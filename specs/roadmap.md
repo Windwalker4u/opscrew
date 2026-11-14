@@ -7,7 +7,7 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 
 Done: 000–027. [026 Contabo](026-contabo-provider-plugins/) shipped as 0.2.7 on 2026-11-12, and
 [027 shared hosting](027-shared-hosting/) as 0.2.8 on 2026-11-14. Now: [028 moving an app to
-another Cloudflare account](028-cloudflare-account-move/), for 0.2.9. Then 029 AWS, once the
+another Cloudflare account](028-cloudflare-account-move/), for 0.2.10; 0.2.9 ships build arguments from the plan and a further app's analysis fix first. Then 029 AWS, once the
 founder gives the go-ahead.
 
 ## 019 Rollback
@@ -407,14 +407,14 @@ servers.
 ## 028 Moving an app to another Cloudflare account
 
 `opscrew` moves an app's whole Cloudflare setup to another Cloudflare account the user owns
-(founder, 2026-11-14, for 0.2.9). Cloudflare moves nothing between accounts by itself: the domain
+(founder, 2026-11-14, for 0.2.10). Cloudflare moves nothing between accounts by itself: the domain
 is added to the new account, its records and OpsCrew's rules copied, the app's Tunnels, Access,
 Workers and R2 buckets created there, the nameservers switched, and the old account's pieces
 removed after an approved plan. Research and the founder's decisions:
 [research.md](028-cloudflare-account-move/research.md).
 
 **The founder's decisions (2026-11-14):**
-- It ships as 0.2.9; 0.2.8 went out without it.
+- It ships as its own release, 0.2.10; 0.2.9 carries build arguments from the plan and a further app's analysis fix, which the control plane waits for.
 - A zone serving several OpsCrew apps moves with all of them: each app prepares its side from its
   own repository, one run switches the zone, each repository then finishes.
 - The R2 buckets are copied to the new account and the app switched to them in a short

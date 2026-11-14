@@ -1,7 +1,7 @@
 # ADR 0032: Moving an app to another Cloudflare account: shadow states, marks in the new zone
 
 **Status**: Accepted (2026-11-14, feature 028). The founder asked for the move and set its
-scope on 2026-11-14: it ships as 0.2.9; a zone serving several apps moves with all of them; R2
+scope on 2026-11-14: it ships as 0.2.10 (0.2.9 carries two smaller changes first); a zone serving several apps moves with all of them; R2
 buckets are copied; a site on Cloudflare's hosting runs in the new account before the switch;
 deploys through Cloudflare Access keep working during the move; the live pass is the real move of
 opscrew.dev. The design is the lead's, to be settled by spike S1 on the two accounts (028 research

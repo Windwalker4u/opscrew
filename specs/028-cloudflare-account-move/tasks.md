@@ -88,6 +88,17 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow src/docker src/portainer-target && npx vitest run --root packages/agents src/shared src/localhost src/design && pnpm lint`
   - Effort: high
 
+- [ ] T2834 A further app's analysis reads its own folder (bug in 0.2.8, reported through the control plane's session)
+  - Owns: `packages/detect/src/**`, `packages/agents/src/analyze/**`, `packages/agents/src/apps/**` (only if the app's folder is recorded wrongly), the colocated tests and fixtures
+  - Reads: `docs/guide/several-apps.md`; `detectProjectDetails`, `normalizeAppDir`; `packages/detect/src/env.ts`
+  - Found: in a pnpm workspace, `opscrew app add pay --dir apps/pay` then `opscrew analyze --app pay --no-ai` wrote `opscrew/apps/pay/architecture.json` with the whole repository's facts: `facts.envVars` held the 37 names of the root `.env.example` and none of the app's three `VITE_` settings (read through Vite's `loadEnv(mode, cwd, "VITE_")` in `vite.config.ts` and a file it imports, never `import.meta.env`); `facts.services` held PostgreSQL from `apps/server` (`dependency:pg`, `env:DATABASE_URL`); `facts.frameworks` held React from `apps/web`. Design for Cloudflare's hosting then refused it for PostgreSQL.
+  - Accept:
+    - For an app with an `appDir`, envVars, services and frameworks come from that folder only, plus its `sharedPaths`; a root `.env.example` counts only for the first app at the root.
+    - Settings read through `loadEnv(…, "VITE_")` or `env.VITE_X` in `vite.config.*` and the files it imports are detected, as client-exposed.
+    - A fixture shaped like the report (a workspace with a root `.env.example`, a server app with `pg`, a React app, and a Vite app reading three `VITE_` settings through `loadEnv`): the Vite app's facts hold only its own; the first app's analysis is unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/detect --filter=@opscrew/agents && npx vitest run --root packages/detect && npx vitest run --root packages/agents src/analyze src/apps && pnpm lint`
+  - Effort: high
+
 ## Phase 2: Wave 1 (parallel)
 
 - [x] T2803 [P] [US1] The move's record in the plan
@@ -466,6 +477,32 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move/deploy-secrets && pnpm lint`
   - Effort: high
 
+- [ ] T2832 [P] [US1] Portainer: the new account's connector stacks beside the app's (found by T2815)
+  - Owns: `packages/connectors/portainer/src/**`
+  - Reads: T2815's block and its report (the seam's type); `renderNextConnectorStacks` in `@opscrew/iac-templates` (T2807); ADR 0012
+  - Depends: T2807
+  - Decided by the lead: the stack plan today knows three roles (`ROLES`, `STACK_CHANGE_IDS`, a record of at most 3 stacks) and one `tunnelToken`, so the move's stacks `opscrew-<app>-tunnel-next` and `opscrew-<app>-portainer-tunnel-next` get a plan of their own rather than widening the app's.
+  - Accept:
+    - `planNextStacks(facts, { app, environmentId, stacks: { name, compose }[] | "remove", fingerprints })`: a StackPlan of its own (the stacks' text, `TUNNEL_TOKEN` as their only value, its `valuesDigest`), approved by hash; `"remove"` plans the removal of those stacks only.
+    - `applyStackPlan` applies it with `secrets.nextTunnelTokens` keyed by stack name; a token never in the plan, its hash or an output.
+    - `inspectPortainer` reads the `-next` stacks too; the app's own stacks, roles and record are unchanged.
+    - Tests with the Portainer fake: create, re-run (nothing to do), remove; the app's stacks untouched; no token in any plan or call log.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-portainer && npx vitest run --root packages/connectors/portainer && pnpm lint`
+  - Effort: high
+
+- [ ] T2833 [P] [US1] A saved plan made with `-var`s applies with the same `-var`s (found by T2813)
+  - Owns: `packages/iac-engine/src/engine.ts` and its tests; `packages/agents/src/provision/plan-apply.ts`, `packages/agents/src/shared/connector-removal.ts`, `packages/agents/src/testing/{state,deploy}.ts` and their tests
+  - Reads: T2813's block; `IacRunOptions` in `@opscrew/contracts` (it already has `vars`)
+  - Depends: T2811
+  - Decided by the lead: OpenTofu 1.13 refuses to apply a saved plan when a variable saved in it differs from what the root's `terraform.tfvars.json` gives at apply ("Mismatch between input and plan variable value"); Terraform applies it; both apply it when the same `-var`s are passed to `apply <planfile>`. So the engine passes `options.vars` to `apply` as it does to `plan`, with no contract change.
+  - Accept:
+    - `IacEngine.apply` passes `options.vars` as `-var` arguments before the plan file (both engines); without `vars` the command is byte-identical to today's.
+    - `planAndApply` passes its `vars` to the apply, through `applyWithConnectorRemoval` too.
+    - The fake engine's `PlanVariables.mismatch` takes apply-time `vars` over `terraform.tfvars.json`, as OpenTofu does, so a test that drops the apply's `vars` fails.
+    - Tests: the engine's argument list with and without `vars`; with the real engines from `.tools/bin` (skipping without them), a root planned with `-var` differing from its tfvars applies with OpenTofu and Terraform; `planAndApply` with `vars` reaches the apply.
+  - Verify: `PATH="D:/opscrew/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-engine --filter=@opscrew/agents && npx vitest run --root packages/iac-engine && npx vitest run --root packages/agents src/provision/plan-apply src/shared/connector-removal && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [ ] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
@@ -546,6 +583,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2823 [US1] [US3] Finish, part 2: the steps in order
   - Owns: `packages/agents/src/cloudflare-move/finish*.ts` except T2822's files
+  - Lead note (after T2814): before the swap replaces `.opscrew/cloudflare.json` with B's record, move A's record to `aSharedRecordPath(env)` (exported from `cloudflare-move/shared.ts`); `revokeAOrigin` reads it there and asks nothing when it is missing. One helper for the `cloudflare-move/` folder paths, shared with T2813's, is T2828's to gather.
   - Lead note (after T2812, T2811): a damaged app progress file reads as absent and loses `window.stoppedAt`, so the finish also tells from the app itself (or its state) that it is stopped; forget A's kept bucket keys with `forgetStorageKey(deps, bucket, { account: A, moveTo: B })` so B's stay.
   - Reads: plan 7., 9.; data-model 1, 2, 3, 7
   - Depends: T2813, T2815, T2816, T2818, T2822
@@ -600,6 +638,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 ## Phase 8: Wave 7
 
 - [ ] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
+  - Lead note (2026-11-14): B's account id is read from `OPSCREW_E2E_MOVE_TOKEN_B` (`GET /accounts`) when the token sees exactly one account; `OPSCREW_E2E_MOVE_ACCOUNT_B` is required only otherwise. The same holds for A's.
   - Lead note (after T2808): record the SSH probe's status code and duration for an accepted service token (a quick 502, or a held stream until `--max-time 5`); if Access holds the stream, the probe moves to `-I`. Confirm `wrangler deploy --secrets-file` to B and cloudflared's behaviour on a refused token.
   - Owns: `packages/cli/test/live/cloudflare-move*.ts`, the move's section of `docs/e2e.md`
   - Reads: plan 15.; quickstart's live part; `packages/cli/test/live/{harness,retarget-anywhere,own-server,live,snapshots-support,tls-support}.ts`
@@ -630,7 +669,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   implementer per area so no two edit the same file; known so far: the move's and retarget's
   pending-plan files, the texts kept per file, the two rclone call sites.
 - [ ] T2829 `CLAUDE.md`'s package notes (the move's folder), and the roadmap: 028 done (lead).
-- [ ] T2830 The release 0.2.9, following `docs/releasing.md` (lead).
+- [ ] T2830 The release 0.2.10, following `docs/releasing.md` (lead).
 
 ## Dependencies and waves
 

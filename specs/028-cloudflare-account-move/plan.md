@@ -531,7 +531,7 @@ the lead in legs over hours or days.
 7. Wave 6: T2824 (CLI, status, MCP, plugin), T2825 (guide).
 8. Wave 7: T2826 (live test files).
 9. Lead: T2827 (the rehearsal and the real move), T2828 (simplify), T2829 (CLAUDE.md, roadmap), T2830
-   (release 0.2.9).
+   (release 0.2.10).
 
 ## Deviations from the lead's starting decisions
 

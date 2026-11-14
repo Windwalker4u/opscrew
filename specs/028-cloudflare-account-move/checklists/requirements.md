@@ -34,5 +34,5 @@
 - As in OpsCrew's earlier specs, the spec names the user-facing commands, Cloudflare's own pieces
   (Tunnels, Workers, R2) and the registrars, since they are what the user sees; how OpsCrew builds
   the move (state layout, adapters, the prepared mark's form) is left to the plan.
-- The founder's three decisions (release 0.2.9, all apps in the zone, R2 copied) settled the scope
+- The founder's three decisions (its own release, all apps in the zone, R2 copied) settled the scope
   questions; no clarification is open.

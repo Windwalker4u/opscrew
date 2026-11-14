@@ -116,7 +116,7 @@ account (A) to the new account the founder is making (B). It runs once, in legs 
 | `OPSCREW_E2E_CLOUDFLARE_MOVE` | `1` runs the pass. |
 | `OPSCREW_E2E_MOVE_ZONE` | `opscrew.dev`. |
 | `OPSCREW_E2E_MOVE_TOKEN_A`, `OPSCREW_E2E_MOVE_ACCOUNT_A` | A's token (today's) and account id. |
-| `OPSCREW_E2E_MOVE_TOKEN_B`, `OPSCREW_E2E_MOVE_ACCOUNT_B` | B's token and account id. |
+| `OPSCREW_E2E_MOVE_TOKEN_B`, `OPSCREW_E2E_MOVE_ACCOUNT_B` | B's token; B's account id only when the token sees more than one account (otherwise it is read from the token). |
 | `OPSCREW_E2E_MOVE_R2_KEY_A_ID`, `…_A_SECRET`, `…_B_ID`, `…_B_SECRET` | An R2 key per account. |
 | `OPSCREW_E2E_MOVE_DEPLOY_TOKEN_B` | B's Workers deploy token, when the zone serves a site on Cloudflare's hosting. |
 | `PORKBUN_*`, `NAMECHEAP_*` or `GODADDY_API_TOKEN` | Only when opscrew.dev is at one of them (L4a). |

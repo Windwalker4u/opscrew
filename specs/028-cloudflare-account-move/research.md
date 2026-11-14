@@ -7,7 +7,7 @@ token is not a supported path (the IaC state points at the old account's resourc
 
 ## Founder's decisions (2026-11-14)
 
-- **Release:** 0.2.8 ships without it; the move ships as 0.2.9 once it has passed live.
+- **Release:** 0.2.8 ships without it; the move ships once it has passed live, as 0.2.10: later the same day the founder chose to ship build arguments from the plan (T2831) and a further app's analysis fix (T2834) first, as 0.2.9, since the move waits on DNSSEC and its live pass.
 - **A zone that serves several OpsCrew apps:** all of them move. A zone moves as a whole (its
   nameservers change once), so each app prepares its side in the new account from its own
   repository, one run switches the zone, and each repository then finishes.

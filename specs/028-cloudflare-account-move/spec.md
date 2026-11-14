@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: The founder, 2026-11-14: "is opscrew able to transfer from one cloudflare account to
 another setup?", then "can you please implement that too". His decisions the same day: it ships
-as 0.2.9; a zone serving several OpsCrew apps moves with all of them; the R2 buckets are copied to
+as its own release (0.2.10); a zone serving several OpsCrew apps moves with all of them; the R2 buckets are copied to
 the new account; a site on Cloudflare's hosting runs in the new account before the switch, so only
 its custom domains wait for activation ("shorten the gap"); deploys through Cloudflare Access keep
 working during the move ("avoid the pause"); the live pass is the real move of opscrew.dev, with
