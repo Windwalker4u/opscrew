@@ -257,6 +257,12 @@ export interface SharedDesired {
     served?: { originSha256?: string; requiring: string[] };
     /** Present only when a new origin certificate is wanted: its CSR (PEM). */
     origin?: { csr: string };
+    /**
+     * The zone is pending in the account a move goes to, and Cloudflare issues no Origin CA
+     * certificate for a pending zone: the plan sets the origin pulls and creates no certificate,
+     * which comes at the move's finish.
+     */
+    originLater?: boolean;
     /** The client certificate to upload, by its SHA-256 fingerprint, if not yet at Cloudflare. */
     client?: { sha256: string };
   };
@@ -761,7 +767,7 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
     sameList(origin.hostnames, proxied) &&
     Date.parse(origin.expiresAt) - Date.parse(read.readAt) >= RENEW_DAYS * DAY_MS;
   let csr: string | undefined;
-  if (proxied.length > 0 && !valid) {
+  if (proxied.length > 0 && !valid && want.originLater !== true) {
     if (want.origin === undefined) throw originCsrMissing(proxied);
     csr = want.origin.csr;
     changes.push({

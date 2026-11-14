@@ -1882,6 +1882,18 @@ describe("origin TLS and the zone's minimum TLS", () => {
     expect(error.hint).toContain("CSR");
   });
 
+  it("with originLater (a pending zone: Cloudflare issues it no Origin CA certificate), plans the origin pulls and no certificate, without a CSR", async () => {
+    const zone = new FakeZone();
+    const m = material();
+    const desired = wanted(m);
+    const { origin: _origin, ...withoutCsr } = desired.tls as DesiredTls;
+    const plan = await tlsPlan(zone, { ...desired, tls: { ...withoutCsr, originLater: true } });
+    const kinds = plan.changes.map((change) => change.kind);
+    expect(kinds).not.toContain("create-origin-certificate");
+    expect(kinds).toContain("upload-client-certificate");
+    expect(kinds).toContain("enable-client-certificate");
+  });
+
   it("refuses to replace a client certificate Cloudflare still has, and says how to replace it by hand", async () => {
     const zone = new FakeZone();
     const m = material();
