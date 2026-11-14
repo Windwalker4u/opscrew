@@ -541,11 +541,16 @@ describe("DeployPlan target provider", () => {
     const parsed = DeployPlanSchema.parse({ ...plan, app: { ...plan.app, env: [marked] } });
     expect(parsed.app.env).toEqual([marked]);
     expect(parseArtifact("plan", serializeArtifact("plan", parsed), "plan.yaml")).toEqual(parsed);
-    const secret = { ...plan, app: { ...plan.app, env: [{ ...marked, secret: true }] } };
-    const result = DeployPlanSchema.safeParse(secret);
-    expect(pathsOf(result)).toEqual(["app.env.0.buildArg"]);
-    expect(result.error?.issues[0]?.message).toBe(
-      "PLUGINS is secret, so it cannot be a build argument: a build argument is recorded in the image's provenance. A secret reaches the build only as a secret mount; remove buildArg from it, or set secret: false when its value is public.",
+    const refused = (variable: object) => {
+      const result = DeployPlanSchema.safeParse({ ...plan, app: { ...plan.app, env: [variable] } });
+      expect(pathsOf(result)).toEqual(["app.env.0.buildArg"]);
+      return result.error?.issues[0]?.message;
+    };
+    expect(refused({ ...marked, secret: true })).toBe(
+      "PLUGINS is secret, so it cannot be a build argument: a build argument is recorded in the image's provenance. Remove buildArg from it.",
+    );
+    expect(refused({ ...marked, source: "generated" })).toBe(
+      "PLUGINS is a random value OpsCrew generates, so it cannot be a build argument: a build argument is recorded in the image's provenance. Remove buildArg from it.",
     );
   });
 

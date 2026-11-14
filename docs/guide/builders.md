@@ -305,8 +305,9 @@ app:
 
 It then takes the path of the prefixed variables that are not secret. `npx opscrew provision`
 asks for its value, or reads it from the `OPSCREW_APP_ENV_FILE` file in scripts. Its value must be
-one line. It reaches the build only, never the running app, and the image's provenance record
-lists it, so its value is public. A later `npx opscrew design` keeps the mark.
+one line. It reaches the build only, never the running app. With a Dockerfile, the image's
+provenance record lists it; treat its value as public. A later `npx opscrew design` keeps the
+mark.
 
 - **A Dockerfile** gets it with `--build-arg`, in the deploy workflow (also for a Portainer you
   already run, whose image the workflow builds) and on your own computer. Your own Dockerfile
@@ -320,3 +321,4 @@ lists it, so its value is public. A later `npx opscrew design` keeps the mark.
 
 A secret cannot be a build argument: OpsCrew refuses a plan with both `secret: true` and
 `buildArg: true` on a variable. A secret value the build needs reaches it only as a secret mount.
+A value OpsCrew generates (`source: generated`) cannot be one either.

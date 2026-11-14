@@ -2183,16 +2183,23 @@ const DeployPlanFieldsSchema = z.strictObject({
           /**
            * True when the image's build reads it: it reaches the build as a build argument, as the
            * variables named with a browser prefix (`VITE_`, `NEXT_PUBLIC_`) do, and the image's
-           * provenance lists it. Never with `secret: true`. Absent means false.
+           * provenance lists it. Never with `secret: true` or `source: generated`. Absent means
+           * false.
            */
           buildArg: z.boolean().optional(),
         })
         .superRefine((variable, ctx) => {
-          if (variable.buildArg !== true || !variable.secret) return;
+          if (variable.buildArg !== true) return;
+          const why = variable.secret
+            ? "is secret"
+            : variable.source === "generated"
+              ? "is a random value OpsCrew generates"
+              : undefined;
+          if (why === undefined) return;
           ctx.addIssue({
             code: "custom",
             path: ["buildArg"],
-            message: `${variable.name} is secret, so it cannot be a build argument: a build argument is recorded in the image's provenance. A secret reaches the build only as a secret mount; remove buildArg from it, or set secret: false when its value is public.`,
+            message: `${variable.name} ${why}, so it cannot be a build argument: a build argument is recorded in the image's provenance. Remove buildArg from it.`,
           });
         }),
     ),

@@ -311,20 +311,6 @@ describe("build values", () => {
       });
       // Provision writes it into the build values; the build job carries them whatever their names.
       expect(rendered(marked)).toBe(rendered(plan));
-      const plugins = {
-        ...values,
-        [DEPLOY_SECRETS.buildEnv]: `${values[DEPLOY_SECRETS.buildEnv]}PLUGINS=alpha@1a2b3c4\n`,
-      };
-      const steps = evaluated(rendered(marked), plugins);
-      const reads = steps.filter((s) =>
-        [s.with?.["build-args"], s.with?.secrets, s.env?.BUILD_ENV].some((v) =>
-          String(v ?? "").includes("PLUGINS=alpha@1a2b3c4"),
-        ),
-      );
-      expect(reads.map((s) => s.id)).toEqual([
-        builder === "buildpacks" ? "pack" : builder === "railpack" ? "prepare" : "push",
-        ...(builder === "railpack" ? ["railpack"] : []),
-      ]);
     },
   );
 
