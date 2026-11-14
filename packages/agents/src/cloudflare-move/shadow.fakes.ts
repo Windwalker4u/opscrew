@@ -27,9 +27,9 @@ export function addressState(addresses: readonly string[]): string {
   return `${JSON.stringify({ version: 4, addresses })}\n`;
 }
 
-/** The addresses in a state file of the fake. */
+/** The addresses in a state file of the fake (none in a state provision's fake left). */
 export async function stateAddresses(file: string): Promise<string[]> {
-  return (JSON.parse(await readFile(file, "utf8")) as { addresses: string[] }).addresses;
+  return (JSON.parse(await readFile(file, "utf8")) as { addresses?: string[] }).addresses ?? [];
 }
 
 /**

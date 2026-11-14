@@ -6,9 +6,16 @@
  * the approval. A non-interactive run stops with the hash; `--approve <hash>` applies the saved plan.
  */
 import type { ResourceChange } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { hashFile } from "@opscrew/iac-engine";
-import { cloudflareAddressScope } from "@opscrew/iac-templates";
+import {
+  beszelHostname,
+  cloudflareAddressScope,
+  portainerHostname,
+  portainerWebhookHostname,
+  sshHostname,
+} from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   findSavedPlan,
@@ -35,9 +42,12 @@ import {
   removalTarget,
   removedBy,
   type ShadowSide,
+  seedShadow,
   shadowEngineEnv,
   shadowFiles,
+  tfvarsFile,
 } from "./shadow";
+import { A_TOKEN_VAR, refusal } from "./texts";
 import type { MoveSession, ShadowRoot } from "./types";
 
 /** What a root's pieces are called in an approval's title. */
@@ -55,6 +65,8 @@ interface ShadowPlan {
   env: Record<string, string | undefined>;
   vars?: Record<string, string>;
   destroy?: boolean;
+  /** The variable of the token the plan runs with, for the hints (default B's). */
+  tokenVar?: string;
   /** Stops before any approval when the plan does more than this step may do. */
   check: (saved: SavedPlan) => void;
   title: string;
@@ -140,6 +152,7 @@ async function shadowPlanStep(
     costDelta: null,
     approvalTitle: plan.title,
     ...(plan.destroy === true ? { destroy: true } : {}),
+    ...(plan.tokenVar === undefined ? {} : { tokenVar: plan.tokenVar }),
   };
   let planHash = await approvedPending(session, deps, key, plan.check);
   if (planHash === undefined) {
@@ -185,9 +198,22 @@ async function shadowPlanStep(
  */
 const HELD_BACK_WHILE_PENDING = ["access_applications", "protected_route_records"] as const;
 
+/** True when the environment's root puts any of its hostnames behind Cloudflare Access. */
+function hasAccess(plan: DeployPlan, zone: string): boolean {
+  const zoned: DeployPlan = { ...plan, dns: { ...plan.dns, zone } };
+  return [
+    sshHostname(zoned),
+    portainerWebhookHostname(zoned),
+    portainerHostname(zoned),
+    beszelHostname(zoned),
+  ].some((hostname) => hostname !== undefined);
+}
+
 /**
  * `false` for each of {@link HELD_BACK_WHILE_PENDING} the root's committed values have, while B's
- * zone is not active; none once it is, or in a root without them.
+ * zone is not active; none once it is, or in a root without them. Refuses a main root with Access
+ * whose values lack them (rendered before them): planned as it is, B's plan would make the Access
+ * applications Cloudflare refuses there.
  */
 async function heldBackWhilePending(
   session: MoveSession,
@@ -195,9 +221,19 @@ async function heldBackWhilePending(
 ): Promise<Record<string, string>> {
   if (session.accounts.b.zone?.status === "active") return {};
   const values = await committedValues(session, root.dir);
-  return Object.fromEntries(
-    HELD_BACK_WHILE_PENDING.filter((name) => name in values).map((name) => [name, "false"]),
-  );
+  const held = HELD_BACK_WHILE_PENDING.filter((name) => name in values);
+  const { plan } = environmentOf(session, root);
+  if (
+    root.name === "main" &&
+    held.length < HELD_BACK_WHILE_PENDING.length &&
+    hasAccess(plan, session.zone)
+  ) {
+    throw refusal(
+      `${toPosixRelative(session.paths.root, tfvarsFile(root.dir))} is from before OpsCrew could hold back Access applications, which Cloudflare refuses on the new account's pending zone.`,
+      `Run \`opscrew provision\` to bring the app's files up to date and commit them, then run \`${session.command}\` again.`,
+    );
+  }
+  return Object.fromEntries(held.map((name) => [name, "false"]));
 }
 
 /** True when `change` is a `action` of a Cloudflare resource. */
@@ -206,19 +242,22 @@ function cloudflare(change: ResourceChange, action: ResourceChange["action"]): b
 }
 
 /**
- * Plans B's pieces of `root` in its shadow state (seeded first): the committed root module with B's
- * token, B's ids as `-var`s (`root.vars`, with the Access applications and the records they protect
- * held back while B's zone is pending) and the shadow data folder, allowed only to create
- * Cloudflare resources; anything else stops before the approval with the plan's lines.
+ * Plans B's pieces of `root` in its shadow state, seeded first (`seedShadow`, which also finishes a
+ * seeding that stopped half-way): the committed root module with B's token, B's ids as `-var`s
+ * (`root.vars`, with the Access applications and the records they protect held back while B's zone
+ * is pending) and the shadow data folder, allowed only to create Cloudflare resources; anything
+ * else stops before the approval with the plan's lines.
  */
 export async function planShadow(session: MoveSession, root: ShadowRoot): Promise<PlanStep> {
   const what = rootWords(session, root);
   const b = accountName(session.accounts.b);
+  const held = await heldBackWhilePending(session, root);
+  await seedShadow(session, root);
   return shadowPlanStep(session, root, {
     action: "shadow-create",
     statePath: root.statePath,
     env: await shadowEngineEnv(session, root, "b", root.dataDir),
-    vars: { ...root.vars, ...(await heldBackWhilePending(session, root)) },
+    vars: { ...root.vars, ...held },
     check: planBounded({
       lead: `The plan of ${what} in the Cloudflare account ${b} would do more than create them there, so OpsCrew stopped. Nothing was changed.`,
       change: (change) => cloudflare(change, "create"),
@@ -272,6 +311,7 @@ export async function planRemoval(
       : root.vars;
   return shadowPlanStep(session, root, {
     action: side === "a" ? "a-removal" : "abort-shadow",
+    ...(side === "a" ? { tokenVar: A_TOKEN_VAR } : {}),
     statePath,
     env: await shadowEngineEnv(session, root, side, dataDir),
     vars,

@@ -38,8 +38,9 @@ import {
   stateContents,
   storageStateFile,
 } from "../shared";
+import { rootVariables } from "../shared/root-variables";
 import type { MoveRoot } from "./progress";
-import { A_TOKEN_VAR, B_TOKEN_VAR, refusal } from "./texts";
+import { A_TOKEN_VAR, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
 import type { MoveEnvironment, MoveSession, ShadowRoot } from "./types";
 
 /** Whose pieces: A's (the account that holds the zone when the move starts) or B's. */
@@ -116,8 +117,16 @@ export async function hasContent(file: string): Promise<boolean> {
   }
 }
 
+/**
+ * The mark of a seeding under way: while it is there, the shadow state is a copy of A's state with
+ * nothing of B's in it.
+ */
+function seedingMark(root: ShadowRoot): string {
+  return `${root.statePath}.seeding`;
+}
+
 /** The root's `terraform.tfvars.json`. */
-function tfvarsFile(dir: string): string {
+export function tfvarsFile(dir: string): string {
   return join(dir, "terraform.tfvars.json");
 }
 
@@ -138,7 +147,8 @@ export async function committedValues(
 /**
  * The Cloudflare ids among the root's variables (`values`, its `terraform.tfvars.json`), with
  * `side`'s values (`accountVariables`): its zone's and account's ids and, when the root has the
- * variable, the id of the account's one-time PIN login, read with that side's client.
+ * variable, the id of the account's one-time PIN login, read with that side's client (a refusal
+ * when the account has none: B's shared plan makes it).
  */
 export async function accountIds(
   session: MoveSession,
@@ -158,17 +168,21 @@ export async function accountIds(
       { hint: BUG },
     );
   }
-  const pin =
-    PIN_VARIABLE in values
-      ? (await client.accessIdentityProviders(accountId)).find((one) => one.type === "onetimepin")
-          ?.id
-      : undefined;
+  if (!(PIN_VARIABLE in values))
+    return accountVariables(values, { cloudflare: { zoneId, accountId } });
+  const providers = await client.accessIdentityProviders(accountId);
+  const pin = providers.find((one) => one.type === "onetimepin")?.id;
+  if (pin === undefined) {
+    const name = (side === "a" ? a.name : b.name) ?? accountId;
+    throw refusal(
+      `The app's Access in the Cloudflare account ${name} logs in with a one-time PIN, but the account's one-time PIN login is missing; preparing again makes it.`,
+      session.command === MOVE_COMMAND
+        ? `Run \`${MOVE_COMMAND}\` again.`
+        : `Run \`${MOVE_COMMAND}\` first, then run \`${session.command}\` again.`,
+    );
+  }
   return accountVariables(values, {
-    cloudflare: {
-      zoneId,
-      accountId,
-      ...(pin === undefined ? {} : { oneTimePinIdentityProviderId: pin }),
-    },
+    cloudflare: { zoneId, accountId, oneTimePinIdentityProviderId: pin },
   });
 }
 
@@ -215,8 +229,9 @@ export async function shadowRoots(
 /**
  * The engine's environment for `root`'s environment and `side`: the phase's, with that
  * environment's own `TF_ENCRYPTION` (its passphrase and key name, as `existingStateEngine` reads
- * them), `side`'s token as `CLOUDFLARE_API_TOKEN` (B's token under no other name) and `TF_DATA_DIR`
- * when `dataDir` is given. Never logged.
+ * them) and the root's variables from OpsCrew's local records (`rootVariables`: an own server's or
+ * Portainer's address), `side`'s token as `CLOUDFLARE_API_TOKEN` (B's token under no other name)
+ * and `TF_DATA_DIR` when `dataDir` is given. Never logged.
  */
 export async function shadowEngineEnv(
   session: MoveSession,
@@ -225,16 +240,14 @@ export async function shadowEngineEnv(
   dataDir?: string,
 ): Promise<Record<string, string | undefined>> {
   const environment = environmentOf(session, root);
-  const { env } = await projectEngine(
-    { ...session.deps, paths: environment.paths },
-    environment.plan,
-    {
-      preference: session.engine.info.name,
-      services: { engine: async () => session.engine },
-      passphrase: { requiredBy: session.command },
-    },
-  );
-  const { [B_TOKEN_VAR]: _b, ...rest } = env;
+  const deps = { ...session.deps, paths: environment.paths };
+  const setup = await projectEngine(deps, environment.plan, {
+    preference: session.engine.info.name,
+    services: { engine: async () => session.engine },
+    passphrase: { requiredBy: session.command },
+  });
+  await rootVariables(deps, environment.plan, setup, session.command);
+  const { [B_TOKEN_VAR]: _b, ...rest } = setup.env;
   return {
     ...rest,
     CLOUDFLARE_API_TOKEN: session.deps.env[side === "a" ? A_TOKEN_VAR : B_TOKEN_VAR]?.trim(),
@@ -291,7 +304,7 @@ async function removeFromState(
  * state is kept; a seeding that stopped half-way (its `.seeding` mark left) is done again.
  */
 export async function seedShadow(session: MoveSession, root: ShadowRoot): Promise<void> {
-  const mark = `${root.statePath}.seeding`;
+  const mark = seedingMark(root);
   if ((await exists(root.statePath)) && !(await exists(mark))) return;
   const { environmentState } = shadowFiles(root);
   if (!(await hasContent(environmentState))) return;
@@ -394,7 +407,8 @@ export async function patchTfvars(root: ShadowRoot): Promise<boolean> {
  * Prepares `side`'s state of `root` for its destroy plan: from A's former state every address that
  * is not Cloudflare's or is zone-scoped is taken out (A's records go with its moved zone, and the
  * server stays), from B's shadow state every address that is not Cloudflare's (the copied server
- * resources). State only; nothing without a state.
+ * resources). State only; nothing without a state. A shadow state whose seeding stopped half-way
+ * holds only A's copy and nothing of B's: it is deleted with its mark, and nothing is planned.
  */
 export async function prepareRemoval(
   session: MoveSession,
@@ -402,6 +416,11 @@ export async function prepareRemoval(
   side: ShadowSide,
 ): Promise<void> {
   const { statePath, dataDir } = removalTarget(root, side);
+  if (side === "b" && (await exists(seedingMark(root)))) {
+    await rm(statePath, { force: true });
+    await rm(seedingMark(root));
+    return;
+  }
   if (!(await hasContent(statePath))) return;
   const env = await shadowEngineEnv(session, root, side, dataDir);
   await removeFromState(
@@ -435,7 +454,7 @@ export async function dropShadow(session: MoveSession, root: ShadowRoot): Promis
   for (const path of [
     root.statePath,
     `${root.statePath}.backup`,
-    `${root.statePath}.seeding`,
+    seedingMark(root),
     root.dataDir,
     removalState,
     `${removalState}.backup`,

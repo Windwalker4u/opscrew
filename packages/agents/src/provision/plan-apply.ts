@@ -173,6 +173,12 @@ export interface PlanAndApplyOptions {
    * the account it goes to. Callers pass `costDelta: null`.
    */
   move?: boolean;
+  /**
+   * The variable the hints name for the Cloudflare token the plan runs with (default
+   * `CLOUDFLARE_API_TOKEN`; `OPSCREW_NEW_CLOUDFLARE_API_TOKEN` with `move`): a move's plan in the
+   * account it leaves runs with that account's own token.
+   */
+  tokenVar?: string;
 }
 
 /**
@@ -188,7 +194,8 @@ function planRunOptions(options: Pick<PlanAndApplyOptions, "env" | "vars" | "des
 }
 
 /** The variable that holds the Cloudflare token the plan's Cloudflare resources are made with. */
-function cloudflareTokenVar(options: Pick<PlanAndApplyOptions, "move">): string {
+function cloudflareTokenVar(options: Pick<PlanAndApplyOptions, "move" | "tokenVar">): string {
+  if (options.tokenVar !== undefined) return options.tokenVar;
   return options.move === true ? "OPSCREW_NEW_CLOUDFLARE_API_TOKEN" : "CLOUDFLARE_API_TOKEN";
 }
 
@@ -235,7 +242,7 @@ function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "pro
 function applyFailureHint(
   deps: PhaseDeps,
   log: string,
-  options: Pick<PlanAndApplyOptions, "deployPlan" | "redesignHint" | "move">,
+  options: Pick<PlanAndApplyOptions, "deployPlan" | "redesignHint" | "move" | "tokenVar">,
   command: string,
 ): string {
   const { deployPlan } = options;

@@ -63,7 +63,6 @@ import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys
 import { VPS_PROVIDERS } from "../providers";
 import { cloudflareTokenMissing, type GitHubSetup } from "../provision/credentials";
 import { requireNoCloudflareMove } from "../provision/guard";
-import { ownEngineEnv, ownTarget } from "../provision/own";
 import {
   describePlan,
   findSavedPlan,
@@ -73,7 +72,6 @@ import {
   writePlanSidecar,
 } from "../provision/plan-apply";
 import { maskSensitivePlanJson } from "../provision/plan-json";
-import { setPortainerOrigin } from "../provision/portainer";
 import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import {
   backupsEngineEnv,
@@ -99,6 +97,7 @@ import {
 } from "../shared/engine";
 import { continued } from "../shared/errors";
 import { readValidJson } from "../shared/files";
+import { rootVariables } from "../shared/root-variables";
 import {
   adoptNextStatePassphrase,
   keepNextStatePassphrase,
@@ -107,8 +106,6 @@ import {
   readSecretFile,
   statePassphraseFile,
 } from "../shared/secret-files";
-import { setPortainerRecordsAddress } from "../shared/server-address";
-import { readPortainerConnection } from "../shared/server-record";
 import type { VpnServices } from "../vpn/servers";
 import {
   portainerTunnelConnectors,
@@ -191,42 +188,6 @@ export function tunnelModules(plan: DeployPlan): TunnelModule[] {
     ...(plan.target.web.mode === "tunnel" ? (["tunnel"] as const) : []),
     ...(plan.target.redeploy === "cloudflare" ? (["portainer_tunnel"] as const) : []),
   ];
-}
-
-/**
- * The variables the root module of `plan` gets only from OpsCrew's local records, set in `env`,
- * never a file: an own server's address (`TF_VAR_server_ipv4`/`_ipv6`), and Portainer's address
- * (`TF_VAR_portainer_origin`, never from this computer's environment) with the records' address.
- * `env` already holds the state's `TF_ENCRYPTION`.
- * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no record of the Portainer.
- */
-async function rootVariables(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  setup: ProjectEngine,
-  again: string,
-): Promise<void> {
-  const { env } = setup;
-  if (plan.target.provider === "own") {
-    await ownEngineEnv(deps, { target: ownTarget(plan) }, env, () =>
-      infrastructureOutputs(deps, plan, { engine: async () => setup.engine, engineEnv: env }),
-    );
-    return;
-  }
-  if (plan.target.provider !== "portainer") return;
-  delete env.TF_VAR_portainer_origin;
-  const connection = await readPortainerConnection(deps.paths);
-  if (connection === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `This computer has no record of how OpsCrew reaches your Portainer (${toPosixRelative(deps.paths.root, join(deps.paths.stateDir, "server.json"))}), so OpsCrew can't plan its Cloudflare resources. Nothing was changed.`,
-      {
-        hint: `Bring OpsCrew's files from your recovery copy (\`opscrew secrets restore\`) or run the command on the computer that set up the app, then run \`${again}\` again.`,
-      },
-    );
-  }
-  setPortainerOrigin(deps.redactor, env, connection.url);
-  await setPortainerRecordsAddress(deps.paths, plan, env);
 }
 
 /**

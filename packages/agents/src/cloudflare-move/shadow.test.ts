@@ -14,7 +14,17 @@ import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { environmentPaths } from "../environments/paths";
 import { backupsStateFile, pagesVerificationStateFile, storageStateFile } from "../shared";
-import { pagesTestPlan, ScriptedApprovalHandler, sitePlan, testPlan, withBucket } from "../testing";
+import { recordPortainerConnection } from "../shared/server-record";
+import {
+  ownPlan,
+  pagesTestPlan,
+  portainerPlan,
+  ScriptedApprovalHandler,
+  SERVER_IPV4,
+  sitePlan,
+  testPlan,
+  withBucket,
+} from "../testing";
 import { readAppProgress } from "./progress";
 import { serverPlan, unencrypted, ZONE } from "./session.fakes";
 import {
@@ -41,6 +51,12 @@ import { checkAfterSwap, planRemoval, planShadow } from "./shadow-plans";
 import type { MoveEnvironment, MoveSession, ShadowRoot } from "./types";
 
 const { record, certificates, tunnel, secret } = CLOUDFLARE_ADDRESSES;
+
+/** What B's plan of the main root creates. */
+const CREATES = [change(record, "create"), change(tunnel, "create"), change(secret, "create")];
+
+/** Where the fake Portainer of these tests answers. */
+const PORTAINER_URL = "https://portainer.example.com:9443";
 
 /** A planned change of `address`. */
 function change(address: string, action: ResourceChange["action"]): ResourceChange {
@@ -309,8 +325,6 @@ describe.skipIf(!findExecutable("git"))("seedShadow", () => {
 });
 
 describe.skipIf(!findExecutable("git"))("planShadow", () => {
-  const CREATES = [change(record, "create"), change(tunnel, "create"), change(secret, "create")];
-
   it("plans in B with B's token and ids, stops a script with the hash and applies it with --approve", async () => {
     const engine = new StateFileEngine({ changes: CREATES });
     const h = await serverHarness(engine);
@@ -690,5 +704,149 @@ describe.skipIf(!findExecutable("git"))("the shadow state's outputs and imports"
       expect.objectContaining({ action: "import", phase: "cloudflare-move" }),
     );
     expect(await leaked(h, engine)).toBe(false);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("the roots' own variables", () => {
+  it("gives an own server's root its address in the engine's environment, never as a -var", async () => {
+    const own = unencrypted(ownPlan({ access: "public", deployed: true, domain: `shop.${ZONE}` }));
+    const engine = new StateFileEngine({ changes: CREATES });
+    const h = await shadowHarness((plans) => [plans.prod?.infra.dir ?? ""], {
+      engine,
+      plans: () => ({ prod: own }),
+    });
+    const [main] = await shadowRoots(h.session, prodOf(h));
+    if (main === undefined) throw new Error("no main root");
+    await planShadow(h.session, main);
+    const [options] = engine.planOptions;
+    expect(options?.env?.TF_VAR_server_ipv4).toBe(SERVER_IPV4);
+    expect(options?.vars).toEqual(idsOf(h, "New"));
+    expect(await leaked(h, engine)).toBe(false);
+  });
+
+  it("gives a Portainer root Portainer's address in the engine's environment, never as a -var", async () => {
+    const portainer = unencrypted(
+      portainerPlan({ redeploy: "cloudflare", deployed: true, domain: `shop.${ZONE}` }),
+    );
+    const engine = new StateFileEngine({ changes: CREATES });
+    const h = await shadowHarness((plans) => [plans.prod?.infra.dir ?? ""], {
+      engine,
+      plans: () => ({ prod: portainer }),
+      values: {
+        [portainer.infra.dir]: { access_applications: true, protected_route_records: true },
+      },
+    });
+    await recordPortainerConnection(h.deps.paths, {
+      url: PORTAINER_URL,
+      environmentId: 3,
+      environmentName: "local",
+    });
+    const [main] = await shadowRoots(h.session, prodOf(h));
+    if (main === undefined) throw new Error("no main root");
+    await planShadow(h.session, main);
+    const [options] = engine.planOptions;
+    expect(options?.env?.TF_VAR_portainer_origin).toBe(PORTAINER_URL);
+    expect(JSON.stringify(options?.vars)).not.toContain("portainer.example.com");
+    expect(options?.vars).toMatchObject({ access_applications: "false" });
+    expect(await leaked(h, engine)).toBe(false);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("a seeding that stopped half-way", () => {
+  /** prod's server with a shadow state copied from A's and its seeding mark left. */
+  async function halfSeeded(engine: StateFileEngine) {
+    const h = await serverHarness(engine);
+    const { main } = h;
+    const all = addressState([...SERVER_ADDRESSES, record, tunnel]);
+    await writeFile(shadowFiles(main).environmentState, all);
+    await mkdir(dirname(main.statePath), { recursive: true });
+    await writeFile(main.statePath, all);
+    await writeFile(`${main.statePath}.seeding`, "");
+    return h;
+  }
+
+  it("is deleted by an abort, with no destroy plan of A's copy", async () => {
+    const engine = new StateFileEngine({ changes: [change(record, "delete")] });
+    const h = await halfSeeded(engine);
+    const { session, main } = h;
+    await prepareRemoval(session, main, "b");
+    await expect(readFile(main.statePath)).rejects.toThrow();
+    await expect(readFile(`${main.statePath}.seeding`)).rejects.toThrow();
+    expect(await planRemoval(session, main, "b")).toEqual({ kind: "unchanged", outputs: {} });
+    expect(engine.calls).toEqual([]);
+    expect(await stateAddresses(shadowFiles(main).environmentState)).toEqual([
+      ...SERVER_ADDRESSES,
+      record,
+      tunnel,
+    ]);
+  });
+
+  it("is seeded again before B's plan", async () => {
+    const engine = new StateFileEngine({ changes: CREATES });
+    const h = await halfSeeded(engine);
+    const { session, main } = h;
+    expect(await planShadow(session, main)).toMatchObject({ kind: "pending" });
+    expect(await stateAddresses(main.statePath)).toEqual([...SERVER_ADDRESSES]);
+    await expect(readFile(`${main.statePath}.seeding`)).rejects.toThrow();
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("roots the move can't plan as they are", () => {
+  it("refuses Access applications whose root can't hold them back while B's zone is pending", async () => {
+    const portainer = unencrypted(
+      portainerPlan({ redeploy: "cloudflare", deployed: true, domain: `shop.${ZONE}` }),
+    );
+    const engine = new StateFileEngine({ changes: CREATES });
+    const h = await shadowHarness((plans) => [plans.prod?.infra.dir ?? ""], {
+      engine,
+      plans: () => ({ prod: portainer }),
+    });
+    const [main] = await shadowRoots(h.session, prodOf(h));
+    if (main === undefined) throw new Error("no main root");
+    const error = await planShadow(h.session, main).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toBe(
+      `${portainer.infra.dir}/terraform.tfvars.json is from before OpsCrew could hold back Access applications, which Cloudflare refuses on the new account's pending zone. Nothing was changed.`,
+    );
+    expect((error as OpsCrewError).hint).toBe(
+      "Run `opscrew provision` to bring the app's files up to date and commit them, then run `opscrew cloudflare move` again.",
+    );
+    expect(engine.calls).toEqual([]);
+    await expect(readFile(main.statePath)).rejects.toThrow();
+  });
+
+  it("refuses plainly when the account has no one-time PIN login the root needs", async () => {
+    const h = await serverHarness(new StateFileEngine());
+    h.cloudflare.account("New").identityProviders.splice(0);
+    const error = await shadowRoots(h.session, prodOf(h)).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toBe(
+      "The app's Access in the Cloudflare account New logs in with a one-time PIN, but the account's one-time PIN login is missing; preparing again makes it. Nothing was changed.",
+    );
+    expect((error as OpsCrewError).hint).toBe("Run `opscrew cloudflare move` again.");
+  });
+
+  it("names each side's token when Cloudflare refuses an apply", async () => {
+    const applyLog = [
+      "Error: 403 Forbidden",
+      "",
+      "  with module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this,",
+    ].join("\n");
+    const engine = new StateFileEngine({
+      changes: [change(tunnel, "delete")],
+      applyOk: false,
+      applyLog,
+    });
+    const h = await serverHarness(engine, { interactive: true });
+    const { session, main } = h;
+    const { removalState } = shadowFiles(main);
+    await mkdir(dirname(removalState), { recursive: true });
+    await writeFile(removalState, addressState([tunnel]));
+    const a = await planRemoval(session, main, "a").catch((e: unknown) => e);
+    expect((a as OpsCrewError).hint).toContain("set CLOUDFLARE_API_TOKEN to it");
+    await mkdir(dirname(main.statePath), { recursive: true });
+    await writeFile(main.statePath, addressState([tunnel]));
+    const b = await planRemoval(session, main, "b").catch((e: unknown) => e);
+    expect((b as OpsCrewError).hint).toContain("set OPSCREW_NEW_CLOUDFLARE_API_TOKEN to it");
   });
 });
