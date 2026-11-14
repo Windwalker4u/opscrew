@@ -11,7 +11,7 @@ import {
   OPSCREW_MANAGED_COMMENT,
   sharedRuleHostnames,
 } from "@opscrew/connector-cloudflare";
-import { listText, sha256Hex } from "@opscrew/core";
+import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
   beszelHostname,
   opscrewRecordNames,
@@ -180,6 +180,16 @@ export function markContents(mark: MoveMark): string[] {
       ["hosts", hosts.join(",")],
       ...tail(index),
     ]);
+  // Only the hostnames are split between parts: the first holds the rest whole.
+  if (part(0, "999/999", []).length > MAX_CONTENT) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The mark of ${mark.app} can't hold its sites and its hostnames behind Cloudflare Access in one TXT record of 2,048 characters, so the move can't record the app as prepared.`,
+      {
+        hint: "Please report this to OpsCrew with the number of the app's environments and hostnames behind Access.",
+      },
+    );
+  }
   const chunks: string[][] = [[]];
   for (const host of mark.hosts) {
     const index = chunks.length - 1;

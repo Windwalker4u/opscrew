@@ -16,7 +16,7 @@ import {
   type ZonePermissionNeed,
 } from "@opscrew/connector-cloudflare";
 import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
-import { type ComparableRecord, recordsMissingFromZone } from "../domain";
+import { type ComparableRecord, recordsMissingFromZone, sameRecordContent } from "../domain";
 import { recordText } from "../domain/connect-plan";
 import { sharedDesired } from "../provision/shared-cloudflare";
 import { appliesNow } from "../retarget/steps";
@@ -41,6 +41,19 @@ export interface ZoneMarks {
   delete: string[];
 }
 
+/**
+ * A's records of a type and name against B's, listed and never changed: B has other values of
+ * them (or one proxied differently, or a CNAME there that Cloudflare won't put another record
+ * beside). After the switch B's are served.
+ */
+export interface ZoneDifference {
+  /** A's records' type and name. */
+  type: string;
+  name: string;
+  a: ZoneRecord[];
+  b: ZoneRecord[];
+}
+
 /** The zone plan (data model 5); `planHash` is the SHA-256 of the canonical JSON of the rest. */
 export interface ZoneCopy {
   zone: string;
@@ -51,7 +64,7 @@ export interface ZoneCopy {
   /** In A, missing from B: created in B. */
   create: ZoneRecord[];
   /** The same type and name in both, other content: listed only (B's is served after the switch). */
-  differ: { a: ZoneRecord; b: ZoneRecord }[];
+  differ: ZoneDifference[];
   /** Listed only, never deleted. */
   onlyInB: ZoneRecord[];
   /** A's records not copied, and why. */
@@ -111,28 +124,49 @@ function recordInput(record: ZoneRecord): ZoneRecord {
   return rest;
 }
 
-const sameName = (a: CloudflareZoneRecord, b: CloudflareZoneRecord) =>
-  a.name.toLowerCase() === b.name.toLowerCase();
+/** A record's type and name, the set it belongs to. */
+const keyOf = (record: Pick<ZoneRecord, "type" | "name">) =>
+  `${record.type.toUpperCase()} ${record.name.toLowerCase()}`;
 
-/** The same type and name: `b` is what B serves in place of `a`. */
-function sameTypeAndName(a: CloudflareZoneRecord, b: CloudflareZoneRecord): boolean {
-  return sameName(a, b) && a.type.toUpperCase() === b.type.toUpperCase();
+/**
+ * A CNAME beside another type of record of the name, which Cloudflare refuses to create; not at
+ * the zone's apex, where Cloudflare flattens a CNAME and takes other records beside it.
+ */
+function cnameClash(a: CloudflareZoneRecord, b: CloudflareZoneRecord, zone: string): boolean {
+  const name = a.name.toLowerCase();
+  if (name !== b.name.toLowerCase() || name === zone) return false;
+  const types = [a.type.toUpperCase(), b.type.toUpperCase()];
+  return types[0] !== types[1] && types.includes("CNAME");
 }
 
-/** A CNAME beside another record of the name, which Cloudflare refuses to create. */
-function cnameClash(a: CloudflareZoneRecord, b: CloudflareZoneRecord): boolean {
-  return sameName(a, b) && (a.type.toUpperCase() === "CNAME" || b.type.toUpperCase() === "CNAME");
-}
+/** The types `recordsMissingFromZone` compares by their `data`; every other by its `content`. */
+const DATA_TYPES = new Set(["SRV", "CAA"]);
 
-/** A record as compared: by its `data` alone when it has some (Cloudflare words their content). */
-function comparable(record: CloudflareZoneRecord): ComparableRecord {
+/** A record as compared: SRV and CAA by their `data` (Cloudflare words their content itself). */
+function comparable(record: Omit<ZoneRecord, "ttl">): ComparableRecord {
   const { type, name, content, data, priority } = record;
+  const byData = data !== undefined && DATA_TYPES.has(type.toUpperCase());
   return {
     type,
     name,
-    ...(data === undefined ? { content } : { data }),
+    ...(byData ? { data } : content === undefined ? {} : { content }),
     ...(priority === undefined ? {} : { priority }),
   };
+}
+
+/** True when `a` and `b` are the same value but one is proxied and the other not. */
+function proxiedApart(a: Omit<ZoneRecord, "ttl">, b: Omit<ZoneRecord, "ttl">): boolean {
+  return (
+    sameRecordContent(comparable(a), comparable(b)) && Boolean(a.proxied) !== Boolean(b.proxied)
+  );
+}
+
+/** `records` by their type and name. */
+function sets(records: readonly CloudflareZoneRecord[]): Map<string, CloudflareZoneRecord[]> {
+  const found = new Map<string, CloudflareZoneRecord[]>();
+  for (const record of records)
+    found.set(keyOf(record), [...(found.get(keyOf(record)) ?? []), record]);
+  return found;
 }
 
 /** The records of `source` that `zone` does not have (`recordsMissingFromZone`). */
@@ -188,9 +222,10 @@ function requireMarks(marks: ZoneMarks, inB: readonly CloudflareZoneRecord[]): v
 /**
  * The zone plan, read-only: A's records that are no OpsCrew app's (not OpsCrew's comment, not
  * Cloudflare's own, not the apex NS, not a mark) compared with B's by type, name and normalised
- * content (`recordsMissingFromZone`). One missing from B is listed when B has another record of
- * its type and name that A lacks (or a CNAME clash Cloudflare would refuse), and created
- * otherwise; B's own are listed; B's zone is added when it has none; and the mark's records
+ * content (`recordsMissingFromZone`), set by set (a type and a name). A's values missing from B are
+ * created when B has no other value of the set and none proxied differently; otherwise, or when
+ * B has a CNAME clash Cloudflare would refuse, the set is listed and never changed. B's sets that
+ * A doesn't have are listed; B's zone is added when it has none; and the mark's records
  * (`marks`, a mark's name, deleting only its TXT records). A's records are read only while A's
  * zone is active (it is authoritative) and never for a plan that only deletes a mark.
  */
@@ -214,20 +249,38 @@ export async function planZone(
     else skipped.push({ record: zoneRecord(record), reason });
   }
   const fromB = copies ? inB.filter((record) => skipReason(record, zone) === undefined) : [];
-  const unmatchedB = missing(fromB, fromA);
+  const inSetsA = sets(fromA);
+  const inSetsB = sets(fromB);
   const create: ZoneRecord[] = [];
-  const differ: ZoneCopy["differ"] = [];
-  const paired = new Set<CloudflareZoneRecord>();
-  for (const record of missing(fromA, fromB)) {
-    const other =
-      unmatchedB.find((one) => sameTypeAndName(record, one)) ??
-      fromB.find((one) => cnameClash(record, one));
-    if (other === undefined) {
-      create.push(zoneRecord(record));
+  const differ: ZoneDifference[] = [];
+  /** B's records a difference lists. */
+  const listed = new Set<CloudflareZoneRecord>();
+  const differs = (
+    first: CloudflareZoneRecord,
+    setA: readonly CloudflareZoneRecord[],
+    setB: readonly CloudflareZoneRecord[],
+  ) => {
+    differ.push({
+      type: first.type,
+      name: first.name,
+      a: byJson(setA.map(zoneRecord)),
+      b: byJson(setB.map(zoneRecord)),
+    });
+    for (const record of setB) listed.add(record);
+  };
+  for (const [key, setA] of inSetsA) {
+    const first = setA[0] as CloudflareZoneRecord;
+    const setB = inSetsB.get(key) ?? [];
+    if (setB.length === 0) {
+      const clash = fromB.filter((record) => cnameClash(first, record, zone));
+      if (clash.length > 0) differs(first, setA, clash);
+      else create.push(...setA.map(zoneRecord));
       continue;
     }
-    differ.push({ a: zoneRecord(record), b: zoneRecord(other) });
-    paired.add(other);
+    // A value is added only where B has no other value of the set; otherwise the set is listed.
+    const apart = setA.some((one) => setB.some((other) => proxiedApart(one, other)));
+    if (missing(setB, setA).length > 0 || apart) differs(first, setA, setB);
+    else create.push(...missing(setA, setB).map(zoneRecord));
   }
   const body: Omit<ZoneCopy, "planHash"> = {
     zone,
@@ -236,7 +289,9 @@ export async function planZone(
     createZone: b.zone === undefined,
     create: byJson(create),
     differ: byJson(differ),
-    onlyInB: byJson(unmatchedB.filter((record) => !paired.has(record)).map(zoneRecord)),
+    onlyInB: byJson(
+      fromB.filter((record) => !inSetsA.has(keyOf(record)) && !listed.has(record)).map(zoneRecord),
+    ),
     skipped: byJson(skipped),
     ...(marks === undefined ? {} : { marks }),
   };
@@ -264,15 +319,39 @@ async function serverAddresses(
       found.push(address.ipv4, ...(address.ipv6 === undefined ? [] : [address.ipv6]));
     }
   }
-  // Longest first, so an address that contains another is masked whole.
-  return [...new Set(found.filter((one) => one.length > 0))].sort((x, y) => y.length - x.length);
+  return [...new Set(found.filter((one) => one.length > 0))];
 }
 
 /** `MX example.com 10 mail.example.com`, ` (proxied)` when it is: the addresses masked. */
 function shownRecord(record: ZoneRecord, addresses: readonly string[]): string {
   let text = recordText({ ...record, proxied: false } as CloudflareRecordInput);
-  for (const address of addresses) text = text.split(address).join(MASKED_ADDRESS);
+  for (const address of addresses) text = text.replace(addressPattern(address), MASKED_ADDRESS);
   return `${text}${record.proxied ? " (proxied)" : ""}`;
+}
+
+/**
+ * Where `address` stands as a whole address: `203.0.113.1` is not found inside `203.0.113.10`, while
+ * an SPF policy's `ip4:203.0.113.1` and `ip6:2001:db8::1` are.
+ */
+function addressPattern(address: string): RegExp {
+  const escaped = address.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = address.includes(":")
+    ? `(?:(?<=ip6:)|(?<![0-9a-fA-F:]))${escaped}(?![0-9a-fA-F]|:[0-9a-fA-F])`
+    : `(?<![\\d.])${escaped}(?!\\d|\\.\\d)`;
+  return new RegExp(pattern, "g");
+}
+
+/** The difference in words: `Old has x', y'; New has x, y`, and a value proxied in one only. */
+function differenceText(
+  difference: ZoneDifference,
+  names: { a: string; b: string },
+  text: (record: ZoneRecord) => string,
+): string {
+  const line = `${names.a} has ${difference.a.map(text).join(", ")}; ${names.b} has ${difference.b.map(text).join(", ")}`;
+  const apart = difference.a.find((one) => difference.b.some((other) => proxiedApart(one, other)));
+  if (apart === undefined) return line;
+  const [on, off] = apart.proxied ? [names.a, names.b] : [names.b, names.a];
+  return `${line} (proxied in ${on}, not in ${off})`;
 }
 
 /** The plan in words, as its approval shows it. */
@@ -296,11 +375,16 @@ function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly 
       ...plan.create.map((record) => `  - ${text(record)}`),
     );
   }
+  if (a.zone?.status !== "active" && !deletesOnly(marks)) {
+    lines.push(
+      `- ${aName}'s records were not read, since ${zone} is ${a.zone?.status ?? "gone"} there: nothing is copied.`,
+    );
+  }
   if (plan.differ.length > 0) {
     lines.push(
-      `- Different in the new account's zone, never changed there (after the switch the new account's record is served):`,
+      `- Different in the new account's zone, never changed there. A value is copied only where the new account's zone has no other value of its type and name; otherwise the whole set is listed. After the switch the new account's records are served:`,
       ...plan.differ.map(
-        (pair) => `  - ${aName} has ${text(pair.a)}; ${bName} has ${text(pair.b)}`,
+        (difference) => `  - ${differenceText(difference, { a: aName, b: bName }, text)}`,
       ),
     );
   }
@@ -413,7 +497,13 @@ export async function applyZone(
   const checks = !deletesOnly(plan.marks);
   if (checks && b.zone !== undefined) await requireUsableZone(session, b.zone, false);
   const changes = changeCount(plan);
-  if (changes === 0) return undefined;
+  if (changes === 0) {
+    // What is listed and never changed is still shown.
+    if (plan.differ.length + plan.onlyInB.length + plan.skipped.length > 0) {
+      deps.reporter.info(plan.details);
+    }
+    return undefined;
+  }
   const key = planKey(plan.marks);
   if (!appliesNow(session, plan.planHash)) {
     deps.reporter.info(plan.details);

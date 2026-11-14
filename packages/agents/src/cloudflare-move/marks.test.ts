@@ -129,6 +129,17 @@ describe("markContents and parseMarks", () => {
     expect(parseMarks(listed(name, [damaged])).damaged).toEqual([name]);
   });
 
+  it("stops plainly when the first part can't hold the sites and the hostnames behind Access", () => {
+    const access = Array.from({ length: 60 }, (_, i) => ({
+      hostname: `access-${i}-with-a-long-name.shop.${ZONE}`,
+      kind: "service" as const,
+      environment: "prod",
+    }));
+    expect(() => markContents({ ...SHOP, access })).toThrow(
+      expect.objectContaining({ code: "PHASE_PRECONDITION" }),
+    );
+  });
+
   it("labels the app by its name and a hash of its repository and key", () => {
     const repository = { owner: "acme", repo: "shop" };
     expect(markLabel("shop", repository)).toBe(`shop-${sha256Hex("acme/shop#").slice(0, 8)}`);

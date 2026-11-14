@@ -170,8 +170,8 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
     expect(plan.create.map((r) => `${r.type} ${r.name} ${r.content}`)).toEqual([
       `CNAME cdn.${ZONE} cdn.example.net`,
     ]);
-    expect(plan.differ.map((d) => [d.a.content, d.b.content])).toEqual([
-      ["198.51.100.7", SERVER_IPV4],
+    expect(plan.differ.map((d) => [d.a.map((r) => r.content), d.b.map((r) => r.content)])).toEqual([
+      [["198.51.100.7"], [SERVER_IPV4]],
     ]);
     expect(plan.onlyInB.map((r) => r.name)).toEqual([`own.${ZONE}`]);
     expect(plan.details).toContain(
@@ -236,7 +236,7 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
     });
     const session = await h.open({ to: "New" });
     const plan = await planZone(session);
-    expect(plan.differ.map((d) => [d.a.type, d.b.type])).toEqual([["CNAME", "A"]]);
+    expect(plan.differ.map((d) => [d.a[0]?.type, d.b[0]?.type])).toEqual([["CNAME", "A"]]);
     expect(plan.create.some((r) => r.name === `web.${ZONE}`)).toBe(false);
     expect(plan.onlyInB).toEqual([]);
   });
@@ -355,5 +355,132 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
     expect(error.message).not.toContain("DNS");
     expect(h.cloudflare.zone(ZONE, "New").records).toEqual([]);
     expect(seen(h, error.message, error.hint ?? "")).toBe(false);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("the zone plan's sets of records", () => {
+  /** B's records as Cloudflare words them: their content from A's, as Cloudflare computes it. */
+  function wordedLikeA(h: MoveHarness): void {
+    const inA = h.cloudflare.zone(ZONE, "Old").records;
+    for (const record of h.cloudflare.zone(ZONE, "New").records) {
+      const same = inA.find((r) => r.type === record.type && r.name === record.name);
+      if (same && record.content === "") record.content = same.content;
+    }
+  }
+
+  it("compares TLSA and HTTPS records by their content: a changed value is listed, not created", async () => {
+    const h = await harness();
+    const old = h.cloudflare.zone(ZONE, "Old");
+    const tlsa = h.cloudflare.addRecord(old, {
+      type: "TLSA",
+      name: `_443._tcp.www.${ZONE}`,
+      content: "3 1 1 abcd",
+      data: { usage: 3, selector: 1, matching_type: 1, certificate: "abcd" },
+    });
+    const https = h.cloudflare.addRecord(old, {
+      type: "HTTPS",
+      name: `www.${ZONE}`,
+      content: '1 . alpn="h2"',
+      data: { priority: 1, target: ".", value: 'alpn="h2"' },
+    });
+    const session = await h.open({ to: "New" });
+    await applyZone(session, await planZone(session));
+    wordedLikeA(h);
+    expect(await planZone(session)).toMatchObject({ create: [], differ: [] });
+    tlsa.content = "3 1 1 ef01";
+    tlsa.data = { usage: 3, selector: 1, matching_type: 1, certificate: "ef01" };
+    https.content = '1 . alpn="h3"';
+    https.data = { priority: 1, target: ".", value: 'alpn="h3"' };
+    const plan = await planZone(session);
+    expect(plan.create).toEqual([]);
+    expect(
+      plan.differ.map((d) => [d.type, d.a.map((r) => r.content), d.b.map((r) => r.content)]),
+    ).toEqual([
+      ["HTTPS", ['1 . alpn="h3"'], ['1 . alpn="h2"']],
+      ["TLSA", ["3 1 1 ef01"], ["3 1 1 abcd"]],
+    ]);
+  });
+
+  it("lists a set that differs as one difference, and leaves its records out of B's own", async () => {
+    const h = await harness({ bZone: true });
+    const old = h.cloudflare.zone(ZONE, "Old");
+    const fresh = h.cloudflare.zone(ZONE, "New");
+    h.cloudflare.addRecord(old, { type: "TXT", name: `set.${ZONE}`, content: '"one"' });
+    h.cloudflare.addRecord(old, { type: "TXT", name: `set.${ZONE}`, content: '"two"' });
+    h.cloudflare.addRecord(fresh, { type: "TXT", name: `set.${ZONE}`, content: '"one"' });
+    h.cloudflare.addRecord(fresh, { type: "TXT", name: `set.${ZONE}`, content: '"three"' });
+    const session = await h.open({ to: "New" });
+    const plan = await planZone(session);
+    const set = plan.differ.filter((d) => d.name === `set.${ZONE}`);
+    expect(set.map((d) => [d.a.map((r) => r.content), d.b.map((r) => r.content)])).toEqual([
+      [
+        ['"one"', '"two"'],
+        ['"one"', '"three"'],
+      ],
+    ]);
+    expect(plan.create.some((r) => r.name === `set.${ZONE}`)).toBe(false);
+    expect(plan.onlyInB.some((r) => r.name === `set.${ZONE}`)).toBe(false);
+    expect(plan.details).toContain(
+      `Old has TXT set.${ZONE} "one", TXT set.${ZONE} "two"; New has TXT set.${ZONE} "one", TXT set.${ZONE} "three"`,
+    );
+    expect(plan.details).toContain("otherwise the whole set is listed");
+  });
+
+  it("creates a record at the apex beside B's CNAME there, which Cloudflare flattens", async () => {
+    const h = await harness({ bZone: true });
+    h.cloudflare.addRecord(h.cloudflare.zone(ZONE, "New"), {
+      type: "CNAME",
+      name: ZONE,
+      content: "apex.example.net",
+    });
+    const session = await h.open({ to: "New" });
+    const plan = await planZone(session);
+    expect(plan.create.map((r) => `${r.type} ${r.name}`)).toContain(`TXT ${ZONE}`);
+    expect(plan.differ).toEqual([]);
+    expect(plan.onlyInB.map((r) => `${r.type} ${r.name}`)).toEqual([`CNAME ${ZONE}`]);
+  });
+
+  it("lists a value proxied in one account only, and shows a plan that changes nothing", async () => {
+    const h = await harness();
+    const session = await h.open({ to: "New" });
+    await applyZone(session, await planZone(session));
+    wordedLikeA(h);
+    const ftp = h.cloudflare.zone(ZONE, "New").records.find((r) => r.name === `ftp.${ZONE}`);
+    if (ftp) ftp.proxied = true;
+    const plan = await planZone(session);
+    expect(plan.create).toEqual([]);
+    expect(plan.differ.map((d) => d.name)).toEqual([`ftp.${ZONE}`]);
+    expect(plan.details).toContain("(proxied in New, not in Old)");
+    const asked = (h.deps.approvalHandler as ScriptedApprovalHandler).requests.length;
+    expect(await applyZone(session, plan)).toBeUndefined();
+    expect(h.deps.reporter.text()).toContain(plan.details);
+    expect((h.deps.approvalHandler as ScriptedApprovalHandler).requests).toHaveLength(asked);
+    expect(ftp?.proxied).toBe(true);
+    expect(seen(h, plan.details)).toBe(false);
+  });
+
+  it("masks whole addresses only, also in an SPF policy", async () => {
+    const h = await harness();
+    const old = h.cloudflare.zone(ZONE, "Old");
+    h.cloudflare.addRecord(old, {
+      type: "TXT",
+      name: `spf.${ZONE}`,
+      content: `"v=spf1 ip4:${SERVER_IPV4} -all"`,
+    });
+    h.cloudflare.addRecord(old, { type: "A", name: `near.${ZONE}`, content: `${SERVER_IPV4}0` });
+    const session = await h.open({ to: "New" });
+    const { details } = await planZone(session);
+    expect(details).toContain(`TXT spf.${ZONE} "v=spf1 ip4:<server address> -all"`);
+    expect(details).toContain(`A near.${ZONE} ${SERVER_IPV4}0`);
+  });
+
+  it("says A's records were not read while A's zone is not active", async () => {
+    const h = await harness();
+    const session = await h.open({ to: "New" });
+    const zone = session.accounts.a.zone;
+    if (zone) session.accounts.a.zone = { ...zone, status: "moved" };
+    const plan = await planZone(session);
+    expect(plan.create).toEqual([]);
+    expect(plan.details).toContain(`Old's records were not read, since ${ZONE} is moved there`);
   });
 });
