@@ -49,3 +49,9 @@ variable "one_time_pin_identity_provider_id" {
   type        = string
   default     = null
 }
+
+variable "applications" {
+  description = "Create the Access applications. False keeps only the policies and the service token, for a zone that is not active yet (Cloudflare refuses applications there); the hostnames' records must then wait too, or they are public."
+  type        = bool
+  default     = true
+}

@@ -3,6 +3,7 @@ import { usesCloudflare } from "../predicates";
 import { beszelHostname, portainerHostname, sshHostname } from "../tunnel";
 import type { RenderContext } from "../types";
 import { managesPortainerRecords, portainerWebhookHostname } from "./portainer";
+import { ACCESS_HOLD_VARIABLES } from "./tunnel";
 
 /**
  * The module calls of OpsCrew's roots that hold only Cloudflare resources: the app's records, its
@@ -74,21 +75,27 @@ const ACCOUNT_IDS = {
  * the root's `terraform.tfvars.json`, where every root writes them. Rendered for another account,
  * a root's files differ only in these values, so planning the committed root with them as `-var`s
  * plans it in that account, and patching them in its `terraform.tfvars.json` moves it there.
+ * With `pendingZone` (the other account's zone is not active yet) also `access_applications` and
+ * `protected_route_records` as `"false"`, those the root has ({@link ACCESS_HOLD_VARIABLES}):
+ * Cloudflare refuses Access applications there, and their hostnames' records wait with them.
  * @throws Error when `ctx` lacks an id the root has.
  */
 export function accountVariables(
   tfvars: Readonly<Record<string, unknown>>,
   ctx: Pick<RenderContext, "cloudflare">,
+  options: { pendingZone?: boolean } = {},
 ): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(ACCOUNT_IDS)
-      .filter(([name]) => name in tfvars)
-      .map(([name, { key, label }]) => {
-        const id = ctx.cloudflare?.[key];
-        if (!id) throw new Error(`This configuration needs the Cloudflare ${label}.`);
-        return [name, id];
-      }),
-  );
+  const ids = Object.entries(ACCOUNT_IDS)
+    .filter(([name]) => name in tfvars)
+    .map(([name, { key, label }]) => {
+      const id = ctx.cloudflare?.[key];
+      if (!id) throw new Error(`This configuration needs the Cloudflare ${label}.`);
+      return [name, id];
+    });
+  const held = options.pendingZone
+    ? ACCESS_HOLD_VARIABLES.filter(({ name }) => name in tfvars).map(({ name }) => [name, "false"])
+    : [];
+  return Object.fromEntries([...ids, ...held]);
 }
 
 /**

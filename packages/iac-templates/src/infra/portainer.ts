@@ -28,6 +28,7 @@ import {
   versionsTf,
 } from "./hcl";
 import { addressVariables } from "./servers";
+import { ACCESS_APPLICATIONS_ARGUMENT, ACCESS_HOLD_TFVARS, ACCESS_HOLD_VARIABLES } from "./tunnel";
 
 /** Where the app's stack connector sends the app's hostnames: Caddy on the stack's network. */
 const APP_ORIGIN = '"http://caddy:80"';
@@ -167,8 +168,11 @@ function mainTf(plan: DeployPlan, s: Shape): string {
           `      path          = ${JSON.stringify(PORTAINER_WEBHOOK_PATH)}`,
           "      service       = var.portainer_origin",
           "      no_tls_verify = true",
+          "      protected     = true",
           "    },",
           "  ]",
+          "",
+          "  protected_records = var.protected_route_records",
           "",
           "  # Portainer's hostname gets its Access application before its route and DNS record, and",
           "  # loses it only after them, so the webhook is never reachable without Access in front of it.",
@@ -185,6 +189,7 @@ function mainTf(plan: DeployPlan, s: Shape): string {
         args: accessArguments([
           ["service_hostname", "var.portainer_hostname"],
           ["service_label", '"Portainer webhook"'],
+          ACCESS_APPLICATIONS_ARGUMENT,
         ]),
       }),
     );
@@ -221,6 +226,7 @@ function variables(s: Shape): VariableSpec[] {
         // The engines never show Portainer's address in a plan.
         sensitive: true,
       },
+      ...ACCESS_HOLD_VARIABLES,
     );
   }
   return specs;
@@ -255,7 +261,9 @@ function tfvars(plan: DeployPlan, ctx: RenderContext, s: Shape): Record<string, 
     app_name: plan.app.name,
     ...zoneTfvars(plan, ctx, zoneUse(s)),
     ...(s.appTunnel || s.webhook ? { cloudflare_account_id: accountId(ctx) } : {}),
-    ...(s.webhook ? { portainer_hostname: portainerWebhookHostname(plan) } : {}),
+    ...(s.webhook
+      ? { portainer_hostname: portainerWebhookHostname(plan), ...ACCESS_HOLD_TFVARS }
+      : {}),
   };
 }
 

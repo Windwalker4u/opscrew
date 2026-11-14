@@ -5,6 +5,8 @@
 # - Beszel's dashboard (opt-in): the same, with its own list.
 # The account's Zero Trust organization and its one-time PIN login method are shared by every
 # OpsCrew app in the account, so OpsCrew creates them outside this configuration.
+# With applications = false the policies and the service token exist without their applications
+# (Cloudflare refuses Access applications on a zone that is not active yet).
 locals {
   service   = var.service_hostname != null
   portainer = var.portainer_hostname != null
@@ -30,7 +32,7 @@ resource "cloudflare_zero_trust_access_policy" "ssh" {
 }
 
 resource "cloudflare_zero_trust_access_application" "ssh" {
-  count                     = local.service ? 1 : 0
+  count                     = local.service && var.applications ? 1 : 0
   account_id                = var.account_id
   name                      = "OpsCrew ${var.service_label} (${var.app_name})"
   type                      = "self_hosted"
@@ -53,7 +55,7 @@ resource "cloudflare_zero_trust_access_policy" "portainer" {
 }
 
 resource "cloudflare_zero_trust_access_application" "portainer" {
-  count                     = local.portainer ? 1 : 0
+  count                     = local.portainer && var.applications ? 1 : 0
   account_id                = var.account_id
   name                      = "OpsCrew Portainer (${var.app_name})"
   type                      = "self_hosted"
@@ -77,7 +79,7 @@ resource "cloudflare_zero_trust_access_policy" "beszel" {
 }
 
 resource "cloudflare_zero_trust_access_application" "beszel" {
-  count                     = local.beszel ? 1 : 0
+  count                     = local.beszel && var.applications ? 1 : 0
   account_id                = var.account_id
   name                      = "OpsCrew Beszel (${var.app_name})"
   type                      = "self_hosted"

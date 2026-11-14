@@ -144,9 +144,11 @@ module "tunnel" {
 
   routes = [
     { hostname = var.domain, service = "http://localhost:18080" },
-    { hostname = var.ssh_hostname, service = "ssh://localhost:\${var.ssh_port}" },
-    { hostname = var.portainer_hostname, service = "https://localhost:9443", no_tls_verify = true },
+    { hostname = var.ssh_hostname, service = "ssh://localhost:\${var.ssh_port}", protected = true },
+    { hostname = var.portainer_hostname, service = "https://localhost:9443", no_tls_verify = true, protected = true },
   ]
+
+  protected_records = var.protected_route_records
 
   # Every hostname gets its Access application before its route and DNS record, and loses it
   # only after them, so nothing is reachable without Access in front of it.
@@ -163,6 +165,7 @@ module "access" {
   portainer_hostname                = var.portainer_hostname
   portainer_allowed_emails          = var.portainer_allowed_emails
   one_time_pin_identity_provider_id = var.one_time_pin_identity_provider_id
+  applications                      = var.access_applications
 }
 "
 `;
@@ -188,8 +191,10 @@ module "tunnel" {
 
   routes = [
     { hostname = var.domain, service = "http://localhost:18080" },
-    { hostname = var.ssh_hostname, service = "ssh://localhost:\${var.ssh_port}" },
+    { hostname = var.ssh_hostname, service = "ssh://localhost:\${var.ssh_port}", protected = true },
   ]
+
+  protected_records = var.protected_route_records
 
   # Every hostname gets its Access application before its route and DNS record, and loses it
   # only after them, so nothing is reachable without Access in front of it.
@@ -203,6 +208,7 @@ module "access" {
   account_id       = var.cloudflare_account_id
   app_name         = var.app_name
   service_hostname = var.ssh_hostname
+  applications     = var.access_applications
 }
 "
 `;
@@ -274,6 +280,16 @@ variable "ssh_hostname" {
 variable "ssh_port" {
   description = "Port sshd listens on, on the server."
   type        = number
+}
+
+variable "access_applications" {
+  description = "Create the Access applications (false while the zone is not active: Cloudflare refuses them there)."
+  type        = bool
+}
+
+variable "protected_route_records" {
+  description = "Create the tunnels' DNS records of the hostnames behind Access (false until their Access applications exist)."
+  type        = bool
 }
 "
 `;

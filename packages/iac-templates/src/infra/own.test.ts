@@ -168,7 +168,7 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     expect(main).not.toMatch(/module "dns"|module "server|server_ipv/);
     expect(main).toContain('{ hostname = var.domain, service = "http://localhost:18080" },');
     expect(main).toContain(
-      '{ hostname = var.ssh_hostname, service = "ssh://localhost:${var.ssh_port}" },',
+      '{ hostname = var.ssh_hostname, service = "ssh://localhost:${var.ssh_port}", protected = true },',
     );
     expect(main).not.toContain("portainer");
     expect(main).toMatchSnapshot("main.tf");
@@ -184,6 +184,8 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
       cloudflare_account_id: ACCOUNT_ID,
       ssh_hostname: "ssh-shop.example.com",
       ssh_port: 2222,
+      access_applications: true,
+      protected_route_records: true,
     });
     expect(file(files, "prod/variables.tf")).not.toContain("server_ipv");
     expectNoAddress(files);
@@ -230,7 +232,7 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     );
     const main = file(withPortainer, "prod/main.tf");
     expect(main).toContain(
-      '{ hostname = var.portainer_hostname, service = "https://localhost:9443", no_tls_verify = true },',
+      '{ hostname = var.portainer_hostname, service = "https://localhost:9443", no_tls_verify = true, protected = true },',
     );
     expect(main).toMatchSnapshot("main.tf with Portainer");
     expect(JSON.parse(file(withPortainer, "terraform.tfvars.json"))).toMatchObject({

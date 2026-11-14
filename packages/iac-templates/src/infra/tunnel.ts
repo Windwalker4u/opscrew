@@ -15,6 +15,37 @@ import type { RenderContext } from "../types";
 import { accessArguments, accountId, DEPLOY_TOKEN_OUTPUTS, tunnelArguments } from "./cloudflare";
 import { moduleBlock, output, sensitiveOutput, type VariableSpec } from "./hcl";
 
+/**
+ * The root variables that hold back the Access applications (`access_applications`) and the
+ * tunnels' records of the hostnames Access protects (`protected_route_records`): Cloudflare refuses
+ * Access applications on a zone that is not active yet, and such a record without its application
+ * would make the hostname public. Every root with Access declares them; both are true in its
+ * `terraform.tfvars.json`.
+ */
+export const ACCESS_HOLD_VARIABLES: readonly VariableSpec[] = [
+  {
+    name: "access_applications",
+    type: "bool",
+    description:
+      "Create the Access applications (false while the zone is not active: Cloudflare refuses them there).",
+  },
+  {
+    name: "protected_route_records",
+    type: "bool",
+    description:
+      "Create the tunnels' DNS records of the hostnames behind Access (false until their Access applications exist).",
+  },
+];
+
+/** The values of {@link ACCESS_HOLD_VARIABLES} in `terraform.tfvars.json`. */
+export const ACCESS_HOLD_TFVARS = { access_applications: true, protected_route_records: true };
+
+/** `module "access"`'s argument that holds back its applications. */
+export const ACCESS_APPLICATIONS_ARGUMENT: [string, string] = [
+  "applications",
+  "var.access_applications",
+];
+
 /** What the Cloudflare Tunnel and Access add to a root module (own server or cloud server). */
 export interface TunnelPieces {
   main: string[];
@@ -55,17 +86,17 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   }
   if (ssh !== undefined) {
     routes.push(
-      '    { hostname = var.ssh_hostname, service = "ssh://localhost:${var.ssh_port}" },',
+      '    { hostname = var.ssh_hostname, service = "ssh://localhost:${var.ssh_port}", protected = true },',
     );
   }
   if (portainer !== undefined) {
     routes.push(
-      `    { hostname = var.portainer_hostname, service = "https://localhost:${PORTAINER_PORT}", no_tls_verify = true },`,
+      `    { hostname = var.portainer_hostname, service = "https://localhost:${PORTAINER_PORT}", no_tls_verify = true, protected = true },`,
     );
   }
   if (beszel !== undefined) {
     routes.push(
-      `    { hostname = var.beszel_hostname, service = "http://localhost:${BESZEL_PORT}" },`,
+      `    { hostname = var.beszel_hostname, service = "http://localhost:${BESZEL_PORT}", protected = true },`,
     );
   }
 
@@ -104,6 +135,8 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
         ...routes,
         "  ]",
         "",
+        "  protected_records = var.protected_route_records",
+        "",
         "  # Every hostname gets its Access application before its route and DNS record, and loses it",
         "  # only after them, so nothing is reachable without Access in front of it.",
         "  depends_on = [module.access]",
@@ -117,7 +150,7 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       ],
       name: "access",
       source: "cloudflare-access",
-      args: accessArguments(accessHostnames),
+      args: accessArguments([...accessHostnames, ACCESS_APPLICATIONS_ARGUMENT]),
     }),
   ];
 
@@ -195,6 +228,8 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
     });
     tfvars.one_time_pin_identity_provider_id = pin;
   }
+  variables.push(...ACCESS_HOLD_VARIABLES);
+  Object.assign(tfvars, ACCESS_HOLD_TFVARS);
 
   const outputs = [
     ...output("tunnel_id", "module.tunnel.tunnel_id"),

@@ -143,8 +143,11 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
         '      path          = "^/api/stacks/webhooks/"',
         "      service       = var.portainer_origin",
         "      no_tls_verify = true",
+        "      protected     = true",
         "    },",
         "  ]",
+        "",
+        "  protected_records = var.protected_route_records",
       ].join("\n"),
     );
     expect(main).toContain("  depends_on = [module.access]");
@@ -181,6 +184,8 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
       cloudflare_zone_id: testCloudflare().zoneId,
       cloudflare_account_id: testCloudflareAccount().accountId,
       portainer_hostname: "portainer-shop.example.com",
+      access_applications: true,
+      protected_route_records: true,
     });
     expect(variables).not.toMatch(/variable "(domain|proxied|www)"|organization|one_time_pin/);
     expectNoAddress(files);
@@ -312,6 +317,8 @@ describe("renderInfra for a Portainer target, web mode caddy with the records Op
       "caa_issuers",
       "cloudflare_account_id",
       "portainer_hostname",
+      "access_applications",
+      "protected_route_records",
     ]);
     expect(checkDialect(bothFiles)).toEqual([]);
   });

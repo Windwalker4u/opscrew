@@ -34,8 +34,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
   }
 }
 
+# A protected route's record waits for protected_records: without the Access application in front
+# of its hostname (none on a zone that is not active yet) the record would make it public.
 resource "cloudflare_dns_record" "route" {
-  for_each = toset([for route in var.routes : route.hostname])
+  for_each = toset([for route in var.routes : route.hostname if var.protected_records || !route.protected])
 
   zone_id = var.zone_id
   name    = each.value

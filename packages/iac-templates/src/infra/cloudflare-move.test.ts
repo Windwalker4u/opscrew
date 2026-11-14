@@ -269,6 +269,8 @@ describe("cloudflareAddressScope", () => {
     ["module.tunnel.data.cloudflare_zero_trust_tunnel_cloudflared_token.this", "account"],
     ["module.portainer_tunnel.cloudflare_zero_trust_tunnel_cloudflared_config.this", "account"],
     ["module.access.cloudflare_zero_trust_access_service_token.ssh[0]", "account"],
+    ["module.access.cloudflare_zero_trust_access_application.portainer[0]", "account"],
+    ['module.portainer_tunnel.cloudflare_dns_record.route["portainer-shop.example.com"]', "zone"],
     ["module.worker.terraform_data.worker", "account"],
     ["module.worker.cloudflare_workers_custom_domain.www[0]", "account"],
     ["cloudflare_certificate_pack.previews", "zone"],
@@ -351,6 +353,37 @@ describe("accountVariables", () => {
       }
     },
   );
+
+  it("holds back the Access applications and their records on a pending zone, where Access is", () => {
+    let withAccess = 0;
+    for (const c of CASES) {
+      const files = c.render(ctxA());
+      for (const file of files.filter((f) => f.path.endsWith("/terraform.tfvars.json"))) {
+        const main = files.find((f) => f.path === posix.join(posix.dirname(file.path), "main.tf"));
+        const values: Record<string, unknown> = JSON.parse(file.content);
+        const ids = accountVariables(values, ctxB());
+        const pending = accountVariables(values, ctxB(), { pendingZone: true });
+        if (!main?.content.includes('module "access" {')) {
+          expect(values, `${c.name}: ${file.path}`).not.toHaveProperty("access_applications");
+          expect(values).not.toHaveProperty("protected_route_records");
+          expect(pending, `${c.name}: ${file.path}`).toEqual(ids);
+          continue;
+        }
+        withAccess += 1;
+        expect(values, `${c.name}: ${file.path}`).toMatchObject({
+          access_applications: true,
+          protected_route_records: true,
+        });
+        expect(ids).not.toHaveProperty("access_applications");
+        expect(pending, `${c.name}: ${file.path}`).toEqual({
+          ...ids,
+          access_applications: "false",
+          protected_route_records: "false",
+        });
+      }
+    }
+    expect(withAccess).toBeGreaterThanOrEqual(4);
+  });
 
   it("names only the ids the root has", () => {
     expect(accountVariables({ app_name: "shop", cloudflare_zone_id: "z" }, ctxB())).toEqual({
