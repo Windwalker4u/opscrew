@@ -341,6 +341,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2813 [P] [US1] [US3] [US4] Shadow states
   - Owns: `packages/agents/src/cloudflare-move/shadow*.ts`
+  - Lead note (after the spike, plan 13b): B's shadow plans set `access_applications = false` and `protected_route_records = false` (the roots' variables from T2835) while B's zone is pending.
   - Lead note (after T2810): `checkMoveStart` (T2810) already refuses when a covered environment's infrastructure state is not on this computer; shadow states can rely on it.
   - Lead note (after T2807): `accountVariables(tfvars, ctx)` takes the root's parsed `terraform.tfvars.json` and `{ cloudflare: { zoneId, accountId, oneTimePinIdentityProviderId } }` from B's setup.
   - Reads: plan 3.; data-model 3; research R10; `shared/engine.ts`, `provision/plan-apply.ts`, `retarget/plans.ts` (`planBounded`, saved-plan approvals), `provision/storage.ts`, `destroy/deletion.ts`
@@ -369,6 +370,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2814 [P] [US1] B's shared plan, A's Origin CA certificate, B's shared removal
   - Owns: `packages/agents/src/cloudflare-move/shared*.ts`
+  - Lead note (after the spike, plan 13b): on a pending zone B's shared plan passes `originLater: true` in its `tls` (connector, commit d2329847): origin pulls set, no certificate; B's Origin CA certificate is issued at the finish.
   - Lead note (after T2805): whenever B's zone is pending, pass `pendingZone: true` to `inspectShared` together with `waitForActive: false` to `applyShared`, so B's shared plan settles after its first apply.
   - Reads: plan 4.4.1, 7.7, 8.; ADR 0014, ADR 0017; `provision/{shared-cloudflare,origin-tls}.ts`; research R10.2, R10.7
   - Depends: T2802, T2805, T2810, T2811
@@ -437,6 +439,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2817 [P] [US1] [US2] The zone plan: B's zone, the copy, the marks, coverage
   - Owns: `packages/agents/src/cloudflare-move/{zone,marks}*.ts`
+  - Lead note (after the spike, plan 13b): each mark also lists the app's Access-protected hostnames: `access: { hostname, kind: "service" | "portainer" | "beszel", environment }[]`, no e-mail or id.
   - Lead note (after T2810): coverage also needs the hostnames only OpsCrew's shared rules name; read them with `sharedRuleHostnames(facts)` from `@opscrew/connector-cloudflare` (facts from `inspectShared` on A's zone). `listZoneWorkerDomains` needs Workers permission on A's token: probe first and, without it, say the custom domains were not read rather than skip them silently.
   - Lead note (after T2807): `opscrewRecordNames(plan, zone)` leaves out GitHub's verification TXT record (`_github-pages-challenge-<owner>.<domain>`); coverage counts a `_github-pages-challenge-*` TXT record as the Pages app's by that prefix.
   - Reads: plan 4.3, 4.5, 5.1, 5.2, 7.8; data-model 4, 5; `provision/shared-cloudflare.ts` (how a `cloudflare-apply` plan is shown and approved); T2804's and T2809's blocks
@@ -503,10 +506,22 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `PATH="D:/opscrew/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-engine --filter=@opscrew/agents && npx vitest run --root packages/iac-engine && npx vitest run --root packages/agents src/provision/plan-apply src/shared/connector-removal && pnpm lint`
   - Effort: high
 
+- [ ] T2835 [P] [US1] Templates: Access applications and the records they protect, held back on a pending zone (after the spike)
+  - Owns: `packages/iac-templates/modules/{cloudflare-access,cloudflare-tunnel}/**`, `packages/iac-templates/src/generated/modules.ts`, `packages/iac-templates/src/infra/{tunnel,portainer,cloudflare-move}.ts` and their tests and snapshots
+  - Reads: plan 13b; research R10 (Access refused on a pending zone)
+  - Depends: T2807
+  - Accept:
+    - The `cloudflare-access` module's applications (not its policies or service tokens) count on a new variable `applications` (default true); the `cloudflare-tunnel` module's route records for Access-protected hostnames (the SSH/webhook service hostname, Portainer's and Beszel's) count on a new variable `protected_records` (default true); the app's own public route record always stays.
+    - The roots that call them pass root variables `access_applications` and `protected_route_records` (default true, written to `terraform.tfvars.json`), and `accountVariables`/`cloudflareAddressScope` know them.
+    - With the defaults every rendered root is byte-identical to today's except the two variables (snapshots show only them); both engines validate a root with the variables false (no application, no protected record).
+  - Verify: `PATH="D:/opscrew/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/infra && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [ ] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
   - Owns: `packages/agents/src/cloudflare-move/{switch,gap}*.ts`
+  - Lead note (after the spike, plan 13b): right after activation, for every prepared app's mark: make its Access applications with B's token exactly as the `cloudflare-access` module would (names and settings from the module, policies found in B by name), then the protected hostnames' proxied CNAMEs to the app's tunnel in B (found by name), before attaching the Workers custom domains; the approval names them.
   - Lead note (after T2817's review): `coverage(session)` returns `{ uncovered, marks, unread }`; the switch refuses on a non-empty `unread` as on a non-empty `uncovered` (an empty `uncovered` alone does not mean every app is prepared).
   - Lead note (after T2805): the two-account fake models no Cloudflare Registrar registration; tests stub `getDomain`/`getRegistration` for the registrar decision.
   - Lead note (after T2809): read the DS wait as `dsWaitStatus(stateFile, now, ds)` with a fresh `readDs` reading, in a note file of the switch's own (not the switch file).
@@ -565,6 +580,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2822 [US1] [US4] Finish, part 1: A's removal, the site's adoption, the mark
   - Owns: `packages/agents/src/cloudflare-move/{finish-removal,finish-site}*.ts`
+  - Lead note (after the spike, plan 13b): the finish also imports the Access applications and the protected hostnames' records the switch made into the app's state, sets `access_applications`/`protected_route_records` back to true, and its check plan must then be empty.
   - Reads: plan 7.5, 7.7, 7.8; data-model 3, 4
   - Depends: T2813, T2814, T2815, T2816, T2817, T2818
   - Accept:
@@ -585,6 +601,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2823 [US1] [US3] Finish, part 2: the steps in order
   - Owns: `packages/agents/src/cloudflare-move/finish*.ts` except T2822's files
+  - Lead note (after the spike, plan 13b): the finish issues B's Origin CA certificate (now that B is active) and places it with the deploy before `revokeAOrigin`.
   - Lead note (after T2814): before the swap replaces `.opscrew/cloudflare.json` with B's record, move A's record to `aSharedRecordPath(env)` (exported from `cloudflare-move/shared.ts`); `revokeAOrigin` reads it there and asks nothing when it is missing. One helper for the `cloudflare-move/` folder paths, shared with T2813's, is T2828's to gather.
   - Lead note (after T2812, T2811): a damaged app progress file reads as absent and loses `window.stoppedAt`, so the finish also tells from the app itself (or its state) that it is stopped; forget A's kept bucket keys with `forgetStorageKey(deps, bucket, { account: A, moveTo: B })` so B's stay.
   - Reads: plan 7., 9.; data-model 1, 2, 3, 7

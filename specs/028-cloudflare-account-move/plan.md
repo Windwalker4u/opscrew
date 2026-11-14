@@ -448,6 +448,35 @@ Refused unless every covered environment is `prepared` and B's zone is active. P
 - **B's lifecycle on copied snapshots** counts from the copy (OPEN O7).
 - **Rate limits:** activation checks (hourly on free plans), DNS batch creates (200 a call).
 
+### 13b. After the spike (R10): the lead's decisions, 2026-11-14
+
+- **Access applications** are refused on B's pending zone (12130), and the founder chose that deploys
+  through Access keep working through the move. So:
+  - prepare makes B's Access policies and service tokens (account pieces, accepted), but not B's
+    Access applications nor the DNS records of the hostnames they protect (a CNAME to B's tunnel
+    without its application would be public from activation): B's shadow plans set the roots'
+    `access_applications` and `protected_route_records` variables to false (T2835);
+  - each app's mark lists its protected hostnames with their kind (`service`, `portainer`,
+    `beszel`) and environment (T2817); names and settings follow the modules, so nothing personal
+    (the policies' e-mail lists) is ever in the zone;
+  - right after activation the switch, from whichever repository runs it, makes every prepared
+    app's Access applications with B's token (exactly as the module would, referencing B's policies
+    by name), then the protected hostnames' CNAMEs to the app's tunnel in B (T2819);
+  - each app's finish imports them into its state and sets the variables back to true; its check
+    plan is then empty (T2822).
+  Deploys through Access stop only for the seconds between activation and the switch making them.
+- **Origin CA certificates** are refused for B's pending zone (1010); per-hostname origin pulls are
+  accepted (O1 settled). So prepare's shared plan for B sets the origin pulls with
+  `originLater: true` (the connector plans no certificate, T2814); each app's finish issues B's
+  Origin CA certificate, places it with the deploy, and only then revokes A's once the server shows
+  it serves B's. Between activation and that finish the origin serves A's certificate to B's edge:
+  O2 decides whether that works; the switch's approval says origin-protected apps may answer 526
+  until their finish, and its output puts their finishes first. The live pass measures it.
+- **R2 names** are accepted in both accounts: no `-b` suffix.
+- **Cloudflare-managed records** are those with `meta.read_only` (O4).
+- **B's nameservers answer before activation** with the origin's own address for a proxied record:
+  the guide says so (no change in the plan).
+
 ### 14. What OpsCrew doesn't move
 
 The move covers what OpsCrew made for its apps and the zone's DNS records. It doesn't copy, and the
