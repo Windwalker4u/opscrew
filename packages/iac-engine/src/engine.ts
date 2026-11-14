@@ -321,6 +321,9 @@ class Engine implements IacEngine {
       );
     }
 
+    // The plan's own -vars again: OpenTofu refuses a saved plan whose variables differ from what
+    // the root's terraform.tfvars.json gives at the apply.
+    const args = ["apply", "-input=false", "-no-color", ...this.varArgs(options.vars)];
     // Apply a private copy of the verified bytes so the file cannot change between the hash
     // check, the destroy check and the apply.
     const scratch = await mkdtemp(path.join(tmpdir(), "opscrew-plan-"));
@@ -342,7 +345,7 @@ class Engine implements IacEngine {
       }
 
       const timeoutMs = options.timeoutMs ?? APPLY_TIMEOUT_MS;
-      const result = await this.exec("apply", cwd, ["apply", "-input=false", "-no-color", copy], {
+      const result = await this.exec("apply", cwd, [...args, copy], {
         ...options,
         timeoutMs,
       });

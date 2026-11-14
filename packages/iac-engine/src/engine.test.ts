@@ -501,14 +501,52 @@ describe("apply", () => {
     });
     expect(runner.subcommands()).toEqual(["show", "apply", "output"]);
     const applyCall = runner.calls[1];
-    expect(applyCall?.args.slice(0, 3)).toEqual(["apply", "-input=false", "-no-color"]);
     // The apply runs on a private copy of the verified bytes, which is removed afterwards.
     const applied = applyCall?.args[3] ?? "";
+    expect(applyCall?.args).toEqual(["apply", "-input=false", "-no-color", applied]);
     expect(applied).not.toBe(file);
     expect(runner.calls[0]?.args[3]).toBe(applied);
     expect(existsSync(applied)).toBe(false);
     expect(applyCall?.options.timeoutMs).toBe(APPLY_TIMEOUT_MS);
     expect(applyCall?.options.cwd).toBe(path.resolve(dir));
+  });
+
+  it("passes the vars as -var before the plan file to both engines, as the plan was made", async () => {
+    for (const name of ["tofu", "terraform"] as const) {
+      const { runner, hash } = await planned("PLAN-A", fixture("show-create.json"));
+      const result = await makeEngine(runner, name).apply(
+        dir,
+        "p.tfplan",
+        { approvedPlanHash: hash },
+        { vars: { zone: "bbbb", name: "my-app" } },
+      );
+      expect(result.ok).toBe(true);
+      const args = runner.calls[1]?.args ?? [];
+      expect(args).toEqual([
+        "apply",
+        "-input=false",
+        "-no-color",
+        "-var",
+        "zone=bbbb",
+        "-var",
+        "name=my-app",
+        runner.calls[0]?.args[3],
+      ]);
+    }
+  });
+
+  it("refuses invalid variable names before running anything", async () => {
+    const { runner, hash } = await planned("PLAN-A", fixture("show-create.json"));
+    const error = await failure(
+      makeEngine(runner).apply(
+        dir,
+        "p.tfplan",
+        { approvedPlanHash: hash },
+        { vars: { "bad name": "x" } },
+      ),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(runner.calls).toEqual([]);
   });
 
   it("refuses a plan that changed after approval", async () => {

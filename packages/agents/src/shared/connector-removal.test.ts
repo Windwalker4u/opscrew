@@ -192,6 +192,27 @@ describe("applyWithConnectorRemoval", () => {
     ]);
   });
 
+  it("applies with the run's vars, over the root's terraform.tfvars.json, also the plan made again", async () => {
+    for (const changes of [[change("module.server.terraform_data.firewall", "delete")], TEARDOWN]) {
+      const s = await setup(changes);
+      // The plans are made with a -var the root's file gives another value: OpenTofu applies them
+      // only with the same -var again.
+      const vars = { server_type: "V92" };
+      await writeFile(join(s.dir, "terraform.tfvars.json"), JSON.stringify({ server_type: "V91" }));
+      const approved = await s.engine.plan(s.dir, join(s.dir, "vars.tfplan"), {
+        destroy: true,
+        vars,
+      });
+      const replan = (file: string) => s.engine.plan(s.dir, file, { destroy: true, vars });
+      const result = await applyWithConnectorRemoval({ ...s.run, vars }, approved, {
+        allowDestroy: true,
+        replan,
+      });
+      expect(result, result.log).toMatchObject({ ok: true });
+      expect(s.engine.applied).toHaveLength(1);
+    }
+  });
+
   it("cancels every such server and takes them out of the state together", async () => {
     const changes = [...TEARDOWN, change(WORKER, "delete")];
     const s = await setup(changes, { [SERVER]: APP_ID, [WORKER]: WORKER_ID });

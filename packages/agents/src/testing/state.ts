@@ -101,7 +101,8 @@ async function tfvarsIn(dir: string): Promise<Record<string, unknown>> {
 /**
  * The input variables each saved plan was made with, as OpenTofu (1.8 and later) checks them when
  * it applies one: the root's `terraform.tfvars.json` at the plan, with `-var` values over it. An
- * apply whose root's file now holds another value for one of them is refused, with its message.
+ * apply whose root's file, with the apply's own `-var` values over it, now gives another value for
+ * one of them is refused, with its message.
  */
 export class PlanVariables {
   readonly #saved = new Map<string, Record<string, unknown>>();
@@ -111,11 +112,18 @@ export class PlanVariables {
     this.#saved.set(planHash, { ...(await tfvarsIn(dir)), ...vars });
   }
 
-  /** OpenTofu's refusal of the apply of `planHash` in `dir`, when the file differs from the plan. */
-  async mismatch(dir: string, planHash: string): Promise<string | undefined> {
+  /**
+   * OpenTofu's refusal of the apply of `planHash` in `dir` with `vars` (`-var`), when the file with
+   * them over it differs from the plan.
+   */
+  async mismatch(
+    dir: string,
+    planHash: string,
+    vars: Record<string, string> = {},
+  ): Promise<string | undefined> {
     const saved = this.#saved.get(planHash);
     if (saved === undefined) return undefined;
-    const current = await tfvarsIn(dir);
+    const current = { ...(await tfvarsIn(dir)), ...vars };
     const name = Object.keys(current).find(
       (key) => key in saved && JSON.stringify(current[key]) !== JSON.stringify(saved[key]),
     );

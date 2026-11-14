@@ -518,12 +518,17 @@ export class FakeEngine implements IacEngine {
     };
   }
 
-  async apply(dir: string, planFile: string, approval: IacApproval): Promise<IacApplyResult> {
+  async apply(
+    dir: string,
+    planFile: string,
+    approval: IacApproval,
+    options: IacRunOptions = {},
+  ): Promise<IacApplyResult> {
     this.calls.push("apply");
     if (sha256(await readFile(planFile)) !== approval.approvedPlanHash) {
       throw new Error("plan hash mismatch");
     }
-    const mismatch = await this.#variables.mismatch(dir, approval.approvedPlanHash);
+    const mismatch = await this.#variables.mismatch(dir, approval.approvedPlanHash, options.vars);
     if (mismatch !== undefined) return { ok: false, outputs: {}, log: mismatch };
     this.applied.push({ planFile, approval });
     return this.scenario.applyOk === false

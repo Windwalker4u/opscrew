@@ -186,7 +186,7 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
     );
 
     it(
-      "a saved plan applies with the root's terraform.tfvars.json it was made from, not past a -var that differs",
+      "a saved plan made with a -var that differs from the root's terraform.tfvars.json applies with the same -var",
       async () => {
         const root = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-tfvars-`));
         try {
@@ -199,19 +199,19 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
           ).toBe(true);
 
           // Planned with -var over the file's value: OpenTofu reads the file again at the apply
-          // and refuses the difference; Terraform applies the plan's value.
-          const overridden = await engine.plan(root, "var.tfplan", { vars: { label: "two" } });
-          const withVar = await engine.apply(root, overridden.planFile, {
-            approvedPlanHash: overridden.planHash,
-            allowDestroy: true,
-          });
+          // and refuses the difference unless the apply is given the same -var.
+          const vars = { label: "two" };
+          const overridden = await engine.plan(root, "var.tfplan", { vars });
+          const approval = { approvedPlanHash: overridden.planHash, allowDestroy: true };
           if (name === "tofu") {
-            expect(withVar.ok).toBe(false);
-            expect(withVar.log).toContain("Mismatch between input and plan variable value");
+            const without = await engine.apply(root, overridden.planFile, approval);
+            expect(without.ok).toBe(false);
+            expect(without.log).toContain("Mismatch between input and plan variable value");
             expect(await engine.output(root)).toEqual({ a: "alpha-one" });
-          } else {
-            expect(withVar.ok, withVar.log).toBe(true);
           }
+          const withVar = await engine.apply(root, overridden.planFile, approval, { vars });
+          expect(withVar.ok, withVar.log).toBe(true);
+          expect(withVar.outputs).toEqual({ a: "alpha-two" });
 
           // The value written into the file first: plan and apply see the same one.
           await writeFile(path.join(root, "terraform.tfvars.json"), '{ "label": "three" }\n');

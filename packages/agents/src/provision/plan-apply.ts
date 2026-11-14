@@ -67,8 +67,8 @@ export interface PlanAndApplyOptions {
   /** Engine environment: provider tokens and `TF_ENCRYPTION`. Never logged. */
   env: Record<string, string | undefined>;
   /**
-   * Input variables passed to `plan` (`-var`), also when a plan is made again; never a secret (a
-   * move's ids of the account it goes to).
+   * Input variables passed to `plan` (`-var`), also when a plan is made again, and to its apply;
+   * never a secret (a move's ids of the account it goes to).
    */
   vars?: Record<string, string>;
   deployPlan: DeployPlan;
@@ -891,6 +891,7 @@ export async function planAndApply(
       engine,
       dir,
       env,
+      vars: options.vars,
       servers: options.servers,
     },
     saved,

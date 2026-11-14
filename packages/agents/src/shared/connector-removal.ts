@@ -39,6 +39,8 @@ export interface ConnectorRemovalRun {
   dir: string;
   /** Engine environment: provider tokens and `TF_ENCRYPTION`. Never logged. */
   env: Record<string, string | undefined>;
+  /** The `-var`s the plan was made with, given to the apply again (OpenTofu checks them). */
+  vars?: Record<string, string> | undefined;
   /** The server API the run was given for a provider (tests), else its connector's. */
   servers?: ((provider: CloudProvider) => ServerSnapshotApi | undefined) | undefined;
 }
@@ -251,7 +253,7 @@ export async function applyWithConnectorRemoval(
       dir,
       plan.planFile,
       { approvedPlanHash: plan.planHash, allowDestroy: options.allowDestroy },
-      { env },
+      { env, ...(run.vars !== undefined ? { vars: run.vars } : {}) },
     );
   const servers = options.replan === undefined ? [] : connectorServers(approved);
   if (options.replan === undefined || servers.length === 0) return apply(approved);

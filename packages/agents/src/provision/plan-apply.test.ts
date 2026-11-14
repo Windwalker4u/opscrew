@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
@@ -499,9 +499,9 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
     });
     const engine = new FakeEngine(scenario);
     const apply = engine.apply.bind(engine);
-    engine.apply = async (dir, planFile, approval) => {
+    engine.apply = async (dir, planFile, approval, options) => {
       events.push("apply");
-      return apply(dir, planFile, approval);
+      return apply(dir, planFile, approval, options);
     };
     const contabo = new FakeFirewalls((call) => events.push(call));
     const servers = new FakeServers(events, "contabo");
@@ -633,7 +633,15 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
     });
     const vars = { cloudflare_account_id: "fedcba9876543210fedcba9876543210" };
     s.contabo.seed(DB);
-    await planAndApply(s.deps, { ...s.options, vars });
+    // The root's file gives another value: OpenTofu applies only with the same -vars again.
+    await mkdir(s.options.dir, { recursive: true });
+    await writeFile(
+      join(s.options.dir, "terraform.tfvars.json"),
+      JSON.stringify({ cloudflare_account_id: "0123456789abcdef0123456789abcdef" }),
+    );
+    const result = await planAndApply(s.deps, { ...s.options, vars });
+    expect(result.applied).toBe(true);
+    expect(s.engine.applied).toHaveLength(1);
     expect(s.events[0]).toBe("cancel:202611002");
     expect(s.engine.planOptions.length).toBeGreaterThan(1);
     expect(s.engine.planOptions).toEqual(s.engine.planOptions.map(() => ({ env: {}, vars })));
@@ -969,6 +977,18 @@ describe("planAndApply for a move to another Cloudflare account", () => {
     s.engine.scenario.changes = [];
     await planAndApply(s.deps, s.options);
     expect(s.events).toEqual([]);
+  });
+
+  it("applies with the vars it planned with, over the root's terraform.tfvars.json (as OpenTofu checks)", async () => {
+    const s = await moveSetup();
+    await mkdir(s.options.dir, { recursive: true });
+    await writeFile(
+      join(s.options.dir, "terraform.tfvars.json"),
+      JSON.stringify({ cloudflare_zone_id: "00000000000000000000000000000a01" }),
+    );
+    const result = await planAndApply(s.deps, s.options);
+    expect(result.applied).toBe(true);
+    expect(s.engine.applied).toHaveLength(1);
   });
 
   it("is applied only by the move: any other run refuses its saved plan before any change", async () => {
