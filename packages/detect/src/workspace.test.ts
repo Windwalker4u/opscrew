@@ -119,6 +119,51 @@ describe("the workspace packages an app's build uses", () => {
   });
 });
 
+describe("the repository root's own files", () => {
+  /**
+   * A workspace whose API keeps its database client and Redis client hoisted in the root
+   * `package.json`, its Prisma schema in the root's `prisma/` and its compose file at the root.
+   */
+  const HOISTED = {
+    "package.json": json({
+      name: "acme",
+      private: true,
+      packageManager: "pnpm@10.18.0",
+      dependencies: { "@prisma/client": "^6.16.0", ioredis: "^5.8.0", pg: "^8.16.0" },
+    }),
+    "pnpm-workspace.yaml": "packages:\n  - apps/*\n",
+    "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    "prisma/schema.prisma":
+      'datasource db {\n  provider = "postgresql"\n  url      = env("DATABASE_URL")\n}\n',
+    "docker-compose.yml": "services:\n  cache:\n    image: redis:7\n",
+    "apps/api/package.json": json({
+      name: "api",
+      scripts: { start: "node server.js" },
+      dependencies: { express: "^5.1.0" },
+    }),
+    "apps/api/server.js": "const app = require('express')();\napp.listen(3000);\n",
+  };
+
+  it("are the first app's, in a folder too", async () => {
+    const root = await tree(HOISTED);
+    const api = await detectProject(root, { appDir: "apps/api" });
+    expect(api.services).toEqual([
+      {
+        kind: "postgres",
+        evidence: ["dependency:@prisma/client", "dependency:pg", "prisma:postgresql"],
+      },
+      { kind: "redis", evidence: ["compose-image:redis", "dependency:ioredis"] },
+    ]);
+    expect(api.frameworks.map((framework) => framework.name)).toEqual(["express"]);
+  });
+
+  it("are never a further app's", async () => {
+    const root = await tree(HOISTED);
+    const api = await detectProject(root, { appDir: "apps/api", rootFiles: false });
+    expect(api.services).toEqual([]);
+  });
+});
+
 describe("the variables of an app in a folder", () => {
   it("come from the app's folder and its workspace packages, never the repository's scripts or other apps", async () => {
     const root = await tree({
@@ -142,7 +187,7 @@ describe("the variables of an app in a folder", () => {
       "VITE_SITE_URL",
     ]);
     // A further app reads neither.
-    const docs = await detectProject(root, { appDir: "sites/docs", rootEnvFiles: false });
+    const docs = await detectProject(root, { appDir: "sites/docs", rootFiles: false });
     expect(docs.envVars.map((variable) => variable.name)).toEqual(["DOCS_SEARCH_KEY"]);
     // The repository's root app reads the whole repository, its scripts and root files included.
     const { facts } = await detectProjectDetails(root, { appDir: "." });
@@ -216,7 +261,7 @@ describe("an app beside other apps in a workspace (the 0.2.8 report)", () => {
   };
 
   it("holds only its own variables, services and frameworks", async () => {
-    const pay = { appDir: "apps/pay", rootEnvFiles: false };
+    const pay = { appDir: "apps/pay", rootFiles: false };
     expect(await detectProject(THREE_APPS, pay)).toMatchObject(ownFacts);
     // As the first app, it would also read the root's .env.example.
     const first = await detectProject(THREE_APPS, { appDir: "apps/pay" });
@@ -231,6 +276,31 @@ describe("an app beside other apps in a workspace (the 0.2.8 report)", () => {
     ]);
   });
 
+  it("reads the loadEnv settings of a config's TypeScript and folder imports", async () => {
+    const root = await tree({});
+    await cp(THREE_APPS, root, { recursive: true });
+    await writeTree(root, {
+      "apps/pay/vite.config.ts": [
+        'import { defineConfig, loadEnv } from "vite";',
+        'import { checkoutDefine } from "./config/checkout.js";',
+        'import { theme } from "./theme";',
+        "export default defineConfig(({ mode }) => {",
+        '  const env = loadEnv(mode, process.cwd(), "VITE_");',
+        "  return { base: env.VITE_BASE_PATH, define: { ...checkoutDefine(env), ...theme(env) } };",
+        "});",
+        "",
+      ].join("\n"),
+      "apps/pay/theme/index.ts": "export const theme = (env) => ({ t: env.VITE_THEME });\n",
+    });
+    const pay = await detectProject(root, { appDir: "apps/pay", rootFiles: false });
+    expect(pay.envVars.map((variable) => [variable.name, variable.files])).toEqual([
+      ["VITE_BASE_PATH", ["apps/pay/vite.config.ts"]],
+      ["VITE_CHECKOUT_URL", ["apps/pay/config/checkout.ts"]],
+      ["VITE_SHOP_ID", ["apps/pay/config/checkout.ts"]],
+      ["VITE_THEME", ["apps/pay/theme/index.ts"]],
+    ]);
+  });
+
   it("holds none of another app's, even beside the one deployable server", async () => {
     // A start script makes the server the workspace's one deployable server.
     const root = await tree({});
@@ -242,7 +312,7 @@ describe("an app beside other apps in a workspace (the 0.2.8 report)", () => {
         dependencies: { pg: "^8.16.0" },
       }),
     });
-    expect(await detectProject(root, { appDir: "apps/pay", rootEnvFiles: false })).toMatchObject(
+    expect(await detectProject(root, { appDir: "apps/pay", rootFiles: false })).toMatchObject(
       ownFacts,
     );
   });

@@ -126,10 +126,12 @@ export interface DetectOptions {
    */
   sharedPaths?: string[];
   /**
-   * Whether the committed env files in the repository root (`.env.example`) are the app's too,
-   * when it sits in a folder (default true: the repository's first app). False for a further app.
+   * Whether what lies at the repository root outside every app and package folder is the app's
+   * too when it sits in a folder: the root `package.json`'s dependencies, the root's committed env
+   * files (`.env.example`), compose files and Prisma schemas. Default true (the repository's first
+   * app); false for a further app.
    */
-  rootEnvFiles?: boolean;
+  rootFiles?: boolean;
 }
 
 /** Full detection result: the facts plus context the caller may turn into warnings or risks. */
@@ -450,8 +452,8 @@ export async function detectProjectDetails(
   const scopedMembers = members.filter((info) => inScope(info.unit.dir));
   const appDir = primary?.unit.dir ?? ".";
   // An app in a folder is its folder, its workspace packages and its shared paths: its variables,
-  // services and frameworks come from there only (the first app also reads the root's committed
-  // env files), never from the repository's other folders (its scripts, other apps). The app at
+  // services and frameworks come from there only, never from the repository's other folders (its
+  // scripts, other apps). The first app also has the root's own files (`rootFiles`). The app at
   // the root reads the whole repository.
   const ownPaths = [
     appDir,
@@ -460,8 +462,12 @@ export async function detectProjectDetails(
   ];
   const isOwn = (path: string) => ownPaths.some((dir) => isWithin(dir, path));
   const ownFiles = scopedFiles.filter(isOwn);
-  const relevant = (rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers).filter((info) =>
-    isOwn(info.unit.dir),
+  const rootFiles = options.rootFiles !== false;
+  /** The app's file, or one of the root's own files outside every member's folder. */
+  const isOwnOrRoot = (file: string) =>
+    isOwn(file) || (rootFiles && !members.some((info) => isWithin(info.unit.dir, file)));
+  const relevant = (rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers).filter(
+    (info) => isOwn(info.unit.dir) || (rootFiles && info === rootInfo),
   );
   const appPackage = primary?.unit.packageJson;
   const appKind: AppKind = primary?.appKind ?? "unknown";
@@ -479,10 +485,8 @@ export async function detectProjectDetails(
   });
 
   const envFiles: { path: string; text: string }[] = [];
-  const rootEnvFiles = options.rootEnvFiles !== false;
   for (const path of scopedFiles.filter(
-    (file) =>
-      isCommittedEnvFile(file) && (isOwn(file) || (rootEnvFiles && dirnameRel(file) === ".")),
+    (file) => isCommittedEnvFile(file) && (isOwn(file) || (rootFiles && dirnameRel(file) === ".")),
   )) {
     envFiles.push({ path, text: (await read(path)) ?? "" });
   }
@@ -508,7 +512,7 @@ export async function detectProjectDetails(
   const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
   const composeEngines = new Set<ComposeRedisEngine>();
-  for (const file of ownFiles.filter(isComposeFile)) {
+  for (const file of scopedFiles.filter((f) => isComposeFile(f) && isOwnOrRoot(f))) {
     const text = (await read(file)) ?? "";
     if (composeUsesRedis(text)) composeRedis = true;
     for (const engine of composeRedisEngines(text)) composeEngines.add(engine);
@@ -543,7 +547,7 @@ export async function detectProjectDetails(
       redisModuleCalls,
     });
   }
-  for (const file of ownFiles.filter((f) => f.endsWith(".prisma"))) {
+  for (const file of scopedFiles.filter((f) => f.endsWith(".prisma") && isOwnOrRoot(f))) {
     addPrismaServices(
       services,
       (await read(file)) ?? "",
@@ -1063,8 +1067,12 @@ async function redisModuleCallers(
 
 /** A relative import's path: `from "./x"`, `import "./x"`, `import("./x")`, `require("./x")`. */
 const RELATIVE_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g;
-/** What a relative import may leave out of the file's name. */
-const IMPORT_EXTENSIONS = ["", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"];
+/** What a relative import may leave out of the file's name, a folder's `index` file included. */
+const IMPORT_EXTENSIONS = ["", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"].flatMap(
+  (extension) => [extension, `/index${extension}`],
+);
+/** The JavaScript extension a TypeScript import names for its `.ts` file (`./env.js`). */
+const JS_EXTENSION = /\.[cm]?js$/;
 
 /**
  * The settings Vite's `loadEnv` gives the `vite.config.*` in `dir` and the files it imports
@@ -1081,9 +1089,9 @@ async function viteConfigReads(
     const text = (await read(config)) ?? "";
     const imported = [...text.matchAll(RELATIVE_IMPORT)].flatMap((match) => {
       const base = posix.join(dirnameRel(config), match[1] as string);
-      const file = IMPORT_EXTENSIONS.map((extension) => base + extension).find((path) =>
-        fileSet.has(path),
-      );
+      const file = [base, base.replace(JS_EXTENSION, "")]
+        .flatMap((stem) => IMPORT_EXTENSIONS.map((extension) => stem + extension))
+        .find((path) => fileSet.has(path));
       return file === undefined ? [] : [file];
     });
     for (const file of [config, ...imported]) {

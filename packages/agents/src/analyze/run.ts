@@ -23,6 +23,7 @@ import { z } from "zod";
 import { recordedAppDir } from "../apps/record";
 import type { PhaseDeps } from "../context";
 import { runPhase } from "../shared/phase-status";
+import { appDetectOptions } from "./detect-options";
 import { renderArchitectureMarkdown } from "./markdown";
 import { ANALYST_SYSTEM_PROMPT, buildAnalystPrompt } from "./prompts";
 import { APP_KIND_LABELS, summarizeFacts } from "./summary";
@@ -119,13 +120,7 @@ export async function runAnalyze(
             : " (chosen earlier; `--dir .` describes the whole repository)";
       reporter.info(`Describing the app in ${normalizeAppDir(appDir)}${source}.`);
     }
-    const sharedPaths = await plannedSharedPaths(deps);
-    const detection = await detectProjectDetails(paths.root, {
-      ...(appDir !== undefined ? { appDir } : {}),
-      ...(sharedPaths !== undefined ? { sharedPaths } : {}),
-      // The root's committed env files (`.env.example`) are the first app's, never a further app's.
-      ...(recorded !== undefined ? { rootEnvFiles: false } : {}),
-    });
+    const detection = await detectProjectDetails(paths.root, await appDetectOptions(paths, appDir));
     if (detection.truncated) {
       reporter.warn(
         "The repository has more files than OpsCrew inspects (20,000); detection may be incomplete.",
@@ -197,18 +192,6 @@ async function chosenAppDir(deps: PhaseDeps): Promise<string | undefined> {
     const previous = (await readArtifact("architecture", deps.paths.files.architecture)).facts
       .appDir;
     return previous !== undefined && previous !== "." ? previous : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The folders outside the app's that its plan names as its own (`app.sharedPaths` in
- * `opscrew/plan.yaml`, written by design); none without a valid plan.
- */
-async function plannedSharedPaths(deps: PhaseDeps): Promise<string[] | undefined> {
-  try {
-    return (await readArtifact("plan", deps.paths.files.plan)).app.sharedPaths;
   } catch {
     return undefined;
   }

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  appDetectOptions,
   type DesignPreview,
   type DesignResult,
   inspectOwnServerForDesign,
@@ -139,7 +140,9 @@ async function previewDesign(
   ownServer: OwnServerDesignInput | undefined,
 ): Promise<DesignPreview> {
   const quiet: PhaseDeps = { ...phase, reporter: new CollectingReporter(deps.redactor.redact) };
-  const facts = hasArchitecture ? undefined : await detectProject(phase.paths.root);
+  const facts = hasArchitecture
+    ? undefined
+    : await detectProject(phase.paths.root, await appDetectOptions(phase.paths));
   return previewDesignOptions(quiet, {
     ...(facts ? { facts } : {}),
     ...(ownServer === undefined ? {} : { ownServer }),

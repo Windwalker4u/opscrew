@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  appDetectOptions,
   buildComponentQuestions,
   buildPortainerQuestions,
   buildQuestions,
@@ -59,11 +60,7 @@ async function loadFacts(
     };
   } catch {
     return {
-      // `appDir` is set only for a further app, which never reads the root's committed env files.
-      facts: await detectProject(
-        paths.root,
-        appDir === undefined ? {} : { appDir, rootEnvFiles: false },
-      ),
+      facts: await detectProject(paths.root, await appDetectOptions(paths, appDir)),
       source: "detected",
     };
   }

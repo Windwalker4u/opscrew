@@ -16,7 +16,7 @@ import {
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import { runAnalyze } from "../analyze";
+import { appDetectOptions, runAnalyze } from "../analyze";
 import { appFlag } from "../apps/choice";
 import { recordedAppDir } from "../apps/record";
 import type { PhaseDeps } from "../context";
@@ -188,11 +188,7 @@ async function loadFacts(deps: PhaseDeps, recorded: string | undefined): Promise
     } else {
       throw error;
     }
-    // The root's committed env files (`.env.example`) are the first app's, never a further app's.
-    return detectProject(
-      paths.root,
-      recorded === undefined ? {} : { appDir: recorded, rootEnvFiles: false },
-    );
+    return detectProject(paths.root, await appDetectOptions(paths, recorded));
   }
 }
 
