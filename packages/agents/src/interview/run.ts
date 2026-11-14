@@ -188,7 +188,11 @@ async function loadFacts(deps: PhaseDeps, recorded: string | undefined): Promise
     } else {
       throw error;
     }
-    return detectProject(paths.root, recorded === undefined ? {} : { appDir: recorded });
+    // The root's committed env files (`.env.example`) are the first app's, never a further app's.
+    return detectProject(
+      paths.root,
+      recorded === undefined ? {} : { appDir: recorded, rootEnvFiles: false },
+    );
   }
 }
 

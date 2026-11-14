@@ -59,7 +59,11 @@ async function loadFacts(
     };
   } catch {
     return {
-      facts: await detectProject(paths.root, appDir === undefined ? {} : { appDir }),
+      // `appDir` is set only for a further app, which never reads the root's committed env files.
+      facts: await detectProject(
+        paths.root,
+        appDir === undefined ? {} : { appDir, rootEnvFiles: false },
+      ),
       source: "detected",
     };
   }
