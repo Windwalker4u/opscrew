@@ -69,6 +69,28 @@ export type Role = keyof typeof ROLES;
 /** The roles in record order. */
 export const ROLE_NAMES = Object.keys(ROLES) as [Role, ...Role[]];
 
+/**
+ * The stacks beside the app's while it moves to another Cloudflare account (feature 028), by the
+ * stack plan change that manages each, and what its name adds to `opscrew-<app>`: the new
+ * account's tunnel connector (web mode `tunnel`) and its connector to Portainer's webhook (redeploy
+ * `cloudflare`). OpsCrew keeps no record of them: they are found by name.
+ */
+export const NEXT_STACKS = {
+  "tunnel-next-stack": "-tunnel-next",
+  "tunnel-connector-next-stack": "-portainer-tunnel-next",
+} as const;
+export type NextStackChangeId = keyof typeof NEXT_STACKS;
+/** The beside stacks' changes, in the order a plan lists them. */
+export const NEXT_STACK_CHANGE_IDS = Object.keys(NEXT_STACKS) as [
+  NextStackChangeId,
+  ...NextStackChangeId[],
+];
+
+/** The name of the app's beside stack that `change` manages. */
+export function nextStackName(app: string, change: NextStackChangeId): string {
+  return `${opscrewNames(app).app}${NEXT_STACKS[change]}`;
+}
+
 /** The names of everything OpsCrew creates in Portainer for one app (research R6). */
 export interface OpsCrewNames {
   /** The app's Git stack (and its Compose project): `opscrew-<app>`. */
@@ -111,4 +133,19 @@ export function stackName(names: Pick<OpsCrewNames, "app">, role: Role): string 
 export function opscrewStackNames(app: string): string[] {
   const names = opscrewNames(app);
   return ROLE_NAMES.map((role) => stackName(names, role));
+}
+
+/**
+ * `names` and, for every app whose stacks (`opscrewStackNames`) are all in it, the names of its
+ * beside stacks ({@link NEXT_STACKS}), which `inspectPortainer` then reads too.
+ */
+export function withNextStackNames(names: ReadonlySet<string>): Set<string> {
+  const all = new Set(names);
+  for (const name of names) {
+    const app = name.slice("opscrew-".length);
+    if (!AppNameSchema.safeParse(app).success) continue;
+    if (!opscrewStackNames(app).every((stack) => names.has(stack))) continue;
+    for (const change of NEXT_STACK_CHANGE_IDS) all.add(nextStackName(app, change));
+  }
+  return all;
 }

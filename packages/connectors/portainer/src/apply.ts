@@ -3,6 +3,7 @@ import type { EnvPair, PortainerClient, StackDetails } from "./client";
 import {
   DEPLOY_COMPOSE_FILE,
   isDeployReference,
+  nextStackName,
   opscrewNames,
   ROLE_NAMES,
   ROLES,
@@ -11,7 +12,8 @@ import {
 } from "./names";
 import {
   type CreatedRecord,
-  type DesiredValueFingerprints,
+  isNextStackChange,
+  type SentFingerprints,
   type StackChange,
   type StackChangeId,
   type StackParamValue,
@@ -43,6 +45,11 @@ export interface ApplySecrets {
   registryToken?: string;
   /** The Cloudflare connector stack's `TUNNEL_TOKEN`. */
   tunnelToken?: string;
+  /**
+   * The beside stacks' `TUNNEL_TOKEN`s while the app moves to another Cloudflare account, by stack
+   * name (`planNextStacks`).
+   */
+  nextTunnelTokens?: Readonly<Record<string, string>>;
   /**
    * The updater stack's `Env` values, exactly for the `${VARS}` of its stack file. One must be an
    * `http:` or `https:` URL whose path ends in `/api/stacks/webhooks/<webhookId>` (the app
@@ -216,7 +223,7 @@ function checkValuesDigest(
       "Apply it with the value key OpsCrew keeps for this project.",
     );
   }
-  const parts: DesiredValueFingerprints = {};
+  const parts: SentFingerprints = {};
   if (sent.app !== undefined) parts.app = valueFingerprints(valueKey, only(secrets.env, sent.app));
   if (sent.updater !== undefined) {
     parts.updater = valueFingerprints(valueKey, only(secrets.updaterEnv, sent.updater));
@@ -225,6 +232,17 @@ function checkValuesDigest(
     parts.connector = valueFingerprints(
       valueKey,
       only({ TUNNEL_TOKEN: secrets.tunnelToken ?? "" }, sent.connector),
+    );
+  }
+  if (sent.next !== undefined) {
+    parts.next = Object.fromEntries(
+      Object.entries(sent.next).map(([name, keys]) => [
+        name,
+        valueFingerprints(
+          valueKey,
+          only({ TUNNEL_TOKEN: secrets.nextTunnelTokens?.[name] ?? "" }, keys),
+        ),
+      ]),
     );
   }
   if (sent.webhook) {
@@ -288,6 +306,9 @@ function registerSecrets(client: PortainerClient, secrets: ApplySecrets): void {
     client.registerSecret(secrets.registryToken, "OPSCREW_GHCR_READ_TOKEN");
   }
   if (secrets.tunnelToken !== undefined) client.registerSecret(secrets.tunnelToken, "tunnel-token");
+  for (const value of Object.values(secrets.nextTunnelTokens ?? {})) {
+    client.registerSecret(value, "tunnel-token");
+  }
 }
 
 function invalid(message: string, hint?: string): OpsCrewError {
@@ -376,6 +397,18 @@ function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinn
     const keys = list(change.params, "envKeys");
     if (keys.join(",") !== "TUNNEL_TOKEN") throw notOurs();
     requireToken(secrets.tunnelToken, "the Cloudflare connector's tunnel token");
+  }
+  if (isNextStackChange(change.id)) {
+    // A beside stack is found by name (no record): only the app's own beside stack names.
+    const name = str(change.params, "name");
+    if (name !== nextStackName(plan.app, change.id)) throw notOurs();
+    if (sendsEnv) {
+      if (list(change.params, "envKeys").join(",") !== "TUNNEL_TOKEN") throw notOurs();
+      requireToken(
+        secrets.nextTunnelTokens?.[name],
+        `the new Cloudflare account's tunnel token for ${name}`,
+      );
+    }
   }
 }
 
@@ -562,7 +595,10 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
   }
 
   const role = roleOf(change.id);
-  if (role === undefined) throw new OpsCrewError("INTERNAL", `Unknown stack change ${change.id}.`);
+  const next = isNextStackChange(change.id);
+  if (role === undefined && !next) {
+    throw new OpsCrewError("INTERNAL", `Unknown stack change ${change.id}.`);
+  }
   const name = str(params, "name");
 
   if (action === "remove" || action === "forget") {
@@ -639,11 +675,12 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
   const values: Readonly<Record<string, string>> =
     role === "updater"
       ? (secrets.updaterEnv ?? {})
-      : { TUNNEL_TOKEN: secrets.tunnelToken as string };
+      : { TUNNEL_TOKEN: (next ? secrets.nextTunnelTokens?.[name] : secrets.tunnelToken) as string };
   const env = pairs(values, keys);
   if (action === "create") {
     const created = await client.createStringStack(envId, { name, compose, env });
-    remember(record, created.id, name, role);
+    // The beside stacks are found by name, never recorded.
+    if (role !== undefined) remember(record, created.id, name, role);
     ctx.done(`Created the stack ${name} (id ${created.id})`);
     await waitForDeploy(ctx, created, NEW_DEPLOY, name);
     return true;

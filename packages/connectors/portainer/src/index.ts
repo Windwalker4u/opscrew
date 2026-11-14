@@ -57,8 +57,10 @@ export {
 export {
   type CreatedRecord,
   CreatedRecordSchema,
+  type DesiredNextStacks,
   type DesiredStacks,
   type DesiredValueFingerprints,
+  planNextStacks,
   planStacks,
   planStackTeardown,
   type StackChange,

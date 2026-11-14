@@ -6,6 +6,10 @@ import {
   AppNameSchema,
   DEPLOY_COMPOSE_FILE,
   isDeployBranch,
+  NEXT_STACK_CHANGE_IDS,
+  NEXT_STACKS,
+  type NextStackChangeId,
+  nextStackName,
   OpsCrewNameSchema,
   type OpsCrewNames,
   opscrewNames,
@@ -19,13 +23,18 @@ import {
 /** Version of the stack plan format (`StackPlan.schemaVersion`). */
 export const STACK_PLAN_SCHEMA_VERSION = 1;
 
-/** Stack plan changes, in the order a setup applies them (teardown: updater, connector, volumes, app, registry). */
+/**
+ * Stack plan changes, in the order a setup applies them (teardown: updater, connector, volumes,
+ * app, registry); the last two only in the beside stacks' plan ({@link planNextStacks}).
+ */
 export const STACK_CHANGE_IDS = [
   "registry",
   "app-stack",
   "updater-stack",
   "tunnel-connector-stack",
   "volumes",
+  "tunnel-next-stack",
+  "tunnel-connector-next-stack",
 ] as const;
 export type StackChangeId = (typeof STACK_CHANGE_IDS)[number];
 
@@ -41,6 +50,13 @@ const ComposeTextSchema = z
   .min(1)
   .max(64 * 1024)
   .refine((text) => !text.includes("\0"), { message: "must not contain NUL bytes" });
+
+/** A connector's Compose file (rendered by `@opscrew/iac-templates`): only `${TUNNEL_TOKEN}`. */
+const TunnelComposeSchema = ComposeTextSchema.refine(
+  (text) => composeVariables(text).join(",") === "TUNNEL_TOKEN",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose interpolation, not a JavaScript template.
+  { message: "must use ${TUNNEL_TOKEN} and no other variable" },
+);
 
 const LoginNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/, {
   message: "must be a user name",
@@ -219,15 +235,7 @@ const DesiredStacksSchema = z
     /** Rendered by `@opscrew/iac-templates`; its `${VARS}` are supplied at apply (`updaterEnv`). */
     updater: z.strictObject({ compose: ComposeTextSchema }).optional(),
     /** Rendered by `@opscrew/iac-templates`; it may only use `${TUNNEL_TOKEN}`. */
-    tunnelConnector: z
-      .strictObject({
-        compose: ComposeTextSchema.refine(
-          (text) => composeVariables(text).join(",") === "TUNNEL_TOKEN",
-          // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose interpolation, not a JavaScript template.
-          { message: "must use ${TUNNEL_TOKEN} and no other variable" },
-        ),
-      })
-      .optional(),
+    tunnelConnector: z.strictObject({ compose: TunnelComposeSchema }).optional(),
     /** Host ports the app stack publishes (80 and 443 for Caddy, or the proxy port); checked free. */
     ports: z.array(PortSchema).max(16).optional(),
     /** Docker names of the app stack's named volumes (`opscrew-<app>_<volume>`), recorded at apply. */
@@ -359,6 +367,8 @@ export interface SentValues {
   app?: string[];
   updater?: string[];
   connector?: string[];
+  /** The beside stacks' env keys, by stack name. */
+  next?: Record<string, string[]>;
   webhook: boolean;
   repositoryToken: boolean;
   registryToken: boolean;
@@ -391,13 +401,25 @@ export function sentValues(changes: readonly StackChange[]): SentValues {
       sent.updater = list;
     } else if (change.id === "tunnel-connector-stack") {
       sent.connector = list;
+    } else if (isNextStackChange(change.id)) {
+      sent.next = { ...sent.next, [String(change.params.name)]: list };
     }
   }
   return sent;
 }
 
+/** True for a change of the beside stacks' plan. */
+export function isNextStackChange(id: StackChangeId): id is NextStackChangeId {
+  return id in NEXT_STACKS;
+}
+
+/** The fingerprints of the values a plan sends: the app's parts, and the beside stacks' by name. */
+export type SentFingerprints = DesiredValueFingerprints & {
+  next?: Record<string, Record<string, string>>;
+};
+
 /** SHA-256 over the canonical JSON (sorted keys) of the fingerprints of the values sent. */
-export function valuesDigestOf(fingerprints: DesiredValueFingerprints): string {
+export function valuesDigestOf(fingerprints: SentFingerprints): string {
   return sha256Hex(canonicalJson(fingerprints));
 }
 
@@ -407,6 +429,7 @@ export function sendsNothing(sent: SentValues): boolean {
     sent.app === undefined &&
     sent.updater === undefined &&
     sent.connector === undefined &&
+    sent.next === undefined &&
     !sent.webhook &&
     !sent.repositoryToken &&
     !sent.registryToken
@@ -1000,9 +1023,45 @@ function stringStackChange(
   fingerprints: Record<string, string> | undefined,
   appWebhookChanges = false,
 ): StackChange {
-  const id = ROLES[role].change;
-  const label = role === "updater" ? "updater stack" : "Cloudflare connector stack";
-  const located = locate(facts, record, role, name);
+  return composeStackChange(
+    facts,
+    {
+      id: ROLES[role].change,
+      label: role === "updater" ? "updater stack" : "Cloudflare connector stack",
+      purpose:
+        role === "updater"
+          ? "asks Portainer once a minute, through the app stack's webhook, to redeploy it when the deploy branch changed"
+          : "lets the deploy workflow reach Portainer's webhook only through Cloudflare Access",
+      name,
+      compose,
+      located: locate(facts, record, role, name),
+    },
+    found,
+    fingerprints,
+    appWebhookChanges,
+  );
+}
+
+/** A stack made from a Compose file OpsCrew gives (not from Git), and where it stands. */
+interface ComposeStack {
+  id: StackChangeId;
+  /** What the stack is, e.g. "updater stack". */
+  label: string;
+  /** What it does, shown when it is created. */
+  purpose: string;
+  name: string;
+  compose: string;
+  located: Located;
+}
+
+/** The change that makes `stack` run its Compose file with the values of `fingerprints`. */
+function composeStackChange(
+  facts: PortainerFacts,
+  { id, label, purpose, name, compose, located }: ComposeStack,
+  found: PortainerFinding[],
+  fingerprints: Record<string, string> | undefined,
+  appWebhookChanges = false,
+): StackChange {
   const params: Record<string, StackParamValue> = {
     name,
     compose,
@@ -1014,10 +1073,6 @@ function stringStackChange(
     return { id, title: `Create the ${label} ${name}`, state: "blocked", reason: blocked, params };
   }
   if (located.kind === "absent") {
-    const purpose =
-      role === "updater"
-        ? "asks Portainer once a minute, through the app stack's webhook, to redeploy it when the deploy branch changed"
-        : "lets the deploy workflow reach Portainer's webhook only through Cloudflare Access";
     return {
       id,
       title: `Create the ${label} ${name} (${purpose})`,
@@ -1307,6 +1362,161 @@ function removeRegistryChange(
     title: `Remove the registry entry ${entry.name} OpsCrew added`,
     state: "change",
     params: { ...params, name: entry.name },
+  };
+}
+
+// --- Beside stacks (the move to another Cloudflare account) -------------------------------------
+
+/**
+ * The app's beside stacks to run or remove while it moves to another Cloudflare account (feature
+ * 028): see {@link planNextStacks}.
+ */
+export interface DesiredNextStacks {
+  /** The stacks' names derive from it: `opscrew-<app>-tunnel-next`, `opscrew-<app>-portainer-tunnel-next`. */
+  app: string;
+  environmentId: number;
+  /**
+   * The beside stacks to run, as `renderNextConnectorStacks` renders them (each Compose file uses
+   * only `${TUNNEL_TOKEN}`), or `"remove"` to remove both.
+   */
+  stacks: readonly { name: string; compose: string }[] | "remove";
+  /**
+   * By stack name, `valueFingerprints(valueKey, { TUNNEL_TOKEN: token })` of the token it gets
+   * (every stack to run needs it); `{}` to remove.
+   */
+  fingerprints: Readonly<Record<string, Readonly<Record<string, string>>>>;
+}
+
+const DesiredNextStacksSchema = z
+  .strictObject({
+    app: AppNameSchema,
+    environmentId: z.int().positive(),
+    stacks: z.union([
+      z.literal("remove"),
+      z
+        .array(z.strictObject({ name: z.string(), compose: TunnelComposeSchema }))
+        .max(NEXT_STACK_CHANGE_IDS.length),
+    ]),
+    fingerprints: z.record(z.string(), FingerprintsSchema),
+  })
+  .superRefine((desired, ctx) => {
+    if (desired.stacks === "remove" || !AppNameSchema.safeParse(desired.app).success) return;
+    const names = NEXT_STACK_CHANGE_IDS.map((id) => nextStackName(desired.app, id));
+    const seen = new Set<string>();
+    desired.stacks.forEach((stack, i) => {
+      if (!names.includes(stack.name) || seen.has(stack.name)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["stacks", i, "name"],
+          message: `must be one of ${names.join(" and ")}, once`,
+        });
+      }
+      seen.add(stack.name);
+      if (desired.fingerprints[stack.name]?.TUNNEL_TOKEN === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["fingerprints", stack.name],
+          message: "needs the fingerprint of its TUNNEL_TOKEN (the plan is bound to the token)",
+        });
+      }
+    });
+  });
+
+/** What each beside stack does, shown when it is created. */
+const NEXT_PURPOSES: Record<NextStackChangeId, string> = {
+  "tunnel-next-stack":
+    "runs the new account's tunnel connector for the app beside the current one, on the app stack's network",
+  "tunnel-connector-next-stack":
+    "lets the deploy workflow reach Portainer's webhook through the new account's Cloudflare Access, beside the current connector",
+};
+
+/**
+ * The stack plan of the app's beside stacks while it moves to another Cloudflare account
+ * ({@link NEXT_STACKS}), approved by its hash like any other (`stack-apply`). With `stacks`, each
+ * given one is created, updated (its file, or its `TUNNEL_TOKEN` by fingerprint), redeployed,
+ * started or in place, and the plan is bound to the tokens it sends (`valuesDigest`); with
+ * `"remove"`, both are removed (in place when absent). They are found by name, as OpsCrew keeps no
+ * record of them; the app's own stacks, the registry and the record are never part of this plan,
+ * and no token is.
+ */
+export function planNextStacks(facts: PortainerFacts, desired: DesiredNextStacks): StackPlan {
+  const parsed = DesiredNextStacksSchema.safeParse(desired);
+  if (!parsed.success) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The beside Portainer stacks are not valid: ${zodIssues(parsed.error, 5)}`,
+    );
+  }
+  const d = parsed.data;
+  if (facts.environment === undefined || facts.environment.id !== d.environmentId) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Inspect environment ${d.environmentId} with inspectPortainer before planning its stacks.`,
+    );
+  }
+  const remove = d.stacks === "remove";
+  const found: PortainerFinding[] = [];
+  const changes: StackChange[] = [];
+  for (const id of NEXT_STACK_CHANGE_IDS) {
+    const name = nextStackName(d.app, id);
+    const visible = facts.stacks.find((stack) => stack.name.toLowerCase() === name);
+    if (d.stacks === "remove") {
+      const title = `Remove the stack ${name}`;
+      changes.push(
+        visible === undefined
+          ? {
+              id,
+              title,
+              state: "in-place",
+              reason: "Portainer has no stack of this name (removed, or this token cannot see it).",
+              params: { action: "absent", name },
+            }
+          : { id, title, state: "change", params: { action: "remove", name, stackId: visible.id } },
+      );
+      continue;
+    }
+    const given = d.stacks.find((stack) => stack.name === name);
+    if (given === undefined) continue;
+    changes.push(
+      composeStackChange(
+        facts,
+        {
+          id,
+          label: "new Cloudflare account's connector stack",
+          purpose: NEXT_PURPOSES[id],
+          name,
+          compose: given.compose,
+          located: visible === undefined ? { kind: "absent" } : { kind: "ours", stack: visible },
+        },
+        found,
+        d.fingerprints[name],
+      ),
+    );
+  }
+  const sent = sentValues(changes).next;
+  const valuesDigest =
+    sent === undefined
+      ? undefined
+      : valuesDigestOf({
+          next: Object.fromEntries(
+            Object.entries(sent).map(([name, keys]) => [
+              name,
+              pick(d.fingerprints[name], keys, `next.${name}`),
+            ]),
+          ),
+        });
+  const blockers = remove
+    ? facts.findings.filter((item) => TEARDOWN_BLOCKERS.has(item.code))
+    : facts.findings;
+  return {
+    schemaVersion: STACK_PLAN_SCHEMA_VERSION,
+    purpose: remove ? "teardown" : "setup",
+    app: d.app,
+    environmentId: d.environmentId,
+    changes,
+    findings: unique([...blockers, ...found]),
+    record: { stacks: [], volumes: [] },
+    ...(valuesDigest !== undefined && { valuesDigest }),
   };
 }
 

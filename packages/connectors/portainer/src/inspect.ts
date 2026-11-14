@@ -12,7 +12,7 @@ import {
   type PortainerStackFacts,
 } from "./facts";
 import { findings as finding } from "./findings";
-import { OpsCrewNameSchema } from "./names";
+import { OpsCrewNameSchema, withNextStackNames } from "./names";
 
 const OptionsSchema = z.strictObject({
   environmentId: z.int().positive().optional(),
@@ -25,7 +25,9 @@ class TokenRejected extends Error {}
 /**
  * Reads, without changing anything, what OpsCrew needs to know about the user's Portainer
  * (research R1–R4, R6): version and Compose, the token's user and role, the environments, and for
- * the chosen environment its architecture, the stacks with OpsCrew's `names` (env keys only), the
+ * the chosen environment its architecture, the stacks with OpsCrew's `names` and, for an app whose
+ * stacks are all named, its beside stacks `-tunnel-next` and `-portainer-tunnel-next` (env keys
+ * only), the
  * registry entries usable there and, for an administrator, the Compose projects with those names
  * and the published host ports. A rejected token and refused reads (401, 403) become findings;
  * an unreachable Portainer or a changed certificate throws.
@@ -42,7 +44,8 @@ export async function inspectPortainer(
     );
   }
   const { environmentId } = parsed.data;
-  const names = new Set(parsed.data.names.map((name) => name.toLowerCase()));
+  // An app's beside stacks (while it moves to another Cloudflare account) are read by name too.
+  const names = withNextStackNames(new Set(parsed.data.names.map((name) => name.toLowerCase())));
   const found: PortainerFinding[] = [];
 
   /**
