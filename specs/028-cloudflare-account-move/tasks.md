@@ -426,7 +426,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2817 [P] [US1] [US2] The zone plan: B's zone, the copy, the marks, coverage
   - Owns: `packages/agents/src/cloudflare-move/{zone,marks}*.ts`
-  - Lead note (after T2810): coverage also needs the hostnames only OpsCrew's shared rules name; the lead exports a parser of those rules' hostnames from `@opscrew/connector-cloudflare` before this task starts. `listZoneWorkerDomains` needs Workers permission on A's token: probe first and, without it, say the custom domains were not read rather than skip them silently.
+  - Lead note (after T2810): coverage also needs the hostnames only OpsCrew's shared rules name; read them with `sharedRuleHostnames(facts)` from `@opscrew/connector-cloudflare` (facts from `inspectShared` on A's zone). `listZoneWorkerDomains` needs Workers permission on A's token: probe first and, without it, say the custom domains were not read rather than skip them silently.
   - Lead note (after T2807): `opscrewRecordNames(plan, zone)` leaves out GitHub's verification TXT record (`_github-pages-challenge-<owner>.<domain>`); coverage counts a `_github-pages-challenge-*` TXT record as the Pages app's by that prefix.
   - Reads: plan 4.3, 4.5, 5.1, 5.2, 7.8; data-model 4, 5; `provision/shared-cloudflare.ts` (how a `cloudflare-apply` plan is shown and approved); T2804's and T2809's blocks
   - Depends: T2804, T2805, T2807, T2809, T2810
