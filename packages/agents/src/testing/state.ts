@@ -99,7 +99,7 @@ async function tfvarsIn(dir: string): Promise<Record<string, unknown>> {
 }
 
 /**
- * The input variables each saved plan was made with, as OpenTofu (1.8 and later) checks them when
+ * The input variables each saved plan was made with, as OpenTofu (1.11 and later) checks them when
  * it applies one: the root's `terraform.tfvars.json` at the plan, with `-var` values over it. An
  * apply whose root's file, with the apply's own `-var` values over it, now gives another value for
  * one of them is refused, with its message.

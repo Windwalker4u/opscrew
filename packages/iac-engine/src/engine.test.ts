@@ -27,11 +27,9 @@ function makeEngine(
   runner: ScriptedRunner,
   name: IacEngineName = "tofu",
   env: Record<string, string | undefined> = { PATH: "/usr/bin" },
+  version = "1.13.1",
 ): IacEngine {
-  return createEngine(
-    { name, version: "1.13.1", binary: `/bin/${name}` },
-    { runner, env, now: () => NOW },
-  );
+  return createEngine({ name, version, binary: `/bin/${name}` }, { runner, env, now: () => NOW });
 }
 
 async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
@@ -511,27 +509,34 @@ describe("apply", () => {
     expect(applyCall?.options.cwd).toBe(path.resolve(dir));
   });
 
-  it("passes the vars as -var before the plan file to both engines, as the plan was made", async () => {
-    for (const name of ["tofu", "terraform"] as const) {
-      const { runner, hash } = await planned("PLAN-A", fixture("show-create.json"));
-      const result = await makeEngine(runner, name).apply(
-        dir,
-        "p.tfplan",
-        { approvedPlanHash: hash },
-        { vars: { zone: "bbbb", name: "my-app" } },
-      );
-      expect(result.ok).toBe(true);
-      const args = runner.calls[1]?.args ?? [];
-      expect(args).toEqual([
-        "apply",
-        "-input=false",
-        "-no-color",
-        "-var",
-        "zone=bbbb",
-        "-var",
-        "name=my-app",
-        runner.calls[0]?.args[3],
-      ]);
+  it("passes the vars as -var before the plan file to the engines that take them at an apply", async () => {
+    // OpenTofu 1.11 and Terraform 1.10 take -var with a saved plan; older ones refuse any.
+    const vars = { zone: "bbbb", name: "my-app" };
+    for (const [name, older, newer] of [
+      ["tofu", "1.10.9", "1.11.0"],
+      ["terraform", "1.9.8", "1.10.0"],
+    ] as const) {
+      for (const version of [older, newer]) {
+        const { runner, hash } = await planned("PLAN-A", fixture("show-create.json"));
+        const engine = makeEngine(runner, name, { PATH: "/usr/bin" }, version);
+        const result = await engine.apply(dir, "p.tfplan", { approvedPlanHash: hash }, { vars });
+        expect(result.ok).toBe(true);
+        const copy = runner.calls[0]?.args[3];
+        expect(runner.calls[1]?.args).toEqual(
+          version === older
+            ? ["apply", "-input=false", "-no-color", copy]
+            : [
+                "apply",
+                "-input=false",
+                "-no-color",
+                "-var",
+                "zone=bbbb",
+                "-var",
+                "name=my-app",
+                copy,
+              ],
+        );
+      }
     }
   });
 

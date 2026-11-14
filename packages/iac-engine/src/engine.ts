@@ -25,6 +25,7 @@ import {
   zodIssues,
 } from "@opscrew/core";
 import { z } from "zod";
+import { versionAtLeast } from "./detect";
 import { encryptionSecrets } from "./encryption";
 import { parsePlanJson } from "./plan-json";
 import { managedAddresses } from "./state-resources";
@@ -321,9 +322,15 @@ class Engine implements IacEngine {
       );
     }
 
-    // The plan's own -vars again: OpenTofu refuses a saved plan whose variables differ from what
-    // the root's terraform.tfvars.json gives at the apply.
-    const args = ["apply", "-input=false", "-no-color", ...this.varArgs(options.vars)];
+    // The plan's own -vars again: OpenTofu 1.11 and later refuse a saved plan whose variables
+    // differ from what the root's terraform.tfvars.json gives at the apply. OpenTofu before 1.11
+    // and Terraform before 1.10 refuse any -var with a saved plan and use the plan's own values.
+    const vars = this.varArgs(options.vars);
+    const takesVars = versionAtLeast(
+      this.info.version,
+      this.info.name === "tofu" ? "1.11.0" : "1.10.0",
+    );
+    const args = ["apply", "-input=false", "-no-color", ...(takesVars ? vars : [])];
     // Apply a private copy of the verified bytes so the file cannot change between the hash
     // check, the destroy check and the apply.
     const scratch = await mkdtemp(path.join(tmpdir(), "opscrew-plan-"));

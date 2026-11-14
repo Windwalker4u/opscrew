@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { IacEngine, IacEngineName } from "@opscrew/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { detectEngines, selectEngine } from "./detect";
+import { detectEngines, selectEngine, versionAtLeast } from "./detect";
 import { stateKeyName, tofuEncryptionEnv } from "./encryption";
 
 const MODULE = `variable "label" {
@@ -198,12 +198,12 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
             (await engine.apply(root, created.planFile, { approvedPlanHash: created.planHash })).ok,
           ).toBe(true);
 
-          // Planned with -var over the file's value: OpenTofu reads the file again at the apply
-          // and refuses the difference unless the apply is given the same -var.
+          // Planned with -var over the file's value: OpenTofu 1.11 and later read the file again
+          // at the apply and refuse the difference unless the apply is given the same -var.
           const vars = { label: "two" };
           const overridden = await engine.plan(root, "var.tfplan", { vars });
           const approval = { approvedPlanHash: overridden.planHash, allowDestroy: true };
-          if (name === "tofu") {
+          if (name === "tofu" && versionAtLeast(engine.info.version, "1.11.0")) {
             const without = await engine.apply(root, overridden.planFile, approval);
             expect(without.ok).toBe(false);
             expect(without.log).toContain("Mismatch between input and plan variable value");
