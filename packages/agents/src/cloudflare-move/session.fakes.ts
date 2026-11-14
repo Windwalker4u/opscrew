@@ -108,7 +108,10 @@ export interface MoveHarnessOptions {
  * and a user's record. The app's plans are written into a git project.
  */
 export async function moveHarness(o: MoveHarnessOptions = {}) {
-  const tokens = { a: fakeSecret("cloudflare-token"), b: fakeSecret("cloudflare-token") };
+  const tokens = {
+    a: fakeSecret("cloudflare-token", "account-a"),
+    b: fakeSecret("cloudflare-token", "account-b"),
+  };
   const cloudflare = fakeCloudflareAccounts({
     accounts: [
       ...(o.stale ? [{ name: "Stale", token: tokens.a }] : []),

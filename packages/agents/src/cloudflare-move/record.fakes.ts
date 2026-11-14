@@ -22,7 +22,10 @@ export interface TwoAccounts {
 }
 
 export function twoAccounts(zone = MOVE_ZONE): TwoAccounts {
-  const tokens = { a: fakeSecret("cloudflare-token"), b: fakeSecret("cloudflare-token") };
+  const tokens = {
+    a: fakeSecret("cloudflare-token", "account-a"),
+    b: fakeSecret("cloudflare-token", "account-b"),
+  };
   const cloudflare = fakeCloudflareAccounts({
     accounts: [
       { name: "A", token: tokens.a },
