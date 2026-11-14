@@ -73,18 +73,20 @@ async function verifiedClient(
 }
 
 /**
- * The zone the environment's domain is in, in `accountId`: `dns.zone` when the plan names it,
- * else the zone A's token finds there for `dns.domain`; `undefined` off Cloudflare.
+ * The zone the environment's domain is in, in `accountId`: the one A's token finds there for
+ * `dns.zone` when the plan names it (that zone only), else for `dns.domain`; `undefined` off
+ * Cloudflare or when the account has none.
  */
 async function zoneOf(
   plan: DeployPlan,
   a: CloudflareClient,
   accountId: string,
-): Promise<string | undefined> {
+): Promise<MoveZone | undefined> {
   const { dns } = plan;
   if (dns.provider !== "cloudflare" || dns.domain === undefined) return undefined;
-  if (dns.zone !== undefined) return dns.zone;
-  return (await a.findZone(dns.domain, { accountId }))?.name;
+  const found = await a.findZone(dns.zone ?? dns.domain, { accountId });
+  if (found === undefined || (dns.zone !== undefined && found.name !== dns.zone)) return undefined;
+  return { ...found, accountId };
 }
 
 /** The zone of the plan's domain in the first of `accounts` that has one, an active one first. */
@@ -95,11 +97,8 @@ async function zoneInAccounts(
 ): Promise<MoveZone | undefined> {
   let found: MoveZone | undefined;
   for (const accountId of accounts) {
-    const name = await zoneOf(plan, a, accountId);
-    const zone = name === undefined ? undefined : await zoneIn(a, name, accountId);
-    if (zone !== undefined && (found === undefined || zone.status === "active")) {
-      found = { ...zone, accountId };
-    }
+    const zone = await zoneOf(plan, a, accountId);
+    if (zone !== undefined && (found === undefined || zone.status === "active")) found = zone;
     if (found?.status === "active") break;
   }
   return found;
@@ -178,15 +177,26 @@ async function splitEnvironments(
     skipped: [],
     staying: [],
   };
+  const others = accounts.filter((id) => id !== start.accountId);
   for (const env of all) {
-    const zone = await zoneOf(env.plan, a, start.accountId);
-    if (zone !== start.name) {
-      split.staying.push({ name: env.environment, ...(zone === undefined ? {} : { zone }) });
-    } else if (deployed.get(env.environment)) {
+    // A recorded environment is covered without a lookup: A's moved zone is deleted after a week.
+    if (env.plan.cloudflareMove?.zone === start.name) {
       split.environments.push(env);
-    } else {
-      split.skipped.push(env);
+      continue;
     }
+    const own = await zoneOf(env.plan, a, start.accountId);
+    if (own?.name === start.name) {
+      (deployed.get(env.environment) ? split.environments : split.skipped).push(env);
+      continue;
+    }
+    const cloudflare = env.plan.dns.provider === "cloudflare";
+    const elsewhere = cloudflare ? (own ?? (await zoneInAccounts(env.plan, a, others))) : undefined;
+    const zone = elsewhere?.name ?? env.plan.dns.zone;
+    split.staying.push({
+      name: env.environment,
+      cloudflare,
+      ...(zone === undefined ? {} : { zone }),
+    });
   }
   return split;
 }

@@ -86,7 +86,12 @@ export type MoveEnvironment = MoveRecordPlan;
 /** An environment of the app the move doesn't cover, since its domain is not in the zone. */
 export interface StayingEnvironment {
   name: string;
-  /** Its zone, when it is in another Cloudflare zone; `undefined` when it is not on Cloudflare. */
+  /** Its DNS is on Cloudflare (`dns.provider`). */
+  cloudflare: boolean;
+  /**
+   * Its zone, when it is in another zone A's token sees (in any of its accounts) or its plan names
+   * one; `undefined` off Cloudflare, or when A's token sees no zone for its domain.
+   */
   zone?: string;
 }
 
@@ -114,7 +119,12 @@ export interface MoveSession {
   github: GitHubSetup;
   githubApi: RetargetGitHubApi;
   engine: IacEngine;
-  /** The engine's environment: the phase's, with `TF_ENCRYPTION` when it applies. Never logged. */
+  /**
+   * The engine's environment: the phase's, with `TF_ENCRYPTION` when it applies, as the first
+   * covered environment's state reads it (its key name). A step that runs the engine for another
+   * environment whose states have another key name builds that environment's own
+   * (`existingStateEngine` with its paths). Never logged.
+   */
   env: Record<string, string | undefined>;
   /** `--approve <hash>` until a step used it. */
   approve: string | undefined;
@@ -149,15 +159,11 @@ export interface StepStop {
 }
 
 /** What a command of the move reached. */
-export interface MoveResult {
+export interface MoveResult extends StepStop {
   /** The record's step, or `switched`, `finished` or `aborted`. */
   step: CloudflareMove["step"] | "switched" | "finished" | "aborted";
   /** True when the command did all it can; false when it stopped on purpose (`next` says why). */
   done: boolean;
-  /** Set when a non-interactive run stopped before an apply: approve it with this hash. */
-  pendingPlanHash?: string;
-  /** Plain-English next steps for the CLI to print. */
-  next: string[];
 }
 
 /** What every command of the move takes. */
@@ -177,17 +183,37 @@ export interface PrepareMoveOptions extends MoveCommandOptions {
   confirmStart?: (summary: MoveSummary) => Promise<boolean>;
 }
 
+/** What a name typed to confirm a change or deletion stands for. */
+export type TypedNameKind = "app" | "bucket" | "domain" | "zone";
+
+/** A name the user types to confirm a change or deletion, and what it confirms. */
+export interface TypedNameQuestion {
+  kind: TypedNameKind;
+  /** The name to type: the app's, a bucket's, the domain or the zone. */
+  name: string;
+  /** What typing it confirms, in words (for the prompt). */
+  what: string;
+}
+
+/** The typed names of the switch, the finish and the abort. */
+export interface TypedNameOptions {
+  /** `--confirm <name>` (repeatable): the names a script types (the app, each bucket, the domain, the zone). */
+  confirm?: readonly string[];
+  /** Asks the user to type `question.name` in a terminal; true when it was typed. */
+  typeName?: (question: TypedNameQuestion) => Promise<boolean>;
+}
+
 /** `opscrew cloudflare move --switch`. */
-export type SwitchMoveOptions = MoveCommandOptions;
+export interface SwitchMoveOptions extends MoveCommandOptions, TypedNameOptions {}
 
 /** `opscrew cloudflare move --finish`. */
-export interface FinishMoveOptions extends MoveCommandOptions {
+export interface FinishMoveOptions extends MoveCommandOptions, TypedNameOptions {
   /** `--allow-downtime`: the R2 window without a prompt (non-interactive runs). */
   allowDowntime?: boolean;
 }
 
 /** `opscrew cloudflare move --abort`. */
-export type AbortMoveOptions = MoveCommandOptions;
+export interface AbortMoveOptions extends MoveCommandOptions, TypedNameOptions {}
 
 /** One of the app's R2 buckets in A, as `rclone size` measured it on the app's server. */
 export interface MoveBucketSize extends BucketSize {

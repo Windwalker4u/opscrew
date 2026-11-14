@@ -11,7 +11,7 @@ import {
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
 import { listText, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
-import { isMoveReady, opscrewRecordNames, usesTunnel } from "@opscrew/iac-templates";
+import { isMoveReady, opscrewRecordNames, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
 import {
   appsOf,
   type DeployPlan,
@@ -21,6 +21,7 @@ import {
 } from "@opscrew/plan-schema";
 import { portainerCloudflare } from "../provision/credentials";
 import { planWhere } from "../runners/words";
+import { hasState, stateCopyPaths, stateNotHere } from "../shared";
 import { readMoveRecords } from "./record";
 import { A_TOKEN_VAR, ABORT_COMMAND, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
 import type { MoveEnvironment, MoveSession } from "./types";
@@ -53,15 +54,31 @@ export async function requireNoRetarget(
 }
 
 /**
- * Every check of the move's start that reads Cloudflare or the repository, before any change: A's
- * zone active and without a zone hold, no other app of the repository moving the zone to another
- * account, B's account permissions for the app's pieces, and committed files the move can use.
+ * Every check of the move's start that reads Cloudflare or the repository, before any change: each
+ * covered environment's infrastructure state on this computer, A's zone active and without a zone
+ * hold, no other app of the repository moving the zone to another account, B's account permissions
+ * for the app's pieces, and committed files the move can use.
  */
 export async function checkMoveStart(session: MoveSession): Promise<void> {
+  await requireStates(session);
   await requireActiveZone(session);
   await requireNoOtherMove(session);
   await requireAccountPermissions(session);
   await requireMoveReady(session);
+}
+
+/** Stops unless every covered environment's infrastructure state is on this computer. */
+async function requireStates(session: MoveSession): Promise<void> {
+  for (const env of session.environments) {
+    if (await hasState(env.paths)) continue;
+    const { folder, passphrase } = stateCopyPaths(env.plan);
+    const { flag } = await planWhere(session.paths.root, env.plan);
+    throw stateNotHere(
+      env.plan,
+      "move it to another Cloudflare account",
+      `Run OpsCrew on the computer that ran \`opscrew provision${flag}\`, or copy its ${folder} folder (and, with OpenTofu, the state passphrase from ${passphrase}) here, then try again.`,
+    );
+  }
 }
 
 /** Stops unless A's zone is active and has no zone hold. */
@@ -112,21 +129,47 @@ async function requireNoOtherMove(session: MoveSession): Promise<void> {
   }
 }
 
+/** The account-scoped Cloudflare pieces of a plan, which B's token needs permissions for. */
+export interface AccountPieces {
+  /** A Cloudflare Tunnel: tunnel mode, Portainer or Beszel on a subdomain, a Portainer tunnel. */
+  tunnel: boolean;
+  /** Access applications and the Zero Trust organization: SSH, the subdomains, the webhook. */
+  access: boolean;
+  /** Access service tokens: the deploy's SSH in tunnel mode, Portainer's webhook. */
+  serviceTokens: boolean;
+  /** The app's bucket on R2. */
+  storage: boolean;
+  /** The snapshots' copies on R2. */
+  backups: boolean;
+  /** A site's Worker. */
+  worker: boolean;
+}
+
+/** {@link AccountPieces} of `plan`. */
+export function accountPieces(plan: DeployPlan): AccountPieces {
+  const portainer = portainerCloudflare(plan);
+  const webhook = portainer?.webhook === true;
+  return {
+    tunnel: usesTunnel(plan) || portainer?.appTunnel === true || webhook,
+    access: usesTunnel(plan) || webhook,
+    serviceTokens: tunnelMode(plan) || webhook,
+    storage: plan.storage?.objectStorage?.provider === "r2",
+    backups: snapshotOffsiteOf(plan)?.provider === "r2",
+    worker: plan.target.provider === "cloudflare-workers",
+  };
+}
+
 /** The account permissions B's token needs for `plan`'s pieces (only those). */
 export function accountNeeds(plan: DeployPlan): AccountPermissionNeed[] {
-  const portainer = portainerCloudflare(plan);
-  const tunnel = usesTunnel(plan) || portainer?.appTunnel === true || portainer?.webhook === true;
-  const r2 =
-    plan.storage?.objectStorage?.provider === "r2" || snapshotOffsiteOf(plan)?.provider === "r2";
-  return [
-    // Every tunnel of OpsCrew's comes with Access in front of it (SSH, Portainer, Beszel, the
-    // webhook) and the account's Zero Trust organization.
-    ...(tunnel
-      ? (["tunnel", "access-apps", "access-service-tokens", "access-organization"] as const)
-      : []),
-    ...(r2 ? (["r2"] as const) : []),
-    ...(plan.target.provider === "cloudflare-workers" ? (["workers"] as const) : []),
+  const pieces = accountPieces(plan);
+  const needs: [boolean, AccountPermissionNeed[]][] = [
+    [pieces.tunnel, ["tunnel"]],
+    [pieces.access, ["access-apps", "access-organization"]],
+    [pieces.serviceTokens, ["access-service-tokens"]],
+    [pieces.storage || pieces.backups, ["r2"]],
+    [pieces.worker, ["workers"]],
   ];
+  return needs.flatMap(([needed, names]) => (needed ? names : []));
 }
 
 /** Stops naming each account permission B's token lacks for the app's pieces. */
@@ -173,7 +216,7 @@ async function opscrewNamesInZone(
   const records = (await client.listDnsRecords(zoneId))
     .filter((record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT)
     .map((record) => record.name);
-  const workers = (await client.accountPermissions(accountId, ["workers"])).missing.length === 0;
+  const workers = (await client.workersPermissions(accountId)).missing.length === 0;
   const domains = workers
     ? (await client.listZoneWorkerDomains(accountId, zoneId)).map((domain) => domain.hostname)
     : [];

@@ -3,13 +3,14 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { projectEngine } from "../shared";
-import { ownPlan, previewTestPlan, testPlan } from "../testing";
-import { checkMoveStart } from "./checks";
+import { ownPlan, portainerPlan, previewTestPlan, testPlan } from "../testing";
+import { accountNeeds, checkMoveStart } from "./checks";
 import {
   type MoveHarness,
   moveHarness,
   OTHER_ZONE,
   recordedMove,
+  STALE_ZONE,
   serverPlan,
   unencrypted,
   ZONE,
@@ -52,7 +53,7 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
     expect(session.zone).toBe(ZONE);
     expect(session.environments.map((env) => env.environment)).toEqual(["prod", "staging"]);
     expect(session.environments[1]?.paths.environment).toBe("staging");
-    expect(session.staying).toEqual([{ name: "dev", zone: OTHER_ZONE }]);
+    expect(session.staying).toEqual([{ name: "dev", cloudflare: true, zone: OTHER_ZONE }]);
     expect(session.skipped).toEqual(["old"]);
     expect(session.accounts.a).toMatchObject({
       accountId: old.id,
@@ -133,6 +134,67 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
   });
 });
 
+describe.skipIf(!findExecutable("git"))("openMoveSession, by account and record", () => {
+  it("takes A as the account whose copy of the zone is active, of several A's token sees", async () => {
+    const h = await moveHarness({
+      stale: true,
+      plans: () => ({
+        prod: serverPlan(),
+        dev: serverPlan(`dev.${STALE_ZONE}`, "dev"),
+        lost: serverPlan("lost.example.invalid", "lost"),
+      }),
+    });
+    const session = await h.open({ to: "New" });
+    expect(session.accounts.a).toMatchObject({
+      accountId: h.cloudflare.account("Old").id,
+      zoneId: h.cloudflare.zone(ZONE, "Old").id,
+      zone: { status: "active" },
+    });
+    expect(session.staying).toEqual([
+      { name: "dev", cloudflare: true, zone: STALE_ZONE },
+      { name: "lost", cloudflare: true },
+    ]);
+    expect(zonesByAccount(h)).toBe(true);
+    expect(h.leaks()).toBe(false);
+  });
+
+  it("covers the recorded environments without a zone lookup once A's moved zone is gone", async () => {
+    const h = await moveHarness({
+      plans: (cloudflare) => ({
+        prod: recordedMove(serverPlan(), cloudflare),
+        staging: recordedMove(serverPlan(`staging.shop.${ZONE}`, "staging"), cloudflare),
+      }),
+    });
+    const old = h.cloudflare.zone(ZONE, "Old");
+    h.cloudflare.zones.splice(h.cloudflare.zones.indexOf(old), 1);
+    const session = await h.open();
+    expect(session.environments.map((env) => env.environment)).toEqual(["prod", "staging"]);
+    expect(session.accounts.a).toMatchObject({ accountId: old.accountId, zoneId: old.id });
+    expect(session.accounts.a.zone).toBeUndefined();
+    expect(session.otherHostnames).toEqual([]);
+  });
+
+  it("asks only for a tunnel's permission for a Portainer app served through a tunnel", async () => {
+    const plan = unencrypted(portainerPlan({ web: { mode: "tunnel" }, deployed: true }));
+    expect(accountNeeds(plan)).toEqual(["tunnel"]);
+    const h = await moveHarness({
+      plans: () => ({ prod: plan }),
+      bDenied: ["access-apps", "access-service-tokens", "access-organization"],
+    });
+    await expect(h.open({ to: "New" }).then(checkMoveStart)).resolves.toBeUndefined();
+  });
+
+  it("asks for Access with its service tokens in tunnel mode", () => {
+    expect(accountNeeds(ownPlan({ access: "tunnel", deployed: true }))).toEqual([
+      "tunnel",
+      "access-apps",
+      "access-organization",
+      "access-service-tokens",
+    ]);
+    expect(accountNeeds(serverPlan())).toEqual([]);
+  });
+});
+
 describe.skipIf(!findExecutable("git"))("the move's refusals before any change", () => {
   it("refuses without A's token, before any call", async () => {
     const h = await moveHarness({ env: { CLOUDFLARE_API_TOKEN: undefined } });
@@ -161,6 +223,18 @@ describe.skipIf(!findExecutable("git"))("the move's refusals before any change",
     const h = await moveHarness();
     const error = await refused(h, h.open({ to: "Elsewhere" }));
     expect(error.message).toContain(`${B_TOKEN_VAR}: This Cloudflare token cannot use the account`);
+    expect(h.deps.redactor.redact(h.tokens.b)).not.toContain(h.tokens.b);
+    expect(h.deps.redactor.redact(h.tokens.a)).not.toContain(h.tokens.a);
+  });
+
+  it("refuses when a covered environment's infrastructure state is not on this computer", async () => {
+    const h = await moveHarness({ plans: SEVERAL, noState: ["staging"] });
+    const session = await h.open({ to: "New" });
+    const error = await refused(h, checkMoveStart(session));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("is not on this computer");
+    expect(error.message).toContain("move it to another Cloudflare account");
+    expect(error.hint).toContain("`opscrew provision --env staging`");
   });
 
   it("refuses B when it is A", async () => {

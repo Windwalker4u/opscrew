@@ -12,9 +12,11 @@ import {
   fakeCloudflareAccounts,
 } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
+import { tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { appPlan } from "../apps/__fixtures__/sites";
+import { environmentPaths } from "../environments/paths";
 import {
   CF_V4,
   CF_V6,
@@ -33,6 +35,8 @@ import type { MoveServices } from "./types";
 /** The zone that moves, and another zone of Old's. */
 export const ZONE = "example.com";
 export const OTHER_ZONE = "example.org";
+/** A zone only Stale holds. */
+export const STALE_ZONE = "example.net";
 
 /** Cloudflare's edge ranges, which need no token (the fake doesn't answer them). */
 const EDGE_RANGES = "https://api.cloudflare.com/client/v4/ips";
@@ -92,6 +96,10 @@ export interface MoveHarnessOptions {
   env?: Record<string, string | undefined>;
   /** Files of the repository, by path. */
   files?: Record<string, string>;
+  /** Deployed environments whose infrastructure state is not on this computer. */
+  noState?: string[];
+  /** A's token also reaches Stale, listed first, with a pending copy of the zone. */
+  stale?: boolean;
 }
 
 /**
@@ -103,6 +111,7 @@ export async function moveHarness(o: MoveHarnessOptions = {}) {
   const tokens = { a: fakeSecret("cloudflare-token"), b: fakeSecret("cloudflare-token") };
   const cloudflare = fakeCloudflareAccounts({
     accounts: [
+      ...(o.stale ? [{ name: "Stale", token: tokens.a }] : []),
       { name: "Old", token: tokens.a },
       { name: "New", token: tokens.b, ...(o.bDenied ? { denied: o.bDenied } : {}) },
       { name: "Spare", token: tokens.b },
@@ -111,6 +120,12 @@ export async function moveHarness(o: MoveHarnessOptions = {}) {
       { name: ZONE, account: "Old", ...(o.aStatus ? { status: o.aStatus } : {}) },
       { name: OTHER_ZONE, account: "Old" },
       ...(o.bZone ? [{ name: ZONE, account: "New", status: "pending" as const }] : []),
+      ...(o.stale
+        ? [
+            { name: ZONE, account: "Stale", status: "pending" as const },
+            { name: STALE_ZONE, account: "Stale" },
+          ]
+        : []),
     ],
   });
   const zone = cloudflare.zone(ZONE, "Old");
@@ -153,6 +168,13 @@ export async function moveHarness(o: MoveHarnessOptions = {}) {
     fetch: withEdgeRanges(cloudflare.fetch),
     runner: projectRunner(),
   });
+  // Each deployed environment's infrastructure state, as provision leaves it.
+  for (const [name, plan] of Object.entries(plans)) {
+    if (plan.deployment.lastApplyAt === undefined || o.noState?.includes(name)) continue;
+    const file = tfstateFile(environmentPaths(deps.paths, name));
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, '{"version":4}\n');
+  }
   const github = new SiteGitHub();
   const engine = new FakeEngine();
   const services: MoveServices = { github, engine: async () => engine };

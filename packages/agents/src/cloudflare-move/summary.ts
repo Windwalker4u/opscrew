@@ -1,32 +1,22 @@
 /** The summary of a move to another Cloudflare account, shown before its first change (plan 4.2). */
-import { listText, OpsCrewError } from "@opscrew/core";
-import { opscrewRecordNames, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
-import { portainerCloudflare } from "../provision/credentials";
+import { listText, OpsCrewError, plural } from "@opscrew/core";
+import { opscrewRecordNames, tunnelMode } from "@opscrew/iac-templates";
+import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { bucketMinutes, syncMinutes } from "../retarget/bucket";
 import { sizeText, windowMinutes } from "../retarget/texts";
-import { FINISH_COMMAND, MOVE_COMMAND, SWITCH_COMMAND } from "./texts";
-import type { MoveBucketSize, MoveSession, MoveSummary } from "./types";
-
-/** `n` and the noun, plural unless one. */
-function count(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
+import { accountPieces } from "./checks";
+import { A_TOKEN_VAR, FINISH_COMMAND, MOVE_COMMAND, SWITCH_COMMAND } from "./texts";
+import type { MoveBucketSize, MoveSession, MoveSummary, StayingEnvironment } from "./types";
 
 /** The app's pieces of `plan` that prepare makes in B's zone `zone`, in words. */
 function piecesInB(plan: DeployPlan, zone: string): string[] {
   const names = opscrewRecordNames(plan, zone).filter((name) => !name.startsWith("_"));
-  const portainer = portainerCloudflare(plan);
-  const tunnel = usesTunnel(plan) || portainer?.appTunnel === true || portainer?.webhook === true;
-  const origin = originTlsHostnames(plan);
+  const parts = accountPieces(plan);
   // A deploy through Cloudflare Access from GitHub's machines or a runner machine (a runner on the
   // server or this computer deploys in place), Portainer's webhook, or a site's Worker.
   const inPlace = plan.environment?.runner === "server" || plan.environment?.runner === "local";
-  const secrets =
-    (tunnelMode(plan) && !inPlace) ||
-    portainer?.webhook === true ||
-    plan.target.provider === "cloudflare-workers";
+  const secrets = (parts.serviceTokens && !(tunnelMode(plan) && inPlace)) || parts.worker;
   const pieces: string[] = [];
   if (plan.target.provider === "cloudflare-workers") {
     pieces.push(
@@ -36,20 +26,28 @@ function piecesInB(plan: DeployPlan, zone: string): string[] {
     pieces.push(`DNS records for ${listText(names)}`);
   }
   if (plan.dns.proxied) pieces.push("OpsCrew's rules for its hostnames");
-  if (origin.length > 0) {
+  if (originTlsHostnames(plan).length > 0) {
     pieces.push(
       "origin protection: the same client certificate, and a new Origin CA certificate that the finish puts in place",
     );
   }
-  if (tunnel) {
+  if (parts.tunnel) {
+    const where = plan.target.provider === "portainer" ? "in your Portainer" : "on the server";
     pieces.push(
-      plan.target.provider === "portainer"
-        ? "a Cloudflare Tunnel with its Access, and its connector in your Portainer beside the current one"
-        : "a Cloudflare Tunnel with its Access, and its connector on the server beside the current one",
+      `a Cloudflare Tunnel${parts.access ? " with its Access" : ""}, and its connector ${where} beside the current one`,
     );
   }
-  if (plan.storage?.objectStorage?.provider === "r2") {
+  if (parts.access) {
+    pieces.push(
+      "the Zero Trust organization and its one-time PIN login, when the new account has none",
+    );
+  }
+  if (parts.storage && plan.storage?.objectStorage !== undefined) {
     pieces.push(`the R2 bucket ${plan.storage.objectStorage.bucket}`);
+  }
+  const offsite = snapshotOffsiteOf(plan);
+  if (parts.backups && offsite !== undefined && "bucket" in offsite) {
+    pieces.push(`the R2 bucket ${offsite.bucket} of the snapshots' copies`);
   }
   if (secrets) {
     pieces.push(
@@ -57,6 +55,14 @@ function piecesInB(plan: DeployPlan, zone: string): string[] {
     );
   }
   return pieces;
+}
+
+/** Where a staying environment is, in words. */
+function stayingWords(env: StayingEnvironment): string {
+  if (env.zone !== undefined) return `${env.name} (in ${env.zone})`;
+  return env.cloudflare
+    ? `${env.name} (its zone isn't one ${A_TOKEN_VAR} sees)`
+    : `${env.name} (not on Cloudflare)`;
 }
 
 /**
@@ -104,15 +110,13 @@ export function moveSummary(session: MoveSession, sizes: readonly MoveBucketSize
           "  3. Copy each R2 bucket once (the finish copies only what changed since):",
           ...buckets.map(
             (bucket) =>
-              `     - ${bucket.environment}'s ${bucket.bucket}: ${sizeText(bucket.bytes)} in ${count(bucket.count, "object")}, about ${bucket.minutes} minutes.`,
+              `     - ${bucket.environment}'s ${bucket.bucket}: ${sizeText(bucket.bytes)} in ${plural(bucket.count, "object")}, about ${bucket.minutes} minutes.`,
           ),
         ]),
     `  ${buckets.length === 0 ? 3 : 4}. Mark the app as prepared in the new zone.`,
     ...(session.staying.length === 0
       ? []
-      : [
-          `Staying as they are: ${listText(session.staying.map((env) => (env.zone === undefined ? `${env.name} (not on Cloudflare)` : `${env.name} (in ${env.zone})`)))}.`,
-        ]),
+      : [`Staying as they are: ${listText(session.staying.map(stayingWords))}.`]),
     ...(session.skipped.length === 0
       ? []
       : [`Skipped, since they are not deployed: ${listText(session.skipped)}.`]),

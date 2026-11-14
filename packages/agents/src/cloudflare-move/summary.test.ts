@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { ownPlan } from "../testing";
@@ -42,7 +43,7 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
       zone: ZONE,
       from: { accountId: h.cloudflare.account("Old").id },
       to: { accountId: fresh.id, name: "New" },
-      staying: [{ name: "dev", zone: OTHER_ZONE }],
+      staying: [{ name: "dev", cloudflare: true, zone: OTHER_ZONE }],
       skipped: ["old"],
       otherHostnames: [`blog.${ZONE}`, `docs.${ZONE}`],
       windows: [{ environment: "prod", minutes: 4 }],
@@ -66,6 +67,31 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
     expect(text).toContain("HTTPS visitors may get certificate errors");
     expect(text).toContain("a maintenance window of about 4 minutes for prod");
     expect(h.leaks(text)).toBe(false);
+  });
+
+  it("names the snapshots' R2 bucket, and the Zero Trust pieces a tunnel's Access needs", async () => {
+    const backedUp = DeployPlanSchema.parse({
+      ...serverPlan(),
+      snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
+    });
+    const h = await moveHarness({
+      plans: () => ({
+        prod: backedUp,
+        staging: appPlan(
+          undefined,
+          "staging",
+          unencrypted(
+            ownPlan({ access: "tunnel", deployed: true, domain: `staging.shop.${ZONE}` }),
+          ),
+        ),
+      }),
+    });
+    const [prod, staging] = moveSummary(await h.open({ to: "New" }), []).environments;
+    expect(prod?.pieces).toContain("the R2 bucket shop-backups of the snapshots' copies");
+    expect(prod?.pieces.join(" ")).not.toContain("Zero Trust");
+    expect(staging?.pieces).toContain(
+      "the Zero Trust organization and its one-time PIN login, when the new account has none",
+    );
   });
 
   it("uses B's zone when it is there, and has no window without an app bucket", async () => {
