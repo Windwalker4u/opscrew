@@ -339,7 +339,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 ## Phase 4: Wave 3 (parallel; after T2802's results)
 
-- [ ] T2813 [P] [US1] [US3] [US4] Shadow states
+- [x] T2813 [P] [US1] [US3] [US4] Shadow states
   - Owns: `packages/agents/src/cloudflare-move/shadow*.ts`
   - Lead note (after the spike, plan 13b): B's shadow plans set `access_applications = false` and `protected_route_records = false` (the roots' variables from T2835) while B's zone is pending.
   - Lead note (after T2810): `checkMoveStart` (T2810) already refuses when a covered environment's infrastructure state is not on this computer; shadow states can rely on it.
@@ -507,7 +507,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-engine --filter=@opscrew/agents && npx vitest run --root packages/iac-engine && npx vitest run --root packages/agents src/provision/plan-apply src/shared/connector-removal && pnpm lint`
   - Effort: high
 
-- [ ] T2835 [P] [US1] Templates: Access applications and the records they protect, held back on a pending zone (after the spike)
+- [x] T2835 [P] [US1] Templates: Access applications and the records they protect, held back on a pending zone (after the spike)
   - Owns: `packages/iac-templates/modules/{cloudflare-access,cloudflare-tunnel}/**`, `packages/iac-templates/src/generated/modules.ts`, `packages/iac-templates/src/infra/{tunnel,portainer,cloudflare-move}.ts` and their tests and snapshots
   - Reads: plan 13b; research R10 (Access refused on a pending zone)
   - Depends: T2807
@@ -566,6 +566,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2821 [US1] Abort
   - Owns: `packages/agents/src/cloudflare-move/abort*.ts`
+  - Lead note (after T2818): drop the `_NEW` deploy credentials with `dropNewCredentials`; give it a pending action of its own (`abort-secrets` in `progress.ts`'s `MOVE_PLAN_ACTIONS`) rather than reusing `secrets`.
   - Lead note (after T2813): the same `prevent_destroy` copy for B's storage and backups roots on abort.
   - Lead note (after T2811): forget only B's kept bucket keys with `forgetStorageKey(deps, bucket, { account: B, moveTo: B })`, so A's (kept before the move without an account) stay.
   - Reads: plan 8.; data-model 1, 2, 3
@@ -606,6 +607,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2823 [US1] [US3] Finish, part 2: the steps in order
   - Owns: `packages/agents/src/cloudflare-move/finish*.ts` except T2822's files
+  - Lead note (after T2818): `promoteNewCredentials` is its own approval (a second one beside the finish's other secrets; accepted) and reads B's Access values from the shadow state, so it runs before the swap and never once an environment is `adopted`.
   - Lead note (after T2814's fixes): the finish's origin TLS order is: `planBShared` on B's now-active zone (issues B's Origin CA certificate into `originTlsNext`), `promoteNextOriginTls`, the deploy that places it, then `revokeAOrigin` (which revokes only once it reads that the server serves B's certificate, else stops asking to run again after the deploy).
   - Lead note (after the spike, plan 13b): the finish issues B's Origin CA certificate (now that B is active) and places it with the deploy before `revokeAOrigin`.
   - Lead note (after T2814): before the swap replaces `.opscrew/cloudflare.json` with B's record, move A's record to `aSharedRecordPath(env)` (exported from `cloudflare-move/shared.ts`); `revokeAOrigin` reads it there and asks nothing when it is missing. One helper for the `cloudflare-move/` folder paths, shared with T2813's, is T2828's to gather.
@@ -691,6 +693,9 @@ Asked for through the control plane's session: a non-secret build setting whatev
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2818's review: export `placeText` from `provision/secrets.ts` (copied in `deploy-secrets.ts`); a `deleteSecretAt` beside `setSecretAt` for the three delete-and-audit loops; one helper for `deployToBoth` and retarget's `runSiteWorkflow`; data-model 3 lists `cloudflare-move/deploy-secrets.json`.
+  - From T2818: `requireWorkersTokens` (`serverless/cloudflare/checks.ts`) takes the token variables' names as parameters, so `deploy-secrets.ts` drops its regex rename; export `deploysInPlace` (also from T2810).
+  - From T2819: the switch keeps a DS wait note of its own (`switch-ds.ts`) for Cloudflare Registrar and other registrars beside `domain connect`'s `ConnectState`; one note shape if both can share it.
   - From T2835's review: `tunnel.test.ts` ~317 checks the hostname anywhere in the plan (outputs show it too): assert inside the tunnel config's block; `accessArguments` always appends `applications` (drop `ACCESS_APPLICATIONS_ARGUMENT`); `ACCESS_HOLD_TFVARS` built from `ACCESS_HOLD_VARIABLES`.
   - From T2813's review: `approvedPending` repeats `planAndApply`'s approve-path checks (and mirrors retarget's `approvedSavedPlan`); `hasContent` is `shared/engine.ts`'s `hasState` taking a path.
   - From T2815's review: rotate's connector factories audit under rotate's phases during a move (give them a `phase` input), and a check before the Portainer takeover's restart would need them to plan with B's tokens (today it would plan with A's and break a rerun); `waitForTunnelToClose` taking an optional client instead of the move's own wait; `TunnelConnectors.restart` returning the hashes it applied so `restartHash` can go; once T2832's `nextTunnelTokens` lands, `nextStacksStep` calls `applyStackPlanAudited`.
