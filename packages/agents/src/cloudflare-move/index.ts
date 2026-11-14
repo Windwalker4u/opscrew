@@ -3,3 +3,4 @@ export { abortMove } from "./abort";
 export { finishMove } from "./finish";
 export { prepareMove } from "./prepare";
 export { switchMove } from "./switch";
+export type * from "./types";

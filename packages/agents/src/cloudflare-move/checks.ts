@@ -1,0 +1,197 @@
+/**
+ * The refusals of a move to another Cloudflare account before any change (the spec's edge cases),
+ * and the other OpsCrew apps found in A's zone.
+ */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  type AccountPermissionNeed,
+  CLOUDFLARE_TOKEN_PAGE,
+  type CloudflareClient,
+  OPSCREW_MANAGED_COMMENT,
+} from "@opscrew/connector-cloudflare";
+import { listText, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
+import { isMoveReady, opscrewRecordNames, usesTunnel } from "@opscrew/iac-templates";
+import {
+  appsOf,
+  type DeployPlan,
+  environmentsOf,
+  previewEnvironmentOf,
+  snapshotOffsiteOf,
+} from "@opscrew/plan-schema";
+import { portainerCloudflare } from "../provision/credentials";
+import { planWhere } from "../runners/words";
+import { readMoveRecords } from "./record";
+import { A_TOKEN_VAR, ABORT_COMMAND, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
+import type { MoveEnvironment, MoveSession } from "./types";
+
+/**
+ * Stops when the app has a preview environment: previews per pull request don't move with it
+ * (their zone and certificate are set up again by turning them on after the move).
+ */
+export async function requireNoPreviews(paths: ProjectPaths): Promise<void> {
+  const preview = await previewEnvironmentOf(paths.root, paths.app);
+  if (preview === undefined) return;
+  throw refusal(
+    `The app has previews per pull request (the environment ${preview}), which don't move to another Cloudflare account.`,
+    `Turn previews off first (\`opscrew destroy --env ${preview}\`, then \`opscrew env remove ${preview}\`), move the app, then turn them on again.`,
+  );
+}
+
+/** Stops while an environment of the app moves to another server (`opscrew retarget`). */
+export async function requireNoRetarget(
+  paths: ProjectPaths,
+  environments: readonly MoveEnvironment[],
+): Promise<void> {
+  const moving = environments.find((env) => env.plan.retarget !== undefined);
+  if (moving === undefined) return;
+  const { flag } = await planWhere(paths.root, moving.plan);
+  throw refusal(
+    `${moving.plan.app.name} is moving to another server, and a move to another Cloudflare account waits until that move is finished or aborted.`,
+    `Run \`opscrew retarget${flag}\` to the end (or \`opscrew retarget --abort${flag}\`), then start this move again.`,
+  );
+}
+
+/**
+ * Every check of the move's start that reads Cloudflare or the repository, before any change: A's
+ * zone active and without a zone hold, no other app of the repository moving the zone to another
+ * account, B's account permissions for the app's pieces, and committed files the move can use.
+ */
+export async function checkMoveStart(session: MoveSession): Promise<void> {
+  await requireActiveZone(session);
+  await requireNoOtherMove(session);
+  await requireAccountPermissions(session);
+  await requireMoveReady(session);
+}
+
+/** Stops unless A's zone is active and has no zone hold. */
+async function requireActiveZone(session: MoveSession): Promise<void> {
+  const { zone } = session;
+  const { a } = session.accounts;
+  const status = a.zone?.status;
+  if (status === "moved") {
+    throw refusal(
+      `${zone} has moved to another Cloudflare account already.`,
+      `Set ${A_TOKEN_VAR} to the token of the account that holds ${zone} now, then start the move again.`,
+    );
+  }
+  if (status !== "active") {
+    throw refusal(
+      `${zone} is ${status ?? "gone"} in the account ${a.accountId}, and only an active zone moves to another account.`,
+      `Wait until the Cloudflare dashboard shows ${zone} as Active, then start the move again.`,
+    );
+  }
+  if ((await a.client.zoneHold(a.zoneId)).hold) {
+    throw refusal(
+      `${zone} has a zone hold, which keeps it from being added to another account.`,
+      `Release the hold in the Cloudflare dashboard (the zone's Overview, Zone Hold), then start the move again.`,
+    );
+  }
+}
+
+/** Stops when another app of the repository moves the same zone to another account. */
+async function requireNoOtherMove(session: MoveSession): Promise<void> {
+  const { paths, zone } = session;
+  const b = session.accounts.b.accountId;
+  for (const app of await appsOf(paths.root)) {
+    if (app.key === paths.app) continue;
+    const own = resolveProjectPaths(paths.root, {
+      env: { OPSCREW_HOME: paths.homeDir },
+      ...(app.key === undefined ? {} : { app: app.key }),
+    });
+    const records = await readMoveRecords(own, await environmentsOf(paths.root, app.key));
+    const other = records
+      .map((record) => record.plan.cloudflareMove)
+      .find((move) => move?.zone === zone && move.to.accountId !== b);
+    if (other === undefined) continue;
+    const flag = app.key === undefined ? "" : ` --app ${app.key}`;
+    throw refusal(
+      `Another app of this repository is moving ${zone} to the Cloudflare account ${other.to.accountId}, and a zone moves to one account.`,
+      `Move this app to that account too (\`${MOVE_COMMAND} --to ${other.to.accountId}\`), or abort that move first (\`${ABORT_COMMAND}${flag}\`).`,
+    );
+  }
+}
+
+/** The account permissions B's token needs for `plan`'s pieces (only those). */
+export function accountNeeds(plan: DeployPlan): AccountPermissionNeed[] {
+  const portainer = portainerCloudflare(plan);
+  const tunnel = usesTunnel(plan) || portainer?.appTunnel === true || portainer?.webhook === true;
+  const r2 =
+    plan.storage?.objectStorage?.provider === "r2" || snapshotOffsiteOf(plan)?.provider === "r2";
+  return [
+    // Every tunnel of OpsCrew's comes with Access in front of it (SSH, Portainer, Beszel, the
+    // webhook) and the account's Zero Trust organization.
+    ...(tunnel
+      ? (["tunnel", "access-apps", "access-service-tokens", "access-organization"] as const)
+      : []),
+    ...(r2 ? (["r2"] as const) : []),
+    ...(plan.target.provider === "cloudflare-workers" ? (["workers"] as const) : []),
+  ];
+}
+
+/** Stops naming each account permission B's token lacks for the app's pieces. */
+async function requireAccountPermissions(session: MoveSession): Promise<void> {
+  const needs = [...new Set(session.environments.flatMap((env) => accountNeeds(env.plan)))];
+  if (needs.length === 0) return;
+  const { b } = session.accounts;
+  const { missing } = await b.client.accountPermissions(b.accountId, needs);
+  if (missing.length === 0) return;
+  throw refusal(
+    `${B_TOKEN_VAR} lacks ${listText(missing)} for the account ${b.name ?? b.accountId}, which the app's pieces need there.`,
+    `Add ${missing.length === 1 ? "it" : "them"} to the token at ${CLOUDFLARE_TOKEN_PAGE}, then run \`${session.command}\` again.`,
+    "CREDENTIALS_INVALID",
+  );
+}
+
+/** Stops when an environment's committed files can't deploy to both accounts yet (`isMoveReady`). */
+async function requireMoveReady(session: MoveSession): Promise<void> {
+  const { root } = session.paths;
+  const read = (path: string) => readFile(join(root, path), "utf8").catch(() => undefined);
+  const stale: string[] = [];
+  for (const env of session.environments) {
+    if (!(await isMoveReady(env.plan, read))) {
+      stale.push(`\`opscrew provision${(await planWhere(root, env.plan)).flag}\``);
+    }
+  }
+  if (stale.length === 0) return;
+  throw refusal(
+    "The app's files come from an earlier version of OpsCrew, which can't deploy to two Cloudflare accounts during a move.",
+    `Run ${listText(stale)} to bring the app's files up to date and commit them, then start the move.`,
+  );
+}
+
+/**
+ * The names of OpsCrew's records in a zone (their comment) and of the account's Workers custom
+ * domains in it, sorted. The custom domains are left out when the token may not read the account's
+ * Workers. Read-only.
+ */
+async function opscrewNamesInZone(
+  client: CloudflareClient,
+  accountId: string,
+  zoneId: string,
+): Promise<string[]> {
+  const records = (await client.listDnsRecords(zoneId))
+    .filter((record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT)
+    .map((record) => record.name);
+  const workers = (await client.accountPermissions(accountId, ["workers"])).missing.length === 0;
+  const domains = workers
+    ? (await client.listZoneWorkerDomains(accountId, zoneId)).map((domain) => domain.hostname)
+    : [];
+  return [...new Set([...records, ...domains])].sort();
+}
+
+/**
+ * The hostnames of the other OpsCrew apps in A's zone: OpsCrew's names there that none of
+ * `environments` (the app's, in the zone) gives a record or a custom domain, and none of the
+ * `_`-named records (verification records, not hostnames). Read-only.
+ */
+export async function otherAppHostnames(
+  a: { client: CloudflareClient; accountId: string; zoneId: string },
+  zone: string,
+  environments: readonly Pick<MoveEnvironment, "plan">[],
+): Promise<string[]> {
+  const own = new Set(environments.flatMap((env) => opscrewRecordNames(env.plan, zone)));
+  return (await opscrewNamesInZone(a.client, a.accountId, a.zoneId)).filter(
+    (name) => !own.has(name) && !name.split(".").some((label) => label.startsWith("_")),
+  );
+}
