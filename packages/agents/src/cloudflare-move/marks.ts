@@ -1,8 +1,9 @@
 /**
  * The prepared mark of an app (data model 4): TXT records `_opscrew-move.<label>.<zone>` in B's zone
- * holding the app's name, its covered environments' names, its hostnames and a site's Worker with
- * its custom domains (no secret, no repository, no id), split in parts when one record can't hold
- * it; and the switch's coverage: every OpsCrew name in A's zone in some mark.
+ * holding the app's name, its covered environments' names, its hostnames, a site's Worker with its
+ * custom domains and the hostnames behind Cloudflare Access (no secret, no e-mail, no repository,
+ * no id), split in parts when one record can't hold it; and the switch's coverage: every OpsCrew
+ * name in A's zone in some mark.
  */
 import {
   type CloudflareZoneRecord,
@@ -11,12 +12,24 @@ import {
   sharedRuleHostnames,
 } from "@opscrew/connector-cloudflare";
 import { listText, sha256Hex } from "@opscrew/core";
-import { opscrewRecordNames, workerCustomDomainAddresses } from "@opscrew/iac-templates";
-import { EnvironmentNameSchema, FqdnSchema, readArtifact } from "@opscrew/plan-schema";
+import {
+  beszelHostname,
+  opscrewRecordNames,
+  portainerHostname,
+  portainerWebhookHostname,
+  sshHostname,
+  workerCustomDomainAddresses,
+} from "@opscrew/iac-templates";
+import {
+  type DeployPlan,
+  EnvironmentNameSchema,
+  FqdnSchema,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import { unquoteTxt } from "../domain/connect-plan";
 import { A_TOKEN_VAR } from "./texts";
-import type { MoveSession } from "./types";
+import type { MoveSession, StepStop } from "./types";
 import { applyZone, MARK_PREFIX, planZone } from "./zone";
 
 /** The longest TXT content Cloudflare takes, quotes included. */
@@ -33,6 +46,18 @@ const MoveMarkSchema = z.strictObject({
   hosts: z.array(FqdnSchema),
   /** Each Workers site's Worker in B and the custom domains the switch attaches to it. */
   sites: z.array(z.strictObject({ worker: NameSchema, domains: z.array(FqdnSchema) })),
+  /**
+   * Each hostname behind Cloudflare Access, which the switch protects in B right after activation
+   * (B refuses Access applications on a pending zone): a service token's (a tunnel's SSH,
+   * Portainer's webhook), Portainer's or Beszel's subdomain, with its environment.
+   */
+  access: z.array(
+    z.strictObject({
+      hostname: FqdnSchema,
+      kind: z.enum(["service", "portainer", "beszel"]),
+      environment: EnvironmentNameSchema,
+    }),
+  ),
 });
 
 /** What an app's mark says. */
@@ -67,10 +92,28 @@ export async function markName(session: MoveSession): Promise<string> {
   return `${MARK_PREFIX}${label}.${session.zone}`;
 }
 
-/** The app's mark: its covered environments, every name OpsCrew gives them, its sites' Workers. */
+/** The hostnames behind Cloudflare Access of an environment, in the zone that moves. */
+function accessOf(env: MoveSession["environments"][number], zone: string): MoveMark["access"] {
+  const plan: DeployPlan = { ...env.plan, dns: { ...env.plan.dns, zone } };
+  const found: [MoveMark["access"][number]["kind"], string | undefined][] = [
+    ["service", sshHostname(plan)],
+    ["service", portainerWebhookHostname(plan)],
+    ["portainer", portainerHostname(plan)],
+    ["beszel", beszelHostname(plan)],
+  ];
+  return found.flatMap(([kind, hostname]) =>
+    hostname === undefined ? [] : [{ hostname, kind, environment: env.environment }],
+  );
+}
+
+/**
+ * The app's mark: its covered environments, every name OpsCrew gives them, its sites' Workers and
+ * its hostnames behind Cloudflare Access.
+ */
 export async function appMark(session: MoveSession): Promise<MoveMark> {
   const plans = session.environments.map((env) => env.plan);
   return MoveMarkSchema.parse({
+    access: session.environments.flatMap((env) => accessOf(env, session.zone)),
     app: await appName(session),
     envs: session.environments.map((env) => env.environment),
     hosts: [...new Set(plans.flatMap((plan) => opscrewRecordNames(plan, session.zone)))].sort(),
@@ -110,9 +153,18 @@ export function markContents(mark: MoveMark): string[] {
     ["worker", site.worker],
     ["domains", site.domains.join(",")],
   ]);
+  const access: Field[] =
+    mark.access.length === 0
+      ? []
+      : [
+          [
+            "access",
+            mark.access.map((one) => `${one.kind}:${one.environment}:${one.hostname}`).join(","),
+          ],
+        ];
   const head = (index: number): Field[] =>
     index === 0 ? [app, ["envs", mark.envs.join(",")]] : [app];
-  const tail = (index: number): Field[] => (index === 0 ? sites : []);
+  const tail = (index: number): Field[] => (index === 0 ? [...sites, ...access] : []);
   const whole = contentOf([
     ["opscrew-move", VERSION],
     ...head(0),
@@ -169,6 +221,7 @@ function parseMark(contents: readonly string[]): MoveMark | undefined {
   const envs: string[] = [];
   const hosts: string[] = [];
   const sites: { worker: string; domains: string[] }[] = [];
+  const access: { kind: string; environment?: string; hostname?: string }[] = [];
   for (const { fields } of parts) {
     for (const [key, value] of fields) {
       if (key === "app") apps.add(value);
@@ -176,32 +229,48 @@ function parseMark(contents: readonly string[]): MoveMark | undefined {
       else if (key === "hosts") hosts.push(...listOf(value));
       else if (key === "worker") sites.push({ worker: value, domains: [] });
       else if (key === "domains") sites.at(-1)?.domains.push(...listOf(value));
+      else if (key === "access") {
+        for (const one of listOf(value)) {
+          const [kind = "", environment, hostname, ...rest] = one.split(":");
+          if (rest.length > 0) return undefined;
+          access.push({ kind, environment, hostname });
+        }
+      }
     }
   }
   if (apps.size !== 1) return undefined;
-  const parsed = MoveMarkSchema.safeParse({ app: [...apps][0], envs, hosts, sites });
+  const parsed = MoveMarkSchema.safeParse({ app: [...apps][0], envs, hosts, sites, access });
   return parsed.success ? parsed.data : undefined;
 }
 
-/** The marks among a zone's records, by name; a damaged or incomplete mark is left out. */
-export function parseMarks(records: readonly CloudflareZoneRecord[]): ReadMark[] {
+/** The marks a zone's records hold, and the names of those that can't be read. */
+export interface MarksRead {
+  marks: ReadMark[];
+  /** Marks with a damaged or missing part, by name. */
+  damaged: string[];
+}
+
+/** The marks among a zone's records, by name; a damaged or incomplete one is named apart. */
+export function parseMarks(records: readonly CloudflareZoneRecord[]): MarksRead {
   const byName = new Map<string, CloudflareZoneRecord[]>();
   for (const record of records) {
     if (record.type.toUpperCase() !== "TXT" || !record.name.startsWith(MARK_PREFIX)) continue;
     byName.set(record.name, [...(byName.get(record.name) ?? []), record]);
   }
-  const marks: ReadMark[] = [];
+  const read: MarksRead = { marks: [], damaged: [] };
   for (const [name, found] of [...byName].sort(([x], [y]) => x.localeCompare(y))) {
     const mark = parseMark(found.map((record) => record.content));
-    if (mark !== undefined) marks.push({ name, ids: found.map((record) => record.id), mark });
+    if (mark === undefined) read.damaged.push(name);
+    else read.marks.push({ name, ids: found.map((record) => record.id), mark });
   }
-  return marks;
+  return read;
 }
 
 /** Every mark in B's zone (none while B has no zone). Read-only. */
-export async function readMarks(session: MoveSession): Promise<ReadMark[]> {
+export async function readMarks(session: MoveSession): Promise<MarksRead> {
   const { b } = session.accounts;
-  return b.zone === undefined ? [] : parseMarks(await b.client.listZoneRecords(b.zone.id));
+  if (b.zone === undefined) return { marks: [], damaged: [] };
+  return parseMarks(await b.client.listZoneRecords(b.zone.id));
 }
 
 /** The TXT records of the app's mark in B's zone (`name`), damaged ones too. */
@@ -213,33 +282,35 @@ async function ownMarkRecords(session: MoveSession, name: string): Promise<Cloud
 }
 
 /**
- * Writes the app's mark into B's zone through a zone plan (`planZone`, `applyZone`); nothing when
- * the mark there says it already. A mark of the app that says something else is deleted first,
- * through a plan of its own. Returns true when B's zone changed.
+ * Writes the app's mark into B's zone through one zone plan (`planZone`, `applyZone`): its records
+ * not there yet created, the app's records there that it no longer has deleted; nothing when the
+ * mark there says it already. A run that doesn't apply the plan now stops with it.
  */
-export async function writeMark(session: MoveSession): Promise<boolean> {
+export async function writeMark(session: MoveSession): Promise<StepStop | undefined> {
   const name = await markName(session);
   const contents = markContents(await appMark(session));
   const existing = await ownMarkRecords(session, name);
-  const have = existing.map((record) => unquoteTxt(record.content)).sort();
-  const want = contents.map(unquoteTxt).sort();
-  if (have.length === want.length && have.every((content, i) => content === want[i])) return false;
-  if (existing.length > 0) await deleteMark(session);
-  await applyZone(session, await planZone(session, { marks: { name, create: contents } }));
-  return true;
+  const have = new Set(existing.map((record) => unquoteTxt(record.content)));
+  const want = new Set(contents.map(unquoteTxt));
+  const marks = {
+    name,
+    create: contents.filter((content) => !have.has(unquoteTxt(content))),
+    delete: existing.filter((record) => !want.has(unquoteTxt(record.content))).map((r) => r.id),
+  };
+  if (marks.create.length === 0 && marks.delete.length === 0) return undefined;
+  return applyZone(session, await planZone(session, { marks }));
 }
 
 /**
  * Deletes the app's mark from B's zone through a zone plan of its own (each app's finish and abort
- * delete their own); other apps' marks stay. Returns true when B's zone changed.
+ * delete their own); other apps' marks stay. A run that doesn't apply the plan now stops with it.
  */
-export async function deleteMark(session: MoveSession): Promise<boolean> {
+export async function deleteMark(session: MoveSession): Promise<StepStop | undefined> {
   const name = await markName(session);
   const existing = await ownMarkRecords(session, name);
-  if (existing.length === 0) return false;
-  const ids = existing.map((record) => record.id);
-  await applyZone(session, await planZone(session, { marks: { name, delete: ids } }));
-  return true;
+  if (existing.length === 0) return undefined;
+  const marks = { name, create: [], delete: existing.map((record) => record.id) };
+  return applyZone(session, await planZone(session, { marks }));
 }
 
 /** GitHub's domain verification record of a Pages site: `_github-pages-challenge-<owner>.<domain>`. */
@@ -249,9 +320,9 @@ const PAGES_CHALLENGE = /^_github-pages-challenge-[^.]+\.(.+)$/;
 export interface MoveCoverage {
   /** OpsCrew's names in A's zone that no mark holds, sorted. */
   uncovered: string[];
-  /** The marks in B's zone. */
+  /** The marks in B's zone that can be read. */
   marks: ReadMark[];
-  /** What A's token could not read, in words (its names are not checked). */
+  /** What could not be read, in words: what A's token may not read, and damaged marks. */
   unread: string[];
 }
 
@@ -286,7 +357,8 @@ export async function coverage(session: MoveSession): Promise<MoveCoverage> {
       `the zone's Workers custom domains, since ${A_TOKEN_VAR} may not read the account's Workers`,
     );
   }
-  const marks = await readMarks(session);
+  const { marks, damaged } = await readMarks(session);
+  unread.push(...damaged.map((name) => `the mark ${name}, which can't be read`));
   const hosts = new Set(marks.flatMap((read) => read.mark.hosts));
   const covered = (name: string, type = "") => {
     const site = type.toUpperCase() === "TXT" ? PAGES_CHALLENGE.exec(name)?.[1] : undefined;

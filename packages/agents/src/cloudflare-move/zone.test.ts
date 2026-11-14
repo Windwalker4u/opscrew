@@ -3,11 +3,12 @@ import { findExecutable, OpsCrewError, resolveProjectPaths } from "@opscrew/core
 import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { type ScriptedApprovalHandler, SERVER_IPV4 } from "../testing";
+import { readAppProgress } from "./progress";
 import { openMoveSession } from "./session";
 import { type MoveHarness, moveHarness, serverPlan, ZONE } from "./session.fakes";
 import { MOVE_COMMAND } from "./texts";
 import type { MoveSession } from "./types";
-import { applyZone, MARK_COMMENT, planZone } from "./zone";
+import { applyZone, MARK_COMMENT, MARK_PREFIX, planZone } from "./zone";
 
 const CAA = { flags: 0, tag: "issue", value: "letsencrypt.org" };
 
@@ -39,6 +40,7 @@ async function harness(options: Parameters<typeof moveHarness>[0] = {}): Promise
     proxied: true,
     meta: { read_only: true, origin_worker_id: "docs" },
   });
+  h.deps.interactive = true;
   return h;
 }
 
@@ -113,9 +115,8 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
     expect((await planZone(session)).planHash).toBe(plan.planHash);
     expect(h.readOnly()).toBe(true);
 
-    const zone = await applyZone(session, plan);
+    expect(await applyZone(session, plan)).toBeUndefined();
     const fresh = h.cloudflare.zone(ZONE, "New");
-    expect(zone?.id).toBe(fresh.id);
     expect(session.accounts.b.zone?.id).toBe(fresh.id);
     expect(fresh.status).toBe("pending");
     const copied = fields(h, "Old").filter((r) =>
@@ -188,6 +189,101 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
     expect(after.find((r) => r.name === `own.${ZONE}`)).toBeDefined();
     expect(wroteToA(h)).toBe(false);
     expect(seen(h, plan.details)).toBe(false);
+  });
+
+  it("copies every value of a name into an empty zone, and a value added later too", async () => {
+    const h = await harness();
+    const old = h.cloudflare.zone(ZONE, "Old");
+    h.cloudflare.addRecord(old, { type: "TXT", name: `two.${ZONE}`, content: '"first"' });
+    h.cloudflare.addRecord(old, { type: "TXT", name: `two.${ZONE}`, content: '"second"' });
+    h.cloudflare.addRecord(old, {
+      type: "MX",
+      name: `two.${ZONE}`,
+      content: `mx2.${ZONE}`,
+      priority: 20,
+    });
+    h.cloudflare.addRecord(old, { type: "MX", name: ZONE, content: `mx2.${ZONE}`, priority: 20 });
+    const session = await h.open({ to: "New" });
+    const plan = await planZone(session);
+    expect(plan.differ).toEqual([]);
+    expect(
+      plan.create.filter((r) => r.name === `two.${ZONE}` || r.type === "MX").map((r) => r.content),
+    ).toEqual(
+      expect.arrayContaining(['"first"', '"second"', `mx2.${ZONE}`, `mail.${ZONE}`, `mx2.${ZONE}`]),
+    );
+    await applyZone(session, plan);
+    const fresh = h.cloudflare.zone(ZONE, "New");
+    expect(fresh.records.filter((r) => r.name === `two.${ZONE}`)).toHaveLength(3);
+    expect(fresh.records.filter((r) => r.type === "MX" && r.name === ZONE)).toHaveLength(2);
+    // A third value of the name in A after the copy: created, not listed as a difference.
+    h.cloudflare.addRecord(old, { type: "TXT", name: `two.${ZONE}`, content: '"third"' });
+    const later = await planZone(session);
+    expect(later.differ).toEqual([]);
+    expect(later.create.map((r) => r.content)).toEqual(['"third"']);
+  });
+
+  it("lists a CNAME that clashes with B's record of the name, never creating it", async () => {
+    const h = await harness({ bZone: true });
+    h.cloudflare.addRecord(h.cloudflare.zone(ZONE, "Old"), {
+      type: "CNAME",
+      name: `web.${ZONE}`,
+      content: "web.example.net",
+    });
+    h.cloudflare.addRecord(h.cloudflare.zone(ZONE, "New"), {
+      type: "A",
+      name: `web.${ZONE}`,
+      content: "198.51.100.9",
+    });
+    const session = await h.open({ to: "New" });
+    const plan = await planZone(session);
+    expect(plan.differ.map((d) => [d.a.type, d.b.type])).toEqual([["CNAME", "A"]]);
+    expect(plan.create.some((r) => r.name === `web.${ZONE}`)).toBe(false);
+    expect(plan.onlyInB).toEqual([]);
+  });
+
+  it("stops a run that doesn't apply the plan now with it, and applies it with --approve", async () => {
+    const h = await harness();
+    h.deps.interactive = false;
+    const session = await h.open({ to: "New" });
+    const plan = await planZone(session);
+    const stop = await applyZone(session, plan);
+    expect(stop).toEqual({
+      pendingPlanHash: plan.planHash,
+      next: [
+        `Review the plan above, then run \`opscrew cloudflare move --approve ${plan.planHash}\` to apply it and continue.`,
+      ],
+    });
+    expect(h.deps.reporter.text()).toContain(plan.details);
+    expect(await readAppProgress(h.deps.paths)).toMatchObject({
+      pending: { action: "zone", planHash: plan.planHash },
+    });
+    expect(h.readOnly()).toBe(true);
+    expect((h.deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
+
+    // The rerun with --approve: the same plan, applied, and no longer waiting.
+    const again = await h.open({ to: "New", approvePlanHash: plan.planHash });
+    const same = await planZone(again);
+    expect(same.planHash).toBe(plan.planHash);
+    expect(await applyZone(again, same)).toBeUndefined();
+    expect(again.approve).toBeUndefined();
+    expect(h.cloudflare.zone(ZONE, "New").records.length).toBe(plan.create.length);
+    expect((await readAppProgress(h.deps.paths)).pending).toBeUndefined();
+    expect(seen(h)).toBe(false);
+  });
+
+  it("refuses a mark plan that names no mark, or deletes a record that is not the mark's", async () => {
+    const h = await harness({ bZone: true });
+    const fresh = h.cloudflare.zone(ZONE, "New");
+    const user = h.cloudflare.addRecord(fresh, { type: "TXT", name: `own.${ZONE}`, content: "x" });
+    const session = await h.open({ to: "New" });
+    const name = `${MARK_PREFIX}shop-12345678.${ZONE}`;
+    const wrongName = planZone(session, {
+      marks: { name: `own.${ZONE}`, create: ['"opscrew-move=1"'], delete: [] },
+    });
+    await expect(wrongName).rejects.toMatchObject({ code: "INTERNAL" });
+    const wrongId = planZone(session, { marks: { name, create: [], delete: [user.id] } });
+    await expect(wrongId).rejects.toMatchObject({ code: "INTERNAL" });
+    expect(h.readOnly()).toBe(true);
   });
 
   it("asks nothing when there is nothing to change", async () => {

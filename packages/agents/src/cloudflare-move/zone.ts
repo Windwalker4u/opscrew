@@ -1,12 +1,13 @@
 /**
  * The zone plan of a move (data model 5): B's zone added when it is missing, A's records that are
  * no OpsCrew app's copied to it create-only (records that differ, and those only in B, are listed
- * and never changed), and the apps' marks written or deleted. Planned here, shown with the app's
+ * and never changed), and an app's mark written or deleted. Planned here, shown with the app's
  * servers' addresses masked, approved by its hash (`cloudflare-apply`) and applied through the
  * Cloudflare client. A's zone is only read.
  */
 import {
   CLOUDFLARE_TOKEN_PAGE,
+  type CloudflareRecordInput,
   type CloudflareZoneRecord,
   type CloudflareZoneRecordInput,
   OPSCREW_MANAGED_COMMENT,
@@ -16,10 +17,14 @@ import {
 } from "@opscrew/connector-cloudflare";
 import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
 import { type ComparableRecord, recordsMissingFromZone } from "../domain";
+import { recordText } from "../domain/connect-plan";
 import { sharedDesired } from "../provision/shared-cloudflare";
+import { appliesNow } from "../retarget/steps";
+import { approveCommand } from "../retarget/texts";
 import { readServerAddresses, requestApproval } from "../shared";
+import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { ABORT_COMMAND, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
-import type { MoveSession, MoveZone } from "./types";
+import type { MoveSession, MoveZone, StepStop } from "./types";
 
 /** The comment of a mark's TXT records: no copy or foreign-record check takes it for an app's. */
 export const MARK_COMMENT = "OpsCrew move mark";
@@ -29,8 +34,12 @@ export const MARK_PREFIX = "_opscrew-move.";
 /** A DNS record of a zone plan: every field a copy keeps, without its id and Cloudflare's `meta`. */
 export type ZoneRecord = CloudflareZoneRecordInput;
 
-/** The marks a zone plan writes (TXT contents) or deletes (record ids), under the mark's name. */
-export type ZoneMarks = { name: string; create: string[] } | { name: string; delete: string[] };
+/** The TXT records of one app's mark a zone plan writes (contents) and deletes (record ids). */
+export interface ZoneMarks {
+  name: string;
+  create: string[];
+  delete: string[];
+}
 
 /** The zone plan (data model 5); `planHash` is the SHA-256 of the canonical JSON of the rest. */
 export interface ZoneCopy {
@@ -60,17 +69,17 @@ export interface ZonePlan extends ZoneCopy {
 const MASKED_ADDRESS = "<server address>";
 
 /**
- * True for a record Cloudflare made, by its `meta`: a Workers custom domain's record is
- * `read_only` with the Worker in `origin_worker_id`. Research R10 (spike T2802) is to confirm which
- * fields mark Cloudflare's own records; this is the one place that reads them.
+ * True for a record Cloudflare made, by its `meta` (research R10): `read_only`, as a Workers custom
+ * domain's record is; `origin_worker_id`, the Worker such a record serves, is a second sign. The
+ * one place that reads them.
  */
-export function cloudflareManaged(record: Pick<CloudflareZoneRecord, "meta">): boolean {
+function cloudflareManaged(record: Pick<CloudflareZoneRecord, "meta">): boolean {
   const meta = record.meta ?? {};
   return meta.read_only === true || meta.origin_worker_id !== undefined;
 }
 
 /** True for a mark's record: its comment, or its name under {@link MARK_PREFIX}. */
-export function isMarkRecord(record: Pick<CloudflareZoneRecord, "name" | "comment">): boolean {
+function isMarkRecord(record: Pick<CloudflareZoneRecord, "name" | "comment">): boolean {
   return record.comment?.trim() === MARK_COMMENT || record.name.startsWith(MARK_PREFIX);
 }
 
@@ -102,12 +111,17 @@ function recordInput(record: ZoneRecord): ZoneRecord {
   return rest;
 }
 
-/** True when `b` keeps `a` from being created in B: the same type and name, or a CNAME there. */
-function clashes(a: CloudflareZoneRecord, b: CloudflareZoneRecord): boolean {
-  if (a.name.toLowerCase() !== b.name.toLowerCase()) return false;
-  const type = a.type.toUpperCase();
-  const other = b.type.toUpperCase();
-  return type === other || type === "CNAME" || other === "CNAME";
+const sameName = (a: CloudflareZoneRecord, b: CloudflareZoneRecord) =>
+  a.name.toLowerCase() === b.name.toLowerCase();
+
+/** The same type and name: `b` is what B serves in place of `a`. */
+function sameTypeAndName(a: CloudflareZoneRecord, b: CloudflareZoneRecord): boolean {
+  return sameName(a, b) && a.type.toUpperCase() === b.type.toUpperCase();
+}
+
+/** A CNAME beside another record of the name, which Cloudflare refuses to create. */
+function cnameClash(a: CloudflareZoneRecord, b: CloudflareZoneRecord): boolean {
+  return sameName(a, b) && (a.type.toUpperCase() === "CNAME" || b.type.toUpperCase() === "CNAME");
 }
 
 /** A record as compared: by its `data` alone when it has some (Cloudflare words their content). */
@@ -135,28 +149,50 @@ function missing(
 const byJson = <T>(items: readonly T[]): T[] =>
   [...items].sort((x, y) => canonicalJson(x).localeCompare(canonicalJson(y)));
 
-/** The plan's changes: the zone added, the records created, the marks written or deleted. */
+/** The plan's changes: the zone added, the records created, the mark's records written or deleted. */
 function changeCount(plan: ZoneCopy): number {
-  const marks = plan.marks === undefined ? 0 : marksOf(plan.marks).length;
+  const marks = (plan.marks?.create.length ?? 0) + (plan.marks?.delete.length ?? 0);
   return (plan.createZone ? 1 : 0) + plan.create.length + marks;
 }
 
-function marksOf(marks: ZoneMarks): string[] {
-  return "create" in marks ? marks.create : marks.delete;
+/** True for a plan that only deletes a mark (the finish's, the abort's): it copies nothing. */
+function deletesOnly(marks: ZoneMarks | undefined): boolean {
+  return marks !== undefined && marks.create.length === 0 && marks.delete.length > 0;
 }
 
-/** True for a plan that only deletes marks (the finish's, the abort's): it reads and copies nothing. */
-function deletesOnly(marks: ZoneMarks | undefined): boolean {
-  return marks !== undefined && "delete" in marks;
+/** A plan of OpsCrew's own making that is not what it must be: OpsCrew's bug. */
+function bug(message: string): OpsCrewError {
+  return new OpsCrewError("INTERNAL", message, {
+    hint: "This is a bug in OpsCrew; please report it.",
+  });
+}
+
+/** Stops unless `marks` names a mark and deletes only TXT records of that name in `inB`. */
+function requireMarks(marks: ZoneMarks, inB: readonly CloudflareZoneRecord[]): void {
+  if (!marks.name.startsWith(MARK_PREFIX)) {
+    throw bug(`The zone plan's mark ${marks.name} is not named as a mark of the move.`);
+  }
+  const own = new Set(
+    inB
+      .filter((record) => record.type.toUpperCase() === "TXT" && record.name === marks.name)
+      .map((record) => record.id),
+  );
+  const other = marks.delete.find((id) => !own.has(id));
+  if (other !== undefined) {
+    throw bug(
+      `The zone plan deletes the record ${other}, which is not a TXT record of ${marks.name}.`,
+    );
+  }
 }
 
 /**
  * The zone plan, read-only: A's records that are no OpsCrew app's (not OpsCrew's comment, not
  * Cloudflare's own, not the apex NS, not a mark) compared with B's by type, name and normalised
- * content (`recordsMissingFromZone`); those missing from B created, those whose type and name B
- * has with other content listed, B's own listed; B's zone added when it has none; and `marks`.
- * A's records are read only while A's zone is active (it is authoritative) and never for a plan
- * that only deletes marks.
+ * content (`recordsMissingFromZone`). One missing from B is listed when B has another record of
+ * its type and name that A lacks (or a CNAME clash Cloudflare would refuse), and created
+ * otherwise; B's own are listed; B's zone is added when it has none; and the mark's records
+ * (`marks`, a mark's name, deleting only its TXT records). A's records are read only while A's
+ * zone is active (it is authoritative) and never for a plan that only deletes a mark.
  */
 export async function planZone(
   session: MoveSession,
@@ -164,9 +200,12 @@ export async function planZone(
 ): Promise<ZonePlan> {
   const { zone } = session;
   const { a, b } = session.accounts;
-  const copies = !deletesOnly(options.marks) && a.zone?.status === "active";
+  const { marks } = options;
+  const copies = !deletesOnly(marks) && a.zone?.status === "active";
+  const reads = copies || (marks?.delete.length ?? 0) > 0;
   const inA = copies ? await a.client.listZoneRecords(a.zoneId) : [];
-  const inB = copies && b.zone !== undefined ? await b.client.listZoneRecords(b.zone.id) : [];
+  const inB = reads && b.zone !== undefined ? await b.client.listZoneRecords(b.zone.id) : [];
+  if (marks !== undefined) requireMarks(marks, inB);
   const skipped: ZoneCopy["skipped"] = [];
   const fromA: CloudflareZoneRecord[] = [];
   for (const record of inA) {
@@ -174,14 +213,15 @@ export async function planZone(
     if (reason === undefined) fromA.push(record);
     else skipped.push({ record: zoneRecord(record), reason });
   }
-  const fromB = inB.filter((record) => skipReason(record, zone) === undefined);
+  const fromB = copies ? inB.filter((record) => skipReason(record, zone) === undefined) : [];
   const unmatchedB = missing(fromB, fromA);
   const create: ZoneRecord[] = [];
   const differ: ZoneCopy["differ"] = [];
   const paired = new Set<CloudflareZoneRecord>();
   for (const record of missing(fromA, fromB)) {
     const other =
-      unmatchedB.find((one) => clashes(record, one)) ?? fromB.find((one) => clashes(record, one));
+      unmatchedB.find((one) => sameTypeAndName(record, one)) ??
+      fromB.find((one) => cnameClash(record, one));
     if (other === undefined) {
       create.push(zoneRecord(record));
       continue;
@@ -198,7 +238,7 @@ export async function planZone(
     differ: byJson(differ),
     onlyInB: byJson(unmatchedB.filter((record) => !paired.has(record)).map(zoneRecord)),
     skipped: byJson(skipped),
-    ...(options.marks === undefined ? {} : { marks: options.marks }),
+    ...(marks === undefined ? {} : { marks }),
   };
   const plan: ZoneCopy = { ...body, planHash: sha256Hex(canonicalJson(body)) };
   const addresses = await serverAddresses(session, inA);
@@ -228,21 +268,20 @@ async function serverAddresses(
   return [...new Set(found.filter((one) => one.length > 0))].sort((x, y) => y.length - x.length);
 }
 
-/** `MX example.com 10 mail.example.com (proxied)`: a record as the plan shows it. */
-function recordText(record: ZoneRecord, addresses: readonly string[]): string {
-  let content = record.content ?? canonicalJson(record.data ?? {});
-  for (const address of addresses) content = content.split(address).join(MASKED_ADDRESS);
-  const priority = record.priority === undefined ? "" : ` ${record.priority}`;
-  return `${record.type} ${record.name}${priority} ${content}${record.proxied ? " (proxied)" : ""}`;
+/** `MX example.com 10 mail.example.com`, ` (proxied)` when it is: the addresses masked. */
+function shownRecord(record: ZoneRecord, addresses: readonly string[]): string {
+  let text = recordText({ ...record, proxied: false } as CloudflareRecordInput);
+  for (const address of addresses) text = text.split(address).join(MASKED_ADDRESS);
+  return `${text}${record.proxied ? " (proxied)" : ""}`;
 }
 
 /** The plan in words, as its approval shows it. */
 function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly string[]): string {
-  const { zone } = plan;
+  const { zone, marks } = plan;
   const { a, b } = session.accounts;
   const bName = b.name ?? b.accountId;
   const aName = a.name ?? a.accountId;
-  const text = (record: ZoneRecord) => recordText(record, addresses);
+  const text = (record: ZoneRecord) => shownRecord(record, addresses);
   const lines = [
     `The zone plan for ${zone} in the Cloudflare account ${bName} (hash ${plan.planHash}):`,
   ];
@@ -277,12 +316,14 @@ function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly 
       ...plan.skipped.map(({ record, reason }) => `  - ${text(record)}: ${reason}`),
     );
   }
-  if (plan.marks !== undefined) {
-    const count = plural(marksOf(plan.marks).length, "TXT record");
+  if (marks !== undefined && marks.create.length > 0) {
     lines.push(
-      "create" in plan.marks
-        ? `- Write the app's mark of the move, ${plan.marks.name} (${count}): its name, its environments' names and its hostnames, no secret.`
-        : `- Delete the app's mark of the move, ${plan.marks.name} (${count}).`,
+      `- Write the app's mark of the move, ${marks.name} (${plural(marks.create.length, "TXT record")}): its name, its environments' names and its hostnames, no secret.`,
+    );
+  }
+  if (marks !== undefined && marks.delete.length > 0) {
+    lines.push(
+      `- Delete ${marks.create.length > 0 ? "the mark's earlier records" : "the app's mark of the move"}, ${marks.name} (${plural(marks.delete.length, "TXT record")}).`,
     );
   }
   if (changeCount(plan) === 0) lines.push("- Nothing to change.");
@@ -345,26 +386,45 @@ async function requireUsableZone(
   );
 }
 
+/** Which of the move's waiting plans this is: the zone's, a mark's, or a mark's deletion. */
+function planKey(marks: ZoneMarks | undefined): MovePlanKey {
+  if (marks === undefined) return { action: "zone" };
+  return { action: marks.create.length > 0 ? "mark" : "mark-delete" };
+}
+
 /**
- * Applies the zone plan: with B's zone there (and the plan not only deleting marks), its
+ * Applies the zone plan: with B's zone there (and the plan not only deleting a mark), its
  * nameservers and B's zone permissions are checked first; a plan without changes stops there.
- * Otherwise it is approved by its hash (`cloudflare-apply`), made again and refused when the hash
- * differs (nothing changed), then B's zone is added when the plan says so (and checked as above
- * before any record), the records and the marks created in batches of 200, and the marks to delete
- * deleted. Returns B's zone, which `session` holds from then on.
+ * A run that doesn't apply it now (not interactive, and no `--approve` with its hash) shows it,
+ * records it as waiting and stops with the command that applies it. Otherwise it is approved by
+ * its hash (`cloudflare-apply`), made again and refused when the hash differs (nothing changed),
+ * then B's zone is added when the plan says so (and checked as above before any record), the
+ * records and the mark's created in batches of 200, and the mark's records to delete deleted.
+ * `session` holds B's zone from then on.
  * @throws PlanRefusedError when the plan is not approved; `PLAN_HASH_MISMATCH` when the zones
  * changed since it was made.
  */
 export async function applyZone(
   session: MoveSession,
   plan: ZonePlan,
-): Promise<MoveZone | undefined> {
+): Promise<StepStop | undefined> {
   const { deps, zone } = session;
   const { b } = session.accounts;
   const checks = !deletesOnly(plan.marks);
   if (checks && b.zone !== undefined) await requireUsableZone(session, b.zone, false);
   const changes = changeCount(plan);
-  if (changes === 0) return b.zone;
+  if (changes === 0) return undefined;
+  const key = planKey(plan.marks);
+  if (!appliesNow(session, plan.planHash)) {
+    deps.reporter.info(plan.details);
+    await writePending(deps, key, plan.planHash);
+    return {
+      pendingPlanHash: plan.planHash,
+      next: [
+        `Review the plan above, then run \`${approveCommand(session.command, plan.planHash)}\` to apply it and continue.`,
+      ],
+    };
+  }
   await requestApproval(deps, {
     kind: "cloudflare-apply",
     title: `Apply the zone plan to ${zone} in the Cloudflare account ${b.name ?? b.accountId} (${plural(changes, "change")})`,
@@ -403,42 +463,31 @@ export async function applyZone(
     await audit("cloudflare zone created", `${zone} in the account ${b.accountId}`);
     if (checks) await requireUsableZone(session, target, true);
   }
-  if (target === undefined) {
-    throw new OpsCrewError(
-      "INTERNAL",
-      `The zone plan has no zone for ${zone} in the new account.`,
-      {
-        hint: "This is a bug in OpsCrew; please report it.",
-      },
-    );
-  }
-  const marks = plan.marks;
-  const records: ZoneRecord[] = [
-    ...plan.create.map(recordInput),
-    ...(marks !== undefined && "create" in marks
-      ? marks.create.map((content) => ({
-          type: "TXT",
-          name: marks.name,
-          content,
-          ttl: 1,
-          proxied: false,
-          comment: MARK_COMMENT,
-        }))
-      : []),
-  ];
+  if (target === undefined) throw bug(`The zone plan has no zone for ${zone} in the new account.`);
+  const { marks } = plan;
+  const markRecords = (marks?.create ?? []).map((content) => ({
+    type: "TXT",
+    name: (marks as ZoneMarks).name,
+    content,
+    ttl: 1,
+    proxied: false,
+    comment: MARK_COMMENT,
+  }));
+  const records: ZoneRecord[] = [...plan.create.map(recordInput), ...markRecords];
   if (records.length > 0) {
     await b.client.createZoneRecords(target.id, records);
     await audit("cloudflare records created", `${plural(records.length, "record")} in ${zone}`);
   }
-  if (marks !== undefined && "delete" in marks) {
+  if (marks !== undefined && marks.delete.length > 0) {
     for (const id of marks.delete) await b.client.deleteRecord(target.id, id);
     await audit(
-      "cloudflare mark deleted",
+      "cloudflare mark records deleted",
       `${marks.name}: ${plural(marks.delete.length, "record")}`,
     );
   }
+  await clearPending(deps, key);
   deps.reporter.success(
     `Changed ${zone} in the account ${b.name ?? b.accountId} (${plural(changes, "change")}).`,
   );
-  return target;
+  return undefined;
 }

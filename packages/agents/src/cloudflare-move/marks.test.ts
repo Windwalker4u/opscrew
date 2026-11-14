@@ -3,7 +3,7 @@ import { findExecutable, resolveProjectPaths, sha256Hex } from "@opscrew/core";
 import { opscrewRecordNames } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
-import { type ScriptedApprovalHandler, SERVER_IPV4 } from "../testing";
+import { ownPlan, type ScriptedApprovalHandler, SERVER_IPV4 } from "../testing";
 import {
   appMark,
   coverage,
@@ -16,6 +16,7 @@ import {
   readMarks,
   writeMark,
 } from "./marks";
+import { readAppProgress } from "./progress";
 import { openMoveSession } from "./session";
 import { type MoveHarness, moveHarness, serverPlan, ZONE } from "./session.fakes";
 import { MOVE_COMMAND } from "./texts";
@@ -27,6 +28,7 @@ const SHOP: MoveMark = {
   envs: ["prod", "staging"],
   hosts: [`shop.${ZONE}`, `www.shop.${ZONE}`, `ssh-shop.${ZONE}`, `staging.shop.${ZONE}`],
   sites: [],
+  access: [],
 };
 
 /** Records as Cloudflare lists them, for {@link parseMarks}. */
@@ -42,10 +44,14 @@ async function prepared(): Promise<{ h: MoveHarness; session: MoveSession }> {
   const h = await moveHarness({
     apps: () => ({ blog: appPlan("blog", undefined, serverPlan(`blog.${ZONE}`)) }),
   });
+  h.deps.interactive = true;
   const session = await h.open({ to: "New" });
   await applyZone(session, await planZone(session));
   return { h, session };
 }
+
+/** The approvals asked so far. */
+const asked = (h: MoveHarness) => (h.deps.approvalHandler as ScriptedApprovalHandler).requests;
 
 function blogSession(h: MoveHarness): Promise<MoveSession> {
   const paths = resolveProjectPaths(h.root, { env: h.deps.env, app: "blog" });
@@ -66,14 +72,16 @@ describe("markContents and parseMarks", () => {
       envs: ["prod"],
       hosts: [`docs.${ZONE}`],
       sites: [{ worker: "docs", domains: [`docs.${ZONE}`] }],
+      access: [],
     };
     expect(markContents(site)).toEqual([
       `"opscrew-move=1; app=docs; envs=prod; hosts=docs.${ZONE}; worker=docs; domains=docs.${ZONE}"`,
     ]);
     const name = `_opscrew-move.docs-0123abcd.${ZONE}`;
-    expect(parseMarks(listed(name, markContents(site)))).toEqual([
-      { name, ids: ["r0"], mark: site },
-    ]);
+    expect(parseMarks(listed(name, markContents(site)))).toEqual({
+      marks: [{ name, ids: ["r0"], mark: site }],
+      damaged: [],
+    });
   });
 
   it("splits a long mark in parts of at most 2,048 characters, each in 255-character strings", () => {
@@ -89,12 +97,36 @@ describe("markContents and parseMarks", () => {
     });
     const name = `_opscrew-move.shop-0123abcd.${ZONE}`;
     // Read back in any order.
-    expect(parseMarks(listed(name, [...contents].reverse()))[0]?.mark).toEqual(mark);
-    // A part missing, or a damaged one: no mark is read.
-    expect(parseMarks(listed(name, contents.slice(1)))).toEqual([]);
+    expect(parseMarks(listed(name, [...contents].reverse())).marks[0]?.mark).toEqual(mark);
+    // A part missing, or a damaged one: the mark is named, not read.
+    const unreadable = { marks: [], damaged: [name] };
+    expect(parseMarks(listed(name, contents.slice(1)))).toEqual(unreadable);
     expect(parseMarks(listed(name, [contents[0] as string, '"opscrew-move=1; part=2/9"']))).toEqual(
-      [],
+      unreadable,
     );
+  });
+
+  it("lists the hostnames behind Cloudflare Access, with their kind and environment", async () => {
+    const plan = ownPlan({ access: "tunnel", portainer: "subdomain" });
+    const session = {
+      zone: ZONE,
+      environments: [{ environment: "prod", plan }],
+    } as unknown as MoveSession;
+    const mark = await appMark(session);
+    expect(mark.access).toEqual([
+      { hostname: `ssh-shop.${ZONE}`, kind: "service", environment: "prod" },
+      { hostname: `portainer.${ZONE}`, kind: "portainer", environment: "prod" },
+    ]);
+    const [content] = markContents(mark);
+    expect(content).toContain(
+      `; access=service:prod:ssh-shop.${ZONE},portainer:prod:portainer.${ZONE}"`,
+    );
+    const name = `_opscrew-move.shop-0123abcd.${ZONE}`;
+    expect(parseMarks(listed(name, markContents(mark))).marks[0]?.mark).toEqual(mark);
+    // No e-mail, no id: hostnames, kinds and environment names only.
+    expect(content).not.toMatch(/@|[0-9a-f]{32}/);
+    const damaged = (content as string).replace("access=service:prod:", "access=service:");
+    expect(parseMarks(listed(name, [damaged])).damaged).toEqual([name]);
   });
 
   it("labels the app by its name and a hash of its repository and key", () => {
@@ -119,8 +151,9 @@ describe.skipIf(!findExecutable("git"))("the marks in B's zone", () => {
       envs: ["prod"],
       hosts: opscrewRecordNames(session.environments[0]?.plan as never, ZONE),
       sites: [],
+      access: [],
     });
-    expect(await writeMark(session)).toBe(true);
+    expect(await writeMark(session)).toBeUndefined();
     const fresh = h.cloudflare.zone(ZONE, "New");
     expect(fresh.records.filter((r) => r.name === name)).toMatchObject([
       {
@@ -131,38 +164,56 @@ describe.skipIf(!findExecutable("git"))("the marks in B's zone", () => {
         content: markContents(mark)[0],
       },
     ]);
-    const requests = (h.deps.approvalHandler as ScriptedApprovalHandler).requests;
+    const requests = asked(h);
     expect(requests.at(-1)).toMatchObject({ kind: "cloudflare-apply" });
     expect(requests.at(-1)?.details).toContain(`Write the app's mark of the move, ${name}`);
-    // Written already: nothing to do.
-    expect(await writeMark(session)).toBe(false);
+    // Written already: nothing to do, nothing asked.
+    const count = requests.length;
+    expect(await writeMark(session)).toBeUndefined();
+    expect(requests).toHaveLength(count);
 
     const blog = await blogSession(h);
-    expect(await writeMark(blog)).toBe(true);
-    expect((await readMarks(session)).map((read) => read.mark.app)).toEqual(["blog", "shop"]);
+    await writeMark(blog);
+    const apps = async () => (await readMarks(session)).marks.map((read) => read.mark.app);
+    expect(await apps()).toEqual(["blog", "shop"]);
     // A mark is never copied or listed as B's own record.
     const plan = await planZone(session);
     expect(plan).toMatchObject({ create: [], differ: [], onlyInB: [] });
 
-    expect(await deleteMark(session)).toBe(true);
+    expect(await deleteMark(session)).toBeUndefined();
     expect(requests.at(-1)?.details).toContain(`Delete the app's mark of the move, ${name}`);
-    expect((await readMarks(session)).map((read) => read.mark.app)).toEqual(["blog"]);
-    expect(await deleteMark(session)).toBe(false);
+    expect(await apps()).toEqual(["blog"]);
+    const after = requests.length;
+    await deleteMark(session);
+    expect(requests).toHaveLength(after);
     expect(seen(h)).toBe(false);
   });
 
-  it("replaces a mark that says something else", async () => {
+  it("rewrites a mark that says something else in one plan", async () => {
     const { h, session } = await prepared();
     const name = await markName(session);
+    const earlier = markContents({ ...SHOP, hosts: [`old.shop.${ZONE}`] });
     await applyZone(
       session,
-      await planZone(session, {
-        marks: { name, create: markContents({ ...SHOP, hosts: [`old.shop.${ZONE}`] }) },
-      }),
+      await planZone(session, { marks: { name, create: earlier, delete: [] } }),
     );
-    expect(await writeMark(session)).toBe(true);
+    const count = asked(h).length;
+    await writeMark(session);
+    expect(asked(h)).toHaveLength(count + 1);
+    expect(asked(h).at(-1)?.details).toContain("Delete the mark's earlier records");
     const records = h.cloudflare.zone(ZONE, "New").records.filter((r) => r.name === name);
     expect(records.map((r) => r.content)).toEqual(markContents(await appMark(session)));
+  });
+
+  it("stops a run that doesn't apply the mark's plan now, recorded as the mark's", async () => {
+    const { h, session } = await prepared();
+    h.deps.interactive = false;
+    const stop = await writeMark(session);
+    expect(stop?.pendingPlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(await readAppProgress(h.deps.paths)).toMatchObject({
+      pending: { action: "mark", planHash: stop?.pendingPlanHash },
+    });
+    expect((await readMarks(session)).marks).toEqual([]);
   });
 });
 
@@ -228,5 +279,30 @@ describe.skipIf(!findExecutable("git"))("coverage", () => {
     ]);
     expect(seen(h, ...result.unread)).toBe(false);
     expect(result.uncovered.join(" ")).not.toContain(SERVER_IPV4);
+  });
+
+  it("names a rule phase A's token may not read", async () => {
+    const { h, session } = await prepared();
+    h.cloudflare.tokens.get(h.tokens.a)?.denied.add("http_request_firewall_custom");
+    const result = await coverage(session);
+    expect(result.unread).toEqual([
+      "the hostnames in OpsCrew's rules of the phases http_request_firewall_custom, which CLOUDFLARE_API_TOKEN may not read",
+    ]);
+    expect(seen(h, ...result.unread)).toBe(false);
+  });
+
+  it("names a mark that can't be read, and counts none of its hostnames", async () => {
+    const { h, session } = await prepared();
+    const name = `_opscrew-move.blog-0123abcd.${ZONE}`;
+    h.cloudflare.addRecord(h.cloudflare.zone(ZONE, "New"), {
+      type: "TXT",
+      name,
+      content: `"opscrew-move=1; part=1/2; app=blog; envs=prod; hosts=blog.${ZONE}"`,
+      comment: MARK_COMMENT,
+    });
+    const result = await coverage(session);
+    expect(result.unread).toEqual([`the mark ${name}, which can't be read`]);
+    expect(result.uncovered).toContain(`blog.${ZONE}`);
+    expect(seen(h, ...result.unread)).toBe(false);
   });
 });
