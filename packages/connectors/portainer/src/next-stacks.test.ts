@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
   CONNECTOR_COMPOSE,
   desired,
   fingerprintsFor,
+  REPO,
   secrets,
 } from "./__fixtures__/scenario";
 import { type ApplyStackOptions, applyStackPlan } from "./apply";
@@ -445,6 +446,49 @@ describe("planNextStacks and applyStackPlan: the safety gate", () => {
     expect(notOurs.code).toBe("INVALID_INPUT");
     expect(notOurs.message).toMatch(/does not list \(tunnel-next-stack\)/);
 
+    // So is one whose beside change points at another stack's id under the beside name.
+    const otherId: StackPlan = {
+      ...removal,
+      changes: [
+        {
+          id: "tunnel-next-stack",
+          title: `Remove the stack ${TUNNEL}`,
+          state: "change",
+          params: { action: "remove", name: TUNNEL, stackId: w.decoy.Id },
+        },
+      ],
+    };
+    const decoy = await failure(applyNext(w, otherId, {}));
+    expect(decoy.code).toBe("INVALID_INPUT");
+    expect(decoy.message).toMatch(/does not list \(tunnel-next-stack\)/);
+
+    expect(mutating(w, start)).toEqual([]);
+  });
+
+  it("blocks running and removing a beside name held by another app's Git stack", async () => {
+    // The app `shop-tunnel-next` has the Git stack opscrew-shop-tunnel-next.
+    const w = world();
+    const client = w.client();
+    await client.createGitStack(3, {
+      name: TUNNEL,
+      repositoryUrl: REPO,
+      referenceName: "refs/heads/opscrew-deploy",
+      composeFile: "compose.yaml",
+      authentication: { username: "x-access-token", password: secrets().repositoryToken },
+      webhookId: randomUUID(),
+      env: [{ name: "DATABASE_URL", value: "postgres://db" }],
+    });
+    w.fake.settle();
+    const facts = await w.inspect();
+    const tokens = nextTokens();
+    const start = w.fake.calls.length;
+    for (const input of [running(tokens), REMOVE]) {
+      const plan = api.plan(facts, input);
+      expect(plan.changes[0]?.state, input.stacks === "remove" ? "remove" : "run").toBe("blocked");
+      expect(plan.findings.map((item) => item.code)).toEqual(["stack-name-taken"]);
+      const error = await failure(applyNext(w, plan, tokens));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+    }
     expect(mutating(w, start)).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ import {
 } from "./names";
 import {
   type CreatedRecord,
+  isBesideStack,
   isNextStackChange,
   type SentFingerprints,
   type StackChange,
@@ -164,6 +165,7 @@ export async function applyStackPlan(
   // Everything is checked before the first call: a bad plan or a missing secret changes nothing.
   for (const change of work) check(valid, change, secrets, client.pinned);
   checkValuesDigest(valid, secrets, opts.valueKey);
+  await checkBesideStacks(client, work);
 
   const wait = {
     timeoutMs: opts.wait?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -267,6 +269,24 @@ function checkValuesDigest(
   }
 }
 
+/**
+ * A beside stack has no record, so before any change each one the plan changes by id must still
+ * be the stack of its name that looks like a beside stack (one already gone is left to its change).
+ */
+async function checkBesideStacks(
+  client: PortainerClient,
+  work: readonly StackChange[],
+): Promise<void> {
+  for (const change of work) {
+    if (!isNextStackChange(change.id) || change.params.action === "create") continue;
+    const stack = await client.getStack(num(change.params, "stackId"));
+    if (stack === undefined) continue;
+    if (stack.name.toLowerCase() !== str(change.params, "name") || !isBesideStack(stack)) {
+      throw notOursOf(change.id);
+    }
+  }
+}
+
 function only(
   values: Readonly<Record<string, string>> | undefined,
   keys: readonly string[],
@@ -311,6 +331,13 @@ function registerSecrets(client: PortainerClient, secrets: ApplySecrets): void {
   }
 }
 
+function notOursOf(id: StackChangeId): OpsCrewError {
+  return invalid(
+    `The stack plan would change something OpsCrew's record does not list (${id}), so OpsCrew changes nothing.`,
+    "Make a fresh stack plan with opscrew provision and approve it.",
+  );
+}
+
 function invalid(message: string, hint?: string): OpsCrewError {
   return new OpsCrewError("INVALID_INPUT", message, hint === undefined ? undefined : { hint });
 }
@@ -322,11 +349,7 @@ function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinn
   const role = roleOf(change.id);
   const recordedStack = (id: number) =>
     plan.record.stacks.find((stack) => stack.id === id && stack.role === role);
-  const notOurs = () =>
-    invalid(
-      `The stack plan would change something OpsCrew's record does not list (${change.id}), so OpsCrew changes nothing.`,
-      "Make a fresh stack plan with opscrew provision and approve it.",
-    );
+  const notOurs = () => notOursOf(change.id);
 
   if (plan.purpose === "teardown" && action !== "remove" && action !== "forget") throw notOurs();
   if (role !== undefined) {

@@ -1422,6 +1422,11 @@ const DesiredNextStacksSchema = z
     });
   });
 
+/** True for a stack that looks like a beside stack: from a stack file, its only value TUNNEL_TOKEN. */
+export function isBesideStack(stack: Pick<PortainerStackFacts, "gitConfig" | "envKeys">): boolean {
+  return stack.gitConfig === undefined && sameList(stack.envKeys, ["TUNNEL_TOKEN"]);
+}
+
 /** What each beside stack does, shown when it is created. */
 const NEXT_PURPOSES: Record<NextStackChangeId, string> = {
   "tunnel-next-stack":
@@ -1454,28 +1459,49 @@ export function planNextStacks(facts: PortainerFacts, desired: DesiredNextStacks
       `Inspect environment ${d.environmentId} with inspectPortainer before planning its stacks.`,
     );
   }
-  const remove = d.stacks === "remove";
+  const { stacks } = d;
+  const remove = stacks === "remove";
   const found: PortainerFinding[] = [];
   const changes: StackChange[] = [];
   for (const id of NEXT_STACK_CHANGE_IDS) {
     const name = nextStackName(d.app, id);
     const visible = facts.stacks.find((stack) => stack.name.toLowerCase() === name);
-    if (d.stacks === "remove") {
+    // A stack of the name is the beside stack only when it looks like one (a stack file using only
+    // TUNNEL_TOKEN): another app's Git stack may have the name (`opscrew-shop-tunnel-next`).
+    const located: Located =
+      visible === undefined
+        ? { kind: "absent" }
+        : isBesideStack(visible)
+          ? { kind: "ours", stack: visible }
+          : { kind: "taken", stack: visible };
+    if (remove) {
       const title = `Remove the stack ${name}`;
-      changes.push(
-        visible === undefined
-          ? {
-              id,
-              title,
-              state: "in-place",
-              reason: "Portainer has no stack of this name (removed, or this token cannot see it).",
-              params: { action: "absent", name },
-            }
-          : { id, title, state: "change", params: { action: "remove", name, stackId: visible.id } },
-      );
+      if (located.kind === "taken") {
+        const blocker = finding.stackNameTaken(name, located.stack.id);
+        found.push(blocker);
+        changes.push({ id, title, state: "blocked", reason: blocker.message, params: { name } });
+      } else {
+        changes.push(
+          located.kind === "absent"
+            ? {
+                id,
+                title,
+                state: "in-place",
+                reason:
+                  "Portainer has no stack of this name (removed, or this token cannot see it).",
+                params: { action: "absent", name },
+              }
+            : {
+                id,
+                title,
+                state: "change",
+                params: { action: "remove", name, stackId: located.stack.id },
+              },
+        );
+      }
       continue;
     }
-    const given = d.stacks.find((stack) => stack.name === name);
+    const given = stacks.find((stack) => stack.name === name);
     if (given === undefined) continue;
     changes.push(
       composeStackChange(
@@ -1486,7 +1512,7 @@ export function planNextStacks(facts: PortainerFacts, desired: DesiredNextStacks
           purpose: NEXT_PURPOSES[id],
           name,
           compose: given.compose,
-          located: visible === undefined ? { kind: "absent" } : { kind: "ours", stack: visible },
+          located,
         },
         found,
         d.fingerprints[name],
