@@ -123,6 +123,8 @@ export async function runAnalyze(
     const detection = await detectProjectDetails(paths.root, {
       ...(appDir !== undefined ? { appDir } : {}),
       ...(sharedPaths !== undefined ? { sharedPaths } : {}),
+      // The root's committed env files (`.env.example`) are the first app's, never a further app's.
+      ...(recorded !== undefined ? { rootEnvFiles: false } : {}),
     });
     if (detection.truncated) {
       reporter.warn(

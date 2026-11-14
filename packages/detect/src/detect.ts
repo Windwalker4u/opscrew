@@ -125,6 +125,11 @@ export interface DetectOptions {
    * and these paths only.
    */
   sharedPaths?: string[];
+  /**
+   * Whether the committed env files in the repository root (`.env.example`) are the app's too,
+   * when it sits in a folder (default true: the repository's first app). False for a further app.
+   */
+  rootEnvFiles?: boolean;
 }
 
 /** Full detection result: the facts plus context the caller may turn into warnings or risks. */
@@ -445,8 +450,9 @@ export async function detectProjectDetails(
   const scopedMembers = members.filter((info) => inScope(info.unit.dir));
   const appDir = primary?.unit.dir ?? ".";
   // An app in a folder is its folder, its workspace packages and its shared paths: its variables,
-  // services and frameworks come from there only, never from the repository's root files or its
-  // other folders (its scripts, other apps). The app at the root reads the whole repository.
+  // services and frameworks come from there only (the first app also reads the root's committed
+  // env files), never from the repository's other folders (its scripts, other apps). The app at
+  // the root reads the whole repository.
   const ownPaths = [
     appDir,
     ...workspacePackages,
@@ -473,7 +479,11 @@ export async function detectProjectDetails(
   });
 
   const envFiles: { path: string; text: string }[] = [];
-  for (const path of ownFiles.filter(isCommittedEnvFile)) {
+  const rootEnvFiles = options.rootEnvFiles !== false;
+  for (const path of scopedFiles.filter(
+    (file) =>
+      isCommittedEnvFile(file) && (isOwn(file) || (rootEnvFiles && dirnameRel(file) === ".")),
+  )) {
     envFiles.push({ path, text: (await read(path)) ?? "" });
   }
   const envTexts = envFiles.map((file) => file.text);

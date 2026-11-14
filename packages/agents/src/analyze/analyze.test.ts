@@ -503,6 +503,22 @@ describe("runAnalyze", () => {
       const shared = (await runAnalyze(deps, { ai: false })).architecture.facts;
       expect(shared.envVars.map((variable) => variable.name)).toContain("DATABASE_URL");
       expect(shared.services.map((service) => service.kind)).toEqual(["postgres"]);
+
+      // The first app in that folder also reads the root's .env.example; a further app never.
+      expect(shared.envVars.map((variable) => variable.name)).not.toContain("SESSION_SECRET");
+      const inFolder = await runAnalyze(await createTestPhaseDeps({ root }), {
+        ai: false,
+        appDir: "apps/pay",
+      });
+      expect(inFolder.architecture.facts.envVars.map((variable) => variable.name)).toEqual([
+        "APP_ORIGIN",
+        "DATABASE_URL",
+        "MAIL_FROM",
+        "SESSION_SECRET",
+        "VITE_BASE_PATH",
+        "VITE_CHECKOUT_URL",
+        "VITE_SHOP_ID",
+      ]);
     });
 
     it("rejects an unknown app folder with the candidates and writes nothing", async () => {

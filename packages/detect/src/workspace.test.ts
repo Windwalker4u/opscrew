@@ -133,14 +133,16 @@ describe("the variables of an app in a folder", () => {
       "scripts/sync-docs.mjs": "const dir = process.env.OPSCREW_GUIDE_DIR;\n",
       ".env.example": "SITE_ORIGIN=\n",
     });
-    // Neither the root's committed env files nor the code in the root's folders are theirs.
+    // The root's committed env files are the first app's; the code in the root's folders is not.
     const landing = await detectProject(root, { appDir: "sites/landing" });
     expect(landing.envVars.map((variable) => variable.name)).toEqual([
+      "SITE_ORIGIN",
       "UI_CDN_URL",
       "VITE_CONTACT_EMAIL",
       "VITE_SITE_URL",
     ]);
-    const docs = await detectProject(root, { appDir: "sites/docs" });
+    // A further app reads neither.
+    const docs = await detectProject(root, { appDir: "sites/docs", rootEnvFiles: false });
     expect(docs.envVars.map((variable) => variable.name)).toEqual(["DOCS_SEARCH_KEY"]);
     // The repository's root app reads the whole repository, its scripts and root files included.
     const { facts } = await detectProjectDetails(root, { appDir: "." });
@@ -214,7 +216,19 @@ describe("an app beside other apps in a workspace (the 0.2.8 report)", () => {
   };
 
   it("holds only its own variables, services and frameworks", async () => {
-    expect(await detectProject(THREE_APPS, { appDir: "apps/pay" })).toMatchObject(ownFacts);
+    const pay = { appDir: "apps/pay", rootEnvFiles: false };
+    expect(await detectProject(THREE_APPS, pay)).toMatchObject(ownFacts);
+    // As the first app, it would also read the root's .env.example.
+    const first = await detectProject(THREE_APPS, { appDir: "apps/pay" });
+    expect(first.envVars.map((variable) => variable.name)).toEqual([
+      "APP_ORIGIN",
+      "DATABASE_URL",
+      "MAIL_FROM",
+      "SESSION_SECRET",
+      "VITE_BASE_PATH",
+      "VITE_CHECKOUT_URL",
+      "VITE_SHOP_ID",
+    ]);
   });
 
   it("holds none of another app's, even beside the one deployable server", async () => {
@@ -228,7 +242,9 @@ describe("an app beside other apps in a workspace (the 0.2.8 report)", () => {
         dependencies: { pg: "^8.16.0" },
       }),
     });
-    expect(await detectProject(root, { appDir: "apps/pay" })).toMatchObject(ownFacts);
+    expect(await detectProject(root, { appDir: "apps/pay", rootEnvFiles: false })).toMatchObject(
+      ownFacts,
+    );
   });
 
   it("leaves the app at the repository root reading the whole repository", async () => {

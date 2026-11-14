@@ -35,6 +35,11 @@ npx opscrew provision --app docs
 npx opscrew verify --app docs
 ```
 
+A further app's analysis reads only its own folder, the workspace packages it uses and the paths
+its plan lists in `app.sharedPaths`: the repository root's `.env.example` and the other apps'
+folders are not its own. The settings a Vite app reads through `loadEnv` in its `vite.config.*`,
+and in the files that config imports, count as its settings, which the browser can see.
+
 A key is 1 to 16 lower-case letters, digits or hyphens, starting with a letter. A few keys are
 reserved: `prod`, `production`, `github-pages`, `modules`, `storage` and keys starting with
 `storage-`, keys with `service` or `env` as one of their hyphen-separated parts, and the names
