@@ -1,6 +1,7 @@
-# ADR 0003: Apache-2.0 core, FSL-1.1-ALv2 for `ee/`
+# ADR 0003: Apache-2.0 for the whole repository
 
-- Status: accepted (2026-10-11)
+- Status: accepted (2026-10-11); amended 2026-11-14: `ee/` retired, the whole repository is
+  Apache-2.0
 
 ## Context
 
@@ -11,12 +12,15 @@ forked as OpenTofu), Sentry (FSL).
 
 ## Decision
 
-Everything outside `ee/` is Apache-2.0. Team/enterprise control-plane features live in `ee/` under
-the Functional Source License 1.1 with Apache-2.0 future license (each release becomes Apache-2.0
-after two years). Public commitment: anything primarily useful to individual developers stays
-outside `ee/`.
+The whole repository is Apache-2.0. Public commitment: anything primarily useful to an individual
+developer stays free.
+
+The `ee/` directory, first reserved for team and enterprise features under the Functional Source
+License 1.1 with an Apache-2.0 future license, is retired (founder, 2026-11-14): those features
+won't be built in this repository, `ee/` never held code, and the repository has no
+source-available part.
 
 ## Consequences
 
 - No AGPL or non-commercial dependency may be linked into the CLI (optional external binaries only).
-- Contributors need no CLA for the Apache-2.0 part; `ee/` contributions require a decision later.
+- Contributors need no CLA: every contribution is Apache-2.0.

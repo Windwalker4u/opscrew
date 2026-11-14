@@ -142,7 +142,8 @@ human sees and approves every change.
 - Agent runtime: the Claude Agent SDK behind the `AgentRuntime` contract (bring your own key:
   Anthropic API key, Amazon Bedrock, Google Vertex AI or Microsoft Foundry). A provider-agnostic
   runtime may be added later behind the same contract. OpsCrew never resells model tokens.
-- Licensing: Apache-2.0 for everything outside `ee/`; FSL-1.1-ALv2 for `ee/`. No AGPL or
+- Licensing: the whole repository is Apache-2.0; anything primarily useful to an individual
+  developer stays free. No AGPL or
   non-commercial dependency may be linked into the CLI; such tools may only be invoked as optional
   external binaries. Semgrep-maintained rules are never used in the hosted control plane.
 - Provider order: hosting on Hetzner Cloud, DigitalOcean, Contabo, servers the user already owns
@@ -188,4 +189,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.10.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-12
+**Version**: 1.11.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-14

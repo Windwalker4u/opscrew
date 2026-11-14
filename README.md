@@ -102,6 +102,6 @@ Specifications live in `specs/` and the project constitution in `.specify/memory
 
 ## License
 
-Apache-2.0 (see `LICENSE`), except `ee/`, which is under FSL-1.1-ALv2 and converts to Apache-2.0 after two years. Anything primarily useful to individual developers stays outside `ee/` and stays free.
+Apache-2.0 (see `LICENSE`). Anything primarily useful to an individual developer stays free.
 
 OpsCrew uses Claude by Anthropic. Powered by Claude.
