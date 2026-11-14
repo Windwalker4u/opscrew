@@ -88,7 +88,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow src/docker src/portainer-target && npx vitest run --root packages/agents src/shared src/localhost src/design && pnpm lint`
   - Effort: high
 
-- [ ] T2834 A further app's analysis reads its own folder (bug in 0.2.8, reported through the control plane's session)
+- [x] T2834 A further app's analysis reads its own folder (bug in 0.2.8, reported through the control plane's session)
   - Owns: `packages/detect/src/**`, `packages/agents/src/analyze/**`, `packages/agents/src/apps/**` (only if the app's folder is recorded wrongly), the colocated tests and fixtures
   - Reads: `docs/guide/several-apps.md`; `detectProjectDetails`, `normalizeAppDir`; `packages/detect/src/env.ts`
   - Found: in a pnpm workspace, `opscrew app add pay --dir apps/pay` then `opscrew analyze --app pay --no-ai` wrote `opscrew/apps/pay/architecture.json` with the whole repository's facts: `facts.envVars` held the 37 names of the root `.env.example` and none of the app's three `VITE_` settings (read through Vite's `loadEnv(mode, cwd, "VITE_")` in `vite.config.ts` and a file it imports, never `import.meta.env`); `facts.services` held PostgreSQL from `apps/server` (`dependency:pg`, `env:DATABASE_URL`); `facts.frameworks` held React from `apps/web`. Design for Cloudflare's hosting then refused it for PostgreSQL.
@@ -389,7 +389,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move/shared && pnpm lint`
   - Effort: high
 
-- [ ] T2815 [P] [US1] B's connector beside A's
+- [x] T2815 [P] [US1] B's connector beside A's
   - Owns: `packages/agents/src/cloudflare-move/connector*.ts`, additions to `packages/agents/src/provision/{portainer-flow,stack-plan}.ts` (+ tests)
   - Lead note (after T2806): `planNextTunnelConnector` and `planNextTunnelConnectorRemoval` take `facts` from `inspectHost(remote)` and refuse when another app is named `<app>-tunnel-next`; as root the folder is `/srv/opscrew/cloudflared-next/<app>`, on a cloud server as the login pass `dir: "/home/deploy/opscrew/cloudflared-next"`.
   - Reads: plan 4.4.3, 7.4, 8., 9.; `rotate/infra-connectors.ts`, `shared/host-plan.ts`, `vpn/servers.ts` (`networkServer`), `provision/portainer-flow.ts`; T2806's and T2807's blocks
@@ -494,7 +494,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-portainer && npx vitest run --root packages/connectors/portainer && pnpm lint`
   - Effort: high
 
-- [ ] T2833 [P] [US1] A saved plan made with `-var`s applies with the same `-var`s (found by T2813)
+- [x] T2833 [P] [US1] A saved plan made with `-var`s applies with the same `-var`s (found by T2813)
   - Owns: `packages/iac-engine/src/engine.ts` and its tests; `packages/agents/src/provision/plan-apply.ts`, `packages/agents/src/shared/connector-removal.ts`, `packages/agents/src/testing/{state,deploy}.ts` and their tests
   - Reads: T2813's block; `IacRunOptions` in `@opscrew/contracts` (it already has `vars`)
   - Depends: T2811
@@ -691,6 +691,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2835's review: `tunnel.test.ts` ~317 checks the hostname anywhere in the plan (outputs show it too): assert inside the tunnel config's block; `accessArguments` always appends `applications` (drop `ACCESS_APPLICATIONS_ARGUMENT`); `ACCESS_HOLD_TFVARS` built from `ACCESS_HOLD_VARIABLES`.
+  - From T2813's review: `approvedPending` repeats `planAndApply`'s approve-path checks (and mirrors retarget's `approvedSavedPlan`); `hasContent` is `shared/engine.ts`'s `hasState` taking a path.
   - From T2815's review: rotate's connector factories audit under rotate's phases during a move (give them a `phase` input), and a check before the Portainer takeover's restart would need them to plan with B's tokens (today it would plan with A's and break a rerun); `waitForTunnelToClose` taking an optional client instead of the move's own wait; `TunnelConnectors.restart` returning the hashes it applied so `restartHash` can go; once T2832's `nextTunnelTokens` lands, `nextStacksStep` calls `applyStackPlanAudited`.
   - From T2815: one shared move phase constant (`MOVE_PHASE`); `applyStackPlanAudited` taking an injected apply instead of repeating its audit lines; the cloud server's beside-connector folder named once.
   - From T2817's review: coverage repeats part of `checks.ts`'s `opscrewNamesInZone`; one shared reader of the zone's OpsCrew names (with record types and the Workers gap).
