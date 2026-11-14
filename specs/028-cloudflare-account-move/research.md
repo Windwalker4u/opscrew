@@ -176,3 +176,125 @@ the certificate and the site, and reports how long each took. The live pass meas
    share the zone; a previews zone below another domain moves on its own.
 5. The live pass: a second Cloudflare account (the founder's, free) and a domain whose nameservers
    OpsCrew can switch, other than the domain every other pass uses.
+
+## R10 The spike on two accounts (2026-11-14)
+
+Spike S1 (T2802) used the v4 API, with A as the account holding `opscrew.dev` (active, free plan,
+Cloudflare Registrar, DNSSEC on) and B as a new account with R2 and Zero Trust turned on. Each
+account had its own token, and B's token sees one account. Hostnames were
+`spike-<r>.opscrew.dev`, `spike-tunnel-<r>.opscrew.dev` and `spike-access-<r>.opscrew.dev`. There
+were two runs: the first, then a follow-up that made B's zone again to retry 2(c) to 2(e). Ids are
+masked. Nothing was rate-limited (no 429). B's token got no permission error on anything the move
+uses.
+
+1. **B's zone while A's is active:** `POST /zones` in B (`type: full`) returned HTTP 200 with
+   `status: pending` and no messages. B's pair is `grannbo.ns.cloudflare.com`,
+   `randy.ns.cloudflare.com`; A's is `kira.ns.cloudflare.com`, `leland.ns.cloudflare.com`. They
+   share no name. B got the same pair again when its zone was deleted and made a second time, so the
+   pair holds for this name in B. B's new zone already reports `original_registrar`
+   `cloudflare, inc. (id: 1910)`, and `original_name_servers` is A's pair. Right after B's zone was
+   made, A's zone was still active with the same nameservers, the same 27 records, DNSSEC `active`
+   and an unchanged `modified_on`. No fallback is needed. Plan 4.3's stop on an equal pair stays as
+   a guard.
+2. **Pieces on B's pending zone:**
+   - (a) A proxied A record → `203.0.113.10`: HTTP 200, `proxied: true`, `proxiable: true`.
+   - (b) A tunnel in B (`config_src: cloudflare`): HTTP 200, status `inactive` (no connector).
+     A proxied CNAME → `<tunnel-B>.cfargotunnel.com`: HTTP 200, `proxied: true`. The tunnel's
+     ingress configuration naming the hostname (`PUT …/configurations`): HTTP 200.
+   - (c) A self-hosted Access application: refused with HTTP 400, code 12130,
+     "access.api.error.invalid_request: domain does not belong to zone". It was refused three ways:
+     with `domain`, with `destinations: [{type: public, uri}]`, and for a hostname that had a record
+     in B's zone. B already had a Zero Trust organization, so none was made. An account-level
+     reusable policy (`POST /access/policies`) was accepted (HTTP 201). With one domain the spike
+     can't tell whether Access refuses because B's zone is pending or because the name is active in
+     A. The fallback is the same either way.
+   - (d) An Origin CA certificate with B's token for `spike-<r>.opscrew.dev`: refused with HTTP 400,
+     code 1010, "Failed to validate requested hostname …: This zone is either not part of your
+     account, or you do not have access to it. Please contact support if using a multi-user
+     organization." A retry about a minute later got the same answer.
+   - (e) A hostname client certificate and per-hostname AOP: **accepted**. The first upload was
+     refused with HTTP 400, code 1412, "Missing leaf certificate.", because the spike's own test
+     certificate was a CA certificate (OpenSSL's default `CA:TRUE`). A leaf like the one
+     `selfSignedClientCertificate` makes (P-256, `CA:FALSE`, digitalSignature, clientAuth) gave
+     HTTP 201 with status `pending_deployment`. `PUT …/origin_tls_client_auth/hostnames` with
+     `enabled: true` gave HTTP 202, with the setting `pending_deployment` and `cert_status: active`.
+     About 20 seconds later the setting and the certificate were both `active`. Turning it off
+     (`enabled: null`) gave HTTP 202, and the delete HTTP 200.
+   - B's zone had no certificate packs while pending (Universal SSL waits for activation, as R8
+     says). B's token could read the zone's `settings/ssl`, `settings/min_tls_version`, `rulesets`,
+     `ssl/universal/settings` and `dnssec` (all HTTP 200).
+   - **For the plan:** O1 is settled: per-hostname AOP can be set on a pending zone, so plan 4.4.1's
+     "same client certificate uploaded to B" stands. Records and tunnels can be made during prepare.
+     Plan 13 has a fallback for Access applications ("made at each app's finish instead"), and it
+     applies. It must take the protected hostname's record along: B accepts the CNAME to its tunnel
+     while pending. If that record were made in prepare and the Access application only after
+     activation, the hostname would be public without Access in between. So an Access-protected
+     hostname's record is made right after its application, never before it. B's Origin CA
+     certificate also falls back ("issued at the finish instead", or right after activation). Until
+     then B's edge meets A's Origin CA certificate at the origin, so O2 decides whether
+     origin-protected apps answer 526 in between.
+3. **What B's nameservers answer while pending:** both of B's nameservers, asked directly with
+   `node:dns` `Resolver`, answered authoritatively:
+   - the proxied A record: `203.0.113.10`, the origin's own address and not Cloudflare's;
+   - the proxied CNAME: the CNAME itself (`<tunnel-B>.cfargotunnel.com`), no address for A;
+   - a hostname with no record in B: NXDOMAIN;
+   - NS for `opscrew.dev`: B's pair; SOA: `mname` `grannbo.ns.cloudflare.com`.
+   A's nameservers answered NXDOMAIN for the spike hostname (the control). So a pending zone's
+   nameservers do answer with origin addresses: plan 13's "no change, the guide says so" applies.
+   The exposure starts when each record is made in B, not at the switch: anyone who asks B's
+   assigned nameservers directly gets the origin's address and the tunnel's id.
+4. **R2 names:** `opscrew-spike-<r>` was made in A (HTTP 200), then the same name in B (HTTP 200).
+   Bucket names are per account, so B's buckets keep A's names and plan 13's `-b` suffix is not
+   needed.
+5. **`meta` on A's records:** A has 27 records: A 2, AAAA 6, CNAME 4, MX 5, TXT 10. Top-level
+   fields: `comment`, `comment_modified_on`, `content`, `created_on`, `id`, `meta`, `modified_on`,
+   `name`, `priority`, `proxiable`, `proxied`, `settings`, `tags`, `ttl`, `type`. The `meta` keys
+   seen:
+   - `read_only: true` on 8 records: the 4 Email Routing records and the 4 Workers custom-domain
+     records;
+   - `email_routing: true` on the Email Routing records (3 MX, 1 TXT);
+   - `origin_worker_id` (a string) on the 4 proxied AAAA records of Workers custom domains (A's
+     account lists 4 Workers custom domains for the zone).
+   No `auto_added`, `managed_by_apps` or `managed_by_argo_tunnel` was present, and the other 19
+   records have empty `meta`. For O4, a record is Cloudflare-managed when `meta.read_only` is true:
+   the zone copy skips it. `origin_worker_id` marks a site's custom domain, which plan 5.8 attaches
+   again. `email_routing` marks Email Routing, which plan 14 leaves out.
+6. **Zone hold:** `GET /zones/{id}/hold` gave HTTP 200 with
+   `{"hold":false,"hold_after":null,"include_subdomains":false}` for A's active zone and for B's
+   pending one.
+7. **Origin CA across accounts (O2):** A's certificate for `spike-<r>.opscrew.dev` was issued
+   (HTTP 200, `origin-ecc`, 7 days) and revoked afterwards. Issuer: `C=US, ST=California,
+   L=San Francisco, O=CloudFlare, Inc., OU=CloudFlare Origin SSL ECC Certificate Authority`.
+   Subject: `O=CloudFlare, Inc., OU=CloudFlare Origin CA, CN=CloudFlare Origin Certificate`.
+   It is `CA:FALSE`, has an authority key identifier, and the answer's PEM holds only the leaf, with
+   no chain. **B's certificate couldn't be issued** (2(d)), so the spike compared nothing. Neither
+   the issuer nor the subject names an account or a zone, which fits one Origin CA shared by all
+   accounts, but that doesn't prove B's edge accepts A's certificate. O2 stays open until the real
+   move, and until then the switch's approval and output say what plan 5.5 says.
+8. **Registrar:** A's token got HTTP 403, code 10000, "Authentication error" on
+   `/accounts/<A>/registrar/domains/opscrew.dev`, `/registrar/registrations/opscrew.dev` and
+   `/registrar/domains`, so it has no Registrar permission. `getRegistration` therefore needs that
+   permission on A's token, or the move falls back to the public registrar. That public answer says
+   Cloudflare Registrar: the registry says "CloudFlare, Inc." with DNSSEC signed, and B's pending
+   zone reports `original_registrar` `cloudflare, inc. (id: 1910)`. For O9, the live pass takes L4b,
+   the dashboard move between accounts.
+9. **A's DNSSEC changed during the spike, cause unknown:** A's DNSSEC was `active` at the start and
+   still `active` in the first run's after-check. At 20:43:05 UTC its `modified_on` changed and its
+   status became `pending-disabled`. That was during the follow-up run, while B's second pending
+   zone existed and the run was waiting on the AOP setting. None of the spike's calls writes A's
+   DNSSEC: its only writes in A were the Origin CA certificate and the R2 bucket, both in the first
+   run, plus their removal. A's and B's audit logs were refused to both tokens (HTTP 403, code
+   10000), so the actor is unknown: a hand change, another session, or Cloudflare reacting to a
+   second zone for a Cloudflare Registrar domain. At 20:46 UTC the DS was still at the registry,
+   the DNSKEYs were served, and opscrew.dev validated (AD) at 1.1.1.1 and 8.8.8.8. If Cloudflare
+   did it, the move's DNSSEC handling (R2, `dsAtStart`) has to expect A's DNSSEC to start turning
+   off when B's zone is made, and the live pass must check that.
+10. **Cleanup:** in B, the Access policy, the records, the client certificate (AOP off first), the
+    tunnel, the bucket and both pending zones were removed. B's Zero Trust organization existed
+    before the spike and was left alone. In A, the spike's Origin CA certificate was revoked and its
+    bucket deleted. Listing afterwards:
+    - B: 0 zones (none named `opscrew.dev` in any status), 0 tunnels, 0 Access applications,
+      0 reusable policies, 0 buckets.
+    - A: `opscrew.dev` active on `kira`/`leland`, 27 records (none `spike-*`), no hold, 1 bucket as
+      before (no `opscrew-spike-*`), 2 Origin CA certificates as before (no spike one), DNSSEC
+      `pending-disabled` (item 9).

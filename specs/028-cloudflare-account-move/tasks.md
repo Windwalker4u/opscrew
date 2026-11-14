@@ -50,7 +50,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm check`
   - Effort: lead
 
-- [ ] T2802 Spike S1 on the two accounts, and research R10 (lead)
+- [x] T2802 Spike S1 on the two accounts, and research R10 (lead)
   - Owns: research R10 in `specs/028-cloudflare-account-move/research.md`; the plan and wave 3's blocks where an answer is "no"
   - Needs: the founder's account B (R2 and Zero Trust on). The zone is opscrew.dev itself, active in A:
     a pending zone for it in B serves nothing.
@@ -507,6 +507,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
   - Owns: `packages/agents/src/cloudflare-move/{switch,gap}*.ts`
+  - Lead note (after T2817's review): `coverage(session)` returns `{ uncovered, marks, unread }`; the switch refuses on a non-empty `unread` as on a non-empty `uncovered` (an empty `uncovered` alone does not mean every app is prepared).
   - Lead note (after T2805): the two-account fake models no Cloudflare Registrar registration; tests stub `getDomain`/`getRegistration` for the registrar decision.
   - Lead note (after T2809): read the DS wait as `dsWaitStatus(stateFile, now, ds)` with a fresh `readDs` reading, in a note file of the switch's own (not the switch file).
   - Reads: plan 5., 6.; data-model 2; spec FR-2806 to FR-2809; `domain/{switch,connect}.ts`; T2809's and T2817's blocks
@@ -532,6 +533,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2820 [US1] [US2] [US3] [US4] Prepare
   - Owns: `packages/agents/src/cloudflare-move/prepare*.ts`
+  - Lead note (after T2814's review): one approval pattern for every step of the move: retarget's `appliesNow`/`approveCommand`, a non-interactive run recording its waiting plan (`writePending`) and stopping with the exact `--approve` command; `planBShared` returns B's one-time PIN login id for the shadow plan's `oneTimePinIdentityProviderId`.
   - Reads: plan 4., 9., 10.; data-model 1, 2
   - Depends: T2812, T2813, T2814, T2815, T2816, T2817, T2818
   - Accept:
@@ -638,6 +640,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 ## Phase 8: Wave 7
 
 - [ ] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
+  - Lead note (after T2814's review): record how Cloudflare answers `listOriginCertificates` for A's zone once it is moved, and once deleted (about 7 days after activation).
   - Lead note (2026-11-14): B's account id is read from `OPSCREW_E2E_MOVE_TOKEN_B` (`GET /accounts`) when the token sees exactly one account; `OPSCREW_E2E_MOVE_ACCOUNT_B` is required only otherwise. The same holds for A's.
   - Lead note (after T2808): record the SSH probe's status code and duration for an accepted service token (a quick 502, or a held stream until `--max-time 5`); if Access holds the stream, the probe moves to `-I`. Confirm `wrangler deploy --secrets-file` to B and cloudflared's behaviour on a refused token.
   - Owns: `packages/cli/test/live/cloudflare-move*.ts`, the move's section of `docs/e2e.md`
@@ -663,6 +666,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2817's review: coverage repeats part of `checks.ts`'s `opscrewNamesInZone`; one shared reader of the zone's OpsCrew names (with record types and the Workers gap).
+  - From T2814's review: `removeBShared` repeats `destroy/shared-rules.ts`'s `planSharedRemoval`; give that `client`/`recordPath`/`pendingZone` and call it; fold the `cloudflare-move/` path helpers (`moveDir`, `aSharedRecordPath`, T2813's) into one.
   - From T2810: export `deploysInPlace` from `@opscrew/iac-templates` (the summary repeats it inline); let the two-account fake answer `GET /ips` so tests drop their fetch wrapper.
   - From T2812's review: the guard's hints name no `--app <key>`/`--env` (as retarget's); pass the command's flags to `requireNoCloudflareMove`.
   - From T2807's review: `runtime/tunnel-next.ts` and `portainer-target/next-connector.ts` copy the main connector's renderers; give those a "next" variant (name suffix and folder) and drop the copies.
