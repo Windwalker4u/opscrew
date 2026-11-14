@@ -599,8 +599,10 @@ export function portainerInspect(
 /**
  * The user's Portainer reached with the pinned certificate and `token`, values fingerprinted with
  * the local value key, and read-only inspected; `inspect` reads it again ({@link portainerInspect}).
+ * A move to another Cloudflare account reaches it this way for the connectors beside the current
+ * ones.
  */
-async function connectPortainer(
+export async function connectPortainer(
   deps: PhaseDeps,
   input: {
     plan: DeployPlan;

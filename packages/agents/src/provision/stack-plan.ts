@@ -26,10 +26,14 @@ export interface StackStepResult {
   approval?: ApprovalRecord;
 }
 
-/** The plain stop for findings and blocked changes in Portainer: what was found and what to do. */
+/**
+ * The plain stop for findings and blocked changes in Portainer: what was found and what to do,
+ * then `command` again.
+ */
 function portainerBlocked(
   findings: readonly AdapterFinding[],
   blocked: readonly StackChange[],
+  command = "opscrew provision",
 ): OpsCrewError {
   return adapterBlocked({
     cannot: "OpsCrew cannot deploy to your Portainer yet",
@@ -41,7 +45,7 @@ function portainerBlocked(
             "If you made the image public, run `opscrew provision --public-image`: OpsCrew cannot see a package's visibility before the first build.",
         }
       : {}),
-    fallbackHint: "Fix what blocks these changes in Portainer, then run `opscrew provision` again.",
+    fallbackHint: `Fix what blocks these changes in Portainer, then run \`${command}\` again.`,
   });
 }
 
@@ -60,11 +64,11 @@ export function requireUsableFacts(facts: PortainerFacts, target: PortainerDeplo
   }
 }
 
-/** Stops on a stack plan with findings or blocked changes. */
-export function requireNoStackBlockers(plan: StackPlan): void {
+/** Stops on a stack plan with findings or blocked changes; the hint runs `command` again. */
+export function requireNoStackBlockers(plan: StackPlan, command?: string): void {
   const blocked = plan.changes.filter((change) => change.state === "blocked");
   if (plan.findings.length > 0 || blocked.length > 0) {
-    throw portainerBlocked(plan.findings, blocked);
+    throw portainerBlocked(plan.findings, blocked, command);
   }
 }
 
