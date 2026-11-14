@@ -574,14 +574,14 @@ export function preparePortainerStacks(
 
 /**
  * Reads the user's Portainer through `client`, read-only and audited (`detail`: why), stopping on
- * what blocks the app's stacks.
+ * what blocks the app's stacks (its hints run `command` again, default `opscrew provision`).
  */
 export function portainerInspect(
   deps: PhaseDeps,
   client: PortainerClient,
-  input: { plan: DeployPlan; phase: PhaseName },
+  input: { plan: DeployPlan; phase: PhaseName; command?: string },
 ): (detail?: string) => Promise<PortainerFacts> {
-  const { plan, phase } = input;
+  const { plan, phase, command } = input;
   const target = portainerTarget(plan.target);
   return async (detail) => {
     const facts = await inspectAudited(deps, client, {
@@ -591,7 +591,7 @@ export function portainerInspect(
       phase,
       ...(detail !== undefined ? { detail } : {}),
     });
-    requireUsableFacts(facts, target);
+    requireUsableFacts(facts, target, command);
     return facts;
   };
 }
@@ -610,9 +610,11 @@ export async function connectPortainer(
     token: string;
     services: PortainerServices;
     phase: PhaseName;
+    /** The command a stop on what blocks the stacks says to run again (default provision). */
+    command?: string;
   },
 ) {
-  const { plan, connection, token, services, phase } = input;
+  const { plan, connection, token, services, phase, command } = input;
   const valueKey = await ensurePortainerValueKey(deps, services.randomBytes);
   const client = portainerClientFor(deps, {
     connection,
@@ -620,7 +622,11 @@ export async function connectPortainer(
     client: services.client,
     valueKey,
   });
-  const inspect = portainerInspect(deps, client, { plan, phase });
+  const inspect = portainerInspect(deps, client, {
+    plan,
+    phase,
+    ...(command === undefined ? {} : { command }),
+  });
   return { connection, valueKey, client, inspect, facts: await inspect() };
 }
 

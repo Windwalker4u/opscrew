@@ -49,16 +49,23 @@ function portainerBlocked(
   });
 }
 
-/** Stops on blocking findings of the inspection or an environment of another architecture. */
-export function requireUsableFacts(facts: PortainerFacts, target: PortainerDeployTarget): void {
-  if (facts.findings.length > 0) throw portainerBlocked(facts.findings, []);
+/**
+ * Stops on blocking findings of the inspection or an environment of another architecture; the
+ * hints run `command` again (default `opscrew provision`).
+ */
+export function requireUsableFacts(
+  facts: PortainerFacts,
+  target: PortainerDeployTarget,
+  command = "opscrew provision",
+): void {
+  if (facts.findings.length > 0) throw portainerBlocked(facts.findings, [], command);
   const arch = facts.environment?.arch;
   if (arch !== undefined && arch !== target.arch) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `opscrew/plan.yaml builds the app for ${target.arch}, but your Portainer environment runs on ${arch}. Nothing was changed.`,
       {
-        hint: `Run \`opscrew design\` again so OpsCrew builds the image for ${arch}, then run \`opscrew provision\` again.`,
+        hint: `Run \`opscrew design\` again so OpsCrew builds the image for ${arch}, then run \`${command}\` again.`,
       },
     );
   }

@@ -115,7 +115,13 @@ function besideStacks(
     stacks.length !== tunnels.length ||
     stacks.some((stack) => tokens[stack.name] === undefined)
   ) {
-    throw new Error("Each beside stack the plan renders needs exactly one of the given tunnels.");
+    throw new OpsCrewError(
+      "INTERNAL",
+      "Each connector beside the current ones in Portainer needs its tunnel of the new Cloudflare account, so OpsCrew changed nothing in Portainer.",
+      {
+        hint: "This is a bug in OpsCrew; please report it.",
+      },
+    );
   }
   return { stacks, tokens };
 }
@@ -144,6 +150,7 @@ export async function nextStacksStep(
     token: requirePortainerToken(deps),
     services: session.services.portainer ?? {},
     phase: MOVE_PHASE,
+    command,
   });
   const fingerprints = Object.fromEntries(
     Object.entries(tokens).map(([name, token]) => [

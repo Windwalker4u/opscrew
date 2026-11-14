@@ -15,7 +15,7 @@ import {
   planTunnelToken,
   tunnelProject,
 } from "@opscrew/connector-ssh-host";
-import { durationText, errorMessage } from "@opscrew/core";
+import { durationText, errorMessage, OpsCrewError } from "@opscrew/core";
 import {
   keepNewerPins,
   renderNextTunnelConnectorCompose,
@@ -42,8 +42,9 @@ import type { MoveAccount, MoveEnvironment, MoveSession } from "./types";
 /** The beside connector's folder on a cloud server, as the deploy login (beside the main one's). */
 export const CLOUD_NEXT_TUNNEL_DIR = `${CLOUD_TUNNEL_DIR}-next`;
 
-/** How often {@link waitForNoConnection} asks Cloudflare. */
+/** How often {@link waitForNoConnection} asks Cloudflare, and says it still waits. */
 const POLL_INTERVAL_MS = 5_000;
+const PROGRESS_EVERY_MS = 20_000;
 
 /** One of B's tunnels of an environment, with its token (from its shadow root's outputs). */
 export type MoveTunnel = RotatedTunnel;
@@ -115,7 +116,13 @@ async function withCommittedPins(deps: PhaseDeps, plan: DeployPlan, rendered: st
 function serverTunnel(tunnels: readonly MoveTunnel[]): MoveTunnel {
   const [tunnel, ...more] = tunnels;
   if (tunnel === undefined || tunnel.module !== "tunnel" || more.length > 0) {
-    throw new Error("A server runs the connector of one tunnel: the root module's `tunnel`.");
+    throw new OpsCrewError(
+      "INTERNAL",
+      "OpsCrew was given other tunnels than the one whose connector runs on the app's server, so it changed nothing there.",
+      {
+        hint: "This is a bug in OpsCrew; please report it.",
+      },
+    );
   }
   return tunnel;
 }
@@ -187,10 +194,10 @@ function hostAccess(server: NetworkServer) {
  * The finish's connector step for `environment`: the main connector restarts with B's tunnel
  * token (rotate's `serverTunnelConnectors(…).restart` or `portainerTunnelConnectors(…).restart`,
  * each approved by its hash), then the beside connector is removed, so B's tunnel never pauses.
- * On a server, skipped once the beside connector is gone (it goes only after the restart); a run
- * after the restart restarts the main connector once more while the beside one still serves, and
- * a refused removal names both hashes, which a script approves together. In Portainer each stack
- * plan that changes nothing is skipped. `tunnels`: B's tunnels with their tokens.
+ * On a server, skipped once the beside connector is gone and B's tunnel is connected (the main
+ * connector holds B's token then); a run after the restart restarts the main connector once more
+ * while the beside one still serves, and a refused removal names both hashes, which a script
+ * approves together. In Portainer each stack plan that changes nothing is skipped. `tunnels`: B's tunnels with their tokens.
  */
 export async function takeOverConnector(
   session: MoveSession,
@@ -214,7 +221,11 @@ export async function takeOverConnector(
   }
   const tunnel = serverTunnel(tunnels);
   const server = await inspectServer(session, deps, plan);
-  if (!besideOnServer(server.facts, plan.app.name)) {
+  const b = session.accounts.b;
+  if (
+    !besideOnServer(server.facts, plan.app.name) &&
+    (await b.client.tunnelConnections(b.accountId, tunnel.tunnelId)) === "active"
+  ) {
     deps.reporter.success(
       `The Cloudflare Tunnel connector on ${serverWords(plan)} serves the new account's tunnel, and none runs beside it; nothing on it changes.`,
     );
@@ -343,8 +354,8 @@ function provisionServices(session: MoveSession): ProvisionServices {
 /**
  * Waits, with read-only calls of `account`'s client, until Cloudflare reports no active
  * connection for its tunnel `tunnelId` (`tunnelConnections` closed or gone), for at most
- * {@link TUNNEL_CLOSE_TIMEOUT_MS}; then a plain stop that nothing in Cloudflare was deleted and to
- * run the command again. Used before B's tunnels are destroyed (abort) and before A's are (finish).
+ * {@link TUNNEL_CLOSE_TIMEOUT_MS}, saying about every 20 seconds that it still waits; then a plain
+ * stop that nothing in Cloudflare was deleted and to run the command again. Used before B's tunnels are destroyed (abort) and before A's are (finish).
  */
 export async function waitForNoConnection(
   session: MoveSession,
@@ -352,7 +363,10 @@ export async function waitForNoConnection(
   tunnelId: string,
 ): Promise<void> {
   const { reporter, redactor } = session.deps;
-  const { sleep, now } = session.services;
+  const { sleep } = session.services;
+  const now = session.services.now ?? Date.now;
+  const start = now();
+  let said = 0;
   reporter.step(
     `Waiting until Cloudflare reports no active connections for the tunnel (up to ${durationText(TUNNEL_CLOSE_TIMEOUT_MS)})`,
   );
@@ -362,17 +376,24 @@ export async function waitForNoConnection(
       try {
         const state = await account.client.tunnelConnections(account.accountId, tunnelId);
         problem = undefined;
-        return state === "active" ? undefined : true;
+        if (state !== "active") return true;
       } catch (error) {
         problem = redactor.redact(errorMessage(error));
-        return undefined;
       }
+      const elapsed = now() - start;
+      if (elapsed < TUNNEL_CLOSE_TIMEOUT_MS && elapsed - said >= PROGRESS_EVERY_MS) {
+        said = elapsed;
+        reporter.info(
+          `Still waiting for Cloudflare to close the tunnel's connections (${Math.round(elapsed / 1000)} s so far, up to ${durationText(TUNNEL_CLOSE_TIMEOUT_MS)}).`,
+        );
+      }
+      return undefined;
     },
     {
       timeoutMs: TUNNEL_CLOSE_TIMEOUT_MS,
       intervalMs: POLL_INTERVAL_MS,
+      now,
       ...(sleep === undefined ? {} : { sleep }),
-      ...(now === undefined ? {} : { now }),
     },
   );
   if (closed === true) {

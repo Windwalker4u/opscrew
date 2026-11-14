@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   besideConnector,
   CLOUD_NEXT_TUNNEL_DIR,
+  type MoveTunnel,
   removeBesideConnector,
   takeOverConnector,
   waitForNoConnection,
@@ -127,15 +128,39 @@ describe.skipIf(!findExecutable("git"))("besideConnector", () => {
     expect(asked(w)).toHaveLength(1);
   });
 
-  it("runs only the webhook's beside stack in Portainer's Caddy and proxy modes", async () => {
-    for (const web of [{ mode: "caddy" as const }, { mode: "proxy" as const, port: 8080 }]) {
-      const w = await connectorWorld({ kind: "portainer", web, redeploy: "cloudflare" });
+  it("runs only the beside stacks of the tunnels each Portainer web and redeploy mode has", async () => {
+    const cases = [
+      { web: { mode: "caddy" }, redeploy: "cloudflare", stacks: ["portainer-tunnel"] },
+      { web: { mode: "proxy", port: 8080 }, redeploy: "cloudflare", stacks: ["portainer-tunnel"] },
+      { web: { mode: "tunnel" }, redeploy: "updater", stacks: ["tunnel"] },
+    ] as const;
+    for (const { web, redeploy, stacks: names } of cases) {
+      const w = await connectorWorld({ kind: "portainer", web, redeploy });
       const stacks = fakeNextStacks();
       await besideConnector(w.session, w.environment, w.tunnels, { nextStacks: stacks.api });
-      expect(stacks.applies[0]?.tokens).toEqual({
-        "opscrew-shop-portainer-tunnel-next": w.tokens.portainer_tunnel,
-      });
+      const token = { tunnel: w.tokens.tunnel, "portainer-tunnel": w.tokens.portainer_tunnel };
+      expect(stacks.applies[0]?.tokens).toEqual(
+        Object.fromEntries(names.map((name) => [`opscrew-shop-${name}-next`, token[name]])),
+      );
     }
+  });
+
+  it("names the move's command when the Portainer environment no longer fits the plan", async () => {
+    const w = await connectorWorld(
+      { kind: "portainer", ...PORTAINER_TUNNEL },
+      { portainer: { architecture: "aarch64" } },
+    );
+    const stacks = fakeNextStacks();
+    const error = await failure(
+      besideConnector(w.session, w.environment, w.tunnels, { nextStacks: stacks.api }),
+    );
+    expect(error.message).toContain(
+      "your Portainer environment runs on arm64. Nothing was changed.",
+    );
+    expect(error.hint).toBe(
+      "Run `opscrew design` again so OpsCrew builds the image for arm64, then run `opscrew cloudflare move` again.",
+    );
+    expect(stacks.applies).toEqual([]);
   });
 
   it("does nothing for an app with no tunnel, and stops before any change without the beside stacks", async () => {
@@ -154,6 +179,25 @@ describe.skipIf(!findExecutable("git"))("besideConnector", () => {
     expect(error.code).toBe("INTERNAL");
     expect(error.message).toMatch(/Nothing was changed\.$/);
     expect(w.portainer.calls).toEqual([]);
+    expect(asked(w)).toEqual([]);
+
+    // A tunnel missing for a beside stack the plan has, or a server given the webhook's tunnel.
+    const stacks = fakeNextStacks();
+    const missing = await failure(
+      besideConnector(w.session, w.environment, w.tunnels.slice(1), { nextStacks: stacks.api }),
+    );
+    expect(missing.code).toBe("INTERNAL");
+    expect(missing.message).toContain("so OpsCrew changed nothing in Portainer.");
+    const own = await connectorWorld({ kind: "own" });
+    const [tunnel] = own.tunnels;
+    const wrong = await failure(
+      besideConnector(own.session, own.environment, [
+        { ...(tunnel as MoveTunnel), module: "portainer_tunnel" },
+      ]),
+    );
+    expect(wrong.code).toBe("INTERNAL");
+    expect(stacks.applies).toEqual([]);
+    expect(own.host.applies).toEqual([]);
     expect(asked(w)).toEqual([]);
   });
 });
@@ -192,41 +236,76 @@ describe.skipIf(!findExecutable("git"))("takeOverConnector", () => {
     expect(asked(w)).toHaveLength(3);
   });
 
-  it("names both hashes when a script approved the restart but not the removal", async () => {
-    const w = await connectorWorld({ kind: "cloud" });
+  it("restarts the main connector when the beside one is gone and B's tunnel has no connection", async () => {
+    const w = await connectorWorld({ kind: "own" });
     await besideConnector(w.session, w.environment, w.tunnels);
-    const first = scripted(w.session, []);
-    const refused = await failure(takeOverConnector(first.session, w.environment, w.tunnels));
-    const restart = first.handler.requests[0]?.planHash as string;
-    expect(refused.hint).toContain(`--approve ${restart}`);
-
-    const second = scripted(w.session, [restart]);
-    const stopped = await failure(takeOverConnector(second.session, w.environment, w.tunnels));
-    const removal = second.handler.requests[1]?.planHash as string;
-    expect(stopped.code).toBe("APPROVAL_REFUSED");
-    expect(stopped.message).toContain(
-      "serves the new account's tunnel now, and the host plan that removes the one beside it was not approved",
-    );
-    expect(stopped.hint).toContain(`--approve ${restart} --approve ${removal}`);
-    expect(w.tunnel.connections.map((c) => c.id).sort()).toEqual(["beside", "main"]);
-
-    // The run with both: the main connector restarts once more while the beside one serves.
-    const third = scripted(w.session, [restart, removal]);
-    await takeOverConnector(third.session, w.environment, w.tunnels);
-    expect(w.host.connected.at(-1)).toBe(1);
-    expect(w.host.applies.at(-1)?.plan.steps[0]?.params).toMatchObject({
-      remove: true,
-      dir: CLOUD_NEXT_TUNNEL_DIR,
-      runAs: "login",
-    });
-    expect(w.host.applies[1]?.plan.steps[0]?.params).toMatchObject({
-      dir: "/home/deploy/opscrew/cloudflared",
-      runAs: "login",
-      rewrite: true,
-    });
-    expect(Math.min(...w.host.connected)).toBeGreaterThan(0);
-    expect(await w.leaks(refused.hint ?? "", stopped.message, stopped.hint ?? "")).toBe(false);
+    // The beside container went (removed by hand, say) and B's tunnel lost its connection.
+    w.host.facts = { ...w.host.facts, containers: [] };
+    w.tunnel.connections = [];
+    await takeOverConnector(w.session, w.environment, w.tunnels);
+    expect(applied(w).slice(1)).toEqual([
+      {
+        params: [expect.objectContaining({ rewrite: true, runAs: "root", tunnelId: B_TUNNEL })],
+        token: w.tokens.tunnel,
+      },
+    ]);
+    // Nothing beside it to remove.
+    expect(asked(w)).toHaveLength(2);
+    expect(w.tunnel.connections.map((c) => c.id)).toEqual(["main"]);
+    expect(await w.leaks()).toBe(false);
   });
+
+  it.each([
+    {
+      kind: "own" as const,
+      runAs: "root",
+      main: "/srv/opscrew/cloudflared/shop",
+      beside: "/srv/opscrew/cloudflared-next/shop",
+    },
+    {
+      kind: "cloud" as const,
+      runAs: "login",
+      main: "/home/deploy/opscrew/cloudflared",
+      beside: CLOUD_NEXT_TUNNEL_DIR,
+    },
+  ])(
+    "names both hashes when a script approved the restart but not the removal ($kind)",
+    async ({ kind, runAs, main, beside }) => {
+      const w = await connectorWorld({ kind });
+      await besideConnector(w.session, w.environment, w.tunnels);
+      const first = scripted(w.session, []);
+      const refused = await failure(takeOverConnector(first.session, w.environment, w.tunnels));
+      const restart = first.handler.requests[0]?.planHash as string;
+      expect(refused.hint).toContain(`--approve ${restart}`);
+
+      const second = scripted(w.session, [restart]);
+      const stopped = await failure(takeOverConnector(second.session, w.environment, w.tunnels));
+      const removal = second.handler.requests[1]?.planHash as string;
+      expect(stopped.code).toBe("APPROVAL_REFUSED");
+      expect(stopped.message).toContain(
+        "serves the new account's tunnel now, and the host plan that removes the one beside it was not approved",
+      );
+      expect(stopped.hint).toContain(`--approve ${restart} --approve ${removal}`);
+      expect(w.tunnel.connections.map((c) => c.id).sort()).toEqual(["beside", "main"]);
+
+      // The run with both: the main connector restarts once more while the beside one serves.
+      const third = scripted(w.session, [restart, removal]);
+      await takeOverConnector(third.session, w.environment, w.tunnels);
+      expect(w.host.connected.at(-1)).toBe(1);
+      expect(w.host.applies.at(-1)?.plan.steps[0]?.params).toMatchObject({
+        remove: true,
+        dir: beside,
+        runAs,
+      });
+      expect(w.host.applies[1]?.plan.steps[0]?.params).toMatchObject({
+        dir: main,
+        runAs,
+        rewrite: true,
+      });
+      expect(Math.min(...w.host.connected)).toBeGreaterThan(0);
+      expect(await w.leaks(refused.hint ?? "", stopped.message, stopped.hint ?? "")).toBe(false);
+    },
+  );
 
   it("in Portainer restarts the main connectors with B's tokens, then removes the beside stacks", async () => {
     const w = await connectorWorld({ kind: "portainer", ...PORTAINER_TUNNEL });
@@ -349,6 +428,9 @@ describe.skipIf(!findExecutable("git"))("waitForNoConnection", () => {
       "Cloudflare still reports active connections for the app's Cloudflare Tunnel after 3 minutes",
     );
     expect(error.message).toContain("Nothing in Cloudflare was deleted.");
+    expect(w.deps.reporter.text()).toContain(
+      "Still waiting for Cloudflare to close the tunnel's connections (20 s so far, up to 3 minutes).",
+    );
     expect(error.hint).toContain("Run `opscrew cloudflare move` again in a few minutes");
     expect(w.clock.now()).toBeGreaterThanOrEqual(180_000);
     expect(await w.leaks(error.message)).toBe(false);

@@ -21,6 +21,7 @@ import { type DeployPlan, DeployPlanSchema, type PortainerWeb } from "@opscrew/p
 import { recordPortainerConnection, updateServerAddresses } from "../shared/server-record";
 import {
   FakeHostServer,
+  type FakePortainerOptions,
   fakeCertificate,
   fakePortainer,
   freshFacts,
@@ -239,9 +240,13 @@ export function fakeClock() {
 /**
  * The app on `target` in a move of {@link ZONE} from Old to New, prepared up to the connector: B's
  * tunnels in New (none connected yet) with their tokens, the server's or Portainer's login
- * recorded, and a session whose services hold the fake host and Portainer.
+ * recorded, and a session whose services hold the fake host and Portainer (`o.portainer`: the fake
+ * Portainer's options).
  */
-export async function connectorWorld(target: ConnectorTarget) {
+export async function connectorWorld(
+  target: ConnectorTarget,
+  o: { portainer?: Omit<FakePortainerOptions, "token"> } = {},
+) {
   const plan = unencrypted(planFor(target));
   const h = await moveHarness({
     plans: () => ({ prod: plan }),
@@ -282,7 +287,7 @@ export async function connectorWorld(target: ConnectorTarget) {
       own: { host: "192.0.2.50", port: 22, user: "admin", agent: true },
     }));
   }
-  const portainer = fakePortainer({ token: PORTAINER_TOKEN });
+  const portainer = fakePortainer({ ...o.portainer, token: PORTAINER_TOKEN });
   if (target.kind === "portainer") {
     await recordPortainerConnection(h.deps.paths, {
       url: PORTAINER_URL,
