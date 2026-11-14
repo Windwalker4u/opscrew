@@ -4,6 +4,34 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.9] - 2026-11-15
+
+Nothing to redo.
+
+### Added
+
+- **A build argument of your own.** A variable in `opscrew/plan.yaml` marked `buildArg: true`
+  reaches your image's build whatever its name, the way the browser-prefixed variables do: as a
+  Dockerfile `--build-arg` (in the deploy workflow, for your Portainer and on your computer), and to
+  Buildpacks and Railpack builds. It never goes into the running app's settings, and it can't be a
+  secret or a value OpsCrew generates. See
+  [How OpsCrew builds your app's image](docs/guide/builders.md#a-build-argument-of-your-own).
+- **Vite's `loadEnv`.** Settings a Vite app reads through `loadEnv` in `vite.config.*`, or in the
+  files it imports, are detected as public build-time values.
+
+### Fixed
+
+- **A further app reads only its own folder.** `npx opscrew analyze --app <key>` (and interview's
+  and design's own reading) take an app added with `opscrew app add` from its folder, its workspace
+  packages and `app.sharedPaths`: no longer the repository root's `.env.example`, nor another app's
+  database or frameworks, which could make design refuse a target. The first app reads the
+  repository root as before. See [Several apps in one repository](docs/guide/several-apps.md).
+
+### Changed
+
+- **The whole repository is Apache-2.0.** The `ee/` folder, reserved for features that won't be
+  built here, is gone. Anything primarily useful to an individual developer stays free.
+
 ## [0.2.8] - 2026-11-14
 
 Nothing to redo. Two defaults change at your next `npx opscrew design` and `npx opscrew provision`:
@@ -686,6 +714,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.9]: https://github.com/opscrew-hub/opscrew/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/opscrew-hub/opscrew/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/opscrew-hub/opscrew/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/opscrew-hub/opscrew/compare/v0.2.5...v0.2.6
