@@ -23,6 +23,7 @@ import {
   type SharedPlan,
   type SharedRecord,
   SharedRecordSchema,
+  sharedRuleHostnames,
 } from "./shared";
 import {
   FAKE_ACCOUNT_ID as ACCOUNT_ID,
@@ -272,6 +273,67 @@ describe("the www redirect rule (feature 016)", () => {
     ]);
     zone.plan = "pro";
     expect((await planFor(zone, { hostnames: redirect(SITE) })).findings).toEqual([]);
+  });
+});
+
+describe("sharedRuleHostnames", () => {
+  it("lists every hostname OpsCrew's rules name, other apps' included, and none from a rule it did not write", () => {
+    const facts = {
+      entrypoints: {
+        [WAF]: {
+          id: "waf",
+          rules: [
+            {
+              id: "r1",
+              ref: BLOCK,
+              expression: blockExpression([...A, ...B]),
+              action: "block",
+              enabled: true,
+            },
+            {
+              id: "r2",
+              ref: "own-rule",
+              expression: '(http.host eq "own.example.com")',
+              action: "block",
+              enabled: true,
+            },
+          ],
+        },
+        [CONFIG]: {
+          id: "config",
+          rules: [
+            {
+              id: "r3",
+              ref: TLS,
+              expression:
+                '(http.host in {"docs.example.com"} or ends_with(http.host, ".pr.example.com"))',
+              action: "set_config",
+              enabled: true,
+            },
+          ],
+        },
+        [REDIRECT]: {
+          id: "redirect",
+          rules: [
+            {
+              id: "r4",
+              ref: WWW,
+              expression: '(http.host eq "changed by hand")',
+              action: "redirect",
+              enabled: true,
+            },
+          ],
+        },
+      },
+    };
+    expect(sharedRuleHostnames(facts)).toEqual([
+      "*.pr.example.com",
+      "api.example.com",
+      "docs.example.com",
+      "shop.example.com",
+      "www.shop.example.com",
+    ]);
+    expect(sharedRuleHostnames({ entrypoints: { [WAF]: undefined } })).toEqual([]);
   });
 });
 

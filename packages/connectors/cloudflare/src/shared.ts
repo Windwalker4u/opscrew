@@ -981,6 +981,22 @@ function hostnamesOf(ref: SharedRuleRef, rule: RulesetRule): string[] | undefine
   return sortedUnique(hostnames);
 }
 
+/**
+ * Every hostname OpsCrew's shared rules name in the entrypoints read, every app's, sorted: a move
+ * to another Cloudflare account finds the zone's OpsCrew apps by them. A rule OpsCrew did not
+ * write, or one whose expression was changed by hand, names none.
+ */
+export function sharedRuleHostnames(facts: Pick<SharedFacts, "entrypoints">): string[] {
+  const names = Object.values(facts.entrypoints).flatMap((entrypoint) =>
+    (entrypoint?.rules ?? []).flatMap((rule) =>
+      rule.ref !== undefined && rule.ref in SHARED_RULES
+        ? (hostnamesOf(rule.ref as SharedRuleRef, rule) ?? [])
+        : [],
+    ),
+  );
+  return sortedUnique(names);
+}
+
 /** How OpsCrew's rule differs from its template, apart from its hostnames (none: as written). */
 function ruleDifferences(ref: SharedRuleRef, rule: RulesetRule): string[] {
   const template = TEMPLATES[ref];
