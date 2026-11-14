@@ -11,6 +11,8 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { addApp } from "../apps";
+import { appPlan } from "../apps/__fixtures__/sites";
 import { createTestPhaseDeps } from "../testing";
 import { renderArchitectureMarkdown } from "./markdown";
 import { ANALYST_SYSTEM_PROMPT, buildAnalystPrompt } from "./prompts";
@@ -21,6 +23,13 @@ const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url)
 /** The detect fixture with an Express API in `apps/api` and a Next.js app in `apps/web`. */
 const TWO_APPS = fileURLToPath(
   new URL("../../../detect/test/fixtures/monorepo-two-apps/", import.meta.url),
+);
+/**
+ * The detect fixture of the 0.2.8 report: a root `.env.example`, a server app on PostgreSQL, a
+ * React app, and a Vite app in `apps/pay` reading three `VITE_` settings through `loadEnv`.
+ */
+const THREE_APPS = fileURLToPath(
+  new URL("../../../detect/test/fixtures/monorepo-three-apps/", import.meta.url),
 );
 
 async function project(example: string) {
@@ -461,6 +470,39 @@ describe("runAnalyze", () => {
       expect(reset.architecture.facts.appDir).toBe(".");
       const afterReset = await runAnalyze(deps, { ai: false });
       expect(afterReset.architecture.facts.appDir).toBe(".");
+    });
+
+    it("describes a further app from its own folder only, and the first app as before", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opscrew-analyze-three-apps-"));
+      await materializeFixture(THREE_APPS, root);
+      const first = await runAnalyze(await createTestPhaseDeps({ root }), { ai: false });
+      const expected = JSON.parse(await readFile(join(THREE_APPS, "expected.json"), "utf8"));
+      expect(first.architecture.facts).toMatchObject(expected);
+
+      await addApp(root, "pay", "apps/pay");
+      const deps = await createTestPhaseDeps({ root, app: "pay" });
+      const { facts } = (await runAnalyze(deps, { ai: false })).architecture;
+      expect(facts.appDir).toBe("apps/pay");
+      expect(facts.envVars.map((variable) => [variable.name, variable.clientExposed])).toEqual([
+        ["VITE_BASE_PATH", true],
+        ["VITE_CHECKOUT_URL", true],
+        ["VITE_SHOP_ID", true],
+      ]);
+      expect(facts.services).toEqual([]);
+      expect(facts.frameworks).toEqual([{ name: "vite", version: "^7.1.0", path: "apps/pay" }]);
+      expect((await readArtifact("architecture", deps.paths.files.architecture)).facts).toEqual(
+        facts,
+      );
+
+      // The folders its plan shares are its own too.
+      const plan = appPlan("pay");
+      await writeArtifact("plan", deps.paths.files.plan, {
+        ...plan,
+        app: { ...plan.app, sharedPaths: ["apps/server"] },
+      });
+      const shared = (await runAnalyze(deps, { ai: false })).architecture.facts;
+      expect(shared.envVars.map((variable) => variable.name)).toContain("DATABASE_URL");
+      expect(shared.services.map((service) => service.kind)).toEqual(["postgres"]);
     });
 
     it("rejects an unknown app folder with the candidates and writes nothing", async () => {

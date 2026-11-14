@@ -1,6 +1,8 @@
+import { cp } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { detectProject, detectProjectDetails } from "./index";
-import { makeTree, removeTree } from "./test-helpers";
+import { makeTree, removeTree, writeTree } from "./test-helpers";
 
 const roots: string[] = [];
 async function tree(files: Record<string, string>): Promise<string> {
@@ -131,24 +133,41 @@ describe("the variables of an app in a folder", () => {
       "scripts/sync-docs.mjs": "const dir = process.env.OPSCREW_GUIDE_DIR;\n",
       ".env.example": "SITE_ORIGIN=\n",
     });
-    // The root's committed env files are every app's; the code in the root's folders is not.
+    // Neither the root's committed env files nor the code in the root's folders are theirs.
     const landing = await detectProject(root, { appDir: "sites/landing" });
     expect(landing.envVars.map((variable) => variable.name)).toEqual([
-      "SITE_ORIGIN",
       "UI_CDN_URL",
       "VITE_CONTACT_EMAIL",
       "VITE_SITE_URL",
     ]);
     const docs = await detectProject(root, { appDir: "sites/docs" });
-    expect(docs.envVars.map((variable) => variable.name)).toEqual([
-      "DOCS_SEARCH_KEY",
-      "SITE_ORIGIN",
-    ]);
-    // The repository's root app reads the whole repository, its scripts included.
+    expect(docs.envVars.map((variable) => variable.name)).toEqual(["DOCS_SEARCH_KEY"]);
+    // The repository's root app reads the whole repository, its scripts and root files included.
     const { facts } = await detectProjectDetails(root, { appDir: "." });
     expect(facts.envVars.map((variable) => variable.name)).toEqual(
-      expect.arrayContaining(["BROWSER_CHANNEL", "BROWSER_PATH", "OPSCREW_GUIDE_DIR"]),
+      expect.arrayContaining([
+        "BROWSER_CHANNEL",
+        "BROWSER_PATH",
+        "OPSCREW_GUIDE_DIR",
+        "SITE_ORIGIN",
+      ]),
     );
+  });
+
+  it("come from its shared paths too", async () => {
+    const root = await tree({
+      ...PNPM_WORKSPACE,
+      "config/site.mjs": "export const origin = process.env.SITE_ORIGIN;\n",
+      "sites/landing/src/main.js": "const url = import.meta.env.VITE_SITE_URL;\n",
+    });
+    const landing = await detectProject(root, {
+      appDir: "sites/landing",
+      sharedPaths: ["config/site.mjs"],
+    });
+    expect(landing.envVars.map((variable) => variable.name)).toEqual([
+      "SITE_ORIGIN",
+      "VITE_SITE_URL",
+    ]);
   });
 
   it("come from a workspace package the app uses, even one that looks like an app itself", async () => {
@@ -172,5 +191,51 @@ describe("the variables of an app in a folder", () => {
     expect(web.workspacePackages).toEqual(["packages/db"]);
     expect(web.envVars.map((variable) => variable.name)).toContain("DATABASE_URL");
     expect(web.services.map((service) => service.kind)).toContain("postgres");
+  });
+});
+
+/**
+ * The workspace of the 0.2.8 report: a root `.env.example` for the whole repository, a server app
+ * on PostgreSQL with no start script, a React app, and a Vite app (`apps/pay`) that reads its three
+ * `VITE_` settings through `loadEnv` in `vite.config.ts` and a file it imports.
+ */
+const THREE_APPS = fileURLToPath(new URL("../test/fixtures/monorepo-three-apps/", import.meta.url));
+
+describe("an app beside other apps in a workspace (the 0.2.8 report)", () => {
+  const client = { clientExposed: true, secretLikely: false };
+  const ownFacts = {
+    envVars: [
+      { name: "VITE_BASE_PATH", files: ["apps/pay/vite.config.ts"], ...client },
+      { name: "VITE_CHECKOUT_URL", files: ["apps/pay/config/checkout.ts"], ...client },
+      { name: "VITE_SHOP_ID", files: ["apps/pay/config/checkout.ts"], ...client },
+    ],
+    services: [],
+    frameworks: [{ name: "vite", version: "^7.1.0", path: "apps/pay" }],
+  };
+
+  it("holds only its own variables, services and frameworks", async () => {
+    expect(await detectProject(THREE_APPS, { appDir: "apps/pay" })).toMatchObject(ownFacts);
+  });
+
+  it("holds none of another app's, even beside the one deployable server", async () => {
+    // A start script makes the server the workspace's one deployable server.
+    const root = await tree({});
+    await cp(THREE_APPS, root, { recursive: true });
+    await writeTree(root, {
+      "apps/server/package.json": json({
+        name: "server",
+        scripts: { start: "node dist/index.js" },
+        dependencies: { pg: "^8.16.0" },
+      }),
+    });
+    expect(await detectProject(root, { appDir: "apps/pay" })).toMatchObject(ownFacts);
+  });
+
+  it("leaves the app at the repository root reading the whole repository", async () => {
+    // expected.json holds the root's facts in full.
+    const { facts, appCandidates } = await detectProjectDetails(THREE_APPS);
+    expect(facts.appDir).toBe(".");
+    expect(appCandidates).toEqual(["apps/pay", "apps/web"]);
+    expect(facts.services.map((service) => service.kind)).toEqual(["postgres"]);
   });
 });

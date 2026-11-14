@@ -240,10 +240,44 @@ function readHasDefault(kind: ReadKind, after: string): boolean {
  * with and once without a default has none: the read without one needs a value.
  */
 export function extractEnvReads(text: string): EnvRead[] {
+  return collectReads(text, REFERENCE_PATTERNS, DESTRUCTURING, (name) => !IGNORED_NAMES.has(name));
+}
+
+/** `env.VITE_X` and `env["VITE_X"]`, on whatever holds `loadEnv`'s result. */
+const VITE_READS: Array<{ pattern: RegExp; kind: ReadKind }> = [
+  { pattern: /\.(VITE_[A-Za-z0-9_]+)\b/g, kind: "member" },
+  {
+    pattern: new RegExp(`\\[\\s*${QUOTE}(VITE_[A-Za-z0-9_]+)${QUOTE}\\s*\\]`, "g"),
+    kind: "member",
+  },
+];
+/** `const { VITE_A, VITE_B = "x" } = loadEnv(…)` */
+const VITE_DESTRUCTURING = /\{([^{}]*)\}\s*=\s*loadEnv\s*\(/g;
+
+/**
+ * The `VITE_` settings a Vite config, or a file it imports, reads from the result of
+ * `loadEnv(mode, root, "VITE_")` (sorted by name, unique): `env.VITE_X`, `env["VITE_X"]` and
+ * `const { VITE_X } = loadEnv(…)`, each with whether every read has a default.
+ */
+export function extractViteEnvReads(text: string): EnvRead[] {
+  return collectReads(text, VITE_READS, VITE_DESTRUCTURING, (name) => name.startsWith("VITE_"));
+}
+
+/**
+ * The reads `patterns` and `destructuring` (whose group 1 is the `{ … }` list) find in `text`,
+ * of the names `keep` accepts, sorted by name; a variable read once with and once without a
+ * default has none.
+ */
+function collectReads(
+  text: string,
+  patterns: ReadonlyArray<{ pattern: RegExp; kind: ReadKind }>,
+  destructuring: RegExp,
+  keep: (name: string) => boolean,
+): EnvRead[] {
   const reads = new Map<string, boolean>();
   const add = (name: string, hasDefault: boolean) =>
     reads.set(name, (reads.get(name) ?? true) && hasDefault);
-  for (const { pattern, kind } of REFERENCE_PATTERNS) {
+  for (const { pattern, kind } of patterns) {
     for (const match of text.matchAll(pattern)) {
       const name = match[1];
       if (!name) continue;
@@ -254,7 +288,7 @@ export function extractEnvReads(text: string): EnvRead[] {
       add(name, !negated && readHasDefault(kind, text.slice(end, end + 200)));
     }
   }
-  for (const match of text.matchAll(DESTRUCTURING)) {
+  for (const match of text.matchAll(destructuring)) {
     for (const part of (match[1] ?? "").split(",")) {
       if (part.trim().startsWith("...")) continue;
       const parsed = /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[\w$]+)?\s*(=)?/.exec(part);
@@ -263,7 +297,7 @@ export function extractEnvReads(text: string): EnvRead[] {
     }
   }
   return [...reads.entries()]
-    .filter(([name]) => !IGNORED_NAMES.has(name))
+    .filter(([name]) => keep(name))
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([name, hasDefault]) => ({ name, hasDefault }));
 }

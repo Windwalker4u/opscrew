@@ -16,6 +16,7 @@ const FIXTURE_NAMES = [
   "fastapi-redis",
   "laravel-sail",
   "lovable-vite-supabase",
+  "monorepo-three-apps",
   "monorepo-turbo",
   "monorepo-two-apps",
   "nextjs-prisma-postgres",

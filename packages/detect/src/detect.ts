@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, posix, resolve } from "node:path";
 import { exists, stripBom, zodIssues } from "@opscrew/core";
 import {
   type AppKind,
@@ -25,6 +25,7 @@ import {
 import {
   type EnvRead,
   extractPhpEnvReads,
+  extractViteEnvReads,
   isClientExposed,
   isEnvExampleFile,
   isSecretLikely,
@@ -118,6 +119,12 @@ export interface DetectOptions {
    * directory throws an `OpsCrewError` (`INVALID_INPUT`) listing the candidates.
    */
   appDir?: string;
+  /**
+   * The paths outside `appDir` that are the app's too (its plan's `app.sharedPaths`). An app in a
+   * folder takes its variables, services and frameworks from its folder, its workspace packages
+   * and these paths only.
+   */
+  sharedPaths?: string[];
 }
 
 /** Full detection result: the facts plus context the caller may turn into warnings or risks. */
@@ -148,6 +155,7 @@ interface UnitInfo {
 
 const NEXT_CONFIG = /^next\.config\.[cm]?[jt]s$/;
 const ASTRO_CONFIG = /^astro\.config\.[cm]?[jt]s$/;
+const VITE_CONFIG = /^vite\.config\.[cm]?[jt]s$/;
 /** Dockerfiles for development, tests or local runs: `Dockerfile.dev`, `test.Dockerfile`. */
 const DEV_DOCKERFILE =
   /^(?:dockerfile\.(?:dev|development|test|local)|(?:dev|development|test|local)\.dockerfile)$/i;
@@ -435,13 +443,20 @@ export async function detectProjectDetails(
   const inScope = (path: string) => !otherApps.some((dir) => isWithin(dir, path));
   const scopedFiles = otherApps.length > 0 ? files.filter(inScope) : files;
   const scopedMembers = members.filter((info) => inScope(info.unit.dir));
-  const relevant = rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers;
   const appDir = primary?.unit.dir ?? ".";
-  // An app in a folder reads its variables in its own files and its workspace packages (and the
-  // repository root's committed env files) only, never in the repository's other folders (its
-  // scripts, other apps).
-  const envDirs = [appDir, ...workspacePackages];
-  const inEnvScope = (path: string) => envDirs.some((dir) => isWithin(dir, path));
+  // An app in a folder is its folder, its workspace packages and its shared paths: its variables,
+  // services and frameworks come from there only, never from the repository's root files or its
+  // other folders (its scripts, other apps). The app at the root reads the whole repository.
+  const ownPaths = [
+    appDir,
+    ...workspacePackages,
+    ...(options.sharedPaths ?? []).map(normalizeAppDir),
+  ];
+  const isOwn = (path: string) => ownPaths.some((dir) => isWithin(dir, path));
+  const ownFiles = scopedFiles.filter(isOwn);
+  const relevant = (rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers).filter((info) =>
+    isOwn(info.unit.dir),
+  );
   const appPackage = primary?.unit.packageJson;
   const appKind: AppKind = primary?.appKind ?? "unknown";
   const plainPhp = primary?.hints.plainPhp === true;
@@ -458,22 +473,19 @@ export async function detectProjectDetails(
   });
 
   const envFiles: { path: string; text: string }[] = [];
-  // The repository root's committed env files are the app's too.
-  const envFileInScope = (file: string) => inEnvScope(file) || dirnameRel(file) === ".";
-  for (const path of scopedFiles.filter(
-    (file) => isCommittedEnvFile(file) && envFileInScope(file),
-  )) {
+  for (const path of ownFiles.filter(isCommittedEnvFile)) {
     envFiles.push({ path, text: (await read(path)) ?? "" });
   }
   const envTexts = envFiles.map((file) => file.text);
-  const envSignals = new Map([...signals].filter(([file]) => inEnvScope(file)));
+  const ownSignals = new Map([...signals].filter(([file]) => isOwn(file)));
   // PHP code's reads of the app's variables (`vendor/` is never walked).
   const phpReads: EnvRead[] = [];
-  const phpFiles = scopedFiles.filter((file) => file.endsWith(".php") && inEnvScope(file));
+  const phpFiles = ownFiles.filter((file) => file.endsWith(".php"));
   await mapLimit(phpFiles, 16, async (file) => {
     phpReads.push(...extractPhpEnvReads((await read(file)) ?? ""));
   });
-  const collected = collectEnvVars(envSignals, envFiles, phpReads);
+  const viteReads = await viteConfigReads(appDir, filesIn, fileSet, read);
+  const collected = collectEnvVars(ownSignals, viteReads, envFiles, phpReads);
   const { configUrlSchemes, envUrls } = collected;
   // Laravel Sail's development settings (the container user's ids) are never asked.
   const sail =
@@ -486,12 +498,12 @@ export async function detectProjectDetails(
   const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
   const composeEngines = new Set<ComposeRedisEngine>();
-  for (const file of scopedFiles.filter(isComposeFile)) {
+  for (const file of ownFiles.filter(isComposeFile)) {
     const text = (await read(file)) ?? "";
     if (composeUsesRedis(text)) composeRedis = true;
     for (const engine of composeRedisEngines(text)) composeEngines.add(engine);
   }
-  const redisModuleCalls = await redisModuleCallers(relevant, scopedFiles, read);
+  const redisModuleCalls = await redisModuleCallers(relevant, ownFiles, read);
 
   // Services. Celery's broker is the `*BROKER*` variable's URL.
   const pythonUrlSchemes = new Set<string>();
@@ -499,7 +511,7 @@ export async function detectProjectDetails(
   // Python's own sqlite3 module and SQLAlchemy need no dependency for SQLite: the code shows it.
   let sqliteConnect = false;
   let sqliteUrl = false;
-  for (const [file, found] of signals) {
+  for (const [file, found] of ownSignals) {
     if (!file.endsWith(".py")) continue;
     for (const scheme of found.urlSchemes) pythonUrlSchemes.add(scheme);
     if (!isRuntimeCodeFile(file)) continue;
@@ -521,14 +533,14 @@ export async function detectProjectDetails(
       redisModuleCalls,
     });
   }
-  for (const file of scopedFiles.filter((f) => f.endsWith(".prisma"))) {
+  for (const file of ownFiles.filter((f) => f.endsWith(".prisma"))) {
     addPrismaServices(
       services,
       (await read(file)) ?? "",
       relevant.map((info) => info.unit),
     );
   }
-  const settingsFiles = scopedFiles.filter((f) => /(?:^|\/)settings(?:\.py|\/[^/]+\.py)$/.test(f));
+  const settingsFiles = ownFiles.filter((f) => /(?:^|\/)settings(?:\.py|\/[^/]+\.py)$/.test(f));
   const settingsTexts = new Map<string, string>();
   for (const file of settingsFiles) {
     const text = (await read(file)) ?? "";
@@ -1039,15 +1051,50 @@ async function redisModuleCallers(
   return found;
 }
 
+/** A relative import's path: `from "./x"`, `import "./x"`, `import("./x")`, `require("./x")`. */
+const RELATIVE_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g;
+/** What a relative import may leave out of the file's name. */
+const IMPORT_EXTENSIONS = ["", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"];
+
+/**
+ * The settings Vite's `loadEnv` gives the `vite.config.*` in `dir` and the files it imports
+ * (`extractViteEnvReads`), per file that reads any.
+ */
+async function viteConfigReads(
+  dir: string,
+  filesIn: (dir: string, test: (name: string) => boolean) => string[],
+  fileSet: ReadonlySet<string>,
+  read: ReadText,
+): Promise<Map<string, EnvRead[]>> {
+  const reads = new Map<string, EnvRead[]>();
+  for (const config of filesIn(dir, (name) => VITE_CONFIG.test(name))) {
+    const text = (await read(config)) ?? "";
+    const imported = [...text.matchAll(RELATIVE_IMPORT)].flatMap((match) => {
+      const base = posix.join(dirnameRel(config), match[1] as string);
+      const file = IMPORT_EXTENSIONS.map((extension) => base + extension).find((path) =>
+        fileSet.has(path),
+      );
+      return file === undefined ? [] : [file];
+    });
+    for (const file of [config, ...imported]) {
+      const found = extractViteEnvReads(file === config ? text : ((await read(file)) ?? ""));
+      if (found.length > 0) reads.set(file, found);
+    }
+  }
+  return reads;
+}
+
 /**
  * The app's environment variables: the names the code reads, every name of an example env file,
  * and the names Flask loads by prefix (`app.config.from_prefixed_env()`) from the other committed
  * env files. Values are only looked at for their URL scheme and host (`configUrlSchemes`, each
- * variable's `urlScheme`, and `envUrls`, the first file's URL per variable), never kept. PHP code's
- * reads (`phpReads`) add no name: they only give a default to a name found otherwise.
+ * variable's `urlScheme`, and `envUrls`, the first file's URL per variable), never kept. The
+ * `loadEnv` settings of the Vite config (`viteReads`, per file) count as reads in the code. PHP
+ * code's reads (`phpReads`) add no name: they only give a default to a name found otherwise.
  */
 function collectEnvVars(
   signals: ReadonlyMap<string, SourceSignals>,
+  viteReads: ReadonlyMap<string, readonly EnvRead[]>,
   committedEnvFiles: readonly { path: string; text: string }[],
   phpReads: readonly EnvRead[],
 ): {
@@ -1066,8 +1113,12 @@ function collectEnvVars(
   const envDefaults = new Map<string, boolean>();
   const addRead = (envRead: EnvRead) =>
     envDefaults.set(envRead.name, (envDefaults.get(envRead.name) ?? true) && envRead.hasDefault);
-  for (const [file, found] of signals) {
-    for (const envRead of found.envReads) {
+  const codeReads = [
+    ...[...signals].map(([file, found]) => [file, found.envReads] as const),
+    ...viteReads,
+  ];
+  for (const [file, reads] of codeReads) {
+    for (const envRead of reads) {
       addEnv(envRead.name, file);
       addRead(envRead);
     }
@@ -1154,7 +1205,7 @@ async function staticOutputDir(
   if (names.has("astro")) return "dist";
   if (names.has("angular")) return angularOutputDir(await read(joinRel(dir, "angular.json")));
   if (names.has("vite")) {
-    const config = await read(filesIn(dir, (n) => /^vite\.config\.[cm]?[jt]s$/.test(n))[0] ?? "");
+    const config = await read(filesIn(dir, (n) => VITE_CONFIG.test(n))[0] ?? "");
     return (
       /\boutDir\s*:\s*["'`]([^"'`]+)["'`]/.exec(config ?? "")?.[1]?.replace(/^\.\//, "") ?? "dist"
     );

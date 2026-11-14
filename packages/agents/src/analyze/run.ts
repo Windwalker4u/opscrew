@@ -119,10 +119,11 @@ export async function runAnalyze(
             : " (chosen earlier; `--dir .` describes the whole repository)";
       reporter.info(`Describing the app in ${normalizeAppDir(appDir)}${source}.`);
     }
-    const detection = await detectProjectDetails(
-      paths.root,
-      appDir !== undefined ? { appDir } : {},
-    );
+    const sharedPaths = await plannedSharedPaths(deps);
+    const detection = await detectProjectDetails(paths.root, {
+      ...(appDir !== undefined ? { appDir } : {}),
+      ...(sharedPaths !== undefined ? { sharedPaths } : {}),
+    });
     if (detection.truncated) {
       reporter.warn(
         "The repository has more files than OpsCrew inspects (20,000); detection may be incomplete.",
@@ -194,6 +195,18 @@ async function chosenAppDir(deps: PhaseDeps): Promise<string | undefined> {
     const previous = (await readArtifact("architecture", deps.paths.files.architecture)).facts
       .appDir;
     return previous !== undefined && previous !== "." ? previous : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The folders outside the app's that its plan names as its own (`app.sharedPaths` in
+ * `opscrew/plan.yaml`, written by design); none without a valid plan.
+ */
+async function plannedSharedPaths(deps: PhaseDeps): Promise<string[] | undefined> {
+  try {
+    return (await readArtifact("plan", deps.paths.files.plan)).app.sharedPaths;
   } catch {
     return undefined;
   }

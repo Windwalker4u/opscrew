@@ -1,0 +1,10 @@
+{
+  "name": "pay",
+  "private": true,
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}

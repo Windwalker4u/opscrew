@@ -1,0 +1,90 @@
+{
+  "name": "shop",
+  "languages": [
+    "javascript",
+    "typescript"
+  ],
+  "packageManager": "pnpm",
+  "frameworks": [
+    {
+      "name": "vite",
+      "version": "^7.1.0",
+      "path": "apps/pay"
+    },
+    {
+      "name": "react",
+      "version": "^19.2.0",
+      "path": "apps/web"
+    },
+    {
+      "name": "vite",
+      "version": "^7.1.0",
+      "path": "apps/web"
+    }
+  ],
+  "appKind": "unknown",
+  "platformExport": {
+    "platform": "none",
+    "evidence": []
+  },
+  "build": {
+    "installCommand": "pnpm install --frozen-lockfile"
+  },
+  "runtimeVersions": {},
+  "envVars": [
+    {
+      "name": "APP_ORIGIN",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "DATABASE_URL",
+      "files": [
+        ".env.example",
+        "apps/server/src/index.ts"
+      ],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "MAIL_FROM",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "SESSION_SECRET",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "VITE_SHOP_TITLE",
+      "files": [
+        "apps/web/src/main.jsx"
+      ],
+      "clientExposed": true,
+      "secretLikely": false
+    }
+  ],
+  "services": [
+    {
+      "kind": "postgres",
+      "evidence": [
+        "dependency:pg",
+        "env:DATABASE_URL"
+      ],
+      "variable": "DATABASE_URL"
+    }
+  ],
+  "docker": {},
+  "monorepo": true,
+  "appDir": "."
+}

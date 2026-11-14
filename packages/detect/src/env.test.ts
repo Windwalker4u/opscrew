@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractEnvReads, extractPhpEnvReads } from "./env";
+import { extractEnvReads, extractPhpEnvReads, extractViteEnvReads } from "./env";
 import {
   extractEnvReferences,
   isClientExposed,
@@ -153,6 +153,33 @@ describe("extractEnvReads", () => {
       { name: "API_URL", hasDefault: false },
       { name: "PY_VAR", hasDefault: false },
     ]);
+  });
+});
+
+describe("extractViteEnvReads", () => {
+  it("finds the VITE_ settings read from loadEnv's result, with their defaults", () => {
+    const text = [
+      'import { defineConfig, loadEnv } from "vite";',
+      "export default defineConfig(({ mode }) => {",
+      '  const env = loadEnv(mode, process.cwd(), "VITE_");',
+      '  const { VITE_SHOP_ID, VITE_THEME = "light" } = loadEnv(mode, process.cwd(), "VITE_");',
+      "  return {",
+      "    base: env.VITE_BASE_PATH,",
+      '    define: { currency: JSON.stringify(env["VITE_CURRENCY"] ?? "EUR") },',
+      "    server: { port: Number(env.PORT) },",
+      "  };",
+      "});",
+    ].join("\n");
+    expect(extractViteEnvReads(text)).toEqual([
+      { name: "VITE_BASE_PATH", hasDefault: false },
+      { name: "VITE_CURRENCY", hasDefault: true },
+      { name: "VITE_SHOP_ID", hasDefault: false },
+      { name: "VITE_THEME", hasDefault: true },
+    ]);
+  });
+
+  it("finds none in text that names no VITE_ setting", () => {
+    expect(extractViteEnvReads('const env = loadEnv(mode, root, "VITE_");\n')).toEqual([]);
   });
 });
 
