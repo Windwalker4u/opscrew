@@ -7,8 +7,10 @@
  */
 import {
   type ApplyStackOptions,
+  applyStackPlan,
   type PortainerClient,
   type PortainerFacts,
+  planNextStacks,
   type StackPlan,
   stackPlanHash,
   valueFingerprints,
@@ -85,12 +87,7 @@ export interface NextStacksApi {
  * of an app in Portainer stops here before anything changes.
  */
 export function nextStacksApi(options: { nextStacks?: NextStacksApi }): NextStacksApi {
-  if (options.nextStacks !== undefined) return options.nextStacks;
-  throw new OpsCrewError(
-    "INTERNAL",
-    "OpsCrew can't run the new Cloudflare account's tunnel connectors beside the current ones in Portainer yet. Nothing was changed.",
-    { hint: "This part of the move is not built yet; please report it to OpsCrew." },
-  );
+  return options.nextStacks ?? { plan: planNextStacks, apply: applyStackPlan };
 }
 
 /** The beside stack that runs the connector of a tunnel of `module`. */

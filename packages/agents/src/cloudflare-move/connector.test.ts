@@ -163,7 +163,7 @@ describe.skipIf(!findExecutable("git"))("besideConnector", () => {
     expect(stacks.applies).toEqual([]);
   });
 
-  it("does nothing for an app with no tunnel, and stops before any change without the beside stacks", async () => {
+  it("does nothing for an app with no tunnel, and stops before any change when a beside stack has no tunnel", async () => {
     const none = await connectorWorld({
       kind: "portainer",
       web: { mode: "proxy", port: 8080 },
@@ -175,11 +175,6 @@ describe.skipIf(!findExecutable("git"))("besideConnector", () => {
     expect(none.portainer.calls).toEqual([]);
 
     const w = await connectorWorld({ kind: "portainer", ...PORTAINER_TUNNEL });
-    const error = await failure(besideConnector(w.session, w.environment, w.tunnels));
-    expect(error.code).toBe("INTERNAL");
-    expect(error.message).toMatch(/Nothing was changed\.$/);
-    expect(w.portainer.calls).toEqual([]);
-    expect(asked(w)).toEqual([]);
 
     // A tunnel missing for a beside stack the plan has, or a server given the webhook's tunnel.
     const stacks = fakeNextStacks();
