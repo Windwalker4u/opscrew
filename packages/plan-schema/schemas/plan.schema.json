@@ -234,6 +234,9 @@
               },
               "optional": {
                 "type": "boolean"
+              },
+              "buildArg": {
+                "type": "boolean"
               }
             },
             "required": ["name", "secret", "source"],

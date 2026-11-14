@@ -11,7 +11,7 @@ import {
 import { stringify } from "yaml";
 import { appVariables, enabledServices, renderContext, serviceSpec } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
-import { isClientExposedEnvName } from "../docker";
+import { isBuildValue } from "../docker";
 import { CADDY_MEMORY_MB } from "../edge";
 import { offsiteVariables } from "../offsite";
 import { IMAGES } from "../pins";
@@ -390,8 +390,8 @@ export function fillPortainerStack(template: string, image: string): string {
 /**
  * The app's variables in its stack: the conventional ones of each service OpsCrew runs (the
  * catalog's, such as `DATABASE_URL` and `REDIS_URL`) and every variable of `app.env`, except
- * `PORT` (fixed) and the build-time variables of the frontend (they go to the image build, as on
- * other targets). Sorted by code point.
+ * `PORT` (fixed) and the build values (`isBuildValue`: the frontend's and those marked `buildArg`;
+ * they go to the image build, as on other targets). Sorted by code point.
  */
 function appEnvKeys(plan: DeployPlan): string[] {
   const names = new Set<string>();
@@ -400,7 +400,7 @@ function appEnvKeys(plan: DeployPlan): string[] {
     for (const name of Object.keys(variables)) names.add(name);
   }
   for (const variable of plan.app.env) {
-    if (variable.name === "PORT" || isClientExposedEnvName(variable.name)) continue;
+    if (variable.name === "PORT" || isBuildValue(variable)) continue;
     names.add(variable.name);
   }
   return [...names].sort();
@@ -431,9 +431,9 @@ function checkAppEnvNames(plan: DeployPlan): void {
 export interface PortainerStackEnvKeys {
   /**
    * The app's variables: the conventional ones of the services OpsCrew runs (`DATABASE_URL`,
-   * `REDIS_URL`, …), and every variable of `app.env` except `PORT` and the frontend's build-time
-   * variables. Their values are the app's production environment (`OPSCREW_APP_ENV` on other
-   * targets); an optional variable left unset is sent as an empty string.
+   * `REDIS_URL`, …), and every variable of `app.env` except `PORT` and the build values. Their
+   * values are the app's production environment (`OPSCREW_APP_ENV` on other targets); an optional
+   * variable left unset is sent as an empty string.
    */
   app: string[];
   /**

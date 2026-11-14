@@ -44,6 +44,14 @@ export function isClientExposedEnvName(name: string): boolean {
   return CLIENT_ENV_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
+/**
+ * True when a variable of the plan's `app.env` goes to the image's build, not to the running app:
+ * a client-exposed name, or one marked `buildArg: true`.
+ */
+export function isBuildValue(variable: { name: string; buildArg?: boolean | undefined }): boolean {
+  return isClientExposedEnvName(variable.name) || variable.buildArg === true;
+}
+
 const NODE_SERVER_FRAMEWORKS = ["express", "fastify", "@nestjs/core", "nestjs", "hono", "koa"];
 
 function hasFramework(facts: ProjectFacts, ...names: string[]): boolean {
@@ -410,20 +418,33 @@ function nextReleaseTool(dir: string, releaseCommand?: string): string[] {
 }
 
 /**
- * Build values the frontend reads while it is built (client-exposed names): non-secret ones as
- * `ARG`/`ENV` lines, secret ones as BuildKit secret mounts for the build command's `RUN`, so they
- * stay out of the image's layers and config.
+ * Build values the frontend reads while it is built (client-exposed names) and the plan's
+ * variables marked `buildArg: true` (`buildArgs`): non-secret ones as `ARG`/`ENV` lines, secret
+ * ones as BuildKit secret mounts for the build command's `RUN`, so they stay out of the image's
+ * layers and config.
  */
-function buildValues(facts: ProjectFacts): { lines: string[]; mounts: string } {
+function buildValues(
+  facts: ProjectFacts,
+  buildArgs: readonly string[],
+): { lines: string[]; mounts: string } {
   const values = facts.envVars.filter((v) => isClientExposedEnvName(v.name));
   const plain = values.filter((v) => !v.secretLikely).map((v) => v.name);
+  const marked = buildArgs.filter((name) => !plain.includes(name));
   const secret = values.filter((v) => v.secretLikely).map((v) => v.name);
+  const declare = (names: string[]) =>
+    names.flatMap((name) => [`ARG ${name}`, `ENV ${name}=$${name}`]);
   const lines = [
     ...(plain.length === 0
       ? []
       : [
           "# Values baked into the frontend at build time (public by design; never put secrets here).",
-          ...plain.flatMap((name) => [`ARG ${name}`, `ENV ${name}=$${name}`]),
+          ...declare(plain),
+        ]),
+    ...(marked.length === 0
+      ? []
+      : [
+          "# Values the plan marks as build arguments (buildArg: true); the provenance lists them.",
+          ...declare(marked),
         ]),
     ...(secret.length === 0
       ? []
@@ -566,6 +587,7 @@ export function nextStandaloneDockerfile(
   releaseCommand?: string,
   cron?: PinArch,
   kept: KeptFolders = {},
+  buildArgs: readonly string[] = [],
 ): string {
   const dir = appDirectory(facts);
   const atRoot = dir === ".";
@@ -595,7 +617,7 @@ export function nextStandaloneDockerfile(
       ];
   const resolveNext = `node -p "require.resolve('next/dist/bin/next')"`;
   const nextBin = atRoot ? resolveNext : `cd ${shellQuote(dir)} && ${resolveNext}`;
-  const values = buildValues(facts);
+  const values = buildValues(facts, buildArgs);
   return [
     header("next-standalone", base),
     ...notes,
@@ -650,6 +672,7 @@ export function nodeServerDockerfile(
   releaseCommand?: string,
   cron?: PinArch,
   kept: KeptFolders = {},
+  buildArgs: readonly string[] = [],
 ): string {
   const dir = appDirectory(facts);
   const runtime = runtimePackageManager(
@@ -658,7 +681,7 @@ export function nodeServerDockerfile(
     facts.build.startCommand ?? jsScript(facts, dir, "start"),
     releaseCommand,
   );
-  const values = buildValues(facts);
+  const values = buildValues(facts, buildArgs);
   const lines = [
     header("node-server", base),
     ...jsFolderNote(facts, dir),
@@ -694,6 +717,7 @@ export function staticSpaDockerfile(
   planFile: string,
   base: BaseImage,
   cron?: PinArch,
+  buildArgs: readonly string[] = [],
 ): string {
   const dir = appDirectory(facts);
   const build = facts.build.buildCommand ?? jsScript(facts, dir, "build");
@@ -710,7 +734,7 @@ export function staticSpaDockerfile(
     "\tfile_server",
     "}",
   ];
-  const values = buildValues(facts);
+  const values = buildValues(facts, buildArgs);
   return [
     header("static-spa", base),
     "# Builds the site with Node, then serves the static files with Caddy on port 8080 as an",

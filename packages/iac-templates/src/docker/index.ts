@@ -24,6 +24,7 @@ export {
   detectStack,
   type ImageReleaseCommand,
   imageReleaseCommand,
+  isBuildValue,
   isClientExposedEnvName,
   releaseCommandInImage,
 } from "./stacks";
@@ -36,10 +37,12 @@ export interface DockerAssetOptions {
   /**
    * The plan's `app`: `build.runtime.version` picks the runtime version, `releaseCommand` the
    * migration tool a Node.js server image keeps, and a further app's `key` the plan the
-   * Dockerfile's notes name. Absent: the version the app declares (else OpsCrew's default), the
-   * detected release command and the first app's plan.
+   * Dockerfile's notes name, and the variables of `env` marked `buildArg: true` the Node.js images'
+   * build reads as the client-exposed ones. Absent: the version the app declares (else OpsCrew's
+   * default), the detected release command, the first app's plan and no marked variable.
    */
-  app?: Pick<DeployPlan["app"], "build" | "releaseCommand" | "key">;
+  app?: Pick<DeployPlan["app"], "build" | "releaseCommand" | "key"> &
+    Partial<Pick<DeployPlan["app"], "env">>;
   /**
    * Finds the digest of a runtime image OpsCrew has no pin for (a declared non-default version).
    * Without it, or when it finds none, that image is pinned by tag only and the Dockerfile says so.
@@ -85,15 +88,16 @@ function dockerfile(
   const release = options.app ? options.app.releaseCommand : facts.build.releaseCommand;
   const cron = options.supercronic;
   const kept = { sqlite: options.sqliteFolder, files: options.filesFolder };
+  const args = (options.app?.env ?? []).filter((v) => v.buildArg === true).map((v) => v.name);
   // The app's Dockerfile serves all its environments: its notes name the app's prod plan.
   const planFile = planFilePath({ app: { key: options.app?.key } }, "prod");
   switch (stack) {
     case "next-standalone":
-      return nextStandaloneDockerfile(facts, planFile, port, node(), release, cron, kept);
+      return nextStandaloneDockerfile(facts, planFile, port, node(), release, cron, kept, args);
     case "node-server":
-      return nodeServerDockerfile(facts, planFile, port, node(), release, cron, kept);
+      return nodeServerDockerfile(facts, planFile, port, node(), release, cron, kept, args);
     case "static-spa":
-      return staticSpaDockerfile(facts, planFile, node(), cron);
+      return staticSpaDockerfile(facts, planFile, node(), cron, args);
     case "python-fastapi":
       return fastapiDockerfile(facts, planFile, port, python(), cron, kept);
     case "python-django":

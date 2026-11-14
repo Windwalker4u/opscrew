@@ -2166,20 +2166,35 @@ const DeployPlanFieldsSchema = z.strictObject({
     maxBodyMb: z.int().min(1).max(2048).default(100),
     /** Names only, never values. */
     env: z.array(
-      z.strictObject({
-        name: EnvVarNameSchema,
-        secret: z.boolean(),
-        /**
-         * `user`: the user provides it; `generated`: a random secret OpsCrew creates;
-         * `derived`: OpsCrew fills it from the deployment (container URLs, the domain).
-         */
-        source: z.enum(["user", "generated", "derived"]),
-        /**
-         * True when the code has a default for it: `provision` may leave it unset and the app
-         * keeps that default. Absent means false (a value is required).
-         */
-        optional: z.boolean().optional(),
-      }),
+      z
+        .strictObject({
+          name: EnvVarNameSchema,
+          secret: z.boolean(),
+          /**
+           * `user`: the user provides it; `generated`: a random secret OpsCrew creates;
+           * `derived`: OpsCrew fills it from the deployment (container URLs, the domain).
+           */
+          source: z.enum(["user", "generated", "derived"]),
+          /**
+           * True when the code has a default for it: `provision` may leave it unset and the app
+           * keeps that default. Absent means false (a value is required).
+           */
+          optional: z.boolean().optional(),
+          /**
+           * True when the image's build reads it: it reaches the build as a build argument, as the
+           * variables named with a browser prefix (`VITE_`, `NEXT_PUBLIC_`) do, and the image's
+           * provenance lists it. Never with `secret: true`. Absent means false.
+           */
+          buildArg: z.boolean().optional(),
+        })
+        .superRefine((variable, ctx) => {
+          if (variable.buildArg !== true || !variable.secret) return;
+          ctx.addIssue({
+            code: "custom",
+            path: ["buildArg"],
+            message: `${variable.name} is secret, so it cannot be a build argument: a build argument is recorded in the image's provenance. A secret reaches the build only as a secret mount; remove buildArg from it, or set secret: false when its value is public.`,
+          });
+        }),
     ),
     /** Absent until design sets it. */
     build: AppBuildSchema.optional(),

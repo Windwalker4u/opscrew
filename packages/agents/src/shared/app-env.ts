@@ -5,6 +5,7 @@ import {
   appVariables,
   type DatabaseSettings,
   type GeneratedSecret,
+  isBuildValue,
   isClientExposedEnvName,
   PREVIOUS_VALUES,
   type PreviewSecretFormat,
@@ -638,8 +639,9 @@ export interface AppEnvironment {
   /** Contents of the `OPSCREW_APP_ENV` secret (Compose env_file for the app). */
   appEnv: string;
   /**
-   * Contents of `OPSCREW_BUILD_ENV`: the client-exposed values the plan does not mark secret,
-   * passed to the build as build arguments (baked into the image).
+   * Contents of `OPSCREW_BUILD_ENV`: the build values (`isBuildValue`: client-exposed, or marked
+   * `buildArg: true`) the plan does not mark secret, passed to the build as build arguments (baked
+   * into the image); the app does not get them.
    */
   buildEnv: string;
   /**
@@ -810,7 +812,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       (optional ? defaulted : missing).push(variable.name);
       continue;
     }
-    if (isClientExposedEnvName(variable.name)) {
+    if (isBuildValue(variable)) {
       if (/[\r\n]/.test(value)) {
         throw new OpsCrewError("INVALID_INPUT", `${variable.name} must be a single line.`);
       }

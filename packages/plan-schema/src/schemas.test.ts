@@ -535,6 +535,20 @@ describe("DeployPlan target provider", () => {
     expect(pathsOf(DeployPlanSchema.safeParse(wrong))).toEqual(["app.env.0.optional"]);
   });
 
+  it("marks a non-secret app variable as a build argument, never a secret one", async () => {
+    const plan = await validPlan();
+    const marked = { name: "PLUGINS", secret: false, source: "user", buildArg: true };
+    const parsed = DeployPlanSchema.parse({ ...plan, app: { ...plan.app, env: [marked] } });
+    expect(parsed.app.env).toEqual([marked]);
+    expect(parseArtifact("plan", serializeArtifact("plan", parsed), "plan.yaml")).toEqual(parsed);
+    const secret = { ...plan, app: { ...plan.app, env: [{ ...marked, secret: true }] } };
+    const result = DeployPlanSchema.safeParse(secret);
+    expect(pathsOf(result)).toEqual(["app.env.0.buildArg"]);
+    expect(result.error?.issues[0]?.message).toBe(
+      "PLUGINS is secret, so it cannot be a build argument: a build argument is recorded in the image's provenance. A secret reaches the build only as a secret mount; remove buildArg from it, or set secret: false when its value is public.",
+    );
+  });
+
   it("carries an optional release command that the user may change or remove", async () => {
     const plan = await validPlan();
     expect(plan.app.releaseCommand).toBeUndefined();

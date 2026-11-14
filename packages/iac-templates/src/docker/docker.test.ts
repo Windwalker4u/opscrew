@@ -17,6 +17,7 @@ import {
   containerPort,
   detectStack,
   imageReleaseCommand,
+  isBuildValue,
   isClientExposedEnvName,
   releaseCommandInImage,
   renderDockerAssets,
@@ -381,6 +382,30 @@ describe("renderDockerAssets", () => {
       ?.content;
     expect(dockerfile).toContain("ARG NEXT_PUBLIC_SITE_URL");
     expect(dockerfile).not.toContain("DATABASE_URL");
+  });
+
+  it("declares the plan's variables marked as build arguments as the client-exposed ones", () => {
+    const env = [
+      { name: "PLUGINS", secret: false, source: "user" as const, buildArg: true },
+      { name: "LOG_LEVEL", secret: false, source: "user" as const },
+    ];
+    for (const sample of [nextApp, viteApp, expressApp]) {
+      const lines = (
+        renderDockerAssets(sample, { appPort: 3000, healthPath: "/", app: { env } })[0]?.content ??
+        ""
+      ).split("\n");
+      const build = lines.indexOf("ARG PLUGINS");
+      expect(build, sample.name).toBeGreaterThan(-1);
+      expect(lines[build + 1]).toBe("ENV PLUGINS=$PLUGINS");
+      expect(lines.join("\n")).not.toContain("LOG_LEVEL");
+    }
+  });
+
+  it("tells build values from the app's values", () => {
+    expect(isBuildValue({ name: "VITE_X" })).toBe(true);
+    expect(isBuildValue({ name: "PLUGINS", buildArg: true })).toBe(true);
+    expect(isBuildValue({ name: "PLUGINS" })).toBe(false);
+    expect(isBuildValue({ name: "PLUGINS", buildArg: false })).toBe(false);
   });
 
   it("lists env names without values in .env.example", () => {

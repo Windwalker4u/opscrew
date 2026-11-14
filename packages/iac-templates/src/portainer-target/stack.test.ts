@@ -208,6 +208,19 @@ describe("renderPortainerStack", () => {
     expect(app.filter((name) => opscrew.includes(name))).toEqual([]);
   });
 
+  it("leaves a variable marked as a build argument to the image build, as the frontend's", () => {
+    const plan = portainerTestPlan({
+      web: { mode: "tunnel" },
+      env: [
+        { name: "LOG_LEVEL", secret: false, source: "user" },
+        { name: "PLUGINS", secret: false, source: "user", buildArg: true },
+      ],
+    });
+    const content = renderPortainerStack(plan, ctx).content;
+    expect(content).not.toContain("PLUGINS");
+    expect(portainerStackEnvKeys(plan).app).toEqual(["LOG_LEVEL"]);
+  });
+
   it("refuses app variables named like OpsCrew's own or Compose's settings", () => {
     for (const [names, prefix] of [
       [["OPSCREW_DB_PASSWORD"], "OPSCREW_"],

@@ -353,6 +353,33 @@ describe("connection settings under the app's own names (FR-814)", () => {
     expect([plain.buildEnv, plain.buildSecrets]).toEqual(["\n", "\n"]);
   });
 
+  it("gives a variable marked as a build argument to the build only, as a client-exposed one", async () => {
+    const plugins = "alpha@1a2b3c4,beta@5d6e7f8";
+    const env: Env = [
+      { name: "NEXT_PUBLIC_SITE", secret: false, source: "user" },
+      { name: "PLUGINS", secret: false, source: "user", buildArg: true },
+      { name: "LOG_LEVEL", secret: false, source: "user" },
+    ];
+    const result = await assembleAppEnv({
+      plan: plan(env),
+      dotenvText: `NEXT_PUBLIC_SITE=https://shop.example.com\nPLUGINS=${plugins}\nLOG_LEVEL=info\n`,
+      password: () => "db-password-0123456789",
+    });
+    expect(result.buildEnv).toBe(`NEXT_PUBLIC_SITE=https://shop.example.com\nPLUGINS=${plugins}\n`);
+    expect(result.buildSecrets).toBe("\n");
+    expect(parseDotenv(result.appEnv).has("PLUGINS")).toBe(false);
+    expect(parseDotenv(result.appEnv).get("LOG_LEVEL")).toBe("info");
+    expect(result.values.build).toEqual({
+      NEXT_PUBLIC_SITE: "https://shop.example.com",
+      PLUGINS: plugins,
+    });
+    expect(result.names).toContain("PLUGINS");
+    // A build argument is one line, as a client-exposed value is.
+    await expect(
+      assembleAppEnv({ plan: plan(env.slice(1, 2)), ask: async () => ({ value: "a\nb" }) }),
+    ).rejects.toThrow("PLUGINS must be a single line.");
+  });
+
   it("takes the user's value for an alias whose service OpsCrew does not run", async () => {
     const env: Env = [{ name: "CELERY_BROKER_URL", secret: false, source: "derived" }];
     const result = await assembleAppEnv({

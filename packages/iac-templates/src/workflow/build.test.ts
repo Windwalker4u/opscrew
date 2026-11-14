@@ -295,6 +295,39 @@ describe("build values", () => {
     expect(push?.with?.secrets).toBe(values[DEPLOY_SECRETS.buildSecrets]);
   });
 
+  it.each(BUILDERS)(
+    "%s: a variable marked as a build argument reaches the build as the client-exposed ones",
+    (builder) => {
+      const plan = planFor(builder);
+      const marked = DeployPlanSchema.parse({
+        ...plan,
+        app: {
+          ...plan.app,
+          env: [
+            ...plan.app.env,
+            { name: "PLUGINS", secret: false, source: "user", buildArg: true },
+          ],
+        },
+      });
+      // Provision writes it into the build values; the build job carries them whatever their names.
+      expect(rendered(marked)).toBe(rendered(plan));
+      const plugins = {
+        ...values,
+        [DEPLOY_SECRETS.buildEnv]: `${values[DEPLOY_SECRETS.buildEnv]}PLUGINS=alpha@1a2b3c4\n`,
+      };
+      const steps = evaluated(rendered(marked), plugins);
+      const reads = steps.filter((s) =>
+        [s.with?.["build-args"], s.with?.secrets, s.env?.BUILD_ENV].some((v) =>
+          String(v ?? "").includes("PLUGINS=alpha@1a2b3c4"),
+        ),
+      );
+      expect(reads.map((s) => s.id)).toEqual([
+        builder === "buildpacks" ? "pack" : builder === "railpack" ? "prepare" : "push",
+        ...(builder === "railpack" ? ["railpack"] : []),
+      ]);
+    },
+  );
+
   it("Buildpacks gets the non-secret values with --env and never reads the secret ones", () => {
     const pack = step(buildJob(planFor("buildpacks")), "pack");
     expect(pack?.env?.BUILD_ENV).toBe(`\${{ secrets.${DEPLOY_SECRETS.buildEnv} }}`);

@@ -287,3 +287,36 @@ image's provenance record lists. The ones marked secret in `opscrew/plan.yaml` (
 the variable) reach the build only as secret mounts, so they are not in the build arguments, the
 image configuration or the provenance. Whatever your code compiles into the frontend is still
 public.
+
+### A build argument of your own
+
+A variable without one of these prefixes can go to the build too, when your build reads it: for
+example `PLUGINS`, a list of plugins pinned to commits that the build downloads. Mark it with
+`buildArg: true` in `opscrew/plan.yaml`:
+
+```yaml
+app:
+  env:
+    - name: PLUGINS
+      secret: false
+      source: user
+      buildArg: true
+```
+
+It then takes the path of the prefixed variables that are not secret. `npx opscrew provision`
+asks for its value, or reads it from the `OPSCREW_APP_ENV_FILE` file in scripts. Its value must be
+one line. It reaches the build only, never the running app, and the image's provenance record
+lists it, so its value is public. A later `npx opscrew design` keeps the mark.
+
+- **A Dockerfile** gets it with `--build-arg`, in the deploy workflow (also for a Portainer you
+  already run, whose image the workflow builds) and on your own computer. Your own Dockerfile
+  reads it with an `ARG PLUGINS` line before the step that uses it. OpsCrew's Dockerfile for a
+  Node.js app declares it (`ARG PLUGINS` and `ENV PLUGINS=$PLUGINS`) before the build command
+  when `npx opscrew adapt` writes the Dockerfile. Adapt never changes a Dockerfile your repository
+  already has, so when you mark a variable later, add those two lines yourself. OpsCrew's
+  Dockerfile for a Python app has no build step that reads build values, so it does not use it.
+- **Buildpacks** gets it as a build environment variable (`pack build --env`).
+- **Railpack** gets it as a build environment variable, through its build plan.
+
+A secret cannot be a build argument: OpsCrew refuses a plan with both `secret: true` and
+`buildArg: true` on a variable. A secret value the build needs reaches it only as a secret mount.
