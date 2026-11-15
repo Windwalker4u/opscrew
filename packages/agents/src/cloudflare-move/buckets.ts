@@ -44,7 +44,7 @@ import {
   sizeText,
   windowMinutes,
 } from "../retarget/texts";
-import { portainerClientFor, r2Endpoint, type StorageLogin } from "../shared";
+import { portainerClientFor, type StorageLogin } from "../shared";
 import { clearDeployPause, setDeployPause, waitForDeploys } from "../shared/deploy-pause";
 import { codeOf, hintOf } from "../shared/errors";
 import {
@@ -461,30 +461,6 @@ export function lastBackupsCopy(
     title: `Copy the snapshots' copies of ${appWords(environment)} made since the first copy to the new Cloudflare account`,
     minutes: (size) => Math.max(1, syncMinutes(size.count)),
   });
-}
-
-/** What the finish's step 1 needs of the environment's R2 buckets in B. */
-export interface BucketSettings {
-  /** The app's bucket: B's key and endpoint (`r2Endpoint(B)`), for the app's settings. */
-  storage?: StorageLogin;
-  /** The snapshots' copies' bucket: B's key and endpoint, for `OPSCREW_OFFSITE_ENV`. */
-  backups?: StorageLogin;
-}
-
-/**
- * The bucket's part of the finish's step 1 (plan 7.1): for each of the environment's R2 buckets,
- * B's key with B's S3 endpoint. The names stay. Registered with the redactor; never logged.
- */
-export async function appSettingsForB(
-  session: MoveSession,
-  environment: MoveEnvironment,
-): Promise<BucketSettings> {
-  const settings: BucketSettings = {};
-  const endpoint = r2Endpoint(session.accounts.b.accountId);
-  for (const bucket of moveBuckets(environment.plan)) {
-    settings[bucket.root] = { ...(await bucketKey(session, environment, bucket, "b")), endpoint };
-  }
-  return settings;
 }
 
 /** The finish's step 1 (T2823): the app pointed at B, in its two parts. */

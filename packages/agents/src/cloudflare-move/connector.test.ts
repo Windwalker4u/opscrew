@@ -1,7 +1,10 @@
 import { stackPlanHash } from "@opscrew/connector-portainer";
 import { type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { PORTAINER_OFFSITE_VARIABLES, PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
+import { r2Endpoint } from "../shared";
 import {
   besideConnector,
   CLOUD_NEXT_TUNNEL_DIR,
@@ -19,6 +22,7 @@ import {
   fakeNextStacks,
   scripted,
 } from "./connector.fakes";
+import { portainerFinishWorld } from "./finish-portainer.fakes";
 
 async function failure(run: Promise<unknown>): Promise<OpsCrewError> {
   const error = await run.catch((e: unknown) => e);
@@ -337,6 +341,30 @@ describe.skipIf(!findExecutable("git"))("takeOverConnector", () => {
     // A run again: the removal changes nothing.
     await takeOverConnector(w.session, w.environment, w.tunnels, options);
     expect(stacks.applies).toHaveLength(2);
+    expect(await w.leaks()).toBe(false);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("takeOverConnector in Portainer by default", () => {
+  it("restarts the app's connector through stacks with B's token and B's bucket keys and endpoints", async () => {
+    const w = await portainerFinishWorld();
+    const stacks = fakeNextStacks();
+    const token = fakeSecret("cloudflare-token", "b-tunnel");
+    const tunnels: MoveTunnel[] = [{ module: "tunnel", tunnelId: B_TUNNEL, token }];
+    await takeOverConnector(w.session, w.environment, tunnels, { nextStacks: stacks.api });
+    const endpoint = r2Endpoint(w.fresh.id);
+    const v = PORTAINER_OFFSITE_VARIABLES;
+    expect(w.appStack()).toMatchObject({
+      [PORTAINER_STACK_VARIABLES.tunnelToken]: token,
+      AWS_ACCESS_KEY_ID: w.keys.b.storage.accessKeyId,
+      AWS_SECRET_ACCESS_KEY: w.keys.b.storage.secretAccessKey,
+      AWS_ENDPOINT_URL_S3: endpoint,
+      [v.endpoint]: endpoint,
+      [v.accessKeyId]: w.keys.b.backups.accessKeyId,
+    });
+    const held = Object.values(w.appStack());
+    for (const key of Object.values(w.keys.a)) expect(held).not.toContain(key.accessKeyId);
+    expect(w.handler.requests.map((r) => r.kind)).toEqual(["stack-apply"]);
     expect(await w.leaks()).toBe(false);
   });
 });

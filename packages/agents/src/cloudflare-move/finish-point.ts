@@ -43,7 +43,7 @@ import {
   requireStorageKey,
 } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
-import { type AppValues, withAppEnv, withAppRecord } from "../rotate/app-values";
+import { type AppValues, withAppEnv } from "../rotate/app-values";
 import { knownRecipients } from "../secrets/store";
 import {
   PlanRefusedError,
@@ -450,7 +450,8 @@ async function serverPointAtB(
  * client standing for Cloudflare, so an R2 bucket's endpoint is B's.
  */
 function provisionServices(session: MoveSession): ProvisionServices {
-  const { engine, remote, docker, own, portainer, askStorageKey, sleep, now } = session.services;
+  const { engine, remote, docker, own, portainer, askStorageKey, askEnv, sleep, now } =
+    session.services;
   return {
     ...(engine === undefined ? {} : { engine }),
     ...(remote === undefined ? {} : { remote }),
@@ -458,6 +459,7 @@ function provisionServices(session: MoveSession): ProvisionServices {
     ...(own === undefined ? {} : { own }),
     ...(portainer === undefined ? {} : { portainer }),
     ...(askStorageKey === undefined ? {} : { askStorageKey }),
+    ...(askEnv === undefined ? {} : { askEnv }),
     ...(sleep === undefined ? {} : { sleep }),
     ...(now === undefined ? {} : { now }),
     github: session.githubApi,
@@ -466,40 +468,31 @@ function provisionServices(session: MoveSession): ProvisionServices {
 }
 
 /**
- * The app's stacks in the user's Portainer with B's values (`portainerStacksFor` with B's client):
- * the stack Caddy's origin certificate as the environment's record has it (B's once the finish
- * took it), and the app bucket's keys and endpoint B's. The tunnels' tokens are the state's.
- * @throws OpsCrewError `INTERNAL` for off-server copies on R2, whose settings in the stack OpsCrew
- * can't give B's bucket key yet.
+ * The app's stacks in the user's Portainer with B's values (`portainerStacksFor` with B's client
+ * and B's bucket keys): the stack Caddy's origin certificate as the environment's record has it
+ * (B's once the finish took it), and the app's bucket and the off-server copies' with B's keys and
+ * endpoint. The tunnels' tokens are the state's. The finish's step 1 and its connector's restart
+ * plan the stacks with it.
  */
 export async function stacksForB(
   session: MoveSession,
   environment: MoveEnvironment,
 ): Promise<PortainerStacksSetup> {
-  const deps = environmentDeps(session, environment);
-  const { plan } = environment;
-  if (backupsBucketOf(plan)?.provider === "r2") {
-    throw new OpsCrewError(
-      "INTERNAL",
-      `OpsCrew can't give the off-server copies of ${appWords(environment)} in your Portainer their bucket in the new Cloudflare account yet, so the finish stopped. Nothing was changed.`,
-      { hint: "This is a bug in OpsCrew; please report it." },
-    );
-  }
-  const storage = await storageLogins(session, environment);
-  return portainerStacksFor(deps, plan, provisionServices(session), {
-    phase: PHASE,
-    command: session.command,
-    ...(storage === undefined
-      ? {}
-      : {
-          // Built with A's key, kept for the bucket before the move, and B's endpoint.
-          rewrite: (built) => {
-            const { app } = built.values;
-            const pairs = storagePairs(Object.keys(app), storage.a, storage.b);
-            return { ...built, values: { ...built.values, app: withAppRecord(app, pairs, "new") } };
-          },
-        }),
-  });
+  const storage = await bucketLogin(session, environment, "storage", "b");
+  const offsite = await bucketLogin(session, environment, "backups", "b");
+  return portainerStacksFor(
+    environmentDeps(session, environment),
+    environment.plan,
+    provisionServices(session),
+    {
+      phase: PHASE,
+      command: session.command,
+      keys: {
+        ...(storage === undefined ? {} : { storage }),
+        ...(offsite === undefined ? {} : { offsite }),
+      },
+    },
+  );
 }
 
 /** Step 1 in the user's Portainer: one stack plan with B's values, approved by its hash. */

@@ -25,7 +25,6 @@ import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
 import type { NetworkServer } from "../provision/network";
-import type { ProvisionServices } from "../provision/types";
 import { tunnelModules } from "../rotate/infra";
 import {
   portainerTunnelConnectors,
@@ -37,6 +36,7 @@ import { approveAndApplyHostPlan, committedText, pollUntil, serverLogin } from "
 import { TUNNEL_CLOSE_TIMEOUT_MS, tunnelBusyError } from "../shared/tunnel-connections";
 import { networkServer, type VpnServices } from "../vpn/servers";
 import { MOVE_PHASE, type NextStacksApi, nextStacksApi, nextStacksStep } from "./connector-stacks";
+import { stacksForB } from "./finish-point";
 import type { MoveAccount, MoveEnvironment, MoveSession } from "./types";
 
 /** The beside connector's folder on a cloud server, as the deploy login (beside the main one's). */
@@ -55,7 +55,8 @@ export interface ConnectorOptions {
   nextStacks?: NextStacksApi;
   /**
    * The main connectors the finish restarts with B's tokens (tests; default rotate's
-   * `serverTunnelConnectors` or `portainerTunnelConnectors`, by the target).
+   * `serverTunnelConnectors`, or `portainerTunnelConnectors` planning the stacks with B's values,
+   * `stacksForB`, by the target).
    */
   connectors?: TunnelConnectors;
 }
@@ -214,7 +215,10 @@ export async function takeOverConnector(
     const api = nextStacksApi(options);
     const connectors =
       options.connectors ??
-      portainerTunnelConnectors(deps, plan, { command, services: provisionServices(session) });
+      portainerTunnelConnectors(deps, plan, {
+        command,
+        stacksFor: () => stacksForB(session, environment),
+      });
     await connectors.restart(tunnels);
     await nextStacksStep(session, deps, plan, api, { remove: true });
     return;
@@ -328,27 +332,6 @@ async function removeOnServer(
     secrets: async () => ({}),
     applying: `Removing the new Cloudflare account's tunnel connector beside the current one on ${words}`,
   });
-}
-
-/**
- * The provision services a Portainer stack plan reads the app's values with, from the move's: B's
- * client stands for Cloudflare, since at the finish A's zone has moved and the app's bucket
- * settings are B's.
- */
-function provisionServices(session: MoveSession): ProvisionServices {
-  const { engine, remote, docker, own, portainer, askStorageKey, sleep, now } = session.services;
-  return {
-    ...(engine === undefined ? {} : { engine }),
-    ...(remote === undefined ? {} : { remote }),
-    ...(docker === undefined ? {} : { docker }),
-    ...(own === undefined ? {} : { own }),
-    ...(portainer === undefined ? {} : { portainer }),
-    ...(askStorageKey === undefined ? {} : { askStorageKey }),
-    ...(sleep === undefined ? {} : { sleep }),
-    ...(now === undefined ? {} : { now }),
-    github: session.githubApi,
-    cloudflare: session.accounts.b.client,
-  };
 }
 
 /**

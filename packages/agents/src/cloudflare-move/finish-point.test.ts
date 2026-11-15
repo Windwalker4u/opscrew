@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { PORTAINER_OFFSITE_VARIABLES, PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import {
   NEW_OFFSITE_KEY_VARS,
@@ -14,6 +15,7 @@ import { r2Endpoint } from "../shared";
 import { generatedValuesFile } from "../shared/app-secrets";
 import { BACKUPS_BUCKET } from "./buckets.fakes";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
+import { A_TUNNEL_TOKEN, portainerFinishWorld } from "./finish-portainer.fakes";
 import { type FinishWorld, finishWorld } from "./finish-removal.fakes";
 import { ZONE } from "./session.fakes";
 
@@ -229,16 +231,58 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   });
 });
 
-describe.skipIf(!findExecutable("git"))("pointAtB elsewhere", () => {
-  it("stops before any change for off-server copies on R2 in Portainer, which it can't point yet", async () => {
-    const w = await finishWorld("portainer", { buckets: true, step: "prepared" });
-    const error = await pointAtB(w.session, w.environment).catch((e: unknown) => e);
-    expect((error as OpsCrewError).message).toBe(
-      "OpsCrew can't give the off-server copies of shop (prod) in your Portainer their bucket in the new Cloudflare account yet, so the finish stopped. Nothing was changed.",
-    );
-    expect(w.handler.requests).toEqual([]);
+describe.skipIf(!findExecutable("git"))("pointAtB in Portainer", () => {
+  it("plans the app's stacks once with B's bucket keys and endpoints, approved by hash, values never shown", async () => {
+    const w = await portainerFinishWorld();
+    const point = await pointAtB(w.session, w.environment);
+    expect(point).toMatchObject({ done: false, pointing: false });
+    const hash = point.asks?.hash;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(w.portainer.stacks).toEqual([]);
+
+    await point.secrets();
+    expect(w.handler.requests.map((r) => [r.kind, r.planHash])).toEqual([["stack-apply", hash]]);
+    expect(w.portainer.stacks).toEqual([]);
+    await point.deploy();
+    const stack = w.appStack();
+    const endpoint = r2Endpoint(w.fresh.id);
+    const v = PORTAINER_OFFSITE_VARIABLES;
+    expect(stack).toMatchObject({
+      AWS_ACCESS_KEY_ID: w.keys.b.storage.accessKeyId,
+      AWS_SECRET_ACCESS_KEY: w.keys.b.storage.secretAccessKey,
+      AWS_ENDPOINT_URL_S3: endpoint,
+      [v.endpoint]: endpoint,
+      [v.accessKeyId]: w.keys.b.backups.accessKeyId,
+      [v.secretAccessKey]: w.keys.b.backups.secretAccessKey,
+      [PORTAINER_STACK_VARIABLES.tunnelToken]: A_TUNNEL_TOKEN,
+    });
+    const held = Object.values(stack);
+    for (const key of Object.values(w.keys.a)) {
+      expect(held).not.toContain(key.accessKeyId);
+      expect(held).not.toContain(key.secretAccessKey);
+    }
+
+    // The stacks hold B's values now: nothing is planned or asked again.
+    const again = await pointAtB(w.session, w.environment);
+    expect(again).toMatchObject({ done: true, pointing: true });
+    expect(again.asks).toBeUndefined();
+    expect(w.handler.requests).toHaveLength(1);
+    expect(await w.leaks()).toBe(false);
   });
 
+  it("changes nothing in Portainer when its stack plan is refused", async () => {
+    const w = await portainerFinishWorld();
+    w.answers.approve = () => false;
+    const point = await pointAtB(w.session, w.environment);
+    const error = await point.secrets().catch((e: unknown) => e);
+    expect((error as OpsCrewError).code).toBe("APPROVAL_REFUSED");
+    expect((error as OpsCrewError).message).toContain("Nothing in Portainer was changed.");
+    expect(w.portainer.stacks).toEqual([]);
+    expect(await w.leaks((error as OpsCrewError).message)).toBe(false);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("pointAtB elsewhere", () => {
   it("has nothing to point for a site or an own server without buckets or origin certificate", async () => {
     for (const target of ["site", "own"] as const) {
       const w = await finishWorld(target, { step: "prepared" });

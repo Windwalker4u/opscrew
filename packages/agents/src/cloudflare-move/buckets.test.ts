@@ -2,7 +2,6 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import {
-  appSettingsForB,
   bucketWindow,
   emptyBuckets,
   firstCopies,
@@ -232,17 +231,6 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       expect(await lastBackupsCopy(w.session, w.environment)).toBeUndefined();
       expect(w.r2.runs).toEqual([]);
       expect(w.handler.requests).toEqual([]);
-    });
-  });
-
-  describe("appSettingsForB", () => {
-    it("gives B's keys with B's endpoint, the names kept", async () => {
-      const w = await bucketWorld("cloud");
-      const endpoint = `https://${w.fresh}.r2.cloudflarestorage.com`;
-      expect(await appSettingsForB(w.session, w.environment)).toEqual({
-        storage: { ...w.keys.b.storage, endpoint },
-        backups: { ...w.keys.b.backups, endpoint },
-      });
     });
   });
 

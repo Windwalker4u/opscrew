@@ -11,7 +11,14 @@
  */
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { exists, listText, OpsCrewError, renameWithRetry, upperFirst } from "@opscrew/core";
+import {
+  exists,
+  listText,
+  OpsCrewError,
+  renameWithRetry,
+  toPosixRelative,
+  upperFirst,
+} from "@opscrew/core";
 import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { promoteNextOriginTls } from "../provision/origin-tls";
@@ -19,12 +26,12 @@ import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import { forgetStorageKey } from "../provision/storage";
 import { appliesNow } from "../retarget/steps";
 import { tunnelModules } from "../rotate/infra";
-import { portainerTunnelConnectors, type TunnelModule } from "../rotate/infra-connectors";
+import type { TunnelModule } from "../rotate/infra-connectors";
 import { stringOutput } from "../shared";
 import { readableDeployPause } from "../shared/deploy-pause";
 import { bucketWindow, moveBuckets, recoverWindow } from "./buckets";
 import { type MoveTunnel, takeOverConnector } from "./connector";
-import { backToA, lastCopyOnce, pointAtB, stacksForB } from "./finish-point";
+import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
 import { endFinish, removeA } from "./finish-removal";
 import { adoptSite } from "./finish-site";
 import {
@@ -36,7 +43,14 @@ import {
 } from "./progress";
 import { advancedMove, writeMoveRecord } from "./record";
 import { openMoveSession } from "./session";
-import { patchTfvars, shadowFiles, shadowOutputs, shadowRoots, swapShadow } from "./shadow";
+import {
+  patchTfvars,
+  shadowFiles,
+  shadowOutputs,
+  shadowRoots,
+  swapShadow,
+  tfvarsFile,
+} from "./shadow";
 import { checkAfterSwap } from "./shadow-plans";
 import { aSharedRecordPath, bSharedRecordPath, pendingStop, planBShared } from "./shared";
 import { ABORT_COMMAND, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
@@ -258,26 +272,12 @@ async function bTunnels(session: MoveSession, environment: MoveEnvironment): Pro
 
 /**
  * The connector (plan 7.4): the main connector takes B's tunnel token, then the one beside it
- * goes (`takeOverConnector`); in the user's Portainer the stacks keep B's values from step 1.
+ * goes (`takeOverConnector`; in the user's Portainer the stacks keep B's values from step 1).
  */
 async function connectorStep(run: Run, environment: MoveEnvironment): Promise<undefined> {
   const { session } = run;
   const tunnels = await bTunnels(session, environment);
-  if (tunnels.length === 0) return undefined;
-  const { plan } = environment;
-  const connectors =
-    plan.target.provider === "portainer"
-      ? portainerTunnelConnectors(environmentDeps(session, environment), plan, {
-          command: session.command,
-          stacksFor: () => stacksForB(session, environment),
-        })
-      : undefined;
-  await run.steps.takeOverConnector(
-    session,
-    environment,
-    tunnels,
-    connectors === undefined ? {} : { connectors },
-  );
+  if (tunnels.length > 0) await run.steps.takeOverConnector(session, environment, tunnels);
   return undefined;
 }
 
@@ -367,6 +367,21 @@ async function forgetAKeys(session: MoveSession, environment: MoveEnvironment): 
 }
 
 /**
+ * The repository's files the finish changes: each covered environment's plan (its record, then
+ * its removal) and each of its roots' committed `terraform.tfvars.json` (B's ids).
+ */
+async function changedFiles(session: MoveSession): Promise<string[]> {
+  const files: string[] = [];
+  for (const environment of session.environments) {
+    files.push(toPosixRelative(session.paths.root, environment.paths.files.plan));
+    for (const root of await shadowRoots(session, environment)) {
+      files.push(toPosixRelative(session.paths.root, tfvarsFile(root.dir)));
+    }
+  }
+  return [...new Set(files)];
+}
+
+/**
  * `opscrew cloudflare move --finish` (plan 7.): refused, before any change, unless every covered
  * environment is prepared in B (or adopted there by an earlier finish) and B's zone is active.
  * Then a stopped maintenance window is recovered first; each environment not adopted yet goes
@@ -374,7 +389,8 @@ async function forgetAKeys(session: MoveSession, environment: MoveEnvironment): 
  * bucket keys forgotten; then the end (`endFinish`). Stops on purpose (`done: false`, `next` says
  * what to do) for an approval a script gives with `--approve <hash>`, the window in a script
  * without `--allow-downtime`, and the revocation of A's origin certificate until the server serves
- * B's. `steps`: the steps it calls (tests replace them).
+ * B's. Once it has ended, `next` also names the files it changed, to commit and push. `steps`:
+ * the steps it calls (tests replace them).
  */
 export async function finishMove(
   deps: PhaseDeps,
@@ -400,5 +416,14 @@ export async function finishMove(
     if (stop !== undefined) return { step: "adopted", done: false, ...stop };
     await forgetAKeys(session, environment);
   }
-  return steps.endFinish(session);
+  const files = await changedFiles(session);
+  const result = await steps.endFinish(session);
+  if (!result.done) return result;
+  return {
+    ...result,
+    next: [
+      ...result.next,
+      `Commit and push the files the move changed (${listText(files)}), so OpsCrew on every computer, and the next provision, work with the app in the new Cloudflare account.`,
+    ],
+  };
 }

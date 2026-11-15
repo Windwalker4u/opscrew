@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { findExecutable, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,10 +78,8 @@ beforeEach(() => {
       trail.push("copy");
       return undefined;
     }),
-    takeOverConnector: vi.fn<FinishSteps["takeOverConnector"]>(async (_s, _e, tunnels, options) => {
-      const portainer = options?.connectors === undefined ? "" : " (stacks with B's values)";
-      const named = tunnels.map((t) => `${t.module}=${t.tunnelId}`).join(" ");
-      trail.push(`connector ${named}${portainer}`);
+    takeOverConnector: vi.fn<FinishSteps["takeOverConnector"]>(async (_s, _e, tunnels) => {
+      trail.push(`connector ${tunnels.map((t) => `${t.module}=${t.tunnelId}`).join(" ")}`);
     }),
     adoptSite: vi.fn<FinishSteps["adoptSite"]>(async () => {
       trail.push("adopt");
@@ -198,7 +196,16 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     );
 
     const result = await finish(w);
-    expect(result).toEqual({ step: "finished", done: true, next: [] });
+    const files = ["main", "storage", "backups"].map((name) =>
+      toPosixRelative(w.root, join(w.rootOf(name as "main").dir, "terraform.tfvars.json")),
+    );
+    expect(result).toEqual({
+      step: "finished",
+      done: true,
+      next: [
+        `Commit and push the files the move changed (opscrew/plan.yaml, ${files[0]}, ${files[1]} and ${files[2]}), so OpsCrew on every computer, and the next provision, work with the app in the new Cloudflare account.`,
+      ],
+    });
     expect(trail).toEqual([
       "recover prod",
       "shared",
@@ -253,12 +260,14 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(w.leaks()).toBe(false);
   });
 
-  it("restarts Portainer's connectors through stacks that keep B's values", async () => {
+  it("gives Portainer's connectors B's tunnels and tokens from B's state", async () => {
     const w = await world("portainer");
     await finish(w);
-    expect(trail).toContain(
-      `connector tunnel=${B_TUNNEL} portainer_tunnel=${B_WEBHOOK_TUNNEL} (stacks with B's values)`,
-    );
+    expect(trail).toContain(`connector tunnel=${B_TUNNEL} portainer_tunnel=${B_WEBHOOK_TUNNEL}`);
+    const [, , tunnels, options] = steps.takeOverConnector.mock.calls[0] ?? [];
+    expect(tunnels?.map((tunnel) => tunnel.token)).toEqual([TUNNEL_TOKEN, WEBHOOK_TOKEN]);
+    // The default restarts them through the stacks with B's values (`stacksForB`).
+    expect(options).toBeUndefined();
     expect(w.leaks()).toBe(false);
   });
 

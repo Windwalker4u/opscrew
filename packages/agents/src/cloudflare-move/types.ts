@@ -39,6 +39,8 @@ export interface MoveServices
     | "portainer"
     // B's bucket keys, asked once in a terminal when the environment doesn't hold them.
     | "askStorageKey"
+    // The app's own values, offered from its env file in a terminal (Portainer's stack plans).
+    | "askEnv"
     | "sleep"
     | "now"
   > {

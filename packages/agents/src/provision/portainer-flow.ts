@@ -58,6 +58,7 @@ import {
   type ProjectEngine,
   pinnedPublicKey,
   portainerClientFor,
+  type StorageLogin,
   setPortainerRecordsAddress,
   stateContents,
   stringOutput,
@@ -650,6 +651,11 @@ export interface RecordedStacksInput {
   rotating?: true;
   /** Changes the app's values before any plan binds them: a rotation's new values. */
   rewrite?: (environment: AppEnvironment) => AppEnvironment;
+  /**
+   * The buckets' keys instead of the ones this computer keeps (the app's bucket's and the
+   * off-server copies'): a move to another Cloudflare account gives that account's.
+   */
+  keys?: { storage?: StorageLogin; offsite?: StorageLogin };
 }
 
 /**
@@ -677,7 +683,8 @@ export async function recordedPortainerStacks(
       const key =
         bucket === undefined
           ? undefined
-          : await requireStorageKey(deps, plan, services, { command, already });
+          : (input.keys?.storage ??
+            (await requireStorageKey(deps, plan, services, { command, already })));
       const built = await buildAppEnvironment(deps, plan, services, undefined, {
         portainer: true,
         ...(input.rotating === undefined ? {} : { rotating: input.rotating }),
@@ -690,7 +697,7 @@ export async function recordedPortainerStacks(
   let offsiteValues: Promise<Record<string, string>> | undefined;
   const offsiteStack = () => {
     offsiteValues ??= offsiteSetup(deps, plan, services, {
-      key: undefined,
+      key: input.keys?.offsite,
       cloudflare,
       command,
       already,
@@ -745,6 +752,7 @@ export async function portainerStacksFor(
     /** The command a refusal says to run again. */
     command: string;
     rewrite?: (environment: AppEnvironment) => AppEnvironment;
+    keys?: RecordedStacksInput["keys"];
   },
 ): Promise<PortainerStacksSetup> {
   const target = portainerTarget(plan.target);
