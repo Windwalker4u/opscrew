@@ -134,6 +134,21 @@ describe.skipIf(!findExecutable("git"))("adoptSite", () => {
     });
   }
 
+  it("imports nothing and runs no check without a main shadow state", async () => {
+    const w = await finishWorld("site", { step: "prepared" });
+    w.fresh.workerDomains.push({
+      id: "b-domain",
+      hostname: `site.${ZONE}`,
+      service: "example-app",
+      zone_id: w.bZone.id,
+      zone_name: ZONE,
+    });
+    expect(await adoptSite(w.session, w.environment)).toBeUndefined();
+    expect(w.engine.imports).toEqual([]);
+    expect(w.engine.planOptions).toEqual([]);
+    expect(w.engine.calls).not.toContain("init");
+  });
+
   it("has nothing to adopt for a cloud server without Access", async () => {
     const w = await finishWorld("cloud", { step: "prepared" });
     expect(await adoptSite(w.session, w.environment)).toBeUndefined();

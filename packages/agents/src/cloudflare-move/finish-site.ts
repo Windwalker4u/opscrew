@@ -98,7 +98,6 @@ async function accessPieces(
 
 /** The addresses in `root`'s shadow state (`state list` outside the root: no `TF_DATA_DIR`). */
 async function shadowAddresses(session: MoveSession, root: ShadowRoot): Promise<string[]> {
-  if (!(await hasContent(root.statePath))) return [];
   const env = await shadowEngineEnv(session, root, "b");
   return session.engine.stateResources(root.statePath, { env });
 }
@@ -109,15 +108,17 @@ async function shadowAddresses(session: MoveSession, root: ShadowRoot): Promise<
  * of the hostnames they protect, each imported into the main shadow state (`importIntoShadow`)
  * unless it is there already; then the check plan of the main shadow root with the committed
  * values (`checkAdoption`), which must be empty: any change stops before an approval and before
- * the credentials; then `promoteNewCredentials`. Nothing for an
- * environment without them but the credentials. Resumable: a run imports only what is missing.
+ * the credentials; then `promoteNewCredentials`. Nothing but the credentials for an environment
+ * without them, or without a main shadow state. Resumable: a run imports only what is missing.
  * Nothing in A is read or changed.
  */
 export async function adoptSite(
   session: MoveSession,
   environment: MoveEnvironment,
 ): Promise<StepStop | undefined> {
-  const main = (await shadowRoots(session, environment)).find((root) => root.name === "main");
+  const found = (await shadowRoots(session, environment)).find((root) => root.name === "main");
+  // Without its shadow state (the swap took it), an import would make one holding only that piece.
+  const main = found !== undefined && (await hasContent(found.statePath)) ? found : undefined;
   const wanted =
     main === undefined
       ? []

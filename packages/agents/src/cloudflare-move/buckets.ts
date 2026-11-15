@@ -932,15 +932,19 @@ function requireEmptyingStep(
  * --checksum`, run right before the deletion, shows that B's bucket holds every file of it; at an
  * abort B's (`b`, before the finish adopted it), without that check. `rclone delete` removes the
  * files; the bucket itself goes with its root's destroy plan. An empty bucket is skipped. A script
- * stops with the hash (`--confirm <bucket> --approve <hash>`), one bucket at a time.
+ * stops with the hash (`--confirm <bucket> --approve <hash>`), one bucket at a time. `only`: the
+ * bucket roots to empty (default every one).
  */
 export async function emptyBuckets(
   session: MoveSession,
   environment: MoveEnvironment,
   side: BucketSide,
+  only?: readonly MoveRoot[],
 ): Promise<StepStop | undefined> {
   requireEmptyingStep(session, environment, side);
-  const buckets = moveBuckets(environment.plan);
+  const buckets = moveBuckets(environment.plan).filter(
+    (bucket) => only === undefined || only.includes(bucket.root),
+  );
   if (buckets.length === 0) return undefined;
   const deps = environmentDeps(session, environment);
   // Each bucket's key in the account emptied (`own`), and B's, which the finish's check reads too.

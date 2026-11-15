@@ -1,8 +1,10 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { edgeReadCommand } from "../provision/origin-tls";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { APP_BUCKET, BACKUPS_BUCKET } from "./buckets.fakes";
 import { NEW_DEPLOY_TOKEN_VAR } from "./deploy-secrets";
 import { endFinish, removeA } from "./finish-removal";
@@ -18,7 +20,31 @@ import { appProgressFile, writePending } from "./progress";
 import { ZONE } from "./session.fakes";
 import { shadowFiles } from "./shadow";
 import { SERVER_ADDRESSES } from "./shadow.fakes";
+import { aSharedRecordPath } from "./shared";
 import { MARK_COMMENT } from "./zone";
+
+/** Two origin certificates (PEM blocks): A's and B's. */
+const A_PEM = pem("the certificate issued in Old");
+const B_PEM = pem("the certificate issued in New");
+
+function pem(text: string): string {
+  return `-----BEGIN CERTIFICATE-----\n${Buffer.from(text).toString("base64")}\n-----END CERTIFICATE-----\n`;
+}
+
+/** The server's edge serving `cert` as the app's origin certificate. */
+function serving(w: FinishWorld, cert: string): void {
+  w.session.services.remote = (host) => ({
+    host,
+    run: async (command) =>
+      command === edgeReadCommand(w.environment.plan.app.name)
+        ? {
+            exitCode: 0,
+            stdout: `opscrew-edge-read 1\nproxy=caddy\n--origin--\n${cert}--site--\n--end--\n`,
+            stderr: "",
+          }
+        : { exitCode: 255, stdout: "", stderr: "" },
+  });
+}
 
 async function caught(promise: Promise<unknown>): Promise<OpsCrewError> {
   const error = await promise.catch((e: unknown) => e);
@@ -259,6 +285,130 @@ describe.skipIf(!findExecutable("git"))("removeA", () => {
     expect(await leftIn(w, "main")).toEqual([]);
   });
 
+  it("stops before any bucket is emptied when a bucket root's guard can't be taken off", async () => {
+    const w = await finishWorld("cloud", { buckets: true });
+    await w.seedRemoval("main", [...SERVER_ADDRESSES, RECORD]);
+    await w.seedRemoval("storage", R2);
+    await w.seedRemoval("backups", R2_BACKUPS);
+    copiedToB(w);
+    const file = join(w.rootOf("storage").dir, "main.tf");
+    const committed = await readFile(file, "utf8");
+    await writeFile(
+      file,
+      committed.replace(
+        "prevent_destroy = true",
+        "prevent_destroy = true\n    ignore_changes  = [name]",
+      ),
+    );
+    const error = await caught(removeA(w.session, w.environment));
+    expect(error.code).toBe("INTERNAL");
+    expect(error.message).toBe(
+      "OpsCrew couldn't take the guard off the bucket in storage/main.tf for its removal, so it planned nothing. Nothing was changed.",
+    );
+    // No bucket root was planned.
+    expect(w.engine.planDirs.filter((dir) => dir.includes("a-removal"))).toEqual([]);
+    expect(await leftIn(w, "storage")).toEqual(R2);
+    expect(w.r2?.objects(w.old.id, APP_BUCKET).size).toBe(3);
+    expect(w.handler.requests).toEqual([]);
+  });
+
+  it("goes on after the storage bucket's deletion: nothing emptied twice, the backups bucket deleted", async () => {
+    const w = await finishWorld("cloud", { buckets: true });
+    await w.seedRemoval("main", [...SERVER_ADDRESSES, RECORD]);
+    await w.seedRemoval("storage", R2);
+    await w.seedRemoval("backups", R2_BACKUPS);
+    copiedToB(w);
+    w.answers.approve = (request) => !request.title.includes("snapshots' copies (prod)");
+    const error = await caught(removeA(w.session, w.environment));
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(await leftIn(w, "storage")).toEqual([]);
+    expect(await leftIn(w, "backups")).toEqual(R2_BACKUPS);
+    const deletes = () => w.r2?.runs.filter((run) => run.verb === "delete").length;
+    expect(deletes()).toBe(2);
+
+    w.answers.approve = () => true;
+    w.handler.requests.length = 0;
+    const runs = w.r2?.runs.length ?? 0;
+    expect(await removeA(w.session, w.environment)).toBeUndefined();
+    expect(deletes()).toBe(2);
+    // The deleted storage bucket is never read again.
+    expect(
+      w.r2?.runs.slice(runs).map((run) => run.args.find((arg) => arg.startsWith("a:"))),
+    ).toEqual([`a:${BACKUPS_BUCKET}`]);
+    expect(asked(w)).toEqual([
+      [
+        "iac-apply",
+        "Delete shop's bucket of the snapshots' copies (prod) in the Cloudflare account Old",
+        "shop",
+      ],
+    ]);
+    expect(await leftIn(w, "backups")).toEqual([]);
+    expect(w.leaks()).toBe(false);
+  });
+
+  it("revokes A's origin certificate only once the server serves B's, then forgets A's record", async () => {
+    const w = await finishWorld("cloud");
+    await w.seedRemoval("main", [...SERVER_ADDRESSES, RECORD]);
+    const aZone = w.cloudflare.zone(ZONE, "Old");
+    aZone.data.originCertificates.push({
+      id: "a-origin",
+      hostnames: [`shop.${ZONE}`],
+      expires_on: "2041-10-16 23:53:00 +0000 UTC",
+      certificate: A_PEM,
+    });
+    const record = aSharedRecordPath(w.environment);
+    await mkdir(dirname(record), { recursive: true });
+    await writeFile(
+      record,
+      JSON.stringify({
+        zoneId: aZone.id,
+        hostnames: {},
+        createdEntrypoints: [],
+        tls: {
+          origin: {
+            id: "a-origin",
+            hostnames: [`shop.${ZONE}`],
+            expiresAt: "2041-10-16T23:53:00.000Z",
+            sha256: fingerprintSha256(A_PEM),
+            superseded: [],
+          },
+        },
+      }),
+    );
+    const deps = { ...w.session.deps, paths: w.environment.paths };
+    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+    await writeFile(
+      generatedValuesFile(deps),
+      JSON.stringify({ originTls: { ORIGIN_TLS_CERT: B_PEM } }),
+    );
+    await mkdir(dirname(w.environment.paths.files.deployKey), { recursive: true });
+    await writeFile(w.environment.paths.files.deployKey, "a placeholder deploy key\n");
+
+    serving(w, A_PEM);
+    expect(await removeA(w.session, w.environment)).toEqual({
+      next: [
+        "Once the deploy has brought the new origin certificate to the server, run `opscrew cloudflare move --finish` again.",
+      ],
+    });
+    expect(w.handler.requests).toEqual([]);
+    expect(aZone.data.originCertificates[0]?.revoked_at).toBeUndefined();
+    expect(await readFile(record, "utf8")).toContain("a-origin");
+
+    serving(w, B_PEM);
+    expect(await removeA(w.session, w.environment)).toBeUndefined();
+    expect(w.handler.requests).toEqual([
+      expect.objectContaining({
+        kind: "cloudflare-apply",
+        allowDestroy: true,
+        confirmPhrase: "shop",
+      }),
+    ]);
+    expect(aZone.data.originCertificates[0]?.revoked_at).toBeDefined();
+    expect(w.aWrites().map((call) => call.method)).toEqual(["DELETE"]);
+    await expect(readFile(record)).rejects.toThrow();
+    expect(w.leaks()).toBe(false);
+  });
+
   it("refuses before the finish adopted the app in B, changing nothing", async () => {
     const w = await finishWorld("own", { step: "prepared" });
     await w.seedRemoval("main", TUNNEL);
@@ -363,13 +513,33 @@ describe.skipIf(!findExecutable("git"))("endFinish", () => {
     await w.seedRemoval("main", TUNNEL);
     const error = await caught(endFinish(w.session));
     expect(error.message).toContain("still holds pieces of shop OpsCrew hasn't removed");
+    expect(error.message).toContain("Nothing was changed.");
     expect(await leftIn(w, "main")).toEqual(TUNNEL);
+    // A refused end changes nothing: the mark stays, and no approval was asked.
+    expect(markNames(w)).toHaveLength(2);
+    expect(w.handler.requests).toEqual([]);
     const plan = await readArtifact("plan", w.environment.paths.files.plan);
     expect(plan.cloudflareMove?.step).toBe("adopted");
 
     // Once A's pieces are removed, the end goes on where it stopped.
     await w.seedRemoval("main", []);
     expect(await endFinish(w.session)).toMatchObject({ step: "finished", done: true });
+  });
+
+  it("refuses while A's origin certificate is still to be revoked, changing nothing", async () => {
+    const w = await finishWorld("cloud");
+    await marks(w);
+    await w.seedRemoval("main", []);
+    const record = aSharedRecordPath(w.environment);
+    await mkdir(dirname(record), { recursive: true });
+    await writeFile(record, "{}\n");
+    const error = await caught(endFinish(w.session));
+    expect(error.message).toBe(
+      "The origin certificate of shop (prod) in the Cloudflare account Old isn't revoked yet, so the move can't end. Nothing was changed.",
+    );
+    expect(markNames(w)).toHaveLength(2);
+    expect(await readFile(record, "utf8")).toBe("{}\n");
+    expect(w.handler.requests).toEqual([]);
   });
 
   it("refuses before every environment is adopted in B", async () => {

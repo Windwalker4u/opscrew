@@ -7,7 +7,7 @@
  */
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { listText, OpsCrewError } from "@opscrew/core";
+import { exists, listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { backupsBucketOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import {
@@ -33,7 +33,7 @@ import {
   shadowRoots,
 } from "./shadow";
 import { planRemoval } from "./shadow-plans";
-import { pendingStop, revokeAOrigin } from "./shared";
+import { aSharedRecordPath, pendingStop, revokeAOrigin } from "./shared";
 import { A_TOKEN_VAR, B_TOKEN_VAR, refusal } from "./texts";
 import type { MoveEnvironment, MoveResult, MoveSession, ShadowRoot, StepStop } from "./types";
 
@@ -133,34 +133,24 @@ async function removeRoot(
   return undefined;
 }
 
-/** True while every bucket root's former state still holds its bucket (none was deleted yet). */
-async function bucketsStand(
-  session: MoveSession,
-  environment: MoveEnvironment,
-  roots: readonly ShadowRoot[],
-): Promise<boolean> {
+/** What A's former state of `root` holds (`stateContents`). */
+function removalContents(session: MoveSession, environment: MoveEnvironment, root: ShadowRoot) {
   const deps = { ...session.deps, paths: environment.paths };
-  for (const root of roots) {
-    const held = await stateContents(
-      deps,
-      shadowFiles(root).removalState,
-      async () => session.engine,
-    );
-    if (held === "nothing") return false;
-  }
-  return true;
+  return stateContents(deps, shadowFiles(root).removalState, async () => session.engine);
 }
 
 /**
  * Removes A's pieces of `environment` once the finish adopted it in B (plan 7.7), in order: A's
  * tunnels waited on until Cloudflare reports no connection; the destroy plans of A's account-scoped
  * pieces of the main root (and of GitHub's verification record's, which has none) from A's former
- * states; A's buckets checked against B's and emptied (`emptyBuckets`, each after its name is
- * typed, skipped once a bucket was deleted); each bucket root's destroy plan, made from a copy of
- * the root without the bucket's guard; A's origin certificate revoked (`revokeAOrigin`). Every
- * destroy plan is approved by its hash with `allowDestroy` and the app's name typed. Resumable: a
- * run plans each step again, and a step that is done plans nothing. A refused approval leaves the
- * app on B and the step to run again. A script stops with each step's hash.
+ * states; a copy of each bucket root without the bucket's guard (any guard left stops before a file
+ * is deleted); A's buckets checked against B's and emptied (`emptyBuckets`, each after its name is
+ * typed, only those A's former state still holds); each bucket root's destroy plan, from its copy;
+ * A's origin certificate revoked (`revokeAOrigin`), and A's record (`aSharedRecordPath`)
+ * deleted once nothing of it is left to revoke. Every destroy plan is approved by its hash with
+ * `allowDestroy` and the app's name typed. Resumable: a run plans each step again, and a step
+ * that is done plans nothing. A refused approval leaves the app on B and the step to run again. A
+ * script stops with each step's hash.
  */
 export async function removeA(
   session: MoveSession,
@@ -177,18 +167,52 @@ export async function removeA(
     const stop = await removeRoot(session, environment, root);
     if (stop !== undefined) return stop;
   }
-  const buckets = roots.filter((one) => GUARDED.has(one.name));
-  if (buckets.length > 0 && (await bucketsStand(session, environment, buckets))) {
-    const stop = await emptyBuckets(session, environment, "a");
+  const copies: ShadowRoot[] = [];
+  for (const root of roots.filter((one) => GUARDED.has(one.name))) {
+    copies.push(await unguardedCopy(root));
+  }
+  const standing: MoveRoot[] = [];
+  for (const copy of copies) {
+    if ((await removalContents(session, environment, copy)) !== "nothing") standing.push(copy.name);
+  }
+  if (standing.length > 0) {
+    const stop = await emptyBuckets(session, environment, "a", standing);
     if (stop !== undefined) return stop;
   }
-  for (const root of buckets) {
-    const copy = await unguardedCopy(root);
+  for (const copy of copies) {
     const stop = await removeRoot(session, environment, copy);
     if (stop !== undefined) return stop;
     await rm(copy.dir, { recursive: true, force: true });
   }
-  return revokeAOrigin(session, environment);
+  const stop = await revokeAOrigin(session, environment);
+  if (stop !== undefined) return stop;
+  await rm(aSharedRecordPath(environment), { force: true });
+  return undefined;
+}
+
+/**
+ * Refuses, changing nothing, while the end would lose something: a state of the move that still
+ * holds pieces (or can't be read), or A's record naming an origin certificate still to revoke.
+ */
+async function requireNothingLeft(session: MoveSession): Promise<void> {
+  for (const environment of session.environments) {
+    const deps = { ...session.deps, paths: environment.paths };
+    for (const root of await shadowRoots(session, environment)) {
+      for (const state of [root.statePath, shadowFiles(root).removalState]) {
+        if ((await stateContents(deps, state, async () => session.engine)) === "nothing") continue;
+        throw refusal(
+          `${toPosixRelative(session.paths.root, state)} still holds pieces of ${environment.plan.app.name} OpsCrew hasn't removed, or can't be read, so the move can't end yet.`,
+          `Run \`${session.command}\` again: it plans their removal first.`,
+        );
+      }
+    }
+    if (await exists(aSharedRecordPath(environment))) {
+      throw refusal(
+        `The origin certificate of ${appWords(environment)} in ${accountWords(session.accounts.a)} isn't revoked yet, so the move can't end.`,
+        `Run \`${session.command}\` again: it revokes it once the server serves the new account's origin certificate.`,
+      );
+    }
+  }
 }
 
 /**
@@ -219,10 +243,11 @@ function renames(session: MoveSession): [string, string][] {
 
 /**
  * The move's end (plan 7.8), once every covered environment is adopted in B and A's pieces are
- * removed: the app's mark deleted from B's zone (a zone plan approved by its hash; other apps'
- * marks stay), then the move's local files (each root's states and data folders, refused while a
- * state still holds pieces, each environment's `cloudflare-move/` folder and the app's
- * `cloudflare-move.json`), then `cloudflareMove` removed from every covered plan. Resumable after
+ * removed: refused, changing nothing, while a state of the move still holds pieces or A's record
+ * is still there; then the app's mark deleted from B's zone (a zone plan approved by its hash;
+ * other apps' marks stay), then the move's local files (each root's states and data folders, each
+ * environment's `cloudflare-move/` folder and the app's `cloudflare-move.json`), then
+ * `cloudflareMove` removed from every covered plan. Resumable after
  * each. The result says which variables to give B's values once every app in the zone has
  * finished: now, or once the apps whose marks are still in B's zone have.
  */
@@ -236,6 +261,7 @@ export async function endFinish(session: MoveSession): Promise<MoveResult> {
       `Run \`${session.command}\` again: it goes on where it stopped.`,
     );
   }
+  await requireNothingLeft(session);
   const stop = await deleteMark(session);
   if (stop !== undefined) return { step: "adopted", done: false, ...stop };
   for (const environment of session.environments) {
