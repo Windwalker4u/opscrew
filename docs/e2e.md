@@ -3745,6 +3745,187 @@ OPSCREW_E2E_SFTP=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opsc
 on the smallest x86 server (one or two cents of server time), two Let's Encrypt certificates for the
 run's own names, and GitHub Actions minutes. It leaves nothing.
 
+## Moving to another Cloudflare account
+
+`packages/cli/test/live/cloudflare-move.test.ts`, with `OPSCREW_E2E_CLOUDFLARE_MOVE=1`, runs feature
+028's live pass: the real move of the zone `OPSCREW_E2E_DOMAIN` (the zone itself, not a name below
+it), with every OpsCrew app it serves, from the account that holds it (A, `OPSCREW_E2E_CLOUDFLARE_TOKEN`)
+to another account (B, `OPSCREW_E2E_MOVE_TOKEN_B`). It is a production move made once, one way,
+in legs run one at a time over hours or days. Its results go to
+[e2e-coverage.md](e2e-coverage.md).
+
+**The pass's own apps**, beside the real ones (which the lead prepares and finishes from their own
+repositories, per the lead's checklist kept outside the repository):
+- **P:** `examples/s3-uploads` on a Hetzner server OpsCrew makes, proxied with origin TLS, its files
+  in an R2 bucket, from `OPSCREW_E2E_GITHUB_REPO`, on `e2e-<run id>.<zone>`;
+- **Q:** `examples/flask-sqlite` on a throwaway Hetzner server set up as the user's own, in tunnel
+  mode, its snapshots copied off the server to R2, from `OPSCREW_E2E_GITHUB_REPO_B`, on
+  `e2e-<run id>-b.<zone>`.
+
+Both are named after the run (`e2e-move-<run id>-p` and `-q`), so every tunnel, Access piece and
+bucket of theirs is the pass's alone. Each account's R2 key is the one of its token (the token's
+id and the SHA-256 of its value), so both tokens need R2 Storage Edit.
+
+**Between legs.** Each leg is its own vitest process. The pass keeps everything it needs in the
+folder `opscrew-e2e-cloudflare-move` under `OPSCREW_TEST_TMP`, outside every vitest run folder:
+`pass.json` (the run id, both account ids, the registrar L0 found, each leg's outcome and the
+figures for the coverage page), P's and Q's checkouts with OpsCrew's home and keys, every CLI
+output, every version of the move's local files (the shadow states, the pending plans, the saved
+plans), the probes' samples and the inventories. Each leg starts only when the leg before it passed
+(L4a or L4b counts as one); L6 runs after anything.
+
+**Every command runs as a script runs it.** A stop's printed command (`--approve <hash>` with its
+`--confirm` names) is run next, and only with the names the leg expects: the app's, its buckets' and
+the zone's. Every `--finish` passes `--allow-downtime`, so P's R2 window runs through the CLI. A run
+that stops without a command to run next is a wait: the leg ends as waiting and logs when to run it
+again (`pass.json` keeps the note).
+
+**Masks.** The zone, both account ids, the zones' ids, the Zero Trust team domains and every address
+in either zone's records are masked in everything printed under labels of their own (`mask-…`).
+The leak search never looks for them, since commits name them on purpose; it looks for every secret
+and for the servers' addresses.
+
+**The load** runs while a leg changes anything (L1's check, L2 to L5): 20 requests a second to P's
+and Q's health routes, where every answer but a 2xx fails, and one a second to each real app's
+hostname (OpsCrew's records and the Workers custom domains of the zone that serves), where only a 5xx
+or no answer fails. Nothing runs between legs. Each leg's figures go to `pass.json`.
+
+### The legs
+
+Run them in this order, each alone with `-t`:
+
+1. **L0, preflight** (read only): A holds the zone, active, without a zone hold; B has no zone of
+   its name; both account ids (B's from its token when it sees one account, else
+   `OPSCREW_E2E_MOVE_ACCOUNT_B`). The registrar: A's token on Cloudflare Registrar, else the public
+   record (RDAP, from IANA's bootstrap file). Cloudflare Registrar is L4b; Porkbun, Namecheap or
+   GoDaddy with its credentials set is L4a; any other registrar stops the pass here. DNSSEC: A's
+   status and whether the registry still publishes a DS record. Both accounts' inventories: the
+   zone's plan, settings, rulesets, page rules, Logpush jobs, Email Routing's state, rules and
+   records, origin certificates and records by whose they are (OpsCrew's, Email Routing's, the
+   Workers custom domains', the user's); the account's tunnels, Access applications, policies,
+   service tokens, login methods, Workers, Pages projects, R2 buckets, Turnstile widgets, Web
+   Analytics sites, members (by role), API tokens and notifications, with what OpsCrew didn't make
+   named apart (plan 14). A kind the token can't read is listed as not readable. The inventories go
+   to `inventory-L0.json` for the lead's checklist: each piece is redone in B before the switch or
+   let go, and Email Routing is set up in B right after the activation.
+2. **L1, P and Q in A:** P designed, its bucket on R2, provisioned and deployed; Q's throwaway
+   server, the interview for your own server in tunnel mode, `snapshot offsite on --to r2`,
+   provisioned and deployed, a value written through the app. Both keep a recovery copy (a folder
+   copy and `--key-out`). P's app writes 200 objects into its bucket; Q takes two snapshots, both
+   copied off the server, and the objects of the copies in A's bucket are read with their SHA-256
+   (rclone in Docker). Then a minute of load, which P and Q must answer, and the SSH hostname behind
+   Access with A's service token: its status and time, or Access holding the stream to the 5 s
+   limit.
+3. **L2, the rehearsal** (SC-2806), under load: P prepared to B, then Q; `opscrew status` shows them
+   prepared; P aborted (B's zone stays for Q's mark), then Q (B's zone goes). Then B has no zone of
+   the name and nothing of P or Q, A's inventory is unchanged, and no request failed. This covers
+   the own-tunnel abort through the CLI.
+4. **L3, prepare for real** (SC-2802), under load: P prepared; until Q is, `--switch` refuses and
+   names Q's hostname; Q prepared while P's app writes its objects again; `opscrew status` shows both.
+   On B's pending zone, read only: Email Routing's answers (`email/routing` and `email/routing/dns`,
+   never turned on), whether Cloudflare filled `content` for the records made from `data` (TLSA,
+   HTTPS…), and both apps' marks. Last, `--switch` without `--approve`: when it only shows its plan,
+   every OpsCrew name in the zone is in a mark and the leg passes; when it names hostnames, the lead
+   prepares those real apps from their repositories and runs L3 again.
+5. **L4a or L4b, the switch** (SC-2803), whichever L0 found, under load and with the probes:
+   `--switch` with the zone typed; with a DS record still published, the DS run, the wait it prints
+   and the second approval (the leg waits and says after when); at Cloudflare Registrar, the
+   dashboard steps it prints: the founder starts the move in A's dashboard and accepts it in B's,
+   while the leg waits up to 6 hours for the delegation to name B's nameservers, then runs the
+   switch again (after that, run L4b again). The switch's own waits (the activation, the
+   certificate, each hostname's first good answer) run again as it says. The probes, every 5 s for
+   P, Q and each real hostname: this computer's resolver with an HTTPS request; DNS over HTTPS, then
+   an HTTPS request to the edge address it gave with the hostname as SNI; A's and B's nameservers
+   asked directly (`A`, `A origin` for a server of the pass, `CNAME`, `NXDOMAIN`). Recorded: the
+   switch's times, the probes from the delegation's change, the load's failures, whether the switch
+   plan names Email Routing, whether the registrar was told from B's zone's record, any Workers
+   custom domain refusal, A's zone afterwards, B's DNSSEC (when the DS was published at L0), and P's
+   answer between the switch and its finish (O2). Then a deploy of Q goes through B's Access.
+6. **L5, every finish** (SC-2804, SC-2805), under load: P's finish with its R2 window, its files
+   committed, P answering; P's objects in B's bucket as the app lists them, the same as in A's just
+   before. Q's finish (the connector takes B's token); Q's copies in B's bucket with the same
+   checksums; a restore of Q from its copy (`restore <id> --from offsite --key-file`, approved by its
+   hash and the typed name), and its value read back. A deploy of each after its finish, and the SSH
+   hostname with B's service token. A holds nothing of P or Q but its moved zone, the Zero Trust
+   organization and the PIN login; how Cloudflare answers for A's origin certificates of the moved
+   zone is recorded (run L6 again about 7 days later to see it once Cloudflare deleted the zone).
+   Then, once the lead finished every real app, each real hostname answers from B.
+7. **L6, the leak search and the cleanup** (SC-2807), every step run even after a failure: a move a
+   failed leg left is finished (after the switch) or aborted (before it); the leak search over every
+   output, kept file, commit, pull request, audit entry, saved plan and state file of the whole
+   pass; P and Q destroyed with `--delete-data` in the account that serves the zone; the throwaway
+   server deleted; then, in either account, what is left of P and Q (their tunnels, Access
+   applications, policies and service tokens, the records holding the run's id, their marks and
+   their R2 buckets, matched by the apps' names) removed and listed, OpsCrew's shared rules checked
+   for their hostnames, and both repositories reset. A's moved zone is left to Cloudflare, which
+   deletes it. With nothing left, the pass's folder goes.
+
+After a failed leg, fix the cause, rebuild the CLI and run the leg again (each step finds what is
+done), or run L6 to clean up. L1 doesn't run twice: after a failed L1, run L6, then L0 and L1.
+
+### Variables and running it
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_CLOUDFLARE_MOVE` | `1` runs the pass. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A's token: the permissions of [Setup](#setup) on the zone, plus Workers R2 Storage Edit, Access and Cloudflare Tunnel Edit, and, for the inventories, the account's reads (a kind it can't read is listed as such). |
+| `OPSCREW_E2E_MOVE_TOKEN_B` | B's token, with the permissions [the guide](guide/cloudflare-move.md) lists for B and Workers R2 Storage Edit. |
+| `OPSCREW_E2E_MOVE_ACCOUNT_B` | Only when B's token sees more than one account: B's account id. |
+| `OPSCREW_E2E_DOMAIN` | The zone being moved. |
+| `OPSCREW_TEST_TMP` | Where the pass keeps its folder: a drive with space, never inside a Git checkout. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B` | L1 to L6, as for [your own server](#your-own-server): P's repository and Q's. |
+| `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY`, `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY`, or `GODADDY_API_TOKEN` | L4a only, for the registrar that holds the zone. |
+| `OPSCREW_E2E_REGION` | Optional, as for your own server. |
+
+L1 and L5 read Q's copies with rclone in Docker, so Docker runs on this computer.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_CLOUDFLARE_MOVE=1 OPSCREW_TEST_TMP=D:/opscrew-test-tmp \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_MOVE_TOKEN_B=… OPSCREW_E2E_DOMAIN=example.com \
+  OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b
+export PATH="$PWD/../../.tools/bin:$PATH"
+npx vitest run test/live/cloudflare-move.test.ts -t "L0"
+npx vitest run test/live/cloudflare-move.test.ts -t "L1"
+npx vitest run test/live/cloudflare-move.test.ts -t "L2"
+npx vitest run test/live/cloudflare-move.test.ts -t "L3"   # again after the lead's prepares
+npx vitest run test/live/cloudflare-move.test.ts -t "L4b"  # or L4a; again after each wait
+npx vitest run test/live/cloudflare-move.test.ts -t "L5"
+npx vitest run test/live/cloudflare-move.test.ts -t "L6"
+```
+
+Set `OPSCREW_E2E_CLOUDFLARE_MOVE=1` only on these command lines, never in `.env.e2e` or an exported
+shell of other passes: a run of every live test would otherwise start legs of a production move.
+
+**Expected time and cost** (not measured yet):
+- **L0:** a few minutes, read only, free.
+- **L1:** about 2 hours: two Hetzner servers of the cheapest x86 type (about 0.01 EUR an hour each)
+  from here until L6, two deploy runs, R2 within its free tier (no egress fees).
+- **L2 and L3:** about 1–2 hours each, plus the lead's prepares of the real apps; nothing new is
+  billed (B's zone starts on the free plan; Cloudflare Tunnel, Zero Trust's free plan and per-hostname
+  origin pulls cost nothing).
+- **L4:** activation up to an hour on a free zone, the certificate minutes and at worst 24 hours,
+  24 to 48 hours more before it when the registry still publishes a DS record; at Cloudflare
+  Registrar the dashboard move, accepted within five days. A nameserver change costs nothing.
+- **L5:** about 2 hours, P's maintenance window of a few minutes, four deploy runs.
+- **L6:** under an hour.
+
+With the legs spread over three days, the two servers cost about 1–2 EUR in all; within one day a
+few cents.
+
+### Cleanup
+
+L6 is the cleanup; run it after the last leg, or after a failure that leaves the pass where it
+can't go on. **If L6 can't run**, delete by hand, in either account, only what holds P's or Q's
+name (`e2e-move-<run id>-p`, `-q`): their tunnels, Access applications, policies and service tokens,
+their R2 buckets (emptied first), the records holding `e2e-<run id>` and the marks
+`_opscrew-move.…` of both apps in B's zone; at Hetzner, P's server (labelled with its app) and the
+throwaway server `opscrew-e2e-move-cf-b-<run id>` (labelled `managed-by=opscrew-e2e`), its SSH
+key and firewall; reset both repositories; then the pass's folder. Never A's moved zone, a real app
+or anything the pass didn't make.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
