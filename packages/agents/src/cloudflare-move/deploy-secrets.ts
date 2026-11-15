@@ -339,10 +339,7 @@ async function deployToBoth(session: MoveSession, environment: MoveEnvironment):
         detail: `${workflowFile} on ${ref}`,
       }),
     );
-    // GitHub's client takes `onWaiting`; the move's GitHub type doesn't declare it yet.
-    const wait: Parameters<typeof githubApi.waitForWorkflowRun>[2] & {
-      onWaiting: (url: string) => void;
-    } = {
+    run = await githubApi.waitForWorkflowRun(owner, repo, {
       workflowFile,
       ref,
       runId,
@@ -351,8 +348,7 @@ async function deployToBoth(session: MoveSession, environment: MoveEnvironment):
         deps.reporter.info(
           `${environment.environment}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run until it ends.`,
         ),
-    };
-    run = await githubApi.waitForWorkflowRun(owner, repo, wait);
+    });
   } catch (error) {
     throw new OpsCrewError(
       codeOf(error),

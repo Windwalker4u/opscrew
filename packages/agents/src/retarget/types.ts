@@ -32,6 +32,8 @@ export interface RetargetGitHubApi extends GitHubApi, Pick<GitHubClient, "delete
       runId: number;
       timeoutMs?: number;
       pollMs?: number;
+      /** Called once when the run waits for a required reviewer, with the run's page. */
+      onWaiting?: (htmlUrl: string) => Promise<void> | void;
     },
   ): Promise<{ id: number; conclusion: string | null; htmlUrl: string }>;
 }
