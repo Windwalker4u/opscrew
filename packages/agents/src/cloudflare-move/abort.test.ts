@@ -910,6 +910,34 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
       expect(await readFile(file, "utf8")).toBe(`${lines(before)}\n`);
     });
 
+    it("forgets New's kept key also after an interruption right after its bucket's destroy", async () => {
+      const { h, remote, plan } = await r2World();
+      const kept = (seed: string, account?: string) => ({
+        provider: "r2",
+        bucket: APP_BUCKET,
+        ...(account === undefined ? {} : { account }),
+        ...key(seed),
+      });
+      const before = [kept("kept-a")];
+      const file = storageKeyFile(h.prodPaths);
+      await mkdir(dirname(file), { recursive: true });
+      const lines = (keys: readonly object[]) => keys.map((one) => JSON.stringify(one)).join("\n");
+      await writeFile(file, `${lines([...before, kept("kept-b", h.fresh.id)])}\n`);
+      const destroyed = h.engine.onDestroy;
+      let once = true;
+      h.engine.onDestroy = (addresses, dir) => {
+        destroyed(addresses, dir);
+        if (once && dir.endsWith(basename(storageRootDir(plan)))) {
+          once = false;
+          throw new Error("interrupted");
+        }
+      };
+      h.deps.interactive = true;
+      await expect(h.run({ services: { remote } })).rejects.toThrow("interrupted");
+      await expectAborted(h, await h.run({ services: { remote } }));
+      expect(await readFile(file, "utf8")).toBe(`${lines(before)}\n`);
+    });
+
     it("refuses, before any bucket is emptied, a bucket root whose guard it can't take out", async () => {
       const { h, r2, remote, plan } = await r2World();
       const guarded = GUARDED_BUCKET.replace(

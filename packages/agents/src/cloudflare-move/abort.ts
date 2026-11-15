@@ -297,7 +297,6 @@ async function removeEnvironment(
     if (emptied !== undefined) return emptied;
     const stop = await destroyRoot(session, environment, root, copy);
     if (stop !== undefined) return stop;
-    await forgetBKey(session, environment, root);
   }
   for (const root of others) {
     const stop = await destroyRoot(session, environment, root, root);
@@ -342,18 +341,16 @@ function bucketOf(environment: MoveEnvironment, root: ShadowRoot): string {
   return moveBuckets(environment.plan).find((bucket) => bucket.root === root.name)?.bucket ?? "";
 }
 
-/** B's kept key of the bucket root's bucket forgotten, once the root's destroy went through; A's stay. */
-async function forgetBKey(
-  session: MoveSession,
-  environment: MoveEnvironment,
-  root: ShadowRoot,
-): Promise<void> {
+/** B's kept key of each of the environment's R2 buckets forgotten; A's keys stay. */
+async function forgetBKeys(session: MoveSession, environment: MoveEnvironment): Promise<void> {
   const { b } = session.accounts;
-  await forgetStorageKey(
-    { ...session.deps, paths: environment.paths },
-    { provider: "r2", bucket: bucketOf(environment, root) },
-    { account: b.accountId, moveTo: b.accountId },
-  );
+  for (const { bucket } of moveBuckets(environment.plan)) {
+    await forgetStorageKey(
+      { ...session.deps, paths: environment.paths },
+      { provider: "r2", bucket },
+      { account: b.accountId, moveTo: b.accountId },
+    );
+  }
 }
 
 /**
@@ -424,9 +421,10 @@ async function withoutGuard(session: MoveSession, root: ShadowRoot): Promise<Sha
 
 /**
  * After B's pieces are gone: each environment's move folder deleted, B's zone deleted or kept,
- * the repository's switch file and DS notes deleted when no other app of it records a move (an
- * approved switch plan kept there would let a later move switch without asking), then the record
- * removed from every covered plan and the app's local file deleted.
+ * B's kept bucket keys forgotten, the repository's switch file and DS notes deleted when no other
+ * app of it records a move (an approved switch plan kept there would let a later move switch
+ * without asking), then the record removed from every covered plan and the app's local file
+ * deleted.
  */
 async function endAbort(session: MoveSession, move: CloudflareMove): Promise<MoveResult> {
   const { deps, zone } = session;
@@ -442,6 +440,7 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
       ? "the new account had no zone"
       : "the new account's zone stays";
   // Before the records go, so an interrupted abort never leaves them behind.
+  for (const env of session.environments) await forgetBKeys(session, env);
   if (!(await otherMoveRecorded(session.paths))) {
     await clearSwitchProgress(session.paths);
     await clearDsNotes(session.paths);
