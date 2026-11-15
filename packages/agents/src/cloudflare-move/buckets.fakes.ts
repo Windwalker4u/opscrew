@@ -8,6 +8,7 @@
 import { Readable } from "node:stream";
 import { FakeDocker, parseTar } from "@opscrew/connector-docker/testing";
 import type {
+  ApprovalRequest,
   CommandResult,
   DockerTransport,
   RemoteExec,
@@ -15,8 +16,8 @@ import type {
 } from "@opscrew/contracts";
 import { ApprovalGate, MemoryApprovalStore } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { CHECK_PAUSED_VARIABLE, DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
+import { type CloudflareMove, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import {
   NEW_OFFSITE_KEY_VARS,
   NEW_STORAGE_KEY_VARS,
@@ -40,8 +41,14 @@ export interface R2Run {
   verb: string;
   args: string[];
   config: string;
-  /** Whether the app's deploys were paused when it ran. */
-  paused: boolean;
+  /** Whether the app's deploys and its scheduled check were paused when it ran. */
+  paused: Paused;
+}
+
+/** Whether the app's deploys and its scheduled check are paused. */
+export interface Paused {
+  deploys: boolean;
+  check: boolean;
 }
 
 /** One section of rclone's configuration, by its keys. */
@@ -80,7 +87,7 @@ export class FakeR2 {
 
   constructor(
     readonly trail: string[],
-    private readonly paused: () => boolean,
+    private readonly paused: () => Paused,
   ) {}
 
   /** Adds `bucket` in `account`, with its key and objects. */
@@ -220,22 +227,34 @@ export interface BucketWorldOptions {
   none?: boolean;
   /** The session's command (default prepare's). */
   command?: string;
-  /** Only these approvals are granted (default: every one). */
-  approve?: (title: string) => boolean;
+  /** The move's recorded step (default `started`). */
+  step?: CloudflareMove["step"];
+}
+
+/** `plan` with the move's record at `step`. */
+function atStep(plan: DeployPlan, step: CloudflareMove["step"]): DeployPlan {
+  const move = plan.cloudflareMove;
+  if (move === undefined) throw new Error("the plan records no move");
+  return DeployPlanSchema.parse({ ...plan, cloudflareMove: { ...move, step } });
 }
 
 /**
- * The app on `target` in a move of the zone from Old to New, prepared up to its buckets: A's
- * buckets with three files and two snapshots' copies, B's empty, each with its own key in the
- * environment's variables (A's plain, B's `OPSCREW_NEW_*`); a session (interactive, every approval
- * granted and recorded) whose services reach the fakes.
+ * The app on `target` in a move of the zone from Old to New, prepared up to its buckets, its
+ * scheduled check on: A's buckets with three files and two snapshots' copies, B's empty, each with
+ * its own key in the environment's variables (A's plain, B's `OPSCREW_NEW_*`); a session
+ * (interactive, every approval recorded and granted unless `answers.approve` says no) whose
+ * services reach the fakes.
  */
 export async function bucketWorld(target: "cloud" | "portainer", o: BucketWorldOptions = {}) {
   const keys = bucketKeys();
-  const base =
+  const server =
     target === "cloud"
       ? serverPlan()
       : unencrypted(portainerPlan({ web: { mode: "tunnel" }, deployed: true }));
+  const base = DeployPlanSchema.parse({
+    ...server,
+    observability: { ...server.observability, check: { enabled: true } },
+  });
   const plan = o.none ? base : o.appOnly ? withBucket(base, "r2") : withR2(base);
   const env: Record<string, string> = {
     [STORAGE_KEY_VARS.accessKeyId]: keys.a.storage.accessKeyId,
@@ -248,13 +267,16 @@ export async function bucketWorld(target: "cloud" | "portainer", o: BucketWorldO
     [NEW_OFFSITE_KEY_VARS.secretAccessKey]: keys.b.backups.secretAccessKey,
   };
   const h = await moveHarness({
-    plans: (cloudflare) => ({ prod: recordedMove(plan, cloudflare) }),
+    plans: (cloudflare) => ({ prod: atStep(recordedMove(plan, cloudflare), o.step ?? "started") }),
     env,
   });
   const old = h.cloudflare.account("Old").id;
   const fresh = h.cloudflare.account("New").id;
   const trail: string[] = [];
-  const paused = () => h.github.variables.has(DEPLOY_PAUSED_VARIABLE);
+  const paused = (): Paused => ({
+    deploys: h.github.variables.has(DEPLOY_PAUSED_VARIABLE),
+    check: (h.github.variables.get(CHECK_PAUSED_VARIABLE) ?? "").includes('"shop/prod"'),
+  });
   const r2 = new FakeR2(trail, paused);
   r2.add(old, APP_BUCKET, keys.a.storage, { "a.png": "aaaa", "b.png": "bb", "c.pdf": "c" });
   r2.add(old, BACKUPS_BUCKET, keys.a.backups, {
@@ -327,8 +349,9 @@ export async function bucketWorld(target: "cloud" | "portainer", o: BucketWorldO
     command: o.command ?? MOVE_COMMAND,
     services: { ...h.services, remote, docker: () => transport, ...clock },
   });
-  // Every approval asked and recorded, as in a terminal; granted unless `o.approve` says no.
-  const handler = new ScriptedApprovalHandler((request) => o.approve?.(request.title) ?? true);
+  // Every approval asked and recorded, as in a terminal; granted unless `answers.approve` says no.
+  const answers: { approve: (request: ApprovalRequest) => boolean } = { approve: () => true };
+  const handler = new ScriptedApprovalHandler((request) => answers.approve(request));
   const approvals = new ApprovalGate({
     handler,
     store: new MemoryApprovalStore(),
@@ -366,7 +389,9 @@ export async function bucketWorld(target: "cloud" | "portainer", o: BucketWorldO
     ...h,
     session,
     handler,
+    answers,
     environment,
+    paused,
     keys,
     old,
     fresh,

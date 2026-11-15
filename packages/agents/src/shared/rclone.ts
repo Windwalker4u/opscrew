@@ -146,18 +146,28 @@ export function sshRclone(
 /** Where a container of {@link dockerRclone} finds its configuration (mode 0600, root's). */
 const CONFIG = "/tmp/r.conf";
 
+/** The label of every container {@link dockerRclone} runs; its value names whose it is. */
+export const RCLONE_LABEL = "opscrew.rclone";
+
 /**
  * Runs rclone in a one-off container through `docker` (Portainer's Docker proxy): its
  * configuration is written into the created container at {@link CONFIG} through the archive API
  * before it starts, and goes when the container is removed afterwards. On Docker's default network,
- * so it reaches the buckets. `words` names the place in what a failure says.
+ * so it reaches the buckets. Each container is labelled {@link RCLONE_LABEL} with `owner`, and any
+ * left by an earlier run with it (each holds the buckets' keys) is removed first. Docker's API only
+ * waits for a container, so one that outlasts `timeoutMs` is stopped. `words` names the place in
+ * what a failure says.
  */
 export function dockerRclone(
   redactor: Pick<Redactor, "redact">,
   docker: DockerClient,
   words: string,
+  owner: string,
 ): RcloneRunner {
   return async (run) => {
+    for (const left of await docker.listContainers([`${RCLONE_LABEL}=${owner}`])) {
+      await docker.removeContainer(left.id);
+    }
     const file = {
       name: CONFIG.slice(1),
       type: "file",
@@ -166,25 +176,58 @@ export function dockerRclone(
       gid: 0,
       data: Buffer.from(`${run.config.join("\n")}\n`),
     } as const;
+    let id: string | undefined;
+    let late = false;
+    const timer = setTimeout(() => {
+      late = true;
+      // The wait then ends, and the container is removed as after any run.
+      if (id !== undefined) docker.stopContainer(id, 0).catch(() => undefined);
+    }, run.timeoutMs);
+    // Once its output is read, rclone has ended: only the container's removal is left.
+    let ended = false;
+    const watched: DockerClient = {
+      ...docker,
+      containerLogs: async (container) => {
+        const logs = await docker.containerLogs(container);
+        ended = true;
+        return logs;
+      },
+    };
     let result: Awaited<ReturnType<typeof runOneOff>>;
     try {
       result = await runOneOff(
-        docker,
-        { image: IMAGES.rclone.ref, cmd: ["--config", CONFIG, ...run.args] },
-        (id) => docker.putArchive(id, "/", tarStream([file])),
+        watched,
+        {
+          image: IMAGES.rclone.ref,
+          cmd: ["--config", CONFIG, ...run.args],
+          labels: { [RCLONE_LABEL]: owner },
+        },
+        async (created) => {
+          id = created;
+          await docker.putArchive(created, "/", tarStream([file]));
+        },
       );
     } catch (error) {
       // A container left behind holds the buckets' keys: never silently.
       if (!(error instanceof ContainerLeftError)) throw error;
+      const short = error.id.slice(0, 12);
+      const why = errorMessage(error.cause).replace(/\.?$/, ".");
       throw new OpsCrewError(
         "COMMAND_FAILED",
         redactor.redact(
-          `${run.what} failed on ${words}: ${errorMessage(error.cause)} OpsCrew could not remove its one-off container ${error.id.slice(0, 12)} either, which holds the buckets' keys.`,
+          ended
+            ? `${run.what} on ${words}: rclone ended, but its container ${short} could not be removed: ${why} It holds the buckets' keys.`
+            : `${run.what} failed on ${words}: ${why} OpsCrew could not remove its one-off container ${short} either, which holds the buckets' keys.`,
         ),
         {
-          hint: `Remove it on the Docker host with \`docker rm -f ${error.id.slice(0, 12)}\`. ${run.hint}`,
+          hint: `Remove it on the Docker host with \`docker rm -f ${short}\` (OpsCrew also removes it before its next rclone run there). ${run.hint}`,
         },
       );
+    } finally {
+      clearTimeout(timer);
+    }
+    if (late) {
+      throw failed(redactor, run, words, `it did not finish within ${durationText(run.timeoutMs)}`);
     }
     if (result.exitCode === 0) return result.stdout;
     throw failed(redactor, run, words, lastLines(result.stdout, result.stderr, result.exitCode));

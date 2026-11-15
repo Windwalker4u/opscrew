@@ -62,9 +62,19 @@ export type MovePlanKey = Pick<PendingMovePlan, "action" | "environment" | "root
 
 const AppProgressSchema = z.strictObject({
   pending: PendingSchema.optional(),
-  /** Set before the finish stops the app; a run that finds it starts the app on A's settings first. */
+  /**
+   * The finish's maintenance window of one environment. `stoppedAt` is set before the app stops: a
+   * run that finds only it starts the app on A's settings first. `pointingAt` is set before step 1
+   * points the app at B: from then on a run only goes forward. `endedAt`: the app runs on B, and a
+   * run skips the window.
+   */
   window: z
-    .strictObject({ environment: EnvironmentNameSchema, stoppedAt: IsoDateTimeSchema })
+    .strictObject({
+      environment: EnvironmentNameSchema,
+      stoppedAt: IsoDateTimeSchema,
+      pointingAt: IsoDateTimeSchema.optional(),
+      endedAt: IsoDateTimeSchema.optional(),
+    })
     .optional(),
 });
 
@@ -167,7 +177,18 @@ export async function recordWindowStop(
   await writeAppProgress(deps.paths, { ...progress, window });
 }
 
-/** Forgets the window's stop, once the app runs again. */
+/** Records that the recorded window reached `field` now: pointing the app at B, or its end. */
+export async function markWindow(
+  deps: Pick<PhaseDeps, "paths" | "clock">,
+  field: "pointingAt" | "endedAt",
+): Promise<void> {
+  const progress = await readAppProgress(deps.paths);
+  if (progress.window === undefined) throw new Error("No maintenance window is recorded.");
+  const window = { ...progress.window, [field]: deps.clock.now().toISOString() };
+  await writeAppProgress(deps.paths, { ...progress, window });
+}
+
+/** Forgets the window's stop, once the app runs again on A's settings. */
 export async function clearWindow(deps: Pick<PhaseDeps, "paths">): Promise<void> {
   const { window: _done, ...rest } = await readAppProgress(deps.paths);
   await writeAppProgress(deps.paths, rest);

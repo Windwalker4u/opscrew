@@ -9,6 +9,7 @@ import {
   lastBackupsCopy,
   measureBuckets,
   recoverWindow,
+  type WindowOptions,
 } from "./buckets";
 import {
   APP_BUCKET,
@@ -17,7 +18,7 @@ import {
   type BucketWorld,
   bucketWorld,
 } from "./buckets.fakes";
-import { readAppProgress, recordWindowStop } from "./progress";
+import { markWindow, readAppProgress, recordWindowStop } from "./progress";
 import { FINISH_COMMAND, MOVE_COMMAND } from "./texts";
 
 async function caught(promise: Promise<unknown>): Promise<OpsCrewError> {
@@ -40,17 +41,26 @@ function verbs(w: BucketWorld): string[] {
   return w.r2.runs.map((run) => `${run.verb} ${run.args.find((arg) => /^[ab]:/.test(arg))}`);
 }
 
-/** The window's step 1 and its undo, each noted in the trail. */
-function stepOne(w: BucketWorld, fail?: () => boolean) {
+/**
+ * The window's options: step 1's two parts and its undo, each noted in the trail (step 1's with
+ * whether the deploys were paused then); `fail` names the part that fails.
+ */
+function stepOne(w: BucketWorld, fail?: "secrets" | "deploy"): WindowOptions {
+  const part = (name: "secrets" | "deploy") => async () => {
+    w.trail.push(`${name}${w.paused().deploys ? " (deploys paused)" : ""}`);
+    if (fail === name) throw new OpsCrewError("COMMAND_FAILED", `The ${name} step failed.`);
+  };
   return {
-    pointAtB: async () => {
-      w.trail.push("point at B");
-      if (fail?.()) throw new OpsCrewError("COMMAND_FAILED", "The deploy failed.");
-    },
+    pointAtB: { secrets: part("secrets"), deploy: part("deploy") },
     backToA: async () => {
       w.trail.push("back to A");
     },
   };
+}
+
+/** The window's record in the app's file. */
+async function windowOf(w: BucketWorld) {
+  return (await readAppProgress(w.deps.paths)).window;
 }
 
 const TARGETS = ["cloud", "portainer"] as const;
@@ -181,7 +191,8 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
     });
 
     it("a refused approval copies nothing", async () => {
-      const w = await bucketWorld("cloud", { approve: () => false });
+      const w = await bucketWorld("cloud");
+      w.answers.approve = () => false;
       const error = await caught(firstCopies(w.session, w.environment));
       expect(error.code).toBe("APPROVAL_REFUSED");
       expect(error.message).toContain("Nothing was changed.");
@@ -237,7 +248,7 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
 
   describe("bucketWindow", () => {
     for (const target of TARGETS) {
-      it(`stops the app, syncs its bucket while deploys are paused, then points it at B (${target})`, async () => {
+      it(`stops the app, syncs its bucket, writes B's settings while deploys are paused, then deploys (${target})`, async () => {
         const w = await bucketWorld(target, { command: FINISH_COMMAND });
         await firstCopies(w.session, w.environment);
         // Since the first copy, A's app wrote one file and deleted another.
@@ -246,25 +257,36 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
         a.delete("b.png");
         w.trail.length = 0;
         w.r2.runs.length = 0;
-        const step = stepOne(w);
-        expect(await bucketWindow(w.session, w.environment, step.pointAtB, step)).toBeUndefined();
+        w.handler.requests.length = 0;
+        expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
         expect(w.trail).toEqual([
           "rclone size",
           "stop app",
           "stop worker",
           "rclone sync",
-          "point at B",
+          "secrets (deploys paused)",
+          "deploy",
         ]);
-        const window = w.handler.requests.at(-1);
-        expect(window?.kind).toBe("remote-exec");
+        // One approval: the window's, which covers the scheduled check's pause and resume.
+        expect(w.handler.requests.map((r) => r.kind)).toEqual(["remote-exec"]);
+        const [window] = w.handler.requests;
         expect(window?.title).toMatch(/^Maintenance window: stop shop \(prod\) on /);
         expect(window?.title).toContain("(about ");
         expect(window?.details).toContain("pause the app's deploys");
-        // The sync ran with the deploys paused; they run again before step 1's deploy.
-        expect(w.r2.runs.find((run) => run.verb === "sync")?.paused).toBe(true);
-        expect(w.github.variables.has(DEPLOY_PAUSED_VARIABLE)).toBe(false);
+        expect(window?.details).toContain("pause the scheduled check");
+        // The sync ran with the deploys and the check paused; both run again afterwards.
+        expect(w.r2.runs.find((run) => run.verb === "sync")?.paused).toEqual({
+          deploys: true,
+          check: true,
+        });
+        expect(w.paused()).toEqual({ deploys: false, check: false });
         expect(objectsOf(w, w.fresh, APP_BUCKET)).toEqual(objectsOf(w, w.old, APP_BUCKET));
-        expect((await readAppProgress(w.deps.paths)).window).toBeUndefined();
+        expect(await windowOf(w)).toEqual({
+          environment: "prod",
+          stoppedAt: expect.any(String),
+          pointingAt: expect.any(String),
+          endedAt: expect.any(String),
+        });
         const actions = w.deps.audit.entries
           .filter((e) => e.phase === "cloudflare-move" && e.action === "window")
           .map((e) => e.detail);
@@ -276,10 +298,64 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       });
     }
 
+    it("a run after a window that ended deletes nothing in B: only step 1 runs again", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      await firstCopies(w.session, w.environment);
+      await bucketWindow(w.session, w.environment, stepOne(w));
+      // The app on B wrote a file; A's bucket no longer changes.
+      w.r2.objects(w.fresh, APP_BUCKET).set("new.png", "written on B");
+      w.trail.length = 0;
+      const asked = w.handler.requests.length;
+      expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
+      expect(w.trail).toEqual(["secrets", "deploy"]);
+      expect(w.handler.requests).toHaveLength(asked);
+      expect(objectsOf(w, w.fresh, APP_BUCKET)["new.png"]).toBe("written on B");
+      // The finish's recovery leaves an ended window alone.
+      await recoverWindow(w.session, w.environment, stepOne(w).backToA);
+      expect(w.trail).toEqual(["secrets", "deploy"]);
+    });
+
+    it("a run that died while pointing the app at B goes forward, never syncing again", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      await firstCopies(w.session, w.environment);
+      // The earlier run synced, began pointing at B, then died with the deploys paused.
+      await recordWindowStop(w.deps, "prod");
+      await markWindow(w.deps, "pointingAt");
+      w.github.variables.set(
+        DEPLOY_PAUSED_VARIABLE,
+        JSON.stringify({ "shop/prod": { reason: "move", since: "2026-11-21T09:00:00.000Z" } }),
+      );
+      w.r2.objects(w.fresh, APP_BUCKET).set("new.png", "written on B");
+      w.trail.length = 0;
+      // recoverWindow doesn't take it back to A.
+      await recoverWindow(w.session, w.environment, stepOne(w).backToA);
+      expect(w.trail).toEqual([]);
+      expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
+      expect(w.trail).toEqual(["secrets (deploys paused)", "deploy"]);
+      expect(w.deps.reporter.text()).toContain("OpsCrew goes on pointing it there");
+      expect(objectsOf(w, w.fresh, APP_BUCKET)["new.png"]).toBe("written on B");
+      expect((await windowOf(w))?.endedAt).toEqual(expect.any(String));
+      expect(w.paused().deploys).toBe(false);
+    });
+
+    it("going forward that fails again keeps the record, to go on next time", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      await recordWindowStop(w.deps, "prod");
+      await markWindow(w.deps, "pointingAt");
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w, "deploy")));
+      expect(error.message).toBe(
+        "Pointing shop (prod) at the new Cloudflare account failed again: The deploy step failed. Its bucket's files are in the new account; OpsCrew goes on from here, never back.",
+      );
+      expect(w.trail).toEqual(["secrets", "deploy"]);
+      expect(await windowOf(w)).toMatchObject({ pointingAt: expect.any(String) });
+      expect((await windowOf(w))?.endedAt).toBeUndefined();
+    });
+
     const failures = [
-      { at: "the stop", fail: (w: BucketWorld) => stopFails(w) },
+      { at: "the stop", fail: (w: BucketWorld) => w.failNextStop() },
       { at: "the sync", fail: (w: BucketWorld) => syncFails(w) },
-      { at: "step 1", fail: () => true },
+      { at: "B's secrets", part: "secrets" as const },
+      { at: "the deploy", part: "deploy" as const },
     ];
     for (const target of TARGETS) {
       for (const failure of failures) {
@@ -287,17 +363,18 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
           const w = await bucketWorld(target, { command: FINISH_COMMAND });
           await firstCopies(w.session, w.environment);
           w.trail.length = 0;
-          const stepFails = failure.fail(w);
-          const step = stepOne(w, () => stepFails === true);
-          const error = await caught(bucketWindow(w.session, w.environment, step.pointAtB, step));
+          failure.fail?.(w);
+          const error = await caught(
+            bucketWindow(w.session, w.environment, stepOne(w, failure.part)),
+          );
           expect(error.message).toMatch(/^The maintenance window failed: /);
           expect(error.message).toContain(
             "Shop (prod) runs again on the current Cloudflare account's bucket, and nothing else changed.",
           );
           expect(error.hint).toContain(`Then run \`${FINISH_COMMAND}\` again`);
           expect(w.trail.slice(-3)).toEqual(["back to A", "start app", "start worker"]);
-          expect((await readAppProgress(w.deps.paths)).window).toBeUndefined();
-          expect(w.github.variables.has(DEPLOY_PAUSED_VARIABLE)).toBe(false);
+          expect(await windowOf(w)).toBeUndefined();
+          expect(w.paused()).toEqual({ deploys: false, check: false });
           expect(
             w.deps.audit.entries.some((e) => e.action === "window" && e.decision === "refused"),
           ).toBe(true);
@@ -306,20 +383,30 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       }
     }
 
+    it("refuses in Portainer when the stack runs no app container", async () => {
+      const w = await bucketWorld("portainer", { command: FINISH_COMMAND });
+      w.docker.containers.delete("opscrew-shop-app".padEnd(64, "0"));
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w)));
+      expect(error.message).toContain(
+        "Your Portainer runs no app container of the stack opscrew-shop, so OpsCrew can't stop shop (prod) for the window",
+      );
+      expect(w.trail).not.toContain("stop worker");
+      expect(w.trail).not.toContain("rclone sync");
+    });
+
     it("a deploy that still runs keeps the window from starting, the app untouched", async () => {
       const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
       w.github.workflowRuns = [
         { status: "in_progress", htmlUrl: "https://github.com/acme/shop/actions/runs/1" },
       ] as typeof w.github.workflowRuns;
-      const step = stepOne(w);
-      const error = await caught(bucketWindow(w.session, w.environment, step.pointAtB, step));
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w)));
       expect(error.message).toContain("the maintenance window did not start");
       expect(w.trail).toEqual(["rclone size"]);
-      expect((await readAppProgress(w.deps.paths)).window).toBeUndefined();
-      expect(w.github.variables.has(DEPLOY_PAUSED_VARIABLE)).toBe(false);
+      expect(await windowOf(w)).toBeUndefined();
+      expect(w.paused()).toEqual({ deploys: false, check: false });
     });
 
-    it("a run that finds the app stopped by an earlier window starts it on A first, then repeats the window", async () => {
+    it("a run that finds the app stopped before pointing at B starts it on A first, then repeats the window", async () => {
       const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
       await firstCopies(w.session, w.environment);
       // The earlier run died during the window, its deploy pause left behind.
@@ -329,8 +416,7 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
         JSON.stringify({ "shop/prod": { reason: "move", since: "2026-11-21T09:00:00.000Z" } }),
       );
       w.trail.length = 0;
-      const step = stepOne(w);
-      expect(await bucketWindow(w.session, w.environment, step.pointAtB, step)).toBeUndefined();
+      expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
       expect(w.trail).toEqual([
         "back to A",
         "start app",
@@ -339,12 +425,28 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
         "stop app",
         "stop worker",
         "rclone sync",
-        "point at B",
+        "secrets (deploys paused)",
+        "deploy",
       ]);
       expect(w.deps.reporter.text()).toContain(
         "An earlier run stopped shop (prod) for the maintenance window",
       );
-      expect((await readAppProgress(w.deps.paths)).window).toBeUndefined();
+      expect((await windowOf(w))?.endedAt).toEqual(expect.any(String));
+    });
+
+    it("refuses while another environment's window has not ended, and not once it has", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      await recordWindowStop(w.deps, "staging");
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w)));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toMatch(
+        /^The maintenance window of staging began at .+ and has not ended, so OpsCrew does not start shop \(prod\)'s\. Nothing was changed\.$/,
+      );
+      expect(error.hint).toBe(`Finish staging first: run \`${FINISH_COMMAND}\` again.`);
+      expect(w.trail).toEqual([]);
+      await markWindow(w.deps, "endedAt");
+      expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
+      expect(w.trail).toContain("rclone sync");
     });
 
     it("recoverWindow does nothing when no window was left", async () => {
@@ -356,24 +458,23 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
     it("keeps the window's stop when the app can't be started again", async () => {
       const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
       syncFails(w);
-      const step = {
-        pointAtB: async () => {},
+      const options: WindowOptions = {
+        ...stepOne(w),
         backToA: async () => {
           throw new OpsCrewError("COMMAND_FAILED", "GitHub refused the secrets.");
         },
       };
-      const error = await caught(bucketWindow(w.session, w.environment, step.pointAtB, step));
+      const error = await caught(bucketWindow(w.session, w.environment, options));
       expect(error.message).toBe(
         "OpsCrew could not start shop (prod) again on the current Cloudflare account's settings: GitHub refused the secrets. Your app is offline until it runs again.",
       );
       expect(error.hint).toContain("run `docker compose up -d` in /srv/apps/shop");
-      expect((await readAppProgress(w.deps.paths)).window?.environment).toBe("prod");
+      expect((await windowOf(w))?.environment).toBe("prod");
     });
 
     it("a script without --allow-downtime stops before anything changes", async () => {
       const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
-      const step = stepOne(w);
-      const stop = await bucketWindow(asScript(w), w.environment, step.pointAtB, step);
+      const stop = await bucketWindow(asScript(w), w.environment, stepOne(w));
       expect(stop?.next.at(-1)).toBe(
         `Run \`${FINISH_COMMAND} --allow-downtime\` when that is acceptable.`,
       );
@@ -383,21 +484,18 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       expect(w.trail).toEqual(["rclone size"]);
       expect(w.handler.requests).toEqual([]);
 
-      const scripted = await bucketWindow(asScript(w), w.environment, step.pointAtB, {
-        ...step,
+      const scripted = await bucketWindow(asScript(w), w.environment, {
+        ...stepOne(w),
         allowDowntime: true,
       });
       expect(scripted).toBeUndefined();
-      expect(w.trail).toContain("point at B");
+      expect(w.trail).toContain("deploy");
     });
 
     it("a refused window changes nothing", async () => {
-      const w = await bucketWorld("cloud", {
-        command: FINISH_COMMAND,
-        approve: (title) => !title.startsWith("Maintenance window"),
-      });
-      const step = stepOne(w);
-      const error = await caught(bucketWindow(w.session, w.environment, step.pointAtB, step));
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      w.answers.approve = (request) => !request.title.startsWith("Maintenance window");
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w)));
       expect(error.code).toBe("APPROVAL_REFUSED");
       expect(error.message).toContain("Nothing was changed");
       expect(w.trail).toEqual(["rclone size"]);
@@ -405,19 +503,23 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
 
     it("without an app bucket on R2, step 1 runs as it is", async () => {
       const w = await bucketWorld("cloud", { none: true, command: FINISH_COMMAND });
-      const step = stepOne(w);
-      expect(await bucketWindow(w.session, w.environment, step.pointAtB, step)).toBeUndefined();
-      expect(w.trail).toEqual(["point at B"]);
+      expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
+      expect(w.trail).toEqual(["secrets", "deploy"]);
       expect(w.handler.requests).toEqual([]);
     });
   });
 
   describe("emptyBuckets", () => {
     for (const target of TARGETS) {
-      it(`at the finish checks each of A's buckets against B's, then empties it after its name is typed (${target})`, async () => {
-        const w = await bucketWorld(target, { command: FINISH_COMMAND });
+      it(`at the finish empties each of A's buckets after its name is typed, checked against B's right before (${target})`, async () => {
+        const w = await bucketWorld(target, { command: FINISH_COMMAND, step: "adopted" });
         await firstCopies(w.session, w.environment);
         w.r2.runs.length = 0;
+        let checked = -1;
+        w.answers.approve = () => {
+          checked = w.r2.runs.filter((run) => run.verb === "check").length;
+          return true;
+        };
         expect(await emptyBuckets(w.session, w.environment, "a")).toBeUndefined();
         expect(verbs(w)).toEqual([
           `size a:${APP_BUCKET}`,
@@ -427,6 +529,8 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
           `check a:${BACKUPS_BUCKET}`,
           `delete a:${BACKUPS_BUCKET}`,
         ]);
+        // The check runs after each approval, right before its deletion.
+        expect(checked).toBe(1);
         expect(w.r2.runs.find((run) => run.verb === "check")?.args).toEqual([
           "check",
           `a:${APP_BUCKET}`,
@@ -443,6 +547,7 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
           "Empty the bucket shop-uploads in the current Cloudflare account Old",
         );
         expect(deletions[0]?.details).toContain("This cannot be undone.");
+        expect(deletions[0]?.details).toContain("same size, and checksum where R2 has one");
         expect(objectsOf(w, w.old, APP_BUCKET)).toEqual({});
         expect(objectsOf(w, w.old, BACKUPS_BUCKET)).toEqual({});
         expect(Object.keys(objectsOf(w, w.fresh, APP_BUCKET))).toEqual(["a.png", "b.png", "c.pdf"]);
@@ -455,22 +560,43 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       });
     }
 
-    it("deletes nothing when B's bucket lacks a file of A's", async () => {
-      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+    it("a file written to A between the approval and the deletion stops the deletion", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND, step: "adopted" });
       await firstCopies(w.session, w.environment);
-      w.r2.objects(w.old, APP_BUCKET).set("late.png", "written after the window");
+      w.answers.approve = (request) => {
+        if (request.title.startsWith("Empty the bucket")) {
+          w.r2.objects(w.old, APP_BUCKET).set("late.png", "written after the approval");
+        }
+        return true;
+      };
       const error = await caught(emptyBuckets(w.session, w.environment, "a"));
       expect(error.code).toBe("COMMAND_FAILED");
       expect(error.message).toContain(
         "Checking that the new Cloudflare account's bucket shop-uploads holds every file of the current one's failed on the app's server: ERROR : late.png: file not in the destination",
       );
       expect(error.hint).toContain("Nothing was deleted");
-      expect(w.handler.requests.filter((r) => r.allowDestroy === true)).toEqual([]);
+      expect(w.r2.runs.some((run) => run.verb === "delete")).toBe(false);
       expect(Object.keys(objectsOf(w, w.old, APP_BUCKET))).toContain("late.png");
     });
 
+    it("refuses A's buckets before the finish adopted the app, and B's after", async () => {
+      const before = await bucketWorld("cloud", { command: FINISH_COMMAND, step: "prepared" });
+      const early = await caught(emptyBuckets(before.session, before.environment, "a"));
+      expect(early.code).toBe("PHASE_PRECONDITION");
+      expect(early.message).toBe(
+        "Shop (prod) still uses its buckets in the current Cloudflare account Old: OpsCrew empties them only once the finish has moved the app to the new account. Nothing was changed.",
+      );
+      expect(before.r2.runs).toEqual([]);
+
+      const after = await bucketWorld("cloud", { command: ABORT, step: "adopted" });
+      const late = await caught(emptyBuckets(after.session, after.environment, "b"));
+      expect(late.code).toBe("PHASE_PRECONDITION");
+      expect(late.message).toContain("uses its buckets in the new Cloudflare account New");
+      expect(after.r2.runs).toEqual([]);
+    });
+
     it("at an abort empties B's buckets without a check; A's are never read", async () => {
-      const w = await bucketWorld("portainer", { command: `${MOVE_COMMAND} --abort` });
+      const w = await bucketWorld("portainer", { command: ABORT });
       await firstCopies(w.session, w.environment);
       w.r2.runs.length = 0;
       expect(await emptyBuckets(w.session, w.environment, "b")).toBeUndefined();
@@ -491,7 +617,7 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
     });
 
     it("an abort before any copy skips B's empty buckets", async () => {
-      const w = await bucketWorld("cloud", { command: `${MOVE_COMMAND} --abort` });
+      const w = await bucketWorld("cloud", { command: ABORT });
       expect(await emptyBuckets(w.session, w.environment, "b")).toBeUndefined();
       expect(w.handler.requests).toEqual([]);
       expect(w.deps.reporter.text()).toContain(
@@ -500,7 +626,7 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
     });
 
     it("a script empties one bucket per run, with --confirm and --approve", async () => {
-      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND, step: "adopted" });
       await firstCopies(w.session, w.environment);
       const first = await emptyBuckets(asScript(w), w.environment, "a");
       const hash = first?.pendingPlanHash ?? "";
@@ -524,32 +650,26 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
     });
 
     it("a refused typed name deletes nothing", async () => {
-      const w = await bucketWorld("cloud", {
-        command: FINISH_COMMAND,
-        approve: (title) => !title.startsWith("Empty the bucket"),
-      });
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND, step: "adopted" });
       await firstCopies(w.session, w.environment);
+      w.answers.approve = (request) => !request.title.startsWith("Empty the bucket");
       const error = await caught(emptyBuckets(w.session, w.environment, "a"));
       expect(error.code).toBe("APPROVAL_REFUSED");
       expect(error.message).toBe(
         "The bucket shop-uploads in the current Cloudflare account Old was not emptied. Nothing was deleted.",
       );
+      expect(w.r2.runs.some((run) => run.verb === "check" || run.verb === "delete")).toBe(false);
       expect(Object.keys(objectsOf(w, w.old, APP_BUCKET))).toHaveLength(3);
     });
   });
 });
 
-/** Makes the app's next stop fail on its server or in Portainer; step 1 does not fail. */
-function stopFails(w: BucketWorld): false {
-  w.failNextStop();
-  return false;
-}
+const ABORT = `${MOVE_COMMAND} --abort`;
 
-/** Makes the window's sync fail, its output naming A's key; returns that step 1 does not fail. */
-function syncFails(w: BucketWorld): false {
+/** Makes the window's sync fail, its output naming A's key. */
+function syncFails(w: BucketWorld): void {
   w.r2.fail = (verb) =>
     verb === "sync"
       ? { exitCode: 1, stdout: "", stderr: `ERROR: denied for ${w.keys.a.storage.secretAccessKey}` }
       : undefined;
-  return false;
 }

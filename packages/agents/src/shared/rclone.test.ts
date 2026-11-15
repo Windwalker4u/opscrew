@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import type { StorageLogin } from "./app-env";
 import {
   dockerRclone,
+  RCLONE_LABEL,
   type RcloneRun,
   r2Remote,
   rcloneCommand,
@@ -24,6 +25,8 @@ import {
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const HOST = "203.0.113.10";
+/** Whose rclone containers these are. */
+const OWNER = "opscrew-shop";
 
 function key(name: string): StorageLogin {
   return {
@@ -161,16 +164,26 @@ describe("sshRclone", () => {
 
 /**
  * A fake Docker host whose archive writes are kept (FakeDocker drops those outside a mount), each
- * with the container it went into, and whose rclone containers answer with `answer`.
+ * with the container it went into, and whose rclone containers answer with `answer`. With `hold`,
+ * a container's wait ends only once it is stopped, as a run that never ends would.
  */
-function rcloneDocker(answer: (cmd: readonly string[]) => { exitCode: number; stderr?: string }) {
+function rcloneDocker(
+  answer: (cmd: readonly string[]) => { exitCode: number; stderr?: string },
+  hold = false,
+) {
   const fake = new FakeDocker();
   const archives: { container: string; files: { name: string; mode: number; data: string }[] }[] =
     [];
+  const stopped = new Map<string, () => void>();
   fake.onStart = (container) =>
     container.image === IMAGES.rclone.ref ? answer(container.cmd) : undefined;
   const transport: DockerTransport = {
     async request(request) {
+      const call = /^\/containers\/([^/]+)\/(wait|stop)/.exec(request.path);
+      if (hold && call?.[2] === "wait") {
+        await new Promise<void>((resolve) => stopped.set(call[1] ?? "", resolve));
+      }
+      if (call?.[2] === "stop") stopped.get(call[1] ?? "")?.();
       const put = /^\/containers\/([^/]+)\/archive/.exec(request.path);
       if (request.method === "PUT" && put !== null && request.body instanceof Readable) {
         const chunks: Buffer[] = [];
@@ -202,7 +215,12 @@ describe("dockerRclone", () => {
       seen.push({ env: container.env, cmd: container.cmd });
       return inner?.(container);
     };
-    await dockerRclone(redactorOf(k), docker, "your Portainer")(copyRun(r2Remote("b", ACCOUNT, k)));
+    await dockerRclone(
+      redactorOf(k),
+      docker,
+      "your Portainer",
+      OWNER,
+    )(copyRun(r2Remote("b", ACCOUNT, k)));
     expect(seen).toEqual([
       {
         env: [],
@@ -237,7 +255,12 @@ describe("dockerRclone", () => {
       stderr: `Failed to copy: AccessDenied for ${k.accessKeyId}`,
     }));
     const error = await caught(
-      dockerRclone(redactorOf(k), docker, "your Portainer")(copyRun(r2Remote("a", ACCOUNT, k))),
+      dockerRclone(
+        redactorOf(k),
+        docker,
+        "your Portainer",
+        OWNER,
+      )(copyRun(r2Remote("a", ACCOUNT, k))),
     );
     expect(error.message).toBe(
       "Copying the bucket shop-uploads failed on your Portainer: Failed to copy: AccessDenied for [REDACTED:storage-key]",
@@ -251,11 +274,91 @@ describe("dockerRclone", () => {
     fake.fail("PUT", /\/archive/, 500, "disk full");
     fake.fail("DELETE", /^\/containers\//, 500, "busy");
     const error = await caught(
-      dockerRclone(redactorOf(k), docker, "your Portainer")(copyRun(r2Remote("a", ACCOUNT, k))),
+      dockerRclone(
+        redactorOf(k),
+        docker,
+        "your Portainer",
+        OWNER,
+      )(copyRun(r2Remote("a", ACCOUNT, k))),
     );
     expect(error.message).toContain("Copying the bucket shop-uploads failed on your Portainer:");
     expect(error.message).toContain("which holds the buckets' keys.");
-    expect(error.hint).toMatch(/^Remove it on the Docker host with `docker rm -f [0-9a-f]{12}`\. /);
+    expect(error.hint).toMatch(
+      /^Remove it on the Docker host with `docker rm -f [0-9a-f]{12}` \(OpsCrew also removes it before its next rclone run there\)\. /,
+    );
+  });
+
+  it("says when only the container's removal failed", async () => {
+    const k = key("cleanup");
+    const { docker, fake } = rcloneDocker(() => ({ exitCode: 0 }));
+    fake.fail("DELETE", /^\/containers\//, 500, "busy");
+    const error = await caught(
+      dockerRclone(
+        redactorOf(k),
+        docker,
+        "your Portainer",
+        OWNER,
+      )(copyRun(r2Remote("a", ACCOUNT, k))),
+    );
+    expect(error.message).toMatch(
+      /^Copying the bucket shop-uploads on your Portainer: rclone ended, but its container [0-9a-f]{12} could not be removed: .*busy\. It holds the buckets' keys\.$/,
+    );
+  });
+
+  it("labels its containers and removes those an earlier run left, which hold keys", async () => {
+    const k = key("label");
+    const { docker, fake } = rcloneDocker(() => ({ exitCode: 0 }));
+    const labels: Record<string, string>[] = [];
+    const inner = fake.onStart;
+    fake.onStart = (container) => {
+      labels.push(container.labels);
+      return inner?.(container);
+    };
+    const left = (owner: string) => ({
+      id: `left-${owner}`.padEnd(64, "0"),
+      image: IMAGES.rclone.ref,
+      cmd: [],
+      env: [],
+      labels: { [RCLONE_LABEL]: owner },
+      binds: [],
+      mounts: [],
+      state: "exited" as const,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    });
+    fake.containers.set(left(OWNER).id, left(OWNER));
+    fake.containers.set(left("opscrew-other").id, left("opscrew-other"));
+    await dockerRclone(
+      redactorOf(k),
+      docker,
+      "your Portainer",
+      OWNER,
+    )(copyRun(r2Remote("a", ACCOUNT, k)));
+    expect(labels).toEqual([{ [RCLONE_LABEL]: OWNER }]);
+    // Another app's container stays.
+    expect([...fake.containers.keys()]).toEqual([left("opscrew-other").id]);
+  });
+
+  it("stops a run that outlasts its time", async () => {
+    const k = key("slow");
+    const { docker, fake } = rcloneDocker(() => ({ exitCode: 0 }), true);
+    const error = await caught(
+      dockerRclone(
+        redactorOf(k),
+        docker,
+        "your Portainer",
+        OWNER,
+      )({
+        ...copyRun(r2Remote("a", ACCOUNT, k)),
+        timeoutMs: 30,
+      }),
+    );
+    expect(error.message).toBe(
+      "Copying the bucket shop-uploads failed on your Portainer: it did not finish within 0 seconds",
+    );
+    expect(fake.calls.some((call) => /^POST \/containers\/[^/]+\/stop/.test(call))).toBe(true);
+    expect(fake.containers.size).toBe(0);
   });
 });
 
