@@ -29,7 +29,6 @@ import { tunnelModules } from "../rotate/infra";
 import { readableDeployPause } from "../shared/deploy-pause";
 import { bucketWindow, moveBuckets, recoverWindow } from "./buckets";
 import { type MoveTunnel, moveTunnels, takeOverConnector } from "./connector";
-import { MOVE_PHASE } from "./connector-stacks";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
 import { endFinish, removeA } from "./finish-removal";
 import { adoptSite } from "./finish-site";
@@ -52,7 +51,16 @@ import {
 } from "./shadow";
 import { checkAfterSwap } from "./shadow-plans";
 import { aSharedRecordPath, bSharedRecordPath, pendingStop, planBShared } from "./shared";
-import { ABORT_COMMAND, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
+import {
+  ABORT_COMMAND,
+  appWords,
+  environmentDeps,
+  FINISH_COMMAND,
+  MOVE_COMMAND,
+  MOVE_PHASE,
+  refusal,
+  SWITCH_COMMAND,
+} from "./texts";
 import type {
   FinishMoveOptions,
   MoveEnvironment,
@@ -85,16 +93,6 @@ interface Run {
   session: MoveSession;
   options: FinishMoveOptions;
   steps: FinishSteps;
-}
-
-/** `shop (prod)`. */
-function appWords(environment: MoveEnvironment): string {
-  return `${environment.plan.app.name} (${environment.environment})`;
-}
-
-/** The phase deps with the environment's paths. */
-function environmentDeps(session: MoveSession, environment: MoveEnvironment): PhaseDeps {
-  return { ...session.deps, paths: environment.paths };
 }
 
 /**

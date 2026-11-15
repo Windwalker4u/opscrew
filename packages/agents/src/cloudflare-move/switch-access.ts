@@ -10,6 +10,7 @@
 import { type CloudflareClient, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { OpsCrewError, plural } from "@opscrew/core";
 import type { MoveMark, ReadMark } from "./marks";
+import { MOVE_PHASE } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
 
 type AccessInput = Parameters<CloudflareClient["createAccessApplication"]>[1];
@@ -89,7 +90,7 @@ export async function protectInB(
       kind: "provider-call",
       actor: "opscrew",
       action,
-      phase: "cloudflare-move",
+      phase: MOVE_PHASE,
       target: session.zone,
       detail,
     });

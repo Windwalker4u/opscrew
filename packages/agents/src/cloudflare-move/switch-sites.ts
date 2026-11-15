@@ -7,6 +7,7 @@
  */
 import { OpsCrewError } from "@opscrew/core";
 import type { ReadMark } from "./marks";
+import { MOVE_PHASE } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
 
 /**
@@ -56,7 +57,7 @@ export async function attachSites(
         kind: "provider-call",
         actor: "opscrew",
         action: "custom domain detached (A)",
-        phase: "cloudflare-move",
+        phase: MOVE_PHASE,
         target: session.zone,
         detail: `${hostname} from the Worker ${held.service} in the account ${a.accountId}, which held it`,
       });
@@ -69,7 +70,7 @@ export async function attachSites(
       kind: "provider-call",
       actor: "opscrew",
       action: "custom domains attached",
-      phase: "cloudflare-move",
+      phase: MOVE_PHASE,
       target: session.zone,
       detail: `${made.join(", ")} in the account ${b.accountId}`,
     });

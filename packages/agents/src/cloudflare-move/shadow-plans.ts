@@ -47,7 +47,7 @@ import {
   shadowFiles,
   tfvarsFile,
 } from "./shadow";
-import { A_TOKEN_VAR, refusal } from "./texts";
+import { A_TOKEN_VAR, accountName, environmentDeps, MOVE_PHASE, refusal } from "./texts";
 import type { MoveSession, ShadowRoot } from "./types";
 
 /** What a root's pieces are called in an approval's title. */
@@ -76,11 +76,6 @@ interface ShadowPlan {
 function rootWords(session: MoveSession, root: ShadowRoot): string {
   const app = environmentOf(session, root).plan.app.name;
   return `${app}'s ${ROOT_WORDS[root.name]} (${root.environment})`;
-}
-
-/** The account's name as the session read it, else its id. */
-function accountName(account: { accountId: string; name?: string }): string {
-  return account.name ?? account.accountId;
 }
 
 /**
@@ -136,7 +131,7 @@ async function shadowPlanStep(
   plan: ShadowPlan,
 ): Promise<PlanStep> {
   const environment = environmentOf(session, root);
-  const deps: PhaseDeps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   const key: MovePlanKey = { action: plan.action, environment: root.environment, root: root.name };
   const options: PlanAndApplyOptions = {
     engine: session.engine,
@@ -147,7 +142,7 @@ async function shadowPlanStep(
     files: [],
     statePath: plan.statePath,
     command: session.command,
-    phase: "cloudflare-move",
+    phase: MOVE_PHASE,
     move: true,
     costDelta: null,
     approvalTitle: plan.title,

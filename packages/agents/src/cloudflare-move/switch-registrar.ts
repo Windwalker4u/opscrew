@@ -16,6 +16,7 @@ import {
 import { REGISTRAR_NAMES, registrarLinks } from "../domain/registrars";
 import { resolveDomainServices } from "../domain/services";
 import { dsRecordText, hosts, pointToZone, publishDs, type SwitchContext } from "../domain/switch";
+import { accountName, MOVE_PHASE } from "./texts";
 import type { MoveSession, MoveZone, StepStop } from "./types";
 
 /** The registrar in words: `Porkbun`, `Cloudflare Registrar`, `the registrar that holds it`. */
@@ -73,7 +74,7 @@ function fromRecordWhenRefused(session: MoveSession, registrar: Registrar): Regi
       if (!(error instanceof CloudflareError)) throw error;
       const record = session.accounts.b.zone?.originalRegistrar;
       const cloudflare = record !== undefined && /cloudflare/i.test(record);
-      const aName = session.accounts.a.name ?? session.accounts.a.accountId;
+      const aName = accountName(session.accounts.a);
       session.deps.reporter.info(
         `The token of the account ${aName} can't read Cloudflare Registrar, so OpsCrew told the registrar of ${domain} from Cloudflare's record on the new account's zone: ${cloudflare ? "Cloudflare Registrar" : "another registrar"}. To have OpsCrew read it instead, give that token the Registrar permission.`,
       );
@@ -140,9 +141,9 @@ function switchContext(
   return {
     deps: {
       ...deps,
-      audit: { append: (entry) => deps.audit.append({ ...entry, phase: "cloudflare-move" }) },
+      audit: { append: (entry) => deps.audit.append({ ...entry, phase: MOVE_PHASE }) },
     },
-    account: { id: b.accountId, name: b.name ?? b.accountId },
+    account: { id: b.accountId, name: accountName(b) },
     zones: domainZonesFrom(b.client),
     domain: session.zone,
     registrarId: registrar.registrarId,
@@ -173,8 +174,8 @@ export async function pointAtB(
     const done = await pointToZone(switchContext(session, registrar), zone);
     return done.outcome === "manual" ? { set: false, stop: { next: [again] } } : { set: true };
   }
-  const bName = b.name ?? b.accountId;
-  const aName = a.name ?? a.accountId;
+  const bName = accountName(b);
+  const aName = accountName(a);
   if (registrar.kind === "cloudflare") {
     deps.reporter.warn(
       `${session.zone} is registered at Cloudflare Registrar, whose move between accounts is done in the dashboard, so OpsCrew does not change its nameservers itself.`,
@@ -240,7 +241,7 @@ export async function dnssecInB(
       kind: "provider-call",
       actor: "opscrew",
       action: "DNSSEC on (B)",
-      phase: "cloudflare-move",
+      phase: MOVE_PHASE,
       target: session.zone,
       detail: `zone ${zone.id} in the account ${b.accountId} (domain at ${registrarWords(registrar)})`,
     });

@@ -24,7 +24,14 @@ import { portainerCloudflare } from "../provision/credentials";
 import { planWhere } from "../runners/words";
 import { hasState, stateCopyPaths, stateNotHere } from "../shared";
 import { readMoveRecords } from "./record";
-import { A_TOKEN_VAR, ABORT_COMMAND, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
+import {
+  A_TOKEN_VAR,
+  ABORT_COMMAND,
+  accountName,
+  B_TOKEN_VAR,
+  MOVE_COMMAND,
+  refusal,
+} from "./texts";
 import type { MoveEnvironment, MoveSession } from "./types";
 
 /**
@@ -181,7 +188,7 @@ async function requireAccountPermissions(session: MoveSession): Promise<void> {
   const { missing } = await b.client.accountPermissions(b.accountId, needs);
   if (missing.length === 0) return;
   throw refusal(
-    `${B_TOKEN_VAR} lacks ${listText(missing)} for the account ${b.name ?? b.accountId}, which the app's pieces need there.`,
+    `${B_TOKEN_VAR} lacks ${listText(missing)} for the account ${accountName(b)}, which the app's pieces need there.`,
     `Add ${missing.length === 1 ? "it" : "them"} to the token at ${CLOUDFLARE_TOKEN_PAGE}, then run \`${session.command}\` again.`,
     "CREDENTIALS_INVALID",
   );

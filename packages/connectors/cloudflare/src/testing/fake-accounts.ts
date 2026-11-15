@@ -23,6 +23,7 @@ import { answer, type FakeFault, ok, only, paged, refuse, takeFault } from "./re
  *   TLS setting** are each zone's own {@link FakeZone} (`data`), as features 011 and 014 saw them.
  *   On a pending zone, client certificates and hostname settings stay `pending_deployment` until
  *   the zone is activated (research R10 is to confirm it).
+ * - **Edge ranges:** `GET /ips` answers without a token.
  * - **Certificate packs:** the universal pack appears, active, when the zone is activated.
  * - **DNSSEC:** turned on it is pending, with its DS record, until a test makes it active.
  * - **Account pieces** (tunnels with their connections, Access applications, policies, service
@@ -166,6 +167,11 @@ const PROXIABLE = new Set(["A", "AAAA", "CNAME"]);
 const NAMESERVERS = ["ada", "bob", "cruz", "dana", "eli", "faye", "gus", "hana", "ivy", "jay"];
 /** Records one batch call may create: the Free plan's limit (a new zone's plan), on any plan. */
 const BATCH_LIMIT = 200;
+/** Cloudflare's edge ranges as `GET /ips` answers them (a few of the real ones). */
+const EDGE_RANGES = {
+  ipv4_cidrs: ["173.245.48.0/20", "103.21.244.0/22"],
+  ipv6_cidrs: ["2400:cb00::/32"],
+};
 
 const DENIED = refuse(403, 10000, "Authentication error");
 const UNAUTHORIZED = refuse(403, 9109, "Unauthorized to access requested resource");
@@ -366,6 +372,8 @@ class FakeCloudflareAccounts {
     const { method, body } = call;
     const url = new URL(call.path, "https://fake.invalid");
     const route = url.pathname;
+    // The edge ranges need no token.
+    if (route === "/ips" && method === "GET") return ok(EDGE_RANGES);
     if (token === undefined) {
       return refuse(400, 9106, "Missing X-Auth-Key, X-Auth-Email or Authorization headers");
     }

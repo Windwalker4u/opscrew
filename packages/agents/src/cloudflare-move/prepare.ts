@@ -12,7 +12,6 @@ import { listText, OpsCrewError } from "@opscrew/core";
 import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { lookupPublishedDs } from "../domain/connect-dns";
-import { setupCloudflare } from "../provision";
 import { firstCopies, measureBuckets } from "./buckets";
 import { checkMoveStart } from "./checks";
 import { besideConnector, moveTunnels } from "./connector";
@@ -25,12 +24,19 @@ import {
   withTargetZone,
   writeMoveRecord,
 } from "./record";
-import { openMoveSession } from "./session";
+import { openMoveSession, readBSetup } from "./session";
 import { shadowRoots } from "./shadow";
 import { planShadow } from "./shadow-plans";
 import { pendingStop, planBShared } from "./shared";
 import { confirmMoveStart, moveSummary } from "./summary";
-import { ABORT_COMMAND, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
+import {
+  ABORT_COMMAND,
+  accountWords,
+  FINISH_COMMAND,
+  MOVE_COMMAND,
+  refusal,
+  SWITCH_COMMAND,
+} from "./texts";
 import type {
   MoveEnvironment,
   MoveResult,
@@ -126,7 +132,7 @@ function requireRecordedZone(session: MoveSession): void {
   const { b } = session.accounts;
   if (recorded === undefined || b.zone?.id === recorded) return;
   throw refusal(
-    `${session.zone} in the Cloudflare account ${b.name ?? b.accountId} is not the zone the move was prepared in: it is gone, or it was added again.`,
+    `${session.zone} in ${accountWords(b)} is not the zone the move was prepared in: it is gone, or it was added again.`,
     `Run \`${ABORT_COMMAND}\` to remove what the move made, then start the move again (\`${MOVE_COMMAND} --to <account>\`).`,
   );
 }
@@ -180,12 +186,7 @@ async function zoneStep(session: MoveSession): Promise<StepStop | undefined> {
   const zone = b.zone as MoveZone;
   if (b.setup === undefined) {
     const [first] = session.environments as [MoveEnvironment];
-    b.setup = await setupCloudflare(
-      { ...session.deps, paths: first.paths },
-      first.plan,
-      { cloudflare: b.client },
-      { accountId: b.accountId, foreignRecords: "report" },
-    );
+    b.setup = await readBSetup(session.deps, first, b);
   }
   for (const env of session.environments) {
     await saveRecord(session, env, withTargetZone(recordOf(env), zone.id));
@@ -205,7 +206,7 @@ async function prepareEnvironment(
 ): Promise<StepStop | undefined> {
   const { b } = session.accounts;
   session.deps.reporter.step(
-    `Preparing ${environment.environment} of ${environment.plan.app.name} in the Cloudflare account ${b.name ?? b.accountId}`,
+    `Preparing ${environment.environment} of ${environment.plan.app.name} in ${accountWords(b)}`,
   );
   const shared = await planBShared(session, environment);
   if (shared.stop !== undefined) return shared.stop;
@@ -252,7 +253,7 @@ async function prepared(session: MoveSession): Promise<MoveResult> {
   const marked = new Set(marks.flatMap((read) => read.mark.hosts));
   const waiting = session.otherHostnames.filter((name) => !marked.has(name));
   session.deps.reporter.success(
-    `${app} is prepared in the Cloudflare account ${b.name ?? b.accountId}; the current account keeps serving it until the switch.`,
+    `${app} is prepared in ${accountWords(b)}; the current account keeps serving it until the switch.`,
   );
   const next =
     waiting.length === 0

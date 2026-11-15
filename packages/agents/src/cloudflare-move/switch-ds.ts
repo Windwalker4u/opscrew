@@ -29,6 +29,7 @@ import {
 import { formatTime } from "../domain/purchase";
 import { REGISTRAR_NAMES, registrarLinks } from "../domain/registrars";
 import { dsRecordText } from "../domain/switch";
+import { accountName, MOVE_PHASE } from "./texts";
 import type { MoveSession, MoveZone, StepStop } from "./types";
 
 /** A registrar OpsCrew drives through its API. */
@@ -215,7 +216,7 @@ async function ownGate(
   const note = await readOwnNote(file);
   const now = deps.clock.now();
   const state = cloudflare ? (await a.client.getDnssec(a.zoneId)).status : undefined;
-  const aName = a.name ?? a.accountId;
+  const aName = accountName(a);
   const on = state === "active" || state === "pending";
   if (ds.records.length > 0 || on) {
     const waitSeconds = Math.max(note?.waitSeconds ?? 0, dsWaitSeconds(ds.ttlSeconds));
@@ -289,7 +290,7 @@ export async function removeDs(
     kind: "provider-call",
     actor: "opscrew",
     action: "DS removed",
-    phase: "cloudflare-move",
+    phase: MOVE_PHASE,
     target: zone,
     detail: `${REGISTRAR_NAMES[registrarId]}: ${gate.ds.records.length} DS record(s); switch after ${switchAfter}`,
   });

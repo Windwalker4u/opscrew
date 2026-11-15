@@ -11,15 +11,12 @@ import {
   type FakeZoneStatus,
   fakeCloudflareAccounts,
 } from "@opscrew/connector-cloudflare/testing";
-import type { FetchLike } from "@opscrew/contracts";
 import { tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { environmentPaths } from "../environments/paths";
 import {
-  CF_V4,
-  CF_V6,
   createProject,
   createTestPhaseDeps,
   FakeEngine,
@@ -37,19 +34,6 @@ export const ZONE = "example.com";
 export const OTHER_ZONE = "example.org";
 /** A zone only Stale holds. */
 export const STALE_ZONE = "example.net";
-
-/** Cloudflare's edge ranges, which need no token (the fake doesn't answer them). */
-const EDGE_RANGES = "https://api.cloudflare.com/client/v4/ips";
-
-function withEdgeRanges(fetch: FetchLike): FetchLike {
-  return async (input, init) => {
-    if (String(input) !== EDGE_RANGES) return fetch(input, init);
-    const result = { ipv4_cidrs: CF_V4, ipv6_cidrs: CF_V6 };
-    return new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
-      headers: { "content-type": "application/json" },
-    });
-  };
-}
 
 /** `plan` with its state unencrypted, so no passphrase is needed. */
 export function unencrypted(plan: DeployPlan): DeployPlan {
@@ -168,7 +152,7 @@ export async function moveHarness(o: MoveHarnessOptions = {}) {
   const deps = await createTestPhaseDeps({
     root,
     env,
-    fetch: withEdgeRanges(cloudflare.fetch),
+    fetch: cloudflare.fetch,
     runner: projectRunner(),
   });
   // Each deployed environment's infrastructure state, as provision leaves it.

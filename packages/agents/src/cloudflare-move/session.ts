@@ -114,6 +114,23 @@ async function zoneIn(
   return found?.name === zone ? found : undefined;
 }
 
+/**
+ * B's `CloudflareSetup` for the first covered environment, read with B's token in B's account
+ * (records no OpsCrew app owns are reported, not refused).
+ */
+export function readBSetup(
+  deps: PhaseDeps,
+  first: MoveEnvironment,
+  b: { client: CloudflareClient; accountId: string },
+): Promise<CloudflareSetup | undefined> {
+  return setupCloudflare(
+    { ...deps, paths: first.paths },
+    first.plan,
+    { cloudflare: b.client },
+    { accountId: b.accountId, foreignRecords: "report" },
+  );
+}
+
 /** The app's environments, split by the zone: covered, in the zone but not deployed, staying. */
 interface Split {
   zone: string;
@@ -282,9 +299,9 @@ async function targetAccount(
  * the zone (the recorded move's, else `dns.zone` or the zone A's token finds for `dns.domain` of
  * the first deployed environment), A's account from A's zone, the covered environments (every
  * deployed one in the zone; one in another zone stays, one not deployed is skipped), B's account
- * (`--to`, or the record's) not A, B's zone and its `CloudflareSetup` when B has it, the other
- * apps' hostnames in A's zone while it is active, GitHub, and the engine with the state passphrase
- * as `existingStateEngine` reads them.
+ * (`--to`, or the record's) not A, B's zone and its `CloudflareSetup` when B has it (a moved one
+ * counts as none), the other apps' hostnames in A's zone while it is active, GitHub, and the
+ * engine with the state passphrase as `existingStateEngine` reads them.
  */
 export async function openMoveSession(
   deps: PhaseDeps,
@@ -345,16 +362,13 @@ export async function openMoveSession(
   }
   const [first] = split.environments;
   if (first === undefined) throw nothingToMove(all);
-  const bZone = await zoneIn(bClient, zone, target.id);
-  const setup: CloudflareSetup | undefined =
+  // A moved zone in B is the one an earlier move took from it: a move back adds the zone again.
+  const found = await zoneIn(bClient, zone, target.id);
+  const bZone = found?.status === "moved" ? undefined : found;
+  const setup =
     bZone === undefined
       ? undefined
-      : await setupCloudflare(
-          { ...deps, paths: first.paths },
-          first.plan,
-          { cloudflare: bClient },
-          { accountId: target.id, foreignRecords: "report" },
-        );
+      : await readBSetup(deps, first, { client: bClient, accountId: target.id });
   const a: MoveAccounts["a"] = {
     client: aClient,
     accountId: split.a.accountId,

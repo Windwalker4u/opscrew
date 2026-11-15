@@ -157,6 +157,15 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
     for (const token of [TOKEN_A, TOKEN_B, unknown]) expect(recorded).not.toContain(token);
   });
 
+  it("answers Cloudflare's edge ranges without a token", async () => {
+    const { fake } = setup();
+    const client = new CloudflareClient({ token: "", fetch: fake.fetch, sleep: async () => {} });
+    const ranges = await client.getIpRanges();
+    expect(ranges.ipv4.length).toBeGreaterThan(0);
+    expect(ranges.ipv6.length).toBeGreaterThan(0);
+    expect(fake.calls).toEqual([{ method: "GET", path: "/ips", body: undefined, status: 200 }]);
+  });
+
   it("lists the zones a token sees by name and account, page by page", async () => {
     const { fake, a, b, clientA, clientB } = setup();
     const both = fakeSecret("cloudflare-token", "both");

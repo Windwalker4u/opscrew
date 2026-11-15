@@ -42,7 +42,14 @@ import {
 import { rootVariables } from "../shared/root-variables";
 import { moveFolder } from "./paths";
 import type { MoveRoot } from "./progress";
-import { A_TOKEN_VAR, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
+import {
+  A_TOKEN_VAR,
+  B_TOKEN_VAR,
+  environmentDeps,
+  MOVE_COMMAND,
+  MOVE_PHASE,
+  refusal,
+} from "./texts";
 import type { MoveEnvironment, MoveSession, ShadowRoot } from "./types";
 
 /** Whose pieces: A's (the account that holds the zone when the move starts) or B's. */
@@ -233,7 +240,7 @@ export async function shadowEngineEnv(
   dataDir?: string,
 ): Promise<Record<string, string | undefined>> {
   const environment = environmentOf(session, root);
-  const deps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   const setup = await projectEngine(deps, environment.plan, {
     preference: session.engine.info.name,
     services: { engine: async () => session.engine },
@@ -259,7 +266,7 @@ function auditState(
     kind: "iac",
     actor: "opscrew",
     action,
-    phase: "cloudflare-move",
+    phase: MOVE_PHASE,
     target: `${root.environment} ${root.name} root`,
     detail,
   });
@@ -483,7 +490,7 @@ export async function unguardedCopy(
  */
 export async function dropShadow(session: MoveSession, root: ShadowRoot): Promise<void> {
   const environment = environmentOf(session, root);
-  const deps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   const { removalState, removalDataDir } = shadowFiles(root);
   for (const state of [root.statePath, removalState]) {
     if ((await stateContents(deps, state, async () => session.engine)) === "nothing") continue;

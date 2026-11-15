@@ -40,11 +40,12 @@ import {
 } from "../shared";
 import { TUNNEL_CLOSE_TIMEOUT_MS, tunnelBusyError } from "../shared/tunnel-connections";
 import { networkServer, type VpnServices } from "../vpn/servers";
-import { MOVE_PHASE, type NextStacksApi, nextStacksApi, nextStacksStep } from "./connector-stacks";
+import { type NextStacksApi, nextStacksApi, nextStacksStep } from "./connector-stacks";
 import { stacksForB } from "./finish-point";
 import { moveFolder, recordedHash, recordHash } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { pendingStop } from "./shared";
+import { environmentDeps, MOVE_PHASE } from "./texts";
 import type { MoveAccount, MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** The beside connector's folder on a cloud server, as the deploy login (beside the main one's). */
@@ -66,11 +67,6 @@ export interface ConnectorOptions {
    * default rotate's `portainerTunnelConnectors` planning the stacks with B's values, `stacksForB`).
    */
   connectors?: TunnelConnectors;
-}
-
-/** The phase's deps with the environment's own paths. */
-function environmentDeps(session: MoveSession, environment: MoveEnvironment): PhaseDeps {
-  return { ...session.deps, paths: environment.paths };
 }
 
 /** The server in words: the user's own, or the one OpsCrew created. */

@@ -185,37 +185,17 @@ export interface PrepareMoveOptions extends MoveCommandOptions {
   confirmStart?: (summary: MoveSummary) => Promise<boolean>;
 }
 
-/** What a name typed to confirm a change or deletion stands for. */
-export type TypedNameKind = "app" | "bucket" | "domain" | "zone";
-
-/** A name the user types to confirm a change or deletion, and what it confirms. */
-export interface TypedNameQuestion {
-  kind: TypedNameKind;
-  /** The name to type: the app's, a bucket's, the domain or the zone. */
-  name: string;
-  /** What typing it confirms, in words (for the prompt). */
-  what: string;
-}
-
-/** The typed names of the switch, the finish and the abort. */
-export interface TypedNameOptions {
-  /** `--confirm <name>` (repeatable): the names a script types (the app, each bucket, the domain, the zone). */
-  confirm?: readonly string[];
-  /** Asks the user to type `question.name` in a terminal; true when it was typed. */
-  typeName?: (question: TypedNameQuestion) => Promise<boolean>;
-}
-
-/** `opscrew cloudflare move --switch`. */
-export interface SwitchMoveOptions extends MoveCommandOptions, TypedNameOptions {}
+/** `opscrew cloudflare move --switch` (its typed name goes through the request's `confirmPhrase`). */
+export type SwitchMoveOptions = MoveCommandOptions;
 
 /** `opscrew cloudflare move --finish`. */
-export interface FinishMoveOptions extends MoveCommandOptions, TypedNameOptions {
+export interface FinishMoveOptions extends MoveCommandOptions {
   /** `--allow-downtime`: the R2 window without a prompt (non-interactive runs). */
   allowDowntime?: boolean;
 }
 
 /** `opscrew cloudflare move --abort`. */
-export interface AbortMoveOptions extends MoveCommandOptions, TypedNameOptions {}
+export type AbortMoveOptions = MoveCommandOptions;
 
 /** One of the app's R2 buckets in A, as `rclone size` measured it on the app's server. */
 export interface MoveBucketSize extends BucketSize {

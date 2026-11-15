@@ -49,8 +49,8 @@ import {
 import { dotenvLine, parseDotenv, storageVariableKind } from "../shared/app-env";
 import { reasonOf } from "../shared/errors";
 import { bucketKey, lastBackupsCopy, moveBuckets, type PointAtB } from "./buckets";
-import { MOVE_PHASE } from "./connector-stacks";
 import { moveFolder } from "./paths";
+import { accountWords, appWords, environmentDeps, MOVE_PHASE } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** Whose values: A's (the account the app runs on before the finish) or B's. */
@@ -75,22 +75,6 @@ export interface PointingAtB extends PointAtB {
    * are written only under it, and only while they still have its hash.
    */
   approve(): Promise<void>;
-}
-
-/** The phase deps with the environment's paths. */
-function environmentDeps(session: MoveSession, environment: MoveEnvironment): PhaseDeps {
-  return { ...session.deps, paths: environment.paths };
-}
-
-/** `shop (prod)`. */
-function appWords(environment: MoveEnvironment): string {
-  return `${environment.plan.app.name} (${environment.environment})`;
-}
-
-/** The account in words. */
-function bWords(session: MoveSession): string {
-  const { b } = session.accounts;
-  return `the Cloudflare account ${b.name ?? b.accountId}`;
 }
 
 /**
@@ -334,7 +318,7 @@ async function runDeploy(session: MoveSession, environment: MoveEnvironment): Pr
     environment.plan,
     MOVE_PHASE,
     {
-      purpose: `so ${appWords(environment)} runs on its settings for ${bWords(session)}`,
+      purpose: `so ${appWords(environment)} runs on its settings for ${accountWords(session.accounts.b)}`,
       failedHint: `Check the workflow in your repository's Actions tab, then run \`${command}\` again.`,
       unsuccessfulHint: `Open the run to see what failed and push a fix, then run \`${command}\` again.`,
       environment: environment.environment,
@@ -357,9 +341,9 @@ async function serverPointAtB(
   const applied = await readApplied(environment);
   const done = applied?.sha256 === hash && applied.deployed === true;
   const name = environment.environment;
-  const title = `Give the deploy secrets of ${name} their values for ${bWords(session)}`;
+  const title = `Give the deploy secrets of ${name} their values for ${accountWords(session.accounts.b)}`;
   const details = [
-    `These deploy secrets name the account the app runs on; they take their values for ${bWords(session)}, and the deploy that follows writes them on the server and starts the app on them:`,
+    `These deploy secrets name the account the app runs on; they take their values for ${accountWords(session.accounts.b)}, and the deploy that follows writes them on the server and starts the app on them:`,
     ...set.map((stored) => `  ${placeText(stored)}`),
     "(names only; values are encrypted on this computer before upload and never shown)",
   ].join("\n");
@@ -386,7 +370,7 @@ async function serverPointAtB(
     secrets: async () => {
       if ((await readApplied(environment))?.sha256 === hash) {
         deps.reporter.info(
-          `The deploy secrets of ${name} hold their values for ${bWords(session)}.`,
+          `The deploy secrets of ${name} hold their values for ${accountWords(session.accounts.b)}.`,
         );
         return;
       }
@@ -396,14 +380,14 @@ async function serverPointAtB(
       if (changeHash(session, environment, now.set) !== hash) {
         throw new OpsCrewError(
           "PHASE_PRECONDITION",
-          `What the deploy secrets of ${name} would hold for ${bWords(session)} changed since you approved it, so OpsCrew wrote none of them.`,
+          `What the deploy secrets of ${name} would hold for ${accountWords(session.accounts.b)} changed since you approved it, so OpsCrew wrote none of them.`,
           { hint: `Run \`${session.command}\` again to see the change and approve it.` },
         );
       }
       await storeSecrets(session, environment, now.set);
       await writeApplied(environment, { sha256: hash });
       deps.reporter.success(
-        `The deploy secrets of ${name} hold their values for ${bWords(session)}.`,
+        `The deploy secrets of ${name} hold their values for ${accountWords(session.accounts.b)}.`,
       );
     },
     deploy: async () => {
@@ -491,7 +475,7 @@ async function portainerPointAtB(
     approve: async () => {
       const approval = await deps.approvals.request({
         kind: "stack-apply",
-        title: `Give the app's stacks in your Portainer their values for ${bWords(session)}`,
+        title: `Give the app's stacks in your Portainer their values for ${accountWords(session.accounts.b)}`,
         details: planned.details,
         planHash: hash,
       });

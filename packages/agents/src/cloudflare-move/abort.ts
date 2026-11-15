@@ -56,7 +56,16 @@ import { planRemoval } from "./shadow-plans";
 import { pendingStop, removeBShared } from "./shared";
 import { clearDsNotes, readPublished } from "./switch-ds";
 import { currentNameservers, findSwitchRegistrar } from "./switch-registrar";
-import { ABORT_COMMAND, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
+import {
+  ABORT_COMMAND,
+  accountName,
+  environmentDeps,
+  FINISH_COMMAND,
+  MOVE_COMMAND,
+  MOVE_PHASE,
+  refusal,
+  SWITCH_COMMAND,
+} from "./texts";
 import type {
   AbortMoveOptions,
   MoveEnvironment,
@@ -65,8 +74,6 @@ import type {
   ShadowRoot,
   StepStop,
 } from "./types";
-
-const PHASE = "cloudflare-move";
 
 /**
  * `opscrew cloudflare move --abort`: refused before any change unless the app has a recorded move
@@ -119,7 +126,7 @@ type SwitchReading = { begun: string } | { begun?: undefined; publicDns: boolean
 function begunRefusal(session: MoveSession, move: CloudflareMove, begun: string): OpsCrewError {
   const { zone } = session;
   const { a } = session.accounts;
-  const aName = a.name ?? a.accountId;
+  const aName = accountName(a);
   const hint =
     move.abort?.step === "removed"
       ? `The app's pieces in the new account are removed already, so the move can't go on: set the nameservers of ${zone} back to the account ${aName}'s (${(a.zone?.nameServers ?? []).join(", ")}) at its registrar, then run \`${ABORT_COMMAND}\` again.`
@@ -141,7 +148,7 @@ async function confirmDelegation(session: MoveSession): Promise<void> {
   const progress = await readSwitchProgress(session.paths);
   if (progress?.zone !== zone || progress.approved === undefined) return;
   const { a } = session.accounts;
-  const aName = a.name ?? a.accountId;
+  const aName = accountName(a);
   const servers = (a.zone?.nameServers ?? []).join(", ");
   const approval = await deps.approvals.request({
     kind: "domain-settings",
@@ -171,7 +178,7 @@ async function confirmDelegation(session: MoveSession): Promise<void> {
 async function switchBegun(session: MoveSession, move: CloudflareMove): Promise<SwitchReading> {
   const { zone } = session;
   const { a, b } = session.accounts;
-  const aName = a.name ?? a.accountId;
+  const aName = accountName(a);
   if (session.environments.some((env) => env.plan.cloudflareMove?.step === "adopted")) {
     return { begun: "the finish has moved the app to the new account" };
   }
@@ -248,7 +255,7 @@ async function rootsOf(session: MoveSession, environment: MoveEnvironment): Prom
     }
   }
   if (held.length === 0) return [];
-  const bName = b.name ?? b.accountId;
+  const bName = accountName(b);
   const app = environment.plan.app.name;
   const one = held.length === 1;
   const folder = toPosixRelative(session.paths.root, moveFolder(environment.paths));
@@ -263,7 +270,7 @@ async function rootsOf(session: MoveSession, environment: MoveEnvironment): Prom
 
 /** Whether `root`'s shadow state may hold resources (it does, or can't be read). */
 async function holds(session: MoveSession, environment: MoveEnvironment, root: ShadowRoot) {
-  const deps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   return (await stateContents(deps, root.statePath, async () => session.engine)) !== "nothing";
 }
 
@@ -319,7 +326,7 @@ async function bucketsHeld(
   environment: MoveEnvironment,
   buckets: readonly ShadowRoot[],
 ): Promise<ShadowRoot[]> {
-  const deps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   const { b } = session.accounts;
   const held: ShadowRoot[] = [];
   for (const root of buckets) {
@@ -329,7 +336,7 @@ async function bucketsHeld(
     const state = toPosixRelative(session.paths.root, root.statePath);
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${state} can't be read, so OpsCrew neither empties nor deletes the bucket ${bucketOf(environment, root)} in the account ${b.name ?? b.accountId}. Nothing was deleted.`,
+      `${state} can't be read, so OpsCrew neither empties nor deletes the bucket ${bucketOf(environment, root)} in the account ${accountName(b)}. Nothing was deleted.`,
       {
         hint: `Restore ${state}, or run \`${session.command}\` on the computer that keeps the project's state passphrase.`,
       },
@@ -348,7 +355,7 @@ async function forgetBKeys(session: MoveSession, environment: MoveEnvironment): 
   const { b } = session.accounts;
   for (const { bucket } of moveBuckets(environment.plan)) {
     await forgetStorageKey(
-      { ...session.deps, paths: environment.paths },
+      environmentDeps(session, environment),
       { provider: "r2", bucket },
       { account: b.accountId, moveTo: b.accountId },
     );
@@ -429,7 +436,7 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
     kind: "provider-call",
     actor: "opscrew",
     action: "abort ended",
-    phase: PHASE,
+    phase: MOVE_PHASE,
     target: app,
     detail: `the move of ${zone} is aborted; ${zoneWords}`,
   });
@@ -439,7 +446,7 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
     done: true,
     next: [
       ...(outcome.kept === undefined ? [] : [outcome.kept]),
-      `${zone} goes on serving from the account ${a.name ?? a.accountId}, which the move never changed. To move later, start again with \`${MOVE_COMMAND} --to <account>\`.`,
+      `${zone} goes on serving from the account ${accountName(a)}, which the move never changed. To move later, start again with \`${MOVE_COMMAND} --to <account>\`.`,
     ],
   };
 }
@@ -500,7 +507,7 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
   const { deps, zone } = session;
   const { a, b } = session.accounts;
   if (b.zone === undefined) return { deleted: false };
-  const bName = b.name ?? b.accountId;
+  const bName = accountName(b);
   const first = await zoneDeletion(session, b.zone.id);
   const own = await markName(session);
   const { marks, damaged } = parseMarks(first.records);
@@ -533,7 +540,7 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
   const title = `Delete the zone ${zone} from the Cloudflare account ${bName}`;
   const details = [
     `${zone} in the account ${bName} is ${first.zone.status} and has never served the app. It holds no other app's mark and no OpsCrew record. ${recordsText(first.records)}`,
-    `Nothing in the account ${a.name ?? a.accountId} changes. Type the zone's name to approve.`,
+    `Nothing in the account ${accountName(a)} changes. Type the zone's name to approve.`,
   ].join("\n");
   if (!appliesNow(session, first.hash)) {
     deps.reporter.info(`${title}\n${details}`);
@@ -567,7 +574,7 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
     kind: "provider-call",
     actor: "opscrew",
     action: "abort zone deleted",
-    phase: PHASE,
+    phase: MOVE_PHASE,
     target: first.hash,
     decision: "approved",
     detail: `${zone} in the account ${b.accountId}`,

@@ -12,6 +12,7 @@ import { dsRecordText, sameHosts } from "../domain/switch";
 import type { ReadMark } from "./marks";
 import type { DsGate } from "./switch-ds";
 import { registrarId, registrarWords } from "./switch-registrar";
+import { accountName } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
 import { planZone, type ZonePlan } from "./zone";
 
@@ -90,8 +91,8 @@ function describe(
 ): string {
   const { zone } = plan;
   const { a, b } = session.accounts;
-  const aName = a.name ?? a.accountId;
-  const bName = b.name ?? b.accountId;
+  const aName = accountName(a);
+  const bName = accountName(b);
   const where = registrarWords(input.registrar);
   const lines = [
     `The switch of ${zone} from the Cloudflare account ${aName} to ${bName} (hash ${planHash}):`,

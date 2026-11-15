@@ -38,8 +38,11 @@ import { attachSites } from "./switch-sites";
 import {
   A_TOKEN_VAR,
   ABORT_COMMAND,
+  accountName,
+  accountWords,
   FINISH_COMMAND,
   MOVE_COMMAND,
+  MOVE_PHASE,
   refusal,
   SWITCH_COMMAND,
 } from "./texts";
@@ -136,7 +139,7 @@ async function readDelegation(
   const aServers = hosts(a.zone?.nameServers ?? []);
   if (aServers.length > 0 && sameHosts(aServers, hosts(zone.nameServers))) {
     throw refusal(
-      `Cloudflare gave ${session.zone} in the account ${b.name ?? b.accountId} the nameservers it has in the account ${a.name ?? a.accountId} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
+      `Cloudflare gave ${session.zone} in the account ${accountName(b)} the nameservers it has in the account ${accountName(a)} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
       `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
     );
   }
@@ -207,7 +210,7 @@ async function beforeSwitch(
     }
     const approval = await deps.approvals.request({
       kind: "domain-settings",
-      title: `Switch ${zone} to the Cloudflare account ${session.accounts.b.name ?? session.accounts.b.accountId}`,
+      title: `Switch ${zone} to ${accountWords(session.accounts.b)}`,
       details: plan.details,
       planHash: plan.planHash,
       // Typed in a terminal, `--confirm <zone>` in a script.
@@ -261,7 +264,7 @@ async function requireCoverage(session: MoveSession): Promise<ReadMark[]> {
   if (found.uncovered.length > 0) {
     throw refusal(
       `${listText(found.uncovered)} in ${zone} ${found.uncovered.length === 1 ? "belongs" : "belong"} to OpsCrew apps not prepared in the new Cloudflare account yet, so ${zone} can't switch.`,
-      `Run \`${MOVE_COMMAND} --to ${b.accountId}\` in the repository that deploys them, or remove those records from the account ${a.name ?? a.accountId} if no app uses them, then run \`${command}\` again.`,
+      `Run \`${MOVE_COMMAND} --to ${b.accountId}\` in the repository that deploys them, or remove those records from the account ${accountName(a)} if no app uses them, then run \`${command}\` again.`,
     );
   }
   if (found.unread.length > 0) {
@@ -285,7 +288,7 @@ async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPla
     kind: "provider-call",
     actor: "opscrew",
     action: "cloudflare records created",
-    phase: "cloudflare-move",
+    phase: MOVE_PHASE,
     target: plan.planHash,
     decision: "approved",
     detail: `${plural(records.length, "record")} in ${session.zone} (the switch)`,
@@ -382,7 +385,7 @@ async function afterSwitch(
     kind: "provider-call",
     actor: "opscrew",
     action: "switch measured",
-    phase: "cloudflare-move",
+    phase: MOVE_PHASE,
     target: zone,
     detail: report.join(" "),
   });

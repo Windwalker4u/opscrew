@@ -101,6 +101,15 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
     expect(h.leaks()).toBe(false);
   });
 
+  it("finds no zone in B when B holds only its moved copy, as on a move back", async () => {
+    const h = await moveHarness({ bZone: true });
+    h.cloudflare.move(h.cloudflare.zone(ZONE, "New"));
+    const session = await h.open({ to: "New" });
+    expect(session.accounts.b.zone).toBeUndefined();
+    expect(session.accounts.b.setup).toBeUndefined();
+    expect(h.readOnly()).toBe(true);
+  });
+
   it("continues a recorded move without --to, and refuses another --to", async () => {
     const h = await moveHarness({
       plans: (cloudflare) => ({ prod: recordedMove(serverPlan(), cloudflare) }),

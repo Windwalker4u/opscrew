@@ -48,10 +48,8 @@ import { approveCommand } from "../retarget/texts";
 import { portainerClientFor, recordedStack } from "../shared";
 import { moveFolder } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
-import { refusal } from "./texts";
+import { environmentDeps, MOVE_PHASE, refusal } from "./texts";
 import type { MoveEnvironment, MoveSession, MoveZone, StepStop } from "./types";
-
-const PHASE = "cloudflare-move";
 
 /** B's shared record of the environment: `cloudflare-move/cloudflare.json`. */
 export function bSharedRecordPath(environment: MoveEnvironment): string {
@@ -64,11 +62,6 @@ export function bSharedRecordPath(environment: MoveEnvironment): string {
  */
 export function aSharedRecordPath(environment: MoveEnvironment): string {
   return moveFolder(environment.paths, "a-removal", "cloudflare.json");
-}
-
-/** The phase deps with the environment's paths (its records and generated values). */
-function environmentDeps(session: MoveSession, environment: MoveEnvironment): PhaseDeps {
-  return { ...session.deps, paths: environment.paths };
 }
 
 /** B's zone as B's token reads it now; `undefined` when B has none. */
@@ -155,7 +148,7 @@ async function cloudflareStep(
   const deps = environmentDeps(session, environment);
   const { plan, details } = input.zone;
   const app = environment.plan.app.name;
-  const run = { app, command: session.command, phase: PHASE } as const;
+  const run = { app, command: session.command, phase: MOVE_PHASE } as const;
   if (plan.changes.length === 0) {
     await applyZonePlan(deps, input.client, input.zone, { ...run, planOnly: false });
     await clearPending(session.deps, input.key);
@@ -269,7 +262,7 @@ async function servedOriginSha256(
     client: portainer.client,
     valueKey,
   });
-  const facts = await portainerInspect(deps, client, { plan, phase: PHASE })(
+  const facts = await portainerInspect(deps, client, { plan, phase: MOVE_PHASE })(
     "the origin certificate the app's stack serves",
   );
   const name = PORTAINER_STACK_VARIABLES.originTls;

@@ -23,7 +23,15 @@ import { appliesNow } from "../retarget/steps";
 import { approveCommand } from "../retarget/texts";
 import { readServerAddresses, requestApproval } from "../shared";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
-import { ABORT_COMMAND, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
+import {
+  ABORT_COMMAND,
+  accountName,
+  accountWords,
+  B_TOKEN_VAR,
+  MOVE_COMMAND,
+  MOVE_PHASE,
+  refusal,
+} from "./texts";
 import type { MoveSession, MoveZone, StepStop } from "./types";
 
 /** The comment of a mark's TXT records: no copy or foreign-record check takes it for an app's. */
@@ -358,8 +366,8 @@ function differenceText(
 function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly string[]): string {
   const { zone, marks } = plan;
   const { a, b } = session.accounts;
-  const bName = b.name ?? b.accountId;
-  const aName = a.name ?? a.accountId;
+  const bName = accountName(b);
+  const aName = accountName(a);
   const text = (record: ZoneRecord) => shownRecord(record, addresses);
   const lines = [
     `The zone plan for ${zone} in the Cloudflare account ${bName} (hash ${plan.planHash}):`,
@@ -456,7 +464,7 @@ async function requireUsableZone(
   const aServers = a.zone?.nameServers ?? [];
   if (aServers.length > 0 && own(zone.nameServers) === own(aServers)) {
     throw stop(
-      `Cloudflare gave ${session.zone} in the account ${b.name ?? b.accountId} the nameservers it has in the account ${a.name ?? a.accountId} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
+      `Cloudflare gave ${session.zone} in the account ${accountName(b)} the nameservers it has in the account ${accountName(a)} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
       `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
       "PHASE_PRECONDITION",
     );
@@ -464,7 +472,7 @@ async function requireUsableZone(
   const { missing } = await b.client.zonePermissions(zone.id, zoneNeeds(session));
   if (missing.length === 0) return;
   throw stop(
-    `${B_TOKEN_VAR} lacks ${listText(missing)} for ${session.zone} in the account ${b.name ?? b.accountId}, which the app's pieces need there.`,
+    `${B_TOKEN_VAR} lacks ${listText(missing)} for ${session.zone} in the account ${accountName(b)}, which the app's pieces need there.`,
     `Add ${missing.length === 1 ? "it" : "them"} to the token at ${CLOUDFLARE_TOKEN_PAGE} (for this zone, or all zones of the account), then run \`${session.command}\` again.`,
     "CREDENTIALS_INVALID",
   );
@@ -517,7 +525,7 @@ export async function applyZone(
   }
   await requestApproval(deps, {
     kind: "cloudflare-apply",
-    title: `Apply the zone plan to ${zone} in the Cloudflare account ${b.name ?? b.accountId} (${plural(changes, "change")})`,
+    title: `Apply the zone plan to ${zone} in ${accountWords(b)} (${plural(changes, "change")})`,
     details: plan.details,
     hash: plan.planHash,
     refused: {
@@ -540,12 +548,12 @@ export async function applyZone(
       kind: "provider-call",
       actor: "opscrew",
       action,
-      phase: "cloudflare-move",
+      phase: MOVE_PHASE,
       target: plan.planHash,
       decision: "approved",
       detail,
     });
-  deps.reporter.step(`Changing ${zone} in the Cloudflare account ${b.name ?? b.accountId}`);
+  deps.reporter.step(`Changing ${zone} in ${accountWords(b)}`);
   let target = b.zone;
   if (plan.createZone) {
     target = { ...(await b.client.createZone(b.accountId, zone)), accountId: b.accountId };
@@ -577,7 +585,7 @@ export async function applyZone(
   }
   await clearPending(deps, key);
   deps.reporter.success(
-    `Changed ${zone} in the account ${b.name ?? b.accountId} (${plural(changes, "change")}).`,
+    `Changed ${zone} in the account ${accountName(b)} (${plural(changes, "change")}).`,
   );
   return undefined;
 }

@@ -36,10 +36,8 @@ import { moveFolder, recordedHash, recordHash } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { shadowOutputs, shadowRoots } from "./shadow";
 import { pendingStop } from "./shared";
-import { A_TOKEN_VAR, B_TOKEN_VAR } from "./texts";
+import { A_TOKEN_VAR, accountWords, B_TOKEN_VAR, MOVE_PHASE } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
-
-const PHASE = "cloudflare-move";
 
 /** B's Workers deploy token, which GitHub gets as the site's `_NEW` deploy token. */
 export const NEW_DEPLOY_TOKEN_VAR = "OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN";
@@ -103,7 +101,7 @@ async function bDeployToken(session: MoveSession): Promise<string> {
       "CREDENTIALS_INVALID",
       `${NEW_DEPLOY_TOKEN_VAR} is the same token as ${A_TOKEN_VAR}, which can edit your DNS, so OpsCrew does not store it in GitHub. Nothing was changed.`,
       {
-        hint: `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with only ${CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS[0]} for ${bWords(session)}, set ${NEW_DEPLOY_TOKEN_VAR} to it, then run \`${session.command}\` again.`,
+        hint: `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with only ${CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS[0]} for ${accountWords(session.accounts.b)}, set ${NEW_DEPLOY_TOKEN_VAR} to it, then run \`${session.command}\` again.`,
       },
     );
   }
@@ -113,7 +111,11 @@ async function bDeployToken(session: MoveSession): Promise<string> {
     deployToken: true,
     command: session.command,
     // B by name: "the account that holds" the zone is A while it is active.
-    names: { apiToken: B_TOKEN_VAR, deployToken: NEW_DEPLOY_TOKEN_VAR, account: bWords(session) },
+    names: {
+      apiToken: B_TOKEN_VAR,
+      deployToken: NEW_DEPLOY_TOKEN_VAR,
+      account: accountWords(session.accounts.b),
+    },
   });
   return token as string;
 }
@@ -247,8 +249,9 @@ async function applySecretsChange(
     },
   });
   const at = { api: session.githubApi, owner: github.owner, repo: github.repo };
-  for (const place of change.set) await setSecretAt(deps, at, where(place), place.value, PHASE);
-  for (const place of change.delete) await deleteSecretAt(deps, at, place, PHASE);
+  for (const place of change.set)
+    await setSecretAt(deps, at, where(place), place.value, MOVE_PHASE);
+  for (const place of change.delete) await deleteSecretAt(deps, at, place, MOVE_PHASE);
   await change.after?.();
   await recordHash(file, hash);
   await clearPending(deps, change.key);
@@ -265,19 +268,13 @@ async function applySecretsChange(
 async function deployToBoth(session: MoveSession, environment: MoveEnvironment): Promise<void> {
   const { command } = session;
   const github = { ...session.github, api: session.githubApi };
-  await runDeployWorkflow(session.deps, github, environment.plan, PHASE, {
+  await runDeployWorkflow(session.deps, github, environment.plan, MOVE_PHASE, {
     purpose: "so the Worker in the new account runs the site's current code",
     unchanged: "The site is still served from the current Cloudflare account.",
     failedHint: `Check the workflow in your repository's Actions tab, then run \`${command}\` again.`,
     unsuccessfulHint: `Open the run to see what failed and push a fix, then run \`${command}\` again.`,
     environment: environment.environment,
   });
-}
-
-/** The account the move goes to, in words. */
-function bWords(session: MoveSession): string {
-  const { b } = session.accounts;
-  return `the Cloudflare account ${b.name ?? b.accountId}`;
 }
 
 /**
@@ -308,15 +305,15 @@ export async function addNewCredentials(
     key: { action: "secrets", environment: name },
     set,
     delete: [],
-    title: `Store the deploy's credentials for ${bWords(session)} as ${plural(set.length, "extra GitHub secret")} of ${name}`,
+    title: `Store the deploy's credentials for ${accountWords(session.accounts.b)} as ${plural(set.length, "extra GitHub secret")} of ${name}`,
     intro: site
       ? [
-          `While these are set, each deploy of ${name} also deploys the site's Worker in ${bWords(session)}; OpsCrew runs the deploy workflow once now, so that Worker runs the site's current code.`,
+          `While these are set, each deploy of ${name} also deploys the site's Worker in ${accountWords(session.accounts.b)}; OpsCrew runs the deploy workflow once now, so that Worker runs the site's current code.`,
         ]
       : [
           `During the move the deploy of ${name} tries the current account's Access credentials first and these once Cloudflare Access refuses those, so deploys keep working on both sides of the switch.`,
         ],
-    done: `The deploy of ${name} has its credentials for ${bWords(session)}.`,
+    done: `The deploy of ${name} has its credentials for ${accountWords(session.accounts.b)}.`,
     ...(site ? { after: () => deployToBoth(session, environment) } : {}),
   });
 }
@@ -345,11 +342,11 @@ export async function promoteNewCredentials(
       value: values[plain] as string,
     })),
     delete: moved.pairs.map(({ next }) => deploySecretPlace(plan, next)),
-    title: `Give the deploy of ${name} its credentials for ${bWords(session)} under their usual names`,
+    title: `Give the deploy of ${name} its credentials for ${accountWords(session.accounts.b)} under their usual names`,
     intro: [
-      `The deploy's secrets take the credentials of ${bWords(session)}, and the extra ones the move added are deleted.`,
+      `The deploy's secrets take the credentials of ${accountWords(session.accounts.b)}, and the extra ones the move added are deleted.`,
     ],
-    done: `The deploy of ${name} uses its credentials for ${bWords(session)}.`,
+    done: `The deploy of ${name} uses its credentials for ${accountWords(session.accounts.b)}.`,
   });
 }
 
@@ -388,6 +385,6 @@ export async function dropNewCredentials(
     delete: remove,
     title: `Delete the ${plural(remove.length, "extra GitHub secret")} the move added for the deploy of ${name}`,
     intro: [`The deploy of ${name} goes on with the current account's credentials only.`],
-    done: `The deploy of ${name} has no credentials for ${bWords(session)} left.`,
+    done: `The deploy of ${name} has no credentials for ${accountWords(session.accounts.b)} left.`,
   });
 }

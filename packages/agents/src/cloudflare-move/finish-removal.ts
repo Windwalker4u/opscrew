@@ -36,21 +36,19 @@ import {
 } from "./shadow";
 import { planRemoval } from "./shadow-plans";
 import { aSharedRecordPath, pendingStop, revokeAOrigin } from "./shared";
-import { A_TOKEN_VAR, B_TOKEN_VAR, refusal } from "./texts";
+import {
+  A_TOKEN_VAR,
+  accountWords,
+  appWords,
+  B_TOKEN_VAR,
+  environmentDeps,
+  MOVE_PHASE,
+  refusal,
+} from "./texts";
 import type { MoveEnvironment, MoveResult, MoveSession, ShadowRoot, StepStop } from "./types";
 
 /** The roots whose bucket carries `prevent_destroy`. */
 const GUARDED: ReadonlySet<MoveRoot> = new Set(["storage", "backups"]);
-
-/** `shop (prod)`. */
-function appWords(environment: MoveEnvironment): string {
-  return `${environment.plan.app.name} (${environment.environment})`;
-}
-
-/** The account in words: its name as the session read it, else its id. */
-function accountWords(account: { accountId: string; name?: string }): string {
-  return `the Cloudflare account ${account.name ?? account.accountId}`;
-}
 
 /**
  * Waits until Cloudflare reports no connection for each of A's tunnels the main root's former
@@ -90,7 +88,7 @@ async function removeRoot(
       kind: "iac",
       actor: "opscrew",
       action: `A removed ${root.name}`,
-      phase: "cloudflare-move",
+      phase: MOVE_PHASE,
       target: app,
       detail: `${environment.environment}: the ${root.name} root's pieces deleted in ${accountWords(session.accounts.a)} (plan ${step.planHash})`,
     });
@@ -100,7 +98,7 @@ async function removeRoot(
 
 /** What A's former state of `root` holds (`stateContents`). */
 function removalContents(session: MoveSession, environment: MoveEnvironment, root: ShadowRoot) {
-  const deps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   return stateContents(deps, shadowFiles(root).removalState, async () => session.engine);
 }
 
@@ -162,7 +160,7 @@ export async function removeA(
  */
 async function requireNothingLeft(session: MoveSession): Promise<void> {
   for (const environment of session.environments) {
-    const deps = { ...session.deps, paths: environment.paths };
+    const deps = environmentDeps(session, environment);
     for (const root of await shadowRoots(session, environment)) {
       for (const state of [root.statePath, shadowFiles(root).removalState]) {
         if ((await stateContents(deps, state, async () => session.engine)) === "nothing") continue;
@@ -244,7 +242,7 @@ export async function endFinish(session: MoveSession): Promise<MoveResult> {
     kind: "provider-call",
     actor: "opscrew",
     action: "move finished",
-    phase: "cloudflare-move",
+    phase: MOVE_PHASE,
     target: app,
     detail: `${session.zone}: ${app} runs in ${accountWords(session.accounts.b)}; its mark, record and local files of the move are deleted`,
   });

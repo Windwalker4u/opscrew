@@ -15,7 +15,6 @@ import {
   stackPlanHash,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import {
   portainerConnectorStackName,
@@ -24,7 +23,6 @@ import {
   renderNextConnectorStacks,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import type { PhaseDeps } from "../context";
 import {
   requirePortainerConnection,
   requirePortainerToken,
@@ -37,10 +35,8 @@ import type { TunnelModule } from "../rotate/infra-connectors";
 import { PlanRefusedError } from "../shared";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { pendingStop } from "./shared";
+import { environmentDeps, MOVE_PHASE } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
-
-/** The phase the move's steps are audited under. */
-export const MOVE_PHASE: PhaseName = "cloudflare-move";
 
 /** What the Portainer connector's `planNextStacks` is given. */
 export interface NextStacksInput {
@@ -142,7 +138,7 @@ export async function nextStacksStep(
   want: { run: readonly { module: TunnelModule; token: string }[] } | { remove: true },
 ): Promise<StepStop | undefined> {
   const command = session.command;
-  const deps: PhaseDeps = { ...session.deps, paths: environment.paths };
+  const deps = environmentDeps(session, environment);
   const { plan } = environment;
   const key: MovePlanKey = { action: "connector", environment: environment.environment };
   const { stacks, tokens } =

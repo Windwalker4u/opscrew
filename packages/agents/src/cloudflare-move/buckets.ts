@@ -55,7 +55,6 @@ import {
   rcloneSize,
   sshRclone,
 } from "../shared/rclone";
-import { MOVE_PHASE } from "./connector-stacks";
 import { moveFolder, recordedHash, recordHash } from "./paths";
 import {
   clearPending,
@@ -67,7 +66,7 @@ import {
   recordWindowStop,
   writePending,
 } from "./progress";
-import { refusal } from "./texts";
+import { accountName, appWords, environmentDeps, MOVE_PHASE, refusal } from "./texts";
 import type { MoveBucketSize, MoveEnvironment, MoveSession, StepStop } from "./types";
 
 const MINUTE = 60_000;
@@ -100,19 +99,9 @@ function bucketWords(bucket: MoveBucket): string {
 }
 
 /** The account in words: its name as the session read it, else its id. */
-function accountWords(session: MoveSession, side: BucketSide): string {
+function sideWords(session: MoveSession, side: BucketSide): string {
   const account = session.accounts[side];
-  return `${side === "a" ? "the current" : "the new"} Cloudflare account ${account.name ?? account.accountId}`;
-}
-
-/** The phase deps with the environment's paths (its kept keys, its server's address). */
-function environmentDeps(session: MoveSession, environment: MoveEnvironment): PhaseDeps {
-  return { ...session.deps, paths: environment.paths };
-}
-
-/** `shop (prod)`. */
-function appWords(environment: MoveEnvironment): string {
-  return `${environment.plan.app.name} (${environment.environment})`;
+  return `${side === "a" ? "the current" : "the new"} Cloudflare account ${accountName(account)}`;
 }
 
 /**
@@ -249,8 +238,8 @@ function sizeOf(
     command: session.command,
     config: remoteOf(session, side, key),
     timeoutMs: 30 * MINUTE,
-    what: `Measuring the bucket ${bucket.bucket} in ${accountWords(session, side)}`,
-    hint: `Check that the key of the bucket ${bucket.bucket} in ${accountWords(session, side)} can list it, then run \`${session.command}\` again. Nothing was changed.`,
+    what: `Measuring the bucket ${bucket.bucket} in ${sideWords(session, side)}`,
+    hint: `Check that the key of the bucket ${bucket.bucket} in ${sideWords(session, side)} can list it, then run \`${session.command}\` again. Nothing was changed.`,
   });
 }
 
@@ -388,7 +377,7 @@ async function copyBuckets(
   const host = await appHost(session, environment);
   const sizes = await measured(session, environment, host, keyed);
   const details = [
-    `From ${accountWords(session, "a")} into the bucket of the same name in ${accountWords(session, "b")}, with rclone copy in a one-off container on ${host.words}, both keys ${host.keys}: it copies only what is missing there, comparing checksums and keeping the files' metadata.`,
+    `From ${sideWords(session, "a")} into the bucket of the same name in ${sideWords(session, "b")}, with rclone copy in a one-off container on ${host.words}, both keys ${host.keys}: it copies only what is missing there, comparing checksums and keeping the files' metadata.`,
     ...sizes.map(
       (size) =>
         `  ${bucketWords(size)}: ${sizeText(size.bytes)} in ${plural(size.count, "object")}, about ${step.minutes(size)} minutes`,
@@ -416,7 +405,7 @@ async function copyBuckets(
   for (const key of keyed) {
     const { bucket } = key;
     deps.reporter.step(
-      `Copying the bucket ${bucketWords(bucket)} to ${accountWords(session, "b")}, from ${host.words}`,
+      `Copying the bucket ${bucketWords(bucket)} to ${sideWords(session, "b")}, from ${host.words}`,
     );
     await host.rclone({
       args: ["copy", `a:${bucket.bucket}`, `b:${bucket.bucket}`, "--checksum", "--metadata"],
@@ -429,7 +418,7 @@ async function copyBuckets(
     await audit(session, environment, {
       action: "copy bucket",
       decision: "approved",
-      detail: `${environment.environment}: copied the bucket ${bucket.bucket} from ${accountWords(session, "a")} to ${accountWords(session, "b")} with rclone`,
+      detail: `${environment.environment}: copied the bucket ${bucket.bucket} from ${sideWords(session, "a")} to ${sideWords(session, "b")} with rclone`,
     });
   }
   if (step.ended !== undefined) {
@@ -905,13 +894,13 @@ function requireEmptyingStep(
   const app = appWords(environment);
   if (side === "a" && !adopted) {
     throw refusal(
-      `${upperFirst(app)} still uses its buckets in ${accountWords(session, "a")}: OpsCrew empties them only once the finish has moved the app to the new account.`,
+      `${upperFirst(app)} still uses its buckets in ${sideWords(session, "a")}: OpsCrew empties them only once the finish has moved the app to the new account.`,
       `Run \`${session.command}\` to finish the move first.`,
     );
   }
   if (side === "b" && adopted) {
     throw refusal(
-      `${upperFirst(app)} uses its buckets in ${accountWords(session, "b")} since the finish moved it there, so OpsCrew does not empty them.`,
+      `${upperFirst(app)} uses its buckets in ${sideWords(session, "b")} since the finish moved it there, so OpsCrew does not empty them.`,
       "A finished move is not aborted: moving back is a move to the other account.",
     );
   }
@@ -947,7 +936,7 @@ export async function emptyBuckets(
     keyed.push({ bucket, own, b });
   }
   const host = await appHost(session, environment);
-  const where = accountWords(session, side);
+  const where = sideWords(session, side);
   for (const { bucket, own, b } of keyed) {
     const { count } = await sizeOf(session, host, bucket, side, own);
     if (count === 0) {
@@ -973,7 +962,7 @@ export async function emptyBuckets(
       `Every file of ${bucketWords(bucket)} in ${where} (${plural(count, "object")}) is deleted with rclone delete in a one-off container on ${host.words}, its key ${host.keys}. This cannot be undone.`,
       ...(side === "a"
         ? [
-            `Right before it, rclone check confirms that the bucket of the same name in ${accountWords(session, "b")} holds every one of them (same size, and checksum where R2 has one); any difference stops the deletion.`,
+            `Right before it, rclone check confirms that the bucket of the same name in ${sideWords(session, "b")} holds every one of them (same size, and checksum where R2 has one); any difference stops the deletion.`,
           ]
         : []),
       "The bucket itself is deleted afterwards by its own plan. Type the bucket's name to approve.",
@@ -1003,7 +992,7 @@ export async function emptyBuckets(
     if (side === "a") {
       // Right before the deletion: whatever was written to A until now must be in B.
       deps.reporter.step(
-        `Checking that the bucket ${bucket.bucket} in ${accountWords(session, "b")} holds every file of it in ${where}`,
+        `Checking that the bucket ${bucket.bucket} in ${sideWords(session, "b")} holds every file of it in ${where}`,
       );
       await host.rclone({
         args: ["check", `a:${bucket.bucket}`, `b:${bucket.bucket}`, "--one-way", "--checksum"],
