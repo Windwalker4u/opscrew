@@ -409,6 +409,17 @@ account before the switch, or let it go; Email Routing right after the switch (s
 - **the domain's registration** when it stays at another registrar. At Cloudflare Registrar, its
   own move between accounts carries the registration, but not its contacts.
 
+You don't have to find these yourself. Prepare's summary, before its first plan, and the switch's
+plan, before you approve it, list what OpsCrew found in the old account that it doesn't move:
+Email Routing (on or off, with its rules and catch-all counted), the zone's SSL/TLS mode, minimum
+TLS version, Always Use HTTPS, security level and cache level, your own rules in each of the zone's
+rule phases and its page rules, and the Workers, Pages projects and R2 buckets that aren't the
+app's, Turnstile widgets and Web Analytics sites. Each line says where to redo it in the new
+account's dashboard. The list shows names and counts only, never an address or a rule's content.
+OpsCrew only reads these, with `CLOUDFLARE_API_TOKEN`: it moves and changes none of them. A kind
+the token may not read is listed as "couldn't read: check in the dashboard", and the move goes on.
+The list isn't part of the switch plan's hash, so a change to it doesn't undo your approval.
+
 ## What stays in the old account
 
 - **The old zone,** with the app's records, OpsCrew's rules and the origin-pull settings. Cloudflare

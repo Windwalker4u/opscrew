@@ -614,6 +614,21 @@ const IdResultSchema = z.looseObject({ id: z.string().min(1) });
 
 const ZoneSettingSchema = z.looseObject({ value: z.string(), editable: z.boolean() });
 
+// What a move to another account leaves behind (feature 028, FR-2819): only names and counts.
+const EmailRoutingSchema = z.looseObject({ enabled: z.boolean() });
+const EmailRuleSchema = z.looseObject({
+  matchers: z.array(z.looseObject({ type: z.string() })).nullish(),
+});
+const CatchAllSchema = z.looseObject({ enabled: z.boolean().nullish() });
+const RulesetListSchema = z.array(z.looseObject({ kind: z.string(), phase: z.string().nullish() }));
+const NamedSchema = z.looseObject({ name: z.string().min(1) });
+const R2BucketsSchema = z.looseObject({ buckets: z.array(NamedSchema).nullish() });
+const R2CursorSchema = z.looseObject({ cursor: z.string().nullish() }).optional();
+const WebAnalyticsSiteSchema = z.looseObject({
+  host: z.string().nullish(),
+  site_tag: z.string().min(1),
+});
+
 const CertificatePackQuotaSchema = z.looseObject({
   advanced: z
     .looseObject({ allocated: z.number().int().min(0), used: z.number().int().min(0) })
@@ -1549,20 +1564,72 @@ export class CloudflareClient {
   /**
    * The zone's entrypoint ruleset for `phase` with its rules: `undefined` when the zone has none
    * (HTTP 404 with code 10003), `"forbidden"` when the token may not read it (HTTP 403). Any other
-   * failure throws. Read-only.
+   * failure throws. Any phase can be read (a {@link listRulesetPhases} one, for one). Read-only.
    */
   async entrypointRuleset(
     zoneId: string,
-    phase: ManagedRulesetPhase,
+    phase: string,
   ): Promise<EntrypointRuleset | undefined | "forbidden"> {
     const answer = await this.#request(
-      `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`,
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${encodeURIComponent(phase)}/entrypoint`,
     );
     if (answer.status === 404 && answer.body.errors.some((e) => e.code === NO_ENTRYPOINT_CODE)) {
       return undefined;
     }
     if (answer.status === 403) return "forbidden";
     return toEntrypoint(this.#result(answer, EntrypointSchema, `read the ${phase} rules`));
+  }
+
+  /**
+   * The phases of the zone's own rulesets (`GET /zones/{id}/rulesets`, kind `zone`: its
+   * entrypoints, Cloudflare's managed rulesets left out), sorted. Read-only.
+   */
+  async listRulesetPhases(zoneId: string): Promise<string[]> {
+    const rulesets = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets`,
+      RulesetListSchema,
+      "list the zone's rulesets",
+    );
+    const phases = rulesets.flatMap((r) => (r.kind === "zone" && r.phase ? [r.phase] : []));
+    return [...new Set(phases)].sort();
+  }
+
+  /** How many page rules the zone has (`GET /zones/{id}/pagerules`). Read-only. */
+  async pageRuleCount(zoneId: string): Promise<number> {
+    const rules = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}/pagerules`,
+      z.array(z.unknown()),
+      "list the zone's page rules",
+    );
+    return rules.length;
+  }
+
+  /**
+   * The zone's Email Routing: on or off, how many routing rules it has (the catch-all apart), and
+   * whether its catch-all is on (off when Cloudflare has none). Only counts: never an address.
+   * Read-only.
+   */
+  async emailRouting(
+    zoneId: string,
+  ): Promise<{ enabled: boolean; rules: number; catchAll: boolean }> {
+    const path = `/zones/${encodeURIComponent(zoneId)}/email/routing`;
+    const settings = await this.#call(path, EmailRoutingSchema, "read the zone's Email Routing");
+    const rules = await this.#all(
+      `${path}/rules`,
+      EmailRuleSchema,
+      "list the zone's Email Routing rules",
+      { perPage: 50 },
+    );
+    const answer = await this.#request(`${path}/rules/catch_all`);
+    const catchAll =
+      answer.status === 404
+        ? undefined
+        : this.#result(answer, CatchAllSchema, "read the zone's Email Routing catch-all");
+    return {
+      enabled: settings.enabled,
+      rules: rules.filter((rule) => !rule.matchers?.some((m) => m.type === "all")).length,
+      catchAll: catchAll?.enabled === true,
+    };
   }
 
   /**
@@ -1824,6 +1891,26 @@ export class CloudflareClient {
       { hints: SETTINGS_HINTS },
     );
     return { value: setting.value, editable: setting.editable };
+  }
+
+  /**
+   * The values of the zone's settings `ids` (`ssl`, `always_use_https` and the like), each read on
+   * its own (`GET /zones/{id}/settings/{setting}`). Read-only.
+   */
+  async zoneSettings<T extends string>(
+    zoneId: string,
+    ids: readonly T[],
+  ): Promise<Record<T, string>> {
+    const values = {} as Record<T, string>;
+    for (const id of ids) {
+      const setting = await this.#call(
+        `/zones/${encodeURIComponent(zoneId)}/settings/${encodeURIComponent(id)}`,
+        ZoneSettingSchema,
+        `read the zone's ${id} setting`,
+      );
+      values[id] = setting.value;
+    }
+    return values;
   }
 
   /** Raises the zone's minimum TLS version (`PATCH /zones/{id}/settings/min_tls_version`). */
@@ -2231,6 +2318,69 @@ export class CloudflareClient {
       zoneId: d.zone_id,
       service: d.service,
     }));
+  }
+
+  /** The names of the account's Workers (`GET /accounts/{id}/workers/scripts`). Read-only. */
+  async listWorkerNames(accountId: string): Promise<string[]> {
+    const scripts = await this.#call(
+      `/accounts/${encodeURIComponent(accountId)}/workers/scripts`,
+      z.array(z.looseObject({ id: z.string().min(1) })),
+      "list the account's Workers",
+      { hints: WORKERS_HINTS },
+    );
+    return scripts.map((script) => script.id);
+  }
+
+  /** The names of the account's R2 buckets, every page (`GET /accounts/{id}/r2/buckets`). Read-only. */
+  async listR2Buckets(accountId: string): Promise<string[]> {
+    const names: string[] = [];
+    let cursor = "";
+    do {
+      const query = new URLSearchParams({ per_page: "1000", ...(cursor ? { cursor } : {}) });
+      const what = "list the account's R2 buckets";
+      const answer = await this.#request(
+        `/accounts/${encodeURIComponent(accountId)}/r2/buckets?${query}`,
+      );
+      names.push(...(this.#result(answer, R2BucketsSchema, what).buckets ?? []).map((b) => b.name));
+      cursor = this.#parse(R2CursorSchema, answer.body.result_info, what)?.cursor ?? "";
+    } while (cursor);
+    return names;
+  }
+
+  /** The names of the account's Pages projects (`GET /accounts/{id}/pages/projects`). Read-only. */
+  async listPagesProjects(accountId: string): Promise<string[]> {
+    const projects = await this.#all(
+      `/accounts/${encodeURIComponent(accountId)}/pages/projects`,
+      NamedSchema,
+      "list the account's Pages projects",
+      { perPage: 10 },
+    );
+    return projects.map((project) => project.name);
+  }
+
+  /** The names of the account's Turnstile widgets (`GET /accounts/{id}/challenges/widgets`). Read-only. */
+  async listTurnstileWidgets(accountId: string): Promise<string[]> {
+    const widgets = await this.#all(
+      `/accounts/${encodeURIComponent(accountId)}/challenges/widgets`,
+      NamedSchema,
+      "list the account's Turnstile widgets",
+      { perPage: 25 },
+    );
+    return widgets.map((widget) => widget.name);
+  }
+
+  /**
+   * The account's Web Analytics sites, each by its hostname (or its site tag when it has none)
+   * (`GET /accounts/{id}/rum/site_info/list`). Read-only.
+   */
+  async listWebAnalyticsSites(accountId: string): Promise<string[]> {
+    const sites = await this.#all(
+      `/accounts/${encodeURIComponent(accountId)}/rum/site_info/list`,
+      WebAnalyticsSiteSchema,
+      "list the account's Web Analytics sites",
+      { perPage: 25 },
+    );
+    return sites.map((site) => site.host || site.site_tag);
   }
 
   /**

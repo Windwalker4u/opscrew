@@ -11,7 +11,8 @@ import { DENIED, ok, only, paged, refuse } from "./replies";
 
 /**
  * The account-scoped pieces of {@link fakeCloudflareAccounts}' accounts: tunnels, Zero Trust
- * Access, R2 buckets and Workers. OpsCrew makes most of them through the IaC engine, so a test
+ * Access, R2 buckets and Workers, and the Pages projects, Turnstile widgets and Web Analytics sites
+ * a move only lists. OpsCrew makes most of them through the IaC engine, so a test
  * seeds them as plain data; the fake answers the reads OpsCrew's client and its permission probes
  * make, and the client's own writes (the Zero Trust organization and login method, a tunnel's
  * secret, Access applications, custom domains). Any other request throws.
@@ -83,6 +84,10 @@ export interface FakeCloudflareAccount {
   readonly workers: Map<string, FakeScript>;
   /** Workers custom domains: attaching one adds its record to the zone, detaching removes it. */
   readonly workerDomains: FakeWorkerDomain[];
+  /** Pages projects, Turnstile widgets and Web Analytics sites (by hostname), by name only. */
+  readonly pagesProjects: string[];
+  readonly turnstileWidgets: string[];
+  readonly webAnalyticsSites: string[];
 }
 
 /** An account with nothing in it. */
@@ -99,6 +104,9 @@ export function newAccount(id: string, name: string): FakeCloudflareAccount {
     buckets: [],
     workers: new Map(),
     workerDomains: [],
+    pagesProjects: [],
+    turnstileWidgets: [],
+    webAnalyticsSites: [],
   };
 }
 
@@ -152,6 +160,13 @@ export function accountReply(
     ["/r2/buckets", "r2", (m, r, u) => buckets(ctx, m, r, u)],
     ["/workers/scripts", "workers", (m, r, u) => scripts(ctx, m, r, u)],
     ["/workers/domains", "workers", (...a) => workerDomains(ctx, ...a)],
+    ["/pages/projects", "pages", (m, r, u) => listed(ctx, "/pages/projects", m, r, u)],
+    ["/challenges/widgets", "turnstile", (m, r, u) => listed(ctx, "/challenges/widgets", m, r, u)],
+    [
+      "/rum/site_info/list",
+      "web-analytics",
+      (m, r, u) => listed(ctx, "/rum/site_info/list", m, r, u),
+    ],
   ];
   for (const [prefix, permission, route] of routes) {
     if (rest !== prefix && !rest.startsWith(`${prefix}/`)) continue;
@@ -313,6 +328,26 @@ function identityProviders(
   const provider = { id: ctx.uuid(), name: sent.name, type: sent.type };
   providers.push(provider);
   return ok({ ...provider, config: {} });
+}
+
+// --- What a move only lists ----------------------------------------------------------------------
+
+/** Pages projects, Turnstile widgets or Web Analytics sites, listed as Cloudflare lists them. */
+function listed(ctx: PieceContext, prefix: string, method: string, rest: string, url: URL) {
+  if (rest !== "" || method !== "GET") return unanswered(ctx, method, `${prefix}${rest}`);
+  only(url, ["page", "per_page"]);
+  const { account } = ctx;
+  const items =
+    prefix === "/pages/projects"
+      ? account.pagesProjects.map((name) => ({ id: `project-${name}`, name }))
+      : prefix === "/challenges/widgets"
+        ? account.turnstileWidgets.map((name) => ({
+            sitekey: `widget-${name}`,
+            name,
+            mode: "managed",
+          }))
+        : account.webAnalyticsSites.map((host, at) => ({ site_tag: `site-${at + 1}`, host }));
+  return paged(items, url, 25);
 }
 
 // --- R2 ------------------------------------------------------------------------------------------

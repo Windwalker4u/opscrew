@@ -3,12 +3,15 @@
  * (`domain-settings`, the zone's name typed) is bound to. It covers A's and B's zones, the
  * nameservers before and after, the registrar, the DS records removed, the zone copy plan's hash,
  * the marks (apps and hostnames), the Access applications and protected records made and each
- * site's custom domains attached right after activation, and DNSSEC turned on in B.
+ * site's custom domains attached right after activation, and DNSSEC turned on in B. Its details
+ * also list what OpsCrew doesn't move (FR-2819), outside the hash: a list that changes can't
+ * change an approval.
  */
 import type { DsRecord } from "@opscrew/contracts";
 import { canonicalJson, listText, plural, sha256Hex } from "@opscrew/core";
 import type { DomainRegistrar } from "../domain";
 import { dsRecordText, sameHosts } from "../domain/switch";
+import { leftBehind, leftBehindLines } from "./left-behind";
 import type { ReadMark } from "./marks";
 import type { DsGate } from "./switch-ds";
 import { registrarId, registrarWords } from "./switch-registrar";
@@ -80,7 +83,12 @@ export async function planSwitch(
     dnssec: input.dnssec,
   };
   const planHash = sha256Hex(canonicalJson(body));
-  const details = session.deps.redactor.redact(describe(session, body, planHash, input, copy));
+  // Not in the hash: what OpsCrew doesn't move, read only, before the switch's own approval (not
+  // before a run that only removes DS records).
+  const left = copy === undefined ? [] : leftBehindLines(session, await leftBehind(session));
+  const details = session.deps.redactor.redact(
+    [describe(session, body, planHash, input, copy), ...left].join("\n"),
+  );
   return { ...body, planHash, ...(copy === undefined ? {} : { copy }), details };
 }
 

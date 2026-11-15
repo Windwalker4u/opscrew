@@ -191,6 +191,23 @@ export class FakeZone {
   certificatePendingReads = 0;
   /** The zone's `min_tls_version` setting. */
   minTls = { value: "1.0", editable: true };
+  /** The zone's other settings OpsCrew reads, by id (read-only here), as a new zone has them. */
+  readonly settings: Record<string, string> = {
+    ssl: "full",
+    always_use_https: "off",
+    security_level: "medium",
+    cache_level: "aggressive",
+  };
+  /**
+   * The zone's Email Routing (off, with no rules, as a new zone has it): rule names only, the
+   * catch-all apart (Cloudflare has none until it is set).
+   */
+  readonly emailRouting: { enabled: boolean; rules: string[]; catchAll?: boolean } = {
+    enabled: false,
+    rules: [],
+  };
+  /** How many page rules the zone has. */
+  pageRules = 0;
   /** The zone's DNS records, as Cloudflare lists them. */
   readonly dnsRecords: Record<string, unknown>[] = [];
   /** When the fake issues certificates (they expire 15 years later). */
@@ -365,6 +382,8 @@ export class FakeZone {
     if (route === `/zones/${this.zoneId}/settings/min_tls_version`) {
       return this.#minTls(method, body);
     }
+    const left = this.#leftBehind(method, route);
+    if (left) return left;
     if (route === "/graphql" && method === "POST") return this.#graphql(body);
     if (route === `/zones/${this.zoneId}/dns_records` && method === "GET") {
       if (this.denied.has("dns")) return refuse(403, 10000, "Authentication error");
@@ -695,6 +714,63 @@ export class FakeZone {
     }
     const { variables } = body as { variables: { worker: string } };
     return { body: analyticsAnswer(variables.worker, this.figures.get(variables.worker)) };
+  }
+
+  /**
+   * The reads of what a move leaves behind: the zone's other settings, its rulesets listed, its
+   * Email Routing (settings, rules, catch-all) and its page rules; `undefined` for another route.
+   */
+  #leftBehind(method: string, route: string): FakeReply | undefined {
+    const zone = `/zones/${this.zoneId}`;
+    if (method !== "GET" || !route.startsWith(`${zone}/`)) return undefined;
+    const rest = route.slice(zone.length);
+    const denied = refuse(403, 10000, "Authentication error");
+    const setting = /^\/settings\/([a-z_]+)$/.exec(rest)?.[1];
+    if (setting !== undefined && setting in this.settings) {
+      if (this.denied.has("settings")) return denied;
+      return ok({ id: setting, value: this.settings[setting], editable: true, modified_on: null });
+    }
+    if (rest === "/rulesets") {
+      return ok([...this.entrypoints.values()].map(({ rules: _rules, ...ruleset }) => ruleset));
+    }
+    if (rest === "/pagerules") {
+      if (this.denied.has("page-rules")) return denied;
+      return ok(
+        Array.from({ length: this.pageRules }, (_, at) => ({
+          id: `rule-${at + 1}`,
+          status: "active",
+        })),
+      );
+    }
+    if (!rest.startsWith("/email/routing")) return undefined;
+    if (this.denied.has("email-routing")) return denied;
+    const routing = this.emailRouting;
+    if (rest === "/email/routing") {
+      return ok({ enabled: routing.enabled, status: routing.enabled ? "ready" : "unconfigured" });
+    }
+    if (rest === "/email/routing/rules") {
+      const rules = routing.rules.map((name) => ({
+        name,
+        enabled: true,
+        matchers: [{ type: "literal", field: "to" }],
+        actions: [{ type: "forward" }],
+      }));
+      return {
+        body: {
+          success: true,
+          errors: [],
+          messages: [],
+          result: rules,
+          result_info: { page: 1, total_pages: 1 },
+        },
+      };
+    }
+    if (rest === "/email/routing/rules/catch_all") {
+      // The code and words are the fake's own.
+      if (routing.catchAll === undefined) return refuse(404, 2020, "Catch-all rule not found");
+      return ok({ enabled: routing.catchAll, matchers: [{ type: "all" }], actions: [] });
+    }
+    return undefined;
   }
 
   #minTls(method: string, body: unknown): FakeReply {

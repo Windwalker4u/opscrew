@@ -121,11 +121,39 @@ describe.skipIf(!findExecutable("git"))("confirmMoveStart", () => {
       message: "The move was not started. Nothing was changed.",
       hint: "Run `opscrew cloudflare move` again when you are ready.",
     });
-    expect(asked).toEqual([summary]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.lines.slice(0, summary.lines.length)).toEqual(summary.lines);
     expect(h.deps.reporter.text()).toContain(summary.lines[0]);
     expect(await readFile(h.deps.paths.files.plan, "utf8")).toBe(before);
     expect(h.readOnly()).toBe(true);
     expect(h.leaks()).toBe(false);
+  });
+
+  it("shows and asks with what OpsCrew doesn't move, read only; a kind A's token can't read is listed as not read", async () => {
+    const h = await moveHarness();
+    const zone = h.cloudflare.zone(ZONE, "Old").data;
+    Object.assign(zone.emailRouting, { enabled: true, rules: ["a", "b"], catchAll: false });
+    h.cloudflare.account("Old").workers.set("hello", {});
+    const session = await h.open({ to: "New" });
+    h.cloudflare.tokens.get(h.tokens.a)?.denied.add("pages");
+    const summary = moveSummary(session, [], []);
+    let shown: MoveSummary | undefined;
+    await confirmMoveStart(session, summary, async (asked) => {
+      shown = asked;
+      return true;
+    });
+    const list = shown?.lines.slice(summary.lines.length) ?? [];
+    expect(list[0]).toMatch(/^What OpsCrew doesn't move, read in the Cloudflare account Old /);
+    expect(list).toEqual(
+      expect.arrayContaining([
+        "  - Email Routing: on, 2 rules. In New: Email > Email Routing.",
+        "  - Workers: hello. In New: Workers & Pages.",
+        "  - Pages projects: couldn't read: check in the dashboard. In New: Workers & Pages.",
+      ]),
+    );
+    expect(h.deps.reporter.text()).toContain("  - Workers: hello. In New: Workers & Pages.");
+    expect(h.readOnly()).toBe(true);
+    expect(h.leaks(...list)).toBe(false);
   });
 
   it("goes on when confirmed, or in a script without the question", async () => {

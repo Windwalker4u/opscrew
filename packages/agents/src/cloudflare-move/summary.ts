@@ -6,6 +6,7 @@ import { originTlsHostnames } from "../provision/origin-tls";
 import { bucketMinutes, syncMinutes } from "../retarget/bucket";
 import { sizeText, windowMinutes } from "../retarget/texts";
 import { accountPieces } from "./checks";
+import { leftBehind, leftBehindLines } from "./left-behind";
 import { A_TOKEN_VAR, FINISH_COMMAND, MOVE_COMMAND, SWITCH_COMMAND } from "./texts";
 import type { MoveBucketSize, MoveSession, MoveSummary, StayingEnvironment } from "./types";
 
@@ -144,16 +145,19 @@ export function moveSummary(
 }
 
 /**
- * Shows `summary` and asks `confirmStart` once; refused, the move stops with nothing changed.
- * Without `confirmStart` (a script) the summary is only shown.
+ * Shows `summary`, followed by what OpsCrew doesn't move (read now, read only, FR-2819), and asks
+ * `confirmStart` once; refused, the move stops with nothing changed. Without `confirmStart` (a
+ * script) the summary is only shown.
  */
 export async function confirmMoveStart(
-  session: Pick<MoveSession, "deps" | "command">,
+  session: MoveSession,
   summary: MoveSummary,
   confirmStart: ((summary: MoveSummary) => Promise<boolean>) | undefined,
 ): Promise<void> {
-  session.deps.reporter.info(summary.lines.join("\n"));
-  if (confirmStart === undefined || (await confirmStart(summary))) return;
+  const left = leftBehindLines(session, await leftBehind(session));
+  const shown = { ...summary, lines: [...summary.lines, ...left] };
+  session.deps.reporter.info(shown.lines.join("\n"));
+  if (confirmStart === undefined || (await confirmStart(shown))) return;
   throw new OpsCrewError("APPROVAL_REFUSED", "The move was not started. Nothing was changed.", {
     hint: `Run \`${session.command}\` again when you are ready.`,
   });

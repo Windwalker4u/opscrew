@@ -20,7 +20,8 @@ import { answer, DENIED, type FakeFault, ok, only, paged, refuse, takeFault } fr
  *   `read_only`); they are created in batch transactions of up to 200, with Cloudflare's
  *   refusals of an identical record and of a CNAME beside another record, and deleted.
  * - **Rulesets, Origin CA certificates, client certificates with per-hostname AOP and the minimum
- *   TLS setting** are each zone's own {@link FakeZone} (`data`), as features 011 and 014 saw them.
+ *   TLS setting** are each zone's own {@link FakeZone} (`data`), as features 011 and 014 saw them;
+ *   so are the zone's other settings, Email Routing and page rules a move reads (and leaves).
  *   On a pending zone, client certificates and hostname settings stay `pending_deployment` until
  *   the zone is activated (research R10 is to confirm it).
  * - **Edge ranges:** `GET /ips` answers without a token.
@@ -40,9 +41,10 @@ import { answer, DENIED, type FakeFault, ok, only, paged, refuse, takeFault } fr
  * A permission a token may lack: every call that needs it is refused (HTTP 403, "Authentication
  * error"). Zone ones: `zone` (adding and deleting zones, the activation check), `dns`
  * (records and DNSSEC), `ssl` (Origin CA, client certificates and AOP, certificate packs),
- * `settings` (the zone's settings), and each rule phase. Account ones: `tunnel`, `access-apps`
- * (applications and policies), `access-service-tokens`, `access-organization` (the organization
- * and login methods), `r2`, `workers`.
+ * `settings` (the zone's settings), each rule phase, `page-rules` and `email-routing`. Account
+ * ones: `tunnel`, `access-apps` (applications and policies), `access-service-tokens`,
+ * `access-organization` (the organization and login methods), `r2`, `workers`, `pages`,
+ * `turnstile` and `web-analytics`.
  */
 export type FakeCloudflarePermission =
   | "zone"
@@ -50,12 +52,17 @@ export type FakeCloudflarePermission =
   | "ssl"
   | "settings"
   | ManagedRulesetPhase
+  | "page-rules"
+  | "email-routing"
   | "tunnel"
   | "access-apps"
   | "access-service-tokens"
   | "access-organization"
   | "r2"
-  | "workers";
+  | "workers"
+  | "pages"
+  | "turnstile"
+  | "web-analytics";
 
 /** What a token reaches. */
 export interface FakeCloudflareToken {
@@ -542,6 +549,9 @@ class FakeCloudflareAccounts {
         [...zone.data.entrypoints.values()].find((r) => r.id === rulesetId)?.phase;
       return phase !== undefined && lacks(phase) ? DENIED : zone.data;
     }
+    if (rest === "/rulesets" && method === "GET") return zone.data;
+    if (rest === "/pagerules") return lacks("page-rules") ? DENIED : zone.data;
+    if (rest.startsWith("/email/routing")) return lacks("email-routing") ? DENIED : zone.data;
     if (rest.startsWith("/origin_tls_client_auth/")) return lacks("ssl") ? DENIED : zone.data;
     if (rest.startsWith("/settings/")) return lacks("settings") ? DENIED : zone.data;
     throw new Error(`fake cloudflare: no route for ${method} /zones/${zone.id}${rest}`);

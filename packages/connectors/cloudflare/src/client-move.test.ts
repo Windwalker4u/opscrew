@@ -587,3 +587,91 @@ describe("CloudflareClient permission probes", () => {
     expect(error.code).toBe("CREDENTIALS_INVALID");
   });
 });
+
+describe("CloudflareClient: what a move leaves behind (names and counts, read-only)", () => {
+  const ACCOUNT = `/accounts/${ACCOUNT_A}`;
+  const ZONE = `/zones/${ZONE_A}`;
+  const page = (result: unknown[], at: number, of: number) =>
+    ok(result, { result_info: { page: at, total_pages: of } });
+
+  it("counts Email Routing's rules apart from the catch-all, and its catch-all when on", async () => {
+    const { cf, calls } = client({
+      [`GET ${ZONE}/email/routing/rules/catch_all`]: ok({ enabled: true, matchers: [] }),
+      [`GET ${ZONE}/email/routing/rules`]: [
+        page([{ matchers: [{ type: "literal" }] }, { matchers: [{ type: "all" }] }], 1, 2),
+        page([{ matchers: [{ type: "literal" }] }, { name: "no matchers" }], 2, 2),
+      ],
+      [`GET ${ZONE}/email/routing`]: ok({ enabled: true, status: "ready" }),
+    });
+    expect(await cf.emailRouting(ZONE_A)).toEqual({ enabled: true, rules: 3, catchAll: true });
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("reads no catch-all where Cloudflare has none", async () => {
+    const { cf } = client({
+      [`GET ${ZONE}/email/routing/rules/catch_all`]: fail(404, 2020, "not found"),
+      [`GET ${ZONE}/email/routing/rules`]: ok([]),
+      [`GET ${ZONE}/email/routing`]: ok({ enabled: false }),
+    });
+    expect(await cf.emailRouting(ZONE_A)).toEqual({ enabled: false, rules: 0, catchAll: false });
+  });
+
+  it("reads each zone setting asked, the zone's own rulesets' phases and its page rules", async () => {
+    const { cf, calls } = client({
+      [`GET ${ZONE}/settings/ssl`]: ok({ id: "ssl", value: "strict", editable: true }),
+      [`GET ${ZONE}/settings/always_use_https`]: ok({ value: "on", editable: true }),
+      [`GET ${ZONE}/rulesets`]: ok([
+        { id: "r1", kind: "zone", phase: "http_request_dynamic_redirect" },
+        { id: "r2", kind: "managed", phase: "http_request_firewall_managed" },
+        { id: "r3", kind: "zone", phase: "http_config_settings" },
+        { id: "r4", kind: "zone", phase: "http_config_settings" },
+      ]),
+      [`GET ${ZONE}/pagerules`]: ok([{ id: "p1" }, { id: "p2" }]),
+    });
+    expect(await cf.zoneSettings(ZONE_A, ["ssl", "always_use_https"])).toEqual({
+      ssl: "strict",
+      always_use_https: "on",
+    });
+    expect(await cf.listRulesetPhases(ZONE_A)).toEqual([
+      "http_config_settings",
+      "http_request_dynamic_redirect",
+    ]);
+    expect(await cf.pageRuleCount(ZONE_A)).toBe(2);
+    expect(calls).toHaveLength(4);
+  });
+
+  it("lists the account's Workers, R2 buckets (every cursor), Pages projects, Turnstile widgets and Web Analytics sites by name", async () => {
+    const { cf, calls } = client({
+      [`GET ${ACCOUNT}/workers/scripts`]: ok([{ id: "hello" }, { id: "api" }]),
+      [`GET ${ACCOUNT}/r2/buckets`]: [
+        ok({ buckets: [{ name: "one" }] }, { result_info: { cursor: "c2" } }),
+        ok({ buckets: [{ name: "two" }] }, { result_info: { cursor: "" } }),
+      ],
+      [`GET ${ACCOUNT}/pages/projects`]: [
+        page([{ name: "blog" }], 1, 2),
+        page([{ name: "docs" }], 2, 2),
+      ],
+      [`GET ${ACCOUNT}/challenges/widgets`]: ok([{ name: "signup", sitekey: "widget-1" }]),
+      [`GET ${ACCOUNT}/rum/site_info/list`]: ok([
+        { site_tag: "t1", host: "example.com" },
+        { site_tag: "t2", host: null },
+      ]),
+    });
+    expect(await cf.listWorkerNames(ACCOUNT_A)).toEqual(["hello", "api"]);
+    expect(await cf.listR2Buckets(ACCOUNT_A)).toEqual(["one", "two"]);
+    expect(calls.filter((c) => c.path.includes("/r2/"))[1]?.path).toContain("cursor=c2");
+    expect(await cf.listPagesProjects(ACCOUNT_A)).toEqual(["blog", "docs"]);
+    expect(await cf.listTurnstileWidgets(ACCOUNT_A)).toEqual(["signup"]);
+    expect(await cf.listWebAnalyticsSites(ACCOUNT_A)).toEqual(["example.com", "t2"]);
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("throws a permission error on a refusal and a plain one on an answer it doesn't know", async () => {
+    const { cf } = client({
+      [`GET ${ACCOUNT}/pages/projects`]: denied,
+      [`GET ${ZONE}/pagerules`]: ok({ not: "a list" }),
+    });
+    expect(await rejection(cf.listPagesProjects(ACCOUNT_A))).toBeInstanceOf(CloudflareError);
+    expect((await rejection(cf.pageRuleCount(ZONE_A))).code).toBe("PROVIDER_ERROR");
+  });
+});
