@@ -615,6 +615,42 @@ describe("fakeCloudflareAccounts: account pieces", () => {
     await unanswered(fake, TOKEN_B, "DELETE", `${access}/service_tokens/token-1`);
   });
 
+  it("creates an Access application only for a hostname in an active zone of the account, as Cloudflare refused it on a pending one", async () => {
+    const { fake, b, clientB } = setup();
+    await clientB.createZone(b.id, ZONE);
+    const zoneB = fake.zone(ZONE, "New");
+    const app = {
+      name: "OpsCrew SSH (shop)",
+      domain: `ssh-shop.${ZONE}`,
+      appLauncherVisible: false,
+      sessionDuration: "24h",
+      policies: [{ id: "policy-1", precedence: 1 }],
+      serviceAuth401Redirect: true,
+    };
+    const refused = await rejection(clientB.createAccessApplication(b.id, app));
+    expect(refused.message).toContain("domain does not belong to zone");
+    expect(b.accessApps).toEqual([]);
+    const elsewhere = { ...app, domain: "ssh-shop.example.org" };
+    await rejection(clientB.createAccessApplication(b.id, elsewhere));
+
+    fake.activate(zoneB);
+    const id = await clientB.createAccessApplication(b.id, app);
+    expect(b.accessApps).toEqual([
+      expect.objectContaining({
+        id,
+        name: app.name,
+        type: "self_hosted",
+        domain: app.domain,
+        destinations: [{ type: "public", uri: app.domain }],
+        service_auth_401_redirect: true,
+      }),
+    ]);
+    expect(await clientB.listAccessApplications(b.id)).toEqual([
+      { id, name: app.name, domain: app.domain },
+    ]);
+    await unanswered(fake, TOKEN_B, "POST", `/accounts/${b.id}/access/policies`);
+  });
+
   it("answers R2 buckets per account, page by page", async () => {
     const { fake, a, b, clientB } = setup();
     a.buckets.push({ name: "example-app-files" });

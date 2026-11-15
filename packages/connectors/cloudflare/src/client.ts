@@ -393,6 +393,40 @@ export interface CloudflareIdentityProvider {
  */
 export type TunnelConnectionState = "active" | "closed" | "gone";
 
+/** A Cloudflare Tunnel of an account: its id and name, and whether it is deleted. */
+export interface CloudflareTunnel {
+  id: string;
+  name: string;
+  deleted: boolean;
+}
+
+/** A Cloudflare Access application of an account, or a reusable Access policy (no `domain`). */
+export interface AccessItem {
+  id: string;
+  name: string;
+  /** An application's hostname. */
+  domain?: string;
+}
+
+/** A self-hosted Access application to create in front of a public hostname. */
+export interface AccessApplicationInput {
+  name: string;
+  /** The hostname it protects (`domain`, and its one public destination). */
+  domain: string;
+  /** Shown in the App Launcher. */
+  appLauncherVisible: boolean;
+  /** How long a login lasts, for example `24h`. */
+  sessionDuration: string;
+  /** The account's reusable policies by id, with their precedence (1 first). */
+  policies: { id: string; precedence: number }[];
+  /** A refused service token gets HTTP 401 rather than the login page. */
+  serviceAuth401Redirect?: boolean;
+  /** The login methods (identity providers) offered, by id. */
+  allowedIdps?: string[];
+  /** With one login method, go straight to it. */
+  autoRedirectToIdentity?: boolean;
+}
+
 const Envelope = z.looseObject({
   success: z.boolean(),
   // Some lists (the Workers custom domains) answer `"errors": null` on success.
@@ -515,6 +549,20 @@ const TunnelSchema = z.looseObject({
   conns_active_at: z.string().nullish(),
   conns_inactive_at: z.string().nullish(),
   deleted_at: z.string().nullish(),
+});
+
+/** A tunnel as the account's list names it. */
+const TunnelListItemSchema = z.looseObject({
+  id: z.string().min(1),
+  name: z.string(),
+  deleted_at: z.string().nullish(),
+});
+
+/** An Access application or reusable policy as the account's lists name it. */
+const AccessItemSchema = z.looseObject({
+  id: z.string().min(1),
+  name: z.string(),
+  domain: z.string().nullish(),
 });
 
 /** A tunnel after its secret changed: the new token, when the answer holds it. */
@@ -751,6 +799,16 @@ const ACCESS_HINTS: FailHints = {
 /** Hints for creating the account's Zero Trust organization and login methods. */
 const ACCESS_EDIT_HINTS: FailHints = {
   auth: `Setting up Cloudflare Access needs the account permission "Access: Organizations, Identity Providers, and Groups → Edit" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Hints for the account's Access applications and policies. */
+const ACCESS_APPS_HINTS: FailHints = {
+  auth: `Reading Cloudflare Access applications and policies needs the account permission "Access: Apps and Policies" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Hints for creating an Access application. */
+const ACCESS_APPS_EDIT_HINTS: FailHints = {
+  auth: `Creating a Cloudflare Access application needs the account permission "Access: Apps and Policies → Edit" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
 /**
@@ -1878,6 +1936,82 @@ export class CloudflareClient {
     );
     if (answer.status === 404) return "gone";
     return tunnelState(this.#result(answer, TunnelSchema, "read the tunnel", TUNNEL_HINTS));
+  }
+
+  /**
+   * The account's Cloudflare Tunnels, deleted ones too (`GET /accounts/{id}/cfd_tunnel`), each
+   * with its id, name and whether it is deleted. Follows pagination. Read-only.
+   */
+  async listTunnels(accountId: string): Promise<CloudflareTunnel[]> {
+    const tunnels = await this.#all(
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel`,
+      TunnelListItemSchema,
+      "list the account's Cloudflare Tunnels",
+      { perPage: 50, hints: TUNNEL_HINTS },
+    );
+    return tunnels.map((t) => ({ id: t.id, name: t.name, deleted: t.deleted_at != null }));
+  }
+
+  /**
+   * The account's reusable Access policies (`GET /accounts/{id}/access/policies`), each with its id
+   * and name. Follows pagination. Read-only.
+   */
+  async listAccessPolicies(accountId: string): Promise<AccessItem[]> {
+    const policies = await this.#all(
+      `/accounts/${encodeURIComponent(accountId)}/access/policies`,
+      AccessItemSchema,
+      "list the account's Access policies",
+      { perPage: 50, hints: ACCESS_APPS_HINTS },
+    );
+    return policies.map((p) => ({ id: p.id, name: p.name }));
+  }
+
+  /**
+   * The account's Access applications (`GET /accounts/{id}/access/apps`), each with its id, name
+   * and hostname. Follows pagination. Read-only.
+   */
+  async listAccessApplications(accountId: string): Promise<AccessItem[]> {
+    const apps = await this.#all(
+      `/accounts/${encodeURIComponent(accountId)}/access/apps`,
+      AccessItemSchema,
+      "list the account's Access applications",
+      { perPage: 50, hints: ACCESS_APPS_HINTS },
+    );
+    return apps.map((a) => ({ id: a.id, name: a.name, ...(a.domain ? { domain: a.domain } : {}) }));
+  }
+
+  /**
+   * Creates a self-hosted Access application in front of `app.domain`
+   * (`POST /accounts/{id}/access/apps`) with the account's reusable policies; returns its id. Sent
+   * once.
+   */
+  async createAccessApplication(accountId: string, app: AccessApplicationInput): Promise<string> {
+    const what = `create the Access application ${app.name}`;
+    const answer = await this.#send(
+      `/accounts/${encodeURIComponent(accountId)}/access/apps`,
+      what,
+      {
+        method: "POST",
+        body: {
+          name: app.name,
+          type: "self_hosted",
+          domain: app.domain,
+          destinations: [{ type: "public", uri: app.domain }],
+          app_launcher_visible: app.appLauncherVisible,
+          session_duration: app.sessionDuration,
+          policies: app.policies,
+          ...(app.serviceAuth401Redirect === undefined
+            ? {}
+            : { service_auth_401_redirect: app.serviceAuth401Redirect }),
+          ...(app.allowedIdps === undefined ? {} : { allowed_idps: app.allowedIdps }),
+          ...(app.autoRedirectToIdentity === undefined
+            ? {}
+            : { auto_redirect_to_identity: app.autoRedirectToIdentity }),
+        },
+        hints: ACCESS_APPS_EDIT_HINTS,
+      },
+    );
+    return this.#parseWrite(IdResultSchema, answer.body.result, what).id;
   }
 
   /**

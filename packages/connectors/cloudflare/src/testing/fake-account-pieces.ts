@@ -14,7 +14,7 @@ import { ok, only, paged, refuse } from "./replies";
  * Access, R2 buckets and Workers. OpsCrew makes most of them through the IaC engine, so a test
  * seeds them as plain data; the fake answers the reads OpsCrew's client and its permission probes
  * make, and the client's own writes (the Zero Trust organization and login method, a tunnel's
- * secret, custom domains). Any other request throws.
+ * secret, Access applications, custom domains). Any other request throws.
  */
 
 /** A connection of a tunnel's connector, as Cloudflare lists it (it names the server's address). */
@@ -134,7 +134,14 @@ export function accountReply(
 ): FakeReply {
   const routes: [string, FakeCloudflarePermission, Route][] = [
     ["/cfd_tunnel", "tunnel", (...a) => tunnels(ctx, ...a)],
-    ["/access/apps", "access-apps", (m, r, u) => accessItems(ctx, ctx.account.accessApps, m, r, u)],
+    [
+      "/access/apps",
+      "access-apps",
+      (m, r, u, b) =>
+        m === "POST" && r === ""
+          ? createAccessApp(ctx, b)
+          : accessItems(ctx, ctx.account.accessApps, m, r, u),
+    ],
     [
       "/access/policies",
       "access-apps",
@@ -224,6 +231,25 @@ function accessItems(
   if (rest !== "" || method !== "GET") return unanswered(ctx, method, `/access${rest}`);
   only(url, ["page", "per_page"]);
   return paged(items, url, 25);
+}
+
+/**
+ * `POST …/access/apps`: the application is stored as sent, with an id. Refused, as research R10
+ * saw Cloudflare refuse it (its code and words), when its hostname is in no active zone of the
+ * account.
+ */
+function createAccessApp(ctx: PieceContext, body: unknown): FakeReply {
+  const sent = body as Record<string, unknown> & { name?: unknown; domain?: unknown };
+  const domain = String(sent.domain ?? "").toLowerCase();
+  const zone = ctx.zones
+    .filter((z) => inZone(domain, z.name))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  if (zone?.status !== "active") {
+    return refuse(400, 12130, "access.api.error.invalid_request: domain does not belong to zone");
+  }
+  const app: FakeAccessItem = { ...sent, id: ctx.uuid(), name: String(sent.name ?? "") };
+  ctx.account.accessApps.push(app);
+  return ok(app);
 }
 
 /** The service tokens, listed without their secrets. */
