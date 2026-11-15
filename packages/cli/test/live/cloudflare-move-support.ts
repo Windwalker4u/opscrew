@@ -132,8 +132,6 @@ const AppStateSchema = z.object({
   hostname: z.string(),
   /** Q's throwaway server, the user's own. */
   server: ServerSchema.optional(),
-  /** P's objects as the app lists them (`<key> <etag> <size>` lines), seeded in L1. */
-  objects: z.string().optional(),
   /** Q's value in its SQLite file. */
   value: z.string().optional(),
   /** Q's snapshot copies (ids) and each copy's objects with a SHA-256, read in A's bucket. */
@@ -151,7 +149,6 @@ export type AppState = z.infer<typeof AppStateSchema>;
 const RegistrarFindingSchema = z.object({
   registrar: z.string(),
   leg: z.enum(["L4a", "L4b"]).optional(),
-  registrarId: z.enum(["porkbun", "namecheap", "godaddy", "cloudflare"]).optional(),
   why: z.string().optional(),
 });
 export type RegistrarFinding = z.infer<typeof RegistrarFindingSchema>;
@@ -172,6 +169,10 @@ export const PassStateSchema = z.object({
   registrar: RegistrarFindingSchema.optional(),
   /** L0: A's DNSSEC status and whether the registry still publishes a DS record. */
   dnssec: z.object({ status: z.string(), dsPublished: z.boolean() }).optional(),
+  /** L0: A's Zero Trust organization (its team domain) and one-time PIN logins, which must stay. */
+  zeroTrust: z
+    .object({ organization: z.string().optional(), oneTimePins: z.array(z.string()) })
+    .optional(),
   apps: z.object({ p: AppStateSchema.optional(), q: AppStateSchema.optional() }),
   legs: z.record(z.string(), LegRecordSchema),
   /** The figures for docs/e2e-coverage.md, by name, each a line without a name or address. */
@@ -195,12 +196,32 @@ export function parsePass(text: string): PassState {
   return parsed.data;
 }
 
+/** Each leg's place in the order (L4a and L4b share one). */
+const LEG_RANK: Readonly<Record<MoveLeg, number>> = {
+  L0: 0,
+  L1: 1,
+  L2: 2,
+  L3: 3,
+  L4a: 4,
+  L4b: 4,
+  L5: 5,
+  L6: 6,
+};
+
 /**
- * Why `leg` can't start yet, from the legs recorded: each leg needs the one before it passed (L4a
- * and L4b count as one; L6 runs after anything); a leg that waits runs again.
+ * Why `leg` can't start, from the legs recorded: never once a later leg than it (but L6) ran; each
+ * leg needs the one before it passed (L4a and L4b count as one; L6 runs after anything); a leg
+ * that waits runs again.
  */
 export function legOrderProblem(state: PassState | undefined, leg: MoveLeg): string | undefined {
-  if (leg === "L0" || leg === "L6") return undefined;
+  if (leg === "L6") return undefined;
+  const later = MOVE_LEGS.filter(
+    (name) => name !== "L6" && LEG_RANK[name] > LEG_RANK[leg] && state?.legs[name] !== undefined,
+  );
+  if (later.length > 0) {
+    return `${later.join(" and ")} ran already, so ${leg} doesn't run again: go on from there, or run L6`;
+  }
+  if (leg === "L0") return undefined;
   if (state === undefined) return "run L0 first";
   const before: Partial<Record<MoveLeg, readonly MoveLeg[]>> = {
     L1: ["L0"],
@@ -213,6 +234,30 @@ export function legOrderProblem(state: PassState | undefined, leg: MoveLeg): str
   const needed = before[leg] ?? [];
   const passed = needed.some((name) => state.legs[name]?.outcome === "passed");
   return passed ? undefined : `run ${needed.join(" or ")} to its end first`;
+}
+
+/**
+ * Why `leg` can't open the pass in a process that opened `claimed` already: each leg is its own
+ * process (`-t "<leg>"`), since a leg's state and outputs are saved as it ends.
+ */
+export function otherLegProblem(claimed: MoveLeg | undefined, leg: MoveLeg): string | undefined {
+  if (claimed === undefined || claimed === leg) return undefined;
+  return `this run has ${claimed} too: run one leg at a time with -t "<leg>" (docs/e2e.md)`;
+}
+
+/**
+ * Why L6 may not abort a move left half-way by itself: a switch leg ran (L4a or L4b), or the
+ * public delegation names B's nameservers, so the switch may have begun and an abort could take
+ * the zone offline. `undefined` when it may.
+ */
+export function abortProblem(state: PassState, delegatedToB: boolean): string | undefined {
+  const switched = (["L4a", "L4b"] as const).filter((leg) => state.legs[leg] !== undefined);
+  if (switched.length === 0 && !delegatedToB) return undefined;
+  const why =
+    switched.length > 0
+      ? `${switched.join(" and ")} ran`
+      : "the delegation names the new account's nameservers";
+  return `the switch may have begun (${why}): run L4 again to its end, then L5 and L6; or, after checking the zone's nameservers at its registrar, abort by hand in a terminal (\`opscrew cloudflare move --abort\`), then run L6`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -428,9 +473,54 @@ export function inventoryLines(label: string, inventory: Inventory): string[] {
   return lines;
 }
 
-/** Whether a piece's name is one OpsCrew gives (`opscrew-…`, `OpsCrew …`, `opscrew …`). */
+/** Whether a piece's name is one OpsCrew gives (`opscrew-…`, `OpsCrew …`). */
 export function madeByOpscrew(name: string): boolean {
-  return /^opscrew[- ]/i.test(name) || /^OpsCrew /.test(name);
+  return /^opscrew[- ]/i.test(name);
+}
+
+/** Whether two nameserver lists name the same servers (case and order aside); never two empty ones. */
+export function sameNameservers(a: readonly string[], b: readonly string[]): boolean {
+  const key = (names: readonly string[]) =>
+    names
+      .map((name) => name.toLowerCase().replace(/\.$/, ""))
+      .sort()
+      .join();
+  return a.length > 0 && key(a) === key(b);
+}
+
+/** `text` with every character a regular expression gives a meaning escaped. */
+function escaped(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * What the cleanup takes as P's and Q's (`appNames`, and `tag`, their run's hostnames' tag), and
+ * nothing else: a piece (tunnel, Access application, policy, service token, bucket) whose name holds
+ * an app's name between separators (`opscrew-<app>`, `OpsCrew SSH (<app>)`, `<app>-prod-backups`);
+ * a record with a label that is the tag, starts with `<tag>-` or holds an app's name so
+ * (`ssh-<app>`); an app's mark (`_opscrew-move.<app>-<8 hex>.<zone>`). With no app, nothing matches.
+ */
+export function leftoverMatch(
+  appNames: readonly string[],
+  tag: string,
+): { piece(name: string): boolean; record(name: string): boolean } {
+  const apps = appNames.filter((app) => app !== "");
+  const patterns = apps.map((app) => new RegExp(`(^|[\\s(-])${escaped(app)}([\\s)-]|$)`));
+  const marks = apps.map((app) => new RegExp(`^${escaped(app)}-[0-9a-f]{8}$`));
+  const piece = (name: string) => patterns.some((pattern) => pattern.test(name));
+  const tagged = (label: string) =>
+    tag !== "" && apps.length > 0 && (label === tag || label.startsWith(`${tag}-`));
+  return {
+    piece,
+    record(name) {
+      const labels = name.toLowerCase().split(".");
+      if (name.startsWith(MARK_PREFIX)) {
+        const label = labels[1] ?? "";
+        return marks.some((mark) => mark.test(label));
+      }
+      return labels.some((label) => tagged(label) || piece(label));
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -503,12 +593,9 @@ export function registrarFinding(input: {
   publicName?: string;
   configured: readonly DrivenRegistrar[];
 }): RegistrarFinding {
-  if (input.cloudflare === "holds") {
-    return { registrar: "Cloudflare Registrar", leg: "L4b", registrarId: "cloudflare" };
-  }
   const name = input.publicName ?? "";
-  if (/cloudflare/i.test(name)) {
-    return { registrar: "Cloudflare Registrar", leg: "L4b", registrarId: "cloudflare" };
+  if (input.cloudflare === "holds" || /cloudflare/i.test(name)) {
+    return { registrar: "Cloudflare Registrar", leg: "L4b" };
   }
   const driven = (Object.keys(REGISTRAR_CREDENTIALS) as DrivenRegistrar[]).find((id) =>
     name
@@ -525,11 +612,10 @@ export function registrarFinding(input: {
   if (!input.configured.includes(driven)) {
     return {
       registrar: driven,
-      registrarId: driven,
       why: `${driven}, but its credentials aren't set: set ${REGISTRAR_CREDENTIALS[driven].join(" and ")} and run L0 again`,
     };
   }
-  return { registrar: driven, leg: "L4a", registrarId: driven };
+  return { registrar: driven, leg: "L4a" };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -547,6 +633,31 @@ export function recordAddresses(records: readonly ListedRecord[]): string[] {
     .map((record) => record.content?.trim() ?? "")
     .filter((content) => isIP(content) !== 0);
   return [...new Set(found)];
+}
+
+/** The labels of values each process derives again from the environment, never written down. */
+const DERIVED_LABELS = [
+  "hetzner-token",
+  "github-token",
+  "github-basic-auth",
+  "cloudflare-token",
+  "cloudflare-token-b",
+];
+
+/**
+ * The scrubber's entries the pass keeps in `known.json` between legs: the masks and what OpsCrew
+ * generated (keys, passwords, outputs, addresses), never a token or an R2 key, which each process
+ * derives again.
+ */
+export function persistedEntries(
+  entries: readonly { label: string; value: string }[],
+): { label: string; value: string }[] {
+  return entries.filter(
+    ({ label }) =>
+      !DERIVED_LABELS.includes(label) &&
+      !label.startsWith("r2-key-id-") &&
+      !label.startsWith("r2-secret-"),
+  );
 }
 
 /**

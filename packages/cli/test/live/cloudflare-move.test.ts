@@ -31,6 +31,7 @@ import {
 } from "./cloud";
 import { doh, Leg, MovePass, result, type StepWait, zoneName } from "./cloudflare-move-pass";
 import {
+  abortProblem,
   configuredRegistrars,
   dataRecords,
   inventoryChanges,
@@ -143,7 +144,6 @@ describe.skipIf(L0.skip)(L0.title, () => {
       const accounts = await pass.b.list<{ id: string }>("/accounts");
       const b = oneAccount(accounts, pass.settings.accountB, "OPSCREW_E2E_MOVE_ACCOUNT_B");
       expect(b === a.accountId, "B is another account than A").toBe(false);
-      pass.mask(zone, "zone");
       pass.mask(a.accountId, "account-a");
       pass.mask(b, "account-b");
       pass.startPass({ a: a.accountId, b });
@@ -228,6 +228,9 @@ describe.skipIf(L0.skip)(L0.title, () => {
       ]) {
         pass.log(line);
       }
+      const zeroTrust = await pass.a.zeroTrust(pass.pass().accounts.a);
+      if (zeroTrust.organization !== undefined) pass.mask(zeroTrust.organization, "team-a");
+      pass.pass().zeroTrust = zeroTrust;
       const kinds = recordKinds(a.records);
       pass.log(
         `A's records: ${kinds.opscrew.length} OpsCrew's, ${kinds.emailRouting.length} Email Routing's, ${kinds.workersDomains.length} Workers custom domains', ${kinds.otherManaged.length} other Cloudflare-managed, ${kinds.user.length} the user's (${[...new Set(kinds.user.map((r) => r.type))].join(", ")})`,
@@ -355,7 +358,6 @@ describe.skipIf(L1.skip)(L1.title, () => {
         objectsCommand(project, true, runId()),
       );
       expect(objects.split("\n").filter((line) => line !== "").length, "P's objects").toBe(OBJECTS);
-      await pass.record("p", { objects });
       const snapshots: string[] = [];
       for (const which of ["first", "second"]) {
         const taken = await q.opscrewOk("snapshot");
@@ -800,6 +802,12 @@ describe.skipIf(L5.skip)(L5.title, () => {
           `HTTP ${certificates.status}${body?.errors?.[0]?.code === undefined ? "" : ` code ${body.errors[0].code}`}, ${body?.result?.length ?? 0} listed`;
       }
       const zeroTrust = await pass.a.zeroTrust(state.accounts.a);
+      expect(zeroTrust.organization, "A's Zero Trust organization, as L0 saw it").toBe(
+        state.zeroTrust?.organization,
+      );
+      expect(zeroTrust.oneTimePins, "A's PIN logins L0 saw").toEqual(
+        expect.arrayContaining(state.zeroTrust?.oneTimePins ?? []),
+      );
       state.figures["L5 A's Zero Trust"] =
         `organization ${zeroTrust.organization === undefined ? "none" : "kept"}, ${zeroTrust.oneTimePins.length} PIN login(s)`;
       for (const key of [
@@ -861,12 +869,27 @@ describe.skipIf(L6.skip)(L6.title, () => {
           await pass.commitMoved(run);
           await pass.markMoved(which);
         } else {
-          await pass.moveDone(run, ["--abort"], { label, names: await pass.typedNames(which) });
+          const problem = abortProblem(pass.pass(), await pass.delegatedToB());
+          if (problem !== undefined) throw new Error(`${label}: ${problem}.`);
+          const zone = zoneName(pass.settings.domain);
+          const names = (await pass.typedNames(which)).filter((name) => name !== zone);
+          await pass.moveDone(run, ["--abort"], { label, names });
         }
       }
     },
     { always: true },
   );
+
+  /** Stops a removing step while a move is still recorded: the first step's advice comes first. */
+  const noMoveLeft = async () => {
+    for (const { which, run } of apps()) {
+      if ((await run.readPlan()).cloudflareMove !== undefined) {
+        throw new Error(
+          `${which.toUpperCase()}'s move is still recorded, so nothing is removed: follow the first step's advice, then run L6 again.`,
+        );
+      }
+    }
+  };
 
   leg.step(
     "no secret, key or address in any output, commit, pull request, plan, audit entry or state file of the whole pass (SC-2807)",
@@ -885,6 +908,7 @@ describe.skipIf(L6.skip)(L6.title, () => {
     hours(1),
     async () => {
       if (pass.state === undefined) return;
+      await noMoveLeft();
       const { side } = await pass.servingZone();
       for (const { which, app, run } of apps()) {
         if (app.destroyed === true) continue;
@@ -905,6 +929,7 @@ describe.skipIf(L6.skip)(L6.title, () => {
     async () => {
       const state = pass.state;
       if (state === undefined) return;
+      await noMoveLeft();
       const problems: string[] = [];
       const { hcloudToken } = pass.settings;
       problems.push(

@@ -3748,8 +3748,7 @@ run's own names, and GitHub Actions minutes. It leaves nothing.
 ## Moving to another Cloudflare account
 
 `packages/cli/test/live/cloudflare-move.test.ts`, with `OPSCREW_E2E_CLOUDFLARE_MOVE=1`, runs feature
-028's live pass: the real move of the zone `OPSCREW_E2E_DOMAIN` (the zone itself, not a name below
-it), with every OpsCrew app it serves, from the account that holds it (A, `OPSCREW_E2E_CLOUDFLARE_TOKEN`)
+028's live pass: the real move of the zone of `OPSCREW_E2E_DOMAIN`, with every OpsCrew app it serves, from the account that holds it (A, `OPSCREW_E2E_CLOUDFLARE_TOKEN`)
 to another account (B, `OPSCREW_E2E_MOVE_TOKEN_B`). It is a production move made once, one way,
 in legs run one at a time over hours or days. Its results go to
 [e2e-coverage.md](e2e-coverage.md).
@@ -3771,8 +3770,10 @@ folder `opscrew-e2e-cloudflare-move` under `OPSCREW_TEST_TMP`, outside every vit
 `pass.json` (the run id, both account ids, the registrar L0 found, each leg's outcome and the
 figures for the coverage page), P's and Q's checkouts with OpsCrew's home and keys, every CLI
 output, every version of the move's local files (the shadow states, the pending plans, the saved
-plans), the probes' samples and the inventories. Each leg starts only when the leg before it passed
-(L4a or L4b counts as one); L6 runs after anything.
+plans), the probes' samples and the inventories. The tokens and R2 keys are never written there:
+each leg derives them again from the environment. Each leg starts only when the leg before it
+passed (L4a or L4b counts as one), and never once a later leg ran; L6 runs after anything. One leg
+runs in a process: a run whose `-t` takes two legs stops at the second.
 
 **Every command runs as a script runs it.** A stop's printed command (`--approve <hash>` with its
 `--confirm` names) is run next, and only with the names the leg expects: the app's, its buckets' and
@@ -3847,16 +3848,22 @@ Run them in this order, each alone with `-t`:
    checksums; a restore of Q from its copy (`restore <id> --from offsite --key-file`, approved by its
    hash and the typed name), and its value read back. A deploy of each after its finish, and the SSH
    hostname with B's service token. A holds nothing of P or Q but its moved zone, the Zero Trust
-   organization and the PIN login; how Cloudflare answers for A's origin certificates of the moved
-   zone is recorded (run L6 again about 7 days later to see it once Cloudflare deleted the zone).
+   organization and the PIN login L0 saw; how Cloudflare answers for A's origin certificates of the
+   moved zone is recorded. To see that answer once Cloudflare deleted A's moved zone, wait about 7
+   days after the activation and run `-t "L5: A holds nothing"` again before L6.
    Then, once the lead finished every real app, each real hostname answers from B.
 7. **L6, the leak search and the cleanup** (SC-2807), every step run even after a failure: a move a
-   failed leg left is finished (after the switch) or aborted (before it); the leak search over every
+   failed leg left is finished when B's zone is active, and aborted only when no switch leg ran and
+   the delegation still names A's nameservers (never with the zone typed, so B's zone stays);
+   otherwise L6 stops there, nothing is removed, and its log says to run L4 again, or to abort by
+   hand in a terminal after checking the nameservers at the registrar. Then the leak search over every
    output, kept file, commit, pull request, audit entry, saved plan and state file of the whole
    pass; P and Q destroyed with `--delete-data` in the account that serves the zone; the throwaway
    server deleted; then, in either account, what is left of P and Q (their tunnels, Access
    applications, policies and service tokens, the records holding the run's id, their marks and
-   their R2 buckets, matched by the apps' names) removed and listed, OpsCrew's shared rules checked
+   their R2 buckets, matched by the apps' names, and P's Origin CA certificate, origin pull settings
+   and client certificate, matched by P's hostnames) removed and listed; a list the token can't
+   read counts as left, so the pass's folder stays; OpsCrew's shared rules checked
    for their hostnames, and both repositories reset. A's moved zone is left to Cloudflare, which
    deletes it. With nothing left, the pass's folder goes.
 
@@ -3871,7 +3878,7 @@ done), or run L6 to clean up. L1 doesn't run twice: after a failed L1, run L6, t
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A's token: the permissions of [Setup](#setup) on the zone, plus Workers R2 Storage Edit, Access and Cloudflare Tunnel Edit, and, for the inventories, the account's reads (a kind it can't read is listed as such). |
 | `OPSCREW_E2E_MOVE_TOKEN_B` | B's token, with the permissions [the guide](guide/cloudflare-move.md) lists for B and Workers R2 Storage Edit. |
 | `OPSCREW_E2E_MOVE_ACCOUNT_B` | Only when B's token sees more than one account: B's account id. |
-| `OPSCREW_E2E_DOMAIN` | The zone being moved. |
+| `OPSCREW_E2E_DOMAIN` | The zone being moved, or a name directly below it (the zone is then the name without its first label). A zone of more than two labels isn't supported. |
 | `OPSCREW_TEST_TMP` | Where the pass keeps its folder: a drive with space, never inside a Git checkout. |
 | `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B` | L1 to L6, as for [your own server](#your-own-server): P's repository and Q's. |
 | `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY`, `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY`, or `GODADDY_API_TOKEN` | L4a only, for the registrar that holds the zone. |
@@ -3882,22 +3889,25 @@ L1 and L5 read Q's copies with rclone in Docker, so Docker runs on this computer
 ```bash
 pnpm --filter opscrew build
 cd packages/cli
-export OPSCREW_E2E_CLOUDFLARE_MOVE=1 OPSCREW_TEST_TMP=D:/opscrew-test-tmp \
+export OPSCREW_TEST_TMP=D:/opscrew-test-tmp \
   OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_MOVE_TOKEN_B=… OPSCREW_E2E_DOMAIN=example.com \
   OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_TOKEN=… \
   OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b
 export PATH="$PWD/../../.tools/bin:$PATH"
-npx vitest run test/live/cloudflare-move.test.ts -t "L0"
-npx vitest run test/live/cloudflare-move.test.ts -t "L1"
-npx vitest run test/live/cloudflare-move.test.ts -t "L2"
-npx vitest run test/live/cloudflare-move.test.ts -t "L3"   # again after the lead's prepares
-npx vitest run test/live/cloudflare-move.test.ts -t "L4b"  # or L4a; again after each wait
-npx vitest run test/live/cloudflare-move.test.ts -t "L5"
-npx vitest run test/live/cloudflare-move.test.ts -t "L6"
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L0"
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L1"
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L2"
+# L3 again after the lead's prepares.
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L3"
+# L4b (or L4a), again after each wait.
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L4b"
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L5"
+OPSCREW_E2E_CLOUDFLARE_MOVE=1 npx vitest run test/live/cloudflare-move.test.ts -t "L6"
 ```
 
-Set `OPSCREW_E2E_CLOUDFLARE_MOVE=1` only on these command lines, never in `.env.e2e` or an exported
-shell of other passes: a run of every live test would otherwise start legs of a production move.
+Set `OPSCREW_E2E_CLOUDFLARE_MOVE=1` only on each of these command lines, never with `export`, in
+`.env.e2e` or in the shell of other passes: a run of every live test would otherwise start legs of a
+production move.
 
 **Expected time and cost** (not measured yet):
 - **L0:** a few minutes, read only, free.

@@ -30,6 +30,7 @@ import {
   type Inventory,
   type ListedRecord,
   leakSearchValues,
+  leftoverMatch,
   legOrderProblem,
   loadFigures,
   MASK_PREFIX,
@@ -37,13 +38,17 @@ import {
   newPass,
   nextMoveCommand,
   nextSteps,
+  otherLegProblem,
   type PassState,
   type ProbeSample,
   parsePass,
   passFolder,
+  persistedEntries,
   realAppHosts,
   recordAddresses,
+  recordKinds,
   recordLine,
+  sameNameservers,
   unexpectedNames,
   withDowntime,
 } from "./cloudflare-move-support";
@@ -150,6 +155,7 @@ export class MovePass {
     this.qEnvs = new AppEnvironments(this.q, "");
     this.a = new Cloudflare(this.settings.cloudflareToken);
     this.b = new Cloudflare(this.settings.tokenB);
+    this.mask(zoneName(this.settings.domain), "zone");
   }
 
   readonly log = (message: string) => this.p.log(message);
@@ -186,6 +192,10 @@ export class MovePass {
     await mkdir(join(this.folder, "kept"), { recursive: true });
     const { scrubber } = this.p;
     scrubber.add(this.settings.tokenB, "cloudflare-token-b");
+    scrubber.add(
+      Buffer.from(`x-access-token:${this.settings.githubToken}`).toString("base64"),
+      "github-basic-auth",
+    );
     if (existsSync(this.file("known.json"))) {
       const known = JSON.parse(await readFile(this.file("known.json"), "utf8")) as {
         label: string;
@@ -208,9 +218,13 @@ export class MovePass {
     if (this.state !== undefined) {
       await writeFile(this.file("pass.json"), `${JSON.stringify(this.state, null, 2)}\n`);
     }
-    await writeFile(this.file("known.json"), JSON.stringify(this.p.scrubber.entries()), {
-      mode: 0o600,
-    });
+    await writeFile(
+      this.file("known.json"),
+      JSON.stringify(persistedEntries(this.p.scrubber.entries())),
+      {
+        mode: 0o600,
+      },
+    );
     const outputs = [...this.p.outputs];
     const stamp = Date.now().toString(36);
     for (const [index, [label, output]] of outputs.entries()) {
@@ -414,7 +428,9 @@ export class MovePass {
     const zones = await cf.list<ListedZone>(
       `/zones?name=${encodeURIComponent(zoneName(zone))}&account.id=${account}`,
     );
-    return zones.find((item) => item.name === zoneName(zone));
+    const found = zones.find((item) => item.name === zoneName(zone));
+    if (found !== undefined) this.mask(found.id, `zone-id-${side}`);
+    return found;
   }
 
   /** The zone that serves now: A's while it is active there, else B's. */
@@ -443,7 +459,6 @@ export class MovePass {
     const settings: Record<string, string> = {};
     const pieces: AccountPieces = {};
     if (zone !== undefined) {
-      this.mask(zone.id, `zone-id-${side}`);
       for (const setting of [
         "ssl",
         "min_tls_version",
@@ -464,8 +479,7 @@ export class MovePass {
         "unreadable" in routing
           ? routing.unreadable
           : `${routing.value?.enabled === true ? "on" : "off"} (${routing.value?.status ?? "?"})`;
-      const kinds = recordKindsCount(records);
-      settings["email routing records"] = String(kinds.emailRouting);
+      settings["email routing records"] = String(recordKinds(records).emailRouting.length);
       Object.assign(pieces, {
         "zone rulesets": await names(
           cf,
@@ -795,7 +809,6 @@ export class MovePass {
       ).flat();
     const nsA = await servers(aZone?.name_servers ?? []);
     const nsB = await servers(bZone?.name_servers ?? []);
-    const bNames = (bZone?.name_servers ?? []).map((name) => name.toLowerCase()).sort();
     const origins = this.p.scrubber
       .entries()
       .filter(({ label }) => label.startsWith("server-"))
@@ -806,15 +819,8 @@ export class MovePass {
     const file = this.file("probes.jsonl");
     const round = async (count: number) => {
       const at = Date.now();
-      if (delegatedAt === undefined && count % 6 === 0 && bNames.length > 0) {
-        const now = await publicNameservers(fetch, zoneName(this.settings.domain)).catch(() => []);
-        if (
-          now
-            .map((name) => name.toLowerCase())
-            .sort()
-            .join() === bNames.join()
-        )
-          delegatedAt = at;
+      if (delegatedAt === undefined && count % 6 === 0 && (await this.delegatedToB())) {
+        delegatedAt = at;
       }
       const taken = await Promise.all(
         hosts.flatMap(({ label, host }) => [
@@ -850,19 +856,9 @@ export class MovePass {
 
   /** Whether the public delegation names B's nameservers now. */
   async delegatedToB(): Promise<boolean> {
-    const b = await this.zoneIn("b");
-    const wanted = (b?.name_servers ?? [])
-      .map((name) => name.toLowerCase())
-      .sort()
-      .join();
+    const b = await this.zoneIn("b").catch(() => undefined);
     const now = await publicNameservers(fetch, zoneName(this.settings.domain)).catch(() => []);
-    return (
-      wanted !== "" &&
-      now
-        .map((name) => name.toLowerCase())
-        .sort()
-        .join() === wanted
-    );
+    return sameNameservers(b?.name_servers ?? [], now);
   }
 
   /**
@@ -993,68 +989,62 @@ export class MovePass {
   }
 
   /**
-   * What is left of P's and Q's in `side`'s account (`names`: the apps' names; `tag`: the run's
-   * hostnames' tag), deleted when `remove`: their tunnels (connections first), Access
-   * applications, policies and service tokens, DNS records holding the tag (marks included) in
-   * the account's zone, and their R2 buckets (emptied with rclone first). Nothing else is
-   * touched: every piece is matched by the apps' names. Returns what is left (or was removed).
+   * What is left of P's and Q's in `side`'s account, deleted when `remove`, matched by
+   * {@link leftoverMatch} only (their apps' names, their hostnames' tag): their tunnels (connections
+   * first), Access applications, policies and service tokens, their records and marks in the
+   * account's zone (unless it is moved), P's origin TLS there (its Origin CA certificate, its
+   * hostnames' origin pull settings and the client certificate they name; never the zone's own),
+   * and their R2 buckets (emptied with rclone first). A list that can't be read is named as left,
+   * so the pass's folder stays. Returns what is left (or was removed).
    */
   async leftovers(side: "a" | "b", remove: boolean): Promise<string[]> {
     const cf = side === "a" ? this.a : this.b;
     const accountId = this.pass().accounts[side];
     const account = `/accounts/${accountId}`;
     const apps = (["p", "q"] as const).flatMap((which) => {
-      const app = this.pass().apps[which];
-      // Never an empty name, which every name would hold.
-      return app?.appName === undefined || app.appName === "" ? [] : [app.appName];
+      const name = this.pass().apps[which]?.appName;
+      return name === undefined ? [] : [name];
     });
-    if (apps.length === 0) return [];
-    const ours = (name: string | undefined) =>
-      name !== undefined && apps.some((app) => name.includes(app));
-    const tag = `e2e-${this.pass().runId}`;
+    const match = leftoverMatch(apps, `e2e-${this.pass().runId}`);
+    const S = side.toUpperCase();
     const left: string[] = [];
     const sweep = async (
       what: string,
       path: string,
-      pick: (item: { id: string; name?: string }) => boolean,
+      pick: (name: string) => boolean,
       before?: (id: string) => Promise<unknown>,
     ) => {
-      for (const item of (
-        await cf.list<{ id: string; name?: string }>(path).catch(() => [])
-      ).filter(pick)) {
-        left.push(`${side.toUpperCase()}: ${what} ${item.name ?? item.id}`);
+      let items: { id: string; name?: string }[];
+      try {
+        items = await cf.list<{ id: string; name?: string }>(path);
+      } catch (error) {
+        left.push(`${S}: ${what}s not listed (${String(error)})`);
+        return;
+      }
+      for (const item of items.filter((one) => pick(one.name ?? ""))) {
+        left.push(`${S}: ${what} ${item.name ?? item.id}`);
         if (!remove) continue;
         await before?.(item.id);
         if (!(await retryDelete(() => cf.call("DELETE", `${path.split("?")[0]}/${item.id}`)))) {
-          left.push(
-            `${side.toUpperCase()}: Cloudflare did not delete ${what} ${item.name ?? item.id}`,
-          );
+          left.push(`${S}: Cloudflare did not delete ${what} ${item.name ?? item.id}`);
         }
       }
     };
-    await sweep("Access application", `${account}/access/apps`, (item) => ours(item.name));
-    await sweep("Access policy", `${account}/access/policies`, (item) => ours(item.name));
-    await sweep("service token", `${account}/access/service_tokens`, (item) => ours(item.name));
-    await sweep(
-      "tunnel",
-      `${account}/cfd_tunnel?is_deleted=false`,
-      (item) => ours(item.name),
-      (id) => cf.call("DELETE", `${account}/cfd_tunnel/${id}/connections`),
+    await sweep("Access application", `${account}/access/apps`, match.piece);
+    await sweep("Access policy", `${account}/access/policies`, match.piece);
+    await sweep("service token", `${account}/access/service_tokens`, match.piece);
+    await sweep("tunnel", `${account}/cfd_tunnel?is_deleted=false`, match.piece, (id) =>
+      cf.call("DELETE", `${account}/cfd_tunnel/${id}/connections`),
     );
     const zone = await this.zoneIn(side);
     if (zone !== undefined && zone.status !== "moved") {
-      await sweep(
-        "DNS record",
-        `/zones/${zone.id}/dns_records`,
-        (item) =>
-          item.name?.includes(tag) === true ||
-          (item.name?.startsWith("_opscrew-move.") === true &&
-            apps.some((app) => item.name?.includes(app))),
-      );
+      await sweep("DNS record", `/zones/${zone.id}/dns_records`, match.record);
+      left.push(...(await this.originTlsLeft(cf, { ...zone, accountId }, remove, S)));
     }
     const buckets = await r2Buckets(cf, account);
-    for (const name of Array.isArray(buckets) ? buckets.filter(ours) : []) {
-      left.push(`${side.toUpperCase()}: R2 bucket ${name}`);
+    if (!Array.isArray(buckets)) left.push(`${S}: R2 buckets not listed (${buckets.unreadable})`);
+    for (const name of Array.isArray(buckets) ? buckets.filter(match.piece) : []) {
+      left.push(`${S}: R2 bucket ${name}`);
       if (!remove) continue;
       const bucket = new BackupsBucket(
         this.p,
@@ -1067,9 +1057,58 @@ export class MovePass {
       );
       await bucket
         .remove()
-        .catch((error: unknown) =>
-          left.push(`${side.toUpperCase()}: R2 bucket ${name}: ${String(error)}`),
-        );
+        .catch((error: unknown) => left.push(`${S}: R2 bucket ${name}: ${String(error)}`));
+    }
+    return left;
+  }
+
+  /**
+   * P's origin TLS left in `zone`, by P's hostnames only: an Origin CA certificate for none but
+   * them, their origin pull settings still on, and the client certificates those settings name;
+   * removed when `remove` (the settings off first). Unreadable: named as left.
+   */
+  private async originTlsLeft(
+    cf: Cloudflare,
+    zone: CloudflareZone,
+    remove: boolean,
+    S: string,
+  ): Promise<string[]> {
+    const hostname = this.pass().apps.p?.hostname;
+    if (hostname === undefined) return [];
+    const hosts = [hostname, `www.${hostname}`];
+    let tls: Awaited<ReturnType<Cloudflare["zoneTls"]>>;
+    try {
+      tls = await cf.zoneTls(zone, hosts);
+    } catch (error) {
+      return [`${S}: P's origin TLS not listed (${String(error)})`];
+    }
+    const left: string[] = [];
+    const removed = async (what: string, request: () => Promise<{ status: number }>) => {
+      left.push(`${S}: ${what}`);
+      if (remove && !(await retryDelete(request)))
+        left.push(`${S}: Cloudflare did not remove ${what}`);
+    };
+    const aop = `/zones/${zone.id}/origin_tls_client_auth/hostnames`;
+    for (const setting of tls.hostnameSettings.filter((one) => one.enabled === true)) {
+      await removed(`P's origin pull setting of ${setting.hostname}`, () =>
+        cf.call("PUT", aop, {
+          config: [{ hostname: setting.hostname, cert_id: setting.certId, enabled: null }],
+        }),
+      );
+    }
+    const named = new Set(tls.hostnameSettings.flatMap((one) => (one.certId ? [one.certId] : [])));
+    for (const id of tls.clientCertificates.filter((one) => named.has(one))) {
+      await removed(`P's client certificate ${id}`, () =>
+        cf.call("DELETE", `${aop}/certificates/${id}`),
+      );
+    }
+    const own = (certificate: { hostnames: string[] }) =>
+      certificate.hostnames.length > 0 &&
+      certificate.hostnames.every((name) => hosts.includes(name));
+    for (const certificate of tls.originCertificates.filter(own)) {
+      await removed(`P's Origin CA certificate ${certificate.id}`, () =>
+        cf.call("DELETE", `/certificates/${certificate.id}`),
+      );
     }
     return left;
   }
@@ -1089,6 +1128,9 @@ export interface StepWait {
   wait: string;
 }
 
+/** The leg this process opened: one a process. */
+let openedLeg: MoveLeg | undefined;
+
 /**
  * One leg in one process: opens the pass before its first step (after checking the legs before it
  * passed), saves it after its last, records its outcome. A step that returns {@link StepWait} ends
@@ -1103,6 +1145,12 @@ export class Leg {
     readonly leg: MoveLeg,
   ) {
     beforeAll(async () => {
+      const other = otherLegProblem(openedLeg, leg);
+      if (other !== undefined) {
+        this.ended = "failed";
+        throw new Error(`${leg} can't start: ${other}.`);
+      }
+      openedLeg = leg;
       await pass.open();
       const problem = legOrderProblem(pass.state, leg);
       if (problem !== undefined) {
@@ -1186,11 +1234,6 @@ export function zoneName(domain: string): string {
 function backupsBuckets(plan: DeployPlan): string[] {
   const bucket = backupsBucketOf(plan);
   return bucket?.provider === "r2" ? [bucket.bucket] : [];
-}
-
-/** Each `kind` of the records, counted. */
-function recordKindsCount(records: readonly ListedRecord[]): { emailRouting: number } {
-  return { emailRouting: records.filter((record) => record.meta?.email_routing === true).length };
 }
 
 /** A token's id (a user's token, or the account's own), for its R2 key. */

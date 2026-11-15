@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
+  abortProblem,
   configuredRegistrars,
   dataRecords,
   edgeAnswer,
@@ -10,6 +11,7 @@ import {
   inventoryLines,
   LEG_VARIABLES,
   leakSearchValues,
+  leftoverMatch,
   legOrderProblem,
   legSkip,
   loadFigures,
@@ -19,9 +21,11 @@ import {
   nextMoveCommand,
   nextSteps,
   oneAccount,
+  otherLegProblem,
   type PassState,
   parsePass,
   passFolder,
+  persistedEntries,
   probeFigures,
   rdapRegistrar,
   rdapServers,
@@ -29,6 +33,7 @@ import {
   recordAddresses,
   recordKinds,
   registrarFinding,
+  sameNameservers,
   switchLegSkip,
   unexpectedNames,
   waitOf,
@@ -112,6 +117,67 @@ describe("the pass's state", () => {
     expect(legOrderProblem(pass, "L5")).toBe("run L4a or L4b to its end first");
     pass.legs.L4b = { startedAt: pass.startedAt, outcome: "passed" };
     expect(legOrderProblem(pass, "L5")).toBeUndefined();
+  });
+
+  it("never runs a leg again once a later one ran, apart from L6", () => {
+    const pass = state();
+    pass.legs.L0 = { startedAt: pass.startedAt, outcome: "passed" };
+    pass.legs.L1 = { startedAt: pass.startedAt, outcome: "passed" };
+    pass.legs.L2 = { startedAt: pass.startedAt, outcome: "failed" };
+    expect(legOrderProblem(pass, "L0")).toBe(
+      "L1 and L2 ran already, so L0 doesn't run again: go on from there, or run L6",
+    );
+    expect(legOrderProblem(pass, "L1")).toContain("L2 ran already");
+    expect(legOrderProblem(pass, "L2")).toBeUndefined();
+    pass.legs.L4b = { startedAt: pass.startedAt, outcome: "waiting" };
+    expect(legOrderProblem(pass, "L4a")).toBe("run L3 to its end first");
+    expect(legOrderProblem(pass, "L3")).toContain("L4b ran already");
+    pass.legs.L6 = { startedAt: pass.startedAt, outcome: "failed" };
+    expect(legOrderProblem(pass, "L4b")).toBe("run L3 to its end first");
+  });
+
+  it("opens one leg in a process", () => {
+    expect(otherLegProblem(undefined, "L2")).toBeUndefined();
+    expect(otherLegProblem("L2", "L2")).toBeUndefined();
+    expect(otherLegProblem("L2", "L3")).toBe(
+      'this run has L2 too: run one leg at a time with -t "<leg>" (docs/e2e.md)',
+    );
+  });
+
+  it("lets L6 abort a move by itself only before any switch leg and while A's nameservers serve", () => {
+    const pass = state();
+    pass.legs.L3 = { startedAt: pass.startedAt, outcome: "failed" };
+    expect(abortProblem(pass, false)).toBeUndefined();
+    expect(abortProblem(pass, true)).toContain(
+      "the switch may have begun (the delegation names the new account's nameservers)",
+    );
+    pass.legs.L4b = { startedAt: pass.startedAt, outcome: "waiting" };
+    const refused = abortProblem(pass, false);
+    expect(refused).toContain("(L4b ran)");
+    expect(refused).toContain("run L4 again");
+    expect(refused).toContain("abort by hand in a terminal");
+  });
+
+  it("keeps the masks and the generated values between legs, never a token or an R2 key", () => {
+    const entries = [
+      "hetzner-token",
+      "github-token",
+      "github-basic-auth",
+      "cloudflare-token",
+      "cloudflare-token-b",
+      "r2-key-id-a",
+      "r2-secret-b",
+      "mask-zone",
+      "server-ipv4",
+      "deploy-private-key",
+      "tunnel-token",
+    ].map((label) => ({ label, value: `${label}-value` }));
+    expect(persistedEntries(entries).map(({ label }) => label)).toEqual([
+      "mask-zone",
+      "server-ipv4",
+      "deploy-private-key",
+      "tunnel-token",
+    ]);
   });
 });
 
@@ -315,14 +381,14 @@ describe("the accounts and the registrar", () => {
   it("chooses L4b at Cloudflare Registrar, L4a at a registrar OpsCrew drives with its keys", () => {
     expect(
       registrarFinding({ cloudflare: "refused", publicName: "CloudFlare, Inc.", configured: [] }),
-    ).toEqual({ registrar: "Cloudflare Registrar", leg: "L4b", registrarId: "cloudflare" });
+    ).toEqual({ registrar: "Cloudflare Registrar", leg: "L4b" });
     expect(
       registrarFinding({
         cloudflare: "absent",
         publicName: "Porkbun LLC",
         configured: ["porkbun"],
       }),
-    ).toEqual({ registrar: "porkbun", leg: "L4a", registrarId: "porkbun" });
+    ).toEqual({ registrar: "porkbun", leg: "L4a" });
     const keyless = registrarFinding({
       cloudflare: "absent",
       publicName: "GoDaddy.com, LLC",
@@ -336,7 +402,72 @@ describe("the accounts and the registrar", () => {
   });
 });
 
+describe("the cleanup's matching", () => {
+  const p = "e2e-move-run1-p";
+  const q = "e2e-move-run1-q";
+  const match = leftoverMatch([p, q], "e2e-run1");
+
+  it("takes P's and Q's tunnels, Access pieces, buckets, records and marks", () => {
+    for (const name of [
+      `opscrew-${q}`,
+      `opscrew-${q}-portainer`,
+      `OpsCrew SSH (${q})`,
+      `OpsCrew deploy (${q})`,
+      p,
+      `${q}-prod-backups`,
+    ]) {
+      expect(match.piece(name), name).toBe(true);
+    }
+    for (const name of [
+      `e2e-run1.${ZONE}`,
+      `www.e2e-run1.${ZONE}`,
+      `e2e-run1-b.${ZONE}`,
+      `ssh-${q}.${ZONE}`,
+      `_opscrew-move.${p}-0a1b2c3d.${ZONE}`,
+    ]) {
+      expect(match.record(name), name).toBe(true);
+    }
+  });
+
+  it("never takes a real app's pieces, records or mark", () => {
+    for (const name of [
+      "shop",
+      "opscrew-shop",
+      "OpsCrew SSH (shop)",
+      "shop-prod-backups",
+      `${p}2`,
+    ]) {
+      expect(match.piece(name), name).toBe(false);
+    }
+    for (const name of [
+      ZONE,
+      `shop.${ZONE}`,
+      `ssh-shop.${ZONE}`,
+      `e2e-run12.${ZONE}`,
+      `_opscrew-move.shop-1234abcd.${ZONE}`,
+      `_opscrew-move.${p}.${ZONE}`,
+    ]) {
+      expect(match.record(name), name).toBe(false);
+    }
+  });
+
+  it("takes nothing without an app", () => {
+    const none = leftoverMatch([], "e2e-run1");
+    expect(none.piece("opscrew-shop")).toBe(false);
+    expect(none.record(`e2e-run1.${ZONE}`)).toBe(false);
+    expect(leftoverMatch([""], "").piece("anything")).toBe(false);
+  });
+});
+
 describe("the masks, the load and the probes", () => {
+  it("compares nameservers whatever their case, order or final dot", () => {
+    expect(
+      sameNameservers(["B.ns.example.", "a.ns.example"], ["a.ns.example", "b.ns.example"]),
+    ).toBe(true);
+    expect(sameNameservers(["a.ns.example"], ["a.ns.example", "b.ns.example"])).toBe(false);
+    expect(sameNameservers([], [])).toBe(false);
+  });
+
   it("searches for secrets and the servers' addresses, never the masks", () => {
     const token = fakeSecret("cloudflare-token", "a");
     const values = leakSearchValues([
