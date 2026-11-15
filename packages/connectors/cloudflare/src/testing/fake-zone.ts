@@ -276,9 +276,13 @@ export class FakeZone {
     return JSON.stringify(rules.filter((r) => !String(r.ref).startsWith("opscrew-")));
   }
 
-  /** OpsCrew's rule in the phase, as stored. */
-  opscrewRule(phase: string): Record<string, unknown> | undefined {
-    return this.entrypoints.get(phase)?.rules.find((r) => String(r.ref).startsWith("opscrew-"));
+  /** OpsCrew's (first) rule in the phase, or the one with `ref`, as stored. */
+  opscrewRule(phase: string, ref?: string): Record<string, unknown> | undefined {
+    return this.entrypoints
+      .get(phase)
+      ?.rules.find((r) =>
+        ref === undefined ? String(r.ref).startsWith("opscrew-") : r.ref === ref,
+      );
   }
 
   /** The write requests received (everything but `GET`). */

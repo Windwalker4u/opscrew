@@ -70,6 +70,10 @@ export const RULES: Record<SharedRuleRef, { name: string; kind: string }> = {
     name: "Redirect www to the domain",
     kind: "single redirect rules",
   },
+  "opscrew-https-redirect": {
+    name: "Redirect plain HTTP to HTTPS",
+    kind: "single redirect rules",
+  },
 };
 
 const RECORD_FILE = ".opscrew/cloudflare.json";
@@ -169,14 +173,30 @@ export function sharedDesired(plan: DeployPlan, zone: string): SharedDesired {
   };
 }
 
-/** The ruleset changes of one rule's phase in words: what it does with this app's hostnames. */
+/** The rule a change of a ruleset is about; none for the deletion of the whole ruleset. */
+function changedRule(change: Extract<SharedChange, { phase: string }>): string | undefined {
+  if (change.kind === "delete-entrypoint") return undefined;
+  return "rule" in change ? change.rule.ref : change.ref;
+}
+
+/**
+ * One rule's changes in words: what they do with this app's hostnames. The deletion of the
+ * phase's ruleset goes with the last of its rules that changes, or alone with its first rule.
+ */
 function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undefined {
   const { phase } = SHARED_RULES[ref];
   const { name, kind } = RULES[ref];
   const mine = plan.record.hostnames[ref] ?? [];
-  const changes = plan.changes.filter(
+  const inPhase = plan.changes.filter(
     (change): change is Extract<SharedChange, { phase: string }> =>
       "phase" in change && change.phase === phase,
+  );
+  const refs = REFS.filter((other) => SHARED_RULES[other].phase === phase);
+  const owner =
+    refs.findLast((other) => inPhase.some((change) => changedRule(change) === other)) ?? refs[0];
+  const changes = inPhase.filter(
+    (change) =>
+      changedRule(change) === ref || (change.kind === "delete-entrypoint" && owner === ref),
   );
   const [first] = changes;
   if (first === undefined) {
@@ -185,7 +205,7 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
     return { title: `${name}: ${listText(mine)}`, state: "in-place" };
   }
   const before = plan.previous?.hostnames[ref] ?? [];
-  const others = (plan.expect[phase]?.hostnames ?? []).filter((host) => !before.includes(host));
+  const others = (plan.expect[ref]?.hostnames ?? []).filter((host) => !before.includes(host));
   const keeps =
     others.length > 0
       ? `OpsCrew's rule keeps the ${plural(others.length, "hostname")} of other OpsCrew apps there.`
@@ -211,6 +231,13 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
         reason: `OpsCrew adds its rule after the zone's own ${kind}, which stay as they are.`,
       };
     case "update-hostnames": {
+      if (first.add.length === 0 && first.remove.length === 0) {
+        return {
+          title: `${name}: bring OpsCrew's rule up to date, with the same hostnames`,
+          state: "change",
+          reason: "An earlier version of OpsCrew wrote it with settings OpsCrew no longer uses.",
+        };
+      }
       const parts = [
         ...(first.add.length > 0 ? [`add ${listText(first.add)}`] : []),
         ...(first.remove.length > 0 ? [`remove ${listText(first.remove)}`] : []),
@@ -224,7 +251,7 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
     default: {
       const ruleset = changes.some((change) => change.kind === "delete-entrypoint");
       return {
-        title: `${name}: remove ${listText(plan.expect[phase]?.hostnames ?? [])}`,
+        title: `${name}: remove ${listText(plan.expect[ref]?.hostnames ?? [])}`,
         state: "change",
         reason: `No other OpsCrew app is in OpsCrew's rule, so OpsCrew deletes it${ruleset ? `, and the zone's ${kind}, which then hold no rule` : ""}.`,
       };

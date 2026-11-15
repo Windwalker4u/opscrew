@@ -39,6 +39,7 @@ const REDIRECT = "http_request_dynamic_redirect";
 const BLOCK = "opscrew-block-probes";
 const TLS = "opscrew-strict-tls";
 const WWW = "opscrew-www-redirect";
+const HTTPS = "opscrew-https-redirect";
 const PATHS =
   'http.request.uri.path contains "/.env" or starts_with(http.request.uri.path, "/.git") or http.request.uri.path contains "/wp-admin" or http.request.uri.path contains "/wp-login.php" or http.request.uri.path contains "/xmlrpc.php" or http.request.uri.path contains "/phpmyadmin"';
 const hostSet = (hosts: string[]) => `(http.host in {${hosts.map((h) => `"${h}"`).join(" ")}})`;
@@ -65,8 +66,10 @@ async function planFor(
     zoneId: ZONE_ID,
     accountId: ACCOUNT_ID,
     access: desired.access !== undefined,
-    // A site hosted on Cloudflare: it has (or had) www hostnames in the redirect rule.
-    redirect: WWW in desired.hostnames || record?.hostnames[WWW] !== undefined,
+    // A site hosted on Cloudflare: it has (or had) hostnames in the redirect rules.
+    redirect: ([WWW, HTTPS] as const).some(
+      (ref) => ref in desired.hostnames || record?.hostnames[ref] !== undefined,
+    ),
   });
   return planShared(facts, desired, record);
 }
@@ -94,11 +97,12 @@ async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
 }
 
 describe("SHARED_RULES", () => {
-  it("names one rule per phase by its fixed ref", () => {
+  it("names each rule by its fixed ref: one per phase, two in the redirect phase", () => {
     expect(SHARED_RULES).toEqual({
       "opscrew-block-probes": { phase: WAF },
       "opscrew-strict-tls": { phase: CONFIG },
       "opscrew-www-redirect": { phase: REDIRECT },
+      "opscrew-https-redirect": { phase: REDIRECT },
     });
   });
 });
@@ -107,8 +111,8 @@ describe("the www redirect rule (feature 016)", () => {
   const SITE = ["www.example.com"];
   const DOCS = ["www.docs.example.com"];
   const redirect = (hosts: string[]) => ({ [WWW]: hosts });
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: `${1}` is Cloudflare's wildcard capture.
-  const TARGET = 'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")';
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: `${2}` is Cloudflare's wildcard capture.
+  const TARGET = 'wildcard_replace(http.request.full_uri, "*://www.*", "https://${2}")';
   const PARAMETERS = {
     from_value: {
       status_code: 301,
@@ -116,6 +120,78 @@ describe("the www redirect rule (feature 016)", () => {
       preserve_query_string: true,
     },
   };
+  /** The parameters OpsCrew wrote before T2842: plain HTTP redirected to itself. */
+  const OLD_PARAMETERS = {
+    from_value: {
+      ...PARAMETERS.from_value,
+      target_url: {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: `${1}` is Cloudflare's wildcard capture.
+        expression: 'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")',
+      },
+    },
+  };
+
+  /**
+   * Cloudflare's `wildcard_replace(source, pattern, replacement)` as documented: the whole source
+   * matches the pattern, each `*` (zero or more characters) captured as `${n}`; no match gives the
+   * source unchanged.
+   */
+  const wildcardReplace = (source: string, pattern: string, replacement: string) => {
+    const parts = pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"));
+    const match = new RegExp(`^${parts.join("(.*?)")}$`, "i").exec(source);
+    if (!match) return source;
+    return replacement.replace(/\$\{(\d+)\}/g, (_, n: string) => match[Number(n)] ?? "");
+  };
+  const redirectOf = (expression: string, fullUri: string) => {
+    const call = /^wildcard_replace\(http\.request\.full_uri, "([^"]*)", "([^"]*)"\)$/.exec(
+      expression,
+    );
+    if (!call) throw new Error(`not a wildcard_replace target: ${expression}`);
+    return wildcardReplace(fullUri, call[1] as string, call[2] as string);
+  };
+
+  it("sends plain HTTP and HTTPS on www to the domain over HTTPS in one hop, path and query kept", async () => {
+    const zone = new FakeZone();
+    await deploy(zone, { hostnames: redirect(SITE) });
+    const target = (zone.opscrewRule(REDIRECT) as { action_parameters: typeof PARAMETERS })
+      .action_parameters.from_value.target_url.expression;
+    expect(target).toBe(TARGET);
+    for (const scheme of ["http", "https"]) {
+      expect(redirectOf(target, `${scheme}://www.example.com/a/b?c=1`)).toBe(
+        "https://example.com/a/b?c=1",
+      );
+    }
+    // The target before T2842 sent plain HTTP to itself, so browsers stopped on too many redirects.
+    const old = OLD_PARAMETERS.from_value.target_url.expression;
+    expect(redirectOf(old, "http://www.example.com/")).toBe("http://www.example.com/");
+  });
+
+  it("brings a www redirect an earlier OpsCrew wrote up to date in place, with the same hostnames", async () => {
+    const zone = new FakeZone();
+    const { result } = await deploy(zone, { hostnames: redirect(SITE) });
+    const rule = zone.opscrewRule(REDIRECT) as Record<string, unknown>;
+    rule.action_parameters = OLD_PARAMETERS;
+    // A plan without hostnames there (another app's) leaves it.
+    expect((await planFor(zone, { hostnames: redirect([]) })).changes).toEqual([]);
+    const { plan } = await deploy(zone, { hostnames: redirect(SITE) }, result.record);
+    expect(plan.changes).toEqual([
+      {
+        kind: "update-hostnames",
+        phase: REDIRECT,
+        ref: WWW,
+        rulesetId: zone.entrypoints.get(REDIRECT)?.id,
+        ruleId: rule.id,
+        add: [],
+        remove: [],
+      },
+    ]);
+    expect(zone.opscrewRule(REDIRECT)).toMatchObject({
+      id: rule.id,
+      expression: hostSet(SITE),
+      action_parameters: PARAMETERS,
+    });
+    expect((await planFor(zone, { hostnames: redirect(SITE) }, result.record)).changes).toEqual([]);
+  });
 
   it("creates the redirect entrypoint for the first site, adds a second site's www hostname, and the last site deletes it (204)", async () => {
     const zone = new FakeZone();
@@ -276,6 +352,187 @@ describe("the www redirect rule (feature 016)", () => {
   });
 });
 
+describe("the HTTPS redirect rule (T2842)", () => {
+  const SITE = { [WWW]: ["www.example.com"], [HTTPS]: ["example.com"] };
+  const DOCS = { [HTTPS]: ["docs.example.com"] };
+  const httpsExpression = (hosts: string[]) =>
+    `${hostSet(hosts)} and http.request.scheme eq "http"`;
+  const httpsRule = (hosts: string[]) => ({
+    ref: HTTPS,
+    description: "OpsCrew: redirect plain HTTP to HTTPS",
+    expression: httpsExpression(hosts),
+    action: "redirect",
+    action_parameters: {
+      from_value: {
+        status_code: 301,
+        target_url: { expression: 'concat("https://", http.host, http.request.uri.path)' },
+        preserve_query_string: true,
+      },
+    },
+    enabled: true,
+  });
+  const redirectRefs = (zone: FakeZone) =>
+    zone.entrypoints.get(REDIRECT)?.rules.map((rule) => rule.ref);
+
+  it("creates the redirect rules for the first hosted app: the www redirect, then plain HTTP to HTTPS in the ruleset it creates", async () => {
+    const zone = new FakeZone();
+    const before = zone.calls.length;
+    const { plan, result } = await deploy(zone, { hostnames: SITE });
+    expect(plan.changes).toEqual([
+      { kind: "create-entrypoint", phase: REDIRECT, rule: expect.objectContaining({ ref: WWW }) },
+      { kind: "add-rule", phase: REDIRECT, rule: httpsRule(["example.com"]) },
+    ]);
+    expect(plan.expect).toEqual({ [WWW]: null, [HTTPS]: null });
+    const rulesetId = zone.entrypoints.get(REDIRECT)?.id;
+    expect(writesSince(zone, before).map((c) => `${c.method} ${c.path}`)).toEqual([
+      `PUT /zones/${ZONE_ID}/rulesets/phases/${REDIRECT}/entrypoint`,
+      `POST /zones/${ZONE_ID}/rulesets/${rulesetId}/rules`,
+    ]);
+    expect(redirectRefs(zone)).toEqual([WWW, HTTPS]);
+    expect(zone.entrypoints.get(REDIRECT)?.rules[1]).toMatchObject(httpsRule(["example.com"]));
+    expect(result.applied).toEqual([`create-entrypoint ${REDIRECT}`, `add-rule ${REDIRECT}`]);
+    expect(result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: SITE,
+      createdEntrypoints: [REDIRECT],
+    });
+    expect(SharedRecordSchema.parse(JSON.parse(JSON.stringify(result.record)))).toEqual(
+      result.record,
+    );
+    expect((await planFor(zone, { hostnames: SITE }, result.record)).changes).toEqual([]);
+  });
+
+  it("adds a second hosted app's hostname to the rule, and adds the rule after a www redirect already there", async () => {
+    const zone = new FakeZone();
+    const www = await deploy(zone, { hostnames: { [WWW]: SITE[WWW] } });
+    const site = await deploy(zone, { hostnames: SITE }, www.result.record);
+    const rulesetId = zone.entrypoints.get(REDIRECT)?.id;
+    expect(site.plan.changes).toEqual([
+      { kind: "add-rule", phase: REDIRECT, rulesetId, rule: httpsRule(["example.com"]) },
+    ]);
+    const docs = await deploy(zone, { hostnames: DOCS });
+    const rule = zone.entrypoints.get(REDIRECT)?.rules[1];
+    expect(docs.plan.changes).toEqual([
+      {
+        kind: "update-hostnames",
+        phase: REDIRECT,
+        ref: HTTPS,
+        rulesetId,
+        ruleId: rule?.id,
+        add: ["docs.example.com"],
+        remove: [],
+      },
+    ]);
+    expect(docs.plan.expect).toEqual({ [HTTPS]: { id: rule?.id, hostnames: ["example.com"] } });
+    expect(zone.entrypoints.get(REDIRECT)?.rules[1]).toMatchObject(
+      httpsRule(["docs.example.com", "example.com"]),
+    );
+    expect(redirectRefs(zone)).toEqual([WWW, HTTPS]);
+  });
+
+  it("a destroy removes the app's hostnames, and the last app's takes the rules and the ruleset", async () => {
+    const zone = new FakeZone();
+    const site = await deploy(zone, { hostnames: SITE });
+    const docs = await deploy(zone, { hostnames: DOCS });
+    const leave = await deploy(zone, { hostnames: {} }, site.result.record);
+    expect(leave.plan.changes).toMatchObject([
+      { kind: "delete-rule", phase: REDIRECT, ref: WWW },
+      { kind: "update-hostnames", phase: REDIRECT, ref: HTTPS, add: [], remove: ["example.com"] },
+    ]);
+    expect(redirectRefs(zone)).toEqual([HTTPS]);
+    expect(zone.opscrewRule(REDIRECT)?.expression).toBe(httpsExpression(["docs.example.com"]));
+    expect(leave.result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: {},
+      createdEntrypoints: [REDIRECT],
+    });
+    const before = zone.calls.length;
+    const last = await deploy(zone, { hostnames: {} }, docs.result.record);
+    expect(kinds(last.plan)).toEqual(["delete-rule", "delete-entrypoint"]);
+    expect(writesSince(zone, before).map((c) => c.method)).toEqual(["DELETE", "DELETE"]);
+    expect(zone.entrypoints.has(REDIRECT)).toBe(false);
+  });
+
+  it("a destroy of the only hosted app deletes both its rules, then their ruleset", async () => {
+    const zone = new FakeZone();
+    const site = await deploy(zone, { hostnames: SITE });
+    const before = zone.calls.length;
+    const gone = await deploy(zone, { hostnames: {} }, site.result.record);
+    expect(gone.plan.changes).toMatchObject([
+      { kind: "delete-rule", phase: REDIRECT, ref: WWW },
+      { kind: "delete-rule", phase: REDIRECT, ref: HTTPS },
+      { kind: "delete-entrypoint", phase: REDIRECT },
+    ]);
+    expect(writesSince(zone, before).map((c) => c.method)).toEqual(["DELETE", "DELETE", "DELETE"]);
+    expect(zone.entrypoints.has(REDIRECT)).toBe(false);
+    expect(gone.result.record).toEqual({ zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] });
+  });
+
+  it("keeps the ruleset when a rule of the user's joined it after the plan that deletes it", async () => {
+    const zone = new FakeZone();
+    const site = await deploy(zone, { hostnames: SITE });
+    const plan = await planFor(zone, { hostnames: {} }, site.result.record);
+    zone.seedRule(REDIRECT, {
+      description: "My own redirect",
+      expression: '(http.host eq "old.example.com")',
+      action: "redirect",
+    });
+    const before = zone.calls.length;
+    const error = await rejection(applyShared(clientFor(zone), plan, { approvedHash: plan.hash }));
+    expect(error.message).toContain("their ruleset holds another rule now");
+    expect(writesSince(zone, before)).toEqual([]);
+  });
+
+  it("finds an HTTPS redirect changed outside OpsCrew and does not overwrite it", async () => {
+    const zone = new FakeZone();
+    const site = await deploy(zone, { hostnames: SITE });
+    const rule = zone.entrypoints.get(REDIRECT)?.rules[1] as Record<string, unknown>;
+    rule.action_parameters = {
+      from_value: { ...httpsRule([]).action_parameters.from_value, status_code: 302 },
+    };
+    const plan = await planFor(zone, { hostnames: { ...SITE, ...DOCS } }, site.result.record);
+    expect(plan.findings).toEqual([
+      {
+        code: "rule-changed",
+        message:
+          "OpsCrew's shared rule \"OpsCrew: redirect plain HTTP to HTTPS\" in the zone's single redirect rules was changed outside OpsCrew: its redirect is not OpsCrew's 301 to the same address over HTTPS. OpsCrew does not overwrite it.",
+        hint: expect.stringContaining(
+          'with a dynamic redirect to concat("https://", http.host, http.request.uri.path), the status code 301',
+        ),
+      },
+    ]);
+  });
+
+  it("is not planned for a server's hostnames: a zone without hosted apps reads no redirect rule", async () => {
+    const zone = new FakeZone();
+    zone.denied.add(REDIRECT);
+    const server = await deploy(zone, { hostnames: both(A) });
+    expect(server.plan.changes.map((c) => ("phase" in c ? c.phase : c.kind))).toEqual([
+      WAF,
+      CONFIG,
+    ]);
+    expect(server.plan.expect).toEqual({ [BLOCK]: null, [TLS]: null });
+    expect(zone.calls.some((c) => c.path.includes(REDIRECT))).toBe(false);
+  });
+
+  it("names its hostnames among OpsCrew's rules' for a move", async () => {
+    const zone = new FakeZone();
+    await deploy(zone, { hostnames: SITE });
+    await deploy(zone, { hostnames: DOCS });
+    const facts = await inspectShared(clientFor(zone), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+      redirect: true,
+    });
+    expect(sharedRuleHostnames(facts)).toEqual([
+      "docs.example.com",
+      "example.com",
+      "www.example.com",
+    ]);
+  });
+});
+
 describe("sharedRuleHostnames", () => {
   it("lists every hostname OpsCrew's rules name, other apps' included, and none from a rule it did not write", () => {
     const facts = {
@@ -369,7 +626,7 @@ describe("planShared and applyShared", () => {
         },
       },
     ]);
-    expect(plan.expect).toEqual({ [WAF]: null, [CONFIG]: null });
+    expect(plan.expect).toEqual({ [BLOCK]: null, [TLS]: null });
     expect(plan.hash).toBe(
       sha256Hex(
         canonicalJson({
@@ -417,6 +674,7 @@ describe("planShared and applyShared", () => {
       {
         kind: "update-hostnames",
         phase: WAF,
+        ref: BLOCK,
         rulesetId: zone.entrypoints.get(WAF)?.id,
         ruleId: blockRule?.id,
         add: B,
@@ -425,13 +683,14 @@ describe("planShared and applyShared", () => {
       {
         kind: "update-hostnames",
         phase: CONFIG,
+        ref: TLS,
         rulesetId: zone.entrypoints.get(CONFIG)?.id,
         ruleId: zone.opscrewRule(CONFIG)?.id,
         add: B,
         remove: [],
       },
     ]);
-    expect(b.plan.expect[WAF]).toEqual({ id: blockRule?.id, hostnames: A });
+    expect(b.plan.expect[BLOCK]).toEqual({ id: blockRule?.id, hostnames: A });
     const all = [...B, ...A];
     expect(zone.opscrewRule(WAF)).toMatchObject({
       id: blockRule?.id,
@@ -595,8 +854,8 @@ describe("the pending zone", () => {
     const desired: SharedDesired = { hostnames: both(A) };
     const active = await planFor(new FakeZone(), desired);
     expect(active).not.toHaveProperty("pendingZone");
-    // The hash every other command's shared plan of these hostnames had before (and has).
-    expect(active.hash).toBe("6d889eee5874abd0d91cc6254d77b639b2022a28bead33ae8f86843674a5ccba");
+    // The hash every other command's shared plan of these hostnames has.
+    expect(active.hash).toBe("e0b7ad555a7ed5b6826b5121df674a75c791fb57c8734d481295adee07b61f4f");
     const facts = await inspectShared(clientFor(new FakeZone()), {
       zoneId: ZONE_ID,
       accountId: ACCOUNT_ID,
@@ -1220,7 +1479,7 @@ describe("applyShared", () => {
 
     const again = await planFor(zone, { hostnames: {} }, failed.record);
     expect(again.changes).toEqual([{ kind: "delete-entrypoint", phase: WAF, rulesetId: waf }]);
-    expect(again.expect).toEqual({ [WAF]: null });
+    expect(again.expect).toEqual({});
     expect(again.record.createdEntrypoints).toEqual([]);
     const done = await applyShared(clientFor(zone), again, { approvedHash: again.hash });
     expect(done.applied).toEqual([`delete-entrypoint ${WAF}`]);

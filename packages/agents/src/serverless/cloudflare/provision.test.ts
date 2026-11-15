@@ -46,6 +46,8 @@ const API_KEY = fakeSecret("stripe-live-key", "site-app");
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
 const WAF = "http_request_firewall_custom";
 const REDIRECT = "http_request_dynamic_redirect";
+const WWW = "opscrew-www-redirect";
+const HTTPS = "opscrew-https-redirect";
 
 interface SetupOptions {
   plan?: DeployPlan;
@@ -238,7 +240,11 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     // The probe block lists the Worker's hostname; there is no strict-TLS rule (no origin).
     expect(String(s.zone.opscrewRule(WAF)?.expression)).toContain('"docs.example.com"');
     expect(s.zone.entrypoints.has("http_config_settings")).toBe(false);
-    expect(s.zone.calls.some((call) => call.path.includes(REDIRECT))).toBe(false);
+    // Without www, the redirect phase holds only the redirect of plain HTTP to HTTPS.
+    expect(s.zone.entrypoints.get(REDIRECT)?.rules.map((r) => r.ref)).toEqual([HTTPS]);
+    expect(s.zone.opscrewRule(REDIRECT, HTTPS)?.expression).toBe(
+      '(http.host in {"docs.example.com"}) and http.request.scheme eq "http"',
+    );
 
     // The deploy secrets: the deploy token (never OpsCrew's own), the account id and the app's
     // value, all repository secrets.
@@ -311,6 +317,74 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     expect(shared?.details).toContain("Redirect www to the domain: add www.example.com");
     const record = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
     expect(record.hostnames["opscrew-www-redirect"]).toEqual(["www.example.com"]);
+  });
+
+  it("plain HTTP: the shared HTTPS redirect sends the domain's plain HTTP requests to HTTPS (T2842)", async () => {
+    const s = await setup({ plan: sitePlan({ domain: "example.com" }) });
+    const result = await runProvision(s.deps, { services: s.services });
+    expect(s.zone.entrypoints.get(REDIRECT)?.rules.map((r) => r.ref)).toEqual([HTTPS]);
+    expect(s.zone.opscrewRule(REDIRECT, HTTPS)).toMatchObject({
+      action: "redirect",
+      expression: '(http.host in {"example.com"}) and http.request.scheme eq "http"',
+      action_parameters: {
+        from_value: {
+          status_code: 301,
+          target_url: { expression: 'concat("https://", http.host, http.request.uri.path)' },
+          preserve_query_string: true,
+        },
+      },
+      enabled: true,
+    });
+    const shared = s.handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(shared?.planHash).toBe(result.cloudflarePlanHash);
+    expect(shared?.details).toContain("Redirect plain HTTP to HTTPS: add example.com");
+    const record = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+    expect(record.hostnames[HTTPS]).toEqual(["example.com"]);
+  });
+
+  it("an app deployed before T2842: its next provision adds the HTTPS redirect and brings the www redirect up to date", async () => {
+    const plan = sitePlan({ domain: "example.com", www: true });
+    const s = await setup({ plan });
+    await runProvision(s.deps, { services: s.services });
+    // As an earlier OpsCrew left it: no HTTPS redirect, and the www redirect's old target.
+    const rules = s.zone.entrypoints.get(REDIRECT)?.rules ?? [];
+    rules.splice(
+      rules.findIndex((r) => r.ref === HTTPS),
+      1,
+    );
+    const www = s.zone.opscrewRule(REDIRECT, WWW) as Record<string, unknown>;
+    const parameters = structuredClone(www.action_parameters) as {
+      from_value: { target_url: { expression: string } };
+    };
+    parameters.from_value.target_url.expression =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: `${1}` is Cloudflare's wildcard capture.
+      'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")';
+    www.action_parameters = parameters;
+    const file = s.deps.paths.files.cloudflareRecord;
+    const old = JSON.parse(await readFile(file, "utf8"));
+    delete old.hostnames[HTTPS];
+    await writeFile(file, `${JSON.stringify(old, null, 2)}\n`);
+
+    workerCreated(s, ["example.com", "www.example.com"]);
+    await writeWorkerState(s);
+    s.github.openPull = OPEN_PULL;
+    s.handler.requests.length = 0;
+    const again = new FakeEngine({ changes: [], outputs: { url: "https://example.com" } });
+    await runProvision(s.deps, { services: { ...s.services, engine: async () => again } });
+    const shared = s.handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(shared?.details).toContain(
+      "Redirect www to the domain: bring OpsCrew's rule up to date, with the same hostnames",
+    );
+    expect(shared?.details).toContain("Redirect plain HTTP to HTTPS: add example.com");
+    expect(s.zone.entrypoints.get(REDIRECT)?.rules.map((r) => r.ref)).toEqual([WWW, HTTPS]);
+    expect(s.zone.opscrewRule(REDIRECT, WWW)?.action_parameters).toMatchObject({
+      from_value: {
+        target_url: {
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: `${2}` is Cloudflare's wildcard capture.
+          expression: 'wildcard_replace(http.request.full_uri, "*://www.*", "https://${2}")',
+        },
+      },
+    });
   });
 
   it("refuses a Worker of that name another app (or the user) has, before anything changes", async () => {

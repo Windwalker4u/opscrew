@@ -4,7 +4,8 @@
  * and the account's Zero Trust organization and one-time PIN login; and (feature 014, ADR 0017)
  * each app's origin TLS, per hostname (an Origin CA certificate and a client certificate for
  * Authenticated Origin Pulls), and the zone's minimum TLS version; and (feature 016) the rule that
- * sends the `www` hostnames of sites hosted on Cloudflare to their domain. `inspectShared` reads them,
+ * sends the `www` hostnames of sites hosted on Cloudflare to their domain, and next to it in the same
+ * phase (T2842) the rule that sends their plain HTTP requests to HTTPS. `inspectShared` reads them,
  * `planShared` plans one app's change, `applyShared` applies a plan approved by its hash
  * (`cloudflare-apply`). A rule OpsCrew did not create is never written. See
  * `specs/011-shared-cloudflare-zone/contracts/cloudflare-shared.md` and
@@ -39,16 +40,24 @@ import {
   type RulesetRule,
 } from "./client";
 
-/** The phases OpsCrew keeps one shared rule in, and the rule's fixed `ref`. */
+/**
+ * OpsCrew's shared rules by their fixed `ref`, and the phase each is in: one rule per phase, but
+ * two in the redirect phase (the `www` redirect, then plain HTTP to HTTPS).
+ */
 export const SHARED_RULES = {
   "opscrew-block-probes": { phase: "http_request_firewall_custom" },
   "opscrew-strict-tls": { phase: "http_config_settings" },
   "opscrew-www-redirect": { phase: "http_request_dynamic_redirect" },
+  "opscrew-https-redirect": { phase: "http_request_dynamic_redirect" },
 } as const;
 export type SharedRuleRef = keyof typeof SHARED_RULES;
 type SharedPhase = (typeof SHARED_RULES)[SharedRuleRef]["phase"];
 
 const REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
+/** The phases of OpsCrew's rules, each once, in the order of {@link SHARED_RULES}. */
+const PHASES = [...new Set(REFS.map((ref) => SHARED_RULES[ref].phase))];
+/** The phase of the redirect rules, read only for a site hosted on Cloudflare. */
+const REDIRECT_PHASE = SHARED_RULES["opscrew-www-redirect"].phase;
 
 /** Cloudflare refuses longer rule expressions (research R3). */
 const MAX_EXPRESSION_LENGTH = 4096;
@@ -63,14 +72,41 @@ const PROBE_PATHS = [
   'http.request.uri.path contains "/phpmyadmin"',
 ].join(" or ");
 
-/** Where the redirect rule sends a `www` hostname: the same URL without `www.` (spike T1602, 12). */
+/**
+ * Where the redirect rule sends a `www` hostname: the same URL over HTTPS without `www.` (spike
+ * T1602, 12), from plain HTTP too in one hop (`*` is the scheme).
+ */
+// biome-ignore lint/suspicious/noTemplateCurlyInString: `${2}` is Cloudflare's wildcard capture.
+const WWW_TARGET = 'wildcard_replace(http.request.full_uri, "*://www.*", "https://${2}")';
+/**
+ * The target an earlier OpsCrew wrote: it matches no plain HTTP request, which then redirected to
+ * itself. A rule with it is OpsCrew's, brought up to date by the next plan with hostnames there.
+ */
 // biome-ignore lint/suspicious/noTemplateCurlyInString: `${1}` is Cloudflare's wildcard capture.
-const WWW_TARGET = 'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")';
+const OLD_WWW_TARGET = 'wildcard_replace(http.request.full_uri, "https://www.*", "https://${1}")';
+/** Where the HTTPS rule sends a plain HTTP request: the same host and path over HTTPS. */
+const HTTPS_TARGET = 'concat("https://", http.host, http.request.uri.path)';
+
+/** A Single Redirect's parameters: a 301 to the URL `target` makes, the query string kept. */
+function redirectTo(target: string): Record<string, unknown> {
+  return {
+    from_value: {
+      status_code: 301,
+      target_url: { expression: target },
+      preserve_query_string: true,
+    },
+  };
+}
 
 interface RuleTemplate {
   description: string;
   action: string;
   parameters?: Record<string, unknown>;
+  /**
+   * Parameters an earlier OpsCrew wrote: not a change by hand, and replaced by `parameters` on the
+   * next plan that keeps hostnames in the rule.
+   */
+  previousParameters?: Record<string, unknown>;
   /** How a rule whose parameters are not `parameters` differs, in words (with `parameters`). */
   changedParameters?: string;
   /** What follows the hostname set in the expression. */
@@ -106,18 +142,23 @@ const TEMPLATES: Record<SharedRuleRef, RuleTemplate> = {
   "opscrew-www-redirect": {
     description: "OpsCrew: redirect www to the domain",
     action: "redirect",
-    parameters: {
-      from_value: {
-        status_code: 301,
-        target_url: { expression: WWW_TARGET },
-        preserve_query_string: true,
-      },
-    },
+    parameters: redirectTo(WWW_TARGET),
+    previousParameters: redirectTo(OLD_WWW_TARGET),
     changedParameters: "its redirect is not OpsCrew's 301 to the domain without www",
     suffix: "",
     label: "single redirect rules",
     permission: "Zone → Single Redirect → Edit",
     restore: `set it back to turned on, with a dynamic redirect to ${WWW_TARGET}, the status code 301 and the query string kept, and the expression (http.host in {…its quoted www hostnames…})`,
+  },
+  "opscrew-https-redirect": {
+    description: "OpsCrew: redirect plain HTTP to HTTPS",
+    action: "redirect",
+    parameters: redirectTo(HTTPS_TARGET),
+    changedParameters: "its redirect is not OpsCrew's 301 to the same address over HTTPS",
+    suffix: ' and http.request.scheme eq "http"',
+    label: "single redirect rules",
+    permission: "Zone → Single Redirect → Edit",
+    restore: `set it back to turned on, with a dynamic redirect to ${HTTPS_TARGET}, the status code 301 and the query string kept, and the expression (http.host in {…its quoted hostnames…}) and http.request.scheme eq "http"`,
   },
 };
 
@@ -137,21 +178,36 @@ const RULE_LIMITS = new Map<string, PlanLimits>([
     "free",
     {
       name: "Free",
-      limits: { "opscrew-block-probes": 5, "opscrew-strict-tls": 10, "opscrew-www-redirect": 10 },
+      limits: {
+        "opscrew-block-probes": 5,
+        "opscrew-strict-tls": 10,
+        "opscrew-www-redirect": 10,
+        "opscrew-https-redirect": 10,
+      },
     },
   ],
   [
     "pro",
     {
       name: "Pro",
-      limits: { "opscrew-block-probes": 20, "opscrew-strict-tls": 25, "opscrew-www-redirect": 25 },
+      limits: {
+        "opscrew-block-probes": 20,
+        "opscrew-strict-tls": 25,
+        "opscrew-www-redirect": 25,
+        "opscrew-https-redirect": 25,
+      },
     },
   ],
   [
     "business",
     {
       name: "Business",
-      limits: { "opscrew-block-probes": 100, "opscrew-strict-tls": 50, "opscrew-www-redirect": 50 },
+      limits: {
+        "opscrew-block-probes": 100,
+        "opscrew-strict-tls": 50,
+        "opscrew-www-redirect": 50,
+        "opscrew-https-redirect": 50,
+      },
     },
   ],
   [
@@ -162,6 +218,7 @@ const RULE_LIMITS = new Map<string, PlanLimits>([
         "opscrew-block-probes": 1000,
         "opscrew-strict-tls": 300,
         "opscrew-www-redirect": 300,
+        "opscrew-https-redirect": 300,
       },
     },
   ],
@@ -313,6 +370,7 @@ export const SharedRecordSchema: z.ZodType<SharedRecord> = z.strictObject({
     "opscrew-block-probes": Hostnames,
     "opscrew-strict-tls": Hostnames,
     "opscrew-www-redirect": Hostnames,
+    "opscrew-https-redirect": Hostnames,
   }),
   createdEntrypoints: z.array(
     z.enum([
@@ -354,21 +412,31 @@ export const SharedRecordSchema: z.ZodType<SharedRecord> = z.strictObject({
 });
 
 /**
- * One change of a shared plan; rule bodies and ids are exactly what is sent. The last seven are
- * the app's origin TLS (certificates and per-hostname origin pulls) and the zone's minimum TLS.
+ * One change of a shared plan; rule bodies and ids are exactly what is sent. An `add-rule` without
+ * `rulesetId` goes into the ruleset the plan's `create-entrypoint` of its phase creates (the
+ * redirect phase's second rule). An `update-hostnames` adding and removing none brings a rule an
+ * earlier OpsCrew wrote up to date. The last seven are the app's origin TLS (certificates and
+ * per-hostname origin pulls) and the zone's minimum TLS.
  */
 export type SharedChange =
   | { kind: "create-entrypoint"; phase: SharedPhase; rule: CloudflareRuleInput }
-  | { kind: "add-rule"; phase: SharedPhase; rulesetId: string; rule: CloudflareRuleInput }
+  | { kind: "add-rule"; phase: SharedPhase; rulesetId?: string; rule: CloudflareRuleInput }
   | {
       kind: "update-hostnames";
       phase: SharedPhase;
+      ref: SharedRuleRef;
       rulesetId: string;
       ruleId: string;
       add: string[];
       remove: string[];
     }
-  | { kind: "delete-rule"; phase: SharedPhase; rulesetId: string; ruleId: string }
+  | {
+      kind: "delete-rule";
+      phase: SharedPhase;
+      ref: SharedRuleRef;
+      rulesetId: string;
+      ruleId: string;
+    }
   | { kind: "delete-entrypoint"; phase: SharedPhase; rulesetId: string }
   | { kind: "create-organization"; authDomain: string }
   | { kind: "create-identity-provider"; type: "onetimepin" }
@@ -381,6 +449,13 @@ export type SharedChange =
   | { kind: "set-min-tls"; from: "1.0"; to: "1.2" };
 
 type RuleChange = Extract<SharedChange, { phase: SharedPhase }>;
+/** The changes to one of OpsCrew's rules (a `delete-entrypoint` is the phase's). */
+type OwnRuleChange = Exclude<RuleChange, { kind: "delete-entrypoint" }>;
+
+/** The rule a change is about. */
+function changeRef(change: OwnRuleChange): SharedRuleRef {
+  return "rule" in change ? (change.rule.ref as SharedRuleRef) : change.ref;
+}
 
 type TlsRecord = NonNullable<SharedRecord["tls"]>;
 type ClientRecord = NonNullable<TlsRecord["client"]>;
@@ -417,8 +492,8 @@ export interface SharedPlan {
   zoneId: string;
   accountId: string;
   changes: SharedChange[];
-  /** Per phase the plan changes: OpsCrew's rule as it was read (`null` when absent). */
-  expect: Partial<Record<SharedPhase, { id: string; hostnames: string[] } | null>>;
+  /** Per rule the plan changes: OpsCrew's rule as it was read (`null` when absent). */
+  expect: Partial<Record<SharedRuleRef, { id: string; hostnames: string[] } | null>>;
   /** Any finding means the plan cannot be applied. */
   findings: SharedFinding[];
   /**
@@ -507,8 +582,9 @@ export async function inspectShared(
     accountId: string;
     access: boolean;
     /**
-     * Read the phase of the `www` redirect rule too: for a site hosted on Cloudflare, which has (or
-     * had) www hostnames there. A server never needs it, nor the token permission for it.
+     * Read the phase of the redirect rules too (the `www` redirect and plain HTTP to HTTPS): for a
+     * site hosted on Cloudflare, which has (or had) hostnames there. A server never needs it, nor
+     * the token permission for it.
      */
     redirect?: boolean;
     /**
@@ -527,9 +603,8 @@ export async function inspectShared(
   const zonePlan = await client.zonePlan(opts.zoneId);
   const entrypoints: Record<string, EntrypointRuleset | undefined> = {};
   const deniedPhases: string[] = [];
-  for (const ref of REFS) {
-    if (ref === "opscrew-www-redirect" && !opts.redirect) continue;
-    const { phase } = SHARED_RULES[ref];
+  for (const phase of PHASES) {
+    if (phase === REDIRECT_PHASE && !opts.redirect) continue;
     const read = await client.entrypointRuleset(opts.zoneId, phase);
     if (read === "forbidden") deniedPhases.push(phase);
     else entrypoints[phase] = read;
@@ -627,36 +702,45 @@ export function planShared(
   const changes: SharedChange[] = [...tls.changes, ...minTls.changes];
   const findings: SharedFinding[] = [...tls.findings];
   const expect: SharedPlan["expect"] = {};
-  for (const ref of REFS) {
-    const { phase } = SHARED_RULES[ref];
+  for (const phase of PHASES) {
+    const refs = refsOf(phase);
     if (facts.deniedPhases?.includes(phase)) {
-      findings.push(permissionMissing(ref));
+      findings.push(permissionMissing(refs[0] as SharedRuleRef));
       continue;
     }
     if (!(phase in facts.entrypoints)) {
       // Not read (`inspectShared` without `redirect`): fine while the app has no hostnames there.
-      if (hostnames[ref].length > 0 || (record?.hostnames[ref] ?? []).length > 0) {
-        throw phaseNotRead(ref);
-      }
+      const wants = refs.find(
+        (ref) => hostnames[ref].length > 0 || (record?.hostnames[ref] ?? []).length > 0,
+      );
+      if (wants) throw phaseNotRead(wants);
       continue;
     }
     const entrypoint = facts.entrypoints[phase];
-    const planned = planRule(
-      ref,
-      entrypoint,
-      hostnames[ref],
-      record?.hostnames[ref] ?? [],
-      facts.zonePlan,
-      record?.createdEntrypoints.includes(phase) ?? false,
-    );
-    if ("finding" in planned) {
-      findings.push(planned.finding);
-      continue;
+    const planned: RuleChange[] = [];
+    let blocked = false;
+    for (const ref of refs) {
+      const rule = planRule(
+        ref,
+        entrypoint,
+        hostnames[ref],
+        record?.hostnames[ref] ?? [],
+        facts.zonePlan,
+        planned,
+      );
+      if ("finding" in rule) {
+        findings.push(rule.finding);
+        blocked = true;
+        continue;
+      }
+      if (rule.changes.length === 0) continue;
+      planned.push(...rule.changes);
+      const own = ownRule(ref, entrypoint);
+      expect[ref] = own ? { id: own.id, hostnames: hostnamesOf(ref, own) ?? [] } : null;
     }
-    if (planned.changes.length === 0) continue;
-    changes.push(...planned.changes);
-    const rule = ownRule(ref, entrypoint);
-    expect[phase] = rule ? { id: rule.id, hostnames: hostnamesOf(ref, rule) ?? [] } : null;
+    const created = record?.createdEntrypoints.includes(phase) ?? false;
+    const emptied = blocked ? undefined : entrypointDeletion(phase, entrypoint, planned, created);
+    changes.push(...planned, ...(emptied ? [emptied] : []));
   }
   if (desired.access) {
     if (!facts.organization) {
@@ -861,9 +945,9 @@ function sortedUnique(items: readonly string[]): string[] {
 }
 
 /**
- * The changes to one shared rule, or the finding that stops them. `created`: the app's record says
- * it created the phase's entrypoint, which then goes when it holds no rule and the app wants none
- * there (a destroy whose delete of the entrypoint was not answered left it empty).
+ * The changes to one shared rule, or the finding that stops them. `planned`: the changes planned
+ * so far to the other OpsCrew rules of its phase (the redirect phase holds two). A rule an earlier
+ * OpsCrew wrote is brought up to date while the app keeps hostnames in it.
  */
 function planRule(
   ref: SharedRuleRef,
@@ -871,8 +955,8 @@ function planRule(
   hostnames: readonly string[],
   mine: readonly string[],
   zonePlan: string | undefined,
-  created: boolean,
-): { changes: RuleChange[] } | { finding: SharedFinding } {
+  planned: readonly RuleChange[],
+): { changes: OwnRuleChange[] } | { finding: SharedFinding } {
   const { phase } = SHARED_RULES[ref];
   const rule = ownRule(ref, entrypoint);
   let current: string[] = [];
@@ -885,34 +969,52 @@ function planRule(
   if (claimed.length > 0) return { finding: hostnameClaimed(ref, claimed) };
   const add = hostnames.filter((h) => !current.includes(h));
   const remove = mine.filter((h) => !hostnames.includes(h) && current.includes(h)).sort();
-  if (add.length === 0 && remove.length === 0) {
-    if (created && entrypoint && entrypoint.rules.length === 0) {
-      return { changes: [{ kind: "delete-entrypoint", phase, rulesetId: entrypoint.id }] };
-    }
-    return { changes: [] };
-  }
+  const outdated = rule !== undefined && hostnames.length > 0 && isOutdated(ref, rule);
+  if (add.length === 0 && remove.length === 0 && !outdated) return { changes: [] };
   const next = [...current, ...add].filter((h) => !remove.includes(h)).sort();
   const body = ruleBody(ref, next);
   if (next.length > 0 && body.expression.length > MAX_EXPRESSION_LENGTH) {
     return { finding: expressionTooLong(ref, body.expression.length, current.length) };
   }
-  if (!entrypoint) return { changes: [{ kind: "create-entrypoint", phase, rule: body }] };
+  if (!entrypoint) {
+    // The phase's first rule creates its ruleset; another goes into the ruleset it creates.
+    const creates = planned.some((change) => change.kind === "create-entrypoint");
+    const change: OwnRuleChange = creates
+      ? { kind: "add-rule", phase, rule: body }
+      : { kind: "create-entrypoint", phase, rule: body };
+    return { changes: [change] };
+  }
   const rulesetId = entrypoint.id;
   if (!rule) {
     const plan = zonePlan === undefined ? undefined : RULE_LIMITS.get(zonePlan);
-    if (plan && entrypoint.rules.length >= plan.limits[ref]) {
-      return { finding: noRuleSlot(ref, entrypoint.rules.length, plan) };
-    }
+    const count = entrypoint.rules.length + planned.filter((c) => c.kind === "add-rule").length;
+    if (plan && count >= plan.limits[ref]) return { finding: noRuleSlot(ref, count, plan) };
     return { changes: [{ kind: "add-rule", phase, rulesetId, rule: body }] };
   }
+  const ruleId = rule.id;
   if (next.length > 0) {
-    return {
-      changes: [{ kind: "update-hostnames", phase, rulesetId, ruleId: rule.id, add, remove }],
-    };
+    return { changes: [{ kind: "update-hostnames", phase, ref, rulesetId, ruleId, add, remove }] };
   }
-  const changes: RuleChange[] = [{ kind: "delete-rule", phase, rulesetId, ruleId: rule.id }];
-  if (entrypoint.rules.length === 1) changes.push({ kind: "delete-entrypoint", phase, rulesetId });
-  return { changes };
+  return { changes: [{ kind: "delete-rule", phase, ref, rulesetId, ruleId }] };
+}
+
+/**
+ * The deletion of the phase's ruleset once the plan leaves no rule in it: when the plan deletes
+ * the last rules there, OpsCrew's, or when the app's record says it created the ruleset, which
+ * holds no rule (a destroy whose delete of the entrypoint was not answered left it empty).
+ */
+function entrypointDeletion(
+  phase: SharedPhase,
+  entrypoint: EntrypointRuleset | undefined,
+  planned: readonly RuleChange[],
+  created: boolean,
+): RuleChange | undefined {
+  if (!entrypoint) return undefined;
+  const count = (kind: RuleChange["kind"]) => planned.filter((c) => c.kind === kind).length;
+  const deletes = count("delete-rule");
+  if (entrypoint.rules.length - deletes + count("add-rule") > 0) return undefined;
+  if (deletes === 0 && !created) return undefined;
+  return { kind: "delete-entrypoint", phase, rulesetId: entrypoint.id };
 }
 
 /** The plan's hash: SHA-256 of the canonical JSON of what the apply sends and expects. */
@@ -1012,12 +1114,28 @@ function ruleDifferences(ref: SharedRuleRef, rule: RulesetRule): string[] {
   if (rule.action !== template.action) {
     out.push(`its action is "${rule.action}" instead of "${template.action}"`);
   }
-  if (canonicalJson(rule.actionParameters ?? null) !== canonicalJson(template.parameters ?? null)) {
+  const parameters = canonicalJson(rule.actionParameters ?? null);
+  // Parameters an earlier OpsCrew wrote are not a change by hand: the next plan updates them.
+  if (parameters !== canonicalJson(template.parameters ?? null) && !isOutdated(ref, rule)) {
     out.push(template.changedParameters ?? "it has settings OpsCrew does not set");
   }
   if (!rule.enabled) out.push("it is turned off");
   if (!hostnamesOf(ref, rule)) out.push("its expression is not the one OpsCrew writes");
   return out;
+}
+
+/** True when the rule has the parameters an earlier OpsCrew wrote (`previousParameters`). */
+function isOutdated(ref: SharedRuleRef, rule: RulesetRule): boolean {
+  const { previousParameters } = TEMPLATES[ref];
+  return (
+    previousParameters !== undefined &&
+    canonicalJson(rule.actionParameters ?? null) === canonicalJson(previousParameters)
+  );
+}
+
+/** OpsCrew's rules in the phase, in their order. */
+function refsOf(phase: SharedPhase): SharedRuleRef[] {
+  return REFS.filter((ref) => SHARED_RULES[ref].phase === phase);
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
@@ -1087,7 +1205,7 @@ function phaseNotRead(ref: SharedRuleRef): OpsCrewError {
     "INTERNAL",
     `OpsCrew planned its shared rule "${TEMPLATES[ref].description}" without reading the zone's ${TEMPLATES[ref].label} first.`,
     {
-      hint: "Report this to OpsCrew: inspectShared needs `redirect` whenever the app has www hostnames there.",
+      hint: "Report this to OpsCrew: inspectShared needs `redirect` whenever the app has hostnames in the redirect rules.",
     },
   );
 }
@@ -1194,9 +1312,17 @@ export async function applyShared(
   checkGiven(plan, opts);
   const ruleChanges = plan.changes.filter((c): c is RuleChange => "phase" in c);
   for (const phase of new Set(ruleChanges.map((c) => c.phase))) {
-    const first = ruleChanges.find((c) => c.phase === phase) as RuleChange;
-    const reason = staleReason(plan, first, await readPhase(client, plan.zoneId, phase));
-    if (reason) throw staleError(phase, reason, "OpsCrew changed nothing.");
+    const current = await readPhase(client, plan.zoneId, phase);
+    const [first, ...rest] = ruleChanges.filter((c) => c.phase === phase);
+    // Each rule's change, as the phase is now; the ruleset's deletion only when it comes first.
+    const checked = [
+      first as RuleChange,
+      ...rest.filter((c) => c.kind !== "delete-entrypoint" && !intoCreated(c)),
+    ];
+    for (const change of checked) {
+      const reason = staleReason(plan, change, current);
+      if (reason) throw staleError(phase, reason, "OpsCrew changed nothing.");
+    }
   }
 
   const given = {
@@ -1210,6 +1336,8 @@ export async function applyShared(
     zoneSettings: structuredClone(plan.record.zoneSettings),
   };
   const done: SharedChange[] = [];
+  /** The rulesets this apply created, by phase: a phase's second rule goes into its own. */
+  const created = new Map<SharedPhase, string>();
   let sent: SharedChange | undefined;
   let organization = plan.organization;
   let oneTimePinId = plan.oneTimePinId;
@@ -1226,19 +1354,22 @@ export async function applyShared(
           plan,
           change,
           await readPhase(client, plan.zoneId, change.phase),
+          created.get(change.phase),
         );
         if (reason) throw staleError(change.phase, reason, "OpsCrew stopped before changing them.");
         sent = change;
-        await writeRule(client, plan, change);
+        const rulesetId = await writeRule(client, plan, change, created.get(change.phase));
+        if (change.kind === "create-entrypoint") created.set(change.phase, rulesetId);
       } else {
         await applyTlsChange(client, plan.zoneId, change, state, given);
       }
       done.push(change);
       sent = undefined;
     } catch (error) {
-      const unclear =
-        sent && "phase" in sent && sent.kind !== "delete-entrypoint" ? sent : undefined;
-      const held = unclear ? await heldHostnames(client, plan.zoneId, unclear.phase) : undefined;
+      const unclear = sent && isOwnRuleChange(sent) ? sent : undefined;
+      const held = unclear
+        ? await heldHostnames(client, plan.zoneId, unclear.phase, changeRef(unclear))
+        : undefined;
       const record = withTls(recordAfter(plan, done, unclear, held), state);
       const applied = done.map(changeId);
       if (error instanceof OpsCrewError) {
@@ -1524,8 +1655,18 @@ function changeId(change: SharedChange): string {
   return "phase" in change ? `${change.kind} ${change.phase}` : change.kind;
 }
 
+/** The phase's first rule: the texts its rules share (their label and permission) are its. */
 function refOf(phase: SharedPhase): SharedRuleRef {
-  return REFS.find((ref) => SHARED_RULES[ref].phase === phase) as SharedRuleRef;
+  return refsOf(phase)[0] as SharedRuleRef;
+}
+
+function isOwnRuleChange(change: SharedChange): change is OwnRuleChange {
+  return "phase" in change && change.kind !== "delete-entrypoint";
+}
+
+/** True for the rule that goes into the ruleset the plan's `create-entrypoint` creates. */
+function intoCreated(change: RuleChange): boolean {
+  return change.kind === "add-rule" && change.rulesetId === undefined;
 }
 
 /** The phase's entrypoint, read again; a refused read stops with the permission to add. */
@@ -1540,23 +1681,29 @@ async function readPhase(
   throw new OpsCrewError("CREDENTIALS_INVALID", finding.message, { hint: finding.hint });
 }
 
-/** Why the phase no longer is what the plan expected before `change` (undefined: it is). */
+/**
+ * Why the phase no longer is what the plan expected before `change` (undefined: it is).
+ * `createdId`: the ruleset this apply created in the phase, which a rule without `rulesetId` goes
+ * into.
+ */
 function staleReason(
   plan: SharedPlan,
   change: RuleChange,
   current: EntrypointRuleset | undefined,
+  createdId?: string,
 ): string | undefined {
   if (change.kind === "create-entrypoint") {
     return current ? "the zone has a ruleset for them now" : undefined;
   }
-  if (!current || current.id !== change.rulesetId) return "their ruleset was deleted or replaced";
+  const rulesetId = change.kind === "add-rule" ? (change.rulesetId ?? createdId) : change.rulesetId;
+  if (!current || current.id !== rulesetId) return "their ruleset was deleted or replaced";
   if (change.kind === "delete-entrypoint") {
     return current.rules.length > 0 ? "their ruleset holds a rule again" : undefined;
   }
-  const ref = refOf(change.phase);
+  const ref = changeRef(change);
   const rule = ownRule(ref, current);
   if (change.kind === "add-rule") return rule ? "OpsCrew's rule was added since" : undefined;
-  const expected = plan.expect[change.phase];
+  const expected = plan.expect[ref];
   if (!rule || !expected || rule.id !== expected.id) {
     return "OpsCrew's rule was deleted or replaced";
   }
@@ -1569,7 +1716,14 @@ function staleReason(
   const deletesRuleset = plan.changes.some(
     (c) => c.kind === "delete-entrypoint" && c.phase === change.phase,
   );
-  if (deletesRuleset && current.rules.length > 1) return "their ruleset holds another rule now";
+  // The ruleset goes after OpsCrew's rules: it may hold no rule the plan does not delete.
+  const deleted = (id: string) =>
+    plan.changes.some(
+      (c) => c.kind === "delete-rule" && c.phase === change.phase && c.ruleId === id,
+    );
+  if (deletesRuleset && current.rules.some((r) => !deleted(r.id))) {
+    return "their ruleset holds another rule now";
+  }
   return undefined;
 }
 
@@ -1583,47 +1737,52 @@ function staleError(phase: SharedPhase, reason: string, outcome: string): OpsCre
   );
 }
 
-/** Sends one rule change and checks the ruleset Cloudflare returns. */
+/**
+ * Sends one rule change and checks the ruleset Cloudflare returns; returns the id of the ruleset
+ * written to. `createdId`: the ruleset this apply created in the phase.
+ */
 async function writeRule(
   client: CloudflareClient,
   plan: SharedPlan,
   change: RuleChange,
-): Promise<void> {
-  const ref = refOf(change.phase);
+  createdId?: string,
+): Promise<string> {
+  if (change.kind === "delete-entrypoint") {
+    await client.deleteRuleset(plan.zoneId, change.rulesetId);
+    return change.rulesetId;
+  }
+  const ref = changeRef(change);
   switch (change.kind) {
-    case "delete-entrypoint":
-      await client.deleteRuleset(plan.zoneId, change.rulesetId);
-      return;
     case "delete-rule": {
       const after = await client.deleteRulesetRule(plan.zoneId, change.rulesetId, change.ruleId);
       if (after.id !== change.rulesetId || ownRule(ref, after)) {
         throw notShown(ref, "still lists OpsCrew's rule");
       }
-      return;
+      return change.rulesetId;
     }
-    case "create-entrypoint":
-      return checkWritten(
-        ref,
-        change.rule,
-        await client.createEntrypointRuleset(plan.zoneId, change.phase, change.rule),
-      );
-    case "add-rule":
-      return checkWritten(
-        ref,
-        change.rule,
-        await client.addRulesetRule(plan.zoneId, change.rulesetId, change.rule),
-        change.rulesetId,
-      );
+    case "create-entrypoint": {
+      const after = await client.createEntrypointRuleset(plan.zoneId, change.phase, change.rule);
+      checkWritten(ref, change.rule, after);
+      return after.id;
+    }
+    case "add-rule": {
+      const rulesetId = change.rulesetId ?? (createdId as string);
+      const after = await client.addRulesetRule(plan.zoneId, rulesetId, change.rule);
+      checkWritten(ref, change.rule, after, rulesetId);
+      return rulesetId;
+    }
     case "update-hostnames": {
-      const before = plan.expect[change.phase]?.hostnames ?? [];
+      const before = plan.expect[ref]?.hostnames ?? [];
       const next = [...before, ...change.add].filter((h) => !change.remove.includes(h)).sort();
       const body = ruleBody(ref, next);
-      return checkWritten(
-        ref,
-        body,
-        await client.updateRulesetRule(plan.zoneId, change.rulesetId, change.ruleId, body),
+      const after = await client.updateRulesetRule(
+        plan.zoneId,
         change.rulesetId,
+        change.ruleId,
+        body,
       );
+      checkWritten(ref, body, after, change.rulesetId);
+      return change.rulesetId;
     }
   }
 }
@@ -1637,7 +1796,12 @@ function checkWritten(
 ): void {
   const rule = ownRule(ref, after);
   if (rulesetId !== undefined && after.id !== rulesetId) throw notShown(ref, "is another ruleset");
-  if (!rule || rule.expression !== body.expression || ruleDifferences(ref, rule).length > 0) {
+  if (
+    !rule ||
+    rule.expression !== body.expression ||
+    ruleDifferences(ref, rule).length > 0 ||
+    isOutdated(ref, rule)
+  ) {
     throw notShown(ref, "does not hold OpsCrew's rule as it was sent");
   }
 }
@@ -1653,18 +1817,19 @@ function notShown(ref: SharedRuleRef, what: string): OpsCrewError {
 }
 
 /**
- * The hostnames OpsCrew's rule in `phase` holds now (none when the phase has no OpsCrew rule), read
- * after a write that failed and may have reached Cloudflare; undefined when that cannot be told.
+ * The hostnames OpsCrew's rule `ref` in `phase` holds now (none when the phase does not have it),
+ * read after a write that failed and may have reached Cloudflare; undefined when that cannot be
+ * told.
  */
 async function heldHostnames(
   client: CloudflareClient,
   zoneId: string,
   phase: SharedPhase,
+  ref: SharedRuleRef,
 ): Promise<string[] | undefined> {
   try {
     const current = await client.entrypointRuleset(zoneId, phase);
     if (current === "forbidden") return undefined;
-    const ref = refOf(phase);
     const rule = ownRule(ref, current);
     return rule ? hostnamesOf(ref, rule) : [];
   } catch {
@@ -1674,24 +1839,22 @@ async function heldHostnames(
 }
 
 /**
- * The app's record after the changes in `done`: a phase whose change was made, or that had none,
- * has the plan's hostnames; the phase of the failed write `unclear` has those of both records
+ * The app's record after the changes in `done`: a rule whose change was made, or that had none,
+ * has the plan's hostnames; the rule of the failed write `unclear` has those of both records
  * that OpsCrew's rule holds (`held`, read again), or all of them when it could not be read; any
- * other phase keeps the previous record's.
+ * other rule keeps the previous record's.
  */
 function recordAfter(
   plan: SharedPlan,
   done: readonly SharedChange[],
-  unclear: SharedChange | undefined,
+  unclear: OwnRuleChange | undefined,
   held: readonly string[] | undefined,
 ): SharedRecord {
   const hostnames: SharedRecord["hostnames"] = {};
   for (const ref of REFS) {
     const before = plan.previous?.hostnames[ref] ?? [];
     const after = plan.record.hostnames[ref] ?? [];
-    const change = plan.changes.find(
-      (c) => "phase" in c && c.phase === SHARED_RULES[ref].phase && c.kind !== "delete-entrypoint",
-    );
+    const change = plan.changes.find((c) => isOwnRuleChange(c) && changeRef(c) === ref);
     const either = [...new Set([...before, ...after])].sort();
     const list =
       !change || done.includes(change)

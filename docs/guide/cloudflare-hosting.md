@@ -60,7 +60,7 @@ OpsCrew uses two Cloudflare tokens, and never stores either in your repository:
 
 | Variable | What it does | What to give it |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | OpsCrew's own token on your computer: it creates the Worker and its custom domains, and OpsCrew's rules in your zone | The zone permissions in [The Cloudflare token](security.md#the-cloudflare-token), plus Account → Workers Scripts → Edit, Zone → Single Redirect → Edit when the site has `www`, and Account → Workers Observability → Read for a server-rendered site's [logs](logs-and-status.md#cloudflares-hosting) |
+| `CLOUDFLARE_API_TOKEN` | OpsCrew's own token on your computer: it creates the Worker and its custom domains, and OpsCrew's rules in your zone | The zone permissions in [The Cloudflare token](security.md#the-cloudflare-token), plus Account → Workers Scripts → Edit, Zone → Single Redirect → Edit for [OpsCrew's redirects](#plain-http), and Account → Workers Observability → Read for a server-rendered site's [logs](logs-and-status.md#cloudflares-hosting) |
 | `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` | The deploy token: `npx opscrew provision` stores it as a GitHub secret, and the deploy workflow uploads each version with it | Only Account → Workers Scripts → Edit, for the account that holds your domain |
 
 To create the deploy token:
@@ -89,7 +89,8 @@ missing permission.
    at your hostnames (an existing record there is refused, with its name). Then it shows:
    - the **infrastructure plan**: the Worker and a custom domain for each hostname, with no code
      and no secret;
-   - the **Cloudflare plan** for OpsCrew's rules in your zone (see [`www`](#www));
+   - the **Cloudflare plan** for OpsCrew's rules in your zone (see [Plain HTTP](#plain-http) and
+     [`www`](#www));
    - the deploy secrets it stores in GitHub, by name.
 
    Then it opens the deploy-setup pull request with the workflow and the Worker's settings.
@@ -210,13 +211,25 @@ A required reviewer on prod's GitHub environment still has to approve the run in
 A copy on your own computer is the framework's own dev or preview server: OpsCrew offers no
 [localhost](localhost.md) environment for a site.
 
+## Plain HTTP
+
+A Worker answers plain HTTP itself, so OpsCrew's rule **"OpsCrew: redirect plain HTTP to HTTPS"**
+in your zone (**Rules → Redirect Rules**) sends `http://<domain>/…` to `https://<domain>/…` with a
+301, keeping the path and the query. It runs before the Worker, so a plain HTTP request never
+costs a Worker request. It lists only the hostnames of sites on Cloudflare's hosting: an app on a
+server gets its redirect from the server, and the zone's **Always Use HTTPS** setting stays as you
+set it.
+
 ## `www`
 
 With `www` on, `www.<domain>` is a custom domain of the Worker too, so it gets its DNS record and
 its certificate. OpsCrew's rule **"OpsCrew: redirect www to the domain"** in your zone
-(**Rules → Redirect Rules**) sends it to the domain with a 301, keeping the path and the query. It
-runs before the Worker, so a request to `www` never costs a Worker request. One rule serves every
-OpsCrew app in the zone (Cloudflare's free plan allows 10 such rules per zone). See
+(**Rules → Redirect Rules**) sends it, over plain HTTP or HTTPS, to `https://<domain>` with a 301
+in one step, keeping the path and the query. It runs before the Worker, so a request to `www`
+never costs a Worker request.
+
+Each of the two redirect rules serves every OpsCrew app in the zone, so OpsCrew takes two of the
+zone's redirect rules (Cloudflare's free plan allows 10). See
 [Your domain on Cloudflare](cloudflare.md) for how OpsCrew shares its rules between apps.
 
 ## Security headers and your own rules
@@ -268,7 +281,7 @@ npx opscrew destroy --confirm <app> # in scripts
 
 `destroy` lists what it deletes and asks you to type the app's name. Then, each step after its own
 approval and only after the step before succeeded:
-1. the app's hostnames leave OpsCrew's rules in your zone (the `www` redirect and the probe block);
+1. the app's hostnames leave OpsCrew's rules in your zone (the redirects and the probe block);
    other OpsCrew apps keep theirs;
 2. the Worker's custom domains and the Worker are deleted, its secrets with it;
 3. the deploy secrets in GitHub are removed.
