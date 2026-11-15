@@ -547,7 +547,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move/switch src/cloudflare-move/gap && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2820 [US1] [US2] [US3] [US4] Prepare
+- [x] T2820 [US1] [US2] [US3] [US4] Prepare
   - Owns: `packages/agents/src/cloudflare-move/prepare*.ts`
   - Lead note (after T2833's review): `testing/move.ts`'s engine fake drops `apply` options; the move's step tests should run on an engine fake that compares apply-time `vars` (as `testing/state.ts`'s `PlanVariables` does) so a lost `vars` fails a test.
   - Lead note (after T2813): when the zone plan creates B's zone in the same run, refresh `session.accounts.b.setup` before `shadowRoots`.
@@ -583,7 +583,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move && pnpm lint`
   - Effort: high
 
-- [ ] T2822 [US1] [US4] Finish, part 1: A's removal, the site's adoption, the mark
+- [x] T2822 [US1] [US4] Finish, part 1: A's removal, the site's adoption, the mark
   - Owns: `packages/agents/src/cloudflare-move/{finish-removal,finish-site}*.ts`
   - Lead note (after T2813): the storage and backups roots carry `prevent_destroy`, so A's removal of them plans from a copy rendered without the guard (as `destroy --delete-data` does), passed as `{ ...root, dir }` to `planRemoval`; with `TF_DATA_DIR` set, `state list` from a scratch folder needs it unset (as `shadow.ts` does).
   - Lead note (after the spike, plan 13b): the finish also imports the Access applications and the protected hostnames' records the switch made into the app's state, sets `access_applications`/`protected_route_records` back to true, and its check plan must then be empty.
@@ -607,6 +607,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2823 [US1] [US3] Finish, part 2: the steps in order
   - Owns: `packages/agents/src/cloudflare-move/finish*.ts` except T2822's files
+  - Lead note (after T2822): call `adoptSite` for every environment, not only a Workers site (it imports the Access applications and the records they protect too); `removeA` and `endFinish` read `plan.cloudflareMove.step`, so pass environments whose plans are read again after the swap; forget A's kept bucket keys only after `removeA`, since `emptyBuckets` needs them.
   - Lead note (after T2816's fixes): the app keeps one window record, so the finish handles one environment at a time and never calls `bucketWindow` for an environment that is `adopted`; `pointAtB.secrets()` and `deploy()` must be idempotent (a rerun after an ended window runs them again); once the window is pointing at B it only goes forward.
   - Lead note (after T2816): `bucketWindow(session, environment, { allowDowntime?, backToA, pointAtB: { secrets(), deploy() } })` measures the buckets itself; B's secrets are written while deploys are paused; the window's record `{ stoppedAt, pointingAt?, endedAt? }` makes a rerun go forward (after `pointingAt`) or skip the window (after `endedAt`), so calling it again is safe; `backToA` is idempotent and redeploys when a failed deploy may already have written B's values; `emptyBuckets` removes only the files, the bucket itself goes with its root's destroy plan (T2822).
   - Lead note (after T2818): `promoteNewCredentials` is its own approval (a second one beside the finish's other secrets; accepted) and reads B's Access values from the shadow state, so it runs before the swap and never once an environment is `adopted`.
@@ -698,6 +699,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2820: the beside connector's host and stack plans (T2815's `connector*.ts`) stop a script with APPROVAL_REFUSED and an `--approve` hint; give them the move's one pattern (`appliesNow`, `writePending`, a stop with the exact command); `SharedStep.oneTimePinId` is unused (`accountIds` reads B's PIN login): drop it; prepare's B setup refresh repeats `session.ts`'s `setupCloudflare` call; `TUNNEL_OUTPUTS` repeats rotate's output-name maps (with T2821's and T2822's). From T2820's review: an interruption between `firstCopies` and the `prepared` write asks the copy's approval again and lists both buckets (nothing copied twice); `copyBuckets` could record that the first copies ended.
+  - From T2821 and T2822: both copy a bucket root without its `prevent_destroy` block (`cloudflare-move/delete/` and `cloudflare-move/a-removal/root/`): one helper; both copy `tunnel_id`/`portainer_tunnel_id` (export `TUNNEL_ID_OUTPUTS` from `rotate/infra.ts`); `TypedNameOptions.confirm`/`typeName` is unused in the move (typed names go through `confirmPhrase`): drop it; `dropNewCredentials` asks a `github-secrets` approval even when no `_NEW` secret was ever set. From T2822's review: `finish-removal.ts`'s `appWords`/`accountWords` repeat buckets.ts's and shadow-plans.ts's (`accountName`): one pair in `texts.ts`; `finish-site.ts`'s `shadowAddresses` repeats shadow.ts's `state list` without `TF_DATA_DIR` (one `shadowStateAddresses`).
   - From T2819's fixes: `attachWorkerDomain` throws a typed refusal for "the hostname already has an assigned Worker", typed by the status, code and text the rehearsal records (not 100117, which the fake uses for externally managed DNS records), so the switch stops matching the message text.
   - From T2819: `pointToZone` writes its own audit entry, so the switch's "set nameservers" appears twice (give it the phase instead); `dsWaitStatus` starts the wait from the API listing alone (callers check the public DNS first; say so in its doc or check it there).
   - From T2818's review: export `placeText` from `provision/secrets.ts` (copied in `deploy-secrets.ts`); a `deleteSecretAt` beside `setSecretAt` for the three delete-and-audit loops; one helper for `deployToBoth` and retarget's `runSiteWorkflow`; data-model 3 lists `cloudflare-move/deploy-secrets.json`.
