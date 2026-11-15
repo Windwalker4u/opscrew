@@ -35,13 +35,7 @@ import {
 } from "../provision/portainer-flow";
 import { recordedEdge } from "../provision/render";
 import { deploySecretPlace, type SecretPlace, setSecretAt } from "../provision/secrets";
-import {
-  offsiteEnvFile,
-  offsiteValues,
-  providerBucket,
-  requireOffsiteKey,
-  requireStorageKey,
-} from "../provision/storage";
+import { offsiteEnvFile, offsiteValues } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
 import { type AppValues, withAppEnv } from "../rotate/app-values";
 import { knownRecipients } from "../secrets/store";
@@ -54,7 +48,7 @@ import {
 } from "../shared";
 import { dotenvLine, parseDotenv, storageVariableKind } from "../shared/app-env";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
-import { lastBackupsCopy, type PointAtB } from "./buckets";
+import { bucketKey, lastBackupsCopy, moveBuckets, type PointAtB } from "./buckets";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
 const PHASE = "cloudflare-move";
@@ -167,29 +161,10 @@ async function bucketLogin(
   root: "storage" | "backups",
   side: Side,
 ): Promise<StorageLogin | undefined> {
-  const deps = environmentDeps(session, environment);
-  const { plan } = environment;
-  const { accountId } = session.accounts[side];
-  const options = { command: session.command, account: accountId };
-  if (root === "storage" && providerBucket(plan)?.provider === "r2") {
-    const key = await requireStorageKey(deps, plan, session.services, options);
-    return { ...key, endpoint: r2Endpoint(accountId) };
-  }
-  if (root === "backups" && backupsBucketOf(plan)?.provider === "r2") {
-    const key = await requireOffsiteKey(deps, plan, session.services, options);
-    return { ...key, endpoint: r2Endpoint(accountId) };
-  }
-  return undefined;
-}
-
-/** The app bucket's logins in both accounts, when it is on R2. */
-async function storageLogins(
-  session: MoveSession,
-  environment: MoveEnvironment,
-): Promise<{ a: StorageLogin; b: StorageLogin } | undefined> {
-  const a = await bucketLogin(session, environment, "storage", "a");
-  const b = await bucketLogin(session, environment, "storage", "b");
-  return a === undefined || b === undefined ? undefined : { a, b };
+  const bucket = moveBuckets(environment.plan).find((one) => one.root === root);
+  if (bucket === undefined) return undefined;
+  const key = await bucketKey(session, environment, bucket, side);
+  return { ...key, endpoint: r2Endpoint(session.accounts[side].accountId) };
 }
 
 /**
@@ -311,11 +286,12 @@ async function serverSecrets(
     set.push(place(OFFSITE_ENV_SECRET, value));
   }
   let onSide = false;
-  const storage = await storageLogins(session, environment);
-  if (storage !== undefined) {
+  const a = await bucketLogin(session, environment, "storage", "a");
+  const b = await bucketLogin(session, environment, "storage", "b");
+  if (a !== undefined && b !== undefined) {
     const text = await serverAppEnv(session, environment);
     const lines = text.split(/\r?\n/);
-    const pairs = storagePairs([...parseDotenv(text).keys()], storage.a, storage.b);
+    const pairs = storagePairs([...parseDotenv(text).keys()], a, b);
     const to = side === "a" ? "old" : "new";
     // Each of its bucket's variables on the server already holds this side's value.
     onSide =
@@ -543,18 +519,22 @@ export async function stacksForB(
   );
 }
 
-/** Step 1 in the user's Portainer: one stack plan with B's values, approved by its hash. */
+/**
+ * Step 1 in the user's Portainer: one stack plan with B's values, approved by its hash, and kept
+ * once applied: a run after it plans nothing again (the connector's restart gives the stacks B's
+ * tunnel tokens afterwards, which a plan from the state's outputs would take back).
+ */
 async function portainerPointAtB(
   session: MoveSession,
   environment: MoveEnvironment,
 ): Promise<PointingAtB> {
   const deps = environmentDeps(session, environment);
+  const nothing = async () => {};
+  const done = { done: true, pointing: true, approve: nothing, secrets: nothing, deploy: nothing };
+  if ((await readApplied(environment))?.deployed === true) return done;
   const setup = await stacksForB(session, environment);
   const planned: PlannedStacks = await setup.stacks.plan(setup.outputs);
-  const nothing = async () => {};
-  if (planned.changes === 0) {
-    return { done: true, pointing: true, approve: nothing, secrets: nothing, deploy: nothing };
-  }
+  if (planned.changes === 0) return done;
   const { hash } = planned;
   let approved: Awaited<ReturnType<typeof deps.approvals.request>> | undefined;
   return {
@@ -587,6 +567,7 @@ async function portainerPointAtB(
     deploy: async () => {
       if (approved === undefined) throw unapproved();
       await setup.stacks.apply(planned, approved);
+      await writeApplied(environment, { sha256: hash, deployed: true });
     },
   };
 }
@@ -609,18 +590,17 @@ export async function pointAtB(
 
 /**
  * Step 1 undone before the app's settings pointed at B (the window's rollback, under the window's
- * approval): on a server, when B's deploy secrets were written, the bucket settings among them take
- * A's values again (B's origin certificate stays: A's edge no longer serves the zone). No deploy:
- * none ran on B's values, and the server's files are still A's. Nothing in Portainer, whose stack
- * gets B's values only after that point.
+ * approval): on a server, the bucket settings among the deploy secrets take A's values again,
+ * unless they are recorded as A's (a write of B's may have stopped part-way); B's origin
+ * certificate stays (A's edge no longer serves the zone). No deploy: none ran on B's values, and
+ * the server's files are still A's. Nothing in Portainer, whose stack gets B's values only after
+ * that point.
  */
 export async function backToA(session: MoveSession, environment: MoveEnvironment): Promise<void> {
   if (runsOn(environment.plan) !== "server") return;
-  const applied = await readApplied(environment);
-  if (applied === undefined) return;
   const { set } = await serverSecrets(session, environment, "a");
   const hash = changeHash(session, environment, set);
-  if (set.length === 0 || applied.sha256 === hash) return;
+  if (set.length === 0 || (await readApplied(environment))?.sha256 === hash) return;
   await storeSecrets(session, environment, set);
   await writeApplied(environment, { sha256: hash });
 }

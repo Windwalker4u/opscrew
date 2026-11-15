@@ -119,7 +119,7 @@ function appWords(environment: MoveEnvironment): string {
  * account): A's from the plain variables or its kept copy, B's from the `OPSCREW_NEW_*` ones or its
  * kept copy, else asked once in a terminal; registered with the redactor.
  */
-function bucketKey(
+export function bucketKey(
   session: MoveSession,
   environment: MoveEnvironment,
   bucket: MoveBucket,

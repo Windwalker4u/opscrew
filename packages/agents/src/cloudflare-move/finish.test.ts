@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { exists, findExecutable, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hostingTestPlan } from "../hosting/__fixtures__/account";
@@ -13,7 +14,7 @@ import { setDeployPause } from "../shared/deploy-pause";
 import { DEPLOYED_AT, pagesTestPlan } from "../testing";
 import { APP_BUCKET, BACKUPS_BUCKET } from "./buckets.fakes";
 import { FINISH_STEPS, type FinishSteps, finishMove } from "./finish";
-import { appWorld, serverPointWorld } from "./finish.fakes";
+import { appEnv, appWorld, portainerFinishWorld, serverPointWorld } from "./finish.fakes";
 import type { PointingAtB } from "./finish-point";
 import {
   asScript,
@@ -519,7 +520,11 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(error.message).toContain(
       "The maintenance window failed: What the deploy secrets of prod would hold for the Cloudflare account New changed since you approved it, so OpsCrew wrote none of them.",
     );
-    expect(w.github.secrets.size).toBe(0);
+    // Nothing of B's was written; the rollback gave the bucket settings A's values again.
+    const settings = w.github.secrets.get("OPSCREW_APP_ENV") ?? "";
+    expect(settings).toContain(`AWS_ACCESS_KEY_ID=${w.a.storage.accessKeyId}`);
+    expect(settings).not.toContain(w.b.storage.accessKeyId);
+    expect(w.github.secrets.has("OPSCREW_ORIGIN_TLS")).toBe(false);
     expect((await readAppProgress(w.session.paths)).window).toBeUndefined();
     expect(await stepOf(w)).toBe("prepared");
     expect(w.leaks(error.message, error.hint ?? "")).toBe(false);
@@ -692,5 +697,91 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(await exists(shadowFiles(main).removalState)).toBe(true);
     expect(w.engine.planDirs).toContain(main.dir);
     expect(await stepOf({ environment })).toBe("adopted");
+  });
+
+  it("puts every bucket secret back to A's when B's stopped part-way in the real window", async () => {
+    const w = await serverPointWorld();
+    for (const name of ["recoverWindow", "pointAtB", "backToA", "bucketWindow"] as const)
+      real(name);
+    const set = w.github.setActionsSecret.bind(w.github);
+    let calls = 0;
+    // B's origin certificate and off-server settings are written; its app settings fail.
+    w.github.setActionsSecret = async (...args: Parameters<typeof set>) => {
+      calls += 1;
+      if (calls === 3) throw new OpsCrewError("COMMAND_FAILED", "GitHub did not answer.");
+      return set(...args);
+    };
+    const error = await caught(finish(w));
+    expect(error.message).toContain("The maintenance window failed: GitHub did not answer.");
+    expect(w.github.secrets.get("OPSCREW_APP_ENV")).toBe(appEnv(w.a.storage, w.old.id));
+    const offsite = w.github.secrets.get("OPSCREW_OFFSITE_ENV") ?? "";
+    expect(offsite).toContain(`=${w.a.backups.secretAccessKey}`);
+    expect(offsite).not.toContain(w.b.backups.secretAccessKey);
+    expect(await stepOf(w)).toBe("prepared");
+    expect(w.leaks(error.message, error.hint ?? "")).toBe(false);
+  });
+
+  describe("in the user's Portainer, on the real path", () => {
+    /** The Portainer world with B's shadow states, the real steps up to the connector. */
+    async function portainerRun() {
+      const w = await portainerFinishWorld();
+      await w.seedShadow("main", [RECORD], { tunnel_id: B_TUNNEL, tunnel_token: TUNNEL_TOKEN });
+      await w.seedShadow("storage", ["cloudflare_r2_bucket.this"]);
+      await w.seedShadow("backups", ["cloudflare_r2_bucket.this"]);
+      for (const name of [
+        "recoverWindow",
+        "pointAtB",
+        "backToA",
+        "bucketWindow",
+        "lastCopyOnce",
+        "takeOverConnector",
+      ] as const) {
+        real(name);
+      }
+      const token = () => w.appStack()[PORTAINER_STACK_VARIABLES.tunnelToken];
+      return { ...w, token };
+    }
+
+    it("keeps B's token in the stack when a finish stopped after the connector runs again, asking nothing again", async () => {
+      const w = await portainerRun();
+      steps.adoptSite.mockImplementationOnce(async () => ({
+        next: ["Approve it, then run again."],
+      }));
+      expect(await finish(w)).toEqual({
+        step: "prepared",
+        done: false,
+        next: ["Approve it, then run again."],
+      });
+      expect(w.token()).toBe(TUNNEL_TOKEN);
+      expect(w.appStack().AWS_ACCESS_KEY_ID).toBe(w.keys.b.storage.accessKeyId);
+      const asked = w.handler.requests.length;
+
+      expect(await finish(w)).toMatchObject({ step: "finished", done: true });
+      expect(w.token()).toBe(TUNNEL_TOKEN);
+      expect(w.handler.requests).toHaveLength(asked);
+      expect(await w.leaks()).toBe(false);
+    });
+
+    it("finishes in a script resumed at each step's hash, the copy and the connector once each", async () => {
+      const w = await portainerRun();
+      // The adoption waits once for its own approval, after the copy and the connector.
+      const adoption = "d".repeat(64);
+      steps.adoptSite.mockImplementationOnce(async () => ({
+        pendingPlanHash: adoption,
+        next: [`Run it again with --approve ${adoption}.`],
+      }));
+      let approve: string | undefined;
+      let result: Awaited<ReturnType<typeof finish>> | undefined;
+      for (let run = 0; run < 6 && result?.done !== true; run++) {
+        result = await finish(w, script(w, approve), true);
+        approve = result.pendingPlanHash;
+      }
+      expect(result).toMatchObject({ step: "finished", done: true });
+      expect(w.token()).toBe(TUNNEL_TOKEN);
+      expect(w.appStack().AWS_ACCESS_KEY_ID).toBe(w.keys.b.storage.accessKeyId);
+      const copies = w.r2?.runs.filter((run) => run.verb === "copy") ?? [];
+      expect(copies).toHaveLength(1);
+      expect(await w.leaks()).toBe(false);
+    });
   });
 });

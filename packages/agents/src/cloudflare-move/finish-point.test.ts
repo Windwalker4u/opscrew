@@ -5,6 +5,7 @@ import { r2Endpoint } from "../shared";
 import { BACKUPS_BUCKET } from "./buckets.fakes";
 import {
   A_TUNNEL_TOKEN,
+  APP_KEY,
   appEnv,
   B_PEM,
   ORIGIN_KEY,
@@ -88,9 +89,12 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
 
   it("puts A's bucket settings back without a deploy or an approval, and keeps B's origin certificate", async () => {
     const w = await serverPointWorld();
-    // Nothing of B's written yet: nothing to put back.
+    // No record of A's values: they are written (a write of B's may have stopped part-way), once.
     await backToA(w.session, w.environment);
-    expect(w.github.secrets.size).toBe(0);
+    expect(w.github.secrets.get("OPSCREW_APP_ENV")).toBe(appEnv(w.a.storage, w.old.id));
+    const written = w.deps.audit.entries.length;
+    await backToA(w.session, w.environment);
+    expect(w.deps.audit.entries).toHaveLength(written);
 
     const point = await pointAtB(w.session, w.environment);
     await point.approve();
@@ -109,6 +113,21 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
     const next = await pointAtB(w.session, w.environment);
     expect(next.asks?.hash).toBe(point.asks?.hash);
     expect(w.leaks()).toBe(false);
+  });
+
+  it("hides the app's secret values once it read them, never its bucket's name, region or endpoint", async () => {
+    const w = await serverPointWorld();
+    await pointAtB(w.session, w.environment);
+    const shown = w.deps.redactor.redact(w.server.appEnv);
+    expect(shown).not.toContain(APP_KEY);
+    expect(shown).not.toContain(w.a.storage.secretAccessKey);
+    for (const line of [
+      "S3_BUCKET=shop-uploads",
+      "AWS_REGION=auto",
+      `AWS_ENDPOINT_URL_S3=${r2Endpoint(w.old.id)}`,
+    ]) {
+      expect(shown).toContain(line);
+    }
   });
 
   it("stops plainly, naming no address, when the server's settings can't be read", async () => {

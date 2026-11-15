@@ -37,7 +37,7 @@ export const ORIGIN_KEY = fakeSecret("private-key-pem", "b-origin");
 const PULL_PEM = pem("the app's client certificate");
 const PULL_KEY = fakeSecret("private-key-pem", "client");
 /** The app's own value on the server, besides its bucket's settings. */
-const APP_KEY = fakeSecret("generic-password", "app-key");
+export const APP_KEY = fakeSecret("generic-password", "app-key");
 /** A's tunnel token, as the app's stack in Portainer holds it before the finish. */
 export const A_TUNNEL_TOKEN = fakeSecret("cloudflare-token", "a-tunnel");
 const PORTAINER_TOKEN = fakeSecret("generic-password", "finish-portainer-api-key");
