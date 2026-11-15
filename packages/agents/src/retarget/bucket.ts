@@ -1,15 +1,6 @@
 import { join } from "node:path";
+import { exists, formatMoney, plural, realSleep } from "@opscrew/core";
 import {
-  durationText,
-  exists,
-  formatMoney,
-  OpsCrewError,
-  plural,
-  realSleep,
-  replaceNames,
-} from "@opscrew/core";
-import {
-  IMAGES,
   type MoveLayoutName,
   type ProviderBucket,
   providerBucket,
@@ -21,7 +12,6 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import { isCloudProvider } from "@opscrew/plan-schema";
-import { z } from "zod";
 import { sellsBuckets, storageOffers } from "../design/storage";
 import { confirmBucketGone } from "../destroy/storage";
 import { providerProfile } from "../providers";
@@ -36,7 +26,13 @@ import {
   withPreviousBucketKey,
 } from "../provision/storage";
 import { type StorageLogin, writeRenderedFiles } from "../shared";
-import { STORAGE_ENDPOINTS } from "../shared/app-env";
+import {
+  type BucketSize,
+  type RcloneRunner,
+  rcloneSize,
+  s3Remote,
+  sshRclone,
+} from "../shared/rclone";
 import { discardSaved, planBounded, quietly } from "./plans";
 import { auditMove, type MoveBase, type MoveSession, remoteFor, serverOf } from "./session";
 import { sideTarget, sideWords } from "./sides";
@@ -58,12 +54,7 @@ export interface BucketKeys {
   next: StorageLogin;
 }
 
-/** A bucket's size, from `rclone size --json`. */
-export interface BucketSize {
-  bytes: number;
-  /** Its number of objects. */
-  count: number;
-}
+export type { BucketSize } from "../shared/rclone";
 
 /** The move's two buckets while it takes the bucket along; undefined otherwise. */
 export function movingBucket(
@@ -200,68 +191,17 @@ export function bucketSummaryLines(bucket: MovingBucket, size: BucketSize): stri
   ];
 }
 
-/** One `[name]` section of rclone's configuration for `bucket`'s service, with `key`. */
-function rcloneRemote(name: "old" | "new", bucket: ProviderBucket, key: StorageLogin): string[] {
-  const endpoint = STORAGE_ENDPOINTS[bucket.provider];
-  if (endpoint === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
-  return [
-    `[${name}]`,
-    "type = s3",
-    `provider = ${bucket.provider === "digitalocean" ? "DigitalOcean" : "Other"}`,
-    `access_key_id = ${key.accessKeyId}`,
-    `secret_access_key = ${key.secretAccessKey}`,
-    `endpoint = ${endpoint(bucket.region)}`,
-    ...(bucket.provider === "hetzner" ? [`region = ${bucket.region}`] : []),
-    // The buckets exist: rclone never tries to create one.
-    "no_check_bucket = true",
-  ];
-}
-
 /**
- * A one-off container of the pinned rclone image running `args`. Its configuration, with the
- * keys, arrives on standard input only: `sh` writes it to a file only this container can read, in
- * a `/tmp` held in memory (never on the server's disk), which goes with the container (`--rm`).
- * The image's entrypoint is rclone itself, so `sh` is named as the entrypoint.
+ * rclone on the `which` side's server (as `deploy`, over SSH), its configuration on standard
+ * input only, a failure naming the server in words.
  */
-function rcloneCommand(args: string): string {
-  return `docker run -i --rm --tmpfs /tmp:mode=0700 --entrypoint sh ${IMAGES.rclone.ref} -c 'umask 077; cat >/tmp/r.conf; exec rclone --config /tmp/r.conf ${args}'`;
-}
-
-/**
- * Runs rclone `args` on the `which` side's server (as `deploy`, over SSH) with `config` on its
- * standard input. Returns its output; a failure stops with the end of its output, redacted and
- * with the server's address in words.
- */
-async function runRclone(
-  session: MoveBase,
-  which: "old" | "new",
-  input: { args: string; config: string[]; timeoutMs: number; what: string; hint: string },
-): Promise<string> {
+function sideRclone(session: MoveBase, which: "old" | "new"): RcloneRunner {
   const { deps } = session;
   const host = serverOf(session, which).ipv4;
   const words = sideWords(sideTarget(session, which), which);
   const remote = remoteFor(deps, session.services, session.deployKey.privateKeyFile, host);
-  const result = await remote.run(rcloneCommand(input.args), {
-    input: `${input.config.join("\n")}\n`,
-    timeoutMs: input.timeoutMs,
-  });
-  if (result.exitCode === 0 && result.timedOut !== true) return result.stdout;
-  const said = (result.stderr || result.stdout).trim().split("\n").slice(-5).join("\n");
-  const why =
-    result.timedOut === true
-      ? `it did not finish within ${durationText(input.timeoutMs)}`
-      : said || `exit code ${result.exitCode}`;
-  throw new OpsCrewError(
-    "COMMAND_FAILED",
-    replaceNames(deps.redactor.redact(`${input.what} failed on ${words}: ${why}`), [host], words),
-    { hint: input.hint },
-  );
+  return sshRclone(deps.redactor, remote, words);
 }
-
-const RcloneSizeSchema = z.object({
-  count: z.number().int().nonnegative(),
-  bytes: z.number().nonnegative(),
-});
 
 /**
  * The size and object count of the bucket being left (`rclone size --json`), read in a one-off
@@ -272,26 +212,16 @@ export async function measureBucket(
   bucket: MovingBucket,
   key: StorageLogin,
 ): Promise<BucketSize> {
-  const { deps } = session;
-  deps.reporter.step(`Measuring the bucket ${bucketWords(bucket.old)}`);
-  const out = await runRclone(session, "old", {
-    args: `size --json old:${bucket.old.bucket}`,
-    config: rcloneRemote("old", bucket.old, key),
+  session.deps.reporter.step(`Measuring the bucket ${bucketWords(bucket.old)}`);
+  return rcloneSize(sideRclone(session, "old"), {
+    path: `old:${bucket.old.bucket}`,
+    bucket: bucket.old.bucket,
+    command: session.command,
+    config: s3Remote("old", bucket.old, key),
     timeoutMs: 30 * MINUTE,
     what: `Measuring the bucket ${bucket.old.bucket}`,
     hint: `Check that the key of the bucket ${bucket.old.bucket} can list it, then run \`${session.command}\` again. Nothing was changed.`,
   });
-  let size: z.infer<typeof RcloneSizeSchema>;
-  try {
-    size = RcloneSizeSchema.parse(JSON.parse(out));
-  } catch {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `rclone did not say the size of the bucket ${bucket.old.bucket}. Nothing was changed.`,
-      { hint: `Run \`${session.command}\` again.` },
-    );
-  }
-  return { bytes: size.bytes, count: size.count };
 }
 
 /**
@@ -316,9 +246,12 @@ export async function copyBucket(
       ? `Copying the files of the bucket ${bucketWords(old)} to ${bucketWords(next)}, from ${fresh}`
       : `Copying what changed in the bucket ${old.bucket} to ${bucketWords(next)}`,
   );
-  await runRclone(session, "new", {
-    args: `${how} old:${old.bucket} new:${next.bucket} --checksum --metadata`,
-    config: [...rcloneRemote("old", old, keys.old), ...rcloneRemote("new", next, keys.next)],
+  await sideRclone(
+    session,
+    "new",
+  )({
+    args: [how, `old:${old.bucket}`, `new:${next.bucket}`, "--checksum", "--metadata"],
+    config: [...s3Remote("old", old, keys.old), ...s3Remote("new", next, keys.next)],
     // A copy that runs out of time is no harm: the next run copies only what is still missing.
     timeoutMs,
     what: `Copying the bucket ${old.bucket} to ${bucketWords(next)}`,
