@@ -603,7 +603,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Why: L3's prepare added B's zone again after L2's abort had deleted it; Cloudflare restored the 15 records the zone held (their `created_on` was L2's copy time), and the copy, planned against a zone that didn't exist yet, failed with "An identical record already exists".
   - Done: `applyZone` lists B's records right after creating the zone and creates only `recordsMissingFromZone(plan.create, present)`; a test where the new zone comes back with one of A's records (it failed with the live error before the fix).
 
-- [ ] T2845 The engine's local backend path doesn't depend on the drive letter's case (found preparing the real move, 2026-11-15)
+- [x] T2845 The engine's local backend path doesn't depend on the drive letter's case (found preparing the real move, 2026-11-15)
   - Why: a further app provisioned from a terminal that opened the checkout as `d:\…` (VS Code) recorded its local backend path with a lower-case drive in `.terraform/terraform.tfstate`; a later run from a `D:\…` terminal passed the same path upper-case, and `tofu init` stopped with "Backend configuration changed" though it is the same file.
   - Owns: `packages/iac-engine/src/**` and `packages/agents/src/**` where the local backend's state path and `TF_DATA_DIR` are built (find them), their tests
   - Accept:
