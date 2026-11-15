@@ -32,6 +32,19 @@ export interface SharedRemoval {
 }
 
 /**
+ * Where a move to another Cloudflare account plans a removal instead: that account (its `client`
+ * and id) and its own record (`recordPath`) of the zone named `zone`, which may still be pending
+ * there (`pendingZone`).
+ */
+export interface SharedRemovalAccount {
+  client: CloudflareClient;
+  accountId: string;
+  zone: string;
+  recordPath: string;
+  pendingZone: boolean;
+}
+
+/**
  * Plans the removal of everything this app's record lists in OpsCrew's shared Cloudflare rules
  * and its origin TLS (read-only): `undefined` without a record or when it lists nothing. On a
  * server the plan is applied only after the app's site is gone, so it is made for an origin that
@@ -39,28 +52,33 @@ export interface SharedRemoval {
  * and every one it replaced are revoked. The zone's minimum TLS stays. The `www` redirect rule's
  * phase is read only when the record has (or created) it, as for a site on Cloudflare's hosting.
  * A damaged record, and a finding of the plan (OpsCrew's rule changed by someone, a refused read),
- * stop before anything changes. Its hints name `command` (default `opscrew destroy`).
+ * stop before anything changes. Its hints name `command` (default `opscrew destroy`). A move plans
+ * it in another `account` ({@link SharedRemovalAccount}); by default it is the app's record, with
+ * the shared Cloudflare client.
  */
 export async function planSharedRemoval(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: Pick<DestroyServices, "sharedCloudflare">,
   command = COMMAND,
+  account?: SharedRemovalAccount,
 ): Promise<SharedRemoval | undefined> {
-  const record = await readCloudflareRecord(deps.paths);
+  const record = await readCloudflareRecord(deps.paths, account?.recordPath);
   if (record === undefined) return undefined;
   const tls = record.tls?.origin !== undefined || record.tls?.client !== undefined;
   if (!listsHostnames(record) && record.createdEntrypoints.length === 0 && !tls) return undefined;
   // The redirect's phase, also when an interrupted destroy left its ruleset empty.
   const { phase } = SHARED_RULES["opscrew-www-redirect"];
   const redirect = listsRedirect(record) || record.createdEntrypoints.includes(phase);
-  const client = sharedCloudflareClient(deps, services);
+  const client = account?.client ?? sharedCloudflareClient(deps, services);
   const zone = await zonePlan(deps, {
     client,
     zoneId: record.zoneId,
     // A removal changes only the zone's rules and the app's certificates: no account is involved.
-    accountId: "",
-    zone: plan.dns.domain === undefined ? "the app's zone" : `the zone of ${plan.dns.domain}`,
+    accountId: account?.accountId ?? "",
+    zone:
+      account?.zone ??
+      (plan.dns.domain === undefined ? "the app's zone" : `the zone of ${plan.dns.domain}`),
     desired: {
       hostnames: {},
       ...(tls ? { tls: { proxied: [], served: { requiring: [] } } } : {}),
@@ -68,6 +86,9 @@ export async function planSharedRemoval(
     record,
     command,
     ...(redirect ? { redirect: true } : {}),
+    ...(account === undefined
+      ? {}
+      : { recordPath: account.recordPath, pendingZone: account.pendingZone }),
   });
   return { client, zone };
 }

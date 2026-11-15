@@ -9,11 +9,12 @@
 import { OpsCrewError } from "@opscrew/core";
 import { portainerWebhookHostname, workerCustomDomainAddresses } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { hasStateFile } from "../shared";
 import { promoteNewCredentials } from "./deploy-secrets";
 import { appMark, type MoveMark } from "./marks";
-import { hasContent, importIntoShadow, shadowEngineEnv, shadowRoots } from "./shadow";
+import { importIntoShadow, shadowEngineEnv, shadowRoots, shadowStateAddresses } from "./shadow";
 import { checkAdoption } from "./shadow-plans";
-import type { MoveEnvironment, MoveSession, ShadowRoot, StepStop } from "./types";
+import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** The Access application's resource in `module.access`, by the kind of hostname it protects. */
 const ACCESS_RESOURCES: Readonly<Record<MoveMark["access"][number]["kind"], string>> = {
@@ -96,12 +97,6 @@ async function accessPieces(
   });
 }
 
-/** The addresses in `root`'s shadow state (`state list` outside the root: no `TF_DATA_DIR`). */
-async function shadowAddresses(session: MoveSession, root: ShadowRoot): Promise<string[]> {
-  const env = await shadowEngineEnv(session, root, "b");
-  return session.engine.stateResources(root.statePath, { env });
-}
-
 /**
  * Adopts in B what the switch made there for `environment` (plan 7.5, 13b), then promotes its
  * deploy credentials: a Workers site's custom domains, and the Access applications and the records
@@ -118,7 +113,7 @@ export async function adoptSite(
 ): Promise<StepStop | undefined> {
   const found = (await shadowRoots(session, environment)).find((root) => root.name === "main");
   // Without its shadow state (the swap took it), an import would make one holding only that piece.
-  const main = found !== undefined && (await hasContent(found.statePath)) ? found : undefined;
+  const main = found !== undefined && (await hasStateFile(found.statePath)) ? found : undefined;
   const wanted =
     main === undefined
       ? []
@@ -127,7 +122,8 @@ export async function adoptSite(
           ...(await accessPieces(session, environment)),
         ];
   if (main !== undefined && wanted.length > 0) {
-    const held = await shadowAddresses(session, main);
+    const env = await shadowEngineEnv(session, main, "b");
+    const held = await shadowStateAddresses(session, main.statePath, env);
     for (const { address, id } of wanted) {
       if (id !== undefined && !held.includes(address)) {
         await importIntoShadow(session, main, address, id);

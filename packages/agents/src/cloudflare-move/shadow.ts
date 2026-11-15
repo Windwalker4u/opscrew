@@ -7,7 +7,7 @@
  * root's `terraform.tfvars.json` and keeps A's former state under `cloudflare-move/a-removal/` for
  * the removal of A's account-scoped pieces. The plans are in `shadow-plans.ts`.
  */
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   exists,
@@ -31,6 +31,7 @@ import { backupsBucketOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import {
   backupsStateFile,
+  hasStateFile,
   pagesVerificationStateFile,
   projectEngine,
   readOutputsAfterInit,
@@ -39,6 +40,7 @@ import {
   storageStateFile,
 } from "../shared";
 import { rootVariables } from "../shared/root-variables";
+import { moveFolder } from "./paths";
 import type { MoveRoot } from "./progress";
 import { A_TOKEN_VAR, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
 import type { MoveEnvironment, MoveSession, ShadowRoot } from "./types";
@@ -106,15 +108,6 @@ export function removalTarget(
  */
 export function removedBy(side: ShadowSide, scope: CloudflareAddressScope | undefined): boolean {
   return side === "a" ? scope === "account" : scope !== undefined;
-}
-
-/** True when `file` exists and is not empty. */
-export async function hasContent(file: string): Promise<boolean> {
-  try {
-    return (await stat(file)).size > 0;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -208,7 +201,7 @@ export async function shadowRoots(
   ) {
     dirs.push(["pages-verification", pagesVerificationRootDir(plan)]);
   }
-  const folder = join(paths.stateDir, "cloudflare-move");
+  const folder = moveFolder(paths);
   const roots: ShadowRoot[] = [];
   for (const [name, relative] of dirs) {
     const dir = join(session.paths.root, relative);
@@ -273,6 +266,20 @@ function auditState(
 }
 
 /**
+ * The addresses in a state of the move (`statePath`), listed with the engine's environment `env`
+ * (`shadowEngineEnv`'s) without its `TF_DATA_DIR`: `state list` runs outside the root, where a data
+ * folder of the root's would ask for its init.
+ */
+export function shadowStateAddresses(
+  session: MoveSession,
+  statePath: string,
+  env: Record<string, string | undefined>,
+): Promise<string[]> {
+  const { TF_DATA_DIR: _data, ...outside } = env;
+  return session.engine.stateResources(statePath, { env: outside });
+}
+
+/**
  * Takes every resource `leaves` names out of the state `statePath`, initialised in the data folder
  * `env` names: a state-only change, nothing in either account changes.
  */
@@ -286,9 +293,7 @@ async function removeFromState(
   const { engine } = session;
   const { statePath, env } = target;
   await engine.init(root.dir, { env, backendConfig: { path: statePath } });
-  // `state list` runs outside the root, where a data folder of the root's would ask for its init.
-  const { TF_DATA_DIR: _data, ...outside } = env;
-  const addresses = (await engine.stateResources(statePath, { env: outside })).filter((address) =>
+  const addresses = (await shadowStateAddresses(session, statePath, env)).filter((address) =>
     leaves(cloudflareAddressScope(address)),
   );
   if (addresses.length === 0) return;
@@ -307,7 +312,7 @@ export async function seedShadow(session: MoveSession, root: ShadowRoot): Promis
   const mark = seedingMark(root);
   if ((await exists(root.statePath)) && !(await exists(mark))) return;
   const { environmentState } = shadowFiles(root);
-  if (!(await hasContent(environmentState))) return;
+  if (!(await hasStateFile(environmentState))) return;
   await mkdir(dirname(root.statePath), { recursive: true });
   await writeFile(mark, "");
   await copyFile(environmentState, root.statePath);
@@ -421,7 +426,7 @@ export async function prepareRemoval(
     await rm(seedingMark(root));
     return;
   }
-  if (!(await hasContent(statePath))) return;
+  if (!(await hasStateFile(statePath))) return;
   const env = await shadowEngineEnv(session, root, side, dataDir);
   await removeFromState(
     session,
@@ -432,6 +437,43 @@ export async function prepareRemoval(
       ? "kept out of the removal in the old Cloudflare account"
       : "kept out of the removal in the new Cloudflare account",
   );
+}
+
+/** A bucket root's `prevent_destroy` guard, as the storage and backups roots are rendered. */
+const DESTROY_GUARD = /\s*lifecycle\s*\{\s*prevent_destroy\s*=\s*true\s*\}/g;
+
+/**
+ * A copy of bucket root `root`'s committed files in `dir` (in the environment's move folder),
+ * its `.tf` files without the bucket's `prevent_destroy` guard, for the bucket's destroy plan (as
+ * `destroy --delete-data` plans one): `root` with its folder there. The committed root keeps the
+ * guard; the copy is made again on every run. Stops (`INTERNAL`), planning nothing, when a copied
+ * `.tf` file still names `prevent_destroy`.
+ */
+export async function unguardedCopy(
+  session: MoveSession,
+  root: ShadowRoot,
+  dir: string,
+): Promise<ShadowRoot> {
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  for (const entry of await readdir(root.dir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const from = join(root.dir, entry.name);
+    if (!entry.name.endsWith(".tf")) {
+      await copyFile(from, join(dir, entry.name));
+      continue;
+    }
+    const text = (await readFile(from, "utf8")).replace(DESTROY_GUARD, "");
+    if (text.includes("prevent_destroy")) {
+      throw new OpsCrewError(
+        "INTERNAL",
+        `OpsCrew couldn't take the prevent_destroy guard out of its copy of ${toPosixRelative(session.paths.root, from)}, so it planned no deletion of the bucket. Nothing in the bucket was changed.`,
+        { hint: BUG },
+      );
+    }
+    await writeFile(join(dir, entry.name), text);
+  }
+  return { ...root, dir };
 }
 
 /**

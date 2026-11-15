@@ -5,9 +5,9 @@
  * end (the app's mark, its record and its local files deleted). Nothing zone-scoped in A is ever
  * planned: A's records, rules and settings go with A's moved zone, which Cloudflare deletes.
  */
-import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { exists, listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { rm } from "node:fs/promises";
+import { basename } from "node:path";
+import { exists, listText, toPosixRelative } from "@opscrew/core";
 import { backupsBucketOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import {
@@ -17,20 +17,22 @@ import {
   providerBucket,
   STORAGE_KEY_VARS,
 } from "../provision/storage";
-import { readOutputsAfterInit, stateContents, stringOutput } from "../shared";
+import { TUNNEL_ID_OUTPUTS } from "../rotate/infra";
+import { hasStateFile, readOutputsAfterInit, stateContents, stringOutput } from "../shared";
 import { emptyBuckets } from "./buckets";
 import { waitForNoConnection } from "./connector";
 import { NEW_DEPLOY_TOKEN_VAR } from "./deploy-secrets";
 import { deleteMark, readMarks } from "./marks";
+import { moveFolder } from "./paths";
 import { appProgressFile, type MoveRoot } from "./progress";
 import { writeMoveRecord } from "./record";
 import {
   dropShadow,
-  hasContent,
   prepareRemoval,
   shadowEngineEnv,
   shadowFiles,
   shadowRoots,
+  unguardedCopy,
 } from "./shadow";
 import { planRemoval } from "./shadow-plans";
 import { aSharedRecordPath, pendingStop, revokeAOrigin } from "./shared";
@@ -39,12 +41,6 @@ import type { MoveEnvironment, MoveResult, MoveSession, ShadowRoot, StepStop } f
 
 /** The roots whose bucket carries `prevent_destroy`. */
 const GUARDED: ReadonlySet<MoveRoot> = new Set(["storage", "backups"]);
-
-/** The bucket's guard as OpsCrew renders it: `lifecycle { prevent_destroy = true }`. */
-const GUARD = /\r?\n[ \t]*lifecycle \{\s*prevent_destroy = true\s*\}/g;
-
-/** The root-module outputs with the id of each of the app's tunnels. */
-const TUNNEL_ID_OUTPUTS = ["tunnel_id", "portainer_tunnel_id"] as const;
 
 /** `shop (prod)`. */
 function appWords(environment: MoveEnvironment): string {
@@ -57,47 +53,16 @@ function accountWords(account: { accountId: string; name?: string }): string {
 }
 
 /**
- * A copy of a bucket root without the bucket's guard, for its destroy plan (as
- * `destroy --delete-data` plans one): the committed root's files in
- * `cloudflare-move/a-removal/root/<root folder>/`, its `.tf` files without `prevent_destroy`.
- * Never written into the repository; made again on every run.
- */
-async function unguardedCopy(root: ShadowRoot): Promise<ShadowRoot> {
-  const removal = dirname(dirname(shadowFiles(root).removalState));
-  const dir = join(removal, "root", basename(root.dir));
-  await rm(dir, { recursive: true, force: true });
-  await mkdir(dir, { recursive: true });
-  for (const entry of await readdir(root.dir, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const from = join(root.dir, entry.name);
-    if (!entry.name.endsWith(".tf")) {
-      await copyFile(from, join(dir, entry.name));
-      continue;
-    }
-    const text = (await readFile(from, "utf8")).replace(GUARD, "");
-    if (text.includes("prevent_destroy")) {
-      throw new OpsCrewError(
-        "INTERNAL",
-        `OpsCrew couldn't take the guard off the bucket in ${basename(root.dir)}/${entry.name} for its removal, so it planned nothing. Nothing was changed.`,
-        { hint: "This is a bug in OpsCrew; please report it." },
-      );
-    }
-    await writeFile(join(dir, entry.name), text);
-  }
-  return { ...root, dir };
-}
-
-/**
  * Waits until Cloudflare reports no connection for each of A's tunnels the main root's former
  * state names (its `tunnel_id` and `portainer_tunnel_id` outputs, read with A's token): the
  * connectors serve B's tunnels by now, and Cloudflare refuses to delete a connected tunnel.
  */
 async function waitForATunnels(session: MoveSession, main: ShadowRoot): Promise<void> {
   const { removalState, removalDataDir } = shadowFiles(main);
-  if (!(await hasContent(removalState))) return;
+  if (!(await hasStateFile(removalState))) return;
   const env = await shadowEngineEnv(session, main, "a", removalDataDir);
   const outputs = await readOutputsAfterInit(session.engine, main.dir, removalState, env);
-  for (const name of TUNNEL_ID_OUTPUTS) {
+  for (const name of Object.values(TUNNEL_ID_OUTPUTS)) {
     const tunnelId = stringOutput(outputs, name);
     if (tunnelId !== undefined) {
       await waitForNoConnection(session, session.accounts.a, tunnelId);
@@ -169,7 +134,8 @@ export async function removeA(
   }
   const copies: ShadowRoot[] = [];
   for (const root of roots.filter((one) => GUARDED.has(one.name))) {
-    copies.push(await unguardedCopy(root));
+    const dir = moveFolder(environment.paths, "a-removal", "root", basename(root.dir));
+    copies.push(await unguardedCopy(session, root, dir));
   }
   const standing: MoveRoot[] = [];
   for (const copy of copies) {
@@ -266,7 +232,7 @@ export async function endFinish(session: MoveSession): Promise<MoveResult> {
   if (stop !== undefined) return { step: "adopted", done: false, ...stop };
   for (const environment of session.environments) {
     for (const root of await shadowRoots(session, environment)) await dropShadow(session, root);
-    await rm(join(environment.paths.stateDir, "cloudflare-move"), { recursive: true, force: true });
+    await rm(moveFolder(environment.paths), { recursive: true, force: true });
   }
   await rm(appProgressFile(session.paths), { force: true });
   for (const environment of session.environments) {

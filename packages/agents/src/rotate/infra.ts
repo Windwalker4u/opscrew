@@ -158,7 +158,7 @@ const DEPLOY_KEY_TYPES: ReadonlySet<string> = new Set(
 );
 
 /** The root module's output with each tunnel's id. */
-const TUNNEL_ID_OUTPUTS: Readonly<Record<TunnelModule, string>> = {
+export const TUNNEL_ID_OUTPUTS: Readonly<Record<TunnelModule, string>> = {
   tunnel: "tunnel_id",
   portainer_tunnel: "portainer_tunnel_id",
 };

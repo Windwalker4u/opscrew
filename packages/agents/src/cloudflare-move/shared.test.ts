@@ -478,19 +478,18 @@ describe.skipIf(!findExecutable("git"))(
       expect(m.h.cloudflare.calls).toEqual([]);
     });
 
-    it("gives B's one-time PIN login's id to an Access-using environment's first prepare, and to every run after", async () => {
+    it("makes B's one-time PIN login at an Access-using environment's first prepare, and nothing on a run after", async () => {
       const m = await moving("an own server with Portainer on a subdomain");
       const stop = await planBShared(m.session, m.env);
       expect(stop.stop?.pendingPlanHash).toBeDefined();
-      expect(stop.oneTimePinId).toBeUndefined();
       m.session.approve = stop.stop?.pendingPlanHash;
       const first = await planBShared(m.session, m.env);
       const login = m.h.cloudflare
         .account("New")
         .identityProviders.find((provider) => provider.type === "onetimepin");
       expect(login).toBeDefined();
-      expect(first).toEqual({ oneTimePinId: login?.id });
-      expect(await planBShared(m.session, m.env)).toEqual({ oneTimePinId: login?.id });
+      expect(first).toEqual({});
+      expect(await planBShared(m.session, m.env)).toEqual({});
       expect(m.handler.requests).toHaveLength(1);
       expect(writesOnly(m, "b")).toBe(true);
     });

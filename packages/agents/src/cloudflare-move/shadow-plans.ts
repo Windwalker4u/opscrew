@@ -25,6 +25,7 @@ import {
   type SavedPlan,
 } from "../provision";
 import { discardSaved, type PlanStep, planBounded, quietly } from "../retarget/plans";
+import { hasStateFile } from "../shared";
 import {
   clearPending,
   type MovePlanAction,
@@ -38,7 +39,6 @@ import {
   accountIds,
   committedValues,
   environmentOf,
-  hasContent,
   removalTarget,
   removedBy,
   type ShadowSide,
@@ -323,7 +323,7 @@ export async function planRemoval(
   side: ShadowSide,
 ): Promise<PlanStep> {
   const { statePath, dataDir } = removalTarget(root, side);
-  if (!(await hasContent(statePath))) return { kind: "unchanged", outputs: {} };
+  if (!(await hasStateFile(statePath))) return { kind: "unchanged", outputs: {} };
   const what = rootWords(session, root);
   const { a, b } = session.accounts;
   const account = accountName(side === "a" ? a : b);

@@ -5,11 +5,9 @@
  * pieces removed at an abort (plan 8.).
  */
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import {
   type CloudflareClient,
   planShared,
-  SHARED_RULES,
   type SharedDesired,
   type SharedPlan,
   type SharedRecord,
@@ -19,6 +17,7 @@ import { fingerprintSha256, OpsCrewError } from "@opscrew/core";
 import { PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { planSharedRemoval } from "../destroy/shared-rules";
 import {
   forgetNextOriginTls,
   keepCertificateRequest,
@@ -39,31 +38,24 @@ import { portainerInspect } from "../provision/portainer-flow";
 import {
   applyZonePlan,
   describeCloudflarePlan,
-  listsHostnames,
   planSharedCloudflare,
   readCloudflareRecord,
   type SharedCloudflareInput,
   type ZonePlan,
-  zonePlan,
 } from "../provision/shared-cloudflare";
 import { appliesNow } from "../retarget/steps";
 import { approveCommand } from "../retarget/texts";
-import { listsRedirect } from "../serverless/cloudflare/rules";
 import { portainerClientFor, recordedStack } from "../shared";
+import { moveFolder } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { refusal } from "./texts";
 import type { MoveEnvironment, MoveSession, MoveZone, StepStop } from "./types";
 
 const PHASE = "cloudflare-move";
 
-/** The environment's move folder: `<state folder>/cloudflare-move/` (data model 3). */
-function moveDir(environment: MoveEnvironment): string {
-  return join(environment.paths.stateDir, "cloudflare-move");
-}
-
 /** B's shared record of the environment: `cloudflare-move/cloudflare.json`. */
 export function bSharedRecordPath(environment: MoveEnvironment): string {
-  return join(moveDir(environment), "cloudflare.json");
+  return moveFolder(environment.paths, "cloudflare.json");
 }
 
 /**
@@ -71,7 +63,7 @@ export function bSharedRecordPath(environment: MoveEnvironment): string {
  * (`cloudflare-move/a-removal/cloudflare.json`): what {@link revokeAOrigin} reads.
  */
 export function aSharedRecordPath(environment: MoveEnvironment): string {
-  return join(moveDir(environment), "a-removal", "cloudflare.json");
+  return moveFolder(environment.paths, "a-removal", "cloudflare.json");
 }
 
 /** The phase deps with the environment's paths (its records and generated values). */
@@ -140,8 +132,6 @@ export function pendingStop(
 export interface SharedStep {
   /** Set when the run stopped on purpose: the plan waits for `--approve <hash>`. */
   stop?: StepStop;
-  /** The id of the account's one-time PIN login, when the plan uses it and it exists. */
-  oneTimePinId?: string;
 }
 
 /**
@@ -166,12 +156,10 @@ async function cloudflareStep(
   const { plan, details } = input.zone;
   const app = environment.plan.app.name;
   const run = { app, command: session.command, phase: PHASE } as const;
-  const pin = (id: string | undefined): SharedStep =>
-    id === undefined ? {} : { oneTimePinId: id };
   if (plan.changes.length === 0) {
     await applyZonePlan(deps, input.client, input.zone, { ...run, planOnly: false });
     await clearPending(session.deps, input.key);
-    return pin(plan.oneTimePinId);
+    return {};
   }
   // A removal's plan is not shown by the apply (a destroy shows it in its preview).
   if (input.allowDestroy === true) deps.reporter.info(details);
@@ -187,7 +175,7 @@ async function cloudflareStep(
     return { stop: pendingStop(session, plan.hash, result.deletes ? ["--confirm", app] : []) };
   }
   await clearPending(session.deps, input.key);
-  return pin(result.applied?.oneTimePinId ?? plan.oneTimePinId);
+  return {};
 }
 
 /**
@@ -197,8 +185,7 @@ async function cloudflareStep(
  * the zone's minimum TLS as provision decides it, and the origin TLS ({@link originTlsForB}). On
  * B's pending zone the apply doesn't wait for origin pulls to deploy, and the plan counts settings
  * still deploying as on, so it settles after its first apply. Approved by its hash; a
- * non-interactive run without it stops with it. Gives B's one-time PIN login's id, for the shadow
- * plans, when the environment uses it.
+ * non-interactive run without it stops with it.
  * @throws OpsCrewError `INTERNAL` when B's zone doesn't exist yet (the zone plan makes it first);
  * `PHASE_PRECONDITION` when B's record names a zone that is no longer there.
  */
@@ -363,7 +350,8 @@ export async function revokeAOrigin(
 
 /**
  * B's shared pieces of the environment removed at an abort (plan 8.), from B's record
- * ({@link bSharedRecordPath}): its hostnames off OpsCrew's rules in B's zone, B's client
+ * ({@link bSharedRecordPath}), as destroy's `planSharedRemoval` plans them with B's client in B's
+ * zone: its hostnames off OpsCrew's rules there, B's client
  * certificate turned off and deleted, and B's Origin CA certificate revoked (B's edge never served
  * the app, so nothing waits for the server), approved by its hash with `allowDestroy` and the app's
  * name typed; then `originTlsNext` forgotten. The Zero Trust organization and login in B stay, as
@@ -381,30 +369,19 @@ export async function removeBShared(
   const zone = record === undefined ? undefined : await readBZone(session);
   if (record !== undefined && (zone === undefined || zone.id !== record.zoneId)) {
     await rm(recordPath, { force: true });
-  } else if (record !== undefined && zone !== undefined) {
-    const tls = record.tls?.origin !== undefined || record.tls?.client !== undefined;
-    const { phase } = SHARED_RULES["opscrew-www-redirect"];
-    const redirect = listsRedirect(record) || record.createdEntrypoints.includes(phase);
-    if (listsHostnames(record) || record.createdEntrypoints.length > 0 || tls) {
-      const removal = await zonePlan(deps, {
-        client: b.client,
-        zoneId: zone.id,
-        accountId: b.accountId,
-        zone: session.zone,
-        desired: {
-          hostnames: {},
-          ...(tls ? { tls: { proxied: [], served: { requiring: [] } } } : {}),
-        },
-        record,
-        command: session.command,
-        ...(redirect ? { redirect: true } : {}),
-        recordPath,
-        pendingZone: zone.status !== "active",
-      });
+  } else if (zone !== undefined) {
+    const removal = await planSharedRemoval(deps, environment.plan, {}, session.command, {
+      client: b.client,
+      accountId: b.accountId,
+      zone: session.zone,
+      recordPath,
+      pendingZone: zone.status !== "active",
+    });
+    if (removal !== undefined) {
       const step = await cloudflareStep(session, environment, {
         key: { action: "abort-shared", environment: environment.environment },
         client: b.client,
-        zone: removal,
+        zone: removal.zone,
         allowDestroy: true,
       });
       if (step.stop !== undefined) return step.stop;

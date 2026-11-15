@@ -22,6 +22,7 @@ import {
   describeChanges,
   existingStateEngine,
   hasState,
+  hasStateFile,
   projectEngine,
   stateContents,
 } from "./engine";
@@ -179,6 +180,17 @@ describe("projectEngine", () => {
     expect(await hasState(deps.paths)).toBe(false);
     await writeFile(tfstateFile(deps.paths), "{}");
     expect(await hasState(deps.paths)).toBe(true);
+  });
+
+  it("tells whether any state file has content", async () => {
+    const deps = await createTestPhaseDeps();
+    const file = join(deps.paths.stateDir, "elsewhere", "storage.tfstate");
+    expect(await hasStateFile(file)).toBe(false);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, "");
+    expect(await hasStateFile(file)).toBe(false);
+    await writeFile(file, "{}");
+    expect(await hasStateFile(file)).toBe(true);
   });
 });
 

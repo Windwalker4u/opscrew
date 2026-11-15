@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
+import { findExecutable, fingerprintSha256, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { edgeReadCommand } from "../provision/origin-tls";
@@ -303,7 +303,7 @@ describe.skipIf(!findExecutable("git"))("removeA", () => {
     const error = await caught(removeA(w.session, w.environment));
     expect(error.code).toBe("INTERNAL");
     expect(error.message).toBe(
-      "OpsCrew couldn't take the guard off the bucket in storage/main.tf for its removal, so it planned nothing. Nothing was changed.",
+      `OpsCrew couldn't take the prevent_destroy guard out of its copy of ${toPosixRelative(w.session.paths.root, file)}, so it planned no deletion of the bucket. Nothing in the bucket was changed.`,
     );
     // No bucket root was planned.
     expect(w.engine.planDirs.filter((dir) => dir.includes("a-removal"))).toEqual([]);

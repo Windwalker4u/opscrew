@@ -90,13 +90,18 @@ export function backupsStateFile(paths: Pick<ProjectPaths, "files">): string {
   return join(paths.files.tfstateDir, "backups.tfstate");
 }
 
-/** True when the environment's state file exists and is not empty. */
-export async function hasState(paths: ProjectPaths): Promise<boolean> {
+/** True when the state file `file` exists and is not empty. */
+export async function hasStateFile(file: string): Promise<boolean> {
   try {
-    return (await stat(tfstateFile(paths))).size > 0;
+    return (await stat(file)).size > 0;
   } catch {
     return false;
   }
+}
+
+/** True when the environment's state file exists and is not empty. */
+export function hasState(paths: ProjectPaths): Promise<boolean> {
+  return hasStateFile(tfstateFile(paths));
 }
 
 /**

@@ -6,8 +6,8 @@
  * delegation, the DS records, B's zone and the records' steps. Every step reads what is there
  * before it acts, so a run after any stop or interruption goes on where the abort got to.
  */
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { readdir, rm } from "node:fs/promises";
+import { basename, join } from "node:path";
 import {
   inspectShared,
   OPSCREW_MANAGED_COMMENT,
@@ -28,12 +28,19 @@ import type { PhaseDeps } from "../context";
 import { hosts, sameHosts } from "../domain/switch";
 import { forgetStorageKey } from "../provision/storage";
 import { appliesNow } from "../retarget/steps";
-import { tunnelModules } from "../rotate/infra";
-import { PlanRefusedError, requestApproval, stateContents, stringOutput } from "../shared";
+import { TUNNEL_ID_OUTPUTS, tunnelModules } from "../rotate/infra";
+import {
+  hasStateFile,
+  PlanRefusedError,
+  requestApproval,
+  stateContents,
+  stringOutput,
+} from "../shared";
 import { emptyBuckets, moveBuckets } from "./buckets";
 import { removeBesideConnector, waitForNoConnection } from "./connector";
 import { dropNewCredentials } from "./deploy-secrets";
 import { appMark, deleteMark, markName, parseMarks } from "./marks";
+import { moveFolder } from "./paths";
 import {
   appProgressFile,
   clearPending,
@@ -44,7 +51,7 @@ import {
 } from "./progress";
 import { abortingMove, readMoveRecords, writeMoveRecord } from "./record";
 import { openMoveSession } from "./session";
-import { dropShadow, hasContent, prepareRemoval, shadowOutputs, shadowRoots } from "./shadow";
+import { dropShadow, prepareRemoval, shadowOutputs, shadowRoots, unguardedCopy } from "./shadow";
 import { planRemoval } from "./shadow-plans";
 import { pendingStop, removeBShared } from "./shared";
 import { clearDsNotes, readPublished } from "./switch-ds";
@@ -60,12 +67,6 @@ import type {
 } from "./types";
 
 const PHASE = "cloudflare-move";
-
-/** The main root's output with each tunnel's id (as rotate reads them). */
-const TUNNEL_ID_OUTPUTS = { tunnel: "tunnel_id", portainer_tunnel: "portainer_tunnel_id" } as const;
-
-/** A bucket root's `prevent_destroy` guard, as the storage and backups roots are rendered. */
-const DESTROY_GUARD = /\s*lifecycle\s*\{\s*prevent_destroy\s*=\s*true\s*\}/g;
 
 /**
  * `opscrew cloudflare move --abort`: refused before any change unless the app has a recorded move
@@ -216,10 +217,10 @@ async function removeFromB(session: MoveSession): Promise<StepStop | undefined> 
 
 /** The environment's shadow state files that are not empty (`cloudflare-move/tfstate/`). */
 async function shadowStates(environment: MoveEnvironment): Promise<string[]> {
-  const dir = join(environment.paths.stateDir, "cloudflare-move", "tfstate");
+  const dir = moveFolder(environment.paths, "tfstate");
   const found: string[] = [];
   for (const name of await readdir(dir).catch(() => [] as string[])) {
-    if (name.endsWith(".tfstate") && (await hasContent(join(dir, name))))
+    if (name.endsWith(".tfstate") && (await hasStateFile(join(dir, name))))
       found.push(join(dir, name));
   }
   return found;
@@ -250,10 +251,7 @@ async function rootsOf(session: MoveSession, environment: MoveEnvironment): Prom
   const bName = b.name ?? b.accountId;
   const app = environment.plan.app.name;
   const one = held.length === 1;
-  const folder = toPosixRelative(
-    session.paths.root,
-    join(environment.paths.stateDir, "cloudflare-move"),
-  );
+  const folder = toPosixRelative(session.paths.root, moveFolder(environment.paths));
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `${session.zone} is no longer in the Cloudflare account ${bName}, but ${listText(held)} still ${one ? "holds" : "hold"} pieces of ${app} there, so OpsCrew keeps ${one ? "it" : "them"}. Nothing was deleted.`,
@@ -291,7 +289,10 @@ async function removeEnvironment(
   // that name.
   const held = await bucketsHeld(session, environment, buckets);
   const pairs: [ShadowRoot, ShadowRoot][] = [];
-  for (const root of held) pairs.push([root, await withoutGuard(session, root)]);
+  for (const root of held) {
+    const dir = moveFolder(environment.paths, "delete", basename(root.dir));
+    pairs.push([root, await unguardedCopy(session, root, dir)]);
+  }
   for (const [root, copy] of pairs) {
     const emptied = await emptyBuckets(session, environment, "b", [root.name]);
     if (emptied !== undefined) return emptied;
@@ -393,33 +394,6 @@ async function destroyRoot(
 }
 
 /**
- * A copy of a bucket root's committed files without its `prevent_destroy` guard, in the
- * environment's move folder (`cloudflare-move/delete/<root folder>/`), as `destroy --delete-data`
- * plans from one: the root with its folder there. The committed root keeps the guard. Stops
- * (`INTERNAL`) when a copied `.tf` file still names `prevent_destroy`.
- */
-async function withoutGuard(session: MoveSession, root: ShadowRoot): Promise<ShadowRoot> {
-  const dir = join(dirname(dirname(root.statePath)), "delete", basename(root.dir));
-  await rm(dir, { recursive: true, force: true });
-  await mkdir(dir, { recursive: true });
-  for (const name of await readdir(root.dir)) {
-    const from = join(root.dir, name);
-    if (!(await stat(from)).isFile()) continue;
-    const text = await readFile(from, "utf8");
-    const copy = name.endsWith(".tf") ? text.replace(DESTROY_GUARD, "") : text;
-    if (name.endsWith(".tf") && copy.includes("prevent_destroy")) {
-      throw new OpsCrewError(
-        "INTERNAL",
-        `OpsCrew couldn't take the prevent_destroy guard out of its copy of ${toPosixRelative(session.paths.root, from)}, so it planned no deletion of the bucket. Nothing in the bucket was changed.`,
-        { hint: "This is a bug in OpsCrew; please report it." },
-      );
-    }
-    await writeFile(join(dir, name), copy);
-  }
-  return { ...root, dir };
-}
-
-/**
  * After B's pieces are gone: each environment's move folder deleted, B's zone deleted or kept,
  * B's kept bucket keys forgotten, the repository's switch file and DS notes deleted when no other
  * app of it records a move (an approved switch plan kept there would let a later move switch
@@ -430,7 +404,7 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
   const { deps, zone } = session;
   const { a } = session.accounts;
   for (const env of session.environments) {
-    await rm(join(env.paths.stateDir, "cloudflare-move"), { recursive: true, force: true });
+    await rm(moveFolder(env.paths), { recursive: true, force: true });
   }
   const outcome = await deleteBZone(session);
   if ("stop" in outcome) return { step: move.step, done: false, ...outcome.stop };

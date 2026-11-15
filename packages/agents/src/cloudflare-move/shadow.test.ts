@@ -10,7 +10,7 @@ import {
 } from "@opscrew/core";
 import { backupsRootDir, pagesVerificationRootDir, storageRootDir } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { environmentPaths } from "../environments/paths";
 import { backupsStateFile, pagesVerificationStateFile, storageStateFile } from "../shared";
@@ -25,6 +25,7 @@ import {
   testPlan,
   withBucket,
 } from "../testing";
+import { moveFolder } from "./paths";
 import { readAppProgress } from "./progress";
 import { serverPlan, unencrypted, ZONE } from "./session.fakes";
 import {
@@ -36,7 +37,9 @@ import {
   shadowFiles,
   shadowOutputs,
   shadowRoots,
+  shadowStateAddresses,
   swapShadow,
+  unguardedCopy,
 } from "./shadow";
 import {
   addressState,
@@ -642,6 +645,60 @@ describe.skipIf(!findExecutable("git"))("the removals", () => {
       }),
     ]);
     expect(await leaked(h, engine)).toBe(false);
+  });
+
+  it("lists a state's addresses outside the root, without its data folder", async () => {
+    const engine = new StateFileEngine();
+    const h = await serverHarness(engine);
+    const { session, main } = h;
+    await mkdir(dirname(main.statePath), { recursive: true });
+    await writeFile(main.statePath, addressState([record, tunnel]));
+    const listed = vi.spyOn(engine, "stateResources");
+    const env = { CLOUDFLARE_API_TOKEN: h.tokens.b, TF_DATA_DIR: main.dataDir };
+    expect(await shadowStateAddresses(session, main.statePath, env)).toEqual([record, tunnel]);
+    expect(listed).toHaveBeenCalledWith(main.statePath, {
+      env: { CLOUDFLARE_API_TOKEN: h.tokens.b },
+    });
+  });
+
+  it("copies a bucket root without its prevent_destroy guard, and refuses a guard it can't take out", async () => {
+    const h = await serverHarness(new StateFileEngine());
+    const dir = join(h.root, "storage-root");
+    const guarded = [
+      'resource "cloudflare_r2_bucket" "this" {',
+      '  name = "shop-files"',
+      "",
+      "  lifecycle {",
+      "    prevent_destroy = true",
+      "  }",
+      "}",
+      "",
+    ].join("\n");
+    await mkdir(join(dir, ".terraform"), { recursive: true });
+    await writeFile(join(dir, "main.tf"), guarded);
+    await writeFile(join(dir, "terraform.tfvars.json"), '{ "app": "shop" }\n');
+    const root: ShadowRoot = { ...h.main, name: "storage", dir };
+    const to = moveFolder(prodOf(h).paths, "delete", "storage-root");
+    expect(await unguardedCopy(h.session, root, to)).toEqual({ ...root, dir: to });
+    expect((await readdir(to)).sort()).toEqual(["main.tf", "terraform.tfvars.json"]);
+    expect(await readFile(join(to, "main.tf"), "utf8")).toBe(
+      'resource "cloudflare_r2_bucket" "this" {\n  name = "shop-files"\n}\n',
+    );
+    expect(await readFile(join(to, "terraform.tfvars.json"), "utf8")).toBe('{ "app": "shop" }\n');
+    expect(await readFile(join(dir, "main.tf"), "utf8")).toBe(guarded);
+
+    await writeFile(
+      join(dir, "main.tf"),
+      guarded.replace(
+        "prevent_destroy = true",
+        "prevent_destroy = true\n    ignore_changes = [name]",
+      ),
+    );
+    const error = await unguardedCopy(h.session, root, to).catch((e: unknown) => e);
+    expect((error as OpsCrewError).code).toBe("INTERNAL");
+    expect((error as OpsCrewError).message).toBe(
+      "OpsCrew couldn't take the prevent_destroy guard out of its copy of storage-root/main.tf, so it planned no deletion of the bucket. Nothing in the bucket was changed.",
+    );
   });
 
   it("drops a root's files only once its states hold nothing", async () => {
