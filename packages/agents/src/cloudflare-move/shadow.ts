@@ -472,18 +472,13 @@ export async function unguardedCopy(
 /**
  * Deletes `root`'s files of the move: its shadow state, A's former state and their data folders.
  * Refuses, deleting nothing, while either state holds resources (or can't be read): the pieces in
- * it would be left without a state. `checked`: this run found both empty already, with no state
- * written since (the finish's end), so they are not read again.
+ * it would be left without a state.
  */
-export async function dropShadow(
-  session: MoveSession,
-  root: ShadowRoot,
-  options: { checked?: boolean } = {},
-): Promise<void> {
+export async function dropShadow(session: MoveSession, root: ShadowRoot): Promise<void> {
   const environment = environmentOf(session, root);
   const deps = environmentDeps(session, environment);
   const { removalState, removalDataDir } = shadowFiles(root);
-  for (const state of options.checked === true ? [] : [root.statePath, removalState]) {
+  for (const state of [root.statePath, removalState]) {
     if ((await stateContents(deps, state, async () => session.engine)) === "nothing") continue;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

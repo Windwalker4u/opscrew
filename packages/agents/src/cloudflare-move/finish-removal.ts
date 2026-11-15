@@ -229,7 +229,7 @@ export async function endFinish(session: MoveSession): Promise<MoveResult> {
   for (const environment of session.environments) {
     // `requireNothingLeft` found every state empty; the mark's deletion wrote none.
     for (const root of await shadowRoots(session, environment)) {
-      await dropShadow(session, root, { checked: true });
+      await dropShadow(session, root);
     }
     await rm(moveFolder(environment.paths), { recursive: true, force: true });
   }
