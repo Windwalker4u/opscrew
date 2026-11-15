@@ -1,4 +1,4 @@
-import { findExecutable } from "@opscrew/core";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { portainerWebhookHostname, sshHostname } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -125,6 +125,8 @@ describe.skipIf(!findExecutable("git"))("adoptSite", () => {
       ]);
       // The check plan holds nothing back: B's zone is active.
       expect(w.engine.planOptions.at(-1)?.vars).not.toHaveProperty("access_applications");
+      // The empty check plan asks nothing: only the credentials are approved.
+      expect(w.handler.requests.map((r) => r.kind)).toEqual(["github-secrets"]);
       expect(secrets(w)[secret]).toBe(TOKEN_ID);
       expect(Object.keys(secrets(w)).filter((name) => name.endsWith("_NEW"))).toEqual([]);
       expect(w.aWrites()).toEqual([]);
@@ -140,7 +142,7 @@ describe.skipIf(!findExecutable("git"))("adoptSite", () => {
     expect(w.handler.requests).toEqual([]);
   });
 
-  it("stops a script with the check plan's hash when B lacks a piece, then goes on with --approve", async () => {
+  it("stops before any approval and before the credentials when the check plan would change something", async () => {
     const w = await finishWorld("own", { step: "prepared" });
     await w.seedShadow(
       "main",
@@ -157,21 +159,22 @@ describe.skipIf(!findExecutable("git"))("adoptSite", () => {
     });
     const app = "module.access.cloudflare_zero_trust_access_application.ssh[0]";
     w.engine.checkChanges = [change(app, "create")];
-    const stop = await adoptSite(asScript(w), w.environment);
-    const hash = stop?.pendingPlanHash ?? "";
-    expect(hash).toMatch(/^[0-9a-f]{64}$/);
-    expect((await readAppProgress(w.environment.paths)).pending?.action).toBe("shadow-create");
+    for (const session of [w.session, asScript(w)]) {
+      const error = await adoptSite(session, w.environment).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect((error as OpsCrewError).message).toBe(
+        [
+          "Once the custom domains and Access pieces are imported, the plan of shop's Cloudflare pieces (prod) in the Cloudflare account New would still change something, so OpsCrew stopped. Nothing was changed.",
+          `  create ${app}`,
+        ].join("\n"),
+      );
+      expect((error as OpsCrewError).hint).toContain("opscrew drift");
+    }
     expect(w.engine.imports.map(({ id }) => id)).toEqual([`${w.bZone.id}/${record.id}`]);
     expect(w.engine.applied).toEqual([]);
-
-    const next = await adoptSite(asScript(w, hash), w.environment);
-    expect(w.engine.applied).toHaveLength(1);
-    // Then the deploy's credentials wait for their own approval.
-    expect((await readAppProgress(w.environment.paths)).pending?.action).toBe("finish-secrets");
-    w.engine.checkChanges = [];
-    expect(await adoptSite(asScript(w, next?.pendingPlanHash), w.environment)).toBeUndefined();
-    expect(secrets(w).OPSCREW_TUNNEL_SERVICE_TOKEN_ID).toBe(TOKEN_ID);
-    expect(w.engine.imports).toHaveLength(1);
+    expect(w.handler.requests).toEqual([]);
+    expect((await readAppProgress(w.environment.paths)).pending).toBeUndefined();
+    expect(secrets(w).OPSCREW_TUNNEL_SERVICE_TOKEN_ID).toBeUndefined();
     expect(w.leaks()).toBe(false);
   });
 });

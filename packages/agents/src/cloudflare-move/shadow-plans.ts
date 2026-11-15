@@ -290,6 +290,28 @@ export async function checkAfterSwap(session: MoveSession, root: ShadowRoot): Pr
 }
 
 /**
+ * The check plan of `root`'s shadow state once the finish imported what the switch made in B (a
+ * site's custom domains, the Access applications and their records): the shadow state and data
+ * folder with B's token and `root.vars` (the committed values, nothing held back). It must be
+ * empty: no change needs no approval, and any change stops before one.
+ */
+export async function checkAdoption(session: MoveSession, root: ShadowRoot): Promise<PlanStep> {
+  const what = rootWords(session, root);
+  const b = accountName(session.accounts.b);
+  return shadowPlanStep(session, root, {
+    action: "site-adopt",
+    statePath: root.statePath,
+    env: await shadowEngineEnv(session, root, "b", root.dataDir),
+    vars: root.vars,
+    check: planBounded({
+      lead: `Once the custom domains and Access pieces are imported, the plan of ${what} in the Cloudflare account ${b} would still change something, so OpsCrew stopped. Nothing was changed.`,
+      hint: `Run \`opscrew drift\` to see what differs between the app's files and what runs, put that right, then run \`${session.command}\` again.`,
+    }),
+    title: `Check ${what} in the Cloudflare account ${b}`,
+  });
+}
+
+/**
  * The destroy plan of `side`'s pieces of `root` (after `prepareRemoval`): with A's token, A's ids
  * and A's removal state and data folder, only A's account-scoped pieces; with B's, from the shadow
  * state, every piece B has of the app. Its approval needs the app's name typed (`allowDestroy`).

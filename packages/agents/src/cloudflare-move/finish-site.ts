@@ -12,8 +12,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { promoteNewCredentials } from "./deploy-secrets";
 import { appMark, type MoveMark } from "./marks";
 import { hasContent, importIntoShadow, shadowEngineEnv, shadowRoots } from "./shadow";
-import { planShadow } from "./shadow-plans";
-import { pendingStop } from "./shared";
+import { checkAdoption } from "./shadow-plans";
 import type { MoveEnvironment, MoveSession, ShadowRoot, StepStop } from "./types";
 
 /** The Access application's resource in `module.access`, by the kind of hostname it protects. */
@@ -109,10 +108,10 @@ async function shadowAddresses(session: MoveSession, root: ShadowRoot): Promise<
  * deploy credentials: a Workers site's custom domains, and the Access applications and the records
  * of the hostnames they protect, each imported into the main shadow state (`importIntoShadow`)
  * unless it is there already; then the check plan of the main shadow root with the committed
- * values, which is empty when the switch made everything (a piece B lacks is created after its
- * approval; anything else stops before one); then `promoteNewCredentials`. Nothing for an
- * environment without them but the credentials. Resumable: a run imports only what is missing. A
- * script stops with the check plan's hash. Nothing in A is read or changed.
+ * values (`checkAdoption`), which must be empty: any change stops before an approval and before
+ * the credentials; then `promoteNewCredentials`. Nothing for an
+ * environment without them but the credentials. Resumable: a run imports only what is missing.
+ * Nothing in A is read or changed.
  */
 export async function adoptSite(
   session: MoveSession,
@@ -134,8 +133,8 @@ export async function adoptSite(
       }
     }
     const { custom_domains: _later, ...vars } = main.vars;
-    const step = await planShadow(session, { ...main, vars });
-    if (step.kind === "pending") return pendingStop(session, step.planHash);
+    // Empty, or a stop before any approval: an empty plan is never pending.
+    await checkAdoption(session, { ...main, vars });
   }
   return promoteNewCredentials(session, environment);
 }
