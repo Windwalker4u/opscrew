@@ -32,11 +32,14 @@ import {
 } from "../provision/portainer";
 import { connectPortainer } from "../provision/portainer-flow";
 import { describeStackPlan, requireNoStackBlockers } from "../provision/stack-plan";
+import { appliesNow } from "../retarget/steps";
 import type { TunnelModule } from "../rotate/infra-connectors";
 import { PlanRefusedError } from "../shared";
-import type { MoveSession } from "./types";
+import { clearPending, type MovePlanKey, writePending } from "./progress";
+import { pendingStop } from "./shared";
+import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
-/** The phase the move's host and stack plans are audited under. */
+/** The phase the move's steps are audited under. */
 export const MOVE_PHASE: PhaseName = "cloudflare-move";
 
 /** What the Portainer connector's `planNextStacks` is given. */
@@ -127,18 +130,21 @@ function besideStacks(
  * The beside stacks' stack plan in the user's Portainer: `run` B's `tunnels` (each stack with its
  * token) or `remove` them. Portainer is reached with its pinned certificate and inspected
  * read-only; the plan is saved, shown and checked for blockers; one that changes nothing is
- * skipped; else it is approved by its hash (`stack-apply`), checked against the approval store and
- * applied, the tokens sent only to Portainer. The start, every change and a failure are audited by
- * the hash.
+ * skipped. A run that doesn't apply it now (not interactive, and no `--approve` with its hash)
+ * records it as waiting (`connector`) and stops with the command that applies it; else it is
+ * approved by its hash (`stack-apply`), checked against the approval store and applied, the tokens
+ * sent only to Portainer. The start, every change and a failure are audited by the hash.
  */
 export async function nextStacksStep(
   session: MoveSession,
-  deps: PhaseDeps,
-  plan: DeployPlan,
+  environment: MoveEnvironment,
   api: NextStacksApi,
   want: { run: readonly { module: TunnelModule; token: string }[] } | { remove: true },
-): Promise<void> {
+): Promise<StepStop | undefined> {
   const command = session.command;
+  const deps: PhaseDeps = { ...session.deps, paths: environment.paths };
+  const { plan } = environment;
+  const key: MovePlanKey = { action: "connector", environment: environment.environment };
   const { stacks, tokens } =
     "run" in want ? besideStacks(plan, want.run) : { stacks: "remove" as const, tokens: {} };
   const connected = await connectPortainer(deps, {
@@ -178,7 +184,12 @@ export async function nextStacksStep(
         ? "The new Cloudflare account's tunnel connectors run beside the current ones in your Portainer; nothing in it changes."
         : "No connector of the new Cloudflare account runs beside the current ones in your Portainer; nothing in it changes.",
     );
-    return;
+    await clearPending(deps, key);
+    return undefined;
+  }
+  if (!appliesNow(session, hash)) {
+    await writePending(deps, key, hash);
+    return pendingStop(session, hash);
   }
   const approval = await deps.approvals.request({
     kind: "stack-apply",
@@ -230,5 +241,7 @@ export async function nextStacksStep(
   for (const change of changes.filter((item) => applied.includes(item.id))) {
     await audit(`stack change ${change.id}`, "approved", change.title);
   }
+  await clearPending(deps, key);
   deps.reporter.success(`Changed your Portainer (${plural(applied.length, "change")} applied).`);
+  return undefined;
 }

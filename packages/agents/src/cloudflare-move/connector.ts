@@ -5,39 +5,49 @@
  * a server (the user's own in tunnel mode as root, a cloud server's subdomain connector as the
  * deploy login) each change is a host plan approved by its hash, with B's token only on the host
  * adapter's standard input; in the user's Portainer, the beside stacks go through one stack plan
- * approved by its hash ({@link ./connector-stacks}).
+ * approved by its hash ({@link ./connector-stacks}). A script stops at each plan with its hash and
+ * the command that applies it.
  */
 import {
   type HostFacts,
   hostPlanHash,
   planNextTunnelConnector,
   planNextTunnelConnectorRemoval,
-  planTunnelToken,
   tunnelProject,
 } from "@opscrew/connector-ssh-host";
-import { durationText, errorMessage, OpsCrewError } from "@opscrew/core";
-import {
-  keepNewerPins,
-  renderNextTunnelConnectorCompose,
-  renderTunnelConnectorCompose,
-} from "@opscrew/iac-templates";
+import { durationText, errorMessage, OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import { keepNewerPins, renderTunnelConnectorCompose } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
 import type { NetworkServer } from "../provision/network";
-import { tunnelModules } from "../rotate/infra";
+import { appliesNow } from "../retarget/steps";
+import { TUNNEL_ID_OUTPUTS, tunnelModules } from "../rotate/infra";
 import {
   portainerTunnelConnectors,
   type RotatedTunnel,
-  serverTunnelConnectors,
+  TUNNEL_TOKEN_OUTPUTS,
   type TunnelConnectors,
+  tunnelTokenStep,
 } from "../rotate/infra-connectors";
-import { approveAndApplyHostPlan, committedText, pollUntil, serverLogin } from "../shared";
+import {
+  approveAndApplyHostPlan,
+  committedText,
+  type HostPlanStep,
+  pollUntil,
+  readValidJson,
+  serverLogin,
+  stringOutput,
+} from "../shared";
 import { TUNNEL_CLOSE_TIMEOUT_MS, tunnelBusyError } from "../shared/tunnel-connections";
 import { networkServer, type VpnServices } from "../vpn/servers";
 import { MOVE_PHASE, type NextStacksApi, nextStacksApi, nextStacksStep } from "./connector-stacks";
 import { stacksForB } from "./finish-point";
-import type { MoveAccount, MoveEnvironment, MoveSession } from "./types";
+import { moveFolder } from "./paths";
+import { clearPending, type MovePlanKey, writePending } from "./progress";
+import { pendingStop } from "./shared";
+import type { MoveAccount, MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** The beside connector's folder on a cloud server, as the deploy login (beside the main one's). */
 export const CLOUD_NEXT_TUNNEL_DIR = `${CLOUD_TUNNEL_DIR}-next`;
@@ -54,9 +64,8 @@ export interface ConnectorOptions {
   /** The beside stacks in Portainer: the Portainer connector's `planNextStacks` and apply. */
   nextStacks?: NextStacksApi;
   /**
-   * The main connectors the finish restarts with B's tokens (tests; default rotate's
-   * `serverTunnelConnectors`, or `portainerTunnelConnectors` planning the stacks with B's values,
-   * `stacksForB`, by the target).
+   * The main connectors in the user's Portainer that the finish restarts with B's tokens (tests;
+   * default rotate's `portainerTunnelConnectors` planning the stacks with B's values, `stacksForB`).
    */
   connectors?: TunnelConnectors;
 }
@@ -69,6 +78,29 @@ function environmentDeps(session: MoveSession, environment: MoveEnvironment): Ph
 /** The server in words: the user's own, or the one OpsCrew created. */
 function serverWords(plan: DeployPlan): string {
   return plan.target.provider === "own" ? "your server" : "the app's server";
+}
+
+/**
+ * B's tunnels of `environment` with their connectors' tokens, from its main shadow root's
+ * `outputs` (each token registered with the redactor); none without a tunnel.
+ * @throws OpsCrewError `ENGINE_FAILED` with `missing`'s words when the outputs hold no tunnel the
+ * environment has, or not its token.
+ */
+export function moveTunnels(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  outputs: Record<string, unknown>,
+  missing: { message: string; hint: string },
+): MoveTunnel[] {
+  return tunnelModules(environment.plan).map((module) => {
+    const tunnelId = stringOutput(outputs, TUNNEL_ID_OUTPUTS[module]);
+    const token = stringOutput(outputs, TUNNEL_TOKEN_OUTPUTS[module]);
+    if (token !== undefined) session.deps.redactor.addLiteral(token, "tunnel-token");
+    if (tunnelId === undefined || token === undefined) {
+      throw new OpsCrewError("ENGINE_FAILED", missing.message, { hint: missing.hint });
+    }
+    return { module, tunnelId, token };
+  });
 }
 
 /**
@@ -107,12 +139,6 @@ function besideRunAs(plan: DeployPlan): { runAs: "root" | "login"; dir?: string 
     : { runAs: "login", dir: CLOUD_NEXT_TUNNEL_DIR };
 }
 
-/** The connector's Compose file `rendered`, with the newer pins of the main connector's committed one. */
-async function withCommittedPins(deps: PhaseDeps, plan: DeployPlan, rendered: string) {
-  const main = renderTunnelConnectorCompose(plan);
-  return keepNewerPins(await committedText(deps.paths.root, [main.path]), rendered);
-}
-
 /** The one tunnel a server's connector serves (the app's, or its subdomains'). */
 function serverTunnel(tunnels: readonly MoveTunnel[]): MoveTunnel {
   const [tunnel, ...more] = tunnels;
@@ -128,6 +154,36 @@ function serverTunnel(tunnels: readonly MoveTunnel[]): MoveTunnel {
   return tunnel;
 }
 
+/** How a host plan reaches the inspected server. */
+function hostAccess(server: NetworkServer) {
+  return { remote: server.remote, apply: server.apply, verifyLogin: server.verifyLogin };
+}
+
+/**
+ * A host plan of the connector step: shown, and one without changes asks nothing. A run that
+ * doesn't apply it now (not interactive, and no `--approve` with its hash) records it as waiting
+ * (`connector`) and stops with the command that applies it; else it is approved by its hash
+ * (`host-apply`) and applied.
+ */
+async function hostStep(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  step: HostPlanStep,
+): Promise<StepStop | undefined> {
+  const deps = environmentDeps(session, environment);
+  const key: MovePlanKey = { action: "connector", environment: environment.environment };
+  const hash = hostPlanHash(step.plan);
+  const changes = step.plan.steps.some((item) => item.state === "change");
+  const now = changes && appliesNow(session, hash);
+  await approveAndApplyHostPlan(deps, { ...step, planOnly: !now });
+  if (changes && !now) {
+    await writePending(deps, key, hash);
+    return pendingStop(session, hash);
+  }
+  await clearPending(deps, key);
+  return undefined;
+}
+
 /**
  * B's connector beside A's for `environment` (prepare): on a server its host plan
  * (`planNextTunnelConnector`: the Compose project `<app>-tunnel-next`, as root in its folder on the
@@ -135,22 +191,21 @@ function serverTunnel(tunnels: readonly MoveTunnel[]): MoveTunnel {
  * token only on the host adapter's standard input, approved by its hash (`host-apply`); skipped
  * when B's tunnel is connected already (before the finish only the beside connector holds its
  * token). In the user's Portainer the beside stacks, through one stack plan approved by its hash
- * (`stack-apply`), skipped when it changes nothing. `tunnels`: B's tunnels with their tokens;
- * none, nothing to do.
+ * (`stack-apply`), skipped when it changes nothing. A script stops with the plan's hash.
+ * `tunnels`: B's tunnels with their tokens; none, nothing to do.
  */
 export async function besideConnector(
   session: MoveSession,
   environment: MoveEnvironment,
   tunnels: readonly MoveTunnel[],
   options: ConnectorOptions = {},
-): Promise<void> {
-  if (tunnels.length === 0) return;
+): Promise<StepStop | undefined> {
+  if (tunnels.length === 0) return undefined;
   const deps = environmentDeps(session, environment);
   const { plan } = environment;
   for (const tunnel of tunnels) deps.redactor.addLiteral(tunnel.token, "tunnel-token");
   if (plan.target.provider === "portainer") {
-    await nextStacksStep(session, deps, plan, nextStacksApi(options), { run: tunnels });
-    return;
+    return nextStacksStep(session, environment, nextStacksApi(options), { run: tunnels });
   }
   const tunnel = serverTunnel(tunnels);
   const words = serverWords(plan);
@@ -158,16 +213,17 @@ export async function besideConnector(
   const runs = `The new Cloudflare account's tunnel connector runs beside the current one on ${words}; nothing on it changes.`;
   if ((await b.client.tunnelConnections(b.accountId, tunnel.tunnelId)) === "active") {
     deps.reporter.success(runs);
-    return;
+    return undefined;
   }
   const server = await inspectServer(session, deps, plan);
   const { runAs, dir } = besideRunAs(plan);
-  const compose = await withCommittedPins(
-    deps,
-    plan,
-    renderNextTunnelConnectorCompose(plan).content,
+  // The beside connector's Compose file, with the newer pins of the main connector's committed one.
+  const main = renderTunnelConnectorCompose(plan);
+  const compose = keepNewerPins(
+    await committedText(deps.paths.root, [main.path]),
+    renderTunnelConnectorCompose(plan, { next: true }).content,
   );
-  await approveAndApplyHostPlan(deps, {
+  return hostStep(session, environment, {
     plan: planNextTunnelConnector({
       facts: server.facts,
       app: plan.app.name,
@@ -186,33 +242,32 @@ export async function besideConnector(
   });
 }
 
-/** How a host plan reaches the inspected server. */
-function hostAccess(server: NetworkServer) {
-  return { remote: server.remote, apply: server.apply, verifyLogin: server.verifyLogin };
-}
+/** The record of the main connector's restart with B's token on a server: its plan's hash. */
+const RestartedSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
 
 /**
  * The finish's connector step for `environment`: the main connector restarts with B's tunnel
- * token (rotate's `serverTunnelConnectors(…).restart` or `portainerTunnelConnectors(…).restart`,
- * each approved by its hash), then the beside connector is removed, so B's tunnel never pauses.
- * On a server, skipped once the beside connector is gone and B's tunnel is connected (the main
- * connector holds B's token then); a run after the restart restarts the main connector once more
- * while the beside one still serves, and a refused removal names both hashes, which a script
- * approves together. In Portainer each stack plan that changes nothing is skipped. `tunnels`: B's tunnels with their tokens.
+ * token, then the beside connector is removed, so B's tunnel never pauses. On a server the restart
+ * is rotate's host plan (`tunnelTokenStep`), recorded once applied by its hash in the move's
+ * folder: a run that finds the beside connector still there after it (a script's, with the
+ * removal's hash) goes on with the removal. Skipped once the beside connector is gone and B's
+ * tunnel is connected (the main connector holds B's token then). In Portainer the main stacks
+ * restart through rotate's `portainerTunnelConnectors(…).restart`, then the beside stacks go; each
+ * stack plan that changes nothing is skipped. Each plan is approved by its hash; a script stops
+ * at each with its hash. `tunnels`: B's tunnels with their tokens.
  */
 export async function takeOverConnector(
   session: MoveSession,
   environment: MoveEnvironment,
   tunnels: readonly MoveTunnel[],
   options: ConnectorOptions = {},
-): Promise<void> {
-  if (tunnels.length === 0) return;
+): Promise<StepStop | undefined> {
+  if (tunnels.length === 0) return undefined;
   const deps = environmentDeps(session, environment);
   const { plan } = environment;
   for (const tunnel of tunnels) deps.redactor.addLiteral(tunnel.token, "tunnel-token");
   const command = session.command;
   if (plan.target.provider === "portainer") {
-    const api = nextStacksApi(options);
     const connectors =
       options.connectors ??
       portainerTunnelConnectors(deps, plan, {
@@ -220,100 +275,80 @@ export async function takeOverConnector(
         stacksFor: () => stacksForB(session, environment),
       });
     await connectors.restart(tunnels);
-    await nextStacksStep(session, deps, plan, api, { remove: true });
-    return;
+    return nextStacksStep(session, environment, nextStacksApi(options), { remove: true });
   }
   const tunnel = serverTunnel(tunnels);
   const server = await inspectServer(session, deps, plan);
   const b = session.accounts.b;
-  if (
-    !besideOnServer(server.facts, plan.app.name) &&
-    (await b.client.tunnelConnections(b.accountId, tunnel.tunnelId)) === "active"
-  ) {
+  const beside = besideOnServer(server.facts, plan.app.name);
+  if (!beside && (await b.client.tunnelConnections(b.accountId, tunnel.tunnelId)) === "active") {
     deps.reporter.success(
       `The Cloudflare Tunnel connector on ${serverWords(plan)} serves the new account's tunnel, and none runs beside it; nothing on it changes.`,
     );
-    return;
+    return undefined;
   }
-  const connectors =
-    options.connectors ??
-    serverTunnelConnectors(deps, plan, {
-      command,
-      services: serverServices(deps, plan, session),
-    });
-  await connectors.restart([tunnel]);
-  await removeOnServer(session, deps, plan, server, await restartHash(deps, plan, tunnel));
-}
-
-/**
- * The hash of the host plan `serverTunnelConnectors(…).restart` shows for `tunnel`, made from the
- * same inputs, so a refused removal can name both plans a script approves together.
- */
-async function restartHash(deps: PhaseDeps, plan: DeployPlan, tunnel: MoveTunnel) {
-  const own = plan.target.provider === "own";
-  const rendered = renderTunnelConnectorCompose(plan);
-  return hostPlanHash(
-    planTunnelToken({
-      app: plan.app.name,
-      runAs: own ? "root" : "login",
-      connector: {
-        ...(own ? {} : { dir: CLOUD_TUNNEL_DIR }),
-        compose: await withCommittedPins(deps, plan, rendered.content),
-        tunnelId: tunnel.tunnelId,
-      },
-    }),
-  );
+  const restart = await tunnelTokenStep(deps, plan, server, tunnel, {
+    command,
+    phase: MOVE_PHASE,
+  });
+  const hash = hostPlanHash(restart.plan);
+  const record = moveFolder(environment.paths, "connector-restart.json");
+  if (!beside || (await readValidJson(record, RestartedSchema))?.sha256 !== hash) {
+    const stop = await hostStep(session, environment, restart);
+    if (stop !== undefined) return stop;
+    await writeFileAtomic(record, `${JSON.stringify({ sha256: hash })}\n`);
+  }
+  return removeOnServer(session, environment, server, true);
 }
 
 /**
  * The abort's connector step for `environment`: the beside connector removed (on a server its
  * host plan, skipped when no container of it is there; in Portainer the stack plan that removes
- * the beside stacks), each approved by its hash; the main connector stays. B's tunnels are then
- * waited on with {@link waitForNoConnection} before they are destroyed.
+ * the beside stacks), each approved by its hash, a script stopping with it; the main connector
+ * stays. B's tunnels are then waited on with {@link waitForNoConnection} before they are destroyed.
  */
 export async function removeBesideConnector(
   session: MoveSession,
   environment: MoveEnvironment,
   options: ConnectorOptions = {},
-): Promise<void> {
+): Promise<StepStop | undefined> {
   const { plan } = environment;
-  if (tunnelModules(plan).length === 0) return;
-  const deps = environmentDeps(session, environment);
+  if (tunnelModules(plan).length === 0) return undefined;
   if (plan.target.provider === "portainer") {
-    await nextStacksStep(session, deps, plan, nextStacksApi(options), { remove: true });
-    return;
+    return nextStacksStep(session, environment, nextStacksApi(options), { remove: true });
   }
-  await removeOnServer(session, deps, plan, await inspectServer(session, deps, plan));
+  const deps = environmentDeps(session, environment);
+  return removeOnServer(session, environment, await inspectServer(session, deps, plan));
 }
 
 /**
  * The beside connector's removal on `server` (`planNextTunnelConnectorRemoval`), approved by its
- * hash; skipped when no container of it is there. `restarted`: the hash of the main connector's
- * restart this run applied, which a refusal names with the removal's.
+ * hash; skipped when no container of it is there. `takenOver`: the main connector serves B's tunnel
+ * now, which a refusal says.
  */
 async function removeOnServer(
   session: MoveSession,
-  deps: PhaseDeps,
-  plan: DeployPlan,
+  environment: MoveEnvironment,
   server: NetworkServer,
-  restarted?: string,
-): Promise<void> {
+  takenOver = false,
+): Promise<StepStop | undefined> {
+  const { plan } = environment;
+  const deps = environmentDeps(session, environment);
   const words = serverWords(plan);
   const gone = `No connector of the new Cloudflare account runs beside the current one on ${words}; nothing on it changes.`;
   if (!besideOnServer(server.facts, plan.app.name)) {
     deps.reporter.success(gone);
-    return;
+    return undefined;
   }
   const { runAs, dir } = besideRunAs(plan);
-  const removal = planNextTunnelConnectorRemoval({
-    facts: server.facts,
-    app: plan.app.name,
-    runAs,
-    ...(dir === undefined ? {} : { dir }),
-  });
   const command = session.command;
-  await approveAndApplyHostPlan(deps, {
-    plan: removal,
+  return hostStep(session, environment, {
+    plan: planNextTunnelConnectorRemoval({
+      facts: server.facts,
+      app: plan.app.name,
+      runAs,
+      ...(dir === undefined ? {} : { dir }),
+    }),
     ...hostAccess(server),
     title: `Remove the new Cloudflare account's tunnel connector that ran beside the current one on ${words}`,
     server: words,
@@ -321,14 +356,14 @@ async function removeOnServer(
     upToDate: gone,
     command,
     phase: MOVE_PHASE,
-    ...(restarted === undefined
-      ? {}
-      : {
+    ...(takenOver
+      ? {
           refused: {
             message: `The Cloudflare Tunnel connector on ${words} serves the new account's tunnel now, and the host plan that removes the one beside it was not approved, so that one still runs`,
-            hint: `Run \`${command} --approve ${restarted} --approve ${hostPlanHash(removal)}\` when you are ready: the first plan restarts the connector once more while the one beside it serves, the second removes that one.`,
+            hint: `Run \`${command}\` again when you are ready: it removes the one beside it.`,
           },
-        }),
+        }
+      : {}),
     secrets: async () => ({}),
     applying: `Removing the new Cloudflare account's tunnel connector beside the current one on ${words}`,
   });

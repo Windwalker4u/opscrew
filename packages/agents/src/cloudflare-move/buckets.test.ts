@@ -189,6 +189,18 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       expect(w.leaks(error.message, error.hint ?? "")).toBe(false);
     });
 
+    it("a run after the copies ended asks and copies nothing again", async () => {
+      const w = await bucketWorld("cloud");
+      expect(await firstCopies(w.session, w.environment)).toBeUndefined();
+      const asked = w.handler.requests.length;
+      w.r2.runs.length = 0;
+      expect(await firstCopies(w.session, w.environment)).toBeUndefined();
+      expect(await firstCopies(asScript(w), w.environment)).toBeUndefined();
+      expect(w.handler.requests).toHaveLength(asked);
+      expect(w.r2.runs).toEqual([]);
+      expect((await readAppProgress(w.deps.paths)).pending).toBeUndefined();
+    });
+
     it("a refused approval copies nothing", async () => {
       const w = await bucketWorld("cloud");
       w.answers.approve = () => false;

@@ -26,11 +26,10 @@ import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import { forgetStorageKey } from "../provision/storage";
 import { appliesNow } from "../retarget/steps";
 import { tunnelModules } from "../rotate/infra";
-import type { TunnelModule } from "../rotate/infra-connectors";
-import { stringOutput } from "../shared";
 import { readableDeployPause } from "../shared/deploy-pause";
 import { bucketWindow, moveBuckets, recoverWindow } from "./buckets";
-import { type MoveTunnel, takeOverConnector } from "./connector";
+import { type MoveTunnel, moveTunnels, takeOverConnector } from "./connector";
+import { MOVE_PHASE } from "./connector-stacks";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
 import { endFinish, removeA } from "./finish-removal";
 import { adoptSite } from "./finish-site";
@@ -63,8 +62,6 @@ import type {
   StepStop,
 } from "./types";
 
-const PHASE = "cloudflare-move";
-
 /**
  * The finish's steps that have tests of their own, which it calls in plan 7.'s order (tests
  * replace them).
@@ -89,12 +86,6 @@ interface Run {
   options: FinishMoveOptions;
   steps: FinishSteps;
 }
-
-/** The root-module outputs with each of B's tunnels' id and token. */
-const TUNNEL_OUTPUTS: Readonly<Record<TunnelModule, { id: string; token: string }>> = {
-  tunnel: { id: "tunnel_id", token: "tunnel_token" },
-  portainer_tunnel: { id: "portainer_tunnel_id", token: "portainer_tunnel_token" },
-};
 
 /** `shop (prod)`. */
 function appWords(environment: MoveEnvironment): string {
@@ -247,34 +238,28 @@ async function pointStep(run: Run, environment: MoveEnvironment): Promise<StepSt
  * token registered with the redactor); none without a tunnel.
  */
 async function bTunnels(session: MoveSession, environment: MoveEnvironment): Promise<MoveTunnel[]> {
-  const modules = tunnelModules(environment.plan);
+  if (tunnelModules(environment.plan).length === 0) return [];
   const main = (await shadowRoots(session, environment)).find((root) => root.name === "main");
-  if (modules.length === 0 || main === undefined) return [];
-  const outputs = await shadowOutputs(session, main);
-  return modules.map((module) => {
-    const tunnelId = stringOutput(outputs, TUNNEL_OUTPUTS[module].id);
-    const token = stringOutput(outputs, TUNNEL_OUTPUTS[module].token);
-    if (token !== undefined) session.deps.redactor.addLiteral(token, "tunnel-token");
-    if (tunnelId === undefined || token === undefined) {
-      throw new OpsCrewError(
-        "ENGINE_FAILED",
-        `The new Cloudflare account's infrastructure state of ${appWords(environment)} has no tunnel with its token, so OpsCrew can't give the connector its token there. Nothing was changed.`,
-        { hint: `Run \`${MOVE_COMMAND}\` again: it plans the new account's pieces again.` },
-      );
-    }
-    return { module, tunnelId, token };
+  if (main === undefined) return [];
+  return moveTunnels(session, environment, await shadowOutputs(session, main), {
+    message: `The new Cloudflare account's infrastructure state of ${appWords(environment)} has no tunnel with its token, so OpsCrew can't give the connector its token there. Nothing was changed.`,
+    hint: `Run \`${MOVE_COMMAND}\` again: it plans the new account's pieces again.`,
   });
 }
 
 /**
  * The connector (plan 7.4): the main connector takes B's tunnel token, then the one beside it
- * goes (`takeOverConnector`; in the user's Portainer the stacks keep B's values from step 1).
+ * goes (`takeOverConnector`; in the user's Portainer the stacks keep B's values from step 1). A
+ * script stops at each plan with its hash.
  */
-async function connectorStep(run: Run, environment: MoveEnvironment): Promise<undefined> {
+async function connectorStep(
+  run: Run,
+  environment: MoveEnvironment,
+): Promise<StepStop | undefined> {
   const { session } = run;
   const tunnels = await bTunnels(session, environment);
-  if (tunnels.length > 0) await run.steps.takeOverConnector(session, environment, tunnels);
-  return undefined;
+  if (tunnels.length === 0) return undefined;
+  return run.steps.takeOverConnector(session, environment, tunnels);
 }
 
 /**
@@ -300,7 +285,7 @@ async function swapStates(
       kind: "iac",
       actor: "opscrew",
       action: "states swapped",
-      phase: PHASE,
+      phase: MOVE_PHASE,
       target: environment.plan.app.name,
       detail: `${environment.environment}: ${listText(ordered.map((root) => root.name))} now on the new account's states; the committed ids are the new account's`,
     });

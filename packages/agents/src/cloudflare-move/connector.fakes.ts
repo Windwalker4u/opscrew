@@ -364,13 +364,14 @@ export async function connectorWorld(
 export type ConnectorWorld = Awaited<ReturnType<typeof connectorWorld>>;
 
 /**
- * `session` with an approval handler that grants only the plans whose hashes are in `approve`, as
- * a script's `--approve <hash>` flags do (`all`: every plan); its requests are recorded.
+ * `session` as a terminal's where the user approves every plan (`all`), or as a script's run
+ * with `--approve <hash>` (`approve`; none without it): not interactive, its approval handler
+ * granting only that hash. Its requests are recorded.
  */
-export function scripted(session: MoveSession, approve: readonly string[] | "all") {
+export function scripted(session: MoveSession, approve: string | undefined | "all") {
+  const all = approve === "all";
   const handler = new ScriptedApprovalHandler(
-    (request) =>
-      approve === "all" || (request.planHash !== undefined && approve.includes(request.planHash)),
+    (request) => all || (request.planHash !== undefined && request.planHash === approve),
   );
   const { deps } = session;
   const approvals = new ApprovalGate({
@@ -379,5 +380,12 @@ export function scripted(session: MoveSession, approve: readonly string[] | "all
     audit: deps.audit,
     clock: deps.clock,
   });
-  return { session: { ...session, deps: { ...deps, approvals } }, handler };
+  return {
+    session: {
+      ...session,
+      approve: all ? undefined : approve,
+      deps: { ...deps, approvals, interactive: all },
+    },
+    handler,
+  };
 }

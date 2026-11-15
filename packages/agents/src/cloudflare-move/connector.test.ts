@@ -23,6 +23,7 @@ import {
   scripted,
 } from "./connector.fakes";
 import { portainerFinishWorld } from "./finish.fakes";
+import { readAppProgress } from "./progress";
 
 async function failure(run: Promise<unknown>): Promise<OpsCrewError> {
   const error = await run.catch((e: unknown) => e);
@@ -33,6 +34,11 @@ async function failure(run: Promise<unknown>): Promise<OpsCrewError> {
 /** The kinds and hashes of the approvals asked so far. */
 function asked(w: ConnectorWorld) {
   return w.handler.requests.map((r) => [r.kind, r.planHash]);
+}
+
+/** The plan the move's file records as waiting for `--approve`. */
+async function pendingOf(w: ConnectorWorld) {
+  return (await readAppProgress(w.environment.paths)).pending;
 }
 
 /** The host plans applied, with the token each was sent. */
@@ -130,6 +136,36 @@ describe.skipIf(!findExecutable("git"))("besideConnector", () => {
     await besideConnector(w.session, w.environment, w.tunnels, { nextStacks: stacks.api });
     expect(stacks.applies).toHaveLength(1);
     expect(asked(w)).toHaveLength(1);
+  });
+
+  it("stops a script with the host plan's or the stack plan's hash, then applies it with --approve", async () => {
+    for (const target of [{ kind: "own" }, { kind: "portainer", ...PORTAINER_TUNNEL }] as const) {
+      const w = await connectorWorld(target);
+      const stacks = fakeNextStacks();
+      const options = { nextStacks: stacks.api };
+      const first = scripted(w.session, undefined);
+      const stop = await besideConnector(first.session, w.environment, w.tunnels, options);
+      const hash = stop?.pendingPlanHash as string;
+      expect(stop?.next).toEqual([
+        `Review the plan above, then run \`${w.session.command} --approve ${hash}\` to apply it and continue.`,
+      ]);
+      expect(await pendingOf(w)).toMatchObject({
+        action: "connector",
+        environment: "prod",
+        planHash: hash,
+      });
+      expect(first.handler.requests).toEqual([]);
+      expect([w.host.applies, stacks.applies]).toEqual([[], []]);
+
+      const second = scripted(w.session, hash);
+      expect(
+        await besideConnector(second.session, w.environment, w.tunnels, options),
+      ).toBeUndefined();
+      expect(second.handler.requests.map((r) => r.planHash)).toEqual([hash]);
+      expect(w.host.applies.length + stacks.applies.length).toBe(1);
+      expect(await pendingOf(w)).toBeUndefined();
+      expect(await w.leaks(JSON.stringify(stop))).toBe(false);
+    }
   });
 
   it("runs only the beside stacks of the tunnels each Portainer web and redeploy mode has", async () => {
@@ -268,43 +304,76 @@ describe.skipIf(!findExecutable("git"))("takeOverConnector", () => {
       beside: CLOUD_NEXT_TUNNEL_DIR,
     },
   ])(
-    "names both hashes when a script approved the restart but not the removal ($kind)",
+    "goes on in a script from each plan's hash: the restart, then the removal, never the restart again ($kind)",
     async ({ kind, runAs, main, beside }) => {
       const w = await connectorWorld({ kind });
       await besideConnector(w.session, w.environment, w.tunnels);
-      const first = scripted(w.session, []);
-      const refused = await failure(takeOverConnector(first.session, w.environment, w.tunnels));
-      const restart = first.handler.requests[0]?.planHash as string;
-      expect(refused.hint).toContain(`--approve ${restart}`);
+      const first = scripted(w.session, undefined);
+      const waiting = await takeOverConnector(first.session, w.environment, w.tunnels);
+      const restart = waiting?.pendingPlanHash as string;
+      expect(waiting?.next).toEqual([
+        `Review the plan above, then run \`${w.session.command} --approve ${restart}\` to apply it and continue.`,
+      ]);
+      expect(await pendingOf(w)).toMatchObject({
+        action: "connector",
+        environment: "prod",
+        planHash: restart,
+      });
+      expect(first.handler.requests).toEqual([]);
+      expect(w.host.applies).toHaveLength(1);
 
-      const second = scripted(w.session, [restart]);
-      const stopped = await failure(takeOverConnector(second.session, w.environment, w.tunnels));
-      const removal = second.handler.requests[1]?.planHash as string;
-      expect(stopped.code).toBe("APPROVAL_REFUSED");
-      expect(stopped.message).toContain(
-        "serves the new account's tunnel now, and the host plan that removes the one beside it was not approved",
-      );
-      expect(stopped.hint).toContain(`--approve ${restart} --approve ${removal}`);
+      const second = scripted(w.session, restart);
+      const next = await takeOverConnector(second.session, w.environment, w.tunnels);
+      const removal = next?.pendingPlanHash as string;
+      expect(removal).toMatch(/^[0-9a-f]{64}$/);
+      expect(removal).not.toBe(restart);
+      expect(second.handler.requests.map((r) => r.planHash)).toEqual([restart]);
+      expect(await pendingOf(w)).toMatchObject({ planHash: removal });
       expect(w.tunnel.connections.map((c) => c.id).sort()).toEqual(["beside", "main"]);
 
-      // The run with both: the main connector restarts once more while the beside one serves.
-      const third = scripted(w.session, [restart, removal]);
-      await takeOverConnector(third.session, w.environment, w.tunnels);
-      expect(w.host.connected.at(-1)).toBe(1);
-      expect(w.host.applies.at(-1)?.plan.steps[0]?.params).toMatchObject({
-        remove: true,
-        dir: beside,
-        runAs,
-      });
+      // The run with the removal's hash: the main connector holds B's token already.
+      const third = scripted(w.session, removal);
+      expect(await takeOverConnector(third.session, w.environment, w.tunnels)).toBeUndefined();
+      expect(third.handler.requests.map((r) => r.planHash)).toEqual([removal]);
+      expect(w.host.applies).toHaveLength(3);
       expect(w.host.applies[1]?.plan.steps[0]?.params).toMatchObject({
         dir: main,
         runAs,
         rewrite: true,
       });
+      expect(w.host.applies[2]?.plan.steps[0]?.params).toMatchObject({
+        remove: true,
+        dir: beside,
+        runAs,
+      });
+      expect(w.host.connected.at(-1)).toBe(1);
       expect(Math.min(...w.host.connected)).toBeGreaterThan(0);
-      expect(await w.leaks(refused.hint ?? "", stopped.message, stopped.hint ?? "")).toBe(false);
+      expect(await pendingOf(w)).toBeUndefined();
+      // The move's phase in the audit, the restart's among them.
+      const hosts = w.deps.audit.entries.filter((e) => e.kind === "remote-exec");
+      expect(new Set(hosts.map((e) => e.phase))).toEqual(new Set(["cloudflare-move"]));
+      expect(await w.leaks(JSON.stringify([waiting, next]))).toBe(false);
     },
   );
+
+  it("says plainly that the main connector serves B's tunnel when the removal is turned down", async () => {
+    const w = await connectorWorld({ kind: "own" });
+    await besideConnector(w.session, w.environment, w.tunnels);
+    const script = scripted(w.session, undefined).session;
+    const restart = (await takeOverConnector(script, w.environment, w.tunnels))?.pendingPlanHash;
+    // In a terminal, the restart approved and the removal turned down.
+    const terminal = scripted(w.session, restart);
+    terminal.session.deps.interactive = true;
+    const refused = await failure(takeOverConnector(terminal.session, w.environment, w.tunnels));
+    expect(refused.code).toBe("APPROVAL_REFUSED");
+    expect(refused.message).toContain(
+      "serves the new account's tunnel now, and the host plan that removes the one beside it was not approved",
+    );
+    expect(refused.hint).toBe(
+      `Run \`${w.session.command}\` again when you are ready: it removes the one beside it.`,
+    );
+    expect(w.tunnel.connections.map((c) => c.id).sort()).toEqual(["beside", "main"]);
+  });
 
   it("in Portainer restarts the main connectors with B's tokens, then removes the beside stacks", async () => {
     const w = await connectorWorld({ kind: "portainer", ...PORTAINER_TUNNEL });

@@ -13,12 +13,9 @@ import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { lookupPublishedDs } from "../domain/connect-dns";
 import { setupCloudflare } from "../provision";
-import { tunnelModules } from "../rotate/infra";
-import type { TunnelModule } from "../rotate/infra-connectors";
-import { stringOutput } from "../shared";
 import { firstCopies, measureBuckets } from "./buckets";
 import { checkMoveStart } from "./checks";
-import { besideConnector, type MoveTunnel } from "./connector";
+import { besideConnector, moveTunnels } from "./connector";
 import { addNewCredentials } from "./deploy-secrets";
 import { readMarks, writeMark } from "./marks";
 import {
@@ -43,12 +40,6 @@ import type {
   StepStop,
 } from "./types";
 import { applyZone, planZone } from "./zone";
-
-/** The outputs of a main root with each tunnel's id and its connector's token. */
-const TUNNEL_OUTPUTS: Readonly<Record<TunnelModule, { id: string; token: string }>> = {
-  tunnel: { id: "tunnel_id", token: "tunnel_token" },
-  portainer_tunnel: { id: "portainer_tunnel_id", token: "portainer_tunnel_token" },
-};
 
 /**
  * `opscrew cloudflare move [--to <account>]`: prepares the app in B, or continues a recorded
@@ -203,32 +194,6 @@ async function zoneStep(session: MoveSession): Promise<StepStop | undefined> {
 }
 
 /**
- * B's tunnels of the environment with their connectors' tokens, from its main shadow root's
- * outputs (each token registered with the redactor); none without a tunnel.
- * @throws OpsCrewError `ENGINE_FAILED` when the outputs hold no tunnel the environment has.
- */
-function tunnelsOf(
-  session: MoveSession,
-  environment: MoveEnvironment,
-  outputs: Record<string, unknown>,
-): MoveTunnel[] {
-  return tunnelModules(environment.plan).map((module) => {
-    const names = TUNNEL_OUTPUTS[module];
-    const tunnelId = stringOutput(outputs, names.id);
-    const token = stringOutput(outputs, names.token);
-    if (token !== undefined) session.deps.redactor.addLiteral(token, "tunnel-token");
-    if (tunnelId === undefined || token === undefined) {
-      throw new OpsCrewError(
-        "ENGINE_FAILED",
-        `The new Cloudflare account's infrastructure state of ${environment.environment} has no Cloudflare Tunnel with its token, so OpsCrew can't run its connector beside the current one. Nothing on the server was changed.`,
-        { hint: `Run \`${session.command}\` again; it plans the new account's pieces again.` },
-      );
-    }
-    return { module, tunnelId, token };
-  });
-}
-
-/**
  * One environment's steps in B (plan 4.4), each checked before it acts: B's shared plan, the
  * shadow roots, B's connector beside A's, the deploy's extra credentials (from the main shadow
  * root's outputs) and the first copies of its R2 buckets; then its record is `prepared`. A step
@@ -250,7 +215,12 @@ async function prepareEnvironment(
     if (step.kind === "pending") return pendingStop(session, step.planHash);
     if (root.name === "main") outputs = step.outputs;
   }
-  await besideConnector(session, environment, tunnelsOf(session, environment, outputs));
+  const tunnels = moveTunnels(session, environment, outputs, {
+    message: `The new Cloudflare account's infrastructure state of ${environment.environment} has no Cloudflare Tunnel with its token, so OpsCrew can't run its connector beside the current one. Nothing on the server was changed.`,
+    hint: `Run \`${session.command}\` again; it plans the new account's pieces again.`,
+  });
+  const connector = await besideConnector(session, environment, tunnels);
+  if (connector !== undefined) return connector;
   const secrets = await addNewCredentials(session, environment, outputs);
   if (secrets !== undefined) return secrets;
   const copies = await firstCopies(session, environment);

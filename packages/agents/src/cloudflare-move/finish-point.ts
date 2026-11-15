@@ -8,7 +8,6 @@
  * its hash (`cloudflare-move/finish-point.json`, no value in it), so a run after it changes nothing
  * again.
  */
-import { join, posix } from "node:path";
 import {
   canonicalJson,
   OpsCrewError,
@@ -34,9 +33,10 @@ import {
   portainerStacksFor,
 } from "../provision/portainer-flow";
 import { recordedEdge } from "../provision/render";
-import { deploySecretPlace, type SecretPlace, setSecretAt } from "../provision/secrets";
+import { deploySecretPlace, placeText, type SecretPlace, setSecretAt } from "../provision/secrets";
 import { offsiteEnvFile, offsiteValues } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
+import { runDeployWorkflow } from "../retarget/site-steps";
 import { type AppValues, withAppEnv } from "../rotate/app-values";
 import { knownRecipients } from "../secrets/store";
 import {
@@ -47,14 +47,11 @@ import {
   type StorageLogin,
 } from "../shared";
 import { dotenvLine, parseDotenv, storageVariableKind } from "../shared/app-env";
-import { codeOf, hintOf, reasonOf } from "../shared/errors";
+import { reasonOf } from "../shared/errors";
 import { bucketKey, lastBackupsCopy, moveBuckets, type PointAtB } from "./buckets";
+import { MOVE_PHASE } from "./connector-stacks";
+import { moveFolder } from "./paths";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
-
-const PHASE = "cloudflare-move";
-
-/** How long the deploy run is awaited. */
-const WORKFLOW_WAIT_MS = 30 * 60_000;
 
 /** Whose values: A's (the account the app runs on before the finish) or B's. */
 type Side = "a" | "b";
@@ -108,7 +105,7 @@ const AppliedSchema = z.strictObject({
 type Applied = z.infer<typeof AppliedSchema>;
 
 function appliedFile(environment: MoveEnvironment): string {
-  return join(environment.paths.stateDir, "cloudflare-move", "finish-point.json");
+  return moveFolder(environment.paths, "finish-point.json");
 }
 
 function readApplied(environment: MoveEnvironment): Promise<Applied | undefined> {
@@ -134,13 +131,6 @@ type Stored = SecretPlace & { value: string };
 /** Where a secret goes, without its value. */
 function placeOf({ name, environment }: SecretPlace): SecretPlace {
   return environment === undefined ? { name } : { name, environment };
-}
-
-/** A secret's name with where it lives, when that is a GitHub environment. */
-function placeText(place: SecretPlace): string {
-  return place.environment === undefined
-    ? place.name
-    : `${place.name} (in the GitHub environment ${place.environment})`;
 }
 
 /** The kind of place the app runs: a server, the user's Portainer, or none of its own. */
@@ -325,7 +315,7 @@ async function storeSecrets(session: MoveSession, environment: MoveEnvironment, 
       { api: session.githubApi, owner, repo },
       placeOf(stored),
       stored.value,
-      PHASE,
+      MOVE_PHASE,
     );
   }
 }
@@ -336,64 +326,20 @@ async function storeSecrets(session: MoveSession, environment: MoveEnvironment, 
  * @throws OpsCrewError when it could not run or did not succeed.
  */
 async function runDeploy(session: MoveSession, environment: MoveEnvironment): Promise<void> {
-  const deps = environmentDeps(session, environment);
-  const { githubApi, command } = session;
-  const { owner, repo } = session.github;
-  const { plan } = environment;
-  const workflowFile = posix.basename(plan.cicd.workflowPath);
-  const ref = plan.cicd.branch;
-  deps.reporter.step(
-    `Running the deploy workflow (${workflowFile} on ${ref}) so ${appWords(environment)} runs on its settings for ${bWords(session)}`,
+  const { command } = session;
+  const github = { ...session.github, api: session.githubApi };
+  await runDeployWorkflow(
+    environmentDeps(session, environment),
+    github,
+    environment.plan,
+    MOVE_PHASE,
+    {
+      purpose: `so ${appWords(environment)} runs on its settings for ${bWords(session)}`,
+      failedHint: `Check the workflow in your repository's Actions tab, then run \`${command}\` again.`,
+      unsuccessfulHint: `Open the run to see what failed and push a fix, then run \`${command}\` again.`,
+      environment: environment.environment,
+    },
   );
-  let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
-  try {
-    const { runId } = await githubApi.dispatchWorkflow(owner, repo, workflowFile, ref, {}, () =>
-      deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action: "dispatch workflow",
-        phase: PHASE,
-        target: `${owner}/${repo}`,
-        detail: `${workflowFile} on ${ref}`,
-      }),
-    );
-    run = await githubApi.waitForWorkflowRun(owner, repo, {
-      workflowFile,
-      ref,
-      runId,
-      timeoutMs: WORKFLOW_WAIT_MS,
-      onWaiting: (url) =>
-        deps.reporter.info(
-          `${environment.environment}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run until it ends.`,
-        ),
-    });
-  } catch (error) {
-    throw new OpsCrewError(
-      codeOf(error),
-      deps.redactor.redact(`Running the deploy workflow failed: ${reasonOf(error)}.`),
-      {
-        hint: `${hintOf(error)}Check the workflow in your repository's Actions tab, then run \`${command}\` again.`,
-      },
-    );
-  }
-  const ok = run.conclusion === "success";
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "deploy workflow",
-    phase: PHASE,
-    target: run.htmlUrl,
-    decision: ok ? "approved" : "refused",
-    detail: `workflow run ${run.id} finished: ${run.conclusion ?? "no result"}`,
-  });
-  if (!ok) {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}.`,
-      { hint: `Open the run to see what failed and push a fix, then run \`${command}\` again.` },
-    );
-  }
-  deps.reporter.success(`The deploy workflow succeeded (${run.htmlUrl}).`);
 }
 
 /** Step 1 on a server: B's deploy secrets in one approval, then one deploy. */
@@ -509,7 +455,7 @@ export async function stacksForB(
     environment.plan,
     provisionServices(session),
     {
-      phase: PHASE,
+      phase: MOVE_PHASE,
       command: session.command,
       keys: {
         ...(storage === undefined ? {} : { storage }),

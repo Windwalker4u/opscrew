@@ -19,6 +19,7 @@ import {
   replaceNames,
   sha256Hex,
   upperFirst,
+  writeFileAtomic,
 } from "@opscrew/core";
 import {
   appDir,
@@ -28,6 +29,7 @@ import {
   providerBucket,
 } from "@opscrew/iac-templates";
 import { APP_SERVER, backupsBucketOf, type DeployPlan } from "@opscrew/plan-schema";
+import { z } from "zod";
 import { changeCheckPause } from "../check/pause";
 import type { PhaseDeps } from "../context";
 import { failureReason } from "../destroy/deletion";
@@ -44,7 +46,7 @@ import {
   sizeText,
   windowMinutes,
 } from "../retarget/texts";
-import { portainerClientFor, type StorageLogin } from "../shared";
+import { portainerClientFor, readValidJson, type StorageLogin } from "../shared";
 import { clearDeployPause, setDeployPause, waitForDeploys } from "../shared/deploy-pause";
 import { codeOf, hintOf } from "../shared/errors";
 import {
@@ -55,6 +57,8 @@ import {
   rcloneSize,
   sshRclone,
 } from "../shared/rclone";
+import { MOVE_PHASE } from "./connector-stacks";
+import { moveFolder } from "./paths";
 import {
   clearPending,
   clearWindow,
@@ -68,7 +72,6 @@ import {
 import { refusal } from "./texts";
 import type { MoveBucketSize, MoveEnvironment, MoveSession, StepStop } from "./types";
 
-const PHASE = "cloudflare-move";
 const MINUTE = 60_000;
 /** How long one copy of a bucket may run on the app's server: a first copy may take hours. */
 const COPY_TIMEOUT_MS = 6 * 60 * MINUTE;
@@ -323,7 +326,7 @@ function audit(
   return session.deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",
-    phase: PHASE,
+    phase: MOVE_PHASE,
     target: environment.plan.app.name,
     ...entry,
   });
@@ -337,7 +340,15 @@ interface CopyStep {
   title: string;
   /** Rough minutes of a bucket's copy, from its size in A. */
   minutes: (size: BucketSize) => number;
+  /**
+   * The file that records, by the step's hash, that its copies ended: a run after them (before the
+   * environment's record says so) asks and copies nothing again.
+   */
+  ended?: string;
 }
+
+/** The record of a copy step that ended: its hash. */
+const EndedSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
 
 /**
  * Copies each of `step.buckets` from A to B's bucket of the same name (`rclone copy --checksum
@@ -345,7 +356,8 @@ interface CopyStep {
  * containers where the app runs, after one `remote-exec` approval bound to the step's hash that
  * lists each bucket with its size, objects and minutes. Both accounts' keys are read first, then
  * A's buckets measured; a non-interactive run without `--approve <hash>` shows the step, records it
- * as waiting and stops. Resumable: a run after an interruption copies what is still missing.
+ * as waiting and stops. Resumable: a run after an interruption copies what is still missing; with
+ * `step.ended`, a run after the copies ended skips them.
  */
 async function copyBuckets(
   session: MoveSession,
@@ -355,6 +367,20 @@ async function copyBuckets(
   if (step.buckets.length === 0) return undefined;
   const deps = environmentDeps(session, environment);
   const { a, b } = session.accounts;
+  const hash = sha256Hex(
+    canonicalJson({
+      action: step.key.action,
+      environment: environment.environment,
+      app: environment.plan.app.name,
+      from: a.accountId,
+      to: b.accountId,
+      buckets: step.buckets.map((bucket) => bucket.bucket),
+    }),
+  );
+  if (step.ended !== undefined && (await readValidJson(step.ended, EndedSchema))?.sha256 === hash) {
+    await clearPending(deps, step.key);
+    return undefined;
+  }
   // Both accounts' keys before anything runs: a script without one stops here.
   const keyed: (KeyedBucket & { b: StorageLogin })[] = [];
   for (const bucket of step.buckets) {
@@ -374,16 +400,6 @@ async function copyBuckets(
     ),
     "Nothing in the current account changes, and the app keeps using its bucket there until the finish.",
   ].join("\n");
-  const hash = sha256Hex(
-    canonicalJson({
-      action: step.key.action,
-      environment: environment.environment,
-      app: environment.plan.app.name,
-      from: a.accountId,
-      to: b.accountId,
-      buckets: step.buckets.map((bucket) => bucket.bucket),
-    }),
-  );
   if (!appliesNow(session, hash)) {
     deps.reporter.info(`${step.title}\n${details}`);
     await writePending(deps, step.key, hash);
@@ -421,6 +437,9 @@ async function copyBuckets(
       detail: `${environment.environment}: copied the bucket ${bucket.bucket} from ${accountWords(session, "a")} to ${accountWords(session, "b")} with rclone`,
     });
   }
+  if (step.ended !== undefined) {
+    await writeFileAtomic(step.ended, `${JSON.stringify({ sha256: hash })}\n`);
+  }
   await clearPending(deps, step.key);
   deps.reporter.success(
     `Copied ${listText(step.buckets.map(bucketWords))} to the new Cloudflare account.`,
@@ -432,7 +451,8 @@ async function copyBuckets(
  * Prepare's first copies of the environment's R2 buckets into B's same-named buckets (plan 4.4.5),
  * once B's bucket keys are known: one `remote-exec` approval listing each bucket, its size, objects
  * and minutes, then `rclone copy --checksum --metadata` of each. A's buckets don't change. A script
- * stops with the step's hash (`--approve <hash>`). Nothing to do without a bucket on R2.
+ * stops with the step's hash (`--approve <hash>`). Once they ended (recorded in the move's folder),
+ * a run asks and copies nothing again. Nothing to do without a bucket on R2.
  */
 export function firstCopies(
   session: MoveSession,
@@ -443,6 +463,7 @@ export function firstCopies(
     key: { action: "copy", environment: environment.environment },
     title: `Copy the R2 buckets of ${appWords(environment)} to the new Cloudflare account`,
     minutes: bucketMinutes,
+    ended: moveFolder(environment.paths, "first-copies.json"),
   });
 }
 
@@ -501,7 +522,7 @@ async function resumeCheck(
       session.github,
       environment.plan,
       undefined,
-      PHASE,
+      MOVE_PHASE,
       approval,
     );
     if (outcome === "refused") deps.reporter.warn(`The scheduled check stays paused; ${again}`);
@@ -800,7 +821,7 @@ export async function bucketWindow(
       hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`${session.command}\` again.`,
     });
     // The scheduled check opens no issue while the app is offline for the window.
-    await changeCheckPause(deps, github, plan, "retarget", PHASE, approval);
+    await changeCheckPause(deps, github, plan, "retarget", MOVE_PHASE, approval);
     await recordWindowStop(deps, environment.environment);
     stopped = true;
     await audit(session, environment, {

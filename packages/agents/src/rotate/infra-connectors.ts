@@ -7,16 +7,18 @@
  * reads; in the user's Portainer, the stacks' values, through one stack plan approved by its hash.
  */
 import { planTunnelToken } from "@opscrew/connector-ssh-host";
+import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { keepNewerPins, renderTunnelConnectorCompose } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
+import type { NetworkServer } from "../provision/network";
 import { type PortainerStacksSetup, portainerStacksFor } from "../provision/portainer-flow";
 import type { ProvisionServices } from "../provision/types";
 import { committedText } from "../shared/files";
-import { approveAndApplyHostPlan } from "../shared/host-plan";
+import { approveAndApplyHostPlan, type HostPlanStep } from "../shared/host-plan";
 import { networkServer, VPN_PHASE, type VpnServices } from "../vpn/servers";
 
 /** A tunnel of the root module, by its module: the app's, or the one in front of Portainer's webhook. */
@@ -45,9 +47,10 @@ export interface TunnelConnectors {
 
 /**
  * The connector of the app's tunnel on its server: `restart` inspects the app's server
- * (read-only), then applies the connector's one-step host plan with the new token, approved by its
- * hash, which recreates the connector (a server runs one, so the tunnel pauses for that restart).
- * `command` is the rotation's, named when a plan is refused or fails.
+ * (read-only), then applies the connector's one-step host plan with the new token
+ * ({@link tunnelTokenStep}), approved by its hash, which recreates the connector (a server runs
+ * one, so the tunnel pauses for that restart). `command` is the rotation's, named when a plan is
+ * refused or fails.
  */
 export function serverTunnelConnectors(
   deps: PhaseDeps,
@@ -58,49 +61,67 @@ export function serverTunnelConnectors(
     // The host plan has one step, the connector's: nothing else of the server's setup changes.
     check: async () => {},
     restart: async (tunnels) => {
-      const own = plan.target.provider === "own";
-      const words = own ? "your server" : "the app's server";
       for (const tunnel of tunnels) {
-        if (tunnel.module !== "tunnel") {
-          throw new Error(`A server runs no connector of the tunnel ${tunnel.module}.`);
-        }
         const server = await networkServer(deps, plan, APP_SERVER, input.services ?? {}, VPN_PHASE);
-        // The Compose file as provision renders it, with the newer pins of the committed one.
-        const rendered = renderTunnelConnectorCompose(plan);
-        const compose = keepNewerPins(
-          await committedText(deps.paths.root, [rendered.path]),
-          rendered.content,
-        );
-        deps.redactor.addLiteral(tunnel.token, "tunnel-token");
-        await approveAndApplyHostPlan(deps, {
-          plan: planTunnelToken({
-            app: plan.app.name,
-            runAs: own ? "root" : "login",
-            connector: {
-              ...(own ? {} : { dir: CLOUD_TUNNEL_DIR }),
-              compose,
-              tunnelId: tunnel.tunnelId,
-            },
+        await approveAndApplyHostPlan(
+          deps,
+          await tunnelTokenStep(deps, plan, server, tunnel, {
+            command: input.command,
+            phase: VPN_PHASE,
           }),
-          remote: server.remote,
-          apply: server.apply,
-          verifyLogin: server.verifyLogin,
-          title: `Give the Cloudflare Tunnel connector on ${words} its new token`,
-          server: words,
-          planOf: words,
-          upToDate: `The Cloudflare Tunnel connector on ${words} has its new token; nothing changes.`,
-          command: input.command,
-          phase: VPN_PHASE,
-          secrets: async () => ({ tunnelToken: tunnel.token }),
-          applying: `Restarting the Cloudflare Tunnel connector on ${words} with the new token`,
-        });
+        );
       }
     },
   };
 }
 
-/** The root module's output each stack reads a tunnel's token from. */
-const TOKEN_OUTPUTS: Readonly<Record<TunnelModule, string>> = {
+/**
+ * The step that gives the connector of the app's tunnel on `server` the token of `tunnel`: its
+ * one-step host plan (`planTunnelToken`, the Compose file as provision renders it with the newer
+ * pins of the committed one), to approve by its hash and apply, audited under `input.phase`. The
+ * token is registered with the redactor and reaches the server only at apply, on the host
+ * adapter's standard input.
+ */
+export async function tunnelTokenStep(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  server: Pick<NetworkServer, "remote" | "apply" | "verifyLogin">,
+  tunnel: RotatedTunnel,
+  input: { command: string; phase: PhaseName },
+): Promise<HostPlanStep> {
+  if (tunnel.module !== "tunnel") {
+    throw new Error(`A server runs no connector of the tunnel ${tunnel.module}.`);
+  }
+  const own = plan.target.provider === "own";
+  const words = own ? "your server" : "the app's server";
+  const rendered = renderTunnelConnectorCompose(plan);
+  const compose = keepNewerPins(
+    await committedText(deps.paths.root, [rendered.path]),
+    rendered.content,
+  );
+  deps.redactor.addLiteral(tunnel.token, "tunnel-token");
+  return {
+    plan: planTunnelToken({
+      app: plan.app.name,
+      runAs: own ? "root" : "login",
+      connector: { ...(own ? {} : { dir: CLOUD_TUNNEL_DIR }), compose, tunnelId: tunnel.tunnelId },
+    }),
+    remote: server.remote,
+    apply: server.apply,
+    verifyLogin: server.verifyLogin,
+    title: `Give the Cloudflare Tunnel connector on ${words} its new token`,
+    server: words,
+    planOf: words,
+    upToDate: `The Cloudflare Tunnel connector on ${words} has its new token; nothing changes.`,
+    command: input.command,
+    phase: input.phase,
+    secrets: async () => ({ tunnelToken: tunnel.token }),
+    applying: `Restarting the Cloudflare Tunnel connector on ${words} with the new token`,
+  };
+}
+
+/** The root module's output with each tunnel's token (each stack's, the move's connectors'). */
+export const TUNNEL_TOKEN_OUTPUTS: Readonly<Record<TunnelModule, string>> = {
   tunnel: "tunnel_token",
   portainer_tunnel: "portainer_tunnel_token",
 };
@@ -149,7 +170,7 @@ export function portainerTunnelConnectors(
       const outputs = { ...setup.outputs };
       for (const tunnel of tunnels) {
         deps.redactor.addLiteral(tunnel.token, "tunnel-token");
-        outputs[TOKEN_OUTPUTS[tunnel.module]] = tunnel.token;
+        outputs[TUNNEL_TOKEN_OUTPUTS[tunnel.module]] = tunnel.token;
       }
       await setup.stacks.step(outputs, { planOnly: false });
     },

@@ -562,8 +562,3 @@ export function renderTunnelConnectorCompose(
     kind: "runtime",
   };
 }
-
-/** The new Cloudflare account's tunnel connector during a move ({@link renderTunnelConnectorCompose}'s `next`). */
-export function renderNextTunnelConnectorCompose(plan: DeployPlan): RenderedFile {
-  return renderTunnelConnectorCompose(plan, { next: true });
-}

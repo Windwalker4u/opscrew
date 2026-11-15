@@ -68,32 +68,18 @@ function whole(target: PrepareTarget): Promise<string[]> {
   return done;
 }
 
-/** The hash a host or stack plan's refusal names for a script (`--approve <hash>`). */
-function refusedHash(error: unknown): string | undefined {
-  if (!(error instanceof OpsCrewError) || error.code !== "APPROVAL_REFUSED") return undefined;
-  return /--approve ([0-9a-f]{64})/.exec(error.hint ?? "")?.[1];
-}
-
 /**
  * Runs prepare as a script until it is done: each run stops with the hash of the plan it waits
- * for (a host or stack plan's refusal names it), the next run approves it with `--approve`.
+ * for, recorded as waiting; the next run approves it with `--approve`.
  */
 async function asScript(w: PrepareWorld): Promise<{ result: MoveResult; hashes: string[] }> {
   const hashes: string[] = [];
   let approve: string | undefined;
   for (let runs = 0; runs < 20; runs++) {
-    let result: MoveResult;
-    try {
-      result = await w.run({
-        interactive: false,
-        ...(approve === undefined ? {} : { approvePlanHash: approve }),
-      });
-    } catch (error) {
-      approve = refusedHash(error);
-      if (approve === undefined) throw error;
-      hashes.push(approve);
-      continue;
-    }
+    const result = await w.run({
+      interactive: false,
+      ...(approve === undefined ? {} : { approvePlanHash: approve }),
+    });
     if (result.done) return { result, hashes };
     approve = result.pendingPlanHash as string;
     expect(approve).toMatch(/^[0-9a-f]{64}$/);

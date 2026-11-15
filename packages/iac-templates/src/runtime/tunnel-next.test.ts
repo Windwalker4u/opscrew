@@ -2,20 +2,20 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
-import { renderNextTunnelConnectorCompose, renderTunnelConnectorCompose } from "./index";
+import { renderTunnelConnectorCompose } from "./index";
 
 const plan = () => testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" });
 
-describe("renderNextTunnelConnectorCompose", () => {
+describe("renderTunnelConnectorCompose with next", () => {
   it("renders the connector as its own Compose project in cloudflared-next", () => {
-    const file = renderNextTunnelConnectorCompose(plan());
+    const file = renderTunnelConnectorCompose(plan(), { next: true });
     expect(file.path).toBe("opscrew/runtime/cloudflared-next/compose.yaml");
     expect(file.kind).toBe("runtime");
     expect(file.content).toMatchSnapshot();
   });
 
   it("matches the app's own connector but for its project name", () => {
-    const next = parse(renderNextTunnelConnectorCompose(plan()).content);
+    const next = parse(renderTunnelConnectorCompose(plan(), { next: true }).content);
     const own = parse(renderTunnelConnectorCompose(plan()).content);
     expect(next.name).toBe("shop-tunnel-next");
     expect(next.services).toEqual(own.services);
@@ -27,7 +27,7 @@ describe("renderNextTunnelConnectorCompose", () => {
   it("follows the environment's runtime folder", () => {
     const base = plan();
     const staging = { ...base, environment: { name: "staging" } } as typeof base;
-    expect(renderNextTunnelConnectorCompose(staging).path).toBe(
+    expect(renderTunnelConnectorCompose(staging, { next: true }).path).toBe(
       "opscrew/environments/staging/runtime/cloudflared-next/compose.yaml",
     );
   });
