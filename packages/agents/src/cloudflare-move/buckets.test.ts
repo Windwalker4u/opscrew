@@ -344,18 +344,51 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       await markWindow(w.deps, "pointingAt");
       const error = await caught(bucketWindow(w.session, w.environment, stepOne(w, "deploy")));
       expect(error.message).toBe(
-        "Pointing shop (prod) at the new Cloudflare account failed again: The deploy step failed. Its bucket's files are in the new account; OpsCrew goes on from here, never back.",
+        "Pointing shop (prod) at the new Cloudflare account failed again: The deploy step failed. Its bucket's last changes are in the new account and its settings point there, so OpsCrew does not go back: the app runs on the new account's settings, or is down until its deploy succeeds.",
       );
+      expect(error.hint).toBe(`Then run \`${FINISH_COMMAND}\` again: it completes the switch.`);
       expect(w.trail).toEqual(["secrets", "deploy"]);
       expect(await windowOf(w)).toMatchObject({ pointingAt: expect.any(String) });
       expect((await windowOf(w))?.endedAt).toBeUndefined();
     });
 
+    for (const target of TARGETS) {
+      it(`a failed deploy never goes back to A: the rerun goes forward and B's files stay (${target})`, async () => {
+        const w = await bucketWorld(target, { command: FINISH_COMMAND });
+        await firstCopies(w.session, w.environment);
+        w.trail.length = 0;
+        const error = await caught(bucketWindow(w.session, w.environment, stepOne(w, "deploy")));
+        expect(error.message).toBe(
+          "Pointing shop (prod) at the new Cloudflare account failed: The deploy step failed. Its bucket's last changes are in the new account and its settings point there, so OpsCrew does not go back: the app runs on the new account's settings, or is down until its deploy succeeds.",
+        );
+        expect(error.hint).toBe(`Then run \`${FINISH_COMMAND}\` again: it completes the switch.`);
+        expect(w.trail).toEqual([
+          "rclone size",
+          "stop app",
+          "stop worker",
+          "rclone sync",
+          "secrets (deploys paused)",
+          "deploy",
+        ]);
+        expect(await windowOf(w)).toMatchObject({ pointingAt: expect.any(String) });
+        expect(w.paused().deploys).toBe(false);
+        expect(w.deps.audit.entries.some((e) => e.action === "window rollback")).toBe(false);
+        // The app ran on B before the deploy failed, and wrote a file there.
+        w.r2.objects(w.fresh, APP_BUCKET).set("new.png", "written on B");
+        w.trail.length = 0;
+        expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
+        expect(w.trail).toEqual(["secrets", "deploy"]);
+        expect(objectsOf(w, w.fresh, APP_BUCKET)["new.png"]).toBe("written on B");
+        expect((await windowOf(w))?.endedAt).toEqual(expect.any(String));
+        expect(w.paused()).toEqual({ deploys: false, check: false });
+        expect(w.leaks(error.message, error.hint ?? "")).toBe(false);
+      });
+    }
+
     const failures = [
       { at: "the stop", fail: (w: BucketWorld) => w.failNextStop() },
       { at: "the sync", fail: (w: BucketWorld) => syncFails(w) },
       { at: "B's secrets", part: "secrets" as const },
-      { at: "the deploy", part: "deploy" as const },
     ];
     for (const target of TARGETS) {
       for (const failure of failures) {

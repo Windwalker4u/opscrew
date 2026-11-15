@@ -64,9 +64,9 @@ const AppProgressSchema = z.strictObject({
   pending: PendingSchema.optional(),
   /**
    * The finish's maintenance window of one environment. `stoppedAt` is set before the app stops: a
-   * run that finds only it starts the app on A's settings first. `pointingAt` is set before step 1
-   * points the app at B: from then on a run only goes forward. `endedAt`: the app runs on B, and a
-   * run skips the window.
+   * run that finds only it starts the app on A's settings first. `pointingAt` is set once B's
+   * secrets and values are written, right before the deploy: from then on a run only goes forward.
+   * `endedAt`: the app runs on B, and a run skips the window.
    */
   window: z
     .strictObject({

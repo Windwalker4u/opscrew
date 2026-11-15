@@ -593,10 +593,37 @@ export async function recoverWindow(
 }
 
 /**
- * A window that an earlier run left while it pointed the app at B (`pointingAt`): the bucket's
- * last changes are in B and the app may have written there since, so it only goes forward, never
- * syncing again: B's secrets and values, the deploy pause lifted, the deploy; then the window's end
- * and the scheduled check resumed. A failure keeps the record, for the next run to go on.
+ * The stop of a failure once the app's settings point at B (`pointingAt`): OpsCrew never goes back
+ * to A then, since the app may already write to B's bucket. Audited; the window's record stays, so
+ * running the finish again completes the switch.
+ */
+async function forwardStop(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  cause: unknown,
+  again: boolean,
+): Promise<OpsCrewError> {
+  const deps = environmentDeps(session, environment);
+  const failed = again ? "failed again" : "failed";
+  const reason = deps.redactor.redact(failureReason(cause));
+  await audit(session, environment, {
+    action: "window",
+    decision: "refused",
+    detail: `${environment.environment}: pointing the app at the new account ${failed}: ${reason}`,
+  });
+  return new OpsCrewError(
+    codeOf(cause),
+    `Pointing ${appWords(environment)} at the new Cloudflare account ${failed}: ${reason}. Its bucket's last changes are in the new account and its settings point there, so OpsCrew does not go back: the app runs on the new account's settings, or is down until its deploy succeeds.`,
+    { hint: `${hintOf(cause)}Then run \`${session.command}\` again: it completes the switch.` },
+  );
+}
+
+/**
+ * A window that an earlier run left once the app's settings pointed at B (`pointingAt`): the
+ * bucket's last changes are in B and the app may have written there since, so it only goes
+ * forward, never syncing again: B's secrets and values again, the deploy pause lifted, the deploy;
+ * then the window's end and the scheduled check resumed. A failure keeps the record
+ * ({@link forwardStop}), for the next run to go on.
  */
 async function goForward(
   session: MoveSession,
@@ -606,24 +633,14 @@ async function goForward(
   const deps = environmentDeps(session, environment);
   const app = appWords(environment);
   deps.reporter.warn(
-    `An earlier run stopped while it pointed ${app} at the new Cloudflare account, after its bucket's last changes were copied there. OpsCrew goes on pointing it there; it never goes back, since the app may have written to that bucket already.`,
+    `An earlier run stopped once ${app}'s settings pointed at the new Cloudflare account, where its bucket's last changes were copied. OpsCrew goes on pointing it there; it never goes back, since the app may have written to that bucket already.`,
   );
   try {
     await pointAtB.secrets();
     await clearDeployPause(deps, session.github, environment.plan, "move");
     await pointAtB.deploy();
   } catch (error) {
-    const reason = deps.redactor.redact(failureReason(error));
-    await audit(session, environment, {
-      action: "window",
-      decision: "refused",
-      detail: `${environment.environment}: pointing the app at the new account failed again: ${reason}`,
-    });
-    throw new OpsCrewError(
-      codeOf(error),
-      `Pointing ${app} at the new Cloudflare account failed again: ${reason}. Its bucket's files are in the new account; OpsCrew goes on from here, never back.`,
-      { hint: `${hintOf(error)}Then run \`${session.command}\` again.` },
-    );
+    throw await forwardStop(session, environment, error, true);
   }
   await markWindow(deps, "endedAt");
   await resumeCheck(session, environment);
@@ -641,17 +658,17 @@ async function goForward(
  * the app's file as it goes (`stoppedAt`, `pointingAt`, `endedAt`):
  * - refused while another environment's window has not ended;
  * - ended already: the window is skipped, and only step 1 runs again;
- * - left while pointing the app at B: it goes forward ({@link goForward});
+ * - left once the app's settings pointed at B: it goes forward ({@link goForward});
  * - left with the app stopped before that: the app starts on A first ({@link recoverWindow}).
  *
  * Then the `remote-exec` approval with the window's length (scripts: `allowDowntime`; its title is a
  * maintenance window's), the deploys paused and a running one awaited, the scheduled check paused
  * under that approval, `stoppedAt`, the app, its workers and cron stopped, `rclone sync --checksum
  * --metadata` from A's bucket to B's (B's was made by the move and never used yet, so `sync` deletes
- * there only what A no longer has), `pointingAt`, B's secrets and values, the deploys resumed, the
- * deploy that starts the app, `endedAt`, the check resumed. On any failure once the app stopped,
- * `backToA` and the app started on A, its record forgotten. Without an app bucket on R2, step 1 runs
- * as it is.
+ * there only what A no longer has), B's secrets and values, the deploys resumed, `pointingAt`, the
+ * deploy that starts the app, `endedAt`, the check resumed. On a failure once the app stopped and
+ * before `pointingAt`, `backToA` and the app started on A, its record forgotten; after it, never
+ * back ({@link forwardStop}). Without an app bucket on R2, step 1 runs as it is.
  * @returns a script's stop when it lacks `allowDowntime`.
  */
 export async function bucketWindow(
@@ -725,7 +742,7 @@ export async function bucketWindow(
       "  write the app's settings for the new account, then resume the deploys",
       "  deploy the app on them, which starts it",
       ...(check ? ["  resume the scheduled check"] : []),
-      "If any of these fails, OpsCrew puts the current account's settings back and starts the app again; its bucket there keeps every file.",
+      "If any of these fails before the deploy, OpsCrew puts the current account's settings back and starts the app again; its bucket there keeps every file. If the deploy fails, OpsCrew does not go back: running the finish again completes it.",
     ].join("\n"),
   });
   if (!approval.approved) {
@@ -738,6 +755,7 @@ export async function bucketWindow(
     );
   }
   let stopped = false;
+  let pointing = false;
   try {
     await withDeploysPaused(
       deps,
@@ -767,14 +785,17 @@ export async function bucketWindow(
           what: `Copying what changed in the bucket ${bucket.bucket} to the new Cloudflare account`,
           hint: `Check both accounts' keys of the bucket ${bucket.bucket}.`,
         });
-        await markWindow(deps, "pointingAt");
         deps.reporter.step(`Writing the new Cloudflare account's settings of ${app}`);
         await pointAtB.secrets();
       },
     );
+    // From here the app's settings point at B: a failure goes forward, never back.
+    await markWindow(deps, "pointingAt");
+    pointing = true;
     deps.reporter.step(`Deploying ${app} on the new Cloudflare account's settings`);
     await pointAtB.deploy();
   } catch (error) {
+    if (pointing) throw await forwardStop(session, environment, error, false);
     if (!stopped) {
       await resumeCheck(session, environment, approval);
       throw error;
