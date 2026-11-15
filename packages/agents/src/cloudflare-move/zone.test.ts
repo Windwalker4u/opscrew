@@ -109,6 +109,9 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
       `AAAA docs.${ZONE}`,
       `NS ${ZONE}`,
     ]);
+    expect(plan.skipped.find((s) => s.record.name === `docs.${ZONE}`)?.reason).toBe(
+      "a Workers custom domain's record: Cloudflare makes it when the domain is attached to its Worker in the new account",
+    );
     // The app's server's address is masked in what is shown, also in the user's own record.
     expect(plan.details).toContain(`A ftp.${ZONE} <server address>`);
     expect(plan.details).not.toContain(SERVER_IPV4);

@@ -125,9 +125,13 @@ function skipReason(record: CloudflareZoneRecord, zone: string): string | undefi
     return "OpsCrew's record: each app's own prepare makes it in the new account";
   }
   if (isMarkRecord(record)) return "a mark of the move";
-  if (cloudflareManaged(record)) {
-    return "made by Cloudflare (a Workers custom domain's record, for one)";
+  if (record.meta?.email_routing === true) {
+    return "Email Routing's record: turn Email Routing on in the new account once its zone is active";
   }
+  if (record.meta?.origin_worker_id !== undefined) {
+    return "a Workers custom domain's record: Cloudflare makes it when the domain is attached to its Worker in the new account";
+  }
+  if (cloudflareManaged(record)) return "made by Cloudflare";
   if (record.type.toUpperCase() === "NS" && record.name.toLowerCase() === zone) {
     return "the zone's own nameservers: the new account's zone has its own";
   }
