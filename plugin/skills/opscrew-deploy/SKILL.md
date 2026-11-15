@@ -687,8 +687,12 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      in the zone: it prepares the app in the new account while the current one keeps serving and
      shows each plan to approve.
   2. `npx opscrew cloudflare move --switch` once, from any of them: it asks for the domain to be
-     typed and changes the nameservers (with DNSSEC on, it first removes the DS record, waits 24
-     to 48 hours and asks again). HTTPS fails until the new account's certificate is issued,
+     typed. With the registrar's API keys set (`PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY`,
+     `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY`, or `GODADDY_API_TOKEN`) it changes the
+     nameservers itself; at Cloudflare Registrar or another registrar it prints what to do there
+     and goes on when run again. With DNSSEC on, the first run removes the DS record (Porkbun)
+     or says where to turn DNSSEC off, and stops: the user runs it again after the time it
+     prints and approves again. HTTPS fails until the new account's certificate is issued,
      usually within minutes; the switch shows that gap before it is approved.
   3. `npx opscrew cloudflare move --finish` in each repository: a short maintenance window when
      the app has an R2 bucket, then the current account's pieces are removed after the user types

@@ -185,7 +185,6 @@ async function runMove(
     ...(flags.engine === undefined ? {} : { engine: flags.engine }),
     services,
   };
-  const typed = names.length === 0 ? {} : { confirm: names };
   switch (mode) {
     case "prepare":
       return prepareMove(deps, {
@@ -204,15 +203,14 @@ async function runMove(
           : {}),
       });
     case "switch":
-      return switchMove(deps, { ...common, ...typed });
+      return switchMove(deps, common);
     case "finish":
       return finishMove(deps, {
         ...common,
-        ...typed,
         ...(flags.allowDowntime === true ? { allowDowntime: true } : {}),
       });
     case "abort":
-      return abortMove(deps, { ...common, ...typed });
+      return abortMove(deps, common);
   }
 }
 
@@ -220,28 +218,31 @@ async function runMove(
 const HELP = [
   "",
   "The steps, run in this order:",
-  "  opscrew cloudflare move --to <account>   prepare: B's zone (pending) with the zone's other",
-  "                                           records, the app's pieces in B, B's connector beside",
-  "                                           the current one, B's credentials in GitHub, the first",
-  "                                           bucket copies and the app's mark; the current account",
-  "                                           keeps serving. Run again without --to to go on.",
+  "  opscrew cloudflare move --to <account>   prepare: the zone in the new account (pending) with",
+  "                                           the zone's other records, the app's pieces there, the",
+  "                                           new account's connector beside the current one, its",
+  "                                           credentials in GitHub, the first bucket copies and the",
+  "                                           app's mark; the current account keeps serving. Run",
+  "                                           again without --to to go on.",
   "  opscrew cloudflare move --switch         once every app in the zone is prepared, from any of",
   "                                           their repositories: the domain typed, the nameservers",
   "                                           set at the registrar (or what to do there), DNSSEC's",
   "                                           wait, the sites' custom domains and the certificates.",
   "  opscrew cloudflare move --finish         in each repository after the switch: the bucket's last",
-  "                                           copy in a maintenance window, B's secrets and a deploy,",
-  "                                           the connector, the states, then the current account's",
-  "                                           pieces removed (the app's and each bucket's name typed).",
-  "  opscrew cloudflare move --abort          before the switch changed anything: B's pieces of the",
-  "                                           app removed (each name typed); the current account",
-  "                                           was never changed.",
+  "                                           copy in a maintenance window, the new account's secrets",
+  "                                           and a deploy, the connector, the states, then the",
+  "                                           current account's pieces removed (the app's and each",
+  "                                           bucket's name typed).",
+  "  opscrew cloudflare move --abort          before the switch changed anything: the app's pieces",
+  "                                           in the new account removed (each name typed); the",
+  "                                           current account was never changed.",
   "",
   "CLOUDFLARE_API_TOKEN stays the current account's token; OPSCREW_NEW_CLOUDFLARE_API_TOKEN is the new one's.",
   "In scripts each step stops at its plan with the hash: run the printed command with",
   "--approve <hash>. A typed name is --confirm <name> (repeatable): the zone at the switch and the",
   "abort, each bucket's name when it is emptied, the app's name for a deletion, the zone's for the",
-  "new account's zone. The finish's maintenance window needs --allow-downtime with --approve.",
+  "new account's zone. In a script the finish's maintenance window needs --allow-downtime; the step",
+  "before it, its --approve <hash>, as the finish prints.",
   "`opscrew status` shows where the move stands.",
 ].join("\n");
 

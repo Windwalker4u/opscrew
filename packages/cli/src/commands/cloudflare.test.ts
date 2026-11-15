@@ -202,14 +202,16 @@ describe("opscrew cloudflare move", () => {
       "--confirm <name>",
       "--allow-downtime",
       "--engine <name>",
-      "prepare: B's zone (pending)",
+      "prepare: the zone in the new account (pending)",
       "once every app in the zone is prepared",
-      "maintenance window",
+      "maintenance window needs --allow-downtime; the step",
+      "before it, its --approve <hash>, as the finish prints.",
       "before the switch changed anything",
       "OPSCREW_NEW_CLOUDFLARE_API_TOKEN",
     ]) {
       expect(help).toContain(text);
     }
     expect(help).not.toContain("--env");
+    expect(help).not.toContain("B's");
   });
 });
