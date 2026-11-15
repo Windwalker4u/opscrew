@@ -105,6 +105,8 @@ cloudflare-move/
   tf/<root folder name>/                  # TF_DATA_DIR of each shadow root
   cloudflare.json                         # B's shared record (SharedRecordSchema)
   deploy-secrets.json                     # the last `_NEW` deploy secrets change applied: its hash only
+  first-copies.json                       # prepare's first copies of the buckets, once ended: their hash
+  connector-restart.json                  # the finish's takeover restart on a server, once applied: its hash
   finish-point.json                       # the finish's step 1 and last backups copy: hashes only
   a-removal/                              # appears at the finish's swap
     tfstate/<same names>.tfstate          # the environment's former states; non-Cloudflare and
