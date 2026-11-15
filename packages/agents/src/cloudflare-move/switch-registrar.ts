@@ -93,17 +93,24 @@ function fromRecordWhenRefused(session: MoveSession, registrar: Registrar): Regi
 
 /**
  * The registrar once the nameservers point at B: Cloudflare Registrar when its move between
- * accounts took the registration to B (read with B's token), else `registrar`.
+ * accounts took the registration to B (read with B's token), else `registrar` (also when B's
+ * token may not read Cloudflare Registrar).
  */
 export async function registrarAfterSwitch(
   session: MoveSession,
   registrar: DomainRegistrar,
 ): Promise<DomainRegistrar> {
   if (registrar.kind !== "other") return registrar;
-  const held = await lookupServices(session)
-    .registrar(session.accounts.b.accountId)
-    .getDomain(session.zone);
-  return held === undefined ? registrar : { kind: "cloudflare" };
+  try {
+    const held = await lookupServices(session)
+      .registrar(session.accounts.b.accountId)
+      .getDomain(session.zone);
+    return held === undefined ? registrar : { kind: "cloudflare" };
+  } catch (error) {
+    // B's token without the Registrar permission: another registrar, read from the public DNS.
+    if (error instanceof CloudflareError) return registrar;
+    throw error;
+  }
 }
 
 /**

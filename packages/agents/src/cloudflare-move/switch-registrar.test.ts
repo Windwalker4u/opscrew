@@ -11,10 +11,10 @@ afterEach(() => {
 
 const FROM_RECORD = "can't read Cloudflare Registrar";
 
-/** A's token refused on Cloudflare Registrar for want of the permission, as R10.8 saw it. */
-function refuseRegistrarInA(accountA: string) {
+/** The account's token refused on Cloudflare Registrar for want of the permission (R10.8 saw it for A). */
+function refuseRegistrarIn(refused: string) {
   vi.spyOn(CloudflareClient.prototype, "getRegistration").mockImplementation(async (accountId) => {
-    if (accountId === accountA) {
+    if (accountId === refused) {
       throw new CloudflareError(
         `Cloudflare refused the request to read the registration of ${ZONE}: Authentication error (10000).`,
         { hint: "Edit the token." },
@@ -28,7 +28,7 @@ describe("findSwitchRegistrar: A's token without a Registrar permission", () => 
   it("Cloudflare's record names Cloudflare: the dashboard steps of the move between accounts", async () => {
     const h = await switchHarness({ registrar: "other" });
     h.deps.interactive = true;
-    refuseRegistrarInA(h.aZone.accountId);
+    refuseRegistrarIn(h.aZone.accountId);
     h.bZone.originalRegistrar = "cloudflare, inc. (id: 1910)";
     const stopped = await h.run();
     expect(stopped.done).toBe(false);
@@ -40,7 +40,7 @@ describe("findSwitchRegistrar: A's token without a Registrar permission", () => 
   it("Cloudflare's record names another registrar: the nameservers to set", async () => {
     const h = await switchHarness({ registrar: "other" });
     h.deps.interactive = true;
-    refuseRegistrarInA(h.aZone.accountId);
+    refuseRegistrarIn(h.aZone.accountId);
     h.bZone.originalRegistrar = "porkbun llc";
     const stopped = await h.run();
     expect(stopped.done).toBe(false);
@@ -52,7 +52,7 @@ describe("findSwitchRegistrar: A's token without a Registrar permission", () => 
   it("no record of the registrar: another registrar", async () => {
     const h = await switchHarness({ registrar: "other" });
     h.deps.interactive = true;
-    refuseRegistrarInA(h.aZone.accountId);
+    refuseRegistrarIn(h.aZone.accountId);
     const stopped = await h.run();
     expect(stopped.done).toBe(false);
     expect(stopped.next[0]).toContain(h.bZone.nameServers[0]);
@@ -68,11 +68,27 @@ describe("findSwitchRegistrar: A's token without a Registrar permission", () => 
     expect(h.deps.reporter.text()).not.toContain(FROM_RECORD);
   });
 
+  it("B's token refused on Cloudflare Registrar once the nameservers are at B: goes on as another registrar", async () => {
+    // With DNSSEC at the start, the switch reads B's registration for its DS record.
+    const h = await switchHarness({ registrar: "other", dsAtStart: true });
+    h.deps.interactive = true;
+    await h.run();
+    h.time.ms += 30 * 3600_000;
+    const stopped = await h.run();
+    expect(stopped.next[0]).toContain(h.bZone.nameServers[0]);
+    refuseRegistrarIn(h.b.id);
+    h.web.ns = [...h.bZone.nameServers];
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    expect(h.asked()).toHaveLength(1);
+    expect(result.next.at(-1)).toContain("at the registrar that holds it");
+  });
+
   it.skipIf(!findExecutable("git"))(
     "the abort goes on past the registrar to its checks",
     async () => {
       const h = await abortHarness({ registrar: "other" });
-      refuseRegistrarInA(h.aZone.accountId);
+      refuseRegistrarIn(h.aZone.accountId);
       h.web.ns = [...(h.bZone?.nameServers ?? [])];
       const error = await h.run().then(
         () => undefined,
