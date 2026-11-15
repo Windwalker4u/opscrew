@@ -9,11 +9,17 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
-import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
+import {
+  canonicalJson,
+  listText,
+  OpsCrewError,
+  plural,
+  sha256Hex,
+  toPosixRelative,
+} from "@opscrew/core";
 import { appsOf, type CloudflareMove, environmentsOf } from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
-import { readDs } from "../domain";
 import { hosts, sameHosts } from "../domain/switch";
 import { appliesNow } from "../retarget/steps";
 import { tunnelModules } from "../rotate/infra";
@@ -31,10 +37,10 @@ import {
 } from "./progress";
 import { abortingMove, readMoveRecords, writeMoveRecord } from "./record";
 import { openMoveSession } from "./session";
-import { dropShadow, prepareRemoval, shadowOutputs, shadowRoots } from "./shadow";
+import { dropShadow, hasContent, prepareRemoval, shadowOutputs, shadowRoots } from "./shadow";
 import { planRemoval } from "./shadow-plans";
 import { pendingStop, removeBShared } from "./shared";
-import { clearDsNotes } from "./switch-ds";
+import { clearDsNotes, readPublished } from "./switch-ds";
 import { currentNameservers, findSwitchRegistrar } from "./switch-registrar";
 import { ABORT_COMMAND, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
 import type {
@@ -119,7 +125,7 @@ async function switchBegun(
   session: MoveSession,
   move: CloudflareMove,
 ): Promise<string | undefined> {
-  const { deps, services, zone } = session;
+  const { zone } = session;
   const { a, b } = session.accounts;
   const aName = a.name ?? a.accountId;
   if (session.environments.some((env) => env.plan.cloudflareMove?.step === "adopted")) {
@@ -133,12 +139,10 @@ async function switchBegun(
     return `its nameservers are no longer those of the account ${aName}`;
   }
   if (move.dsAtStart) {
-    const ds = await readDs({
-      deps: { ...deps, fetch: services.fetch ?? deps.fetch },
-      domain: zone,
-      ...(registrar.kind === "api" ? { registrar: registrar.registrar } : {}),
-    });
-    if (ds.records.length === 0) return "its DNSSEC (DS) record is no longer published";
+    // Either source showing none is enough: the registrar's API before the public DNS's cache.
+    const ds = await readPublished(session, registrar);
+    if (ds.public.length === 0 || ds.api?.length === 0)
+      return "its DNSSEC (DS) record is no longer published";
   }
   return undefined;
 }
@@ -163,10 +167,50 @@ async function removeFromB(session: MoveSession): Promise<StepStop | undefined> 
   return undefined;
 }
 
-/** The environment's shadow roots, none while B has no zone (nothing was planned there then). */
-function rootsOf(session: MoveSession, environment: MoveEnvironment): Promise<ShadowRoot[]> {
-  if (session.accounts.b.setup === undefined) return Promise.resolve([]);
-  return shadowRoots(session, environment);
+/** The environment's shadow state files that are not empty (`cloudflare-move/tfstate/`). */
+async function shadowStates(environment: MoveEnvironment): Promise<string[]> {
+  const dir = join(environment.paths.stateDir, "cloudflare-move", "tfstate");
+  const found: string[] = [];
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (name.endsWith(".tfstate") && (await hasContent(join(dir, name))))
+      found.push(join(dir, name));
+  }
+  return found;
+}
+
+/**
+ * The environment's shadow roots: none while it has no shadow state (prepare made nothing of its
+ * roots in B, and may not have made what they need there, such as B's one-time PIN login). While B
+ * has no zone, none either, unless a shadow state still holds pieces of the app in B: then a plain
+ * stop that keeps the move's folder.
+ */
+async function rootsOf(session: MoveSession, environment: MoveEnvironment): Promise<ShadowRoot[]> {
+  const states = await shadowStates(environment);
+  if (states.length === 0) return [];
+  const { b } = session.accounts;
+  if (b.setup !== undefined) return shadowRoots(session, environment);
+  const deps = { ...session.deps, paths: environment.paths };
+  const held: string[] = [];
+  for (const state of states) {
+    if ((await stateContents(deps, state, async () => session.engine)) !== "nothing") {
+      held.push(toPosixRelative(session.paths.root, state));
+    }
+  }
+  if (held.length === 0) return [];
+  const bName = b.name ?? b.accountId;
+  const app = environment.plan.app.name;
+  const one = held.length === 1;
+  const folder = toPosixRelative(
+    session.paths.root,
+    join(environment.paths.stateDir, "cloudflare-move"),
+  );
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${session.zone} is no longer in the Cloudflare account ${bName}, but ${listText(held)} still ${one ? "holds" : "hold"} pieces of ${app} there, so OpsCrew keeps ${one ? "it" : "them"}. Nothing was deleted.`,
+    {
+      hint: `Delete what is left of ${app} (its tunnels, Access applications, policies and service tokens, Worker or R2 buckets) in the Cloudflare dashboard of the account ${bName}, then delete ${folder} and run \`${session.command}\` again.`,
+    },
+  );
 }
 
 /** Whether `root`'s shadow state may hold resources (it does, or can't be read). */
@@ -192,6 +236,9 @@ async function removeEnvironment(
   }
   const buckets = roots.filter((root) => root.name === "storage" || root.name === "backups");
   const others = roots.filter((root) => !buckets.includes(root));
+  // Each copy without the guard is made, and checked, before any bucket is emptied.
+  const copies = new Map<ShadowRoot, ShadowRoot>();
+  for (const root of buckets) copies.set(root, await withoutGuard(session, root));
   let filled = false;
   for (const root of buckets) filled ||= await holds(session, environment, root);
   if (filled) {
@@ -199,7 +246,7 @@ async function removeEnvironment(
     if (emptied !== undefined) return emptied;
   }
   for (const root of buckets) {
-    const stop = await destroyRoot(session, environment, root, await withoutGuard(root));
+    const stop = await destroyRoot(session, environment, root, copies.get(root) ?? root);
     if (stop !== undefined) return stop;
   }
   for (const root of others) {
@@ -254,9 +301,10 @@ async function destroyRoot(
 /**
  * A copy of a bucket root's committed files without its `prevent_destroy` guard, in the
  * environment's move folder (`cloudflare-move/delete/<root folder>/`), as `destroy --delete-data`
- * plans from one: the root with its folder there. The committed root keeps the guard.
+ * plans from one: the root with its folder there. The committed root keeps the guard. Stops
+ * (`INTERNAL`) when a copied `.tf` file still names `prevent_destroy`.
  */
-async function withoutGuard(root: ShadowRoot): Promise<ShadowRoot> {
+async function withoutGuard(session: MoveSession, root: ShadowRoot): Promise<ShadowRoot> {
   const dir = join(dirname(dirname(root.statePath)), "delete", basename(root.dir));
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
@@ -264,16 +312,24 @@ async function withoutGuard(root: ShadowRoot): Promise<ShadowRoot> {
     const from = join(root.dir, name);
     if (!(await stat(from)).isFile()) continue;
     const text = await readFile(from, "utf8");
-    await writeFile(join(dir, name), name.endsWith(".tf") ? text.replace(DESTROY_GUARD, "") : text);
+    const copy = name.endsWith(".tf") ? text.replace(DESTROY_GUARD, "") : text;
+    if (name.endsWith(".tf") && copy.includes("prevent_destroy")) {
+      throw new OpsCrewError(
+        "INTERNAL",
+        `OpsCrew couldn't take the prevent_destroy guard out of its copy of ${toPosixRelative(session.paths.root, from)}, so it planned no deletion of the bucket. Nothing in the bucket was changed.`,
+        { hint: "This is a bug in OpsCrew; please report it." },
+      );
+    }
+    await writeFile(join(dir, name), copy);
   }
   return { ...root, dir };
 }
 
 /**
  * After B's pieces are gone: each environment's move folder deleted, B's zone deleted or kept,
- * then the record removed from every covered plan and the app's local file deleted; the
- * repository's switch file and DS notes too once no app of it records a move (an approved switch
- * plan kept there would let a later move switch without asking).
+ * the repository's switch file and DS notes deleted when no other app of it records a move (an
+ * approved switch plan kept there would let a later move switch without asking), then the record
+ * removed from every covered plan and the app's local file deleted.
  */
 async function endAbort(session: MoveSession, move: CloudflareMove): Promise<MoveResult> {
   const { deps, zone } = session;
@@ -283,14 +339,15 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
   }
   const outcome = await deleteBZone(session);
   if ("stop" in outcome) return { step: move.step, done: false, ...outcome.stop };
+  // Before the records go, so an interrupted abort never leaves them behind.
+  if (!(await otherMoveRecorded(session.paths))) {
+    await clearSwitchProgress(session.paths);
+    await clearDsNotes(session.paths);
+  }
   for (const env of session.environments) {
     env.plan = await writeMoveRecord(deps, env.paths, undefined);
   }
   await rm(appProgressFile(session.paths), { force: true });
-  if (!(await anyMoveRecorded(session.paths))) {
-    await clearSwitchProgress(session.paths);
-    await clearDsNotes(session.paths);
-  }
   const app = session.environments[0]?.plan.app.name ?? zone;
   await deps.audit.append({
     kind: "provider-call",
@@ -311,14 +368,23 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
   };
 }
 
-/** True when any app of the repository `paths` belong to records a move in any environment. */
-async function anyMoveRecorded(paths: MoveSession["paths"]): Promise<boolean> {
+/** True when an app of the repository other than `paths`' own records a move in any environment. */
+async function otherMoveRecorded(paths: MoveSession["paths"]): Promise<boolean> {
   for (const { key } of await appsOf(paths.root)) {
+    if (key === paths.app) continue;
     const own = appPaths(paths, key);
     const records = await readMoveRecords(own, await environmentsOf(paths.root, key));
     if (records.some((env) => env.plan.cloudflareMove !== undefined)) return true;
   }
   return false;
+}
+
+/** The zone's records in words, by type and name: `Its 2 records go with it: MX example.com, TXT example.com.` */
+function recordsText(records: readonly { type: string; name: string }[]): string {
+  if (records.length === 0) return "It holds no record.";
+  const names = records.map((record) => `${record.type} ${record.name}`).sort();
+  const go = records.length === 1 ? "goes" : "go";
+  return `Its ${plural(records.length, "record")} ${go} with it: ${names.join(", ")}.`;
 }
 
 /** What the zone step came to: deleted, kept (and why), or a stop for its approval. */
@@ -335,7 +401,15 @@ async function zoneDeletion(session: MoveSession, zoneId: string) {
     accountId: b.accountId,
     zoneId,
     status: zone.status,
-    records: records.map((record) => record.id).sort(),
+    records: records
+      .map(({ id, type, name, content, comment }) => ({
+        id,
+        type,
+        name,
+        content,
+        comment: comment ?? null,
+      }))
+      .sort((x, y) => x.id.localeCompare(y.id)),
   };
   return { zone, records, hash: sha256Hex(canonicalJson(body)) };
 }
@@ -379,7 +453,7 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
   const key: MovePlanKey = { action: "abort-zone" };
   const title = `Delete the zone ${zone} from the Cloudflare account ${bName}`;
   const details = [
-    `${zone} in the account ${bName} is ${first.zone.status} and has never served the app. It holds no other app's mark and no OpsCrew record; its ${plural(first.records.length, "record")} (copies of the account ${a.name ?? a.accountId}'s) go with it.`,
+    `${zone} in the account ${bName} is ${first.zone.status} and has never served the app. It holds no other app's mark and no OpsCrew record. ${recordsText(first.records)}`,
     `Nothing in the account ${a.name ?? a.accountId} changes. Type the zone's name to approve.`,
   ].join("\n");
   if (!appliesNow(session, first.hash)) {

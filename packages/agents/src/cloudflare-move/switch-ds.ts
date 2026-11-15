@@ -122,7 +122,10 @@ export async function dsGate(
 }
 
 /** The DS records published now: the registrar's API, when OpsCrew drives it, and the public DNS. */
-function readPublished(session: MoveSession, registrar: DomainRegistrar): Promise<DsReading> {
+export function readPublished(
+  session: MoveSession,
+  registrar: DomainRegistrar,
+): Promise<DsReading> {
   const { deps, services, zone } = session;
   return readDs({
     deps: { ...deps, fetch: services.fetch ?? deps.fetch },

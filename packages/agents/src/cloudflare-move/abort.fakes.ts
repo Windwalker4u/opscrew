@@ -143,6 +143,8 @@ export interface AbortHarnessOptions {
   shadow?: Partial<Record<MoveRoot, string[]>>;
   /** Where the zone is registered: Porkbun (default, its API reads the nameservers) or elsewhere. */
   registrar?: "porkbun" | "other";
+  /** New has its one-time PIN login (default true): its shared plan made it. */
+  bPin?: boolean;
   /** Variables of the environment. */
   env?: Record<string, string | undefined>;
 }
@@ -206,7 +208,9 @@ export async function abortHarness(o: AbortHarnessOptions = {}) {
   const old = cloudflare.account("Old");
   const fresh = cloudflare.account("New");
   old.identityProviders.push({ id: "pin-of-old", name: "One-time PIN", type: "onetimepin" });
-  fresh.identityProviders.push({ id: "pin-of-new", name: "One-time PIN", type: "onetimepin" });
+  if (o.bPin !== false) {
+    fresh.identityProviders.push({ id: "pin-of-new", name: "One-time PIN", type: "onetimepin" });
+  }
   const folders = rootFolders(plan);
   for (const [root, folder] of Object.entries(folders)) {
     const dir = join(h.root, folder);
@@ -294,10 +298,11 @@ export async function abortHarness(o: AbortHarnessOptions = {}) {
     const session = await open();
     const [environment] = session.environments;
     if (environment === undefined) throw new Error("prod is covered");
-    roots = await shadowRoots(session, environment);
     const held = o.shadow ?? {
       main: [...COPIED_SERVER, B_PIECES.record(`shop.${ZONE}`), B_PIECES.certificates],
     };
+    // Without a shadow state, prepare may not have reached what the roots need in New.
+    roots = Object.keys(held).length === 0 ? [] : await shadowRoots(session, environment);
     for (const root of roots) {
       const addresses = held[root.name];
       if (addresses === undefined) continue;

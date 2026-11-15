@@ -1,5 +1,5 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { FakeTunnel } from "@opscrew/connector-cloudflare/testing";
 import { portainerClient } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
@@ -14,6 +14,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
+import { HOSTNAME, hostingTestPlan } from "../hosting/__fixtures__/account";
 import { originTlsApply, planOriginTls, readOriginTlsValues } from "../provision/origin-tls";
 import { applySharedCloudflare, planSharedCloudflare } from "../provision/shared-cloudflare";
 import { NEW_OFFSITE_KEY_VARS, NEW_STORAGE_KEY_VARS } from "../provision/storage";
@@ -38,6 +39,7 @@ import {
   abortHarness,
   B_PIECES,
   COPIED_SERVER,
+  GUARDED_BUCKET,
 } from "./abort.fakes";
 import { APP_BUCKET, BACKUPS_BUCKET, FakeR2 } from "./buckets.fakes";
 import { B_TUNNEL, B_WEBHOOK_TUNNEL, ConnectorHost, fakeClock } from "./connector.fakes";
@@ -45,6 +47,7 @@ import { markName } from "./marks";
 import { readAppProgress, readSwitchProgress, writeSwitchProgress } from "./progress";
 import { writeMoveRecord } from "./record";
 import { recordedMove, serverPlan, unencrypted, ZONE } from "./session.fakes";
+import { addressState } from "./shadow.fakes";
 import { bSharedRecordPath, planBShared } from "./shared";
 import { switchMove } from "./switch";
 import { BLOG, DOCS } from "./switch.fakes";
@@ -125,6 +128,8 @@ describe.skipIf(!findExecutable("git"))("abortMove: a proxied cloud server", () 
     expect(h.handler.requests[2]?.title).toBe(
       `Delete the zone ${ZONE} from the Cloudflare account New`,
     );
+    // The zone's records are listed by type and name.
+    expect(h.handler.requests[2]?.details).toContain(`Its 1 record goes with it: MX ${ZONE}.`);
     // The copied server stays out of the destroy plan, which runs with New's token and ids.
     expect(h.engine.planOptions.at(-1)?.env?.CLOUDFLARE_API_TOKEN).toBe(h.tokens.b);
     const [main] = h.roots;
@@ -336,6 +341,14 @@ describe.skipIf(!findExecutable("git"))(
       await unchanged(h, error, "its DNSSEC (DS) record is no longer published");
     });
 
+    it("after the registrar's API removed the DS record, while the public DNS still caches it", async () => {
+      const h = await abortHarness({ dsAtStart: true });
+      h.api.dsRecords.set(ZONE, []);
+      h.web.ds = [OLD_DS];
+      const error = await refused(h.run());
+      await unchanged(h, error, "its DNSSEC (DS) record is no longer published");
+    });
+
     it("once New's zone is active", async () => {
       const h = await abortHarness();
       if (h.bZone !== undefined) h.bZone.status = "active";
@@ -481,6 +494,59 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
     expect(tunnel.connections).toEqual([]);
     expect(host.applies).toHaveLength(1);
     expect(await h.leaks([tunnelToken, plain, next], JSON.stringify(result))).toBe(false);
+  });
+
+  it("an own server in tunnel mode whose prepare stopped before New's shared plan (no one-time PIN login in New, no shadow state): aborted", async () => {
+    const plan = unencrypted(ownPlan({ access: "tunnel", deployed: true }));
+    const h = await abortHarness({ plan, shadow: {}, bPin: false });
+    await updateServerAddresses(h.deps.paths, (current) => ({
+      ...current,
+      own: { host: "192.0.2.50", port: 22, user: "admin", agent: true },
+    }));
+    const tunnel: FakeTunnel = { id: B_TUNNEL, name: "shop", connections: [] };
+    const host = new ConnectorHost(freshFacts({ user: "admin", privilege: "sudo" }), tunnel);
+    h.deps.interactive = true;
+    const result = await h.run({ services: { host, remote: unusedRemote, ...fakeClock() } });
+    await expectAborted(h, result);
+    expect(asked(h).map(([kind]) => kind)).toEqual([
+      "cloudflare-apply",
+      "github-secrets",
+      "cloudflare-apply",
+    ]);
+    expect(h.engine.planOptions).toEqual([]);
+    expect(bHasZone(h)).toBe(false);
+  });
+
+  it("stops plainly, keeping the move's folder, when New has no zone but a shadow state still holds pieces there", async () => {
+    const h = await abortHarness({ bZone: false, step: "started" });
+    const state = join(h.prodPaths.stateDir, "cloudflare-move", "tfstate", "prod.tfstate");
+    await mkdir(dirname(state), { recursive: true });
+    await writeFile(state, addressState([B_PIECES.tunnel]));
+    h.deps.interactive = true;
+    const error = await h.run().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toBe(
+      `${ZONE} is no longer in the Cloudflare account New, but .opscrew/cloudflare-move/tfstate/prod.tfstate still holds pieces of shop there, so OpsCrew keeps it. Nothing was deleted.`,
+    );
+    expect((error as OpsCrewError).hint).toContain("Cloudflare dashboard of the account New");
+    expect(await readFile(state, "utf8")).toBe(addressState([B_PIECES.tunnel]));
+    expect(await recordNow(h)).toMatchObject({ abort: { step: "started" } });
+    expect(h.engine.planOptions).toEqual([]);
+  });
+
+  it("a hosting account: its DNS-only root destroyed in New", async () => {
+    const plan = hostingTestPlan({ cloudflare: true });
+    const h = await abortHarness({ plan, shadow: { main: [B_PIECES.record(HOSTNAME)] } });
+    h.deps.interactive = true;
+    const result = await h.run();
+    await expectAborted(h, result);
+    expect(asked(h)).toEqual([
+      ["cloudflare-apply", false, undefined],
+      ["iac-apply", true, "notes"],
+      ["cloudflare-apply", true, ZONE],
+    ]);
+    expect(h.bZone?.records.some((r) => r.name === HOSTNAME)).toBe(false);
+    expect(await h.leaks([], JSON.stringify(result))).toBe(false);
   });
 
   it("a Workers site: its _NEW deploy secrets deleted and its Worker destroyed in New", async () => {
@@ -655,6 +721,25 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
         "prevent_destroy = true",
       );
       expect(await h.leaks(secrets, JSON.stringify(result))).toBe(false);
+    });
+
+    it("refuses, before any bucket is emptied, a bucket root whose guard it can't take out", async () => {
+      const { h, r2, remote, plan } = await r2World();
+      const guarded = GUARDED_BUCKET.replace(
+        "    prevent_destroy = true\n",
+        "    prevent_destroy = true\n    ignore_changes  = [name]\n",
+      );
+      await writeFile(join(h.root, storageRootDir(plan), "main.tf"), guarded);
+      h.deps.interactive = true;
+      const error = await h.run({ services: { remote } }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({ code: "INTERNAL" });
+      expect((error as OpsCrewError).message).toBe(
+        `OpsCrew couldn't take the prevent_destroy guard out of its copy of ${storageRootDir(plan)}/main.tf, so it planned no deletion of the bucket. Nothing in the bucket was changed.`,
+      );
+      expect([...r2.objects(h.fresh.id, APP_BUCKET).keys()]).toEqual(["a.png"]);
+      expect(r2.runs).toEqual([]);
+      expect(h.engine.destroyPlans).toEqual([]);
     });
 
     it("in a script, empties one bucket per run and goes on after each", async () => {
