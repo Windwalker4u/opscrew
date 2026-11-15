@@ -1466,8 +1466,8 @@ describe("connectDomain: an unreadable note about an earlier run", () => {
       }),
     ],
     [
-      "a wait below 24 hours",
-      JSON.stringify({ domain: DOMAIN, registrar: "porkbun", dsSeen: RUN_NOW, waitSeconds: 3600 }),
+      "a wait below an hour",
+      JSON.stringify({ domain: DOMAIN, registrar: "porkbun", dsSeen: RUN_NOW, waitSeconds: 60 }),
     ],
   ])("stops on %s before any registrar or Cloudflare call", async (_case, content) => {
     const { cp } = await porkbunHosted();

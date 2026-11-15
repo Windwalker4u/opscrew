@@ -12,7 +12,7 @@ import {
   writeConnectState,
 } from "./connect-state";
 import { type OtherRegistrarId, REGISTRAR_NAMES, registrarLinks } from "./registrars";
-import type { RegistryDsLookup, RegistryDsTtl } from "./registry-ds";
+import type { RegistryDsTtl } from "./registry-ds";
 import { dsRecordText, sameDs } from "./switch";
 
 /**
@@ -47,7 +47,7 @@ export interface DsContext {
    * The run's collaborators, with the registry's nameservers (`registryDsLookup`); without them
    * the registry's TTL is unreadable and the wait is 24 hours or more.
    */
-  deps: PhaseDeps & { registryDs?: RegistryDsLookup };
+  deps: PhaseDeps;
   domain: string;
   /** The registrar's API, when OpsCrew drives it; without one only the public DNS is read. */
   registrar?: Registrar;

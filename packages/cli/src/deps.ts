@@ -15,6 +15,7 @@ import {
   type PortainerServices,
   type PromoteServices,
   type ProvisionServices,
+  type RegistryDsLookup,
   type RestoreServices,
   type RetargetServices,
   type RollbackServices,
@@ -22,6 +23,7 @@ import {
   type RunnerHostServices,
   type RunSecureOptions,
   type RunVerifyOptions,
+  registryDsLookup,
   type ServerSnapshotServices,
   type SiteRotationOptions,
   type SshKeyGitHub,
@@ -57,6 +59,11 @@ export interface CliServices {
   /** Agent runtime used instead of the Claude Agent SDK (still dropped with `--no-ai`). */
   runtime?: AgentRuntime;
   fetch?: FetchLike;
+  /**
+   * Asks a registry's own nameservers for a domain's DS record (the DS wait); default: over the
+   * network, unless `fetch` is faked (a test), when no registry is asked.
+   */
+  registryDs?: RegistryDsLookup;
   runner?: CommandRunner;
   /** Byte pipes to servers (`ssh … docker system dial-stdio`); default core's `NodeStreamRunner`. */
   streams?: StreamRunner;
@@ -230,7 +237,10 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     interactive: ctx.isInteractive,
     version: ctx.version,
   });
-  const deps = extra.streams === undefined ? built : { ...built, streams: extra.streams };
+  const streamed = extra.streams === undefined ? built : { ...built, streams: extra.streams };
+  const registryDs =
+    extra.registryDs ?? (extra.fetch === undefined ? registryDsLookup() : undefined);
+  const deps = registryDs === undefined ? streamed : { ...streamed, registryDs };
   if (options.ai === false) return deps;
   if (extra.runtime !== undefined) return { ...deps, runtime: extra.runtime };
   if (!claudeConfigured(ctx.env)) return deps;

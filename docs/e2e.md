@@ -3917,7 +3917,8 @@ production move.
   billed (B's zone starts on the free plan; Cloudflare Tunnel, Zero Trust's free plan and per-hostname
   origin pulls cost nothing).
 - **L4:** activation up to an hour on a free zone, the certificate minutes and at worst 24 hours,
-  24 to 48 hours more before it when the registry still publishes a DS record; at Cloudflare
+  when the registry still publishes a DS record, about twice that record's lifetime plus an hour more
+  once it is gone (about 2 hours for a .dev domain, at most 48); at Cloudflare
   Registrar the dashboard move, accepted within five days. A nameserver change costs nothing.
 - **L5:** about 2 hours, P's maintenance window of a few minutes, four deploy runs.
 - **L6:** under an hour.

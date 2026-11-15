@@ -33,7 +33,9 @@ other records get lost.
   triggers Cloudflare's activation check (Cloudflare's scan needs the zone, so creating it is its
   own approval first). Old DS records would take the domain offline after the switch: they are
   removed first (through the API where it can, else by the user) and the switch waits for a later
-  run, at least 24 hours after they are gone. Cloudflare's own DS record is published only once the
+  run, at least 24 hours after they are gone (since 2026-11-15, T2838: twice the DS record's TTL as
+  the registry's own nameservers give it, plus an hour, within 1 and 48 hours; 24 hours when the
+  registry can't be read). Cloudflare's own DS record is published only once the
   zone is active.
 - **Optional capabilities.** Each registrar declares what its API supports; OpsCrew says plainly
   when a setting (auto-renew, DNSSEC) must be changed in the dashboard.

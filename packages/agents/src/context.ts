@@ -14,6 +14,7 @@ import type {
   ProjectStateStore,
   Redactor,
 } from "@opscrew/core";
+import type { RegistryDsLookup } from "./domain/registry-ds";
 
 /**
  * Everything a phase needs, injected by the CLI or the MCP server. Phases never reach for globals
@@ -35,6 +36,8 @@ export interface PhaseDeps {
    */
   streams?: StreamRunner;
   fetch: FetchLike;
+  /** Asks a registry's own nameservers for a domain's DS record and its full TTL; unset, the DS wait keeps its 24-hour floor. */
+  registryDs?: RegistryDsLookup;
   env: Record<string, string | undefined>;
   clock: Clock;
   redactor: Redactor;
