@@ -434,7 +434,7 @@ open port and no static address (Cloudflare Tunnel). This feature adds the direc
 answers at the home's own address, proxied through Cloudflare or not.
 
 **Research** (started 2026-11-15 on the founder's go-ahead, while 028 waits for DNSSEC):
-[research.md](029-home-hosting/research.md), with five questions for the founder at its end. It covers:
+[research.md](029-home-hosting/research.md). **The founder's decisions (2026-11-15):** the research's five recommendations: proxied through Cloudflare when the domain is on Cloudflare, else DNS-only; no UPnP or NAT-PMP mapping; OpsCrew's own updater, Cloudflare first; the server's runner as the default deploy path, Cloudflare Access SSH as an option; no DNS-01. It covers:
 - **Dynamic DNS:** what keeps the A/AAAA record current when the address changes: an updater on the
   server (a small timer of OpsCrew's, or ddclient) through Cloudflare's API with a token limited to
   that zone's DNS, or a registrar's own dynamic DNS (Porkbun, Namecheap); how often, and what the

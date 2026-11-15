@@ -362,6 +362,9 @@ The user's own computer must still reach the server for `provision` (same LAN or
 
 ## Questions for the founder
 
+**The founder's answer (2026-11-15):** all five as recommended: proxied when the domain is on Cloudflare, else DNS-only; no UPnP or NAT-PMP mapping in this feature; OpsCrew's own updater, Cloudflare first; the server's runner as the default deploy path, Cloudflare Access SSH as an option; no DNS-01.
+
+
 1. **Default for the home path: proxied or DNS-only?**
    - Proxied (Cloudflare proxy, origin protection, address hidden, no public certificate on the
      home server, dynamic changes invisible to visitors, but the user is on Cloudflare and subject
