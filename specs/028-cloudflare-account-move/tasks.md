@@ -529,7 +529,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/connector-cloudflare && npx vitest run --root packages/connectors/cloudflare && npx vitest run --root packages/agents src/cloudflare-move/switch src/cloudflare-move/abort && pnpm lint`
   - Effort: medium
 
-- [ ] T2837 [US1] What stays behind: the owner told what OpsCrew doesn't move (FR-2819, founder's decision 2026-11-15)
+- [x] T2837 [US1] What stays behind: the owner told what OpsCrew doesn't move (FR-2819, founder's decision 2026-11-15)
   - Owns: `packages/agents/src/cloudflare-move/left-behind*.ts` (new), its lines in `summary.ts` and `switch-plan.ts` and their tests, read-only methods in `packages/connectors/cloudflare/src/client.ts` (+ tests, `testing/**`) for what the client can't read yet, the "What OpsCrew doesn't move" section of `docs/guide/cloudflare-move.md`
   - Reads: spec FR-2819 and its edge case; plan 14.; `packages/cli/test/live/cloudflare-move-pass.ts`'s inventory (what L0 reads, by which endpoint, and its 403 answers on the founder's token)
   - Depends: T2828
