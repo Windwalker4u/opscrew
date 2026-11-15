@@ -1,6 +1,7 @@
 /**
  * What the scan leaves out: findings in test code, and findings in the paths `opscrew/scan.yaml`
- * ignores. A secret is never left out: there it is reported as info, saying why.
+ * ignores. A secret is never left out: a recognisable one keeps its severity there, and only a
+ * guessed one is reported as info, saying why.
  */
 import type { Finding, IgnoredFindings } from "@opscrew/contracts";
 import {
@@ -98,19 +99,27 @@ export interface IgnoreResult {
   ignored?: IgnoredFindings;
 }
 
-function asInfo(finding: Finding, why: string): Finding {
+/** The guess at a secret: a random-looking value under a secret-like name, not a known shape. */
+const GUESSED_SECRET_RULE = "secrets/generic-high-entropy";
+
+function asInfo(finding: Finding, reason: string, sanitize: (text: string) => string): Finding {
   if (finding.severity === "info") return finding;
   return {
     ...finding,
     severity: "info",
-    description: `${finding.description} ${why}, so it is reported as info; if it is a real secret, rotate it.`,
+    description: sanitize(
+      `${finding.description} ${SCAN_CONFIG_FILE} ignores this path ("${reason}"), so this guess is reported as info; if it is a real secret, rotate it.`,
+    ),
   };
 }
 
 /**
  * Leaves out every finding in test code and every finding an `entries` entry matches (its paths,
- * and its rules when it names some), counting them per rule and per entry. A secret finding there
- * stays, as info with why. `sanitize` masks the user's reason before it goes into a finding.
+ * and its rules when it names some), counting them per rule and per entry. A secret there is
+ * never left out: a recognisable one (a known token shape, a private key, a committed `.env`, a
+ * gitleaks hit) keeps its severity, and a guessed one in an ignored path becomes info with the
+ * entry's reason (in test code its own rule already lowers it). `sanitize` masks the user's
+ * reason before it goes into a finding.
  */
 export function applyIgnores(
   findings: readonly Finding[],
@@ -139,13 +148,12 @@ export function applyIgnores(
     if (!inTests && matcher === undefined) {
       kept.push(finding);
     } else if (isSecret(finding)) {
+      // A recognisable secret is a real leak wherever it sits. Only the guess is lowered: in test
+      // code by its own rule, in an ignored path here.
       kept.push(
-        asInfo(
-          finding,
-          matcher === undefined
-            ? "It is in test code, so it is most likely a made-up value for the tests"
-            : sanitize(`${SCAN_CONFIG_FILE} ignores this path ("${matcher.entry.reason}")`),
-        ),
+        matcher !== undefined && finding.ruleId === GUESSED_SECRET_RULE
+          ? asInfo(finding, matcher.entry.reason, sanitize)
+          : finding,
       );
     } else {
       byRule[finding.ruleId] = (byRule[finding.ruleId] ?? 0) + 1;

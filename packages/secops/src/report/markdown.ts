@@ -77,7 +77,7 @@ function renderIgnored(ignored: IgnoredFindings): string[] {
   const out = [
     "## Ignored",
     "",
-    `${ignored.total} finding${ignored.total === 1 ? " is" : "s are"} left out of this report: ${ignored.testCode} in test code and ${byFile} in paths ${inlineCode("opscrew/scan.yaml")} ignores. A secret there is never left out: it is listed above as info.`,
+    `${ignored.total} finding${ignored.total === 1 ? " is" : "s are"} left out of this report: ${ignored.testCode} in test code and ${byFile} in paths ${inlineCode("opscrew/scan.yaml")} ignores. A secret is never left out: a recognisable one keeps its severity there, and only a guessed one (${inlineCode("secrets/generic-high-entropy")}) is listed above as info.`,
     "",
     "| Rule | Findings |",
     "|---|---|",

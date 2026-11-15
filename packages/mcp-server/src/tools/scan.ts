@@ -20,7 +20,7 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
     {
       title: "Security scan",
       description:
-        "Scan the repository for security problems: leaked keys, Supabase service-role keys in frontend code, tables without row-level security, open Firebase rules, risky Docker or framework settings and known-vulnerable dependencies. Writes opscrew/SECURITY_SCAN.md and returns the counts per severity and the most severe findings with masked evidence. Findings in test code and in the paths opscrew/scan.yaml ignores are left out and counted (a secret there stays, as info). No model is used; the only network use is the dependency lookup, which `offline: true` turns off.",
+        "Scan the repository for security problems: leaked keys, Supabase service-role keys in frontend code, tables without row-level security, open Firebase rules, risky Docker or framework settings and known-vulnerable dependencies. Writes opscrew/SECURITY_SCAN.md and returns the counts per severity and the most severe findings with masked evidence. Findings in test code and in the paths opscrew/scan.yaml ignores are left out and counted (a recognisable secret there keeps its severity). No model is used; the only network use is the dependency lookup, which `offline: true` turns off.",
       inputSchema: {
         ...projectDirInput,
         offline: z

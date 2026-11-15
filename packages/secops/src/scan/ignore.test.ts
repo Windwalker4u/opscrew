@@ -144,16 +144,15 @@ describe("applyIgnores", () => {
     );
   });
 
-  it("keeps a secret in test code, as info saying why", () => {
-    const [secret] = applyIgnores(
-      [finding("secrets/github-token", "test/fixtures/repo.json", "secret")],
-      [],
-      same,
-    ).findings;
-    expect(secret?.severity).toBe("info");
-    expect(secret?.description).toBe(
-      "It is a problem. It is in test code, so it is most likely a made-up value for the tests, so it is reported as info; if it is a real secret, rotate it.",
-    );
+  it("keeps a recognisable secret in test code at its severity", () => {
+    const secrets = [
+      finding("secrets/github-token", "test/fixtures/repo.json", "secret"),
+      finding("secrets/private-key", "tests/keys/id_rsa", "secret"),
+      finding("gitleaks/generic-api-key", "src/api.mock.ts", "secret"),
+    ];
+    const result = applyIgnores(secrets, [], same);
+    expect(result.findings).toEqual(secrets);
+    expect(result.ignored).toBeUndefined();
   });
 
   it("leaves out every rule in an entry's paths, or only its rules when it names some", () => {
@@ -197,22 +196,27 @@ describe("applyIgnores", () => {
     });
   });
 
-  it("keeps a secret in an ignored path, as info naming the entry's reason", () => {
+  it("keeps a recognisable secret in an ignored path at its severity, a guessed one as info", () => {
     const result = applyIgnores(
       [
         finding("supabase/service-role-in-client", "e2e/app/admin.ts", "supabase"),
         finding("gitleaks/generic-api-key", "e2e/app/config.ts", "secret"),
+        finding("secrets/committed-env", "e2e/app/.env", "secret"),
+        finding("secrets/generic-high-entropy", "e2e/app/seed.ts", "secret"),
       ],
       [{ paths: ["e2e/"], reason: "End-to-end apps" }],
       same,
     );
     expect(result.ignored).toBeUndefined();
-    expect(result.findings.map((f) => f.severity)).toEqual(["info", "info"]);
-    for (const kept of result.findings) {
-      expect(kept.description).toContain(
-        'opscrew/scan.yaml ignores this path ("End-to-end apps"), so it is reported as info; if it is a real secret, rotate it.',
-      );
-    }
+    expect(result.findings.map((f) => `${f.ruleId}:${f.severity}`)).toEqual([
+      "supabase/service-role-in-client:high",
+      "gitleaks/generic-api-key:high",
+      "secrets/committed-env:high",
+      "secrets/generic-high-entropy:info",
+    ]);
+    expect(result.findings[3]?.description).toBe(
+      'It is a problem. opscrew/scan.yaml ignores this path ("End-to-end apps"), so this guess is reported as info; if it is a real secret, rotate it.',
+    );
   });
 });
 
@@ -245,8 +249,11 @@ describe("readScanIgnores", () => {
 });
 
 describe("runScan with opscrew/scan.yaml", () => {
-  it("leaves out ignored findings, keeps a secret there as info and counts them in the report", async () => {
+  it("leaves out ignored findings, keeps secrets there and counts them in the report", async () => {
     const token = fakeSecret("github-token", "ignored");
+    const testToken = fakeSecret("github-token", "tests");
+    const guess = fakeSecret("generic-password", "ignored");
+    const testGuess = fakeSecret("generic-password", "tests");
     const dir = await project({
       ".gitignore": ".env*\n",
       "opscrew/scan.yaml": [
@@ -262,15 +269,23 @@ describe("runScan with opscrew/scan.yaml", () => {
       "tests/test_app.py": FLASK,
       "examples/demo/app.py": FLASK,
       "examples/demo/config.js": `const token = "${token}";\n`,
+      "examples/demo/login.php": `$x = ["password" => "${guess}"];\n`,
+      "tests/fixtures/repo.js": `const token = "${testToken}";\n`,
+      "src/__mocks__/login.php": `$x = ["password" => "${testGuess}"];\n`,
       "legacy/Dockerfile": `FROM node:22@sha256:${"a".repeat(64)}\n`,
     });
     const report = await scan(dir);
 
     expect(report.findings.map((f) => `${f.ruleId}@${f.file}:${f.severity}`)).toEqual([
+      "secrets/github-token@examples/demo/config.js:critical",
+      "secrets/github-token@tests/fixtures/repo.js:critical",
       "config/flask-debug@app.py:high",
-      "secrets/github-token@examples/demo/config.js:info",
+      "secrets/generic-high-entropy@examples/demo/login.php:info",
+      "secrets/generic-high-entropy@src/__mocks__/login.php:info",
     ]);
-    expect(report.counts.info).toBe(1);
+    expect(report.findings[3]?.description).toContain(
+      'opscrew/scan.yaml ignores this path ("Example apps, never deployed"), so this guess is reported as info',
+    );
     expect(report.ignored).toEqual({
       total: 3,
       byRule: { "config/dockerfile-root": 1, "config/flask-debug": 2 },
@@ -285,7 +300,7 @@ describe("runScan with opscrew/scan.yaml", () => {
         },
       ],
     });
-    expectNoFakeValues(report.findings, [token]);
+    expectNoFakeValues(report.findings, [token, testToken, guess, testGuess]);
 
     const summary = renderScanSummary(report);
     expect(summary).toContain(

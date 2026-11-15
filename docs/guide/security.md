@@ -104,9 +104,13 @@ Ignored: 3 (config/dockerfile-root: 1, config/flask-debug: 2): 1 in test code, 2
   1  legacy/Dockerfile (config/dockerfile-root): Retired image, kept for reference
 ```
 
-Secrets are never left out. A key in test code or in an ignored path is still listed, as info,
-with the reason. If it is a real key, rotate it. `secure`, the MCP server and the plugin run the
-same scan, so the same file applies there.
+Secrets are never left out, and neither test code nor `opscrew/scan.yaml` lowers a secret the scan
+recognises: a token in a provider's own format, a private key, a committed `.env` with values, or
+a gitleaks hit keeps its severity wherever it sits. Use a fake value in a test fixture, or remove
+the secret and rotate it. Only a guess, a random-looking value under a name like `password`
+(`secrets/generic-high-entropy`), is listed as info there, with the reason.
+
+`secure`, the MCP server and the plugin run the same scan, so the same file applies there.
 
 ## The Cloudflare token
 
