@@ -4,12 +4,15 @@ import path from "node:path";
 import type { Finding } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { runScan } from "../scan/run";
 import {
   contextFor,
   expectNoFakeValues,
+  failingRunner,
   keys,
   type MaterializedFixture,
   materialize,
+  noFetch,
   scanWith,
 } from "../scan/test-utils";
 import { createConfigScanner, scanDockerfile } from "./config";
@@ -36,6 +39,23 @@ async function scanFiles(files: Record<string, string>): Promise<Finding[]> {
     await writeFile(path.join(dir, file), content);
   }
   return scanWith(createConfigScanner(), await contextFor(dir));
+}
+
+/** {@link scanFiles} through the scan engine, which leaves out findings in test code. */
+async function scanFilesInRun(files: Record<string, string>) {
+  const dir = await mkdtemp(path.join(tmpdir(), "opscrew-config-"));
+  temps.push(dir);
+  for (const [file, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+    await writeFile(path.join(dir, file), content);
+  }
+  return runScan(dir, {
+    offline: true,
+    fetch: noFetch,
+    runner: failingRunner,
+    scanners: [createConfigScanner()],
+    version: "0.0.0-test",
+  });
 }
 
 function find(findings: Finding[], ruleId: string, file?: string): Finding {
@@ -165,8 +185,8 @@ describe("createConfigScanner", () => {
       ).toEqual(["VITE_OPENAI_API_KEY", "NEXT_PUBLIC_STRIPE_SECRET_KEY"]);
     });
 
-    it("never flags a client-exposed name in test code or test fixtures, which no browser gets", async () => {
-      const findings = await scanFiles({
+    it("never reports a client-exposed name in test code or test fixtures, which no browser gets", async () => {
+      const { findings, ignored } = await scanFilesInRun({
         ".gitignore": ".env*\n",
         "apps/server/src/jobs/runs.test.ts":
           'expect(text).toContain("Secret exposed to the browser via NEXT_PUBLIC_PAYMENT_SECRET");\n',
@@ -177,6 +197,7 @@ describe("createConfigScanner", () => {
       expect(
         findings.filter((f) => f.ruleId === "config/client-exposed-secret").map((f) => f.file),
       ).toEqual(["src/pay.ts"]);
+      expect(ignored?.byRule).toEqual({ "config/client-exposed-secret": 2 });
     });
 
     it("reports nothing about .env when .gitignore excludes it", async () => {
@@ -189,12 +210,13 @@ describe("createConfigScanner", () => {
     });
 
     it("ignores debug=True outside Flask apps and in tests", async () => {
-      const findings = await scanFiles({
+      const { findings, ignored } = await scanFilesInRun({
         "tool.py": "import logging\nrun(debug=True)\n",
         "tests/test_app.py":
           "from flask import Flask\napp = Flask(__name__)\napp.run(debug=True)\n",
       });
       expect(findings).toEqual([]);
+      expect(ignored).toMatchObject({ testCode: 1, byRule: { "config/flask-debug": 1 } });
     });
   });
 

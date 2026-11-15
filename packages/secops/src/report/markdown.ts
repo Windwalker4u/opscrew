@@ -1,4 +1,10 @@
-import { type Finding, type ScanReport, SEVERITIES, type Severity } from "@opscrew/contracts";
+import {
+  type Finding,
+  type IgnoredFindings,
+  type ScanReport,
+  SEVERITIES,
+  type Severity,
+} from "@opscrew/contracts";
 
 /** A severity as a heading or table label: `Critical`, `High`, … */
 export const SEVERITY_LABEL: Record<Severity, string> = {
@@ -66,6 +72,32 @@ function renderFinding(finding: Finding): string {
   return lines.join("\n");
 }
 
+function renderIgnored(ignored: IgnoredFindings): string[] {
+  const byFile = ignored.total - ignored.testCode;
+  const out = [
+    "## Ignored",
+    "",
+    `${ignored.total} finding${ignored.total === 1 ? " is" : "s are"} left out of this report: ${ignored.testCode} in test code and ${byFile} in paths ${inlineCode("opscrew/scan.yaml")} ignores. A secret there is never left out: it is listed above as info.`,
+    "",
+    "| Rule | Findings |",
+    "|---|---|",
+    ...Object.entries(ignored.byRule).map(([rule, count]) => `| ${inlineCode(rule)} | ${count} |`),
+    "",
+  ];
+  if (ignored.entries.length > 0) {
+    out.push(
+      "| Paths | Rules | Reason | Findings |",
+      "|---|---|---|---|",
+      ...ignored.entries.map(
+        (entry) =>
+          `| ${entry.paths.map((p) => tableCell(inlineCode(p))).join(", ")} | ${entry.rules ? entry.rules.map((r) => tableCell(inlineCode(r))).join(", ") : "all"} | ${tableCell(prose(entry.reason))} | ${entry.count} |`,
+      ),
+      "",
+    );
+  }
+  return out;
+}
+
 /**
  * The shareable report written to `opscrew/SECURITY_SCAN.md`. Deterministic for a given report,
  * contains only masked evidence and repo-relative paths.
@@ -94,6 +126,8 @@ export function renderScanMarkdown(report: ScanReport): string {
       for (const finding of findings) out.push(renderFinding(finding));
     }
   }
+
+  if (report.ignored !== undefined) out.push(...renderIgnored(report.ignored));
 
   out.push("## Scanners", "", "| Scanner | Status | Notes |", "|---|---|---|");
   for (const scanner of report.scanners) {

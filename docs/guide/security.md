@@ -73,6 +73,41 @@ Full report: opscrew/SECURITY_SCAN.md
 For a stack [on your computer](localhost.md#what-secure-checks-here), `secure` checks only what
 applies there.
 
+### What the scan leaves out
+
+`opscrew scan` leaves out findings in test code, which never ships: files under `test/`, `tests/`,
+`__tests__/`, `spec/`, `__mocks__/`, `mocks/`, `__fixtures__/` and `testdata/`, and `*.test.*`,
+`*.spec.*`, `*.mock.*`, `*_test.*`, `test_*.py` and `*Test.php` files. A `fixtures/` folder counts
+only inside a test folder, because an app's own fixtures (Django's, for example) can be loaded
+into a real database.
+
+To leave out more, commit an `opscrew/scan.yaml`. Each entry needs `paths` (patterns written as in
+`.gitignore`) and a `reason`. With `rules`, it leaves out only those rules; the rule of each finding
+is in `opscrew/SECURITY_SCAN.md`. The scan refuses the file when an entry has no reason or names a
+rule it does not know.
+
+```yaml
+ignore:
+  - paths: [examples/]
+    reason: Example apps, never deployed
+  - paths: [legacy/Dockerfile]
+    rules: [config/dockerfile-root]
+    reason: Retired image, kept for reference
+```
+
+Nothing is left out silently: the summary, `opscrew/SECURITY_SCAN.md` and `--json` count what was
+left out, per rule and per entry. For example:
+
+```text
+Ignored: 3 (config/dockerfile-root: 1, config/flask-debug: 2): 1 in test code, 2 by opscrew/scan.yaml
+  1  examples/: Example apps, never deployed
+  1  legacy/Dockerfile (config/dockerfile-root): Retired image, kept for reference
+```
+
+Secrets are never left out. A key in test code or in an ignored path is still listed, as info,
+with the reason. If it is a real key, rotate it. `secure`, the MCP server and the plugin run the
+same scan, so the same file applies there.
+
 ## The Cloudflare token
 
 Give `CLOUDFLARE_API_TOKEN` these zone permissions (`npx opscrew init` lists them):

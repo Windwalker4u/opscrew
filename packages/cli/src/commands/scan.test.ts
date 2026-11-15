@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -103,6 +103,46 @@ describe("opscrew scan", () => {
     const report = JSON.parse(ctx.output);
     expect(report.tool).toBe("opscrew");
     expect(report.counts.critical).toBeGreaterThan(0);
+  });
+
+  it("leaves out what opscrew/scan.yaml ignores and counts it, in the text and with --json", async () => {
+    project = await tempProject("static-vite");
+    // Dockerfiles running as root: medium findings, one in test code and one in an ignored path.
+    for (const dir of ["tests/e2e", "examples/demo"]) {
+      await mkdir(path.join(project.root, dir), { recursive: true });
+      await writeFile(path.join(project.root, dir, "Dockerfile"), "FROM node:22-alpine\n");
+    }
+    await mkdir(path.join(project.root, "opscrew"), { recursive: true });
+    await writeFile(
+      path.join(project.root, "opscrew", "scan.yaml"),
+      "ignore:\n  - paths: [examples/]\n    reason: Example apps, never deployed\n",
+    );
+    const text = projectContext(project);
+    expect(await run(text, "scan", "--offline", "--fail-on", "low")).toBe(0);
+    expect(text.output).toContain(
+      "Ignored: 4 (config/dockerfile-root: 2, config/dockerfile-unpinned-digest: 2): 2 in test code, 2 by opscrew/scan.yaml",
+    );
+    expect(text.output).toContain("  2  examples/: Example apps, never deployed");
+
+    const json = projectContext(project);
+    expect(await run(json, "scan", "--offline", "--json")).toBe(0);
+    expect(JSON.parse(json.output).ignored).toMatchObject({
+      total: 4,
+      testCode: 2,
+      entries: [{ paths: ["examples/"], reason: "Example apps, never deployed", count: 2 }],
+    });
+  });
+
+  it("exits 2 with the field to fix when opscrew/scan.yaml is invalid", async () => {
+    project = await tempProject("static-vite");
+    await mkdir(path.join(project.root, "opscrew"), { recursive: true });
+    await writeFile(
+      path.join(project.root, "opscrew", "scan.yaml"),
+      "ignore:\n  - paths: [examples/]\n    rules: [docker/root]\n    reason: Examples\n",
+    );
+    const ctx = projectContext(project);
+    expect(await run(ctx, "scan", "--offline")).toBe(2);
+    expect(ctx.errors).toContain('ignore.0.rules.0: "docker/root" is not a rule of the scan');
   });
 
   it("uses the injected fetch for dependency lookups when online", async () => {

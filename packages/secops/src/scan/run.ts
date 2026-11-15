@@ -12,6 +12,7 @@ import { Redactor } from "@opscrew/core";
 import { defaultScanners } from "../scanners";
 import { createScanContext, type ScanContextOptions } from "./context";
 import { countFindings, SEVERITY_RANK, sortFindings } from "./finding";
+import { applyIgnores, readScanIgnores } from "./ignore";
 import { mapConcurrent } from "./text";
 
 /**
@@ -224,7 +225,10 @@ async function runOne(
  * Runs every available scanner (at most four at a time) over `root` and returns the report:
  * per-scanner status (ran / skipped / failed with reason and duration; one scanner failing never
  * stops the scan), findings deduplicated, sanitized (repo-relative paths, secret-shaped text
- * masked) and sorted, counts per severity, and `project` = the directory name.
+ * masked) and sorted, counts per severity, and `project` = the directory name. Findings in test
+ * code and in the paths `opscrew/scan.yaml` ignores are left out and counted in `ignored`; a
+ * secret there stays, as info.
+ * @throws ArtifactError when `opscrew/scan.yaml` is invalid.
  */
 export async function runScan(root: string, options: RunScanOptions): Promise<ScanReport> {
   const now = options.now ?? (() => new Date());
@@ -246,6 +250,8 @@ export async function runScan(root: string, options: RunScanOptions): Promise<Sc
   };
   if (options.maxFiles !== undefined) contextOptions.maxFiles = options.maxFiles;
   const context = await createScanContext(root, contextOptions);
+  // Read before any scanner runs, so an invalid opscrew/scan.yaml stops the scan at once.
+  const ignores = await readScanIgnores(context.rootDir);
 
   const outcomes = await mapConcurrent(scanners, CONCURRENCY, async (scanner) => {
     notify({ type: "started", scanner: scanner.id });
@@ -262,10 +268,13 @@ export async function runScan(root: string, options: RunScanOptions): Promise<Sc
   });
 
   const raw = outcomes.flatMap((outcome) => outcome.findings);
-  const findings = sortFindings(
+  const { findings: kept, ignored } = applyIgnores(
     dedupeFindings(raw.map((finding) => sanitizeFinding(finding, context.rootDir, sanitize))),
+    ignores,
+    sanitize,
   );
-  return {
+  const findings = sortFindings(kept);
+  const report: ScanReport = {
     tool: "opscrew",
     version: options.version,
     project: path.basename(context.rootDir),
@@ -275,4 +284,6 @@ export async function runScan(root: string, options: RunScanOptions): Promise<Sc
     scanners: outcomes.map((outcome) => outcome.status),
     counts: countFindings(findings),
   };
+  if (ignored) report.ignored = ignored;
+  return report;
 }

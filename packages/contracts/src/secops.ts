@@ -72,6 +72,22 @@ export interface ScanReport {
   findings: Finding[];
   scanners: ScannerStatus[];
   counts: Record<Severity, number>;
+  /**
+   * Findings left out of `findings`: in test code or in a path `opscrew/scan.yaml` ignores. Set
+   * only when one was.
+   */
+  ignored?: IgnoredFindings;
+}
+
+/** What a scan left out, counted so nothing is ignored silently. Secrets are never left out. */
+export interface IgnoredFindings {
+  total: number;
+  /** Findings left out per rule id. */
+  byRule: Record<string, number>;
+  /** Findings left out because they are in test code. */
+  testCode: number;
+  /** Each `opscrew/scan.yaml` entry, in file order, with the findings it left out. */
+  entries: Array<{ paths: string[]; rules?: string[]; reason: string; count: number }>;
 }
 
 /** Result of one verification or hardening check against a live deployment. */

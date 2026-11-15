@@ -6,7 +6,6 @@ import {
   basename,
   isEnvFile,
   isPlaceholderValue,
-  isTestFile,
   lineLocator,
   MAX_LINE_LENGTH,
   mapConcurrent,
@@ -318,7 +317,7 @@ function imageTagProblem(image: string): "latest" | "untagged" | "tag-only" | un
 const DEV_SETTINGS = /(?:^|[._-])(?:dev|develop|development|local|test|tests|testing)(?:[._-]|$)/i;
 
 function isDjangoSettings(file: string, text: string): boolean {
-  if (!file.endsWith(".py") || isTestFile(file)) return false;
+  if (!file.endsWith(".py")) return false;
   const name = basename(file);
   if (DEV_SETTINGS.test(name.replace(/\.py$/, ""))) return false;
   return /settings/i.test(file) || text.includes("INSTALLED_APPS");
@@ -356,7 +355,7 @@ const FLASK_DEBUG = [
 ];
 
 function scanFlask(file: string, text: string): Finding[] {
-  if (!file.endsWith(".py") || isTestFile(file)) return [];
+  if (!file.endsWith(".py")) return [];
   if (!/^[ \t]*(?:from\s+flask\s+import|import\s+flask)\b/m.test(text)) return [];
   const findings: Finding[] = [];
   const lines = splitLines(text);
@@ -403,7 +402,7 @@ const CORS_CREDENTIALS =
 const CORS_WINDOW = 15;
 
 function scanCors(file: string, text: string): Finding[] {
-  if (!CODE_EXTENSION.test(file) || isTestFile(file)) return [];
+  if (!CODE_EXTENSION.test(file)) return [];
   const lines = splitLines(text);
   const lineAt = lineLocator(text);
   const findings: Finding[] = [];
@@ -456,8 +455,7 @@ function isClientNameFile(file: string): boolean {
 }
 
 function scanClientExposed(file: string, text: string): Finding[] {
-  // Test code and its fixtures never ship to a browser.
-  if (!isClientNameFile(file) || isTestFile(file)) return [];
+  if (!isClientNameFile(file)) return [];
   const findings: Finding[] = [];
   const seen = new Set<string>();
   for (const [index, lineText] of splitLines(text).entries()) {

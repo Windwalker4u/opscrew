@@ -54,3 +54,4 @@ export {
 } from "./placement";
 export * from "./plan";
 export * from "./requirements";
+export * from "./scan-config";

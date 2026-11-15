@@ -1,4 +1,9 @@
-import { type ScanReport, SEVERITIES, type Severity } from "@opscrew/contracts";
+import {
+  type IgnoredFindings,
+  type ScanReport,
+  SEVERITIES,
+  type Severity,
+} from "@opscrew/contracts";
 import { findingLocation } from "./markdown";
 
 export interface ScanSummaryOptions {
@@ -30,9 +35,31 @@ export function formatCounts(report: ScanReport): string {
 }
 
 /**
+ * What the scan left out, e.g. `Ignored: 3 (config/flask-debug: 1, trivy/AVD-DS-0002: 2): 1 in
+ * test code, 2 by opscrew/scan.yaml`, then one line per `opscrew/scan.yaml` entry with its count.
+ */
+export function formatIgnored(ignored: IgnoredFindings): string[] {
+  const rules = Object.entries(ignored.byRule)
+    .map(([rule, count]) => `${rule}: ${count}`)
+    .join(", ");
+  const byFile = ignored.total - ignored.testCode;
+  const where = [
+    ...(ignored.testCode > 0 ? [`${ignored.testCode} in test code`] : []),
+    ...(byFile > 0 ? [`${byFile} by opscrew/scan.yaml`] : []),
+  ].join(", ");
+  return [
+    `Ignored: ${ignored.total} (${rules}): ${where}`,
+    ...ignored.entries.map(
+      (entry) =>
+        `  ${entry.count}  ${entry.paths.join(", ")}${entry.rules ? ` (${entry.rules.join(", ")})` : ""}: ${entry.reason}`,
+    ),
+  ];
+}
+
+/**
  * Short terminal summary: counts, a clear "no high or critical problems" line when that is the
- * case, the most severe findings (one line each), skipped or failed scanners, and where the full
- * report is. Deterministic; contains only masked data.
+ * case, the most severe findings (one line each), what was ignored, skipped or failed scanners,
+ * and where the full report is. Deterministic; contains only masked data.
  */
 export function renderScanSummary(report: ScanReport, options: ScanSummaryOptions = {}): string {
   const color = options.color ?? false;
@@ -57,6 +84,8 @@ export function renderScanSummary(report: ScanReport, options: ScanSummaryOption
     const more = report.findings.length - Math.min(top, report.findings.length);
     if (more > 0) lines.push(`  …and ${more} more`);
   }
+
+  if (report.ignored !== undefined) lines.push(...formatIgnored(report.ignored));
 
   const notRun = report.scanners.filter((s) => s.status !== "ran");
   if (notRun.length > 0) {

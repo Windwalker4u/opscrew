@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -225,6 +225,36 @@ describe("createOpscrewMcpServer", () => {
     const report = await readFile(path.join(dir, "opscrew", "SECURITY_SCAN.md"), "utf8");
     for (const value of FAKE_VALUES) expect(report).not.toContain(value);
     expectNoFakeSecrets(h.outputs);
+  });
+
+  it("opscrew_scan counts what test code and opscrew/scan.yaml leave out", async () => {
+    const dir = await fixture("static-vite");
+    for (const sub of ["tests", "examples"]) {
+      await mkdir(path.join(dir, sub), { recursive: true });
+      await writeFile(path.join(dir, sub, "Dockerfile"), "FROM node:22-alpine\n");
+    }
+    await mkdir(path.join(dir, "opscrew"), { recursive: true });
+    await writeFile(
+      path.join(dir, "opscrew", "scan.yaml"),
+      "ignore:\n  - paths: [examples/]\n    rules: [config/dockerfile-root]\n    reason: Examples\n",
+    );
+    const h = await connect(dir);
+    const result = await h.call("opscrew_scan", { offline: true });
+    expect(result.isError).toBeFalsy();
+    expect(dataOf(result).ignored).toEqual({
+      total: 3,
+      byRule: { "config/dockerfile-root": 2, "config/dockerfile-unpinned-digest": 1 },
+      testCode: 2,
+      entries: [
+        { paths: ["examples/"], rules: ["config/dockerfile-root"], reason: "Examples", count: 1 },
+      ],
+    });
+    expect(dataOf(result).findings.map((f: { file: string }) => f.file)).toEqual([
+      "examples/Dockerfile",
+    ]);
+    expect(textOf(result)).toContain(
+      "Ignored: 3 (config/dockerfile-root: 2, config/dockerfile-unpinned-digest: 1): 2 in test code, 1 by opscrew/scan.yaml",
+    );
   });
 
   it("opscrew_scan reports a clean fixture as clean", async () => {

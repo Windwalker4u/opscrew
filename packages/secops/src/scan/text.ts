@@ -30,12 +30,15 @@ export function extension(file: string): string {
   return at <= 0 ? "" : name.slice(at + 1).toLowerCase();
 }
 
+// A plain `fixtures/` is not here: an app's own fixtures (Django's) are loaded into real
+// databases. Under a test folder they are test code through that folder.
 const TEST_FILE =
-  /(?:^|\/)(?:[Tt]ests?|__tests__|spec)\/|(?:^|\/)test_[^/]*\.py$|_test\.[^/]+$|Test\.php$|\.(?:test|spec)\.[^/]+$/;
+  /(?:^|\/)(?:[Tt]ests?|__tests__|spec|__mocks__|mocks|__fixtures__|testdata)\/|(?:^|\/)test_[^/]*\.py$|_test\.[^/]+$|Test\.php$|\.(?:test|spec|mock)\.[^/]+$/;
 
 /**
- * True for test code: files under `tests/`, `test/`, `__tests__/` or `spec/`, and `*Test.php`,
- * `test_*.py`, `*_test.*`, `*.test.*` and `*.spec.*` files.
+ * True for test code: files under `tests/`, `test/`, `__tests__/`, `spec/`, `__mocks__/`,
+ * `mocks/`, `__fixtures__/` or `testdata/` (so `fixtures/` under a test folder too), and
+ * `*Test.php`, `test_*.py`, `*_test.*`, `*.test.*`, `*.spec.*` and `*.mock.*` files.
  */
 export function isTestFile(file: string): boolean {
   return TEST_FILE.test(file);
