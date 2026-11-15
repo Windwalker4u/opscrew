@@ -7,8 +7,9 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 
 Done: 000–027. [026 Contabo](026-contabo-provider-plugins/) shipped as 0.2.7 on 2026-11-12, and
 [027 shared hosting](027-shared-hosting/) as 0.2.8 on 2026-11-14. Now: [028 moving an app to
-another Cloudflare account](028-cloudflare-account-move/), for 0.2.10; 0.2.9 ships build arguments from the plan and a further app's analysis fix first. Then 029 AWS, once the
-founder gives the go-ahead.
+another Cloudflare account](028-cloudflare-account-move/), for 0.2.10; 0.2.9 ships build arguments from the plan and a further app's analysis fix first. Then 029 hosting at
+home (the founder's choice on 2026-11-15, before AWS), then 030 AWS, each once the founder gives the
+go-ahead.
 
 ## 019 Rollback
 
@@ -106,7 +107,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (029), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (030), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -126,7 +127,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (029) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (030) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -297,7 +298,7 @@ AWS on 2026-11-06; its scope set from the research on 2026-11-11,
   like them.
 - Own server and Portainer stay as they are: they are kinds of target with flows of their own,
   not providers.
-- Installing provider packages comes with AWS (029), designed around its first real user.
+- Installing provider packages comes with AWS (030), designed around its first real user.
 - **Other areas get their own contract when a second implementation arrives** (founder,
   2026-11-11), not before, since a contract with one user tends to take the wrong shape:
   - DNS and the edge when Fastly is placed, with Cloudflare moved behind it;
@@ -402,7 +403,7 @@ servers.
     without dropping connections, turning its admin console off, its own certificates (ACME),
     whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
     cache headers, and the image's versions and licence.
-- **Built in**, like the other targets: installing provider packages comes with AWS (029).
+- **Built in**, like the other targets: installing provider packages comes with AWS (030).
 
 ## 028 Moving an app to another Cloudflare account
 
@@ -420,7 +421,33 @@ removed after an approved plan. Research and the founder's decisions:
 - The R2 buckets are copied to the new account and the app switched to them in a short
   maintenance window, so the old account can be closed afterwards.
 
-## 029 AWS
+## 029 Hosting at home: your own IP address and dynamic DNS
+
+An app served from a computer at home (a Raspberry Pi on a fiber line, say) at the home's own
+public address, static or dynamic, with OpsCrew keeping the domain's record pointed at it. The
+founder placed it next, before AWS, on 2026-11-15, after a suggestion that a 1 Gbps home line and a
+Raspberry Pi can serve a site with plenty of traffic.
+
+**What exists today:** [your own server](../docs/guide/own-server.md) reaches any machine OpsCrew can
+SSH into, Arm included, and its tunnel mode already serves an app from behind a home router with no
+open port and no static address (Cloudflare Tunnel). This feature adds the direct path: the app
+answers at the home's own address, proxied through Cloudflare or not.
+
+**To research** (in the feature's `research.md` when it starts):
+- **Dynamic DNS:** what keeps the A/AAAA record current when the address changes: an updater on the
+  server (a small timer of OpsCrew's, or ddclient) through Cloudflare's API with a token limited to
+  that zone's DNS, or a registrar's own dynamic DNS (Porkbun, Namecheap); how often, and what the
+  record's TTL should be.
+- **The router:** ports 80 and 443 forwarded to the server (OpsCrew can't change the router: it
+  checks from outside that they answer and says what to forward; UPnP or NAT-PMP only as an
+  option); no public IPv4 address (CGNAT, `100.64.0.0/10`) or double NAT detected, with tunnel mode
+  or IPv6 offered instead; IPv6 alone.
+- **TLS:** Caddy's certificate through HTTP-01 (port 80 forwarded) or DNS-01 (the same DNS token),
+  and Cloudflare's proxy with origin TLS when proxied.
+- **Safety:** the home network exposed as little as possible (only the forwarded ports, the
+  server's firewall, SSH not opened to the internet), and what an ISP's terms say about hosting.
+
+## 030 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
