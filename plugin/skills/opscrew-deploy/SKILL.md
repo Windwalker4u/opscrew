@@ -676,6 +676,26 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   (or `npx opscrew status`) shows where a move stands; while it is in progress, design,
   provision and drift stop with the commands to continue, finish or abort it, so pass those on to
   the user.
+- **Moving the app to another Cloudflare account.** When the user wants the app's zone in
+  another Cloudflare account (a new account of their own, or a company's), the app stays where it
+  runs and only its Cloudflare pieces move. It is terminal-only on purpose, with no tool: every
+  approval and every typed name happens in the user's own terminal, so never approve, type or
+  pass one yourself. They first make the new account and its token, set it as
+  `OPSCREW_NEW_CLOUDFLARE_API_TOKEN` (`CLOUDFLARE_API_TOKEN` stays the current account's), and
+  commit what `npx opscrew provision` brings up to date. Then, in order:
+  1. `npx opscrew cloudflare move --to <account id or exact name>` in each repository whose app is
+     in the zone: it prepares the app in the new account while the current one keeps serving and
+     shows each plan to approve.
+  2. `npx opscrew cloudflare move --switch` once, from any of them: it asks for the domain to be
+     typed and changes the nameservers (with DNSSEC on, it first removes the DS record, waits 24
+     to 48 hours and asks again). HTTPS fails until the new account's certificate is issued,
+     usually within minutes; the switch shows that gap before it is approved.
+  3. `npx opscrew cloudflare move --finish` in each repository: a short maintenance window when
+     the app has an R2 bucket, then the current account's pieces are removed after the user types
+     the app's and each bucket's name. Its last line names the files to commit and push.
+  `npx opscrew cloudflare move --abort` undoes a prepare, but only before the switch changed
+  anything. `opscrew_status` shows each environment's step (and the apps prepared, when the new
+  token is set) and names the command to run next: pass it on to the user.
 
 If a tool returns an error, read its message and hint to the user and suggest the next step; do not
 work around OpsCrew's checks.

@@ -1,5 +1,6 @@
 import {
   buildStatusLines,
+  cloudflareMoveStatus,
   componentStatusReport,
   formatServerAddress,
   type PhaseDeps,
@@ -102,7 +103,9 @@ async function tlsLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Pro
  * the certificates OpsCrew manages with their expiry, the recovery copy's state, with self-hosted
  * monitoring a line on whether every server sent to its stack within the last 5 minutes, the server's
  * address (from OpsCrew's local state; it is never committed) and a `retarget` line while a move
- * of the app is in progress (from → to, last completed step, the next command).
+ * of the app is in progress (from → to, last completed step, the next command), or a `cloudflare`
+ * line while the app moves to another Cloudflare account (each environment's step, the apps
+ * prepared in the new account when its token is set, the next command).
  * `--ip` prints only the server's IPv4 address, for scripts such as
  * `ssh deploy@$(opscrew status --ip)`.
  */
@@ -110,7 +113,7 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("status")
     .description(
-      "Show which OpsCrew phases have run, the app's components and whether they run on each server, the private network, whether the servers send to self-hosted monitoring, and where a move of the app (to another provider, your own server, your Portainer or the other site host) stands",
+      "Show which OpsCrew phases have run, the app's components and whether they run on each server, the private network, whether the servers send to self-hosted monitoring, and where a move of the app (to another provider, your own server, your Portainer or the other site host, or to another Cloudflare account) stands",
     )
     .option(
       "--ip",
@@ -157,7 +160,10 @@ export function register(program: Command, ctx: CliContext): void {
     }
     const state = await deps.state.read();
     const move = plan === undefined ? undefined : retargetStatusLine(plan);
-    const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
+    // A move to another Cloudflare account: each environment's step, and B's prepared apps.
+    const cloudflareMove = await cloudflareMoveStatus(deps);
+    const moves = [...(move === undefined ? [] : [move]), ...(cloudflareMove?.lines ?? [])];
+    const moveLines = moves.length === 0 ? [] : ["", "Move in progress:", ...moves];
     const serverLines = await addressLines(deps, plan);
     // A site on Cloudflare's hosting or GitHub Pages has no image: its running version instead.
     const imageLines =

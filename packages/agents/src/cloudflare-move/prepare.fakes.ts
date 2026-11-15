@@ -674,6 +674,7 @@ export async function prepareWorld(target: PrepareTarget, o: PrepareWorldOptions
     ...h,
     plans,
     engine,
+    services,
     tunnel,
     r2,
     portainer,

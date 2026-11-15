@@ -5,6 +5,7 @@ import * as addon from "./addon";
 import * as advise from "./advise";
 import * as analyze from "./analyze";
 import * as app from "./app";
+import * as cloudflare from "./cloudflare";
 import * as design from "./design";
 import * as destroy from "./destroy";
 import * as dns from "./dns";
@@ -62,6 +63,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   addon,
   vpn,
   retarget,
+  cloudflare,
   destroy,
   status,
   advise,

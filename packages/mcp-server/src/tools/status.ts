@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   buildStatusLines,
   type ComponentStatusOptions,
+  cloudflareMoveStatus,
   componentStatusReport,
   moveInProgress,
   type PhaseDeps,
@@ -83,6 +84,10 @@ function billing(move: Retarget, to: DeployTarget): string {
     : "Both servers are billed until the move is finished or aborted.";
 }
 
+/** What the next step adds while a move runs. */
+const TERMINAL_ONLY =
+  "Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.";
+
 /** Test-only collaborators for `opscrew_status` (production connects over SSH). */
 export interface StatusToolOptions {
   /** The deploy user's shell on a server OpsCrew created, and own-server fakes. */
@@ -143,7 +148,7 @@ export function registerStatusTool(
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for an app on a hosting account, the release it runs and those kept, the agent's last attempt with its reason, the hostname's certificate and the account's disk left, or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew rollback --to <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, once the app was deployed the version running (commit, message, short digest and since when) and the one before it, and whether its deploys are paused, by a rollback (since when, the pinned version and the resume command `npx opscrew rollback --resume`) or a move (`deploys` in the data, with `running`, `previous` and `paused`; a rollback itself stays in the user's terminal, `npx opscrew rollback`, because it asks for approval), the last snapshot of the app's data (scheduled ones included) with its time and result, and a scheduled snapshot that failed (`snapshot` in the data; opscrew_snapshots lists them all), the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy, nginx or OpenLiteSpeed), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), for an app with a private network each server's components and figures, each link between the servers (up or down, its last handshake and measured round trip), the user's devices (names and addresses, never a key) with their last handshake, each device's database access and whether public SSH is open (`servers`, `links`, `devices` and `grants` in the data; adding a device or access stays in the user's terminal, `npx opscrew vpn add <name>` and `npx opscrew vpn grant <device> <service>`, because it makes a private key or a password that must not pass through the chat), where a move to another provider, the user's own server or their Portainer stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for an app on a hosting account, the release it runs and those kept, the agent's last attempt with its reason, the hostname's certificate and the account's disk left, or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew rollback --to <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, once the app was deployed the version running (commit, message, short digest and since when) and the one before it, and whether its deploys are paused, by a rollback (since when, the pinned version and the resume command `npx opscrew rollback --resume`) or a move (`deploys` in the data, with `running`, `previous` and `paused`; a rollback itself stays in the user's terminal, `npx opscrew rollback`, because it asks for approval), the last snapshot of the app's data (scheduled ones included) with its time and result, and a scheduled snapshot that failed (`snapshot` in the data; opscrew_snapshots lists them all), the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy, nginx or OpenLiteSpeed), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), for an app with a private network each server's components and figures, each link between the servers (up or down, its last handshake and measured round trip), the user's devices (names and addresses, never a key) with their last handshake, each device's database access and whether public SSH is open (`servers`, `links`, `devices` and `grants` in the data; adding a device or access stays in the user's terminal, `npx opscrew vpn add <name>` and `npx opscrew vpn grant <device> <service>`, because it makes a private key or a password that must not pass through the chat), where a move to another provider, the user's own server or their Portainer stands (moves run only in the user's terminal with `npx opscrew retarget`), where a move of the app to another Cloudflare account stands (`cloudflareMove` in the data: each environment's step, and the apps prepared in the new account when OPSCREW_NEW_CLOUDFLARE_API_TOKEN is set; it runs only in the user's terminal with `npx opscrew cloudflare move`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -199,14 +204,18 @@ export function registerStatusTool(
                 `Move: from ${placeWords(plan.retarget.from.target)} to ${placeWords(plan.target)}, last completed step: ${moveData.step}${plan.retarget.abort === undefined ? "" : ` (being aborted, last abort step: ${plan.retarget.abort.step})`}.`,
                 billing(plan.retarget, plan.target),
               ];
+        // A move to another Cloudflare account: each environment's step, B's prepared apps.
+        const cloudflareMove = await cloudflareMoveStatus(phase);
         const step =
-          move === undefined
-            ? nextStep(have, {
-                appKey,
-                planFile: toPosixRelative(paths.root, paths.files.plan),
-                flag,
-              })
-            : `${move.message} ${move.hint} Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.`;
+          move !== undefined
+            ? `${move.message} ${move.hint} ${TERMINAL_ONLY}`
+            : cloudflareMove !== undefined
+              ? `A move of ${cloudflareMove.zone} to another Cloudflare account is in progress: ${cloudflareMove.next}. ${TERMINAL_ONLY}`
+              : nextStep(have, {
+                  appKey,
+                  planFile: toPosixRelative(paths.root, paths.files.plan),
+                  flag,
+                });
         const components =
           plan === undefined ? undefined : await componentsOf(phase, plan, options);
         const tls = plan === undefined ? undefined : await tlsOf(phase, plan, options);
@@ -225,6 +234,7 @@ export function registerStatusTool(
           ...(components === undefined ? [] : ["", ...components.lines]),
           ...(tls === undefined ? [] : ["", ...tls.lines]),
           ...moveLines,
+          ...(cloudflareMove === undefined ? [] : ["", ...cloudflareMove.lines]),
           "",
           `Next: ${step}`,
         ].join("\n");
@@ -236,6 +246,7 @@ export function registerStatusTool(
             artifacts,
             nextStep: step,
             move: moveData,
+            ...(cloudflareMove === undefined ? {} : { cloudflareMove }),
             ...(components?.status === undefined ? {} : { components: components.status }),
             ...(components?.resources === undefined ? {} : { resources: components.resources }),
             ...(components?.check === undefined ? {} : { check: components.check }),

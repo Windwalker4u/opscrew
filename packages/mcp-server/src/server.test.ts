@@ -150,7 +150,8 @@ describe("createOpscrewMcpServer", () => {
       "never write the address into a file",
       "Never run tofu, terraform, hcloud, doctl, cntb, ssh or curl against Portainer yourself",
       "`npx opscrew retarget --to <hetzner|digitalocean|contabo|own|portainer>`",
-      "continue, finish or abort",
+      "or to another Cloudflare account, `npx opscrew cloudflare move --to <account>`",
+      "continue, switch, finish or abort",
       "`npx opscrew domain buy <domain> [--registrar <id>]`",
       "scripts need --confirm and --max-price",
       "`npx opscrew domain connect <domain>`",
@@ -166,7 +167,7 @@ describe("createOpscrewMcpServer", () => {
       expect(instructions, rule).toContain(rule);
     }
     // What each tool does is in its description, the details of the flow in the skill.
-    expect(instructions.length).toBeLessThan(2_700);
+    expect(instructions.length).toBeLessThan(2_800);
   });
 
   it("lists the seven planning tools with descriptions, schemas and annotations", async () => {

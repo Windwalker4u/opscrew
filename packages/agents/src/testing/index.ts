@@ -6,6 +6,7 @@
 export * from "./addons";
 export * from "./bucket-move";
 export * from "./catalog";
+export * from "./cloudflare-move";
 export * from "./connect";
 export * from "./deploy";
 export * from "./deps";

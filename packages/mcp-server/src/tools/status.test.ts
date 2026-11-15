@@ -23,8 +23,9 @@ import {
   testKeyPair,
   testPlan,
 } from "@opscrew/agents/testing";
-import type { RemoteExec } from "@opscrew/contracts";
+import type { FetchLike, RemoteExec } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, type Retarget, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
@@ -773,5 +774,125 @@ describe("opscrew_status: the private network (FR-1821)", () => {
     for (const key of [laptop.privateKey, ...keys.made.map((pair) => pair.privateKey)]) {
       expect(everything).not.toContain(key);
     }
+  });
+});
+
+describe("opscrew_status during a move to another Cloudflare account", () => {
+  const B_ZONE = "b".repeat(32);
+  const MARK = '"opscrew-move=1; app=shop; envs=prod; hosts=shop.example.com"';
+
+  /** `opscrew_status` for an app whose prod environment records a move at `step`. */
+  async function cloudflareStatus(env: Record<string, string>, fetch: FetchLike = forbiddenFetch) {
+    const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const plan = testPlan({ domain: "shop.example.com", deployed: true });
+    await writeArtifact(
+      "plan",
+      path.join(dir, "opscrew", "plan.yaml"),
+      DeployPlanSchema.parse({
+        ...plan,
+        cloudflareMove: {
+          zone: "example.com",
+          from: { accountId: "a".repeat(32), zoneId: "c".repeat(32) },
+          to: { accountId: "d".repeat(32), zoneId: B_ZONE },
+          dsAtStart: false,
+          step: "prepared",
+          startedAt: "2026-11-20T10:00:00.000Z",
+          preparedAt: "2026-11-20T10:40:00.000Z",
+        },
+      }),
+    );
+    const server = createOpscrewMcpServer({
+      version: "0.0.0-test",
+      env: { OPSCREW_HOME: path.join(dir, "home"), ...env },
+      fetch,
+      runner: new ScriptedRunner(),
+      cwd: dir,
+    });
+    const client = new Client({ name: "opscrew-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    cleanups.push(async () => {
+      await client.close();
+      await server.close();
+    });
+    const result = (await client.callTool({
+      name: "opscrew_status",
+      arguments: {},
+    })) as CallToolResult;
+    expect(result.isError).toBeFalsy();
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    return { text, data: result.structuredContent };
+  }
+
+  it("shows each environment's step and names the terminal command, without B's token", async () => {
+    const { text, data } = await cloudflareStatus({});
+    expect(text).toContain("cloudflare  moving example.com to another Cloudflare account");
+    expect(text).toContain("prod  prepared in the new account");
+    expect(text).toContain(
+      "Next: A move of example.com to another Cloudflare account is in progress: run `opscrew cloudflare move --switch` once every app in the zone is prepared",
+    );
+    expect(text).toContain("Moves are terminal-only");
+    expect(text).not.toContain("apps prepared in the new account");
+    expect(data).toMatchObject({
+      cloudflareMove: { zone: "example.com", environments: [{ name: "prod", step: "prepared" }] },
+    });
+    expect((data as { cloudflareMove: object }).cloudflareMove).not.toHaveProperty("prepared");
+  });
+
+  it("with B's token, reads the apps prepared from B's marks, GET only", async () => {
+    const token = fakeSecret("cloudflare-token", "status-b");
+    const calls: string[] = [];
+    const fetch: FetchLike = async (input, init) => {
+      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+      const record = {
+        id: "r1",
+        type: "TXT",
+        name: "_opscrew-move.shop-1.example.com",
+        content: MARK,
+        ttl: 1,
+      };
+      return new Response(
+        JSON.stringify({
+          success: true,
+          errors: [],
+          messages: [],
+          result: [record],
+          result_info: { page: 1, total_pages: 1 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    };
+    const { text, data } = await cloudflareStatus(
+      { OPSCREW_NEW_CLOUDFLARE_API_TOKEN: token },
+      fetch,
+    );
+    expect(text).toContain("apps prepared in the new account: shop (prod)");
+    expect(data).toMatchObject({ cloudflareMove: { prepared: [{ app: "shop", envs: ["prod"] }] } });
+    expect(calls.length).toBeGreaterThan(0);
+    expect(
+      calls.every((call) =>
+        call.startsWith(`GET https://api.cloudflare.com/client/v4/zones/${B_ZONE}/dns_records`),
+      ),
+    ).toBe(true);
+    expect(text).not.toContain(token);
+  });
+
+  it("a refused read of B is a plain line, and the steps still show", async () => {
+    const token = fakeSecret("cloudflare-token", "status-refused");
+    const fetch: FetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+          messages: [],
+          result: null,
+        }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      );
+    const { text } = await cloudflareStatus({ OPSCREW_NEW_CLOUDFLARE_API_TOKEN: token }, fetch);
+    expect(text).toContain("The apps prepared in the new account could not be read");
+    expect(text).toContain("prod  prepared in the new account");
+    expect(text).not.toContain(token);
   });
 });

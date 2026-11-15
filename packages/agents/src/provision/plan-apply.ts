@@ -680,7 +680,7 @@ async function clearDestroyedAt(deps: PhaseDeps): Promise<void> {
 }
 
 /** Commands with `--confirm <app>`, which approves a plan that needs the typed app name. */
-const CONFIRM_COMMANDS = ["opscrew provision", "opscrew retarget"];
+const CONFIRM_COMMANDS = ["opscrew provision", "opscrew retarget", "opscrew cloudflare move"];
 
 /**
  * How to apply a refused plan later. A plan that needs the typed app name (`confirmPhrase`) also

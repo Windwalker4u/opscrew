@@ -9,6 +9,7 @@ import {
   type LocalhostServices,
   type LocalRunnerServices,
   type LogServices,
+  type MoveServices,
   type PhaseDeps,
   type PortainerAccess,
   type PortainerServices,
@@ -85,6 +86,8 @@ export interface CliServices {
   destroy?: DestroyServices;
   /** Engine, both providers, Cloudflare, GitHub, SSH, catalogue and wait fakes for `retarget`. */
   retarget?: RetargetServices;
+  /** Both Cloudflare accounts, engine, servers, Portainer, GitHub and registrar fakes for `cloudflare move`. */
+  cloudflareMove?: MoveServices;
   /** Cloudflare accounts, registrar, extension and zone fakes for `domain`. */
   domain?: DomainServices;
   /** Engine, Cloudflare, own-server and deploy-user shell fakes for `portainer`. */
