@@ -4,7 +4,7 @@
  * computer. Every 30 seconds until each answers, or two hours: then it stops, and the next run
  * goes on with the same times (kept in the switch file).
  */
-import { OpsCrewError, realSleep } from "@opscrew/core";
+import { errorMessage, OpsCrewError, realSleep } from "@opscrew/core";
 import { type SwitchProgress, writeSwitchProgress } from "./progress";
 import type { MoveSession, MoveZone } from "./types";
 
@@ -60,22 +60,23 @@ async function answers(session: MoveSession, hostname: string): Promise<boolean>
 
 /**
  * Asks Cloudflare to check B's nameservers now. A failure other than "too soon" is harmless
- * (Cloudflare checks them on its own): `failed`, and the loop asks again later.
+ * (Cloudflare checks them on its own): `failed` with its reason made safe to show, and the loop
+ * asks again later.
  */
 async function activationCheck(
   session: MoveSession,
   zoneId: string,
-): Promise<{ requested: boolean; retryAfterSeconds?: number; failed?: true }> {
+): Promise<{ requested: boolean; retryAfterSeconds?: number; failed?: string }> {
   try {
     return await session.accounts.b.client.activationCheck(zoneId);
   } catch (error) {
     if (!(error instanceof OpsCrewError)) throw error;
-    return { requested: false, failed: true };
+    return { requested: false, failed: session.deps.redactor.redact(errorMessage(error)) };
   }
 }
 
 /**
- * The gap's loop on `progress` (its `nameserversSetAt` set): B's zone status (an activation check
+ * The gap's loop on `progress`: B's zone status (an activation check
  * while it is pending, when Cloudflare allows one: hourly on free plans), `activeAt` when first
  * seen active (then `input.activated`), `certificateAt` once the universal certificate pack is
  * active, and `okAt` per hostname once it answers, each written to the switch file when first
@@ -95,6 +96,7 @@ export async function measureGap(
   const hostnames = [...input.hostnames];
   let activated = false;
   let nextCheck = started;
+  let warned = false;
   const stamp = async (change: Partial<SwitchProgress>) => {
     times = { ...times, ...change };
     await writeSwitchProgress(session.paths, times);
@@ -105,7 +107,15 @@ export async function measureGap(
       const check = await activationCheck(session, zone.id);
       nextCheck =
         now() +
-        (check.requested || check.failed ? RECHECK_MS : (check.retryAfterSeconds ?? 3600) * 1000);
+        (check.requested || check.failed !== undefined
+          ? RECHECK_MS
+          : (check.retryAfterSeconds ?? 3600) * 1000);
+      if (check.failed !== undefined && !warned) {
+        warned = true;
+        deps.reporter.warn(
+          `Cloudflare could not start an activation check for ${session.zone} now (${check.failed}); Cloudflare checks the nameservers on its own.`,
+        );
+      }
       if (check.requested) {
         await deps.audit.append({
           kind: "provider-call",

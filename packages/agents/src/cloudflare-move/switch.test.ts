@@ -301,10 +301,62 @@ describe("switchMove: Cloudflare Registrar and another registrar", () => {
     const stopped = await h.run();
     expect(stopped.done).toBe(false);
     expect(stopped.next[0]).toContain(h.bZone.nameServers[0]);
+    // This repository approved the switch: the run after the user's change asks nothing again.
+    expect((await h.progress())?.approved).toBe(h.asked()[0]?.planHash);
     h.web.ns = [...h.bZone.nameServers];
     const result = await h.run();
     expect(result.done).toBe(true);
     expect(h.asked()).toHaveLength(1);
+  });
+});
+
+describe("switchMove: nameservers changed by hand, without the switch's approval", () => {
+  it("while New's zone is pending: writes nothing unasked, warns of A's DS record, and asks one approval before the zone copy and the steps after activation", async () => {
+    const h = await switchHarness({ registrar: "other" });
+    h.web.ns = [...h.bZone.nameServers];
+    h.web.ds = [OLD_DS];
+    const stopped = await h.run();
+    expect(stopped.done).toBe(false);
+    const hash = stopped.pendingPlanHash as string;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(h.writes("New")).toEqual([]);
+    expect(h.cloudflare.calls.some((c) => c.path.endsWith("/activation_check"))).toBe(false);
+    expect(h.deps.reporter.text()).toContain("still publishes a DNSSEC (DS) record");
+
+    const result = await h.run({ approvePlanHash: hash });
+    expect(result.done).toBe(true);
+    expect(h.asked()).toHaveLength(1);
+    expect(h.asked()[0]).toEqual(
+      expect.objectContaining({ kind: "domain-settings", confirmPhrase: ZONE, planHash: hash }),
+    );
+    expect(h.asked()[0]?.details).toContain("already point at the new account");
+    expect(inB(h, "MX", ZONE)).toHaveLength(1);
+    expect(h.b.workerDomains.map((d) => d.hostname)).toEqual([`docs.${ZONE}`]);
+    expect(h.writes("Old")).toEqual([]);
+  });
+
+  it("once New's zone is active: makes nothing before the approval, then measures without a nameserver time", async () => {
+    const h = await switchHarness();
+    // A run nobody answered saved a plan; then the nameservers were changed at Porkbun by hand.
+    const saved = await h.run();
+    expect(saved.pendingPlanHash).toBeDefined();
+    h.api.nameservers.set(ZONE, [...h.bZone.nameServers]);
+    h.cloudflare.activate(h.bZone);
+
+    const stopped = await h.run();
+    expect(stopped.done).toBe(false);
+    const hash = stopped.pendingPlanHash as string;
+    expect(hash).not.toBe(saved.pendingPlanHash);
+    expect(h.writes("New")).toEqual([]);
+    expect(h.b.workerDomains).toEqual([]);
+
+    const result = await h.run({ approvePlanHash: hash });
+    expect(result.done).toBe(true);
+    expect(h.b.workerDomains.map((d) => d.hostname)).toEqual([`docs.${ZONE}`]);
+    expect(h.api.count("setNameservers")).toBe(0);
+    expect(h.deps.reporter.text()).toContain("time of the nameserver change is unknown");
+    const audit = h.deps.audit.entries.find((e) => e.action === "switch measured");
+    expect(audit?.detail).not.toContain("NaN");
   });
 });
 
@@ -446,7 +498,8 @@ describe("switchMove: right after activation", () => {
         status: 409,
         body: {
           success: false,
-          errors: [{ code: 100117, message: "Hostname already has an assigned Worker" }],
+          // The code is the test's own: the fake answers 100117 for a record holding the hostname.
+          errors: [{ code: 100110, message: "Hostname already has an assigned Worker" }],
           messages: [],
           result: null,
         },

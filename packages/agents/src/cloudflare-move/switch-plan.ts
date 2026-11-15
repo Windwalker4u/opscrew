@@ -8,7 +8,7 @@
 import type { DsRecord } from "@opscrew/contracts";
 import { canonicalJson, listText, plural, sha256Hex } from "@opscrew/core";
 import type { DomainRegistrar } from "../domain";
-import { dsRecordText } from "../domain/switch";
+import { dsRecordText, sameHosts } from "../domain/switch";
 import type { ReadMark } from "./marks";
 import type { DsGate } from "./switch-ds";
 import { registrarId, registrarWords } from "./switch-registrar";
@@ -115,7 +115,9 @@ function describe(
         ? "through Cloudflare Registrar's move between accounts, which you start in the old account's dashboard and accept in the new one's"
         : "set by you at the registrar that holds it";
   lines.push(
-    `- The nameservers of ${zone}: from ${listText(plan.nameservers.before) || "none"} to ${listText(plan.nameservers.after)}, ${how}. Cloudflare then activates the zone in ${bName}.`,
+    sameHosts(plan.nameservers.before, plan.nameservers.after)
+      ? `- The nameservers of ${zone} already point at the new account (${listText(plan.nameservers.after)}): nothing changes at ${where}.`
+      : `- The nameservers of ${zone}: from ${listText(plan.nameservers.before) || "none"} to ${listText(plan.nameservers.after)}, ${how}. Cloudflare then activates the zone in ${bName}.`,
   );
   const after: string[] = [];
   if (plan.access.length > 0) {

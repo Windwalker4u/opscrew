@@ -115,16 +115,36 @@ export async function dsGate(
   registrar: DomainRegistrar,
   dsAtStart: boolean,
 ): Promise<DsGate> {
-  const { deps, services, zone } = session;
-  const fetch = services.fetch ?? deps.fetch;
+  const ds = await readPublished(session, registrar);
   const api = registrar.kind === "api" ? registrar : undefined;
-  const ds = await readDs({
-    deps: { ...deps, fetch },
-    domain: zone,
-    ...(api === undefined ? {} : { registrar: api.registrar }),
-  });
   if (api !== undefined) return apiGate(session, api, ds, dsAtStart);
   return ownGate(session, registrar.kind === "cloudflare", ds, dsAtStart);
+}
+
+/** The DS records published now: the registrar's API, when OpsCrew drives it, and the public DNS. */
+function readPublished(session: MoveSession, registrar: DomainRegistrar): Promise<DsReading> {
+  const { deps, services, zone } = session;
+  return readDs({
+    deps: { ...deps, fetch: services.fetch ?? deps.fetch },
+    domain: zone,
+    ...(registrar.kind === "api" ? { registrar: registrar.registrar } : {}),
+  });
+}
+
+/**
+ * Once the nameservers point at B without the switch's approval: warns when the registry still
+ * publishes a DS record of the zone (the old account's), since nothing waits for it any more.
+ */
+export async function warnPublishedDs(
+  session: MoveSession,
+  registrar: DomainRegistrar,
+): Promise<void> {
+  const ds = await readPublished(session, registrar);
+  if (ds.records.length === 0) return;
+  const { zone } = session;
+  session.deps.reporter.warn(
+    `The nameservers of ${zone} point at the new account, but the registry still publishes a DNSSEC (DS) record of ${zone} (${ds.records.map(dsRecordText).join("; ")}): visitors whose resolver checks DNSSEC may not reach ${zone} until it is removed. Remove it at the registrar that holds ${zone}, or turn DNSSEC off in the old account's dashboard when the zone is registered at Cloudflare.`,
+  );
 }
 
 /** The gate at Porkbun, Namecheap or GoDaddy, on `domain connect`'s note. */

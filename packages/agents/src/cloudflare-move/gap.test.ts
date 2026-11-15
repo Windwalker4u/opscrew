@@ -84,6 +84,11 @@ describe("measureGap", () => {
     expect(result.done).toBe(true);
     const checks = h.cloudflare.calls.filter((c) => c.path.endsWith("/activation_check"));
     expect(checks.map((c) => c.status)).toEqual([403, 200]);
+    const warned = h.deps.reporter.lines.filter((l) =>
+      l.message.includes("Cloudflare checks the nameservers on its own"),
+    );
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.level).toBe("warn");
     expect(h.bZone.activationChecks).toHaveLength(1);
   });
 

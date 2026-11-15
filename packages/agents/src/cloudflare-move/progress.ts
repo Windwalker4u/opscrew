@@ -85,6 +85,11 @@ const SwitchProgressSchema = z.strictObject({
   zone: FqdnSchema,
   /** The switch plan waiting for `--approve`. */
   pending: z.strictObject({ planHash: HashSchema, savedAt: IsoDateTimeSchema }).optional(),
+  /**
+   * The switch plan this repository approved: a run that finds the nameservers at B goes on with
+   * it; without it, the steps after activation wait for an approval of their own.
+   */
+  approved: HashSchema.optional(),
   /** When the registrar accepted B's nameservers. */
   nameserversSetAt: IsoDateTimeSchema.optional(),
   /** When B's zone became active. */

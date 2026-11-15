@@ -25,7 +25,7 @@ import {
 } from "./progress";
 import { openMoveSession } from "./session";
 import { protectInB } from "./switch-access";
-import { clearDsNotes, type DsGate, dsGate, removeDs } from "./switch-ds";
+import { clearDsNotes, type DsGate, dsGate, removeDs, warnPublishedDs } from "./switch-ds";
 import { planSwitch, type SwitchPlan } from "./switch-plan";
 import {
   currentNameservers,
@@ -51,7 +51,9 @@ import { recordInput } from "./zone";
  * prepared and every OpsCrew name in A's zone is in some mark; then plan 5.'s steps in order,
  * each checked before it acts. Stops on purpose (`done: false`, `next` says what to do) for the
  * plan's approval in a run nobody can answer, a DS record and its wait, a nameserver change the
- * user makes, and the gap's two-hour limit.
+ * user makes, and the gap's two-hour limit. Nameservers found at B without this repository's
+ * approval (changed by hand) get a plan and an approval of their own before anything is written,
+ * except in another repository's run once B's zone is active (no switch file here at all).
  */
 export async function switchMove(
   deps: PhaseDeps,
@@ -63,10 +65,11 @@ export async function switchMove(
   const found = await readSwitchProgress(session.paths);
   let progress = found?.zone === session.zone ? found : undefined;
   const read = await readDelegation(session, move, registrar, progress);
-  if (!read.switched) {
-    const stop = await beforeSwitch(session, move, registrar, read);
-    if (stop !== undefined) return { step: move.step, done: false, ...stop };
-    progress = { zone: session.zone, nameserversSetAt: deps.clock.now().toISOString() };
+  const elsewhere = progress === undefined && read.zone.status === "active";
+  if (!read.switched || (progress?.approved === undefined && !elsewhere)) {
+    const planned = await beforeSwitch(session, move, registrar, read, progress);
+    if ("stop" in planned) return { step: move.step, done: false, ...planned.stop };
+    progress = planned.progress;
   }
   return afterSwitch(session, move, { registrar, zone: read.zone, progress });
 }
@@ -108,7 +111,7 @@ type Registrar = Awaited<ReturnType<typeof findSwitchRegistrar>>;
 /** B's zone and the delegation, read now. */
 interface Delegation {
   zone: MoveZone;
-  /** The zone's nameservers now (empty once it points at B). */
+  /** The zone's nameservers now (B's once it points at B). */
   before: string[];
   /** The nameservers point at B (or B's zone is active). */
   switched: boolean;
@@ -128,7 +131,8 @@ async function readDelegation(
   const { a, b } = session.accounts;
   const zone = await b.client.getZone(move.to.zoneId as string);
   b.zone = zone;
-  if (zone.status === "active") return { zone, before: [], switched: true };
+  const at = hosts(zone.nameServers);
+  if (zone.status === "active") return { zone, before: at, switched: true };
   const aServers = hosts(a.zone?.nameServers ?? []);
   if (aServers.length > 0 && sameHosts(aServers, hosts(zone.nameServers))) {
     throw refusal(
@@ -136,7 +140,7 @@ async function readDelegation(
       `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
     );
   }
-  if (progress?.nameserversSetAt !== undefined) return { zone, before: [], switched: true };
+  if (progress?.nameserversSetAt !== undefined) return { zone, before: at, switched: true };
   const before = await currentNameservers(session, registrar);
   return { zone, before, switched: sameHosts(before, hosts(zone.nameServers)) };
 }
@@ -146,7 +150,10 @@ type Planned =
   | { plan: SwitchPlan; gate: Exclude<DsGate, { kind: "stop" }>; read: Delegation }
   | { stop: StepStop };
 
-/** The coverage, the DS gate and the switch plan from `read`. */
+/**
+ * The coverage, the DS gate (none once the nameservers point at B: nothing waits for a DS record
+ * then) and the switch plan from `read`.
+ */
 async function planFrom(
   session: MoveSession,
   move: CloudflareMove,
@@ -154,81 +161,93 @@ async function planFrom(
   read: Delegation,
 ): Promise<Planned> {
   const marks = await requireCoverage(session);
-  const gate = await dsGate(session, registrar, move.dsAtStart);
+  const gate: DsGate = read.switched
+    ? { kind: "clear" }
+    : await dsGate(session, registrar, move.dsAtStart);
   if (gate.kind === "stop") return { stop: gate.stop };
   const { zone, before } = read;
   const input = { registrar, zone, before, gate, marks, dnssec: move.dsAtStart };
   return { plan: await planSwitch(session, input), gate, read };
 }
 
-/** Everything read again (B's zone, the delegation, the coverage, the DS gate), then planned. */
-async function readAndPlan(
-  session: MoveSession,
-  move: CloudflareMove,
-  registrar: Registrar,
-): Promise<Planned> {
-  const read = await readDelegation(session, move, registrar, undefined);
-  return planFrom(session, move, registrar, read);
-}
-
 /**
- * Before the nameservers point at B: the coverage, the DS gate, the switch plan shown and approved
- * (or saved for `--approve`), then everything read and planned again and refused when its hash
- * changed (or stopped by what the second reading found); then the DS records removed (and a stop
- * for the wait), or the zone copy's records created and B's nameservers set (undefined) or left to
- * the user (a stop).
+ * The switch plan: the coverage, the DS gate (or, with the nameservers at B already, a warning
+ * when A's DS record is still published), the plan shown and approved (or saved for `--approve`;
+ * a plan this repository approved with the same hash is not asked again), then everything read
+ * and planned again and refused when its hash changed (or stopped by what the second reading
+ * found). Then the approved hash recorded in the switch file, and the DS records removed (and a
+ * stop for the wait), or the zone copy's records created and B's nameservers set (the switch file
+ * with their time), already at B, or left to the user (a stop).
  */
 async function beforeSwitch(
   session: MoveSession,
   move: CloudflareMove,
   registrar: Registrar,
   read: Delegation,
-): Promise<StepStop | undefined> {
+  progress: SwitchProgress | undefined,
+): Promise<{ stop: StepStop } | { progress: SwitchProgress }> {
   const { deps, zone, command } = session;
+  if (read.switched) await warnPublishedDs(session, registrar);
   const first = await planFrom(session, move, registrar, read);
-  if ("stop" in first) return first.stop;
+  if ("stop" in first) return first;
   const { plan } = first;
-  if (!appliesNow(session, plan.planHash)) {
-    deps.reporter.info(plan.details);
-    const pending = { planHash: plan.planHash, savedAt: deps.clock.now().toISOString() };
-    await writeSwitchProgress(session.paths, { zone, pending });
-    const approve = approveCommand(command, plan.planHash, ["--confirm", zone]);
-    return {
-      pendingPlanHash: plan.planHash,
-      next: [`Review the plan above, then run \`${approve}\` to apply it and continue.`],
-    };
-  }
-  const approval = await deps.approvals.request({
-    kind: "domain-settings",
-    title: `Switch ${zone} to the Cloudflare account ${session.accounts.b.name ?? session.accounts.b.accountId}`,
-    details: plan.details,
-    planHash: plan.planHash,
-    // Typed in a terminal, `--confirm <zone>` in a script.
-    confirmPhrase: zone,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: "switch plan",
-      ...(approval.reason === undefined ? {} : { reason: approval.reason }),
-      unchanged: "Nothing was changed.",
-      hint: `Run \`${command}\` again when you are ready (in a script: --confirm ${zone} --approve ${plan.planHash}).`,
+  let current: Exclude<Planned, { stop: StepStop }> = first;
+  if (progress?.approved !== plan.planHash) {
+    if (!appliesNow(session, plan.planHash)) {
+      deps.reporter.info(plan.details);
+      const pending = { planHash: plan.planHash, savedAt: deps.clock.now().toISOString() };
+      await writeSwitchProgress(session.paths, { zone, pending });
+      const approve = approveCommand(command, plan.planHash, ["--confirm", zone]);
+      return {
+        stop: {
+          pendingPlanHash: plan.planHash,
+          next: [`Review the plan above, then run \`${approve}\` to apply it and continue.`],
+        },
+      };
+    }
+    const approval = await deps.approvals.request({
+      kind: "domain-settings",
+      title: `Switch ${zone} to the Cloudflare account ${session.accounts.b.name ?? session.accounts.b.accountId}`,
+      details: plan.details,
+      planHash: plan.planHash,
+      // Typed in a terminal, `--confirm <zone>` in a script.
+      confirmPhrase: zone,
     });
+    if (!approval.approved) {
+      throw new PlanRefusedError({
+        plan: "switch plan",
+        ...(approval.reason === undefined ? {} : { reason: approval.reason }),
+        unchanged: "Nothing was changed.",
+        hint: `Run \`${command}\` again when you are ready (in a script: --confirm ${zone} --approve ${plan.planHash}).`,
+      });
+    }
+    // Everything read again (B's zone, the delegation, the coverage, the DS gate) and planned.
+    const reread = await readDelegation(session, move, registrar, undefined);
+    const again = await planFrom(session, move, registrar, reread);
+    if ("stop" in again) return again;
+    if (again.plan.planHash !== plan.planHash) {
+      throw new OpsCrewError(
+        "PLAN_HASH_MISMATCH",
+        `The zones changed since the switch plan ${plan.planHash} was made, so it was not applied. Nothing was changed.`,
+        { hint: `Run \`${command}\` again to see the new plan.` },
+      );
+    }
+    current = again;
   }
-  const again = await readAndPlan(session, move, registrar);
-  if ("stop" in again) return again.stop;
-  if (again.plan.planHash !== plan.planHash) {
-    throw new OpsCrewError(
-      "PLAN_HASH_MISMATCH",
-      `The zones changed since the switch plan ${plan.planHash} was made, so it was not applied. Nothing was changed.`,
-      { hint: `Run \`${command}\` again to see the new plan.` },
-    );
+  const { gate, read: now } = current;
+  if (gate.kind === "remove") {
+    await writeSwitchProgress(session.paths, { zone });
+    return { stop: await removeDs(session, gate, now.zone) };
   }
-  await writeSwitchProgress(session.paths, { zone });
-  const { gate, read: now } = again;
-  if (gate.kind === "remove") return removeDs(session, gate, now.zone);
-  await copyRecords(session, now.zone, again.plan);
+  const approved: SwitchProgress = { zone, approved: plan.planHash };
+  await writeSwitchProgress(session.paths, approved);
+  await copyRecords(session, now.zone, current.plan);
+  if (now.switched) return { progress: approved };
   const change = await pointAtB(session, registrar, now.zone, now.before);
-  return change.set ? undefined : change.stop;
+  if (!change.set) return { stop: change.stop };
+  const set = { ...approved, nameserversSetAt: deps.clock.now().toISOString() };
+  await writeSwitchProgress(session.paths, set);
+  return { progress: set };
 }
 
 /**
@@ -276,9 +295,10 @@ async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPla
 /**
  * Once the nameservers point at B: the steps right after activation (Access, protected records,
  * custom domains, DNSSEC) and each app's finish, origin-protected apps first. The gap is measured
- * with the times kept (`nameserversSetAt` from the switch file, else from this run), except in a
- * run that finds B's zone active with no switch file (another repository's, after the switch):
- * that one only makes what is missing and gives the finishes.
+ * with the times kept (`nameserversSetAt` from the switch file; else from this run while B's zone
+ * is pending, and unknown once it is active), except in a run that finds B's zone active with no
+ * switch file at all (another repository's, after the switch): that one only makes what is
+ * missing and gives the finishes.
  */
 async function afterSwitch(
   session: MoveSession,
@@ -300,7 +320,8 @@ async function afterSwitch(
     return domains;
   };
   const { pending: _done, ...kept } = state.progress ?? { zone };
-  if (kept.nameserversSetAt === undefined && state.zone.status === "active") {
+  const active = state.zone.status === "active";
+  if (state.progress === undefined && active) {
     deps.reporter.info(
       `${zone} is active in the new account already; the run that switched it measured the times.`,
     );
@@ -310,13 +331,15 @@ async function afterSwitch(
   }
   if (kept.nameserversSetAt === undefined) {
     deps.reporter.info(
-      `The nameservers of ${zone} point at the new account already; the times are measured from this run.`,
+      active
+        ? `${zone} is active in the new account already, and the time of the nameserver change is unknown: the certificate's and the hostnames' times are measured from this run.`
+        : `The nameservers of ${zone} point at the new account already; the times are measured from this run.`,
     );
   }
-  const progress: SwitchProgress = {
-    ...kept,
-    nameserversSetAt: kept.nameserversSetAt ?? deps.clock.now().toISOString(),
-  };
+  const progress: SwitchProgress =
+    kept.nameserversSetAt !== undefined || active
+      ? kept
+      : { ...kept, nameserversSetAt: deps.clock.now().toISOString() };
   await writeSwitchProgress(session.paths, progress);
   const inB = await b.client.listZoneRecords(state.zone.id);
   const protectedNames = new Set(
@@ -367,15 +390,24 @@ async function afterSwitch(
   return { step: "switched", done: true, next: [...finishes, ...later] };
 }
 
-/** The measured times in words: the nameserver change to activation, to the certificate, per host. */
+/**
+ * The measured times in words: the nameserver change to activation, to the certificate, per host;
+ * from the activation this run saw when the nameserver change's time is unknown.
+ */
 function timesReport(zone: string, times: SwitchProgress, hostnames: readonly string[]): string[] {
-  const from = times.nameserversSetAt as string;
+  const from = times.nameserversSetAt;
   const active = times.activeAt as string;
+  const certificate = gapText(active, times.certificateAt as string);
+  const since = from ?? active;
+  const after =
+    from === undefined ? "after this run saw the zone active" : "after the nameserver change";
   return [
-    `${zone} switched: active in the new account ${gapText(from, active)} after the nameserver change, its certificate issued ${gapText(active, times.certificateAt as string)} after that.`,
+    from === undefined
+      ? `${zone} switched; the time of the nameserver change is unknown. Its certificate was issued ${certificate} after this run saw the zone active.`
+      : `${zone} switched: active in the new account ${gapText(from, active)} after the nameserver change, its certificate issued ${certificate} after that.`,
     ...hostnames.map(
       (name) =>
-        `${name} answered over HTTPS ${gapText(from, times.okAt?.[name] as string)} after the nameserver change.`,
+        `${name} answered over HTTPS ${gapText(since, times.okAt?.[name] as string)} ${after}.`,
     ),
   ];
 }
