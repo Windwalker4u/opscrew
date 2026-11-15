@@ -561,6 +561,10 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/secrets src/rotate && pnpm lint`
   - Effort: high
 
+- [x] T2840 `config/client-exposed-secret` skips test code and test fixtures (a bug found by the control-plane session, 2026-11-15, for 0.2.10; done by the lead)
+  - Why: `scanClientExposed` checked only `isClientNameFile`, so a browser-exposed name in a `*.test.ts` file or a `test/fixtures/**` file was a critical finding; the other config rules skip `isTestFile`.
+  - Done: `packages/secops/src/rules/config.ts` skips `isTestFile`; a test with a test file, a fixture and real code (only the real code is flagged).
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
