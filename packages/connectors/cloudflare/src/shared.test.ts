@@ -355,8 +355,7 @@ describe("the www redirect rule (feature 016)", () => {
 describe("the HTTPS redirect rule (T2842)", () => {
   const SITE = { [WWW]: ["www.example.com"], [HTTPS]: ["example.com"] };
   const DOCS = { [HTTPS]: ["docs.example.com"] };
-  const httpsExpression = (hosts: string[]) =>
-    `${hostSet(hosts)} and http.request.scheme eq "http"`;
+  const httpsExpression = (hosts: string[]) => `${hostSet(hosts)} and not ssl`;
   const httpsRule = (hosts: string[]) => ({
     ref: HTTPS,
     description: "OpsCrew: redirect plain HTTP to HTTPS",

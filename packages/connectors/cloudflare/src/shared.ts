@@ -155,10 +155,10 @@ const TEMPLATES: Record<SharedRuleRef, RuleTemplate> = {
     action: "redirect",
     parameters: redirectTo(HTTPS_TARGET),
     changedParameters: "its redirect is not OpsCrew's 301 to the same address over HTTPS",
-    suffix: ' and http.request.scheme eq "http"',
+    suffix: " and not ssl",
     label: "single redirect rules",
     permission: "Zone → Single Redirect → Edit",
-    restore: `set it back to turned on, with a dynamic redirect to ${HTTPS_TARGET}, the status code 301 and the query string kept, and the expression (http.host in {…its quoted hostnames…}) and http.request.scheme eq "http"`,
+    restore: `set it back to turned on, with a dynamic redirect to ${HTTPS_TARGET}, the status code 301 and the query string kept, and the expression (http.host in {…its quoted hostnames…}) and not ssl`,
   },
 };
 

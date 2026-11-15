@@ -243,7 +243,7 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     // Without www, the redirect phase holds only the redirect of plain HTTP to HTTPS.
     expect(s.zone.entrypoints.get(REDIRECT)?.rules.map((r) => r.ref)).toEqual([HTTPS]);
     expect(s.zone.opscrewRule(REDIRECT, HTTPS)?.expression).toBe(
-      '(http.host in {"docs.example.com"}) and http.request.scheme eq "http"',
+      '(http.host in {"docs.example.com"}) and not ssl',
     );
 
     // The deploy secrets: the deploy token (never OpsCrew's own), the account id and the app's
@@ -325,7 +325,7 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     expect(s.zone.entrypoints.get(REDIRECT)?.rules.map((r) => r.ref)).toEqual([HTTPS]);
     expect(s.zone.opscrewRule(REDIRECT, HTTPS)).toMatchObject({
       action: "redirect",
-      expression: '(http.host in {"example.com"}) and http.request.scheme eq "http"',
+      expression: '(http.host in {"example.com"}) and not ssl',
       action_parameters: {
         from_value: {
           status_code: 301,
