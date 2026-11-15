@@ -187,6 +187,7 @@ export function appRules(plan: {
   if (target.provider === "cloudflare-workers") {
     return {
       ...(plan.security?.wafCustomRules === true ? { "opscrew-block-probes": hosts } : {}),
+      "opscrew-https-redirect": [dns.domain],
       ...(dns.www ? { "opscrew-www-redirect": [`www.${dns.domain}`] } : {}),
     };
   }

@@ -305,6 +305,7 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
       "opscrew-block-probes": ["shop.example.com"],
       "opscrew-strict-tls": undefined,
       "opscrew-www-redirect": undefined,
+      "opscrew-https-redirect": undefined,
     };
     const a = { "opscrew-block-probes": ["e2e-abc.example.com"] };
     const b = { "opscrew-block-probes": ["e2e-abc-b.example.com"] };
@@ -320,6 +321,7 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
           "opscrew-block-probes": undefined,
           "opscrew-strict-tls": undefined,
           "opscrew-www-redirect": undefined,
+          "opscrew-https-redirect": undefined,
         },
         [
           {
@@ -364,16 +366,17 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     ).toEqual({});
   });
 
-  it("puts a site's hostnames into the probe block and its www into the redirect, never strict TLS", () => {
+  it("puts a site's hostnames into the probe block, its www into the www redirect and its domain into the HTTPS redirect, never strict TLS", () => {
     const dns = { provider: "cloudflare", domain: "e2e-abc.example.com", www: true };
     const site = { target: { provider: "cloudflare-workers" }, dns };
     expect(appRules({ ...site, security: { wafCustomRules: true } })).toEqual({
       "opscrew-block-probes": ["e2e-abc.example.com", "www.e2e-abc.example.com"],
       "opscrew-www-redirect": ["www.e2e-abc.example.com"],
+      "opscrew-https-redirect": ["e2e-abc.example.com"],
     });
     expect(
       appRules({ ...site, dns: { ...dns, www: false }, security: { wafCustomRules: false } }),
-    ).toEqual({});
+    ).toEqual({ "opscrew-https-redirect": ["e2e-abc.example.com"] });
     expect(appRules({ target: { provider: "github-pages" }, dns })).toEqual({});
   });
 

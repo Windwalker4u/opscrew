@@ -222,7 +222,7 @@ function cloudflareUsage({ plan, requirements }: ProjectArtifacts): CloudflareUs
           tunnel: usesTunnel(plan),
           r2: plan.storage?.objectStorage?.provider === "r2",
           offsiteR2: snapshotOffsiteOf(plan)?.provider === "r2",
-          redirect: plan.target.provider === "cloudflare-workers" && plan.dns.www,
+          redirect: plan.target.provider === "cloudflare-workers",
         }
       : { needed: false };
   }

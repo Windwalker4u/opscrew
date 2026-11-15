@@ -1,7 +1,6 @@
 import {
   inspectShared,
   planShared,
-  SHARED_RULES,
   type SharedChange,
   type SharedFacts,
   type SharedRecord,
@@ -11,7 +10,6 @@ import { listText } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import {
   listsHostnames,
-  REFS,
   RULES,
   readCloudflareRecord,
   sharedCloudflareClient,
@@ -20,9 +18,10 @@ import type { ProvisionServices } from "../provision/types";
 import { listsRedirect } from "../serverless/cloudflare/rules";
 import type { CloudflareRuleDifference } from "./types";
 
-/** The rule a change of one phase is about. */
-function refOf(change: Extract<SharedChange, { phase: string }>): SharedRuleRef {
-  return REFS.find((ref) => SHARED_RULES[ref].phase === change.phase) as SharedRuleRef;
+/** The rule a change is about; none for a whole phase's ruleset. */
+function refOf(change: Extract<SharedChange, { phase: string }>): SharedRuleRef | undefined {
+  if (change.kind === "delete-entrypoint") return undefined;
+  return ("rule" in change ? change.rule.ref : change.ref) as SharedRuleRef;
 }
 
 const RUN_PROVISION =
@@ -112,7 +111,9 @@ export async function cloudflareRulesDrift(
   }));
   for (const change of plan.changes) {
     if (!("phase" in change)) continue;
-    const { name, kind } = RULES[refOf(change)];
+    const ref = refOf(change);
+    if (ref === undefined) continue;
+    const { name, kind } = RULES[ref];
     if (change.kind === "create-entrypoint" || change.kind === "add-rule") {
       differences.push({
         title: `OpsCrew's rule "${name}" is missing from the zone's ${kind}`,

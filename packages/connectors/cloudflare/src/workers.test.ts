@@ -394,7 +394,7 @@ describe("Cloudflare hosting permissions", () => {
   it("adds the Workers and redirect permissions for Cloudflare hosting only, and the deploy token needs only Workers", () => {
     expect(CLOUDFLARE_HOSTING_PERMISSIONS).toEqual([
       "Account → Workers Scripts → Edit (only for Cloudflare hosting)",
-      "Zone → Single Redirect → Edit (only for Cloudflare hosting with www)",
+      "Zone → Single Redirect → Edit (only for Cloudflare hosting)",
     ]);
     expect(CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS).toEqual(["Account → Workers Scripts → Edit"]);
     const { credentials } = cloudflareConnector({ env: {}, fetch: new FakeZone().fetch });

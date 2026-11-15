@@ -187,7 +187,7 @@ describe("opscrew init with Cloudflare hosting", () => {
       message: `CLOUDFLARE_API_TOKEN lacks ${WORKERS}; OPSCREW_CLOUDFLARE_DEPLOY_TOKEN lacks ${WORKERS} for the account that holds example.com.`,
     });
     expect(found?.fix).toContain(
-      `Add ${WORKERS} (only for Cloudflare hosting) and Zone → Single Redirect → Edit (only for Cloudflare hosting with www) to CLOUDFLARE_API_TOKEN at https://dash.cloudflare.com/profile/api-tokens.`,
+      `Add ${WORKERS} (only for Cloudflare hosting) and Zone → Single Redirect → Edit (only for Cloudflare hosting) to CLOUDFLARE_API_TOKEN at https://dash.cloudflare.com/profile/api-tokens.`,
     );
     expect(found?.fix).toContain(
       `with only ${WORKERS} for the account that holds docs.example.com, and set OPSCREW_CLOUDFLARE_DEPLOY_TOKEN to it`,
@@ -216,16 +216,16 @@ describe("opscrew init with Cloudflare hosting", () => {
     });
   });
 
-  it("reads the www redirect rule's phase, naming its permission when the token may not", async () => {
+  it("reads the redirect rules' phase for every hosted site, naming its permission when the token may not", async () => {
     const denied = net();
     denied.main.denied.add("http_request_dynamic_redirect");
-    const list = await checks(plan("cloudflare-workers", true), { net: denied });
-    const cloudflare = list.find((check) => check.id === "cloudflare");
-    expect(cloudflare).toMatchObject({ status: "fail" });
-    expect(cloudflare?.fix).toContain("Zone → Single Redirect → Edit");
-    // Without www the redirect phase is never read.
-    const without = await checks(plan("cloudflare-workers"), { net: denied });
-    expect(without.find((check) => check.id === "cloudflare")?.status).toBe("pass");
+    // With www or without: the redirect of plain HTTP to HTTPS is in that phase too.
+    for (const www of [true, false]) {
+      const list = await checks(plan("cloudflare-workers", www), { net: denied });
+      const cloudflare = list.find((check) => check.id === "cloudflare");
+      expect(cloudflare).toMatchObject({ status: "fail" });
+      expect(cloudflare?.fix).toContain("Zone → Single Redirect → Edit");
+    }
   });
 });
 

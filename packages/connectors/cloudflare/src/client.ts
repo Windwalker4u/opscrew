@@ -88,7 +88,7 @@ const WORKERS_PERMISSION = "Account → Workers Scripts → Edit";
  */
 export const CLOUDFLARE_HOSTING_PERMISSIONS = [
   `${WORKERS_PERMISSION} (only for Cloudflare hosting)`,
-  "Zone → Single Redirect → Edit (only for Cloudflare hosting with www)",
+  "Zone → Single Redirect → Edit (only for Cloudflare hosting)",
 ] as const;
 
 /**

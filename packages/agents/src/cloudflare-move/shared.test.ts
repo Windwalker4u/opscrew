@@ -281,7 +281,7 @@ describe.skipIf(!findExecutable("git"))(
       const m = await moving("a Workers site with www");
       await approved(m, planBShared);
       expect(holdings(m.b)).toEqual({
-        rules: { [PROBES]: 1, [REDIRECT]: 1 },
+        rules: { [PROBES]: 1, [REDIRECT]: 2 },
         origin: [],
         client: [],
         on: [],
