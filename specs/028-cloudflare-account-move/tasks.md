@@ -551,6 +551,16 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
   - Effort: high
 
+- [ ] T2839 Each app's recovery copy follows its own `.sops.yaml` rule (a bug found by the control-plane session, 2026-11-15, for 0.2.10)
+  - Why: in a repository with several apps, `opscrew rotate recovery-key --app <key>` rewrites the one rule (`path_regex: secrets.sops.json$`) that every app's copy follows; rotating a second app points the first app's copy at the second app's key, and the next refresh of the first app's copy encrypts it to that key, so the key the user was told to keep for it stops opening it.
+  - Owns: `packages/agents/src/secrets/{store,copy}*.ts`, `packages/agents/src/rotate/recovery*.ts` (or wherever `rotateRecoveryKey` and the rotation's publish step live), their tests, the guide's recovery-key lines if they describe one rule
+  - Accept:
+    - A creation rule per app's copy, by its path (a further app's rule before the first app's general one); `readRecipients` and `sopsConfigFile` read and write per app; a rotation rewrites only its own app's rule; a repository with one rule keeps working, its further apps getting their own rule at their first rotation or refresh.
+    - Test: two apps, rotate the first, then the second: each copy stays encrypted to its own new key and the backup; a refresh of the first app's copy keeps the first app's key.
+    - If small: a second app's rotation may run on OpsCrew's own unmerged `opscrew/deploy-setup` branch (adding to it) instead of refusing; otherwise leave that refusal and say so.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/secrets src/rotate && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
