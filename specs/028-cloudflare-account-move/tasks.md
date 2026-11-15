@@ -588,6 +588,17 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents && npx vitest run --root packages/connectors/cloudflare && npx vitest run --root packages/agents src/provision/shared-cloudflare src/serverless src/destroy src/cloudflare-move && pnpm lint`
   - Effort: high
 
+- [ ] T2843 The registry's own answer decides whether old DS records are gone (founder, 2026-11-15; a follow-up to T2838)
+  - Why: since T2838 OpsCrew asks the registry's nameservers for the DS record's TTL, but still decides that the record is gone from a resolver's cached copy (DNS over HTTPS), up to one TTL behind the registry.
+  - Owns: `packages/agents/src/domain/{connect-ds,registry-ds}*.ts`, `packages/agents/src/cloudflare-move/switch-ds*.ts` and their tests
+  - Accept:
+    - When the registry answers readably, its answer decides: `none` means the old DS records are gone (the wait counts from that reading, twice the registry's TTL plus an hour, which covers every cached copy), `published` means they are not, whatever a resolver shows; the registry is asked whenever old DS records were seen before (a note, `dsAtStart`) or are listed or shown now.
+    - When the registry can't be read, today's rule stays (the API listing and the public copies, the 24-hour floor).
+    - A longer noted wait still holds; the TTL for "none" is the one noted or last read (never a guess shorter than it).
+    - Tests: the registry says none while a resolver still shows the record → gone, the wait from that reading; the registry says published while a resolver shows none → not gone; unreadable → today's rule.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
