@@ -2,7 +2,7 @@
  * `opscrew drift` for the server-less targets (feature 016, FR-1608), read-only. On Cloudflare's
  * hosting: the Worker's shell, its `workers.dev` and preview settings and its custom domains in the
  * IaC state against the live account, the custom domains against the plan's hostnames, and the
- * zone's shared rules (the `www` redirect). On GitHub Pages: the site's DNS records and GitHub's
+ * zone's shared rules (the redirect rules: plain HTTP to HTTPS, and `www`). On GitHub Pages: the site's DNS records and GitHub's
  * verification record in their IaC states, and the Pages site against the plan.
  */
 import { join } from "node:path";
