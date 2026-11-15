@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { FakeTunnel } from "@opscrew/connector-cloudflare/testing";
 import { portainerClient } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
@@ -645,13 +645,21 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
   });
 
   describe("R2", () => {
+    /** Each rclone run's verb and bucket. */
+    const verbs = (r2: FakeR2) =>
+      r2.runs.map((run) => `${run.verb} ${run.args.find((arg) => arg.includes(":"))}`);
+
     const key = (seed: string): StorageLogin => ({
       accessKeyId: fakeSecret("aws-access-key-id", seed),
       secretAccessKey: fakeSecret("aws-secret-access-key", seed),
     });
 
-    /** A cloud server with its files and its snapshots' copies on R2, both copied to New. */
-    async function r2World() {
+    /**
+     * A cloud server with its files and its snapshots' copies on R2, both copied to New (each
+     * bucket root's shadow state holding its bucket unless `held` says otherwise); a destroy of a
+     * bucket root deletes its bucket in New.
+     */
+    async function r2World(held: readonly ("storage" | "backups")[] = ["storage", "backups"]) {
       const keys = { storage: key("b-storage"), backups: key("b-backups") };
       const plan: DeployPlan = DeployPlanSchema.parse({
         ...withBucket(serverPlan(), "r2"),
@@ -667,8 +675,7 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
         },
         shadow: {
           main: [...COPIED_SERVER, B_PIECES.record(`shop.${ZONE}`)],
-          storage: [B_PIECES.bucket],
-          backups: [B_PIECES.bucket],
+          ...Object.fromEntries(held.map((root) => [root, [B_PIECES.bucket]])),
         },
       };
       const h = await abortHarness(options);
@@ -677,6 +684,12 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
       r2.add(h.old.id, APP_BUCKET, aKey, { "a.png": "aaaa" });
       r2.add(h.fresh.id, APP_BUCKET, keys.storage, { "a.png": "aaaa" });
       r2.add(h.fresh.id, BACKUPS_BUCKET, keys.backups, { "backups/1/db.age": "one" });
+      const records = h.engine.onDestroy;
+      h.engine.onDestroy = (addresses, dir) => {
+        records(addresses, dir);
+        const bucket = dir.endsWith(basename(storageRootDir(plan))) ? APP_BUCKET : BACKUPS_BUCKET;
+        if (addresses.includes(B_PIECES.bucket)) r2.buckets.get(h.fresh.id)?.delete(bucket);
+      };
       const remote = (address: string): RemoteExec => ({
         host: address,
         run: async (command: string, run?: RemoteRunOptions): Promise<CommandResult> => {
@@ -700,14 +713,20 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
       expect(asked(h)).toEqual([
         ["cloudflare-apply", false, undefined],
         ["remote-exec", true, APP_BUCKET],
-        ["remote-exec", true, BACKUPS_BUCKET],
         ["iac-apply", true, "shop"],
+        ["remote-exec", true, BACKUPS_BUCKET],
         ["iac-apply", true, "shop"],
         ["iac-apply", true, "shop"],
         ["cloudflare-apply", true, ZONE],
       ]);
-      expect([...r2.objects(h.fresh.id, APP_BUCKET).keys()]).toEqual([]);
-      expect([...r2.objects(h.fresh.id, BACKUPS_BUCKET).keys()]).toEqual([]);
+      // Each bucket emptied, then its root destroyed, which deleted it.
+      expect(verbs(r2)).toEqual([
+        `size b:${APP_BUCKET}`,
+        `delete b:${APP_BUCKET}`,
+        `size b:${BACKUPS_BUCKET}`,
+        `delete b:${BACKUPS_BUCKET}`,
+      ]);
+      expect(r2.buckets.get(h.fresh.id)?.size).toBe(0);
       expect([...r2.objects(h.old.id, APP_BUCKET).keys()]).toEqual(["a.png"]);
       expect(r2.runs.every((run) => run.args.every((arg) => !arg.startsWith("a:")))).toBe(true);
       const [storage, backups, main] = h.engine.destroyPlans;
@@ -742,7 +761,18 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
       expect(h.engine.destroyPlans).toEqual([]);
     });
 
-    it("in a script, empties one bucket per run and goes on after each", async () => {
+    it("never measures or empties a bucket of New's whose root holds nothing", async () => {
+      const { h, r2, remote } = await r2World(["backups"]);
+      h.deps.interactive = true;
+      await expectAborted(h, await h.run({ services: { remote } }));
+      expect(verbs(r2)).toEqual([`size b:${BACKUPS_BUCKET}`, `delete b:${BACKUPS_BUCKET}`]);
+      expect([...r2.objects(h.fresh.id, APP_BUCKET).keys()]).toEqual(["a.png"]);
+      expect(asked(h).filter(([kind]) => kind === "remote-exec")).toEqual([
+        ["remote-exec", true, BACKUPS_BUCKET],
+      ]);
+    });
+
+    it("in a script, empties one bucket per run and goes on after each, also between the two buckets' destroys", async () => {
       const { h, r2, remote } = await r2World();
       const services = { remote };
       const stops: MoveResult[] = [];
@@ -754,7 +784,21 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
       await expectAborted(h, result);
       expect(stops).toHaveLength(7);
       expect(stops[1]?.next[0]).toContain(`--confirm ${APP_BUCKET} --approve`);
-      expect(r2.runs.filter((run) => run.verb === "delete")).toHaveLength(2);
+      expect(stops[2]?.next[0]).toContain("--confirm shop --approve");
+      // Stopped between the two buckets' destroys: the run after it never measures the deleted one.
+      expect(stops[3]?.next[0]).toContain(`--confirm ${BACKUPS_BUCKET} --approve`);
+      // Each bucket measured until its root's destroy is applied (empty by then), never after it.
+      expect(verbs(r2)).toEqual([
+        `size b:${APP_BUCKET}`,
+        `size b:${APP_BUCKET}`,
+        `delete b:${APP_BUCKET}`,
+        `size b:${APP_BUCKET}`,
+        `size b:${BACKUPS_BUCKET}`,
+        `size b:${BACKUPS_BUCKET}`,
+        `delete b:${BACKUPS_BUCKET}`,
+        `size b:${BACKUPS_BUCKET}`,
+      ]);
+      expect(r2.buckets.get(h.fresh.id)?.size).toBe(0);
     });
   });
 });

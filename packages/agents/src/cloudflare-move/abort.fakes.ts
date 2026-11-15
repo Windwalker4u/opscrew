@@ -85,7 +85,8 @@ export class AbortEngine extends StateFileEngine {
   shown: Record<string, unknown> = {};
   /** Each destroy plan made: its root folder and that folder's `main.tf`, when it has one. */
   readonly destroyPlans: { dir: string; mainTf?: string }[] = [];
-  onDestroy: (addresses: readonly string[]) => void = () => {};
+  /** Told each applied destroy: the addresses it deleted and the root folder it was planned in. */
+  onDestroy: (addresses: readonly string[], dir: string) => void = () => {};
   readonly #destroys = new Map<string, { statePath: string; addresses: string[] }>();
 
   constructor() {
@@ -117,7 +118,7 @@ export class AbortEngine extends StateFileEngine {
     const destroy = this.#destroys.get(planFile);
     if (result.ok && destroy !== undefined) {
       await writeFile(destroy.statePath, addressState([]));
-      this.onDestroy(destroy.addresses);
+      this.onDestroy(destroy.addresses, dir);
     }
     return result;
   }

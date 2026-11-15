@@ -64,9 +64,9 @@ const DESTROY_GUARD = /\s*lifecycle\s*\{\s*prevent_destroy\s*=\s*true\s*\}/g;
  * `opscrew cloudflare move --abort`: refused before any change unless the app has a recorded move
  * and the switch changed nothing ({@link switchBegun}). Then, recorded as an abort begun: the app's
  * mark deleted (no switch can start), and per environment the extra `_NEW` deploy secrets deleted,
- * the connectors beside A's removed and B's tunnels waited on until they have no connection, B's
- * buckets emptied (each name typed) and their roots destroyed from a copy without the
- * `prevent_destroy` guard, the other shadow roots destroyed (the app's name typed), B's shared
+ * the connectors beside A's removed and B's tunnels waited on until they have no connection, each
+ * bucket root still holding its bucket emptied (the name typed) and destroyed from a copy without
+ * the `prevent_destroy` guard, the other shadow roots destroyed (the app's name typed), B's shared
  * pieces removed and `originTlsNext` forgotten, the shadow states dropped. Recorded as removed:
  * the move's folders deleted, B's zone deleted ({@link deleteBZone}) or kept with the reason, and
  * the record and the app's local file removed. A script stops with each step's hash.
@@ -239,13 +239,12 @@ async function removeEnvironment(
   // Each copy without the guard is made, and checked, before any bucket is emptied.
   const copies = new Map<ShadowRoot, ShadowRoot>();
   for (const root of buckets) copies.set(root, await withoutGuard(session, root));
-  let filled = false;
-  for (const root of buckets) filled ||= await holds(session, environment, root);
-  if (filled) {
-    const emptied = await emptyBuckets(session, environment, "b");
-    if (emptied !== undefined) return emptied;
-  }
+  // Per bucket root still holding its bucket: that bucket emptied, then the root destroyed. A root
+  // that holds nothing is left alone, and so is any bucket B has of that name.
   for (const root of buckets) {
+    if (!(await holds(session, environment, root))) continue;
+    const emptied = await emptyBuckets(session, environment, "b", [root.name]);
+    if (emptied !== undefined) return emptied;
     const stop = await destroyRoot(session, environment, root, copies.get(root) ?? root);
     if (stop !== undefined) return stop;
   }
