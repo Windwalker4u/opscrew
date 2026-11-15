@@ -120,6 +120,7 @@ export {
   buildRunner,
   DEPLOY_SECRETS,
   deploySecretName,
+  deploysInPlace,
   environmentTag,
   filesFolder,
   githubEnvironment,

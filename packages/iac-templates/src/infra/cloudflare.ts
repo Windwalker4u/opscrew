@@ -192,9 +192,17 @@ export function tunnelArguments(name: string): [string, string][] {
   ];
 }
 
-/** The arguments of `module "access"`, ending with the hostnames it protects (`hostnames`). */
+/**
+ * The arguments of `module "access"`: the hostnames it protects (`hostnames`), then its
+ * applications, held back by the root's `access_applications` variable.
+ */
 export function accessArguments(hostnames: readonly [string, string][]): [string, string][] {
-  return [["account_id", "var.cloudflare_account_id"], ["app_name", "var.app_name"], ...hostnames];
+  return [
+    ["account_id", "var.cloudflare_account_id"],
+    ["app_name", "var.app_name"],
+    ...hostnames,
+    ["applications", "var.access_applications"],
+  ];
 }
 
 /** The outputs of the deploy workflow's Access service token (both sensitive). */

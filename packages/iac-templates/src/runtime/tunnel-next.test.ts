@@ -2,8 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
-import { renderTunnelConnectorCompose } from "./index";
-import { renderNextTunnelConnectorCompose } from "./tunnel-next";
+import { renderNextTunnelConnectorCompose, renderTunnelConnectorCompose } from "./index";
 
 const plan = () => testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" });
 

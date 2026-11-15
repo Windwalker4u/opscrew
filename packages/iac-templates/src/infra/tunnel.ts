@@ -38,13 +38,9 @@ export const ACCESS_HOLD_VARIABLES: readonly VariableSpec[] = [
 ];
 
 /** The values of {@link ACCESS_HOLD_VARIABLES} in `terraform.tfvars.json`. */
-export const ACCESS_HOLD_TFVARS = { access_applications: true, protected_route_records: true };
-
-/** `module "access"`'s argument that holds back its applications. */
-export const ACCESS_APPLICATIONS_ARGUMENT: [string, string] = [
-  "applications",
-  "var.access_applications",
-];
+export const ACCESS_HOLD_TFVARS = Object.fromEntries(
+  ACCESS_HOLD_VARIABLES.map(({ name }) => [name, true]),
+);
 
 /** What the Cloudflare Tunnel and Access add to a root module (own server or cloud server). */
 export interface TunnelPieces {
@@ -150,7 +146,7 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       ],
       name: "access",
       source: "cloudflare-access",
-      args: accessArguments([...accessHostnames, ACCESS_APPLICATIONS_ARGUMENT]),
+      args: accessArguments(accessHostnames),
     }),
   ];
 

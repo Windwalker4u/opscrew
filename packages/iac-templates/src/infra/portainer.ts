@@ -28,7 +28,7 @@ import {
   versionsTf,
 } from "./hcl";
 import { addressVariables } from "./servers";
-import { ACCESS_APPLICATIONS_ARGUMENT, ACCESS_HOLD_TFVARS, ACCESS_HOLD_VARIABLES } from "./tunnel";
+import { ACCESS_HOLD_TFVARS, ACCESS_HOLD_VARIABLES } from "./tunnel";
 
 /** Where the app's stack connector sends the app's hostnames: Caddy on the stack's network. */
 const APP_ORIGIN = '"http://caddy:80"';
@@ -189,7 +189,6 @@ function mainTf(plan: DeployPlan, s: Shape): string {
         args: accessArguments([
           ["service_hostname", "var.portainer_hostname"],
           ["service_label", '"Portainer webhook"'],
-          ACCESS_APPLICATIONS_ARGUMENT,
         ]),
       }),
     );

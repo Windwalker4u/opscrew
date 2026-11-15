@@ -288,8 +288,9 @@ describe.skipIf(!runIt)(
             const protectedNames = ["ssh_hostname", "portainer_hostname", "beszel_hostname"]
               .filter((key) => key in tfvars)
               .map((key) => tfvars[key] as string);
+            const tunnelModule = "domain" in tfvars ? "tunnel" : "portainer_tunnel";
             const record = (hostname: string) =>
-              `module.${"domain" in tfvars ? "tunnel" : "portainer_tunnel"}.cloudflare_dns_record.route["${hostname}"]`;
+              `module.${tunnelModule}.cloudflare_dns_record.route["${hostname}"]`;
             const publicRecords = "domain" in tfvars ? [record(tfvars.domain)] : [];
 
             const all = await plan([]);
@@ -314,7 +315,13 @@ describe.skipIf(!runIt)(
               protectedNames.length,
             );
             expect(created(pending, "cloudflare_zero_trust_access_service_token")).toHaveLength(1);
-            for (const hostname of protectedNames) expect(pending).toContain(`"${hostname}"`);
+            const config = `module.${tunnelModule}.cloudflare_zero_trust_tunnel_cloudflared_config.this`;
+            const start = pending.indexOf(`# ${config} will be created`);
+            expect(start, `no ${config} in the plan`).toBeGreaterThanOrEqual(0);
+            const configBlock = pending.slice(start, pending.indexOf("\n\n", start));
+            expect(configBlock.match(/ will be created/g)).toHaveLength(1);
+            const routed = [...configBlock.matchAll(/\+ hostname\s+= "([^"]+)"/g)].map((m) => m[1]);
+            expect(routed).toEqual(expect.arrayContaining(protectedNames));
           },
           300_000,
         );
