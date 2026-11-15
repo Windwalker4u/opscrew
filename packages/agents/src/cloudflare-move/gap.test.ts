@@ -59,10 +59,38 @@ describe("measureGap", () => {
     expect(await readSwitchProgress(h.deps.paths)).toEqual(times);
   });
 
-  it("stops at the two-hour limit without counting a 52x answer, and the next run goes on with the same times", async () => {
+  it("takes a failed activation check as harmless and asks again five minutes later", async () => {
+    const { h, session, progress } = await started();
+    h.cloudflare.faults.push({
+      match: `PUT /zones/${h.bZone.id}/activation_check`,
+      reply: {
+        status: 403,
+        body: {
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+          messages: [],
+          result: null,
+        },
+      },
+    });
+    h.sleeps.onSleep = () => {
+      if (h.time.ms >= 10 * 60_000 && h.bZone.status === "pending") h.cloudflare.activate(h.bZone);
+    };
+    const result = await measureGap(session, progress, {
+      zone: zoneOf(h),
+      hostnames: [`shop.${ZONE}`],
+      activated: async () => [],
+    });
+    expect(result.done).toBe(true);
+    const checks = h.cloudflare.calls.filter((c) => c.path.endsWith("/activation_check"));
+    expect(checks.map((c) => c.status)).toEqual([403, 200]);
+    expect(h.bZone.activationChecks).toHaveLength(1);
+  });
+
+  it("stops at the two-hour limit without counting a 52x or 530 answer, and the next run goes on with the same times", async () => {
     const { h, session, progress } = await started();
     h.cloudflare.activate(h.bZone);
-    h.web.status.set(`shop.${ZONE}`, 522);
+    h.web.status.set(`shop.${ZONE}`, 530);
     const input = { zone: zoneOf(h), hostnames: [`shop.${ZONE}`], activated: async () => [] };
     const first = await measureGap(session, progress, input);
     expect(first.done).toBe(false);

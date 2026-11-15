@@ -118,7 +118,7 @@ function zoneRecord(record: CloudflareZoneRecord): ZoneRecord {
 }
 
 /** `record` as the client creates it: a record with `data` (SRV, CAA) without its `content`. */
-function recordInput(record: ZoneRecord): ZoneRecord {
+export function recordInput(record: ZoneRecord): ZoneRecord {
   if (record.data === undefined) return record;
   const { content: _content, ...rest } = record;
   return rest;

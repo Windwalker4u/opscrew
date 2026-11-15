@@ -4,7 +4,7 @@
  * computer. Every 30 seconds until each answers, or two hours: then it stops, and the next run
  * goes on with the same times (kept in the switch file).
  */
-import { realSleep } from "@opscrew/core";
+import { OpsCrewError, realSleep } from "@opscrew/core";
 import { type SwitchProgress, writeSwitchProgress } from "./progress";
 import type { MoveSession, MoveZone } from "./types";
 
@@ -41,7 +41,7 @@ export interface GapResult {
 
 /**
  * True when an HTTPS request to `hostname` (certificate checked, 10 s at most) got an answer that
- * is not a 52x: the edge served it with a valid certificate and reached the origin.
+ * is neither a 52x nor a 530: the edge served it with a valid certificate and reached the origin.
  */
 async function answers(session: MoveSession, hostname: string): Promise<boolean> {
   const fetch = session.services.fetch ?? session.deps.fetch;
@@ -52,9 +52,25 @@ async function answers(session: MoveSession, hostname: string): Promise<boolean>
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     await response.body?.cancel();
-    return response.status < 520 || response.status > 529;
+    return response.status < 520 || response.status > 530;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Asks Cloudflare to check B's nameservers now. A failure other than "too soon" is harmless
+ * (Cloudflare checks them on its own): `failed`, and the loop asks again later.
+ */
+async function activationCheck(
+  session: MoveSession,
+  zoneId: string,
+): Promise<{ requested: boolean; retryAfterSeconds?: number; failed?: true }> {
+  try {
+    return await session.accounts.b.client.activationCheck(zoneId);
+  } catch (error) {
+    if (!(error instanceof OpsCrewError)) throw error;
+    return { requested: false, failed: true };
   }
 }
 
@@ -86,8 +102,10 @@ export async function measureGap(
   for (;;) {
     const zone = await b.client.getZone(input.zone.id);
     if (zone.status !== "active" && now() >= nextCheck) {
-      const check = await b.client.activationCheck(zone.id);
-      nextCheck = now() + (check.requested ? RECHECK_MS : (check.retryAfterSeconds ?? 3600) * 1000);
+      const check = await activationCheck(session, zone.id);
+      nextCheck =
+        now() +
+        (check.requested || check.failed ? RECHECK_MS : (check.retryAfterSeconds ?? 3600) * 1000);
       if (check.requested) {
         await deps.audit.append({
           kind: "provider-call",

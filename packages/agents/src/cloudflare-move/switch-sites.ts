@@ -5,8 +5,22 @@
  * Cloudflare refuses one while the old account's Worker still holds it (plan 13), that one is
  * detached in A first (with A's token, A's zone being moved by then) and attached again.
  */
+import { OpsCrewError } from "@opscrew/core";
 import type { ReadMark } from "./marks";
 import type { MoveSession, MoveZone } from "./types";
+
+/**
+ * True for Cloudflare's refusal of a hostname another Worker holds (HTTP 409, code 100117:
+ * "Hostname already has an assigned Worker"). The client's error keeps Cloudflare's words, not
+ * its code, so they are what is matched.
+ */
+function assignedElsewhere(error: unknown): boolean {
+  return (
+    error instanceof OpsCrewError &&
+    error.code === "PROVIDER_ERROR" &&
+    /already has an assigned Worker/i.test(error.message)
+  );
+}
 
 /**
  * Attaches each mark's site domains that B's zone doesn't have on that Worker yet; returns every
@@ -32,6 +46,7 @@ export async function attachSites(
     try {
       await b.client.attachWorkerDomain(b.accountId, domain);
     } catch (error) {
+      if (!assignedElsewhere(error)) throw error;
       const held = (await a.client.listZoneWorkerDomains(a.accountId, a.zoneId)).find(
         (d) => d.hostname === hostname,
       );

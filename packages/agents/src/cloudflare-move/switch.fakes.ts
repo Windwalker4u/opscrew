@@ -61,8 +61,8 @@ export interface SwitchHarnessOptions extends MoveHarnessOptions {
   step?: "started" | "prepared";
   /** The other apps' marks (default blog's and docs'). */
   marks?: MoveMark[];
-  /** Where the zone is registered: Porkbun (default), Cloudflare Registrar in A, or elsewhere. */
-  registrar?: "porkbun" | "cloudflare" | "other";
+  /** Where the zone is registered: Porkbun (default) or Namecheap, Cloudflare Registrar in A, or elsewhere. */
+  registrar?: "porkbun" | "namecheap" | "cloudflare" | "other";
 }
 
 /** A Cloudflare Registrar registration, as `getRegistration` answers it. */
@@ -135,9 +135,12 @@ export async function switchHarness(o: SwitchHarnessOptions = {}) {
     probes: [] as string[],
   };
   const events: string[] = [];
-  const porkbun = new FakeRegistrar("porkbun", events);
-  porkbun.own(ZONE);
-  porkbun.nameservers.set(ZONE, [...aZone.nameServers]);
+  const kind = o.registrar ?? "porkbun";
+  const viaApi = kind === "porkbun" || kind === "namecheap";
+  /** The Porkbun or Namecheap account that holds the zone (Porkbun's for the other registrars). */
+  const api = new FakeRegistrar(kind === "namecheap" ? "namecheap" : "porkbun", events);
+  api.own(ZONE);
+  api.nameservers.set(ZONE, [...aZone.nameServers]);
   /** The account Cloudflare Registrar holds the zone in, for the `cloudflare` registrar. */
   const holder = { accountId: o.registrar === "cloudflare" ? aZone.accountId : undefined };
   vi.spyOn(CloudflareClient.prototype, "getRegistration").mockImplementation(
@@ -145,13 +148,11 @@ export async function switchHarness(o: SwitchHarnessOptions = {}) {
       accountId === holder.accountId && domain === ZONE ? registration(ZONE) : undefined,
   );
   const registrars: DomainServices = {
-    registrars:
-      (o.registrar ?? "porkbun") === "porkbun" ? { porkbun: connectApi(porkbun, events) } : {},
+    registrars: viaApi ? { [api.id]: connectApi(api, events) } : {},
   };
 
-  /** The delegation now: Porkbun's nameservers, else the public DNS's. */
-  const delegation = () =>
-    (o.registrar ?? "porkbun") === "porkbun" ? (porkbun.nameservers.get(ZONE) ?? []) : web.ns;
+  /** The delegation now: the API registrar's nameservers, else the public DNS's. */
+  const delegation = () => (viaApi ? (api.nameservers.get(ZONE) ?? []) : web.ns);
   const sleeps = { count: 0, onSleep: undefined as (() => void) | undefined };
   const sleep = async (ms: number) => {
     sleeps.count++;
@@ -209,7 +210,7 @@ export async function switchHarness(o: SwitchHarnessOptions = {}) {
     web,
     time,
     sleeps,
-    porkbun,
+    api,
     events,
     holder,
     services,

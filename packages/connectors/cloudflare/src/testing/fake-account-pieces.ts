@@ -197,9 +197,13 @@ function tunnels(
 ): FakeReply {
   const { account } = ctx;
   if (rest === "" && method === "GET") {
-    only(url, ["page", "per_page"]);
+    only(url, ["page", "per_page", "is_deleted"]);
+    // `is_deleted=false` leaves deleted tunnels out, as Cloudflare's filter does.
+    const live = url.searchParams.get("is_deleted") === "false";
     return paged(
-      account.tunnels.map((t) => tunnelView(account, t)),
+      account.tunnels
+        .filter((t) => !live || t.deleted_at === undefined)
+        .map((t) => tunnelView(account, t)),
       url,
       20,
     );

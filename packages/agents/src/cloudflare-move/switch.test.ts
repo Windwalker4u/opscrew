@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OLD_DS } from "../testing";
 import { readMarks } from "./marks";
 import { ZONE } from "./session.fakes";
-import { BLOG, OPS, type SwitchHarness, switchHarness } from "./switch.fakes";
+import { BLOG, DOCS, OPS, type SwitchHarness, switchHarness } from "./switch.fakes";
 import type { MoveResult } from "./types";
 
 afterEach(() => {
@@ -54,7 +54,7 @@ describe("switchMove: Porkbun", () => {
     }
     // A's user record copied; New's nameservers at Porkbun; the site's custom domain in New.
     expect(inB(h, "MX", ZONE)).toHaveLength(1);
-    expect([...(h.porkbun.nameservers.get(ZONE) ?? [])].sort()).toEqual(
+    expect([...(h.api.nameservers.get(ZONE) ?? [])].sort()).toEqual(
       [...h.bZone.nameServers].sort(),
     );
     expect(h.b.workerDomains.map((d) => [d.hostname, d.service])).toEqual([
@@ -102,21 +102,21 @@ describe("switchMove: Porkbun", () => {
     expect(result.done).toBe(true);
     expect(h.asked()).toHaveLength(1);
     expect(inB(h, "MX", ZONE)).toHaveLength(1);
-    expect(h.porkbun.count("setNameservers")).toBe(1);
+    expect(h.api.count("setNameservers")).toBe(1);
   });
 
   it("with DNSSEC: the first approved plan removes the DS record and stops; after the wait a new plan and approval; DNSSEC on in New", async () => {
     const h = await switchHarness({ dsAtStart: true });
     h.deps.interactive = true;
-    h.porkbun.dsRecords.set(ZONE, [OLD_DS]);
+    h.api.dsRecords.set(ZONE, [OLD_DS]);
     h.web.ds = [OLD_DS];
 
     const removed = await h.run();
     expect(removed).toEqual(expect.objectContaining({ done: false, step: "prepared" }));
     expect(h.asked()).toHaveLength(1);
     expect(h.asked()[0]?.details).toContain("Remove the DNSSEC (DS) records");
-    expect(h.porkbun.dsRecords.get(ZONE)).toEqual([]);
-    expect(h.porkbun.count("setNameservers")).toBe(0);
+    expect(h.api.dsRecords.get(ZONE)).toEqual([]);
+    expect(h.api.count("setNameservers")).toBe(0);
     expect(inB(h, "MX", ZONE)).toEqual([]);
     expect(removed.next.join(" ")).toMatch(/again after 2026-11-2\d/);
 
@@ -125,20 +125,35 @@ describe("switchMove: Porkbun", () => {
     const waiting = await h.run();
     expect(waiting.done).toBe(false);
     expect(h.asked()).toHaveLength(1);
-    expect(h.porkbun.count("setNameservers")).toBe(0);
+    expect(h.api.count("setNameservers")).toBe(0);
 
     h.time.ms += 50 * 3600_000;
     const result = await h.run();
     expect(result.done).toBe(true);
     expect(h.asked()).toHaveLength(2);
     expect(h.asked()[1]?.planHash).not.toBe(h.asked()[0]?.planHash);
-    expect(h.porkbun.count("setNameservers")).toBe(1);
+    expect(h.api.count("setNameservers")).toBe(1);
     // DNSSEC on in New, and its DS record published at Porkbun.
     expect(h.bZone.dnssec.status).not.toBe("disabled");
-    expect(h.porkbun.dsRecords.get(ZONE)).toHaveLength(1);
+    expect(h.api.dsRecords.get(ZONE)).toHaveLength(1);
     expect(h.deps.audit.entries.map((e) => e.action)).toContain("DNSSEC on (B)");
     expect(h.writes("Old")).toEqual([]);
     expect(leaks(h, removed, waiting, result)).toBe(false);
+  });
+
+  it("reads everything again after the approval and refuses the switch when A changed meanwhile", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    const handler = h.deps.approvalHandler;
+    const ask = handler.request.bind(handler);
+    handler.request = async (request) => {
+      h.cloudflare.addRecord(h.aZone, { type: "TXT", name: ZONE, content: '"v=spf1 -all"' });
+      return ask(request);
+    };
+    const error = await refused(h.run());
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(h.writes("New")).toEqual([]);
+    expect(h.api.count("setNameservers")).toBe(0);
   });
 
   it("saves the plan in a run nobody can answer and stops with the exact command; that command applies it", async () => {
@@ -182,6 +197,18 @@ describe("switchMove: refusals", () => {
     const error = await refused(h.run());
     expect(error.message).toContain("_opscrew-move.wiki-0123abcd");
     expect(h.readOnly()).toBe(true);
+  });
+
+  it("refuses before any change when New's zone has A's nameservers", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.bZone.nameServers = [...h.aZone.nameServers];
+    const error = await refused(h.run());
+    expect(error.message).toContain("would change nothing");
+    expect(error.hint).toContain("opscrew cloudflare move --abort");
+    expect(h.readOnly()).toBe(true);
+    expect(h.cloudflare.calls.some((c) => c.path.endsWith("/activation_check"))).toBe(false);
+    expect(await h.progress()).toBeUndefined();
   });
 
   it("refuses an app that is not prepared yet", async () => {
@@ -249,6 +276,25 @@ describe("switchMove: Cloudflare Registrar and another registrar", () => {
     expect(h.writes("Old")).toEqual([]);
   });
 
+  it("Namecheap with DNSSEC at the start: waits as after a removal, then lists the finishes first and the DS record to add last, auditing only what it wrote", async () => {
+    const h = await switchHarness({ registrar: "namecheap", dsAtStart: true });
+    h.deps.interactive = true;
+    const waiting = await h.run();
+    expect(waiting.done).toBe(false);
+    expect(waiting.next[0]).toMatch(/again after 2026-11-2\d/);
+    expect(h.asked()).toEqual([]);
+
+    h.time.ms += 30 * 3600_000;
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    expect(h.api.count("setNameservers")).toBe(1);
+    expect(result.next[0]).toContain("--finish");
+    expect(result.next.at(-1)).toContain("Add this DS record");
+    const actions = h.deps.audit.entries.map((e) => e.action);
+    expect(actions).toContain("enable DNSSEC");
+    expect(actions).not.toContain("DNSSEC on (B)");
+  });
+
   it("another registrar: shows the nameservers to set, and goes on once the public DNS shows them", async () => {
     const h = await switchHarness({ registrar: "other" });
     h.deps.interactive = true;
@@ -274,8 +320,15 @@ describe("switchMove: right after activation", () => {
     );
     h.b.identityProviders.push({ id: "pin-new", name: "One-time PIN", type: "onetimepin" });
     h.b.tunnels.push({ id: "tunnel-ops", name: "opscrew-ops", connections: [] });
+    // The first run stops at the limit, so the next goes on measuring with the records there.
+    h.web.status.set(`blog.${ZONE}`, 526);
+    const stopped = await h.run();
+    expect(stopped.done).toBe(false);
+    h.web.status.delete(`blog.${ZONE}`);
     const result = await h.run();
     expect(result.done).toBe(true);
+    expect(h.web.probes).not.toContain(`ssh-ops.${ZONE}`);
+    expect(h.web.probes).not.toContain(`portainer.ops.${ZONE}`);
     expect(h.b.accessApps).toEqual([
       expect.objectContaining({
         name: "OpsCrew SSH (ops)",
@@ -314,7 +367,74 @@ describe("switchMove: right after activation", () => {
     const again = await h.run();
     expect(again.done).toBe(true);
     expect(h.writes("New")).toHaveLength(before);
-    expect(leaks(h, result, again)).toBe(false);
+    expect(leaks(h, stopped, result, again)).toBe(false);
+  });
+
+  it("goes on after the Access applications were made but not their records: no application twice", async () => {
+    const h = await switchHarness({ marks: [BLOG, OPS, { ...DOCS, sites: [] }] });
+    h.deps.interactive = true;
+    h.b.accessPolicies.push(
+      { id: "policy-deploy", name: "OpsCrew deploy (ops)" },
+      { id: "policy-portainer", name: "OpsCrew Portainer (ops)" },
+    );
+    h.b.identityProviders.push({ id: "pin-new", name: "One-time PIN", type: "onetimepin" });
+    h.b.tunnels.push({ id: "tunnel-ops", name: "opscrew-ops", connections: [] });
+    // After the zone copy's batch: the next batch, the protected records', is refused.
+    h.sleeps.onSleep = () => {
+      h.sleeps.onSleep = undefined;
+      h.cloudflare.faults.push({
+        match: `POST /zones/${h.bZone.id}/dns_records/batch`,
+        reply: {
+          status: 400,
+          body: {
+            success: false,
+            errors: [{ code: 1004, message: "DNS Validation Error" }],
+            messages: [],
+            result: null,
+          },
+        },
+      });
+    };
+    await expect(h.run()).rejects.toThrow("DNS Validation Error");
+    expect(h.b.accessApps).toHaveLength(2);
+    expect(inB(h, "CNAME", `ssh-ops.${ZONE}`)).toEqual([]);
+
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    const posts = h.cloudflare.calls.filter(
+      (c) => c.method === "POST" && c.path === `/accounts/${h.b.id}/access/apps`,
+    );
+    expect(posts).toHaveLength(2);
+    expect(inB(h, "CNAME", `ssh-ops.${ZONE}`)).toHaveLength(1);
+    expect(inB(h, "CNAME", `portainer.ops.${ZONE}`)).toHaveLength(1);
+  });
+
+  it("goes on after one of a site's two domains was attached: only the other is attached, A's stays", async () => {
+    const www = `www.docs.${ZONE}`;
+    const site = { ...DOCS, hosts: [`docs.${ZONE}`, www] };
+    site.sites = [{ worker: "docs", domains: [`docs.${ZONE}`, www] }];
+    const h = await switchHarness({ marks: [BLOG, site] });
+    h.deps.interactive = true;
+    // A record of its own holds the second domain in New: Cloudflare refuses to attach it there.
+    const held = h.cloudflare.addRecord(h.bZone, {
+      type: "CNAME",
+      name: www,
+      content: "elsewhere.example.net",
+    });
+    await expect(h.run()).rejects.toThrow("externally managed DNS records");
+    expect(h.b.workerDomains.map((d) => d.hostname)).toEqual([`docs.${ZONE}`]);
+    expect(h.cloudflare.account("Old").workerDomains).toHaveLength(1);
+
+    h.bZone.records.splice(h.bZone.records.indexOf(held), 1);
+    const from = h.cloudflare.calls.length;
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    const attaches = h.cloudflare.calls
+      .slice(from)
+      .filter((c) => c.method === "PUT" && c.path === `/accounts/${h.b.id}/workers/domains`);
+    expect(attaches.map((c) => (c.body as { hostname: string }).hostname)).toEqual([www]);
+    expect(h.b.workerDomains.map((d) => d.hostname).sort()).toEqual([`docs.${ZONE}`, www]);
+    expect(h.cloudflare.account("Old").workerDomains).toHaveLength(1);
   });
 
   it("detaches a site's custom domain in A first when Cloudflare refuses it in New, and a rerun from another repository finds it attached", async () => {
@@ -338,12 +458,21 @@ describe("switchMove: right after activation", () => {
     expect(h.b.workerDomains.map((d) => d.hostname)).toEqual([`docs.${ZONE}`]);
     expect(h.deps.audit.entries.map((e) => e.action)).toContain("custom domain detached (A)");
 
-    // Another repository's run (no switch file here): it finds the marks and the domains.
+    // Another repository's run (no switch file here): it finds the marks and the domains, and
+    // gives the finishes without measuring.
     const before = h.writes("New").length;
+    const measured = () => h.deps.audit.entries.filter((e) => e.action === "switch measured");
+    expect(measured()).toHaveLength(1);
+    const reports = h.deps.reporter.lines.filter((l) => l.message.includes(" switched: ")).length;
     const again = await h.run();
-    expect(again.done).toBe(true);
+    expect(again).toEqual(expect.objectContaining({ step: "switched", done: true }));
+    expect(again.next[0]).toContain("--finish");
     expect(h.writes("New")).toHaveLength(before);
-    expect(h.deps.reporter.text()).toContain("measured from this run");
+    expect(measured()).toHaveLength(1);
+    expect(h.deps.reporter.lines.filter((l) => l.message.includes(" switched: "))).toHaveLength(
+      reports,
+    );
+    expect(await h.progress()).toBeUndefined();
   });
 });
 

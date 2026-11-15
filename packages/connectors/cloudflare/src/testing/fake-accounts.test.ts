@@ -534,7 +534,7 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
 });
 
 describe("fakeCloudflareAccounts: account pieces", () => {
-  it("answers tunnels with their connections, and their secret's change", async () => {
+  it("answers tunnels with their connections, the live ones listed, and their secret's change", async () => {
     const { fake, b, clientB } = setup();
     b.tunnels.push({ id: TUNNEL, name: "example-app", connections: [] });
     expect(await clientB.tunnelConnections(b.id, TUNNEL)).toBe("closed");
@@ -564,8 +564,11 @@ describe("fakeCloudflareAccounts: account pieces", () => {
 
     const unknownTunnel = "00000000-0000-4000-8000-0000000000bb";
     expect(await clientB.tunnelConnections(b.id, unknownTunnel)).toBe("gone");
+    expect(await clientB.listTunnels(b.id)).toEqual([{ id: TUNNEL, name: "example-app" }]);
     if (b.tunnels[0]) b.tunnels[0].deleted_at = fake.now.toISOString();
     expect(await clientB.tunnelConnections(b.id, TUNNEL)).toBe("gone");
+    // Listed with `is_deleted=false`: a deleted tunnel is left out.
+    expect(await clientB.listTunnels(b.id)).toEqual([]);
     await unanswered(fake, TOKEN_B, "GET", `/accounts/${b.id}/cfd_tunnel/${TUNNEL}/configurations`);
     await unanswered(fake, TOKEN_B, "GET", `/accounts/${b.id}/cfd_tunnel?name=example-app`);
     await unanswered(fake, TOKEN_B, "POST", `/accounts/${b.id}/cfd_tunnel`);

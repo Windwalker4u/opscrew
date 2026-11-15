@@ -25,7 +25,7 @@ import {
 } from "./progress";
 import { openMoveSession } from "./session";
 import { protectInB } from "./switch-access";
-import { clearDsNotes, dsGate, removeDs } from "./switch-ds";
+import { clearDsNotes, type DsGate, dsGate, removeDs } from "./switch-ds";
 import { planSwitch, type SwitchPlan } from "./switch-plan";
 import {
   currentNameservers,
@@ -35,8 +35,16 @@ import {
   registrarAfterSwitch,
 } from "./switch-registrar";
 import { attachSites } from "./switch-sites";
-import { A_TOKEN_VAR, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
+import {
+  A_TOKEN_VAR,
+  ABORT_COMMAND,
+  FINISH_COMMAND,
+  MOVE_COMMAND,
+  refusal,
+  SWITCH_COMMAND,
+} from "./texts";
 import type { MoveResult, MoveSession, MoveZone, StepStop, SwitchMoveOptions } from "./types";
+import { recordInput } from "./zone";
 
 /**
  * `opscrew cloudflare move --switch`: refused before any change unless this repository's app is
@@ -51,21 +59,16 @@ export async function switchMove(
 ): Promise<MoveResult> {
   const session = await openMoveSession(deps, { ...options, command: SWITCH_COMMAND });
   const move = requirePrepared(session);
-  const { b } = session.accounts;
-  const zone = await b.client.getZone(move.to.zoneId as string);
-  b.zone = zone;
   const registrar = await findSwitchRegistrar(session);
   const found = await readSwitchProgress(session.paths);
   let progress = found?.zone === session.zone ? found : undefined;
-  let switched = zone.status === "active" || progress?.nameserversSetAt !== undefined;
-  const before = switched ? [] : await currentNameservers(session, registrar);
-  switched ||= sameHosts(before, hosts(zone.nameServers));
-  if (!switched) {
-    const stop = await beforeSwitch(session, move, { registrar, zone, before });
+  const read = await readDelegation(session, move, registrar, progress);
+  if (!read.switched) {
+    const stop = await beforeSwitch(session, move, registrar, read);
     if (stop !== undefined) return { step: move.step, done: false, ...stop };
     progress = { zone: session.zone, nameserversSetAt: deps.clock.now().toISOString() };
   }
-  return afterSwitch(session, move, { registrar, zone, progress });
+  return afterSwitch(session, move, { registrar, zone: read.zone, progress });
 }
 
 /** The move's record, once this repository's app is prepared for it; refused otherwise. */
@@ -100,30 +103,91 @@ function requirePrepared(session: MoveSession): CloudflareMove {
   return move;
 }
 
-/** What the switch reads before it plans. */
-interface SwitchState {
-  registrar: Awaited<ReturnType<typeof findSwitchRegistrar>>;
+type Registrar = Awaited<ReturnType<typeof findSwitchRegistrar>>;
+
+/** B's zone and the delegation, read now. */
+interface Delegation {
   zone: MoveZone;
+  /** The zone's nameservers now (empty once it points at B). */
   before: string[];
+  /** The nameservers point at B (or B's zone is active). */
+  switched: boolean;
+}
+
+/**
+ * B's zone (read again) and where the zone points: at B once B's zone is active, the switch file
+ * holds the nameserver change, or the registrar's API or the public DNS names B's nameservers.
+ * While B's zone is not active, refused before any change when B's nameservers are A's.
+ */
+async function readDelegation(
+  session: MoveSession,
+  move: CloudflareMove,
+  registrar: Registrar,
+  progress: SwitchProgress | undefined,
+): Promise<Delegation> {
+  const { a, b } = session.accounts;
+  const zone = await b.client.getZone(move.to.zoneId as string);
+  b.zone = zone;
+  if (zone.status === "active") return { zone, before: [], switched: true };
+  const aServers = hosts(a.zone?.nameServers ?? []);
+  if (aServers.length > 0 && sameHosts(aServers, hosts(zone.nameServers))) {
+    throw refusal(
+      `Cloudflare gave ${session.zone} in the account ${b.name ?? b.accountId} the nameservers it has in the account ${a.name ?? a.accountId} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
+      `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
+    );
+  }
+  if (progress?.nameserversSetAt !== undefined) return { zone, before: [], switched: true };
+  const before = await currentNameservers(session, registrar);
+  return { zone, before, switched: sameHosts(before, hosts(zone.nameServers)) };
+}
+
+/** The switch plan from a reading, or a stop before any change (the DS gate's). */
+type Planned =
+  | { plan: SwitchPlan; gate: Exclude<DsGate, { kind: "stop" }>; read: Delegation }
+  | { stop: StepStop };
+
+/** The coverage, the DS gate and the switch plan from `read`. */
+async function planFrom(
+  session: MoveSession,
+  move: CloudflareMove,
+  registrar: Registrar,
+  read: Delegation,
+): Promise<Planned> {
+  const marks = await requireCoverage(session);
+  const gate = await dsGate(session, registrar, move.dsAtStart);
+  if (gate.kind === "stop") return { stop: gate.stop };
+  const { zone, before } = read;
+  const input = { registrar, zone, before, gate, marks, dnssec: move.dsAtStart };
+  return { plan: await planSwitch(session, input), gate, read };
+}
+
+/** Everything read again (B's zone, the delegation, the coverage, the DS gate), then planned. */
+async function readAndPlan(
+  session: MoveSession,
+  move: CloudflareMove,
+  registrar: Registrar,
+): Promise<Planned> {
+  const read = await readDelegation(session, move, registrar, undefined);
+  return planFrom(session, move, registrar, read);
 }
 
 /**
  * Before the nameservers point at B: the coverage, the DS gate, the switch plan shown and approved
- * (or saved for `--approve`), planned again and refused when its hash changed; then the DS records
- * removed (and a stop for the wait), or the zone copy's records created and B's nameservers set
- * (undefined) or left to the user (a stop).
+ * (or saved for `--approve`), then everything read and planned again and refused when its hash
+ * changed (or stopped by what the second reading found); then the DS records removed (and a stop
+ * for the wait), or the zone copy's records created and B's nameservers set (undefined) or left to
+ * the user (a stop).
  */
 async function beforeSwitch(
   session: MoveSession,
   move: CloudflareMove,
-  state: SwitchState,
+  registrar: Registrar,
+  read: Delegation,
 ): Promise<StepStop | undefined> {
   const { deps, zone, command } = session;
-  const marks = await requireCoverage(session);
-  const gate = await dsGate(session, state.registrar, move.dsAtStart);
-  if (gate.kind === "stop") return gate.stop;
-  const input = { ...state, gate, marks, dnssec: move.dsAtStart };
-  const plan = await planSwitch(session, input);
+  const first = await planFrom(session, move, registrar, read);
+  if ("stop" in first) return first.stop;
+  const { plan } = first;
   if (!appliesNow(session, plan.planHash)) {
     deps.reporter.info(plan.details);
     const pending = { planHash: plan.planHash, savedAt: deps.clock.now().toISOString() };
@@ -150,8 +214,9 @@ async function beforeSwitch(
       hint: `Run \`${command}\` again when you are ready (in a script: --confirm ${zone} --approve ${plan.planHash}).`,
     });
   }
-  const again = await planSwitch(session, input);
-  if (again.planHash !== plan.planHash) {
+  const again = await readAndPlan(session, move, registrar);
+  if ("stop" in again) return again.stop;
+  if (again.plan.planHash !== plan.planHash) {
     throw new OpsCrewError(
       "PLAN_HASH_MISMATCH",
       `The zones changed since the switch plan ${plan.planHash} was made, so it was not applied. Nothing was changed.`,
@@ -159,9 +224,10 @@ async function beforeSwitch(
     );
   }
   await writeSwitchProgress(session.paths, { zone });
-  if (gate.kind === "remove") return removeDs(session, gate, state.zone);
-  await copyRecords(session, state.zone, again);
-  const change = await pointAtB(session, state.registrar, state.zone, state.before);
+  const { gate, read: now } = again;
+  if (gate.kind === "remove") return removeDs(session, gate, now.zone);
+  await copyRecords(session, now.zone, again.plan);
+  const change = await pointAtB(session, registrar, now.zone, now.before);
   return change.set ? undefined : change.stop;
 }
 
@@ -190,9 +256,7 @@ async function requireCoverage(session: MoveSession): Promise<ReadMark[]> {
 
 /** Creates the zone copy's records in B (each with every field; SRV and CAA by their `data`). */
 async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPlan): Promise<void> {
-  const records = (plan.copy?.create ?? []).map(({ content, ...rest }) =>
-    rest.data === undefined ? { ...rest, ...(content === undefined ? {} : { content }) } : rest,
-  );
+  const records = (plan.copy?.create ?? []).map(recordInput);
   if (records.length === 0) return;
   session.deps.reporter.step(
     `Copying ${plural(records.length, "record")} into the new account's zone`,
@@ -210,18 +274,40 @@ async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPla
 }
 
 /**
- * Once the nameservers point at B: the times kept (`nameserversSetAt` from the switch file, else
- * from this run), the gap measured with the steps right after activation (Access, protected
- * records, custom domains, DNSSEC), and the output: the times, then each app's finish.
+ * Once the nameservers point at B: the steps right after activation (Access, protected records,
+ * custom domains, DNSSEC) and each app's finish, origin-protected apps first. The gap is measured
+ * with the times kept (`nameserversSetAt` from the switch file, else from this run), except in a
+ * run that finds B's zone active with no switch file (another repository's, after the switch):
+ * that one only makes what is missing and gives the finishes.
  */
 async function afterSwitch(
   session: MoveSession,
   move: CloudflareMove,
-  state: Omit<SwitchState, "before"> & { progress: SwitchProgress | undefined },
+  state: { registrar: Registrar; zone: MoveZone; progress: SwitchProgress | undefined },
 ): Promise<MoveResult> {
   const { deps, zone, command } = session;
   const { b } = session.accounts;
+  await clearDsNotes(session.paths);
+  const { marks } = await readMarks(session);
+  const later: string[] = [];
+  const activated = async () => {
+    await protectInB(session, marks, state.zone);
+    const domains = await attachSites(session, marks, state.zone);
+    if (move.dsAtStart) {
+      const registrar = await registrarAfterSwitch(session, state.registrar);
+      later.push(...(await dnssecInB(session, registrar, state.zone)));
+    }
+    return domains;
+  };
   const { pending: _done, ...kept } = state.progress ?? { zone };
+  if (kept.nameserversSetAt === undefined && state.zone.status === "active") {
+    deps.reporter.info(
+      `${zone} is active in the new account already; the run that switched it measured the times.`,
+    );
+    await activated();
+    const finishes = await finishLines(session, marks, state.zone);
+    return { step: "switched", done: true, next: [...finishes, ...later] };
+  }
   if (kept.nameserversSetAt === undefined) {
     deps.reporter.info(
       `The nameservers of ${zone} point at the new account already; the times are measured from this run.`,
@@ -232,25 +318,18 @@ async function afterSwitch(
     nameserversSetAt: kept.nameserversSetAt ?? deps.clock.now().toISOString(),
   };
   await writeSwitchProgress(session.paths, progress);
-  await clearDsNotes(session.paths);
-  const { marks } = await readMarks(session);
   const inB = await b.client.listZoneRecords(state.zone.id);
+  const protectedNames = new Set(
+    marks.flatMap((read) => read.mark.access.map((one) => one.hostname)),
+  );
   const served = (name: string) =>
+    !protectedNames.has(name) &&
     !name.split(".").some((label) => label.startsWith("_")) &&
     inB.some((r) => r.name === name && ["A", "AAAA", "CNAME"].includes(r.type.toUpperCase()));
-  const later: string[] = [];
   const result = await measureGap(session, progress, {
     zone: state.zone,
     hostnames: [...new Set(marks.flatMap((read) => read.mark.hosts))].filter(served).sort(),
-    activated: async () => {
-      await protectInB(session, marks, state.zone);
-      const domains = await attachSites(session, marks, state.zone);
-      if (move.dsAtStart) {
-        const registrar = await registrarAfterSwitch(session, state.registrar);
-        later.push(...(await dnssecInB(session, registrar, state.zone)));
-      }
-      return domains;
-    },
+    activated,
   });
   const times = result.progress;
   const finishes =
@@ -285,7 +364,7 @@ async function afterSwitch(
     detail: report.join(" "),
   });
   await clearSwitchProgress(session.paths);
-  return { step: "switched", done: true, next: [...later, ...finishes] };
+  return { step: "switched", done: true, next: [...finishes, ...later] };
 }
 
 /** The measured times in words: the nameserver change to activation, to the certificate, per host. */

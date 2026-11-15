@@ -179,7 +179,8 @@ export async function dnssecInB(
   if (registrar.kind === "api") {
     const ctx = switchContext(session, registrar);
     const done = await publishDs(ctx, zone);
-    if (done.outcome !== "already") await auditDnssec(session, where);
+    // `publishDs` audits its own writes; the move notes only the DS record it published.
+    if (done.outcome === "added") await auditDnssec(session, where);
     const link = registrarLinks(registrar.registrarId, deps.env).domains;
     if (done.outcome === "manual" && done.ds !== undefined) {
       return [

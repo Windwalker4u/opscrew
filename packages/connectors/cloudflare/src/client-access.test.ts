@@ -45,24 +45,21 @@ const APP: AccessApplicationInput = {
 };
 
 describe("CloudflareClient: tunnels and Access by name", () => {
-  it("lists the account's tunnels page by page, deleted ones marked", async () => {
+  it("lists the account's tunnels that are not deleted, page by page", async () => {
     const { cf, calls } = client({
       [`GET ${TUNNELS}?page=1`]: ok(
         [{ id: "t1", name: "opscrew-shop", deleted_at: null, connections: [] }],
         pages(2),
       ),
-      [`GET ${TUNNELS}?page=2`]: ok(
-        [{ id: "t2", name: "opscrew-blog", deleted_at: "2026-11-20T10:00:00Z" }],
-        pages(2),
-      ),
+      [`GET ${TUNNELS}?page=2`]: ok([{ id: "t2", name: "opscrew-blog" }], pages(2)),
     });
     expect(await cf.listTunnels(ACCOUNT)).toEqual([
-      { id: "t1", name: "opscrew-shop", deleted: false },
-      { id: "t2", name: "opscrew-blog", deleted: true },
+      { id: "t1", name: "opscrew-shop" },
+      { id: "t2", name: "opscrew-blog" },
     ]);
     expect(calls.map((c) => c.path)).toEqual([
-      `${TUNNELS}?page=1&per_page=50`,
-      `${TUNNELS}?page=2&per_page=50`,
+      `${TUNNELS}?page=1&per_page=50&is_deleted=false`,
+      `${TUNNELS}?page=2&per_page=50&is_deleted=false`,
     ]);
   });
 

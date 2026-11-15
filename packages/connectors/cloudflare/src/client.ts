@@ -393,11 +393,10 @@ export interface CloudflareIdentityProvider {
  */
 export type TunnelConnectionState = "active" | "closed" | "gone";
 
-/** A Cloudflare Tunnel of an account: its id and name, and whether it is deleted. */
+/** A Cloudflare Tunnel of an account: its id and name. */
 export interface CloudflareTunnel {
   id: string;
   name: string;
-  deleted: boolean;
 }
 
 /** A Cloudflare Access application of an account, or a reusable Access policy (no `domain`). */
@@ -552,11 +551,7 @@ const TunnelSchema = z.looseObject({
 });
 
 /** A tunnel as the account's list names it. */
-const TunnelListItemSchema = z.looseObject({
-  id: z.string().min(1),
-  name: z.string(),
-  deleted_at: z.string().nullish(),
-});
+const TunnelListItemSchema = z.looseObject({ id: z.string().min(1), name: z.string() });
 
 /** An Access application or reusable policy as the account's lists name it. */
 const AccessItemSchema = z.looseObject({
@@ -1939,17 +1934,18 @@ export class CloudflareClient {
   }
 
   /**
-   * The account's Cloudflare Tunnels, deleted ones too (`GET /accounts/{id}/cfd_tunnel`), each
-   * with its id, name and whether it is deleted. Follows pagination. Read-only.
+   * The account's Cloudflare Tunnels that are not deleted
+   * (`GET /accounts/{id}/cfd_tunnel?is_deleted=false`), each with its id and name. Follows
+   * pagination. Read-only.
    */
   async listTunnels(accountId: string): Promise<CloudflareTunnel[]> {
     const tunnels = await this.#all(
       `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel`,
       TunnelListItemSchema,
       "list the account's Cloudflare Tunnels",
-      { perPage: 50, hints: TUNNEL_HINTS },
+      { perPage: 50, filter: { is_deleted: "false" }, hints: TUNNEL_HINTS },
     );
-    return tunnels.map((t) => ({ id: t.id, name: t.name, deleted: t.deleted_at != null }));
+    return tunnels.map((t) => ({ id: t.id, name: t.name }));
   }
 
   /**

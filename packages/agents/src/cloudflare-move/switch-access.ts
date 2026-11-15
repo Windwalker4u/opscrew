@@ -129,7 +129,7 @@ export async function protectInB(
   }
 
   const records = await b.client.listZoneRecords(zone.id);
-  const tunnels = (await b.client.listTunnels(b.accountId)).filter((t) => !t.deleted);
+  const tunnels = await b.client.listTunnels(b.accountId);
   const create = [];
   for (const one of wanted) {
     const tunnel = tunnels.find((t) => t.name === one.tunnel);
