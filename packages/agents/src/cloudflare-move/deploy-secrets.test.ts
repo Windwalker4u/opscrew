@@ -278,9 +278,56 @@ describe.skipIf(!findExecutable("git"))("the deploy's credentials for the new ac
 
   it("stops a script's abort with the deletion's hash", async () => {
     const m = await moving("portainer", { staging: true });
-    const hash = await approved(m, () => dropNewCredentials(m.session, m.env));
+    const drop = () => dropNewCredentials(m.session, m.env);
+    const stop = (await drop()) as StepStop;
+    expect((await readAppProgress(m.h.deps.paths)).pending).toMatchObject({
+      action: "abort-secrets",
+      environment: "staging",
+      planHash: stop.pendingPlanHash,
+    });
+    m.handler.requests.length = 0;
+    const hash = await approved(m, drop);
+    expect(hash).toBe(stop.pendingPlanHash);
     expect((await readAppProgress(m.h.deps.paths)).pending).toBeUndefined();
-    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("finishes a promote that stopped after the plain names took B's values", async () => {
+    const m = await moving("own");
+    m.h.deps.interactive = true;
+    expect(await addNewCredentials(m.session, m.env, OUTPUTS)).toBeUndefined();
+    m.engine.shown = OUTPUTS;
+    const github = m.h.github;
+    const remove = github.deleteActionsSecret.bind(github);
+    github.deleteActionsSecret = async () => {
+      throw new Error("GitHub did not answer");
+    };
+    await expect(promoteNewCredentials(m.session, m.env)).rejects.toThrow("GitHub did not answer");
+    expect(github.secrets.get("OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET")).toBe(TOKEN_SECRET);
+    expect(github.secrets.has("OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW")).toBe(true);
+    github.deleteActionsSecret = remove;
+    expect(await promoteNewCredentials(m.session, m.env)).toBeUndefined();
+    expect([...github.secrets.keys()].sort()).toEqual([
+      "OPSCREW_TUNNEL_SERVICE_TOKEN_ID",
+      "OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET",
+    ]);
+    expect(github.secrets.get("OPSCREW_TUNNEL_SERVICE_TOKEN_ID")).toBe(TOKEN_ID);
+    expect(await promoteNewCredentials(m.session, m.env)).toBeUndefined();
+    expect(m.handler.requests.length).toBe(3);
+    expect(await leaked(m)).toBe(false);
+  });
+
+  it("names a further app's secrets with its prefix", async () => {
+    const m = await moving("own");
+    m.h.deps.interactive = true;
+    const env = { ...m.env, plan: appPlan("api", undefined, m.env.plan) };
+    expect(await addNewCredentials(m.session, env, OUTPUTS)).toBeUndefined();
+    expect([...m.secrets().keys()].sort()).toEqual([
+      "OPSCREW_API_TUNNEL_SERVICE_TOKEN_ID_NEW",
+      "OPSCREW_API_TUNNEL_SERVICE_TOKEN_SECRET_NEW",
+    ]);
+    expect(await dropNewCredentials(m.session, env)).toBeUndefined();
+    expect(m.secrets().size).toBe(0);
+    expect(m.handler.requests[1]?.details).toContain("OPSCREW_API_TUNNEL_SERVICE_TOKEN_ID_NEW");
   });
 
   it("sets B's values again when they changed", async () => {
@@ -361,7 +408,45 @@ describe.skipIf(!findExecutable("git"))("the deploy's credentials for the new ac
     )) as OpsCrewError;
     expect(error.code).toBe("CREDENTIALS_INVALID");
     expect(error.message).toContain("OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN");
+    // B's account by name, never "the account that holds" the zone, which is A's while it is active.
+    expect(`${error.message} ${error.hint}`).toContain("the Cloudflare account New");
+    expect(`${error.message} ${error.hint}`).not.toContain("the account that holds");
     expect(m.h.github.secrets.size).toBe(0);
+  });
+
+  it("refuses A's token as the site's deploy token, since it can edit DNS", async () => {
+    const m = await moving("site");
+    m.h.deps.interactive = true;
+    m.h.deps.env.OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN = ` ${m.h.tokens.a} `;
+    const error = (await addNewCredentials(m.session, m.env, {}).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.message).toContain(
+      "OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN is the same token as CLOUDFLARE_API_TOKEN, which can edit your DNS",
+    );
+    expect(error.message.endsWith("Nothing was changed.")).toBe(true);
+    expect(error.hint).toContain("OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN");
+    expect(m.handler.requests).toEqual([]);
+    expect(m.h.github.secrets.size).toBe(0);
+    expect(m.h.cloudflare.calls).toEqual([]);
+    expect(await leaked(m)).toBe(false);
+  });
+
+  it("says where a site's deploy run waits for a required reviewer", async () => {
+    const m = await moving("site");
+    m.h.deps.interactive = true;
+    const github = m.h.github;
+    const wait = github.waitForWorkflowRun.bind(github);
+    github.waitForWorkflowRun = async (owner, repo, options) => {
+      const url = `https://github.com/${owner}/${repo}/actions/runs/${options.runId}`;
+      await (options as { onWaiting?: (url: string) => Promise<void> | void }).onWaiting?.(url);
+      return wait(owner, repo, options);
+    };
+    expect(await addNewCredentials(m.session, m.env, {})).toBeUndefined();
+    expect(m.h.deps.reporter.text()).toMatch(
+      /deploy run waits in GitHub for a required reviewer: approve it at https:\/\/github\.com\/.+\/actions\/runs\/42/,
+    );
   });
 
   it("runs a site's deploy again when it did not succeed", async () => {

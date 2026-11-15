@@ -123,7 +123,11 @@ function bNotes(step: OriginTlsStep | undefined, pending: boolean): (plan: Share
 }
 
 /** The stop of a non-interactive run: the plan above waits for `--approve <hash>`. */
-function pendingStop(session: MoveSession, hash: string, flags: readonly string[]): StepStop {
+export function pendingStop(
+  session: MoveSession,
+  hash: string,
+  flags: readonly string[] = [],
+): StepStop {
   return {
     pendingPlanHash: hash,
     next: [

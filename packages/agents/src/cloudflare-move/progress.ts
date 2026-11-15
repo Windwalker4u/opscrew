@@ -30,6 +30,7 @@ export const MOVE_PLAN_ACTIONS = [
   "a-revoke",
   "a-empty",
   "mark-delete",
+  "abort-secrets",
   "abort-empty",
   "abort-shadow",
   "abort-shared",

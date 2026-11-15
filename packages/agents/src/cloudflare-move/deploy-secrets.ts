@@ -6,6 +6,10 @@
  * sealed on this computer and never shown, logged or written to a file.
  */
 import { join, posix } from "node:path";
+import {
+  CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
+} from "@opscrew/connector-cloudflare";
 import { canonicalJson, OpsCrewError, plural, sha256Hex, writeFileAtomic } from "@opscrew/core";
 import {
   CLOUDFLARE_DEPLOY_SECRETS,
@@ -21,13 +25,13 @@ import { z } from "zod";
 import { providerProfile } from "../providers";
 import { deploySecretPlace, type SecretPlace, setSecretAt } from "../provision/secrets";
 import { appliesNow } from "../retarget/steps";
-import { approveCommand } from "../retarget/texts";
 import { requireWorkersTokens } from "../serverless/cloudflare/checks";
 import { readValidJson, requestApproval, stringOutput } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { shadowOutputs, shadowRoots } from "./shadow";
-import { B_TOKEN_VAR } from "./texts";
+import { pendingStop } from "./shared";
+import { A_TOKEN_VAR, B_TOKEN_VAR } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
 const PHASE = "cloudflare-move";
@@ -92,19 +96,33 @@ const NAMES = new RegExp(`\\b(?:${Object.keys(B_NAMES).join("|")})\\b`, "g");
 
 /**
  * B's Workers deploy token ({@link NEW_DEPLOY_TOKEN_VAR}), checked as provision checks A's
- * (`requireWorkersTokens` with B's client and token): B's token and the deploy token hold Workers
- * Scripts Edit for B, and the deploy token is not B's own. Registered with the redactor.
- * @throws OpsCrewError naming B's variables, before any change.
+ * (`requireWorkersTokens` with B's client and token): it is not A's token, which can edit DNS;
+ * B's token and the deploy token hold Workers Scripts Edit for B, and the deploy token is not
+ * B's own. Registered with the redactor.
+ * @throws OpsCrewError naming B's variables and B's account, before any change.
  */
 async function bDeployToken(session: MoveSession): Promise<string> {
   const { deps, zone } = session;
   const { b } = session.accounts;
+  const given = deps.env[NEW_DEPLOY_TOKEN_VAR]?.trim();
+  if (given && given === deps.env[A_TOKEN_VAR]?.trim()) {
+    throw new OpsCrewError(
+      "CREDENTIALS_INVALID",
+      `${NEW_DEPLOY_TOKEN_VAR} is the same token as ${A_TOKEN_VAR}, which can edit your DNS, so OpsCrew does not store it in GitHub. Nothing was changed.`,
+      {
+        hint: `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with only ${CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS[0]} for ${bWords(session)}, set ${NEW_DEPLOY_TOKEN_VAR} to it, then run \`${session.command}\` again.`,
+      },
+    );
+  }
   const env = {
     ...deps.env,
     [DEPLOY_TOKEN_VAR]: deps.env[NEW_DEPLOY_TOKEN_VAR],
     CLOUDFLARE_API_TOKEN: deps.env[B_TOKEN_VAR],
   };
-  const rename = (text: string) => text.replace(NAMES, (name) => B_NAMES[name] ?? name);
+  // The checks call the account "the account that holds" the zone, which is A's while it is active.
+  const holds = `the account that holds ${zone}`;
+  const rename = (text: string) =>
+    text.replace(NAMES, (name) => B_NAMES[name] ?? name).replaceAll(holds, bWords(session));
   try {
     const token = await requireWorkersTokens(
       { ...deps, env },
@@ -248,12 +266,7 @@ async function applySecretsChange(
   if (!appliesNow(session, hash)) {
     deps.reporter.info(`${change.title}\n${details}`);
     await writePending(deps, change.key, hash);
-    return {
-      pendingPlanHash: hash,
-      next: [
-        `Review the GitHub secrets above, then run \`${approveCommand(session.command, hash)}\` to change them and continue.`,
-      ],
-    };
+    return pendingStop(session, hash);
   }
   await requestApproval(deps, {
     kind: "github-secrets",
@@ -326,12 +339,20 @@ async function deployToBoth(session: MoveSession, environment: MoveEnvironment):
         detail: `${workflowFile} on ${ref}`,
       }),
     );
-    run = await githubApi.waitForWorkflowRun(owner, repo, {
+    // GitHub's client takes `onWaiting`; the move's GitHub type doesn't declare it yet.
+    const wait: Parameters<typeof githubApi.waitForWorkflowRun>[2] & {
+      onWaiting: (url: string) => void;
+    } = {
       workflowFile,
       ref,
       runId,
       timeoutMs: WORKFLOW_WAIT_MS,
-    });
+      onWaiting: (url) =>
+        deps.reporter.info(
+          `${environment.environment}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run until it ends.`,
+        ),
+    };
+    run = await githubApi.waitForWorkflowRun(owner, repo, wait);
   } catch (error) {
     throw new OpsCrewError(
       codeOf(error),
@@ -458,7 +479,7 @@ export async function dropNewCredentials(
   const name = environment.environment;
   const remove = moved.pairs.map(({ next }) => deploySecretPlace(plan, next));
   return applySecretsChange(session, environment, {
-    key: { action: "secrets", environment: name },
+    key: { action: "abort-secrets", environment: name },
     set: [],
     delete: remove,
     title: `Delete the ${plural(remove.length, "extra GitHub secret")} the move added for the deploy of ${name}`,
