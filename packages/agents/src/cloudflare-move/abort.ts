@@ -274,7 +274,8 @@ async function removeEnvironment(
 ): Promise<StepStop | undefined> {
   const secrets = await dropNewCredentials(session, environment);
   if (secrets !== undefined) return secrets;
-  await removeBesideConnector(session, environment);
+  const connector = await removeBesideConnector(session, environment);
+  if (connector !== undefined) return connector;
   const roots = await rootsOf(session, environment);
   const main = roots.find((root) => root.name === "main");
   if (main !== undefined) {
