@@ -76,7 +76,8 @@ async function builder(
  *    branch and workflow;
  * 3. the IaC plan of the Worker's shell and custom domains (`iac-apply`), then the plan recorded;
  * 4. the Cloudflare plans (`cloudflare-apply`, {@link applySharedCloudflare}): the removal from
- *    the zone the app leaves first, then the `www` redirect, the probe block and the minimum TLS;
+ *    the zone the app leaves first, then the redirect rules (plain HTTP to HTTPS, and `www`), the probe
+ *    block and the minimum TLS;
  * 5. the deploy secrets (`github-secrets`, {@link storeSiteSecrets}): the deploy token, the account
  *    id and the app's values, all repository secrets;
  * 6. the deploy-setup pull request (`git-push`, `pull-request`) with the plan's record.

@@ -452,9 +452,17 @@ type RuleChange = Extract<SharedChange, { phase: SharedPhase }>;
 /** The changes to one of OpsCrew's rules (a `delete-entrypoint` is the phase's). */
 type OwnRuleChange = Exclude<RuleChange, { kind: "delete-entrypoint" }>;
 
-/** The rule a change is about. */
-function changeRef(change: OwnRuleChange): SharedRuleRef {
+/**
+ * The OpsCrew rule a change of a shared plan is about: undefined for the deletion of a phase's
+ * ruleset and for the changes that are not to a rule.
+ */
+export function sharedChangeRef(change: SharedChange): SharedRuleRef | undefined {
+  if (!isOwnRuleChange(change)) return undefined;
   return "rule" in change ? (change.rule.ref as SharedRuleRef) : change.ref;
+}
+
+function changeRef(change: OwnRuleChange): SharedRuleRef {
+  return sharedChangeRef(change) as SharedRuleRef;
 }
 
 type TlsRecord = NonNullable<SharedRecord["tls"]>;

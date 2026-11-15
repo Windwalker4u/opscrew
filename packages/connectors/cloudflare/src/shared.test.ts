@@ -468,6 +468,71 @@ describe("the HTTPS redirect rule (T2842)", () => {
     expect(gone.result.record).toEqual({ zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] });
   });
 
+  /**
+   * The first plan of a hosted app, applied with the second rule's write (`POST …/rules`) failing:
+   * `reached` lets the write reach the zone before the answer fails (unanswered), otherwise
+   * Cloudflare refuses it.
+   */
+  async function secondRuleFails(reached: boolean) {
+    const zone = new FakeZone();
+    const failing: FetchLike = async (input, init) => {
+      if (init?.method !== "POST" || !new URL(String(input)).pathname.endsWith("/rules")) {
+        return zone.fetch(input, init);
+      }
+      if (!reached) {
+        return Response.json(
+          {
+            success: false,
+            errors: [{ code: 10000, message: "refused" }],
+            messages: [],
+            result: null,
+          },
+          { status: 400 },
+        );
+      }
+      await zone.fetch(input, init);
+      return new Response("Bad Gateway", { status: 502 });
+    };
+    const plan = await planFor(zone, { hostnames: SITE });
+    const client = new CloudflareClient({ token: TOKEN, fetch: failing, sleep: async () => {} });
+    const failed = (await rejection(
+      applyShared(client, plan, { approvedHash: plan.hash }),
+    )) as SharedApplyError;
+    expect(failed).toBeInstanceOf(SharedApplyError);
+    expect(failed.applied).toEqual([`create-entrypoint ${REDIRECT}`]);
+    return { zone, failed };
+  }
+
+  it("records the HTTPS rule's hostnames Cloudflare holds when its write into the new ruleset goes unanswered", async () => {
+    const { zone, failed } = await secondRuleFails(true);
+    expect(redirectRefs(zone)).toEqual([WWW, HTTPS]);
+    expect(failed.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: SITE,
+      createdEntrypoints: [REDIRECT],
+    });
+    expect((await planFor(zone, { hostnames: SITE }, failed.record)).changes).toEqual([]);
+  });
+
+  it("leaves the HTTPS rule out of the record when Cloudflare refuses its write, and the next plan adds it to the ruleset", async () => {
+    const { zone, failed } = await secondRuleFails(false);
+    expect(redirectRefs(zone)).toEqual([WWW]);
+    expect(failed.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: { [WWW]: SITE[WWW] },
+      createdEntrypoints: [REDIRECT],
+    });
+    const next = await planFor(zone, { hostnames: SITE }, failed.record);
+    expect(next.changes).toEqual([
+      {
+        kind: "add-rule",
+        phase: REDIRECT,
+        rulesetId: zone.entrypoints.get(REDIRECT)?.id,
+        rule: httpsRule(["example.com"]),
+      },
+    ]);
+  });
+
   it("keeps the ruleset when a rule of the user's joined it after the plan that deletes it", async () => {
     const zone = new FakeZone();
     const site = await deploy(zone, { hostnames: SITE });

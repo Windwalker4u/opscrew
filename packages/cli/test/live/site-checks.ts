@@ -11,7 +11,12 @@ import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { httpRequest, minutes, waitFor } from "./cloud";
 import type { AppEnvironments } from "./environment-checks";
 import type { LiveRun, ServerSettings } from "./harness";
-import { missingHeaders, servingVersion, versionBuild } from "./serverless-support";
+import {
+  missingHeaders,
+  redirectProblem,
+  servingVersion,
+  versionBuild,
+} from "./serverless-support";
 import { duration } from "./support";
 
 /** The deploy token the Cloudflare passes give OpsCrew (`OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`). */
@@ -134,6 +139,34 @@ export async function expectHeaders(
   );
   run.log(`observed: ${url} answers ${status} with OpsCrew's security headers`);
   return answer;
+}
+
+/**
+ * Waits up to 5 minutes for each until `http://<host>/x?q=1` and, with `www`, both
+ * `http://www.<host>/x?q=1` and `https://www.<host>/x?q=1` answer with one 301 straight to
+ * `https://<host>/x?q=1` (the redirect is not followed): OpsCrew's redirect of plain HTTP to HTTPS,
+ * and its www redirect over plain HTTP and HTTPS, each in one hop with the query kept once.
+ */
+export async function expectRedirects(run: LiveRun, host: string, www: boolean): Promise<void> {
+  const path = "/x?q=1";
+  const to = `https://${host}${path}`;
+  const from = [
+    `http://${host}${path}`,
+    ...(www ? [`http://www.${host}${path}`, `https://www.${host}${path}`] : []),
+  ];
+  for (const url of from) {
+    await waitFor(
+      `${url} redirecting to ${to}`,
+      minutes(5),
+      async () => {
+        const problem = redirectProblem(await httpRequest(url), to);
+        if (problem !== undefined) throw new Error(`${url}: ${problem}`);
+        return true;
+      },
+      10_000,
+    );
+    run.log(`observed: ${url} redirects to ${to} with one 301`);
+  }
 }
 
 /**

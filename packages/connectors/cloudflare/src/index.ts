@@ -57,5 +57,6 @@ export {
   type SharedRecord,
   SharedRecordSchema,
   type SharedRuleRef,
+  sharedChangeRef,
   sharedRuleHostnames,
 } from "./shared";

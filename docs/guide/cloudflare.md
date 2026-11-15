@@ -7,7 +7,8 @@ protection, your own rules stay yours, and removing one app leaves the others as
 
 ## The rules OpsCrew keeps in your zone
 
-OpsCrew keeps one rule of its own of each kind in the zone, whatever the number of apps:
+OpsCrew keeps one rule of its own of each kind in the zone, two in Redirect Rules, whatever the
+number of apps:
 
 - **"OpsCrew: block probes for secrets and admin panels"**, in **Security → WAF → Custom rules**.
   Cloudflare blocks requests for paths that bots probe for: `/.env`, `/.git`, `/wp-admin`,
@@ -24,7 +25,8 @@ OpsCrew keeps one rule of its own of each kind in the zone, whatever the number 
 
 Each rule lists the hostnames of every OpsCrew app in the zone. Each app adds only its own
 hostnames, remembers them in `.opscrew/cloudflare.json` on your computer, and later removes only
-those. So the zone uses one rule slot of each kind, whether it has one OpsCrew app or twenty.
+those. So the zone uses one rule slot for each of OpsCrew's rules, whether it has one OpsCrew app or
+twenty.
 
 **Your own rules are never touched.** OpsCrew does not change, reorder or delete any rule it did not
 create. It adds its rule after the rules already in the zone, and it creates a zone's rules of a

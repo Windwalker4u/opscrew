@@ -126,7 +126,7 @@ Give `CLOUDFLARE_API_TOKEN` these zone permissions (`npx opscrew init` lists the
 For [Cloudflare's hosting](cloudflare-hosting.md#the-tokens), also add:
 
 - Account → Workers Scripts → Edit (the Worker and its custom domains)
-- Zone → Single Redirect → Edit, only for a site with `www` (OpsCrew's redirect to the domain)
+- Zone → Single Redirect → Edit (OpsCrew's redirects: plain HTTP to HTTPS, and `www` to the domain)
 - Account → Workers Observability → Read, only for a server-rendered site's past requests in
   [`opscrew logs`](logs-and-status.md#cloudflares-hosting)
 

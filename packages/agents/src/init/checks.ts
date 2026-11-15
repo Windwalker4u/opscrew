@@ -185,7 +185,7 @@ interface CloudflareUsage {
   r2?: boolean;
   /** The plan keeps its snapshots' off-server copies on Cloudflare R2 (the same permission). */
   offsiteR2?: boolean;
-  /** The plan hosts the site on Cloudflare with `www`, redirected by a shared Single Redirect rule. */
+  /** The plan hosts the site on Cloudflare: the redirect rules (plain HTTP to HTTPS, and `www`). */
   redirect?: boolean;
 }
 

@@ -83,8 +83,8 @@ const WORKERS_PERMISSION = "Account → Workers Scripts → Edit";
 
 /**
  * Permissions only Cloudflare hosting (no server) adds to the token, each marked with when it is
- * needed: the Worker, its custom domains and their DNS records; and, for a site that also answers
- * on `www`, the shared `www` redirect rule.
+ * needed: the Worker, its custom domains and their DNS records; and the shared redirect rules
+ * (plain HTTP to HTTPS, and `www`).
  */
 export const CLOUDFLARE_HOSTING_PERMISSIONS = [
   `${WORKERS_PERMISSION} (only for Cloudflare hosting)`,

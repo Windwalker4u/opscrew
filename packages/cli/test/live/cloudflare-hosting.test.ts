@@ -28,7 +28,6 @@ import { liveRunTarget, logsAndFigures } from "./observability-checks";
 import { shownRollback } from "./rollback-support";
 import {
   CLOUDFLARE_HOSTING_VARIABLES,
-  redirectProblem,
   renderedAt,
   SC_1601_MS,
   SC_1604_MS,
@@ -38,6 +37,7 @@ import {
 import {
   designSite,
   expectHeaders,
+  expectRedirects,
   siteEnv,
   siteHosts,
   siteSettings,
@@ -176,7 +176,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "3. OpsCrew's headers on a page and on the fallback, www redirects to the domain, and a second provision has nothing to change",
+      "3. OpsCrew's headers on a page and on the fallback, plain HTTP and www redirect to https://<domain> in one hop, and a second provision has nothing to change",
       minutes(20),
       async () => {
         await expectHeaders(run, `https://${host()}/`);
@@ -186,19 +186,7 @@ describe.skipIf(MISSING.length > 0)(
         await expectHeaders(run, `https://${host()}/opscrew-e2e-no-such-page`, {
           status: spa ? 200 : 404,
         });
-        const from = `https://www.${host()}/opscrew/e2e?q=1`;
-        const to = `https://${host()}/opscrew/e2e?q=1`;
-        await waitFor(
-          `www.${host()} redirecting to the domain`,
-          minutes(5),
-          async () => {
-            const problem = redirectProblem(await httpRequest(from), to);
-            if (problem !== undefined) throw new Error(problem);
-            return true;
-          },
-          10_000,
-        );
-        log("observed: www redirects to the domain with a 301, keeping the path and the query");
+        await expectRedirects(run, host(), plan?.dns.www === true);
         const planned = await run.opscrewOk("provision", "--plan-only", "--yes");
         expect(
           approveHashes(planned.output),

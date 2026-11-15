@@ -19,6 +19,7 @@ import {
   type SharedRecord,
   SharedRecordSchema,
   type SharedRuleRef,
+  sharedChangeRef,
 } from "@opscrew/connector-cloudflare";
 import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
 import {
@@ -173,12 +174,6 @@ export function sharedDesired(plan: DeployPlan, zone: string): SharedDesired {
   };
 }
 
-/** The rule a change of a ruleset is about; none for the deletion of the whole ruleset. */
-function changedRule(change: Extract<SharedChange, { phase: string }>): string | undefined {
-  if (change.kind === "delete-entrypoint") return undefined;
-  return "rule" in change ? change.rule.ref : change.ref;
-}
-
 /**
  * One rule's changes in words: what they do with this app's hostnames. The deletion of the
  * phase's ruleset goes with the last of its rules that changes, or alone with its first rule.
@@ -193,10 +188,11 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
   );
   const refs = REFS.filter((other) => SHARED_RULES[other].phase === phase);
   const owner =
-    refs.findLast((other) => inPhase.some((change) => changedRule(change) === other)) ?? refs[0];
+    refs.findLast((other) => inPhase.some((change) => sharedChangeRef(change) === other)) ??
+    refs[0];
   const changes = inPhase.filter(
     (change) =>
-      changedRule(change) === ref || (change.kind === "delete-entrypoint" && owner === ref),
+      sharedChangeRef(change) === ref || (change.kind === "delete-entrypoint" && owner === ref),
   );
   const [first] = changes;
   if (first === undefined) {
@@ -204,6 +200,16 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
     if (mine.length === 0 || plan.findings.length > 0) return undefined;
     return { title: `${name}: ${listText(mine)}`, state: "in-place" };
   }
+  const created = inPhase.filter(
+    (change) =>
+      change.kind === "create-entrypoint" ||
+      (change.kind === "add-rule" && change.rulesetId === undefined),
+  ).length;
+  const creating: AdapterPlanItem = {
+    title: `${name}: add ${listText(mine)}`,
+    state: "change",
+    reason: `The zone has no ${kind} yet: OpsCrew creates them with only its own ${created > 1 ? "rules" : "rule"}.`,
+  };
   const before = plan.previous?.hostnames[ref] ?? [];
   const others = (plan.expect[ref]?.hostnames ?? []).filter((host) => !before.includes(host));
   const keeps =
@@ -219,12 +225,10 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
         reason: "OpsCrew created them for this app, and they hold no rule any more.",
       };
     case "create-entrypoint":
-      return {
-        title: `${name}: add ${listText(mine)}`,
-        state: "change",
-        reason: `The zone has no ${kind} yet: OpsCrew creates them with only its own rule.`,
-      };
+      return creating;
     case "add-rule":
+      // A rule into the ruleset the plan creates (the redirect phase's second).
+      if (first.rulesetId === undefined) return creating;
       return {
         title: `${name}: add ${listText(mine)}`,
         state: "change",
@@ -426,7 +430,8 @@ export function cloudflarePlanHashes(planned: PlannedCloudflare | undefined): st
 
 /**
  * One zone's plan, reading the app's origin TLS and the zone's minimum TLS when `desired` asks
- * for them, and the `www` redirect rule's phase with `redirect` (a site on Cloudflare's hosting);
+ * for them, and the phase of the redirect rules (plain HTTP to HTTPS, and `www`) with `redirect` (a
+ * site on Cloudflare's hosting);
  * stops (`PHASE_PRECONDITION`, nothing changed) on its findings. `notes` adds lines to the plan's
  * text. `recordPath` is kept for the apply; `pendingZone`: the zone is pending, which the plan
  * carries (`SharedPlan.pendingZone`): its origin pulls count as on while Cloudflare deploys them, it
@@ -485,7 +490,8 @@ export async function zonePlan(
  * Trust pieces ({@link sharedDesired}) against its record, in the plan's zone (`cloudflare`, from
  * `setupCloudflare`). When the record names another zone that still lists this app's hostnames
  * (the app moved, or the plan uses no Cloudflare zone any more), their removal from that zone is
- * planned too. The `www` redirect rule's phase is read in a zone where the plan or the record
+ * planned too. The phase of the redirect rules (plain HTTP to HTTPS, and `www`) is read in a zone
+ * where the plan or the record
  * lists hostnames there (a site on Cloudflare's hosting). `undefined` when there is nothing to
  * plan. Stops on the plans' findings before anything changes.
  *

@@ -1,10 +1,9 @@
 import {
   inspectShared,
   planShared,
-  type SharedChange,
   type SharedFacts,
   type SharedRecord,
-  type SharedRuleRef,
+  sharedChangeRef,
 } from "@opscrew/connector-cloudflare";
 import { listText } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
@@ -17,12 +16,6 @@ import {
 import type { ProvisionServices } from "../provision/types";
 import { listsRedirect } from "../serverless/cloudflare/rules";
 import type { CloudflareRuleDifference } from "./types";
-
-/** The rule a change is about; none for a whole phase's ruleset. */
-function refOf(change: Extract<SharedChange, { phase: string }>): SharedRuleRef | undefined {
-  if (change.kind === "delete-entrypoint") return undefined;
-  return ("rule" in change ? change.rule.ref : change.ref) as SharedRuleRef;
-}
 
 const RUN_PROVISION =
   "`opscrew provision` puts it back (it shows the Cloudflare plan first, and the deploy brings the server what it needs).";
@@ -98,7 +91,7 @@ export async function cloudflareRulesDrift(
     zoneId: record.zoneId,
     accountId: "",
     access: false,
-    // The `www` redirect of a site on Cloudflare's hosting; a server never has hostnames there.
+    // The redirect rules of a site on Cloudflare's hosting; a server never has hostnames there.
     redirect: listsRedirect(record),
     ...(tls ? { tls: { proxied: [], record } } : {}),
     clock: deps.clock,
@@ -111,7 +104,7 @@ export async function cloudflareRulesDrift(
   }));
   for (const change of plan.changes) {
     if (!("phase" in change)) continue;
-    const ref = refOf(change);
+    const ref = sharedChangeRef(change);
     if (ref === undefined) continue;
     const { name, kind } = RULES[ref];
     if (change.kind === "create-entrypoint" || change.kind === "add-rule") {

@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { applyShared, inspectShared, planShared } from "@opscrew/connector-cloudflare";
 import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type {
   FetchLike,
@@ -225,6 +226,38 @@ describe("opscrew drift on Cloudflare's hosting", () => {
     ]);
     expect(s.zone.calls.some((c) => c.path.includes("http_request_dynamic_redirect"))).toBe(true);
     expect(s.zone.writes()).toEqual([]);
+  });
+
+  it("names the redirect of plain HTTP to HTTPS when it is missing next to the www redirect", async () => {
+    const s = await setup(sitePlan({ www: true, deployed: true }));
+    domains(s.zone, ["docs.example.com", "www.docs.example.com"]);
+    // The www redirect is in place; the HTTPS redirect was deleted by hand.
+    const client = fakeSharedCloudflare(s.zone);
+    const www = { "opscrew-www-redirect": ["www.docs.example.com"] };
+    const facts = await inspectShared(client, {
+      zoneId: FAKE_ZONE_ID,
+      accountId: "",
+      access: false,
+      redirect: true,
+    });
+    const plan = planShared(facts, { hostnames: www }, undefined);
+    await applyShared(client, plan, { approvedHash: plan.hash });
+    await writeCloudflareRecord(s.deps.paths, {
+      zoneId: FAKE_ZONE_ID,
+      hostnames: { ...www, "opscrew-https-redirect": ["docs.example.com"] },
+      createdEntrypoints: ["http_request_dynamic_redirect"],
+    });
+    const writes = s.zone.writes().length;
+    const report = await runDrift(s.deps, { services: s.services });
+
+    expect(report.cloudflareRules).toEqual([
+      {
+        title:
+          "OpsCrew's rule \"Redirect plain HTTP to HTTPS\" is missing from the zone's single redirect rules",
+        detail: expect.stringContaining("`opscrew provision` creates it again"),
+      },
+    ]);
+    expect(s.zone.writes()).toHaveLength(writes);
   });
 });
 

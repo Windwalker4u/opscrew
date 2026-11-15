@@ -4,8 +4,8 @@
  * no hostname is left, and so does a ruleset that then holds no rule, or that this app created and
  * an interrupted destroy left empty. Planned before the typed confirmation, applied as a Cloudflare
  * plan approved by its hash (`cloudflare-apply`, with `allowDestroy` and the typed app name): after
- * the infrastructure's destroy on a server, before it on Cloudflare's hosting (the `www` redirect
- * goes first).
+ * the infrastructure's destroy on a server, before it on Cloudflare's hosting (the redirect rules
+ * go first).
  */
 import { type CloudflareClient, SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
@@ -49,8 +49,9 @@ export interface SharedRemovalAccount {
  * and its origin TLS (read-only): `undefined` without a record or when it lists nothing. On a
  * server the plan is applied only after the app's site is gone, so it is made for an origin that
  * serves nothing: the client certificate is turned off and deleted, and the origin certificate
- * and every one it replaced are revoked. The zone's minimum TLS stays. The `www` redirect rule's
- * phase is read only when the record has (or created) it, as for a site on Cloudflare's hosting.
+ * and every one it replaced are revoked. The zone's minimum TLS stays. The phase of the redirect
+ * rules (plain HTTP to HTTPS, and `www`) is read only when the record has (or created) it, as for a
+ * site on Cloudflare's hosting.
  * A damaged record, and a finding of the plan (OpsCrew's rule changed by someone, a refused read),
  * stop before anything changes. Its hints name `command` (default `opscrew destroy`). A move plans
  * it in another `account` ({@link SharedRemovalAccount}); by default it is the app's record, with

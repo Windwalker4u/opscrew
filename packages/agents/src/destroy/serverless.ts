@@ -178,9 +178,9 @@ async function filesLeft(deps: PhaseDeps, plan: DeployPlan, setUp: string): Prom
  * `opscrew destroy` on Cloudflare's hosting (FR-1608), each change only after the one before it
  * succeeded: the state of the Worker's root and its code → Cloudflare's token (GitHub's optional,
  * for the deploy secrets) → a preview of the Worker's destroy plan and this app's hostnames in
- * OpsCrew's shared rules (`inspectShared` reads the `www` redirect's phase when the record has
- * it), confirmed once with the typed app name → the Worker's destroy plan approved (`iac-apply`)
- * → the `www` redirect and the probe block leave the zone's shared rules first (`cloudflare-apply`)
+ * OpsCrew's shared rules (`inspectShared` reads the redirect rules' phase when the record has
+ * hostnames there), confirmed once with the typed app name → the Worker's destroy plan approved (`iac-apply`)
+ * → the redirect rules and the probe block leave the zone's shared rules first (`cloudflare-apply`)
  * → the Worker's custom domains and the Worker go (its secrets with it) → the deploy secrets in
  * GitHub (`github-secrets`) and OpsCrew's record. Running it again continues with what is left.
  */
@@ -257,7 +257,8 @@ export async function destroyCloudflareWorkers(
     unchanged: "Nothing was deleted.",
   });
 
-  // 6. The www redirect and the probe block leave the zone's shared rules first, then 7. the
+  // 6. The redirect rules (plain HTTP to HTTPS, and `www`) and the probe block leave the zone's
+  // shared rules first, then 7. the
   // Worker's custom domains and the Worker.
   let sharedApproval: ApprovalRecord | undefined;
   try {
