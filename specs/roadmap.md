@@ -433,7 +433,8 @@ SSH into, Arm included, and its tunnel mode already serves an app from behind a 
 open port and no static address (Cloudflare Tunnel). This feature adds the direct path: the app
 answers at the home's own address, proxied through Cloudflare or not.
 
-**To research** (in the feature's `research.md` when it starts):
+**Research** (started 2026-11-15 on the founder's go-ahead, while 028 waits for DNSSEC):
+[research.md](029-home-hosting/research.md), with five questions for the founder at its end. It covers:
 - **Dynamic DNS:** what keeps the A/AAAA record current when the address changes: an updater on the
   server (a small timer of OpsCrew's, or ddclient) through Cloudflare's API with a token limited to
   that zone's DNS, or a registrar's own dynamic DNS (Porkbun, Namecheap); how often, and what the
