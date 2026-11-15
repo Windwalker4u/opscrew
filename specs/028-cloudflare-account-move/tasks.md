@@ -540,7 +540,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/connector-cloudflare && npx vitest run --root packages/agents src/cloudflare-move && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
   - Effort: high
 
-- [ ] T2838 [US1] The DS wait from the registry's own TTL (founder, 2026-11-15)
+- [x] T2838 [US1] The DS wait from the registry's own TTL (founder, 2026-11-15)
   - Why: the wait after old DS records are gone has a 24-hour floor (007, T1025), set because a resolver's lookup shows only the TTL left on its copy; the .dev registry's own nameservers give opscrew.dev's DS record a TTL of 1,800 s, so 24 hours is about 48 times what is needed.
   - Owns: `packages/agents/src/domain/{connect-ds,connect-state}*.ts` and a new `packages/agents/src/domain/registry-ds*.ts`, `packages/agents/src/cloudflare-move/switch-ds*.ts`, the texts that name the wait (CLI and agents messages, `docs/guide/{domains,cloudflare-move}.md`), `packages/cli/test/live/cloudflare-move*.ts` if they name it
   - Accept:
@@ -575,6 +575,16 @@ Asked for through the control plane's session: a non-secret build setting whatev
     - **Nothing ignored silently:** the report gives the count of ignored findings per rule (and per `scan.yaml` entry), in the text and in `--json`.
     - Tests for each default path, a `scan.yaml` with and without `rules`, a secret in an ignored path, the counts in text and JSON, and an invalid file.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/secops --filter=@opscrew/plan-schema --filter=opscrew --filter=@opscrew/mcp-server && npx vitest run --root packages/secops && npx vitest run --root packages/plan-schema && npx vitest run --root packages/cli src/commands && npx vitest run --root packages/mcp-server && pnpm lint`
+  - Effort: high
+
+- [ ] T2842 An app on Cloudflare Workers redirects plain HTTP to HTTPS (a bug found by the control-plane session, 2026-11-15, for 0.2.10)
+  - Why: an app OpsCrew deploys to `cloudflare-workers` (Workers SSR or `workers-assets`, static or not) answers `http://<host>/` with 200, no redirect; OpsCrew's own server edges redirect, Cloudflare targets never do, and a first visit or a checker (a payment provider's domain review) sees the site over plain HTTP.
+  - Owns: `packages/connectors/cloudflare/src/shared.ts` (+ tests, `testing/**`), the agents' code that builds the shared plan's desired rules for a Cloudflare-hosted app (`packages/agents/src/provision/shared-cloudflare*.ts`, `packages/agents/src/serverless/cloudflare/**` as needed), `docs/guide/cloudflare-hosting.md`
+  - Accept:
+    - A Single Redirect among OpsCrew's shared rules (`http_request_dynamic_redirect`, its own ref, e.g. `opscrew-https-redirect`): `http.request.scheme eq "http"` and the host in the Cloudflare-hosted apps' hostnames → `https://` + the same host and path, query kept, 301; only the hostnames of apps on a Cloudflare target (a server's hostnames keep their edge's own redirect; GitHub Pages enforces HTTPS itself); the zone's Always Use HTTPS untouched.
+    - Planned and approved by hash with the rest of the shared plan; an app's destroy removes its hostnames from it (the rule goes with the last one); drift and the 028 move see it like OpsCrew's other shared rules.
+    - Tests: the rule's expression and target for one and two hosted apps, a server app not in it, destroy removing it, the plan unchanged for a zone without hosted apps.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents && npx vitest run --root packages/connectors/cloudflare && npx vitest run --root packages/agents src/provision/shared-cloudflare src/serverless src/destroy src/cloudflare-move && pnpm lint`
   - Effort: high
 
 ## Phase 5: Wave 4 (parallel)
