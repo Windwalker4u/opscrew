@@ -565,6 +565,18 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Why: `scanClientExposed` checked only `isClientNameFile`, so a browser-exposed name in a `*.test.ts` file or a `test/fixtures/**` file was a critical finding; the other config rules skip `isTestFile`.
   - Done: `packages/secops/src/rules/config.ts` skips `isTestFile`; a test with a test file, a fixture and real code (only the real code is flagged).
 
+- [ ] T2841 Ignore rules for `opscrew scan`, kept in the repository (founder, 2026-11-15, asked through the control-plane session; for 0.2.10)
+  - Why: test code, mocks and fixtures raise findings that only matter for shipped code; the founder wants "some rules for the scans to ignore those test/mock files".
+  - Owns: `packages/secops/src/**` (the default skips, the ignore file's reading and the report), a schema for the file in `packages/plan-schema/src/` (new file, its export line), the scan's report in the CLI (`packages/cli/src/commands/scan*.ts`, `ui` if it prints there) and the MCP server's scan tool, `docs/guide/security.md`'s scan section
+  - Accept:
+    - **Default skips:** test code is `test/`, `tests/`, `__tests__/`, `spec/`, `*.test.*`, `*.spec.*` as today, plus `__mocks__/`, `mocks/`, `*.mock.*`, `__fixtures__/` and `testdata/` (and `fixtures/` only under a test folder: an app's own `fixtures/`, such as Django's, is loaded into real databases). Every non-secret rule skips test code alike.
+    - **`opscrew/scan.yaml`** (the user's, committed): `ignore: [{ paths: [globs], rules?: [rule ids], reason }]`, validated with zod (a reason required, an unknown rule id refused plainly); read by `scan` and so by `drift`, `secure`, the MCP server and the plugin.
+    - **Secrets are never dropped:** a secret finding in test code or an ignored path is reported as info with why (as `rules/secrets.ts` does for test files today), not removed.
+    - **Nothing ignored silently:** the report gives the count of ignored findings per rule (and per `scan.yaml` entry), in the text and in `--json`.
+    - Tests for each default path, a `scan.yaml` with and without `rules`, a secret in an ignored path, the counts in text and JSON, and an invalid file.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/secops --filter=@opscrew/plan-schema --filter=opscrew --filter=@opscrew/mcp-server && npx vitest run --root packages/secops && npx vitest run --root packages/plan-schema && npx vitest run --root packages/cli src/commands && npx vitest run --root packages/mcp-server && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
