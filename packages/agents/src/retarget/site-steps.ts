@@ -7,7 +7,7 @@ import { rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import { type GitHubClient, githubConnector } from "@opscrew/connector-github";
-import type { ApprovalRecord } from "@opscrew/contracts";
+import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import {
   CLOUDFLARE_DEPLOY_SECRETS,
@@ -15,6 +15,7 @@ import {
   renderPagesVerification,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
 import {
   deploySecretsStoredFor,
@@ -64,7 +65,7 @@ import {
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { runningVersions, versionBuild } from "../status/site";
 import { planBounded, planThenApply } from "./plans";
-import { auditMove, auditStep, moveOf, recordApply, saveMove, savePlan, waitsOf } from "./session";
+import { auditStep, moveOf, recordApply, saveMove, savePlan, waitsOf } from "./session";
 import {
   hostWords,
   movingWorker,
@@ -78,7 +79,7 @@ import {
 } from "./site-session";
 import { appliesNow, fileOnGitHub, normalised, pendingStop } from "./steps";
 import { ABORT_COMMAND, FINISH_COMMAND, RUN_COMMAND } from "./texts";
-import type { RetargetOptions, RetargetResult } from "./types";
+import type { RetargetGitHubApi, RetargetOptions, RetargetResult } from "./types";
 
 const WORKFLOW_WAIT_MS = 30 * 60_000;
 /** How long a site may take to answer: GitHub Pages' deploy, or DNS reaching this computer. */
@@ -410,45 +411,82 @@ async function deploySetupStop(session: SiteSession): Promise<RetargetResult | u
   };
 }
 
-/** Dispatches the deploy workflow on the plan's branch and waits for it to succeed; its run id. */
-async function runSiteWorkflow(session: SiteSession): Promise<number> {
-  const { deps, plan, githubApi } = session;
-  const { owner, repo } = session.github;
+/** What a deploy run's messages say beside the workflow and its run. */
+export interface DeployRunTexts {
+  /** Why it runs, after "Running the deploy workflow (<file> on <branch>)". */
+  purpose: string;
+  /** What a failure leaves as it was, after its message. */
+  unchanged?: string;
+  /** The hint's end when the run could not be started or followed. */
+  failedHint: string;
+  /** The hint when the run did not succeed. */
+  unsuccessfulHint: string;
+  /** The environment named when its run waits for a required reviewer (unsaid without one). */
+  environment?: string;
+}
+
+/**
+ * Dispatches `plan`'s deploy workflow on its branch (audited as soon as GitHub accepts it, before
+ * any wait for its run) and waits for the run to succeed; its result audited under `phase`.
+ * Returns the run's id.
+ * @throws OpsCrewError when it could not run or did not succeed.
+ */
+export async function runDeployWorkflow(
+  deps: Pick<PhaseDeps, "audit" | "reporter" | "redactor">,
+  github: {
+    api: Pick<RetargetGitHubApi, "dispatchWorkflow" | "waitForWorkflowRun">;
+    owner: string;
+    repo: string;
+  },
+  plan: DeployPlan,
+  phase: PhaseName,
+  texts: DeployRunTexts,
+): Promise<number> {
+  const { api, owner, repo } = github;
   const workflowFile = posix.basename(plan.cicd.workflowPath);
-  const branch = plan.cicd.branch;
-  const fresh = hostWords(newSite(plan));
-  const oldStill = `${hostWords(oldSite(plan))} still serves the site.`;
-  deps.reporter.step(`Running the deploy workflow (${workflowFile} on ${branch}) for ${fresh}`);
-  let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
+  const ref = plan.cicd.branch;
+  const unchanged = texts.unchanged === undefined ? "" : ` ${texts.unchanged}`;
+  const environment = texts.environment;
+  deps.reporter.step(`Running the deploy workflow (${workflowFile} on ${ref}) ${texts.purpose}`);
+  let run: Awaited<ReturnType<RetargetGitHubApi["waitForWorkflowRun"]>>;
   try {
-    // Recorded as soon as GitHub accepts the dispatch, before any wait for its run.
-    const { runId } = await githubApi.dispatchWorkflow(owner, repo, workflowFile, branch, {}, () =>
-      auditMove(session, {
+    const { runId } = await api.dispatchWorkflow(owner, repo, workflowFile, ref, {}, () =>
+      deps.audit.append({
         kind: "provider-call",
+        actor: "opscrew",
         action: "dispatch workflow",
+        phase,
         target: `${owner}/${repo}`,
-        detail: `${workflowFile} on ${branch}`,
+        detail: `${workflowFile} on ${ref}`,
       }),
     );
-    run = await githubApi.waitForWorkflowRun(owner, repo, {
+    run = await api.waitForWorkflowRun(owner, repo, {
       workflowFile,
-      ref: branch,
+      ref,
       runId,
       timeoutMs: WORKFLOW_WAIT_MS,
+      ...(environment === undefined
+        ? {}
+        : {
+            onWaiting: (url: string) =>
+              deps.reporter.info(
+                `${environment}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run until it ends.`,
+              ),
+          }),
     });
   } catch (error) {
     throw new OpsCrewError(
       codeOf(error),
-      deps.redactor.redact(`Running the deploy workflow failed: ${reasonOf(error)}. ${oldStill}`),
-      {
-        hint: `${hintOf(error)}Check the workflow in your repository's Actions tab, then run \`${RUN_COMMAND}\` again, or \`${ABORT_COMMAND}\` to undo the move.`,
-      },
+      deps.redactor.redact(`Running the deploy workflow failed: ${reasonOf(error)}.${unchanged}`),
+      { hint: `${hintOf(error)}${texts.failedHint}` },
     );
   }
   const ok = run.conclusion === "success";
-  await auditMove(session, {
+  await deps.audit.append({
     kind: "provider-call",
+    actor: "opscrew",
     action: "deploy workflow",
+    phase,
     target: run.htmlUrl,
     decision: ok ? "approved" : "refused",
     detail: `workflow run ${run.id} finished: ${run.conclusion ?? "no result"}`,
@@ -456,14 +494,30 @@ async function runSiteWorkflow(session: SiteSession): Promise<number> {
   if (!ok) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}. ${oldStill} Nothing else changed.`,
-      {
-        hint: `Open the run to see what failed and push a fix (deploys now go to ${fresh}), then run \`${RUN_COMMAND}\` again. To go back instead, run \`${ABORT_COMMAND}\`.`,
-      },
+      `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}.${unchanged}`,
+      { hint: texts.unsuccessfulHint },
     );
   }
   deps.reporter.success(`The deploy workflow succeeded (${run.htmlUrl}).`);
   return run.id;
+}
+
+/** Dispatches the deploy workflow on the plan's branch and waits for it to succeed; its run id. */
+function runSiteWorkflow(session: SiteSession): Promise<number> {
+  const { plan } = session;
+  const fresh = hostWords(newSite(plan));
+  return runDeployWorkflow(
+    session.deps,
+    { ...session.github, api: session.githubApi },
+    plan,
+    "retarget",
+    {
+      purpose: `for ${fresh}`,
+      unchanged: `${hostWords(oldSite(plan))} still serves the site.`,
+      failedHint: `Check the workflow in your repository's Actions tab, then run \`${RUN_COMMAND}\` again, or \`${ABORT_COMMAND}\` to undo the move.`,
+      unsuccessfulHint: `Open the run to see what failed and push a fix (deploys now go to ${fresh}), then run \`${RUN_COMMAND}\` again. To go back instead, run \`${ABORT_COMMAND}\`.`,
+    },
+  );
 }
 
 /** Polls `url` until it answers with a success status; false when it never did in time. */

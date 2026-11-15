@@ -1013,18 +1013,52 @@ export async function setSecretAt(
   } else {
     await api.setEnvironmentSecret(owner, repo, place.environment, place.name, value);
   }
-  await deps.audit.append({
+  await auditSecret(deps, "set", `${owner}/${repo}`, place, phase);
+}
+
+/**
+ * Deletes GitHub's secret at `place` (a missing one counts as deleted); audited by name (with the
+ * phase it belongs to, when one).
+ */
+export async function deleteSecretAt(
+  deps: Pick<PhaseDeps, "audit">,
+  github: {
+    api: Pick<GitHubClient, "deleteActionsSecret" | "deleteEnvironmentSecret">;
+    owner: string;
+    repo: string;
+  },
+  place: SecretPlace,
+  phase?: PhaseName,
+): Promise<void> {
+  const { api, owner, repo } = github;
+  if (place.environment === undefined) {
+    await api.deleteActionsSecret(owner, repo, place.name);
+  } else {
+    await api.deleteEnvironmentSecret(owner, repo, place.environment, place.name);
+  }
+  await auditSecret(deps, "delete", `${owner}/${repo}`, place, phase);
+}
+
+/** The audit entry of a secret set or deleted at `place` in the repository `target`, by name. */
+function auditSecret(
+  deps: Pick<PhaseDeps, "audit">,
+  action: "set" | "delete",
+  target: string,
+  place: SecretPlace,
+  phase: PhaseName | undefined,
+): Promise<unknown> {
+  return deps.audit.append({
     kind: "secret-set",
     actor: "opscrew",
-    action: `set secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
+    action: `${action} secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
     ...(phase === undefined ? {} : { phase }),
-    target: `${owner}/${repo}`,
+    target,
     decision: "approved",
   });
 }
 
 /** A secret's name with where it lives, when that is a GitHub environment. */
-function placeText(place: SecretPlace): string {
+export function placeText(place: SecretPlace): string {
   return place.environment === undefined
     ? place.name
     : `${place.name} (in the GitHub environment ${place.environment})`;
@@ -1227,15 +1261,6 @@ export async function setDeploySecrets(
       { hint: "Run `opscrew provision` again when you are ready; it continues from here." },
     );
   }
-  const audit = (action: string, place: SecretPlace) =>
-    deps.audit.append({
-      kind: "secret-set",
-      actor: "opscrew",
-      action: `${action} secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
-      phase,
-      target: repo,
-      decision: "approved",
-    });
   const repositoryKey =
     inRepository.length > 0 ? await api.getActionsPublicKey(owner, github.repo) : undefined;
   const environmentKey =
@@ -1255,15 +1280,10 @@ export async function setDeploySecrets(
         environmentKey,
       );
     }
-    await audit("set", place);
+    await auditSecret(deps, "set", repo, place, phase);
   }
   for (const place of [...stale, ...moved]) {
-    if (place.environment === undefined) {
-      await api.deleteActionsSecret(owner, github.repo, place.name);
-    } else {
-      await api.deleteEnvironmentSecret(owner, github.repo, place.environment, place.name);
-    }
-    await audit("delete", place);
+    await deleteSecretAt(deps, { api, owner, repo: github.repo }, place, phase);
   }
   await writeFileAtomic(
     deps.paths.files.deploySecrets,

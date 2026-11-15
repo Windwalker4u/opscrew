@@ -1,6 +1,6 @@
 /** The summary of a move to another Cloudflare account, shown before its first change (plan 4.2). */
 import { listText, OpsCrewError, plural } from "@opscrew/core";
-import { opscrewRecordNames, tunnelMode } from "@opscrew/iac-templates";
+import { deploysInPlace, opscrewRecordNames, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { bucketMinutes, syncMinutes } from "../retarget/bucket";
@@ -15,8 +15,8 @@ function piecesInB(plan: DeployPlan, zone: string): string[] {
   const parts = accountPieces(plan);
   // A deploy through Cloudflare Access from GitHub's machines or a runner machine (a runner on the
   // server or this computer deploys in place), Portainer's webhook, or a site's Worker.
-  const inPlace = plan.environment?.runner === "server" || plan.environment?.runner === "local";
-  const secrets = (parts.serviceTokens && !(tunnelMode(plan) && inPlace)) || parts.worker;
+  const secrets =
+    (parts.serviceTokens && !(tunnelMode(plan) && deploysInPlace(plan))) || parts.worker;
   const pieces: string[] = [];
   if (plan.target.provider === "cloudflare-workers") {
     pieces.push(

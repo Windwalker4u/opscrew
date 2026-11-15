@@ -276,6 +276,27 @@ describe.skipIf(!findExecutable("git"))("the deploy's credentials for the new ac
     expect(await leaked(m)).toBe(false);
   });
 
+  it("asks nothing at an abort for _NEW secrets GitHub doesn't have, and deletes only those it has", async () => {
+    const m = await moving("own");
+    // A script's abort: nothing to delete, so no stop either.
+    expect(await dropNewCredentials(m.session, m.env)).toBeUndefined();
+    expect(m.handler.requests).toEqual([]);
+    expect((await readAppProgress(m.h.deps.paths)).pending).toBeUndefined();
+
+    m.h.deps.interactive = true;
+    m.secrets().set("OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW", TOKEN_SECRET);
+    expect(await dropNewCredentials(m.session, m.env)).toBeUndefined();
+    expect(m.secrets().size).toBe(0);
+    expect(m.handler.requests.map((r) => r.kind)).toEqual(["github-secrets"]);
+    const details = m.handler.requests[0]?.details ?? "";
+    expect(details).toContain("OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW");
+    expect(details).not.toContain("OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW");
+    expect(
+      m.h.deps.audit.entries.filter((entry) => entry.action.startsWith("delete secret")),
+    ).toMatchObject([{ action: "delete secret OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW" }]);
+    expect(await leaked(m)).toBe(false);
+  });
+
   it("stops a script's abort with the deletion's hash", async () => {
     const m = await moving("portainer", { staging: true });
     const drop = () => dropNewCredentials(m.session, m.env);

@@ -5,7 +5,7 @@
  * approval bound to a hash over the secrets' names and their values' digests; the values are
  * sealed on this computer and never shown, logged or written to a file.
  */
-import { join, posix } from "node:path";
+import { join } from "node:path";
 import {
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
@@ -14,6 +14,7 @@ import { canonicalJson, OpsCrewError, plural, sha256Hex, writeFileAtomic } from 
 import {
   CLOUDFLARE_DEPLOY_SECRETS,
   CLOUDFLARE_DEPLOY_SECRETS_NEW,
+  deploysInPlace,
   PORTAINER_DEPLOY_SECRETS,
   PORTAINER_DEPLOY_SECRETS_NEW,
   TUNNEL_DEPLOY_SECRETS,
@@ -22,12 +23,17 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { providerProfile } from "../providers";
-import { deploySecretPlace, type SecretPlace, setSecretAt } from "../provision/secrets";
+import {
+  deleteSecretAt,
+  deploySecretPlace,
+  placeText,
+  type SecretPlace,
+  setSecretAt,
+} from "../provision/secrets";
+import { runDeployWorkflow } from "../retarget/site-steps";
 import { appliesNow } from "../retarget/steps";
 import { requireWorkersTokens } from "../serverless/cloudflare/checks";
 import { readValidJson, requestApproval, stringOutput } from "../shared";
-import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { shadowOutputs, shadowRoots } from "./shadow";
 import { pendingStop } from "./shared";
@@ -38,10 +44,6 @@ const PHASE = "cloudflare-move";
 
 /** B's Workers deploy token, which GitHub gets as the site's `_NEW` deploy token. */
 export const NEW_DEPLOY_TOKEN_VAR = "OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN";
-const DEPLOY_TOKEN_VAR = providerProfile("cloudflare-workers").deployTokenVar;
-
-/** How long the site's deploy run is awaited. */
-const WORKFLOW_WAIT_MS = 30 * 60_000;
 
 /** The outputs of a root that hold its Access deploy service token. */
 const TOKEN_ID_OUTPUT = "deploy_service_token_client_id";
@@ -80,24 +82,16 @@ function movedSecrets(plan: DeployPlan): MovedSecrets | undefined {
     return { kind: "access", pairs: pairs(PORTAINER_DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS_NEW) };
   }
   // A runner on the server or this computer deploys in place, not through Access.
-  const inPlace = plan.environment?.runner === "server" || plan.environment?.runner === "local";
-  if (tunnelMode(plan) && !inPlace) {
+  if (tunnelMode(plan) && !deploysInPlace(plan)) {
     return { kind: "access", pairs: pairs(TUNNEL_DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS_NEW) };
   }
   return undefined;
 }
 
-/** Variable names in a message of `requireWorkersTokens`, as they are called for B. */
-const B_NAMES: Record<string, string> = {
-  [DEPLOY_TOKEN_VAR]: NEW_DEPLOY_TOKEN_VAR,
-  CLOUDFLARE_API_TOKEN: B_TOKEN_VAR,
-};
-const NAMES = new RegExp(`\\b(?:${Object.keys(B_NAMES).join("|")})\\b`, "g");
-
 /**
  * B's Workers deploy token ({@link NEW_DEPLOY_TOKEN_VAR}), checked as provision checks A's
- * (`requireWorkersTokens` with B's client and token): it is not A's token, which can edit DNS;
- * B's token and the deploy token hold Workers Scripts Edit for B, and the deploy token is not
+ * (`requireWorkersTokens` with B's client and B's variables): it is not A's token, which can edit
+ * DNS; B's token and the deploy token hold Workers Scripts Edit for B, and the deploy token is not
  * B's own. Registered with the redactor.
  * @throws OpsCrewError naming B's variables and B's account, before any change.
  */
@@ -114,33 +108,15 @@ async function bDeployToken(session: MoveSession): Promise<string> {
       },
     );
   }
-  const env = {
-    ...deps.env,
-    [DEPLOY_TOKEN_VAR]: deps.env[NEW_DEPLOY_TOKEN_VAR],
-    CLOUDFLARE_API_TOKEN: deps.env[B_TOKEN_VAR],
-  };
-  // The checks call the account "the account that holds" the zone, which is A's while it is active.
-  const holds = `the account that holds ${zone}`;
-  const rename = (text: string) =>
-    text.replace(NAMES, (name) => B_NAMES[name] ?? name).replaceAll(holds, bWords(session));
-  try {
-    const token = await requireWorkersTokens(
-      { ...deps, env },
-      {
-        client: b.client,
-        cloudflare: { accountId: b.accountId, zoneName: zone },
-        deployToken: true,
-        command: session.command,
-      },
-    );
-    return token as string;
-  } catch (error) {
-    if (!(error instanceof OpsCrewError)) throw error;
-    throw new OpsCrewError(error.code, rename(error.message), {
-      ...(error.hint === undefined ? {} : { hint: rename(error.hint) }),
-      cause: error,
-    });
-  }
+  const token = await requireWorkersTokens(deps, {
+    client: b.client,
+    cloudflare: { accountId: b.accountId, zoneName: zone },
+    deployToken: true,
+    command: session.command,
+    // B by name: "the account that holds" the zone is A while it is active.
+    names: { apiToken: B_TOKEN_VAR, deployToken: NEW_DEPLOY_TOKEN_VAR, account: bWords(session) },
+  });
+  return token as string;
 }
 
 /**
@@ -215,19 +191,12 @@ interface SecretsChange {
   after?: () => Promise<void>;
 }
 
-/** A secret's name with where it lives, when that is a GitHub environment. */
-function placeText(place: SecretPlace): string {
-  return place.environment === undefined
-    ? place.name
-    : `${place.name} (in the GitHub environment ${place.environment})`;
-}
-
 /**
- * Applies `change`: skipped when the environment's last applied change has its hash; else shown,
- * and approved by its hash (`github-secrets`) when this run applies it (interactive, or
- * `--approve <hash>`), otherwise recorded as waiting with a stop naming the command. Then each
- * secret is stored (sealed locally, audited by name) and each deleted, `after` runs, and the hash
- * is kept.
+ * Applies `change`: skipped when it changes nothing or the environment's last applied change has
+ * its hash; else shown, and approved by its hash (`github-secrets`) when this run applies it
+ * (interactive, or `--approve <hash>`), otherwise recorded as waiting with a stop naming the
+ * command. Then each secret is stored (sealed locally) and each deleted, both audited by name,
+ * `after` runs, and the hash is kept.
  * @throws PlanRefusedError when it is not approved: no secret changed.
  */
 async function applySecretsChange(
@@ -249,7 +218,8 @@ async function applySecretsChange(
     }),
   );
   const file = appliedFile(environment);
-  if ((await readValidJson(file, AppliedSchema))?.sha256 === hash) {
+  const none = change.set.length === 0 && change.delete.length === 0;
+  if (none || (await readValidJson(file, AppliedSchema))?.sha256 === hash) {
     deps.reporter.info(change.done);
     await clearPending(deps, change.key);
     return undefined;
@@ -279,31 +249,9 @@ async function applySecretsChange(
       again: session.command,
     },
   });
-  const api = session.githubApi;
-  for (const place of change.set) {
-    await setSecretAt(
-      deps,
-      { api, owner: github.owner, repo: github.repo },
-      where(place),
-      place.value,
-      PHASE,
-    );
-  }
-  for (const place of change.delete) {
-    if (place.environment === undefined) {
-      await api.deleteActionsSecret(github.owner, github.repo, place.name);
-    } else {
-      await api.deleteEnvironmentSecret(github.owner, github.repo, place.environment, place.name);
-    }
-    await deps.audit.append({
-      kind: "secret-set",
-      actor: "opscrew",
-      action: `delete secret ${placeText(place)}`,
-      phase: PHASE,
-      target: repository,
-      decision: "approved",
-    });
-  }
+  const at = { api: session.githubApi, owner: github.owner, repo: github.repo };
+  for (const place of change.set) await setSecretAt(deps, at, where(place), place.value, PHASE);
+  for (const place of change.delete) await deleteSecretAt(deps, at, place, PHASE);
   await change.after?.();
   await writeFileAtomic(file, `${JSON.stringify({ sha256: hash })}\n`);
   await clearPending(deps, change.key);
@@ -318,66 +266,15 @@ async function applySecretsChange(
  * @throws OpsCrewError when it could not run or did not succeed; A's Worker still serves the site.
  */
 async function deployToBoth(session: MoveSession, environment: MoveEnvironment): Promise<void> {
-  const { deps, githubApi, github, command } = session;
-  const { plan } = environment;
-  const { owner, repo } = github;
-  const workflowFile = posix.basename(plan.cicd.workflowPath);
-  const ref = plan.cicd.branch;
-  const still = "The site is still served from the current Cloudflare account.";
-  deps.reporter.step(
-    `Running the deploy workflow (${workflowFile} on ${ref}) so the Worker in the new account runs the site's current code`,
-  );
-  let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
-  try {
-    const { runId } = await githubApi.dispatchWorkflow(owner, repo, workflowFile, ref, {}, () =>
-      deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action: "dispatch workflow",
-        phase: PHASE,
-        target: `${owner}/${repo}`,
-        detail: `${workflowFile} on ${ref}`,
-      }),
-    );
-    run = await githubApi.waitForWorkflowRun(owner, repo, {
-      workflowFile,
-      ref,
-      runId,
-      timeoutMs: WORKFLOW_WAIT_MS,
-      onWaiting: (url) =>
-        deps.reporter.info(
-          `${environment.environment}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run until it ends.`,
-        ),
-    });
-  } catch (error) {
-    throw new OpsCrewError(
-      codeOf(error),
-      deps.redactor.redact(`Running the deploy workflow failed: ${reasonOf(error)}. ${still}`),
-      {
-        hint: `${hintOf(error)}Check the workflow in your repository's Actions tab, then run \`${command}\` again.`,
-      },
-    );
-  }
-  const ok = run.conclusion === "success";
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "deploy workflow",
-    phase: PHASE,
-    target: run.htmlUrl,
-    decision: ok ? "approved" : "refused",
-    detail: `workflow run ${run.id} finished: ${run.conclusion ?? "no result"}`,
+  const { command } = session;
+  const github = { ...session.github, api: session.githubApi };
+  await runDeployWorkflow(session.deps, github, environment.plan, PHASE, {
+    purpose: "so the Worker in the new account runs the site's current code",
+    unchanged: "The site is still served from the current Cloudflare account.",
+    failedHint: `Check the workflow in your repository's Actions tab, then run \`${command}\` again.`,
+    unsuccessfulHint: `Open the run to see what failed and push a fix, then run \`${command}\` again.`,
+    environment: environment.environment,
   });
-  if (!ok) {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}. ${still}`,
-      {
-        hint: `Open the run to see what failed and push a fix, then run \`${command}\` again.`,
-      },
-    );
-  }
-  deps.reporter.success(`The deploy workflow succeeded (${run.htmlUrl}).`);
 }
 
 /** The account the move goes to, in words. */
@@ -460,10 +357,20 @@ export async function promoteNewCredentials(
 }
 
 /**
+ * Whether GitHub has the secret at `place` (read-only, never its value). One in a GitHub
+ * environment counts as there: GitHub's client reads no environment secret's existence.
+ */
+async function onGitHub(session: MoveSession, place: SecretPlace): Promise<boolean> {
+  if (place.environment !== undefined) return true;
+  const { owner, repo } = session.github;
+  return session.githubApi.actionsSecretExists(owner, repo, place.name);
+}
+
+/**
  * The abort's deploy secrets of `environment` (plan 8.): one `github-secrets` approval deleting
- * every `_NEW` secret of its deploy, so it works with A's credentials only, as before the move.
- * Skipped when that was done already; nothing for an environment whose deploy needs nothing of
- * B's.
+ * each `_NEW` secret of its deploy that GitHub has, so it works with A's credentials only, as
+ * before the move. Skipped when that was done already or GitHub has none of them; nothing for an
+ * environment whose deploy needs nothing of B's.
  */
 export async function dropNewCredentials(
   session: MoveSession,
@@ -473,7 +380,11 @@ export async function dropNewCredentials(
   const moved = movedSecrets(plan);
   if (moved === undefined) return undefined;
   const name = environment.environment;
-  const remove = moved.pairs.map(({ next }) => deploySecretPlace(plan, next));
+  const remove: SecretPlace[] = [];
+  for (const { next } of moved.pairs) {
+    const place = deploySecretPlace(plan, next);
+    if (await onGitHub(session, place)) remove.push(place);
+  }
   return applySecretsChange(session, environment, {
     key: { action: "abort-secrets", environment: name },
     set: [],

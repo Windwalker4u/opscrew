@@ -43,12 +43,14 @@ import { sitePlan } from "../testing/serverless";
 import { runProvision } from "./run";
 import {
   buildAppEnvironment,
+  deleteSecretAt,
   deploySecretNames,
   deploySecretPlace,
   deploySecrets,
   keepMonitoringValues,
   monitoringPassword,
   monitoringValues,
+  placeText,
   secretsEnvironment,
   serviceEnvSecrets,
   setDeploySecrets,
@@ -1067,7 +1069,7 @@ describe("deploySecretNames on a hosting account", () => {
   });
 });
 
-describe("a deploy secret's place in GitHub (deploySecretPlace, setSecretAt)", () => {
+describe("a deploy secret's place in GitHub (deploySecretPlace, setSecretAt, deleteSecretAt)", () => {
   it("sets a repository secret, or one in the environment's GitHub environment, audited by name with the phase when given", async () => {
     const deps = await createTestPhaseDeps();
     const github = new FakeGitHub();
@@ -1112,6 +1114,39 @@ describe("a deploy secret's place in GitHub (deploySecretPlace, setSecretAt)", (
     expect(audited[0]).not.toHaveProperty("phase");
     expect(JSON.stringify(deps.audit.entries)).not.toContain(one);
     expect(JSON.stringify(deps.audit.entries)).not.toContain(two);
+  });
+
+  it("deletes a repository secret, or one in a GitHub environment, audited by name with the phase when given", async () => {
+    const deps = await createTestPhaseDeps();
+    const github = new FakeGitHub();
+    const setup = { api: github, owner: "acme", repo: "shop" };
+    github.secrets.set("OPSCREW_ONE", fakeSecret("generic-password", "one"));
+    github.environments.set("staging", new Map([["OPSCREW_TWO", fakeSecret("generic-password")]]));
+
+    await deleteSecretAt(deps, setup, { name: "OPSCREW_ONE" });
+    await deleteSecretAt(deps, setup, { name: "OPSCREW_TWO", environment: "staging" }, "provision");
+    expect(github.secrets.size).toBe(0);
+    expect(github.environments.get("staging")?.size).toBe(0);
+
+    const audited = deps.audit.entries.filter((e) => e.kind === "secret-set");
+    expect(audited).toMatchObject([
+      { actor: "opscrew", action: "delete secret OPSCREW_ONE", target: "acme/shop" },
+      {
+        actor: "opscrew",
+        action: "delete secret OPSCREW_TWO in the environment staging",
+        phase: "provision",
+        target: "acme/shop",
+        decision: "approved",
+      },
+    ]);
+    expect(audited[0]).not.toHaveProperty("phase");
+  });
+
+  it("names a secret with its GitHub environment (placeText)", () => {
+    expect(placeText({ name: "OPSCREW_ONE" })).toBe("OPSCREW_ONE");
+    expect(placeText({ name: "OPSCREW_TWO", environment: "staging" })).toBe(
+      "OPSCREW_TWO (in the GitHub environment staging)",
+    );
   });
 });
 

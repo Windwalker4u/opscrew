@@ -45,34 +45,48 @@ export async function requireWorkersTokens(
     cloudflare: Pick<CloudflareSetup, "accountId" | "zoneName">;
     deployToken: boolean;
     command: string;
+    /**
+     * The tokens' variables and the account in words, for another account's tokens (a move's new
+     * account). By default `CLOUDFLARE_API_TOKEN`, the deploy token's variable and "the account
+     * that holds" the zone.
+     */
+    names?: { apiToken: string; deployToken: string; account: string };
   },
 ): Promise<string | undefined> {
   const { accountId, zoneName } = input.cloudflare;
   const again = `then run \`${input.command}\` again`;
-  const account = `the account that holds ${zoneName}`;
+  const {
+    apiToken: apiVar,
+    deployToken: deployVar,
+    account,
+  } = input.names ?? {
+    apiToken: "CLOUDFLARE_API_TOKEN",
+    deployToken: DEPLOY_TOKEN_VAR,
+    account: `the account that holds ${zoneName}`,
+  };
   const main = await input.client.workersPermissions(accountId);
   if (main.missing.length > 0) {
     throw new OpsCrewError(
       "CREDENTIALS_INVALID",
-      `CLOUDFLARE_API_TOKEN lacks ${listText(main.missing)} for ${account}, and OpsCrew creates the app's Worker and its custom domains with it. Nothing was changed.`,
+      `${apiVar} lacks ${listText(main.missing)} for ${account}, and OpsCrew creates the app's Worker and its custom domains with it. Nothing was changed.`,
       { hint: `Add it to the token at ${CLOUDFLARE_TOKEN_PAGE}, ${again}.` },
     );
   }
   if (!input.deployToken) return undefined;
-  const create = `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with only ${WORKERS_PERMISSION} for ${account}, set ${DEPLOY_TOKEN_VAR} to it, ${again}. OpsCrew stores it as a GitHub secret for the deploy workflow.`;
-  const token = deps.env[DEPLOY_TOKEN_VAR]?.trim();
+  const create = `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with only ${WORKERS_PERMISSION} for ${account}, set ${deployVar} to it, ${again}. OpsCrew stores it as a GitHub secret for the deploy workflow.`;
+  const token = deps.env[deployVar]?.trim();
   if (!token) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
-      `${DEPLOY_TOKEN_VAR} is not set: the deploy workflow uploads each version of the Worker with a token of its own, which holds only ${WORKERS_PERMISSION}. Nothing was changed.`,
+      `${deployVar} is not set: the deploy workflow uploads each version of the Worker with a token of its own, which holds only ${WORKERS_PERMISSION}. Nothing was changed.`,
       { hint: create },
     );
   }
-  deps.redactor.addLiteral(token, DEPLOY_TOKEN_VAR);
-  if (token === deps.env.CLOUDFLARE_API_TOKEN?.trim()) {
+  deps.redactor.addLiteral(token, deployVar);
+  if (token === deps.env[apiVar]?.trim()) {
     throw new OpsCrewError(
       "CREDENTIALS_INVALID",
-      `${DEPLOY_TOKEN_VAR} is the same token as CLOUDFLARE_API_TOKEN, which can edit your DNS, so OpsCrew does not store it in GitHub. Nothing was changed.`,
+      `${deployVar} is the same token as ${apiVar}, which can edit your DNS, so OpsCrew does not store it in GitHub. Nothing was changed.`,
       { hint: create },
     );
   }
@@ -88,14 +102,14 @@ export async function requireWorkersTokens(
   } catch (error) {
     throw new OpsCrewError(
       "CREDENTIALS_INVALID",
-      deps.redactor.redact(`${DEPLOY_TOKEN_VAR} does not work: ${errorText(error)}`),
+      deps.redactor.redact(`${deployVar} does not work: ${errorText(error)}`),
       { hint: create, cause: error },
     );
   }
   if (missing.length > 0) {
     throw new OpsCrewError(
       "CREDENTIALS_INVALID",
-      `${DEPLOY_TOKEN_VAR} lacks ${listText(missing)} for ${account}, and the deploy workflow uploads each version of the Worker with it. Nothing was changed.`,
+      `${deployVar} lacks ${listText(missing)} for ${account}, and the deploy workflow uploads each version of the Worker with it. Nothing was changed.`,
       { hint: create },
     );
   }
