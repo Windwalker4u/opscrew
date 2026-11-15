@@ -698,7 +698,7 @@ OPEN list carries those.
 
 - **Decision**: a home server deploys with `environment.runner: server`, design's default, or
   `host`, a runner machine on the LAN that reaches the server's LAN address over SSH. `github` is
-  refused at home in 029: US6 (Cloudflare Access SSH) is cut, pending the founder's answer.
+  refused at home in 029: US6 (Cloudflare Access SSH) is cut (founder, 2026-11-15).
   - **`ownDeployTarget`** (`provision/own.ts`) gets a home branch. `server` gives no deploy target,
     since `deploysInPlace` writes no address. `host` gives the server's LAN address
     (`connection.host`) with its pinned key. GitHub never holds a home address.
@@ -829,7 +829,7 @@ OPEN list carries those.
 
 ### R14 Constitution I and the updater's unattended writes (O1)
 
-- **Decision**: a MINOR amendment, 1.12.0, planned while the founder's answer is pending. It adds
+- **Decision**: a MINOR amendment, 1.12.0, agreed by the founder on 2026-11-15. It adds
   to Principle I's standing-approval clause, in substance:
 
   > A program OpsCrew installs on a server through a host plan approved by its hash MAY repeat one

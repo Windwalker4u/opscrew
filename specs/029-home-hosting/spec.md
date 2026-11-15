@@ -141,11 +141,10 @@ risk and the fix; with an SSD the warning is gone.
 
 ---
 
-### User Story 6 - Deploys through Cloudflare Access SSH instead of the runner (Priority: P3; deferred)
+### User Story 6 - Deploys through Cloudflare Access SSH instead of the runner (Priority: P3; cut from 029)
 
-**Deferred:** the lead recommends leaving this story out of 029 (the plan's review found it reaches
-about ten files; the server's runner covers deploys); the founder's answer is pending, and the plan
-keeps what it would need.
+**Cut from 029 (founder, 2026-11-15):** the plan's review found it reaches about ten files and the
+server's runner covers deploys; the plan keeps what it would need, for a later feature if users ask.
 
 A user who prefers GitHub's hosted runners chooses deploys over SSH through Cloudflare Access: SSH
 travels through a tunnel used only for SSH, while the site itself is served directly at the home's
@@ -228,7 +227,7 @@ address.
   from outside and SSH only from the home network.
 - **FR-2910**: Deploys to a home server MUST go through the server's own runner by default (no
   inbound connection); deploys through Cloudflare Access SSH over a tunnel used only for SSH are
-  deferred with User Story 6. GitHub MUST never hold the home address.
+  cut from 029 with User Story 6. GitHub MUST never hold the home address.
 - **FR-2911**: With no public IPv4 address, OpsCrew MUST offer tunnel mode, and IPv6 behind the
   proxy when the home has a global IPv6 address; DNS-only IPv6-only serving MUST be refused unless the
   user accepts that visitors without IPv6 can't reach the site.

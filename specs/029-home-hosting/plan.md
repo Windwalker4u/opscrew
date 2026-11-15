@@ -3,7 +3,7 @@
 **Branch**: `main` | **Date**: 2026-11-15 | **Spec**: [spec.md](spec.md) | **Research**: [research.md](research.md)
 
 **Status**: DRAFT, revised after the lead's review (2026-11-15). The decisions are R1 to R14 in
-research.md. US6 (deploys through Cloudflare Access SSH) is cut, pending the founder's answer;
+research.md. US6 (deploys through Cloudflare Access SSH) is cut (founder, 2026-11-15);
 "If the founder keeps US6" says what it would need. The constitution amendment (R14) waits for the
 founder too.
 
@@ -633,7 +633,7 @@ plan and the tokens cost nothing, plus a few Actions minutes.
 Task ids are proposed for the lead's tasks.md. Each task is one implementer's. A wave's tasks
 share no file. Dependencies point only to earlier waves.
 
-1. **T2901 (lead):** ADR 0033; constitution 1.12.0 (R14, pending the founder); the empty
+1. **T2901 (lead):** ADR 0033; constitution 1.12.0 (R14, agreed by the founder); the empty
    `agents/src/home/` folder.
 2. **Wave 1:**
    - **T2902** plan-schema: `target.home`, `checkHome` (`home.ts`), the JSON schema.
@@ -700,7 +700,7 @@ share no file. Dependencies point only to earlier waves.
 - **FR-2903:** the lead's new text says OpsCrew "stops" on a carrier-NAT hop. Simplification 4 makes
   the hop a warning (the outside check decides), and the plan follows it. Design stops only when the
   server has no IPv4 route and no IPv6, or can't see its address. Please align one of them.
-- **FR-2910 and US6:** the Access-SSH option is cut, pending the founder.
+- **FR-2910 and US6:** the Access-SSH option is cut (founder, 2026-11-15).
 - **FR-2912:** a proxied app's seen and written addresses are shown as "hidden", with their times.
 - **Retarget (an edge case):** both directions are refused in 029.
 - **FR-2910 with `runner: host`:** the deploy secret holds the server's LAN address, a private one,
@@ -716,7 +716,7 @@ ssh-host task, an iac-templates task and an agents task, plus a live leg.
 
 ## OPEN
 
-- **O1:** constitution 1.12.0 (R14). The founder's answer is pending; the plan assumes it.
+- **O1:** constitution 1.12.0 (R14), agreed by the founder on 2026-11-15.
 - **O2:** design never prints a proxied app's address (the spec is aligned).
 - **O3:** the IPv6 filter. Recommendation: keep it (FR-2911); H6 proves it.
 - **O4:** retarget to and from home, refused. A later feature can add both.
