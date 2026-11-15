@@ -259,7 +259,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2810 [P] [US1] [US2] The move's types, its session, the checks and the summary
+- [x] T2810 [P] [US1] [US2] The move's types, its session, the checks and the summary
   - Owns: `packages/agents/src/cloudflare-move/{types,session,checks,summary,texts}*.ts`, the type export line in `packages/agents/src/cloudflare-move/index.ts`
   - Lead note (after T2812): the checks refuse a recorded `plan.retarget` plainly before the move's record is written (today only the plan-schema rule stops it); the guard is `requireNoCloudflareMove` in `provision/guard.ts`, the record's steps in `cloudflare-move/record.ts`, the local files in `cloudflare-move/progress.ts`.
   - Reads: plan 4.1, 4.2, 11.; spec FR-2802 and the edge cases; `retarget/{session,start}.ts`, `domain/common.ts` (`resolveAccount`), `environments/{list,paths}.ts`, `serverless/cloudflare/checks.ts`
@@ -410,7 +410,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move/connector src/provision && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2816 [P] [US3] R2: first copies, the finish's window, emptying buckets
+- [x] T2816 [P] [US3] R2: first copies, the finish's window, emptying buckets
   - Owns: `packages/agents/src/cloudflare-move/buckets*.ts`, `packages/agents/src/shared/rclone*.ts`, the rclone part of `packages/agents/src/retarget/bucket.ts` (+ tests)
   - Reads: plan 4.4.5, 7.1, 7.2, 7.3, 7.7, 8.; data-model 2, 7; `retarget/{bucket,window,server-ops}.ts`, `retarget/sides/postgres.ts` (the archive API's one-file write), `shared/deploy-pause.ts`, `provision/storage.ts`, `shared/app-env.ts` (`r2Endpoint`)
   - Depends: T2802, T2810, T2811, T2812
@@ -463,7 +463,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move/zone src/cloudflare-move/marks && pnpm lint`
   - Effort: high
 
-- [ ] T2818 [P] [US1] [US4] The deploy's `_NEW` credentials
+- [x] T2818 [P] [US1] [US4] The deploy's `_NEW` credentials
   - Owns: `packages/agents/src/cloudflare-move/deploy-secrets*.ts`
   - Reads: plan 4.4.4, 7.1, 7.5, 8., 10.; data-model 6; `rotate/infra.ts` (`accessSecrets`, `setSecretAt`), `serverless/cloudflare/{checks,provision}.ts` (`requireWorkersTokens`), `provision/origin-tls.ts` (`deployRenewedCertificate`), `retarget/types.ts` (`waitForWorkflowRun`)
   - Depends: T2808, T2810, T2812
@@ -520,7 +520,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
+- [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
   - Owns: `packages/agents/src/cloudflare-move/{switch,gap}*.ts`
   - Lead note (after the spike, plan 13b): right after activation, for every prepared app's mark: make its Access applications with B's token exactly as the `cloudflare-access` module would (names and settings from the module, policies found in B by name), then the protected hostnames' proxied CNAMEs to the app's tunnel in B (found by name), before attaching the Workers custom domains; the approval names them.
   - Lead note (after T2817's review): `coverage(session)` returns `{ uncovered, marks, unread }`; the switch refuses on a non-empty `unread` as on a non-empty `uncovered` (an empty `uncovered` alone does not mean every app is prepared).
@@ -607,6 +607,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2823 [US1] [US3] Finish, part 2: the steps in order
   - Owns: `packages/agents/src/cloudflare-move/finish*.ts` except T2822's files
+  - Lead note (after T2816's fixes): the app keeps one window record, so the finish handles one environment at a time and never calls `bucketWindow` for an environment that is `adopted`; `pointAtB.secrets()` and `deploy()` must be idempotent (a rerun after an ended window runs them again); once the window is pointing at B it only goes forward.
+  - Lead note (after T2816): `bucketWindow(session, environment, { allowDowntime?, backToA, pointAtB: { secrets(), deploy() } })` measures the buckets itself; B's secrets are written while deploys are paused; the window's record `{ stoppedAt, pointingAt?, endedAt? }` makes a rerun go forward (after `pointingAt`) or skip the window (after `endedAt`), so calling it again is safe; `backToA` is idempotent and redeploys when a failed deploy may already have written B's values; `emptyBuckets` removes only the files, the bucket itself goes with its root's destroy plan (T2822).
   - Lead note (after T2818): `promoteNewCredentials` is its own approval (a second one beside the finish's other secrets; accepted) and reads B's Access values from the shadow state, so it runs before the swap and never once an environment is `adopted`.
   - Lead note (after T2814's fixes): the finish's origin TLS order is: `planBShared` on B's now-active zone (issues B's Origin CA certificate into `originTlsNext`), `promoteNextOriginTls`, the deploy that places it, then `revokeAOrigin` (which revokes only once it reads that the server serves B's certificate, else stops asking to run again after the deploy).
   - Lead note (after the spike, plan 13b): the finish issues B's Origin CA certificate (now that B is active) and places it with the deploy before `revokeAOrigin`.
@@ -630,6 +632,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 - [ ] T2824 [US1] [US2] The CLI, status, MCP and the plugin
   - Owns: `packages/cli/src/commands/cloudflare*.ts`, `packages/cli/src/ui/cloudflare-move*.ts`, the command's registration in `packages/cli/src/commands/index.ts`, the move's line in `packages/cli/src/commands/status.ts`, `packages/cli/test/e2e/cloudflare-move.test.ts`, `packages/mcp-server/src/{server,tools/status}.ts` (+ tests), `plugin/skills/opscrew-deploy/SKILL.md`
+  - Lead note (after T2819): scripted switches need the non-interactive handler to accept `domain-settings` with `--confirm <zone> --approve <hash>` (today it refuses any `confirmPhrase` that isn't a destroy).
+  - Lead note (after T2816): the move's command grants `remote-exec` by `--approve <hash>` (first copies, last backups copy) and by `--confirm <bucket>` plus hash (emptying), as `opscrew rotate` does; `--allow-downtime` answers the window's `MaintenanceWindowApproval` (title "Maintenance window: …").
   - Lead note (after T2813): add `opscrew cloudflare move` to `approveLaterHint`'s CONFIRM_COMMANDS so a refused destroy approval in the move names `--confirm`.
   - Reads: plan 1., 11.; `cli/src/commands/retarget.ts`, `cli/src/ui/retarget.ts`, `cli/src/approval.ts`, `mcp-server/src/tools/status.ts`
   - Depends: T2819, T2820, T2821, T2823
@@ -666,6 +670,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 ## Phase 8: Wave 7
 
 - [ ] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
+  - Lead note (after T2819's review): record Cloudflare's real status, code and text when a Workers custom domain is refused because another Worker holds the hostname, before anything matches on it.
   - Lead note (after T2817): check whether Cloudflare fills `content` for TLSA, HTTPS and similar records created from `data` (the fake leaves it empty); if not, a re-plan would list them as differences.
   - Lead note (after T2814's review): record how Cloudflare answers `listOriginCertificates` for A's zone once it is moved, and once deleted (about 7 days after activation).
   - Lead note (2026-11-14): B's account id is read from `OPSCREW_E2E_MOVE_TOKEN_B` (`GET /accounts`) when the token sees exactly one account; `OPSCREW_E2E_MOVE_ACCOUNT_B` is required only otherwise. The same holds for A's.
@@ -693,6 +698,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2819's fixes: `attachWorkerDomain` throws a typed refusal for "the hostname already has an assigned Worker", typed by the status, code and text the rehearsal records (not 100117, which the fake uses for externally managed DNS records), so the switch stops matching the message text.
+  - From T2819: `pointToZone` writes its own audit entry, so the switch's "set nameservers" appears twice (give it the phase instead); `dsWaitStatus` starts the wait from the API listing alone (callers check the public DNS first; say so in its doc or check it there).
   - From T2818's review: export `placeText` from `provision/secrets.ts` (copied in `deploy-secrets.ts`); a `deleteSecretAt` beside `setSecretAt` for the three delete-and-audit loops; one helper for `deployToBoth` and retarget's `runSiteWorkflow`; data-model 3 lists `cloudflare-move/deploy-secrets.json`.
   - From T2818: `requireWorkersTokens` (`serverless/cloudflare/checks.ts`) takes the token variables' names as parameters, so `deploy-secrets.ts` drops its regex rename; export `deploysInPlace` (also from T2810).
   - From T2819: the switch keeps a DS wait note of its own (`switch-ds.ts`) for Cloudflare Registrar and other registrars beside `domain connect`'s `ConnectState`; one note shape if both can share it.
