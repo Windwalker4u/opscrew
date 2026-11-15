@@ -40,6 +40,7 @@ const OBJECT_STORAGE = new Set([
   "design/storage.ts",
   "provision/storage.ts",
   "retarget/bucket.ts",
+  "shared/rclone.ts",
   "snapshot/offsite.ts",
 ]);
 
