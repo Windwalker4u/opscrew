@@ -1,10 +1,10 @@
-import path from "node:path";
 import {
   applyCommand,
   approveLaterHint,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
   isRemovalLiftRequest,
+  knownRecipients,
   type PhaseDeps,
   type ProvisionOptions,
   type ProvisionResult,
@@ -18,13 +18,12 @@ import {
   removalConfirmPhrase,
   runProvision,
   type SavedPlanKind,
-  SOPS_CONFIG_PATH,
   savedLocalPlanChanges,
   stackFollowsReason,
   stringOutput,
 } from "@opscrew/agents";
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
-import { approvalDecision, exists, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { approvalDecision, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import {
   type DeployPlan,
   isServerlessProvider,
@@ -535,12 +534,12 @@ export async function runInfraCommand(
         publicImage,
         confirmNames:
           command === "provision" && confirmNames.size > 0 ? [...confirmNames] : undefined,
-        // No `opscrew/.sops.yaml` yet: the apply makes the recovery copy's first key.
+        // No key for this app's recovery copy yet: the apply makes its first key.
         keyWanted:
           planOnly &&
           command === "provision" &&
           flags.keyOut === undefined &&
-          !(await exists(path.join(deps.paths.root, SOPS_CONFIG_PATH))),
+          (await knownRecipients(deps.paths)) === undefined,
         // `opscrew dns` has no --confirm: a deleting plan is approved in a terminal or by provision.
         dnsDeletes: confirmNames.size > 0 && command === "dns" ? plan?.app.name : undefined,
       };

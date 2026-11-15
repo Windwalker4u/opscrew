@@ -9,4 +9,10 @@ export {
 } from "./copy";
 export { COPY_PATH, copyPath } from "./files";
 export { type RestoreResult, restoreConflictText, restoreRecoveryCopy } from "./restore";
-export { type KeyHandover, keyHandoverNote, SOPS_CONFIG_PATH, setRecoveryFolder } from "./store";
+export {
+  type KeyHandover,
+  keyHandoverNote,
+  knownRecipients,
+  SOPS_CONFIG_PATH,
+  setRecoveryFolder,
+} from "./store";

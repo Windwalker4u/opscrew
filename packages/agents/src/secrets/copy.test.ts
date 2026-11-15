@@ -6,6 +6,7 @@ import type { RenderedFile } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { appPaths } from "../apps/list";
 import { ScriptedApprovalHandler, testPlan } from "../testing";
 import { FAKE_SOPS, type FakeSops } from "./__fixtures__/fake-sops";
 import {
@@ -25,7 +26,7 @@ import {
   rotateRecoveryKey,
 } from "./copy";
 import { isCopyPath, localPath, readLocalFiles } from "./files";
-import { readRecord, setRecoveryFolder, writeRecord } from "./store";
+import { readRecord, SOPS_CONFIG_PATH, setRecoveryFolder, writeRecord } from "./store";
 
 const PLAN = { app: { name: "shop" } } as const;
 const POSIX = process.platform !== "win32";
@@ -668,19 +669,50 @@ describe("rotateRecoveryKey", () => {
     expect(await readFile(existing, "utf8")).toBe("mine\n");
   });
 
-  it("recovers a damaged .sops.yaml when the backup is dropped or given; keeping it needs the file", async () => {
-    const { deps, keys, root } = await withFirstCopy({ backup: generateAgeIdentity().recipient });
+  it("refuses a .sops.yaml that does not parse before anything changes; a rule naming no age keys is replaced when the backup is dropped or given", async () => {
+    const { deps, keys, root, sops } = await withFirstCopy({
+      backup: generateAgeIdentity().recipient,
+    });
+    const before = {
+      copy: await readFile(join(root, "opscrew/secrets.sops.json"), "utf8"),
+      record: await readFile(join(deps.paths.stateDir, "recovery.json"), "utf8"),
+    };
     await writeFile(join(root, "opscrew/.sops.yaml"), "creation_rules: [broken\n");
+    for (const backup of [undefined, null, generateAgeIdentity().recipient]) {
+      const refused = await failure(
+        rotateRecoveryKey(deps, {
+          keyOut: join(keys, "refused.txt"),
+          ...(backup !== undefined ? { backup } : {}),
+        }),
+      );
+      expect(refused.code).toBe("ARTIFACT_INVALID");
+      expect(refused.message).toContain("opscrew/.sops.yaml does not parse");
+      expect(refused.hint).toContain("git restore opscrew/.sops.yaml");
+      await expect(stat(join(keys, "refused.txt"))).rejects.toThrow();
+    }
+    await writeLocal(deps, { "state/server.json": '{"ipv4":"203.0.113.30"}\n' });
+    expect((await failure(refreshRecoveryCopy(deps, PLAN))).code).toBe("ARTIFACT_INVALID");
+    expect(sops.calls).toHaveLength(1);
+    expect(await readFile(join(root, "opscrew/.sops.yaml"), "utf8")).toBe(
+      "creation_rules: [broken\n",
+    );
+    expect({
+      copy: await readFile(join(root, "opscrew/secrets.sops.json"), "utf8"),
+      record: await readFile(join(deps.paths.stateDir, "recovery.json"), "utf8"),
+    }).toEqual(before);
+
+    // A rule that parses but names no age key: keeping the backup needs it, replacing it does not.
+    const badRule = "creation_rules:\n  - path_regex: 'secrets\\.sops\\.json$'\n    age: none\n";
+    await writeFile(join(root, "opscrew/.sops.yaml"), badRule);
     const kept = await failure(rotateRecoveryKey(deps, { keyOut: join(keys, "kept.txt") }));
     expect(kept.code).toBe("ARTIFACT_INVALID");
     await expect(stat(join(keys, "kept.txt"))).rejects.toThrow();
-
     const dropped = await rotateRecoveryKey(deps, {
       keyOut: join(keys, "dropped.txt"),
       backup: null,
     });
     expect(parse(dropped.files[1]?.content ?? "").creation_rules[0].age.split(",")).toHaveLength(1);
-    await writeFile(join(root, "opscrew/.sops.yaml"), "not: [yaml\n");
+    await writeFile(join(root, "opscrew/.sops.yaml"), badRule);
     await writeRepositoryFiles(root, [dropped.files[0] as RenderedFile]);
     const other = generateAgeIdentity().recipient;
     const given = await rotateRecoveryKey(deps, { keyOut: join(keys, "given.txt"), backup: other });
@@ -699,6 +731,133 @@ describe("rotateRecoveryKey", () => {
       (await failure(rotateRecoveryKey(deps, { keyOut: join(keys, "rotated.txt") }))).code,
     ).toBe("SECRETS_COPY_CHANGED_ELSEWHERE");
     await expect(stat(join(keys, "rotated.txt"))).rejects.toThrow();
+  });
+});
+
+describe("two apps' copies (T2839)", () => {
+  it("each rotation changes only its own app's rule, and a refresh keeps each app's key", async () => {
+    // 0.2.9's repository: both copies sealed to K0 and the backup under the one general rule.
+    const backup = generateAgeIdentity();
+    const {
+      deps: first,
+      keys,
+      sops,
+      root,
+      identity: k0,
+    } = await withFirstCopy({
+      backup: backup.recipient,
+    });
+    const pay = { ...first, paths: appPaths(first.paths, "pay") };
+    await writeLocal(pay, provisionedFiles());
+    const payFirst = changed(
+      await refreshRecoveryCopy(
+        pay,
+        { app: { name: "pay" } },
+        { repositoryPrivate: async () => true },
+      ),
+    );
+    expect(payFirst.recipients).toEqual([ageRecipientOf(k0), backup.recipient]);
+    // Its first refresh brings its own rule, which 0.2.9 did not write.
+    const payRule = payFirst.repositoryFiles.find((file) => file.path === SOPS_CONFIG_PATH);
+    expect(parse(payRule?.content ?? "").creation_rules).toHaveLength(2);
+    await writeRepositoryFiles(
+      root,
+      payFirst.repositoryFiles.filter((file) => file.path !== SOPS_CONFIG_PATH),
+    );
+
+    const rotatedFirst = await rotateRecoveryKey(first, { keyOut: join(keys, "first-2.txt") });
+    await writeRepositoryFiles(root, rotatedFirst.files);
+    const rotatedPay = await rotateRecoveryKey(pay, { keyOut: join(keys, "pay-2.txt") });
+    expect(rotatedPay.files.map((file) => file.path)).toEqual([
+      "opscrew/apps/pay/secrets.sops.json",
+      SOPS_CONFIG_PATH,
+    ]);
+    await writeRepositoryFiles(root, rotatedPay.files);
+
+    const identityIn = async (file: string) =>
+      (await readFile(join(keys, file), "utf8")).split("\n")[2] as string;
+    const [ka, kp] = [await identityIn("first-2.txt"), await identityIn("pay-2.txt")];
+    const config = await readFile(join(root, SOPS_CONFIG_PATH), "utf8");
+    const rules = parse(config).creation_rules as { path_regex: string; age: string }[];
+    expect(rules.map((rule) => rule.age)).toEqual([
+      `${ageRecipientOf(kp)},${backup.recipient}`,
+      `${ageRecipientOf(ka)},${backup.recipient}`,
+    ]);
+    expect(rules[1]?.path_regex).toBe("secrets\\.sops\\.json$");
+
+    const opens = async (path: string, key: string) =>
+      (
+        await sops
+          .runner({ run: async () => ({ exitCode: 1, stdout: "", stderr: "" }) })
+          .run(FAKE_SOPS, ["decrypt"], {
+            input: await readFile(join(root, path), "utf8"),
+            env: { SOPS_AGE_KEY: key },
+          })
+      ).exitCode === 0;
+    const copies = async () => ({
+      first: [
+        await opens("opscrew/secrets.sops.json", ka),
+        await opens("opscrew/secrets.sops.json", kp),
+        await opens("opscrew/secrets.sops.json", backup.identity),
+      ],
+      pay: [
+        await opens("opscrew/apps/pay/secrets.sops.json", kp),
+        await opens("opscrew/apps/pay/secrets.sops.json", ka),
+        await opens("opscrew/apps/pay/secrets.sops.json", backup.identity),
+      ],
+    });
+    expect(await copies()).toEqual({ first: [true, false, true], pay: [true, false, true] });
+
+    // The next refresh of either app's copy keeps that app's own key.
+    await writeLocal(first, { "state/server.json": '{"ipv4":"203.0.113.20"}\n' });
+    const refreshed = changed(await refreshRecoveryCopy(first, PLAN));
+    expect(refreshed.recipients).toEqual([ageRecipientOf(ka), backup.recipient]);
+    expect(refreshed.repositoryFiles.map((file) => file.path)).toEqual([
+      "opscrew/secrets.sops.json",
+    ]);
+    await writeRepositoryFiles(root, refreshed.repositoryFiles);
+    await writeLocal(pay, { "state/server.json": '{"ipv4":"203.0.113.21"}\n' });
+    const payRefreshed = changed(await refreshRecoveryCopy(pay, { app: { name: "pay" } }));
+    expect(payRefreshed.recipients).toEqual([ageRecipientOf(kp), backup.recipient]);
+    await writeRepositoryFiles(root, payRefreshed.repositoryFiles);
+    expect(await copies()).toEqual({ first: [true, false, true], pay: [true, false, true] });
+    expect(await readFile(join(root, SOPS_CONFIG_PATH), "utf8")).toBe(config);
+  });
+  it("one rule: after the first app's rotation, a refresh of a further app's copy keeps the keys it is sealed to", async () => {
+    const backup = generateAgeIdentity();
+    const {
+      deps: first,
+      keys,
+      root,
+      identity: k0,
+    } = await withFirstCopy({ backup: backup.recipient });
+    const pay = { ...first, paths: appPaths(first.paths, "pay") };
+    await writeLocal(pay, provisionedFiles());
+    const payFirst = changed(
+      await refreshRecoveryCopy(
+        pay,
+        { app: { name: "pay" } },
+        { repositoryPrivate: async () => true },
+      ),
+    );
+    // 0.2.9 wrote no rule of pay's own.
+    await writeRepositoryFiles(
+      root,
+      payFirst.repositoryFiles.filter((file) => file.path !== SOPS_CONFIG_PATH),
+    );
+    const sealed = [ageRecipientOf(k0), backup.recipient];
+
+    const rotated = await rotateRecoveryKey(first, { keyOut: join(keys, "first-2.txt") });
+    await writeRepositoryFiles(root, rotated.files);
+    const ka = (await readFile(join(keys, "first-2.txt"), "utf8")).split("\n")[2] as string;
+
+    await writeLocal(pay, { "state/server.json": '{"ipv4":"203.0.113.22"}\n' });
+    const refreshed = changed(await refreshRecoveryCopy(pay, { app: { name: "pay" } }));
+    expect(refreshed.recipients).toEqual(sealed);
+    const config = refreshed.repositoryFiles.find((file) => file.path === SOPS_CONFIG_PATH);
+    expect(
+      (parse(config?.content ?? "").creation_rules as { age: string }[]).map((rule) => rule.age),
+    ).toEqual([sealed.join(","), `${ageRecipientOf(ka)},${backup.recipient}`]);
   });
 });
 

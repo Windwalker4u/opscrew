@@ -32,8 +32,27 @@ function gitattributesLines(paths: Pick<ProjectPaths, "root" | "artefactsDir">):
   return [`${copyPath(paths)} text eol=lf`, `${SOPS_CONFIG_PATH} text eol=lf`];
 }
 
-/** The creation rule's `path_regex`, which matches every environment's copy wherever sops is run. */
+/**
+ * The first app's creation rule's `path_regex`: every copy no earlier rule matches, wherever sops
+ * is run. A repository from before each app had its own rule has only this one.
+ */
 const COPY_RULE = "secrets\\.sops\\.json$";
+
+/**
+ * A further app's creation rule's `path_regex`: its copies (`apps/<key>/secrets.sops.json` and its
+ * environments'), as sops matches them: relative to the folder of `.sops.yaml`, with the system's
+ * separator, or as the full path. It goes before {@link COPY_RULE}: sops takes the first rule that
+ * matches.
+ */
+function appRule(key: string): string {
+  const sep = "[/\\\\]";
+  return `(^|${sep})apps${sep}${key}${sep}(environments${sep}[^/\\\\]+${sep})?secrets\\.sops\\.json$`;
+}
+
+/** The `path_regex` of the rule for the copies of `app` (a further app's key, else the first app). */
+function ruleOf(app: string | undefined): string {
+  return app === undefined ? COPY_RULE : appRule(app);
+}
 
 const HEX64 = z.string().regex(/^[0-9a-f]{64}$/);
 
@@ -146,60 +165,166 @@ export function requireOwnCopy(
   );
 }
 
-const SopsConfigSchema = z.looseObject({
-  creation_rules: z.array(z.looseObject({ path_regex: z.string(), age: z.string() })),
-});
+const SopsRuleSchema = z.looseObject({ path_regex: z.string(), age: z.string() });
+type SopsRule = z.infer<typeof SopsRuleSchema>;
+const SopsConfigSchema = z.looseObject({ creation_rules: z.array(SopsRuleSchema) });
 
 /**
- * The recipients (`age1…`) of the copy's creation rule in `opscrew/.sops.yaml`; `undefined` when
- * the file does not exist. A file without a valid rule for the copy stops plainly.
+ * The creation rules of `opscrew/.sops.yaml`'s text. A file that does not parse stops plainly:
+ * it holds every app's rule, so OpsCrew never writes it again from one app's rule alone.
  */
-export async function readRecipients(
-  paths: Pick<ProjectPaths, "root">,
-): Promise<string[] | undefined> {
-  const text = await readTextIfExists(join(paths.root, SOPS_CONFIG_PATH));
-  if (text === undefined) return undefined;
-  let rule: { age: string } | undefined;
+function sopsRules(text: string): SopsRule[] {
+  let rules: SopsRule[] | undefined;
   try {
-    const config = SopsConfigSchema.safeParse(parse(text));
-    rule = config.data?.creation_rules.find((r) => r.path_regex === COPY_RULE);
+    rules = SopsConfigSchema.safeParse(parse(text)).data?.creation_rules;
   } catch {
-    rule = undefined;
+    rules = undefined;
   }
-  const recipients = rule?.age.split(",").map((r) => r.trim()) ?? [];
-  if (recipients.length === 0 || recipients.length > 2 || !recipients.every(isAgeRecipient)) {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `${SOPS_CONFIG_PATH} has no rule for secrets.sops.json with one or two age keys (age1…), so OpsCrew cannot tell whom to encrypt the recovery copy to.`,
-      {
-        hint: `Put back the ${SOPS_CONFIG_PATH} OpsCrew wrote (git restore ${SOPS_CONFIG_PATH}), or make a new key with \`opscrew rotate recovery-key\`.`,
-      },
-    );
+  if (rules !== undefined) return rules;
+  throw new OpsCrewError(
+    "ARTIFACT_INVALID",
+    `${SOPS_CONFIG_PATH} does not parse as the creation rules OpsCrew writes, and it names the keys of every app's recovery copy, so OpsCrew changed neither it nor a copy.`,
+    {
+      hint: `Put back the one OpsCrew wrote (\`git restore ${SOPS_CONFIG_PATH}\`) or fix its YAML, then run the command again. Or delete it: each app's next update of its copy writes the app's rule again, from the keys that copy is sealed to.`,
+    },
+  );
+}
+
+/** The text of `opscrew/.sops.yaml`, checked to parse ({@link sopsRules}); `undefined` without it. */
+export async function readSopsConfig(paths: Pick<ProjectPaths, "root">) {
+  const text = await readTextIfExists(join(paths.root, SOPS_CONFIG_PATH));
+  if (text !== undefined) sopsRules(text);
+  return text;
+}
+
+export const CopyMetadataSchema = z.looseObject({
+  sops: z.looseObject({
+    lastmodified: z.string().optional(),
+    age: z.array(z.unknown()).optional(),
+  }),
+});
+
+const SealedToSchema = z.object({
+  sops: z.looseObject({ age: z.array(z.looseObject({ recipient: z.string() })) }),
+});
+
+/** The recipients (`age1…`) a sops copy is sealed to, from its metadata (`sops.age[].recipient`). */
+function sealedTo(copy: string): string[] | undefined {
+  try {
+    return SealedToSchema.safeParse(JSON.parse(copy)).data?.sops.age.map((a) => a.recipient);
+  } catch {
+    return undefined;
   }
-  return recipients;
+}
+
+/** The recipients of the app's copies, and whether its own rule in `opscrew/.sops.yaml` names them. */
+export interface CopyRule {
+  recipients: string[];
+  /** False for an app with no rule of its own yet: its rule is still to be written. */
+  own: boolean;
+}
+
+/** `recipients` when they are one or two age keys; otherwise a plain stop naming `where`. */
+function checkedRecipients(
+  recipients: string[] | undefined,
+  where: string,
+  app: string | undefined,
+): string[] {
+  if (
+    recipients !== undefined &&
+    recipients.length > 0 &&
+    recipients.length <= 2 &&
+    recipients.every(isAgeRecipient)
+  ) {
+    return recipients;
+  }
+  const rotate = `opscrew rotate recovery-key${app === undefined ? "" : ` --app ${app}`}`;
+  throw new OpsCrewError(
+    "ARTIFACT_INVALID",
+    `${where} does not name one or two age keys (age1…), so OpsCrew cannot tell whom to encrypt the recovery copy to.`,
+    {
+      hint: `Put back the file OpsCrew wrote (git restore), or make a new key with \`${rotate}\`.`,
+    },
+  );
 }
 
 /**
- * The recipients the recovery copy is encrypted to, the main key's first: `opscrew/.sops.yaml`'s
- * ({@link readRecipients}), else those `.opscrew/recovery.json` kept when this computer wrote the
- * copy (D16); `undefined` while there is no copy.
+ * Whom the app's copies are encrypted to ({@link CopyRule}): its own rule in `opscrew/.sops.yaml`;
+ * else, for an app whose copy is in this checkout (written before each app had its own rule), the
+ * keys that copy is sealed to, read from its sops metadata; else, for a further app with no copy
+ * yet, the first app's rule. `undefined` when none of them exists. A `.sops.yaml` that does not
+ * parse, a rule or a copy without one or two age keys, stops plainly.
+ */
+export async function readCopyRule(
+  paths: Pick<ProjectPaths, "root" | "app" | "artefactsDir">,
+): Promise<CopyRule | undefined> {
+  const text = await readSopsConfig(paths);
+  const rules = text === undefined ? [] : sopsRules(text);
+  const ages = (rule: SopsRule) => rule.age.split(",").map((r) => r.trim());
+  const own = rules.find((rule) => rule.path_regex === ruleOf(paths.app));
+  if (own !== undefined) {
+    const where = `${SOPS_CONFIG_PATH}'s rule for this app's secrets.sops.json`;
+    return { recipients: checkedRecipients(ages(own), where, paths.app), own: true };
+  }
+  const copy = await readRepositoryCopy(paths);
+  if (copy !== undefined) {
+    const path = copyPath(paths);
+    return { recipients: checkedRecipients(sealedTo(copy), path, paths.app), own: false };
+  }
+  const general =
+    paths.app === undefined ? undefined : rules.find((rule) => rule.path_regex === COPY_RULE);
+  if (general === undefined) return undefined;
+  const where = `${SOPS_CONFIG_PATH}'s rule for the first app's secrets.sops.json`;
+  return { recipients: checkedRecipients(ages(general), where, paths.app), own: false };
+}
+
+/** The recipients (`age1…`) of the app's copies ({@link readCopyRule}); `undefined` without them. */
+export async function readRecipients(
+  paths: Pick<ProjectPaths, "root" | "app" | "artefactsDir">,
+): Promise<string[] | undefined> {
+  return (await readCopyRule(paths))?.recipients;
+}
+
+/**
+ * The recipients the recovery copy is encrypted to, the main key's first: {@link readRecipients},
+ * else those `.opscrew/recovery.json` kept when this computer wrote the copy (D16); `undefined`
+ * while there is no copy.
  */
 export async function knownRecipients(
-  paths: Pick<ProjectPaths, "root" | "stateDir">,
+  paths: Pick<ProjectPaths, "root" | "stateDir" | "app" | "artefactsDir">,
 ): Promise<string[] | undefined> {
   return (await readRecipients(paths)) ?? (await readRecord(paths)).recipients;
 }
 
-/** `opscrew/.sops.yaml` with the copy's creation rule for `recipients`. */
-export function sopsConfigFile(recipients: readonly string[]): RenderedFile {
+/**
+ * `opscrew/.sops.yaml` (its text now: `current`) with the rule of the copies of `app` (a further
+ * app's key; absent: the first app) set to `recipients`, the other apps' rules as they are. A
+ * further app's new rule goes before the first app's, which matches every copy. A `current` that
+ * does not parse stops plainly ({@link sopsRules}).
+ */
+export function sopsConfigFile(
+  recipients: readonly string[],
+  app?: string,
+  current?: string,
+): RenderedFile {
+  const rules = current === undefined ? [] : sopsRules(current);
+  const rule = { path_regex: ruleOf(app), age: recipients.join(",") };
+  const index = rules.findIndex((r) => r.path_regex === rule.path_regex);
+  const general = rules.findIndex((r) => r.path_regex === COPY_RULE);
+  if (index >= 0) rules[index] = rule;
+  else if (app !== undefined && general >= 0) rules.splice(general, 0, rule);
+  else rules.push(rule);
   return {
     path: SOPS_CONFIG_PATH,
     content: [
-      "# Written by OpsCrew: the age keys that can open opscrew/secrets.sops.json, the encrypted",
-      "# recovery copy of what OpsCrew keeps on your computer for this app.",
+      "# Written by OpsCrew: the age keys that can open each app's secrets.sops.json, the encrypted",
+      "# recovery copy of what OpsCrew keeps on your computer for it. sops takes the first rule that",
+      "# matches, so a further app's rule (apps/<key>/) comes before the first app's.",
       "creation_rules:",
-      `  - path_regex: ${COPY_RULE}`,
-      `    age: ${recipients.join(",")}`,
+      ...rules.flatMap((r) => [
+        `  - path_regex: '${r.path_regex.replaceAll("'", "''")}'`,
+        `    age: ${r.age}`,
+      ]),
       "",
     ].join("\n"),
     kind: "doc",

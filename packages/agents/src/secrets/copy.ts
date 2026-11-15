@@ -17,10 +17,11 @@ import {
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
-import { z } from "zod";
+import type { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { COPY_PATH, copyPath, readLocalFiles } from "./files";
 import {
+  CopyMetadataSchema,
   copyFile,
   folderCopyPath,
   gitattributesFile,
@@ -28,10 +29,12 @@ import {
   keyFilePath,
   keyHandoverNote,
   type RecoveryRecord,
+  readCopyRule,
   readFolder,
   readRecipients,
   readRecord,
   readRepositoryCopy,
+  readSopsConfig,
   requireOwnCopy,
   SOPS_CONFIG_PATH,
   sopsBinary,
@@ -240,12 +243,17 @@ async function placeCopy(
   return {
     repositoryFiles: [
       ...(plan.commit ? [copyFile(deps.paths, copy)] : []),
-      ...(newRule ? [sopsConfigFile(plan.recipients)] : []),
+      ...(newRule ? [await appSopsConfig(deps, plan.recipients)] : []),
       ...(gitattributes !== undefined ? [gitattributes] : []),
     ],
     ...(folderCopy !== undefined ? { folderCopy } : {}),
     warnings,
   };
+}
+
+/** `opscrew/.sops.yaml` with this app's rule set to `recipients`, the other apps' as they are. */
+async function appSopsConfig(deps: PhaseDeps, recipients: readonly string[]) {
+  return sopsConfigFile(recipients, deps.paths.app, await readSopsConfig(deps.paths));
 }
 
 /** The folder copy's path for the app, when the user named a folder. */
@@ -261,8 +269,9 @@ async function planApp(deps: PhaseDeps): Promise<string> {
 
 /**
  * Brings the recovery copy up to date with this computer's files, comparing their SHA-256 hashes
- * with `.opscrew/recovery.json`. On a change it encrypts them with sops to the recipients in
- * `opscrew/.sops.yaml` (no private key needed), or, while that file is not in this checkout, to
+ * with `.opscrew/recovery.json`. On a change it encrypts them with sops to the app's recipients
+ * (`readCopyRule`: its rule in `opscrew/.sops.yaml`, else the keys its copy is sealed to; no
+ * private key needed, and a missing rule of its own is added), or, while neither is here, to
  * those the record kept (D16: a first provision that stopped before its pull request), writes the
  * folder copy at once and returns the files for the caller's pull request, `.sops.yaml` too when
  * the checkout has none. The first time it encrypts to the user's own recipient
@@ -288,17 +297,18 @@ export async function refreshRecoveryCopy(
   // The repository's copy is up to date when it is in this checkout and holds these files.
   if (repositoryCopy !== undefined && sameHashes(hashes, record.hashes)) return { changed: false };
 
-  const inCheckout = await readRecipients(deps.paths);
+  const inCheckout = await readCopyRule(deps.paths);
   // A first provision that stopped before its pull request kept them in the record (D16).
-  let recipients = inCheckout ?? record.recipients;
+  let recipients = inCheckout?.recipients ?? record.recipients;
   if (recipients === undefined && record.copySha256 !== undefined) {
     return {
       changed: false,
-      warning: `OpsCrew made the recovery copy of this app's secrets before, but ${SOPS_CONFIG_PATH}, which names the keys that open it, is not in this checkout, so the copy was not updated. Merge the pull request that adds it (or switch to its branch), then run the command again.`,
+      warning: `OpsCrew made the recovery copy of this app's secrets before, but ${SOPS_CONFIG_PATH}, which names the keys that open it, is not in this checkout or has no rule for this app's copy, so the copy was not updated. Merge the pull request that adds it (or switch to its branch), then run the command again.`,
     };
   }
   // The first copy's key first, so a run without one asks nothing else.
-  const newRule = inCheckout === undefined;
+  // A further app that still follows the first app's rule gets its own now.
+  const newRule = inCheckout?.own !== true;
   let own: string | undefined;
   let key: { file: string; identity: string; recipient: string } | undefined;
   if (recipients === undefined) {
@@ -363,7 +373,8 @@ export async function refreshRecoveryCopy(
 /**
  * A new age key for the recovery copy (FR-1414): written once to `keyOut` like the first key, with
  * the backup recipient kept (`undefined`, read from `opscrew/.sops.yaml`), replaced (`age1…`) or
- * dropped (`null`); the last two work when `.sops.yaml` is damaged. This computer's files are
+ * dropped (`null`); the last two work when the app's rule names no age keys. A `.sops.yaml` that
+ * does not parse stops it before anything changes. This computer's files are
  * encrypted again to the new recipients, the folder copy is rewritten, and the copy and
  * `opscrew/.sops.yaml` are returned for a pull request. A public repository follows the first
  * copy's rule (`repositoryPrivate`): until the user agreed, only the folder copy is written and the
@@ -380,6 +391,8 @@ export async function rotateRecoveryKey(
   const repositoryCopy = await readRepositoryCopy(deps.paths);
   const record = await readRecord(deps.paths);
   requireOwnCopy(deps.paths, repositoryCopy, record);
+  // It holds every app's rule: one that does not parse stops the rotation here.
+  await readSopsConfig(deps.paths);
   const files = await readLocalFiles(deps.paths, deps.redactor);
   if (Object.keys(files).length === 0) {
     throw new OpsCrewError(
@@ -432,13 +445,6 @@ export async function rotateRecoveryKey(
     ].join(" "),
   };
 }
-
-const CopyMetadataSchema = z.looseObject({
-  sops: z.looseObject({
-    lastmodified: z.string().optional(),
-    age: z.array(z.unknown()).optional(),
-  }),
-});
 
 /** What `opscrew status` and `opscrew secrets status` show of the recovery copy. */
 export interface RecoveryStatus {

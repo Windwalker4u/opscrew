@@ -123,8 +123,9 @@ files in `~/.opscrew/projects/<project>/`, and `state/<path>` for those in `.ops
 
 Each of an app's [environments](environments.md) has its own copy beside its plan:
 `opscrew/environments/<env>/secrets.sops.json`, with that environment's generated values, deploy key,
-state and records (prod's stays `opscrew/secrets.sops.json`). Every copy is sealed to the same age
-keys, from `opscrew/.sops.yaml`, so one key restores them all. The commands take `--env`:
+state and records (prod's stays `opscrew/secrets.sops.json`). Every copy of an app is sealed to the
+same age keys, from the app's rule in `opscrew/.sops.yaml`, so one key restores them all. The
+commands take `--env`:
 
 ```bash
 npx opscrew secrets status --env staging
@@ -132,6 +133,22 @@ npx opscrew secrets restore --env staging --key-file ~/opscrew-shop-age-key.txt
 ```
 
 A folder copy is named after the environment's app name, such as `shop-staging.sops.json`.
+
+## Each app's copy
+
+A [further app](several-apps.md) keeps its copies in its own folder, `opscrew/apps/<key>/`, and has
+its own rule in `opscrew/.sops.yaml`, listed before the first app's. Its first copy is sealed to the
+first app's keys when the first app has a copy; otherwise it gets a key of its own.
+`npx opscrew rotate recovery-key --app <key>` gives it a new key and changes only its rule: every
+other app's copies stay sealed to the keys they had.
+
+**A repository from OpsCrew 0.2.9 or earlier** had one rule for every app, and rotating one app's
+key changed it for all of them, so a later update could seal another app's copy to the rotated
+app's key. Check each app's copy: `npx opscrew secrets status --app <key>` (`--app .` for the first
+app) says how many keys open it, and the copy itself names them under `sops.age`
+(`recipient: age1…`), which you compare with the `# public key:` line of each key file. Then run
+`npx opscrew rotate recovery-key --app <key>` for each app whose copy is sealed to another app's
+key.
 
 ## From Claude Code
 
