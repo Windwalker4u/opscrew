@@ -577,7 +577,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/secops --filter=@opscrew/plan-schema --filter=opscrew --filter=@opscrew/mcp-server && npx vitest run --root packages/secops && npx vitest run --root packages/plan-schema && npx vitest run --root packages/cli src/commands && npx vitest run --root packages/mcp-server && pnpm lint`
   - Effort: high
 
-- [ ] T2842 An app on Cloudflare Workers redirects plain HTTP to HTTPS (a bug found by the control-plane session, 2026-11-15, for 0.2.10)
+- [x] T2842 An app on Cloudflare Workers redirects plain HTTP to HTTPS (a bug found by the control-plane session, 2026-11-15, for 0.2.10)
   - Why: an app OpsCrew deploys to `cloudflare-workers` (Workers SSR or `workers-assets`, static or not) answers `http://<host>/` with 200, no redirect; OpsCrew's own server edges redirect, Cloudflare targets never do, and a first visit or a checker (a payment provider's domain review) sees the site over plain HTTP.
   - Owns: `packages/connectors/cloudflare/src/shared.ts` (+ tests, `testing/**`), the agents' code that builds the shared plan's desired rules for a Cloudflare-hosted app (`packages/agents/src/provision/shared-cloudflare*.ts`, `packages/agents/src/serverless/cloudflare/**` as needed), `docs/guide/cloudflare-hosting.md`
   - Accept:
