@@ -104,6 +104,8 @@ cloudflare-move/
     github-pages-verification.tfstate     # GitHub's verification record in B (a Pages app's prod)
   tf/<root folder name>/                  # TF_DATA_DIR of each shadow root
   cloudflare.json                         # B's shared record (SharedRecordSchema)
+  deploy-secrets.json                     # the last `_NEW` deploy secrets change applied: its hash only
+  finish-point.json                       # the finish's step 1 and last backups copy: hashes only
   a-removal/                              # appears at the finish's swap
     tfstate/<same names>.tfstate          # the environment's former states; non-Cloudflare and
                                           #  zone-scoped addresses removed before their destroy plans
