@@ -643,11 +643,8 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
     h.deps.interactive = true;
     const result = await h.run({ services: { host, remote: unusedRemote, ...fakeClock() } });
     await expectAborted(h, result);
-    expect(asked(h).map(([kind]) => kind)).toEqual([
-      "cloudflare-apply",
-      "github-secrets",
-      "cloudflare-apply",
-    ]);
+    // Prepare set no `_NEW` secret, so the abort asks nothing of GitHub.
+    expect(asked(h).map(([kind]) => kind)).toEqual(["cloudflare-apply", "cloudflare-apply"]);
     expect(h.engine.planOptions).toEqual([]);
     expect(bHasZone(h)).toBe(false);
   });

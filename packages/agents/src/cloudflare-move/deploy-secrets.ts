@@ -5,7 +5,6 @@
  * approval bound to a hash over the secrets' names and their values' digests; the values are
  * sealed on this computer and never shown, logged or written to a file.
  */
-import { join } from "node:path";
 import {
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
@@ -34,6 +33,7 @@ import { runDeployWorkflow } from "../retarget/site-steps";
 import { appliesNow } from "../retarget/steps";
 import { requireWorkersTokens } from "../serverless/cloudflare/checks";
 import { readValidJson, requestApproval, stringOutput } from "../shared";
+import { moveFolder } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { shadowOutputs, shadowRoots } from "./shadow";
 import { pendingStop } from "./shared";
@@ -172,7 +172,7 @@ async function mainShadowOutputs(
 const AppliedSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
 
 function appliedFile(environment: MoveEnvironment): string {
-  return join(environment.paths.stateDir, "cloudflare-move", "deploy-secrets.json");
+  return moveFolder(environment.paths, "deploy-secrets.json");
 }
 
 /** A secret to store: where it goes and its value. */
