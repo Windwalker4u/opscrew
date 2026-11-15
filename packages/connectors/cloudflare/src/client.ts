@@ -223,6 +223,8 @@ export interface CloudflareZone {
   nameServers: string[];
   /** The account that holds the zone, when Cloudflare says. */
   accountId?: string;
+  /** Cloudflare's record of the domain's registrar when the zone was made, when it has one. */
+  originalRegistrar?: string;
 }
 
 /**
@@ -462,6 +464,7 @@ const ZoneSchema = z.looseObject({
   status: z.string(),
   name_servers: z.array(z.string()).default([]),
   account: z.looseObject({ id: z.string() }).nullable().optional(),
+  original_registrar: z.string().nullable().optional(),
 });
 
 const RecordSchema = z.looseObject({
@@ -1044,6 +1047,7 @@ function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
     status: zone.status,
     nameServers: zone.name_servers,
     ...(zone.account?.id ? { accountId: zone.account.id } : {}),
+    ...(zone.original_registrar ? { originalRegistrar: zone.original_registrar } : {}),
   };
 }
 

@@ -115,6 +115,8 @@ export interface FakeCloudflareZone {
   readonly accountId: string;
   status: FakeZoneStatus;
   nameServers: string[];
+  /** Cloudflare's record of the domain's registrar at the zone's creation (default none). */
+  originalRegistrar?: string;
   readonly createdOn: string;
   activatedOn: string | null;
   hold: { hold: boolean; include_subdomains: boolean; hold_after?: string };
@@ -442,6 +444,7 @@ class FakeCloudflareAccounts {
       development_mode: 0,
       name_servers: [...zone.nameServers],
       account: { id: account.id, name: account.name },
+      original_registrar: zone.originalRegistrar ?? null,
       ...(zone.data.plan ? { plan: { id: "0".repeat(32), legacy_id: zone.data.plan } } : {}),
       created_on: zone.createdOn,
       modified_on: zone.activatedOn ?? zone.createdOn,

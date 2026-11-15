@@ -130,6 +130,24 @@ describe("CloudflareClient", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("reads the zone's original registrar, Cloudflare's record of it at the zone's creation", async () => {
+    const zone = (registrar: string | null) => ({
+      id: "z1",
+      name: "example.com",
+      status: "pending",
+      name_servers: [],
+      original_registrar: registrar,
+    });
+    const find = async (registrar: string | null) => {
+      const { fetch } = fakeFetch({ "/zones?name=example.com": ok([zone(registrar)]) });
+      return new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).findZone("example.com");
+    };
+    expect((await find("cloudflare, inc. (id: 1910)"))?.originalRegistrar).toBe(
+      "cloudflare, inc. (id: 1910)",
+    );
+    expect(await find(null)).not.toHaveProperty("originalRegistrar");
+  });
+
   it("returns undefined when no zone matches", async () => {
     const { fetch } = fakeFetch({ "/zones?name=": ok([]) });
     expect(

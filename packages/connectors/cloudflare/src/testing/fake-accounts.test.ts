@@ -292,6 +292,17 @@ describe("fakeCloudflareAccounts: zones", () => {
       digest: on.digest,
     });
   });
+
+  it("answers the zone's original registrar once a test sets it", async () => {
+    const { fake, b, clientB } = setup();
+    const made = await clientB.createZone(b.id, ZONE);
+    expect(made).not.toHaveProperty("originalRegistrar");
+    fake.zone(ZONE, "New").originalRegistrar = "cloudflare, inc. (id: 1910)";
+    expect(await clientB.findZone(ZONE, { accountId: b.id })).toMatchObject({
+      id: made.id,
+      originalRegistrar: "cloudflare, inc. (id: 1910)",
+    });
+  });
 });
 
 describe("fakeCloudflareAccounts: records", () => {

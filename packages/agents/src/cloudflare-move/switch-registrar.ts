@@ -4,7 +4,8 @@
  * does (Cloudflare Registrar's move between accounts, another registrar's nameservers), and
  * DNSSEC turned on in B once it is active.
  */
-import { CloudflareRegistrar } from "@opscrew/connector-cloudflare";
+import { CloudflareError, CloudflareRegistrar } from "@opscrew/connector-cloudflare";
+import type { Registrar } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
 import {
   type DomainRegistrar,
@@ -42,15 +43,52 @@ function lookupServices(session: MoveSession) {
 
 /**
  * Where the zone is registered (`findDomainRegistrar`): a configured Porkbun, Namecheap or GoDaddy
- * account that holds it; else Cloudflare Registrar in A; else another registrar.
+ * account that holds it; else Cloudflare Registrar in A; else another registrar. When A's token
+ * may not read Cloudflare Registrar (HTTP 403), Cloudflare's record of the registrar on B's zone
+ * (`originalRegistrar`) tells it: Cloudflare Registrar when it names Cloudflare, else another.
  */
 export function findSwitchRegistrar(session: MoveSession): Promise<DomainRegistrar> {
+  const services = lookupServices(session);
+  const { a } = session.accounts;
   return findDomainRegistrar(
     session.deps,
-    lookupServices(session),
+    {
+      ...services,
+      registrar: (id) =>
+        id === a.accountId
+          ? fromRecordWhenRefused(session, services.registrar(id))
+          : services.registrar(id),
+    },
     session.zone,
-    session.accounts.a.accountId,
+    a.accountId,
   );
+}
+
+/** `registrar` with a `getDomain` that answers from B's zone's record on a permission refusal. */
+function fromRecordWhenRefused(session: MoveSession, registrar: Registrar): Registrar {
+  const getDomain = async (domain: string) => {
+    try {
+      return await registrar.getDomain(domain);
+    } catch (error) {
+      if (!(error instanceof CloudflareError)) throw error;
+      const record = session.accounts.b.zone?.originalRegistrar;
+      const cloudflare = record !== undefined && /cloudflare/i.test(record);
+      const aName = session.accounts.a.name ?? session.accounts.a.accountId;
+      session.deps.reporter.info(
+        `The token of the account ${aName} can't read Cloudflare Registrar, so OpsCrew told the registrar of ${domain} from Cloudflare's record on the new account's zone: ${cloudflare ? "Cloudflare Registrar" : "another registrar"}. To have OpsCrew read it instead, give that token the Registrar permission.`,
+      );
+      return cloudflare
+        ? { domain, registrar: "cloudflare" as const, autoRenew: false }
+        : undefined;
+    }
+  };
+  return new Proxy(registrar, {
+    get: (target, key) => {
+      if (key === "getDomain") return getDomain;
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 /**
