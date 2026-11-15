@@ -9,7 +9,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fixture, type RecordedCall, ScriptedRunner, writesPlan } from "./__fixtures__/fake-runner";
 import { tofuEncryptionEnv } from "./encryption";
-import { APPLY_TIMEOUT_MS, COMMAND_TIMEOUT_MS, createEngine } from "./engine";
+import { APPLY_TIMEOUT_MS, COMMAND_TIMEOUT_MS, createEngine, upperDrive } from "./engine";
 import { hashFile } from "./hash";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
@@ -143,6 +143,71 @@ describe("init", () => {
     expect(error.message).toContain(
       "rejected [REDACTED:DJANGO_SECRET_KEY] and [REDACTED:MINIO_ACCESS_KEY]",
     );
+  });
+
+  it("upper-cases a drive letter on Windows only", () => {
+    expect(upperDrive("d:\\x\\prod.tfstate", "win32")).toBe(
+      upperDrive("D:\\x\\prod.tfstate", "win32"),
+    );
+    expect(upperDrive("d:\\x", "win32")).toBe("D:\\x");
+    expect(upperDrive("/abs/x", "win32")).toBe("/abs/x");
+    expect(upperDrive("d:/x", "linux")).toBe("d:/x");
+  });
+
+  const engineOn = (runner: ScriptedRunner, platform: NodeJS.Platform) =>
+    createEngine(
+      { name: "tofu", version: "1.13.1", binary: "/bin/tofu" },
+      { runner, env: { PATH: "/usr/bin" }, now: () => NOW, platform },
+    );
+  const wanted = "D:\\opscrew\\apps\\pay\\tfstate\\prod.tfstate";
+  const changed = {
+    exitCode: 1,
+    stderr:
+      'Error: Backend configuration changed\n\nA change in the backend configuration has been detected, which may require\nmigrating existing state.\n\nIf you wish to store the current configuration with no changes to the state,\nuse "tofu init -reconfigure".\n',
+  };
+  const recordBackend = async (dataDir: string, recorded: string) => {
+    await mkdir(dataDir, { recursive: true });
+    const backend = { type: "local", config: { path: recorded, workspace_dir: null }, hash: 1 };
+    await writeFile(
+      path.join(dataDir, "terraform.tfstate"),
+      JSON.stringify({ version: 3, backend }),
+    );
+  };
+
+  it("gives the engine its state file and data folder with an upper-case drive on Windows", async () => {
+    const runner = new ScriptedRunner().on("init", { stdout: "ok" });
+    await engineOn(runner, "win32").init(dir, {
+      backendConfig: { path: "d:\\opscrew\\apps\\pay\\tfstate\\prod.tfstate" },
+      env: { TF_DATA_DIR: "d:\\opscrew\\tf" },
+    });
+    expect(runner.calls[0]?.args).toContain(`-backend-config=path=${wanted}`);
+    expect(runner.calls[0]?.options.env?.TF_DATA_DIR).toBe("D:\\opscrew\\tf");
+  });
+
+  it("reinitialises without migrating a data folder that recorded the same file with a lower-case drive", async () => {
+    await recordBackend(path.join(dir, ".terraform"), wanted.replace("D:", "d:"));
+    const runner = new ScriptedRunner().on("init", changed, { stdout: "ok" });
+    await engineOn(runner, "win32").init(dir, { backendConfig: { path: wanted } });
+    expect(runner.calls.map((c) => c.args)).toEqual([
+      ["init", "-input=false", "-no-color", `-backend-config=path=${wanted}`],
+      ["init", "-input=false", "-no-color", `-backend-config=path=${wanted}`, "-reconfigure"],
+    ]);
+  });
+
+  it("still stops on a backend change to another file, or to another case off Windows", async () => {
+    const dataDir = path.join(dir, "tf");
+    await recordBackend(dataDir, "d:\\opscrew\\apps\\other\\tfstate\\prod.tfstate");
+    const runner = new ScriptedRunner().on("init", changed, { stdout: "ok" });
+    const options = { backendConfig: { path: wanted }, env: { TF_DATA_DIR: dataDir } };
+    const error = await failure(engineOn(runner, "win32").init(dir, options));
+    expect(error.message).toContain("Backend configuration changed");
+    expect(runner.subcommands()).toEqual(["init"]);
+
+    await recordBackend(dataDir, "/opscrew/apps/pay/tfstate/prod.tfstate");
+    const posix = new ScriptedRunner().on("init", changed, { stdout: "ok" });
+    const upper = { ...options, backendConfig: { path: "/OPSCREW/apps/pay/tfstate/prod.tfstate" } };
+    await failure(engineOn(posix, "linux").init(dir, upper));
+    expect(posix.subcommands()).toEqual(["init"]);
   });
 
   it("maps a timeout to ENGINE_FAILED", async () => {

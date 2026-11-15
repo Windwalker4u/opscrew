@@ -64,6 +64,8 @@ export interface EngineOptions {
   homeCacheFiles?: readonly string[];
   /** Removes a file, a missing one being fine. Default: `rm` with `force`. */
   removeFile?: (file: string) => Promise<void>;
+  /** The operating system paths are read for. Default `process.platform`. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -73,6 +75,26 @@ export interface EngineOptions {
 const REGISTRY_UNANSWERED = /could not query\s+provider\s+registry/i;
 /** The waits before the second and the third `init`. */
 const INIT_RETRY_WAITS_MS = [5_000, 15_000] as const;
+/** `init` output when the backend's configuration differs from the one its data folder recorded. */
+const BACKEND_CHANGED = /Backend configuration changed/;
+
+/** The part of a data folder's `terraform.tfstate` read here: the backend it recorded. */
+const RecordedBackendSchema = z.looseObject({
+  backend: z.looseObject({
+    type: z.string(),
+    config: z.looseObject({ path: z.string().nullish() }),
+  }),
+});
+
+/**
+ * `file` with its drive letter upper-case on Windows (`d:\x` becomes `D:\x`), so the case of the
+ * terminal's working folder never changes a path given to the engine. Anything else is unchanged.
+ */
+export function upperDrive(file: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" && /^[a-z]:/.test(file)
+    ? file.charAt(0).toUpperCase() + file.slice(1)
+    : file;
+}
 
 /** Display name for an engine (`OpenTofu`, `Terraform`). */
 export function engineLabel(name: IacEngineName): string {
@@ -148,6 +170,7 @@ class Engine implements IacEngine {
   private readonly label: string;
   private readonly homeCacheFiles: readonly string[];
   private readonly removeFile: (file: string) => Promise<void>;
+  private readonly platform: NodeJS.Platform;
   /** Parsed `providers schema -json` per resolved directory. */
   private readonly schemas = new Map<string, unknown>();
 
@@ -161,21 +184,64 @@ class Engine implements IacEngine {
     this.label = engineLabel(info.name);
     this.homeCacheFiles = options.homeCacheFiles ?? [];
     this.removeFile = options.removeFile ?? ((file) => rm(file, { force: true }));
+    this.platform = options.platform ?? process.platform;
   }
 
   async init(dir: string, options: IacInitOptions = {}): Promise<void> {
+    const cwd = path.resolve(dir);
     const args = ["init", "-input=false", "-no-color"];
     for (const [key, value] of Object.entries(options.backendConfig ?? {})) {
-      args.push(`-backend-config=${key}=${value}`);
+      args.push(`-backend-config=${key}=${upperDrive(value, this.platform)}`);
     }
-    let result = await this.exec("init", path.resolve(dir), args, options);
+    let result = await this.#initRun(cwd, args, options);
+    // Only a data folder that recorded the same state file under another spelling (a lower-case
+    // drive from an earlier run) is reinitialised; `-reconfigure` leaves the state untouched.
+    if (await this.#recordsSameStateFile(cwd, result, options)) {
+      result = await this.#initRun(cwd, [...args, "-reconfigure"], options);
+    }
+    this.assertOk("init", result);
+  }
+
+  /** Runs `init`, trying again while the provider registry does not answer. */
+  async #initRun(cwd: string, args: string[], options: IacInitOptions): Promise<CommandResult> {
+    let result = await this.exec("init", cwd, args, options);
     for (const wait of INIT_RETRY_WAITS_MS) {
       const output = `${result.stdout}\n${result.stderr}`;
       if (result.timedOut || result.exitCode === 0 || !REGISTRY_UNANSWERED.test(output)) break;
       await this.sleep(wait);
-      result = await this.exec("init", path.resolve(dir), args, options);
+      result = await this.exec("init", cwd, args, options);
     }
-    this.assertOk("init", result);
+    return result;
+  }
+
+  /**
+   * Whether `init` failed only because the data folder recorded the wanted local state file under
+   * another spelling: the same file, compared case-insensitively on Windows.
+   */
+  async #recordsSameStateFile(
+    cwd: string,
+    result: CommandResult,
+    options: IacInitOptions,
+  ): Promise<boolean> {
+    const wanted = options.backendConfig?.path;
+    if (result.timedOut || result.exitCode === 0 || wanted === undefined) return false;
+    if (!BACKEND_CHANGED.test(`${result.stdout}\n${result.stderr}`)) return false;
+    const dataDir = { ...this.baseEnv, ...options.env }.TF_DATA_DIR || ".terraform";
+    let recorded: z.infer<typeof RecordedBackendSchema>;
+    try {
+      const text = await readFile(
+        path.join(path.resolve(cwd, dataDir), "terraform.tfstate"),
+        "utf8",
+      );
+      recorded = RecordedBackendSchema.parse(JSON.parse(text));
+    } catch {
+      return false;
+    }
+    const { type, config } = recorded.backend;
+    if (type !== "local" || !config.path) return false;
+    const paths = this.platform === "win32" ? path.win32 : path.posix;
+    const [a, b] = [paths.resolve(cwd, config.path), paths.resolve(cwd, wanted)];
+    return this.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
   }
 
   async validate(dir: string, options: IacRunOptions = {}): Promise<IacValidation> {
@@ -409,7 +475,7 @@ class Engine implements IacEngine {
   }
 
   async stateResources(stateFile: string, options: IacRunOptions = {}): Promise<string[]> {
-    const file = path.resolve(stateFile);
+    const file = upperDrive(path.resolve(stateFile), this.platform);
     // An empty folder: no configuration, `.terraform` or lock file of a project can interfere.
     const scratch = await mkdtemp(path.join(tmpdir(), "opscrew-state-"));
     try {
@@ -528,6 +594,7 @@ class Engine implements IacEngine {
       ...extra,
       ...AUTOMATION_ENV,
     };
+    if (env.TF_DATA_DIR) env.TF_DATA_DIR = upperDrive(env.TF_DATA_DIR, this.platform);
     // OpenTofu-only setting; Terraform never needs to see the passphrase.
     if (this.info.name === "terraform") {
       for (const key of Object.keys(env))
