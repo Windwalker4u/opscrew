@@ -551,7 +551,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
   - Effort: high
 
-- [ ] T2839 Each app's recovery copy follows its own `.sops.yaml` rule (a bug found by the control-plane session, 2026-11-15, for 0.2.10)
+- [x] T2839 Each app's recovery copy follows its own `.sops.yaml` rule (a bug found by the control-plane session, 2026-11-15, for 0.2.10)
   - Why: in a repository with several apps, `opscrew rotate recovery-key --app <key>` rewrites the one rule (`path_regex: secrets.sops.json$`) that every app's copy follows; rotating a second app points the first app's copy at the second app's key, and the next refresh of the first app's copy encrypts it to that key, so the key the user was told to keep for it stops opening it.
   - Owns: `packages/agents/src/secrets/{store,copy}*.ts`, `packages/agents/src/rotate/recovery*.ts` (or wherever `rotateRecoveryKey` and the rotation's publish step live), their tests, the guide's recovery-key lines if they describe one rule
   - Accept:
@@ -588,7 +588,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents && npx vitest run --root packages/connectors/cloudflare && npx vitest run --root packages/agents src/provision/shared-cloudflare src/serverless src/destroy src/cloudflare-move && pnpm lint`
   - Effort: high
 
-- [ ] T2843 The registry's own answer decides whether old DS records are gone (founder, 2026-11-15; a follow-up to T2838)
+- [x] T2843 The registry's own answer decides whether old DS records are gone (founder, 2026-11-15; a follow-up to T2838)
   - Why: since T2838 OpsCrew asks the registry's nameservers for the DS record's TTL, but still decides that the record is gone from a resolver's cached copy (DNS over HTTPS), up to one TTL behind the registry.
   - Owns: `packages/agents/src/domain/{connect-ds,registry-ds}*.ts`, `packages/agents/src/cloudflare-move/switch-ds*.ts` and their tests
   - Accept:
