@@ -1,12 +1,3 @@
-/**
- * The finish's adoption of what the switch made in B for an environment (plan 7.5, 13b): Cloudflare
- * attaches a Workers custom domain and makes an Access application only on an active zone, so the
- * switch made them in B with B's token right after activation (and the records of the hostnames
- * behind Access). The finish imports them into the environment's main shadow state, so its plan
- * with the committed values (`custom_domains`, `access_applications` and `protected_route_records`
- * true) is empty, then gives the deploy its credentials for B under their usual names.
- */
-import { OpsCrewError } from "@opscrew/core";
 import { portainerWebhookHostname, workerCustomDomainAddresses } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { hasStateFile } from "../shared";
@@ -14,6 +5,7 @@ import { promoteNewCredentials } from "./deploy-secrets";
 import { appMark, type MoveMark } from "./marks";
 import { importIntoShadow, shadowEngineEnv, shadowRoots, shadowStateAddresses } from "./shadow";
 import { checkAdoption } from "./shadow-plans";
+import { bug } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** The Access application's resource in `module.access`, by the kind of hostname it protects. */
@@ -33,10 +25,8 @@ interface Adopted {
 function bZoneId(session: MoveSession): string {
   const id = session.accounts.b.zone?.id;
   if (id !== undefined) return id;
-  throw new OpsCrewError(
-    "INTERNAL",
+  throw bug(
     `${session.zone} isn't in the new Cloudflare account, so OpsCrew can't adopt what the switch made there.`,
-    { hint: "This is a bug in OpsCrew; please report it." },
   );
 }
 

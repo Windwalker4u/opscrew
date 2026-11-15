@@ -8,7 +8,7 @@
  * after any interruption (or a script's run with `--approve <hash>`) goes on from where the last
  * one stopped and does nothing twice. A's account is only read.
  */
-import { listText, OpsCrewError } from "@opscrew/core";
+import { listText } from "@opscrew/core";
 import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { lookupPublishedDs } from "../domain/connect-dns";
@@ -20,6 +20,7 @@ import { readMarks, writeMark } from "./marks";
 import {
   advancedMove,
   type MoveStart,
+  recordedMove,
   startedMove,
   withTargetZone,
   writeMoveRecord,
@@ -32,6 +33,7 @@ import { confirmMoveStart, moveSummary } from "./summary";
 import {
   ABORT_COMMAND,
   accountWords,
+  bug,
   FINISH_COMMAND,
   MOVE_COMMAND,
   refusal,
@@ -83,11 +85,7 @@ export async function prepareMove(
 function recordOf(environment: MoveEnvironment): CloudflareMove {
   const move = environment.plan.cloudflareMove;
   if (move !== undefined) return move;
-  throw new OpsCrewError(
-    "INTERNAL",
-    `The plan of ${environment.environment} has no record of the move yet.`,
-    { hint: "This is a bug in OpsCrew; please report it." },
-  );
+  throw bug(`The plan of ${environment.environment} has no record of the move yet.`);
 }
 
 function isPrepared(environment: MoveEnvironment): boolean {
@@ -149,8 +147,7 @@ async function startMove(
 ): Promise<void> {
   const missing = session.environments.filter((env) => env.plan.cloudflareMove === undefined);
   if (missing.length === 0) return;
-  const recorded = session.environments.find((env) => env.plan.cloudflareMove !== undefined)?.plan
-    .cloudflareMove;
+  const recorded = recordedMove(session.environments);
   let start: MoveStart;
   if (recorded !== undefined) {
     const { zone, from, to, dsAtStart } = recorded;
@@ -208,8 +205,8 @@ async function prepareEnvironment(
   session.deps.reporter.step(
     `Preparing ${environment.environment} of ${environment.plan.app.name} in ${accountWords(b)}`,
   );
-  const shared = await planBShared(session, environment);
-  if (shared.stop !== undefined) return shared.stop;
+  const stop = await planBShared(session, environment);
+  if (stop !== undefined) return stop;
   let outputs: Record<string, unknown> = {};
   for (const root of await shadowRoots(session, environment)) {
     const step = await planShadow(session, root);

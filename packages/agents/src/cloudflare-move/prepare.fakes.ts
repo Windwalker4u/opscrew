@@ -54,7 +54,7 @@ import {
   OFFSITE_KEY_VARS,
   STORAGE_KEY_VARS,
 } from "../provision/storage";
-import { DNS_OVER_HTTPS_URL, pagesVerificationStateFile, type StorageLogin } from "../shared";
+import { DNS_OVER_HTTPS_URL, pagesVerificationStateFile } from "../shared";
 import { recordPortainerConnection, updateServerAddresses } from "../shared/server-record";
 import {
   fakeCertificate,
@@ -73,6 +73,7 @@ import {
 import { APP_BUCKET, BACKUPS_BUCKET, FakeR2 } from "./buckets.fakes";
 import { B_TUNNEL, B_WEBHOOK_TUNNEL, ConnectorHost, fakeClock } from "./connector.fakes";
 import { prepareMove } from "./prepare";
+import { bucketKeys } from "./record.fakes";
 import { moveHarness, serverPlan, unencrypted, ZONE } from "./session.fakes";
 import { addressState, StateFileEngine, stateAddresses } from "./shadow.fakes";
 import type { MoveResult, MoveServices, PrepareMoveOptions } from "./types";
@@ -110,18 +111,6 @@ const SECRETS = {
   portainer: fakeSecret("generic-password", "prepare-portainer-api-key"),
 };
 const CERT = fakeCertificate("prepare portainer");
-
-/** Each bucket's key in each account. */
-function bucketKeys() {
-  const key = (seed: string): StorageLogin => ({
-    accessKeyId: fakeSecret("aws-access-key-id", `prepare-${seed}`),
-    secretAccessKey: fakeSecret("aws-secret-access-key", `prepare-${seed}`),
-  });
-  return {
-    a: { storage: key("a-storage"), backups: key("a-backups") },
-    b: { storage: key("b-storage"), backups: key("b-backups") },
-  };
-}
 
 /** A cloud server with its files and snapshots' copies on R2 and Portainer on a subdomain. */
 function cloudPlan(domain: string): DeployPlan {
@@ -345,7 +334,7 @@ export async function prepareWorld(target: PrepareTarget, o: PrepareWorldOptions
   const plans: Record<string, DeployPlan> = { prod: planOf(target, host) };
   if (o.staging) plans.staging = appPlan(undefined, "staging", planOf(target, `staging.${host}`));
   const blog = appPlan("blog", undefined, serverPlan(`blog.${ZONE}`));
-  const keys = bucketKeys();
+  const keys = bucketKeys("prepare-");
   const env: Record<string, string> = {};
   if (target === "cloud") {
     Object.assign(env, {

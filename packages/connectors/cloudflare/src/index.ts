@@ -39,6 +39,7 @@ export {
   type CloudflareRecordInput,
   mapRegistrarRecord,
   mapRegistrarRecords,
+  quoteTxt,
 } from "./records";
 export { CloudflareRegistrar } from "./registrar";
 export {

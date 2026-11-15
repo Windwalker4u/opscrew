@@ -11,23 +11,15 @@
  */
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import {
-  exists,
-  listText,
-  OpsCrewError,
-  renameWithRetry,
-  toPosixRelative,
-  upperFirst,
-} from "@opscrew/core";
+import { exists, listText, renameWithRetry, toPosixRelative, upperFirst } from "@opscrew/core";
 import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { promoteNextOriginTls } from "../provision/origin-tls";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
-import { forgetStorageKey } from "../provision/storage";
 import { appliesNow } from "../retarget/steps";
 import { tunnelModules } from "../rotate/infra";
 import { readableDeployPause } from "../shared/deploy-pause";
-import { bucketWindow, moveBuckets, recoverWindow } from "./buckets";
+import { bucketWindow, forgetBucketKeys, moveBuckets, recoverWindow } from "./buckets";
 import { type MoveTunnel, moveTunnels, takeOverConnector } from "./connector";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
 import { endFinish, removeA } from "./finish-removal";
@@ -54,10 +46,11 @@ import { aSharedRecordPath, bSharedRecordPath, pendingStop, planBShared } from "
 import {
   ABORT_COMMAND,
   appWords,
+  bug,
   environmentDeps,
   FINISH_COMMAND,
   MOVE_COMMAND,
-  MOVE_PHASE,
+  moveAudit,
   refusal,
   SWITCH_COMMAND,
 } from "./texts";
@@ -166,17 +159,15 @@ async function originForB(run: Run, environment: MoveEnvironment): Promise<StepS
   const { session } = run;
   const next = bSharedRecordPath(environment);
   if (await exists(next)) {
-    const { stop } = await run.steps.planBShared(session, environment);
+    const stop = await run.steps.planBShared(session, environment);
     if (stop !== undefined) return stop;
   }
   const current = environment.paths.files.cloudflareRecord;
   const aside = aSharedRecordPath(environment);
   if ((await readCloudflareRecord(environment.paths))?.zoneId === session.accounts.a.zoneId) {
     if (await exists(aside)) {
-      throw new OpsCrewError(
-        "INTERNAL",
+      throw bug(
         `Both the record of ${appWords(environment)}'s Cloudflare rules in the account it moves from and the one kept for its removal exist, so OpsCrew moved neither. Nothing was changed.`,
-        { hint: "This is a bug in OpsCrew; please report it." },
       );
     }
     await mkdir(dirname(aside), { recursive: true });
@@ -279,11 +270,9 @@ async function swapStates(
     await patchTfvars(root);
   }
   if (swapped) {
-    await session.deps.audit.append({
+    await moveAudit(session.deps, {
       kind: "iac",
-      actor: "opscrew",
       action: "states swapped",
-      phase: MOVE_PHASE,
       target: environment.plan.app.name,
       detail: `${environment.environment}: ${listText(ordered.map((root) => root.name))} now on the new account's states; the committed ids are the new account's`,
     });
@@ -302,7 +291,7 @@ async function swapStates(
  * root's state was swapped (A's former one kept), the steps before the swap are done and only the
  * swap goes on.
  */
-async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop | MoveEnvironment> {
+async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop | undefined> {
   const { session, steps } = run;
   const roots = await shadowRoots(session, environment);
   const main = roots.find((root) => root.name === "main");
@@ -324,7 +313,7 @@ async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop |
   if (stop !== undefined) return stop;
   // Every covered environment has its record (`requireFinishable`).
   const move = environment.plan.cloudflareMove as CloudflareMove;
-  const plan = await writeMoveRecord(
+  environment.plan = await writeMoveRecord(
     session.deps,
     environment.paths,
     advancedMove(move, "adopted", session.deps.clock.now()),
@@ -332,19 +321,7 @@ async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop |
   session.deps.reporter.success(
     `${upperFirst(appWords(environment))} runs on its pieces in the new Cloudflare account; the move can't be aborted from here.`,
   );
-  return { ...environment, plan };
-}
-
-/** Forgets A's kept keys of the environment's R2 buckets once A's buckets are gone; B's stay. */
-async function forgetAKeys(session: MoveSession, environment: MoveEnvironment): Promise<void> {
-  const { a, b } = session.accounts;
-  for (const { bucket } of moveBuckets(environment.plan)) {
-    await forgetStorageKey(
-      environmentDeps(session, environment),
-      { provider: "r2", bucket },
-      { account: a.accountId, moveTo: b.accountId },
-    );
-  }
+  return undefined;
 }
 
 /**
@@ -386,16 +363,16 @@ export async function finishMove(
   for (const environment of session.environments) {
     if (!adopted(environment)) await recoverFirst(run, environment);
   }
-  for (const [index, environment] of session.environments.entries()) {
+  for (const environment of session.environments) {
     if (adopted(environment)) continue;
-    const outcome = await adopt(run, environment);
-    if (!("plan" in outcome)) return { step: "prepared", done: false, ...outcome };
-    session.environments[index] = outcome;
+    const stop = await adopt(run, environment);
+    if (stop !== undefined) return { step: "prepared", done: false, ...stop };
   }
   for (const environment of session.environments) {
     const stop = await steps.removeA(session, environment);
     if (stop !== undefined) return { step: "adopted", done: false, ...stop };
-    await forgetAKeys(session, environment);
+    // A's buckets are gone; B's keys stay.
+    await forgetBucketKeys(session, environment, "a");
   }
   const files = await changedFiles(session);
   const result = await steps.endFinish(session);

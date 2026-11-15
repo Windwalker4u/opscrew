@@ -13,7 +13,6 @@ import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { hosts, sameHosts } from "../domain/switch";
 import { appliesNow } from "../retarget/steps";
-import { approveCommand } from "../retarget/texts";
 import { PlanRefusedError } from "../shared";
 import { gapText, measureGap } from "./gap";
 import { coverage, markName, type ReadMark, readMarks } from "./marks";
@@ -24,6 +23,7 @@ import {
   writeSwitchProgress,
 } from "./progress";
 import { openMoveSession } from "./session";
+import { pendingStop } from "./shared";
 import { protectInB } from "./switch-access";
 import { clearDsNotes, type DsGate, dsGate, removeDs, warnPublishedDs } from "./switch-ds";
 import { planSwitch, type SwitchPlan } from "./switch-plan";
@@ -37,17 +37,16 @@ import {
 import { attachSites } from "./switch-sites";
 import {
   A_TOKEN_VAR,
-  ABORT_COMMAND,
   accountName,
   accountWords,
   FINISH_COMMAND,
   MOVE_COMMAND,
-  MOVE_PHASE,
+  moveAudit,
   refusal,
   SWITCH_COMMAND,
 } from "./texts";
 import type { MoveResult, MoveSession, MoveZone, StepStop, SwitchMoveOptions } from "./types";
-import { recordInput } from "./zone";
+import { aNameserversClash, recordInput } from "./zone";
 
 /**
  * `opscrew cloudflare move --switch`: refused before any change unless this repository's app is
@@ -131,18 +130,13 @@ async function readDelegation(
   registrar: Registrar,
   progress: SwitchProgress | undefined,
 ): Promise<Delegation> {
-  const { a, b } = session.accounts;
+  const { b } = session.accounts;
   const zone = await b.client.getZone(move.to.zoneId as string);
   b.zone = zone;
   const at = hosts(zone.nameServers);
   if (zone.status === "active") return { zone, before: at, switched: true };
-  const aServers = hosts(a.zone?.nameServers ?? []);
-  if (aServers.length > 0 && sameHosts(aServers, hosts(zone.nameServers))) {
-    throw refusal(
-      `Cloudflare gave ${session.zone} in the account ${accountName(b)} the nameservers it has in the account ${accountName(a)} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
-      `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
-    );
-  }
+  const clash = aNameserversClash(session, zone);
+  if (clash !== undefined) throw refusal(...clash);
   if (progress?.nameserversSetAt !== undefined) return { zone, before: at, switched: true };
   const before = await currentNameservers(session, registrar);
   return { zone, before, switched: sameHosts(before, hosts(zone.nameServers)) };
@@ -200,13 +194,7 @@ async function beforeSwitch(
       deps.reporter.info(plan.details);
       const pending = { planHash: plan.planHash, savedAt: deps.clock.now().toISOString() };
       await writeSwitchProgress(session.paths, { zone, pending });
-      const approve = approveCommand(command, plan.planHash, ["--confirm", zone]);
-      return {
-        stop: {
-          pendingPlanHash: plan.planHash,
-          next: [`Review the plan above, then run \`${approve}\` to apply it and continue.`],
-        },
-      };
+      return { stop: pendingStop(session, plan.planHash, ["--confirm", zone]) };
     }
     const approval = await deps.approvals.request({
       kind: "domain-settings",
@@ -246,8 +234,8 @@ async function beforeSwitch(
   await writeSwitchProgress(session.paths, approved);
   await copyRecords(session, now.zone, current.plan);
   if (now.switched) return { progress: approved };
-  const change = await pointAtB(session, registrar, now.zone, now.before);
-  if (!change.set) return { stop: change.stop };
+  const stop = await pointAtB(session, registrar, now.zone, now.before);
+  if (stop !== undefined) return { stop };
   const set = { ...approved, nameserversSetAt: deps.clock.now().toISOString() };
   await writeSwitchProgress(session.paths, set);
   return { progress: set };
@@ -284,11 +272,9 @@ async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPla
     `Copying ${plural(records.length, "record")} into the new account's zone`,
   );
   await session.accounts.b.client.createZoneRecords(zone.id, records);
-  await session.deps.audit.append({
+  await moveAudit(session.deps, {
     kind: "provider-call",
-    actor: "opscrew",
     action: "cloudflare records created",
-    phase: MOVE_PHASE,
     target: plan.planHash,
     decision: "approved",
     detail: `${plural(records.length, "record")} in ${session.zone} (the switch)`,
@@ -381,11 +367,9 @@ async function afterSwitch(
   }
   const report = timesReport(zone, times, result.hostnames);
   for (const line of report) deps.reporter.success(line);
-  await deps.audit.append({
+  await moveAudit(deps, {
     kind: "provider-call",
-    actor: "opscrew",
     action: "switch measured",
-    phase: MOVE_PHASE,
     target: zone,
     detail: report.join(" "),
   });

@@ -15,21 +15,30 @@ import {
   type SharedRuleRef,
   type ZonePermissionNeed,
 } from "@opscrew/connector-cloudflare";
-import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
-import { type ComparableRecord, recordsMissingFromZone, sameRecordContent } from "../domain";
+import {
+  canonicalJson,
+  escapeRegExp,
+  listText,
+  OpsCrewError,
+  plural,
+  sha256Hex,
+} from "@opscrew/core";
+import { recordsMissingFromZone, sameRecordContent } from "../domain";
 import { recordText } from "../domain/connect-plan";
+import { hosts, sameHosts } from "../domain/switch";
 import { sharedDesired } from "../provision/shared-cloudflare";
 import { appliesNow } from "../retarget/steps";
-import { approveCommand } from "../retarget/texts";
 import { readServerAddresses, requestApproval } from "../shared";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
+import { pendingStop } from "./shared";
 import {
   ABORT_COMMAND,
   accountName,
   accountWords,
   B_TOKEN_VAR,
+  bug,
   MOVE_COMMAND,
-  MOVE_PHASE,
+  moveAudit,
   refusal,
 } from "./texts";
 import type { MoveSession, MoveZone, StepStop } from "./types";
@@ -147,26 +156,9 @@ function cnameClash(a: CloudflareZoneRecord, b: CloudflareZoneRecord, zone: stri
   return types[0] !== types[1] && types.includes("CNAME");
 }
 
-/** The types `recordsMissingFromZone` compares by their `data`; every other by its `content`. */
-const DATA_TYPES = new Set(["SRV", "CAA"]);
-
-/** A record as compared: SRV and CAA by their `data` (Cloudflare words their content itself). */
-function comparable(record: Omit<ZoneRecord, "ttl">): ComparableRecord {
-  const { type, name, content, data, priority } = record;
-  const byData = data !== undefined && DATA_TYPES.has(type.toUpperCase());
-  return {
-    type,
-    name,
-    ...(byData ? { data } : content === undefined ? {} : { content }),
-    ...(priority === undefined ? {} : { priority }),
-  };
-}
-
 /** True when `a` and `b` are the same value but one is proxied and the other not. */
 function proxiedApart(a: Omit<ZoneRecord, "ttl">, b: Omit<ZoneRecord, "ttl">): boolean {
-  return (
-    sameRecordContent(comparable(a), comparable(b)) && Boolean(a.proxied) !== Boolean(b.proxied)
-  );
+  return sameRecordContent(a, b) && Boolean(a.proxied) !== Boolean(b.proxied);
 }
 
 /** `records` by their type and name. */
@@ -175,17 +167,6 @@ function sets(records: readonly CloudflareZoneRecord[]): Map<string, CloudflareZ
   for (const record of records)
     found.set(keyOf(record), [...(found.get(keyOf(record)) ?? []), record]);
   return found;
-}
-
-/** The records of `source` that `zone` does not have (`recordsMissingFromZone`). */
-function missing(
-  source: readonly CloudflareZoneRecord[],
-  zone: readonly CloudflareZoneRecord[],
-): CloudflareZoneRecord[] {
-  const views = new Map(source.map((record) => [comparable(record), record] as const));
-  return recordsMissingFromZone([...views.keys()], zone.map(comparable)).map(
-    (view) => views.get(view) as CloudflareZoneRecord,
-  );
 }
 
 const byJson = <T>(items: readonly T[]): T[] =>
@@ -200,13 +181,6 @@ function changeCount(plan: ZoneCopy): number {
 /** True for a plan that only deletes a mark (the finish's, the abort's): it copies nothing. */
 function deletesOnly(marks: ZoneMarks | undefined): boolean {
   return marks !== undefined && marks.create.length === 0 && marks.delete.length > 0;
-}
-
-/** A plan of OpsCrew's own making that is not what it must be: OpsCrew's bug. */
-function bug(message: string): OpsCrewError {
-  return new OpsCrewError("INTERNAL", message, {
-    hint: "This is a bug in OpsCrew; please report it.",
-  });
 }
 
 /** Stops unless `marks` names a mark and deletes only TXT records of that name in `inB`. */
@@ -287,8 +261,8 @@ export async function planZone(
     }
     // A value is added only where B has no other value of the set; otherwise the set is listed.
     const apart = setA.some((one) => setB.some((other) => proxiedApart(one, other)));
-    if (missing(setB, setA).length > 0 || apart) differs(first, setA, setB);
-    else create.push(...missing(setA, setB).map(zoneRecord));
+    if (recordsMissingFromZone(setB, setA).length > 0 || apart) differs(first, setA, setB);
+    else create.push(...recordsMissingFromZone(setA, setB).map(zoneRecord));
   }
   const body: Omit<ZoneCopy, "planHash"> = {
     zone,
@@ -342,7 +316,7 @@ function shownRecord(record: ZoneRecord, addresses: readonly string[]): string {
  * an SPF policy's `ip4:203.0.113.1` and `ip6:2001:db8::1` are.
  */
 function addressPattern(address: string): RegExp {
-  const escaped = address.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegExp(address);
   const pattern = address.includes(":")
     ? `(?:(?<=ip6:)|(?<![0-9a-fA-F:]))${escaped}(?![0-9a-fA-F]|:[0-9a-fA-F])`
     : `(?<![\\d.])${escaped}(?!\\d|\\.\\d)`;
@@ -438,6 +412,23 @@ function zoneNeeds(session: MoveSession): ZonePermissionNeed[] {
 }
 
 /**
+ * The refusal's message and hint when Cloudflare gave B's zone the nameservers A's zone has:
+ * pointing the domain at B would change nothing.
+ */
+export function aNameserversClash(
+  session: MoveSession,
+  zone: Pick<MoveZone, "nameServers">,
+): [message: string, hint: string] | undefined {
+  const { a, b } = session.accounts;
+  const aServers = hosts(a.zone?.nameServers ?? []);
+  if (aServers.length === 0 || !sameHosts(aServers, hosts(zone.nameServers))) return undefined;
+  return [
+    `Cloudflare gave ${session.zone} in the account ${accountName(b)} the nameservers it has in the account ${accountName(a)} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
+    `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
+  ];
+}
+
+/**
  * Stops unless B's zone has nameservers of its own and B's token has every zone permission the
  * app's pieces need there, each missing one named. `added`: this run added the zone just now.
  */
@@ -446,7 +437,7 @@ async function requireUsableZone(
   zone: MoveZone,
   added: boolean,
 ): Promise<void> {
-  const { a, b } = session.accounts;
+  const { b } = session.accounts;
   const unchanged = added ? "The zone was added to the new account; nothing else was changed." : "";
   const stop = (
     message: string,
@@ -456,19 +447,8 @@ async function requireUsableZone(
     added
       ? new OpsCrewError(code, `${message} ${unchanged}`, { hint })
       : refusal(message, hint, code);
-  const own = (servers: readonly string[]) =>
-    [...servers]
-      .map((one) => one.toLowerCase())
-      .sort()
-      .join(",");
-  const aServers = a.zone?.nameServers ?? [];
-  if (aServers.length > 0 && own(zone.nameServers) === own(aServers)) {
-    throw stop(
-      `Cloudflare gave ${session.zone} in the account ${accountName(b)} the nameservers it has in the account ${accountName(a)} (${listText(zone.nameServers)}), so pointing the domain at the new account would change nothing.`,
-      `Run \`${ABORT_COMMAND}\` to remove the zone from the new account, then start the move again (\`${MOVE_COMMAND} --to <account>\`): Cloudflare gives the zone another pair when it is added again.`,
-      "PHASE_PRECONDITION",
-    );
-  }
+  const clash = aNameserversClash(session, zone);
+  if (clash !== undefined) throw stop(...clash, "PHASE_PRECONDITION");
   const { missing } = await b.client.zonePermissions(zone.id, zoneNeeds(session));
   if (missing.length === 0) return;
   throw stop(
@@ -516,12 +496,7 @@ export async function applyZone(
   if (!appliesNow(session, plan.planHash)) {
     deps.reporter.info(plan.details);
     await writePending(deps, key, plan.planHash);
-    return {
-      pendingPlanHash: plan.planHash,
-      next: [
-        `Review the plan above, then run \`${approveCommand(session.command, plan.planHash)}\` to apply it and continue.`,
-      ],
-    };
+    return pendingStop(session, plan.planHash);
   }
   await requestApproval(deps, {
     kind: "cloudflare-apply",
@@ -544,11 +519,9 @@ export async function applyZone(
     );
   }
   const audit = (action: string, detail: string) =>
-    deps.audit.append({
+    moveAudit(deps, {
       kind: "provider-call",
-      actor: "opscrew",
       action,
-      phase: MOVE_PHASE,
       target: plan.planHash,
       decision: "approved",
       detail,

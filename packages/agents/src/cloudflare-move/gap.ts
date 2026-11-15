@@ -6,7 +6,7 @@
  */
 import { errorMessage, OpsCrewError, realSleep } from "@opscrew/core";
 import { type SwitchProgress, writeSwitchProgress } from "./progress";
-import { MOVE_PHASE } from "./texts";
+import { moveAudit } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
 
 /** How often the loop looks. */
@@ -118,11 +118,9 @@ export async function measureGap(
         );
       }
       if (check.requested) {
-        await deps.audit.append({
+        await moveAudit(deps, {
           kind: "provider-call",
-          actor: "opscrew",
           action: "activation check",
-          phase: MOVE_PHASE,
           target: session.zone,
           detail: `zone ${zone.id} in the account ${b.accountId}`,
         });

@@ -94,6 +94,10 @@ describe("markContents and parseMarks", () => {
       expect(content).toContain(`part=${i + 1}/${contents.length}`);
       for (const piece of content.split('" "'))
         expect(piece.replace(/"/g, "").length).toBeLessThanOrEqual(255);
+      // Every string but the last is a full 255 characters, quoted as it is (no escape in it).
+      const strings = content.slice(1, -1).split('" "');
+      expect(strings.slice(0, -1).every((one) => one.length === 255)).toBe(true);
+      expect(content).not.toContain("\\");
     });
     const name = `_opscrew-move.shop-0123abcd.${ZONE}`;
     // Read back in any order.

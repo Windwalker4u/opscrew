@@ -11,19 +11,13 @@ import {
   type CloudflareDnsRecord,
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
-import { listText, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
+import { listText, type ProjectPaths } from "@opscrew/core";
 import { isMoveReady, opscrewRecordNames, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
-import {
-  appsOf,
-  type DeployPlan,
-  environmentsOf,
-  previewEnvironmentOf,
-  snapshotOffsiteOf,
-} from "@opscrew/plan-schema";
+import { type DeployPlan, previewEnvironmentOf, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { portainerCloudflare } from "../provision/credentials";
 import { planWhere } from "../runners/words";
 import { hasState, stateCopyPaths, stateNotHere } from "../shared";
-import { readMoveRecords } from "./record";
+import { otherAppMoves } from "./record";
 import {
   A_TOKEN_VAR,
   ABORT_COMMAND,
@@ -116,25 +110,18 @@ async function requireActiveZone(session: MoveSession): Promise<void> {
 
 /** Stops when another app of the repository moves the same zone to another account. */
 async function requireNoOtherMove(session: MoveSession): Promise<void> {
-  const { paths, zone } = session;
+  const { zone } = session;
   const b = session.accounts.b.accountId;
-  for (const app of await appsOf(paths.root)) {
-    if (app.key === paths.app) continue;
-    const own = resolveProjectPaths(paths.root, {
-      env: { OPSCREW_HOME: paths.homeDir },
-      ...(app.key === undefined ? {} : { app: app.key }),
-    });
-    const records = await readMoveRecords(own, await environmentsOf(paths.root, app.key));
-    const other = records
-      .map((record) => record.plan.cloudflareMove)
-      .find((move) => move?.zone === zone && move.to.accountId !== b);
-    if (other === undefined) continue;
-    const flag = app.key === undefined ? "" : ` --app ${app.key}`;
-    throw refusal(
-      `Another app of this repository is moving ${zone} to the Cloudflare account ${other.to.accountId}, and a zone moves to one account.`,
-      `Move this app to that account too (\`${MOVE_COMMAND} --to ${other.to.accountId}\`), or abort that move first (\`${ABORT_COMMAND}${flag}\`).`,
-    );
-  }
+  const other = (await otherAppMoves(session.paths)).find(
+    ({ move }) => move.zone === zone && move.to.accountId !== b,
+  );
+  if (other === undefined) return;
+  const to = other.move.to.accountId;
+  const flag = other.key === undefined ? "" : ` --app ${other.key}`;
+  throw refusal(
+    `Another app of this repository is moving ${zone} to the Cloudflare account ${to}, and a zone moves to one account.`,
+    `Move this app to that account too (\`${MOVE_COMMAND} --to ${to}\`), or abort that move first (\`${ABORT_COMMAND}${flag}\`).`,
+  );
 }
 
 /** The account-scoped Cloudflare pieces of a plan, which B's token needs permissions for. */

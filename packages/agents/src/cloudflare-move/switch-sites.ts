@@ -7,7 +7,7 @@
  */
 import { OpsCrewError } from "@opscrew/core";
 import type { ReadMark } from "./marks";
-import { MOVE_PHASE } from "./texts";
+import { moveAudit } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
 
 /**
@@ -53,11 +53,9 @@ export async function attachSites(
       );
       if (held === undefined) throw error;
       await a.client.detachWorkerDomain(a.accountId, held.id);
-      await deps.audit.append({
+      await moveAudit(deps, {
         kind: "provider-call",
-        actor: "opscrew",
         action: "custom domain detached (A)",
-        phase: MOVE_PHASE,
         target: session.zone,
         detail: `${hostname} from the Worker ${held.service} in the account ${a.accountId}, which held it`,
       });
@@ -66,11 +64,9 @@ export async function attachSites(
     made.push(hostname);
   }
   if (made.length > 0) {
-    await deps.audit.append({
+    await moveAudit(deps, {
       kind: "provider-call",
-      actor: "opscrew",
       action: "custom domains attached",
-      phase: MOVE_PHASE,
       target: session.zone,
       detail: `${made.join(", ")} in the account ${b.accountId}`,
     });

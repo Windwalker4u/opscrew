@@ -8,15 +8,15 @@ import {
   cloudflareConnector,
 } from "@opscrew/connector-cloudflare";
 import { errorMessage, OpsCrewError } from "@opscrew/core";
-import { type CloudflareMove, type DeployPlan, environmentsOf } from "@opscrew/plan-schema";
+import type { CloudflareMove, DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { resolveAccount } from "../domain/common";
 import { environmentDeployed } from "../environments/list";
 import { type CloudflareSetup, setupCloudflare, setupGitHub } from "../provision";
 import { existingStateEngine, githubClientFromToken, requireGitRepo } from "../shared";
 import { otherAppHostnames, requireNoPreviews, requireNoRetarget } from "./checks";
-import { readMoveRecords } from "./record";
-import { A_TOKEN_VAR, B_TOKEN_VAR, MOVE_COMMAND, refusal } from "./texts";
+import { readMoveRecords, recordedMove } from "./record";
+import { A_TOKEN_VAR, B_TOKEN_VAR, bug, MOVE_COMMAND, refusal } from "./texts";
 import type {
   MoveAccount,
   MoveAccounts,
@@ -105,7 +105,7 @@ async function zoneInAccounts(
 }
 
 /** The zone named `zone` in `accountId`, when the account has it. */
-async function zoneIn(
+export async function zoneIn(
   client: CloudflareClient,
   zone: string,
   accountId: string,
@@ -310,7 +310,7 @@ export async function openMoveSession(
   const services = options.services ?? {};
   const { command } = options;
   const paths = deps.paths;
-  const all = await readMoveRecords(paths, await environmentsOf(paths.root, paths.app));
+  const all = await readMoveRecords(paths);
   await requireNoPreviews(paths);
   await requireNoRetarget(paths, all);
   const again = `then run \`${command}\` again`;
@@ -343,7 +343,7 @@ export async function openMoveSession(
     B_TOKEN_VAR,
     command,
   );
-  const recorded = all.find((env) => env.plan.cloudflareMove !== undefined)?.plan.cloudflareMove;
+  const recorded = recordedMove(all);
   const aAccounts = await aClient.listAccounts();
   const split = await splitEnvironments(
     all,
@@ -394,9 +394,7 @@ export async function openMoveSession(
   // Stops with CREDENTIALS_MISSING when there is no token, so the API exists after it.
   const github = await setupGitHub(deps, git, { github: githubApi ?? null });
   if (githubApi === null || githubApi === undefined) {
-    throw new OpsCrewError("INTERNAL", "The GitHub API is not available.", {
-      hint: "This is a bug in OpsCrew; please report it.",
-    });
+    throw bug("The GitHub API is not available.");
   }
   const { engine, env } = await existingStateEngine({ ...deps, paths: first.paths }, first.plan, {
     ...(options.engine !== undefined ? { engine: options.engine } : {}),

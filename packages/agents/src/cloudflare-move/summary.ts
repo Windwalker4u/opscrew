@@ -134,14 +134,7 @@ export function moveSummary(session: MoveSession, sizes: readonly MoveBucketSize
   ];
   return {
     zone,
-    from: { accountId: a.accountId },
     to: { accountId: b.accountId, ...(b.name === undefined ? {} : { name: b.name }) },
-    environments,
-    staying: session.staying,
-    skipped: session.skipped,
-    otherHostnames: session.otherHostnames,
-    buckets,
-    windows,
     lines,
   };
 }

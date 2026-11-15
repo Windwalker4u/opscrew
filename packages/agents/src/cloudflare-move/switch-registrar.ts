@@ -16,7 +16,7 @@ import {
 import { REGISTRAR_NAMES, registrarLinks } from "../domain/registrars";
 import { resolveDomainServices } from "../domain/services";
 import { dsRecordText, hosts, pointToZone, publishDs, type SwitchContext } from "../domain/switch";
-import { accountName, MOVE_PHASE } from "./texts";
+import { accountName, MOVE_PHASE, moveAudit } from "./texts";
 import type { MoveSession, MoveZone, StepStop } from "./types";
 
 /** The registrar in words: `Porkbun`, `Cloudflare Registrar`, `the registrar that holds it`. */
@@ -65,8 +65,11 @@ export function findSwitchRegistrar(session: MoveSession): Promise<DomainRegistr
   );
 }
 
-/** `registrar` with a `getDomain` that answers from B's zone's record on a permission refusal. */
-function fromRecordWhenRefused(session: MoveSession, registrar: Registrar): Registrar {
+/** `registrar`'s `getDomain`, answering from B's zone's record on a permission refusal. */
+function fromRecordWhenRefused(
+  session: MoveSession,
+  registrar: Registrar,
+): Pick<Registrar, "getDomain"> {
   const getDomain = async (domain: string) => {
     try {
       return await registrar.getDomain(domain);
@@ -83,13 +86,7 @@ function fromRecordWhenRefused(session: MoveSession, registrar: Registrar): Regi
         : undefined;
     }
   };
-  return new Proxy(registrar, {
-    get: (target, key) => {
-      if (key === "getDomain") return getDomain;
-      const value: unknown = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
+  return { getDomain };
 }
 
 /**
@@ -151,28 +148,25 @@ function switchContext(
   };
 }
 
-/** What changing the nameservers did: set through the registrar's API, or left to the user. */
-export type NameserverChange = { set: true } | { set: false; stop: StepStop };
-
 /**
  * B's nameservers for the zone: set at Porkbun, Namecheap or GoDaddy (`pointToZone`, which
  * audits it under the move); at Cloudflare Registrar the dashboard steps of its move between
- * accounts; at another registrar the nameservers to set. Either of the last two stops: a later run
- * finds the delegation and goes on.
+ * accounts; at another registrar the nameservers to set. Either of the last two stops (the stop
+ * returned; `undefined` once they are set): a later run finds the delegation and goes on.
  */
 export async function pointAtB(
   session: MoveSession,
   registrar: DomainRegistrar,
   zone: MoveZone,
   before: readonly string[],
-): Promise<NameserverChange> {
+): Promise<StepStop | undefined> {
   const { deps, command } = session;
   const { a, b } = session.accounts;
   const after = hosts(zone.nameServers);
   const again = `Then run \`${command}\` again: it finds the new nameservers, waits until the new account's zone is active and its certificate issued, and finishes the switch.`;
   if (registrar.kind === "api") {
     const done = await pointToZone(switchContext(session, registrar), zone);
-    return done.outcome === "manual" ? { set: false, stop: { next: [again] } } : { set: true };
+    return done.outcome === "manual" ? { next: [again] } : undefined;
   }
   const bName = accountName(b);
   const aName = accountName(a);
@@ -181,27 +175,21 @@ export async function pointAtB(
       `${session.zone} is registered at Cloudflare Registrar, whose move between accounts is done in the dashboard, so OpsCrew does not change its nameservers itself.`,
     );
     return {
-      set: false,
-      stop: {
-        next: [
-          `In the account ${aName}'s dashboard (https://dash.cloudflare.com): Domain Registration, Manage Domains, ${session.zone}, Configuration, and start its move to the account ${bName} (${b.accountId}).`,
-          `In the account ${bName}'s dashboard, accept the move within five days (Domain Registration, Manage Domains). Cloudflare then gives ${session.zone} the new account's nameservers (${listText(after)}), and the registration's settings in the old account are not kept.`,
-          again,
-        ],
-      },
+      next: [
+        `In the account ${aName}'s dashboard (https://dash.cloudflare.com): Domain Registration, Manage Domains, ${session.zone}, Configuration, and start its move to the account ${bName} (${b.accountId}).`,
+        `In the account ${bName}'s dashboard, accept the move within five days (Domain Registration, Manage Domains). Cloudflare then gives ${session.zone} the new account's nameservers (${listText(after)}), and the registration's settings in the old account are not kept.`,
+        again,
+      ],
     };
   }
   deps.reporter.warn(
     `OpsCrew can't change the nameservers of ${session.zone} at the registrar that holds it, so set them yourself.`,
   );
   return {
-    set: false,
-    stop: {
-      next: [
-        `At the registrar that holds ${session.zone}, set its nameservers to ${listText(after)} (now ${listText([...before]) || "none"}).`,
-        again,
-      ],
-    },
+    next: [
+      `At the registrar that holds ${session.zone}, set its nameservers to ${listText(after)} (now ${listText([...before]) || "none"}).`,
+      again,
+    ],
   };
 }
 
@@ -237,11 +225,9 @@ export async function dnssecInB(
   const zones = domainZonesFrom(b.client);
   if ((await zones.dnssecEnabled(zone.id)) !== true) {
     await zones.enableDnssec(zone.id);
-    await deps.audit.append({
+    await moveAudit(deps, {
       kind: "provider-call",
-      actor: "opscrew",
       action: "DNSSEC on (B)",
-      phase: MOVE_PHASE,
       target: session.zone,
       detail: `zone ${zone.id} in the account ${b.accountId} (domain at ${registrarWords(registrar)})`,
     });

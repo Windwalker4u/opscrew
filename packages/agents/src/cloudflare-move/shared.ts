@@ -13,7 +13,7 @@ import {
   type SharedRecord,
 } from "@opscrew/connector-cloudflare";
 import { valueFingerprint } from "@opscrew/connector-portainer";
-import { fingerprintSha256, OpsCrewError } from "@opscrew/core";
+import { fingerprintSha256 } from "@opscrew/core";
 import { PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -48,8 +48,9 @@ import { approveCommand } from "../retarget/texts";
 import { portainerClientFor, recordedStack } from "../shared";
 import { moveFolder } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
-import { environmentDeps, MOVE_PHASE, refusal } from "./texts";
-import type { MoveEnvironment, MoveSession, MoveZone, StepStop } from "./types";
+import { zoneIn } from "./session";
+import { bug, environmentDeps, MOVE_PHASE, refusal } from "./texts";
+import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** B's shared record of the environment: `cloudflare-move/cloudflare.json`. */
 export function bSharedRecordPath(environment: MoveEnvironment): string {
@@ -62,13 +63,6 @@ export function bSharedRecordPath(environment: MoveEnvironment): string {
  */
 export function aSharedRecordPath(environment: MoveEnvironment): string {
   return moveFolder(environment.paths, "a-removal", "cloudflare.json");
-}
-
-/** B's zone as B's token reads it now; `undefined` when B has none. */
-async function readBZone(session: MoveSession): Promise<MoveZone | undefined> {
-  const { b } = session.accounts;
-  const found = await b.client.findZone(session.zone, { accountId: b.accountId });
-  return found?.name === session.zone ? found : undefined;
 }
 
 /**
@@ -121,16 +115,11 @@ export function pendingStop(
   };
 }
 
-/** What a Cloudflare step of the move came to. */
-export interface SharedStep {
-  /** Set when the run stopped on purpose: the plan waits for `--approve <hash>`. */
-  stop?: StepStop;
-}
-
 /**
  * One Cloudflare plan of the move: nothing asked when it changes nothing (the record is written,
  * a waiting plan of its key forgotten); else shown, and applied after its approval when this run
- * applies it (interactive, or `--approve <hash>`), otherwise recorded as waiting and stopped. A
+ * applies it (interactive, or `--approve <hash>`), otherwise recorded as waiting and stopped (the
+ * stop returned). A
  * removal asks with `allowDestroy`; it, and a plan deleting OpsCrew's rule, with the app's name
  * typed (`--confirm <app>` in scripts).
  */
@@ -144,7 +133,7 @@ async function cloudflareStep(
     allowDestroy?: boolean;
     apply?: Pick<SharedCloudflareInput, "keys" | "sleep" | "keepOriginCertificate">;
   },
-): Promise<SharedStep> {
+): Promise<StepStop | undefined> {
   const deps = environmentDeps(session, environment);
   const { plan, details } = input.zone;
   const app = environment.plan.app.name;
@@ -152,7 +141,7 @@ async function cloudflareStep(
   if (plan.changes.length === 0) {
     await applyZonePlan(deps, input.client, input.zone, { ...run, planOnly: false });
     await clearPending(session.deps, input.key);
-    return {};
+    return undefined;
   }
   // A removal's plan is not shown by the apply (a destroy shows it in its preview).
   if (input.allowDestroy === true) deps.reporter.info(details);
@@ -165,10 +154,10 @@ async function cloudflareStep(
   });
   if (!now) {
     await writePending(session.deps, input.key, plan.hash);
-    return { stop: pendingStop(session, plan.hash, result.deletes ? ["--confirm", app] : []) };
+    return pendingStop(session, plan.hash, result.deletes ? ["--confirm", app] : []);
   }
   await clearPending(session.deps, input.key);
-  return {};
+  return undefined;
 }
 
 /**
@@ -185,15 +174,13 @@ async function cloudflareStep(
 export async function planBShared(
   session: MoveSession,
   environment: MoveEnvironment,
-): Promise<SharedStep> {
+): Promise<StepStop | undefined> {
   const deps = environmentDeps(session, environment);
   const { b } = session.accounts;
-  const zone = await readBZone(session);
+  const zone = await zoneIn(b.client, session.zone, b.accountId);
   if (zone === undefined) {
-    throw new OpsCrewError(
-      "INTERNAL",
+    throw bug(
       `The Cloudflare account the move goes to has no zone ${session.zone} yet, so its shared plan can't be made.`,
-      { hint: "This is a bug in OpsCrew; please report it." },
     );
   }
   const { plan } = environment;
@@ -332,13 +319,12 @@ export async function revokeAOrigin(
   const details = describeCloudflarePlan(plan, desired, session.zone, [
     "  It was issued in the Cloudflare account the app moved from; OpsCrew read just now that the server serves the new account's origin certificate.",
   ]);
-  const step = await cloudflareStep(session, environment, {
+  return cloudflareStep(session, environment, {
     key: { action: "a-revoke", environment: environment.environment },
     client: a.client,
     zone: { plan, desired, details, recordPath },
     allowDestroy: true,
   });
-  return step.stop;
 }
 
 /**
@@ -359,7 +345,7 @@ export async function removeBShared(
   const { b } = session.accounts;
   const recordPath = bSharedRecordPath(environment);
   const record = await readCloudflareRecord(deps.paths, recordPath);
-  const zone = record === undefined ? undefined : await readBZone(session);
+  const zone = record === undefined ? undefined : await zoneIn(b.client, session.zone, b.accountId);
   if (record !== undefined && (zone === undefined || zone.id !== record.zoneId)) {
     await rm(recordPath, { force: true });
   } else if (zone !== undefined) {
@@ -371,13 +357,13 @@ export async function removeBShared(
       pendingZone: zone.status !== "active",
     });
     if (removal !== undefined) {
-      const step = await cloudflareStep(session, environment, {
+      const stop = await cloudflareStep(session, environment, {
         key: { action: "abort-shared", environment: environment.environment },
         client: b.client,
         zone: removal.zone,
         allowDestroy: true,
       });
-      if (step.stop !== undefined) return step.stop;
+      if (stop !== undefined) return stop;
     }
   }
   await forgetNextOriginTls(deps);

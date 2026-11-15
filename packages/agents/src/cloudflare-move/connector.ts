@@ -45,7 +45,7 @@ import { stacksForB } from "./finish-point";
 import { moveFolder, recordedHash, recordHash } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { pendingStop } from "./shared";
-import { environmentDeps, MOVE_PHASE } from "./texts";
+import { bug, environmentDeps, MOVE_PHASE } from "./texts";
 import type { MoveAccount, MoveEnvironment, MoveSession, StepStop } from "./types";
 
 /** The beside connector's folder on a cloud server, as the deploy login (beside the main one's). */
@@ -70,7 +70,7 @@ export interface ConnectorOptions {
 }
 
 /** The server in words: the user's own, or the one OpsCrew created. */
-function serverWords(plan: DeployPlan): string {
+export function serverWords(plan: DeployPlan): string {
   return plan.target.provider === "own" ? "your server" : "the app's server";
 }
 
@@ -137,12 +137,8 @@ function besideRunAs(plan: DeployPlan): { runAs: "root" | "login"; dir?: string 
 function serverTunnel(tunnels: readonly MoveTunnel[]): MoveTunnel {
   const [tunnel, ...more] = tunnels;
   if (tunnel === undefined || tunnel.module !== "tunnel" || more.length > 0) {
-    throw new OpsCrewError(
-      "INTERNAL",
+    throw bug(
       "OpsCrew was given other tunnels than the one whose connector runs on the app's server, so it changed nothing there.",
-      {
-        hint: "This is a bug in OpsCrew; please report it.",
-      },
     );
   }
   return tunnel;

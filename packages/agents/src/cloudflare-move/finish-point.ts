@@ -8,6 +8,8 @@
  * its hash (`cloudflare-move/finish-point.json`, no value in it), so a run after it changes nothing
  * again.
  */
+
+import type { ApprovalRecord } from "@opscrew/contracts";
 import {
   canonicalJson,
   OpsCrewError,
@@ -15,7 +17,13 @@ import {
   sha256Hex,
   writeFileAtomic,
 } from "@opscrew/core";
-import { appDir, DEPLOY_SECRETS, OFFSITE_ENV_SECRET } from "@opscrew/iac-templates";
+import {
+  appDir,
+  DEPLOY_SECRETS,
+  OFFSITE_ENV_SECRET,
+  type ProviderBucket,
+  providerBucket,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   backupsBucketOf,
@@ -33,28 +41,21 @@ import {
   portainerStacksFor,
 } from "../provision/portainer-flow";
 import { recordedEdge } from "../provision/render";
-import { deploySecretPlace, placeText, type SecretPlace, setSecretAt } from "../provision/secrets";
+import { deploySecretPlace, placeText } from "../provision/secrets";
 import { offsiteEnvFile, offsiteValues } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
 import { runDeployWorkflow } from "../retarget/site-steps";
 import { type AppValues, withAppEnv } from "../rotate/app-values";
 import { knownRecipients } from "../secrets/store";
-import {
-  PlanRefusedError,
-  r2Endpoint,
-  readValidJson,
-  requestApproval,
-  type StorageLogin,
-} from "../shared";
-import { dotenvLine, parseDotenv, storageVariableKind } from "../shared/app-env";
+import { r2Endpoint, readValidJson, requestApproval, type StorageLogin } from "../shared";
+import { dotenvLine, parseDotenv, storageLoginValue, storageVariableKind } from "../shared/app-env";
 import { reasonOf } from "../shared/errors";
 import { bucketKey, lastBackupsCopy, moveBuckets, type PointAtB } from "./buckets";
+import { serverWords } from "./connector";
+import { SEALED, type StoredSecret, secretPlace, storeSecrets } from "./deploy-secrets";
 import { moveFolder } from "./paths";
-import { accountWords, appWords, environmentDeps, MOVE_PHASE } from "./texts";
-import type { MoveEnvironment, MoveSession, StepStop } from "./types";
-
-/** Whose values: A's (the account the app runs on before the finish) or B's. */
-type Side = "a" | "b";
+import { accountWords, appWords, bug, environmentDeps, MOVE_PHASE } from "./texts";
+import type { MoveEnvironment, MoveSession, MoveSide, StepStop } from "./types";
 
 /** Step 1 for one environment, towards B, with what is known of it before it runs. */
 export interface PointingAtB extends PointAtB {
@@ -75,6 +76,12 @@ export interface PointingAtB extends PointAtB {
    * are written only under it, and only while they still have its hash.
    */
   approve(): Promise<void>;
+}
+
+/** Step 1 with nothing left to do (`pointing`: the app reads B's bucket already). */
+function nothingLeft(pointing: boolean): PointingAtB {
+  const nothing = async () => {};
+  return { done: true, pointing, approve: nothing, secrets: nothing, deploy: nothing };
 }
 
 /**
@@ -102,19 +109,9 @@ async function writeApplied(environment: MoveEnvironment, applied: Applied): Pro
 
 /** Step 1's values were to be written without their approval: OpsCrew's bug. */
 function unapproved(): OpsCrewError {
-  return new OpsCrewError(
-    "INTERNAL",
+  return bug(
     "OpsCrew was about to write the new account's values without their approval, so it wrote none.",
-    { hint: "This is a bug in OpsCrew; please report it." },
   );
-}
-
-/** A deploy secret to store: where it goes and its value. */
-type Stored = SecretPlace & { value: string };
-
-/** Where a secret goes, without its value. */
-function placeOf({ name, environment }: SecretPlace): SecretPlace {
-  return environment === undefined ? { name } : { name, environment };
 }
 
 /** The kind of place the app runs: a server, the user's Portainer, or none of its own. */
@@ -133,7 +130,7 @@ async function bucketLogin(
   session: MoveSession,
   environment: MoveEnvironment,
   root: "storage" | "backups",
-  side: Side,
+  side: MoveSide,
 ): Promise<StorageLogin | undefined> {
   const bucket = moveBuckets(environment.plan).find((one) => one.root === root);
   if (bucket === undefined) return undefined;
@@ -145,16 +142,17 @@ async function bucketLogin(
  * The app's bucket variables among `names` that name the account (its keys and endpoint), each
  * with A's value (`old`) and B's (`new`); its bucket's name and region stay.
  */
-function storagePairs(names: readonly string[], a: StorageLogin, b: StorageLogin): AppValues {
+function storagePairs(
+  names: readonly string[],
+  storage: ProviderBucket,
+  a: StorageLogin,
+  b: StorageLogin,
+): AppValues {
   const pairs: AppValues = {};
   for (const name of names) {
-    const kind = storageVariableKind(name);
-    if (kind === "endpoint") pairs[name] = { old: a.endpoint ?? "", new: b.endpoint ?? "" };
-    if (kind !== "key") continue;
-    pairs[name] =
-      name === "AWS_ACCESS_KEY_ID"
-        ? { old: a.accessKeyId, new: b.accessKeyId }
-        : { old: a.secretAccessKey, new: b.secretAccessKey };
+    const old = storageLoginValue(name, storage, a);
+    if (old === undefined) continue;
+    pairs[name] = { old, new: storageLoginValue(name, storage, b) ?? "" };
   }
   return pairs;
 }
@@ -184,7 +182,7 @@ function registerValues(
 async function serverAppEnv(session: MoveSession, environment: MoveEnvironment): Promise<string> {
   const deps = environmentDeps(session, environment);
   const { plan } = environment;
-  const words = plan.target.provider === "own" ? "your server" : "the app's server";
+  const words = serverWords(plan);
   const { remote } = await moveShell(deps, plan, session.services, APP_SERVER);
   const failed = (said: string) =>
     new OpsCrewError(
@@ -221,15 +219,15 @@ async function serverAppEnv(session: MoveSession, environment: MoveEnvironment):
 async function serverSecrets(
   session: MoveSession,
   environment: MoveEnvironment,
-  side: Side,
-): Promise<{ set: Stored[]; onSide: boolean }> {
+  side: MoveSide,
+): Promise<{ set: StoredSecret[]; onSide: boolean }> {
   const deps = environmentDeps(session, environment);
   const { plan } = environment;
-  const place = (name: string, value: string): Stored => ({
+  const place = (name: string, value: string): StoredSecret => ({
     ...deploySecretPlace(plan, name),
     value,
   });
-  const set: Stored[] = [];
+  const set: StoredSecret[] = [];
   if (side === "b") {
     const { edge, values } = await recordedEdge(deps, plan);
     if (edge.originTls !== undefined) {
@@ -262,10 +260,11 @@ async function serverSecrets(
   let onSide = false;
   const a = await bucketLogin(session, environment, "storage", "a");
   const b = await bucketLogin(session, environment, "storage", "b");
-  if (a !== undefined && b !== undefined) {
+  const storage = providerBucket(plan);
+  if (storage !== undefined && a !== undefined && b !== undefined) {
     const text = await serverAppEnv(session, environment);
     const lines = text.split(/\r?\n/);
-    const pairs = storagePairs([...parseDotenv(text).keys()], a, b);
+    const pairs = storagePairs([...parseDotenv(text).keys()], storage, a, b);
     const to = side === "a" ? "old" : "new";
     // Each of its bucket's variables on the server already holds this side's value.
     onSide =
@@ -277,31 +276,20 @@ async function serverSecrets(
 }
 
 /** The hash of a change of the deploy secrets: their places and their values' digests. */
-function changeHash(session: MoveSession, environment: MoveEnvironment, set: readonly Stored[]) {
+function changeHash(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  set: readonly StoredSecret[],
+) {
   const { owner, repo } = session.github;
   return sha256Hex(
     canonicalJson({
       action: "window",
       environment: environment.environment,
       repository: `${owner}/${repo}`,
-      set: set.map((stored) => ({ ...placeOf(stored), sha256: sha256Hex(stored.value) })),
+      set: set.map((stored) => ({ ...secretPlace(stored), sha256: sha256Hex(stored.value) })),
     }),
   );
-}
-
-/** Stores each of `set` where GitHub keeps it, sealed on this computer; audited by name. */
-async function storeSecrets(session: MoveSession, environment: MoveEnvironment, set: Stored[]) {
-  const deps = environmentDeps(session, environment);
-  const { owner, repo } = session.github;
-  for (const stored of set) {
-    await setSecretAt(
-      deps,
-      { api: session.githubApi, owner, repo },
-      placeOf(stored),
-      stored.value,
-      MOVE_PHASE,
-    );
-  }
 }
 
 /**
@@ -333,10 +321,7 @@ async function serverPointAtB(
 ): Promise<PointingAtB> {
   const deps = environmentDeps(session, environment);
   const { set, onSide } = await serverSecrets(session, environment, "b");
-  const nothing = async () => {};
-  if (set.length === 0) {
-    return { done: true, pointing: false, approve: nothing, secrets: nothing, deploy: nothing };
-  }
+  if (set.length === 0) return nothingLeft(false);
   const hash = changeHash(session, environment, set);
   const applied = await readApplied(environment);
   const done = applied?.sha256 === hash && applied.deployed === true;
@@ -345,7 +330,7 @@ async function serverPointAtB(
   const details = [
     `These deploy secrets name the account the app runs on; they take their values for ${accountWords(session.accounts.b)}, and the deploy that follows writes them on the server and starts the app on them:`,
     ...set.map((stored) => `  ${placeText(stored)}`),
-    "(names only; values are encrypted on this computer before upload and never shown)",
+    SEALED,
   ].join("\n");
   let approved = false;
   return {
@@ -384,7 +369,7 @@ async function serverPointAtB(
           { hint: `Run \`${session.command}\` again to see the change and approve it.` },
         );
       }
-      await storeSecrets(session, environment, now.set);
+      await storeSecrets(session, now.set);
       await writeApplied(environment, { sha256: hash });
       deps.reporter.success(
         `The deploy secrets of ${name} hold their values for ${accountWords(session.accounts.b)}.`,
@@ -459,34 +444,29 @@ async function portainerPointAtB(
   environment: MoveEnvironment,
 ): Promise<PointingAtB> {
   const deps = environmentDeps(session, environment);
-  const nothing = async () => {};
-  const done = { done: true, pointing: true, approve: nothing, secrets: nothing, deploy: nothing };
-  if ((await readApplied(environment))?.deployed === true) return done;
+  if ((await readApplied(environment))?.deployed === true) return nothingLeft(true);
   const setup = await stacksForB(session, environment);
   const planned: PlannedStacks = await setup.stacks.plan(setup.outputs);
-  if (planned.changes === 0) return done;
+  if (planned.changes === 0) return nothingLeft(true);
   const { hash } = planned;
-  let approved: Awaited<ReturnType<typeof deps.approvals.request>> | undefined;
+  let approved: ApprovalRecord | undefined;
   return {
     done: false,
     pointing: false,
     // The stack plan was shown as it was made.
     asks: { hash },
     approve: async () => {
-      const approval = await deps.approvals.request({
+      const approval = await requestApproval(deps, {
         kind: "stack-apply",
         title: `Give the app's stacks in your Portainer their values for ${accountWords(session.accounts.b)}`,
         details: planned.details,
-        planHash: hash,
-      });
-      if (!approval.approved) {
-        throw new PlanRefusedError({
+        hash,
+        refused: {
           plan: "stack plan",
-          ...(approval.reason ? { reason: approval.reason } : {}),
           unchanged: "Nothing in Portainer was changed.",
-          hint: `Run \`${session.command}\` again when you are ready (in a script: --approve ${hash}).`,
-        });
-      }
+          again: session.command,
+        },
+      });
       await deps.approvals.assertApprovedStackPlan(hash);
       approved = approval;
     },
@@ -514,8 +494,7 @@ export async function pointAtB(
   const where = runsOn(environment.plan);
   if (where === "server") return serverPointAtB(session, environment);
   if (where === "portainer") return portainerPointAtB(session, environment);
-  const nothing = async () => {};
-  return { done: true, pointing: false, approve: nothing, secrets: nothing, deploy: nothing };
+  return nothingLeft(false);
 }
 
 /**
@@ -531,7 +510,7 @@ export async function backToA(session: MoveSession, environment: MoveEnvironment
   const { set } = await serverSecrets(session, environment, "a");
   const hash = changeHash(session, environment, set);
   if (set.length === 0 || (await readApplied(environment))?.sha256 === hash) return;
-  await storeSecrets(session, environment, set);
+  await storeSecrets(session, set);
   await writeApplied(environment, { sha256: hash });
 }
 

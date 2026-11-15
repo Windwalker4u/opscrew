@@ -8,15 +8,10 @@ import { generatedValuesFile } from "../shared/app-secrets";
 import { APP_BUCKET, BACKUPS_BUCKET } from "./buckets.fakes";
 import { NEW_DEPLOY_TOKEN_VAR } from "./deploy-secrets";
 import { endFinish, removeA } from "./finish-removal";
-import {
-  A_TUNNEL,
-  A_WEBHOOK_TUNNEL,
-  asScript,
-  type FinishWorld,
-  finishWorld,
-} from "./finish-removal.fakes";
+import { A_TUNNEL, A_WEBHOOK_TUNNEL, type FinishWorld, finishWorld } from "./finish-removal.fakes";
 import { appMark, markContents, markName } from "./marks";
 import { appProgressFile, writePending } from "./progress";
+import { asScript } from "./record.fakes";
 import { ZONE } from "./session.fakes";
 import { shadowFiles } from "./shadow";
 import { SERVER_ADDRESSES } from "./shadow.fakes";

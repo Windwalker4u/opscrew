@@ -17,13 +17,13 @@ import { FINISH_STEPS, type FinishSteps, finishMove } from "./finish";
 import { appEnv, appWorld, portainerFinishWorld, serverPointWorld } from "./finish.fakes";
 import type { PointingAtB } from "./finish-point";
 import {
-  asScript,
   change,
   type FinishTarget,
   type FinishWorldOptions,
   finishWorld,
 } from "./finish-removal.fakes";
 import { markWindow, readAppProgress, recordWindowStop } from "./progress";
+import { asScript } from "./record.fakes";
 import { serverPlan, unencrypted, ZONE } from "./session.fakes";
 import { shadowFiles, shadowRoots } from "./shadow";
 import { addressState, SERVER_ADDRESSES, stateAddresses } from "./shadow.fakes";
@@ -58,7 +58,7 @@ beforeEach(() => {
     }),
     planBShared: vi.fn<FinishSteps["planBShared"]>(async () => {
       trail.push("shared");
-      return {};
+      return undefined;
     }),
     pointAtB: vi.fn<FinishSteps["pointAtB"]>(async () => ({
       ...point,
@@ -328,7 +328,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
       };
       once.mockImplementationOnce(async () => {
         trail.push(`${name} stopped`);
-        return name === "planBShared" ? { stop } : stop;
+        return stop;
       });
       expect(await finish(w)).toEqual({ step: "prepared", done: false, ...stop });
       expect(await stepOf(w)).toBe("prepared");

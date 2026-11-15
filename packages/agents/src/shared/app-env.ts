@@ -498,6 +498,21 @@ function storageValue(
       return storage.provider === "contabo" ? "us-east-1" : storage.region;
     case "path-style":
       return "true";
+    default:
+      return storageLoginValue(name, storage, login);
+  }
+}
+
+/**
+ * The value of a bucket variable that names the account, from `login`: the S3 endpoint
+ * (`storageEndpoint`) or one of its keys; undefined for any other variable, or without `login`.
+ */
+export function storageLoginValue(
+  name: string,
+  storage: { provider: string; region: string },
+  login: StorageLogin | undefined,
+): string | undefined {
+  switch (storageVariableKind(name)) {
     case "endpoint":
       return storageEndpoint(storage, login);
     case "key":

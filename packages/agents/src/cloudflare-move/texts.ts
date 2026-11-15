@@ -2,7 +2,7 @@
  * The commands, phase, token variables, words and refusal of a move to another Cloudflare
  * account, and the environment's phase deps every step of it uses.
  */
-import type { PhaseName } from "@opscrew/contracts";
+import type { AuditInput, PhaseName } from "@opscrew/contracts";
 import { type ErrorCode, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import type { MoveEnvironment, MoveSession } from "./types";
@@ -28,6 +28,21 @@ export function refusal(
   code: ErrorCode = "PHASE_PRECONDITION",
 ): OpsCrewError {
   return new OpsCrewError(code, `${message} Nothing was changed.`, { hint });
+}
+
+/** Something OpsCrew's own code should never do: OpsCrew's bug. */
+export function bug(message: string): OpsCrewError {
+  return new OpsCrewError("INTERNAL", message, {
+    hint: "This is a bug in OpsCrew; please report it.",
+  });
+}
+
+/** Appends an audit entry of the move: OpsCrew's, under {@link MOVE_PHASE} (the log redacts it). */
+export function moveAudit(
+  deps: Pick<PhaseDeps, "audit">,
+  entry: Pick<AuditInput, "kind" | "action" | "target" | "decision" | "detail">,
+): Promise<void> {
+  return deps.audit.append({ ...entry, actor: "opscrew", phase: MOVE_PHASE });
 }
 
 /** `shop (prod)`. */

@@ -15,7 +15,6 @@ import type {
   RemoteRunOptions,
 } from "@opscrew/contracts";
 import { ApprovalGate, MemoryApprovalStore } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
 import { CHECK_PAUSED_VARIABLE, DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
 import { type CloudflareMove, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import {
@@ -28,6 +27,7 @@ import type { StorageLogin } from "../shared";
 import { portainerPlan, ScriptedApprovalHandler, SERVER_IPV4 } from "../testing";
 import { withBucket } from "../testing/storage";
 import { fakeClock } from "./connector.fakes";
+import { atStep, bucketKeys } from "./record.fakes";
 import { moveHarness, recordedMove, serverPlan, unencrypted } from "./session.fakes";
 import { MOVE_COMMAND } from "./texts";
 import type { MoveSession } from "./types";
@@ -171,18 +171,6 @@ export class FakeR2 {
   }
 }
 
-/** The app's two buckets in each account, each with its own key. */
-function bucketKeys() {
-  const key = (seed: string): StorageLogin => ({
-    accessKeyId: fakeSecret("aws-access-key-id", seed),
-    secretAccessKey: fakeSecret("aws-secret-access-key", seed),
-  });
-  return {
-    a: { storage: key("a-storage"), backups: key("a-backups") },
-    b: { storage: key("b-storage"), backups: key("b-backups") },
-  };
-}
-
 /** `plan` with the app's files and the snapshots' copies in R2, and a worker beside the app. */
 function withR2(plan: DeployPlan): DeployPlan {
   const bucket = withBucket(plan, "r2");
@@ -229,13 +217,6 @@ export interface BucketWorldOptions {
   command?: string;
   /** The move's recorded step (default `started`). */
   step?: CloudflareMove["step"];
-}
-
-/** `plan` with the move's record at `step`. */
-function atStep(plan: DeployPlan, step: CloudflareMove["step"]): DeployPlan {
-  const move = plan.cloudflareMove;
-  if (move === undefined) throw new Error("the plan records no move");
-  return DeployPlanSchema.parse({ ...plan, cloudflareMove: { ...move, step } });
 }
 
 /**
@@ -407,12 +388,3 @@ export async function bucketWorld(target: "cloud" | "portainer", o: BucketWorldO
 }
 
 export type BucketWorld = Awaited<ReturnType<typeof bucketWorld>>;
-
-/** `w`'s session as a script's: not interactive, with `--approve <hash>` when given. */
-export function asScript(w: BucketWorld, approve?: string): MoveSession {
-  return {
-    ...w.session,
-    deps: { ...w.session.deps, interactive: false },
-    approve,
-  };
-}

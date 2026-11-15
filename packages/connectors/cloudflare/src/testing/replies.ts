@@ -13,6 +13,9 @@ export const refuse = (status: number, code: number, message: string): FakeReply
   body: { success: false, errors: [{ code, message }], messages: [], result: null },
 });
 
+/** Cloudflare's refusal of a call the token has no permission for. */
+export const DENIED = refuse(403, 10000, "Authentication error");
+
 /** One page of `items` as Cloudflare lists them: `page` and `per_page` read, `result_info` set. */
 export function paged(items: readonly unknown[], url: URL, perPage: number): FakeReply {
   const page = Number(url.searchParams.get("page") ?? 1);

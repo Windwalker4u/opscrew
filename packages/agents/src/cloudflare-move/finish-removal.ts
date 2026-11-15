@@ -42,7 +42,7 @@ import {
   appWords,
   B_TOKEN_VAR,
   environmentDeps,
-  MOVE_PHASE,
+  moveAudit,
   refusal,
 } from "./texts";
 import type { MoveEnvironment, MoveResult, MoveSession, ShadowRoot, StepStop } from "./types";
@@ -84,11 +84,9 @@ async function removeRoot(
   const app = environment.plan.app.name;
   if (step.kind === "pending") return pendingStop(session, step.planHash, ["--confirm", app]);
   if (step.kind === "applied") {
-    await session.deps.audit.append({
+    await moveAudit(session.deps, {
       kind: "iac",
-      actor: "opscrew",
       action: `A removed ${root.name}`,
-      phase: MOVE_PHASE,
       target: app,
       detail: `${environment.environment}: the ${root.name} root's pieces deleted in ${accountWords(session.accounts.a)} (plan ${step.planHash})`,
     });
@@ -238,11 +236,9 @@ export async function endFinish(session: MoveSession): Promise<MoveResult> {
   }
   const [first] = session.environments;
   const app = first?.plan.app.name ?? session.zone;
-  await session.deps.audit.append({
+  await moveAudit(session.deps, {
     kind: "provider-call",
-    actor: "opscrew",
     action: "move finished",
-    phase: MOVE_PHASE,
     target: app,
     detail: `${session.zone}: ${app} runs in ${accountWords(session.accounts.b)}; its mark, record and local files of the move are deleted`,
   });

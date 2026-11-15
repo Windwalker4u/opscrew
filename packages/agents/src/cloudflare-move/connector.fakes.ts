@@ -8,6 +8,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FakeTunnel } from "@opscrew/connector-cloudflare/testing";
 import {
+  type DesiredNextStacks,
   portainerClient,
   type StackChange,
   type StackPlan,
@@ -33,7 +34,7 @@ import {
   unusedRemote,
 } from "../testing";
 import type { MoveTunnel } from "./connector";
-import type { NextStacksApi, NextStacksInput } from "./connector-stacks";
+import type { NextStacksApi } from "./connector-stacks";
 import { moveHarness, unencrypted, ZONE } from "./session.fakes";
 import type { MoveSession } from "./types";
 
@@ -148,7 +149,7 @@ export interface NextStacksApply {
  */
 export function fakeNextStacks() {
   const running = new Map<string, string>();
-  const asked = new WeakMap<StackPlan, NextStacksInput>();
+  const asked = new WeakMap<StackPlan, DesiredNextStacks>();
   const applies: NextStacksApply[] = [];
   const api: NextStacksApi = {
     plan: (facts, input) => {

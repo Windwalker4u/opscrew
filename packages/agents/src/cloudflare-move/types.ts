@@ -82,6 +82,9 @@ export interface MoveAccounts {
   b: MoveAccount & { setup?: CloudflareSetup };
 }
 
+/** Which account: A, which the app moves from, or B, which it moves to. */
+export type MoveSide = keyof MoveAccounts;
+
 /** A covered environment: its name, its paths and its plan as last written. */
 export type MoveEnvironment = MoveRecordPlan;
 
@@ -208,18 +211,7 @@ export interface MoveBucketSize extends BucketSize {
 /** What the move will do, shown before anything changes (plan 4.2). */
 export interface MoveSummary {
   zone: string;
-  from: { accountId: string };
   to: { accountId: string; name?: string };
-  /** Each covered environment and its pieces in B, in words. */
-  environments: { name: string; pieces: string[] }[];
-  staying: StayingEnvironment[];
-  skipped: string[];
-  /** The other OpsCrew apps in the zone, by hostname: each needs its own prepare. */
-  otherHostnames: string[];
-  /** Each bucket copied once at prepare, with the copy's rough minutes. */
-  buckets: (MoveBucketSize & { minutes: number })[];
-  /** The finish's maintenance window per environment with an app bucket, in rough minutes. */
-  windows: { environment: string; minutes: number }[];
   /** The summary as printed. */
   lines: string[];
 }

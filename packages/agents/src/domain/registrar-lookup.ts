@@ -23,10 +23,10 @@ export type DomainRegistrar =
   /** Any other registrar, or another account: the user changes the nameservers there. */
   | { kind: "other" };
 
-type LookupServices = Pick<
-  ResolvedDomainServices,
-  "configuredRegistrars" | "otherRegistrar" | "registrar"
->;
+type LookupServices = Pick<ResolvedDomainServices, "configuredRegistrars" | "otherRegistrar"> & {
+  /** The Cloudflare Registrar of one account: only its `getDomain` is read. */
+  registrar: (accountId: string) => Pick<Registrar, "getDomain">;
+};
 
 /** The configured registrars other than Cloudflare. */
 export function otherConfiguredRegistrars(
@@ -69,7 +69,7 @@ export async function askRegistrars(
  */
 async function cloudflareHolds(
   deps: PhaseDeps,
-  services: Pick<ResolvedDomainServices, "registrar">,
+  services: Pick<LookupServices, "registrar">,
   domain: string,
   accountId: string,
 ): Promise<boolean> {

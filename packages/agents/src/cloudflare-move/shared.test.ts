@@ -184,10 +184,6 @@ function writesOnly(m: Moving, side: "a" | "b"): boolean {
   return writes.length > 0 && writes.every((call) => call.accountId === id);
 }
 
-/** B's shared plan's stop, as the other steps give theirs. */
-const bShared = async (session: MoveSession, env: MoveEnvironment) =>
-  (await planBShared(session, env)).stop;
-
 /** Runs `step` without an approval (it stops with the hash), then with `--approve <hash>`. */
 async function approved(
   m: Moving,
@@ -212,7 +208,7 @@ describe.skipIf(!findExecutable("git"))(
       const m = await moving("a proxied cloud server");
       const aBefore = structuredClone(holdings(m.a));
       const aRecord = await readFile(m.env.paths.files.cloudflareRecord, "utf8");
-      const { stop, hash } = await approved(m, bShared);
+      const { stop, hash } = await approved(m, planBShared);
       expect(stop.next).toEqual([
         `Review the plan above, then run \`opscrew cloudflare move --approve ${hash}\` to apply it and continue.`,
       ]);
@@ -242,7 +238,7 @@ describe.skipIf(!findExecutable("git"))(
       expect((await readAppProgress(m.session.paths)).pending).toBeUndefined();
 
       // The pending zone's plan settles after its first apply: nothing more to approve.
-      expect(await planBShared(m.session, m.env)).toEqual({});
+      expect(await planBShared(m.session, m.env)).toBeUndefined();
       expect(m.handler.requests).toHaveLength(1);
       await noLeaks(m, await keys(m));
     });
@@ -251,16 +247,16 @@ describe.skipIf(!findExecutable("git"))(
       const m = await moving("a proxied cloud server");
       const first = await planBShared(m.session, m.env);
       expect(await readAppProgress(m.session.paths)).toMatchObject({
-        pending: { action: "shared", environment: "prod", planHash: first.stop?.pendingPlanHash },
+        pending: { action: "shared", environment: "prod", planHash: first?.pendingPlanHash },
       });
       const again = await planBShared(m.session, m.env);
-      expect(again.stop?.pendingPlanHash).toBe(first.stop?.pendingPlanHash);
+      expect(again?.pendingPlanHash).toBe(first?.pendingPlanHash);
       expect(m.h.cloudflare.calls.every((call) => call.method === "GET")).toBe(true);
     });
 
     it("plans Portainer's Caddy origin TLS in B without OpsCrew's rules", async () => {
       const m = await moving("Portainer in Caddy mode");
-      await approved(m, bShared);
+      await approved(m, planBShared);
       expect(holdings(m.b)).toMatchObject({ rules: {}, origin: [], on: ["shop.example.com"] });
       expect(holdings(m.b).client).toHaveLength(1);
       expect(writesOnly(m, "b")).toBe(true);
@@ -269,7 +265,7 @@ describe.skipIf(!findExecutable("git"))(
 
     it("plans an own server in tunnel mode without origin TLS: B's rules and Zero Trust organization", async () => {
       const m = await moving("an own server in tunnel mode");
-      await approved(m, bShared);
+      await approved(m, planBShared);
       expect(holdings(m.b)).toEqual({ rules: { [PROBES]: 1 }, origin: [], client: [], on: [] });
       expect(m.h.cloudflare.account("New").organization).toBeDefined();
       const next = await readOriginTlsValues({ ...m.h.deps, paths: m.env.paths }, "originTlsNext");
@@ -283,7 +279,7 @@ describe.skipIf(!findExecutable("git"))(
 
     it("plans a Workers site's rules in B, its www redirect included, without origin TLS", async () => {
       const m = await moving("a Workers site with www");
-      await approved(m, bShared);
+      await approved(m, planBShared);
       expect(holdings(m.b)).toEqual({
         rules: { [PROBES]: 1, [REDIRECT]: 1 },
         origin: [],
@@ -305,7 +301,7 @@ describe.skipIf(!findExecutable("git"))(
       const m = await moving("a proxied cloud server");
       m.session.approve = undefined;
       m.h.deps.interactive = true;
-      expect(await planBShared(m.session, m.env)).toEqual({});
+      expect(await planBShared(m.session, m.env)).toBeUndefined();
       const found = await keys(m);
       m.h.deps.interactive = false;
       const aBefore = structuredClone(holdings(m.a));
@@ -481,15 +477,15 @@ describe.skipIf(!findExecutable("git"))(
     it("makes B's one-time PIN login at an Access-using environment's first prepare, and nothing on a run after", async () => {
       const m = await moving("an own server with Portainer on a subdomain");
       const stop = await planBShared(m.session, m.env);
-      expect(stop.stop?.pendingPlanHash).toBeDefined();
-      m.session.approve = stop.stop?.pendingPlanHash;
+      expect(stop?.pendingPlanHash).toBeDefined();
+      m.session.approve = stop?.pendingPlanHash;
       const first = await planBShared(m.session, m.env);
       const login = m.h.cloudflare
         .account("New")
         .identityProviders.find((provider) => provider.type === "onetimepin");
       expect(login).toBeDefined();
-      expect(first).toEqual({});
-      expect(await planBShared(m.session, m.env)).toEqual({});
+      expect(first).toBeUndefined();
+      expect(await planBShared(m.session, m.env)).toBeUndefined();
       expect(m.handler.requests).toHaveLength(1);
       expect(writesOnly(m, "b")).toBe(true);
     });
@@ -500,7 +496,7 @@ describe.skipIf(!findExecutable("git"))(
       await planBShared(m.session, m.env);
       const key = { action: "shared", environment: "prod" } as const;
       await writePending(m.h.deps, key, "a".repeat(64));
-      expect(await planBShared(m.session, m.env)).toEqual({});
+      expect(await planBShared(m.session, m.env)).toBeUndefined();
       expect((await readAppProgress(m.session.paths)).pending).toBeUndefined();
     });
 
@@ -511,7 +507,7 @@ describe.skipIf(!findExecutable("git"))(
       m.h.deps.interactive = false;
       const plan = m.env.plan;
       m.env.plan = DeployPlanSchema.parse({ ...plan, dns: { ...plan.dns, www: false } });
-      const { stop } = await planBShared(m.session, m.env);
+      const stop = await planBShared(m.session, m.env);
       const hash = stop?.pendingPlanHash as string;
       expect(stop?.next).toEqual([
         `Review the plan above, then run \`opscrew cloudflare move --confirm example-app --approve ${hash}\` to apply it and continue.`,
@@ -562,7 +558,7 @@ async function finished(m: Moving) {
   m.h.cloudflare.activate(m.b);
   m.session.services.sleep = async () => undefined;
   m.h.deps.interactive = true;
-  expect(await planBShared(m.session, m.env)).toEqual({});
+  expect(await planBShared(m.session, m.env)).toBeUndefined();
   m.h.deps.interactive = false;
   const found = await keys(m);
   const a = (await readOriginTlsValues(deps)).ORIGIN_TLS_CERT as string;

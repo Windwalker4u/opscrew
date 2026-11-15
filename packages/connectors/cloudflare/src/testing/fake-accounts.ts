@@ -4,7 +4,7 @@ import type { FakeReply } from "@opscrew/core/testing";
 import { CLOUDFLARE_API, type ManagedRulesetPhase } from "../client";
 import { accountReply, type FakeCloudflareAccount, newAccount } from "./fake-account-pieces";
 import { FakeZone } from "./fake-zone";
-import { answer, type FakeFault, ok, only, paged, refuse, takeFault } from "./replies";
+import { answer, DENIED, type FakeFault, ok, only, paged, refuse, takeFault } from "./replies";
 
 /**
  * A fake Cloudflare with several accounts behind one `fetch`, each reached by its own token, for
@@ -173,7 +173,6 @@ const EDGE_RANGES = {
   ipv6_cidrs: ["2400:cb00::/32"],
 };
 
-const DENIED = refuse(403, 10000, "Authentication error");
 const UNAUTHORIZED = refuse(403, 9109, "Unauthorized to access requested resource");
 const noRoute = (route: string) =>
   refuse(404, 7003, `Could not route to ${route}, perhaps your object identifier is invalid?`);

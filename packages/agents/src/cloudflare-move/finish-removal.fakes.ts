@@ -17,12 +17,7 @@ import type {
 import { ApprovalGate, MemoryApprovalStore } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type RenderContext, renderBackups, renderStorage } from "@opscrew/iac-templates";
-import {
-  backupsBucketOf,
-  type CloudflareMove,
-  type DeployPlan,
-  DeployPlanSchema,
-} from "@opscrew/plan-schema";
+import { backupsBucketOf, type CloudflareMove, type DeployPlan } from "@opscrew/plan-schema";
 import { providerBucket } from "../provision/storage";
 import { recordPortainerConnection } from "../shared/server-record";
 import {
@@ -35,6 +30,7 @@ import {
 } from "../testing";
 import { bucketWorld, type FakeR2 } from "./buckets.fakes";
 import { fakeClock } from "./connector.fakes";
+import { atStep } from "./record.fakes";
 import {
   type MoveHarness,
   moveHarness,
@@ -135,13 +131,6 @@ function planOf(target: FinishTarget): DeployPlan {
   }
   if (target === "site") return unencrypted(sitePlan({ domain: `site.${ZONE}`, deployed: true }));
   return serverPlan();
-}
-
-/** `plan` with the move's record at `step`. */
-function atStep(plan: DeployPlan, step: CloudflareMove["step"]): DeployPlan {
-  const move = plan.cloudflareMove;
-  if (move === undefined) throw new Error("the plan records no move");
-  return DeployPlanSchema.parse({ ...plan, cloudflareMove: { ...move, step } });
 }
 
 export interface FinishWorldOptions {
@@ -339,8 +328,3 @@ export async function finishWorld(target: FinishTarget, o: FinishWorldOptions = 
 }
 
 export type FinishWorld = Awaited<ReturnType<typeof finishWorld>>;
-
-/** `w`'s session as a script's: not interactive, with `--approve <hash>` when given. */
-export function asScript(w: FinishWorld, approve?: string): MoveSession {
-  return { ...w.session, deps: { ...w.session.deps, interactive: false }, approve };
-}

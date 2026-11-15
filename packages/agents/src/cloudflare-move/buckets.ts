@@ -34,7 +34,7 @@ import { failureReason } from "../destroy/deletion";
 import { resumeDeploys } from "../move/deploys";
 import { moveShell } from "../move/shells";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
-import { requireOffsiteKey, requireStorageKey } from "../provision/storage";
+import { forgetStorageKey, requireOffsiteKey, requireStorageKey } from "../provision/storage";
 import { bucketMinutes, syncMinutes } from "../retarget/bucket";
 import { serverOps, startService, stopService } from "../retarget/server-ops";
 import { appliesNow } from "../retarget/steps";
@@ -55,6 +55,7 @@ import {
   rcloneSize,
   sshRclone,
 } from "../shared/rclone";
+import { serverWords } from "./connector";
 import { moveFolder, recordedHash, recordHash } from "./paths";
 import {
   clearPending,
@@ -66,8 +67,8 @@ import {
   recordWindowStop,
   writePending,
 } from "./progress";
-import { accountName, appWords, environmentDeps, MOVE_PHASE, refusal } from "./texts";
-import type { MoveBucketSize, MoveEnvironment, MoveSession, StepStop } from "./types";
+import { accountName, appWords, environmentDeps, MOVE_PHASE, moveAudit, refusal } from "./texts";
+import type { MoveBucketSize, MoveEnvironment, MoveSession, MoveSide, StepStop } from "./types";
 
 const MINUTE = 60_000;
 /** How long one copy of a bucket may run on the app's server: a first copy may take hours. */
@@ -80,9 +81,6 @@ export interface MoveBucket {
   bucket: string;
 }
 
-/** Which account a step reads or changes: A, which the app moves from, or B. */
-export type BucketSide = "a" | "b";
-
 /** The environment's buckets on R2: the app's, then the snapshots' copies. */
 export function moveBuckets(plan: DeployPlan): MoveBucket[] {
   const buckets: MoveBucket[] = [];
@@ -93,13 +91,25 @@ export function moveBuckets(plan: DeployPlan): MoveBucket[] {
   return buckets;
 }
 
+/** Forgets `side`'s kept key of each of the environment's R2 buckets; the other side's stay. */
+export async function forgetBucketKeys(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  side: MoveSide,
+): Promise<void> {
+  const keys = { account: session.accounts[side].accountId, moveTo: session.accounts.b.accountId };
+  for (const { bucket } of moveBuckets(environment.plan)) {
+    await forgetStorageKey(environmentDeps(session, environment), { provider: "r2", bucket }, keys);
+  }
+}
+
 /** `shop-uploads (the app's files)`. */
 function bucketWords(bucket: MoveBucket): string {
   return `${bucket.bucket} (${bucket.root === "storage" ? "the app's files" : "the snapshots' copies"})`;
 }
 
 /** The account in words: its name as the session read it, else its id. */
-function sideWords(session: MoveSession, side: BucketSide): string {
+function sideWords(session: MoveSession, side: MoveSide): string {
   const account = session.accounts[side];
   return `${side === "a" ? "the current" : "the new"} Cloudflare account ${accountName(account)}`;
 }
@@ -113,7 +123,7 @@ export function bucketKey(
   session: MoveSession,
   environment: MoveEnvironment,
   bucket: MoveBucket,
-  side: BucketSide,
+  side: MoveSide,
 ): Promise<StorageLogin> {
   const deps = environmentDeps(session, environment);
   const options = { command: session.command, account: session.accounts[side].accountId };
@@ -123,7 +133,7 @@ export function bucketKey(
 }
 
 /** rclone's remote of `side` (`a` or `b`, its account's R2 endpoint) with `key`. */
-function remoteOf(session: MoveSession, side: BucketSide, key: StorageLogin): string[] {
+function remoteOf(session: MoveSession, side: MoveSide, key: StorageLogin): string[] {
   return r2Remote(side, session.accounts[side].accountId, key);
 }
 
@@ -201,7 +211,7 @@ async function appHost(session: MoveSession, environment: MoveEnvironment): Prom
     };
   }
   const { remote } = await moveShell(deps, plan, session.services, APP_SERVER);
-  const words = plan.target.provider === "own" ? "your server" : "the app's server";
+  const words = serverWords(plan);
   const ops = { ...serverOps(plan, deps.redactor), command: session.command };
   // What ssh or Compose said, and the hints, may name the server's address: words instead.
   const inWords = async (act: () => Promise<void>) => {
@@ -229,7 +239,7 @@ function sizeOf(
   session: MoveSession,
   host: AppHost,
   bucket: MoveBucket,
-  side: BucketSide,
+  side: MoveSide,
   key: StorageLogin,
 ): Promise<BucketSize> {
   return rcloneSize(host.rclone, {
@@ -310,10 +320,8 @@ function audit(
   environment: MoveEnvironment,
   entry: { action: string; decision: "approved" | "refused"; detail: string },
 ): Promise<void> {
-  return session.deps.audit.append({
+  return moveAudit(session.deps, {
     kind: "remote-exec",
-    actor: "opscrew",
-    phase: MOVE_PHASE,
     target: environment.plan.app.name,
     ...entry,
   });
@@ -888,7 +896,7 @@ async function rollBack(
 function requireEmptyingStep(
   session: MoveSession,
   environment: MoveEnvironment,
-  side: BucketSide,
+  side: MoveSide,
 ): void {
   const adopted = environment.plan.cloudflareMove?.step === "adopted";
   const app = appWords(environment);
@@ -919,7 +927,7 @@ function requireEmptyingStep(
 export async function emptyBuckets(
   session: MoveSession,
   environment: MoveEnvironment,
-  side: BucketSide,
+  side: MoveSide,
   only?: readonly MoveRoot[],
 ): Promise<StepStop | undefined> {
   requireEmptyingStep(session, environment, side);

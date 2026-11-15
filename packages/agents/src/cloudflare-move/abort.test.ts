@@ -182,7 +182,7 @@ describe.skipIf(!findExecutable("git"))("abortMove: a proxied cloud server", () 
       phase: "provision",
       ...originTlsApply(deps, tls, { sleep: async () => undefined }),
     });
-    expect(await planBShared(prepared, environment)).toEqual({});
+    expect(await planBShared(prepared, environment)).toBeUndefined();
     expect(await readFile(bSharedRecordPath(environment), "utf8")).toContain(h.bZone?.id);
     h.handler.requests.length = 0;
     h.cloudflare.calls.length = 0;

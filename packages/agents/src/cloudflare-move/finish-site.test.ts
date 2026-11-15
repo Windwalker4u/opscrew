@@ -3,7 +3,6 @@ import { portainerWebhookHostname, sshHostname } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
-  asScript,
   change,
   type FinishTarget,
   type FinishWorld,
@@ -13,6 +12,7 @@ import {
 } from "./finish-removal.fakes";
 import { adoptSite } from "./finish-site";
 import { readAppProgress } from "./progress";
+import { asScript } from "./record.fakes";
 import { ZONE } from "./session.fakes";
 
 const SCRIPT = "module.worker.cloudflare_workers_script.this";

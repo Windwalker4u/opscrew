@@ -7,7 +7,7 @@ import type {
   FakeRecordInput,
 } from "./fake-accounts";
 import type { FakeWorkerDomain } from "./fake-zone";
-import { ok, only, paged, refuse } from "./replies";
+import { DENIED, ok, only, paged, refuse } from "./replies";
 
 /**
  * The account-scoped pieces of {@link fakeCloudflareAccounts}' accounts: tunnels, Zero Trust
@@ -114,7 +114,6 @@ export interface PieceContext {
   addRecord: (zone: FakeCloudflareZone, record: FakeRecordInput) => FakeDnsRecord;
 }
 
-const DENIED = refuse(403, 10000, "Authentication error");
 const NO_WORKER = refuse(404, 10007, "This Worker does not exist on your account.");
 
 /** The request the fake does not answer: a test's mistake, not Cloudflare's answer. */

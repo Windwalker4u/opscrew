@@ -7,7 +7,12 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { type ProjectPaths, writeFileAtomic } from "@opscrew/core";
-import { EnvironmentNameSchema, FqdnSchema, IsoDateTimeSchema } from "@opscrew/plan-schema";
+import {
+  EnvironmentNameSchema,
+  FqdnSchema,
+  IsoDateTimeSchema,
+  PlanHashSchema,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { environmentPaths } from "../environments/paths";
@@ -42,15 +47,13 @@ export type MovePlanAction = (typeof MOVE_PLAN_ACTIONS)[number];
 export const MOVE_ROOTS = ["main", "storage", "backups", "pages-verification"] as const;
 export type MoveRoot = (typeof MOVE_ROOTS)[number];
 
-const HashSchema = z.string().regex(/^[0-9a-f]{64}$/i);
-
 const PendingSchema = z.strictObject({
   action: z.enum(MOVE_PLAN_ACTIONS),
   /** Absent for a plan of the zone's (`zone`, `mark`, `mark-delete`, `abort-zone`). */
   environment: EnvironmentNameSchema.optional(),
   /** Absent for a plan of no root of the environment's. */
   root: z.enum(MOVE_ROOTS).optional(),
-  planHash: HashSchema,
+  planHash: PlanHashSchema,
   savedAt: IsoDateTimeSchema,
 });
 
@@ -84,12 +87,12 @@ export type AppProgress = z.infer<typeof AppProgressSchema>;
 const SwitchProgressSchema = z.strictObject({
   zone: FqdnSchema,
   /** The switch plan waiting for `--approve`. */
-  pending: z.strictObject({ planHash: HashSchema, savedAt: IsoDateTimeSchema }).optional(),
+  pending: z.strictObject({ planHash: PlanHashSchema, savedAt: IsoDateTimeSchema }).optional(),
   /**
    * The switch plan this repository approved: a run that finds the nameservers at B goes on with
    * it; without it, the steps after activation wait for an approval of their own.
    */
-  approved: HashSchema.optional(),
+  approved: PlanHashSchema.optional(),
   /** When the registrar accepted B's nameservers. */
   nameserversSetAt: IsoDateTimeSchema.optional(),
   /** When B's zone became active. */

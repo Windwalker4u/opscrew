@@ -3,16 +3,20 @@
  * and the reading and writing of it. Ids, flags and times only (data model 1).
  */
 import { isDeepStrictEqual } from "node:util";
-import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import type { OpsCrewError, ProjectPaths } from "@opscrew/core";
 import {
+  appsOf,
   type CloudflareMove,
   type DeployPlan,
+  environmentsOf,
   readArtifact,
   readOptionalArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { environmentPaths } from "../environments/paths";
+import { bug } from "./texts";
 
 /** What the move starts with: the zone, A's account and zone, B's account (its zone once made). */
 export type MoveStart = Pick<CloudflareMove, "zone" | "from" | "to" | "dsAtStart">;
@@ -27,11 +31,7 @@ export interface MoveRecordPlan {
 /** A step the record can't take: callers check first, so this is OpsCrew's bug. */
 function outOfOrder(move: CloudflareMove, change: string): OpsCrewError {
   const at = move.abort === undefined ? move.step : `${move.step}, being aborted`;
-  return new OpsCrewError(
-    "INTERNAL",
-    `The move of ${move.zone} is ${at}, so its record can't be ${change}.`,
-    { hint: "This is a bug in OpsCrew; please report it." },
-  );
+  return bug(`The move of ${move.zone} is ${at}, so its record can't be ${change}.`);
 }
 
 /** The record written after the start's confirmation. */
@@ -76,18 +76,37 @@ export function abortingMove(move: CloudflareMove, step: "started" | "removed"):
 }
 
 /**
- * The plans of `environments` of the app `paths` belong to, those that have one, each with its
- * paths (the record is `plan.cloudflareMove`).
+ * The plans of the environments of the app `paths` belong to (`environmentsOf`), those that have
+ * one, each with its paths (the record is `plan.cloudflareMove`).
  */
-export async function readMoveRecords(
-  paths: ProjectPaths,
-  environments: readonly string[],
-): Promise<MoveRecordPlan[]> {
+export async function readMoveRecords(paths: ProjectPaths): Promise<MoveRecordPlan[]> {
   const found: MoveRecordPlan[] = [];
-  for (const environment of environments) {
+  for (const environment of await environmentsOf(paths.root, paths.app)) {
     const own = environmentPaths(paths, environment);
     const plan = await readOptionalArtifact("plan", own.files.plan);
     if (plan !== undefined) found.push({ environment, paths: own, plan });
+  }
+  return found;
+}
+
+/** The move `envs` record: the first environment's record of it. */
+export function recordedMove(envs: readonly MoveRecordPlan[]): CloudflareMove | undefined {
+  return envs.find((env) => env.plan.cloudflareMove !== undefined)?.plan.cloudflareMove;
+}
+
+/**
+ * The moves the repository's apps other than `paths`' own record, each with its app's key: one
+ * per environment that records one, app by app.
+ */
+export async function otherAppMoves(
+  paths: ProjectPaths,
+): Promise<{ key: string | undefined; move: CloudflareMove }[]> {
+  const found: { key: string | undefined; move: CloudflareMove }[] = [];
+  for (const { key } of await appsOf(paths.root)) {
+    if (key === paths.app) continue;
+    for (const { plan } of await readMoveRecords(appPaths(paths, key))) {
+      if (plan.cloudflareMove !== undefined) found.push({ key, move: plan.cloudflareMove });
+    }
   }
   return found;
 }

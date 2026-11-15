@@ -107,7 +107,10 @@ function publicGoneAt(ds: DsReading, after: Date): number {
 }
 
 /** The wait for these DS records: their TTL within 24 and 48 hours, never shorter than noted. */
-export function waitFor(state: ConnectState | undefined, ds: DsReading): number {
+export function waitFor(
+  state: Pick<ConnectState, "switchAfter" | "waitSeconds"> | undefined,
+  ds: DsReading,
+): number {
   return Math.max(dsWaitSeconds(ds.ttlSeconds), state?.waitSeconds ?? 0);
 }
 

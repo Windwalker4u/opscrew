@@ -362,10 +362,19 @@ export function missingFromZone(
   return unmatched(records, inputComparable, inZone.map(zoneComparable));
 }
 
-/** A zone record in comparable form: by its content when it has one, else by its data. */
+/** The types a zone record is compared by its `data` when it has it: Cloudflare words their content itself. */
+const DATA_TYPES = new Set(["SRV", "CAA"]);
+
+/**
+ * A zone record in comparable form: SRV and CAA by their data when they have it, every other by
+ * its content when it has one, else by its data.
+ */
 function recordComparable(record: ComparableRecord): Comparable {
   const { content } = record;
-  return content === undefined ? inputComparable(record) : zoneComparable({ ...record, content });
+  const byData = record.data !== undefined && DATA_TYPES.has(record.type.toUpperCase());
+  return byData || content === undefined
+    ? inputComparable(record)
+    : zoneComparable({ ...record, content });
 }
 
 /** `records` without those `inZone` has, each zone record matching one record at most. */

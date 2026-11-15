@@ -39,17 +39,10 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
     const summary = moveSummary(session, SIZES);
     const fresh = h.cloudflare.account("New");
     const text = summary.lines.join("\n");
-    expect(summary).toMatchObject({
-      zone: ZONE,
-      from: { accountId: h.cloudflare.account("Old").id },
-      to: { accountId: fresh.id, name: "New" },
-      staying: [{ name: "dev", cloudflare: true, zone: OTHER_ZONE }],
-      skipped: ["old"],
-      otherHostnames: [`blog.${ZONE}`, `docs.${ZONE}`],
-      windows: [{ environment: "prod", minutes: 4 }],
-    });
-    expect(summary.buckets.map((bucket) => bucket.minutes)).toEqual([7, 2]);
-    expect(summary.environments.map((env) => env.name)).toEqual(["prod", "staging"]);
+    expect(summary).toMatchObject({ zone: ZONE, to: { accountId: fresh.id, name: "New" } });
+    expect(text).toContain(`from the account ${h.cloudflare.account("Old").id} to New`);
+    const envs = summary.lines.flatMap((line) => /^ {5}- ([a-z]+): /.exec(line)?.[1] ?? []);
+    expect(envs).toEqual(["prod", "staging"]);
     expect(text).toContain(
       `Add ${ZONE} to New (${fresh.id}) as a new zone (pending until the switch)`,
     );
@@ -61,6 +54,7 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
     );
     expect(text).toContain("as extra GitHub secrets, so deploys work on both sides of the switch");
     expect(text).toContain("- prod's shop-files: 3.0 GB in 4000 objects, about 7 minutes.");
+    expect(text).toMatch(/- staging's shop-staging-backups: .* about 2 minutes\./);
     expect(text).toContain(`Staying as they are: dev (in ${OTHER_ZONE}).`);
     expect(text).toContain("Skipped, since they are not deployed: old.");
     expect(text).toContain(`from its repository before the switch: blog.${ZONE} and docs.${ZONE}.`);
@@ -86,10 +80,12 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
         ),
       }),
     });
-    const [prod, staging] = moveSummary(await h.open({ to: "New" }), []).environments;
-    expect(prod?.pieces).toContain("the R2 bucket shop-backups of the snapshots' copies");
-    expect(prod?.pieces.join(" ")).not.toContain("Zero Trust");
-    expect(staging?.pieces).toContain(
+    const { lines } = moveSummary(await h.open({ to: "New" }), []);
+    const prod = lines.find((line) => line.startsWith("     - prod: "));
+    const staging = lines.find((line) => line.startsWith("     - staging: "));
+    expect(prod).toContain("the R2 bucket shop-backups of the snapshots' copies");
+    expect(prod).not.toContain("Zero Trust");
+    expect(staging).toContain(
       "the Zero Trust organization and its one-time PIN login, when the new account has none",
     );
   });
@@ -104,7 +100,6 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
     expect(text).toContain(
       "Then the finish (`opscrew cloudflare move --finish`): no maintenance window;",
     );
-    expect(summary.windows).toEqual([]);
   });
 });
 

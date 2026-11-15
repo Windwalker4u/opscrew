@@ -1495,40 +1495,31 @@ export class CloudflareClient {
     zoneId: string,
     filter: { name?: string; type?: string } = {},
   ): Promise<CloudflareDnsRecord[]> {
-    const records = await this.#all(
-      `/zones/${encodeURIComponent(zoneId)}/dns_records`,
-      RecordSchema,
-      "list DNS records",
-      {
-        perPage: 100,
-        filter: {
-          ...(filter.name ? { name: filter.name } : {}),
-          ...(filter.type ? { type: filter.type } : {}),
-        },
-      },
-    );
-    return records.map((r) => ({
-      id: r.id,
-      type: r.type,
-      name: r.name,
-      content: r.content,
-      ttl: r.ttl,
-      ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
-      ...(r.priority == null ? {} : { priority: r.priority }),
-      ...(r.comment ? { comment: r.comment } : {}),
-    }));
+    const records = await this.#zoneRecords(zoneId, {
+      ...(filter.name ? { name: filter.name } : {}),
+      ...(filter.type ? { type: filter.type } : {}),
+    });
+    return records.map(({ data: _data, meta: _meta, ...record }) => record);
   }
 
   /**
    * Every DNS record of a zone with every field a copy keeps: content and `data`, TTL, proxied,
    * priority, comment, and Cloudflare's `meta`. Follows pagination. Read-only.
    */
-  async listZoneRecords(zoneId: string): Promise<CloudflareZoneRecord[]> {
+  listZoneRecords(zoneId: string): Promise<CloudflareZoneRecord[]> {
+    return this.#zoneRecords(zoneId, {});
+  }
+
+  /** The zone's DNS records matching `filter`, each with every field it has. Follows pagination. */
+  async #zoneRecords(
+    zoneId: string,
+    filter: Record<string, string>,
+  ): Promise<CloudflareZoneRecord[]> {
     const records = await this.#all(
       `/zones/${encodeURIComponent(zoneId)}/dns_records`,
       RecordSchema,
       "list DNS records",
-      { perPage: 100 },
+      { perPage: 100, filter },
     );
     return records.map((r) => ({
       id: r.id,

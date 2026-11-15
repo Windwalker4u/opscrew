@@ -6,8 +6,10 @@
  * hash (`stack-apply`). The Portainer connector plans and applies them ({@link NextStacksApi}).
  */
 import {
+  type ApplySecrets,
   type ApplyStackOptions,
   applyStackPlan,
+  type DesiredNextStacks,
   type PortainerClient,
   type PortainerFacts,
   planNextStacks,
@@ -15,7 +17,7 @@ import {
   stackPlanHash,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import { plural, writeFileAtomic } from "@opscrew/core";
 import {
   portainerConnectorStackName,
   portainerStackName,
@@ -35,37 +37,16 @@ import type { TunnelModule } from "../rotate/infra-connectors";
 import { PlanRefusedError } from "../shared";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { pendingStop } from "./shared";
-import { environmentDeps, MOVE_PHASE } from "./texts";
+import { bug, environmentDeps, MOVE_PHASE, moveAudit } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
-/** What the Portainer connector's `planNextStacks` is given. */
-export interface NextStacksInput {
-  /** The app's name, which the stacks' names derive from. */
-  app: string;
-  environmentId: number;
-  /** The beside stacks to run, as `renderNextConnectorStacks` renders them, or `"remove"` them. */
-  stacks: readonly { name: string; compose: string }[] | "remove";
-  /**
-   * By stack name, `valueFingerprints(valueKey, { TUNNEL_TOKEN: token })` of the token it gets, so
-   * a stack whose token changed plans an update and the plan is bound to the tokens; `{}` to
-   * remove.
-   */
-  fingerprints: Readonly<Record<string, Readonly<Record<string, string>>>>;
-}
-
 /** What the beside stacks' apply is given: the approved hash, and each stack's token by its name. */
-export interface NextStacksApplyOptions {
-  approvedHash: string;
-  secrets: {
-    /** The app stack's values: none (this plan has no app stack). */
-    env: Readonly<Record<string, string>>;
-    /** Each beside stack's `TUNNEL_TOKEN`, by the stack's name. */
-    nextTunnelTokens: Readonly<Record<string, string>>;
-  };
+export type NextStacksApplyOptions = Omit<ApplyStackOptions, "secrets" | "valueKey"> & {
+  /** No app stack values (this plan has no app stack), and each beside stack's `TUNNEL_TOKEN`. */
+  secrets: Pick<ApplySecrets, "env"> & Required<Pick<ApplySecrets, "nextTunnelTokens">>;
   /** The local value key the fingerprints were made with. */
   valueKey: Uint8Array;
-  wait?: ApplyStackOptions["wait"];
-}
+};
 
 /**
  * The Portainer connector's beside stacks: `plan` (`planNextStacks`) makes their stack plan, each
@@ -73,7 +54,7 @@ export interface NextStacksApplyOptions {
  * not there); `apply` (`applyStackPlan`) applies it after its approval, refusing another hash.
  */
 export interface NextStacksApi {
-  plan: (facts: PortainerFacts, input: NextStacksInput) => StackPlan;
+  plan: (facts: PortainerFacts, input: DesiredNextStacks) => StackPlan;
   apply: (
     client: PortainerClient,
     plan: StackPlan,
@@ -111,12 +92,8 @@ function besideStacks(
     stacks.length !== tunnels.length ||
     stacks.some((stack) => tokens[stack.name] === undefined)
   ) {
-    throw new OpsCrewError(
-      "INTERNAL",
+    throw bug(
       "Each connector beside the current ones in Portainer needs its tunnel of the new Cloudflare account, so OpsCrew changed nothing in Portainer.",
-      {
-        hint: "This is a bug in OpsCrew; please report it.",
-      },
     );
   }
   return { stacks, tokens };
@@ -205,11 +182,9 @@ export async function nextStacksStep(
   }
   await deps.approvals.assertApprovedStackPlan(hash);
   const audit = (action: string, decision: "approved" | "refused", detail: string) =>
-    deps.audit.append({
+    moveAudit(deps, {
       kind: "provider-call",
-      actor: "opscrew",
       action,
-      phase: MOVE_PHASE,
       target: hash,
       decision,
       detail,

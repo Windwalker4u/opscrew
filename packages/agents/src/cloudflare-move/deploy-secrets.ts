@@ -47,7 +47,8 @@ const TOKEN_ID_OUTPUT = "deploy_service_token_client_id";
 const TOKEN_SECRET_OUTPUT = "deploy_service_token_client_secret";
 
 /** What the approvals say of the values. */
-const SEALED = "(names only; values are encrypted on this computer before upload and never shown)";
+export const SEALED =
+  "(names only; values are encrypted on this computer before upload and never shown)";
 
 /** The credentials the environment's deploy reads in both accounts during a move. */
 interface MovedSecrets {
@@ -175,12 +176,29 @@ function appliedFile(environment: MoveEnvironment): string {
 }
 
 /** A secret to store: where it goes and its value. */
-type Stored = SecretPlace & { value: string };
+export type StoredSecret = SecretPlace & { value: string };
+
+/** Where a secret goes, without its value. */
+export function secretPlace({ name, environment }: SecretPlace): SecretPlace {
+  return environment === undefined ? { name } : { name, environment };
+}
+
+/** Stores each of `set` where GitHub keeps it, sealed on this computer; audited by name. */
+export async function storeSecrets(
+  session: MoveSession,
+  set: readonly StoredSecret[],
+): Promise<void> {
+  const { owner, repo } = session.github;
+  const at = { api: session.githubApi, owner, repo };
+  for (const stored of set) {
+    await setSecretAt(session.deps, at, secretPlace(stored), stored.value, MOVE_PHASE);
+  }
+}
 
 /** One change of the environment's deploy secrets, approved on its own. */
 interface SecretsChange {
   key: MovePlanKey;
-  set: Stored[];
+  set: StoredSecret[];
   delete: SecretPlace[];
   title: string;
   intro: string[];
@@ -205,15 +223,13 @@ async function applySecretsChange(
 ): Promise<StepStop | undefined> {
   const { deps, github } = session;
   const repository = `${github.owner}/${github.repo}`;
-  const where = ({ name, environment }: SecretPlace): SecretPlace =>
-    environment === undefined ? { name } : { name, environment };
   const hash = sha256Hex(
     canonicalJson({
       action: change.key.action,
       environment: environment.environment,
       repository,
-      set: change.set.map((place) => ({ ...where(place), sha256: sha256Hex(place.value) })),
-      delete: change.delete.map(where),
+      set: change.set.map((place) => ({ ...secretPlace(place), sha256: sha256Hex(place.value) })),
+      delete: change.delete.map(secretPlace),
     }),
   );
   const file = appliedFile(environment);
@@ -248,9 +264,8 @@ async function applySecretsChange(
       again: session.command,
     },
   });
+  await storeSecrets(session, change.set);
   const at = { api: session.githubApi, owner: github.owner, repo: github.repo };
-  for (const place of change.set)
-    await setSecretAt(deps, at, where(place), place.value, MOVE_PHASE);
   for (const place of change.delete) await deleteSecretAt(deps, at, place, MOVE_PHASE);
   await change.after?.();
   await recordHash(file, hash);

@@ -8,6 +8,7 @@
 import {
   type CloudflareZoneRecord,
   inspectShared,
+  quoteTxt,
   sharedRuleHostnames,
 } from "@opscrew/connector-cloudflare";
 import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
@@ -34,8 +35,6 @@ import { applyZone, MARK_PREFIX, planZone } from "./zone";
 
 /** The longest TXT content Cloudflare takes, quotes included. */
 const MAX_CONTENT = 2048;
-/** The longest character-string in a TXT record (RFC 1035). */
-const TXT_STRING = 255;
 const VERSION = "1";
 
 const NameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
@@ -92,18 +91,19 @@ export async function markName(session: MoveSession): Promise<string> {
   return `${MARK_PREFIX}${label}.${session.zone}`;
 }
 
-/** The hostnames behind Cloudflare Access of an environment, in the zone that moves. */
-function accessOf(env: MoveSession["environments"][number], zone: string): MoveMark["access"] {
-  const plan: DeployPlan = { ...env.plan, dns: { ...env.plan.dns, zone } };
+/** The hostnames `plan` puts behind Cloudflare Access in `zone` (the zone that moves), by kind. */
+export function accessHostnames(
+  plan: DeployPlan,
+  zone: string,
+): Omit<MoveMark["access"][number], "environment">[] {
+  const zoned: DeployPlan = { ...plan, dns: { ...plan.dns, zone } };
   const found: [MoveMark["access"][number]["kind"], string | undefined][] = [
-    ["service", sshHostname(plan)],
-    ["service", portainerWebhookHostname(plan)],
-    ["portainer", portainerHostname(plan)],
-    ["beszel", beszelHostname(plan)],
+    ["service", sshHostname(zoned)],
+    ["service", portainerWebhookHostname(zoned)],
+    ["portainer", portainerHostname(zoned)],
+    ["beszel", beszelHostname(zoned)],
   ];
-  return found.flatMap(([kind, hostname]) =>
-    hostname === undefined ? [] : [{ hostname, kind, environment: env.environment }],
-  );
+  return found.flatMap(([kind, hostname]) => (hostname === undefined ? [] : [{ hostname, kind }]));
 }
 
 /**
@@ -113,7 +113,12 @@ function accessOf(env: MoveSession["environments"][number], zone: string): MoveM
 export async function appMark(session: MoveSession): Promise<MoveMark> {
   const plans = session.environments.map((env) => env.plan);
   return MoveMarkSchema.parse({
-    access: session.environments.flatMap((env) => accessOf(env, session.zone)),
+    access: session.environments.flatMap((env) =>
+      accessHostnames(env.plan, session.zone).map((one) => ({
+        ...one,
+        environment: env.environment,
+      })),
+    ),
     app: await appName(session),
     envs: session.environments.map((env) => env.environment),
     hosts: [...new Set(plans.flatMap((plan) => opscrewRecordNames(plan, session.zone)))].sort(),
@@ -130,17 +135,11 @@ export async function appMark(session: MoveSession): Promise<MoveMark> {
   });
 }
 
-/** TXT content as Cloudflare takes it: quoted strings of 255 characters at most. */
-function quoted(text: string): string {
-  const strings: string[] = [];
-  for (let i = 0; i < text.length; i += TXT_STRING) strings.push(text.slice(i, i + TXT_STRING));
-  return strings.map((one) => `"${one}"`).join(" ");
-}
-
 type Field = [string, string];
 
+/** TXT content as Cloudflare takes it: quoted strings of 255 characters at most (no quote in it). */
 const contentOf = (fields: readonly Field[]) =>
-  quoted(fields.map(([key, value]) => `${key}=${value}`).join("; "));
+  quoteTxt(fields.map(([key, value]) => `${key}=${value}`).join("; "));
 
 /**
  * The contents of the mark's TXT records: one, `opscrew-move=1; app=shop; envs=prod,staging;

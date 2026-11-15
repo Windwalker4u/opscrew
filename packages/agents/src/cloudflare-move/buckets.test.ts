@@ -10,15 +10,10 @@ import {
   recoverWindow,
   type WindowOptions,
 } from "./buckets";
-import {
-  APP_BUCKET,
-  asScript,
-  BACKUPS_BUCKET,
-  type BucketWorld,
-  bucketWorld,
-} from "./buckets.fakes";
+import { APP_BUCKET, BACKUPS_BUCKET, type BucketWorld, bucketWorld } from "./buckets.fakes";
 import { moveFolder, recordedHash, recordHash } from "./paths";
 import { markWindow, readAppProgress, recordWindowStop } from "./progress";
+import { asScript } from "./record.fakes";
 import { FINISH_COMMAND, MOVE_COMMAND } from "./texts";
 
 async function caught(promise: Promise<unknown>): Promise<OpsCrewError> {

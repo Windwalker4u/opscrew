@@ -64,7 +64,10 @@ export function dsWaitSeconds(ttl: number | undefined): number {
  * The switch time for the note: `at` (milliseconds), unless the note's `switchAfter` is later. The
  * switch time only ever moves later.
  */
-export function laterSwitch(state: ConnectState | undefined, at: number): string {
+export function laterSwitch(
+  state: Pick<ConnectState, "switchAfter" | "waitSeconds"> | undefined,
+  at: number,
+): string {
   const noted = state?.switchAfter === undefined ? at : Date.parse(state.switchAfter);
   return new Date(Math.max(noted, at)).toISOString();
 }

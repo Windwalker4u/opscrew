@@ -9,7 +9,7 @@
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import { IsoDateTimeSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import {
@@ -22,14 +22,17 @@ import {
 import { seenState, switchAfterRemoval, waitFor } from "../domain/connect-ds";
 import {
   dsWaitSeconds,
+  laterSwitch,
   REMOVAL_MARGIN_SECONDS,
   readConnectState,
   writeConnectState,
 } from "../domain/connect-state";
 import { formatTime } from "../domain/purchase";
 import { REGISTRAR_NAMES, registrarLinks } from "../domain/registrars";
+import { domainZonesFrom } from "../domain/services";
 import { dsRecordText } from "../domain/switch";
-import { accountName, MOVE_PHASE } from "./texts";
+import { readRecord } from "../shared/records";
+import { accountName, moveAudit } from "./texts";
 import type { MoveSession, MoveZone, StepStop } from "./types";
 
 /** A registrar OpsCrew drives through its API. */
@@ -57,23 +60,18 @@ const OwnNoteSchema = z.strictObject({
 type OwnNote = z.infer<typeof OwnNoteSchema>;
 
 /** The switch's own note; an unreadable one stops, as `domain connect`'s does. */
-async function readOwnNote(file: string): Promise<OwnNote | undefined> {
-  const text = await readTextIfExists(file);
-  if (text === undefined) return undefined;
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    data = undefined;
-  }
-  const parsed = OwnNoteSchema.safeParse(data);
-  if (parsed.success) return parsed.data;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `OpsCrew cannot read its note about the DNSSEC record of the zone (${file}), so it cannot tell when the DS record was removed. Nothing was changed.`,
-    {
-      hint: "If the DS record was removed in the last 48 hours, wait until 48 hours have passed. Then delete that file and run the command again.",
-    },
+function readOwnNote(file: string): Promise<OwnNote | undefined> {
+  return readRecord(
+    file,
+    OwnNoteSchema,
+    () =>
+      new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew cannot read its note about the DNSSEC record of the zone (${file}), so it cannot tell when the DS record was removed. Nothing was changed.`,
+        {
+          hint: "If the DS record was removed in the last 48 hours, wait until 48 hours have passed. Then delete that file and run the command again.",
+        },
+      ),
   );
 }
 
@@ -215,11 +213,10 @@ async function ownGate(
   const file = ownNoteFile(session.paths);
   const note = await readOwnNote(file);
   const now = deps.clock.now();
-  const state = cloudflare ? (await a.client.getDnssec(a.zoneId)).status : undefined;
+  const on = cloudflare && (await domainZonesFrom(a.client).dnssecEnabled(a.zoneId)) === true;
   const aName = accountName(a);
-  const on = state === "active" || state === "pending";
   if (ds.records.length > 0 || on) {
-    const waitSeconds = Math.max(note?.waitSeconds ?? 0, dsWaitSeconds(ds.ttlSeconds));
+    const waitSeconds = waitFor(note, ds);
     await writeNote(file, { zone, dsSeen: note?.dsSeen ?? now.toISOString(), waitSeconds });
     const records = ds.records.length > 0 ? `: ${ds.records.map(dsRecordText).join("; ")}` : "";
     const hours = Math.round((waitSeconds + REMOVAL_MARGIN_SECONDS) / 3600);
@@ -250,7 +247,7 @@ async function ownGate(
   if (switchAfter === undefined || note?.dsSeen !== undefined) {
     const waitSeconds = note?.waitSeconds ?? dsWaitSeconds(undefined);
     const at = now.getTime() + (waitSeconds + REMOVAL_MARGIN_SECONDS) * 1000;
-    switchAfter = new Date(Math.max(at, Date.parse(switchAfter ?? "0"))).toISOString();
+    switchAfter = laterSwitch(note, at);
     await writeNote(file, { zone, switchAfter, waitSeconds });
   }
   if (now.getTime() < Date.parse(switchAfter)) return waiting(session, switchAfter);
@@ -286,11 +283,9 @@ export async function removeDs(
     },
     file,
   );
-  await deps.audit.append({
+  await moveAudit(deps, {
     kind: "provider-call",
-    actor: "opscrew",
     action: "DS removed",
-    phase: MOVE_PHASE,
     target: zone,
     detail: `${REGISTRAR_NAMES[registrarId]}: ${gate.ds.records.length} DS record(s); switch after ${switchAfter}`,
   });

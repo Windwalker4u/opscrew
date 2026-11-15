@@ -44,18 +44,15 @@ import { moveFolder } from "./paths";
 import type { MoveRoot } from "./progress";
 import {
   A_TOKEN_VAR,
+  accountName,
   B_TOKEN_VAR,
+  bug,
   environmentDeps,
   MOVE_COMMAND,
-  MOVE_PHASE,
+  moveAudit,
   refusal,
 } from "./texts";
-import type { MoveEnvironment, MoveSession, ShadowRoot } from "./types";
-
-/** Whose pieces: A's (the account that holds the zone when the move starts) or B's. */
-export type ShadowSide = "a" | "b";
-
-const BUG = "This is a bug in OpsCrew; please report it.";
+import type { MoveEnvironment, MoveSession, MoveSide, ShadowRoot } from "./types";
 
 /** The environment's state of each root, in its `tfstate/` folder; a shadow state has its name. */
 const ENVIRONMENT_STATES: Readonly<Record<MoveRoot, (paths: ProjectPaths) => string>> = {
@@ -72,11 +69,7 @@ const PIN_VARIABLE = "one_time_pin_identity_provider_id";
 export function environmentOf(session: MoveSession, root: ShadowRoot): MoveEnvironment {
   const found = session.environments.find((env) => env.environment === root.environment);
   if (found !== undefined) return found;
-  throw new OpsCrewError(
-    "INTERNAL",
-    `The move of ${session.zone} doesn't cover the environment ${root.environment}.`,
-    { hint: BUG },
-  );
+  throw bug(`The move of ${session.zone} doesn't cover the environment ${root.environment}.`);
 }
 
 /**
@@ -101,7 +94,7 @@ export function shadowFiles(root: ShadowRoot): {
 /** The state and data folder a side's removal works on: A's former state, or B's shadow state. */
 export function removalTarget(
   root: ShadowRoot,
-  side: ShadowSide,
+  side: MoveSide,
 ): { statePath: string; dataDir: string } {
   if (side === "b") return { statePath: root.statePath, dataDir: root.dataDir };
   const { removalState, removalDataDir } = shadowFiles(root);
@@ -113,7 +106,7 @@ export function removalTarget(
  * zone-scoped ones go with A's moved zone, which Cloudflare deletes), B's every Cloudflare piece
  * (B's zone may stay for other apps). Nothing that isn't Cloudflare's.
  */
-export function removedBy(side: ShadowSide, scope: CloudflareAddressScope | undefined): boolean {
+export function removedBy(side: MoveSide, scope: CloudflareAddressScope | undefined): boolean {
   return side === "a" ? scope === "account" : scope !== undefined;
 }
 
@@ -152,7 +145,7 @@ export async function committedValues(
  */
 export async function accountIds(
   session: MoveSession,
-  side: ShadowSide,
+  side: MoveSide,
   values: Readonly<Record<string, unknown>>,
 ): Promise<Record<string, string>> {
   const { a, b } = session.accounts;
@@ -162,10 +155,8 @@ export async function accountIds(
       : { client: b.client, accountId: b.accountId, zoneId: b.setup?.zoneId };
   const { client, accountId, zoneId } = account;
   if (zoneId === undefined) {
-    throw new OpsCrewError(
-      "INTERNAL",
+    throw bug(
       `${session.zone} isn't in the Cloudflare account ${accountId} yet, so the app's pieces can't be planned there.`,
-      { hint: BUG },
     );
   }
   if (!(PIN_VARIABLE in values))
@@ -173,9 +164,8 @@ export async function accountIds(
   const providers = await client.accessIdentityProviders(accountId);
   const pin = providers.find((one) => one.type === "onetimepin")?.id;
   if (pin === undefined) {
-    const name = (side === "a" ? a.name : b.name) ?? accountId;
     throw refusal(
-      `The app's Access in the Cloudflare account ${name} logs in with a one-time PIN, but the account's one-time PIN login is missing; preparing again makes it.`,
+      `The app's Access in the Cloudflare account ${accountName(session.accounts[side])} logs in with a one-time PIN, but the account's one-time PIN login is missing; preparing again makes it.`,
       session.command === MOVE_COMMAND
         ? `Run \`${MOVE_COMMAND}\` again.`
         : `Run \`${MOVE_COMMAND}\` first, then run \`${session.command}\` again.`,
@@ -236,7 +226,7 @@ export async function shadowRoots(
 export async function shadowEngineEnv(
   session: MoveSession,
   root: ShadowRoot,
-  side: ShadowSide,
+  side: MoveSide,
   dataDir?: string,
 ): Promise<Record<string, string | undefined>> {
   const environment = environmentOf(session, root);
@@ -253,23 +243,6 @@ export async function shadowEngineEnv(
     CLOUDFLARE_API_TOKEN: session.deps.env[side === "a" ? A_TOKEN_VAR : B_TOKEN_VAR]?.trim(),
     ...(dataDir === undefined ? {} : { TF_DATA_DIR: dataDir }),
   };
-}
-
-/** Records in the audit log a state-only change of the move (`state rm`, `import`). */
-function auditState(
-  session: MoveSession,
-  root: ShadowRoot,
-  action: string,
-  detail: string,
-): Promise<void> {
-  return session.deps.audit.append({
-    kind: "iac",
-    actor: "opscrew",
-    action,
-    phase: MOVE_PHASE,
-    target: `${root.environment} ${root.name} root`,
-    detail,
-  });
 }
 
 /**
@@ -305,7 +278,12 @@ async function removeFromState(
   );
   if (addresses.length === 0) return;
   await engine.stateRemove(root.dir, addresses, { env });
-  await auditState(session, root, "state rm", `${detail}: ${addresses.join(", ")}`);
+  await moveAudit(session.deps, {
+    kind: "iac",
+    action: "state rm",
+    target: `${root.environment} ${root.name} root`,
+    detail: `${detail}: ${addresses.join(", ")}`,
+  });
 }
 
 /**
@@ -362,7 +340,12 @@ export async function importIntoShadow(
   const { custom_domains: _committed, ...vars } = root.vars;
   await session.engine.init(root.dir, { env, backendConfig: { path: root.statePath } });
   await session.engine.importResource(root.dir, address, id, { env, vars });
-  await auditState(session, root, "import", `${address} (id ${id}) into the new account's state`);
+  await moveAudit(session.deps, {
+    kind: "iac",
+    action: "import",
+    target: `${root.environment} ${root.name} root`,
+    detail: `${address} (id ${id}) into the new account's state`,
+  });
 }
 
 /**
@@ -376,10 +359,8 @@ export async function swapShadow(root: ShadowRoot): Promise<void> {
   const { environmentState, removalState } = shadowFiles(root);
   if (await exists(environmentState)) {
     if (await exists(removalState)) {
-      throw new OpsCrewError(
-        "INTERNAL",
+      throw bug(
         `Both the infrastructure state ${basename(environmentState)} and the former one kept for the removal of the old account's pieces exist, so OpsCrew can't swap the new account's state in. Nothing was changed.`,
-        { hint: BUG },
       );
     }
     await mkdir(dirname(removalState), { recursive: true });
@@ -404,10 +385,8 @@ export async function patchTfvars(root: ShadowRoot): Promise<boolean> {
   }
   const after = JSON.parse(patched) as Record<string, unknown>;
   if (Object.entries(ids).some(([name, value]) => after[name] !== value)) {
-    throw new OpsCrewError(
-      "INTERNAL",
+    throw bug(
       `OpsCrew couldn't give the Cloudflare ids in ${basename(root.dir)}/terraform.tfvars.json the new account's values. Nothing was changed.`,
-      { hint: BUG },
     );
   }
   if (patched === text) return false;
@@ -425,7 +404,7 @@ export async function patchTfvars(root: ShadowRoot): Promise<boolean> {
 export async function prepareRemoval(
   session: MoveSession,
   root: ShadowRoot,
-  side: ShadowSide,
+  side: MoveSide,
 ): Promise<void> {
   const { statePath, dataDir } = removalTarget(root, side);
   if (side === "b" && (await exists(seedingMark(root)))) {
@@ -472,10 +451,8 @@ export async function unguardedCopy(
     }
     const text = (await readFile(from, "utf8")).replace(DESTROY_GUARD, "");
     if (text.includes("prevent_destroy")) {
-      throw new OpsCrewError(
-        "INTERNAL",
+      throw bug(
         `OpsCrew couldn't take the prevent_destroy guard out of its copy of ${toPosixRelative(session.paths.root, from)}, so it planned no deletion of the bucket. Nothing in the bucket was changed.`,
-        { hint: BUG },
       );
     }
     await writeFile(join(dir, entry.name), text);

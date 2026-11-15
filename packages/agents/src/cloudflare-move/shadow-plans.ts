@@ -8,14 +8,7 @@
 import type { ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { hashFile } from "@opscrew/iac-engine";
-import {
-  beszelHostname,
-  cloudflareAddressScope,
-  portainerHostname,
-  portainerWebhookHostname,
-  sshHostname,
-} from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { cloudflareAddressScope } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
 import {
   findSavedPlan,
@@ -26,6 +19,7 @@ import {
 } from "../provision";
 import { discardSaved, type PlanStep, planBounded, quietly } from "../retarget/plans";
 import { hasStateFile } from "../shared";
+import { accessHostnames } from "./marks";
 import {
   clearPending,
   type MovePlanAction,
@@ -41,14 +35,13 @@ import {
   environmentOf,
   removalTarget,
   removedBy,
-  type ShadowSide,
   seedShadow,
   shadowEngineEnv,
   shadowFiles,
   tfvarsFile,
 } from "./shadow";
 import { A_TOKEN_VAR, accountName, environmentDeps, MOVE_PHASE, refusal } from "./texts";
-import type { MoveSession, ShadowRoot } from "./types";
+import type { MoveSession, MoveSide, ShadowRoot } from "./types";
 
 /** What a root's pieces are called in an approval's title. */
 const ROOT_WORDS: Readonly<Record<MoveRoot, string>> = {
@@ -193,17 +186,6 @@ async function shadowPlanStep(
  */
 const HELD_BACK_WHILE_PENDING = ["access_applications", "protected_route_records"] as const;
 
-/** True when the environment's root puts any of its hostnames behind Cloudflare Access. */
-function hasAccess(plan: DeployPlan, zone: string): boolean {
-  const zoned: DeployPlan = { ...plan, dns: { ...plan.dns, zone } };
-  return [
-    sshHostname(zoned),
-    portainerWebhookHostname(zoned),
-    portainerHostname(zoned),
-    beszelHostname(zoned),
-  ].some((hostname) => hostname !== undefined);
-}
-
 /**
  * `false` for each of {@link HELD_BACK_WHILE_PENDING} the root's committed values have, while B's
  * zone is not active; none once it is, or in a root without them. Refuses a main root with Access
@@ -221,7 +203,7 @@ async function heldBackWhilePending(
   if (
     root.name === "main" &&
     held.length < HELD_BACK_WHILE_PENDING.length &&
-    hasAccess(plan, session.zone)
+    accessHostnames(plan, session.zone).length > 0
   ) {
     throw refusal(
       `${toPosixRelative(session.paths.root, tfvarsFile(root.dir))} is from before OpsCrew could hold back Access applications, which Cloudflare refuses on the new account's pending zone.`,
@@ -315,7 +297,7 @@ export async function checkAdoption(session: MoveSession, root: ShadowRoot): Pro
 export async function planRemoval(
   session: MoveSession,
   root: ShadowRoot,
-  side: ShadowSide,
+  side: MoveSide,
 ): Promise<PlanStep> {
   const { statePath, dataDir } = removalTarget(root, side);
   if (!(await hasStateFile(statePath))) return { kind: "unchanged", outputs: {} };

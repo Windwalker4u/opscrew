@@ -8,6 +8,8 @@ import {
 } from "@opscrew/connector-cloudflare/testing";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type CloudflareMove, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import type { StorageLogin } from "../shared";
+import type { MoveSession } from "./types";
 
 /** The zone that moves when the plan names none. */
 export const MOVE_ZONE = "example.com";
@@ -70,6 +72,30 @@ export function withCloudflareMove(
       ...(step === "adopted" ? { adoptedAt: "2026-11-21T09:10:00.000Z" } : {}),
     },
   });
+}
+
+/** `plan` with the move's record at `step`. */
+export function atStep(plan: DeployPlan, step: CloudflareMove["step"]): DeployPlan {
+  const move = plan.cloudflareMove;
+  if (move === undefined) throw new Error("the plan records no move");
+  return DeployPlanSchema.parse({ ...plan, cloudflareMove: { ...move, step } });
+}
+
+/** `w`'s session as a script's: not interactive, with `--approve <hash>` when given. */
+export function asScript(w: { session: MoveSession }, approve?: string): MoveSession {
+  return { ...w.session, deps: { ...w.session.deps, interactive: false }, approve };
+}
+
+/** The app's two buckets in each account, each with its own key; `prefix` starts each key's seed. */
+export function bucketKeys(prefix = "") {
+  const key = (seed: string): StorageLogin => ({
+    accessKeyId: fakeSecret("aws-access-key-id", `${prefix}${seed}`),
+    secretAccessKey: fakeSecret("aws-secret-access-key", `${prefix}${seed}`),
+  });
+  return {
+    a: { storage: key("a-storage"), backups: key("a-backups") },
+    b: { storage: key("b-storage"), backups: key("b-backups") },
+  };
 }
 
 /** True when any of `texts` holds either account's token. */

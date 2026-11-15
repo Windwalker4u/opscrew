@@ -10,7 +10,7 @@
 import { type CloudflareClient, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { OpsCrewError, plural } from "@opscrew/core";
 import type { MoveMark, ReadMark } from "./marks";
-import { MOVE_PHASE } from "./texts";
+import { moveAudit } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
 
 type AccessInput = Parameters<CloudflareClient["createAccessApplication"]>[1];
@@ -85,16 +85,6 @@ export async function protectInB(
   const { b } = session.accounts;
   const wanted = marks.flatMap((read) => protectedOf(read.mark, session.zone));
   if (wanted.length === 0) return;
-  const audit = (action: string, detail: string) =>
-    deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action,
-      phase: MOVE_PHASE,
-      target: session.zone,
-      detail,
-    });
-
   const apps = await b.client.listAccessApplications(b.accountId);
   const toMake = wanted.filter(
     (one) => !apps.some((app) => app.domain?.toLowerCase() === one.hostname),
@@ -122,10 +112,12 @@ export async function protectInB(
       };
       deps.reporter.step(`Protecting ${one.hostname} with Cloudflare Access in the new account`);
       await b.client.createAccessApplication(b.accountId, input);
-      await audit(
-        "Access application created",
-        `${one.name} for ${one.hostname} in the account ${b.accountId}`,
-      );
+      await moveAudit(deps, {
+        kind: "provider-call",
+        action: "Access application created",
+        target: session.zone,
+        detail: `${one.name} for ${one.hostname} in the account ${b.accountId}`,
+      });
     }
   }
 
@@ -151,8 +143,10 @@ export async function protectInB(
   }
   if (create.length === 0) return;
   await b.client.createZoneRecords(zone.id, create);
-  await audit(
-    "protected records created",
-    `${plural(create.length, "record")} in ${session.zone}: ${create.map((r) => r.name).join(", ")}`,
-  );
+  await moveAudit(deps, {
+    kind: "provider-call",
+    action: "protected records created",
+    target: session.zone,
+    detail: `${plural(create.length, "record")} in ${session.zone}: ${create.map((r) => r.name).join(", ")}`,
+  });
 }

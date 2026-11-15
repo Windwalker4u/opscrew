@@ -100,7 +100,7 @@ describe("the record in each covered plan", () => {
     expect(written.cloudflareMove).toEqual(prepared);
     expect(written.updatedAt).toBe("2026-10-11T12:00:00.000Z");
 
-    const records = await readMoveRecords(deps.paths, ["prod", "staging", "qa"]);
+    const records = await readMoveRecords(deps.paths);
     expect(records.map((r) => [r.environment, r.plan.cloudflareMove?.step])).toEqual([
       ["prod", "started"],
       ["staging", "prepared"],

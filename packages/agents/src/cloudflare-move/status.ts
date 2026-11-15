@@ -5,7 +5,7 @@
  */
 import { type CloudflareClient, cloudflareConnector } from "@opscrew/connector-cloudflare";
 import { errorText, listText } from "@opscrew/core";
-import { type CloudflareMove, environmentsOf } from "@opscrew/plan-schema";
+import type { CloudflareMove } from "@opscrew/plan-schema";
 import { appFlag } from "../apps/choice";
 import type { PhaseDeps } from "../context";
 import { parseMarks } from "./marks";
@@ -111,9 +111,7 @@ export async function cloudflareMoveStatus(
   options: { client?: Pick<CloudflareClient, "listZoneRecords"> } = {},
 ): Promise<CloudflareMoveStatus | undefined> {
   const { paths } = deps;
-  const records = await environmentsOf(paths.root, paths.app)
-    .then((names) => readMoveRecords(paths, names))
-    .catch(() => []);
+  const records = await readMoveRecords(paths).catch(() => []);
   const moves = records.flatMap(({ environment, plan }) =>
     plan.cloudflareMove === undefined ? [] : [{ environment, move: plan.cloudflareMove }],
   );

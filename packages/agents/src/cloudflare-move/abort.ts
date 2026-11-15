@@ -22,11 +22,9 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { cloudflareAddressScope } from "@opscrew/iac-templates";
-import { appsOf, type CloudflareMove, environmentsOf } from "@opscrew/plan-schema";
-import { appPaths } from "../apps/list";
+import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { hosts, sameHosts } from "../domain/switch";
-import { forgetStorageKey } from "../provision/storage";
 import { appliesNow } from "../retarget/steps";
 import { TUNNEL_ID_OUTPUTS, tunnelModules } from "../rotate/infra";
 import {
@@ -36,7 +34,7 @@ import {
   stateContents,
   stringOutput,
 } from "../shared";
-import { emptyBuckets, moveBuckets } from "./buckets";
+import { emptyBuckets, forgetBucketKeys, moveBuckets } from "./buckets";
 import { removeBesideConnector, waitForNoConnection } from "./connector";
 import { dropNewCredentials } from "./deploy-secrets";
 import { appMark, deleteMark, markName, parseMarks } from "./marks";
@@ -49,7 +47,13 @@ import {
   readSwitchProgress,
   writePending,
 } from "./progress";
-import { abortingMove, readMoveRecords, writeMoveRecord } from "./record";
+import {
+  abortingMove,
+  otherAppMoves,
+  readMoveRecords,
+  recordedMove,
+  writeMoveRecord,
+} from "./record";
 import { openMoveSession } from "./session";
 import { dropShadow, prepareRemoval, shadowOutputs, shadowRoots, unguardedCopy } from "./shadow";
 import { planRemoval } from "./shadow-plans";
@@ -62,7 +66,7 @@ import {
   environmentDeps,
   FINISH_COMMAND,
   MOVE_COMMAND,
-  MOVE_PHASE,
+  moveAudit,
   refusal,
   SWITCH_COMMAND,
 } from "./texts";
@@ -106,9 +110,8 @@ export async function abortMove(
 
 /** The move's record; stops before anything is read when no environment of the app records one. */
 async function requireRecordedMove(deps: PhaseDeps): Promise<CloudflareMove> {
-  const { paths } = deps;
-  const all = await readMoveRecords(paths, await environmentsOf(paths.root, paths.app));
-  const move = all.find((env) => env.plan.cloudflareMove !== undefined)?.plan.cloudflareMove;
+  const all = await readMoveRecords(deps.paths);
+  const move = recordedMove(all);
   if (move !== undefined) return move;
   throw refusal(
     `${all[0]?.plan.app.name ?? "The app"} is not moving to another Cloudflare account, so there is no move to abort.`,
@@ -350,18 +353,6 @@ function bucketOf(environment: MoveEnvironment, root: ShadowRoot): string {
   return moveBuckets(environment.plan).find((bucket) => bucket.root === root.name)?.bucket ?? "";
 }
 
-/** B's kept key of each of the environment's R2 buckets forgotten; A's keys stay. */
-async function forgetBKeys(session: MoveSession, environment: MoveEnvironment): Promise<void> {
-  const { b } = session.accounts;
-  for (const { bucket } of moveBuckets(environment.plan)) {
-    await forgetStorageKey(
-      environmentDeps(session, environment),
-      { provider: "r2", bucket },
-      { account: b.accountId, moveTo: b.accountId },
-    );
-  }
-}
-
 /**
  * The ids of B's tunnels of the environment, from its main shadow root's outputs (the other
  * outputs, which may hold secrets, registered with the redactor); none without a tunnel or once
@@ -422,8 +413,8 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
       ? "the new account had no zone"
       : "the new account's zone stays";
   // Before the records go, so an interrupted abort never leaves them behind.
-  for (const env of session.environments) await forgetBKeys(session, env);
-  if (!(await otherMoveRecorded(session.paths))) {
+  for (const env of session.environments) await forgetBucketKeys(session, env, "b");
+  if ((await otherAppMoves(session.paths)).length === 0) {
     await clearSwitchProgress(session.paths);
     await clearDsNotes(session.paths);
   }
@@ -432,11 +423,9 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
   }
   await rm(appProgressFile(session.paths), { force: true });
   const app = session.environments[0]?.plan.app.name ?? zone;
-  await deps.audit.append({
+  await moveAudit(deps, {
     kind: "provider-call",
-    actor: "opscrew",
     action: "abort ended",
-    phase: MOVE_PHASE,
     target: app,
     detail: `the move of ${zone} is aborted; ${zoneWords}`,
   });
@@ -449,17 +438,6 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
       `${zone} goes on serving from the account ${accountName(a)}, which the move never changed. To move later, start again with \`${MOVE_COMMAND} --to <account>\`.`,
     ],
   };
-}
-
-/** True when an app of the repository other than `paths`' own records a move in any environment. */
-async function otherMoveRecorded(paths: MoveSession["paths"]): Promise<boolean> {
-  for (const { key } of await appsOf(paths.root)) {
-    if (key === paths.app) continue;
-    const own = appPaths(paths, key);
-    const records = await readMoveRecords(own, await environmentsOf(paths.root, key));
-    if (records.some((env) => env.plan.cloudflareMove !== undefined)) return true;
-  }
-  return false;
 }
 
 /** The zone's records in words, by type and name: `Its 2 records go with it: MX example.com, TXT example.com.` */
@@ -570,11 +548,9 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
     );
   }
   await b.client.deleteZone(b.zone.id);
-  await deps.audit.append({
+  await moveAudit(deps, {
     kind: "provider-call",
-    actor: "opscrew",
     action: "abort zone deleted",
-    phase: MOVE_PHASE,
     target: first.hash,
     decision: "approved",
     detail: `${zone} in the account ${b.accountId}`,
