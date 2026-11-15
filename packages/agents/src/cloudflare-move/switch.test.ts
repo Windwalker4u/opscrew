@@ -80,6 +80,8 @@ describe("switchMove: Porkbun", () => {
     ]) {
       expect(actions).toContain(action);
     }
+    // Written once, by `pointToZone`, under the move.
+    expect(h.deps.audit.entries.filter((e) => e.action === "set nameservers")).toHaveLength(1);
     expect(h.deps.reporter.text()).toContain("switched: active in the new account");
     expect(result.next.some((line) => line.includes("--finish` here for shop"))).toBe(true);
     // A saw no write.
@@ -136,7 +138,11 @@ describe("switchMove: Porkbun", () => {
     // DNSSEC on in New, and its DS record published at Porkbun.
     expect(h.bZone.dnssec.status).not.toBe("disabled");
     expect(h.api.dsRecords.get(ZONE)).toHaveLength(1);
-    expect(h.deps.audit.entries.map((e) => e.action)).toContain("DNSSEC on (B)");
+    // Porkbun's writes audited once each, under the move.
+    const moved = h.deps.audit.entries.filter((e) => e.phase === "cloudflare-move");
+    for (const action of ["enable DNSSEC", "add DS record"]) {
+      expect(moved.filter((e) => e.action === action)).toHaveLength(1);
+    }
     expect(h.writes("Old")).toEqual([]);
     expect(leaks(h, removed, waiting, result)).toBe(false);
   });

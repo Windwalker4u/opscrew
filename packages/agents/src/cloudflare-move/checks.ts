@@ -8,6 +8,7 @@ import {
   type AccountPermissionNeed,
   CLOUDFLARE_TOKEN_PAGE,
   type CloudflareClient,
+  type CloudflareDnsRecord,
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
 import { listText, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
@@ -203,24 +204,33 @@ async function requireMoveReady(session: MoveSession): Promise<void> {
   );
 }
 
+/** OpsCrew's names in a zone ({@link opscrewNamesInZone}). */
+export interface OpscrewZoneNames {
+  /** The zone's records with OpsCrew's comment. */
+  records: CloudflareDnsRecord[];
+  /** The hostnames of the account's Workers custom domains in the zone. */
+  domains: string[];
+  /** False when the token may not read the account's Workers: `domains` is then empty. */
+  workers: boolean;
+}
+
 /**
- * The names of OpsCrew's records in a zone (their comment) and of the account's Workers custom
- * domains in it, sorted. The custom domains are left out when the token may not read the account's
- * Workers. Read-only.
+ * OpsCrew's names in a zone, read-only: its records (by their comment) and the account's Workers
+ * custom domains in it, unless the token may not read the account's Workers.
  */
-async function opscrewNamesInZone(
+export async function opscrewNamesInZone(
   client: CloudflareClient,
   accountId: string,
   zoneId: string,
-): Promise<string[]> {
-  const records = (await client.listDnsRecords(zoneId))
-    .filter((record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT)
-    .map((record) => record.name);
+): Promise<OpscrewZoneNames> {
+  const records = (await client.listDnsRecords(zoneId)).filter(
+    (record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT,
+  );
   const workers = (await client.workersPermissions(accountId)).missing.length === 0;
   const domains = workers
     ? (await client.listZoneWorkerDomains(accountId, zoneId)).map((domain) => domain.hostname)
     : [];
-  return [...new Set([...records, ...domains])].sort();
+  return { records, domains, workers };
 }
 
 /**
@@ -234,7 +244,8 @@ export async function otherAppHostnames(
   environments: readonly Pick<MoveEnvironment, "plan">[],
 ): Promise<string[]> {
   const own = new Set(environments.flatMap((env) => opscrewRecordNames(env.plan, zone)));
-  return (await opscrewNamesInZone(a.client, a.accountId, a.zoneId)).filter(
-    (name) => !own.has(name) && !name.split(".").some((label) => label.startsWith("_")),
-  );
+  const { records, domains } = await opscrewNamesInZone(a.client, a.accountId, a.zoneId);
+  return [...new Set([...records.map((record) => record.name), ...domains])]
+    .sort()
+    .filter((name) => !own.has(name) && !name.split(".").some((label) => label.startsWith("_")));
 }

@@ -630,6 +630,18 @@ describe("CloudflareClient registrar calls", () => {
     expect((await plainError(cf.listAccounts())).hint).toMatch(/cloudflarestatus/);
   });
 
+  it("names the Registrar permission, not buying, when reading a registration is refused", async () => {
+    const { cf } = client({
+      [`GET ${REG}/registrations/a.com`]: fail(403, [
+        { code: 10000, message: "Authentication error" },
+      ]),
+    });
+    const error = await plainError(cf.getRegistration(ACCOUNT, "a.com"));
+    expect(error.hint).toContain("Reading Cloudflare Registrar needs the Registrar permission");
+    expect(error.hint).toContain(CLOUDFLARE_REGISTRAR_PERMISSIONS[0]);
+    expect(error.hint).not.toContain("Buying domains");
+  });
+
   it("blames the token, not registrar billing, when listing accounts is refused", async () => {
     for (const status of [400, 401, 403]) {
       const { cf } = client({

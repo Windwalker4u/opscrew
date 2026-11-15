@@ -233,7 +233,8 @@ export async function startDsWait(
  * now (`readDs`); undefined when there is no note. A note that saw old DS records but holds no
  * switch time (a removal interrupted before it noted one) starts its wait once the registrar's
  * API lists none (`startDsWait`, the note is updated); while the API still lists one, it waits
- * without a time. An unreadable note stops (see `readConnectState`).
+ * without a time. Only the API's list counts here: the caller checks first that the public DNS
+ * shows none (`ds.records`). An unreadable note stops (see `readConnectState`).
  */
 export async function dsWaitStatus(
   stateFile: string,

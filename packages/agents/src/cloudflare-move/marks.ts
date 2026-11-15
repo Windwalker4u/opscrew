@@ -8,7 +8,6 @@
 import {
   type CloudflareZoneRecord,
   inspectShared,
-  OPSCREW_MANAGED_COMMENT,
   sharedRuleHostnames,
 } from "@opscrew/connector-cloudflare";
 import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
@@ -28,6 +27,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { unquoteTxt } from "../domain/connect-plan";
+import { opscrewNamesInZone } from "./checks";
 import { A_TOKEN_VAR } from "./texts";
 import type { MoveSession, StepStop } from "./types";
 import { applyZone, MARK_PREFIX, planZone } from "./zone";
@@ -343,9 +343,7 @@ export interface MoveCoverage {
  */
 export async function coverage(session: MoveSession): Promise<MoveCoverage> {
   const { a } = session.accounts;
-  const records = (await a.client.listDnsRecords(a.zoneId)).filter(
-    (record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT,
-  );
+  const { records, domains, workers } = await opscrewNamesInZone(a.client, a.accountId, a.zoneId);
   const facts = await inspectShared(a.client, {
     zoneId: a.zoneId,
     accountId: a.accountId,
@@ -358,10 +356,6 @@ export async function coverage(session: MoveSession): Promise<MoveCoverage> {
       `the hostnames in OpsCrew's rules of the phases ${listText(facts.deniedPhases ?? [])}, which ${A_TOKEN_VAR} may not read`,
     );
   }
-  const workers = (await a.client.workersPermissions(a.accountId)).missing.length === 0;
-  const domains = workers
-    ? (await a.client.listZoneWorkerDomains(a.accountId, a.zoneId)).map((domain) => domain.hostname)
-    : [];
   if (!workers) {
     unread.push(
       `the zone's Workers custom domains, since ${A_TOKEN_VAR} may not read the account's Workers`,

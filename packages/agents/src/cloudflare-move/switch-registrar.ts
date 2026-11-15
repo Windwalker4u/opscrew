@@ -127,14 +127,21 @@ export async function currentNameservers(
   return publicNameservers(session.services.fetch ?? session.deps.fetch, session.zone);
 }
 
-/** `pointToZone`'s and `publishDs`'s context for B's zone at an API registrar. */
+/**
+ * `pointToZone`'s and `publishDs`'s context for B's zone at an API registrar: their audit
+ * entries written under the move's phase.
+ */
 function switchContext(
   session: MoveSession,
   registrar: Extract<DomainRegistrar, { kind: "api" }>,
 ): SwitchContext {
+  const { deps } = session;
   const { b } = session.accounts;
   return {
-    deps: session.deps,
+    deps: {
+      ...deps,
+      audit: { append: (entry) => deps.audit.append({ ...entry, phase: "cloudflare-move" }) },
+    },
     account: { id: b.accountId, name: b.name ?? b.accountId },
     zones: domainZonesFrom(b.client),
     domain: session.zone,
@@ -147,10 +154,10 @@ function switchContext(
 export type NameserverChange = { set: true } | { set: false; stop: StepStop };
 
 /**
- * B's nameservers for the zone: set at Porkbun, Namecheap or GoDaddy (`pointToZone`, audited
- * under the move); at Cloudflare Registrar the dashboard steps of its move between accounts; at
- * another registrar the nameservers to set. Either of the last two stops: a later run finds the
- * delegation and goes on.
+ * B's nameservers for the zone: set at Porkbun, Namecheap or GoDaddy (`pointToZone`, which
+ * audits it under the move); at Cloudflare Registrar the dashboard steps of its move between
+ * accounts; at another registrar the nameservers to set. Either of the last two stops: a later run
+ * finds the delegation and goes on.
  */
 export async function pointAtB(
   session: MoveSession,
@@ -164,18 +171,7 @@ export async function pointAtB(
   const again = `Then run \`${command}\` again: it finds the new nameservers, waits until the new account's zone is active and its certificate issued, and finishes the switch.`;
   if (registrar.kind === "api") {
     const done = await pointToZone(switchContext(session, registrar), zone);
-    if (done.outcome !== "manual") {
-      await deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action: "set nameservers",
-        phase: "cloudflare-move",
-        target: session.zone,
-        detail: `${REGISTRAR_NAMES[registrar.registrarId]}: ${after.join(", ")}; before: ${before.join(", ") || "none"}`,
-      });
-      return { set: true };
-    }
-    return { set: false, stop: { next: [again] } };
+    return done.outcome === "manual" ? { set: false, stop: { next: [again] } } : { set: true };
   }
   const bName = b.name ?? b.accountId;
   const aName = a.name ?? a.accountId;
@@ -220,12 +216,10 @@ export async function dnssecInB(
   zone: MoveZone,
 ): Promise<string[]> {
   const { deps } = session;
-  const where = registrarWords(registrar);
+  const { b } = session.accounts;
   if (registrar.kind === "api") {
-    const ctx = switchContext(session, registrar);
-    const done = await publishDs(ctx, zone);
-    // `publishDs` audits its own writes; the move notes only the DS record it published.
-    if (done.outcome === "added") await auditDnssec(session, where);
+    // `publishDs` audits its own writes under the move's phase.
+    const done = await publishDs(switchContext(session, registrar), zone);
     const link = registrarLinks(registrar.registrarId, deps.env).domains;
     if (done.outcome === "manual" && done.ds !== undefined) {
       return [
@@ -239,10 +233,17 @@ export async function dnssecInB(
     }
     return [];
   }
-  const zones = domainZonesFrom(session.accounts.b.client);
+  const zones = domainZonesFrom(b.client);
   if ((await zones.dnssecEnabled(zone.id)) !== true) {
     await zones.enableDnssec(zone.id);
-    await auditDnssec(session, where);
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: "DNSSEC on (B)",
+      phase: "cloudflare-move",
+      target: session.zone,
+      detail: `zone ${zone.id} in the account ${b.accountId} (domain at ${registrarWords(registrar)})`,
+    });
   }
   if (registrar.kind === "cloudflare") return [];
   const ds = await zones.dsRecord(zone.id);
@@ -251,15 +252,4 @@ export async function dnssecInB(
     : [
         `Add this DS record for ${session.zone} at the registrar that holds it to turn DNSSEC on: ${dsRecordText(ds)}.`,
       ];
-}
-
-async function auditDnssec(session: MoveSession, where: string): Promise<void> {
-  await session.deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "DNSSEC on (B)",
-    phase: "cloudflare-move",
-    target: session.zone,
-    detail: `zone ${session.accounts.b.zone?.id ?? ""} in the account ${session.accounts.b.accountId} (domain at ${where})`,
-  });
 }

@@ -776,6 +776,14 @@ const REGISTRAR_HINTS: FailHints = {
   other: `Check the registrar settings at ${CLOUDFLARE_REGISTRAR_DASHBOARD}: buying needs a default payment method, a verified email and a default registrant contact on the account.`,
 };
 
+/**
+ * Hints for reading the account's registration of a domain (where it is registered, read by
+ * `domain` commands and the move to another account): the Registrar permission, not buying.
+ */
+const REGISTRAR_READ_HINTS: FailHints = {
+  auth: `Reading Cloudflare Registrar needs the Registrar permission on the token (${CLOUDFLARE_REGISTRAR_PERMISSIONS[0]}). Edit the token at ${CLOUDFLARE_TOKEN_PAGE}, then run the command again.`,
+};
+
 const ACCOUNT_HINT = `The token in CLOUDFLARE_API_TOKEN may be mistyped, expired or revoked, or cannot see any account. Check it at ${CLOUDFLARE_TOKEN_PAGE}; buying domains needs ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")}.`;
 
 /**
@@ -2587,7 +2595,7 @@ export class CloudflareClient {
     if (this.#noRegistration(answer, "domain not found")) return undefined;
     const what = `read the registration of ${name}`;
     return toRegisteredDomain(
-      this.#result(answer, RegistrationSchema, what, REGISTRAR_HINTS),
+      this.#result(answer, RegistrationSchema, what, REGISTRAR_READ_HINTS),
       name,
     );
   }

@@ -30,9 +30,12 @@ export function moveInProgress(
   };
 }
 
-/** The command a Cloudflare move's step needs next: preparing, the switch, the finish or the abort. */
-function cloudflareMoveHint(move: CloudflareMove): string {
-  const run = "opscrew cloudflare move";
+/**
+ * The command a Cloudflare move's step needs next: preparing, the switch, the finish or the abort,
+ * with a further app's `--app <key>` (the move takes no `--env`: it covers every environment).
+ */
+function cloudflareMoveHint(move: CloudflareMove, app: string | undefined): string {
+  const run = `opscrew cloudflare move${app === undefined ? "" : ` --app ${app}`}`;
   const next =
     move.abort !== undefined
       ? `Run \`${run} --abort\` to finish the abort; it goes on where it stopped.`
@@ -46,17 +49,18 @@ function cloudflareMoveHint(move: CloudflareMove): string {
 
 /**
  * Stops with `PHASE_PRECONDITION` while the app's zone moves to another Cloudflare account
- * (`plan.cloudflareMove` exists), naming the command its step needs next. `destroy`, `retarget`,
- * every rotation, a new preview environment and {@link requireNoMoveInProgress}'s callers refuse
- * with it; snapshot, rollback, advise and design go on during such a move.
+ * (`plan.cloudflareMove` exists), naming the command its step needs next (with a further app's
+ * `--app <key>`). `destroy`, `retarget`, every rotation, a new preview environment and
+ * {@link requireNoMoveInProgress}'s callers refuse with it; snapshot, rollback, advise and design
+ * go on during such a move.
  */
-export function requireNoCloudflareMove(plan: Pick<DeployPlan, "cloudflareMove">): void {
+export function requireNoCloudflareMove(plan: Pick<DeployPlan, "app" | "cloudflareMove">): void {
   const move = plan.cloudflareMove;
   if (move === undefined) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `A move of ${move.zone} to another Cloudflare account is in progress. Nothing was changed.`,
-    { hint: cloudflareMoveHint(move) },
+    { hint: cloudflareMoveHint(move, plan.app.key) },
   );
 }
 
@@ -67,7 +71,7 @@ export function requireNoCloudflareMove(plan: Pick<DeployPlan, "cloudflareMove">
  * `allowCloudflareMove` (design's).
  */
 export function requireNoMoveInProgress(
-  plan: Pick<DeployPlan, "target" | "retarget" | "cloudflareMove">,
+  plan: Pick<DeployPlan, "app" | "target" | "retarget" | "cloudflareMove">,
   options: { allowCloudflareMove?: true } = {},
 ): void {
   const move = moveInProgress(plan);

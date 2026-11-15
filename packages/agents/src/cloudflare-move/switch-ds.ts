@@ -182,6 +182,7 @@ async function apiGate(
       ],
     );
   }
+  // Neither the API nor the public DNS shows a DS record now, as `dsWaitStatus` expects.
   const now = deps.clock.now();
   let status = await dsWaitStatus(file, now, ds);
   if (status === undefined && dsAtStart) {

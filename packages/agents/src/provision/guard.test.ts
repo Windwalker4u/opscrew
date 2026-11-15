@@ -126,6 +126,17 @@ describe("requireNoCloudflareMove", () => {
     expect(accounts.cloudflare.calls).toEqual([]);
   });
 
+  it("names a further app's --app in every command, and no --env", () => {
+    const shop = testPlan();
+    const api = { ...shop, app: { ...shop.app, key: "api" } };
+    const hint = refusal(withCloudflareMove(api, accounts, "prepared"))?.hint ?? "";
+    for (const flag of [" --switch", " --finish", " --abort"]) {
+      expect(hint).toContain(`\`opscrew cloudflare move --app api${flag}\``);
+    }
+    expect(hint).not.toContain("--env");
+    expect(refusal(withCloudflareMove(shop, accounts, "prepared"))?.hint).not.toContain("--app");
+  });
+
   it("names the plan's own zone", () => {
     const shop = testPlan({ domain: "shop.example.org" });
     const plan = withCloudflareMove(
