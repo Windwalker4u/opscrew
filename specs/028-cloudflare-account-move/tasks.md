@@ -565,7 +565,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Why: `scanClientExposed` checked only `isClientNameFile`, so a browser-exposed name in a `*.test.ts` file or a `test/fixtures/**` file was a critical finding; the other config rules skip `isTestFile`.
   - Done: `packages/secops/src/rules/config.ts` skips `isTestFile`; a test with a test file, a fixture and real code (only the real code is flagged).
 
-- [ ] T2841 Ignore rules for `opscrew scan`, kept in the repository (founder, 2026-11-15, asked through the control-plane session; for 0.2.10)
+- [x] T2841 Ignore rules for `opscrew scan`, kept in the repository (founder, 2026-11-15, asked through the control-plane session; for 0.2.10)
   - Why: test code, mocks and fixtures raise findings that only matter for shipped code; the founder wants "some rules for the scans to ignore those test/mock files".
   - Owns: `packages/secops/src/**` (the default skips, the ignore file's reading and the report), a schema for the file in `packages/plan-schema/src/` (new file, its export line), the scan's report in the CLI (`packages/cli/src/commands/scan*.ts`, `ui` if it prints there) and the MCP server's scan tool, `docs/guide/security.md`'s scan section
   - Accept:
