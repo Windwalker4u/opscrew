@@ -23,6 +23,7 @@ import {
   scripted,
 } from "./connector.fakes";
 import { portainerFinishWorld } from "./finish.fakes";
+import { moveFolder, recordedHash, recordHash } from "./paths";
 import { readAppProgress } from "./progress";
 
 async function failure(run: Promise<unknown>): Promise<OpsCrewError> {
@@ -39,6 +40,11 @@ function asked(w: ConnectorWorld) {
 /** The plan the move's file records as waiting for `--approve`. */
 async function pendingOf(w: ConnectorWorld) {
   return (await readAppProgress(w.environment.paths)).pending;
+}
+
+/** The file that records the main connector's restart with B's token on a server. */
+function restartRecord(w: ConnectorWorld): string {
+  return moveFolder(w.environment.paths, "connector-restart.json");
 }
 
 /** The host plans applied, with the token each was sent. */
@@ -355,6 +361,47 @@ describe.skipIf(!findExecutable("git"))("takeOverConnector", () => {
       expect(await w.leaks(JSON.stringify([waiting, next]))).toBe(false);
     },
   );
+
+  it("restarts the main connector before any removal when the restart's record holds another hash", async () => {
+    const w = await connectorWorld({ kind: "own" });
+    await besideConnector(w.session, w.environment, w.tunnels);
+    await recordHash(restartRecord(w), "b".repeat(64));
+    // A script stops with the restart's hash.
+    const stop = await takeOverConnector(
+      scripted(w.session, undefined).session,
+      w.environment,
+      w.tunnels,
+    );
+    const restart = stop?.pendingPlanHash as string;
+    expect(restart).toMatch(/^[0-9a-f]{64}$/);
+    expect(w.host.applies).toHaveLength(1);
+    // A terminal asks the restart's approval first, then the removal's.
+    await takeOverConnector(w.session, w.environment, w.tunnels);
+    expect(w.handler.requests.slice(1).map((r) => [r.kind, r.planHash])).toEqual([
+      ["host-apply", restart],
+      ["host-apply", expect.not.stringMatching(restart)],
+    ]);
+    expect(w.host.applies[1]?.plan.steps[0]?.params).toMatchObject({ rewrite: true });
+    expect(w.host.applies[2]?.plan.steps[0]?.params).toMatchObject({ remove: true });
+    expect(await recordedHash(restartRecord(w))).toBe(restart);
+  });
+
+  it("restarts the main connector again when its restart is recorded but no connector runs beside it", async () => {
+    const w = await connectorWorld({ kind: "own" });
+    await besideConnector(w.session, w.environment, w.tunnels);
+    await takeOverConnector(w.session, w.environment, w.tunnels);
+    const restart = await recordedHash(restartRecord(w));
+    expect(restart).toMatch(/^[0-9a-f]{64}$/);
+    // The main connector lost B's tunnel; nothing runs beside it.
+    w.tunnel.connections = [];
+    const asked = w.handler.requests.length;
+    await takeOverConnector(w.session, w.environment, w.tunnels);
+    expect(w.handler.requests.slice(asked).map((r) => [r.kind, r.planHash])).toEqual([
+      ["host-apply", restart],
+    ]);
+    expect(w.host.applies.at(-1)?.plan.steps[0]?.params).toMatchObject({ rewrite: true });
+    expect(w.tunnel.connections.map((c) => c.id)).toEqual(["main"]);
+  });
 
   it("says plainly that the main connector serves B's tunnel when the removal is turned down", async () => {
     const w = await connectorWorld({ kind: "own" });

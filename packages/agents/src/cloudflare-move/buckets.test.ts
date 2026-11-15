@@ -1,4 +1,4 @@
-import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { canonicalJson, findExecutable, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import {
@@ -17,6 +17,7 @@ import {
   type BucketWorld,
   bucketWorld,
 } from "./buckets.fakes";
+import { moveFolder, recordedHash, recordHash } from "./paths";
 import { markWindow, readAppProgress, recordWindowStop } from "./progress";
 import { FINISH_COMMAND, MOVE_COMMAND } from "./texts";
 
@@ -199,6 +200,31 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       expect(w.handler.requests).toHaveLength(asked);
       expect(w.r2.runs).toEqual([]);
       expect((await readAppProgress(w.deps.paths)).pending).toBeUndefined();
+    });
+
+    it("asks the copy's approval again when the record of ended copies holds another bucket list's hash", async () => {
+      const w = await bucketWorld("cloud");
+      const { a, b } = w.session.accounts;
+      // The hash the first copies of the app's bucket alone would have.
+      const other = sha256Hex(
+        canonicalJson({
+          action: "copy",
+          environment: "prod",
+          app: "shop",
+          from: a.accountId,
+          to: b.accountId,
+          buckets: [APP_BUCKET],
+        }),
+      );
+      await recordHash(moveFolder(w.environment.paths, "first-copies.json"), other);
+      expect(await firstCopies(w.session, w.environment)).toBeUndefined();
+      const asked = w.handler.requests.filter((r) => r.kind === "remote-exec");
+      expect(asked).toHaveLength(1);
+      expect(asked[0]?.planHash).not.toBe(other);
+      expect(w.r2.runs.map((run) => run.verb)).toEqual(["size", "size", "copy", "copy"]);
+      expect(await recordedHash(moveFolder(w.environment.paths, "first-copies.json"))).toBe(
+        asked[0]?.planHash,
+      );
     });
 
     it("a refused approval copies nothing", async () => {

@@ -19,7 +19,6 @@ import {
   replaceNames,
   sha256Hex,
   upperFirst,
-  writeFileAtomic,
 } from "@opscrew/core";
 import {
   appDir,
@@ -29,7 +28,6 @@ import {
   providerBucket,
 } from "@opscrew/iac-templates";
 import { APP_SERVER, backupsBucketOf, type DeployPlan } from "@opscrew/plan-schema";
-import { z } from "zod";
 import { changeCheckPause } from "../check/pause";
 import type { PhaseDeps } from "../context";
 import { failureReason } from "../destroy/deletion";
@@ -46,7 +44,7 @@ import {
   sizeText,
   windowMinutes,
 } from "../retarget/texts";
-import { portainerClientFor, readValidJson, type StorageLogin } from "../shared";
+import { portainerClientFor, type StorageLogin } from "../shared";
 import { clearDeployPause, setDeployPause, waitForDeploys } from "../shared/deploy-pause";
 import { codeOf, hintOf } from "../shared/errors";
 import {
@@ -58,7 +56,7 @@ import {
   sshRclone,
 } from "../shared/rclone";
 import { MOVE_PHASE } from "./connector-stacks";
-import { moveFolder } from "./paths";
+import { moveFolder, recordedHash, recordHash } from "./paths";
 import {
   clearPending,
   clearWindow,
@@ -347,9 +345,6 @@ interface CopyStep {
   ended?: string;
 }
 
-/** The record of a copy step that ended: its hash. */
-const EndedSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
-
 /**
  * Copies each of `step.buckets` from A to B's bucket of the same name (`rclone copy --checksum
  * --metadata`: only what is missing, checksums and metadata compared and kept), in one-off
@@ -377,7 +372,7 @@ async function copyBuckets(
       buckets: step.buckets.map((bucket) => bucket.bucket),
     }),
   );
-  if (step.ended !== undefined && (await readValidJson(step.ended, EndedSchema))?.sha256 === hash) {
+  if (step.ended !== undefined && (await recordedHash(step.ended)) === hash) {
     await clearPending(deps, step.key);
     return undefined;
   }
@@ -438,7 +433,7 @@ async function copyBuckets(
     });
   }
   if (step.ended !== undefined) {
-    await writeFileAtomic(step.ended, `${JSON.stringify({ sha256: hash })}\n`);
+    await recordHash(step.ended, hash);
   }
   await clearPending(deps, step.key);
   deps.reporter.success(

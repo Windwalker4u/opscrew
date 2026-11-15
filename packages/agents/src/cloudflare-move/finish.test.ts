@@ -283,6 +283,21 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(w.leaks()).toBe(false);
   });
 
+  it("returns the connector step's stop, before the adoption and the swap", async () => {
+    const w = await world("own");
+    const stop = { pendingPlanHash: "c".repeat(64), next: ["Approve the connector's plan."] };
+    steps.takeOverConnector.mockImplementationOnce(async () => {
+      trail.push("connector stopped");
+      return stop;
+    });
+    expect(await finish(w)).toEqual({ step: "prepared", done: false, ...stop });
+    expect(trail.at(-1)).toBe("connector stopped");
+    expect(steps.adoptSite).not.toHaveBeenCalled();
+    expect(steps.removeA).not.toHaveBeenCalled();
+    expect(w.deps.audit.entries.map((e) => e.action)).not.toContain("states swapped");
+    expect(await stepOf(w)).toBe("prepared");
+  });
+
   it("gives Portainer's connectors B's tunnels and tokens from B's state", async () => {
     const w = await world("portainer");
     await finish(w);

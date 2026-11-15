@@ -15,10 +15,9 @@ import {
   planNextTunnelConnectorRemoval,
   tunnelProject,
 } from "@opscrew/connector-ssh-host";
-import { durationText, errorMessage, OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import { durationText, errorMessage, OpsCrewError } from "@opscrew/core";
 import { keepNewerPins, renderTunnelConnectorCompose } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
 import type { NetworkServer } from "../provision/network";
@@ -36,7 +35,6 @@ import {
   committedText,
   type HostPlanStep,
   pollUntil,
-  readValidJson,
   serverLogin,
   stringOutput,
 } from "../shared";
@@ -44,7 +42,7 @@ import { TUNNEL_CLOSE_TIMEOUT_MS, tunnelBusyError } from "../shared/tunnel-conne
 import { networkServer, type VpnServices } from "../vpn/servers";
 import { MOVE_PHASE, type NextStacksApi, nextStacksApi, nextStacksStep } from "./connector-stacks";
 import { stacksForB } from "./finish-point";
-import { moveFolder } from "./paths";
+import { moveFolder, recordedHash, recordHash } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { pendingStop } from "./shared";
 import type { MoveAccount, MoveEnvironment, MoveSession, StepStop } from "./types";
@@ -242,9 +240,6 @@ export async function besideConnector(
   });
 }
 
-/** The record of the main connector's restart with B's token on a server: its plan's hash. */
-const RestartedSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
-
 /**
  * The finish's connector step for `environment`: the main connector restarts with B's tunnel
  * token, then the beside connector is removed, so B's tunnel never pauses. On a server the restart
@@ -293,10 +288,10 @@ export async function takeOverConnector(
   });
   const hash = hostPlanHash(restart.plan);
   const record = moveFolder(environment.paths, "connector-restart.json");
-  if (!beside || (await readValidJson(record, RestartedSchema))?.sha256 !== hash) {
+  if (!beside || (await recordedHash(record)) !== hash) {
     const stop = await hostStep(session, environment, restart);
     if (stop !== undefined) return stop;
-    await writeFileAtomic(record, `${JSON.stringify({ sha256: hash })}\n`);
+    await recordHash(record, hash);
   }
   return removeOnServer(session, environment, server, true);
 }

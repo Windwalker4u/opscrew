@@ -9,7 +9,7 @@ import {
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
 } from "@opscrew/connector-cloudflare";
-import { canonicalJson, OpsCrewError, plural, sha256Hex, writeFileAtomic } from "@opscrew/core";
+import { canonicalJson, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
 import {
   CLOUDFLARE_DEPLOY_SECRETS,
   CLOUDFLARE_DEPLOY_SECRETS_NEW,
@@ -21,7 +21,6 @@ import {
   tunnelMode,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { z } from "zod";
 import {
   deleteSecretAt,
   deploySecretPlace,
@@ -32,8 +31,8 @@ import {
 import { runDeployWorkflow } from "../retarget/site-steps";
 import { appliesNow } from "../retarget/steps";
 import { requireWorkersTokens } from "../serverless/cloudflare/checks";
-import { readValidJson, requestApproval, stringOutput } from "../shared";
-import { moveFolder } from "./paths";
+import { requestApproval, stringOutput } from "../shared";
+import { moveFolder, recordedHash, recordHash } from "./paths";
 import { clearPending, type MovePlanKey, writePending } from "./progress";
 import { shadowOutputs, shadowRoots } from "./shadow";
 import { pendingStop } from "./shared";
@@ -169,8 +168,6 @@ async function mainShadowOutputs(
  * states (`cloudflare-move/deploy-secrets.json`, machine-local, deleted with that folder): the
  * hash of the change, which binds names and their values' digests, never a value.
  */
-const AppliedSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
-
 function appliedFile(environment: MoveEnvironment): string {
   return moveFolder(environment.paths, "deploy-secrets.json");
 }
@@ -219,7 +216,7 @@ async function applySecretsChange(
   );
   const file = appliedFile(environment);
   const none = change.set.length === 0 && change.delete.length === 0;
-  if (none || (await readValidJson(file, AppliedSchema))?.sha256 === hash) {
+  if (none || (await recordedHash(file)) === hash) {
     deps.reporter.info(change.done);
     await clearPending(deps, change.key);
     return undefined;
@@ -253,7 +250,7 @@ async function applySecretsChange(
   for (const place of change.set) await setSecretAt(deps, at, where(place), place.value, PHASE);
   for (const place of change.delete) await deleteSecretAt(deps, at, place, PHASE);
   await change.after?.();
-  await writeFileAtomic(file, `${JSON.stringify({ sha256: hash })}\n`);
+  await recordHash(file, hash);
   await clearPending(deps, change.key);
   deps.reporter.success(change.done);
   return undefined;

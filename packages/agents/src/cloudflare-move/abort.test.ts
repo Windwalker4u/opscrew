@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { FakeTunnel } from "@opscrew/connector-cloudflare/testing";
 import { portainerClient } from "@opscrew/connector-portainer";
+import { type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -101,15 +102,23 @@ async function expectAborted(h: AbortHarness, result: MoveResult) {
   );
 }
 
-/** Runs a script's abort to its end: each stop's hash approved by the next run. */
-async function scripted(h: AbortHarness): Promise<{ result: MoveResult; stops: MoveResult[] }> {
+/**
+ * Runs a script's abort to its end (`options` on every run): each stop's hash approved by the
+ * next run; `stopped` is told each stop as it happens.
+ */
+async function scripted(
+  h: AbortHarness,
+  options: Parameters<AbortHarness["run"]>[0] = {},
+  stopped: (stop: MoveResult) => Promise<void> = async () => {},
+): Promise<{ result: MoveResult; stops: MoveResult[] }> {
   const stops: MoveResult[] = [];
-  let result = await h.run();
+  let result = await h.run(options);
   while (!result.done) {
     expect(result.pendingPlanHash).toMatch(/^[0-9a-f]{64}$/);
     stops.push(result);
+    await stopped(result);
     if (stops.length > 12) throw new Error("the abort never ends");
-    result = await h.run({ approvePlanHash: result.pendingPlanHash as string });
+    result = await h.run({ ...options, approvePlanHash: result.pendingPlanHash as string });
   }
   return { result, stops };
 }
@@ -569,7 +578,8 @@ describe.skipIf(!findExecutable("git"))("abortMove: the repository's switch file
 });
 
 describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
-  it("an own server in tunnel mode: the _NEW secrets deleted, the connector beside removed, New's tunnel waited on, then destroyed", async () => {
+  /** An own server in tunnel mode with New's connector beside the current one. */
+  async function ownTunnelWorld() {
     const plan = unencrypted(ownPlan({ access: "tunnel", deployed: true }));
     const h = await abortHarness({
       plan,
@@ -615,8 +625,14 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
       },
       tunnel,
     );
+    const services = { host, remote: unusedRemote, ...fakeClock() };
+    return { h, tunnel, host, services, secrets: [tunnelToken, plain, next] };
+  }
+
+  it("an own server in tunnel mode: the _NEW secrets deleted, the connector beside removed, New's tunnel waited on, then destroyed", async () => {
+    const { h, tunnel, host, services, secrets } = await ownTunnelWorld();
     h.deps.interactive = true;
-    const result = await h.run({ services: { host, remote: unusedRemote, ...fakeClock() } });
+    const result = await h.run({ services });
     await expectAborted(h, result);
     expect(asked(h).map(([kind]) => kind)).toEqual([
       "cloudflare-apply",
@@ -628,7 +644,39 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
     expect([...h.github.secrets.keys()]).toEqual(["OPSCREW_TUNNEL_SERVICE_TOKEN_ID"]);
     expect(tunnel.connections).toEqual([]);
     expect(host.applies).toHaveLength(1);
-    expect(await h.leaks([tunnelToken, plain, next], JSON.stringify(result))).toBe(false);
+    expect(await h.leaks(secrets, JSON.stringify(result))).toBe(false);
+  });
+
+  it("an own server in tunnel mode as a script: stops at the beside connector's removal before New's tunnel is waited on, then goes on with its hash", async () => {
+    const { h, tunnel, host, services, secrets } = await ownTunnelWorld();
+    const waits = () =>
+      h.deps.reporter.text().split("Waiting until Cloudflare reports no active connections")
+        .length - 1;
+    let atRemoval = false;
+    const { result, stops } = await scripted(h, { services }, async (stop) => {
+      if ((await readAppProgress(h.deps.paths)).pending?.action !== "connector") return;
+      // Stopped with the removal's hash: New's tunnel neither waited on nor destroyed.
+      expect(stop.next[0]).toContain(`--approve ${stop.pendingPlanHash}\``);
+      expect(host.applies).toEqual([]);
+      expect(tunnel.connections.map((c) => c.id)).toEqual(["beside"]);
+      expect(waits()).toBe(0);
+      expect(h.engine.applied).toEqual([]);
+      expect(h.fresh.tunnels).toContain(tunnel);
+      atRemoval = true;
+    });
+    expect(atRemoval).toBe(true);
+    await expectAborted(h, result);
+    // The run with the removal's hash removed the connector beside, then went on.
+    const [removal] = host.applies;
+    expect(host.applies).toHaveLength(1);
+    expect(removal?.plan.steps[0]?.params).toMatchObject({ remove: true, next: true });
+    expect(stops.map((stop) => stop.pendingPlanHash)).toContain(
+      hostPlanHash(removal?.plan as HostPlan),
+    );
+    expect(stops).toHaveLength(asked(h).length);
+    expect(tunnel.connections).toEqual([]);
+    expect(waits()).toBeGreaterThan(0);
+    expect(await h.leaks(secrets, JSON.stringify(stops))).toBe(false);
   });
 
   it("an own server in tunnel mode whose prepare stopped before New's shared plan (no one-time PIN login in New, no shadow state): aborted", async () => {
