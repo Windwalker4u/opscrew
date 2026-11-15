@@ -642,7 +642,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 ## Phase 7: Wave 6 (parallel)
 
-- [ ] T2824 [US1] [US2] The CLI, status, MCP and the plugin
+- [x] T2824 [US1] [US2] The CLI, status, MCP and the plugin
   - Owns: `packages/cli/src/commands/cloudflare*.ts`, `packages/cli/src/ui/cloudflare-move*.ts`, the command's registration in `packages/cli/src/commands/index.ts`, the move's line in `packages/cli/src/commands/status.ts`, `packages/cli/test/e2e/cloudflare-move.test.ts`, `packages/mcp-server/src/{server,tools/status}.ts` (+ tests), `plugin/skills/opscrew-deploy/SKILL.md`
   - Lead note (after T2819): scripted switches need the non-interactive handler to accept `domain-settings` with `--confirm <zone> --approve <hash>` (today it refuses any `confirmPhrase` that isn't a destroy).
   - Lead note (after T2816): the move's command grants `remote-exec` by `--approve <hash>` (first copies, last backups copy) and by `--confirm <bucket>` plus hash (emptying), as `opscrew rotate` does; `--allow-downtime` answers the window's `MaintenanceWindowApproval` (title "Maintenance window: …").
@@ -682,6 +682,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 ## Phase 8: Wave 7
 
 - [ ] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
+  - Lead note (after T2824): the CLI e2e runs each step against its own world (cloud and site through the finish and abort, own-tunnel through prepare only, no `--allow-downtime` window); the rehearsal's legs run the whole move continuously, so they cover the own-tunnel finish and abort and the window through the CLI.
   - Lead note (after T2819's review): record Cloudflare's real status, code and text when a Workers custom domain is refused because another Worker holds the hostname, before anything matches on it.
   - Lead note (after T2817): check whether Cloudflare fills `content` for TLSA, HTTPS and similar records created from `data` (the fake leaves it empty); if not, a re-plan would list them as differences.
   - Lead note (after T2814's review): record how Cloudflare answers `listOriginCertificates` for A's zone once it is moved, and once deleted (about 7 days after activation).
