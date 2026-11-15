@@ -164,12 +164,13 @@ describe("sshRclone", () => {
 
 /**
  * A fake Docker host whose archive writes are kept (FakeDocker drops those outside a mount), each
- * with the container it went into, and whose rclone containers answer with `answer`. With `hold`,
- * a container's wait ends only once it is stopped, as a run that never ends would.
+ * with the container it went into, and whose rclone containers answer with `answer`. With
+ * `hold.wait`, a container's wait ends only once it is stopped, as a run that never ends would;
+ * with `hold.createMs`, creating a container takes that long.
  */
 function rcloneDocker(
   answer: (cmd: readonly string[]) => { exitCode: number; stderr?: string },
-  hold = false,
+  hold: { wait?: boolean; createMs?: number } = {},
 ) {
   const fake = new FakeDocker();
   const archives: { container: string; files: { name: string; mode: number; data: string }[] }[] =
@@ -179,8 +180,11 @@ function rcloneDocker(
     container.image === IMAGES.rclone.ref ? answer(container.cmd) : undefined;
   const transport: DockerTransport = {
     async request(request) {
+      if (hold.createMs !== undefined && request.path.startsWith("/containers/create")) {
+        await new Promise((resolve) => setTimeout(resolve, hold.createMs));
+      }
       const call = /^\/containers\/([^/]+)\/(wait|stop)/.exec(request.path);
-      if (hold && call?.[2] === "wait") {
+      if (hold.wait === true && call?.[2] === "wait") {
         await new Promise<void>((resolve) => stopped.set(call[1] ?? "", resolve));
       }
       if (call?.[2] === "stop") stopped.get(call[1] ?? "")?.();
@@ -342,7 +346,7 @@ describe("dockerRclone", () => {
 
   it("stops a run that outlasts its time", async () => {
     const k = key("slow");
-    const { docker, fake } = rcloneDocker(() => ({ exitCode: 0 }), true);
+    const { docker, fake } = rcloneDocker(() => ({ exitCode: 0 }), { wait: true });
     const error = await caught(
       dockerRclone(
         redactorOf(k),
@@ -358,6 +362,29 @@ describe("dockerRclone", () => {
       "Copying the bucket shop-uploads failed on your Portainer: it did not finish within 0 seconds",
     );
     expect(fake.calls.some((call) => /^POST \/containers\/[^/]+\/stop/.test(call))).toBe(true);
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("never starts a container created after its time ran out, and removes it", async () => {
+    const k = key("late");
+    const { docker, fake, archives } = rcloneDocker(() => ({ exitCode: 0 }), { createMs: 80 });
+    const error = await caught(
+      dockerRclone(
+        redactorOf(k),
+        docker,
+        "your Portainer",
+        OWNER,
+      )({
+        ...copyRun(r2Remote("a", ACCOUNT, k)),
+        timeoutMs: 20,
+      }),
+    );
+    expect(error.message).toBe(
+      "Copying the bucket shop-uploads failed on your Portainer: it did not finish within 0 seconds",
+    );
+    expect(fake.calls.some((call) => /^POST \/containers\/[^/]+\/start/.test(call))).toBe(false);
+    // The keys never went in, and the container is gone.
+    expect(archives).toEqual([]);
     expect(fake.containers.size).toBe(0);
   });
 });

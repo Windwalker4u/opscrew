@@ -204,12 +204,24 @@ export function dockerRclone(
         },
         async (created) => {
           id = created;
+          // The time ran out before the container was there: it never starts, and is removed.
+          if (late) throw new Error("the time ran out before the container started");
           await docker.putArchive(created, "/", tarStream([file]));
         },
       );
     } catch (error) {
       // A container left behind holds the buckets' keys: never silently.
-      if (!(error instanceof ContainerLeftError)) throw error;
+      if (!(error instanceof ContainerLeftError)) {
+        if (late) {
+          throw failed(
+            redactor,
+            run,
+            words,
+            `it did not finish within ${durationText(run.timeoutMs)}`,
+          );
+        }
+        throw error;
+      }
       const short = error.id.slice(0, 12);
       const why = errorMessage(error.cause).replace(/\.?$/, ".");
       throw new OpsCrewError(

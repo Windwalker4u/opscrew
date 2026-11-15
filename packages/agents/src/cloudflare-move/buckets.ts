@@ -31,7 +31,7 @@ import { APP_SERVER, backupsBucketOf, type DeployPlan } from "@opscrew/plan-sche
 import { changeCheckPause } from "../check/pause";
 import type { PhaseDeps } from "../context";
 import { failureReason } from "../destroy/deletion";
-import { withDeploysPaused } from "../move/deploys";
+import { resumeDeploys } from "../move/deploys";
 import { moveShell } from "../move/shells";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import { requireOffsiteKey, requireStorageKey } from "../provision/storage";
@@ -45,7 +45,7 @@ import {
   windowMinutes,
 } from "../retarget/texts";
 import { portainerClientFor, r2Endpoint, type StorageLogin } from "../shared";
-import { clearDeployPause } from "../shared/deploy-pause";
+import { clearDeployPause, setDeployPause, waitForDeploys } from "../shared/deploy-pause";
 import { codeOf, hintOf } from "../shared/errors";
 import {
   type BucketSize,
@@ -253,28 +253,25 @@ function sizeOf(
   });
 }
 
-/**
- * The size and objects of each of the environment's R2 buckets in A (or of `buckets`), by `rclone
- * size` on the app's server or in the user's Portainer with A's keys only: for the summary before
- * the first change and the copies' approvals. None without a bucket on R2.
- */
-export async function measureBuckets(
+/** A bucket with its key in A. */
+interface KeyedBucket {
+  bucket: MoveBucket;
+  a: StorageLogin;
+}
+
+/** The size and objects of each of `keyed` in A, read through `host` with A's keys. */
+async function measured(
   session: MoveSession,
   environment: MoveEnvironment,
-  buckets: readonly MoveBucket[] = moveBuckets(environment.plan),
+  host: AppHost,
+  keyed: readonly KeyedBucket[],
 ): Promise<MoveBucketSize[]> {
-  const keyed: { bucket: MoveBucket; key: StorageLogin }[] = [];
-  for (const bucket of buckets) {
-    keyed.push({ bucket, key: await bucketKey(session, environment, bucket, "a") });
-  }
-  if (keyed.length === 0) return [];
-  const host = await appHost(session, environment);
   const sizes: MoveBucketSize[] = [];
-  for (const { bucket, key } of keyed) {
+  for (const { bucket, a } of keyed) {
     session.deps.reporter.step(
       `Measuring the bucket ${bucketWords(bucket)} of ${appWords(environment)}`,
     );
-    const size = await sizeOf(session, host, bucket, "a", key);
+    const size = await sizeOf(session, host, bucket, "a", a);
     sizes.push({
       environment: environment.environment,
       root: bucket.root,
@@ -283,6 +280,23 @@ export async function measureBuckets(
     });
   }
   return sizes;
+}
+
+/**
+ * The size and objects of each of the environment's R2 buckets in A, by `rclone size` on the
+ * app's server or in the user's Portainer with A's keys only: for the summary before the first
+ * change. None without a bucket on R2.
+ */
+export async function measureBuckets(
+  session: MoveSession,
+  environment: MoveEnvironment,
+): Promise<MoveBucketSize[]> {
+  const keyed: KeyedBucket[] = [];
+  for (const bucket of moveBuckets(environment.plan)) {
+    keyed.push({ bucket, a: await bucketKey(session, environment, bucket, "a") });
+  }
+  if (keyed.length === 0) return [];
+  return measured(session, environment, await appHost(session, environment), keyed);
 }
 
 /** The stop of a non-interactive run: the step above waits for `--approve <hash>`. */
@@ -329,10 +343,9 @@ interface CopyStep {
  * Copies each of `step.buckets` from A to B's bucket of the same name (`rclone copy --checksum
  * --metadata`: only what is missing, checksums and metadata compared and kept), in one-off
  * containers where the app runs, after one `remote-exec` approval bound to the step's hash that
- * lists each bucket with its size, objects and minutes. B's keys are read first, then A's buckets
- * measured ({@link measureBuckets}); a non-interactive run without `--approve <hash>` shows the
- * step, records it as waiting and stops. Resumable: a run after an interruption copies what is
- * still missing.
+ * lists each bucket with its size, objects and minutes. Both accounts' keys are read first, then
+ * A's buckets measured; a non-interactive run without `--approve <hash>` shows the step, records it
+ * as waiting and stops. Resumable: a run after an interruption copies what is still missing.
  */
 async function copyBuckets(
   session: MoveSession,
@@ -342,19 +355,23 @@ async function copyBuckets(
   if (step.buckets.length === 0) return undefined;
   const deps = environmentDeps(session, environment);
   const { a, b } = session.accounts;
-  // B's keys before anything runs: a script without them stops here.
-  const bKeys: StorageLogin[] = [];
+  // Both accounts' keys before anything runs: a script without one stops here.
+  const keyed: (KeyedBucket & { b: StorageLogin })[] = [];
   for (const bucket of step.buckets) {
-    bKeys.push(await bucketKey(session, environment, bucket, "b"));
+    keyed.push({
+      bucket,
+      b: await bucketKey(session, environment, bucket, "b"),
+      a: await bucketKey(session, environment, bucket, "a"),
+    });
   }
-  const sizes = await measureBuckets(session, environment, step.buckets);
   const host = await appHost(session, environment);
+  const sizes = await measured(session, environment, host, keyed);
   const details = [
     `From ${accountWords(session, "a")} into the bucket of the same name in ${accountWords(session, "b")}, with rclone copy in a one-off container on ${host.words}, both keys ${host.keys}: it copies only what is missing there, comparing checksums and keeping the files' metadata.`,
-    ...step.buckets.map((bucket, i) => {
-      const size = sizes[i] as BucketSize;
-      return `  ${bucketWords(bucket)}: ${sizeText(size.bytes)} in ${plural(size.count, "object")}, about ${step.minutes(size)} minutes`;
-    }),
+    ...sizes.map(
+      (size) =>
+        `  ${bucketWords(size)}: ${sizeText(size.bytes)} in ${plural(size.count, "object")}, about ${step.minutes(size)} minutes`,
+    ),
     "Nothing in the current account changes, and the app keeps using its bucket there until the finish.",
   ].join("\n");
   const hash = sha256Hex(
@@ -385,17 +402,14 @@ async function copyBuckets(
       { hint: `Run \`${session.command}\` again when you are ready.` },
     );
   }
-  for (const [i, bucket] of step.buckets.entries()) {
-    const aKey = await bucketKey(session, environment, bucket, "a");
+  for (const key of keyed) {
+    const { bucket } = key;
     deps.reporter.step(
       `Copying the bucket ${bucketWords(bucket)} to ${accountWords(session, "b")}, from ${host.words}`,
     );
     await host.rclone({
       args: ["copy", `a:${bucket.bucket}`, `b:${bucket.bucket}`, "--checksum", "--metadata"],
-      config: [
-        ...remoteOf(session, "a", aKey),
-        ...remoteOf(session, "b", bKeys[i] as StorageLogin),
-      ],
+      config: [...remoteOf(session, "a", key.a), ...remoteOf(session, "b", key.b)],
       // A copy that runs out of time is no harm: the next run copies only what is still missing.
       timeoutMs: COPY_TIMEOUT_MS,
       what: `Copying the bucket ${bucket.bucket} to the new Cloudflare account`,
@@ -523,9 +537,11 @@ async function resumeCheck(
 }
 
 /**
- * Starts the environment's app on A's settings: `backToA`, then the app, its workers and cron
- * started; the window's record forgotten. A failure keeps it, so the next run goes on from it, and
- * stops plainly: the app is offline until it runs again.
+ * Starts the environment's app on A's settings: `backToA` while the deploys are still paused (so
+ * none runs on B's values), then the window's deploy pause lifted, then the app, its workers and
+ * cron started; the window's record forgotten. A failure keeps the record, so the next run goes on
+ * from it, and stops plainly: when `backToA` fails the deploys stay paused; the app is offline
+ * until it runs again.
  */
 async function restartOnA(
   session: MoveSession,
@@ -534,11 +550,29 @@ async function restartOnA(
   backToA: () => Promise<void>,
 ): Promise<void> {
   const deps = environmentDeps(session, environment);
+  const app = appWords(environment);
   deps.reporter.step(
-    `Putting the current Cloudflare account's settings back and starting ${appWords(environment)} again on ${host.words}`,
+    `Putting the current Cloudflare account's settings back and starting ${app} again on ${host.words}`,
   );
   try {
     await backToA();
+  } catch (error) {
+    const reason = deps.redactor.redact(failureReason(error));
+    await audit(session, environment, {
+      action: "window rollback",
+      decision: "refused",
+      detail: `${environment.environment}: putting the current account's settings back failed: ${reason}`,
+    });
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `OpsCrew could not put the current Cloudflare account's settings of ${app} back: ${reason}. Its deploys stay paused, so none runs on the new account's settings, and the app stays stopped until they are back.`,
+      {
+        hint: `${hintOf(error)}Then run \`${session.command}\` again: it puts them back and starts the app first.`,
+      },
+    );
+  }
+  try {
+    await clearDeployPause(deps, session.github, environment.plan, "move");
     await host.startApp();
   } catch (error) {
     const reason = deps.redactor.redact(failureReason(error));
@@ -567,11 +601,11 @@ async function restartOnA(
 }
 
 /**
- * When an earlier run stopped the environment's app for the window and died before it began
- * pointing the app at B (the app's file holds the window's `stoppedAt` for it, without
- * `pointingAt`), the deploy pause it left is lifted, the secrets and values go back to A's
- * (`backToA`), the app starts again and the scheduled check resumes, before anything else.
- * Nothing to do otherwise: a window that began pointing at B only goes forward
+ * When an earlier run stopped the environment's app for the window and died before the app's
+ * settings pointed at B (the app's file holds the window's `stoppedAt` for it, without
+ * `pointingAt`), the secrets and values go back to A's (`backToA`), the deploy pause it left is
+ * lifted, the app starts again and the scheduled check resumes, before anything else
+ * ({@link restartOnA}). Nothing to do otherwise: a window past that only goes forward
  * ({@link bucketWindow}), and an ended one is done. The finish calls it first; `bucketWindow` does
  * too.
  */
@@ -587,9 +621,30 @@ export async function recoverWindow(
   deps.reporter.warn(
     `An earlier run stopped ${appWords(environment)} for the maintenance window at ${window.stoppedAt} and did not end it. OpsCrew starts the app on the current Cloudflare account's settings first; the window is repeated.`,
   );
-  await clearDeployPause(deps, session.github, environment.plan, "move");
   await restartOnA(session, environment, await appHost(session, environment), backToA);
   await resumeCheck(session, environment);
+}
+
+/**
+ * The window's end, once the app runs on B's settings with the deploys resumed: `endedAt`, the
+ * scheduled check resumed (under the window's `approval` when this run has it), audited.
+ */
+async function endWindow(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  approval?: ApprovalRecord,
+): Promise<void> {
+  const deps = environmentDeps(session, environment);
+  await markWindow(deps, "endedAt");
+  await resumeCheck(session, environment, approval);
+  await audit(session, environment, {
+    action: "window",
+    decision: "approved",
+    detail: `${environment.environment}: maintenance window ended; the app uses the new account's bucket`,
+  });
+  deps.reporter.success(
+    `${upperFirst(appWords(environment))} runs again, on the new Cloudflare account's bucket.`,
+  );
 }
 
 /**
@@ -642,14 +697,7 @@ async function goForward(
   } catch (error) {
     throw await forwardStop(session, environment, error, true);
   }
-  await markWindow(deps, "endedAt");
-  await resumeCheck(session, environment);
-  await audit(session, environment, {
-    action: "window",
-    decision: "approved",
-    detail: `${environment.environment}: maintenance window ended; the app uses the new account's bucket`,
-  });
-  deps.reporter.success(`${upperFirst(app)} runs again, on the new Cloudflare account's bucket.`);
+  await endWindow(session, environment);
   return undefined;
 }
 
@@ -665,10 +713,12 @@ async function goForward(
  * maintenance window's), the deploys paused and a running one awaited, the scheduled check paused
  * under that approval, `stoppedAt`, the app, its workers and cron stopped, `rclone sync --checksum
  * --metadata` from A's bucket to B's (B's was made by the move and never used yet, so `sync` deletes
- * there only what A no longer has), B's secrets and values, the deploys resumed, `pointingAt`, the
+ * there only what A no longer has), B's secrets and values, `pointingAt`, the deploys resumed, the
  * deploy that starts the app, `endedAt`, the check resumed. On a failure once the app stopped and
- * before `pointingAt`, `backToA` and the app started on A, its record forgotten; after it, never
- * back ({@link forwardStop}). Without an app bucket on R2, step 1 runs as it is.
+ * before `pointingAt`, `backToA` while the deploys are still paused, then the app started on A
+ * ({@link restartOnA}); after it, never back ({@link forwardStop}), and `endedAt` waits until the
+ * deploys run again. Without an app bucket on R2, step 1 runs as it is. Refused once the finish
+ * adopted the environment in B.
  * @returns a script's stop when it lacks `allowDowntime`.
  */
 export async function bucketWindow(
@@ -680,6 +730,12 @@ export async function bucketWindow(
   const { plan } = environment;
   const { pointAtB } = options;
   const app = appWords(environment);
+  if (plan.cloudflareMove?.step === "adopted") {
+    throw refusal(
+      `${upperFirst(app)} runs on the new Cloudflare account since the finish adopted it there, so it has no maintenance window left.`,
+      "This is a bug in OpsCrew; please report it.",
+    );
+  }
   const { window } = await readAppProgress(deps.paths);
   if (
     window !== undefined &&
@@ -754,62 +810,60 @@ export async function bucketWindow(
       },
     );
   }
+  // The deploys stay paused until the record says the settings point at B, or until A's are back:
+  // no deploy ever runs on B's values while a rerun would still take the app back to A.
+  const { github } = session;
+  await setDeployPause(deps, github, plan, {
+    reason: "move",
+    since: deps.clock.now().toISOString(),
+  });
   let stopped = false;
-  let pointing = false;
   try {
-    await withDeploysPaused(
-      deps,
-      session.github,
-      plan,
-      session.services,
-      session.command,
-      async () => {
-        // The scheduled check opens no issue while the app is offline for the window.
-        await changeCheckPause(deps, session.github, plan, "retarget", PHASE, approval);
-        await recordWindowStop(deps, environment.environment);
-        stopped = true;
-        await audit(session, environment, {
-          action: "window",
-          decision: "approved",
-          detail: `${environment.environment}: maintenance window started, about ${minutes} minutes`,
-        });
-        deps.reporter.step(`Stopping ${app} on ${host.words}`);
-        await host.stopApp();
-        deps.reporter.step(
-          `Copying what changed in the bucket ${bucket.bucket} to the new Cloudflare account`,
-        );
-        await host.rclone({
-          args: ["sync", `a:${bucket.bucket}`, `b:${bucket.bucket}`, "--checksum", "--metadata"],
-          config: [...remoteOf(session, "a", keys.a), ...remoteOf(session, "b", keys.b)],
-          timeoutMs: (3 * sync + 5) * MINUTE,
-          what: `Copying what changed in the bucket ${bucket.bucket} to the new Cloudflare account`,
-          hint: `Check both accounts' keys of the bucket ${bucket.bucket}.`,
-        });
-        deps.reporter.step(`Writing the new Cloudflare account's settings of ${app}`);
-        await pointAtB.secrets();
-      },
+    await waitForDeploys(deps, github, plan, session.services, {
+      outcome: "the maintenance window did not start. Nothing was changed on the servers.",
+      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`${session.command}\` again.`,
+    });
+    // The scheduled check opens no issue while the app is offline for the window.
+    await changeCheckPause(deps, github, plan, "retarget", PHASE, approval);
+    await recordWindowStop(deps, environment.environment);
+    stopped = true;
+    await audit(session, environment, {
+      action: "window",
+      decision: "approved",
+      detail: `${environment.environment}: maintenance window started, about ${minutes} minutes`,
+    });
+    deps.reporter.step(`Stopping ${app} on ${host.words}`);
+    await host.stopApp();
+    deps.reporter.step(
+      `Copying what changed in the bucket ${bucket.bucket} to the new Cloudflare account`,
     );
+    await host.rclone({
+      args: ["sync", `a:${bucket.bucket}`, `b:${bucket.bucket}`, "--checksum", "--metadata"],
+      config: [...remoteOf(session, "a", keys.a), ...remoteOf(session, "b", keys.b)],
+      timeoutMs: (3 * sync + 5) * MINUTE,
+      what: `Copying what changed in the bucket ${bucket.bucket} to the new Cloudflare account`,
+      hint: `Check both accounts' keys of the bucket ${bucket.bucket}.`,
+    });
+    deps.reporter.step(`Writing the new Cloudflare account's settings of ${app}`);
+    await pointAtB.secrets();
     // From here the app's settings point at B: a failure goes forward, never back.
     await markWindow(deps, "pointingAt");
-    pointing = true;
-    deps.reporter.step(`Deploying ${app} on the new Cloudflare account's settings`);
-    await pointAtB.deploy();
   } catch (error) {
-    if (pointing) throw await forwardStop(session, environment, error, false);
     if (!stopped) {
+      await resumeDeploys(deps, github, plan);
       await resumeCheck(session, environment, approval);
       throw error;
     }
     throw await rollBack(session, environment, { host, cause: error, approval }, options.backToA);
   }
-  await markWindow(deps, "endedAt");
-  await resumeCheck(session, environment, approval);
-  await audit(session, environment, {
-    action: "window",
-    decision: "approved",
-    detail: `${environment.environment}: maintenance window ended; the app uses the new account's bucket`,
-  });
-  deps.reporter.success(`${upperFirst(app)} runs again, on the new Cloudflare account's bucket.`);
+  try {
+    await clearDeployPause(deps, github, plan, "move");
+    deps.reporter.step(`Deploying ${app} on the new Cloudflare account's settings`);
+    await pointAtB.deploy();
+  } catch (error) {
+    throw await forwardStop(session, environment, error, false);
+  }
+  await endWindow(session, environment, approval);
   return undefined;
 }
 
@@ -960,7 +1014,7 @@ export async function emptyBuckets(
         config: [...remoteOf(session, "a", own), ...remoteOf(session, "b", b)],
         timeoutMs: COPY_TIMEOUT_MS,
         what: `Checking that the new Cloudflare account's bucket ${bucket.bucket} holds every file of the current one's`,
-        hint: `Nothing was deleted: the bucket ${bucket.bucket} in ${where} keeps every file. Compare both buckets in Cloudflare's dashboard, then run \`${session.command}\` again.`,
+        hint: `Nothing was deleted: the bucket ${bucket.bucket} in ${where} keeps every file. A file the app changed since the switch has its newer version in the new account's bucket: delete those files from ${bucket.bucket} in ${where} in Cloudflare's dashboard, then run \`${session.command}\` again.`,
       });
     }
     deps.reporter.step(`Emptying the bucket ${bucket.bucket} in ${where}`);

@@ -53,7 +53,7 @@ function stepOne(w: BucketWorld, fail?: "secrets" | "deploy"): WindowOptions {
   return {
     pointAtB: { secrets: part("secrets"), deploy: part("deploy") },
     backToA: async () => {
-      w.trail.push("back to A");
+      w.trail.push(`back to A${w.paused().deploys ? " (deploys paused)" : ""}`);
     },
   };
 }
@@ -405,7 +405,11 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
             "Shop (prod) runs again on the current Cloudflare account's bucket, and nothing else changed.",
           );
           expect(error.hint).toContain(`Then run \`${FINISH_COMMAND}\` again`);
-          expect(w.trail.slice(-3)).toEqual(["back to A", "start app", "start worker"]);
+          expect(w.trail.slice(-3)).toEqual([
+            "back to A (deploys paused)",
+            "start app",
+            "start worker",
+          ]);
           expect(await windowOf(w)).toBeUndefined();
           expect(w.paused()).toEqual({ deploys: false, check: false });
           expect(
@@ -451,7 +455,7 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       w.trail.length = 0;
       expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
       expect(w.trail).toEqual([
-        "back to A",
+        "back to A (deploys paused)",
         "start app",
         "start worker",
         "rclone size",
@@ -488,21 +492,72 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
       expect(w.trail).toEqual([]);
     });
 
-    it("keeps the window's stop when the app can't be started again", async () => {
+    it("a failed rollback keeps the deploys paused and the window's stop; the next run puts A's settings back first", async () => {
       const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
-      syncFails(w);
+      w.trail.length = 0;
       const options: WindowOptions = {
-        ...stepOne(w),
+        ...stepOne(w, "secrets"),
         backToA: async () => {
+          w.trail.push(`back to A refused${w.paused().deploys ? " (deploys paused)" : ""}`);
           throw new OpsCrewError("COMMAND_FAILED", "GitHub refused the secrets.");
         },
       };
       const error = await caught(bucketWindow(w.session, w.environment, options));
       expect(error.message).toBe(
-        "OpsCrew could not start shop (prod) again on the current Cloudflare account's settings: GitHub refused the secrets. Your app is offline until it runs again.",
+        "OpsCrew could not put the current Cloudflare account's settings of shop (prod) back: GitHub refused the secrets. Its deploys stay paused, so none runs on the new account's settings, and the app stays stopped until they are back.",
       );
-      expect(error.hint).toContain("run `docker compose up -d` in /srv/apps/shop");
-      expect((await windowOf(w))?.environment).toBe("prod");
+      expect(error.hint).toContain("it puts them back and starts the app first");
+      expect(w.trail.at(-1)).toBe("back to A refused (deploys paused)");
+      expect(w.trail).not.toContain("start app");
+      expect(w.paused().deploys).toBe(true);
+      expect(await windowOf(w)).toEqual({ environment: "prod", stoppedAt: expect.any(String) });
+
+      // The next run: A's settings back while still paused, then the pause lifted, then the app.
+      w.trail.length = 0;
+      await recoverWindow(w.session, w.environment, stepOne(w).backToA);
+      expect(w.trail).toEqual(["back to A (deploys paused)", "start app", "start worker"]);
+      expect(w.paused()).toEqual({ deploys: false, check: false });
+      expect(await windowOf(w)).toBeUndefined();
+    });
+
+    it("a resume of the deploys that fails once the settings point at B goes forward, never back", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND });
+      const remove = w.github.deleteRepoVariable.bind(w.github);
+      let refuse = true;
+      w.github.deleteRepoVariable = async (owner, repo, name) => {
+        if (name === DEPLOY_PAUSED_VARIABLE && refuse) {
+          refuse = false;
+          throw new OpsCrewError("PROVIDER_ERROR", "GitHub answered 502.");
+        }
+        return remove(owner, repo, name);
+      };
+      w.trail.length = 0;
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w)));
+      expect(error.message).toMatch(
+        /^Pointing shop \(prod\) at the new Cloudflare account failed: GitHub answered 502\. .*OpsCrew does not go back/,
+      );
+      expect(w.trail).not.toContain("deploy");
+      expect(w.trail.some((step) => step.startsWith("back to A"))).toBe(false);
+      expect(w.paused().deploys).toBe(true);
+      expect(await windowOf(w)).toEqual({
+        environment: "prod",
+        stoppedAt: expect.any(String),
+        pointingAt: expect.any(String),
+      });
+      w.trail.length = 0;
+      expect(await bucketWindow(w.session, w.environment, stepOne(w))).toBeUndefined();
+      expect(w.trail).toEqual(["secrets (deploys paused)", "deploy"]);
+      expect(w.paused().deploys).toBe(false);
+      expect((await windowOf(w))?.endedAt).toEqual(expect.any(String));
+    });
+
+    it("refuses once the finish adopted the environment in B", async () => {
+      const w = await bucketWorld("cloud", { command: FINISH_COMMAND, step: "adopted" });
+      const error = await caught(bucketWindow(w.session, w.environment, stepOne(w)));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain("since the finish adopted it there");
+      expect(w.trail).toEqual([]);
+      expect(w.r2.runs).toEqual([]);
     });
 
     it("a script without --allow-downtime stops before anything changes", async () => {
@@ -608,6 +663,9 @@ describe.skipIf(!findExecutable("git"))("the move's R2 buckets", () => {
         "Checking that the new Cloudflare account's bucket shop-uploads holds every file of the current one's failed on the app's server: ERROR : late.png: file not in the destination",
       );
       expect(error.hint).toContain("Nothing was deleted");
+      expect(error.hint).toContain(
+        "A file the app changed since the switch has its newer version in the new account's bucket: delete those files from shop-uploads in the current Cloudflare account Old in Cloudflare's dashboard",
+      );
       expect(w.r2.runs.some((run) => run.verb === "delete")).toBe(false);
       expect(Object.keys(objectsOf(w, w.old, APP_BUCKET))).toContain("late.png");
     });
