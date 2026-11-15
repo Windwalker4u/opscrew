@@ -8,7 +8,11 @@
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
+import {
+  inspectShared,
+  OPSCREW_MANAGED_COMMENT,
+  sharedRuleHostnames,
+} from "@opscrew/connector-cloudflare";
 import {
   canonicalJson,
   listText,
@@ -17,22 +21,25 @@ import {
   sha256Hex,
   toPosixRelative,
 } from "@opscrew/core";
+import { cloudflareAddressScope } from "@opscrew/iac-templates";
 import { appsOf, type CloudflareMove, environmentsOf } from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { hosts, sameHosts } from "../domain/switch";
+import { forgetStorageKey } from "../provision/storage";
 import { appliesNow } from "../retarget/steps";
 import { tunnelModules } from "../rotate/infra";
-import { requestApproval, stateContents, stringOutput } from "../shared";
-import { emptyBuckets } from "./buckets";
+import { PlanRefusedError, requestApproval, stateContents, stringOutput } from "../shared";
+import { emptyBuckets, moveBuckets } from "./buckets";
 import { removeBesideConnector, waitForNoConnection } from "./connector";
 import { dropNewCredentials } from "./deploy-secrets";
-import { deleteMark, markName, parseMarks } from "./marks";
+import { appMark, deleteMark, markName, parseMarks } from "./marks";
 import {
   appProgressFile,
   clearPending,
   clearSwitchProgress,
   type MovePlanKey,
+  readSwitchProgress,
   writePending,
 } from "./progress";
 import { abortingMove, readMoveRecords, writeMoveRecord } from "./record";
@@ -75,16 +82,11 @@ export async function abortMove(
   deps: PhaseDeps,
   options: AbortMoveOptions = {},
 ): Promise<MoveResult> {
-  await requireRecordedMove(deps);
+  const move = await requireRecordedMove(deps);
   const session = await openMoveSession(deps, { ...options, command: ABORT_COMMAND });
-  const move = recordOf(session);
-  const begun = await switchBegun(session, move);
-  if (begun !== undefined) {
-    throw refusal(
-      `The switch of ${session.zone} to the new Cloudflare account has begun (${begun}), so the move can't be aborted.`,
-      `Go on with the move: run \`${SWITCH_COMMAND}\`, then \`${FINISH_COMMAND}\`. Moving the app back later is a move from the new account to the current one; OpsCrew never publishes a removed DNSSEC (DS) record again.`,
-    );
-  }
+  const reading = await switchBegun(session, move);
+  if (reading.begun !== undefined) throw begunRefusal(session, move, reading.begun);
+  if (move.abort === undefined && reading.publicDns) await confirmDelegation(session);
   if (move.abort?.step !== "removed") {
     await recordAbort(session, "started");
     const stop = await removeFromB(session);
@@ -94,24 +96,68 @@ export async function abortMove(
   return endAbort(session, move);
 }
 
-/** Stops before anything is read when no environment of the app records a move. */
-async function requireRecordedMove(deps: PhaseDeps): Promise<void> {
+/** The move's record; stops before anything is read when no environment of the app records one. */
+async function requireRecordedMove(deps: PhaseDeps): Promise<CloudflareMove> {
   const { paths } = deps;
   const all = await readMoveRecords(paths, await environmentsOf(paths.root, paths.app));
-  if (all.some((env) => env.plan.cloudflareMove !== undefined)) return;
+  const move = all.find((env) => env.plan.cloudflareMove !== undefined)?.plan.cloudflareMove;
+  if (move !== undefined) return move;
   throw refusal(
     `${all[0]?.plan.app.name ?? "The app"} is not moving to another Cloudflare account, so there is no move to abort.`,
     `Start a move with \`${MOVE_COMMAND} --to <account>\`.`,
   );
 }
 
-/** The move's record, as the covered environments hold it. */
-function recordOf(session: MoveSession): CloudflareMove {
-  const move = session.environments.find((env) => env.plan.cloudflareMove !== undefined)?.plan
-    .cloudflareMove;
-  if (move !== undefined) return move;
-  throw new OpsCrewError("INTERNAL", `No environment records the move of ${session.zone}.`, {
-    hint: "This is a bug in OpsCrew; please report it.",
+/** What the switch's reading came to: begun (why), or not, and whether the public DNS was read. */
+type SwitchReading = { begun: string } | { begun?: undefined; publicDns: boolean };
+
+/**
+ * The refusal once the switch has begun: go on with the move, or, once B's pieces are removed
+ * (`abort.step` `removed`), set A's nameservers back at the registrar.
+ */
+function begunRefusal(session: MoveSession, move: CloudflareMove, begun: string): OpsCrewError {
+  const { zone } = session;
+  const { a } = session.accounts;
+  const aName = a.name ?? a.accountId;
+  const hint =
+    move.abort?.step === "removed"
+      ? `The app's pieces in the new account are removed already, so the move can't go on: set the nameservers of ${zone} back to the account ${aName}'s (${(a.zone?.nameServers ?? []).join(", ")}) at its registrar, then run \`${ABORT_COMMAND}\` again.`
+      : `Go on with the move: run \`${SWITCH_COMMAND}\`, then \`${FINISH_COMMAND}\`. Moving the app back later is a move from the new account to the current one; OpsCrew never publishes a removed DNSSEC (DS) record again.`;
+  return refusal(
+    `The switch of ${zone} to the new Cloudflare account has begun (${begun}), so the move can't be aborted.`,
+    hint,
+  );
+}
+
+/**
+ * When this repository approved a switch plan for the zone and the nameservers were read from the
+ * public DNS only (which may still show A's after they changed at the registrar), one typed
+ * confirmation (`domain-settings`, the zone's name; `--confirm <zone>` in a script) before anything
+ * changes. Nothing asked without that approval.
+ */
+async function confirmDelegation(session: MoveSession): Promise<void> {
+  const { deps, zone } = session;
+  const progress = await readSwitchProgress(session.paths);
+  if (progress?.zone !== zone || progress.approved === undefined) return;
+  const { a } = session.accounts;
+  const aName = a.name ?? a.accountId;
+  const servers = (a.zone?.nameServers ?? []).join(", ");
+  const approval = await deps.approvals.request({
+    kind: "domain-settings",
+    title: `Abort the move of ${zone}, whose switch plan was approved on this computer`,
+    details: [
+      `The switch plan was approved here, and OpsCrew read the nameservers of ${zone} from the public DNS only, which can show the old ones for a while after a change.`,
+      `Check that the registrar of ${zone} still lists the account ${aName}'s nameservers (${servers}). If it lists the new account's, don't abort: run the switch and the finish instead (\`${SWITCH_COMMAND}\`, then \`${FINISH_COMMAND}\`).`,
+      "Type the zone's name to confirm.",
+    ].join("\n"),
+    confirmPhrase: zone,
+  });
+  if (approval.approved) return;
+  throw new PlanRefusedError({
+    plan: "abort",
+    ...(approval.reason === undefined ? {} : { reason: approval.reason }),
+    unchanged: "Nothing was changed.",
+    hint: `Check the nameservers at the registrar of ${zone}, then run \`${ABORT_COMMAND}\` again (in a script: --confirm ${zone}).`,
   });
 }
 
@@ -121,30 +167,31 @@ function recordOf(session: MoveSession): CloudflareMove {
  * registrar's API, else the public DNS) no longer names A's nameservers, or the registry published
  * a DS record when the move started and publishes none now. Read-only.
  */
-async function switchBegun(
-  session: MoveSession,
-  move: CloudflareMove,
-): Promise<string | undefined> {
+async function switchBegun(session: MoveSession, move: CloudflareMove): Promise<SwitchReading> {
   const { zone } = session;
   const { a, b } = session.accounts;
   const aName = a.name ?? a.accountId;
   if (session.environments.some((env) => env.plan.cloudflareMove?.step === "adopted")) {
-    return "the finish has moved the app to the new account";
+    return { begun: "the finish has moved the app to the new account" };
   }
-  if (b.zone?.status === "active") return `${zone} is active in the new account`;
-  if (a.zone?.status !== "active") return `${zone} is no longer active in the account ${aName}`;
+  if (b.zone?.status === "active") return { begun: `${zone} is active in the new account` };
+  if (a.zone?.status !== "active") {
+    return { begun: `${zone} is no longer active in the account ${aName}` };
+  }
   const registrar = await findSwitchRegistrar(session);
   const delegation = await currentNameservers(session, registrar);
   if (!sameHosts(hosts(delegation), hosts(a.zone.nameServers))) {
-    return `its nameservers are no longer those of the account ${aName}`;
+    return { begun: `its nameservers are no longer those of the account ${aName}` };
   }
   if (move.dsAtStart) {
     // Either source showing none is enough: the registrar's API before the public DNS's cache.
     const ds = await readPublished(session, registrar);
-    if (ds.public.length === 0 || ds.api?.length === 0)
-      return "its DNSSEC (DS) record is no longer published";
+    if (ds.public.length === 0 || ds.api?.length === 0) {
+      return { begun: "its DNSSEC (DS) record is no longer published" };
+    }
   }
-  return undefined;
+  const api = registrar.kind === "api" ? registrar.registrar : undefined;
+  return { publicDns: api?.getNameservers === undefined };
 }
 
 /** Writes the abort at `step` into every covered environment's record (kept in the session). */
@@ -181,18 +228,21 @@ async function shadowStates(environment: MoveEnvironment): Promise<string[]> {
 /**
  * The environment's shadow roots: none while it has no shadow state (prepare made nothing of its
  * roots in B, and may not have made what they need there, such as B's one-time PIN login). While B
- * has no zone, none either, unless a shadow state still holds pieces of the app in B: then a plain
- * stop that keeps the move's folder.
+ * has no zone, none either, unless a shadow state still holds Cloudflare pieces of the app in B (or
+ * can't be read): then a plain stop that keeps the move's folder.
  */
 async function rootsOf(session: MoveSession, environment: MoveEnvironment): Promise<ShadowRoot[]> {
   const states = await shadowStates(environment);
   if (states.length === 0) return [];
   const { b } = session.accounts;
   if (b.setup !== undefined) return shadowRoots(session, environment);
-  const deps = { ...session.deps, paths: environment.paths };
+  // Only Cloudflare's pieces count: a seeded state also holds the copied server, which is A's.
   const held: string[] = [];
   for (const state of states) {
-    if ((await stateContents(deps, state, async () => session.engine)) !== "nothing") {
+    const addresses = await session.engine
+      .stateResources(state, { env: session.env })
+      .catch(() => undefined);
+    if (addresses?.every((address) => cloudflareAddressScope(address) === undefined) !== true) {
       held.push(toPosixRelative(session.paths.root, state));
     }
   }
@@ -236,17 +286,18 @@ async function removeEnvironment(
   }
   const buckets = roots.filter((root) => root.name === "storage" || root.name === "backups");
   const others = roots.filter((root) => !buckets.includes(root));
-  // Each copy without the guard is made, and checked, before any bucket is emptied.
-  const copies = new Map<ShadowRoot, ShadowRoot>();
-  for (const root of buckets) copies.set(root, await withoutGuard(session, root));
-  // Per bucket root still holding its bucket: that bucket emptied, then the root destroyed. A root
-  // that holds nothing is left alone, and so is any bucket B has of that name.
-  for (const root of buckets) {
-    if (!(await holds(session, environment, root))) continue;
+  // Each bucket root still holding its bucket, with its copy without the guard, checked before
+  // any bucket is emptied. A root that holds nothing is left alone, and so is any bucket B has of
+  // that name.
+  const held = await bucketsHeld(session, environment, buckets);
+  const pairs: [ShadowRoot, ShadowRoot][] = [];
+  for (const root of held) pairs.push([root, await withoutGuard(session, root)]);
+  for (const [root, copy] of pairs) {
     const emptied = await emptyBuckets(session, environment, "b", [root.name]);
     if (emptied !== undefined) return emptied;
-    const stop = await destroyRoot(session, environment, root, copies.get(root) ?? root);
+    const stop = await destroyRoot(session, environment, root, copy);
     if (stop !== undefined) return stop;
+    await forgetBKey(session, environment, root);
   }
   for (const root of others) {
     const stop = await destroyRoot(session, environment, root, root);
@@ -256,6 +307,53 @@ async function removeEnvironment(
   if (shared !== undefined) return shared;
   for (const root of roots) await dropShadow(session, root);
   return undefined;
+}
+
+/**
+ * The bucket roots of `buckets` whose shadow state holds their bucket. Stops plainly, before any
+ * deletion, when one can't be read.
+ */
+async function bucketsHeld(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  buckets: readonly ShadowRoot[],
+): Promise<ShadowRoot[]> {
+  const deps = { ...session.deps, paths: environment.paths };
+  const { b } = session.accounts;
+  const held: ShadowRoot[] = [];
+  for (const root of buckets) {
+    const contents = await stateContents(deps, root.statePath, async () => session.engine);
+    if (contents === "resources") held.push(root);
+    if (contents !== "unknown") continue;
+    const state = toPosixRelative(session.paths.root, root.statePath);
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${state} can't be read, so OpsCrew neither empties nor deletes the bucket ${bucketOf(environment, root)} in the account ${b.name ?? b.accountId}. Nothing was deleted.`,
+      {
+        hint: `Restore ${state}, or run \`${session.command}\` on the computer that keeps the project's state passphrase.`,
+      },
+    );
+  }
+  return held;
+}
+
+/** The name of the bucket of a bucket root of the environment. */
+function bucketOf(environment: MoveEnvironment, root: ShadowRoot): string {
+  return moveBuckets(environment.plan).find((bucket) => bucket.root === root.name)?.bucket ?? "";
+}
+
+/** B's kept key of the bucket root's bucket forgotten, once the root's destroy went through; A's stay. */
+async function forgetBKey(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  root: ShadowRoot,
+): Promise<void> {
+  const { b } = session.accounts;
+  await forgetStorageKey(
+    { ...session.deps, paths: environment.paths },
+    { provider: "r2", bucket: bucketOf(environment, root) },
+    { account: b.accountId, moveTo: b.accountId },
+  );
 }
 
 /**
@@ -338,6 +436,11 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
   }
   const outcome = await deleteBZone(session);
   if ("stop" in outcome) return { step: move.step, done: false, ...outcome.stop };
+  const zoneWords = outcome.deleted
+    ? "the new account's zone is deleted"
+    : outcome.kept === undefined
+      ? "the new account had no zone"
+      : "the new account's zone stays";
   // Before the records go, so an interrupted abort never leaves them behind.
   if (!(await otherMoveRecorded(session.paths))) {
     await clearSwitchProgress(session.paths);
@@ -354,7 +457,7 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
     action: "abort ended",
     phase: PHASE,
     target: app,
-    detail: `the move of ${zone} is aborted; ${outcome.kept === undefined ? "the new account's zone is deleted" : "the new account's zone stays"}`,
+    detail: `the move of ${zone} is aborted; ${zoneWords}`,
   });
   deps.reporter.success(`The move of ${app} to the new Cloudflare account is aborted.`);
   return {
@@ -386,8 +489,8 @@ function recordsText(records: readonly { type: string; name: string }[]): string
   return `Its ${plural(records.length, "record")} ${go} with it: ${names.join(", ")}.`;
 }
 
-/** What the zone step came to: deleted, kept (and why), or a stop for its approval. */
-type ZoneOutcome = { kept?: string } | { stop: StepStop };
+/** What the zone step came to: deleted or not (kept, and why), or a stop for its approval. */
+type ZoneOutcome = { deleted: boolean; kept?: string } | { stop: StepStop };
 
 /** The hash the deletion of B's zone is approved by: the zone, its status and its records. */
 async function zoneDeletion(session: MoveSession, zoneId: string) {
@@ -422,7 +525,7 @@ async function zoneDeletion(session: MoveSession, zoneId: string) {
 async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
   const { deps, zone } = session;
   const { a, b } = session.accounts;
-  if (b.zone === undefined) return {};
+  if (b.zone === undefined) return { deleted: false };
   const bName = b.name ?? b.accountId;
   const first = await zoneDeletion(session, b.zone.id);
   const own = await markName(session);
@@ -438,14 +541,17 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
         .map((record) => record.name),
     ),
   ].sort();
-  if (apps.length > 0 || opscrew.length > 0 || first.zone.status === "active") {
-    const why =
-      apps.length > 0
-        ? `it holds the move ${apps.length === 1 ? "mark" : "marks"} of ${listText(apps)}, prepared there from ${apps.length === 1 ? "its own repository" : "their own repositories"}`
-        : opscrew.length > 0
-          ? `it holds OpsCrew's records of other apps (${listText(opscrew)})`
-          : "it is active there";
+  const why =
+    apps.length > 0
+      ? `it holds the move ${apps.length === 1 ? "mark" : "marks"} of ${listText(apps)}, prepared there from ${apps.length === 1 ? "its own repository" : "their own repositories"}`
+      : opscrew.length > 0
+        ? `it holds OpsCrew's records of other apps (${listText(opscrew)})`
+        : first.zone.status === "active"
+          ? "it is active there"
+          : await otherRules(session, b.zone.id, first.zone.status);
+  if (why !== undefined) {
     return {
+      deleted: false,
       kept: `${zone} stays in the account ${bName}: ${why}. The last abort of an app prepared there deletes it.`,
     };
   }
@@ -494,5 +600,33 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
   });
   await clearPending(deps, key);
   deps.reporter.success(`Deleted ${zone} from the account ${bName}.`);
-  return {};
+  return { deleted: true };
+}
+
+/**
+ * Why B's zone stays for OpsCrew's rules there (`inspectShared` with B's client): they list
+ * hostnames that aren't this app's (another repository's app part-way through its prepare), or
+ * some of their phases can't be read; `undefined` when neither.
+ */
+async function otherRules(
+  session: MoveSession,
+  zoneId: string,
+  status: string,
+): Promise<string | undefined> {
+  const { b } = session.accounts;
+  const facts = await inspectShared(b.client, {
+    zoneId,
+    accountId: b.accountId,
+    access: false,
+    redirect: true,
+    pendingZone: status !== "active",
+  });
+  const denied = facts.deniedPhases ?? [];
+  if (denied.length > 0) {
+    return `OpsCrew can't read its rules there (the phases ${listText(denied)}), so it can't tell whether another app uses them`;
+  }
+  const mine = new Set((await appMark(session)).hosts);
+  const others = sharedRuleHostnames(facts).filter((name) => !mine.has(name));
+  if (others.length === 0) return undefined;
+  return `OpsCrew's rules there list hostnames of other apps (${listText(others)})`;
 }

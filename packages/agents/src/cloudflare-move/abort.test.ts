@@ -17,7 +17,7 @@ import { appPlan } from "../apps/__fixtures__/sites";
 import { HOSTNAME, hostingTestPlan } from "../hosting/__fixtures__/account";
 import { originTlsApply, planOriginTls, readOriginTlsValues } from "../provision/origin-tls";
 import { applySharedCloudflare, planSharedCloudflare } from "../provision/shared-cloudflare";
-import { NEW_OFFSITE_KEY_VARS, NEW_STORAGE_KEY_VARS } from "../provision/storage";
+import { NEW_OFFSITE_KEY_VARS, NEW_STORAGE_KEY_VARS, storageKeyFile } from "../provision/storage";
 import type { StorageLogin } from "../shared";
 import { recordPortainerConnection, updateServerAddresses } from "../shared/server-record";
 import {
@@ -43,7 +43,7 @@ import {
 } from "./abort.fakes";
 import { APP_BUCKET, BACKUPS_BUCKET, FakeR2 } from "./buckets.fakes";
 import { B_TUNNEL, B_WEBHOOK_TUNNEL, ConnectorHost, fakeClock } from "./connector.fakes";
-import { markName } from "./marks";
+import { markContents, markName } from "./marks";
 import { readAppProgress, readSwitchProgress, writeSwitchProgress } from "./progress";
 import { writeMoveRecord } from "./record";
 import { recordedMove, serverPlan, unencrypted, ZONE } from "./session.fakes";
@@ -52,6 +52,7 @@ import { bSharedRecordPath, planBShared } from "./shared";
 import { switchMove } from "./switch";
 import { BLOG, DOCS } from "./switch.fakes";
 import type { MoveResult, SwitchMoveOptions } from "./types";
+import { MARK_COMMENT } from "./zone";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -268,6 +269,72 @@ describe.skipIf(!findExecutable("git"))("abortMove: a proxied cloud server", () 
     });
   }
 
+  it("deletes nothing when New's zone changed while its deletion's approval was open, and keeps it on the next run", async () => {
+    const h = await abortHarness();
+    const { bZone } = h;
+    if (bZone === undefined) throw new Error("New has the zone");
+    h.deps.interactive = true;
+    h.answers.approve = (request) => {
+      if (request.kind === "cloudflare-apply" && request.confirmPhrase === ZONE) {
+        for (const content of markContents(BLOG)) {
+          h.cloudflare.addRecord(bZone, {
+            type: "TXT",
+            name: `_opscrew-move.blog-0123abcd.${ZONE}`,
+            content,
+            comment: MARK_COMMENT,
+          });
+        }
+      }
+      return true;
+    };
+    const error = await h.run().catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PLAN_HASH_MISMATCH" });
+    expect(bHasZone(h)).toBe(true);
+    expect((await readAppProgress(h.deps.paths)).pending).toBeUndefined();
+    h.answers.approve = () => true;
+    const result = await h.run();
+    await expectAborted(h, result);
+    expect(bHasZone(h)).toBe(true);
+    expect(result.next[0]).toContain("it holds the move mark of blog");
+  });
+
+  it("keeps New's zone while OpsCrew's rules there list another app's hostnames", async () => {
+    const h = await abortHarness();
+    const session = await h.open();
+    const { b } = session.accounts;
+    const blog = serverPlan(`blog.${ZONE}`);
+    const deps = { ...h.deps, paths: h.prodPaths };
+    const recordPath = join(h.root, ".opscrew", "blog-in-new.json");
+    const planned = await planSharedCloudflare(deps, {
+      services: {},
+      plan: blog,
+      cloudflare: { zoneId: h.bZone?.id as string, zoneName: ZONE, accountId: b.accountId },
+      command: "opscrew provision",
+      tls: {},
+      client: b.client,
+      recordPath,
+      pendingZone: true,
+    });
+    await applySharedCloudflare(deps, planned as NonNullable<typeof planned>, {
+      app: "blog",
+      planOnly: false,
+      command: "opscrew provision",
+      phase: "provision",
+    });
+    h.handler.requests.length = 0;
+    h.cloudflare.calls.length = 0;
+    h.deps.interactive = true;
+    const result = await h.run();
+    await expectAborted(h, result);
+    expect(bHasZone(h)).toBe(true);
+    expect(result.next[0]).toBe(
+      `${ZONE} stays in the account New: OpsCrew's rules there list hostnames of other apps (blog.${ZONE}). The last abort of an app prepared there deletes it.`,
+    );
+    expect(h.deps.audit.entries.find((e) => e.action === "abort ended")?.detail).toContain(
+      "the new account's zone stays",
+    );
+  });
+
   it("goes on after an interruption past New's destroy, with nothing destroyed twice", async () => {
     const h = await abortHarness();
     h.deps.interactive = true;
@@ -283,6 +350,15 @@ describe.skipIf(!findExecutable("git"))("abortMove: a proxied cloud server", () 
     await expectAborted(h, await h.run());
     expect(h.engine.applied).toHaveLength(1);
     expect(asked(h).filter(([kind]) => kind === "iac-apply")).toHaveLength(1);
+  });
+
+  it("without New's zone, a shadow state holding only the copied server is no reason to stop", async () => {
+    const h = await abortHarness({ bZone: false, step: "started" });
+    const state = join(h.prodPaths.stateDir, "cloudflare-move", "tfstate", "prod.tfstate");
+    await mkdir(dirname(state), { recursive: true });
+    await writeFile(state, addressState(COPIED_SERVER));
+    h.deps.interactive = true;
+    await expectAborted(h, await h.run());
   });
 
   it("right after the start, with no zone in New yet, only forgets the move", async () => {
@@ -356,6 +432,23 @@ describe.skipIf(!findExecutable("git"))(
       await unchanged(h, error, `${ZONE} is active in the new account`);
     });
 
+    it("once B's pieces are removed, says to set the nameservers back at the registrar", async () => {
+      const h = await abortHarness();
+      const record = await recordNow(h);
+      if (record === undefined) throw new Error("recorded");
+      await writeMoveRecord(h.deps, h.prodPaths, { ...record, abort: { step: "started" } });
+      await writeMoveRecord(h.deps, h.prodPaths, { ...record, abort: { step: "removed" } });
+      h.api.nameservers.set(ZONE, [...(h.bZone?.nameServers ?? [])]);
+      const error = await refused(h.run());
+      expect(error.message).toContain(
+        "has begun (its nameservers are no longer those of the account Old)",
+      );
+      expect(error.hint).toContain(
+        `set the nameservers of ${ZONE} back to the account Old's (${h.aZone.nameServers.join(", ")}) at its registrar`,
+      );
+      expect(error.hint).not.toContain("--switch");
+    });
+
     it("once the finish adopted an environment", async () => {
       const h = await abortHarness({ step: "adopted" });
       const error = await refused(h.run());
@@ -370,6 +463,48 @@ describe.skipIf(!findExecutable("git"))(
       expect(error.message).toBe(
         "shop is not moving to another Cloudflare account, so there is no move to abort. Nothing was changed.",
       );
+    });
+  },
+);
+
+describe.skipIf(!findExecutable("git"))(
+  "abortMove: an approved switch plan here, nameservers read from the public DNS",
+  () => {
+    const approve = async (h: AbortHarness) =>
+      writeSwitchProgress(h.deps.paths, { zone: ZONE, approved: "a".repeat(64) });
+
+    it("asks the zone's name typed before the mark is deleted, then aborts", async () => {
+      const h = await abortHarness({ registrar: "other" });
+      await approve(h);
+      h.deps.interactive = true;
+      await expectAborted(h, await h.run());
+      const [first] = h.handler.requests;
+      expect(first).toMatchObject({ kind: "domain-settings", confirmPhrase: ZONE });
+      expect(first?.planHash).toBeUndefined();
+      expect(first?.details).toContain("The switch plan was approved here");
+      expect(first?.details).toContain(h.aZone.nameServers.join(", "));
+      expect(first?.details).toContain("don't abort: run the switch and the finish instead");
+      expect(h.handler.requests[1]?.details).toContain("Delete the app's mark of the move");
+    });
+
+    it("changes nothing when that confirmation is refused", async () => {
+      const h = await abortHarness({ registrar: "other" });
+      await approve(h);
+      h.deps.interactive = true;
+      h.answers.approve = (request) => request.kind !== "domain-settings";
+      const error = await refused(h.run());
+      expect(error.hint).toContain(`--confirm ${ZONE}`);
+      expect(h.handler.requests).toHaveLength(1);
+      expect(h.cloudflare.calls.every((call) => call.method === "GET")).toBe(true);
+      expect((await recordNow(h))?.abort).toBeUndefined();
+    });
+
+    it("asks nothing more when the registrar's API reads the nameservers", async () => {
+      const h = await abortHarness();
+      await approve(h);
+      h.deps.interactive = true;
+      await expectAborted(h, await h.run());
+      expect(h.handler.requests.some((r) => r.kind === "domain-settings")).toBe(false);
     });
   },
 );
@@ -740,6 +875,39 @@ describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
         "prevent_destroy = true",
       );
       expect(await h.leaks(secrets, JSON.stringify(result))).toBe(false);
+    });
+
+    it("stops before any deletion when a bucket root's state can't be read", async () => {
+      const { h, r2, remote } = await r2World();
+      const storage = h.roots.find((root) => root.name === "storage");
+      if (storage === undefined) throw new Error("a storage root");
+      await writeFile(storage.statePath, "{ damaged");
+      h.deps.interactive = true;
+      const error = await h.run({ services: { remote } }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+      expect((error as OpsCrewError).message).toBe(
+        `.opscrew/cloudflare-move/tfstate/storage.tfstate can't be read, so OpsCrew neither empties nor deletes the bucket ${APP_BUCKET} in the account New. Nothing was deleted.`,
+      );
+      expect(r2.runs).toEqual([]);
+      expect(h.engine.destroyPlans).toEqual([]);
+    });
+
+    it("forgets only New's kept key of each bucket it deleted", async () => {
+      const { h, remote } = await r2World();
+      const kept = (seed: string, account?: string) => ({
+        provider: "r2",
+        bucket: APP_BUCKET,
+        ...(account === undefined ? {} : { account }),
+        ...key(seed),
+      });
+      const before = [kept("kept-a"), kept("kept-a-account", h.old.id)];
+      const file = storageKeyFile(h.prodPaths);
+      await mkdir(dirname(file), { recursive: true });
+      const lines = (keys: readonly object[]) => keys.map((one) => JSON.stringify(one)).join("\n");
+      await writeFile(file, `${lines([...before, kept("kept-b", h.fresh.id)])}\n`);
+      h.deps.interactive = true;
+      await expectAborted(h, await h.run({ services: { remote } }));
+      expect(await readFile(file, "utf8")).toBe(`${lines(before)}\n`);
     });
 
     it("refuses, before any bucket is emptied, a bucket root whose guard it can't take out", async () => {
