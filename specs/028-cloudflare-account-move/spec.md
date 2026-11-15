@@ -185,7 +185,8 @@ both end with B's zone active and the move continuing.
 - **The abort after the switch began** (the nameservers or the DS record changed): refused, judged
   from the registrar and the public DNS so any repository can tell; the move goes on.
 - **What OpsCrew didn't make** (the zone's plan, the user's own rules and settings, Email Routing,
-  other Workers, Pages projects or R2 buckets): not moved; the guide lists them to redo in B.
+  other Workers, Pages projects or R2 buckets): not moved; prepare's summary and the switch plan list
+  what was found (FR-2819), and the guide says how to redo each in B.
 - **The domain can't be added to B** (Cloudflare refuses it while active elsewhere, or a zone hold
   is on): OpsCrew stops with Cloudflare's reason and what to do.
 - **A zone hold in A**: the move says to release it first.
@@ -282,6 +283,11 @@ both end with B's zone active and the move continuing.
   prepare adds B's Access deploy credentials (and a site's account and deploy token) to GitHub beside
   A's, the deploy workflow uses A's and, when Cloudflare Access refuses them, B's, a site's deploy
   goes to both accounts, and the finish keeps only B's.
+- **FR-2819**: The move MUST tell the owner what stays behind (founder's decision, 2026-11-15): prepare's
+  summary lists, read only, what OpsCrew found in A that it doesn't move (Email Routing and its rules,
+  the zone settings OpsCrew doesn't set, rules, Workers, Pages projects and R2 buckets OpsCrew didn't
+  make, Turnstile widgets, Web Analytics sites) and what its token couldn't read, each with where to
+  redo it in B; the switch plan repeats the list before the approval. OpsCrew moves none of it.
 
 ### Key Entities
 
