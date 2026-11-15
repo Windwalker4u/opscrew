@@ -13,6 +13,11 @@ function wireName(name: string): number[] {
   return out;
 }
 
+/** A DS record: key tag 4108, algorithm 8, digest type 2, digest ABCD. */
+const RDATA = [0x10, 0x0c, 0x08, 0x02, 0xab, 0xcd];
+const RECORD = { keyTag: 4108, algorithm: 8, digestType: 2, digest: "ABCD" };
+const SECOND = { keyTag: 4108, algorithm: 13, digestType: 2, digest: "01EF" };
+
 const u16 = (n: number) => [(n >> 8) & 0xff, n & 0xff];
 const u32 = (n: number) => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
 
@@ -21,6 +26,8 @@ interface Rr {
   owner?: number[];
   type?: number;
   ttl: number;
+  /** The record data; default key tag 4108, algorithm 8, digest type 2, digest ABCD. */
+  rdata?: number[];
 }
 
 /** An answer to the DS query of `name`, as a registry's nameserver sends it. */
@@ -30,7 +37,6 @@ function answer(
   options: { id?: number; flags?: number; rcode?: number; question?: string } = {},
 ): Uint8Array {
   const flags = (options.flags ?? 0x8000 | AA) | (options.rcode ?? 0);
-  const rdata = [0x10, 0x0c, 0x08, 0x02, 0xab, 0xcd];
   const bytes = [
     ...u16(options.id ?? ID),
     ...u16(flags),
@@ -43,6 +49,7 @@ function answer(
     ...u16(1),
   ];
   for (const rr of rrs) {
+    const rdata = rr.rdata ?? RDATA;
     bytes.push(
       ...(rr.owner ?? [0xc0, 12]),
       ...u16(rr.type ?? 43),
@@ -66,23 +73,25 @@ describe("dsQuery", () => {
 });
 
 describe("readDsAnswer", () => {
-  it("reads the full TTL of the DS record set from an authoritative answer", () => {
+  it("reads the DS records and the full TTL of their set from an authoritative answer", () => {
     expect(readDsAnswer(answer("opscrew.dev", [{ ttl: 1800 }]), ID, "opscrew.dev")).toEqual({
       kind: "published",
       ttlSeconds: 1800,
+      records: [RECORD],
     });
   });
 
   it("takes the longest TTL, and counts only DS records of the name", () => {
     const rrs = [
       { ttl: 1800 },
-      { ttl: 3600 },
+      { ttl: 3600, rdata: [0x10, 0x0c, 0x0d, 0x02, 0x01, 0xef] },
       { ttl: 999_999, type: 46 },
       { ttl: 999_999, owner: wireName("other.dev") },
     ];
     expect(readDsAnswer(answer("opscrew.dev", rrs), ID, "OpsCrew.dev")).toEqual({
       kind: "published",
       ttlSeconds: 3600,
+      records: [RECORD, SECOND],
     });
   });
 
@@ -91,6 +100,7 @@ describe("readDsAnswer", () => {
     expect(readDsAnswer(answer("opscrew.dev", rrs), ID, "opscrew.dev")).toEqual({
       kind: "published",
       ttlSeconds: 1800,
+      records: [RECORD],
     });
   });
 
@@ -111,6 +121,10 @@ describe("readDsAnswer", () => {
     ["a server failure", answer("opscrew.dev", [], { rcode: 2 })],
     ["a refusal", answer("opscrew.dev", [], { rcode: 5 })],
     ["the answer to another question", answer("opscrew.dev", [], { question: "other.dev" })],
+    [
+      "a DS record without a digest",
+      answer("opscrew.dev", [{ ttl: 1800, rdata: [0x10, 0x0c, 8, 2] }]),
+    ],
     ["a cut-off packet", answer("opscrew.dev", [{ ttl: 1800 }]).slice(0, -3)],
     ["a header only", Uint8Array.from([0x12, 0x34, 0x84, 0])],
     // The answer's owner name (at offset 29, after the question) points at itself.
@@ -158,6 +172,7 @@ describe("registryDsLookup", () => {
     expect(await registryDsLookup(net)("opscrew.dev.")).toEqual({
       kind: "published",
       ttlSeconds: 1800,
+      records: [RECORD],
     });
     expect(calls).toEqual(["ns dev", "ask 192.0.2.1"]);
     expect(asked).toEqual([dsQuery("opscrew.dev", ID)]);
@@ -175,6 +190,7 @@ describe("registryDsLookup", () => {
     expect(await registryDsLookup(net)("opscrew.dev")).toEqual({
       kind: "published",
       ttlSeconds: 1800,
+      records: [RECORD],
     });
     expect(calls).toEqual(["ns dev", "ask 192.0.2.1", "ask 192.0.2.2", "ask 192.0.2.3"]);
   });

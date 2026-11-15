@@ -21,6 +21,7 @@ import {
 } from "../domain";
 import { seenState, switchAfterRemoval, waitFor } from "../domain/connect-ds";
 import {
+  type ConnectState,
   dsWaitSeconds,
   laterSwitch,
   REMOVAL_MARGIN_SECONDS,
@@ -105,32 +106,46 @@ function waiting(session: MoveSession, switchAfter: string): DsGate {
 
 /**
  * The DS gate before the switch, read fresh (`readDs`: the registrar's API, when OpsCrew drives
- * it, and the public DNS): `clear`, `remove` (the API lists DS records it can remove), or a stop
- * before any change. `dsAtStart` (the registry published one when the move started) makes a
- * first look that finds none wait as after a removal, since nothing says when it went.
+ * it, and the registry's own answer, or the public DNS when the registry cannot be read): `clear`,
+ * `remove` (the API lists DS records it can remove), or a stop before any change. `dsAtStart` (the
+ * registry published one when the move started) makes a first look that finds none wait as after
+ * a removal, since nothing says when it went; it and a note ask the registry even while nothing
+ * is listed or shown.
  */
 export async function dsGate(
   session: MoveSession,
   registrar: DomainRegistrar,
   dsAtStart: boolean,
 ): Promise<DsGate> {
-  const ds = await readPublished(session, registrar);
   const api = registrar.kind === "api" ? registrar : undefined;
-  if (api !== undefined) return apiGate(session, api, ds, dsAtStart);
-  return ownGate(session, registrar.kind === "cloudflare", ds, dsAtStart);
+  if (api !== undefined) {
+    const state = await readConnectState(connectNoteFile(session.paths));
+    const ds = await readPublished(session, registrar, dsAtStart || state !== undefined);
+    return apiGate(session, api, ds, dsAtStart, state);
+  }
+  const note = await readOwnNote(ownNoteFile(session.paths));
+  const ds = await readPublished(session, registrar, dsAtStart || note !== undefined);
+  return ownGate(session, registrar.kind === "cloudflare", ds, dsAtStart, note);
 }
 
-/** The DS records published now: the registrar's API, when OpsCrew drives it, and the public DNS. */
+/**
+ * The DS records published now: the registrar's API, when OpsCrew drives it, and the registry's
+ * own answer or the public DNS (`readDs`; `seenBefore`: a note or `dsAtStart`).
+ */
 export function readPublished(
   session: MoveSession,
   registrar: DomainRegistrar,
+  seenBefore = false,
 ): Promise<DsReading> {
   const { deps, services, zone } = session;
-  return readDs({
-    deps: { ...deps, fetch: services.fetch ?? deps.fetch },
-    domain: zone,
-    ...(registrar.kind === "api" ? { registrar: registrar.registrar } : {}),
-  });
+  return readDs(
+    {
+      deps: { ...deps, fetch: services.fetch ?? deps.fetch },
+      domain: zone,
+      ...(registrar.kind === "api" ? { registrar: registrar.registrar } : {}),
+    },
+    seenBefore,
+  );
 }
 
 /**
@@ -155,6 +170,7 @@ async function apiGate(
   api: ApiRegistrar,
   ds: DsReading,
   dsAtStart: boolean,
+  state: ConnectState | undefined,
 ): Promise<DsGate> {
   const { deps, zone, command } = session;
   const file = connectNoteFile(session.paths);
@@ -164,7 +180,6 @@ async function apiGate(
     const listed = ds.api ?? [];
     const removable = api.registrar.capabilities.dnssec && api.registrar.removeDsRecord;
     if (listed.length > 0 && removable) return { kind: "remove", ds, registrar: api };
-    const state = await readConnectState(file);
     if (state?.switchAfter !== undefined && state.dsSeen === undefined) {
       // Removed through the API earlier, and the public DNS still shows them: a later time.
       const switchAfter = switchAfterRemoval(state, ds, ds.at);
@@ -200,18 +215,19 @@ async function apiGate(
  * dashboard; while A's zone's DNSSEC is `active` or `pending` the registry publishes, or is about
  * to publish, its DS record, and `pending-disabled` counts as gone once the public DNS shows none)
  * and at any other registrar: while a DS record is published, the run notes it and stops; the
- * first run that sees it gone waits `dsWaitSeconds` plus `REMOVAL_MARGIN_SECONDS` from then.
+ * first run that sees it gone waits the noted wait (`dsWaitSeconds`) from its reading when the
+ * registry answered that it publishes none, else plus `REMOVAL_MARGIN_SECONDS` from then.
  */
 async function ownGate(
   session: MoveSession,
   cloudflare: boolean,
   ds: DsReading,
   dsAtStart: boolean,
+  note: OwnNote | undefined,
 ): Promise<DsGate> {
   const { deps, zone, command } = session;
   const { a } = session.accounts;
   const file = ownNoteFile(session.paths);
-  const note = await readOwnNote(file);
   const now = deps.clock.now();
   const on = cloudflare && (await domainZonesFrom(a.client).dnssecEnabled(a.zoneId)) === true;
   const aName = accountName(a);
@@ -219,7 +235,8 @@ async function ownGate(
     const waitSeconds = waitFor(note, ds);
     await writeNote(file, { zone, dsSeen: note?.dsSeen ?? now.toISOString(), waitSeconds });
     const records = ds.records.length > 0 ? `: ${ds.records.map(dsRecordText).join("; ")}` : "";
-    const hours = Math.round((waitSeconds + REMOVAL_MARGIN_SECONDS) / 3600);
+    const margin = ds.registry.kind === "unreadable" ? REMOVAL_MARGIN_SECONDS : 0;
+    const hours = Math.round((waitSeconds + margin) / 3600);
     const after = `Then run \`${command}\` again: once the registry no longer publishes the DS record, it says when the switch can go on (about ${hours} hours later, once resolvers have forgotten it).`;
     if (on) {
       return stopped(
@@ -246,7 +263,11 @@ async function ownGate(
   let switchAfter = note?.switchAfter;
   if (switchAfter === undefined || note?.dsSeen !== undefined) {
     const waitSeconds = note?.waitSeconds ?? dsWaitSeconds(undefined);
-    const at = now.getTime() + (waitSeconds + REMOVAL_MARGIN_SECONDS) * 1000;
+    // The registry publishes none as of this reading: every cached copy is gone within the wait.
+    const at =
+      ds.registry.kind === "none"
+        ? ds.at.getTime() + waitSeconds * 1000
+        : now.getTime() + (waitSeconds + REMOVAL_MARGIN_SECONDS) * 1000;
     switchAfter = laterSwitch(note, at);
     await writeNote(file, { zone, switchAfter, waitSeconds });
   }

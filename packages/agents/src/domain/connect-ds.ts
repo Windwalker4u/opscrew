@@ -26,15 +26,19 @@ import { dsRecordText, sameDs } from "./switch";
 export interface DsReading {
   /** What the registrar's API lists (registrars with DNSSEC in their API). */
   api?: DsRecord[];
-  /** What the public DNS shows. */
+  /**
+   * What is published: the registry's own answer when it is readable, else what the public DNS (a
+   * resolver's cached copy) shows. A readable `none` while a resolver still shows a copy counts
+   * only once an earlier run saw the records: that run's note times the wait from this reading.
+   */
   public: DsRecord[];
   /** Both combined: before the switch, every one of them is an old DS record. */
   records: DsRecord[];
-  /** The public answer's TTL: how long its copy of the records has left (seconds). */
+  /** The public DNS's TTL: how long its copy of the records has left (seconds). */
   ttlSeconds?: number;
   /**
-   * The DS record's full TTL from the registry's own nameservers (`registryDsLookup`), asked only
-   * while a DS record is listed or shown (`none` otherwise).
+   * The registry's own answer (`registryDsLookup`), asked only when old DS records were seen
+   * before or are listed or shown now (`none` otherwise).
    */
   registry: RegistryDsTtl;
   /** When they were read. */
@@ -51,6 +55,8 @@ export interface DsContext {
   domain: string;
   /** The registrar's API, when OpsCrew drives it; without one only the public DNS is read. */
   registrar?: Registrar;
+  /** The note an earlier run wrote (`readConnectState`), if any: old DS records were seen before. */
+  state?: Pick<ConnectState, "waitSeconds">;
 }
 
 /** What removing the old DS records and noting the wait needs. */
@@ -84,37 +90,48 @@ export function unionDs(list: readonly DsRecord[], extra: readonly DsRecord[]): 
 
 /**
  * The DS records published now: what the registrar's API lists (registrars with DNSSEC in their
- * API) and what the public DNS shows, combined. A failed public lookup stops the run: OpsCrew
- * never switches nameservers on a guess.
+ * API) and what is published (`DsReading.public`), combined. The registry is asked when old DS
+ * records were seen before (`seenBefore`: by default, a note in `ctx.state`) or are listed or
+ * shown now. A failed public lookup stops the run: OpsCrew never switches nameservers on a guess.
  */
-export async function readDs(ctx: DsContext): Promise<DsReading> {
+export async function readDs(
+  ctx: DsContext,
+  seenBefore = ctx.state !== undefined,
+): Promise<DsReading> {
   const { registrar, domain, deps } = ctx;
   const at = deps.clock.now();
   const api =
     registrar?.capabilities.dnssec === true && registrar.listDsRecords !== undefined
       ? await registrar.listDsRecords(domain)
       : undefined;
-  const published = await lookupPublishedDs(deps.fetch, domain);
-  const records = unionDs(api ?? [], published.records);
-  const registry: RegistryDsTtl =
-    records.length === 0
-      ? { kind: "none" }
-      : ((await deps.registryDs?.(domain)) ?? { kind: "unreadable" });
+  const shown = await lookupPublishedDs(deps.fetch, domain);
+  const ask = seenBefore || (api ?? []).length > 0 || shown.records.length > 0;
+  const registry: RegistryDsTtl = ask
+    ? ((await deps.registryDs?.(domain)) ?? { kind: "unreadable" })
+    : { kind: "none" };
+  const published =
+    registry.kind === "published"
+      ? registry.records
+      : registry.kind === "none" && seenBefore
+        ? []
+        : shown.records;
   return {
     api,
-    public: published.records,
-    records,
-    ttlSeconds: published.ttlSeconds,
+    public: published,
+    records: unionDs(api ?? [], published),
+    ttlSeconds: shown.ttlSeconds,
     registry,
     at,
   };
 }
 
 /**
- * When the old DS records are gone from the public DNS at the earliest (milliseconds): when the
- * copy the public answer showed expires, and never before `after`.
+ * When the old DS records are gone from the public DNS at the earliest (milliseconds): `after` when
+ * the registry answered (the wait from its TTL covers every cached copy), else when the copy the
+ * public answer showed expires, and never before `after`.
  */
 function publicGoneAt(ds: DsReading, after: Date): number {
+  if (ds.registry.kind !== "unreadable") return after.getTime();
   const expires =
     ds.public.length > 0 && ds.ttlSeconds !== undefined
       ? ds.at.getTime() + ds.ttlSeconds * 1000
@@ -139,8 +156,9 @@ export function waitFor(
 
 /**
  * The switch time once the old DS records were removed through the API (or are no longer listed
- * there) at `at`: the wait after the public DNS's copy expires, plus an hour in case the registry
- * publishes them a little longer, never earlier than the note says.
+ * there) at `at`: the wait from then (from when the public DNS's copy expires, when the registry
+ * cannot be read), plus an hour in case the registry publishes them a little longer, never earlier
+ * than the note says.
  */
 export function switchAfterRemoval(
   state: ConnectState | undefined,

@@ -1,16 +1,18 @@
 import { randomInt } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { resolve4, resolveNs } from "node:dns/promises";
+import type { DsRecord } from "@opscrew/contracts";
 import { normalizeHostName } from "@opscrew/core";
 
 /**
- * The TTL the registry gives a domain's DS record, read from the parent zone's own nameservers
- * (for `opscrew.dev`, the `dev` zone's). A caching resolver only shows the time its copy has left;
- * the registry's answer has the full TTL every resolver cached the record with.
+ * A domain's DS records as the registry publishes them, read from the parent zone's own
+ * nameservers (for `opscrew.dev`, the `dev` zone's). A caching resolver only shows its copy and
+ * the time that copy has left; the registry's answer is what it publishes now, with the full TTL
+ * every resolver caches the records with.
  */
 export type RegistryDsTtl =
-  /** The registry publishes a DS record for the domain, with this TTL (seconds). */
-  | { kind: "published"; ttlSeconds: number }
+  /** The registry publishes these DS records for the domain, with this TTL (seconds). */
+  | { kind: "published"; ttlSeconds: number; records: DsRecord[] }
   /** The registry publishes none. */
   | { kind: "none" }
   /** No nameserver gave a readable answer (UDP port 53 blocked, timeouts, a truncated answer …). */
@@ -88,10 +90,10 @@ class Message {
 }
 
 /**
- * The DS record set's TTL in a nameserver's answer to `dsQuery(name, id)`: the longest TTL of the
- * name's DS records, `none` when the authoritative answer has none (or the name does not exist),
- * and `unreadable` for anything else: another id, not an authoritative answer, a truncated
- * answer, another question, an error code or a malformed packet.
+ * The DS records in a nameserver's answer to `dsQuery(name, id)`, with the longest TTL among them;
+ * `none` when the authoritative answer has none (or the name does not exist), and `unreadable` for
+ * anything else: another id, not an authoritative answer, a truncated answer, another question,
+ * an error code or a malformed packet (a DS record without a digest among them).
  */
 export function readDsAnswer(packet: Uint8Array, id: number, name: string): RegistryDsTtl {
   const want = normalizeHostName(name);
@@ -114,6 +116,7 @@ export function readDsAnswer(packet: Uint8Array, id: number, name: string): Regi
     if (question.name !== want || qtype !== DS_TYPE || qclass !== IN_CLASS) return UNREADABLE;
     let offset = question.next + 4;
     let ttl: number | undefined;
+    const records: DsRecord[] = [];
     for (let i = m.u16(6); i > 0; i--) {
       const owner = m.name(offset);
       const type = m.u16(owner.next);
@@ -123,10 +126,21 @@ export function readDsAnswer(packet: Uint8Array, id: number, name: string): Regi
       offset = owner.next + 10 + length;
       if (offset > packet.length) return UNREADABLE;
       if (owner.name === want && type === DS_TYPE && rrClass === IN_CLASS) {
+        // RFC 4034 5.1: key tag, algorithm, digest type, then the digest.
+        const data = owner.next + 10;
+        if (length <= 4) return UNREADABLE;
+        records.push({
+          keyTag: m.u16(data),
+          algorithm: packet[data + 2] as number,
+          digestType: packet[data + 3] as number,
+          digest: Buffer.from(packet.subarray(data + 4, offset))
+            .toString("hex")
+            .toUpperCase(),
+        });
         ttl = Math.max(ttl ?? 0, rrTtl);
       }
     }
-    return ttl === undefined ? { kind: "none" } : { kind: "published", ttlSeconds: ttl };
+    return ttl === undefined ? { kind: "none" } : { kind: "published", ttlSeconds: ttl, records };
   } catch {
     return UNREADABLE;
   }
