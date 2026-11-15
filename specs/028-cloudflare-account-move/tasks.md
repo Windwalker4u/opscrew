@@ -603,6 +603,16 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Why: L3's prepare added B's zone again after L2's abort had deleted it; Cloudflare restored the 15 records the zone held (their `created_on` was L2's copy time), and the copy, planned against a zone that didn't exist yet, failed with "An identical record already exists".
   - Done: `applyZone` lists B's records right after creating the zone and creates only `recordsMissingFromZone(plan.create, present)`; a test where the new zone comes back with one of A's records (it failed with the live error before the fix).
 
+- [ ] T2845 The engine's local backend path doesn't depend on the drive letter's case (found preparing the real move, 2026-11-15)
+  - Why: a further app provisioned from a terminal that opened the checkout as `d:\…` (VS Code) recorded its local backend path with a lower-case drive in `.terraform/terraform.tfstate`; a later run from a `D:\…` terminal passed the same path upper-case, and `tofu init` stopped with "Backend configuration changed" though it is the same file.
+  - Owns: `packages/iac-engine/src/**` and `packages/agents/src/**` where the local backend's state path and `TF_DATA_DIR` are built (find them), their tests
+  - Accept:
+    - On Windows, every path OpsCrew gives the engine for a state file or a data folder has its drive letter upper-case (one helper, used wherever such a path is built), so the case of the terminal's working folder never changes a backend's configuration.
+    - A data folder that recorded the same path with a lower-case drive (written by an earlier run) is accepted: when `init` reports the backend changed and the recorded and wanted paths are the same file (case-insensitively on Windows), OpsCrew reinitialises it without migrating the state (`-reconfigure`); any other backend change still stops plainly as today.
+    - Tests: a path built from a lower-case and an upper-case drive gives the same string; a recorded lower-case path is reconfigured; a different path still stops.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-engine --filter=@opscrew/agents && npx vitest run --root packages/iac-engine && npx vitest run --root packages/agents src/provision src/shared && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
