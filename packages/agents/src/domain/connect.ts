@@ -23,6 +23,7 @@ import {
   removeDsAndWait,
   seenState,
   startDsWait,
+  stillPublishedState,
   switchAfterRemoval,
   unionDs,
   waitFor,
@@ -258,7 +259,7 @@ export async function connectDomain(
     return removed ? stillPublished(ctx, ds, existing) : dsMustGoFirst(ctx, ds, existing);
   }
   if (ds.records.length === 0) {
-    const waiting = await waitForOldDs(ctx, existing);
+    const waiting = await waitForOldDs(ctx, existing, ds);
     if (waiting !== undefined) return waiting;
   }
   const source = await currentRecords(ctx, options.recordsFile, current, existing);
@@ -413,9 +414,9 @@ async function dsMustGoFirst(
 }
 
 /**
- * After a removal, the registrar's API lists no old DS record but the public DNS still shows one
- * (the registry still publishes it, or resolvers still cache it): the switch time moves out to
- * the wait after that copy expires, and the run waits.
+ * After a removal, the registrar's API lists no old DS record but one is still published (the
+ * registry still publishes it; when the registry cannot be read, the public DNS still shows it):
+ * the run waits, and the wait starts again once a run finds it gone (`stillPublishedState`).
  */
 async function stillPublished(
   ctx: ConnectContext,
@@ -424,11 +425,7 @@ async function stillPublished(
 ): Promise<ConnectDomainResult> {
   const { deps, domain } = ctx;
   const name = nameOf(ctx);
-  const state = {
-    ...(ctx.state as ConnectState),
-    switchAfter: switchAfterRemoval(ctx.state, ds, ds.at),
-    waitSeconds: waitFor(ctx.state, ds),
-  };
+  const { state, switchAfter } = stillPublishedState(ctx.state as ConnectState, ds);
   await writeConnectState(ctx.stateFile, state);
   deps.reporter.warn(
     `The public DNS still shows old DNSSEC (DS) records of ${domain} (${ds.public.map(dsRecordText).join("; ")}), so OpsCrew does not switch the nameservers yet. Nothing was changed.`,
@@ -436,33 +433,38 @@ async function stillPublished(
   return result(ctx, {
     outcome: "waiting-for-ds",
     ...zoneFields(zone),
-    waitUntil: state.switchAfter,
+    waitUntil: switchAfter,
     next: [
-      `Run \`${ctx.command}\` again after ${formatTime(state.switchAfter)}; it switches the nameservers once neither ${name}'s API nor the public DNS shows an old DS record and resolvers have had time to forget them. If the public DNS still shows them then, remove them in ${name}'s dashboard (${linkOf(ctx)}).`,
+      `Run \`${ctx.command}\` again after ${formatTime(switchAfter)}; it switches the nameservers once neither ${name}'s API nor the public DNS shows an old DS record and resolvers have had time to forget them. If the public DNS still shows them then, remove them in ${name}'s dashboard (${linkOf(ctx)}).`,
     ],
   });
 }
 
 /**
- * Neither the registrar's API nor the public DNS shows an old DS record. When earlier runs saw or
- * removed some, the switch waits until the note's switch time (the first run that sees records
- * OpsCrew did not remove gone sets it to the noted wait from then); returns the `waiting-for-ds`
- * result until then, undefined once nothing has to wait.
+ * Neither the registrar's API nor the registry (or, when it cannot be read, the public DNS) shows
+ * an old DS record. When earlier runs saw or removed some, or a resolver still shows a copy the
+ * registry no longer publishes, the switch waits until the note's switch time (the first run that
+ * sees them gone, unless OpsCrew removed them and no run saw them published since, sets it to the
+ * noted wait from then); returns the `waiting-for-ds` result until then, undefined once nothing
+ * has to wait.
  */
 async function waitForOldDs(
   ctx: ConnectContext,
   zone: DomainZone | undefined,
+  ds: DsReading,
 ): Promise<ConnectDomainResult | undefined> {
-  const { deps, domain, state } = ctx;
+  const { deps, domain } = ctx;
+  // No note, but a resolver still shows a copy the registry no longer publishes: seen now.
+  const state = ctx.state ?? (ds.shown.length > 0 ? seenState(ctx, zone?.id, ds) : undefined);
   if (state === undefined) return undefined;
   const now = deps.clock.now();
   let switchAfter = state.switchAfter;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
     // Gone since the last run: resolvers may hold them for the whole wait from now on.
     switchAfter = await startDsWait(ctx.stateFile, state, now);
-    deps.reporter.info(
-      `The old DNSSEC (DS) records of ${domain} are gone from the registry and the public DNS.`,
-    );
+    const where =
+      ds.registry.kind === "unreadable" ? "the registry and the public DNS" : "the registry";
+    deps.reporter.info(`The old DNSSEC (DS) records of ${domain} are gone from ${where}.`);
   }
   if (now.getTime() >= Date.parse(switchAfter)) return undefined;
   const until = formatTime(switchAfter);
@@ -806,11 +808,15 @@ function approvalDetails(
   if (removeDs) {
     const listed = ds.api ?? [];
     const switchAfter = switchAfterRemoval(ctx.state, ds, deps.clock.now());
+    const from =
+      ds.registry.kind === "unreadable"
+        ? "after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer"
+        : "after the registry stops publishing the old records, which it should do within an hour of their removal";
     lines.push(
       `Old DNSSEC (DS) records at ${name} (${listed.length}), removed through ${name}'s API in this run:`,
       ...listed.map((record) => `  - ${dsRecordText(record)}`),
       `Switching nameservers while resolvers still remember these records would take ${domain} offline, so this run removes them and does not switch the nameservers. Removing them turns DNSSEC off at the current DNS provider; ${domain} keeps working without it.`,
-      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(waitFor(ctx.state, ds))} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
+      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(waitFor(ctx.state, ds))} ${from}) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
     );
     return lines.join("\n");
   }

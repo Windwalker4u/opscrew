@@ -26,10 +26,11 @@ import { dsRecordText, sameDs } from "./switch";
 export interface DsReading {
   /** What the registrar's API lists (registrars with DNSSEC in their API). */
   api?: DsRecord[];
+  /** What the public DNS shows: a resolver's cached copy. */
+  shown: DsRecord[];
   /**
-   * What is published: the registry's own answer when it is readable, else what the public DNS (a
-   * resolver's cached copy) shows. A readable `none` while a resolver still shows a copy counts
-   * only once an earlier run saw the records: that run's note times the wait from this reading.
+   * What is published: the registry's own answer when it is readable (`none` while a resolver
+   * still shows a copy: gone as of this reading), else what the public DNS shows.
    */
   public: DsRecord[];
   /** Both combined: before the switch, every one of them is an old DS record. */
@@ -112,11 +113,12 @@ export async function readDs(
   const published =
     registry.kind === "published"
       ? registry.records
-      : registry.kind === "none" && seenBefore
+      : registry.kind === "none"
         ? []
         : shown.records;
   return {
     api,
+    shown: shown.records,
     public: published,
     records: unionDs(api ?? [], published),
     ttlSeconds: shown.ttlSeconds,
@@ -155,6 +157,26 @@ export function waitFor(
 }
 
 /**
+ * The note after a removal while the registry still publishes the old DS records (`ds` shows
+ * them, the API lists none): the wait (`waitFor`), and no switch time when the registry answered,
+ * so the first run that finds them gone starts the wait from its reading (`startDsWait`); when
+ * the registry cannot be read, the switch time after the public DNS's copy expires
+ * (`switchAfterRemoval`). Returns the note and the switch time to show.
+ */
+export function stillPublishedState(
+  state: ConnectState,
+  ds: DsReading,
+): { state: ConnectState; switchAfter: string } {
+  const switchAfter = switchAfterRemoval(state, ds, ds.at);
+  const waitSeconds = waitFor(state, ds);
+  const fresh = ds.registry.kind !== "unreadable";
+  return {
+    state: { ...state, switchAfter: fresh ? undefined : switchAfter, waitSeconds },
+    switchAfter,
+  };
+}
+
+/**
  * The switch time once the old DS records were removed through the API (or are no longer listed
  * there) at `at`: the wait from then (from when the public DNS's copy expires, when the registry
  * cannot be read), plus an hour in case the registry publishes them a little longer, never earlier
@@ -170,8 +192,9 @@ export function switchAfterRemoval(
 }
 
 /**
- * The note while old DS records OpsCrew did not remove are published: when they were first seen
- * and the wait that starts once a run sees them gone.
+ * The note while old DS records OpsCrew did not remove are published (or, without a note, while a
+ * resolver still shows a copy the registry no longer publishes): when they were first seen and
+ * the wait that starts once a run sees them gone.
  */
 export function seenState(
   ctx: Pick<DsRemovalContext, "deps" | "domain" | "registrarId" | "state">,
@@ -290,6 +313,7 @@ export async function dsWaitStatus(
   const { waitSeconds } = state;
   let { switchAfter } = state;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
+    // Seen published (or still published after a removal) until now: the wait starts now.
     if ((ds.api ?? []).length > 0) return { waiting: true, waitSeconds };
     switchAfter = await startDsWait(stateFile, state, now);
   }

@@ -19,7 +19,7 @@ import {
   readDs,
   removeDsAndWait,
 } from "../domain";
-import { seenState, switchAfterRemoval, waitFor } from "../domain/connect-ds";
+import { seenState, stillPublishedState, waitFor } from "../domain/connect-ds";
 import {
   type ConnectState,
   dsWaitSeconds,
@@ -180,11 +180,11 @@ async function apiGate(
     const listed = ds.api ?? [];
     const removable = api.registrar.capabilities.dnssec && api.registrar.removeDsRecord;
     if (listed.length > 0 && removable) return { kind: "remove", ds, registrar: api };
-    if (state?.switchAfter !== undefined && state.dsSeen === undefined) {
-      // Removed through the API earlier, and the public DNS still shows them: a later time.
-      const switchAfter = switchAfterRemoval(state, ds, ds.at);
-      await writeConnectState(file, { ...state, switchAfter, waitSeconds: waitFor(state, ds) });
-      return waiting(session, switchAfter);
+    if (state !== undefined && state.dsSeen === undefined) {
+      // Removed through the API earlier, and still published: the wait starts once they are gone.
+      const still = stillPublishedState(state, ds);
+      await writeConnectState(file, still.state);
+      return waiting(session, still.switchAfter);
     }
     await writeConnectState(file, seenState({ ...ctx, state }, session.accounts.b.zone?.id, ds));
     const link = registrarLinks(api.registrarId, deps.env).domains;
@@ -196,11 +196,13 @@ async function apiGate(
       ],
     );
   }
-  // Neither the API nor the public DNS shows a DS record now, as `dsWaitStatus` expects.
+  // Neither the API nor the registry (or the public DNS) shows a DS record now, as `dsWaitStatus`
+  // expects.
   const now = deps.clock.now();
   let status = await dsWaitStatus(file, now, ds);
-  if (status === undefined && dsAtStart) {
-    // Gone before the switch ever saw it: resolvers may hold it for the whole wait from now on.
+  if (status === undefined && (dsAtStart || ds.shown.length > 0)) {
+    // Gone before the switch ever saw it (or only a resolver's copy is left): resolvers may hold
+    // it for the whole wait from now on.
     await writeConnectState(file, seenState({ ...ctx, state: undefined }, undefined, ds));
     status = await dsWaitStatus(file, now, ds);
   }
@@ -259,7 +261,8 @@ async function ownGate(
       ],
     );
   }
-  if (note === undefined && !dsAtStart) return { kind: "clear" };
+  // A resolver's copy the registry no longer publishes, with no note: gone as of this reading.
+  if (note === undefined && !dsAtStart && ds.shown.length === 0) return { kind: "clear" };
   let switchAfter = note?.switchAfter;
   if (switchAfter === undefined || note?.dsSeen !== undefined) {
     const waitSeconds = note?.waitSeconds ?? dsWaitSeconds(undefined);

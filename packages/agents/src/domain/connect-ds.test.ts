@@ -83,6 +83,7 @@ describe("readDs", () => {
 
     expect(ds).toEqual({
       api: [OLD_DS],
+      shown: [OLD_DS, SECOND_DS],
       public: [OLD_DS, SECOND_DS],
       records: [OLD_DS, SECOND_DS],
       ttlSeconds: 3600,
@@ -313,6 +314,7 @@ describe("the wait from the registry's own TTL", () => {
 
   it("keeps the noted wait once the registry no longer publishes the record, else 24 hours", () => {
     const ds = {
+      shown: [OLD_DS],
       public: [OLD_DS],
       records: [OLD_DS],
       ttlSeconds: 600,
@@ -394,10 +396,11 @@ describe("the registry's own answer decides whether old DS records are gone", ()
     });
   });
 
-  it("without a note, a resolver's copy still counts: nothing would time the wait", async () => {
+  it("without a note, the registry's none decides too; the public DNS's copy is kept as shown", async () => {
     const { ds, asked } = await afterSighting({ kind: "none" }, { noted: false });
 
     expect(asked).toEqual([DOMAIN]);
-    expect(ds.records).toEqual([OLD_DS, SECOND_DS]);
+    expect(ds.records).toEqual([]);
+    expect(ds.shown).toEqual([OLD_DS, SECOND_DS]);
   });
 });

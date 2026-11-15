@@ -20,6 +20,7 @@ import {
 } from "../testing";
 import { connectDomain } from "./connect";
 import { registrarLinks } from "./registrars";
+import type { RegistryDsTtl } from "./registry-ds";
 import { SANDBOX_NAMESERVERS, SANDBOX_ZONES } from "./services";
 import { dsRecordText } from "./switch";
 import type { DomainZoneApi } from "./types";
@@ -46,6 +47,8 @@ const TXT: RegistrarDnsRecord = {
   ttl: 600,
 };
 const { ds: _line, ...ZONE_DS_RECORD } = ZONE_DS;
+/** The registry publishes OLD_DS with a TTL of half an hour (as .dev does). */
+const PUBLISHED_1800: RegistryDsTtl = { kind: "published", ttlSeconds: 1800, records: [OLD_DS] };
 
 function stateFile(deps: { paths: { projectHomeDir: string } }): string {
   return join(deps.paths.projectHomeDir, "domain-connect.json");
@@ -1590,5 +1593,93 @@ describe("connectDomain: other cases", () => {
       privacy: false,
       dnssec: false,
     });
+  });
+});
+
+describe("connectDomain: the registry's own answer", () => {
+  /** `deps` asking the registry, which answers `registry.answer` (changed between runs). */
+  function withRegistry(deps: object, registry: { answer: RegistryDsTtl }): string[] {
+    const asked: string[] = [];
+    Object.assign(deps, {
+      registryDs: async (domain: string) => {
+        asked.push(domain);
+        return registry.answer;
+      },
+    });
+    return asked;
+  }
+
+  it("starts a fresh wait when the registry drops the records after a run still saw them published", async () => {
+    const { cp, pb } = await porkbunHosted();
+    pb.dsRecords.set(DOMAIN, [{ ...OLD_DS }]);
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 600 });
+    const registry = { answer: PUBLISHED_1800 as RegistryDsTtl };
+
+    // Run 1 at 12:00: removed through the API; TTL 1800, so 2 hours plus the hour after a removal.
+    const first = await cp.run();
+    withRegistry(first.deps, registry);
+    const removed = await connectDomain(first.deps, { domain: DOMAIN, services: first.services });
+    expect(removed.waitUntil).toBe("2026-10-11T15:00:00.000Z");
+    expect(first.handler.requests[0]?.details).toContain(
+      "again after 2026-10-11 15:00 UTC (at least 2 hours after the registry stops publishing the old records, which it should do within an hour of their removal)",
+    );
+
+    // Run 2 at 13:00: the registry still publishes them, so no switch time is noted any more.
+    const second = await cp.run({ now: "2026-10-11T13:00:00.000Z" });
+    withRegistry(second.deps, registry);
+    const still = await connectDomain(second.deps, { domain: DOMAIN, services: second.services });
+    expect(still).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-11T16:00:00.000Z",
+    });
+    expect((await readState(second.deps)).switchAfter).toBeUndefined();
+
+    // The registry drops them at 15:50. Run 3 at 16:00 reads none (the public DNS still shows a
+    // copy): the wait starts from this reading, not the 16:00 run 2 said.
+    registry.answer = { kind: "none" };
+    const third = await cp.run({ now: "2026-10-11T16:00:00.000Z" });
+    withRegistry(third.deps, registry);
+    const fresh = await connectDomain(third.deps, { domain: DOMAIN, services: third.services });
+    expect(fresh).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-11T18:00:00.000Z",
+    });
+    expect(third.handler.requests).toEqual([]);
+
+    const early = await cp.run({ now: "2026-10-11T17:59:00.000Z" });
+    withRegistry(early.deps, registry);
+    expect(
+      (await connectDomain(early.deps, { domain: DOMAIN, services: early.services })).outcome,
+    ).toBe("waiting-for-ds");
+
+    const late = await cp.run({ now: "2026-10-11T18:00:00.000Z" });
+    withRegistry(late.deps, registry);
+    const done = await connectDomain(late.deps, { domain: DOMAIN, services: late.services });
+    expect(done).toMatchObject({ outcome: "connected" });
+    expect(pb.nameservers.get(DOMAIN)).toEqual(ZONE_NAMESERVERS);
+  });
+
+  it("without a note, a copy the registry no longer publishes starts the wait in this run", async () => {
+    const { cp, pb } = await porkbunHosted();
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 600 });
+    const run = await cp.run();
+    const asked = withRegistry(run.deps, { answer: { kind: "none" } });
+
+    const result = await connectDomain(run.deps, { domain: DOMAIN, services: run.services });
+
+    expect(asked).toEqual([DOMAIN]);
+    // No TTL known: the 24-hour floor, from this reading.
+    expect(result).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-12T12:00:00.000Z",
+    });
+    expect(await readState(run.deps)).toEqual({
+      domain: DOMAIN,
+      registrar: "porkbun",
+      switchAfter: "2026-10-12T12:00:00.000Z",
+      waitSeconds: 86_400,
+    });
+    expect(run.handler.requests).toEqual([]);
+    expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
   });
 });
