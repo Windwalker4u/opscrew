@@ -564,7 +564,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2821 [US1] Abort
+- [x] T2821 [US1] Abort
   - Owns: `packages/agents/src/cloudflare-move/abort*.ts`
   - Lead note (after T2818): drop the `_NEW` deploy credentials with `dropNewCredentials`; give it a pending action of its own (`abort-secrets` in `progress.ts`'s `MOVE_PLAN_ACTIONS`) rather than reusing `secrets`.
   - Lead note (after T2813): the same `prevent_destroy` copy for B's storage and backups roots on abort.
@@ -699,6 +699,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2823: `finish-point.ts`'s `bTunnels` repeats prepare's `tunnelsOf`; `provisionServices` is in both `connector.ts` and `finish-point.ts`; `runDeploy` is like `deployToBoth`.
   - From T2820: the beside connector's host and stack plans (T2815's `connector*.ts`) stop a script with APPROVAL_REFUSED and an `--approve` hint; give them the move's one pattern (`appliesNow`, `writePending`, a stop with the exact command); `SharedStep.oneTimePinId` is unused (`accountIds` reads B's PIN login): drop it; prepare's B setup refresh repeats `session.ts`'s `setupCloudflare` call; `TUNNEL_OUTPUTS` repeats rotate's output-name maps (with T2821's and T2822's). From T2820's review: an interruption between `firstCopies` and the `prepared` write asks the copy's approval again and lists both buckets (nothing copied twice); `copyBuckets` could record that the first copies ended.
   - From T2821 and T2822: both copy a bucket root without its `prevent_destroy` block (`cloudflare-move/delete/` and `cloudflare-move/a-removal/root/`): one helper; both copy `tunnel_id`/`portainer_tunnel_id` (export `TUNNEL_ID_OUTPUTS` from `rotate/infra.ts`); `TypedNameOptions.confirm`/`typeName` is unused in the move (typed names go through `confirmPhrase`): drop it; `dropNewCredentials` asks a `github-secrets` approval even when no `_NEW` secret was ever set. From T2822's review: `finish-removal.ts`'s `appWords`/`accountWords` repeat buckets.ts's and shadow-plans.ts's (`accountName`): one pair in `texts.ts`; `finish-site.ts`'s `shadowAddresses` repeats shadow.ts's `state list` without `TF_DATA_DIR` (one `shadowStateAddresses`).
   - From T2819's fixes: `attachWorkerDomain` throws a typed refusal for "the hostname already has an assigned Worker", typed by the status, code and text the rehearsal records (not 100117, which the fake uses for externally managed DNS records), so the switch stops matching the message text.
