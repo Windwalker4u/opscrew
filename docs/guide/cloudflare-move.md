@@ -228,10 +228,16 @@ With DNSSEC on, the domain's DS record must be gone from the registry, and resol
 forgotten it, before the nameservers change. Otherwise visitors whose resolver checks DNSSEC can't
 reach the domain at all. The domain keeps working from the old account meanwhile.
 
+How long resolvers may remember it depends on the registry. OpsCrew asks the registry's own
+nameservers how long it lets resolvers keep the DS record, and waits twice that plus an hour: 2
+hours for a .dev domain, 48 hours (the most) for a .com one. When it can't ask them (UDP port 53
+blocked), it waits at least 24 hours.
+
 **At Porkbun,** whose API removes DS records, the switch takes two runs and two approvals:
 
 1. **The first run** removes the DS record, as part of the switch plan you approve, and stops. It
-   says when the switch can go on: 24 to 48 hours after the removal.
+   says when the switch can go on: that wait, plus an hour, after resolvers' copies of the record
+   have expired.
 2. **The run after the wait** plans the switch again, and asks for a new approval.
 
 **At Namecheap, GoDaddy, Cloudflare Registrar or another registrar,** you turn DNSSEC off yourself:
@@ -241,7 +247,7 @@ reach the domain at all. The domain keeps working from the old account meanwhile
    DNS, Settings, DNSSEC). There Cloudflare removes the DS record from the registry itself, usually
    within a day.
 2. **Run it again** once you did. While the registry still publishes the DS record, it stops again.
-   The first run that finds it gone says when the switch can go on: 24 to 48 hours from then.
+   The first run that finds it gone says when the switch can go on: about that wait from then.
 3. **The run after the wait** plans the switch and asks for its approval.
 
 After activation, DNSSEC is turned on in the new zone. Its DS record is published through the API

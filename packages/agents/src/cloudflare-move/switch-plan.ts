@@ -110,7 +110,7 @@ function describe(
   ];
   if (plan.dsRemoval.length > 0) {
     lines.push(
-      `- Remove the DNSSEC (DS) records of ${zone} at ${where}: ${plan.dsRemoval.map(dsRecordText).join("; ")}. This run stops there: resolvers may remember them for a day or two, and the run after that wait plans the switch again and asks again.`,
+      `- Remove the DNSSEC (DS) records of ${zone} at ${where}: ${plan.dsRemoval.map(dsRecordText).join("; ")}. This run stops there: the switch waits until resolvers have forgotten them (twice the time the registry lets resolvers keep them, plus an hour: 2 hours for a .dev domain, at most 48), and the run after that wait plans the switch again and asks again.`,
     );
     return lines.join("\n");
   }

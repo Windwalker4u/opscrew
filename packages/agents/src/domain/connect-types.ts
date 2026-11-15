@@ -21,9 +21,9 @@ export interface ConnectDomainOptions {
  * What `connectDomain` did:
  * - `connected`: records copied (when missing) and the nameservers switched in this run;
  * - `waiting-for-ds`: old DNSSEC (DS) records block the switch: removed in this run (or earlier)
- *   and resolvers may still remember them until `waitUntil` (at least 24 hours after the
- *   removal), or they must be removed in the registrar's dashboard first (no `waitUntil`); the
- *   nameservers were not switched;
+ *   and resolvers may still remember them until `waitUntil` (twice the registry's TTL for them
+ *   plus an hour after the removal, 24 hours when that TTL is unreadable), or they must be removed
+ *   in the registrar's dashboard first (no `waitUntil`); the nameservers were not switched;
  * - `dnssec-published`: already connected; this run turned DNSSEC on for the active zone after a
  *   typed approval and published its DS record (or showed it to add by hand);
  * - `already-connected`: the nameservers already pointed at the zone; nothing was switched (stale

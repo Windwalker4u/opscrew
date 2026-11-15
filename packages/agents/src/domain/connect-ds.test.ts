@@ -4,7 +4,8 @@ import type { Registrar } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { connectProject, OLD_DS, RUN_NOW, TOKEN, visibleText } from "../testing";
-import { dsWaitStatus, readDs, removeDsAndWait } from "./connect-ds";
+import { dsWaitStatus, readDs, removeDsAndWait, waitFor } from "./connect-ds";
+import type { RegistryDsTtl } from "./registry-ds";
 
 const DOMAIN = "example.com";
 const ZONE = "zone-b";
@@ -32,7 +33,41 @@ async function porkbunWithDs(now = RUN_NOW) {
   return { cp, pb, deps: run.deps, registrar, stateFile };
 }
 
+/** `deps` with the registry's nameservers answering `answer`, logging each domain asked. */
+function withRegistry<T extends object>(deps: T, answer: RegistryDsTtl) {
+  const asked: string[] = [];
+  const registryDs = async (domain: string) => {
+    asked.push(domain);
+    return answer;
+  };
+  return { deps: { ...deps, registryDs }, asked };
+}
+
 describe("readDs", () => {
+  it("reads the DS record's full TTL from the registry's own nameservers", async () => {
+    const { deps: base, registrar } = await porkbunWithDs();
+    const { deps, asked } = withRegistry(base, { kind: "published", ttlSeconds: 1800 });
+
+    const ds = await readDs({ deps, domain: DOMAIN, registrar });
+
+    expect(ds.registry).toEqual({ kind: "published", ttlSeconds: 1800 });
+    // The resolver's copy keeps its own (remaining) TTL, for when that copy expires.
+    expect(ds.ttlSeconds).toBe(3600);
+    expect(asked).toEqual([DOMAIN]);
+  });
+
+  it("does not ask the registry when no DS record is published", async () => {
+    const { cp, pb, deps: base, registrar } = await porkbunWithDs();
+    pb.dsRecords.set(DOMAIN, []);
+    cp.dns.ds.delete(DOMAIN);
+    const { deps, asked } = withRegistry(base, { kind: "published", ttlSeconds: 1800 });
+
+    const ds = await readDs({ deps, domain: DOMAIN, registrar });
+
+    expect(ds.registry).toEqual({ kind: "none" });
+    expect(asked).toEqual([]);
+  });
+
   it("combines what the registrar's API lists with what the public DNS shows", async () => {
     const { cp, deps, registrar } = await porkbunWithDs();
 
@@ -43,6 +78,7 @@ describe("readDs", () => {
       public: [OLD_DS, SECOND_DS],
       records: [OLD_DS, SECOND_DS],
       ttlSeconds: 3600,
+      registry: { kind: "unreadable" },
       at: new Date(RUN_NOW),
     });
     expect(cp.project.cf.events).toEqual([`porkbun listDsRecords ${DOMAIN}`, `dns DS ${DOMAIN}`]);
@@ -225,5 +261,62 @@ describe("removeDsAndWait and dsWaitStatus", () => {
     const error = await caught(dsWaitStatus(stateFile, new Date(RUN_NOW), ds));
 
     expect(error.code).toBe("PHASE_PRECONDITION");
+  });
+});
+
+describe("the wait from the registry's own TTL", () => {
+  /** Removes the DS records with the registry answering `answer`; the note written. */
+  async function removedWith(answer: RegistryDsTtl, state?: { waitSeconds: number }) {
+    const { deps: base, registrar, stateFile } = await porkbunWithDs();
+    const { deps } = withRegistry(base, answer);
+    const ds = await readDs({ deps, domain: DOMAIN, registrar });
+    const noted = state && { domain: DOMAIN, registrar: "porkbun" as const, ...state };
+    return removeDsAndWait(
+      { deps, domain: DOMAIN, registrarId: "porkbun", registrar, state: noted, ds, zoneId: ZONE },
+      stateFile,
+    );
+  }
+
+  it("TTL 1800: waits 2 hours after the public copy expires (13:00), plus the hour after a removal", async () => {
+    expect(await removedWith({ kind: "published", ttlSeconds: 1800 })).toMatchObject({
+      switchAfter: "2026-10-11T16:00:00.000Z",
+      waitSeconds: 7200,
+    });
+  });
+
+  it("TTL 86400: waits 48 hours", async () => {
+    expect(await removedWith({ kind: "published", ttlSeconds: 86_400 })).toMatchObject({
+      switchAfter: "2026-10-13T14:00:00.000Z",
+      waitSeconds: 172_800,
+    });
+  });
+
+  it("an unreadable registry (UDP 53 blocked): waits 24 hours", async () => {
+    expect(await removedWith({ kind: "unreadable" })).toMatchObject({
+      switchAfter: "2026-10-12T14:00:00.000Z",
+      waitSeconds: 86_400,
+    });
+  });
+
+  it("keeps a longer wait an earlier run noted", async () => {
+    const note = await removedWith(
+      { kind: "published", ttlSeconds: 1800 },
+      { waitSeconds: 86_400 },
+    );
+    expect(note).toMatchObject({ switchAfter: "2026-10-12T14:00:00.000Z", waitSeconds: 86_400 });
+  });
+
+  it("keeps the noted wait once the registry no longer publishes the record, else 24 hours", () => {
+    const ds = {
+      public: [OLD_DS],
+      records: [OLD_DS],
+      ttlSeconds: 600,
+      registry: { kind: "none" } as const,
+      at: new Date(RUN_NOW),
+    };
+    const state = { switchAfter: "2026-10-11T16:00:00.000Z", waitSeconds: 7200 };
+    expect(waitFor(state, ds)).toBe(7200);
+    expect(waitFor(undefined, ds)).toBe(86_400);
+    expect(waitFor(state, { ...ds, registry: { kind: "unreadable" } })).toBe(86_400);
   });
 });

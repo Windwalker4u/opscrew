@@ -12,6 +12,7 @@ import {
   writeConnectState,
 } from "./connect-state";
 import { type OtherRegistrarId, REGISTRAR_NAMES, registrarLinks } from "./registrars";
+import type { RegistryDsLookup, RegistryDsTtl } from "./registry-ds";
 import { dsRecordText, sameDs } from "./switch";
 
 /**
@@ -31,13 +32,22 @@ export interface DsReading {
   records: DsRecord[];
   /** The public answer's TTL: how long its copy of the records has left (seconds). */
   ttlSeconds?: number;
+  /**
+   * The DS record's full TTL from the registry's own nameservers (`registryDsLookup`), asked only
+   * while a DS record is listed or shown (`none` otherwise).
+   */
+  registry: RegistryDsTtl;
   /** When they were read. */
   at: Date;
 }
 
 /** What reading the DS records needs. */
 export interface DsContext {
-  deps: PhaseDeps;
+  /**
+   * The run's collaborators, with the registry's nameservers (`registryDsLookup`); without them
+   * the registry's TTL is unreadable and the wait is 24 hours or more.
+   */
+  deps: PhaseDeps & { registryDs?: RegistryDsLookup };
   domain: string;
   /** The registrar's API, when OpsCrew drives it; without one only the public DNS is read. */
   registrar?: Registrar;
@@ -85,11 +95,17 @@ export async function readDs(ctx: DsContext): Promise<DsReading> {
       ? await registrar.listDsRecords(domain)
       : undefined;
   const published = await lookupPublishedDs(deps.fetch, domain);
+  const records = unionDs(api ?? [], published.records);
+  const registry: RegistryDsTtl =
+    records.length === 0
+      ? { kind: "none" }
+      : ((await deps.registryDs?.(domain)) ?? { kind: "unreadable" });
   return {
     api,
     public: published.records,
-    records: unionDs(api ?? [], published.records),
+    records,
     ttlSeconds: published.ttlSeconds,
+    registry,
     at,
   };
 }
@@ -106,12 +122,19 @@ function publicGoneAt(ds: DsReading, after: Date): number {
   return Math.max(after.getTime(), expires);
 }
 
-/** The wait for these DS records: their TTL within 24 and 48 hours, never shorter than noted. */
+/**
+ * The wait for these DS records (`dsWaitSeconds`), never shorter than noted: from the registry's
+ * TTL; once the registry publishes none, the noted wait; when its TTL is unreadable, 24 hours or
+ * the resolver copy's TTL.
+ */
 export function waitFor(
   state: Pick<ConnectState, "switchAfter" | "waitSeconds"> | undefined,
   ds: DsReading,
 ): number {
-  return Math.max(dsWaitSeconds(ds.ttlSeconds), state?.waitSeconds ?? 0);
+  const { registry } = ds;
+  if (registry.kind === "none" && state !== undefined) return state.waitSeconds;
+  const ttl = registry.kind === "published" ? registry.ttlSeconds : undefined;
+  return Math.max(dsWaitSeconds(ttl, ds.ttlSeconds), state?.waitSeconds ?? 0);
 }
 
 /**

@@ -3,16 +3,30 @@ import { dsWaitSeconds, laterSwitch } from "./connect-state";
 
 describe("dsWaitSeconds", () => {
   it.each([
-    [undefined, 86_400],
-    [60, 86_400],
-    [7200, 86_400],
-    [86_400, 86_400],
-    [108_000, 108_000],
-    [172_800, 172_800],
+    [1800, 7200],
+    [3600, 10_800],
+    [0, 3600],
+    [43_200, 90_000],
+    [86_400, 172_800],
     [604_800, 172_800],
-  ])("waits %s seconds of TTL as %i seconds: at least 24 hours, at most 48", (ttl, wait) => {
-    expect(dsWaitSeconds(ttl)).toBe(wait);
-  });
+  ])(
+    "waits a registry TTL of %i seconds as %i seconds: twice it plus an hour, within 1 and 48 hours",
+    (ttl, wait) => {
+      expect(dsWaitSeconds(ttl)).toBe(wait);
+    },
+  );
+
+  it.each([
+    [undefined, 86_400],
+    [7200, 86_400],
+    [108_000, 108_000],
+    [604_800, 172_800],
+  ])(
+    "without the registry's TTL, waits 24 hours, or a resolver copy's TTL of %s seconds up to 48 hours",
+    (resolverTtl, wait) => {
+      expect(dsWaitSeconds(undefined, resolverTtl)).toBe(wait);
+    },
+  );
 });
 
 describe("laterSwitch", () => {

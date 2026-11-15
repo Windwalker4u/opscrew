@@ -5,11 +5,11 @@ import { z } from "zod";
 import { OTHER_REGISTRAR_IDS } from "./registrars";
 
 /**
- * Shortest and longest wait (seconds) once old DS records are gone. Never less than 24 hours: a
- * lookup through a caching resolver reports the TTL that is left, not the TTL other resolvers
- * cached the record with.
+ * Shortest and longest wait (seconds) once old DS records are gone, and the wait when the
+ * registry's own TTL for them is unknown: 24 hours, since a lookup through a caching resolver
+ * reports the TTL that is left, not the TTL other resolvers cached the record with.
  */
-const DS_WAIT_SECONDS = { min: 86_400, max: 172_800 } as const;
+const DS_WAIT_SECONDS = { min: 3600, unknown: 86_400, max: 172_800 } as const;
 
 const IsoSchema = z.string().refine((v) => !Number.isNaN(Date.parse(v)));
 
@@ -35,11 +35,11 @@ const ConnectStateSchema = z.strictObject({
 
 /**
  * Local note about a domain being connected while its old DNSSEC (DS) records expire from
- * resolvers' caches. Resolvers keep the registry's DS record for its TTL (often a day), and
- * switching nameservers while they still hold the old one takes the domain offline for every
- * visitor whose resolver checks DNSSEC. So the switch waits until neither the registrar's API nor
- * the public DNS shows an old DS record and `switchAfter` has passed; this note keeps that time
- * between runs. Holds no contact data or secrets.
+ * resolvers' caches. Resolvers keep the registry's DS record for its TTL (half an hour at .dev, a
+ * day at .com), and switching nameservers while they still hold the old one takes the domain
+ * offline for every visitor whose resolver checks DNSSEC. So the switch waits until neither the
+ * registrar's API nor the public DNS shows an old DS record and `switchAfter` has passed; this
+ * note keeps that time between runs. Holds no contact data or secrets.
  */
 export type ConnectState = z.infer<typeof ConnectStateSchema>;
 
@@ -54,10 +54,19 @@ export function connectStatePath(paths: ProjectPaths): string {
   return join(paths.projectHomeDir, "domain-connect.json");
 }
 
-/** The wait for a DS TTL: the TTL within 24 and 48 hours (24 hours when it is unknown). */
-export function dsWaitSeconds(ttl: number | undefined): number {
-  if (ttl === undefined || !Number.isFinite(ttl)) return DS_WAIT_SECONDS.min;
-  return Math.min(DS_WAIT_SECONDS.max, Math.max(DS_WAIT_SECONDS.min, Math.ceil(ttl)));
+/**
+ * The wait once old DS records are gone (seconds), for the TTL the registry's own nameservers give
+ * them (`registryTtl`, see `registryDsLookup`): twice that TTL plus an hour, within 1 and 48 hours.
+ * Without it, 24 hours, or the TTL a resolver's copy showed (`resolverTtl`, which the registry's is
+ * at least) up to 48 hours.
+ */
+export function dsWaitSeconds(registryTtl: number | undefined, resolverTtl?: number): number {
+  const { min, unknown, max } = DS_WAIT_SECONDS;
+  if (registryTtl === undefined || !Number.isFinite(registryTtl)) {
+    const seen = resolverTtl !== undefined && Number.isFinite(resolverTtl) ? resolverTtl : 0;
+    return Math.min(max, Math.max(unknown, Math.ceil(seen)));
+  }
+  return Math.min(max, Math.max(min, Math.ceil(2 * registryTtl + 3600)));
 }
 
 /**
