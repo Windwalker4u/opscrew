@@ -8,7 +8,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 Done: 000–027. [026 Contabo](026-contabo-provider-plugins/) shipped as 0.2.7 on 2026-11-12, and
 [027 shared hosting](027-shared-hosting/) as 0.2.8 on 2026-11-14. Now: [028 moving an app to
 another Cloudflare account](028-cloudflare-account-move/), for 0.2.10; 0.2.9 ships build arguments from the plan and a further app's analysis fix first. Then 029 hosting at
-home (the founder's choice on 2026-11-15, before AWS), then 030 AWS, each once the founder gives the
+home (the founder's choice on 2026-11-15, before AWS), then 030 scaling across servers (the
+founder's choice on 2026-11-15, also before AWS), then 031 AWS, each once the founder gives the
 go-ahead.
 
 ## 019 Rollback
@@ -107,7 +108,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (030), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (031), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -127,7 +128,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (030) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (031) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -298,7 +299,7 @@ AWS on 2026-11-06; its scope set from the research on 2026-11-11,
   like them.
 - Own server and Portainer stay as they are: they are kinds of target with flows of their own,
   not providers.
-- Installing provider packages comes with AWS (030), designed around its first real user.
+- Installing provider packages comes with AWS (031), designed around its first real user.
 - **Other areas get their own contract when a second implementation arrives** (founder,
   2026-11-11), not before, since a contract with one user tends to take the wrong shape:
   - DNS and the edge when Fastly is placed, with Cloudflare moved behind it;
@@ -403,7 +404,7 @@ servers.
     without dropping connections, turning its admin console off, its own certificates (ACME),
     whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
     cache headers, and the image's versions and licence.
-- **Built in**, like the other targets: installing provider packages comes with AWS (030).
+- **Built in**, like the other targets: installing provider packages comes with AWS (031).
 
 ## 028 Moving an app to another Cloudflare account
 
@@ -448,7 +449,74 @@ answers at the home's own address, proxied through Cloudflare or not.
 - **Safety:** the home network exposed as little as possible (only the forwarded ports, the
   server's firewall, SSH not opened to the internet), and what an ISP's terms say about hosting.
 
-## 030 AWS
+**Also in 029's release** (founder, 2026-11-15), as tasks of their own in 029's task list, the way
+0.2.9's build arguments were tasks of 028; their spec and plan sections are written when 029's
+build starts, before its tasks:
+- **Restore drills:** the latest snapshot (024) restored into a throwaway preview environment
+  (022), its health check run, then the preview removed, which proves the backups restore; later
+  on a schedule. The drill must not reach the production app's outside services (mail, payments,
+  webhooks), and the production data it restores must not be reachable from outside: research.
+- **A read-only database check in `advise`,** PostgreSQL first: locks and blocked sessions, long
+  and idle-in-transaction sessions, slow queries (where `pg_stat_statements` is on), connections
+  near the limit and disk headroom, each query under a strict timeout so the check never weighs on
+  a struggling database. An index it suggests is a proposal, never applied.
+
+## 030 Scaling across servers
+
+Copies of an app's web service and workers on several servers behind a load balancer: more copies
+when the load rises, fewer when it falls, within limits the user approved once. The founder placed
+it after 029 and before AWS on 2026-11-15, after a suggestion to let OpsCrew scale an app onto a
+few cheap servers. Apps on Hetzner, Contabo or the user's own servers can't scale out today; on AWS
+(031) the managed services scale by themselves.
+
+**What exists today:** split placement (018) runs an app's services on several servers joined by a
+WireGuard private network; deploys switch without downtime, and a release gets traffic only after
+its health check passes; `advise` (021) proposes resizing and moving uploads to object storage; the
+self-hosted monitoring (020) keeps the figures.
+
+It covers, in order:
+- **Copies by hand first:** the web service (and the workers) on several servers, at one provider
+  or at several (founder, 2026-11-16: any mix of the providers OpsCrew creates servers at and the
+  user's own servers), the front server's Caddy spreading requests across them over the private network (or the provider's
+  own load balancer where there is one: research), each change a plan approved by hash. Deploys
+  roll across the copies one at a time, so a healthy copy always serves.
+- **Only stateless services get copies:** web and workers. Databases, caches and brokers stay on
+  one server each (018). The app keeps uploads in object storage and sessions out of its local
+  disk: OpsCrew checks that before it adds a copy and says what to change. Cron jobs run on one
+  copy only. A connection pooler goes in front of the database once there are several copies
+  (PgBouncer for PostgreSQL; research for the other engines), since each copy opens connections
+  of its own and the database's limit is fixed (lead, 2026-11-15).
+- **Then automatic scaling, within an approved recipe:** the user approves once, by hash, a recipe
+  (the providers and server types, the fewest and most copies, the figures that add or remove one, a monthly spending
+  ceiling), and OpsCrew adds and removes copies inside it without asking, the way previews run
+  under ADR 0026's standing approval. That needs a MINOR constitution amendment, like 029's for its
+  updater, which covers the release sent back below too. What watches the figures and decides
+  (the front server itself, or a scheduled GitHub Actions run) is research.
+- **A release that keeps crashing after the switch, sent back by itself** (founder, 2026-11-15):
+  today a release that fails its health check never gets traffic, but one that passes and then
+  keeps restarting stays. An opt-in rule, approved once like the recipe: that many restarts within
+  a window after a deploy take the crashing copy out while the others serve, then redeploy the
+  previous image through `rollback` (019), once, and alert. On an app with one copy, the
+  redeploy alone.
+- **Each provider by how it bills:** where billing is hourly (Hetzner bills a server even while
+  it's switched off), a copy is created when it's needed and deleted when it isn't; where it's
+  monthly and a new server takes longer (Contabo), the copies are servers the user keeps; on the
+  user's own servers, the user lists the ones OpsCrew may use. So a fixed base can run at a
+  monthly-billed provider and the extra copies at an hourly one. How a provider bills and how fast
+  its servers are ready come from its definition (ADR 0029), never from code that names it.
+- **Across providers, the distance counts:** copies reach the database over the internet
+  (encrypted by WireGuard), so every query pays the round trip; design shows it, measured between
+  the servers, and warns when copies sit far from the database. Surviving one provider's outage
+  also needs the database's standby at another (database replicas, under Later).
+- **Then, on top of the copies:** a release sent to a share of the requests first, promoted in
+  steps or sent back, which needs copies to split traffic between.
+- **Research first:** load balancing on each provider (Caddy over the private network, Hetzner's
+  load balancer, Cloudflare's), how fast a new copy is ready (a prepared image or cloud-init), the
+  figures that drive scaling (CPU, memory, request rate and latency from Caddy's own metrics, queue
+  depth) and how to keep them from flapping, draining a copy before it's removed, and the cost of
+  each step shown in the plan.
+
+## 031 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -561,6 +629,16 @@ rarely run. If it never runs, those stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
+- **Database replicas** (founder, 2026-11-15): a second database server that copies the main one
+  continuously, for reads (Rails and Laravel send reads there by configuration; Django through a
+  database router) and as a standby, at the same provider or a second one, so that 030's copies at
+  two providers survive one of them failing. The standby takes over through an approved switch the
+  user starts first; taking over by itself only after research (Patroni and the like).
+- **Left out** (founder, 2026-11-15, from an outside proposal of 20 features, a third of which
+  OpsCrew already has): a local dashboard (the hosted control plane is the dashboard), a templates
+  marketplace, an operations knowledge base, chaos testing, and compliance evidence reports until
+  a customer asks. Sharding a database too: the app must be written for it, it pays off only far
+  beyond one large server, and AWS's managed databases (031) serve apps that big.
 - **Down migrations for Alembic projects with several heads, if users ask** (founder, 2026-11-06,
   from 019's database rollback): Alembic's several bases or `branch_labels`, which modular
   codebases use on purpose; no widely used package is known to ship its own branch. Since T1943

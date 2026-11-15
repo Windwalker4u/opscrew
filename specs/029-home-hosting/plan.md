@@ -727,6 +727,9 @@ ssh-host task, an iac-templates task and an agents task, plus a live leg.
 - **O9:** Cloudflare serving IPv4 visitors from an AAAA-only proxied origin, settled by H6. If it
   fails, O3 is cut.
 - **O10:** how soon Cloudflare's edge uses a changed origin address, measured in H2.
+- **O11:** restore drills and a read-only database check in `advise` ship in 029's release, as
+  tasks of their own (founder, 2026-11-15; scope in `specs/roadmap.md`, 029's section). Their
+  spec and plan sections are written when the build starts, before the tasks.
 
 (O6, the token's narrowness through `GET /zones`, is gone: inverse probes replace it.)
 
