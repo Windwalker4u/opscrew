@@ -117,7 +117,9 @@ chats, referrer headers and browser sync. Keep test data in environments other t
 ## Working with several environments
 
 Every command that acts on a deployment takes `--env <name>`: `provision`, `destroy`, `drift`,
-`status`, `verify`, `secure`, [`retarget`](retarget.md), `secrets` and `promote`. In [Claude Code](https://claude.com/product/claude-code),
+`status`, `verify`, `secure`, [`retarget`](retarget.md), `secrets` and `promote`. A
+[move to another Cloudflare account](cloudflare-move.md) takes no `--env`: it covers every
+environment whose domain is in the zone. In [Claude Code](https://claude.com/product/claude-code),
 the matching OpsCrew tools take an `environment` input. In a repository with
 [several apps](several-apps.md), each app has its own environments, and `--app <key>` says whose.
 

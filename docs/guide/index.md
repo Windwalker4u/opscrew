@@ -16,6 +16,7 @@ an app yet.
 - [Deploy to a hosting account: cPanel, Plesk, DirectAdmin or SFTP](hosting-accounts.md)
   ([cPanel](cpanel.md), [Plesk](plesk.md), [DirectAdmin](directadmin.md), [SFTP](sftp.md))
 - [Moving your app somewhere else](retarget.md)
+- [Moving your app to another Cloudflare account](cloudflare-move.md)
 - [dev, staging and prod: environments](environments.md)
 - [Previews: a link for every pull request](previews.md)
 - [Several apps in one repository](several-apps.md)

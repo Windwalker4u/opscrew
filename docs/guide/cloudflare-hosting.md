@@ -256,6 +256,8 @@ domain. To turn either on, set `target.previewUrls` or `target.workersDev` to `t
 - [`npx opscrew retarget --to github-pages`](retarget.md#sites) moves the site to [GitHub Pages](https://pages.github.com/), with
   no maintenance window. A site doesn't move to or from a server yet: remove it with `destroy` and
   set it up on the new target.
+- [`npx opscrew cloudflare move`](cloudflare-move.md) moves the site, with its Worker and custom
+  domains, to another Cloudflare account.
 
 ## Removing the site
 

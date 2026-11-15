@@ -27,7 +27,9 @@ your terminal; in [Claude Code](https://claude.com/product/claude-code), `opscre
 takes `--app <key>` and `--env <name>` for [another app](several-apps.md) or
 [environment](environments.md).
 
-Some moves aren't possible yet; see [What can't move yet](#what-cant-move-yet).
+Some moves aren't possible yet; see [What can't move yet](#what-cant-move-yet). To move the app's
+Cloudflare setup to another Cloudflare account instead, see
+[`opscrew cloudflare move`](cloudflare-move.md).
 
 ## Before you move
 

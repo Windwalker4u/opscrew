@@ -208,4 +208,5 @@ empty first: Cloudflare refuses to delete a bucket that holds files, and OpsCrew
 files itself. Moving the app between Hetzner Cloud and DigitalOcean with [`npx opscrew retarget`](retarget.md) moves
 its bucket too, unless you pass `--keep-bucket`; R2 and Contabo Object Storage stay, and so does a bucket when the app moves
 to your own server or Portainer ([Buckets](retarget.md#buckets)). Garage's files are copied with the
-app's other data.
+app's other data. An R2 bucket moves to another Cloudflare account with the app, in
+[`opscrew cloudflare move`](cloudflare-move.md#r2-buckets).

@@ -455,3 +455,5 @@ recipe.
   each app has its own preview environment and server, and a pull request touching two apps gets
   two separate previews.
 - **No monitoring or alerts** for previews.
+- **No move to another Cloudflare account** with previews on: turn them off first, and on again
+  after the [move](cloudflare-move.md).

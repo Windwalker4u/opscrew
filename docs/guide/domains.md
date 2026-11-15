@@ -23,6 +23,10 @@ OpsCrew never asks for your contact details: registrars use your account's own c
 `npx opscrew domain connect <domain>` copies the domain's records into Cloudflare, then switches its
 nameservers to Cloudflare.
 
+A domain already on Cloudflare moves to another Cloudflare account with
+[`opscrew cloudflare move`](cloudflare-move.md), which switches its nameservers at the same
+registrars.
+
 ## Before you buy
 
 - **Purchases cannot be refunded.** You type the domain name to confirm. Scripts also need

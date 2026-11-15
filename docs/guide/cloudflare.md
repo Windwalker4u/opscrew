@@ -75,6 +75,9 @@ Every app in the account shares both. OpsCrew creates them in the Cloudflare pla
 are missing, reuses them when they are there (also when you set them up yourself), and never
 changes or deletes them. They cost nothing.
 
+To move the zone, with every OpsCrew app in it, to another Cloudflare account, see
+[Moving your app to another Cloudflare account](cloudflare-move.md).
+
 ## Limits
 
 - **Rule slots.** Each Cloudflare plan allows only so many rules of each kind in a zone: Free 5

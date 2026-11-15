@@ -113,6 +113,9 @@ already uses.
   changes a path that app's deploy reads: its own folder, its `app.sharedPaths`, and its own files
   ([When a push deploys your app](when-deploys-run.md)). A push that changes only another app
   deploys only that app.
+- **A Cloudflare zone.** When several apps share one domain, a
+  [move to another Cloudflare account](cloudflare-move.md#several-apps-in-one-zone) takes all of
+  them, each prepared from its repository with its own `--app <key>`.
 
 ## Removing an app
 

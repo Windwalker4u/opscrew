@@ -384,7 +384,10 @@ restore the copy.
 ### Deleting the bucket
 
 OpsCrew never deletes the bucket or its copies: not `offsite off`, not `destroy`, not
-`destroy --delete-data`. Deleting it is yours to do:
+`destroy --delete-data`. Only a [move to another Cloudflare account](cloudflare-move.md#r2-buckets)
+deletes an R2 bucket of the copies, after you type its name: at its finish, the old account's,
+once its copies are in the new one; at an abort, the one the move made in the new account.
+Deleting it is otherwise yours to do:
 
 1. Run `npx opscrew snapshot offsite off` and `npx opscrew provision`, so no more copies are
    uploaded. The copies left expire after `--days`, except on Spaces, where they stay until you

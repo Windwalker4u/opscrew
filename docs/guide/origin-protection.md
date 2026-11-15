@@ -118,7 +118,9 @@ Switching a hostname from proxied to DNS only takes two provision runs, so no re
 - **Moving the app to another Cloudflare zone** leaves its origin and client certificates in the
   old zone. OpsCrew sets up new ones in the new zone, but does not clean up the old zone: revoke the
   origin certificate there by hand (**SSL/TLS → Origin Server** in the old zone's dashboard), and
-  delete its per-hostname client certificate with Cloudflare's API.
+  delete its per-hostname client certificate with Cloudflare's API. A
+  [move to another Cloudflare account](cloudflare-move.md) keeps the same zone name and revokes
+  the old account's origin certificate itself.
 - **Your own proxy rules are not used in a Portainer stack yet.** The stack's Caddy gets origin
   protection, but not your [additions](reverse-proxy.md#your-own-rules); provision warns when you
   have them.
