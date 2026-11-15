@@ -599,6 +599,10 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
   - Effort: high
 
+- [x] T2844 The zone copy creates only what isn't in a zone Cloudflare brings back with its records (found by L3, 2026-11-15; done by the lead)
+  - Why: L3's prepare added B's zone again after L2's abort had deleted it; Cloudflare restored the 15 records the zone held (their `created_on` was L2's copy time), and the copy, planned against a zone that didn't exist yet, failed with "An identical record already exists".
+  - Done: `applyZone` lists B's records right after creating the zone and creates only `recordsMissingFromZone(plan.create, present)`; a test where the new zone comes back with one of A's records (it failed with the live error before the fix).
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
