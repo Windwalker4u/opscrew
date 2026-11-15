@@ -559,7 +559,12 @@ export async function applyZone(
     proxied: false,
     comment: MARK_COMMENT,
   }));
-  const records: ZoneRecord[] = [...plan.create.map(recordInput), ...markRecords];
+  // A zone added again soon after it was deleted (an abort, then a new prepare) comes back with
+  // the records it held; the copy creates only what isn't there yet, record for record.
+  const create = plan.createZone
+    ? recordsMissingFromZone(plan.create, await b.client.listZoneRecords(target.id))
+    : plan.create;
+  const records: ZoneRecord[] = [...create.map(recordInput), ...markRecords];
   if (records.length > 0) {
     await b.client.createZoneRecords(target.id, records);
     await audit("cloudflare records created", `${plural(records.length, "record")} in ${zone}`);

@@ -136,6 +136,32 @@ describe.skipIf(!findExecutable("git"))("planZone and applyZone", () => {
     expect(seen(h, plan.details)).toBe(false);
   });
 
+  it("copies only what isn't there into a zone Cloudflare brings back with its records (added again soon after a deletion)", async () => {
+    const h = await harness();
+    const session = await h.open({ to: "New" });
+    const plan = await planZone(session);
+    expect(plan.createZone).toBe(true);
+    const b = session.accounts.b.client;
+    const create = b.createZone.bind(b);
+    // Cloudflare restores the records a deleted zone held when the zone is added again.
+    b.createZone = async (accountId, name) => {
+      const zone = await create(accountId, name);
+      const kept = h.cloudflare.zone(ZONE, "Old").records.find((r) => r.type === "MX");
+      if (kept === undefined) throw new Error("the fixture has an MX record");
+      h.cloudflare.zone(ZONE, "New").records.push({ ...kept, id: "restored-mx" });
+      return zone;
+    };
+    expect(await applyZone(session, plan)).toBeUndefined();
+    const copied = fields(h, "Old").filter((r) =>
+      plan.create.some((c) => c.type === r.type && c.name === r.name),
+    );
+    // Each of A's records once: the restored MX kept, the others created.
+    expect(fields(h, "New")).toEqual(
+      copied.map((r) => (r.type === "CAA" ? { ...r, content: "" } : r)),
+    );
+    expect(wroteToA(h)).toBe(false);
+  });
+
   it("a second app's prepare copies only what is missing, and lists A's changes and B's own records", async () => {
     const h = await harness();
     const first = await h.open({ to: "New" });
