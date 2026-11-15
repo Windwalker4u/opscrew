@@ -540,6 +540,17 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/connector-cloudflare && npx vitest run --root packages/agents src/cloudflare-move && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
   - Effort: high
 
+- [ ] T2838 [US1] The DS wait from the registry's own TTL (founder, 2026-11-15)
+  - Why: the wait after old DS records are gone has a 24-hour floor (007, T1025), set because a resolver's lookup shows only the TTL left on its copy; the .dev registry's own nameservers give opscrew.dev's DS record a TTL of 1,800 s, so 24 hours is about 48 times what is needed.
+  - Owns: `packages/agents/src/domain/{connect-ds,connect-state}*.ts` and a new `packages/agents/src/domain/registry-ds*.ts`, `packages/agents/src/cloudflare-move/switch-ds*.ts`, the texts that name the wait (CLI and agents messages, `docs/guide/{domains,cloudflare-move}.md`), `packages/cli/test/live/cloudflare-move*.ts` if they name it
+  - Accept:
+    - The DS record's TTL read from the parent zone's own nameservers (the TLD's NS, asked directly over DNS for type DS; every answer validated; injected so tests never touch the network): the full TTL, not a resolver's remaining time.
+    - The wait once the old DS records are gone: twice that TTL plus an hour, at least one hour, at most 48 hours; when the registry's TTL can't be read (UDP 53 blocked, no answer), the 24-hour floor stays. A note's longer recorded wait still holds ("never shorter than noted").
+    - `opscrew domain connect` and the move's switch both use it; every text and guide line that says "24 to 48 hours" says what the wait is now.
+    - Tests: TTL 1800 → 2 hours; TTL 86400 → 48 hours; unreadable → 24 hours; a noted longer wait kept.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
+  - Effort: high
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
