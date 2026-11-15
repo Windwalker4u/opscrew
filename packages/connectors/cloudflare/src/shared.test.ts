@@ -590,6 +590,26 @@ describe("planShared and applyShared", () => {
   );
 });
 
+describe("the pending zone", () => {
+  it("keeps a plan's hash as it was: the pending zone is local to the plan, never in its hash", async () => {
+    const desired: SharedDesired = { hostnames: both(A) };
+    const active = await planFor(new FakeZone(), desired);
+    expect(active).not.toHaveProperty("pendingZone");
+    // The hash every other command's shared plan of these hostnames had before (and has).
+    expect(active.hash).toBe("6d889eee5874abd0d91cc6254d77b639b2022a28bead33ae8f86843674a5ccba");
+    const facts = await inspectShared(clientFor(new FakeZone()), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+      pendingZone: true,
+    });
+    const pending = planShared(facts, desired, undefined);
+    expect(pending.pendingZone).toBe(true);
+    expect(pending.changes).toEqual(active.changes);
+    expect(pending.hash).toBe(active.hash);
+  });
+});
+
 describe("findings", () => {
   it("refuses to claim a hostname another app added", async () => {
     const zone = new FakeZone();
@@ -1474,6 +1494,7 @@ describe("origin TLS and the zone's minimum TLS", () => {
     desired: SharedDesired,
     record?: SharedRecord,
     time: Time = fakeTime(),
+    pendingZone = false,
   ): Promise<SharedPlan> {
     const facts = await inspectShared(clientFor(zone), {
       zoneId: ZONE_ID,
@@ -1481,6 +1502,7 @@ describe("origin TLS and the zone's minimum TLS", () => {
       access: false,
       ...(desired.tls ? { tls: { proxied: desired.tls.proxied, record } } : {}),
       ...(desired.minTls ? { minTls: true } : {}),
+      pendingZone,
       clock: time.clock,
     });
     return planShared(facts, desired, record);
@@ -1687,27 +1709,26 @@ describe("origin TLS and the zone's minimum TLS", () => {
     expect(zone.calls.filter((c) => c.method === "POST" && c.path.startsWith(AOP))).toHaveLength(1);
   });
 
-  it("with waitForActive false, turns the client certificate on without waiting for it or the hostnames' settings (a pending zone)", async () => {
+  it("on a pending zone, turns the client certificate on without waiting for it or the hostnames' settings", async () => {
     const zone = new FakeZone();
     zone.pendingReads = Number.POSITIVE_INFINITY;
     zone.certificatePendingReads = Number.POSITIVE_INFINITY;
     const m = material();
     const time = fakeTime();
-    const plan = await tlsPlan(zone, wanted(m), undefined, time);
+    const plan = await tlsPlan(zone, wanted(m), undefined, time, true);
+    expect(plan.pendingZone).toBe(true);
     const before = zone.calls.length;
     const result = await applyShared(clientFor(zone), plan, {
       approvedHash: plan.hash,
       keys: m.keys,
-      csr: m.csr,
       clock: time.clock,
       sleep: time.sleep,
-      waitForActive: false,
     });
     expect(time.sleeps).toEqual([]);
+    // Cloudflare issues no Origin CA certificate for a pending zone.
     expect(result.applied).toEqual([
       "upload-client-certificate",
       "enable-client-certificate",
-      "create-origin-certificate",
       `create-entrypoint ${WAF}`,
       `create-entrypoint ${CONFIG}`,
     ]);
@@ -1718,8 +1739,8 @@ describe("origin TLS and the zone's minimum TLS", () => {
       calls.slice(calls.indexOf(`POST ${AOP}/certificates`) + 1, calls.indexOf(`PUT ${AOP}`)),
     ).toEqual([`GET ${AOP}/${SHOP}`, `GET ${AOP}/${WWW}`]);
     expect(
-      calls.slice(calls.indexOf(`PUT ${AOP}`) + 1, calls.indexOf("POST /certificates")),
-    ).toEqual([]);
+      calls.slice(calls.indexOf(`PUT ${AOP}`) + 1).some((c) => c.startsWith(`GET ${AOP}`)),
+    ).toBe(false);
     const [client] = zone.clientCertificates;
     expect([...zone.hostnameAop.values()]).toEqual(
       A.map((hostname) => ({ hostname, cert_id: client?.id, enabled: true })),
@@ -1882,12 +1903,12 @@ describe("origin TLS and the zone's minimum TLS", () => {
     expect(error.hint).toContain("CSR");
   });
 
-  it("with originLater (a pending zone: Cloudflare issues it no Origin CA certificate), plans the origin pulls and no certificate, without a CSR", async () => {
+  it("on a pending zone (Cloudflare issues it no Origin CA certificate), plans the origin pulls and no certificate, without a CSR", async () => {
     const zone = new FakeZone();
     const m = material();
     const desired = wanted(m);
     const { origin: _origin, ...withoutCsr } = desired.tls as DesiredTls;
-    const plan = await tlsPlan(zone, { ...desired, tls: { ...withoutCsr, originLater: true } });
+    const plan = await tlsPlan(zone, { ...desired, tls: withoutCsr }, undefined, fakeTime(), true);
     const kinds = plan.changes.map((change) => change.kind);
     expect(kinds).not.toContain("create-origin-certificate");
     expect(kinds).toContain("upload-client-certificate");

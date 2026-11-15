@@ -78,8 +78,12 @@ export interface MoveAccount {
 export interface MoveAccounts {
   /** A: the account that holds the zone when the move starts, with its zone's id. */
   a: MoveAccount & { zoneId: string };
-  /** B: the account the zone moves to; its `CloudflareSetup` once its zone exists. */
-  b: MoveAccount & { setup?: CloudflareSetup };
+  /**
+   * B: the account the zone moves to; its `CloudflareSetup` once its zone exists (`bSetup`), and
+   * the id of its one-time PIN login once a run found it (OpsCrew never deletes it), and the id of
+   * its zone once this run found it usable (`requireUsableZone`).
+   */
+  b: MoveAccount & { setup?: CloudflareSetup; pinLoginId?: string; usableZoneId?: string };
 }
 
 /** Which account: A, which the app moves from, or B, which it moves to. */
@@ -115,11 +119,6 @@ export interface MoveSession {
   /** The app's environments in the zone that are not deployed (destroyed, or never applied). */
   skipped: string[];
   accounts: MoveAccounts;
-  /**
-   * The hostnames of the other OpsCrew apps in A's zone (its records with OpsCrew's comment and its
-   * Workers custom domains that are none of this app's), sorted; read while A's zone is active.
-   */
-  otherHostnames: string[];
   git: GitClient;
   github: GitHubSetup;
   githubApi: RetargetGitHubApi;

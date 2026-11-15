@@ -16,7 +16,7 @@ import {
   fakeCloudflareAccounts,
 } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest, FetchLike } from "@opscrew/contracts";
-import { findExecutable, fingerprintSha256, type OpsCrewError } from "@opscrew/core";
+import { findExecutable, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
   type DeployPlan,
@@ -813,7 +813,7 @@ describe("the shared plan in another Cloudflare account, with its client and rec
     const { planned, tls } = await planB(s, plan);
     expect(planned?.client).toBe(s.clientB);
     expect(planned?.main?.recordPath).toBe(s.recordPath);
-    expect(planned?.main?.pendingZone).toBe(true);
+    expect(planned?.main?.plan.pendingZone).toBe(true);
     const changes = planned?.main?.plan.changes.map((c) => c.kind) ?? [];
     expect(changes).toContain("upload-client-certificate");
     expect(changes).toContain("enable-client-certificate");
@@ -844,18 +844,19 @@ describe("the shared plan in another Cloudflare account, with its client and rec
     const again = await planB(s, plan);
     expect(again.planned?.main?.plan.changes).toEqual([]);
 
-    // B's origin certificate is kept apart from the app's, beside the shared client certificate.
+    // Cloudflare issues no Origin CA certificate for a pending zone: none is planned or kept.
+    expect(changes).not.toContain("create-origin-certificate");
     const values = await readOriginTlsValues(s.deps);
     const next = await readOriginTlsValues(s.deps, "originTlsNext");
     expect(values.ORIGIN_TLS_CERT).toBeUndefined();
-    expect(next.ORIGIN_TLS_CERT).toContain("BEGIN CERTIFICATE");
-    expect(fingerprintSha256(next.ORIGIN_TLS_CERT as string)).toBe(written.tls?.origin?.sha256);
+    expect(next.ORIGIN_TLS_CERT).toBeUndefined();
+    expect(written.tls?.origin).toBeUndefined();
 
     // No token or private key in what was asked, said, audited, recorded or sent.
-    const secrets = [TOKEN_A, TOKEN_B, values.ORIGIN_PULL_KEY, next.ORIGIN_TLS_KEY].filter(
+    const secrets = [TOKEN_A, TOKEN_B, values.ORIGIN_PULL_KEY].filter(
       (value): value is string => value !== undefined,
     );
-    expect(secrets.length).toBe(4);
+    expect(secrets.length).toBe(3);
     const seen = JSON.stringify([
       s.handler.requests,
       s.deps.reporter.text(),
@@ -880,7 +881,7 @@ describe("the shared plan in another Cloudflare account, with its client and rec
     });
     expect(planned?.client).toBe(shared);
     expect(planned?.main?.recordPath).toBeUndefined();
-    expect(planned?.main?.pendingZone).toBeUndefined();
+    expect(planned?.main?.plan).not.toHaveProperty("pendingZone");
     await applySharedCloudflare(s.deps, planned as NonNullable<typeof planned>, {
       app: plan.app.name,
       planOnly: false,

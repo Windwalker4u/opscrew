@@ -14,7 +14,7 @@ import type { DsGate } from "./switch-ds";
 import { registrarId, registrarWords } from "./switch-registrar";
 import { accountName } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
-import { planZone, type ZonePlan } from "./zone";
+import { type ListedRecords, planZone, type ZonePlan } from "./zone";
 
 /** What the switch plan says; hashed as canonical JSON. */
 export interface SwitchPlanBody {
@@ -53,6 +53,8 @@ export interface SwitchPlanInput {
   gate: Exclude<DsGate, { kind: "stop" }>;
   marks: readonly ReadMark[];
   dnssec: boolean;
+  /** A's and B's records, read for the coverage just before. */
+  listed: ListedRecords;
 }
 
 /** The switch plan, read-only: the zone copy planned (`planZone`) unless this run removes DS records. */
@@ -61,7 +63,8 @@ export async function planSwitch(
   input: SwitchPlanInput,
 ): Promise<SwitchPlan> {
   const { a, b } = session.accounts;
-  const copy = input.gate.kind === "remove" ? undefined : await planZone(session);
+  const copy =
+    input.gate.kind === "remove" ? undefined : await planZone(session, { listed: input.listed });
   const sorted = (list: readonly string[]) => [...list].map((one) => one.toLowerCase()).sort();
   const body: SwitchPlanBody = {
     zone: session.zone,

@@ -17,7 +17,7 @@ import { type DeployPlan, previewEnvironmentOf, snapshotOffsiteOf } from "@opscr
 import { portainerCloudflare } from "../provision/credentials";
 import { planWhere } from "../runners/words";
 import { hasState, stateCopyPaths, stateNotHere } from "../shared";
-import { otherAppMoves } from "./record";
+import { otherAppMoves, readMoveRecords } from "./record";
 import {
   A_TOKEN_VAR,
   ABORT_COMMAND,
@@ -209,15 +209,17 @@ export interface OpscrewZoneNames {
 }
 
 /**
- * OpsCrew's names in a zone, read-only: its records (by their comment) and the account's Workers
- * custom domains in it, unless the token may not read the account's Workers.
+ * OpsCrew's names in a zone, read-only: its records (by their comment; of `listed`, the zone's
+ * records read just before, when given) and the account's Workers custom domains in it, unless the
+ * token may not read the account's Workers.
  */
 export async function opscrewNamesInZone(
   client: CloudflareClient,
   accountId: string,
   zoneId: string,
+  listed?: readonly CloudflareDnsRecord[],
 ): Promise<OpscrewZoneNames> {
-  const records = (await client.listDnsRecords(zoneId)).filter(
+  const records = (listed ?? (await client.listDnsRecords(zoneId))).filter(
     (record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT,
   );
   const workers = (await client.workersPermissions(accountId)).missing.length === 0;
@@ -228,15 +230,20 @@ export async function opscrewNamesInZone(
 }
 
 /**
- * The hostnames of the other OpsCrew apps in A's zone: OpsCrew's names there that none of
- * `environments` (the app's, in the zone) gives a record or a custom domain, and none of the
- * `_`-named records (verification records, not hostnames). Read-only.
+ * The hostnames of the other OpsCrew apps in A's zone, sorted, read while A's zone is active (none
+ * otherwise): OpsCrew's names there (its records with OpsCrew's comment and its Workers custom
+ * domains) that none of the app's environments in the zone (covered or skipped) gives a record or
+ * a custom domain, and none of the `_`-named records (verification records, not hostnames).
+ * Read-only.
  */
-export async function otherAppHostnames(
-  a: { client: CloudflareClient; accountId: string; zoneId: string },
-  zone: string,
-  environments: readonly Pick<MoveEnvironment, "plan">[],
-): Promise<string[]> {
+export async function otherAppHostnames(session: MoveSession): Promise<string[]> {
+  const { zone } = session;
+  const { a } = session.accounts;
+  if (a.zone?.status !== "active") return [];
+  const skipped = (await readMoveRecords(session.paths)).filter((env) =>
+    session.skipped.includes(env.environment),
+  );
+  const environments = [...session.environments, ...skipped];
   const own = new Set(environments.flatMap((env) => opscrewRecordNames(env.plan, zone)));
   const { records, domains } = await opscrewNamesInZone(a.client, a.accountId, a.zoneId);
   return [...new Set([...records.map((record) => record.name), ...domains])]

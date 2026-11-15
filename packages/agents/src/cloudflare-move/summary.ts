@@ -71,7 +71,11 @@ function stayingWords(env: StayingEnvironment): string {
  * that stay or are skipped, the other apps in the zone (each needs its own prepare), the switch's
  * HTTPS gap and the finish's window.
  */
-export function moveSummary(session: MoveSession, sizes: readonly MoveBucketSize[]): MoveSummary {
+export function moveSummary(
+  session: MoveSession,
+  sizes: readonly MoveBucketSize[],
+  otherHostnames: readonly string[],
+): MoveSummary {
   const { zone } = session;
   const { a, b } = session.accounts;
   const bName = b.name === undefined ? b.accountId : `${b.name} (${b.accountId})`;
@@ -120,10 +124,10 @@ export function moveSummary(session: MoveSession, sizes: readonly MoveBucketSize
     ...(session.skipped.length === 0
       ? []
       : [`Skipped, since they are not deployed: ${listText(session.skipped)}.`]),
-    ...(session.otherHostnames.length === 0
+    ...(otherHostnames.length === 0
       ? []
       : [
-          `Other OpsCrew apps in ${zone}, each needing its own \`${MOVE_COMMAND} --to ${b.accountId}\` from its repository before the switch: ${listText(session.otherHostnames)}.`,
+          `Other OpsCrew apps in ${zone}, each needing its own \`${MOVE_COMMAND} --to ${b.accountId}\` from its repository before the switch: ${listText(otherHostnames)}.`,
         ]),
     `Then the switch (\`${SWITCH_COMMAND}\`) points ${zone} at the new account: from the nameserver change until the new zone is active and its certificate issued (minutes, at worst 24 hours), HTTPS visitors may get certificate errors.`,
     `Then the finish (\`${FINISH_COMMAND}\`): ${

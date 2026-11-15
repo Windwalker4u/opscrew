@@ -13,7 +13,7 @@ import type { CloudflareMove } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { lookupPublishedDs } from "../domain/connect-dns";
 import { firstCopies, measureBuckets } from "./buckets";
-import { checkMoveStart } from "./checks";
+import { checkMoveStart, otherAppHostnames } from "./checks";
 import { besideConnector, moveTunnels } from "./connector";
 import { addNewCredentials } from "./deploy-secrets";
 import { readMarks, writeMark } from "./marks";
@@ -25,7 +25,7 @@ import {
   withTargetZone,
   writeMoveRecord,
 } from "./record";
-import { openMoveSession, readBSetup } from "./session";
+import { bSetup, openMoveSession } from "./session";
 import { shadowRoots } from "./shadow";
 import { planShadow } from "./shadow-plans";
 import { pendingStop, planBShared } from "./shared";
@@ -65,9 +65,11 @@ export async function prepareMove(
   const session = await openMoveSession(deps, { ...options, command: MOVE_COMMAND });
   requirePreparing(session);
   requireRecordedZone(session);
+  await bSetup(session);
+  const others = await otherAppHostnames(session);
   if (!session.environments.every(isPrepared)) {
     await checkMoveStart(session);
-    await startMove(session, options.confirmStart);
+    await startMove(session, options.confirmStart, others);
     const zoneStop = await zoneStep(session);
     if (zoneStop !== undefined) return stopped(session, zoneStop);
     for (const environment of session.environments) {
@@ -78,7 +80,7 @@ export async function prepareMove(
   }
   const markStop = await writeMark(session);
   if (markStop !== undefined) return stopped(session, markStop);
-  return prepared(session);
+  return prepared(session, others);
 }
 
 /** The environment's record of the move; written by {@link startMove} before any step reads it. */
@@ -144,6 +146,7 @@ function requireRecordedZone(session: MoveSession): void {
 async function startMove(
   session: MoveSession,
   confirmStart: PrepareMoveOptions["confirmStart"],
+  others: readonly string[],
 ): Promise<void> {
   const missing = session.environments.filter((env) => env.plan.cloudflareMove === undefined);
   if (missing.length === 0) return;
@@ -158,7 +161,7 @@ async function startMove(
     const { records } = await lookupPublishedDs(fetch, session.zone);
     const sizes = [];
     for (const env of session.environments) sizes.push(...(await measureBuckets(session, env)));
-    await confirmMoveStart(session, moveSummary(session, sizes), confirmStart);
+    await confirmMoveStart(session, moveSummary(session, sizes, others), confirmStart);
     start = {
       zone: session.zone,
       from: { accountId: a.accountId, zoneId: a.zoneId },
@@ -181,10 +184,7 @@ async function zoneStep(session: MoveSession): Promise<StepStop | undefined> {
   if (stop !== undefined) return stop;
   const { b } = session.accounts;
   const zone = b.zone as MoveZone;
-  if (b.setup === undefined) {
-    const [first] = session.environments as [MoveEnvironment];
-    b.setup = await readBSetup(session.deps, first, b);
-  }
+  await bSetup(session);
   for (const env of session.environments) {
     await saveRecord(session, env, withTargetZone(recordOf(env), zone.id));
   }
@@ -242,13 +242,13 @@ function stopped(session: MoveSession, stop: StepStop): MoveResult {
  * apps of A's zone that no mark holds yet (by hostname), each to prepare from its own repository,
  * and the switch.
  */
-async function prepared(session: MoveSession): Promise<MoveResult> {
+async function prepared(session: MoveSession, others: readonly string[]): Promise<MoveResult> {
   const { zone } = session;
   const { b } = session.accounts;
   const app = session.environments[0]?.plan.app.name ?? "The app";
   const { marks } = await readMarks(session);
   const marked = new Set(marks.flatMap((read) => read.mark.hosts));
-  const waiting = session.otherHostnames.filter((name) => !marked.has(name));
+  const waiting = others.filter((name) => !marked.has(name));
   session.deps.reporter.success(
     `${app} is prepared in ${accountWords(b)}; the current account keeps serving it until the switch.`,
   );

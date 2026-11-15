@@ -32,7 +32,7 @@ import {
   writePending,
 } from "./progress";
 import { advancedMove, writeMoveRecord } from "./record";
-import { openMoveSession } from "./session";
+import { bSetup, openMoveSession } from "./session";
 import {
   patchTfvars,
   shadowFiles,
@@ -357,6 +357,7 @@ export async function finishMove(
 ): Promise<MoveResult> {
   const session = await openMoveSession(deps, { ...options, command: FINISH_COMMAND });
   requireFinishable(session);
+  await bSetup(session);
   const run: Run = { session, options, steps };
   const adopted = (environment: MoveEnvironment) =>
     environment.plan.cloudflareMove?.step === "adopted";

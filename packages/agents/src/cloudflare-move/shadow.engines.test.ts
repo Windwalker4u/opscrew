@@ -326,9 +326,14 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
         });
 
         // What the switch made in B, imported as the finish does.
-        for (const address of [DOMAIN_ADDRESS, ACCESS, PROTECTED]) {
-          await importIntoShadow(session, main, address, `id-of-${address}`);
-        }
+        await importIntoShadow(
+          session,
+          main,
+          [DOMAIN_ADDRESS, ACCESS, PROTECTED].map((address) => ({
+            address,
+            id: `id-of-${address}`,
+          })),
+        );
         expect(await list(main.statePath)).toEqual(deployed);
 
         // The swap stopped after its first rename, then a run finishes it.

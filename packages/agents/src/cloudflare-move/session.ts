@@ -14,7 +14,7 @@ import { resolveAccount } from "../domain/common";
 import { environmentDeployed } from "../environments/list";
 import { type CloudflareSetup, setupCloudflare, setupGitHub } from "../provision";
 import { existingStateEngine, githubClientFromToken, requireGitRepo } from "../shared";
-import { otherAppHostnames, requireNoPreviews, requireNoRetarget } from "./checks";
+import { requireNoPreviews, requireNoRetarget } from "./checks";
 import { readMoveRecords, recordedMove } from "./record";
 import { A_TOKEN_VAR, B_TOKEN_VAR, bug, MOVE_COMMAND, refusal } from "./texts";
 import type {
@@ -116,19 +116,23 @@ export async function zoneIn(
 
 /**
  * B's `CloudflareSetup` for the first covered environment, read with B's token in B's account
- * (records no OpsCrew app owns are reported, not refused).
+ * (records no OpsCrew app owns are reported, not refused) on first use while B has the zone, and
+ * kept in the session (`accounts.b.setup`); `undefined` while B has no zone. The steps that use it
+ * read it before any change (prepare, the finish, the abort), as the session once did.
  */
-export function readBSetup(
-  deps: PhaseDeps,
-  first: MoveEnvironment,
-  b: { client: CloudflareClient; accountId: string },
-): Promise<CloudflareSetup | undefined> {
-  return setupCloudflare(
-    { ...deps, paths: first.paths },
-    first.plan,
-    { cloudflare: b.client },
-    { accountId: b.accountId, foreignRecords: "report" },
-  );
+export async function bSetup(session: MoveSession): Promise<CloudflareSetup | undefined> {
+  const { b } = session.accounts;
+  const [first] = session.environments;
+  if (b.setup === undefined && b.zone !== undefined && first !== undefined) {
+    const setup = await setupCloudflare(
+      { ...session.deps, paths: first.paths },
+      first.plan,
+      { cloudflare: b.client },
+      { accountId: b.accountId, foreignRecords: "report" },
+    );
+    if (setup !== undefined) b.setup = setup;
+  }
+  return b.setup;
 }
 
 /** The app's environments, split by the zone: covered, in the zone but not deployed, staying. */
@@ -365,10 +369,6 @@ export async function openMoveSession(
   // A moved zone in B is the one an earlier move took from it: a move back adds the zone again.
   const found = await zoneIn(bClient, zone, target.id);
   const bZone = found?.status === "moved" ? undefined : found;
-  const setup =
-    bZone === undefined
-      ? undefined
-      : await readBSetup(deps, first, { client: bClient, accountId: target.id });
   const a: MoveAccounts["a"] = {
     client: aClient,
     accountId: split.a.accountId,
@@ -381,12 +381,7 @@ export async function openMoveSession(
     accountId: target.id,
     name: target.name,
     ...(bZone === undefined ? {} : { zone: bZone }),
-    ...(setup === undefined ? {} : { setup }),
   };
-  const otherHostnames =
-    a.zone?.status === "active"
-      ? await otherAppHostnames(a, zone, [...split.environments, ...split.skipped])
-      : [];
 
   const git = await requireGitRepo(deps);
   const githubApi =
@@ -410,7 +405,6 @@ export async function openMoveSession(
     staying: split.staying,
     skipped: split.skipped.map((env) => env.environment),
     accounts: { a, b },
-    otherHostnames,
     git,
     github,
     githubApi,

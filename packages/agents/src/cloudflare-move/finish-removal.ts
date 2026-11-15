@@ -227,7 +227,10 @@ export async function endFinish(session: MoveSession): Promise<MoveResult> {
   const stop = await deleteMark(session);
   if (stop !== undefined) return { step: "adopted", done: false, ...stop };
   for (const environment of session.environments) {
-    for (const root of await shadowRoots(session, environment)) await dropShadow(session, root);
+    // `requireNothingLeft` found every state empty; the mark's deletion wrote none.
+    for (const root of await shadowRoots(session, environment)) {
+      await dropShadow(session, root, { checked: true });
+    }
     await rm(moveFolder(environment.paths), { recursive: true, force: true });
   }
   await rm(appProgressFile(session.paths), { force: true });

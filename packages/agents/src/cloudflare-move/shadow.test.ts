@@ -750,7 +750,7 @@ describe.skipIf(!findExecutable("git"))("the shadow state's outputs and imports"
     await writeFile(main.statePath, addressState(["module.worker.cloudflare_workers_script.this"]));
     const address = "module.worker.cloudflare_workers_custom_domain.domain[0]";
     const id = `${h.cloudflare.account("New").id}/domain-id`;
-    await importIntoShadow(h.session, main, address, id);
+    await importIntoShadow(h.session, main, [{ address, id }]);
     expect(engine.imports).toEqual([{ address, id, env: expect.any(Object) }]);
     expect(engine.importOptions[0]?.vars).toEqual(idsOf(h, "New"));
     expect(engine.importOptions[0]).toMatchObject({
@@ -875,6 +875,8 @@ describe.skipIf(!findExecutable("git"))("roots the move can't plan as they are",
   it("refuses plainly when the account has no one-time PIN login the root needs", async () => {
     const h = await serverHarness(new StateFileEngine());
     h.cloudflare.account("New").identityProviders.splice(0);
+    // A run that never found it (the harness's session did, and keeps it).
+    delete h.session.accounts.b.pinLoginId;
     const error = await shadowRoots(h.session, prodOf(h)).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).message).toBe(

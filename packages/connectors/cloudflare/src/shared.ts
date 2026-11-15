@@ -235,7 +235,8 @@ export interface SharedFacts {
   deniedTls?: string[];
   /**
    * The zone is pending (its nameservers not switched yet): Cloudflare deploys origin pull
-   * settings only once it is active, so one still `pending_deployment` counts as on.
+   * settings only once it is active, so one still `pending_deployment` counts as on; it issues no
+   * Origin CA certificate for it, so none is planned; and the apply waits for no deployment.
    */
   pendingZone?: true;
 }
@@ -257,12 +258,6 @@ export interface SharedDesired {
     served?: { originSha256?: string; requiring: string[] };
     /** Present only when a new origin certificate is wanted: its CSR (PEM). */
     origin?: { csr: string };
-    /**
-     * The zone is pending in the account a move goes to, and Cloudflare issues no Origin CA
-     * certificate for a pending zone: the plan sets the origin pulls and creates no certificate,
-     * which comes at the move's finish.
-     */
-    originLater?: boolean;
     /** The client certificate to upload, by its SHA-256 fingerprint, if not yet at Cloudflare. */
     client?: { sha256: string };
   };
@@ -443,6 +438,11 @@ export interface SharedPlan {
    * SHA-256, which the hash covers.
    */
   csr?: string;
+  /**
+   * The zone was pending when planned (`SharedFacts.pendingZone`): the apply waits for no
+   * deployment. Local, not in the hash.
+   */
+  pendingZone?: true;
   /** What OpsCrew advises without blocking the plan, in plain English. Local, not in the hash. */
   advice: { code: "tls-permission-missing" | "min-tls-advised"; message: string; hint: string }[];
   /** The Zero Trust pieces that already exist (returned by the apply). */
@@ -684,6 +684,7 @@ export function planShared(
       { tls: tls.tls, zoneSettings: record?.zoneSettings },
     ),
     ...(tls.csr !== undefined ? { csr: tls.csr } : {}),
+    ...(facts.pendingZone ? { pendingZone: true } : {}),
     advice: [
       ...(facts.deniedTls?.length ? [tlsPermissionMissing(facts.deniedTls)] : []),
       ...minTls.advice,
@@ -767,7 +768,8 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
     sameList(origin.hostnames, proxied) &&
     Date.parse(origin.expiresAt) - Date.parse(read.readAt) >= RENEW_DAYS * DAY_MS;
   let csr: string | undefined;
-  if (proxied.length > 0 && !valid && want.originLater !== true) {
+  // Cloudflare issues no Origin CA certificate for a pending zone: a move's finish gets it.
+  if (proxied.length > 0 && !valid && facts.pendingZone !== true) {
     if (want.origin === undefined) throw originCsrMissing(proxied);
     csr = want.origin.csr;
     changes.push({
@@ -1158,7 +1160,8 @@ function minTlsAdvised(value: string, editable: boolean, others: readonly string
  * before the first write and before each write; every write is sent once and checked against the
  * ruleset Cloudflare returns. Before a client certificate is turned on, the certificate is waited
  * for until Cloudflare reports it active, and then each hostname's setting (each wait at most 5
- * minutes), unless `waitForActive` is false; the record is updated after each change.
+ * minutes), unless the zone was pending when planned (`plan.pendingZone`, where Cloudflare deploys
+ * them only once it is active); the record is updated after each change.
  */
 export async function applyShared(
   client: CloudflareClient,
@@ -1172,12 +1175,6 @@ export async function applyShared(
     /** Times the wait for active and `setAt`. Default: this computer's clock. */
     clock?: Clock;
     sleep?: (ms: number) => Promise<void>;
-    /**
-     * Wait for the client certificate and the hostnames' settings to be active before going on
-     * (default true). False on a pending zone, where Cloudflare deploys them only once the zone
-     * is active.
-     */
-    waitForActive?: boolean;
   },
 ): Promise<SharedApplyResult> {
   if (!isPlanHash(opts.approvedHash) || opts.approvedHash.toLowerCase() !== sharedPlanHash(plan)) {
@@ -1202,7 +1199,12 @@ export async function applyShared(
     if (reason) throw staleError(phase, reason, "OpsCrew changed nothing.");
   }
 
-  const given = { ...opts, clock: opts.clock ?? systemClock, sleep: opts.sleep ?? realSleep };
+  const given = {
+    ...opts,
+    clock: opts.clock ?? systemClock,
+    sleep: opts.sleep ?? realSleep,
+    wait: plan.pendingZone !== true,
+  };
   const state: TlsState = {
     tls: structuredClone(plan.record.tls ?? {}),
     zoneSettings: structuredClone(plan.record.zoneSettings),
@@ -1334,7 +1336,8 @@ async function applyTlsChange(
     csr?: string;
     clock: Clock;
     sleep: (ms: number) => Promise<void>;
-    waitForActive?: boolean;
+    /** Wait for the client certificate and the hostnames' settings to deploy (not on a pending zone). */
+    wait: boolean;
   },
 ): Promise<void> {
   const { tls } = state;
@@ -1364,7 +1367,7 @@ async function applyTlsChange(
           { hint: "Run the command again to make a new plan, and approve that one." },
         );
       }
-      const wait = given.waitForActive ?? true;
+      const { wait } = given;
       // The certificate itself first: an upload answers `pending_deployment` (spike T1402).
       if (wait) {
         await untilActive(

@@ -31,7 +31,7 @@ import { unquoteTxt } from "../domain/connect-plan";
 import { opscrewNamesInZone } from "./checks";
 import { A_TOKEN_VAR } from "./texts";
 import type { MoveSession, StepStop } from "./types";
-import { applyZone, MARK_PREFIX, planZone } from "./zone";
+import { applyZone, type ListedRecords, MARK_PREFIX, planZone } from "./zone";
 
 /** The longest TXT content Cloudflare takes, quotes included. */
 const MAX_CONTENT = 2048;
@@ -282,12 +282,16 @@ export async function readMarks(session: MoveSession): Promise<MarksRead> {
   return parseMarks(await b.client.listZoneRecords(b.zone.id));
 }
 
-/** The TXT records of the app's mark in B's zone (`name`), damaged ones too. */
-async function ownMarkRecords(session: MoveSession, name: string): Promise<CloudflareZoneRecord[]> {
+/** B's zone's records (none while B has no zone), and the app's mark's TXT records (`name`) among them. */
+async function ownMarkRecords(
+  session: MoveSession,
+  name: string,
+): Promise<{ inB: CloudflareZoneRecord[]; own: CloudflareZoneRecord[] }> {
   const { b } = session.accounts;
-  if (b.zone === undefined) return [];
-  const records = await b.client.listZoneRecords(b.zone.id);
-  return records.filter((record) => record.type.toUpperCase() === "TXT" && record.name === name);
+  if (b.zone === undefined) return { inB: [], own: [] };
+  const inB = await b.client.listZoneRecords(b.zone.id);
+  const own = inB.filter((record) => record.type.toUpperCase() === "TXT" && record.name === name);
+  return { inB, own };
 }
 
 /**
@@ -298,7 +302,7 @@ async function ownMarkRecords(session: MoveSession, name: string): Promise<Cloud
 export async function writeMark(session: MoveSession): Promise<StepStop | undefined> {
   const name = await markName(session);
   const contents = markContents(await appMark(session));
-  const existing = await ownMarkRecords(session, name);
+  const { inB, own: existing } = await ownMarkRecords(session, name);
   const have = new Set(existing.map((record) => unquoteTxt(record.content)));
   const want = new Set(contents.map(unquoteTxt));
   const marks = {
@@ -307,7 +311,7 @@ export async function writeMark(session: MoveSession): Promise<StepStop | undefi
     delete: existing.filter((record) => !want.has(unquoteTxt(record.content))).map((r) => r.id),
   };
   if (marks.create.length === 0 && marks.delete.length === 0) return undefined;
-  return applyZone(session, await planZone(session, { marks }));
+  return applyZone(session, await planZone(session, { marks, listed: { b: inB } }));
 }
 
 /**
@@ -316,10 +320,10 @@ export async function writeMark(session: MoveSession): Promise<StepStop | undefi
  */
 export async function deleteMark(session: MoveSession): Promise<StepStop | undefined> {
   const name = await markName(session);
-  const existing = await ownMarkRecords(session, name);
-  if (existing.length === 0) return undefined;
-  const marks = { name, create: [], delete: existing.map((record) => record.id) };
-  return applyZone(session, await planZone(session, { marks }));
+  const { inB, own } = await ownMarkRecords(session, name);
+  if (own.length === 0) return undefined;
+  const marks = { name, create: [], delete: own.map((record) => record.id) };
+  return applyZone(session, await planZone(session, { marks, listed: { b: inB } }));
 }
 
 /** GitHub's domain verification record of a Pages site: `_github-pages-challenge-<owner>.<domain>`. */
@@ -338,11 +342,20 @@ export interface MoveCoverage {
 /**
  * The switch's coverage, read-only: OpsCrew's names in A's zone (its records with OpsCrew's comment,
  * the hostnames in OpsCrew's rules, the account's Workers custom domains in the zone) against every
- * mark's `hosts`. A Pages site's verification record counts as the site's, by its domain.
+ * mark's `hosts`. A Pages site's verification record counts as the site's, by its domain. `listed`:
+ * A's and B's records read just before (else they are read here).
  */
-export async function coverage(session: MoveSession): Promise<MoveCoverage> {
+export async function coverage(
+  session: MoveSession,
+  listed?: ListedRecords,
+): Promise<MoveCoverage> {
   const { a } = session.accounts;
-  const { records, domains, workers } = await opscrewNamesInZone(a.client, a.accountId, a.zoneId);
+  const { records, domains, workers } = await opscrewNamesInZone(
+    a.client,
+    a.accountId,
+    a.zoneId,
+    listed?.a,
+  );
   const facts = await inspectShared(a.client, {
     zoneId: a.zoneId,
     accountId: a.accountId,
@@ -360,7 +373,8 @@ export async function coverage(session: MoveSession): Promise<MoveCoverage> {
       `the zone's Workers custom domains, since ${A_TOKEN_VAR} may not read the account's Workers`,
     );
   }
-  const { marks, damaged } = await readMarks(session);
+  const { marks, damaged } =
+    listed?.b === undefined ? await readMarks(session) : parseMarks(listed.b);
   unread.push(...damaged.map((name) => `the mark ${name}, which can't be read`));
   const hosts = new Set(marks.flatMap((read) => read.mark.hosts));
   const covered = (name: string, type = "") => {

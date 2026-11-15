@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { projectEngine } from "../shared";
 import { ownPlan, portainerPlan, previewTestPlan, testPlan } from "../testing";
-import { accountNeeds, checkMoveStart } from "./checks";
+import { accountNeeds, checkMoveStart, otherAppHostnames } from "./checks";
+import { bSetup } from "./session";
 import {
   type MoveHarness,
   moveHarness,
@@ -63,7 +64,7 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
     });
     expect(session.accounts.b).toMatchObject({ accountId: fresh.id, name: "New" });
     expect(session.accounts.b.zone).toBeUndefined();
-    expect(session.accounts.b.setup).toBeUndefined();
+    expect(await bSetup(session)).toBeUndefined();
     expect(session.github).toMatchObject({ owner: "acme", repo: "shop" });
     expect(session.engine).toBe(h.engine);
     expect(session.approve).toBeUndefined();
@@ -77,14 +78,14 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
     const h = await moveHarness({ plans: SEVERAL });
     const session = await h.open({ to: "New" });
     // shop.example.com is this app's, the MX record is the user's.
-    expect(session.otherHostnames).toEqual([`blog.${ZONE}`, `docs.${ZONE}`]);
+    expect(await otherAppHostnames(session)).toEqual([`blog.${ZONE}`, `docs.${ZONE}`]);
   });
 
   it("leaves Workers custom domains out when A's token can't read the account's Workers", async () => {
     const h = await moveHarness();
     h.cloudflare.tokens.get(h.tokens.a)?.denied.add("workers");
     const session = await h.open({ to: "New" });
-    expect(session.otherHostnames).toEqual([`blog.${ZONE}`]);
+    expect(await otherAppHostnames(session)).toEqual([`blog.${ZONE}`]);
   });
 
   it("reads B's zone and its Cloudflare setup with B's token once B has the zone", async () => {
@@ -92,7 +93,8 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
     const session = await h.open({ to: h.cloudflare.account("New").id });
     const zone = h.cloudflare.zone(ZONE, "New");
     expect(session.accounts.b.zone).toMatchObject({ id: zone.id, status: "pending" });
-    expect(session.accounts.b.setup).toMatchObject({
+    expect(session.accounts.b.setup).toBeUndefined();
+    expect(await bSetup(session)).toMatchObject({
       zoneId: zone.id,
       zoneName: ZONE,
       accountId: zone.accountId,
@@ -106,7 +108,7 @@ describe.skipIf(!findExecutable("git"))("openMoveSession", () => {
     h.cloudflare.move(h.cloudflare.zone(ZONE, "New"));
     const session = await h.open({ to: "New" });
     expect(session.accounts.b.zone).toBeUndefined();
-    expect(session.accounts.b.setup).toBeUndefined();
+    expect(await bSetup(session)).toBeUndefined();
     expect(h.readOnly()).toBe(true);
   });
 
@@ -180,7 +182,7 @@ describe.skipIf(!findExecutable("git"))("openMoveSession, by account and record"
     expect(session.environments.map((env) => env.environment)).toEqual(["prod", "staging"]);
     expect(session.accounts.a).toMatchObject({ accountId: old.accountId, zoneId: old.id });
     expect(session.accounts.a.zone).toBeUndefined();
-    expect(session.otherHostnames).toEqual([]);
+    expect(await otherAppHostnames(session)).toEqual([]);
   });
 
   it("asks only for a tunnel's permission for a Portainer app served through a tunnel", async () => {
@@ -259,7 +261,7 @@ describe.skipIf(!findExecutable("git"))("the move's refusals before any change",
     const session = await h.open({ to: "New" });
     const error = await refused(h, checkMoveStart(session));
     expect(error.message).toContain(`${ZONE} is pending in the account`);
-    expect(session.otherHostnames).toEqual([]);
+    expect(await otherAppHostnames(session)).toEqual([]);
   });
 
   it("refuses a zone that has moved already", async () => {

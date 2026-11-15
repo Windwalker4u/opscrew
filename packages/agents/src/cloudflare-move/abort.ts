@@ -54,7 +54,7 @@ import {
   recordedMove,
   writeMoveRecord,
 } from "./record";
-import { openMoveSession } from "./session";
+import { bSetup, openMoveSession } from "./session";
 import { dropShadow, prepareRemoval, shadowOutputs, shadowRoots, unguardedCopy } from "./shadow";
 import { planRemoval } from "./shadow-plans";
 import { pendingStop, removeBShared } from "./shared";
@@ -96,6 +96,7 @@ export async function abortMove(
 ): Promise<MoveResult> {
   const move = await requireRecordedMove(deps);
   const session = await openMoveSession(deps, { ...options, command: ABORT_COMMAND });
+  await bSetup(session);
   const reading = await switchBegun(session, move);
   if (reading.begun !== undefined) throw begunRefusal(session, move, reading.begun);
   if (move.abort === undefined && reading.publicDns) await confirmDelegation(session);
@@ -246,7 +247,7 @@ async function rootsOf(session: MoveSession, environment: MoveEnvironment): Prom
   const states = await shadowStates(environment);
   if (states.length === 0) return [];
   const { b } = session.accounts;
-  if (b.setup !== undefined) return shadowRoots(session, environment);
+  if ((await bSetup(session)) !== undefined) return shadowRoots(session, environment);
   // Only Cloudflare's pieces count: a seeded state also holds the copied server, which is A's.
   const held: string[] = [];
   for (const state of states) {
@@ -507,7 +508,7 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
         ? `it holds OpsCrew's records of other apps (${listText(opscrew)})`
         : first.zone.status === "active"
           ? "it is active there"
-          : await otherRules(session, b.zone.id, first.zone.status);
+          : await otherRules(session, b.zone.id);
   if (why !== undefined) {
     return {
       deleted: false,
@@ -565,18 +566,13 @@ async function deleteBZone(session: MoveSession): Promise<ZoneOutcome> {
  * hostnames that aren't this app's (another repository's app part-way through its prepare), or
  * some of their phases can't be read; `undefined` when neither.
  */
-async function otherRules(
-  session: MoveSession,
-  zoneId: string,
-  status: string,
-): Promise<string | undefined> {
+async function otherRules(session: MoveSession, zoneId: string): Promise<string | undefined> {
   const { b } = session.accounts;
   const facts = await inspectShared(b.client, {
     zoneId,
     accountId: b.accountId,
     access: false,
     redirect: true,
-    pendingZone: status !== "active",
   });
   const denied = facts.deniedPhases ?? [];
   if (denied.length > 0) {

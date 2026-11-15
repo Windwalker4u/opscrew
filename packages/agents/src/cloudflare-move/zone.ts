@@ -48,6 +48,12 @@ export const MARK_COMMENT = "OpsCrew move mark";
 /** The first label of every mark's name: `_opscrew-move.<label>.<zone>`. */
 export const MARK_PREFIX = "_opscrew-move.";
 
+/** A's and B's zone records read just before a plan or a check, so it doesn't list them again. */
+export interface ListedRecords {
+  a?: readonly CloudflareZoneRecord[];
+  b?: readonly CloudflareZoneRecord[];
+}
+
 /** A DNS record of a zone plan: every field a copy keeps, without its id and Cloudflare's `meta`. */
 export type ZoneRecord = CloudflareZoneRecordInput;
 
@@ -209,19 +215,23 @@ function requireMarks(marks: ZoneMarks, inB: readonly CloudflareZoneRecord[]): v
  * B has a CNAME clash Cloudflare would refuse, the set is listed and never changed. B's sets that
  * A doesn't have are listed; B's zone is added when it has none; and the mark's records
  * (`marks`, a mark's name, deleting only its TXT records). A's records are read only while A's
- * zone is active (it is authoritative) and never for a plan that only deletes a mark.
+ * zone is active (it is authoritative) and never for a plan that only deletes a mark. `listed`:
+ * either zone's records read just before, which are not listed again.
  */
 export async function planZone(
   session: MoveSession,
-  options: { marks?: ZoneMarks } = {},
+  options: { marks?: ZoneMarks; listed?: ListedRecords } = {},
 ): Promise<ZonePlan> {
   const { zone } = session;
   const { a, b } = session.accounts;
   const { marks } = options;
   const copies = !deletesOnly(marks) && a.zone?.status === "active";
   const reads = copies || (marks?.delete.length ?? 0) > 0;
-  const inA = copies ? await a.client.listZoneRecords(a.zoneId) : [];
-  const inB = reads && b.zone !== undefined ? await b.client.listZoneRecords(b.zone.id) : [];
+  const inA = copies ? (options.listed?.a ?? (await a.client.listZoneRecords(a.zoneId))) : [];
+  const inB =
+    reads && b.zone !== undefined
+      ? (options.listed?.b ?? (await b.client.listZoneRecords(b.zone.id)))
+      : [];
   if (marks !== undefined) requireMarks(marks, inB);
   const skipped: ZoneCopy["skipped"] = [];
   const fromA: CloudflareZoneRecord[] = [];
@@ -430,7 +440,8 @@ export function aNameserversClash(
 
 /**
  * Stops unless B's zone has nameservers of its own and B's token has every zone permission the
- * app's pieces need there, each missing one named. `added`: this run added the zone just now.
+ * app's pieces need there, each missing one named. `added`: this run added the zone just now. A
+ * zone that passed already this run is not checked again.
  */
 async function requireUsableZone(
   session: MoveSession,
@@ -438,6 +449,7 @@ async function requireUsableZone(
   added: boolean,
 ): Promise<void> {
   const { b } = session.accounts;
+  if (b.usableZoneId === zone.id) return;
   const unchanged = added ? "The zone was added to the new account; nothing else was changed." : "";
   const stop = (
     message: string,
@@ -450,7 +462,10 @@ async function requireUsableZone(
   const clash = aNameserversClash(session, zone);
   if (clash !== undefined) throw stop(...clash, "PHASE_PRECONDITION");
   const { missing } = await b.client.zonePermissions(zone.id, zoneNeeds(session));
-  if (missing.length === 0) return;
+  if (missing.length === 0) {
+    b.usableZoneId = zone.id;
+    return;
+  }
   throw stop(
     `${B_TOKEN_VAR} lacks ${listText(missing)} for ${session.zone} in the account ${accountName(b)}, which the app's pieces need there.`,
     `Add ${missing.length === 1 ? "it" : "them"} to the token at ${CLOUDFLARE_TOKEN_PAGE} (for this zone, or all zones of the account), then run \`${session.command}\` again.`,

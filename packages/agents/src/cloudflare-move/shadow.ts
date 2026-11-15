@@ -42,6 +42,7 @@ import {
 import { rootVariables } from "../shared/root-variables";
 import { moveFolder } from "./paths";
 import type { MoveRoot } from "./progress";
+import { bSetup } from "./session";
 import {
   A_TOKEN_VAR,
   accountName,
@@ -152,7 +153,7 @@ export async function accountIds(
   const account =
     side === "a"
       ? { client: a.client, accountId: a.accountId, zoneId: a.zoneId }
-      : { client: b.client, accountId: b.accountId, zoneId: b.setup?.zoneId };
+      : { client: b.client, accountId: b.accountId, zoneId: (await bSetup(session))?.zoneId };
   const { client, accountId, zoneId } = account;
   if (zoneId === undefined) {
     throw bug(
@@ -161,8 +162,11 @@ export async function accountIds(
   }
   if (!(PIN_VARIABLE in values))
     return accountVariables(values, { cloudflare: { zoneId, accountId } });
-  const providers = await client.accessIdentityProviders(accountId);
-  const pin = providers.find((one) => one.type === "onetimepin")?.id;
+  // B's is kept once found (OpsCrew never deletes it); a missing one is asked for again.
+  const known = side === "b" ? b.pinLoginId : undefined;
+  const pin =
+    known ??
+    (await client.accessIdentityProviders(accountId)).find((one) => one.type === "onetimepin")?.id;
   if (pin === undefined) {
     throw refusal(
       `The app's Access in the Cloudflare account ${accountName(session.accounts[side])} logs in with a one-time PIN, but the account's one-time PIN login is missing; preparing again makes it.`,
@@ -171,6 +175,7 @@ export async function accountIds(
         : `Run \`${MOVE_COMMAND}\` first, then run \`${session.command}\` again.`,
     );
   }
+  if (side === "b") b.pinLoginId = pin;
   return accountVariables(values, {
     cloudflare: { zoneId, accountId, oneTimePinIdentityProviderId: pin },
   });
@@ -272,11 +277,12 @@ async function removeFromState(
 ): Promise<void> {
   const { engine } = session;
   const { statePath, env } = target;
-  await engine.init(root.dir, { env, backendConfig: { path: statePath } });
+  // `state list` reads the state outside the root, so only the removal needs the init.
   const addresses = (await shadowStateAddresses(session, statePath, env)).filter((address) =>
     leaves(cloudflareAddressScope(address)),
   );
   if (addresses.length === 0) return;
+  await engine.init(root.dir, { env, backendConfig: { path: statePath } });
   await engine.stateRemove(root.dir, addresses, { env });
   await moveAudit(session.deps, {
     kind: "iac",
@@ -326,26 +332,29 @@ export async function shadowOutputs(
 }
 
 /**
- * Records the existing object `id` at `address` in `root`'s shadow state (`importResource`, state
- * only), with B's token and ids and the root's committed `custom_domains`: a Workers site's custom
- * domains, which the switch attached in B, exist in its configuration only then.
+ * Records each existing object `id` at its `address` in `root`'s shadow state (`importResource`,
+ * state only, after one init), with B's token and ids and the root's committed `custom_domains`: a
+ * Workers site's custom domains, which the switch attached in B, exist in its configuration only
+ * then. Each import is audited; nothing at all without `pieces`.
  */
 export async function importIntoShadow(
   session: MoveSession,
   root: ShadowRoot,
-  address: string,
-  id: string,
+  pieces: readonly { address: string; id: string }[],
 ): Promise<void> {
+  if (pieces.length === 0) return;
   const env = await shadowEngineEnv(session, root, "b", root.dataDir);
   const { custom_domains: _committed, ...vars } = root.vars;
   await session.engine.init(root.dir, { env, backendConfig: { path: root.statePath } });
-  await session.engine.importResource(root.dir, address, id, { env, vars });
-  await moveAudit(session.deps, {
-    kind: "iac",
-    action: "import",
-    target: `${root.environment} ${root.name} root`,
-    detail: `${address} (id ${id}) into the new account's state`,
-  });
+  for (const { address, id } of pieces) {
+    await session.engine.importResource(root.dir, address, id, { env, vars });
+    await moveAudit(session.deps, {
+      kind: "iac",
+      action: "import",
+      target: `${root.environment} ${root.name} root`,
+      detail: `${address} (id ${id}) into the new account's state`,
+    });
+  }
 }
 
 /**
@@ -463,13 +472,18 @@ export async function unguardedCopy(
 /**
  * Deletes `root`'s files of the move: its shadow state, A's former state and their data folders.
  * Refuses, deleting nothing, while either state holds resources (or can't be read): the pieces in
- * it would be left without a state.
+ * it would be left without a state. `checked`: this run found both empty already, with no state
+ * written since (the finish's end), so they are not read again.
  */
-export async function dropShadow(session: MoveSession, root: ShadowRoot): Promise<void> {
+export async function dropShadow(
+  session: MoveSession,
+  root: ShadowRoot,
+  options: { checked?: boolean } = {},
+): Promise<void> {
   const environment = environmentOf(session, root);
   const deps = environmentDeps(session, environment);
   const { removalState, removalDataDir } = shadowFiles(root);
-  for (const state of [root.statePath, removalState]) {
+  for (const state of options.checked === true ? [] : [root.statePath, removalState]) {
     if ((await stateContents(deps, state, async () => session.engine)) === "nothing") continue;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

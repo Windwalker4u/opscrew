@@ -376,8 +376,6 @@ export interface ZonePlan {
   details: string;
   /** The record file the plan was made against, written by its apply (default: the app's). */
   recordPath?: string;
-  /** The zone is pending: its apply does not wait for Cloudflare to deploy origin pulls. */
-  pendingZone?: true;
 }
 
 /**
@@ -403,8 +401,9 @@ export function cloudflarePlanHashes(planned: PlannedCloudflare | undefined): st
  * One zone's plan, reading the app's origin TLS and the zone's minimum TLS when `desired` asks
  * for them, and the `www` redirect rule's phase with `redirect` (a site on Cloudflare's hosting);
  * stops (`PHASE_PRECONDITION`, nothing changed) on its findings. `notes` adds lines to the plan's
- * text. `recordPath` is kept for the apply; `pendingZone` reads a pending zone's origin pulls as
- * Cloudflare deploys them only once it is active.
+ * text. `recordPath` is kept for the apply; `pendingZone`: the zone is pending, which the plan
+ * carries (`SharedPlan.pendingZone`): its origin pulls count as on while Cloudflare deploys them, it
+ * gets no Origin CA certificate, and the apply waits for no deployment.
  */
 export async function zonePlan(
   deps: Pick<PhaseDeps, "reporter" | "clock">,
@@ -451,7 +450,6 @@ export async function zonePlan(
     desired: input.desired,
     details,
     ...(input.recordPath !== undefined ? { recordPath: input.recordPath } : {}),
-    ...(input.pendingZone === true ? { pendingZone: true as const } : {}),
   };
 }
 
@@ -659,8 +657,6 @@ export async function applyZonePlan(
       ...(plan.csr !== undefined ? { csr: plan.csr } : {}),
       clock: deps.clock,
       ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
-      // A pending zone deploys origin pulls only once it is active.
-      ...(zone.pendingZone === true ? { waitForActive: false } : {}),
     });
   } catch (error) {
     // What reached Cloudflare before the failure is this app's: recorded before the error shows.

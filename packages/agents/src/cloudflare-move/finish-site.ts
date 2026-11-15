@@ -114,11 +114,10 @@ export async function adoptSite(
   if (main !== undefined && wanted.length > 0) {
     const env = await shadowEngineEnv(session, main, "b");
     const held = await shadowStateAddresses(session, main.statePath, env);
-    for (const { address, id } of wanted) {
-      if (id !== undefined && !held.includes(address)) {
-        await importIntoShadow(session, main, address, id);
-      }
-    }
+    const missing = wanted.flatMap(({ address, id }) =>
+      id !== undefined && !held.includes(address) ? [{ address, id }] : [],
+    );
+    await importIntoShadow(session, main, missing);
     const { custom_domains: _later, ...vars } = main.vars;
     // Empty, or a stop before any approval: an empty plan is never pending.
     await checkAdoption(session, { ...main, vars });

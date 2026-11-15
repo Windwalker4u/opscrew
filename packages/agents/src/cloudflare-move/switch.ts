@@ -15,7 +15,7 @@ import { hosts, sameHosts } from "../domain/switch";
 import { appliesNow } from "../retarget/steps";
 import { PlanRefusedError } from "../shared";
 import { gapText, measureGap } from "./gap";
-import { coverage, markName, type ReadMark, readMarks } from "./marks";
+import { coverage, markName, parseMarks, type ReadMark } from "./marks";
 import {
   clearSwitchProgress,
   readSwitchProgress,
@@ -46,7 +46,7 @@ import {
   SWITCH_COMMAND,
 } from "./texts";
 import type { MoveResult, MoveSession, MoveZone, StepStop, SwitchMoveOptions } from "./types";
-import { aNameserversClash, recordInput } from "./zone";
+import { aNameserversClash, type ListedRecords, recordInput } from "./zone";
 
 /**
  * `opscrew cloudflare move --switch`: refused before any change unless this repository's app is
@@ -157,13 +157,19 @@ async function planFrom(
   registrar: Registrar,
   read: Delegation,
 ): Promise<Planned> {
-  const marks = await requireCoverage(session);
+  const { a } = session.accounts;
+  // Each zone listed once for the coverage and the zone copy; a second planning reads them anew.
+  const listed = {
+    a: await a.client.listZoneRecords(a.zoneId),
+    b: await session.accounts.b.client.listZoneRecords(read.zone.id),
+  };
+  const marks = await requireCoverage(session, listed);
   const gate: DsGate = read.switched
     ? { kind: "clear" }
     : await dsGate(session, registrar, move.dsAtStart);
   if (gate.kind === "stop") return { stop: gate.stop };
   const { zone, before } = read;
-  const input = { registrar, zone, before, gate, marks, dnssec: move.dsAtStart };
+  const input = { registrar, zone, before, gate, marks, dnssec: move.dsAtStart, listed };
   return { plan: await planSwitch(session, input), gate, read };
 }
 
@@ -245,10 +251,10 @@ async function beforeSwitch(
  * The marks in B, once every OpsCrew name in A's zone is in one of them and nothing went unread;
  * refused before any change otherwise.
  */
-async function requireCoverage(session: MoveSession): Promise<ReadMark[]> {
+async function requireCoverage(session: MoveSession, listed: ListedRecords): Promise<ReadMark[]> {
   const { zone, command } = session;
   const { a, b } = session.accounts;
-  const found = await coverage(session);
+  const found = await coverage(session, listed);
   if (found.uncovered.length > 0) {
     throw refusal(
       `${listText(found.uncovered)} in ${zone} ${found.uncovered.length === 1 ? "belongs" : "belong"} to OpsCrew apps not prepared in the new Cloudflare account yet, so ${zone} can't switch.`,
@@ -297,7 +303,8 @@ async function afterSwitch(
   const { deps, zone, command } = session;
   const { b } = session.accounts;
   await clearDsNotes(session.paths);
-  const { marks } = await readMarks(session);
+  const inB = await b.client.listZoneRecords(state.zone.id);
+  const { marks } = parseMarks(inB);
   const later: string[] = [];
   const activated = async () => {
     await protectInB(session, marks, state.zone);
@@ -330,7 +337,6 @@ async function afterSwitch(
       ? kept
       : { ...kept, nameserversSetAt: deps.clock.now().toISOString() };
   await writeSwitchProgress(session.paths, progress);
-  const inB = await b.client.listZoneRecords(state.zone.id);
   const protectedNames = new Set(
     marks.flatMap((read) => read.mark.access.map((one) => one.hostname)),
   );

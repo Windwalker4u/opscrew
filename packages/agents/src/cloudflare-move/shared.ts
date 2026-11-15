@@ -65,22 +65,6 @@ export function aSharedRecordPath(environment: MoveEnvironment): string {
   return moveFolder(environment.paths, "a-removal", "cloudflare.json");
 }
 
-/**
- * The origin TLS asked of B's zone (plan 4.4.1, 13b): the app's own client certificate with
- * per-hostname origin pulls. Cloudflare issues no Origin CA certificate for a pending zone, so
- * while B's is pending none is asked for (`originLater`, no certificate request): B's comes at
- * the move's finish, kept as `originTlsNext`.
- */
-function originTlsForB(
-  step: OriginTlsStep | undefined,
-  pending: boolean,
-): Pick<SharedDesired, "tls"> {
-  if (step === undefined) return {};
-  if (!pending) return { tls: step.desired };
-  const { origin: _later, ...desired } = step.desired;
-  return { tls: { ...desired, originLater: true } };
-}
-
 /** What B's shared plan says beyond its changes: the client certificate, the certificate later. */
 function bNotes(step: OriginTlsStep | undefined, pending: boolean): (plan: SharedPlan) => string[] {
   return (plan) => {
@@ -203,7 +187,10 @@ export async function planBShared(
     plan,
     cloudflare: { zoneId: zone.id, zoneName: session.zone, accountId: b.accountId },
     command: session.command,
-    tls: { ...originTlsForB(tls, pending), minTls: true },
+    // The app's own client certificate with per-hostname origin pulls (plan 4.4.1, 13b). Cloudflare
+    // issues no Origin CA certificate for a pending zone, so the plan of B's pending zone asks for
+    // none: B's comes at the move's finish, kept as `originTlsNext`.
+    tls: { ...(tls === undefined ? {} : { tls: tls.desired }), minTls: true },
     notes: bNotes(tls, pending),
     client: b.client,
     recordPath,

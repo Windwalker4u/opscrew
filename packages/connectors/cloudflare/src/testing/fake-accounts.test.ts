@@ -490,14 +490,14 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
       });
     const plan = planShared(await inspect(undefined, true), desired, undefined);
     const sleeps: number[] = [];
+    // Cloudflare issues no Origin CA certificate for a pending zone: none is planned yet.
+    expect(plan.changes.map((change) => change.kind)).not.toContain("create-origin-certificate");
     const applied = await applyShared(clientB, plan, {
       approvedHash: plan.hash,
       keys: { clientCertificate, clientKey: client.privateKey },
-      csr,
       sleep: async (ms) => {
         sleeps.push(ms);
       },
-      waitForActive: false,
     });
     expect(sleeps).toEqual([]);
     expect(applied.applied).toContain("enable-client-certificate");
@@ -516,19 +516,20 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
     // The pending zone's plan settles: its deploying settings count as on.
     const again = planShared(await inspect(applied.record, true), desired, applied.record);
     expect(again).toMatchObject({ changes: [], findings: [], record: applied.record });
-    // Not on an active zone: a setting still deploying there is turned on again and waited for.
+    // Not on an active zone: a setting still deploying there is turned on again and waited for,
+    // and the origin certificate is asked for.
     const active = planShared(await inspect(applied.record, false), desired, applied.record);
-    expect(active.changes).toEqual([
-      {
-        kind: "enable-client-certificate",
-        hostnames: hosts,
-        sha256: fingerprintSha256(clientCertificate),
-      },
+    expect(active.changes.map((change) => change.kind)).toEqual([
+      "enable-client-certificate",
+      "create-origin-certificate",
     ]);
     fake.activate(zoneB);
     expect(await status()).toEqual(Array(3).fill("active"));
     const deployed = planShared(await inspect(applied.record, false), desired, applied.record);
-    expect(deployed).toMatchObject({ changes: [], findings: [], record: applied.record });
+    expect(deployed.changes.map((change) => change.kind)).toEqual(["create-origin-certificate"]);
+    const issued = await applyShared(clientB, deployed, { approvedHash: deployed.hash, csr });
+    const settled = planShared(await inspect(issued.record, false), desired, issued.record);
+    expect(settled).toMatchObject({ changes: [], findings: [], record: issued.record });
 
     // The origin certificate is B's zone's: A's token neither lists nor revokes it.
     const [origin] = await clientB.listOriginCertificates(created.id);

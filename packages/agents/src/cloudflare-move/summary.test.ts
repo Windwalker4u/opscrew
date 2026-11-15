@@ -4,6 +4,7 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { appPlan } from "../apps/__fixtures__/sites";
 import { ownPlan } from "../testing";
+import { otherAppHostnames } from "./checks";
 import { moveHarness, OTHER_ZONE, serverPlan, unencrypted, ZONE } from "./session.fakes";
 import { confirmMoveStart, moveSummary } from "./summary";
 import type { MoveBucketSize, MoveSummary } from "./types";
@@ -36,7 +37,7 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
   it("lists B's zone, each environment's pieces, the buckets, the other apps, the gap and the window", async () => {
     const h = await several();
     const session = await h.open({ to: "New" });
-    const summary = moveSummary(session, SIZES);
+    const summary = moveSummary(session, SIZES, await otherAppHostnames(session));
     const fresh = h.cloudflare.account("New");
     const text = summary.lines.join("\n");
     expect(summary).toMatchObject({ zone: ZONE, to: { accountId: fresh.id, name: "New" } });
@@ -80,7 +81,7 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
         ),
       }),
     });
-    const { lines } = moveSummary(await h.open({ to: "New" }), []);
+    const { lines } = moveSummary(await h.open({ to: "New" }), [], []);
     const prod = lines.find((line) => line.startsWith("     - prod: "));
     const staging = lines.find((line) => line.startsWith("     - staging: "));
     expect(prod).toContain("the R2 bucket shop-backups of the snapshots' copies");
@@ -93,7 +94,7 @@ describe.skipIf(!findExecutable("git"))("moveSummary", () => {
   it("uses B's zone when it is there, and has no window without an app bucket", async () => {
     const h = await moveHarness({ bZone: true });
     const session = await h.open({ to: "New" });
-    const summary = moveSummary(session, []);
+    const summary = moveSummary(session, [], []);
     const text = summary.lines.join("\n");
     expect(text).toContain(`Use ${ZONE} in New (${h.cloudflare.account("New").id}) (pending)`);
     expect(text).toContain("  3. Mark the app as prepared in the new zone.");
@@ -108,7 +109,7 @@ describe.skipIf(!findExecutable("git"))("confirmMoveStart", () => {
     const h = await moveHarness();
     const session = await h.open({ to: "New" });
     const before = await readFile(h.deps.paths.files.plan, "utf8");
-    const summary = moveSummary(session, []);
+    const summary = moveSummary(session, [], []);
     const asked: MoveSummary[] = [];
     const error = await confirmMoveStart(session, summary, async (shown) => {
       asked.push(shown);
@@ -130,7 +131,7 @@ describe.skipIf(!findExecutable("git"))("confirmMoveStart", () => {
   it("goes on when confirmed, or in a script without the question", async () => {
     const h = await moveHarness();
     const session = await h.open({ to: "New" });
-    const summary = moveSummary(session, []);
+    const summary = moveSummary(session, [], []);
     await expect(confirmMoveStart(session, summary, async () => true)).resolves.toBeUndefined();
     await expect(confirmMoveStart(session, summary, undefined)).resolves.toBeUndefined();
   });
