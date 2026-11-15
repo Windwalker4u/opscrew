@@ -22,7 +22,7 @@ import {
   fakeNextStacks,
   scripted,
 } from "./connector.fakes";
-import { portainerFinishWorld } from "./finish-portainer.fakes";
+import { portainerFinishWorld } from "./finish.fakes";
 
 async function failure(run: Promise<unknown>): Promise<OpsCrewError> {
   const error = await run.catch((e: unknown) => e);

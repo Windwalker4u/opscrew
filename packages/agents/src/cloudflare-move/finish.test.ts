@@ -1,35 +1,38 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { findExecutable, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { exists, findExecutable, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hostingTestPlan } from "../hosting/__fixtures__/account";
 import { setupCloudflare } from "../provision";
 import { storageKeyFile } from "../provision/storage";
+import { MAINTENANCE_WINDOW_TITLE } from "../retarget/texts";
 import { generatedValuesFile } from "../shared/app-secrets";
 import { setDeployPause } from "../shared/deploy-pause";
+import { DEPLOYED_AT, pagesTestPlan } from "../testing";
 import { APP_BUCKET, BACKUPS_BUCKET } from "./buckets.fakes";
 import { FINISH_STEPS, type FinishSteps, finishMove } from "./finish";
+import { appWorld, serverPointWorld } from "./finish.fakes";
 import type { PointingAtB } from "./finish-point";
 import {
   asScript,
   change,
   type FinishTarget,
-  type FinishWorld,
   type FinishWorldOptions,
   finishWorld,
 } from "./finish-removal.fakes";
-import { readAppProgress } from "./progress";
-import { ZONE } from "./session.fakes";
-import { shadowFiles } from "./shadow";
-import { addressState, SERVER_ADDRESSES } from "./shadow.fakes";
+import { markWindow, readAppProgress, recordWindowStop } from "./progress";
+import { serverPlan, unencrypted, ZONE } from "./session.fakes";
+import { shadowFiles, shadowRoots } from "./shadow";
+import { addressState, SERVER_ADDRESSES, stateAddresses } from "./shadow.fakes";
 import { aSharedRecordPath, bSharedRecordPath } from "./shared";
-import type { MoveSession } from "./types";
+import type { MoveEnvironment, MoveSession } from "./types";
 
 /** What the steps (each tested on its own) did, in order. */
 let trail: string[] = [];
 /** What step 1 says of itself (default: B's values to write, after an approval). */
-let point: Omit<PointingAtB, "secrets" | "deploy"> = {
+let point: Omit<PointingAtB, "approve" | "secrets" | "deploy"> = {
   done: false,
   pointing: false,
   asks: { hash: "f".repeat(64) },
@@ -58,6 +61,9 @@ beforeEach(() => {
     }),
     pointAtB: vi.fn<FinishSteps["pointAtB"]>(async () => ({
       ...point,
+      approve: async () => {
+        trail.push("approve");
+      },
       secrets: async () => {
         trail.push("secrets");
       },
@@ -142,8 +148,17 @@ async function world(target: FinishTarget, o: FinishWorldOptions = {}) {
   return { ...w, leaks };
 }
 
+/** The finish's real step `name`, in place of its recorder. */
+function real(name: keyof FinishSteps): void {
+  steps[name] = vi.fn(FINISH_STEPS[name]) as never;
+}
+
 /** Runs the finish with `session`'s deps and services (a script's when given one). */
-function finish(w: FinishWorld, session: MoveSession = w.session, allowDowntime = false) {
+function finish(
+  w: { session: MoveSession },
+  session: MoveSession = w.session,
+  allowDowntime = false,
+) {
   return finishMove(
     session.deps,
     {
@@ -155,8 +170,13 @@ function finish(w: FinishWorld, session: MoveSession = w.session, allowDowntime 
   );
 }
 
-async function stepOf(w: FinishWorld): Promise<string | undefined> {
+async function stepOf(w: { environment: MoveEnvironment }): Promise<string | undefined> {
   return (await readArtifact("plan", w.environment.paths.files.plan)).cloudflareMove?.step;
+}
+
+/** `w`'s session as a script's: not interactive, with `--approve <hash>` when given. */
+function script(w: { session: MoveSession }, approve?: string): MoveSession {
+  return { ...w.session, deps: { ...w.session.deps, interactive: false }, approve };
 }
 
 async function caught(promise: Promise<unknown>): Promise<OpsCrewError> {
@@ -209,6 +229,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(trail).toEqual([
       "recover prod",
       "shared",
+      "approve",
       "window",
       "secrets",
       "deploy",
@@ -246,6 +267,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(trail).toEqual([
       "recover prod",
       "shared",
+      "approve",
       "window",
       "secrets",
       "deploy",
@@ -360,7 +382,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     const done = await finish(w, asScript(w, hash), true);
     expect(done).toMatchObject({ step: "finished", done: true });
     // B's shared pieces and records were taken by the first run.
-    expect(trail.slice(0, 5)).toEqual(["recover prod", "window", "secrets", "deploy", "copy"]);
+    expect(trail.slice(0, 5)).toEqual(["recover prod", "approve", "window", "secrets", "deploy"]);
     const [, , options] = steps.bucketWindow.mock.calls[0] ?? [];
     expect(options?.allowDowntime).toBe(true);
     expect((await readAppProgress(w.session.paths)).pending).toBeUndefined();
@@ -456,10 +478,21 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(pending.handler.requests).toEqual([]);
   });
 
-  it("leaves A's token refusing the moved zone after the finish", async () => {
+  it("leaves A's token refusing the moved zone once the real end removed the move's record", async () => {
     const w = await world("own");
-    await finish(w);
+    real("endFinish");
+    // A's pieces removed, as removeA leaves them.
+    steps.removeA.mockImplementation(async (session, environment) => {
+      for (const root of await shadowRoots(session, environment)) {
+        const { removalState } = shadowFiles(root);
+        if (await exists(removalState)) await writeFile(removalState, addressState([]));
+      }
+      await rm(aSharedRecordPath(environment), { force: true });
+      return undefined;
+    });
+    expect(await finish(w)).toMatchObject({ step: "finished", done: true });
     const plan = await readArtifact("plan", w.environment.paths.files.plan);
+    expect(plan.cloudflareMove).toBeUndefined();
     const error = await caught(
       setupCloudflare({ ...w.session.deps, paths: w.environment.paths }, plan, {
         cloudflare: w.session.accounts.a.client,
@@ -468,5 +501,196 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     expect(error.message).toBe(
       `${ZONE} moved to another Cloudflare account: set CLOUDFLARE_API_TOKEN to that account's token, then run the command again. Nothing was changed.`,
     );
+  });
+
+  it("asks step 1's approval before the window's, and the window stops when what it would write changed", async () => {
+    const w = await serverPointWorld();
+    for (const name of ["recoverWindow", "pointAtB", "backToA", "bucketWindow"] as const)
+      real(name);
+    // Once the window stopped the app, the server's settings are not what was approved.
+    w.server.onCommand = (command) => {
+      if (command.includes("docker compose stop")) {
+        w.server.appEnv = `${w.server.appEnv}NEW_SETTING=1\n`;
+      }
+    };
+    const error = await caught(finish(w));
+    expect(w.handler.requests.map((r) => r.kind)).toEqual(["github-secrets", "remote-exec"]);
+    expect(w.handler.requests[1]?.title.startsWith(MAINTENANCE_WINDOW_TITLE)).toBe(true);
+    expect(error.message).toContain(
+      "The maintenance window failed: What the deploy secrets of prod would hold for the Cloudflare account New changed since you approved it, so OpsCrew wrote none of them.",
+    );
+    expect(w.github.secrets.size).toBe(0);
+    expect((await readAppProgress(w.session.paths)).window).toBeUndefined();
+    expect(await stepOf(w)).toBe("prepared");
+    expect(w.leaks(error.message, error.hint ?? "")).toBe(false);
+  });
+
+  it("runs the real window around a stand-in step 1, after its approval", async () => {
+    const w = await world("cloud", { buckets: true });
+    real("recoverWindow");
+    real("bucketWindow");
+    expect(await finish(w)).toMatchObject({ done: true });
+    expect(trail.slice(0, 4)).toEqual(["shared", "approve", "secrets", "deploy"]);
+    expect(w.handler.requests.map((r) => r.title.startsWith(MAINTENANCE_WINDOW_TITLE))).toEqual([
+      true,
+    ]);
+    expect(w.r2?.runs.map((run) => run.verb)).toContain("sync");
+    expect((await readAppProgress(w.session.paths)).window).toMatchObject({
+      environment: "prod",
+      endedAt: expect.any(String),
+    });
+    expect(w.leaks()).toBe(false);
+  });
+
+  it("goes through the window while prod's is recorded and not ended, even when the server reads B's bucket", async () => {
+    const w = await world("own");
+    await recordWindowStop(w.session.deps, "prod");
+    await markWindow(w.session.deps, "pointingAt");
+    point = { done: false, pointing: true };
+    await finish(w);
+    expect(trail.slice(1, 5)).toEqual(["shared", "window", "secrets", "deploy"]);
+  });
+
+  it("calls the window for prod's ended window, and neither it nor step 1 without a record once done", async () => {
+    const ended = await world("own");
+    await recordWindowStop(ended.session.deps, "prod");
+    await markWindow(ended.session.deps, "pointingAt");
+    await markWindow(ended.session.deps, "endedAt");
+    point = { done: true, pointing: true };
+    await finish(ended);
+    expect(trail).toContain("window");
+
+    const none = await world("own");
+    trail = [];
+    await finish(none);
+    expect(trail).not.toContain("window");
+    expect(trail).not.toContain("secrets");
+  });
+
+  it("stops a script without --allow-downtime before the window, its --approve kept for one rerun", async () => {
+    const w = await world("cloud", { buckets: true });
+    const hash = "f".repeat(64);
+    const stop = await finish(w, asScript(w, hash));
+    expect(stop).toMatchObject({ step: "prepared", done: false, pendingPlanHash: hash });
+    expect(stop.next[0]).toContain(`--finish --allow-downtime --approve ${hash}`);
+    expect(trail).toEqual(["recover prod", "shared"]);
+    expect(steps.bucketWindow).not.toHaveBeenCalled();
+
+    trail = [];
+    expect(await finish(w, asScript(w, hash), true)).toMatchObject({ done: true });
+    expect(trail.slice(0, 3)).toEqual(["recover prod", "approve", "window"]);
+  });
+
+  it("plans no second B certificate after a stop between the records' move and the promotion", async () => {
+    const w = await world("cloud");
+    const { paths } = w.environment;
+    // An earlier run moved the records, then stopped.
+    await mkdir(dirname(aSharedRecordPath(w.environment)), { recursive: true });
+    await rename(paths.files.cloudflareRecord, aSharedRecordPath(w.environment));
+    await rename(bSharedRecordPath(w.environment), paths.files.cloudflareRecord);
+    const values = generatedValuesFile({ paths });
+    await mkdir(dirname(values), { recursive: true });
+    const keyB = fakeSecret("private-key-pem", "b-origin");
+    await writeFile(
+      values,
+      JSON.stringify({
+        originTls: { ORIGIN_TLS_CERT: "A's", ORIGIN_PULL_CERT: "pull" },
+        originTlsNext: { ORIGIN_TLS_KEY: keyB, ORIGIN_TLS_CERT: "B's" },
+      }),
+    );
+    point = { done: true, pointing: false };
+    await finish(w);
+    expect(trail).not.toContain("shared");
+    expect(JSON.parse(await readFile(values, "utf8"))).toEqual({
+      originTls: { ORIGIN_TLS_KEY: keyB, ORIGIN_TLS_CERT: "B's", ORIGIN_PULL_CERT: "pull" },
+    });
+    expect(w.leaks()).toBe(false);
+  });
+
+  it("finishes two environments one at a time, then removes A's pieces of each", async () => {
+    const w = await appWorld({
+      prod: serverPlan(),
+      staging: serverPlan(`staging.${ZONE}`, "staging"),
+    });
+    const hash = "e".repeat(64);
+    // Staging's step 1 waits for its approval; prod's is done.
+    steps.pointAtB.mockImplementation(async (_s, environment) => ({
+      ...(environment.environment === "staging"
+        ? { done: false, pointing: false, asks: { hash } }
+        : { done: true, pointing: false }),
+      approve: async () => {
+        trail.push(`approve ${environment.environment}`);
+      },
+      secrets: async () => {
+        trail.push("secrets");
+      },
+      deploy: async () => {
+        trail.push("deploy");
+      },
+    }));
+    const stepIn = async (name: string) =>
+      (await readArtifact("plan", w.environmentOf(name).paths.files.plan)).cloudflareMove?.step;
+
+    const stop = await finish(w, script(w));
+    expect(stop).toMatchObject({ step: "prepared", done: false, pendingPlanHash: hash });
+    expect(trail).toEqual(["recover prod", "recover staging", "copy", "adopt"]);
+    expect(await stepIn("prod")).toBe("adopted");
+    expect(await stepIn("staging")).toBe("prepared");
+    expect(steps.removeA).not.toHaveBeenCalled();
+
+    trail = [];
+    expect(await finish(w, script(w, hash))).toMatchObject({ step: "finished", done: true });
+    expect(trail).toEqual([
+      "recover staging",
+      "approve staging",
+      "window",
+      "secrets",
+      "deploy",
+      "copy",
+      "adopt",
+      "remove A adopted",
+      "remove A adopted",
+      "end",
+    ]);
+    expect(steps.removeA.mock.calls.map(([, environment]) => environment.environment)).toEqual([
+      "prod",
+      "staging",
+    ]);
+    expect(await stepIn("staging")).toBe("adopted");
+  });
+
+  it("swaps and checks both roots of a GitHub Pages site, then adopts it", async () => {
+    const pages = DeployPlanSchema.parse({
+      ...pagesTestPlan({ domain: `pages.${ZONE}` }),
+      deployment: { lastApplyAt: DEPLOYED_AT },
+    });
+    const w = await appWorld({ prod: unencrypted(pages) });
+    point = { done: true, pointing: false };
+    expect(await finish(w)).toMatchObject({ step: "finished", done: true });
+    const environment = w.environmentOf("prod");
+    const roots = await shadowRoots(w.session, environment);
+    expect(roots.map((root) => root.name)).toEqual(["main", "pages-verification"]);
+    for (const root of roots) {
+      const { environmentState, removalState } = shadowFiles(root);
+      expect(await exists(removalState)).toBe(true);
+      expect(await stateAddresses(environmentState)).toEqual([
+        `module.dns.cloudflare_dns_record.${root.name}`,
+      ]);
+      expect(w.engine.planDirs).toContain(root.dir);
+    }
+    expect(await stepOf({ environment })).toBe("adopted");
+  });
+
+  it("swaps and checks a hosting account's DNS root, then adopts it", async () => {
+    const w = await appWorld({ prod: hostingTestPlan({ cloudflare: true }) });
+    point = { done: true, pointing: false };
+    expect(await finish(w)).toMatchObject({ step: "finished", done: true });
+    const environment = w.environmentOf("prod");
+    const [main, ...others] = await shadowRoots(w.session, environment);
+    expect(others).toEqual([]);
+    if (main === undefined) throw new Error("no main root");
+    expect(await exists(shadowFiles(main).removalState)).toBe(true);
+    expect(w.engine.planDirs).toContain(main.dir);
+    expect(await stepOf({ environment })).toBe("adopted");
   });
 });

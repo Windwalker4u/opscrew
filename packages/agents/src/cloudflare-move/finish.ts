@@ -106,15 +106,6 @@ function environmentDeps(session: MoveSession, environment: MoveEnvironment): Ph
   return { ...session.deps, paths: environment.paths };
 }
 
-/** The environment's record of the move (every covered one has it once the finish may run). */
-function moveOf(environment: MoveEnvironment): CloudflareMove {
-  const move = environment.plan.cloudflareMove;
-  if (move !== undefined) return move;
-  throw new OpsCrewError("INTERNAL", `${appWords(environment)} has no record of the move.`, {
-    hint: "This is a bug in OpsCrew; please report it.",
-  });
-}
-
 /**
  * Refuses, before any change, unless every covered environment is prepared in B (or adopted there
  * by an earlier finish), no abort began, and B's zone is active (the switch is done).
@@ -176,19 +167,18 @@ async function recoverFirst(run: Run, environment: MoveEnvironment): Promise<voi
 }
 
 /**
- * B's origin certificate, now that B's zone is active (plan 13b): B's shared plan issues it into
- * `originTlsNext` (and settles what it set on the pending zone), then the app's origin TLS values
- * take it, and the records follow: A's record moves aside for the revocation of A's certificate
- * (`aSharedRecordPath`), B's takes its place. Nothing to plan once B's record has moved.
+ * B's origin certificate, now that B's zone is active (plan 13b): while B's record is in the move's
+ * folder, B's shared plan issues it into `originTlsNext` (and settles what it set on the pending
+ * zone); then the records move: A's aside for the revocation of A's certificate
+ * (`aSharedRecordPath`), B's into its place; then the app's origin TLS values take B's certificate
+ * (nothing when they have). Once B's record moved, no plan can issue a second certificate.
  */
 async function originForB(run: Run, environment: MoveEnvironment): Promise<StepStop | undefined> {
   const { session } = run;
-  const deps = environmentDeps(session, environment);
   const next = bSharedRecordPath(environment);
   if (await exists(next)) {
     const { stop } = await run.steps.planBShared(session, environment);
     if (stop !== undefined) return stop;
-    await promoteNextOriginTls(deps);
   }
   const current = environment.paths.files.cloudflareRecord;
   const aside = aSharedRecordPath(environment);
@@ -204,14 +194,15 @@ async function originForB(run: Run, environment: MoveEnvironment): Promise<StepS
     await renameWithRetry(current, aside);
   }
   if (await exists(next)) await renameWithRetry(next, current);
+  await promoteNextOriginTls(environmentDeps(session, environment));
   return undefined;
 }
 
 /**
  * Step 1 (plan 7.1), wrapped by the window (plan 7.2): what the app reads that names A pointed at
- * B. A script without the approval's hash stops with it before the window starts (`window`). Once
- * the app reads B's bucket it only goes forward, without a window; once step 1 was deployed it is
- * done.
+ * B. Its approval is asked before the window stops anything; a script without its hash, or without
+ * `--allow-downtime` when a window follows, stops before either with both (`window`). Once the
+ * app reads B's bucket it only goes forward, without a window; once step 1 was deployed it is done.
  */
 async function pointStep(run: Run, environment: MoveEnvironment): Promise<StepStop | undefined> {
   const { session, steps, options } = run;
@@ -225,10 +216,15 @@ async function pointStep(run: Run, environment: MoveEnvironment): Promise<StepSt
     !point.pointing &&
     own?.pointingAt === undefined &&
     moveBuckets(environment.plan).some((bucket) => bucket.root === "storage");
-  if (point.asks !== undefined && !appliesNow(session, point.asks.hash)) {
-    if (point.asks.details !== undefined) deps.reporter.info(point.asks.details);
-    await writePending(deps, key, point.asks.hash);
-    return pendingStop(session, point.asks.hash, windowed ? ["--allow-downtime"] : []);
+  // A script that would stop at the window's downtime stops here, its approval kept for one rerun.
+  const needsDowntime = windowed && !deps.interactive && options.allowDowntime !== true;
+  if (point.asks !== undefined) {
+    if (needsDowntime || !appliesNow(session, point.asks.hash)) {
+      if (point.asks.details !== undefined) deps.reporter.info(point.asks.details);
+      await writePending(deps, key, point.asks.hash);
+      return pendingStop(session, point.asks.hash, windowed ? ["--allow-downtime"] : []);
+    }
+    await point.approve();
   }
   if (point.pointing && own === undefined) {
     // The app reads B's bucket already: a window would copy A's older files over B's.
@@ -343,10 +339,12 @@ async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop |
   }
   const stop = await swapStates(session, environment, roots);
   if (stop !== undefined) return stop;
+  // Every covered environment has its record (`requireFinishable`).
+  const move = environment.plan.cloudflareMove as CloudflareMove;
   const plan = await writeMoveRecord(
     session.deps,
     environment.paths,
-    advancedMove(moveOf(environment), "adopted", session.deps.clock.now()),
+    advancedMove(move, "adopted", session.deps.clock.now()),
   );
   session.deps.reporter.success(
     `${upperFirst(appWords(environment))} runs on its pieces in the new Cloudflare account; the move can't be aborted from here.`,

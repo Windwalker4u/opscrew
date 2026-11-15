@@ -52,7 +52,7 @@ import {
   requestApproval,
   type StorageLogin,
 } from "../shared";
-import { storageVariableKind } from "../shared/app-env";
+import { dotenvLine, parseDotenv, storageVariableKind } from "../shared/app-env";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { lastBackupsCopy, type PointAtB } from "./buckets";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
@@ -75,10 +75,15 @@ export interface PointingAtB extends PointAtB {
    */
   pointing: boolean;
   /**
-   * The hash {@link PointAtB.secrets} asks its approval with (a script's `--approve <hash>`), and
+   * The hash of the approval {@link PointingAtB.approve} asks (a script's `--approve <hash>`), and
    * what that approval shows; absent when nothing is asked (B's values written already).
    */
   asks?: { hash: string; details?: string };
+  /**
+   * Asks the approval of {@link PointingAtB.asks}, before the window stops anything: B's values
+   * are written only under it, and only while they still have its hash.
+   */
+  approve(): Promise<void>;
 }
 
 /** The phase deps with the environment's paths. */
@@ -118,6 +123,15 @@ function readApplied(environment: MoveEnvironment): Promise<Applied | undefined>
 
 async function writeApplied(environment: MoveEnvironment, applied: Applied): Promise<void> {
   await writeFileAtomic(appliedFile(environment), `${JSON.stringify(applied)}\n`);
+}
+
+/** Step 1's values were to be written without their approval: OpsCrew's bug. */
+function unapproved(): OpsCrewError {
+  return new OpsCrewError(
+    "INTERNAL",
+    "OpsCrew was about to write the new account's values without their approval, so it wrote none.",
+    { hint: "This is a bug in OpsCrew; please report it." },
+  );
 }
 
 /** A deploy secret to store: where it goes and its value. */
@@ -196,9 +210,22 @@ function storagePairs(names: readonly string[], a: StorageLogin, b: StorageLogin
   return pairs;
 }
 
-/** The variables' names in an env file's text. */
-function envNames(text: string): string[] {
-  return [...text.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1] as string);
+/**
+ * Registers each value of the app's settings `values` with the redactor, by itself, but those the
+ * plan says are not secret and its bucket's public settings (its name, region and endpoint), which
+ * the move's messages name.
+ */
+function registerValues(
+  deps: Pick<PhaseDeps, "redactor">,
+  plan: DeployPlan,
+  values: ReadonlyMap<string, string>,
+): void {
+  const open = new Set(plan.app.env.filter((variable) => !variable.secret).map((one) => one.name));
+  for (const [name, value] of values) {
+    const kind = storageVariableKind(name);
+    if (open.has(name) || (kind !== undefined && kind !== "key")) continue;
+    deps.redactor.addLiteral(value, "app-env");
+  }
 }
 
 /**
@@ -231,7 +258,7 @@ async function serverAppEnv(session: MoveSession, environment: MoveEnvironment):
   if (result.exitCode !== 0) {
     throw failed(result.stderr.trim() || `exit code ${result.exitCode}`);
   }
-  deps.redactor.addLiteral(result.stdout, "app-env");
+  registerValues(deps, plan, parseDotenv(result.stdout));
   return result.stdout;
 }
 
@@ -287,10 +314,14 @@ async function serverSecrets(
   const storage = await storageLogins(session, environment);
   if (storage !== undefined) {
     const text = await serverAppEnv(session, environment);
-    const pairs = storagePairs(envNames(text), storage.a, storage.b);
-    const wanted = withAppEnv(text, pairs, side === "a" ? "old" : "new");
-    onSide = Object.keys(pairs).length > 0 && wanted === text;
-    set.push(place(DEPLOY_SECRETS.appEnv, wanted));
+    const lines = text.split(/\r?\n/);
+    const pairs = storagePairs([...parseDotenv(text).keys()], storage.a, storage.b);
+    const to = side === "a" ? "old" : "new";
+    // Each of its bucket's variables on the server already holds this side's value.
+    onSide =
+      Object.keys(pairs).length > 0 &&
+      Object.entries(pairs).every(([name, pair]) => lines.includes(dotenvLine(name, pair[to])));
+    set.push(place(DEPLOY_SECRETS.appEnv, withAppEnv(text, pairs, to)));
   }
   return { set, onSide };
 }
@@ -397,7 +428,9 @@ async function serverPointAtB(
   const deps = environmentDeps(session, environment);
   const { set, onSide } = await serverSecrets(session, environment, "b");
   const nothing = async () => {};
-  if (set.length === 0) return { done: true, pointing: false, secrets: nothing, deploy: nothing };
+  if (set.length === 0) {
+    return { done: true, pointing: false, approve: nothing, secrets: nothing, deploy: nothing };
+  }
   const hash = changeHash(session, environment, set);
   const applied = await readApplied(environment);
   const done = applied?.sha256 === hash && applied.deployed === true;
@@ -408,17 +441,13 @@ async function serverPointAtB(
     ...set.map((stored) => `  ${placeText(stored)}`),
     "(names only; values are encrypted on this computer before upload and never shown)",
   ].join("\n");
+  let approved = false;
   return {
     done,
     pointing: onSide,
     ...(applied?.sha256 === hash ? {} : { asks: { hash, details: `${title}\n${details}` } }),
-    secrets: async () => {
-      if ((await readApplied(environment))?.sha256 === hash) {
-        deps.reporter.info(
-          `The deploy secrets of ${name} hold their values for ${bWords(session)}.`,
-        );
-        return;
-      }
+    approve: async () => {
+      if ((await readApplied(environment))?.sha256 === hash) return;
       await requestApproval(deps, {
         kind: "github-secrets",
         title,
@@ -430,7 +459,26 @@ async function serverPointAtB(
           again: session.command,
         },
       });
-      await storeSecrets(session, environment, set);
+      approved = true;
+    },
+    secrets: async () => {
+      if ((await readApplied(environment))?.sha256 === hash) {
+        deps.reporter.info(
+          `The deploy secrets of ${name} hold their values for ${bWords(session)}.`,
+        );
+        return;
+      }
+      if (!approved) throw unapproved();
+      // Read again: what is written must be what was approved.
+      const now = await serverSecrets(session, environment, "b");
+      if (changeHash(session, environment, now.set) !== hash) {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          `What the deploy secrets of ${name} would hold for ${bWords(session)} changed since you approved it, so OpsCrew wrote none of them.`,
+          { hint: `Run \`${session.command}\` again to see the change and approve it.` },
+        );
+      }
+      await storeSecrets(session, environment, now.set);
       await writeApplied(environment, { sha256: hash });
       deps.reporter.success(
         `The deploy secrets of ${name} hold their values for ${bWords(session)}.`,
@@ -505,7 +553,7 @@ async function portainerPointAtB(
   const planned: PlannedStacks = await setup.stacks.plan(setup.outputs);
   const nothing = async () => {};
   if (planned.changes === 0) {
-    return { done: true, pointing: true, secrets: nothing, deploy: nothing };
+    return { done: true, pointing: true, approve: nothing, secrets: nothing, deploy: nothing };
   }
   const { hash } = planned;
   let approved: Awaited<ReturnType<typeof deps.approvals.request>> | undefined;
@@ -514,7 +562,7 @@ async function portainerPointAtB(
     pointing: false,
     // The stack plan was shown as it was made.
     asks: { hash },
-    secrets: async () => {
+    approve: async () => {
       const approval = await deps.approvals.request({
         kind: "stack-apply",
         title: `Give the app's stacks in your Portainer their values for ${bWords(session)}`,
@@ -532,8 +580,12 @@ async function portainerPointAtB(
       await deps.approvals.assertApprovedStackPlan(hash);
       approved = approval;
     },
+    // Nothing is written before the stack plan's apply, which sends the values it was approved by.
+    secrets: async () => {
+      if (approved === undefined) throw unapproved();
+    },
     deploy: async () => {
-      if (approved === undefined) throw new Error("The stack plan is applied after its approval.");
+      if (approved === undefined) throw unapproved();
       await setup.stacks.apply(planned, approved);
     },
   };
@@ -552,7 +604,7 @@ export async function pointAtB(
   if (where === "server") return serverPointAtB(session, environment);
   if (where === "portainer") return portainerPointAtB(session, environment);
   const nothing = async () => {};
-  return { done: true, pointing: false, secrets: nothing, deploy: nothing };
+  return { done: true, pointing: false, approve: nothing, secrets: nothing, deploy: nothing };
 }
 
 /**

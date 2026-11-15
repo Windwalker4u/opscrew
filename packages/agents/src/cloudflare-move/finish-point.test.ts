@@ -1,145 +1,28 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { PORTAINER_OFFSITE_VARIABLES, PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
-import {
-  NEW_OFFSITE_KEY_VARS,
-  NEW_STORAGE_KEY_VARS,
-  OFFSITE_KEY_VARS,
-  STORAGE_KEY_VARS,
-} from "../provision/storage";
 import { r2Endpoint } from "../shared";
-import { generatedValuesFile } from "../shared/app-secrets";
 import { BACKUPS_BUCKET } from "./buckets.fakes";
+import {
+  A_TUNNEL_TOKEN,
+  appEnv,
+  B_PEM,
+  ORIGIN_KEY,
+  portainerFinishWorld,
+  serverPointWorld,
+} from "./finish.fakes";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
-import { A_TUNNEL_TOKEN, portainerFinishWorld } from "./finish-portainer.fakes";
-import { type FinishWorld, finishWorld } from "./finish-removal.fakes";
-import { ZONE } from "./session.fakes";
-
-/** An origin certificate issued in New, and the app's client certificate. */
-const B_PEM = pem("the certificate issued in New");
-const PULL_PEM = pem("the app's client certificate");
-const ORIGIN_KEY = fakeSecret("private-key-pem", "b-origin");
-const PULL_KEY = fakeSecret("private-key-pem", "client");
-/** The app's own value on the server, besides its bucket's settings. */
-const APP_KEY = fakeSecret("generic-password", "app-key");
-
-function pem(text: string): string {
-  return `-----BEGIN CERTIFICATE-----\n${Buffer.from(text).toString("base64")}\n-----END CERTIFICATE-----\n`;
-}
-
-/** A bucket's login as the environment holds it: the key's two parts. */
-function key(w: FinishWorld, vars: { accessKeyId: string; secretAccessKey: string }) {
-  return {
-    accessKeyId: w.deps.env[vars.accessKeyId] ?? "",
-    secretAccessKey: w.deps.env[vars.secretAccessKey] ?? "",
-  };
-}
-
-/** The app's settings as a deploy writes them, with the bucket's key and endpoint of `account`. */
-function appEnv(login: { accessKeyId: string; secretAccessKey: string }, account: string): string {
-  return [
-    `APP_KEY=${APP_KEY}`,
-    `AWS_ACCESS_KEY_ID=${login.accessKeyId}`,
-    `AWS_ENDPOINT_URL_S3=${r2Endpoint(account)}`,
-    "AWS_REGION=auto",
-    `AWS_SECRET_ACCESS_KEY=${login.secretAccessKey}`,
-    "S3_BUCKET=shop-uploads",
-    "",
-  ].join("\n");
-}
-
-/**
- * The cloud server with both buckets on R2, prepared, after the switch: its server's `app.env`
- * on A's bucket (`cat` answers it; a successful deploy writes GitHub's), B's record and origin
- * certificate taken already, the recovery copy's age key known.
- */
-async function pointWorld() {
-  const w = await finishWorld("cloud", { buckets: true, step: "prepared" });
-  const a = { storage: key(w, STORAGE_KEY_VARS), backups: key(w, OFFSITE_KEY_VARS) };
-  const b = { storage: key(w, NEW_STORAGE_KEY_VARS), backups: key(w, NEW_OFFSITE_KEY_VARS) };
-  const server = { appEnv: appEnv(a.storage, w.old.id) };
-  const inner = w.session.services.remote as (host: string) => RemoteExec;
-  w.session.services.remote = (host) => ({
-    host,
-    run: async (command, options): Promise<CommandResult> =>
-      command === "cat /srv/apps/shop/app.env"
-        ? { exitCode: 0, stdout: server.appEnv, stderr: "" }
-        : inner(host).run(command, options),
-  });
-  w.github.deploy = () => {
-    server.appEnv = w.github.secrets.get("OPSCREW_APP_ENV") ?? "";
-  };
-  const { paths } = w.environment;
-  await writeFile(join(paths.stateDir, "recovery.json"), '{"recipients":["age1recipient"]}\n');
-  const host = `shop.${ZONE}`;
-  await writeFile(
-    paths.files.cloudflareRecord,
-    JSON.stringify({
-      zoneId: w.bZone.id,
-      hostnames: {},
-      createdEntrypoints: [],
-      tls: {
-        origin: {
-          id: "b-origin",
-          hostnames: [host],
-          expiresAt: "2041-10-16T23:53:00.000Z",
-          sha256: fingerprintSha256(B_PEM),
-          superseded: [],
-        },
-        client: {
-          id: "client",
-          expiresAt: "2041-10-16T23:53:00.000Z",
-          sha256: fingerprintSha256(PULL_PEM),
-          enabled: [host],
-          retiring: [],
-        },
-      },
-    }),
-  );
-  const values = generatedValuesFile({ paths });
-  await mkdir(dirname(values), { recursive: true });
-  await writeFile(
-    values,
-    JSON.stringify({
-      originTls: {
-        ORIGIN_TLS_KEY: ORIGIN_KEY,
-        ORIGIN_TLS_CERT: B_PEM,
-        ORIGIN_PULL_KEY: PULL_KEY,
-        ORIGIN_PULL_CERT: PULL_PEM,
-      },
-    }),
-  );
-  const secrets = [
-    ...Object.values(a).flatMap((one) => [one.accessKeyId, one.secretAccessKey]),
-    ...Object.values(b).flatMap((one) => [one.accessKeyId, one.secretAccessKey]),
-    ORIGIN_KEY,
-    PULL_KEY,
-    APP_KEY,
-  ];
-  /** True when a key, the app's values or the origin's key was said, asked or audited. */
-  const leaks = (...texts: string[]) => {
-    const said = [
-      ...texts,
-      w.deps.reporter.text(),
-      JSON.stringify(w.deps.audit.entries),
-      JSON.stringify(w.handler.requests),
-    ].join("\n");
-    return w.leaks(...texts) || secrets.some((secret) => said.includes(secret));
-  };
-  return { ...w, a, b, server, leaks };
-}
+import { finishWorld } from "./finish-removal.fakes";
 
 describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   it("gives the deploy secrets B's values in one approval, names only, then deploys once", async () => {
-    const w = await pointWorld();
+    const w = await serverPointWorld();
     const point = await pointAtB(w.session, w.environment);
     expect(point).toMatchObject({ done: false, pointing: false });
     expect(point.asks?.hash).toMatch(/^[0-9a-f]{64}$/);
 
+    await point.approve();
+    expect(w.github.secrets.size).toBe(0);
     await point.secrets();
     expect(w.handler.requests.map((r) => [r.kind, r.title])).toEqual([
       [
@@ -169,6 +52,7 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
     const again = await pointAtB(w.session, w.environment);
     expect(again).toMatchObject({ done: true, pointing: true });
     expect(again.asks).toBeUndefined();
+    await again.approve();
     await again.secrets();
     await again.deploy();
     expect(w.handler.requests).toHaveLength(1);
@@ -176,13 +60,40 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
     expect(w.leaks()).toBe(false);
   });
 
+  it("writes nothing when what it would write no longer has the approved hash, or without the approval", async () => {
+    const w = await serverPointWorld();
+    const point = await pointAtB(w.session, w.environment);
+    const unapproved = await point.secrets().catch((e: unknown) => e);
+    expect((unapproved as OpsCrewError).code).toBe("INTERNAL");
+    await point.approve();
+    // The server's settings changed since the approval.
+    w.server.appEnv = `${w.server.appEnv}NEW_SETTING=1\n`;
+    const error = await point.secrets().catch((e: unknown) => e);
+    expect((error as OpsCrewError).message).toBe(
+      "What the deploy secrets of prod would hold for the Cloudflare account New changed since you approved it, so OpsCrew wrote none of them.",
+    );
+    expect(w.github.secrets.size).toBe(0);
+    expect(w.leaks((error as OpsCrewError).message)).toBe(false);
+  });
+
+  it("tells by each bucket variable whether the server reads B's bucket already", async () => {
+    const w = await serverPointWorld();
+    // B's key and endpoint, the lines in another order and another value beside them.
+    w.server.appEnv = `ZZZ=1\n${appEnv(w.b.storage, w.fresh.id).split("\n").reverse().join("\n")}\n`;
+    expect((await pointAtB(w.session, w.environment)).pointing).toBe(true);
+    // B's key with A's endpoint: not yet.
+    w.server.appEnv = appEnv(w.b.storage, w.old.id);
+    expect((await pointAtB(w.session, w.environment)).pointing).toBe(false);
+  });
+
   it("puts A's bucket settings back without a deploy or an approval, and keeps B's origin certificate", async () => {
-    const w = await pointWorld();
+    const w = await serverPointWorld();
     // Nothing of B's written yet: nothing to put back.
     await backToA(w.session, w.environment);
     expect(w.github.secrets.size).toBe(0);
 
     const point = await pointAtB(w.session, w.environment);
+    await point.approve();
     await point.secrets();
     const asked = w.handler.requests.length;
     await backToA(w.session, w.environment);
@@ -201,7 +112,7 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   });
 
   it("stops plainly, naming no address, when the server's settings can't be read", async () => {
-    const w = await pointWorld();
+    const w = await serverPointWorld();
     w.session.services.remote = (host) => ({
       host,
       run: async () => ({ exitCode: 1, stdout: "", stderr: `cat: ${host}: Permission denied` }),
@@ -215,8 +126,9 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   });
 
   it("copies the snapshots' copies once more after the deploy, then never again", async () => {
-    const w = await pointWorld();
+    const w = await serverPointWorld();
     const point = await pointAtB(w.session, w.environment);
+    await point.approve();
     await point.secrets();
     await point.deploy();
     expect(await lastCopyOnce(w.session, w.environment)).toBeUndefined();
@@ -240,8 +152,9 @@ describe.skipIf(!findExecutable("git"))("pointAtB in Portainer", () => {
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(w.portainer.stacks).toEqual([]);
 
-    await point.secrets();
+    await point.approve();
     expect(w.handler.requests.map((r) => [r.kind, r.planHash])).toEqual([["stack-apply", hash]]);
+    await point.secrets();
     expect(w.portainer.stacks).toEqual([]);
     await point.deploy();
     const stack = w.appStack();
@@ -274,8 +187,9 @@ describe.skipIf(!findExecutable("git"))("pointAtB in Portainer", () => {
     const w = await portainerFinishWorld();
     w.answers.approve = () => false;
     const point = await pointAtB(w.session, w.environment);
-    const error = await point.secrets().catch((e: unknown) => e);
+    const error = await point.approve().catch((e: unknown) => e);
     expect((error as OpsCrewError).code).toBe("APPROVAL_REFUSED");
+    expect(await point.deploy().catch((e: unknown) => (e as OpsCrewError).code)).toBe("INTERNAL");
     expect((error as OpsCrewError).message).toContain("Nothing in Portainer was changed.");
     expect(w.portainer.stacks).toEqual([]);
     expect(await w.leaks((error as OpsCrewError).message)).toBe(false);
@@ -289,6 +203,7 @@ describe.skipIf(!findExecutable("git"))("pointAtB elsewhere", () => {
       const point = await pointAtB(w.session, w.environment);
       expect(point).toMatchObject({ done: true });
       expect(point.asks).toBeUndefined();
+      await point.approve();
       await point.secrets();
       await point.deploy();
       expect(w.handler.requests).toEqual([]);
