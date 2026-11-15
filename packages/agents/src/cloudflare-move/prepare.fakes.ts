@@ -420,6 +420,8 @@ export async function prepareWorld(target: PrepareTarget, o: PrepareWorldOptions
           ? { one_time_pin_identity_provider_id: "pin-of-old" }
           : {}),
         ...(access ? { access_applications: true, protected_route_records: true } : {}),
+        // A site's Worker gets its custom domains, which B's plan holds back with a `-var`.
+        ...(one.target === "site" && relative === plan.infra.dir ? { custom_domains: true } : {}),
       };
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "terraform.tfvars.json"), `${JSON.stringify(values, null, 2)}\n`);
@@ -671,15 +673,10 @@ export async function prepareWorld(target: PrepareTarget, o: PrepareWorldOptions
   return {
     ...h,
     plans,
-    blog,
-    blogPaths,
     engine,
-    server,
     tunnel,
-    webhookTunnel,
     r2,
     portainer,
-    services,
     secrets: SECRETS,
     old,
     fresh,

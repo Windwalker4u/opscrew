@@ -65,6 +65,7 @@ export async function prepareMove(
 ): Promise<MoveResult> {
   const session = await openMoveSession(deps, { ...options, command: MOVE_COMMAND });
   requirePreparing(session);
+  requireRecordedZone(session);
   if (!session.environments.every(isPrepared)) {
     await checkMoveStart(session);
     await startMove(session, options.confirmStart);
@@ -122,6 +123,21 @@ function requirePreparing(session: MoveSession): void {
       `Run \`${FINISH_COMMAND}\` to go on with the finish.`,
     );
   }
+}
+
+/**
+ * Stops before any change when the record names B's zone and B has no zone of that name now, or
+ * one with another id: the pieces prepared there went with it, and a zone plan would add it again.
+ */
+function requireRecordedZone(session: MoveSession): void {
+  const recorded = session.environments.find((env) => env.plan.cloudflareMove?.to.zoneId)?.plan
+    .cloudflareMove?.to.zoneId;
+  const { b } = session.accounts;
+  if (recorded === undefined || b.zone?.id === recorded) return;
+  throw refusal(
+    `${session.zone} in the Cloudflare account ${b.name ?? b.accountId} is not the zone the move was prepared in: it is gone, or it was added again.`,
+    `Run \`${ABORT_COMMAND}\` to remove what the move made, then start the move again (\`${MOVE_COMMAND} --to <account>\`).`,
+  );
 }
 
 /**

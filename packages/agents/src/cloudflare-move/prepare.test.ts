@@ -138,6 +138,7 @@ describe.skipIf(!findExecutable("git"))("prepareMove", () => {
       expect(options?.vars).toMatchObject({
         cloudflare_zone_id: bZone.id,
         cloudflare_account_id: w.fresh.id,
+        ...(target === "site" ? { custom_domains: "false" } : {}),
       });
     }
     // The mark: the app, its environment and its hostnames.
@@ -182,6 +183,19 @@ describe.skipIf(!findExecutable("git"))("prepareMove", () => {
     }
     expect(w.wroteToA()).toBe(false);
     expect(await w.leaks(JSON.stringify(result))).toBe(false);
+  });
+
+  it("fails a site's shadow apply that lost -var custom_domains=false, as OpenTofu does", async () => {
+    const w = await prepareWorld("site");
+    const apply = w.engine.apply.bind(w.engine);
+    w.engine.apply = (dir, planFile, approval, options = {}) => {
+      const { custom_domains: _lost, ...vars } = options.vars ?? {};
+      return apply(dir, planFile, approval, { ...options, vars });
+    };
+    const failed = await w.run().catch((error) => error);
+    expect(failed).toBeInstanceOf(OpsCrewError);
+    expect(failed.message).toContain("custom_domains");
+    expect(w.engine.appliedDirs).toEqual([]);
   });
 
   it("names the other apps of the zone still to prepare, then the switch", async () => {
@@ -385,4 +399,35 @@ describe.skipIf(!findExecutable("git"))("prepareMove", () => {
     expect(refused.hint).toContain(`opscrew cloudflare move ${flag}`);
     expect({ done: w.done(), asked: w.requests.length }).toEqual(before);
   });
+
+  it.each([
+    ["gone half-way through", false, false],
+    ["added again after the end", true, true],
+  ] as const)(
+    "refuses when New's zone the move was prepared in is %s",
+    async (_when, whole, again) => {
+      const w = await prepareWorld("proxied");
+      if (whole) await w.run();
+      else {
+        const first = await w.run({ interactive: false });
+        await w.run({ interactive: false, approvePlanHash: first.pendingPlanHash as string });
+        expect((await recordOf(w)).to.zoneId).toBe(w.cloudflare.zone(ZONE, "New").id);
+      }
+      const prepared = w.cloudflare.zone(ZONE, "New");
+      w.cloudflare.zones.splice(w.cloudflare.zones.indexOf(prepared), 1);
+      if (again) await (await w.open()).accounts.b.client.createZone(w.fresh.id, ZONE);
+      const before = { done: w.done(), asked: w.requests.length, zones: w.cloudflare.zones.length };
+      const refused = await w.run().catch((error) => error);
+      expect(refused).toBeInstanceOf(OpsCrewError);
+      expect(refused.message).toBe(
+        `${ZONE} in the Cloudflare account New is not the zone the move was prepared in: it is gone, or it was added again. Nothing was changed.`,
+      );
+      expect(refused.hint).toBe(
+        "Run `opscrew cloudflare move --abort` to remove what the move made, then start the move again (`opscrew cloudflare move --to <account>`).",
+      );
+      const after = { done: w.done(), asked: w.requests.length, zones: w.cloudflare.zones.length };
+      expect(after).toEqual(before);
+      expect(w.wroteToA()).toBe(false);
+    },
+  );
 });
