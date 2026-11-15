@@ -165,6 +165,20 @@ describe("createConfigScanner", () => {
       ).toEqual(["VITE_OPENAI_API_KEY", "NEXT_PUBLIC_STRIPE_SECRET_KEY"]);
     });
 
+    it("never flags a client-exposed name in test code or test fixtures, which no browser gets", async () => {
+      const findings = await scanFiles({
+        ".gitignore": ".env*\n",
+        "apps/server/src/jobs/runs.test.ts":
+          'expect(text).toContain("Secret exposed to the browser via NEXT_PUBLIC_PAYMENT_SECRET");\n',
+        "packages/reports/test/fixtures/app/scan.json":
+          '{ "evidence": "NEXT_PUBLIC_PAYMENT_SECRET" }\n',
+        "src/pay.ts": "const key = process.env.NEXT_PUBLIC_PAYMENT_SECRET;\n",
+      });
+      expect(
+        findings.filter((f) => f.ruleId === "config/client-exposed-secret").map((f) => f.file),
+      ).toEqual(["src/pay.ts"]);
+    });
+
     it("reports nothing about .env when .gitignore excludes it", async () => {
       const findings = await scanFiles({ ".gitignore": ".env*\n", ".env": "PORT=3000\n" });
       expect(findings).toEqual([]);

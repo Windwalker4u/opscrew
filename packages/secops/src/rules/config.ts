@@ -456,7 +456,8 @@ function isClientNameFile(file: string): boolean {
 }
 
 function scanClientExposed(file: string, text: string): Finding[] {
-  if (!isClientNameFile(file)) return [];
+  // Test code and its fixtures never ship to a browser.
+  if (!isClientNameFile(file) || isTestFile(file)) return [];
   const findings: Finding[] = [];
   const seen = new Set<string>();
   for (const [index, lineText] of splitLines(text).entries()) {
