@@ -10,7 +10,8 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path";
 import { OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
-import { type CloudflareMove, environmentsOf } from "@opscrew/plan-schema";
+import { appsOf, type CloudflareMove, environmentsOf } from "@opscrew/plan-schema";
+import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { readDs } from "../domain";
 import { hosts, sameHosts } from "../domain/switch";
@@ -21,12 +22,19 @@ import { emptyBuckets } from "./buckets";
 import { removeBesideConnector, waitForNoConnection } from "./connector";
 import { dropNewCredentials } from "./deploy-secrets";
 import { deleteMark, markName, parseMarks } from "./marks";
-import { appProgressFile, clearPending, type MovePlanKey, writePending } from "./progress";
+import {
+  appProgressFile,
+  clearPending,
+  clearSwitchProgress,
+  type MovePlanKey,
+  writePending,
+} from "./progress";
 import { abortingMove, readMoveRecords, writeMoveRecord } from "./record";
 import { openMoveSession } from "./session";
 import { dropShadow, prepareRemoval, shadowOutputs, shadowRoots } from "./shadow";
 import { planRemoval } from "./shadow-plans";
 import { pendingStop, removeBShared } from "./shared";
+import { clearDsNotes } from "./switch-ds";
 import { currentNameservers, findSwitchRegistrar } from "./switch-registrar";
 import { ABORT_COMMAND, FINISH_COMMAND, MOVE_COMMAND, refusal, SWITCH_COMMAND } from "./texts";
 import type {
@@ -263,7 +271,9 @@ async function withoutGuard(root: ShadowRoot): Promise<ShadowRoot> {
 
 /**
  * After B's pieces are gone: each environment's move folder deleted, B's zone deleted or kept,
- * then the record removed from every covered plan and the app's local file deleted.
+ * then the record removed from every covered plan and the app's local file deleted; the
+ * repository's switch file and DS notes too once no app of it records a move (an approved switch
+ * plan kept there would let a later move switch without asking).
  */
 async function endAbort(session: MoveSession, move: CloudflareMove): Promise<MoveResult> {
   const { deps, zone } = session;
@@ -277,6 +287,10 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
     env.plan = await writeMoveRecord(deps, env.paths, undefined);
   }
   await rm(appProgressFile(session.paths), { force: true });
+  if (!(await anyMoveRecorded(session.paths))) {
+    await clearSwitchProgress(session.paths);
+    await clearDsNotes(session.paths);
+  }
   const app = session.environments[0]?.plan.app.name ?? zone;
   await deps.audit.append({
     kind: "provider-call",
@@ -295,6 +309,16 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
       `${zone} goes on serving from the account ${a.name ?? a.accountId}, which the move never changed. To move later, start again with \`${MOVE_COMMAND} --to <account>\`.`,
     ],
   };
+}
+
+/** True when any app of the repository `paths` belong to records a move in any environment. */
+async function anyMoveRecorded(paths: MoveSession["paths"]): Promise<boolean> {
+  for (const { key } of await appsOf(paths.root)) {
+    const own = appPaths(paths, key);
+    const records = await readMoveRecords(own, await environmentsOf(paths.root, key));
+    if (records.some((env) => env.plan.cloudflareMove !== undefined)) return true;
+  }
+  return false;
 }
 
 /** What the zone step came to: deleted, kept (and why), or a stop for its approval. */

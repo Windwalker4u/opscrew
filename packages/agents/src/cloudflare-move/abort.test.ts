@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FakeTunnel } from "@opscrew/connector-cloudflare/testing";
 import { portainerClient } from "@opscrew/connector-portainer";
@@ -6,8 +6,14 @@ import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contr
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES, storageRootDir } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { appPlan } from "../apps/__fixtures__/sites";
 import { originTlsApply, planOriginTls, readOriginTlsValues } from "../provision/origin-tls";
 import { applySharedCloudflare, planSharedCloudflare } from "../provision/shared-cloudflare";
 import { NEW_OFFSITE_KEY_VARS, NEW_STORAGE_KEY_VARS } from "../provision/storage";
@@ -35,11 +41,14 @@ import {
 } from "./abort.fakes";
 import { APP_BUCKET, BACKUPS_BUCKET, FakeR2 } from "./buckets.fakes";
 import { B_TUNNEL, B_WEBHOOK_TUNNEL, ConnectorHost, fakeClock } from "./connector.fakes";
-import { readAppProgress } from "./progress";
-import { serverPlan, unencrypted, ZONE } from "./session.fakes";
+import { markName } from "./marks";
+import { readAppProgress, readSwitchProgress, writeSwitchProgress } from "./progress";
+import { writeMoveRecord } from "./record";
+import { recordedMove, serverPlan, unencrypted, ZONE } from "./session.fakes";
 import { bSharedRecordPath, planBShared } from "./shared";
-import { BLOG } from "./switch.fakes";
-import type { MoveResult } from "./types";
+import { switchMove } from "./switch";
+import { BLOG, DOCS } from "./switch.fakes";
+import type { MoveResult, SwitchMoveOptions } from "./types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -351,6 +360,65 @@ describe.skipIf(!findExecutable("git"))(
     });
   },
 );
+
+describe.skipIf(!findExecutable("git"))("abortMove: the repository's switch file", () => {
+  /** The switch's own DS note, beside the switch file. */
+  const dsNote = (h: AbortHarness) =>
+    join(h.root, ".opscrew", "cloudflare-move-switch-ds-wait.json");
+
+  it("after an approved switch plan that stopped before the nameservers changed: no switch file or DS note left, and a new move's switch asks again", async () => {
+    const h = await abortHarness({ registrar: "other", marks: [BLOG, DOCS] });
+    const switching = (options: Partial<SwitchMoveOptions> = {}) =>
+      switchMove(h.deps, { services: h.services, ...options });
+    h.deps.interactive = true;
+    const stopped = await switching();
+    expect(stopped.done).toBe(false);
+    const approved = (await readSwitchProgress(h.deps.paths))?.approved;
+    expect(approved).toMatch(/^[0-9a-f]{64}$/);
+    // Run again, the approved plan is not asked again.
+    h.deps.interactive = false;
+    expect((await switching()).pendingPlanHash).toBeUndefined();
+    expect(h.handler.requests.map((r) => r.kind)).toEqual(["domain-settings"]);
+    await writeFile(dsNote(h), "{}\n");
+    const record = await recordNow(h);
+    const session = await h.open();
+    const name = await markName(session);
+    const mark = (h.bZone?.records ?? []).filter((r) => r.name === name);
+
+    h.deps.interactive = true;
+    await expectAborted(h, await h.run());
+    expect(await readSwitchProgress(h.deps.paths)).toBeUndefined();
+    await expect(readFile(dsNote(h))).rejects.toThrow();
+
+    // The same move prepared again: its switch asks for the plan again.
+    await writeMoveRecord(h.deps, h.prodPaths, record);
+    for (const one of mark) h.bZone?.records.push(one);
+    h.deps.interactive = false;
+    const again = await switching();
+    expect(again.pendingPlanHash).toBe(approved);
+    expect(again.done).toBe(false);
+  });
+
+  it("stays while another app of the repository records a move", async () => {
+    const h = await abortHarness();
+    const other = recordedMove(
+      appPlan("blog", undefined, serverPlan(`blog.${ZONE}`)),
+      h.cloudflare,
+    );
+    const dir = join(h.root, "opscrew", "apps", "blog");
+    await writeArtifact("app", join(dir, "app.yaml"), { schemaVersion: 1, dir: "." });
+    await writeArtifact("plan", join(dir, "plan.yaml"), other);
+    await writeSwitchProgress(h.deps.paths, { zone: ZONE, approved: "a".repeat(64) });
+    await writeFile(dsNote(h), "{}\n");
+    h.deps.interactive = true;
+    await expectAborted(h, await h.run());
+    expect(await readSwitchProgress(h.deps.paths)).toEqual({
+      zone: ZONE,
+      approved: "a".repeat(64),
+    });
+    expect(await readFile(dsNote(h), "utf8")).toBe("{}\n");
+  });
+});
 
 describe.skipIf(!findExecutable("git"))("abortMove: by target", () => {
   it("an own server in tunnel mode: the _NEW secrets deleted, the connector beside removed, New's tunnel waited on, then destroyed", async () => {
