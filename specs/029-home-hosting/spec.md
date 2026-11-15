@@ -33,12 +33,11 @@ outside scan finds only 80 and 443 open; a second push deploys through the serve
 **Acceptance Scenarios**:
 
 1. **Given** a server at home whose public IPv4 address is fixed and a domain on Cloudflare,
-   **When** the user chooses "at home" for their own server, **Then** OpsCrew shows the address it
-   found, the router forwards to set up (TCP 80 and 443 to the server's LAN address, which should
+   **When** the user chooses "at home" for their own server, **Then** OpsCrew says it found a public
+   address (never showing a proxied app's address), the router forwards to set up (TCP 80 and 443 to the server's LAN address, which should
    stay fixed), and serves the app behind Cloudflare's proxy with origin protection.
-2. **Given** the forwards are not set up yet, **When** OpsCrew checks from outside, **Then** it
-   says plainly which port doesn't answer and what to forward, and changes nothing else until the
-   user runs it again.
+2. **Given** the forwards are not set up yet, **When** OpsCrew checks from outside once the app
+   serves, **Then** it says plainly which port doesn't answer and what to forward.
 3. **Given** the site is provisioned, **When** anyone scans the home address from outside, **Then**
    only ports 80 and 443 answer; SSH is reachable only from the home network.
 4. **Given** a domain whose DNS is not on Cloudflare, **When** the user hosts at a fixed home
@@ -142,7 +141,11 @@ risk and the fix; with an SSD the warning is gone.
 
 ---
 
-### User Story 6 - Deploys through Cloudflare Access SSH instead of the runner (Priority: P3)
+### User Story 6 - Deploys through Cloudflare Access SSH instead of the runner (Priority: P3; deferred)
+
+**Deferred:** the lead recommends leaving this story out of 029 (the plan's review found it reaches
+about ten files; the server's runner covers deploys); the founder's answer is pending, and the plan
+keeps what it would need.
 
 A user who prefers GitHub's hosted runners chooses deploys over SSH through Cloudflare Access: SSH
 travels through a tunnel used only for SSH, while the site itself is served directly at the home's
@@ -170,15 +173,17 @@ address.
   OpsCrew never claims it is from an inside test.
 - **The address changes during a deploy:** the deploy (through the runner or Access) doesn't depend
   on the home address; the updater fixes the record on its next run.
-- **Several apps on one home server:** one updater keeps every app's records current.
+- **Several apps on one home server:** one updater program, one instance per app (each app's token
+  is limited to its own zone).
 - **An IPv6 prefix change:** the AAAA record follows on the next run; a stale one is removed.
 - **The updater's credential is revoked or expires:** the updater logs it, keeps the last address,
   and `opscrew status` and `verify` say what to do (`opscrew rotate`).
 - **`opscrew destroy`:** removes the updater and its credential from the server and stops it
   writing; the records go with the app's DNS.
-- **`opscrew retarget` from home to another target, or a move to another Cloudflare account (028):**
-  the updater is removed or given the new account's credential with the rest of the app's
-  Cloudflare secrets.
+- **`opscrew retarget` to or from a home server:** refused in 029 (move the app by destroying and
+  provisioning it again).
+- **A move to another Cloudflare account (028):** the updater is given the new account's credential
+  at the finish, with the rest of the app's Cloudflare secrets.
 - **The ISP's terms:** many residential plans restrict running servers; OpsCrew says to check them
   and makes no claim about any provider.
 - **Large media through Cloudflare's proxy:** Cloudflare's terms limit serving video and large
@@ -195,8 +200,11 @@ address.
   443 to the server's LAN address) and that the server's LAN address must stay fixed; it MUST NOT
   change the router itself (no UPnP or NAT-PMP mapping in this feature).
 - **FR-2903**: OpsCrew MUST check from outside the home, through a one-shot run on GitHub's hosted
-  runners, that the site's ports answer; a check from inside the home MUST never count as proof.
-  When they don't answer, it MUST say which and offer tunnel mode, before any further change.
+  runners, that the site's ports answer, once the app serves (`opscrew verify`, run after the first
+  deploy); a check from inside the home MUST never count as proof. When they don't answer, it MUST
+  say which and offer tunnel mode. Before provisioning, OpsCrew stops only on what the server itself
+  can see for certain (no IPv4 route and no IPv6, or its own address unreadable); a carrier-NAT hop is
+  a warning, and the outside check is the final word.
 - **FR-2904**: With the domain on Cloudflare, a home server MUST be served behind Cloudflare's
   proxy with today's origin protection (origin certificate, authenticated origin pulls, Cloudflare-
   only traffic); otherwise DNS-only with a public certificate the server's edge obtains over ports
@@ -205,19 +213,22 @@ address.
   server that keeps the A record (and the AAAA record, FR-2906) of every app the server serves at the
   current address, writing only on change, every few minutes; DNS-only records MUST get a short
   lifetime (one minute).
-- **FR-2906**: The updater MUST point AAAA records at the server's stable global IPv6 address (never
-  a temporary one) and remove them when the server has none.
+- **FR-2906**: Where an app gets an AAAA record (DNS-only serving, or proxied without a public IPv4
+  address), the updater MUST point it at the server's stable global IPv6 address (never a temporary
+  one) and remove it when the server has none; a proxied app with a public IPv4 address gets no AAAA
+  record.
 - **FR-2907**: The updater's credential MUST be a dedicated Cloudflare token limited to the DNS of
   the app's zone, kept only on the server (readable by root alone), never OpsCrew's own token; it
-  MUST be rotatable with `opscrew rotate` and removed by `opscrew destroy`.
+  MUST be rotatable with `opscrew rotate`, and `opscrew destroy` removes the server's copy (deleting
+  the token itself stays the user's).
 - **FR-2908**: Dynamic DNS in this feature MUST work for domains on Cloudflare DNS; a fixed home
   address MUST work with any DNS provider (the user adds the record, as today); another provider's
   dynamic DNS is left for later.
 - **FR-2909**: A home server MUST keep SSH closed to the internet: its firewall allows 80 and 443
   from outside and SSH only from the home network.
 - **FR-2910**: Deploys to a home server MUST go through the server's own runner by default (no
-  inbound connection); deploys through Cloudflare Access SSH over a tunnel used only for SSH MUST
-  be offered as an option. GitHub MUST never hold the home address.
+  inbound connection); deploys through Cloudflare Access SSH over a tunnel used only for SSH are
+  deferred with User Story 6. GitHub MUST never hold the home address.
 - **FR-2911**: With no public IPv4 address, OpsCrew MUST offer tunnel mode, and IPv6 behind the
   proxy when the home has a global IPv6 address; DNS-only IPv6-only serving MUST be refused unless the
   user accepts that visitors without IPv6 can't reach the site.
@@ -249,8 +260,8 @@ address.
   HTTPS from outside within 30 minutes of starting, router forwards included.
 - **SC-2902**: After the home address changes, the site answers at the new address within 5
   minutes, with no action by the user.
-- **SC-2903**: On a connection without a public IPv4 address, OpsCrew says so before changing
-  anything, every time.
+- **SC-2903**: On a connection without a public IPv4 address, OpsCrew says so: as a warning before
+  any change when the server sees a carrier-NAT sign, and in the outside check's result otherwise.
 - **SC-2904**: An outside scan of a provisioned home server finds only ports 80 and 443 open.
 - **SC-2905**: A user can read in `opscrew status` when the updater last wrote the address, without
   logging in to the server.
