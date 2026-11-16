@@ -25,6 +25,7 @@ claude plugin install opscrew@opscrew
 
 The first command adds OpsCrew's plugin marketplace, the `opscrew-hub/opscrew` repository on [GitHub](https://github.com/).
 The second installs the `opscrew` plugin from it.
+`npx opscrew mcp install` runs both for you, and adds OpsCrew to your other AI apps too: see [OpsCrew in other AI apps](mcp-clients.md).
 
 ## What it runs
 

@@ -1,8 +1,12 @@
+import { homedir } from "node:os";
 import type { Readable } from "node:stream";
+import { NodeCommandRunner } from "@opscrew/core";
 import { startStdioServer } from "@opscrew/mcp-server";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
-import { servicesOf } from "../deps";
+import { promptsOf, servicesOf } from "../deps";
+import { CliExit } from "../exit";
+import { CLIENT_IDS, type McpClientsAction, runMcpClients } from "../mcp-clients";
 
 /** Resolves when `stdin` ends or closes, or (for the process's stdin) on SIGINT/SIGTERM. */
 function untilClosed(stdin: Readable, isProcessStdin: boolean): Promise<void> {
@@ -23,15 +27,41 @@ function untilClosed(stdin: Readable, isProcessStdin: boolean): Promise<void> {
   });
 }
 
+/** `opscrew mcp install|uninstall`: OpsCrew's server in the AI apps on this computer. */
+async function setUp(
+  ctx: CliContext,
+  action: McpClientsAction,
+  options: { client?: string[]; yes?: boolean },
+): Promise<void> {
+  const services = servicesOf(ctx);
+  const code = await runMcpClients({
+    action,
+    clients: options.client,
+    yes: options.yes === true,
+    interactive: ctx.isInteractive,
+    version: ctx.version,
+    system: {
+      home: services.homedir ?? homedir(),
+      env: ctx.env,
+      platform: process.platform,
+      runner: services.runner ?? new NodeCommandRunner(),
+    },
+    prompts: promptsOf(ctx),
+    out: (text) => ctx.stdout(text),
+  });
+  if (code !== 0) throw new CliExit(code);
+}
+
 /**
  * `opscrew mcp`: serves the OpsCrew MCP tools over stdio for the project in the current directory
  * until the client closes the connection. Standard output is the MCP channel, so every message of
- * this command goes to standard error.
+ * this command goes to standard error. `opscrew mcp install` and `uninstall` add the server to the
+ * AI apps on this computer, or remove it.
  */
 export function register(program: Command, ctx: CliContext): void {
-  program
+  const mcp = program
     .command("mcp")
-    .description("Start the OpsCrew MCP server over stdio")
+    .description("Start the OpsCrew MCP server over stdio, or add it to your AI apps")
     .action(async () => {
       const { fetch, runner, clock, mcp } = servicesOf(ctx);
       const streams = mcp ?? {};
@@ -55,4 +85,19 @@ export function register(program: Command, ctx: CliContext): void {
       }
       ctx.stderr("[opscrew mcp] Client disconnected; server stopped.\n");
     });
+  const clientOption = `Only these apps, even when they aren't found: ${CLIENT_IDS.join(", ")}`;
+  mcp
+    .command("install")
+    .description(
+      "Add OpsCrew's MCP server to Claude Code, Claude Desktop, Codex, Cursor and VS Code (shows each file's change and asks first; writes no token)",
+    )
+    .option("--client <id...>", clientOption)
+    .option("--yes", "Make the changes without asking (a script needs it)")
+    .action((options: { client?: string[]; yes?: boolean }) => setUp(ctx, "install", options));
+  mcp
+    .command("uninstall")
+    .description("Remove OpsCrew's MCP server from those apps, leaving the rest of their files")
+    .option("--client <id...>", clientOption)
+    .option("--yes", "Make the changes without asking (a script needs it)")
+    .action((options: { client?: string[]; yes?: boolean }) => setUp(ctx, "uninstall", options));
 }
