@@ -12,7 +12,7 @@ import {
 } from "./types";
 
 /** The guide page on OpsCrew in other AI apps, and on the tokens they read. */
-export const MCP_CLIENTS_GUIDE = "https://docs.opscrew.dev/mcp-clients/";
+const MCP_CLIENTS_GUIDE = "https://docs.opscrew.dev/mcp-clients/";
 
 const APP_NAMES = ["Claude Code", ...FILE_APPS.map((app) => app.name)];
 
@@ -123,12 +123,16 @@ async function fileStep(
   action: McpClientsAction,
   version: string,
 ): Promise<Step> {
-  const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  const change = app.change(text, action === "install" ? version : undefined);
   const name = app.name;
+  let text: string | undefined;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return { app: name, refused: true, show: fileError(name, "read", file, error) };
+    }
+  }
+  const change = app.change(text, action === "install" ? version : undefined);
   const entry = indented(app.entryText(version));
   if (change.kind === "same") {
     const state = action === "install" ? "already set up with this version" : "not set up";
@@ -156,12 +160,26 @@ async function fileStep(
     show,
     apply: async () => {
       const backup = `${file}.opscrew-backup`;
-      if (text !== undefined) await copyFile(file, backup);
-      await writeFileAtomic(file, change.text);
+      try {
+        if (text !== undefined) await copyFile(file, backup);
+        await writeFileAtomic(file, change.text);
+      } catch (error) {
+        return { ok: false, text: fileError(name, "write", file, error) };
+      }
       const kept = text === undefined ? "" : ` (the old file is kept as ${backup})`;
       return { ok: true, text: `${name}: wrote ${file}${kept}.` };
     },
   };
+}
+
+/**
+ * The line for an app's file OpsCrew couldn't read or write (the app may hold it open, or the
+ * permissions forbid it); anything but a file-system error is thrown again.
+ */
+function fileError(name: string, verb: "read" | "write", file: string, error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code !== "string") throw error;
+  return `${name}: couldn't ${verb} ${file} (${code}). Close ${name} or check the file's permissions, then run this again.`;
 }
 
 function nothingFound(action: McpClientsAction): string {

@@ -23,7 +23,8 @@ export function changeJson(
   }
   let data: unknown;
   try {
-    data = JSON.parse(text);
+    // Notepad on Windows starts a file with a byte-order mark; it is written back without one.
+    data = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch {
     return { kind: "refused", reason: "isn't plain JSON (it has comments or a syntax error)" };
   }

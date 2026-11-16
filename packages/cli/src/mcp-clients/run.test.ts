@@ -2,13 +2,19 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { parse } from "smol-toml";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UiPrompts } from "../ui/prompts";
 import { CREDENTIAL_VARIABLES, codexEntry, codexTable } from "./entry";
 import { type McpClientsOptions, runMcpClients } from "./run";
 import type { McpClientsAction } from "./types";
+
+// The real writes, except where a test makes one fail as a held or protected file does.
+vi.mock("@opscrew/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@opscrew/core")>();
+  return { ...actual, writeFileAtomic: vi.fn(actual.writeFileAtomic) };
+});
 
 const VERSION = "1.2.3";
 const ARGS = ["-y", `opscrew@${VERSION}`, "mcp"];
@@ -395,6 +401,42 @@ describe("opscrew mcp install's questions", () => {
 });
 
 describe("opscrew mcp install's refusals", () => {
+  it("reports a file it can't read or write for that app alone, and goes on with the others", async () => {
+    const desktop = path.join(LINUX.desktop(home), "claude_desktop_config.json");
+    const codex = path.join(home, ".codex", "config.toml");
+    const cursor = path.join(home, ".cursor", "mcp.json");
+    const original = '{"mcpServers": {}}';
+    await mkdir(desktop, { recursive: true }); // a folder where the file belongs: EISDIR
+    await mkdir(path.dirname(codex));
+    await mkdir(path.dirname(cursor));
+    await writeFile(cursor, original);
+    const actual = await vi.importActual<typeof import("@opscrew/core")>("@opscrew/core");
+    vi.mocked(writeFileAtomic).mockImplementation(async (file, content, options) => {
+      if (file !== cursor) return actual.writeFileAtomic(file, content, options);
+      throw Object.assign(new Error(`EPERM: operation not permitted, rename '${file}'`), {
+        code: "EPERM",
+      });
+    });
+    try {
+      const result = await run("install", { yes: true });
+      expect(result.code).toBe(1);
+      expect(result.output).toContain(
+        `Claude Desktop: couldn't read ${desktop} (EISDIR). Close Claude Desktop or check the file's permissions, then run this again.\n`,
+      );
+      expect(result.output).toContain(
+        `Cursor: couldn't write ${cursor} (EPERM). Close Cursor or check the file's permissions, then run this again.\n`,
+      );
+      expect(await readFile(cursor, "utf8")).toBe(original);
+      expect(await readToml(codex)).toEqual({ mcp_servers: { opscrew: codexEntry(VERSION) } });
+      expect(result.output).toContain("Restart Codex to load OpsCrew.\n");
+      expect(result.output).not.toContain("Restart Cursor");
+      expect(result.output).not.toContain("Restart Claude Desktop");
+      expect(result.output.endsWith(`${TOKEN_NOTE}\n`)).toBe(true);
+    } finally {
+      vi.mocked(writeFileAtomic).mockImplementation(actual.writeFileAtomic);
+    }
+  });
+
   it("leaves a JSON file with comments, a non-object key and Codex's inline table as they were, printing the entry", async () => {
     const cursor = path.join(home, ".cursor", "mcp.json");
     const desktop = path.join(LINUX.desktop(home), "claude_desktop_config.json");

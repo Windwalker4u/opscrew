@@ -70,6 +70,19 @@ describe("changeJson", () => {
     expect(changeJson(undefined, "mcpServers", undefined)).toEqual({ kind: "same" });
   });
 
+  it("reads a file that starts with a byte-order mark and writes it back without one", () => {
+    const bom = String.fromCharCode(0xfeff);
+    const text = `${bom}{"mcpServers": {"other": {"command": "x"}}}\r\n`;
+    const change = changeJson(text, "mcpServers", entry);
+    expect(change.kind).toBe("write");
+    if (change.kind !== "write") return;
+    expect(change.text.startsWith("{\n")).toBe(true);
+    expect(JSON.parse(change.text)).toEqual({
+      mcpServers: { other: { command: "x" }, opscrew: entry },
+    });
+    expect(changeJson(`${bom}${change.text}`, "mcpServers", entry)).toEqual({ kind: "same" });
+  });
+
   it("refuses a file with comments, one that isn't an object, and a key that isn't an object", () => {
     const comments = '{\n  // my servers\n  "mcpServers": {}\n}\n';
     for (const action of [entry, undefined]) {
