@@ -9,8 +9,8 @@ Done: 000–027. [026 Contabo](026-contabo-provider-plugins/) shipped as 0.2.7 o
 [027 shared hosting](027-shared-hosting/) as 0.2.8 on 2026-11-14. Now: [028 moving an app to
 another Cloudflare account](028-cloudflare-account-move/), for 0.2.10; 0.2.9 ships build arguments from the plan and a further app's analysis fix first. Then 029 hosting at
 home (the founder's choice on 2026-11-15, before AWS), then 030 scaling across servers (the
-founder's choice on 2026-11-15, also before AWS), then 031 AWS, each once the founder gives the
-go-ahead.
+founder's choice on 2026-11-15, also before AWS), then 031 AWS, then more providers in phases
+(032–036), each once the founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -627,6 +627,70 @@ research compares them and the lead decides: one of them, or both, each for what
 A small optional live pass on a throwaway account covers only what the chosen emulator can't show,
 rarely run. If it never runs, those stay "not tested live" on the coverage page.
 
+## After AWS: more providers, in phases (founder, 2026-11-16)
+
+The founder listed the providers to add and left the phases to the lead. Hetzner and DigitalOcean
+are built in already; AWS is 031. A phase that brings a provider brings its live test only with an
+account the founder opens, so each phase's live tests are decided when it starts.
+
+**Amazon CloudFront comes with 031** (S3's files behind it, in its per-component list); in front of
+a whole AWS app it joins 033's contract. **Azure Front Door comes with Azure** (035).
+
+### 032 More server providers, first wave: Vultr, Akamai Cloud (Linode), UpCloud, Scaleway
+
+Each is a provider package on 026's contract (ADR 0029), installed as 031 makes provider packages
+installable, so none of them grows the core. They were picked first because their servers are the
+shape OpsCrew already handles at Hetzner (a server, a firewall, an SSH key, backups or snapshots,
+billed by use), which also makes them places for 030's extra copies. **Research first, per
+provider:** its API and Terraform provider, how it bills a server (and a switched-off one), its
+firewall and private networking, its backups and snapshots, its regions, and its prices read live.
+
+### 033 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
+
+It opens with the contract for the DNS and edge provider, with Cloudflare moved behind it (026's
+rule: a contract when the second implementation arrives); designing it with three at once keeps it
+from being shaped by one. Bunny.net and Gcore also host DNS, so a domain can leave Cloudflare
+entirely; Fastly hosts none, so its domain stays at Cloudflare (DNS only) or the user's DNS host.
+What stays Cloudflare's (Tunnel, Access, Workers hosting, R2) is said in design, and an app behind
+another edge has its server reachable only from that edge. For each one: OpsCrew's rule against
+probes for secrets and admin panels, the edge's certificates for the app's hostnames, and its
+cache kept off what must not be cached.
+- **Fastly** (founder, 2026-11-11, moved here from Later): a Fastly service through its official
+  Terraform provider (`fastly/fastly`), with Fastly's certificates for the app's hostnames (5
+  domains free, then $20 a domain); the probe rule written into the service, since Fastly's WAF is
+  sold in paid packages; later, if users ask, sites on Fastly Compute (like Workers) and Fastly
+  Object Storage (like R2). Its free tier covers 100 GB and 1M requests a month (its pricing page,
+  2026-11-11).
+- **Research first:** how the origin is restricted to each edge (published IP ranges, a shared
+  secret header, mutual TLS), how hostnames and the apex point at it, how certificates are
+  validated, which of them can block those paths on their free or cheapest plan, their Terraform
+  providers, and their prices.
+
+### 034 More server providers, second wave: OVHcloud, IONOS Cloud, Kamatera
+
+After the first wave, because their accounts and APIs are shaped further from Hetzner's: OVHcloud's
+Public Cloud runs on OpenStack with its own projects and keys, IONOS Cloud builds servers inside a
+virtual data centre, and Kamatera has an API and account model of its own. **Research first:** the
+same list as 032's, plus how each account's projects or data centres map to an app.
+
+### 035 Azure and 036 Google Cloud
+
+After the providers above, as provider packages, reusing 031's managed-services design, Azure
+Verified Modules, terraform-google-modules and Infracost. Azure brings Azure Front Door and Azure
+DNS as its edge and DNS; Google Cloud brings Cloud CDN, Cloud Armor and Cloud DNS. Both join 033's
+contract.
+
+### Later, if users ask
+- **Enterprise edges:** Akamai's CDN and security services, and Imperva, both aimed at large
+  companies.
+- **A website firewall in front of a hosting account (027):** Sucuri, common with WordPress on
+  shared hosting.
+- **CDNs for an app's files:** KeyCDN and CDN77, used mostly for an app's static files and media
+  rather than in front of the whole app.
+- **Cloudways:** a managed hosting platform on servers it runs at DigitalOcean, AWS, Google Cloud,
+  Vultr and Akamai. OpsCrew would deploy into a Cloudways application through its API, the way it
+  deploys into a hosting account (027).
+
 ## Later, not yet placed
 
 - **Database replicas** (founder, 2026-11-15): a second database server that copies the main one
@@ -657,25 +721,6 @@ rarely run. If it never runs, those stay "not tested live" on the coverage page.
   A tunnel on either side needs two DNS changes with an outage between them. Two Portainer
   environments would share one deploy branch and webhook. All three stay refused with the steps to
   do them by hand.
-- **Azure and Google Cloud** after AWS, as provider plugins, reusing Azure Verified
-  Modules, terraform-google-modules and Infracost.
-- **Fastly in front of an app, in place of Cloudflare's proxy** (founder, 2026-11-11). It
-  opens with a contract for the DNS and edge provider, with Cloudflare moved behind it (026's
-  rule: a contract when the second implementation arrives).
-  - a Fastly service through its official Terraform provider (`fastly/fastly`), with Fastly's
-    certificates for the app's hostnames (5 domains free, then $20 a domain);
-  - OpsCrew's rule against probes for secrets and admin panels written into the service, since
-    Fastly's WAF is sold in paid packages;
-  - the server reachable only from Fastly, since Fastly has no tunnel;
-  - the domain stays at Cloudflare (DNS only) or the user's DNS host;
-  - later, if users ask: sites hosted on Fastly Compute (like Workers) and Fastly Object Storage
-    (like R2).
-
-  Fastly's free tier covers 100 GB and 1M requests a month (its pricing page, 2026-11-11). Live
-  tests are decided when it is placed; there is no Fastly account yet. **Research first:** how
-  the origin is restricted to Fastly (its published IP ranges, a shared secret header, mutual
-  TLS), how hostnames and the apex point at Fastly, how certificates are validated, and whether
-  plain VCL can block those paths.
 - **Tailscale or Headscale as the private network** (lead proposal, 2026-10-18; the founder is
   interested in Headscale), next to 018's plain WireGuard:
   - Tailscale for users with a tailnet: OpsCrew joins the servers with tags and writes the ACLs,
