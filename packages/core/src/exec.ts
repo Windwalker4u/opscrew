@@ -98,40 +98,68 @@ function spawnError(command: string, error: unknown): OpsCrewError {
 
 /**
  * The program and arguments that start `command`. On Windows a `.cmd` or `.bat` file is a batch
- * script only cmd.exe runs, and cmd.exe reads its arguments as commands, so a Node.js shim (npm's,
- * pnpm's, yarn's...) given by its full path runs as this Node.js with the shim's script, and any
- * other batch file is refused.
+ * script only cmd.exe runs, and cmd.exe reads its arguments as commands, so a shim given by its
+ * full path runs without it: a Node.js shim (npm's, pnpm's, yarn's...) as this Node.js with the
+ * shim's script, a shim that starts a program directly (Claude Code's) as that program. Any other
+ * batch file is refused.
  */
 function launchTarget(command: string, args: readonly string[]): [string, string[]] {
   if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(command)) {
     return [command, [...args]];
   }
-  const script = path.isAbsolute(command)
-    ? nodeShimScript(readFileSync(command, "utf8"), path.dirname(command))
-    : undefined;
-  if (script === undefined) {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `Could not run ${command}: on Windows OpsCrew starts programs, and Node.js command shims by their full path; this batch file is neither.`,
-      { hint: `Put the program's .exe on PATH before ${path.basename(command)}, then try again.` },
-    );
-  }
-  return [process.execPath, [script, ...args]];
+  const shim = path.isAbsolute(command) ? readFileSync(command, "utf8") : undefined;
+  const dir = path.dirname(command);
+  const script = shim === undefined ? undefined : nodeShimScript(shim, dir);
+  if (script !== undefined) return [process.execPath, [script, ...args]];
+  const program = shim === undefined ? undefined : shimExecutable(shim, dir);
+  if (program !== undefined) return [program, [...args]];
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    `Could not run ${command}: on Windows OpsCrew starts programs, and command shims that start Node.js or a program by their full path; this batch file is neither.`,
+    { hint: `Put the program's .exe on PATH before ${path.basename(command)}, then try again.` },
+  );
 }
 
 /**
  * The absolute path of the Node.js script a Windows command shim starts (its line
- * `"<node>" "<script>" %*`, as the Node.js installer's `npm.cmd` and npm's cmd-shim write it),
- * with `%~dp0` as `dir` (the shim's folder) and the shim's variables at their first `SET`;
- * undefined when the shim does not start a script with Node.js, or a variable grows past 32 KB.
+ * `"<node>" "<script>" %*`, as the Node.js installer's `npm.cmd` and npm's cmd-shim write it);
+ * undefined when the shim does not start a script with Node.js. See {@link shimLaunch}.
  */
 export function nodeShimScript(shim: string, dir: string): string | undefined {
+  const launch = shimLaunch(shim, dir);
+  if (launch?.script === undefined) return undefined;
+  if (!/^node(?:\.exe)?$/i.test(path.posix.basename(launch.program))) return undefined;
+  if (launch.script.includes("%") || !/\.[cm]?js$/i.test(launch.script)) return undefined;
+  return path.resolve(launch.script);
+}
+
+/**
+ * The absolute path of the `.exe` a Windows command shim starts directly with the shim's
+ * arguments (its line `"<program>.exe" %*`, as npm writes Claude Code's `claude.cmd`); undefined
+ * for any other batch file. See {@link shimLaunch}.
+ */
+export function shimExecutable(shim: string, dir: string): string | undefined {
+  const launch = shimLaunch(shim, dir);
+  if (launch === undefined || launch.script !== undefined) return undefined;
+  if (launch.program.includes("%") || !/\.exe$/i.test(launch.program)) return undefined;
+  return path.resolve(launch.program);
+}
+
+/**
+ * A shim's last launch line, `"<program>" "<script>" %*` or a line of only `"<program>" %*`, with
+ * `%~dp0` as `dir` (the shim's folder) and the shim's variables at their first `SET`; undefined
+ * when it has none, or a variable grows past 32 KB.
+ */
+function shimLaunch(
+  shim: string,
+  dir: string,
+): { program: string; script: string | undefined } | undefined {
   const vars = new Map<string, string>();
   const expand = (text: string) =>
     text.replace(/%~dp0|%(\w+)%/g, (match, name: string | undefined) =>
       name === undefined ? `${dir}/` : (vars.get(name.toLowerCase()) ?? match),
     );
-  let launch: RegExpExecArray | null = null;
+  let launch: { program: string; script: string | undefined } | undefined;
   for (const line of shim.split(/\r?\n/)) {
     const set = /^\s*set\s+"?(\w+)=([^"]*)"?\s*$/i.exec(line);
     const name = set?.[1]?.toLowerCase();
@@ -141,14 +169,17 @@ export function nodeShimScript(shim: string, dir: string): string | undefined {
       if (value.length > 32_768) return undefined;
       vars.set(name, value);
     }
-    launch = /"([^"]+)"\s+"([^"]+)"\s+%\*\s*$/.exec(line) ?? launch;
+    const withScript = /"([^"]+)"\s+"([^"]+)"\s+%\*\s*$/.exec(line);
+    const direct = /^\s*"([^"]+)"\s+%\*\s*$/.exec(line);
+    if (withScript !== null) launch = { program: withScript[1] ?? "", script: withScript[2] };
+    else if (direct !== null) launch = { program: direct[1] ?? "", script: undefined };
   }
-  if (launch === null) return undefined;
-  const program = expand(launch[1] ?? "").replaceAll("\\", "/");
-  const script = expand(launch[2] ?? "").replaceAll("\\", "/");
-  if (!/^node(?:\.exe)?$/i.test(path.posix.basename(program))) return undefined;
-  if (script.includes("%") || !/\.[cm]?js$/i.test(script)) return undefined;
-  return path.resolve(script);
+  if (launch === undefined) return undefined;
+  const slashes = (text: string) => expand(text).replaceAll("\\", "/");
+  return {
+    program: slashes(launch.program),
+    script: launch.script === undefined ? undefined : slashes(launch.script),
+  };
 }
 
 /** Kills `child` and everything it started. */

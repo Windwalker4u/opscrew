@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { OpsCrewError } from "./errors";
-import { findExecutable, NodeCommandRunner, nodeShimScript } from "./exec";
+import { findExecutable, NodeCommandRunner, nodeShimScript, shimExecutable } from "./exec";
 
 const node = process.execPath;
 const isWindows = process.platform === "win32";
@@ -261,6 +261,18 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\ENTRY
     .replaceAll("\n", "\r\n");
 }
 
+/** `claude.cmd` as npm writes it for Claude Code, whose package ships a native program. */
+const EXE_SHIM = String.raw`@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
+`.replaceAll("\n", "\r\n");
+
 describe("nodeShimScript", () => {
   const dir = path.resolve("shim-dir");
 
@@ -289,6 +301,27 @@ describe("nodeShimScript", () => {
   });
 });
 
+describe("shimExecutable", () => {
+  const dir = path.resolve("shim-dir");
+
+  it("finds the program a shim starts directly, as Claude Code's npm shim does", () => {
+    expect(shimExecutable(EXE_SHIM, dir)).toBe(
+      path.join(dir, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+    );
+  });
+
+  it("finds nothing in a Node.js shim or any other batch file", () => {
+    expect(shimExecutable(NODE_INSTALLER_NPM_CMD, dir)).toBeUndefined();
+    expect(
+      shimExecutable(cmdShim(String.raw`node_modules\pnpm\bin\pnpm.cjs`), dir),
+    ).toBeUndefined();
+    expect(shimExecutable(String.raw`"%~dp0\tool.bat" %*`, dir)).toBeUndefined();
+    expect(shimExecutable(String.raw`"%~dp0\tool.exe" --flag %*`, dir)).toBeUndefined();
+    expect(shimExecutable(String.raw`"%UNSET%\tool.exe" %*`, dir)).toBeUndefined();
+    expect(shimExecutable("@echo off\r\necho hello\r\n", dir)).toBeUndefined();
+  });
+});
+
 describe.runIf(isWindows)("NodeCommandRunner with Windows command shims", () => {
   const runner = new NodeCommandRunner({ defaultTimeoutMs: 20_000 });
 
@@ -307,6 +340,17 @@ describe.runIf(isWindows)("NodeCommandRunner with Windows command shims", () => 
     expect(JSON.parse(result.stdout)).toEqual(args);
   });
 
+  it("starts the program a shim starts directly, with the arguments unchanged, through no shell", async () => {
+    const shim = path.join(tmp, "bin dir", "tool.cmd");
+    await mkdir(path.dirname(shim), { recursive: true });
+    await writeFile(shim, `@ECHO off\r\n"${process.execPath}"   %*\r\n`);
+    const args = ["a b", "x & echo injected", '"quoted"', "%PATH%", "^caret", "a|b", "back\\"];
+    const print = "process.stdout.write(JSON.stringify(process.argv.slice(1)))";
+    const result = await runner.run(shim, ["-e", print, ...args]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  });
+
   it("refuses a batch file that is not a Node.js shim, without running it", async () => {
     const shim = path.join(tmp, "other.bat");
     await writeFile(shim, "@echo off\r\necho ran > ran.txt\r\n");
@@ -317,7 +361,7 @@ describe.runIf(isWindows)("NodeCommandRunner with Windows command shims", () => 
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).code).toBe("COMMAND_FAILED");
     expect((error as OpsCrewError).message).toBe(
-      `Could not run ${shim}: on Windows OpsCrew starts programs, and Node.js command shims by their full path; this batch file is neither.`,
+      `Could not run ${shim}: on Windows OpsCrew starts programs, and command shims that start Node.js or a program by their full path; this batch file is neither.`,
     );
   });
 
