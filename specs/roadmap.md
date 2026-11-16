@@ -422,6 +422,11 @@ removed after an approved plan. Research and the founder's decisions:
 - The R2 buckets are copied to the new account and the app switched to them in a short
   maintenance window, so the old account can be closed afterwards.
 
+**Also in 0.2.10 (founder, 2026-11-16):** `opscrew mcp install` adds OpsCrew's MCP server to
+Claude Code, Claude Desktop, Codex, Cursor and VS Code in one command, and `opscrew mcp uninstall`
+removes it (T2846, research R11). Claude Desktop's one-click `.mcpb` bundle comes later (the lead's
+recommendation; the founder left it open).
+
 ## 029 Hosting at home: your own IP address and dynamic DNS
 
 An app served from a computer at home (a Raspberry Pi on a fiber line, say) at the home's own

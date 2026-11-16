@@ -298,3 +298,49 @@ uses.
     - A: `opscrew.dev` active on `kira`/`leland`, 27 records (none `spike-*`), no hold, 1 bucket as
       before (no `opscrew-spike-*`), 2 Origin CA certificates as before (no spike one), DNSSEC
       `pending-disabled` (item 9).
+
+## R11 OpsCrew's MCP server in other AI apps, in one command (2026-11-16)
+
+Asked for by the founder on 2026-11-16 ("can we make it easier to install from one command that mcp
+for claude/codex and others", then "implement it now as next task for the upcoming release
+(0.2.10)"). Independent of the move; it ships in 0.2.10 beside it (T2846). Read on 2026-11-16 from
+official sources only; "not documented" where the vendor says nothing.
+
+| App | User-level file (Windows / macOS / Linux) | Format and key | Its own add command | Approval dialogs (elicitation) |
+|---|---|---|---|---|
+| Claude Code | the plugin, not a file: `claude plugin marketplace add opscrew-hub/opscrew`, `claude plugin install opscrew@opscrew` (scope user by default), `claude plugin uninstall`, all non-interactive | — | yes | yes |
+| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` / `~/Library/Application Support/Claude/claude_desktop_config.json` / `~/.config/Claude/claude_desktop_config.json` | JSON, `mcpServers`, `{command, args, env}` | none; quit fully and start again | not documented |
+| Codex (the CLI, the IDE extension and the desktop app share the file) | `~/.codex/config.toml` | TOML, `[mcp_servers.<name>]`: `command`, `args`, `env`, `env_vars` (names forwarded from Codex's environment), `cwd`, `startup_timeout_sec` (default 10) | `codex mcp add` | yes |
+| Cursor | `~/.cursor/mcp.json` | JSON, `mcpServers`, `{command, args, env}` | none | yes |
+| VS Code (Copilot) | `$COPILOT_HOME/mcp-config.json`, else `~/.copilot/mcp-config.json`; the user profile's `mcp.json` (key `servers`) is deprecated | JSON, `mcpServers`, `{type: "stdio", command, args, tools: ["*"]}` | `code --add-mcp` (writes the deprecated file) | yes, during an active turn |
+
+Sources: [MCP: connect local servers](https://modelcontextprotocol.io/docs/develop/connect-local-servers),
+[Claude Code MCP](https://code.claude.com/docs/en/mcp),
+[Claude Code plugins](https://code.claude.com/docs/en/discover-plugins),
+[Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+[Codex configuration reference](https://developers.openai.com/codex/config-reference),
+[Cursor MCP](https://cursor.com/docs/context/mcp),
+[VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration),
+[VS Code MCP for extensions](https://code.visualstudio.com/api/extension-guides/ai/mcp),
+[Claude Desktop local MCP servers](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
+
+1. **Left out of the first version:** Gemini CLI was replaced by Antigravity CLI on 2026-06-18 (its
+   docs' banner); Windsurf's docs now redirect to Devin's, which never name Windsurf's own file;
+   Zed's settings path isn't documented and Zed lists elicitation as unsupported; Cline's IDE
+   extension has no documented path. Later, if users ask.
+2. **Windows:** every vendor's example uses plain `npx`; none documents `cmd /c npx`.
+3. **Environment:** no vendor documents whether a server a desktop app starts inherits the user's
+   variables. Codex forwards the names listed in `env_vars`, and whether it forwards others isn't
+   documented, so OpsCrew's entry there lists its credential variables' names (names only).
+4. **Codex's start limit:** 10 seconds by default, shorter than `npx`'s first download of OpsCrew
+   (about 37 MB); OpsCrew's entry sets `startup_timeout_sec = 120`.
+5. **Claude Desktop from the Microsoft Store:** user reports, not Anthropic's docs, put its file
+   under `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`. The command writes there too
+   when that folder exists.
+6. **Desktop Extensions (`.mcpb`)** install with one click; `user_config` values marked `sensitive`
+   are kept in the OS's secure storage, so Claude Desktop users could enter tokens there rather than
+   in environment variables. Later: the lead's recommendation on 2026-11-16, which the founder left
+   open.
+7. **Constitution IV:** no token or secret value is ever written into an app's file; only Codex's
+   `env_vars` names.
+8. **Claude Code:** the plugin rather than a bare server entry, since it brings the skills too.

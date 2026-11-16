@@ -789,6 +789,38 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cloudflare-move-support.test.ts && pnpm lint`
   - Effort: high
 
+## Phase 8b: OpsCrew's MCP server in other AI apps, in one command (founder, 2026-11-16; independent of the move)
+
+Asked for directly: one command that adds OpsCrew's MCP server to Claude Code, Claude Desktop,
+Codex, Cursor and VS Code. Research: R11. It ships in 0.2.10 beside the move.
+
+- [ ] T2846 `opscrew mcp install` and `opscrew mcp uninstall`
+  - Owns: `packages/cli/src/commands/mcp.ts`, `packages/cli/src/commands/mcp.test.ts`, `packages/cli/src/mcp-clients/**` (new), `packages/cli/src/program.test.ts` (only if it lists commands), `docs/guide/mcp-clients.md` (new), the "Using OpsCrew" list in `docs/guide/index.md`, one line in `docs/guide/claude-code-plugin.md`
+  - Reads: research R11; `packages/cli/src/{context,deps}.ts`, `ui/prompts.ts`; `CLOUD_PROVIDERS` (`@opscrew/providers`); `docs/guide/claude-code-plugin.md`; `plugin/.mcp.json`
+  - Decided by the lead:
+    - **Commands:** `opscrew mcp install` and `opscrew mcp uninstall`, each with `--client <id...>` (ids `claude-code`, `claude-desktop`, `codex`, `cursor`, `vscode`) and `--yes`. `opscrew mcp` alone still starts the server, unchanged.
+    - **Finding the apps:** Claude Code when `claude --version` succeeds (through the runner); Claude Desktop when its folder exists (Windows `%APPDATA%\Claude` and each `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`, every one found; macOS `~/Library/Application Support/Claude`; Linux `$XDG_CONFIG_HOME/Claude`, else `~/.config/Claude`); Codex when `$CODEX_HOME` or `~/.codex` exists; Cursor when `~/.cursor` exists; VS Code when `$COPILOT_HOME` or `~/.copilot` exists, or VS Code's user folder (Windows `%APPDATA%\Code\User`, macOS `~/Library/Application Support/Code/User`, Linux `~/.config/Code/User`). `--client` sets an app up even when it isn't found (creating its folder and file); an unknown id is refused, listing the ids. Nothing found and no `--client`: say which apps were looked for and how to name one; nothing changes.
+    - **The entry**, named `opscrew` in every app: command `npx`, args `["-y", "opscrew@<this CLI's version>", "mcp"]` on every OS (R11 2.). Claude Desktop and Cursor: `{command, args}`. VS Code: `{type: "stdio", command, args, tools: ["*"]}` in `mcp-config.json`. Codex: `command`, `args`, `startup_timeout_sec = 120` and `env_vars` = OpsCrew's credential variable names. No `env` block and no value, ever (R11 7.).
+    - **Credential names for Codex:** `CLOUD_PROVIDERS`' credential variables, plus a list kept in `mcp-clients`: `CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `PORTAINER_API_KEY`, `GODADDY_API_TOKEN`, `NAMECHEAP_API_USER`, `NAMECHEAP_API_KEY`, `NAMECHEAP_USERNAME`, `NAMECHEAP_CLIENT_IP`, `PORKBUN_API_KEY`, `PORKBUN_SECRET_API_KEY`, `OPSCREW_HOSTING_TOKEN`, `OPSCREW_HOSTING_USER`, `OPSCREW_SFTP_USER`, `OPSCREW_SFTP_KEY`, `OPSCREW_BESZEL_TOKEN`, `OPSCREW_GRAFANA_CLOUD_TOKEN`, `OPSCREW_APP_ENV_FILE`, `OPSCREW_STORAGE_ACCESS_KEY_ID`, `OPSCREW_STORAGE_SECRET_ACCESS_KEY`, `OPSCREW_OFFSITE_ACCESS_KEY_ID`, `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`, `OPSCREW_OFFSITE_SFTP_KEY`, `OPSCREW_HOME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`. Check each against the code that reads it from the user's environment: drop a name nothing reads, add a credential the MCP tools' phases read that the list misses, and report the final list. An app's own runtime settings and GitHub Actions secrets are not in it.
+    - **Showing before writing:** per app, the file and the entry, or "already set up with this version". One question for all of them when interactive; `--yes` writes without asking; non-interactive without `--yes` shows the changes, changes nothing and names the rerun with `--yes`. These are local files, not infrastructure, so there is no plan hash (constitution I covers infrastructure, DNS, provider resources and remote hosts).
+    - **JSON files:** parsed; every other key and server kept; an existing `opscrew` entry replaced; written with 2-space indentation and a final newline. A file that isn't valid JSON (comments included), or whose key isn't an object, is left untouched: the output says why and prints the entry to add by hand. A missing file is created with OpsCrew's entry only.
+    - **Codex's TOML:** the text outside OpsCrew's tables is kept byte for byte, comments included. The `[mcp_servers.opscrew]` table and its sub-tables are removed and the new block appended. The result, parsed with `smol-toml`, must equal the original's data with only `mcp_servers.opscrew` changed; otherwise (an inline table or dotted keys, say) nothing is written and the entry is printed to add by hand.
+    - **Backups and writes:** before changing an existing file, copy it to `<file>.opscrew-backup` (replacing an older one) and name it in the output; write through a temporary file and a rename.
+    - **Claude Code:** the plugin (R11 8.). `claude plugin marketplace add opscrew-hub/opscrew` (an "already added" refusal is fine), then `claude plugin install opscrew@opscrew`, or `claude plugin update opscrew@opscrew` when it is already installed. Uninstall: `claude plugin uninstall opscrew@opscrew`. Through the injected runner, never a shell. You may read `claude plugin --help` and its subcommands' help; never run add, install, update or uninstall for real.
+    - **Uninstall** removes only OpsCrew's entry (Codex: its tables) and leaves the rest of the file as it was; for an app without it, "not set up".
+    - **After writing:** per app, "Restart <app> to load OpsCrew"; then once: no token was written, OpsCrew reads tokens from the environment the app starts in, and the guide page's link.
+    - **Side effects:** home folder, environment and platform injected (tests run the Windows, macOS and Linux layouts in a temporary folder); the runner and the prompts through `CliServices`; output through `ctx.stdout`.
+  - Accept:
+    - Install and uninstall for each of the five apps on each OS layout, including the Microsoft Store Claude Desktop folder, with `--client`, `--yes`, non-interactive and "nothing found".
+    - Other servers and keys kept in every JSON file; Codex's comments and other tables kept byte for byte; a second install with the same version changes nothing; a different version replaces the entry.
+    - The refusals: a JSON file with comments, a non-object key, Codex's inline-table form, an unknown id. Each leaves the file as it was and prints the entry.
+    - Claude Code's runner calls for a fresh install, an already-added marketplace, an already-installed plugin, and uninstall; no `claude` found.
+    - A leak check: no value of a variable from the test's environment appears in any file written or any output.
+    - `opscrew mcp` with no subcommand still starts the server (its existing tests pass unchanged).
+    - `docs/guide/mcp-clients.md`, "OpsCrew in other AI apps": the command; per app, the file it writes and whether approvals appear in the chat (Claude Code, Codex, Cursor and VS Code: yes; Claude Desktop: not documented, so where no dialog appears the tool names the command to run in your terminal); tokens: none written; Codex forwards the names it lists from the environment it starts in; for apps started from the desktop on Windows, user environment variables (set in Windows' settings, then restart the app); elsewhere the vendors don't document it, so run the steps that need tokens in the terminal (`npx opscrew ...`) or start the app from a terminal where they're set; never paste a token into the chat; the first start downloads OpsCrew (about 37 MB); uninstall; the entry per app for adding by hand. Linked from the guide's index ("Using OpsCrew") and from `claude-code-plugin.md`. Facts only from R11.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli src/commands/mcp.test.ts src/mcp-clients src/program.test.ts && node -e "const fs=require('fs'),p=require('path');const d='docs/guide';const bad=[];for(const f of fs.readdirSync(d)){const t=fs.readFileSync(p.join(d,f),'utf8');for(const m of t.matchAll(/\]\(([^)#:]+\.md)(#[^)]*)?\)/g)){if(!fs.existsSync(p.join(d,m[1])))bad.push(f+' -> '+m[1])}}if(bad.length){console.error(bad.join('\n'));process.exit(1)}" && pnpm lint`
+  - Effort: high
+
 ## Phase 9: The real move and the release (lead)
 
 - [ ] T2827 The rehearsal and the real move of opscrew.dev (lead): T2826's legs on the final code,
@@ -845,7 +877,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
 | 5 | T2823, T2836 | T2822 and wave 3; T2836 after T2819 |
 | 6 | T2824, T2825 | waves 4 and 5 |
 | 7 | T2826 | T2824 |
-| Lead | T2827, T2828, T2829, T2830 | T2826 |
+| 8b | T2846 | — (independent of the move) |
+| Lead | T2827, T2828, T2829, T2830 | T2826; T2830 also T2846 |
 
 No two tasks of a wave share an `Owns` path. Wave 1's connector files are T2804's (`client.ts`,
 `index.ts`) and T2805's (`testing/**`, `shared.ts`); its template files are T2807's (new files and
