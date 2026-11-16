@@ -77,6 +77,8 @@ To install it once instead of fetching it with `npx` each time, run `npm install
 
 In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every plan still waits for your approval: `/plugin marketplace add opscrew-hub/opscrew`, then `/plugin install opscrew@opscrew`. See [the plugin's README](https://github.com/opscrew-hub/opscrew/tree/main/plugin).
 
+To add OpsCrew to Claude Code, Claude Desktop, Codex, Cursor and VS Code at once, run `npx opscrew mcp install`. See [OpsCrew in other AI apps](docs/guide/mcp-clients.md).
+
 ## After the first deploy
 
 - `npx opscrew logs` shows the app's log lines (`--follow` for new ones), and `npx opscrew status` what runs with its CPU, memory and disk. See [Your app's logs and resource figures](docs/guide/logs-and-status.md).
