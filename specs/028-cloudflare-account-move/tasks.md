@@ -794,7 +794,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 Asked for directly: one command that adds OpsCrew's MCP server to Claude Code, Claude Desktop,
 Codex, Cursor and VS Code. Research: R11. It ships in 0.2.10 beside the move.
 
-- [ ] T2846 `opscrew mcp install` and `opscrew mcp uninstall`
+- [x] T2846 `opscrew mcp install` and `opscrew mcp uninstall`
   - Owns: `packages/cli/src/commands/mcp.ts`, `packages/cli/src/commands/mcp.test.ts`, `packages/cli/src/mcp-clients/**` (new), `packages/cli/src/program.test.ts` (only if it lists commands), `docs/guide/mcp-clients.md` (new), the "Using OpsCrew" list in `docs/guide/index.md`, one line in `docs/guide/claude-code-plugin.md`
   - Reads: research R11; `packages/cli/src/{context,deps}.ts`, `ui/prompts.ts`; `CLOUD_PROVIDERS` (`@opscrew/providers`); `docs/guide/claude-code-plugin.md`; `plugin/.mcp.json`
   - Decided by the lead:
