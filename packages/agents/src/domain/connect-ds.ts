@@ -281,16 +281,31 @@ export async function removeDsAndWait(
 }
 
 /**
- * Starts the noted wait at `now` for old DS records a run sees gone (they were seen, or removed by
- * a run interrupted before it noted the switch time): resolvers may hold them for the whole wait
- * from now on. Writes the note and returns the switch time (never earlier than noted).
+ * When old DS records a run sees gone left the registry, at the latest: the registry's own last
+ * change (`RegistryDsTtl.changedAt`, from its RDAP record) when it publishes none, that change is
+ * not before `dsSeen` (a run saw them published then) and not after `now`; else `now`. Every
+ * resolver's copy expires within the wait from then.
+ */
+export function dsGoneAt(ds: DsReading, dsSeen: string | undefined, now: Date): Date {
+  if (ds.registry.kind !== "none" || ds.registry.changedAt === undefined) return now;
+  const changed = Date.parse(ds.registry.changedAt);
+  const seen = dsSeen === undefined ? Number.NEGATIVE_INFINITY : Date.parse(dsSeen);
+  if (Number.isNaN(changed) || changed < seen || changed > now.getTime()) return now;
+  return new Date(changed);
+}
+
+/**
+ * Starts the noted wait at `from` for old DS records a run sees gone (they were seen, or removed
+ * by a run interrupted before it noted the switch time; `dsGoneAt`): resolvers may hold them for
+ * the whole wait from then on. Writes the note and returns the switch time (never earlier than
+ * noted).
  */
 export async function startDsWait(
   stateFile: string,
   state: ConnectState,
-  now: Date,
+  from: Date,
 ): Promise<string> {
-  const switchAfter = laterSwitch(state, now.getTime() + state.waitSeconds * 1000);
+  const switchAfter = laterSwitch(state, from.getTime() + state.waitSeconds * 1000);
   await writeConnectState(stateFile, { ...state, dsSeen: undefined, switchAfter });
   return switchAfter;
 }
@@ -315,7 +330,7 @@ export async function dsWaitStatus(
   if (state.dsSeen !== undefined || switchAfter === undefined) {
     // Seen published (or still published after a removal) until now: the wait starts now.
     if ((ds.api ?? []).length > 0) return { waiting: true, waitSeconds };
-    switchAfter = await startDsWait(stateFile, state, now);
+    switchAfter = await startDsWait(stateFile, state, dsGoneAt(ds, state.dsSeen, now));
   }
   return { waiting: now.getTime() < Date.parse(switchAfter), switchAfter, waitSeconds };
 }

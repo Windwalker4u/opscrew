@@ -19,6 +19,7 @@ import { readBindFile } from "./connect-bind";
 import { lookupPublishedDs } from "./connect-dns";
 import {
   type DsReading,
+  dsGoneAt,
   readDs,
   removeDsAndWait,
   seenState,
@@ -461,7 +462,7 @@ async function waitForOldDs(
   let switchAfter = state.switchAfter;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
     // Gone since the last run: resolvers may hold them for the whole wait from now on.
-    switchAfter = await startDsWait(ctx.stateFile, state, now);
+    switchAfter = await startDsWait(ctx.stateFile, state, dsGoneAt(ds, state.dsSeen, now));
     const where =
       ds.registry.kind === "unreadable" ? "the registry and the public DNS" : "the registry";
     deps.reporter.info(`The old DNSSEC (DS) records of ${domain} are gone from ${where}.`);

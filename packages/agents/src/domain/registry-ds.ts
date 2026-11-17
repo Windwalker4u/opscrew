@@ -3,6 +3,7 @@ import { createSocket } from "node:dgram";
 import { resolve4, resolveNs } from "node:dns/promises";
 import type { DsRecord } from "@opscrew/contracts";
 import { normalizeHostName } from "@opscrew/core";
+import { z } from "zod";
 
 /**
  * A domain's DS records as the registry publishes them, read from the parent zone's own
@@ -13,8 +14,11 @@ import { normalizeHostName } from "@opscrew/core";
 export type RegistryDsTtl =
   /** The registry publishes these DS records for the domain, with this TTL (seconds). */
   | { kind: "published"; ttlSeconds: number; records: DsRecord[] }
-  /** The registry publishes none. */
-  | { kind: "none" }
+  /**
+   * The registry publishes none; `changedAt` when its public record (RDAP) says the domain is not
+   * signed: the domain's last change there, at or after the DS record's removal.
+   */
+  | { kind: "none"; changedAt?: string }
   /** No nameserver gave a readable answer (UDP port 53 blocked, timeouts, a truncated answer …). */
   | { kind: "unreadable" };
 
@@ -29,6 +33,38 @@ export interface RegistryNetwork {
   exchange(address: string, query: Uint8Array): Promise<Uint8Array>;
   /** A random 16-bit query id. */
   randomId(): number;
+  /** The registry's RDAP record of `domain` (parsed JSON); rejects when it cannot be read. */
+  rdapRecord?(domain: string): Promise<unknown>;
+}
+
+const RdapDomainSchema = z.object({
+  secureDNS: z.object({ delegationSigned: z.boolean() }).optional(),
+  events: z.array(z.object({ eventAction: z.string(), eventDate: z.string() })).optional(),
+});
+
+const RdapBootstrapSchema = z.object({
+  services: z.array(z.tuple([z.array(z.string()), z.array(z.string())])),
+});
+
+/**
+ * The domain's last change at the registry (RDAP's `last changed` event) when its RDAP record says
+ * it is not signed; undefined when it is signed, says nothing, or cannot be read.
+ */
+export function rdapUnsignedSince(record: unknown): string | undefined {
+  const parsed = RdapDomainSchema.safeParse(record);
+  if (!parsed.success || parsed.data.secureDNS?.delegationSigned !== false) return undefined;
+  const changed = parsed.data.events?.find((e) => e.eventAction === "last changed")?.eventDate;
+  return changed !== undefined && !Number.isNaN(Date.parse(changed)) ? changed : undefined;
+}
+
+/** `none`, with the registry's change time when its RDAP record gives one (`rdapUnsignedSince`). */
+async function noneSince(network: RegistryNetwork, name: string): Promise<RegistryDsTtl> {
+  try {
+    const changedAt = rdapUnsignedSince(await network.rdapRecord?.(name));
+    return changedAt === undefined ? { kind: "none" } : { kind: "none", changedAt };
+  } catch {
+    return { kind: "none" };
+  }
 }
 
 const DS_TYPE = 43;
@@ -173,6 +209,7 @@ export function registryDsLookup(
         continue;
       }
       const read = readDsAnswer(reply, id, name);
+      if (read.kind === "none") return noneSince(network, name);
       if (read.kind !== "unreadable") return read;
     }
     return UNREADABLE;
@@ -206,5 +243,24 @@ export function nodeRegistryNetwork(): RegistryNetwork {
         socket.send(query, 53, address);
       }),
     randomId: () => randomInt(0x10000),
+    // The TLD's RDAP server from IANA's bootstrap file (RFC 9224), then the domain's record there.
+    async rdapRecord(domain) {
+      const signal = () => AbortSignal.timeout(TIMEOUT_MS * 3);
+      const tld = domain.split(".").at(-1) ?? "";
+      const bootstrap = RdapBootstrapSchema.parse(
+        await (await fetch("https://data.iana.org/rdap/dns.json", { signal: signal() })).json(),
+      );
+      const base = bootstrap.services
+        .find(([tlds]) => tlds.includes(tld))?.[1]
+        .find((url) => url.startsWith("https://"));
+      if (base === undefined) throw new Error(`no RDAP server for .${tld}`);
+      const url = new URL(`domain/${domain}`, base.endsWith("/") ? base : `${base}/`);
+      const response = await fetch(url, {
+        headers: { accept: "application/rdap+json" },
+        signal: signal(),
+      });
+      if (!response.ok) throw new Error(`RDAP answered ${response.status}`);
+      return response.json();
+    },
   };
 }

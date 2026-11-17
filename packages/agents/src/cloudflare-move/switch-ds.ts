@@ -19,7 +19,7 @@ import {
   readDs,
   removeDsAndWait,
 } from "../domain";
-import { seenState, stillPublishedState, waitFor } from "../domain/connect-ds";
+import { dsGoneAt, seenState, stillPublishedState, waitFor } from "../domain/connect-ds";
 import {
   type ConnectState,
   dsWaitSeconds,
@@ -269,7 +269,7 @@ async function ownGate(
     // The registry publishes none as of this reading: every cached copy is gone within the wait.
     const at =
       ds.registry.kind === "none"
-        ? ds.at.getTime() + waitSeconds * 1000
+        ? dsGoneAt(ds, note?.dsSeen, ds.at).getTime() + waitSeconds * 1000
         : now.getTime() + (waitSeconds + REMOVAL_MARGIN_SECONDS) * 1000;
     switchAfter = laterSwitch(note, at);
     await writeNote(file, { zone, switchAfter, waitSeconds });
