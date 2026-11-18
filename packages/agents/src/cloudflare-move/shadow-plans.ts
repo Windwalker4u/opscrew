@@ -269,8 +269,11 @@ export async function checkAfterSwap(session: MoveSession, root: ShadowRoot): Pr
 /**
  * The check plan of `root`'s shadow state once the finish imported what the switch made in B (a
  * site's custom domains, the Access applications and their records): the shadow state and data
- * folder with B's token and `root.vars` (the committed values, nothing held back). It must be
- * empty: no change needs no approval, and any change stops before one.
+ * folder with B's token and `root.vars` (the committed values, nothing held back). No change
+ * needs no approval; in-place updates of Cloudflare resources are shown and approved by hash (an
+ * imported Access application brings Cloudflare's defaults for attributes the module leaves unset,
+ * found at the real move: `auto_redirect_to_identity`, `enable_binding_cookie` and
+ * `options_preflight_bypass` from `false` to unset); anything else stops before the approval.
  */
 export async function checkAdoption(session: MoveSession, root: ShadowRoot): Promise<PlanStep> {
   const what = rootWords(session, root);
@@ -281,10 +284,11 @@ export async function checkAdoption(session: MoveSession, root: ShadowRoot): Pro
     env: await shadowEngineEnv(session, root, "b", root.dataDir),
     vars: root.vars,
     check: planBounded({
-      lead: `Once the custom domains and Access pieces are imported, the plan of ${what} in the Cloudflare account ${b} would still change something, so OpsCrew stopped. Nothing was changed.`,
+      lead: `Once the custom domains and Access pieces are imported, the plan of ${what} in the Cloudflare account ${b} would do more than update Cloudflare pieces in place, so OpsCrew stopped. Nothing was changed.`,
+      change: (change) => cloudflare(change, "update"),
       hint: `Run \`opscrew drift\` to see what differs between the app's files and what runs, put that right, then run \`${session.command}\` again.`,
     }),
-    title: `Check ${what} in the Cloudflare account ${b}`,
+    title: `Update ${what} in place in the Cloudflare account ${b}, after the import of what the switch made there`,
   });
 }
 

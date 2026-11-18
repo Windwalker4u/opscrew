@@ -157,7 +157,33 @@ describe.skipIf(!findExecutable("git"))("adoptSite", () => {
     expect(w.handler.requests).toEqual([]);
   });
 
-  it("stops before any approval and before the credentials when the check plan would change something", async () => {
+  it("waits for the approval of an in-place update of the imported pieces (Cloudflare's defaults the module leaves unset), then promotes the credentials", async () => {
+    const w = await finishWorld("own", { step: "prepared" });
+    await w.seedShadow(
+      "main",
+      ["module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this"],
+      OUTPUTS,
+    );
+    protectedInB(w, sshHostname(inZone(w)) ?? "", B_TUNNEL);
+    const app = "module.access.cloudflare_zero_trust_access_application.ssh[0]";
+    w.engine.checkChanges = [change(app, "update")];
+    const stop = await adoptSite(asScript(w), w.environment);
+    const hash = stop?.pendingPlanHash ?? "";
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(stop?.next[0]).toContain(`--approve ${hash}`);
+    expect(w.engine.applied).toEqual([]);
+    expect(secrets(w).OPSCREW_TUNNEL_SERVICE_TOKEN_ID).toBeUndefined();
+
+    // Interactively: the update shown and approved, applied, then the credentials promoted.
+    expect(await adoptSite(w.session, w.environment)).toBeUndefined();
+    expect(w.engine.applied.length).toBe(1);
+    expect(w.handler.requests.at(-1)?.kind).toBe("github-secrets");
+    expect(w.handler.requests).toHaveLength(2);
+    expect(secrets(w).OPSCREW_TUNNEL_SERVICE_TOKEN_ID).toBe(TOKEN_ID);
+    expect(w.leaks()).toBe(false);
+  });
+
+  it("stops before any approval and before the credentials when the check plan would create something", async () => {
     const w = await finishWorld("own", { step: "prepared" });
     await w.seedShadow(
       "main",
@@ -179,7 +205,7 @@ describe.skipIf(!findExecutable("git"))("adoptSite", () => {
       expect(error).toBeInstanceOf(OpsCrewError);
       expect((error as OpsCrewError).message).toBe(
         [
-          "Once the custom domains and Access pieces are imported, the plan of shop's Cloudflare pieces (prod) in the Cloudflare account New would still change something, so OpsCrew stopped. Nothing was changed.",
+          "Once the custom domains and Access pieces are imported, the plan of shop's Cloudflare pieces (prod) in the Cloudflare account New would do more than update Cloudflare pieces in place, so OpsCrew stopped. Nothing was changed.",
           `  create ${app}`,
         ].join("\n"),
       );

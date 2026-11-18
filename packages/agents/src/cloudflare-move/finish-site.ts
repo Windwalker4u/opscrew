@@ -5,6 +5,7 @@ import { promoteNewCredentials } from "./deploy-secrets";
 import { appMark, type MoveMark } from "./marks";
 import { importIntoShadow, shadowEngineEnv, shadowRoots, shadowStateAddresses } from "./shadow";
 import { checkAdoption } from "./shadow-plans";
+import { pendingStop } from "./shared";
 import { bug } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
 
@@ -92,8 +93,8 @@ async function accessPieces(
  * deploy credentials: a Workers site's custom domains, and the Access applications and the records
  * of the hostnames they protect, each imported into the main shadow state (`importIntoShadow`)
  * unless it is there already; then the check plan of the main shadow root with the committed
- * values (`checkAdoption`), which must be empty: any change stops before an approval and before
- * the credentials; then `promoteNewCredentials`. Nothing but the credentials for an environment
+ * values (`checkAdoption`): no change goes on, an in-place update of Cloudflare pieces waits for its
+ * approval, anything else stops, each before the credentials; then `promoteNewCredentials`. Nothing but the credentials for an environment
  * without them, or without a main shadow state. Resumable: a run imports only what is missing.
  * Nothing in A is read or changed.
  */
@@ -119,8 +120,8 @@ export async function adoptSite(
     );
     await importIntoShadow(session, main, missing);
     const { custom_domains: _later, ...vars } = main.vars;
-    // Empty, or a stop before any approval: an empty plan is never pending.
-    await checkAdoption(session, { ...main, vars });
+    const step = await checkAdoption(session, { ...main, vars });
+    if (step.kind === "pending") return pendingStop(session, step.planHash);
   }
   return promoteNewCredentials(session, environment);
 }
