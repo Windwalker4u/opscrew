@@ -54,6 +54,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      only, open to everyone on 80/443 and without Cloudflare's protection. Recommend (a) unless the
      user has a reason against it. Both Cloudflare ways need a domain on the user's Cloudflare
      account.
+   - a server at home (`server.home`: yes by default for a private or local address): see
+     **Hosting at home** below for what to ask and say.
 
    These questions are about what runs next to the app:
    - `workerCommands.<name>`: a background-job library OpsCrew found has no conventional start
@@ -616,6 +618,42 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   also removes the app's hostnames from OpsCrew's shared Cloudflare rules (deleting a rule only
   when no other OpsCrew app is in it), and the account's Zero Trust organization and one-time PIN
   login stay for the other apps.
+- **Hosting at home.** A Raspberry Pi (64-bit OS), a mini PC or another Linux machine at the
+  user's home, reached on the home network with an SSH key, can serve the app from the home's own
+  internet address (`provider: own` with `server.home: true`). Before the user chooses it:
+  - say that many home internet plans restrict running servers (they check their provider's
+    terms), and that videos or large downloads must not go through Cloudflare's proxy.
+  - how visitors reach it: `proxy` (recommended with a domain on Cloudflare: the router forwards
+    TCP 80 and 443, and a filter lets only Cloudflare in, so nobody sees the home's address),
+    `dns-only` (the only choice without a domain on Cloudflare, and then only with a fixed
+    address) or `tunnel` (no forwards, works on any connection, also without a public IPv4).
+    Don't ask `server.reachable` for it. `server.sshFrom` (space-separated networks that may reach
+    SSH) is optional: pass it only when the user names them, for example their VPN's network
+    beside the home network.
+  - an address updater on the server keeps the site's records at the home's address every
+    2 minutes, with a Cloudflare token of its own: the user makes it at
+    https://dash.cloudflare.com/profile/api-tokens with only Zone → DNS → Edit on that one zone and
+    sets it as `OPSCREW_DNS_UPDATER_TOKEN` before provision. Never ask for it in the chat. It goes
+    only to the server, readable by root alone; say plainly that it can change any record of the
+    zone and that anything with root on the server can use it, the deploy runner included.
+  - design names what to set on the router: the forwards of TCP 80 and 443 to the server's
+    address on the home network, a DHCP reservation for it, never a forward for SSH, and, when an
+    AAAA record is published, inbound TCP 80 and 443 in the router's IPv6 firewall. Pass these on;
+    the home's public address is never shown behind the proxy. When design warns that the
+    connection looks like it has no public IPv4 (carrier-grade NAT), offer the tunnel, or IPv6
+    behind the proxy (`target.home.ipv4: false` in `opscrew/plan.yaml`, then design again).
+  - SSH answers only on the home network, so provision, status and the server's checks work from
+    there; away from home, `opscrew_status` says so and shows the last outside check.
+  - `opscrew_verify` starts the outside check on GitHub's machines (the
+    `opscrew-outside-check.yml` workflow provision's pull request brings): it says which port
+    didn't answer from outside and what to forward, and offers the tunnel. Only `opscrew_verify`
+    starts it.
+  - a new updater token: the user sets `OPSCREW_DNS_UPDATER_TOKEN` to it and runs
+    `npx opscrew rotate dns-updater` in a terminal, then deletes the old one. Destroying the app,
+    or switching it away from home, deletes the records the updater kept after the user types the
+    app's name (`--approve <hash> --confirm <app>` in a script); the token itself stays until they
+    delete it at Cloudflare. A move to another Cloudflare account takes the new account's updater
+    token from `OPSCREW_NEW_DNS_UPDATER_TOKEN` (the terminal asks for it, hidden, when unset).
 - **Portainer.** A web UI for the containers, off by default, on any server OpsCrew deploys to.
   `opscrew_portainer_enable` installs it (listening only on the server itself, reached through an
   SSH tunnel; an admin password generated on the user's computer) after the user approves the plan

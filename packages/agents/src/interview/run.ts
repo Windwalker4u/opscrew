@@ -54,7 +54,7 @@ import {
 } from "./hosting";
 import {
   answersToOwnServer,
-  buildServerQuestions,
+  askServerQuestions,
   type OwnServerAnswers,
   recordOwnServerAnswers,
   SERVER_FIELDS,
@@ -86,7 +86,8 @@ export interface InterviewOptions {
   /**
    * Asks the follow-up questions for a server the user already has (`provider: own`) and returns
    * the answers keyed by question id (`server.host`, …). Called after `ask`, only for `own` and
-   * only when `answers` holds no server answers.
+   * only when `answers` holds no server answers, in three rounds (`askServerQuestions`): the
+   * address, whether it is at home, then the rest.
    */
   askServer?: (questions: ServerQuestion[]) => Promise<InterviewAnswers>;
   /**
@@ -442,7 +443,7 @@ export async function runInterview(
       };
       if (!hasFollowUps(split) && options.askServer !== undefined) {
         split = splitFollowUps(
-          await options.askServer(buildServerQuestions(serverContext)),
+          await askServerQuestions(options.askServer, serverContext),
           "server",
           SERVER_FIELDS,
         );

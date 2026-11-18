@@ -19,6 +19,7 @@ import {
   answersToOwnServer,
   buildServerQuestions,
   SERVER_FIELDS,
+  type ServerQuestion,
   suggestReachable,
 } from "./own-server";
 import type { InterviewAnswers } from "./questions";
@@ -43,6 +44,7 @@ async function deps() {
   await materializeFixture(join(examples, "static-vite"), root);
   return createTestPhaseDeps({ root });
 }
+type PhaseDepsOf = Awaited<ReturnType<typeof deps>>;
 
 const split = (server: Record<string, unknown>) => splitServerAnswers({ server });
 
@@ -404,25 +406,22 @@ describe("runInterview with a server the user already has", () => {
     await runInterview(d, {
       answers: { ...BASE, provider: "own", server: { host: IPV4, user: "root", key: "agent" } },
     });
-    let asked: string[] = [];
+    const rounds: string[][] = [];
     let defaults: Record<string, unknown> = {};
     const result = await runInterview(d, {
       ask: async () => ({ ...BASE, provider: "own" }),
       askServer: async (questions) => {
-        asked = questions.map((q) => q.id);
-        defaults = Object.fromEntries(questions.map((q) => [q.id, q.default]));
+        rounds.push(questions.map((q) => q.id));
+        defaults = { ...defaults, ...Object.fromEntries(questions.map((q) => [q.id, q.default])) };
         return { "server.host": IPV4, "server.user": "ubuntu", "server.key": "agent" };
       },
       suggestedReachable: false,
     });
-    expect(asked).toEqual([
-      "server.host",
-      "server.home",
-      "server.port",
-      "server.user",
-      "server.key",
-      "server.reachable",
-      "server.serve",
+    // The address, then whether it is at home, then the rest for that address and that answer.
+    expect(rounds).toEqual([
+      ["server.host"],
+      ["server.home"],
+      ["server.port", "server.user", "server.key", "server.reachable", "server.serve"],
     ]);
     expect(defaults).toMatchObject({ "server.host": IPV4, "server.user": "root" });
     expect(result.ownServer).toMatchObject({ user: "ubuntu", reachable: false });
@@ -808,24 +807,128 @@ describe("a server at home", () => {
     expect(await readFile(serverAddressesFile(d.paths), "utf8")).not.toContain(detected);
   });
 
-  it("asks server.home in a terminal and leaves server.reachable out at home", async () => {
-    const d = await deps();
-    let asked: string[] = [];
-    const result = await runInterview(d, {
-      ask: async () => ({ ...BASE, provider: "own" }),
-      // A terminal skips server.reachable once server.home is yes.
+  /**
+   * A terminal's three rounds: `host` typed first, then `home` (the offered default when not
+   * given), then each other question's default with the user and key given. Answers the rounds'
+   * questions and the interview's result.
+   */
+  async function terminal(typed: { host: string; home?: boolean }, d?: PhaseDepsOf) {
+    const rounds: ServerQuestion[][] = [];
+    const result = await runInterview(d ?? (await deps()), {
+      ask: async () => ({
+        ...BASE,
+        provider: "own",
+        domain: "shop.example.com",
+        dnsProvider: "cloudflare",
+      }),
       askServer: async (questions) => {
-        asked = questions.map((q) => q.id);
-        return {
-          "server.host": LAN,
-          "server.home": true,
-          "server.user": "ana",
-          "server.key": "agent",
-        };
+        rounds.push(questions);
+        const answers: InterviewAnswers = {};
+        for (const q of questions) answers[q.id] = q.default;
+        if (questions.some((q) => q.id === "server.host")) answers["server.host"] = typed.host;
+        if (typed.home !== undefined && "server.home" in answers) {
+          answers["server.home"] = typed.home;
+        }
+        if ("server.user" in answers) Object.assign(answers, { "server.user": "ana" });
+        return answers;
       },
     });
-    expect(asked.slice(0, 2)).toEqual(["server.host", "server.home"]);
-    expect(result.ownServer).toMatchObject({ host: LAN, home: {} });
+    const question = (id: string) => rounds.flat().find((q) => q.id === id);
+    return { rounds, question, result };
+  }
+
+  it("asks the address, then server.home with the default for that address, then the rest", async () => {
+    const { rounds, question, result } = await terminal({ host: LAN });
+    expect(rounds.map((round) => round.map((q) => q.id))).toEqual([
+      ["server.host"],
+      ["server.home"],
+      // At home, server.reachable isn't asked: the router's forwards reach the server.
+      ["server.port", "server.user", "server.key", "server.serve"],
+    ]);
+    expect(question("server.home")).toMatchObject({ default: true });
+    // Answered yes: the home labels, with Cloudflare's proxy recommended and preselected.
+    const serve = question("server.serve");
+    expect(serve?.prompt).toBe("How should your server at home serve the site?");
+    expect(serve?.default).toBe("proxy");
+    expect(serve?.options?.[0]).toMatchObject({
+      value: "proxy",
+      label: "From your home's address, behind Cloudflare's proxy (recommended)",
+    });
+    expect(result.ownServer).toMatchObject({ host: LAN, home: {}, serve: "proxy" });
     expect(result.ownServer?.reachable).toBeUndefined();
+  });
+
+  it("defaults to no for a public address, and a local name is at home", async () => {
+    expect((await terminal({ host: IPV4 })).question("server.home")).toMatchObject({
+      default: false,
+    });
+    expect((await terminal({ host: "pi.local" })).question("server.home")).toMatchObject({
+      default: true,
+    });
+  });
+
+  it("answered no on a private address: the other labels, and server.reachable asked", async () => {
+    const { rounds, question, result } = await terminal({ host: LAN, home: false });
+    expect(question("server.home")).toMatchObject({ default: true });
+    expect(rounds[2]?.map((q) => q.id)).toEqual([
+      "server.port",
+      "server.user",
+      "server.key",
+      "server.reachable",
+      "server.serve",
+    ]);
+    const serve = question("server.serve");
+    expect(serve?.prompt).toBe(
+      "If the internet can reach your server, how should it serve the site?",
+    );
+    expect(serve?.default).toBe("tunnel");
+    expect(serve?.options?.[0]).toMatchObject({
+      value: "tunnel",
+      label: "Through a Cloudflare Tunnel (recommended)",
+    });
+    expect(question("server.reachable")).toMatchObject({ default: false });
+    expect(result.ownServer?.home).toBeUndefined();
+  });
+
+  it("keeps the earlier answer for the same address as the default", async () => {
+    const d = await deps();
+    await recordOwnServer(d.paths, {
+      host: LAN,
+      port: 22,
+      user: "ana",
+      agent: true,
+      reachable: false,
+      serve: "tunnel",
+    });
+    expect((await terminal({ host: LAN }, d)).question("server.home")).toMatchObject({
+      default: false,
+    });
+    // Another private address is at home by default again.
+    expect((await terminal({ host: "10.0.0.5" }, d)).question("server.home")).toMatchObject({
+      default: true,
+    });
+  });
+
+  it("an answers file is taken as it is: no question is asked", async () => {
+    const d = await deps();
+    const result = await runInterview(d, {
+      answers: {
+        ...BASE,
+        provider: "own",
+        domain: "shop.example.com",
+        dnsProvider: "cloudflare",
+        "server.host": LAN,
+        "server.user": "ana",
+        "server.sshFrom": "192.168.1.0/24",
+      },
+      askServer: async () => {
+        throw new Error("asked a question with an answers file");
+      },
+    });
+    expect(result.ownServer).toMatchObject({
+      host: LAN,
+      home: { sshFrom: ["192.168.1.0/24"] },
+      serve: "proxy",
+    });
   });
 });

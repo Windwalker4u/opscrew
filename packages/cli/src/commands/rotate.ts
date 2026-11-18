@@ -728,6 +728,8 @@ async function rotate(
         ...(provision.github === undefined || provision.github === null
           ? {}
           : { github: provision.github }),
+        // The address updater's token goes to a server at home through its host plan.
+        server: provision,
       });
       break;
   }
@@ -816,6 +818,7 @@ export function register(program: Command, ctx: CliContext): void {
         "  opscrew rotate grant:laptop/cache       a new password for laptop's login to cache",
         "  opscrew rotate recovery-key --key-out <path>   a new age key for the recovery copy",
         "  opscrew rotate hetzner                  after you set a new HCLOUD_TOKEN",
+        "  opscrew rotate dns-updater              a server at home: after you set a new OPSCREW_DNS_UPDATER_TOKEN",
       ].join("\n"),
     )
     .action(async (names: string[], flags: RotateFlags) => {

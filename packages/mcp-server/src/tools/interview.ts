@@ -147,8 +147,12 @@ const SERVER_ANSWER_HELP: Record<string, string> = {
   "server.user": "Own server: the SSH user, root or a user with passwordless sudo.",
   "server.key":
     'Own server: the path to the private key file (for example ~/.ssh/id_ed25519), or "agent" for the SSH agent. Never the key itself, a password or a passphrase.',
+  "server.home":
+    "Own server: true when it is at the user's home, on their home internet connection (a mini PC or a Raspberry Pi behind their router): OpsCrew serves the site from the home's own address and keeps its DNS record current. Default: true for a private or local address. Then leave server.reachable out.",
   "server.reachable":
-    "Own server: true when the internet reaches it directly; false for a home server behind a router (then a Cloudflare Tunnel on the user's Cloudflare domain).",
+    "Own server, not at home: true when the internet reaches it directly; false behind a router or firewall that doesn't forward to it (then a Cloudflare Tunnel on the user's Cloudflare domain). Refused with server.home true.",
+  "server.sshFrom":
+    "Own server at home: the addresses and networks that may reach SSH, space-separated (IPv4 or IPv6, up to 32), for example 192.168.1.0/24 10.8.0.0/24. Default: the home network design finds, plus fe80::/10. It must include the address the user connects from (add a VPN's network); required when the server holds its public IPv4 itself.",
 };
 
 /** The follow-ups for a hosting account (`provider: hosting`); never a token, password or key. */
@@ -406,6 +410,7 @@ export function registerInterviewTools(
             : []),
           "",
           ...serverQuestions.map(renderQuestion),
+          `When the server is at home (server.home true), don't ask server.reachable. Pass server.sshFrom only when the user names the networks that may reach SSH: ${SERVER_ANSWER_HELP["server.sshFrom"]}`,
           "",
           `Only when the user chooses "portainer" (a Portainer they already run), also ask these and pass them as portainer.* answers. The access token comes only from the PORTAINER_API_KEY environment variable of the MCP server: never ask for it or a password. The address stays on the user's computer only; do not write it into any file. When OpsCrew connects, the user confirms Portainer's certificate in a dialog; never confirm it or pass a fingerprint yourself. The choices for web and redeploy follow the domain answered above: a Cloudflare Tunnel and Cloudflare redeploys need a domain on Cloudflare, Caddy needs a domain.`,
           ...(portainer !== undefined

@@ -4,11 +4,20 @@
  * `test/e2e/cloudflare-move.test.ts`).
  */
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
+import { Redactor } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { withAllowDowntime } from "../approval";
 import { createTestContext } from "../test-context";
-import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import { flagProblems, MoveApprovalHandler } from "./cloudflare";
+import {
+  CANCEL,
+  projectContext,
+  run,
+  ScriptedPrompts,
+  type TempProject,
+  tempProject,
+} from "../ui/__fixtures__/harness";
+import { createUpdaterTokenPrompt, flagProblems, MoveApprovalHandler } from "./cloudflare";
 
 const HASH = "a".repeat(64);
 const OTHER = "b".repeat(64);
@@ -208,10 +217,36 @@ describe("opscrew cloudflare move", () => {
       "before it, its --approve <hash>, as the finish prints.",
       "before the switch changed anything",
       "OPSCREW_NEW_CLOUDFLARE_API_TOKEN",
+      "OPSCREW_NEW_DNS_UPDATER_TOKEN",
     ]) {
       expect(help).toContain(text);
     }
     expect(help).not.toContain("--env");
     expect(help).not.toContain("B's");
+  });
+});
+
+describe("the new account's updater token in a terminal", () => {
+  const question = {
+    zone: "example.com",
+    prompt: "Make the token for example.com, then paste it here.",
+  };
+
+  it("asks once with the recipe, hidden, and registers the token with the redactor", async () => {
+    const token = fakeSecret("cloudflare-token", "new-updater");
+    const prompts = new ScriptedPrompts([` ${token} `]);
+    const redactor = new Redactor();
+    expect(await createUpdaterTokenPrompt({ redactor }, prompts)(question)).toBe(token);
+    expect(prompts.calls).toEqual([{ kind: "password", message: question.prompt }]);
+    expect(redactor.redact(`token ${token}`)).not.toContain(token);
+  });
+
+  it("answers nothing when cancelled or left empty", async () => {
+    for (const answer of [CANCEL, "  "]) {
+      const prompts = new ScriptedPrompts([answer]);
+      expect(
+        await createUpdaterTokenPrompt({ redactor: new Redactor() }, prompts)(question),
+      ).toBeUndefined();
+    }
   });
 });

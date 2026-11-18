@@ -186,6 +186,59 @@ describe("opscrew interview", () => {
     expect(ctx.output).not.toContain("203.0.113.20");
   });
 
+  it("asks right after a home network address whether the server is at home, then the home choices", async () => {
+    project = await tempProject("nextjs-postgres");
+    const calls: { message: string; initial: unknown; options?: string[] }[] = [];
+    const answer = (message: string, initial: unknown, options?: string[]): unknown => {
+      calls.push({
+        message: message.split("\n")[0] ?? "",
+        initial,
+        ...(options ? { options } : {}),
+      });
+      if (message.includes("Where should OpsCrew run your app?")) return "own";
+      if (message.includes("server's address")) return "192.168.1.30";
+      if (message.includes("Which user should OpsCrew log in as?")) return "ana";
+      if (message.includes("Which domain should the app use?")) return "shop.example.com";
+      if (message.includes("Where is the domain's DNS managed?")) return "cloudflare";
+      if (message.toLowerCase().includes("budget")) return "10 EUR";
+      return initial ?? "";
+    };
+    const prompts = new ScriptedPrompts([]);
+    const fake = {
+      ...prompts,
+      isCancel: prompts.isCancel.bind(prompts),
+      password: prompts.password.bind(prompts),
+      select: async (o: { message: string; options: { value: string }[]; initialValue?: string }) =>
+        answer(
+          o.message,
+          o.initialValue ?? o.options[0]?.value,
+          o.options.map((option) => option.value),
+        ) as string,
+      multiselect: async (o: { message: string; initialValues?: string[] }) =>
+        answer(o.message, o.initialValues ?? []) as string[],
+      text: async (o: { message: string; initialValue?: string }) =>
+        answer(o.message, o.initialValue) as string,
+      confirm: async (o: { message: string; initialValue?: boolean }) =>
+        answer(o.message, o.initialValue) as boolean,
+    };
+    const ctx = projectContext(project, { interactive: true, services: { prompts: fake } });
+    expect(await run(ctx, "interview"), ctx.errors).toBe(0);
+
+    const asked = calls.map((call) => call.message);
+    const at = asked.indexOf("What is your server's address?");
+    expect(asked[at + 1]).toBe("Is this server at your home, on your home internet connection?");
+    // The default for 192.168.1.30, typed just before: yes.
+    expect(calls[at + 1]?.initial).toBe(true);
+    expect(asked).not.toContain("Can the internet reach this server directly?");
+    const serve = calls.find((call) => call.message.startsWith("How should your server at home"));
+    expect(serve).toMatchObject({ initial: "proxy", options: ["proxy", "dns-only", "tunnel"] });
+    const paths = resolveProjectPaths(project.root, { env: project.env });
+    const local = JSON.parse(await readFile(path.join(paths.stateDir, "server.json"), "utf8"));
+    expect(local.own).toMatchObject({ host: "192.168.1.30", serve: "proxy", home: {} });
+    expect(await readFile(paths.files.requirements, "utf8")).not.toContain("192.168.1.30");
+    expect(ctx.output).not.toContain("192.168.1.30");
+  });
+
   describe.skipIf(GIT === undefined)("the signing question and the repository's visibility", () => {
     /** A project whose origin is github.com/acme/shop, and a fetch answering GitHub's repository API. */
     async function onGitHub(visibility: { private: boolean } | "unavailable") {

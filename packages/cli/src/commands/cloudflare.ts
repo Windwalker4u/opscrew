@@ -17,6 +17,7 @@ import { chooseApp } from "../ui/app";
 import { collect, runPhaseCommand } from "../ui/deploy";
 import { createEnvPrompt } from "../ui/env-prompt";
 import { printNextSteps } from "../ui/output";
+import type { UiPrompts } from "../ui/prompts";
 import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
 import { engineOption } from "./provision";
 
@@ -138,6 +139,24 @@ function scriptHint(ctx: CliContext): (error: unknown) => string | undefined {
   };
 }
 
+/**
+ * The move's question for the new account's address updater token of a server at home, asked once
+ * in a terminal when `OPSCREW_NEW_DNS_UPDATER_TOKEN` is not set: the recipe, then a hidden prompt.
+ * The token is registered with the redactor; `undefined` when the user cancels or types nothing.
+ */
+export function createUpdaterTokenPrompt(
+  ctx: Pick<CliContext, "redactor">,
+  prompts: UiPrompts,
+): NonNullable<MoveServices["askUpdaterToken"]> {
+  return async ({ prompt }) => {
+    const answer = await prompts.password({ message: prompt });
+    if (prompts.isCancel(answer) || answer.trim() === "") return undefined;
+    const token = answer.trim();
+    ctx.redactor.addLiteral(token, "OPSCREW_NEW_DNS_UPDATER_TOKEN");
+    return token;
+  };
+}
+
 /** The yes/no question asked in a terminal after prepare's summary (printed by the move). */
 function startQuestion(summary: { zone: string; to: { accountId: string; name?: string } }) {
   return `Start moving ${summary.zone} to the Cloudflare account ${summary.to.name ?? summary.to.accountId}?`;
@@ -176,6 +195,7 @@ async function runMove(
       ? {
           askEnv: createEnvPrompt(prompts, appFlag),
           askStorageKey: createStorageKeyPrompt(prompts, ctx.stdout),
+          askUpdaterToken: createUpdaterTokenPrompt(ctx, prompts),
         }
       : {}),
     ...servicesOf(ctx).cloudflareMove,
@@ -238,6 +258,8 @@ const HELP = [
   "                                           current account was never changed.",
   "",
   "CLOUDFLARE_API_TOKEN stays the current account's token; OPSCREW_NEW_CLOUDFLARE_API_TOKEN is the new one's.",
+  "A server at home: the finish puts OPSCREW_NEW_DNS_UPDATER_TOKEN, the address updater's token in the",
+  "new account, on your server (a terminal asks for it, hidden, when it isn't set).",
   "In scripts each step stops at its plan with the hash: run the printed command with",
   "--approve <hash>. A typed name is --confirm <name> (repeatable): the zone at the switch and the",
   "abort, each bucket's name when it is emptied, the app's name for a deletion, the zone's for the",

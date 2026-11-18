@@ -16,6 +16,7 @@ import {
   portAnswer,
   withDefault,
 } from "./follow-ups";
+import type { InterviewAnswers } from "./questions";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
 export const SERVER_FIELDS = [
@@ -180,6 +181,16 @@ export interface OwnServerContext {
    * proxy it must be at most one level below its zone (Cloudflare's free certificate).
    */
   domain?: string;
+  /**
+   * The address typed in an earlier round of a terminal's questions ({@link askServerQuestions}):
+   * `server.home`'s default is the one for it.
+   */
+  host?: string;
+  /**
+   * Whether the server is at home, as typed in an earlier round: the serving question's labels and
+   * default follow it.
+   */
+  home?: boolean;
 }
 
 /**
@@ -270,7 +281,7 @@ const sameHost = (a: string, b: string) => normalizeHostName(a) === normalizeHos
  */
 export function buildServerQuestions(context: OwnServerContext = {}): ServerQuestion[] {
   const { previous } = context;
-  const home = homeDefault(context);
+  const home = context.home ?? homeDefault(context, context.host);
   return [
     {
       id: "server.host",
@@ -317,7 +328,7 @@ export function buildServerQuestions(context: OwnServerContext = {}): ServerQues
       prompt: "Can the internet reach this server directly?",
       help: "Yes for a rented server with a public IP address. No for a server behind a router or firewall that doesn't forward to it: OpsCrew then serves the app through a Cloudflare Tunnel, which needs a domain on your Cloudflare account. Not asked for a server at home: your router's forwards reach it.",
       kind: "confirm",
-      default: reachableDefault(context),
+      default: reachableDefault(context, context.host),
       required: true,
     },
     context.cloudflareDomain === false
@@ -350,6 +361,31 @@ export function buildServerQuestions(context: OwnServerContext = {}): ServerQues
             required: true,
           },
   ];
+}
+
+/**
+ * Asks the follow-up questions in a terminal's three rounds: the address; then whether the server
+ * is at home, its default the one for that address; then the rest, built for that address and that
+ * answer, so the serving question's labels and default follow it, and without `server.reachable`
+ * at home. Answers every round's answers keyed by question id.
+ */
+export async function askServerQuestions(
+  ask: (questions: ServerQuestion[]) => Promise<InterviewAnswers>,
+  context: OwnServerContext = {},
+): Promise<InterviewAnswers> {
+  const only = (built: ServerQuestion[], id: ServerQuestionId) => built.filter((q) => q.id === id);
+  const first = await ask(only(buildServerQuestions(context), "server.host"));
+  const host = isBlank(first["server.host"]) ? undefined : String(first["server.host"]).trim();
+  const typed = { ...context, ...(host === undefined ? {} : { host }) };
+  const second = await ask(only(buildServerQuestions(typed), "server.home"));
+  const home = booleanAnswer(second["server.home"]);
+  const rest = buildServerQuestions({ ...typed, ...(home === undefined ? {} : { home }) }).filter(
+    (q) =>
+      q.id !== "server.host" &&
+      q.id !== "server.home" &&
+      !(home === true && q.id === "server.reachable"),
+  );
+  return { ...first, ...second, ...(await ask(rest)) };
 }
 
 /**
