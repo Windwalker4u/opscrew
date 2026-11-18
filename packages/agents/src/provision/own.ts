@@ -14,10 +14,14 @@ import {
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, plural, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
+  addressUpdaterName,
+  homeIpv4,
   homeIpv6Proxied,
   homeMode,
   hostSysctl,
   keepNewerPins,
+  type OwnAccessMode,
+  ownAccessMode,
   renderPortainerCompose,
   renderTunnelConnectorCompose,
   siteHosts,
@@ -34,8 +38,13 @@ import {
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { homeForwards } from "../home/forwards";
-import { classifyHomeNetwork, type HomeNetworkClass, registerHomeAddresses } from "../home/network";
+import { homeForwards, homeForwardsInput } from "../home/forwards";
+import {
+  classifyHomeNetwork,
+  type HomeNetworkClass,
+  readHomeNetwork,
+  sshSourcesUnknown,
+} from "../home/network";
 import { carrierNatWarning } from "../home/texts";
 import { checkUpdaterToken, UPDATER_TOKEN_VAR } from "../home/token";
 import { serverNetworkInputs } from "../network";
@@ -286,7 +295,9 @@ export async function ownWebSources(
  */
 export async function desiredHost(
   deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
-  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner" | "home">,
+  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner"> & {
+    home?: Pick<OwnHomeRun, "sshFrom" | "updater">;
+  },
   input: {
     plan: DeployPlan;
     deployPublicKey: string;
@@ -363,9 +374,9 @@ export async function desiredHost(
  */
 function homeHost(
   plan: DeployPlan,
-  home: OwnHomeRun,
+  home: Pick<OwnHomeRun, "sshFrom" | "updater">,
 ): Pick<DesiredHost, "home" | "sshFrom" | "dnsUpdater"> {
-  const ipv4 = ownTarget(plan).home?.ipv4 === true;
+  const ipv4 = homeIpv4(plan);
   const { proxied } = plan.dns;
   const { updater } = home;
   return {
@@ -686,19 +697,14 @@ async function prepareHome(
   },
 ): Promise<OwnHomeRun> {
   const { plan, session } = input;
-  const ipv4 = ownTarget(plan).home?.ipv4 === true;
+  const ipv4 = homeIpv4(plan);
   const proxied = plan.dns.provider === "cloudflare" && plan.dns.proxied;
   deps.reporter.step("Reading your home network from your server (read-only)");
-  const detected = await input.host.detectHomeNetwork(session.remote);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "detect home network (read-only)",
+  const detected = await readHomeNetwork(deps, session, {
+    host: input.host,
+    proxied,
     phase: input.phase,
-    target: "own server",
-    decision: "allow",
   });
-  registerHomeAddresses(deps.redactor, detected, proxied);
   const network = classifyHomeNetwork(detected);
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const planFile = toPosixRelative(deps.paths.root, deps.paths.files.plan);
@@ -728,12 +734,8 @@ async function prepareHome(
     }
   }
   const sshFrom = session.connection.home?.sshFrom;
-  if (sshFrom === undefined) {
-    throw homeStop(
-      "OpsCrew doesn't know on this computer which networks may reach your server's SSH at home.",
-      `Run \`opscrew design${flags}\` again: it finds your home network. Then run \`${input.command}${flags}\` again.`,
-    );
-  }
+  if (sshFrom === undefined)
+    throw sshSourcesUnknown(flags, input.command, ". Nothing was changed.");
   const updater = await homeUpdater(deps, { ...input, flags });
   const lanAddress = network.noNat ? undefined : detected.lan?.address;
   return {
@@ -765,8 +767,8 @@ async function homeUpdater(
   },
 ): Promise<OwnHomeRun["updater"]> {
   const { plan, cloudflare: zone, flags } = input;
-  const name = plan.dns.domain;
-  if (plan.dns.provider !== "cloudflare" || name === undefined) return undefined;
+  const name = addressUpdaterName(plan);
+  if (name === undefined) return undefined;
   const onServer = input.facts.dnsUpdaters?.find((item) => item.app === plan.app.name);
   if (zone === undefined) {
     const zoneId = onServer?.config?.zoneId;
@@ -800,18 +802,16 @@ async function homeUpdater(
  */
 export function homeProvisionLines(plan: DeployPlan, home: OwnHomeRun | undefined): string[] {
   if (home === undefined || !homeMode(plan)) return [];
-  const ipv4 = ownTarget(plan).home?.ipv4 === true;
   const proxied = plan.dns.provider === "cloudflare" && plan.dns.proxied;
-  // An AAAA record is published behind the proxy without IPv4, and with DNS only while there is IPv6.
-  const aaaa = proxied ? !ipv4 : home.network.ipv6 === "present";
-  const router = homeForwards({
-    ...(home.lanAddress !== undefined ? { lanAddress: home.lanAddress } : {}),
-    ipv4,
-    noNat: home.network.noNat,
-    aaaa,
+  const forwards = homeForwardsInput({
+    ipv4: homeIpv4(plan),
+    proxied,
+    network: home.network,
+    lanAddress: home.lanAddress,
     sshFrom: home.sshFrom,
   });
-  const settings = (ipv4 && !home.network.noNat) || aaaa;
+  const router = homeForwards(forwards);
+  const settings = (forwards.ipv4 && !forwards.noNat) || forwards.aaaa;
   const when = proxied
     ? "so Cloudflare reaches your server"
     : "set them before you merge: the first deploy fetches its certificate through them";
@@ -848,8 +848,8 @@ export async function ownEngineEnv(
   setAddressVariables(env, address);
 }
 
-/** How the app on a server the user owns is served: directly, through the tunnel, or from home. */
-export type OwnAccessMode = "public" | "tunnel" | "home";
+// The switch's steps (`home-switch.ts`) read the mode from here.
+export { ownAccessMode };
 
 /** Each {@link OwnAccessMode} in words. */
 export const MODE_TEXT: Record<OwnAccessMode, string> = {
@@ -857,11 +857,6 @@ export const MODE_TEXT: Record<OwnAccessMode, string> = {
   tunnel: "serving the app through a Cloudflare Tunnel",
   home: "serving the app from your home",
 };
-
-/** The plan's {@link OwnAccessMode}: a server at home (`homeMode`) is a mode of its own. */
-export function ownAccessMode(plan: DeployPlan): OwnAccessMode {
-  return homeMode(plan) ? "home" : ownTarget(plan).access;
-}
 
 /**
  * The {@link OwnAccessMode} the infrastructure state was applied in, from its outputs: the

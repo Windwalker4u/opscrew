@@ -16,6 +16,7 @@ import {
 import type { CheckResult, CommandResult, FetchLike } from "@opscrew/contracts";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { AWAY_FROM_HOME } from "../home/server";
 import { recordOwnServer } from "../shared";
 import {
   CLOUDFLARE_IPV4,
@@ -32,7 +33,7 @@ import {
   ownPlan,
   ScriptedRunner,
 } from "../testing";
-import { AWAY_FROM_HOME, dnsUpdaterCheck, hairpinWarnings, piPowerCheck } from "./home";
+import { dnsUpdaterCheck, hairpinWarnings, piPowerCheck } from "./home";
 import type { DnsResolver, TlsConnect } from "./net";
 import { runVerify } from "./run";
 
@@ -517,7 +518,8 @@ describe("runVerify on a DNS-only server at home", () => {
 describe("dnsUpdaterCheck", () => {
   const plan = homePlan();
   const now = new Date(NOW);
-  const check = (state: unknown) => dnsUpdaterCheck(plan, [updaterFact(state)], now, "");
+  const check = (state: unknown) =>
+    dnsUpdaterCheck(plan, { dnsUpdaters: [updaterFact(state)] }, now, "");
 
   it("fails when the last success is older than 10 minutes", () => {
     const result = check(updaterState({ lastSuccess: "2026-11-20T09:55:00Z" }));
@@ -551,7 +553,7 @@ describe("dnsUpdaterCheck", () => {
   });
 
   it("fails without an updater for the app, or without a state", () => {
-    expect(dnsUpdaterCheck(plan, [], now, "").status).toBe("fail");
+    expect(dnsUpdaterCheck(plan, { dnsUpdaters: [] }, now, "").status).toBe("fail");
     expect(check(null).status).toBe("fail");
   });
 });

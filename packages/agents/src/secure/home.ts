@@ -11,13 +11,12 @@ import {
   type HostFacts,
 } from "@opscrew/connector-ssh-host";
 import type { CheckResult } from "@opscrew/contracts";
-import { errorText, isUserFacingError } from "@opscrew/core";
+import { errorText, upperFirst } from "@opscrew/core";
 import { homeIpv6Proxied, webFilterMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import type { PhaseDeps } from "../context";
-import type { OwnServerServices } from "../provision/types";
+import { AWAY_FROM_HOME, type HomeServerRead } from "../home/server";
+import { UPDATER_TOKEN_VAR } from "../home/token";
 import { checkResult } from "../shared";
-import { connectOwnServer, inspectOwnHost } from "../shared/own-server";
 import type { OwnHome } from "../shared/server-record";
 import { sshTableSources, utcText } from "../status/home";
 
@@ -165,7 +164,7 @@ function updaterChecks(
         "fail",
         "The address updater's token file isn't on your server, so it can't change the site's records.",
         {
-          remediation: `Set \`OPSCREW_DNS_UPDATER_TOKEN\` (the guide's recipe) and run \`opscrew provision${flags}\`.`,
+          remediation: `Set \`${UPDATER_TOKEN_VAR}\` (the guide's recipe) and run \`opscrew provision${flags}\`.`,
         },
       )
     : checkResult(
@@ -252,48 +251,16 @@ export function homeServerChecks(
 }
 
 /** Why nothing on a server at home was checked over SSH from this computer. */
-export const AWAY_FROM_HOME =
-  "Your server answers SSH only on your home network, so it wasn't checked over SSH from here.";
-
-/** How `secure` read a server at home through its admin login. */
-export type HomeSecureRead =
-  | { facts: HostFacts }
-  /** SSH didn't answer: this computer is away from the home network. Nothing tries it again. */
-  | { away: true }
-  | { failed: string };
+export const NOT_CHECKED_AWAY = `${upperFirst(AWAY_FROM_HOME)}, so it wasn't checked over SSH from here.`;
 
 /**
- * Reads a server at home once through the admin login (pinned host key) and the host adapter's
- * inspection of `services` (default `inspectHost`), read-only. A login that can't reach SSH is
- * `away`; any other plain-words failure is `failed`, with its words.
- */
-export async function readHomeForSecure(
-  deps: PhaseDeps,
-  services?: Pick<OwnServerServices, "remote" | "homeDir" | "host">,
-): Promise<HomeSecureRead> {
-  try {
-    deps.reporter.step("Checking your server's home setup as its admin login (read-only)");
-    const session = await connectOwnServer(deps, { services });
-    const facts = await inspectOwnHost(deps, session, {
-      services,
-      phase: "secure",
-      detail: "the SSH table, the web filter and the address updater",
-    });
-    return { facts };
-  } catch (error) {
-    if (!isUserFacingError(error)) throw error;
-    return error.code === "COMMAND_FAILED" ? { away: true } : { failed: errorText(error) };
-  }
-}
-
-/**
- * `check` skipped away from home ({@link AWAY_FROM_HOME}), with what to do: run secure at home.
+ * `check` skipped away from home ({@link NOT_CHECKED_AWAY}), with what to do: run secure at home.
  */
 export function awayFromHome(
   check: Pick<CheckResult, "id" | "title" | "severity">,
   flags: string,
 ): CheckResult {
-  return checkResult(check.id, check.title, check.severity, "skip", AWAY_FROM_HOME, {
+  return checkResult(check.id, check.title, check.severity, "skip", NOT_CHECKED_AWAY, {
     remediation: `Run \`opscrew secure${flags}\` from your home network.`,
   });
 }
@@ -305,7 +272,7 @@ export function awayFromHome(
 export function homeSecurityChecks(
   plan: DeployPlan,
   home: OwnHome,
-  read: HomeSecureRead,
+  read: HomeServerRead,
   flags: string,
 ): CheckResult[] {
   const check = {
@@ -314,8 +281,8 @@ export function homeSecurityChecks(
     severity: "medium" as const,
   };
   if ("away" in read) return [awayFromHome(check, flags)];
-  if ("failed" in read) {
-    return [checkResult(check.id, check.title, check.severity, "fail", read.failed)];
+  if ("unread" in read) {
+    return [checkResult(check.id, check.title, check.severity, "fail", errorText(read.unread))];
   }
   return homeServerChecks(plan, read.facts, home, flags);
 }

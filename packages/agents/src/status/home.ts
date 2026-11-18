@@ -6,58 +6,20 @@
  * updater's line says "hidden: behind Cloudflare's proxy", and the addresses it read are
  * registered with the redactor as names. Read-only.
  */
-import type { HostFacts } from "@opscrew/connector-ssh-host";
-import type { UserFacingError } from "@opscrew/contracts";
-import { isUserFacingError } from "@opscrew/core";
+import {
+  type DnsUpdaterError,
+  type DnsUpdaterState,
+  DnsUpdaterStateSchema,
+  type HostFacts,
+} from "@opscrew/connector-ssh-host";
+import { isUserFacingError, upperFirst } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { HOME_ADDRESS_LABEL } from "../home/network";
+import { AWAY_FROM_HOME, type HomeServerRead, readHomeServer as readHome } from "../home/server";
+import { UPDATER_TOKEN_VAR } from "../home/token";
 import type { OwnServerServices } from "../provision/types";
-import { connectOwnServer, inspectOwnHost } from "../shared/own-server";
 import type { OwnHome } from "../shared/server-record";
-
-/** The updater's error codes (data model 5). */
-const UPDATER_ERRORS = [
-  "address-unknown",
-  "sources-disagree",
-  "token-refused",
-  "rate-limited",
-  "cloudflare-unreachable",
-  "cloudflare-error",
-  "foreign-record",
-  "cname-at-name",
-  "config-invalid",
-] as const;
-type UpdaterError = (typeof UPDATER_ERRORS)[number];
-
-/**
- * The updater's state file, `/var/lib/opscrew-dns-updater/<app>/state.json` (data model 5), as
- * inspection hands it over unchecked. `seen` is what the last run detected, `records` what the
- * records hold after it; `null` is none, or a family the updater doesn't keep.
- */
-export const UpdaterStateSchema = z.object({
-  schemaVersion: z.literal(1),
-  version: z.number().int().positive(),
-  lastRun: z.iso.datetime(),
-  lastSuccess: z.iso.datetime().optional(),
-  seen: z.object({ ipv4: z.ipv4().nullable(), ipv6: z.ipv6().nullable() }),
-  records: z.object({ ipv4: z.ipv4().nullable(), ipv6: z.ipv6().nullable() }),
-  lastWrite: z
-    .object({
-      at: z.iso.datetime(),
-      changed: z.array(z.enum(["A", "AAAA", "A-deleted", "AAAA-deleted", "created"])),
-    })
-    .optional(),
-  lastError: z
-    .object({
-      at: z.iso.datetime(),
-      code: z.enum(UPDATER_ERRORS),
-      http: z.number().int().optional(),
-      cloudflare: z.array(z.number().int()).optional(),
-    })
-    .optional(),
-});
-export type UpdaterState = z.infer<typeof UpdaterStateSchema>;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -112,13 +74,13 @@ export function outsideCheckText(check: OutsideCheck, now?: Date): string {
 }
 
 /** What the updater's last error means, with the next step (data model 5's table). */
-function errorWords(error: NonNullable<UpdaterState["lastError"]>, name: string, flags: string) {
-  const said: Record<UpdaterError, string> = {
+function errorWords(error: NonNullable<DnsUpdaterState["lastError"]>, name: string, flags: string) {
+  const said: Record<DnsUpdaterError, string> = {
     "address-unknown":
       "neither outside source told your server its address: check that the server can reach the internet over HTTPS",
     "sources-disagree":
       "the two outside sources gave different addresses: wait a few minutes (a router with two connections can cause it)",
-    "token-refused": `Cloudflare refused the updater's token: make a new token as the guide says, set \`OPSCREW_DNS_UPDATER_TOKEN\`, and run \`opscrew rotate dns-updater${flags}\``,
+    "token-refused": `Cloudflare refused the updater's token: make a new token as the guide says, set \`${UPDATER_TOKEN_VAR}\`, and run \`opscrew rotate dns-updater${flags}\``,
     "rate-limited": "Cloudflare limited the requests for a while (retried)",
     "cloudflare-unreachable": "Cloudflare didn't answer: check your server's internet connection",
     "cloudflare-error": `Cloudflare answered with an error${error.http === undefined ? "" : ` (HTTP ${error.http}${error.cloudflare?.length ? `, code ${error.cloudflare.join(", ")}` : ""})`}: run \`opscrew verify${flags}\` again, and report it if it stays`,
@@ -130,7 +92,7 @@ function errorWords(error: NonNullable<UpdaterState["lastError"]>, name: string,
 }
 
 /** What the last write changed: `A changed`, `AAAA removed`, `created`. */
-const CHANGED: Record<NonNullable<UpdaterState["lastWrite"]>["changed"][number], string> = {
+const CHANGED: Record<NonNullable<DnsUpdaterState["lastWrite"]>["changed"][number], string> = {
   A: "A changed",
   AAAA: "AAAA changed",
   "A-deleted": "A removed",
@@ -142,7 +104,7 @@ const CHANGED: Record<NonNullable<UpdaterState["lastWrite"]>["changed"][number],
 const row = (label: string, text: string) => `${label.padEnd(13)}${text}`;
 
 /** What the updater sees: addresses with DNS only, "hidden" behind the proxy. */
-function seesText(seen: UpdaterState["seen"], proxied: boolean): string {
+function seesText(seen: DnsUpdaterState["seen"], proxied: boolean): string {
   if (!proxied) {
     return [
       seen.ipv4 === null ? "no IPv4" : `IPv4 ${seen.ipv4}`,
@@ -176,7 +138,7 @@ function updaterLines(
       ? "every 2 minutes"
       : `stopped: its timer isn't running (\`opscrew provision${flags}\` starts it again)`;
   if (updater.state === null) return [row("Updater", `${timer} · no run yet`)];
-  const parsed = UpdaterStateSchema.safeParse(updater.state);
+  const parsed = DnsUpdaterStateSchema.safeParse(updater.state);
   if (!parsed.success) {
     return [
       row(
@@ -223,14 +185,8 @@ function updaterLines(
   ];
 }
 
-/** How the server at home was read for `status`. */
-export type HomeRead =
-  /** Inspection's facts. */
-  | { facts: HostFacts }
-  /** SSH didn't answer: this computer is away from the home network. */
-  | { away: UserFacingError }
-  /** Another reason, which the components' section says. */
-  | { unread: UserFacingError };
+/** How the server at home was read for `status`: an unread one's reason the components' section says. */
+export type HomeRead = HomeServerRead;
 
 /** The section's input: the plan, the local record's `own.home`, the read, the time, the flags. */
 export interface HomeStatusInput {
@@ -259,7 +215,7 @@ export function homeStatusLines(input: HomeStatusInput): string[] {
         ? `No check from outside your home yet: \`opscrew verify${flags}\` runs it.`
         : `Last outside check: ${outsideCheckText(check, now)}.`;
     return [
-      `Your server answers SSH only on your home network, so ${updater ? "its updater" : "it"} can't be read from here. ${last}`,
+      `${upperFirst(AWAY_FROM_HOME)}, so ${updater ? "its updater" : "it"} can't be read from here. ${last}`,
     ];
   }
   const facts = "facts" in read ? read.facts : undefined;
@@ -302,20 +258,19 @@ export function hideHomeAddresses(
   facts: HostFacts,
 ) {
   if (!plan.dns.proxied) return;
-  const state = UpdaterStateSchema.safeParse(
+  const state = DnsUpdaterStateSchema.safeParse(
     facts.dnsUpdaters?.find((item) => item.app === plan.app.name)?.state,
   );
   if (!state.success) return;
   const { seen, records } = state.data;
   for (const address of [seen.ipv4, seen.ipv6, records.ipv4, records.ipv6]) {
-    if (address !== null) deps.redactor.addName(address, "your home's address");
+    if (address !== null) deps.redactor.addName(address, HOME_ADDRESS_LABEL);
   }
 }
 
 /**
  * Reads the server at home once for `status` (read-only): `check` first (the MCP server's host
- * key check), then the admin login with the pinned host key and the host adapter's inspection.
- * A login that can't reach SSH is `away`; any other plain-words failure `unread`.
+ * key check, a failure of which is `unread`), then `readHomeServer` with the pinned host key.
  */
 export async function readHomeServer(
   deps: PhaseDeps,
@@ -325,33 +280,15 @@ export async function readHomeServer(
     check?: (() => Promise<void>) | undefined;
   },
 ): Promise<HomeRead> {
-  const plainly = (error: unknown) => {
-    if (!isUserFacingError(error)) throw error;
-    return error;
-  };
   try {
     await options.check?.();
   } catch (error) {
-    return { unread: plainly(error) };
+    if (!isUserFacingError(error)) throw error;
+    return { unread: error };
   }
-  let session: Awaited<ReturnType<typeof connectOwnServer>>;
-  try {
-    deps.reporter.step("Connecting to your server");
-    session = await connectOwnServer(deps, {
-      hostKey: options.hostKey,
-      services: options.services,
-    });
-  } catch (error) {
-    const failed = plainly(error);
-    return failed.code === "COMMAND_FAILED" ? { away: failed } : { unread: failed };
-  }
-  try {
-    const facts = await inspectOwnHost(deps, session, {
-      services: options.services,
-      detail: "the app's components and the address updater",
-    });
-    return { facts };
-  } catch (error) {
-    return { unread: plainly(error) };
-  }
+  return readHome(deps, {
+    hostKey: options.hostKey,
+    services: options.services,
+    detail: "the app's components and the address updater",
+  });
 }

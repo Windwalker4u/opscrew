@@ -46,6 +46,7 @@ import {
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { type HomeServerRead, readHomeServer } from "../home/server";
 import { hostnameOf } from "../hosting/provision-plans";
 import { type HostingSecurity, hostingSecurityChecks } from "../hosting/secure";
 import { LOCAL_PROBES_SKIPPED, LOCAL_SECURE_NOTES, localSecurityChecks } from "../localhost/secure";
@@ -68,13 +69,11 @@ import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { siteHost } from "../verify/serverless";
 import {
-  AWAY_FROM_HOME,
   awayFromHome,
   fromInside,
-  type HomeSecureRead,
   homeSecurityChecks,
   insideLabel,
-  readHomeForSecure,
+  NOT_CHECKED_AWAY,
 } from "./home";
 import { monitoringSecurityChecks } from "./monitoring";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
@@ -534,7 +533,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let hostChecksSkipped: string | undefined;
   let remote: RemoteExec | undefined;
   let account: HostingSecurity | undefined;
-  let homeRead: HomeSecureRead | undefined;
+  let homeRead: HomeServerRead | undefined;
   const own = plan.target.provider === "own" ? await ownSecureTarget(deps, plan) : undefined;
   const sshHost = own?.sshHost ?? host;
   if (portainer) {
@@ -556,7 +555,15 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   } else {
     // A server at home is read once through its admin login first: away from home (SSH answers
     // only on the home network) nothing else tries it, and every check over SSH is a skip.
-    homeRead = own?.home === undefined ? undefined : await readHomeForSecure(deps, options.own);
+    homeRead =
+      own?.home === undefined
+        ? undefined
+        : await readHomeServer(deps, {
+            services: options.own,
+            phase: "secure",
+            detail: "the SSH table, the web filter and the address updater",
+            step: "Checking your server's home setup as its admin login (read-only)",
+          });
     const flags = await commandFlags(paths.root, paths.environment, paths.app);
     const away = homeRead !== undefined && "away" in homeRead ? flags : undefined;
     const checked = await checkServer(deps, plan, sshHost, own, options, away);
@@ -638,7 +645,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
               : hosting
                 ? HOSTING_DEEP
                 : away
-                  ? { skipped: AWAY_FROM_HOME, sshPort: own?.sshPort ?? 22 }
+                  ? { skipped: NOT_CHECKED_AWAY, sshPort: own?.sshPort ?? 22 }
                   : {
                       ...(remote !== undefined ? { remote } : {}),
                       ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),

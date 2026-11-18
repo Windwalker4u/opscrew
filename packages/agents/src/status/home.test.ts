@@ -3,7 +3,7 @@
  * address updater from inspection, and the last outside check; away from home, the last outside
  * check from this computer's record. A proxied app's addresses never show.
  */
-import { type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
+import { type DnsUpdaterState, type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -20,13 +20,7 @@ import {
   ownPlan,
   ownRunner,
 } from "../testing";
-import {
-  homeStatusLines,
-  outsideCheckText,
-  sshTableSources,
-  type UpdaterState,
-  utcText,
-} from "./home";
+import { homeStatusLines, outsideCheckText, sshTableSources, utcText } from "./home";
 import { componentStatusReport } from "./run";
 
 const NOW = new Date("2026-11-20T10:35:00Z");
@@ -64,7 +58,7 @@ function homePlan(o: { proxied?: boolean; dnsElsewhere?: boolean } = {}): Deploy
 }
 
 /** The updater's state after a run that saw {@link HOME_IPV4} and no IPv6. */
-function updaterState(over: Partial<UpdaterState> = {}): UpdaterState {
+function updaterState(over: Partial<DnsUpdaterState> = {}): DnsUpdaterState {
   return {
     schemaVersion: 1,
     version: 1,
@@ -226,7 +220,7 @@ describe("homeStatusLines", () => {
   });
 
   it("each error code says what to do next", () => {
-    const words = (code: NonNullable<UpdaterState["lastError"]>["code"]) =>
+    const words = (code: NonNullable<DnsUpdaterState["lastError"]>["code"]) =>
       homeStatusLines({
         plan: homePlan(),
         home: HOME,

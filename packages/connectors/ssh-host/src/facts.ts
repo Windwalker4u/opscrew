@@ -303,7 +303,8 @@ const HashedFileSchema = FileModeSchema.extend({ sha256: z.string().regex(/^[0-9
  * One instance of the address updater on the server, as inspection reads it: its config when it
  * parses as the updater's own (null otherwise), the config file's mode and owner, its token file's
  * mode, owner and SHA-256 (never its content), its timer, and its state file's JSON (at most 4 KiB,
- * not yet validated: agents checks it), null when absent or unreadable.
+ * not yet validated: its reader checks it with `DnsUpdaterStateSchema`), null when absent or
+ * unreadable.
  */
 export const DnsUpdaterFactSchema = z.object({
   app: AppNameSchema,

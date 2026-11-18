@@ -12,6 +12,7 @@
  * the agents (`home/records.ts`), never by the server.
  */
 import { canonicalJson, sha256Hex } from "@opscrew/core";
+import { z } from "zod";
 import { HOSTNAME_RE } from "./constants";
 import type { DnsUpdaterConfig, DnsUpdaterFiles, HostFacts } from "./facts";
 import { shellQuote } from "./shell";
@@ -19,6 +20,54 @@ import type { DesiredDnsUpdater, HostFinding, HostStep, HostStepId } from "./typ
 
 /** The script and units' version: a step never replaces a newer copy on the server. */
 export const DNS_UPDATER_VERSION = 1;
+
+/** The error codes a run of the script records (contracts/dns-updater.md, data model 5). */
+export const DNS_UPDATER_ERRORS = [
+  "address-unknown",
+  "sources-disagree",
+  "token-refused",
+  "rate-limited",
+  "cloudflare-unreachable",
+  "cloudflare-error",
+  "foreign-record",
+  "cname-at-name",
+  "config-invalid",
+] as const;
+export type DnsUpdaterError = (typeof DNS_UPDATER_ERRORS)[number];
+
+/**
+ * The state file the script writes, `<DNS_UPDATER_STATE_DIR>/<app>/state.json` (data model 5),
+ * which inspection hands over unchecked (`DnsUpdaterFact.state`). `seen` is what the last run
+ * detected, `records` what the records hold after it; `null` is none, or a family the updater
+ * doesn't keep.
+ */
+export const DnsUpdaterStateSchema = z.object({
+  schemaVersion: z.literal(1),
+  version: z.number().int().positive(),
+  lastRun: z.iso.datetime(),
+  lastSuccess: z.iso.datetime().optional(),
+  seen: z.object({ ipv4: z.ipv4().nullable(), ipv6: z.ipv6().nullable() }),
+  records: z.object({ ipv4: z.ipv4().nullable(), ipv6: z.ipv6().nullable() }),
+  lastWrite: z
+    .object({
+      at: z.iso.datetime(),
+      changed: z.array(z.enum(["A", "AAAA", "A-deleted", "AAAA-deleted", "created"])),
+    })
+    .optional(),
+  lastError: z
+    .object({
+      at: z.iso.datetime(),
+      code: z.enum(DNS_UPDATER_ERRORS),
+      http: z.number().int().optional(),
+      cloudflare: z.array(z.number().int()).optional(),
+    })
+    .optional(),
+});
+export type DnsUpdaterState = z.infer<typeof DnsUpdaterStateSchema>;
+
+/** What the updater's token can reach, as the host plan says it (agents words it per zone). */
+export const DNS_UPDATER_TOKEN_REACH =
+  "The updater changes only this app's A/AAAA records, but the token can change any record in its zone. Anything with root on your server can use it, the deploy runner included: it runs your repository's code in the docker group, which is as good as root.";
 
 /** The comment of every record the updater writes; it touches no record without it. */
 export const DNS_UPDATER_RECORD_COMMENT = "Managed by OpsCrew (address updater)";
@@ -495,7 +544,7 @@ function setupText(app: string, updater: DesiredDnsUpdater): string {
     updater.tokenSha256 === undefined
       ? `The token already in ${DNS_UPDATER_CONFIG_DIR}/${app}.token stays.`
       : `The token you gave is written to ${DNS_UPDATER_CONFIG_DIR}/${app}.token (root only) and nowhere else: OpsCrew keeps no copy.`,
-    "The updater changes only this app's A/AAAA records, but the token can change any record in its zone. Anything with root on your server can use it, the deploy runner included: it runs your repository's code in the docker group, which is as good as root.",
+    DNS_UPDATER_TOKEN_REACH,
   ].join(" ");
 }
 

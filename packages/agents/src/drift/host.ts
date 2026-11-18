@@ -1,9 +1,14 @@
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
   appDirs,
+  DNS_UPDATER_CONFIG_DIR,
+  DNS_UPDATER_SCRIPT,
+  DNS_UPDATER_SERVICE_UNIT,
+  DNS_UPDATER_TIMER_UNIT,
   DNS_UPDATER_VERSION,
   dnsUpdaterConfig,
   dnsUpdaterFileHashes,
+  dnsUpdaterTimer,
   type HASHED_RUNTIME_FILES,
   type HostFacts,
   type HostPlan,
@@ -26,11 +31,11 @@ import {
   isUserFacingError,
   listText,
   lowerFirst,
-  OpsCrewError,
   sha256Hex,
   upperFirst,
 } from "@opscrew/core";
 import {
+  addressUpdaterName,
   DEPLOY_SECRETS,
   EDGE_DIR,
   EDGE_PROXIES,
@@ -47,7 +52,7 @@ import {
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { classifyHomeNetwork, registerHomeAddresses } from "../home/network";
+import { readHomeNetwork, sshSourcesUnknown } from "../home/network";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import {
   type OwnHomeRun,
@@ -59,7 +64,6 @@ import { readRequirements, recordedEdge, siteContext } from "../provision/render
 import type { CloudflareApi } from "../provision/types";
 import { type CloudRunnerServices, cloudRunnerPlan, serverRunner } from "../runners";
 import {
-  boundHostAdapter,
   committedText,
   gitClient,
   githubCoordinates,
@@ -353,14 +357,6 @@ function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan):
   return out;
 }
 
-/** The address updater's folder, with each app's config and token. */
-const UPDATER_DIR = "/etc/opscrew/dns-updater";
-const UPDATER_SCRIPT = "/usr/local/sbin/opscrew-dns-updater";
-const UPDATER_UNITS = {
-  service: "/etc/systemd/system/opscrew-dns-updater@.service",
-  timer: "/etc/systemd/system/opscrew-dns-updater@.timer",
-};
-
 /** `path` is not root's with the permission bits `mode`: what it is, and what OpsCrew set. */
 function rootFileDetail(
   path: string,
@@ -391,7 +387,7 @@ function dnsUpdaterDetails(facts: HostFacts, step: HostStep, app: string): strin
   const own = facts.dnsUpdaters?.find((item) => item.app === app);
   // Without an instance (and so without a token) the step is blocked; its finding says so.
   if (own === undefined) return [];
-  const configPath = `${UPDATER_DIR}/${app}.json`;
+  const configPath = `${DNS_UPDATER_CONFIG_DIR}/${app}.json`;
   const out: string[] = [];
   if (own.config === null) {
     out.push(`${configPath} is no longer the address updater's config (it was edited or damaged).`);
@@ -418,7 +414,7 @@ function dnsUpdaterDetails(facts: HostFacts, step: HostStep, app: string): strin
   if (own.token.present) {
     out.push(
       ...rootFileDetail(
-        `${UPDATER_DIR}/${app}.token`,
+        `${DNS_UPDATER_CONFIG_DIR}/${app}.token`,
         own.token,
         "600",
         ", so only root can read the updater's token",
@@ -427,11 +423,11 @@ function dnsUpdaterDetails(facts: HostFacts, step: HostStep, app: string): strin
   }
   if (!own.timer.enabled || !own.timer.active) {
     out.push(
-      `The updater's timer opscrew-dns-updater@${app}.timer is not enabled and running, so the site's DNS records no longer follow your home's address.`,
+      `The updater's timer ${dnsUpdaterTimer(app)} is not enabled and running, so the site's DNS records no longer follow your home's address.`,
     );
   }
   const files = facts.dnsUpdaterFiles;
-  out.push(...rootFileDetail(UPDATER_DIR, files?.dir, "700"));
+  out.push(...rootFileDetail(DNS_UPDATER_CONFIG_DIR, files?.dir, "700"));
   if (
     files === undefined ||
     files.version === null ||
@@ -441,14 +437,14 @@ function dnsUpdaterDetails(facts: HostFacts, step: HostStep, app: string): strin
     files.timer === null
   ) {
     out.push(
-      `The updater's script (${UPDATER_SCRIPT}) or its systemd units are missing or older than this OpsCrew's.`,
+      `The updater's script (${DNS_UPDATER_SCRIPT}) or its systemd units are missing or older than this OpsCrew's.`,
     );
   } else if (files.version === DNS_UPDATER_VERSION) {
     const hashes = dnsUpdaterFileHashes();
     const shared = [
-      { path: UPDATER_SCRIPT, file: files.script, sha256: hashes.script, mode: "755" },
-      { path: UPDATER_UNITS.service, file: files.service, sha256: hashes.service, mode: "644" },
-      { path: UPDATER_UNITS.timer, file: files.timer, sha256: hashes.timer, mode: "644" },
+      { path: DNS_UPDATER_SCRIPT, file: files.script, sha256: hashes.script, mode: "755" },
+      { path: DNS_UPDATER_SERVICE_UNIT, file: files.service, sha256: hashes.service, mode: "644" },
+      { path: DNS_UPDATER_TIMER_UNIT, file: files.timer, sha256: hashes.timer, mode: "644" },
     ];
     for (const { path, file, sha256, mode } of shared) {
       if (file.sha256 !== sha256) out.push(`${path} was edited.`);
@@ -1096,36 +1092,25 @@ async function driftHome(
   deps: PhaseDeps,
   plan: DeployPlan,
   input: { session: OwnServerSession; facts: HostFacts; host: OwnServerServices["host"] },
-): Promise<OwnHomeRun> {
+): Promise<Pick<OwnHomeRun, "sshFrom" | "updater">> {
   const { session, facts } = input;
-  const detected = await boundHostAdapter(input.host).detectHomeNetwork(session.remote);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "detect home network (read-only)",
-    target: "own server",
-    decision: "allow",
+  await readHomeNetwork(deps, session, {
+    host: input.host,
+    proxied: plan.dns.provider === "cloudflare" && plan.dns.proxied,
     detail: "drift check",
   });
-  registerHomeAddresses(
-    deps.redactor,
-    detected,
-    plan.dns.provider === "cloudflare" && plan.dns.proxied,
-  );
   const sshFrom = session.connection.home?.sshFrom;
   if (sshFrom === undefined) {
     const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "OpsCrew doesn't know on this computer which networks may reach your server's SSH at home, so it can't compare your server with its setup.",
-      {
-        hint: `Run \`opscrew design${flags}\` again: it finds your home network. Then run \`opscrew drift${flags}\` again.`,
-      },
+    throw sshSourcesUnknown(
+      flags,
+      "opscrew drift",
+      ", so it can't compare your server with its setup.",
     );
   }
-  const name = plan.dns.domain;
+  const name = addressUpdaterName(plan);
   const updater =
-    plan.dns.provider === "cloudflare" && name !== undefined
+    name !== undefined
       ? {
           zoneId:
             facts.dnsUpdaters?.find((item) => item.app === plan.app.name)?.config?.zoneId ??
@@ -1133,11 +1118,7 @@ async function driftHome(
           name,
         }
       : undefined;
-  return {
-    network: classifyHomeNetwork(detected),
-    sshFrom: [...sshFrom],
-    ...(updater !== undefined ? { updater } : {}),
-  };
+  return { sshFrom: [...sshFrom], ...(updater !== undefined ? { updater } : {}) };
 }
 
 /**

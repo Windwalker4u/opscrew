@@ -85,10 +85,21 @@ export {
   UFW_WEB_COMMENT,
 } from "./constants";
 export {
+  DNS_UPDATER_CONFIG_DIR,
+  DNS_UPDATER_ERRORS,
   DNS_UPDATER_RECORD_COMMENT,
+  DNS_UPDATER_SCRIPT,
+  DNS_UPDATER_SERVICE_UNIT,
+  DNS_UPDATER_STATE_DIR,
+  DNS_UPDATER_TIMER_UNIT,
+  DNS_UPDATER_TOKEN_REACH,
   DNS_UPDATER_VERSION,
+  type DnsUpdaterError,
+  type DnsUpdaterState,
+  DnsUpdaterStateSchema,
   dnsUpdaterConfig,
   dnsUpdaterFileHashes,
+  dnsUpdaterTimer,
   renderDnsUpdaterScript,
 } from "./dns-updater";
 export {

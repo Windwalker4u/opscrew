@@ -6,77 +6,56 @@
  * No request from this computer ever counts as the outside check, and a proxied app's address is
  * never in a line.
  */
+import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
 import {
   agreedIpv4,
-  type DnsUpdaterFact,
+  type DnsUpdaterError,
+  DnsUpdaterStateSchema,
+  dnsUpdaterTimer,
   type HomeNetwork,
   type HostFacts,
 } from "@opscrew/connector-ssh-host";
 import type { CheckResult } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
-import { z } from "zod";
+import { isUserFacingError, upperFirst } from "@opscrew/core";
+import { homeIpv4 } from "@opscrew/iac-templates";
+import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
+import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import type { HomeForwardsInput } from "../home/forwards";
+import { type HomeForwardsInput, homeForwardsInput } from "../home/forwards";
 import { type OutsideCheckResult, outsideCheckLines, runOutsideCheck } from "../home/outside-check";
+import { AWAY_FROM_HOME, readHomeServer } from "../home/server";
+import { UPDATER_TOKEN_VAR } from "../home/token";
 import type { OwnServerServices } from "../provision/types";
 import { checkResult } from "../shared";
 import { codeOf } from "../shared/errors";
-import { boundHostAdapter } from "../shared/host-plan";
-import { connectOwnServer, inspectOwnHost, readOwnServerRecord } from "../shared/own-server";
+import { readOwnServerRecord } from "../shared/own-server";
 import { errorText } from "./checks";
 import type { DnsResolver } from "./net";
 
-/** Why the server-side checks are skipped away from home (research R11). */
-export const AWAY_FROM_HOME = "your server answers SSH only on your home network";
-
+/** Why a server-side check is skipped away from home (research R11). */
 const AWAY_SKIP = `Skipped: ${AWAY_FROM_HOME}, and OpsCrew couldn't reach it from here.`;
 
 /** The updater's last success may be at most this old (two missed runs and then some). */
 const UPDATER_FRESH_MS = 10 * 60_000;
 
-const UPDATER_ERROR_CODES = [
-  "address-unknown",
-  "sources-disagree",
-  "token-refused",
-  "rate-limited",
-  "cloudflare-unreachable",
-  "cloudflare-error",
-  "foreign-record",
-  "cname-at-name",
-  "config-invalid",
-] as const;
-type UpdaterErrorCode = (typeof UPDATER_ERROR_CODES)[number];
-
-const FamiliesSchema = z.object({
-  ipv4: z.string().nullable().optional(),
-  ipv6: z.string().nullable().optional(),
-});
-
-/** The updater's `state.json` (data model 5), as inspection's `dnsUpdaters` carries it. */
-const UpdaterStateSchema = z.object({
-  schemaVersion: z.literal(1),
-  lastRun: z.iso.datetime(),
-  lastSuccess: z.iso.datetime().optional(),
-  seen: FamiliesSchema,
-  records: FamiliesSchema.optional(),
-  lastError: z.object({ at: z.iso.datetime(), code: z.enum(UPDATER_ERROR_CODES) }).optional(),
-});
-
-/** `2026-11-20 10:04 UTC` from an ISO timestamp. */
-function utc(iso: string): string {
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+/** A check's result with its id, title and severity fixed. */
+function resultOf(id: string, title: string, severity: CheckResult["severity"]) {
+  return (
+    status: CheckResult["status"],
+    message: string,
+    extra?: { remediation?: string; target?: string },
+  ): CheckResult => checkResult(id, title, severity, status, message, extra);
 }
 
 /** What each error code means, and what to do next (data model 5). */
 function updaterError(
-  code: UpdaterErrorCode,
+  code: DnsUpdaterError,
   plan: DeployPlan,
   flag: string,
 ): { said: string; next: string } {
   const zone = plan.dns.zone ?? plan.dns.domain ?? "the zone";
-  const words: Record<UpdaterErrorCode, { said: string; next: string }> = {
+  const words: Record<DnsUpdaterError, { said: string; next: string }> = {
     "address-unknown": {
       said: "no outside source told your server its public address",
       next: "Check that your server can make outgoing HTTPS connections.",
@@ -87,7 +66,7 @@ function updaterError(
     },
     "token-refused": {
       said: "Cloudflare refused the updater's token",
-      next: `Make a new token with only Zone → DNS → Edit on ${zone} (https://dash.cloudflare.com/profile/api-tokens), set OPSCREW_DNS_UPDATER_TOKEN to it, and run \`opscrew rotate dns-updater${flag}\`.`,
+      next: `Make a new token with only Zone → DNS → Edit on ${zone} (${CLOUDFLARE_TOKEN_PAGE}), set ${UPDATER_TOKEN_VAR} to it, and run \`opscrew rotate dns-updater${flag}\`.`,
     },
     "rate-limited": {
       said: "Cloudflare limited the requests for a while",
@@ -118,44 +97,36 @@ function updaterError(
 }
 
 /**
- * The address updater of this app (inspection's `dnsUpdaters`, its state validated here): a
- * failure when its last success is older than 10 minutes or its records don't hold what the server
- * sees, a warning when a run failed since its last success. Names no address.
+ * The address updater of this app (inspection's `dnsUpdaters`, its state validated here; no
+ * `facts` away from home: a skip): a failure when its last success is older than 10 minutes or its
+ * records don't hold what the server sees, a warning when a run failed since its last success.
+ * Names no address.
  */
 export function dnsUpdaterCheck(
   plan: DeployPlan,
-  updaters: readonly DnsUpdaterFact[] | undefined,
+  facts: Pick<HostFacts, "dnsUpdaters"> | undefined,
   now: Date,
   flag: string,
 ): CheckResult {
-  const id = "dns-updater";
-  const title = "The address updater keeps the app's records current";
-  const fact = updaters?.find((item) => item.app === plan.app.name);
+  const result = resultOf(
+    "dns-updater",
+    "The address updater keeps the app's records current",
+    "high",
+  );
+  if (facts === undefined) return result("skip", AWAY_SKIP);
+  const fact = facts.dnsUpdaters?.find((item) => item.app === plan.app.name);
   const provision = `Run \`opscrew provision${flag}\`: it sets the updater up.`;
+  const timer = `Check its timer on your server (\`systemctl status ${dnsUpdaterTimer(plan.app.name)}\`). ${provision}`;
   if (fact === undefined) {
-    return checkResult(
-      id,
-      title,
-      "high",
-      "fail",
-      "Your server has no address updater for this app.",
-      {
-        remediation: provision,
-      },
-    );
+    return result("fail", "Your server has no address updater for this app.", {
+      remediation: provision,
+    });
   }
-  const parsed = UpdaterStateSchema.safeParse(fact.state);
+  const parsed = DnsUpdaterStateSchema.safeParse(fact.state);
   if (!parsed.success) {
-    return checkResult(
-      id,
-      title,
-      "high",
-      "fail",
-      "The address updater on your server hasn't recorded a run yet.",
-      {
-        remediation: `Check its timer on your server (\`systemctl status opscrew-dns-updater@${plan.app.name}.timer\`). ${provision}`,
-      },
-    );
+    return result("fail", "The address updater on your server hasn't recorded a run yet.", {
+      remediation: timer,
+    });
   }
   const state = parsed.data;
   const { lastSuccess, lastError } = state;
@@ -165,62 +136,42 @@ export function dnsUpdaterCheck(
       ? { at: lastError.at, ...updaterError(lastError.code, plan, flag) }
       : undefined;
   const failure = failedSince
-    ? ` Its last error (${utc(failedSince.at)}): ${failedSince.said}.`
+    ? ` Its last error (${formatUtc(failedSince.at)}): ${failedSince.said}.`
     : "";
   if (lastSuccess === undefined || now.getTime() - Date.parse(lastSuccess) > UPDATER_FRESH_MS) {
-    return checkResult(
-      id,
-      title,
-      "high",
+    return result(
       "fail",
       `${
         lastSuccess === undefined
           ? "The address updater hasn't succeeded yet."
-          : `The address updater last succeeded at ${utc(lastSuccess)}, more than 10 minutes ago.`
+          : `The address updater last succeeded at ${formatUtc(lastSuccess)}, more than 10 minutes ago.`
       }${failure}`,
-      {
-        remediation:
-          failedSince?.next ??
-          `Check its timer on your server (\`systemctl status opscrew-dns-updater@${plan.app.name}.timer\`). ${provision}`,
-      },
+      { remediation: failedSince?.next ?? timer },
     );
   }
   // Only a family it keeps and saw an address for: an address it couldn't read changes nothing.
   const keeps = { ipv4: fact.config?.ipv4 ?? true, ipv6: fact.config?.ipv6 ?? true };
   const differ = (["ipv4", "ipv6"] as const).some((family) => {
     const seen = state.seen[family];
-    return keeps[family] && seen != null && state.records?.[family] !== seen;
+    return keeps[family] && seen !== null && state.records[family] !== seen;
   });
   if (differ) {
-    return checkResult(
-      id,
-      title,
-      "high",
-      "fail",
-      `The app's records don't hold the address your server sees.${failure}`,
-      {
-        remediation:
-          failedSince?.next ??
-          `The updater writes them on its next run (every 2 minutes): run \`opscrew verify${flag}\` again in a few minutes.`,
-      },
-    );
+    return result("fail", `The app's records don't hold the address your server sees.${failure}`, {
+      remediation:
+        failedSince?.next ??
+        `The updater writes them on its next run (every 2 minutes): run \`opscrew verify${flag}\` again in a few minutes.`,
+    });
   }
   if (failedSince !== undefined) {
-    return checkResult(
-      id,
-      title,
-      "high",
+    return result(
       "warn",
-      `The address updater's last run failed at ${utc(failedSince.at)}: ${failedSince.said}. It last succeeded at ${utc(lastSuccess)}.`,
+      `The address updater's last run failed at ${formatUtc(failedSince.at)}: ${failedSince.said}. It last succeeded at ${formatUtc(lastSuccess)}.`,
       { remediation: failedSince.next },
     );
   }
-  return checkResult(
-    id,
-    title,
-    "high",
+  return result(
     "pass",
-    `The address updater last succeeded at ${utc(lastSuccess)}, and the records hold the address your server sees.`,
+    `The address updater last succeeded at ${formatUtc(lastSuccess)}, and the records hold the address your server sees.`,
   );
 }
 
@@ -233,52 +184,37 @@ function piSupply(board: string): string {
 
 /**
  * A Raspberry Pi's power (inspection's `power`): a failure when it's under-voltage now, a warning
- * when it was since boot, naming the supply it needs. None for another board.
+ * when it was since boot, naming the supply it needs. None for another board. Away from home (no
+ * `facts`) the board is unknown: a skip on an `arch` that can be a Raspberry Pi (arm64), else none.
  */
-export function piPowerCheck(facts: Pick<HostFacts, "board" | "power">): CheckResult | undefined {
+export function piPowerCheck(
+  facts: Pick<HostFacts, "board" | "power"> | undefined,
+  arch?: OwnDeployTarget["arch"],
+): CheckResult | undefined {
+  const result = resultOf("pi-power", "Your Raspberry Pi gets enough power", "medium");
+  if (facts === undefined) return arch === "arm64" ? result("skip", AWAY_SKIP) : undefined;
   const board = facts.board ?? "";
   if (!/raspberry pi/i.test(board)) return undefined;
-  const id = "pi-power";
-  const title = "Your Raspberry Pi gets enough power";
   const fix = `Use ${piSupply(board)} and a short, good USB-C cable: under-voltage slows the Pi down and can corrupt its storage.`;
   if (facts.power == null) {
-    return checkResult(
-      id,
-      title,
-      "medium",
+    return result(
       "skip",
       "Skipped: OpsCrew couldn't read the power state on your server (vcgencmd or this boot's kernel log).",
     );
   }
   if (facts.power.underVoltageNow) {
-    return checkResult(
-      id,
-      title,
-      "medium",
-      "fail",
-      "Your Raspberry Pi is short of power now (under-voltage).",
-      {
-        remediation: fix,
-      },
-    );
+    return result("fail", "Your Raspberry Pi is short of power now (under-voltage).", {
+      remediation: fix,
+    });
   }
   if (facts.power.underVoltageSinceBoot) {
-    return checkResult(
-      id,
-      title,
-      "medium",
+    return result(
       "warn",
       "Your Raspberry Pi was short of power since it started (under-voltage), though not now.",
       { remediation: fix },
     );
   }
-  return checkResult(
-    id,
-    title,
-    "medium",
-    "pass",
-    "No under-voltage since your Raspberry Pi started.",
-  );
+  return result("pass", "No under-voltage since your Raspberry Pi started.");
 }
 
 /**
@@ -292,28 +228,23 @@ export async function homeDnsCheck(
   resolver: DnsResolver,
   network: HomeNetwork | undefined,
 ): Promise<CheckResult> {
-  const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
-  const title = `DNS for ${host} points to the right place`;
+  const result = resultOf(
+    host.startsWith("www.") ? "dns-records-www" : "dns-records",
+    `DNS for ${host} points to the right place`,
+    "high",
+  );
   if (network === undefined) {
-    return checkResult(
-      id,
-      title,
-      "high",
+    return result(
       "skip",
       `Skipped: ${AWAY_FROM_HOME}, so OpsCrew couldn't read your home's address from it to compare.`,
-      {
-        target: host,
-      },
+      { target: host },
     );
   }
-  const ipv4 = plan.target.provider === "own" && plan.target.home?.ipv4 === true;
+  const ipv4 = homeIpv4(plan);
   const expected4 = ipv4 ? agreedIpv4(network.ipv4) : undefined;
   const expected6 = network.ipv6.stable;
   if (ipv4 && expected4 === undefined) {
-    return checkResult(
-      id,
-      title,
-      "high",
+    return result(
       "warn",
       `Your server couldn't see its public IPv4 address, so OpsCrew can't tell whether ${host} points to it.`,
       {
@@ -333,17 +264,10 @@ export async function homeDnsCheck(
   try {
     [a, aaaa] = await Promise.all([resolver.resolve4(host), resolver.resolve6(host)]);
   } catch (error) {
-    return checkResult(
-      id,
-      title,
-      "high",
-      "fail",
-      `Could not look up ${host}: ${errorText(error)}.`,
-      {
-        remediation: fix,
-        target: host,
-      },
-    );
+    return result("fail", `Could not look up ${host}: ${errorText(error)}.`, {
+      remediation: fix,
+      target: host,
+    });
   }
   const wrong = [
     ...a.filter((address) => address !== expected4),
@@ -351,10 +275,7 @@ export async function homeDnsCheck(
   ];
   const missing = ipv4 ? a.length === 0 : aaaa.length === 0;
   if (wrong.length > 0 || missing) {
-    return checkResult(
-      id,
-      title,
-      "high",
+    return result(
       "fail",
       a.length + aaaa.length === 0
         ? `${host} has no A or AAAA record.`
@@ -362,13 +283,12 @@ export async function homeDnsCheck(
       { remediation: fix, target: host },
     );
   }
-  return checkResult(
-    id,
-    title,
-    "high",
+  return result(
     "pass",
     `${host} resolves to your home's address (${[...a, ...aaaa].join(", ")}).`,
-    { target: host },
+    {
+      target: host,
+    },
   );
 }
 
@@ -404,11 +324,10 @@ async function outsideCheck(
   input: Pick<HomeChecksInput, "github" | "resolver">,
   forwards: HomeForwardsInput,
 ): Promise<{ check: CheckResult; result?: OutsideCheckResult }> {
-  const id = "outside-check";
-  const title = "Your app answers from outside your home";
   const host = plan.dns.domain;
+  const result = resultOf("outside-check", "Your app answers from outside your home", "high");
   const skip = (message: string, remediation?: string) => ({
-    check: checkResult(id, title, "high", "skip", message, {
+    check: result("skip", message, {
       ...(remediation !== undefined ? { remediation } : {}),
       ...(host !== undefined ? { target: host } : {}),
     }),
@@ -427,10 +346,10 @@ async function outsideCheck(
       "Skipped: the check runs on GitHub's machines, and no GitHub token is available (set GITHUB_TOKEN or run `gh auth login`).",
     );
   }
-  let result: OutsideCheckResult;
+  let outcome: OutsideCheckResult;
   try {
     const { defaultBranch } = await client.getRepo(repo.owner, repo.repo);
-    result = await runOutsideCheck(
+    outcome = await runOutsideCheck(
       deps,
       { api: client, owner: repo.owner, repo: repo.repo, defaultBranch },
       {
@@ -449,17 +368,15 @@ async function outsideCheck(
     }
     throw error;
   }
-  const ports = [result.http, result.https];
+  const ports = [outcome.http, outcome.https];
   const status = ports.includes("failed")
     ? "fail"
     : ports.every((port) => port === "ok")
       ? "pass"
       : "warn";
   return {
-    check: checkResult(id, title, "high", status, outsideCheckLines(result, forwards).join(" "), {
-      target: host,
-    }),
-    result,
+    check: result(status, outsideCheckLines(outcome, forwards).join(" "), { target: host }),
+    result: outcome,
   };
 }
 
@@ -479,11 +396,13 @@ export interface HomeChecksInput {
 }
 
 /**
- * The checks of a server at home (plan 13.): with SSH, inspection's updater state (`dns-updater`,
- * with DNS on Cloudflare) and power (`pi-power`, on a Raspberry Pi), and for a DNS-only app its
- * records against the address the server detects; away from home those are skipped with
- * {@link AWAY_FROM_HOME}. Then `outside-check`, from GitHub's machines. A DNS-only app this computer
- * can't reach while port 443 answered from outside gets warnings for its site requests.
+ * The checks of a server at home (plan 13.): the server read once (`readHomeServer`, with DNS only
+ * its home network too), then inspection's updater state (`dns-updater`, with DNS on Cloudflare)
+ * and power (`pi-power`, on a Raspberry Pi), and for a DNS-only app its records against the
+ * address the server detects; away from home those are skipped with {@link AWAY_FROM_HOME}. Then
+ * `outside-check`, from GitHub's machines. A DNS-only app this computer can't reach while port
+ * 443 answered from outside gets warnings for its site requests.
+ * @throws the read's plain-words error when the server answered but couldn't be read.
  */
 export async function homeChecks(
   deps: PhaseDeps,
@@ -491,12 +410,19 @@ export async function homeChecks(
   input: HomeChecksInput,
 ): Promise<CheckResult[]> {
   const proxied = plan.dns.provider === "cloudflare" && plan.dns.proxied;
-  const target = plan.target.provider === "own" ? plan.target : undefined;
   const record = (await readOwnServerRecord(deps.paths))?.home;
-  const server = await readServer(deps, { dnsOnly: !proxied, services: input.services });
+  const read = await readHomeServer(deps, {
+    services: input.services,
+    phase: "verify",
+    detail: "the address updater and the power supply",
+    // With DNS only the records are compared with the address the server detects.
+    ...(proxied ? {} : { network: { proxied } }),
+  });
+  if ("unread" in read) throw read.unread;
+  const server = "facts" in read ? read : undefined;
   if (server === undefined) {
     deps.reporter.info(
-      "Your server answers SSH only on your home network, so the updater's state and the power supply weren't checked (skipped). The outside check runs from GitHub's machines.",
+      `${upperFirst(AWAY_FROM_HOME)}, so the updater's state and the power supply weren't checked (skipped). The outside check runs from GitHub's machines.`,
     );
   }
   let checks = [...input.checks];
@@ -510,85 +436,24 @@ export async function homeChecks(
     );
   }
   if (plan.dns.provider === "cloudflare") {
-    checks.push(
-      server === undefined
-        ? checkResult(
-            "dns-updater",
-            "The address updater keeps the app's records current",
-            "high",
-            "skip",
-            AWAY_SKIP,
-          )
-        : dnsUpdaterCheck(plan, server.facts.dnsUpdaters, deps.clock.now(), input.flag),
-    );
+    checks.push(dnsUpdaterCheck(plan, server?.facts, deps.clock.now(), input.flag));
   }
-  // Away from home the board is unknown: only an arm64 server can be a Raspberry Pi.
-  const power =
-    server === undefined
-      ? target?.arch === "arm64"
-        ? checkResult(
-            "pi-power",
-            "Your Raspberry Pi gets enough power",
-            "medium",
-            "skip",
-            AWAY_SKIP,
-          )
-        : undefined
-      : piPowerCheck(server.facts);
+  const power = piPowerCheck(
+    server?.facts,
+    plan.target.provider === "own" ? plan.target.arch : undefined,
+  );
   if (power !== undefined) checks.push(power);
 
-  const ipv4 = target?.home?.ipv4 === true;
-  const network = record?.network;
-  const forwards: HomeForwardsInput = {
-    ...(network?.lan !== undefined && !network.noNat ? { lanAddress: network.lan.address } : {}),
-    ipv4,
-    noNat: network?.noNat ?? false,
-    // An AAAA record is published behind the proxy without IPv4, and with DNS only while there is IPv6.
-    aaaa: proxied ? !ipv4 : network?.ipv6 === "present",
-    ...(record?.sshFrom !== undefined ? { sshFrom: record.sshFrom } : {}),
-  };
+  const forwards = homeForwardsInput({
+    ipv4: homeIpv4(plan),
+    proxied,
+    network: record?.network,
+    lanAddress: record?.network?.lan?.address,
+    sshFrom: record?.sshFrom,
+  });
   const outside = await outsideCheck(deps, plan, input, forwards);
   checks.push(outside.check);
   return !proxied && outside.result?.https === "ok" && input.siteUnreachable
     ? hairpinWarnings(checks)
     : checks;
-}
-
-/**
- * Inspects the server at home over SSH, read-only, and with DNS only reads its home network for
- * the detected address; `undefined` when SSH doesn't answer (away from home).
- */
-async function readServer(
-  deps: PhaseDeps,
-  options: {
-    dnsOnly: boolean;
-    services: Pick<OwnServerServices, "remote" | "homeDir" | "host"> | undefined;
-  },
-): Promise<{ facts: HostFacts; network?: HomeNetwork } | undefined> {
-  deps.reporter.step("Connecting to your server");
-  let session: Awaited<ReturnType<typeof connectOwnServer>>;
-  try {
-    session = await connectOwnServer(deps, { services: options.services });
-  } catch (error) {
-    // ssh couldn't reach it (testLogin's and the key scan's COMMAND_FAILED): not on its network.
-    if (error instanceof OpsCrewError && error.code === "COMMAND_FAILED") return undefined;
-    throw error;
-  }
-  const facts = await inspectOwnHost(deps, session, {
-    services: options.services,
-    phase: "verify",
-    detail: "the address updater and the power supply",
-  });
-  if (!options.dnsOnly) return { facts };
-  deps.reporter.step("Reading your home network from your server (read-only)");
-  const network = await boundHostAdapter(options.services?.host).detectHomeNetwork(session.remote);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "detect home network (read-only)",
-    phase: "verify",
-    target: "own server",
-    decision: "allow",
-  });
-  return { facts, network };
 }

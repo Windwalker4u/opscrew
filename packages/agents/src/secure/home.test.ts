@@ -25,7 +25,7 @@ import {
   ownPlan,
   ownRunner,
 } from "../testing";
-import { AWAY_FROM_HOME, fromInside, homeServerChecks, insideLabel } from "./home";
+import { fromInside, homeServerChecks, insideLabel, NOT_CHECKED_AWAY } from "./home";
 import { runSecure } from "./run";
 
 const NOW = "2026-11-20T12:00:00.000Z";
@@ -338,7 +338,7 @@ describe("runSecure on a server at home", () => {
     const overSsh = [...result.hostChecks, find(result.probes, "ssh-password-login-disabled")];
     expect(overSsh.length).toBeGreaterThan(2);
     for (const check of overSsh) {
-      expect(check).toMatchObject({ status: "skip", message: AWAY_FROM_HOME });
+      expect(check).toMatchObject({ status: "skip", message: NOT_CHECKED_AWAY });
       expect(check.remediation).toBe("Run `opscrew secure` from your home network.");
     }
     expect(find(result.hostChecks, "home-server-checks").message).toContain(

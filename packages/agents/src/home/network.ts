@@ -1,11 +1,16 @@
 /**
- * The classification of a home server's network (research R3): what `detectHomeNetwork` found,
- * turned into the facts design, provision and verify act on and `.opscrew/server.json` keeps
- * (`own.home.network`, beside the LAN facts and the time). Pure: it holds no address, so the
- * public addresses stay in the run's memory only, hidden from output for a proxied app.
+ * A home server's network (research R3): its read through the host adapter's `detectHomeNetwork`
+ * ({@link readHomeNetwork}), and the classification of what it found, turned into the facts
+ * design, provision and verify act on and `.opscrew/server.json` keeps (`own.home.network`,
+ * beside the LAN facts and the time). The classification holds no address, so the public
+ * addresses stay in the run's memory only, hidden from output for a proxied app.
  */
 import { agreedIpv4, type HomeNetwork, isPublicAddress } from "@opscrew/connector-ssh-host";
-import type { Redactor } from "@opscrew/core";
+import type { PhaseName } from "@opscrew/contracts";
+import { OpsCrewError, type Redactor } from "@opscrew/core";
+import type { PhaseDeps } from "../context";
+import { boundHostAdapter, type HostAdapterApi } from "../shared/host-plan";
+import type { OwnServerSession } from "../shared/own-server";
 import type { OwnHome } from "../shared/server-record";
 
 /** What {@link classifyHomeNetwork} found: `own.home.network` without the LAN facts and the time. */
@@ -104,4 +109,52 @@ export function registerHomeAddresses(
       redactor.addName(address, HOME_ADDRESS_LABEL);
     }
   }
+}
+
+/**
+ * Reads the home's network from the server over `session` (read-only, through `host`'s
+ * `detectHomeNetwork`), audits it as "detect home network (read-only)" under `phase` with
+ * `detail`, and for a proxied app registers the detected addresses ({@link registerHomeAddresses}).
+ */
+export async function readHomeNetwork(
+  deps: Pick<PhaseDeps, "audit" | "redactor">,
+  session: Pick<OwnServerSession, "remote">,
+  options: {
+    host: HostAdapterApi | undefined;
+    proxied: boolean;
+    phase?: PhaseName;
+    detail?: string;
+  },
+): Promise<HomeNetwork> {
+  const network = await boundHostAdapter(options.host).detectHomeNetwork(session.remote);
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "detect home network (read-only)",
+    ...(options.phase !== undefined ? { phase: options.phase } : {}),
+    target: "own server",
+    decision: "allow",
+    ...(options.detail !== undefined ? { detail: options.detail } : {}),
+  });
+  registerHomeAddresses(deps.redactor, network, options.proxied);
+  return network;
+}
+
+/**
+ * The stop when this computer doesn't know which networks may reach SSH at home
+ * (`own.home.sshFrom`): design finds them, then `command` runs again. `consequence` ends the
+ * first sentence (`, so …` or `. Nothing was changed.`).
+ */
+export function sshSourcesUnknown(
+  flags: string,
+  command: string,
+  consequence: string,
+): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `OpsCrew doesn't know on this computer which networks may reach your server's SSH at home${consequence}`,
+    {
+      hint: `Run \`opscrew design${flags}\` again: it finds your home network. Then run \`${command}${flags}\` again.`,
+    },
+  );
 }
