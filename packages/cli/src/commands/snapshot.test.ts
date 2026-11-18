@@ -42,6 +42,8 @@ vi.mock("@opscrew/agents", async (importOriginal) => {
     deleteSnapshot: faked("deleteSnapshot"),
     snapshotScheduleOn: faked("snapshotScheduleOn"),
     snapshotScheduleOff: faked("snapshotScheduleOff"),
+    snapshotDrillScheduleOn: faked("snapshotDrillScheduleOn"),
+    snapshotDrillScheduleOff: faked("snapshotDrillScheduleOff"),
     snapshotOffsiteOn: faked("snapshotOffsiteOn"),
     snapshotOffsiteOff: faked("snapshotOffsiteOff"),
   };
@@ -103,6 +105,12 @@ describe("opscrew snapshot: the flags, checked before any work", () => {
     [["schedule", "on", "--keep", "0"], "Give a whole number from 1 up."],
     [["schedule", "on", "--keep", "two"], "Give a whole number from 1 up."],
     [["schedule", "sometimes"], "Allowed choices are on, off."],
+    [
+      ["drill", "schedule", "off", "--every", "daily"],
+      "`opscrew snapshot drill schedule off` takes no --every",
+    ],
+    [["drill", "schedule", "on", "--every", "hourly"], "Allowed choices are weekly, daily."],
+    [["drill", "schedule", "sometimes"], "Allowed choices are on, off."],
     [["offsite", "on"], "`opscrew snapshot offsite on` needs --to"],
     [["offsite", "on", "--to", "ftp"], "Allowed choices are r2, hetzner, digitalocean, s3, sftp."],
     [["offsite", "off", "--to", "r2", "--days", "30"], "takes no --to, --days"],
@@ -134,6 +142,7 @@ describe("opscrew snapshot: the flags, checked before any work", () => {
       "list [options]",
       "delete [options] <id>",
       "schedule [options] <on|off>",
+      "drill",
       "offsite [options] <on|off>",
       "opscrew restore <id>",
     ]) {
@@ -565,6 +574,33 @@ describe("opscrew snapshot schedule and offsite", () => {
     expect(await run(ctx, "snapshot", "offsite", "off", "--host", "x")).toBe(2);
     expect(ctx.errors).toContain("`opscrew snapshot offsite off` takes no --host");
     expect(fake.calls).toHaveLength(calls);
+  });
+
+  it("turns scheduled restore drills on with --every, and off", async () => {
+    const ctx = await setup();
+    fake.answers.snapshotDrillScheduleOn = async () =>
+      change(["Scheduled restore drills of staging: off → daily."]);
+    fake.answers.snapshotDrillScheduleOff = async () =>
+      change(["Scheduled restore drills of staging: daily → off."]);
+    expect(
+      await run(ctx, "snapshot", "drill", "schedule", "on", "--env", "staging", "--every", "daily"),
+      ctx.errors,
+    ).toBe(0);
+    expect(lastCall(fake.calls, "snapshotDrillScheduleOn").args).toEqual([{ every: "daily" }]);
+    expect(lastCall(fake.calls, "snapshotDrillScheduleOn").deps.paths.environment).toBe("staging");
+    expect(ctx.output).toContain("Scheduled restore drills of staging: off → daily.");
+    expect(await run(ctx, "snapshot", "drill", "schedule", "on", "--env", "staging")).toBe(0);
+    expect(lastCall(fake.calls, "snapshotDrillScheduleOn").args).toEqual([{}]);
+    expect(await run(ctx, "snapshot", "drill", "schedule", "off", "--env", "staging")).toBe(0);
+    expect(lastCall(fake.calls, "snapshotDrillScheduleOff").args).toEqual([]);
+    expect(ctx.output).toContain("Scheduled restore drills of staging: daily → off.");
+  });
+
+  it("refuses the drill schedule without the snapshot schedule, through the real agent", async () => {
+    const ctx = await setup();
+    expect(await run(ctx, "snapshot", "drill", "schedule", "on", "--env", "staging")).toBe(1);
+    expect(ctx.errors).toContain("A scheduled restore drill proves the latest scheduled snapshot");
+    expect(ctx.errors).toContain("opscrew snapshot schedule on --env staging");
   });
 
   it("writes the real plan's schedule through the agent", async () => {

@@ -1013,6 +1013,133 @@ describe("scheduled snapshots", () => {
   });
 });
 
+/**
+ * The line CHECK_COMMAND prints about `app`'s scheduled restore drills, after its snapshots': the
+ * end and result of the last scheduled drill that ran, or nothing after `drill` when none has.
+ */
+function drilled(app: string, last?: { end: Date; result: string }): string {
+  return `scheduled ${app} drill${last === undefined ? "" : ` ${last.end.toISOString().replace(/\.\d{3}Z$/, "Z")} ${last.result}`}\n`;
+}
+
+describe("scheduled restore drills", () => {
+  const RAN = new Date("2026-10-28T03:04:00.000Z");
+  const SNAPSHOT = scheduled("example-app", RAN, ["20261028T000000Z"]);
+  const DRILLED = (every: "weekly" | "daily" = "weekly"): CheckEnvironment => ({
+    ...PROD,
+    snapshots: {
+      app: "example-app",
+      servers: ["hetzner-example-app"],
+      drill: { server: "hetzner-example-app", every },
+    },
+  });
+  const KEY = "example-app/prod/drill/hetzner-example-app";
+  const daysAgo = (days: number, hours = 0) =>
+    new Date(START.getTime() - days * 86_400_000 - hours * 3_600_000);
+  const world = (answer: string, every: "weekly" | "daily" = "weekly") => {
+    const w = new World();
+    w.config = config({ environments: [DRILLED(every)] });
+    w.disks.set(SERVER_HOST, `${df(40)}${SNAPSHOT}${answer}`);
+    return w;
+  };
+
+  it("passes a healthy drill within twice its schedule, in the same read as the snapshot", async () => {
+    const w = world(drilled("example-app", { end: daysAgo(13, 23), result: "healthy" }));
+    expect(await run(env(), w.io())).toBe(0);
+    expect(w.sshCalls).toHaveLength(1);
+    expect(w.open()).toEqual([]);
+    expect(w.summaries.at(-1)).toContain(`- ${KEY}: passed`);
+    expect(w.summaries.at(-1)).toContain("- example-app/prod/snapshot/hetzner-example-app: passed");
+  });
+
+  it.each([
+    ["not-restored", "the snapshot did not restore."],
+    [
+      "unhealthy",
+      "the app did not become healthy on the restored data, with no internet and none of production's .env values.",
+    ],
+    ["failed", "the copy could not be made, cut off from the internet or started."],
+  ])("opens an issue for a %s drill, with its fixed sentence", async (result, sentence) => {
+    const w = world(drilled("example-app", { end: daysAgo(1), result }));
+    await run(env(), w.io());
+    const [issue] = w.open();
+    expect(issue?.title).toBe(
+      "OpsCrew check: example-app (prod) scheduled restore drill failed on hetzner-example-app",
+    );
+    expect(issue?.body).toContain(`<!-- opscrew-check:${KEY} -->`);
+    expect(issue?.body).toContain(
+      `The last scheduled restore drill of example-app on the server hetzner-example-app failed, at 2026-10-27 12:00 UTC: ${sentence}`,
+    );
+    expect(issue?.body).toContain("npx opscrew status");
+  });
+
+  it("opens an issue when no drill ran within twice the schedule, and closes it once one passes", async () => {
+    const w = world(drilled("example-app", { end: daysAgo(14, 2), result: "healthy" }));
+    await run(env(), w.io());
+    const [issue] = w.open();
+    expect(issue?.title).toBe(
+      "OpsCrew check: example-app (prod) no scheduled restore drill on hetzner-example-app",
+    );
+    expect(issue?.body).toContain(
+      "No scheduled restore drill of example-app has run on the server hetzner-example-app since 2026-10-14 10:00 UTC, more than twice its weekly schedule: each was skipped or did not start.",
+    );
+    w.disks.set(
+      SERVER_HOST,
+      `${df(40)}${SNAPSHOT}${drilled("example-app", { end: daysAgo(0, 1), result: "healthy" })}`,
+    );
+    await run(env(), w.io());
+    expect(w.open()).toEqual([]);
+
+    // Daily: twice its schedule is two days.
+    const daily = world(drilled("example-app", { end: daysAgo(2, 2), result: "healthy" }), "daily");
+    await run(env(), daily.io());
+    expect(daily.open().map((each) => each.title)).toEqual([
+      "OpsCrew check: example-app (prod) no scheduled restore drill on hetzner-example-app",
+    ]);
+  });
+
+  it("never opens an issue for a skip, and counts a server where none ran yet, or an older key, as not checked", async () => {
+    // Skips never reach the check: only drills that ran are printed.
+    const none = world(drilled("example-app"));
+    await run(env(), none.io());
+    expect(none.open()).toEqual([]);
+    expect(none.logs).toContain(
+      "hetzner-example-app: no scheduled restore drill of example-app has run there yet.",
+    );
+    expect(none.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+
+    const older = world("");
+    await run(env(), older.io());
+    expect(older.open()).toEqual([]);
+    expect(older.logs).toContain(
+      "::warning::The server hetzner-example-app was set up before the scheduled check read restore drills, so its drills are not checked. `npx opscrew provision` gives the app's server and the servers you own the new key line; another server OpsCrew created gets it when it is created again.",
+    );
+    expect(older.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+  });
+
+  it("reads a line in another form as one it cannot read, and never lets it reach any text", async () => {
+    const w = world(`scheduled example-app drill 2026-10-27T12:00:00Z ${SECRETS.inBody}\n`);
+    await run(env(), w.io());
+    expect(w.open()).toEqual([]);
+    expect(w.logs).toContain(
+      "::warning::The server hetzner-example-app answered about example-app's restore drills in a form the check cannot read.",
+    );
+    expect(w.texts().join("\n")).not.toContain(SECRETS.inBody);
+  });
+
+  it("checks no drill without a drill schedule", async () => {
+    const w = new World();
+    w.config = config({
+      environments: [
+        { ...PROD, snapshots: { app: "example-app", servers: ["hetzner-example-app"] } },
+      ],
+    });
+    w.disks.set(SERVER_HOST, `${df(40)}${SNAPSHOT}${drilled("example-app")}`);
+    await run(env(), w.io());
+    expect(w.summaries.at(-1)).not.toContain(KEY);
+    expect(w.logs.join("\n")).not.toContain("restore drill");
+  });
+});
+
 /** True when `program` runs in sh here. */
 function inShell(program: string): boolean {
   return spawnSync("sh", ["-c", `command -v ${program}`]).status === 0;
@@ -1050,6 +1177,22 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     for (const [app, lines] of Object.entries(logs)) {
       await write(`apps/${app}/.snapshots/scheduled.log`, `${lines.join("\n")}\n`);
     }
+    // Restore drills: shop's last scheduled one that ran failed, then one was skipped and one
+    // ran by hand; example-app's have only been skipped; blog has none.
+    await write(
+      "apps/shop/.snapshots/drills.log",
+      [
+        "2026-10-21T03:20:00Z scheduled healthy id=20261021T000000Z version=aaaaaaaaaaaa start=2026-10-21T03:05:00Z parts=db:7:1 health=healthy:9 tables=db:3 removal=removed cleaned=no reason=-",
+        `2026-10-28T03:20:00Z scheduled not-restored id=20261028T000000Z version=- start=2026-10-28T03:05:00Z parts=- health=- tables=- removal=removed cleaned=no reason=${secret}`,
+        "2026-10-28T09:00:00Z scheduled skipped id=- version=- start=2026-10-28T09:00:00Z parts=- health=- tables=- removal=- cleaned=no reason=locked",
+        "2026-10-28T10:00:00Z manual healthy id=20261028T000000Z version=- start=2026-10-28T09:55:00Z parts=- health=- tables=- removal=removed cleaned=no reason=-",
+        "",
+      ].join("\n"),
+    );
+    await write(
+      "apps/example-app/.snapshots/drills.log",
+      "2026-10-28T03:05:00Z scheduled skipped id=- version=- start=2026-10-28T03:05:00Z parts=- health=- tables=- removal=- cleaned=no reason=memory\n",
+    );
     await mkdir(join(dir, "apps/blog/.snapshots/20261028T030000Z.partial"), { recursive: true });
     await write("apps/Odd name/.snapshots/scheduled.log", "failed\n");
     await mkdir(join(dir, "apps/no-log"), { recursive: true });
@@ -1070,14 +1213,18 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     for (const text of ["Odd", "line ", "left out", "failed", "exit", secret]) {
       expect(result.stdout).not.toContain(text);
     }
-    // Each app's lines are what scheduledLog reads of its log.
+    // Each app's lines are what scheduledLog reads of its log, then the last scheduled drill that ran.
     for (const [app, lines] of Object.entries(logs)) {
       const printed = out.filter((line) => line.startsWith(`scheduled ${app} `));
       expect(printed[0]).toMatch(new RegExp(`^scheduled ${app} at \\d+$`));
       const expected = scheduled(app, new Date(0), lines, app === "blog").split("\n");
-      expect(printed.slice(1)).toEqual(expected.slice(1, -1));
+      expect(printed.slice(1, -1)).toEqual(expected.slice(1, -1));
     }
     expect(out).toContain("scheduled shop after 2");
+    expect(out).toContain("scheduled shop drill 2026-10-28T03:20:00Z not-restored");
+    expect(out).toContain("scheduled example-app drill");
+    expect(out).toContain("scheduled blog drill");
+    expect(result.stdout).not.toContain("locked");
 
     // The check reads that answer: the disk, a success, a failed copy and a snapshot being taken.
     const world = new World();

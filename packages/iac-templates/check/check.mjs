@@ -66,7 +66,9 @@ const PAUSE_REASONS = {
  * last written), `id <id>` (its last scheduled snapshot id line, if any), `after <n>` (how many
  * non-empty lines follow it, all of them without one: {@link scheduledLog}) and `running` (a
  * snapshot is being taken: a `.partial` folder while the app's start lock is held). Nothing else
- * of the log.
+ * of the log. Then `scheduled <app> drill`, with the end and result of the last scheduled restore
+ * drill that ran (not one that was skipped) from `.snapshots/drills.log`, if any: nothing else of
+ * that log either.
  */
 export const CHECK_COMMAND = [
   "export LC_ALL=C; df -P -B1 / && echo scheduled &&",
@@ -86,11 +88,32 @@ export const CHECK_COMMAND = [
   "if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi;",
   "break;",
   "done;",
+  "echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);",
   "done",
 ].join(" ");
 
 /** A scheduled snapshot's id: the hour of its slot, `20261107T030000Z`. */
 const SCHEDULED_ID = /^\d{8}T\d{6}Z$/;
+
+/** The answer's line on the last scheduled restore drill that ran: its end and its result. */
+const DRILL_LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (healthy|unhealthy|not-restored|failed)$/;
+
+/** A drill schedule's period in milliseconds. */
+const DRILL_PERIOD_MS = { weekly: 7 * 86_400_000, daily: 86_400_000 };
+
+/** The time a drill may take past its slot, added to twice its period: an hour. */
+const DRILL_GRACE_MS = 3_600_000;
+
+/** Why the last scheduled drill failed, by its result (research R19). */
+const DRILL_FAILURES = {
+  "not-restored": "the snapshot did not restore.",
+  unhealthy:
+    "the app did not become healthy on the restored data, with no internet and none of production's .env values.",
+  failed: "the copy could not be made, cut off from the internet or started.",
+};
+
+const DRILL_HINT =
+  "To see why, run `npx opscrew status` in this repository, with `--app <key>` and `--env <name>` for an app or environment other than the first app's prod; `npx opscrew restore --drill` runs a drill now. Each drill's line stays on the server, in .snapshots/drills.log in the app's folder.";
 
 const SNAPSHOT_HINT =
   "To see why, run `npx opscrew status` in this repository, with `--app <key>` and `--env <name>` for an app or environment other than the first app's prod. The snapshot's output stays on the server, in .snapshots/scheduled.log in the app's folder.";
@@ -328,6 +351,18 @@ function checksOf(environment, servers, records) {
       app: snapshots.app,
     });
   }
+  const drillServer =
+    snapshots?.drill === undefined ? undefined : servers.get(snapshots.drill.server);
+  if (drillServer !== undefined) {
+    checks.push({
+      key: `${environment.key}/drill/${drillServer.id}`,
+      kind: "drill",
+      environment,
+      server: drillServer,
+      app: snapshots.app,
+      every: snapshots.drill.every,
+    });
+  }
   for (const [name, date] of records.get(environment.key) ?? []) {
     checks.push({
       key: `${environment.key}/credential/${name}`,
@@ -372,6 +407,7 @@ function describe(key) {
       certificate: "the certificate",
       disk: "the disk",
       snapshot: "the scheduled snapshot",
+      drill: "the scheduled restore drill",
     }[kind] ?? kind;
   return `${appLabel(key)}, ${what} on ${target}`;
 }
@@ -381,6 +417,7 @@ function runCheck(check, thresholds, read, io) {
   if (check.kind === "https") return checkHttps(check, thresholds, io);
   if (check.kind === "certificate") return checkCertificate(check, thresholds, io);
   if (check.kind === "snapshot") return checkSnapshot(check, read, io);
+  if (check.kind === "drill") return checkDrill(check, read, io);
   if (check.kind === "credential") return checkCredential(check, io);
   return checkDisk(check, thresholds, read, io);
 }
@@ -689,6 +726,59 @@ async function checkSnapshot(check, read, io) {
     what: `The scheduled snapshot ${id} of ${app}, due at ${due}, was taken on the server ${server.id}, but its copy off the server failed, at ${at}.`,
     hint: SNAPSHOT_HINT,
   };
+}
+
+/**
+ * The last scheduled restore drill of the app on the server, from its `scheduled <app> drill`
+ * line: a failure when it did not restore, did not become healthy or failed otherwise, or when
+ * none ran within twice its schedule (and an hour). A skipped drill never reaches the line, so it
+ * never fails the check. Unknown when none ran yet, and when the server's check key is from before
+ * the check read drills. Nothing the drills' log says reaches any text but the end and result.
+ */
+async function checkDrill(check, read, io) {
+  const { server, app, every } = check;
+  const output = await read(server);
+  if (output === undefined) return undefined;
+  const prefix = `scheduled ${app} drill`;
+  const line = output.split("\n").find((each) => each === prefix || each.startsWith(`${prefix} `));
+  if (line === undefined) {
+    io.log(
+      `::warning::The server ${server.id} was set up before the scheduled check read restore drills, so its drills are not checked. \`npx opscrew provision\` gives the app's server and the servers you own the new key line; another server OpsCrew created gets it when it is created again.`,
+    );
+    return undefined;
+  }
+  const rest = line.slice(prefix.length).trim();
+  if (rest === "") {
+    io.log(`${server.id}: no scheduled restore drill of ${app} has run there yet.`);
+    return undefined;
+  }
+  const match = DRILL_LINE.exec(rest);
+  const period = DRILL_PERIOD_MS[every];
+  if (match === null || period === undefined) {
+    io.log(
+      `::warning::The server ${server.id} answered about ${app}'s restore drills in a form the check cannot read.`,
+    );
+    return undefined;
+  }
+  const [, end, result] = match;
+  const at = utc(new Date(end));
+  const title = `OpsCrew check: ${appLabel(check.key)}`;
+  if (result !== "healthy") {
+    return {
+      title: `${title} scheduled restore drill failed on ${server.id}`,
+      what: `The last scheduled restore drill of ${app} on the server ${server.id} failed, at ${at}: ${DRILL_FAILURES[result]}`,
+      hint: DRILL_HINT,
+    };
+  }
+  if (io.now().getTime() - Date.parse(end) > 2 * period + DRILL_GRACE_MS) {
+    return {
+      title: `${title} no scheduled restore drill on ${server.id}`,
+      what: `No scheduled restore drill of ${app} has run on the server ${server.id} since ${at}, more than twice its ${every} schedule: each was skipped or did not start.`,
+      hint: DRILL_HINT,
+    };
+  }
+  io.log(`${server.id}: the last scheduled restore drill of ${app} passed.`);
+  return null;
 }
 
 /**

@@ -3,6 +3,8 @@ import {
   listSnapshots,
   type OffsiteProvider,
   type SnapshotSettingChange,
+  snapshotDrillScheduleOff,
+  snapshotDrillScheduleOn,
   snapshotListLines,
   snapshotOffsiteOff,
   snapshotOffsiteOn,
@@ -41,6 +43,10 @@ interface ScheduleFlags extends AppEnvFlags {
   keep?: number;
   /** `--stop <service>`, repeatable. */
   stop?: string[];
+}
+
+interface DrillScheduleFlags extends AppEnvFlags {
+  every?: "weekly" | "daily";
 }
 
 interface OffsiteFlags extends AppEnvFlags {
@@ -220,6 +226,7 @@ export function register(program: Command, ctx: CliContext): void {
         "  opscrew snapshot list                     every snapshot, newest first",
         "  opscrew snapshot delete <id>              delete one, after you type its id",
         "  opscrew snapshot schedule on --every daily   scheduled snapshots, from the next provision",
+        "  opscrew snapshot drill schedule on        a weekly restore drill of the latest scheduled one",
         "  opscrew snapshot offsite on --to r2       an encrypted copy of each in a bucket",
         "  opscrew restore <id>                      put a snapshot's data back",
       ].join("\n"),
@@ -339,6 +346,41 @@ export function register(program: Command, ctx: CliContext): void {
             ...(flags.keep === undefined ? {} : { keep: flags.keep }),
             ...(stop === undefined ? {} : { stop }),
           }),
+    );
+  });
+
+  const drill = snapshot
+    .command("drill")
+    .description(
+      "Scheduled restore drills of the environment's snapshots: `opscrew restore --drill` runs one by hand",
+    );
+  addEnvOption(
+    drill
+      .command("schedule")
+      .description(
+        "Turn scheduled restore drills on or off in the plan, which need scheduled snapshots; `opscrew provision` then sets them up or removes them",
+      )
+      .addArgument(new Argument("<on|off>", "Turn them on or off").choices(["on", "off"]))
+      .addOption(
+        new Option(
+          "--every <when>",
+          "How often: weekly (the default) or daily, three hours after the scheduled snapshot",
+        ).choices(["weekly", "daily"]),
+      ),
+  ).action(async (state: "on" | "off", flags: DrillScheduleFlags) => {
+    if (state === "off") {
+      checkOff("drill schedule", givenFlags(flags), [[flags.every !== undefined, "--every"]]);
+    }
+    const { app, name } = await chooseEnvironment(ctx, flags, "snapshot drill schedule");
+    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
+    printChange(
+      ctx,
+      state === "off"
+        ? await snapshotDrillScheduleOff(deps)
+        : await snapshotDrillScheduleOn(
+            deps,
+            flags.every === undefined ? {} : { every: flags.every },
+          ),
     );
   });
 

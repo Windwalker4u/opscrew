@@ -36,9 +36,15 @@ export interface CheckEnvironment {
   /**
    * With scheduled snapshots on: the app's folder in `/srv/apps` and the ids of the servers with
    * its data (each listed by this or an earlier environment), whose last scheduled snapshot is
-   * checked. Absent when they are off, or no server with its data is read.
+   * checked. Absent when they are off, or no server with its data is read. With scheduled restore
+   * drills on (`snapshots.drills.schedule`), `drill` names the app's server, one of `servers`, whose
+   * last scheduled drill is checked, and how often one runs.
    */
-  snapshots?: { app: string; servers: string[] };
+  snapshots?: {
+    app: string;
+    servers: string[];
+    drill?: { server: string; every: "weekly" | "daily" };
+  };
   /**
    * With `observability.check.credentials` on: the app's committed rotation record (its path from
    * the repository's root), the environment's name in it, the age in days from which a

@@ -158,6 +158,13 @@ describe("check-key", () => {
     expect(old.test(`restrict,command="df -P -B1 /; sh" ${check} opscrew-check:acme/shop`)).toBe(
       false,
     );
+    // The form that read the scheduled snapshots but not the restore drills is older too.
+    const drill = CHECK_KEY_COMMAND.match(/ echo scheduled \$a drill [^;]*;/)?.[0];
+    expect(drill).toBeDefined();
+    const snapshotsOnly = checkKeyLine(check, "acme/shop").replace(drill ?? "", "");
+    expect(re.test(snapshotsOnly)).toBe(false);
+    expect(old.test(snapshotsOnly)).toBe(true);
+    expect(old.test(snapshotsOnly.replace("$(stat", "X(stat"))).toBe(false);
   });
 
   it("is removed alone by its undo, and by the last app's teardown (its own repository's only)", async () => {

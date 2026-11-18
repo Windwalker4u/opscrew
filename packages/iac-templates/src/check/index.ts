@@ -294,7 +294,8 @@ function extraServersOf(plan: DeployPlan): CheckServer[] {
 /**
  * With `plan`'s scheduled snapshots on, its app's folder and the ids of the servers with its data
  * the check reads (`app`, the app's server, and `extras`): those `status` reads the scheduled
- * snapshots' logs of. `undefined` when they are off or there is none.
+ * snapshots' logs of. With scheduled restore drills on and data on the app's server, which runs
+ * them, `drill` names it and the drills' schedule. `undefined` when they are off or there is none.
  */
 function scheduledSnapshots(
   plan: DeployPlan,
@@ -302,13 +303,20 @@ function scheduledSnapshots(
   extras: readonly CheckServer[],
 ): CheckEnvironment["snapshots"] {
   if (snapshotScheduleOf(plan) === undefined) return undefined;
+  const onApp = app !== undefined && snapshotParts(plan).length > 0;
   const servers = [
-    ...(app !== undefined && snapshotParts(plan).length > 0 ? [app.id] : []),
+    ...(onApp ? [app.id] : []),
     ...extras
       .filter((extra) => extra.name !== undefined && snapshotParts(plan, extra.name).length > 0)
       .map((extra) => extra.id),
   ];
-  return servers.length === 0 ? undefined : { app: plan.app.name, servers };
+  if (servers.length === 0) return undefined;
+  const every = plan.snapshots?.drills?.schedule;
+  return {
+    app: plan.app.name,
+    servers,
+    ...(onApp && every !== undefined ? { drill: { server: app.id, every } } : {}),
+  };
 }
 
 /**

@@ -446,6 +446,38 @@ describe("renderCheck with scheduled snapshots", () => {
       { app: "shop-staging", servers: ["own-1"] },
     ]);
   });
+
+  it("names the drills' schedule and the app's server, which runs them, with scheduled drills on", () => {
+    const drilled = (plan: DeployPlan, schedule: "weekly" | "daily") =>
+      DeployPlanSchema.parse({ ...plan, snapshots: { schedule: {}, drills: { schedule } } });
+    const split = withCheck(inEnvironment(splitPlan(), { runner: "github" }));
+    expect(snapshotsOf(renderCheck({ plans: [drilled(split, "daily")], repo: PUBLIC }))).toEqual([
+      {
+        app: "shop",
+        servers: ["hetzner-shop", "hetzner-shop-data", "own-shop-box-2"],
+        drill: { server: "hetzner-shop", every: "daily" },
+      },
+    ]);
+    // Drills by hand only: nothing more is read.
+    const byHand = DeployPlanSchema.parse({ ...split, snapshots: { schedule: {}, drills: {} } });
+    expect(snapshotsOf(renderCheck({ plans: [byHand], repo: PUBLIC }))).toEqual([
+      { app: "shop", servers: ["hetzner-shop", "hetzner-shop-data", "own-shop-box-2"] },
+    ]);
+    // No data on the app's server: no drill there to check.
+    const extrasOnly = withCheck(
+      DeployPlanSchema.parse({
+        ...split,
+        services: split.services.filter((service) => service.server !== undefined),
+        network: {
+          ...split.network,
+          grants: split.network?.grants?.filter((grant) => grant.service !== "cache"),
+        },
+      }),
+    );
+    expect(
+      snapshotsOf(renderCheck({ plans: [drilled(extrasOnly, "weekly")], repo: PUBLIC })),
+    ).toEqual([{ app: "shop", servers: ["hetzner-shop-data", "own-shop-box-2"] }]);
+  });
 });
 
 describe("renderCheck: the credentials' ages", () => {

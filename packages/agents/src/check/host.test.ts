@@ -23,6 +23,10 @@ describe("hasCheckKey", () => {
       await hasCheckKey(deps, shell(`ssh-ed25519 AAAAdeploy deploy\n${line}\n`), key, "acme/shop"),
     ).toBe(true);
     expect(await hasCheckKey(deps, shell(`${old}\n`), key, "acme/shop")).toBe(false);
+    // The line that read the scheduled snapshots but not the restore drills is planned again too.
+    const snapshotsOnly = line.replace(/ echo scheduled \$a drill [^;]*;/, "");
+    expect(snapshotsOnly).not.toBe(line);
+    expect(await hasCheckKey(deps, shell(`${snapshotsOnly}\n`), key, "acme/shop")).toBe(false);
     expect(await hasCheckKey(deps, shell(`${line}\n`), key, "acme/blog")).toBe(false);
   });
 });

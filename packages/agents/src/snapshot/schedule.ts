@@ -1,7 +1,9 @@
 /**
  * `opscrew snapshot schedule on|off` (US5, FR-2406): scheduled data snapshots in the plan
  * (`snapshots.schedule`), which provision then puts on the servers (a line in the deploy user's
- * crontab, D2) or into the Portainer stack. Only the plan changes here.
+ * crontab, D2) or into the Portainer stack; and `opscrew snapshot drill schedule on|off` (029
+ * plan.md 19., research R28): scheduled restore drills (`snapshots.drills.schedule`), which need
+ * the snapshot schedule. Only the plan changes here.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
 import { snapshotParts } from "@opscrew/iac-templates";
@@ -10,7 +12,7 @@ import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { planFile } from "../runners/words";
 import { dataServers } from "./hosts";
-import { type SnapshotRun, snapshotRun } from "./run";
+import { type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
 import {
   provisionLine,
   requireSettingsPlace,
@@ -135,15 +137,120 @@ export async function snapshotScheduleOn(
 export async function snapshotScheduleOff(deps: PhaseDeps): Promise<SnapshotSettingChange> {
   const run = await snapshotRun(deps);
   const { plan } = run;
-  const after = withSnapshotSetting(plan, "schedule", undefined, "turn off scheduled snapshots");
+  const what = "turn off scheduled snapshots";
+  // The drills prove the scheduled snapshots: their schedule goes first; drills by hand stay.
+  const drills = plan.snapshots?.drills?.schedule !== undefined;
+  const after = withSnapshotSetting(
+    drills ? withDrillSchedule(plan, undefined, what) : plan,
+    "schedule",
+    undefined,
+    what,
+  );
   return writeSnapshotSetting(
     run,
     after,
     [
       `Scheduled snapshots of ${run.environment}'s data (snapshots.schedule in ${planFile(plan)}): ${scheduleText(plan)} → off.`,
+      ...(drills
+        ? [
+            `The scheduled restore drills (snapshots.drills.schedule) go too: each one proves the latest scheduled snapshot. ${byHandLine(run)}`,
+          ]
+        : []),
       `The scheduled snapshots already taken stay until you delete them with \`opscrew snapshot delete <id>${run.flags}\`; \`opscrew snapshot list${run.flags}\` lists them.`,
       provisionLine(run, `take the schedule off ${where(plan)}`),
     ],
     `Scheduled snapshots of ${run.environment}'s data are already off.`,
+  );
+}
+
+/** How often `opscrew snapshot drill schedule on` drills: `weekly` (the default) or `daily`. */
+export interface DrillScheduleOnOptions {
+  every?: "weekly" | "daily";
+}
+
+/** `plan` with `snapshots.drills.schedule` set to `every`, or removed (drills by hand stay on). */
+function withDrillSchedule(
+  plan: DeployPlan,
+  every: "weekly" | "daily" | undefined,
+  what: string,
+): DeployPlan {
+  const { schedule: _old, ...drills } = plan.snapshots?.drills ?? {};
+  return withSnapshotSetting(
+    plan,
+    "drills",
+    every === undefined ? drills : { ...drills, schedule: every },
+    what,
+  );
+}
+
+/** The line that says restore drills by hand stay. */
+function byHandLine(run: SnapshotRun): string {
+  return `Restore drills by hand stay: \`opscrew restore --drill${run.flags}\` runs one.`;
+}
+
+/**
+ * `opscrew snapshot drill schedule on` (research R28): `snapshots.drills.schedule` in the plan,
+ * `options.every` over the plan's value, else weekly, written through the plan-writing path; once
+ * provision puts it on the target, each drill runs three hours after the scheduled snapshot's slot.
+ * @throws OpsCrewError `PHASE_PRECONDITION` on this computer, where snapshots can't be scheduled,
+ * and without the snapshot schedule (offering both commands). Nothing is written then.
+ */
+export async function snapshotDrillScheduleOn(
+  deps: PhaseDeps,
+  options: DrillScheduleOnOptions = {},
+): Promise<SnapshotSettingChange> {
+  const run = await snapshotRun(deps);
+  const { plan } = run;
+  if (snapshotTarget(run) === "computer") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew does not run scheduled restore drills on this computer: it isn't always on to run them. ${NOTHING_CHANGED}`,
+      { hint: `Run one when you need it with \`opscrew restore --drill${run.flags}\`.` },
+    );
+  }
+  requireSettingsPlace(run, "drills", "run scheduled restore drills");
+  if (snapshotScheduleOf(plan) === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `A scheduled restore drill proves the latest scheduled snapshot, and ${run.environment} takes none on a schedule, so OpsCrew did not schedule drills. ${NOTHING_CHANGED}`,
+      {
+        hint: `Turn both on: \`opscrew snapshot schedule on${run.flags}\`, then \`opscrew snapshot drill schedule on${run.flags}\`.`,
+      },
+    );
+  }
+  const current = plan.snapshots?.drills?.schedule;
+  const every = options.every ?? current ?? "weekly";
+  const after = withDrillSchedule(plan, every, "schedule restore drills");
+  return writeSnapshotSetting(
+    run,
+    after,
+    [
+      `Scheduled restore drills of ${run.environment} (snapshots.drills.schedule in ${planFile(plan)}): ${current ?? "off"} → ${every}, three hours after the scheduled snapshot.`,
+      "Each one restores the latest scheduled snapshot into a throwaway copy with no internet and none of the production .env's values, checks it and removes it. A deploy or a snapshot running, or too little disk or memory, skips it.",
+      provisionLine(run, `put the schedule on ${where(after)}`),
+    ],
+    `Scheduled restore drills of ${run.environment} are already ${every}.`,
+  );
+}
+
+/**
+ * `opscrew snapshot drill schedule off`: `snapshots.drills.schedule` removed from the plan; drills
+ * by hand stay, and the lines say so and to run provision.
+ */
+export async function snapshotDrillScheduleOff(deps: PhaseDeps): Promise<SnapshotSettingChange> {
+  const run = await snapshotRun(deps);
+  const { plan } = run;
+  const current = plan.snapshots?.drills?.schedule;
+  const after =
+    current === undefined ? plan : withDrillSchedule(plan, undefined, "turn off scheduled drills");
+  return writeSnapshotSetting(
+    run,
+    after,
+    [
+      `Scheduled restore drills of ${run.environment} (snapshots.drills.schedule in ${planFile(plan)}): ${current} → off.`,
+      byHandLine(run),
+      provisionLine(run, `take the schedule off ${where(plan)}`),
+    ],
+    `Scheduled restore drills of ${run.environment} are already off.`,
   );
 }

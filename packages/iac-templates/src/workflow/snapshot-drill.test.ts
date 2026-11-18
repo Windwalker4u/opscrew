@@ -2,7 +2,15 @@
 // Feature 029, restore drills (T2933; plan.md 19., research R15–R19, R29): `snapshot.sh drill`
 // keeps its bounds itself, whatever asks it.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -17,6 +25,7 @@ import {
   drillRecord,
   renderDrill,
 } from "../drill";
+import { DRILL_RECIPE_DIR, drillRecipe } from "../drill/script";
 import { onThisComputer } from "../edge/__fixtures__/localhost";
 import { withBuild, withSqlite } from "./__fixtures__/plans";
 import { FAKE_DF, fakeBin, shWorks, write } from "./__fixtures__/sh";
@@ -87,6 +96,8 @@ const FAKE_DOCKER = [
   "      exit 1",
   "    fi",
   '    if [ -n "${CREATE_FAIL:-}" ]; then exit 1; fi',
+  // What the copy's folder held when it was created, for the scheduled drill's tests.
+  '    rm -rf "$WORK/seen"; cp -Rp .drill "$WORK/seen"',
   '    for s in $DRILL_SERVICES; do : > "$d/containers/$s"; done',
   '    for v in ${DRILL_VOLUMES:-}; do : > "$d/volumes/$v"; done',
   '    echo "${NET_INTERNAL:-true}" > "$d/network" ;;',
@@ -170,9 +181,18 @@ const mode = (path: string) => (statSync(path).mode & 0o777).toString(8);
 /** The fake `date +%s` of the run, in Unix seconds. */
 const now = () => Number(readFileSync(`${work}/clock`, "utf8").trim());
 
-/** The parts of `plan`'s snapshot `id` taken `taken`, each file `<part> rows`. */
-function snapshot(id: string, taken: string, plan: DeployPlan = PLAN): void {
-  const parts = snapshotParts(plan);
+/**
+ * The parts of `plan`'s snapshot `id` taken `taken`, each file `<part> rows`: every part, or with
+ * `kind: "scheduled"` those copied while they run.
+ */
+function snapshot(
+  id: string,
+  taken: string,
+  plan: DeployPlan = PLAN,
+  kind: "manual" | "scheduled" = "manual",
+  version = `sha256:${A}`,
+): void {
+  const parts = snapshotParts(plan).filter((part) => kind === "manual" || part.online);
   for (const part of parts) write(at(`.snapshots/${id}/${part.file}`, plan), `${part.name} rows`);
   write(at(`.snapshots/${id}/taken`, plan), `${taken}\n`);
   const services = parts.map((part) => ({
@@ -183,7 +203,7 @@ function snapshot(id: string, taken: string, plan: DeployPlan = PLAN): void {
   }));
   write(
     at(`.snapshots/${id}/about.json`, plan),
-    `${JSON.stringify({ id, kind: "manual", taken, version: `sha256:${A}`, services })}\n`,
+    `${JSON.stringify({ id, kind, taken, version, services })}\n`,
   );
 }
 
@@ -307,18 +327,21 @@ function noProduction(plan: DeployPlan = PLAN): void {
   }
 }
 
-describe.skipIf(!shWorks())("snapshot.sh drill", { timeout: 300_000 }, () => {
-  beforeEach(() => {
-    work = mkdtempSync(join(tmpdir(), "opscrew-snapshot-drill-")).replaceAll("\\", "/");
-    fakeBin(work, {
-      docker: FAKE_DOCKER,
-      df: FAKE_DF,
-      flock: FAKE_FLOCK,
-      date: FAKE_DATE,
-      sleep: FAKE_SLEEP,
-    });
-    write(`${work}/clock`, `${Math.floor(Date.now() / 1000)}\n`);
+/** A machine of its own for each test: the fakes, and the clock now. */
+function setUp(): void {
+  work = mkdtempSync(join(tmpdir(), "opscrew-snapshot-drill-")).replaceAll("\\", "/");
+  fakeBin(work, {
+    docker: FAKE_DOCKER,
+    df: FAKE_DF,
+    flock: FAKE_FLOCK,
+    date: FAKE_DATE,
+    sleep: FAKE_SLEEP,
   });
+  write(`${work}/clock`, `${Math.floor(Date.now() / 1000)}\n`);
+}
+
+describe.skipIf(!shWorks())("snapshot.sh drill", { timeout: 300_000 }, () => {
+  beforeEach(setUp);
   afterEach(() => rmSync(work, { recursive: true, force: true }));
 
   it("restores each part into <app>-drill with no internet, finds it healthy, counts its tables and removes it", () => {
@@ -643,6 +666,183 @@ describe.skipIf(!shWorks())("snapshot.sh drill", { timeout: 300_000 }, () => {
     });
     expect(gone.record).toMatchObject({ result: "failed", reason: "gone" });
     expect(calls().some((call) => call.startsWith("docker pull"))).toBe(false);
+  });
+});
+
+/** {@link PLAN} with a weekly snapshot schedule and weekly drills. */
+const SCHEDULED = DeployPlanSchema.parse({
+  ...PLAN,
+  snapshots: { schedule: { every: "weekly", keep: 4 }, drills: { schedule: "weekly" } },
+});
+const REPOSITORY = "ghcr.io/acme/shop";
+/** The version the latest scheduled snapshot recorded. */
+const B = "b".repeat(64);
+/** A snapshot by hand, newer than the scheduled ones, which a scheduled drill leaves alone. */
+const NEWER = "20261118T020000Z";
+/** The scheduled copy's services: the stop-only mq is not in a scheduled snapshot. */
+const SCHEDULED_ENV = { DRILL_SERVICES: "app db" };
+
+/** The clock `hours` after the start of the weekly slot's hour (Thursday 03:00 UTC), plus 5 minutes. */
+function inSlot(hours = 0): void {
+  const hour = Math.floor(Date.now() / 3_600_000);
+  write(`${work}/clock`, `${(hour - (hour % 168) + 3 + hours) * 3600 + 300}\n`);
+}
+
+/** The scheduled drill's recipe, as the host plan writes it: its files, then values.env (600). */
+function recipe(): void {
+  for (const file of drillRecipe(SCHEDULED, {
+    repository: REPOSITORY,
+    env: ENV,
+    previewValues: true,
+  })) {
+    write(at(file.path, SCHEDULED), file.content);
+  }
+  write(at(`${DRILL_RECIPE_DIR}/values.env`, SCHEDULED), VALUES);
+  chmodSync(at(`${DRILL_RECIPE_DIR}/values.env`, SCHEDULED), 0o600);
+}
+
+/** The app folder with its script, two scheduled snapshots ({@link ID} the latest), a newer one by hand and the recipe. */
+function scheduledMachine(): void {
+  write(at("snapshot.sh", SCHEDULED), `${snapshotScript(SCHEDULED).join("\n")}\n`);
+  write(at(".env", SCHEDULED), `APP_IMAGE=${IMAGE}\n`);
+  snapshot(OLDER, "2026-11-11T00:00:00Z", SCHEDULED, "scheduled", `sha256:${"c".repeat(64)}`);
+  snapshot(ID, "2026-11-18T00:00:00Z", SCHEDULED, "scheduled", `sha256:${B}`);
+  snapshot(NEWER, "2026-11-18T02:00:00Z", SCHEDULED);
+  recipe();
+}
+
+/** `sh snapshot.sh drill scheduled`, as the deploy user's crontab runs it. */
+const scheduledDrill = (env: Record<string, string> = {}, args: string[] = ["scheduled"]) =>
+  drill(args, { plan: SCHEDULED, env: { ...SCHEDULED_ENV, ...env } });
+
+describe.skipIf(!shWorks())("snapshot.sh drill scheduled", { timeout: 300_000 }, () => {
+  beforeEach(setUp);
+  afterEach(() => rmSync(work, { recursive: true, force: true }));
+
+  it("drills the latest scheduled snapshot in its slot, from the recipe, with the snapshot's version and no one-time approval", () => {
+    scheduledMachine();
+    inSlot();
+    // A one-time approval here is for a drill by hand: the scheduled one neither needs nor uses it.
+    approve({}, SCHEDULED);
+    const result = scheduledDrill();
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.record).toMatchObject({
+      kind: "scheduled",
+      result: "healthy",
+      id: ID,
+      version: B.slice(0, 12),
+      parts: [
+        { name: "db", size: 7, seconds: 0 },
+        { name: "sqlite", size: 11, seconds: 0 },
+      ],
+      tables: [{ service: "db", count: 3 }],
+      removal: "removed",
+      cleaned: false,
+    });
+    expect(logged(SCHEDULED)).toEqual([result.record]);
+    expect(calls()).toContain(`docker image inspect ${REPOSITORY}@sha256:${B}`);
+    expect(existsSync(at(DRILL_APPROVAL_FILE, SCHEDULED))).toBe(true);
+
+    // The copy was the recipe's, the app at the snapshot's version, its values filled in here.
+    const seen = `${work}/seen/${ID}`;
+    expect(read(`${seen}/compose.yaml`)).toContain(`image: ${REPOSITORY}@sha256:${B}`);
+    expect(read(`${seen}/compose.yaml`)).not.toMatch(/sha256:0{64}/);
+    expect(read(`${seen}/values.env`)).toBe(VALUES);
+    expect(read(`${seen}/app.env`)).toMatch(/^DATABASE_URL=postgres:\/\/app:[0-9a-f]{64}@db/m);
+    expect(existsSync(`${seen}/schedule`)).toBe(false);
+    if (!windows) {
+      for (const file of ["app.env", "db.env", "values.env"]) {
+        expect(mode(`${seen}/${file}`), file).toBe("600");
+      }
+      expect(mode(seen)).toBe("700");
+    }
+    // The copy is gone; the recipe stays as the host plan wrote it.
+    expect(existsSync(at(".drill", SCHEDULED))).toBe(false);
+    expect(read(at(`${DRILL_RECIPE_DIR}/compose.yaml`, SCHEDULED))).toMatch(/sha256:0{64}/);
+    expect(read(at(`${DRILL_RECIPE_DIR}/app.env`, SCHEDULED))).toContain("@SECRET:");
+    noProduction(SCHEDULED);
+    expect(result.output).not.toContain(VALUES.trim());
+    expect(read(at(DRILLS_LOG, SCHEDULED))).not.toContain(VALUES.trim());
+  });
+
+  it("does nothing outside its slot, and runs daily in each day's slot with a daily schedule", () => {
+    scheduledMachine();
+    inSlot(24);
+    const weekly = scheduledDrill();
+    expect(weekly.status, weekly.output).toBe(0);
+    expect(weekly.output).toBe("");
+    expect(calls()).toEqual([]);
+    expect(read(at(DRILLS_LOG, SCHEDULED))).toBeUndefined();
+
+    write(at(`${DRILL_RECIPE_DIR}/schedule`, SCHEDULED), "daily\n");
+    const daily = scheduledDrill();
+    expect(daily.record, daily.output).toMatchObject({ kind: "scheduled", result: "healthy" });
+    inSlot(25);
+    rmSync(`${work}/docker.log`);
+    expect(scheduledDrill().status).toBe(0);
+    expect(calls()).toEqual([]);
+  });
+
+  it("refuses without the recipe's schedule, and with any other argument, changing nothing", () => {
+    scheduledMachine();
+    inSlot();
+    for (const args of [
+      ["scheduled", "--keep"],
+      ["scheduled", ID],
+    ]) {
+      expect(scheduledDrill({}, args).status, args.join(" ")).toBe(1);
+    }
+    rmSync(at(DRILL_RECIPE_DIR, SCHEDULED), { recursive: true });
+    const result = scheduledDrill();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "There is no schedule of restore drills here (.drill-recipe/schedule), so nothing was changed.",
+    );
+    expect(calls()).toEqual([]);
+    expect(read(at(DRILLS_LOG, SCHEDULED))).toBeUndefined();
+  });
+
+  it("is skipped, never failed, while the lock is held, a kept copy is there, or no scheduled snapshot is", () => {
+    scheduledMachine();
+    inSlot();
+    const locked = scheduledDrill({ FLOCK_BUSY: "1" });
+    expect(locked.status).toBe(3);
+    expect(locked.record).toMatchObject({ kind: "scheduled", result: "skipped", reason: "locked" });
+
+    write(at(`.drill/${OLDER}/kept`, SCHEDULED), "");
+    const kept = scheduledDrill();
+    expect(kept.status).toBe(3);
+    expect(kept.stderr).toContain("OpsCrew skipped this drill: the copy of an earlier drill");
+    expect(kept.record).toMatchObject({ result: "skipped", reason: "kept" });
+    expect(existsSync(at(`.drill/${OLDER}/kept`, SCHEDULED))).toBe(true);
+    rmSync(at(".drill", SCHEDULED), { recursive: true });
+
+    rmSync(at(`.snapshots/${ID}`, SCHEDULED), { recursive: true });
+    rmSync(at(`.snapshots/${OLDER}`, SCHEDULED), { recursive: true });
+    const none = scheduledDrill();
+    expect(none.status).toBe(3);
+    expect(none.record).toMatchObject({ result: "skipped", reason: "none" });
+    expect(logged(SCHEDULED).map((record) => record?.reason)).toEqual(["locked", "kept", "none"]);
+    expect(calls().some((call) => / (create|up|run|pull)( |$)/.test(call))).toBe(false);
+  });
+
+  it("records a part that did not restore, and a snapshot with no version, as failures", () => {
+    scheduledMachine();
+    inSlot();
+    const broken = scheduledDrill({ RESTORE_FAIL: "db" });
+    expect(broken.status).toBe(2);
+    expect(broken.record).toMatchObject({
+      kind: "scheduled",
+      result: "not-restored",
+      reason: "db",
+      removal: "removed",
+    });
+    snapshot(ID, "2026-11-18T00:00:00Z", SCHEDULED, "scheduled", "");
+    const versionless = scheduledDrill();
+    expect(versionless.status).toBe(2);
+    expect(versionless.record).toMatchObject({ result: "failed", reason: "version" });
+    expect(existsSync(at(".drill", SCHEDULED))).toBe(false);
   });
 });
 

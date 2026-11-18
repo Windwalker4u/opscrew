@@ -1,13 +1,17 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 /**
- * `snapshot.sh drill` (029 plan.md 19., research R15–R19, R26, R29): the app's server's, or this
- * computer's, restore drill by hand, which keeps its bounds itself, whatever asks it.
+ * `snapshot.sh drill` (029 plan.md 19., research R15–R19, R26, R28, R29): the app's server's, or
+ * this computer's, restore drill by hand, and on a server the scheduled one, which keep their
+ * bounds themselves, whatever asks them.
  */
-import { APP_SERVER, type DeployPlan, servicesOn } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, servicesOn, snapshotScheduleOf } from "@opscrew/plan-schema";
 import { IMAGES } from "../pins";
+import type { PreviewEnvTemplates } from "../previews";
 import { PREVIEW_SECRET_PLACEHOLDER, previewGenerate, previewSecretFill } from "../previews/script";
+import { wrongTarget } from "../providers";
 import { shellQuote } from "../runtime/services";
-import { said } from "../workflow/shared";
+import type { RenderedFile } from "../types";
+import { planFilePath, said } from "../workflow/shared";
 import {
   databaseCount,
   type RestoreProject,
@@ -16,7 +20,7 @@ import {
   snapshotParts,
 } from "../workflow/snapshots";
 import { appFolder, approvalExpiry, readApproval, START_LOCK } from "../workflow/switch";
-import { DRILL_DIR } from "./index";
+import { DRILL_DIR, renderDrill } from "./index";
 import {
   DRILL_APPROVAL_FILE,
   DRILL_LIMIT_SECONDS,
@@ -42,7 +46,83 @@ const SKIPS: Record<string, string> = {
   rotation: "a credential rotation holds the app.",
   disk: "the disk has less free space than the snapshot's size and 1 GiB and 10% of the disk.",
   memory: "the machine has less free memory than the copy's memory limits add up to.",
+  kept: "the copy of an earlier drill, kept with --keep, is still here; opscrew restore --drill --remove removes it.",
+  none: "there is no complete scheduled snapshot here yet.",
 };
+
+/**
+ * The scheduled drill's copy in the app's folder on its server (research R28): outside
+ * {@link DRILL_DIR}, which each drill clears. The host plan that installs the schedule writes it
+ * with {@link drillRecipe}'s files, and `values.env` (`.env.preview`'s values, mode 600) at apply
+ * time; `snapshot.sh drill scheduled` only reads it.
+ */
+export const DRILL_RECIPE_DIR = ".drill-recipe";
+
+/** The file in {@link DRILL_RECIPE_DIR} with the drills' schedule: `weekly` or `daily`. */
+export const DRILL_RECIPE_SCHEDULE = "schedule";
+
+/**
+ * The digest the recipe's `compose.yaml` names the app's image with: the scheduled drill puts the
+ * version the snapshot recorded in its place, so the copy runs the snapshot's own version.
+ */
+export const DRILL_RECIPE_DIGEST = `sha256:${"0".repeat(64)}`;
+
+/** The hours a scheduled drill's slot comes after the scheduled snapshot's (research R28). */
+export const DRILL_SLOT_AFTER_HOURS = 3;
+
+/** The schedule's period in hours: weekly 168, daily 24. */
+export function drillScheduleHours(every: "weekly" | "daily"): number {
+  return every === "daily" ? 24 : 168;
+}
+
+/**
+ * The files of the scheduled drill's copy, each under {@link DRILL_RECIPE_DIR}, for the host plan
+ * that installs the schedule (`snapshots.drills.schedule`): the copy {@link renderDrill} renders
+ * of the parts a scheduled snapshot holds (those copied while they run, and the stop-only ones
+ * `snapshots.schedule.stop` names), the app's image `<o.repository>@`{@link DRILL_RECIPE_DIGEST},
+ * and {@link DRILL_RECIPE_SCHEDULE}. `values.env` is not among them: with `o.previewValues`, the
+ * host plan writes it at apply time. Generated values stay the preview server's placeholders,
+ * which the drill fills on the server.
+ * @throws OpsCrewError without `snapshots.drills.schedule` or a part on the app's server, or for
+ * what {@link renderDrill} refuses.
+ */
+export function drillRecipe(
+  plan: DeployPlan,
+  o: { repository: string; env: PreviewEnvTemplates; previewValues?: boolean },
+): RenderedFile[] {
+  const every = plan.snapshots?.drills?.schedule;
+  const stop = snapshotScheduleOf(plan)?.stop ?? [];
+  const parts = snapshotParts(plan)
+    .filter((part) => part.online || stop.includes(part.name))
+    .map((part) => part.name);
+  if (every === undefined || parts.length === 0) {
+    throw wrongTarget(
+      `${planFilePath(plan)} schedules no restore drill of data on the app's server (snapshots.drills.schedule).`,
+    );
+  }
+  const id = "scheduled";
+  const prefix = `${DRILL_DIR}/${id}/`;
+  const files = renderDrill(
+    plan,
+    { id, parts },
+    {
+      image: `${o.repository}@${DRILL_RECIPE_DIGEST}`,
+      env: o.env,
+      ...(o.previewValues === true ? { previewValues: true } : {}),
+    },
+  );
+  return [
+    ...files.map((file) => ({
+      ...file,
+      path: `${DRILL_RECIPE_DIR}/${file.path.slice(prefix.length)}`,
+    })),
+    {
+      path: `${DRILL_RECIPE_DIR}/${DRILL_RECIPE_SCHEDULE}`,
+      content: `${every}\n`,
+      kind: "runtime",
+    },
+  ];
+}
 
 /**
  * `snapshot_cmd_drill [<id>] [--only <service>] [--keep]` and `snapshot_cmd_drill --remove` of
@@ -73,6 +153,16 @@ const SKIPS: Record<string, string> = {
  * it exits 0 when healthy (or removed), 1 for a refusal (nothing changed), 2 when the drill failed
  * and 3 when it was skipped. Stop-only services start without waiting for their health checks
  * once restored: their data keeps production's logins.
+ *
+ * On a server, `snapshot_cmd_drill scheduled` is the scheduled drill, which the deploy user's
+ * crontab runs each hour (research R28): approved by the host plan that installs it, so it reads
+ * no one-time approval. It drills only in its slot, {@link DRILL_SLOT_AFTER_HOURS} hours after the
+ * scheduled snapshot's ({@link DRILL_RECIPE_SCHEDULE}'s `weekly` or `daily`, else it refuses), and
+ * only the latest complete scheduled snapshot (none: skipped), never keeping its copy (a kept one:
+ * skipped). Its copy's files are {@link DRILL_RECIPE_DIR}'s, `values.env` with them, copied into
+ * `.drill/<id>/` (env files owner-only), the app's image the snapshot's version in place of
+ * {@link DRILL_RECIPE_DIGEST}. Every other bound, and its line (`scheduled`), are the drill's by
+ * hand.
  */
 export function drillCommand(plan: DeployPlan): string[] {
   const parts = snapshotParts(plan);
@@ -101,6 +191,68 @@ export function drillCommand(plan: DeployPlan): string[] {
   const fill = `${DRILL_DIR}/.fill.sed`;
   const secrets = `${DRILL_DIR}/.secrets.env`;
   const timedOut = `${DRILL_DIR}/.timed-out`;
+  const recipe = DRILL_RECIPE_DIR;
+  const zeros = "0\\{64\\}";
+  // The scheduled drill: on a server only, in its slot, with no one-time approval.
+  const scheduled = local
+    ? []
+    : [
+        '  if [ "${1:-}" = scheduled ]; then',
+        '    [ "$#" -eq 1 ] || { snapshot_usage; exit 1; }',
+        "    shift",
+        "    _drill_kind=scheduled",
+        `    case "$(cat ${recipe}/${DRILL_RECIPE_SCHEDULE} 2> /dev/null || true)" in`,
+        `      weekly) _drill_every=${drillScheduleHours("weekly")} ;;`,
+        `      daily) _drill_every=${drillScheduleHours("daily")} ;;`,
+        `      *) echo ${shellQuote(`There is no schedule of restore drills here (${recipe}/${DRILL_RECIPE_SCHEDULE}), so nothing was changed. opscrew snapshot drill schedule on, then opscrew provision, puts it here.`)} >&2; exit 1 ;;`,
+        "    esac",
+        `    if [ $(( $(date +%s) / 3600 % _drill_every )) -ne ${DRILL_SLOT_AFTER_HOURS} ]; then exit 0; fi`,
+        "  fi",
+      ];
+  const approval = [
+    `if [ ! -f ${DRILL_APPROVAL_FILE} ]; then`,
+    `  echo ${shellQuote(`A drill needs its one-time approval here (${DRILL_APPROVAL_FILE}), which opscrew restore --drill writes once you approve it, so nothing was changed. Run opscrew restore --drill.`)} >&2`,
+    "  exit 1",
+    "fi",
+    ...readApproval(DRILL_APPROVAL_FILE),
+    'if [ "$approved" != "${_drill_id:--}" ] || [ "$choice" != "$_drill_action" ] || [ "$kept" != "${_drill_only:--}" ]; then',
+    `  echo ${shellQuote(`The one-time approval here (${DRILL_APPROVAL_FILE}) is for another drill, so OpsCrew removed it and changed nothing. Run opscrew restore --drill again.`)} >&2`,
+    "  exit 1",
+    "fi",
+    ...approvalExpiry([
+      `echo ${shellQuote("The one-time approval of this drill expired before it started, so nothing was changed. Run opscrew restore --drill again.")} >&2`,
+      "exit 1",
+    ]),
+  ];
+  // 3. The copy's files: by hand from stdin into its own folder, env files owner-only.
+  const fromInput = [
+    "while IFS=' ' read -r _drill_what _drill_a _drill_b; do",
+    '  case "$_drill_what" in',
+    '    image) _drill_image="$_drill_a" ;;',
+    "    file)",
+    '      case "$_drill_a" in "" | /* | *..* | *[!A-Za-z0-9._/-]*) drill_finish failed files ;; esac',
+    `      case "$_drill_a" in */*) mkdir -p ${DIR}/"\${_drill_a%/*}" || drill_finish failed files ;; esac`,
+    '      _drill_mode=022; case "$_drill_a" in *.env) _drill_mode=077 ;; esac',
+    `      (umask "$_drill_mode" && printf '%s' "$_drill_b" | base64 -d > ${DIR}/"$_drill_a") || drill_finish failed files ;;`,
+    '    "") ;;',
+    "    *) drill_finish failed files ;;",
+    "  esac",
+    "done",
+  ];
+  // Scheduled, from the recipe; the app's image is the snapshot's version.
+  const fromRecipe = [
+    `_drill_hex="$(sed -n 's/.*"version":"sha256:\\([0-9a-f]\\{64\\}\\)".*/\\1/p' ${SNAPSHOTS_DIR}/"$_drill_id"/about.json)"`,
+    '[ -n "$_drill_hex" ] || drill_finish failed version',
+    `cp -Rp ${recipe}/. ${DIR}/ || drill_finish failed files`,
+    `rm -f ${DIR}/${DRILL_RECIPE_SCHEDULE}`,
+    `chmod 700 ${DIR} || drill_finish failed files`,
+    `for _drill_f in ${DIR}/*.env; do if [ -f "$_drill_f" ]; then chmod 600 "$_drill_f" || drill_finish failed files; fi; done`,
+    `[ -f ${DIR}/compose.yaml ] || drill_finish failed files`,
+    `_drill_image="$(sed -n 's|^ *image: *\\(ghcr\\.io/[a-z0-9._/-]*\\)@sha256:${zeros}$|\\1|p' ${DIR}/compose.yaml | head -n 1)"`,
+    '[ -n "$_drill_image" ] || drill_finish failed files',
+    '_drill_image="$_drill_image@sha256:$_drill_hex"',
+    `{ sed "s|@sha256:${zeros}\\$|@sha256:$_drill_hex|" ${DIR}/compose.yaml > ${DIR}/compose.yaml.new && mv -f ${DIR}/compose.yaml.new ${DIR}/compose.yaml; } || drill_finish failed files`,
+  ];
   const lines = [
     // The drill's own part restores, in the project <app>-drill: only in this subshell.
     ...restoreFunctions(plan, APP_SERVER, folder, project).map((line) => `  ${line}`),
@@ -194,6 +346,7 @@ export function drillCommand(plan: DeployPlan): string[] {
     '    drill_record "$_drill_result" "$_drill_reason"',
     '    case "$_drill_result" in healthy) exit 0 ;; *) exit 2 ;; esac',
     "  }",
+    ...scheduled,
     // The request: an id or the latest, --only, --keep, or --remove alone.
     '  while [ "$#" -gt 0 ]; do',
     '    case "$1" in',
@@ -214,19 +367,13 @@ export function drillCommand(plan: DeployPlan): string[] {
     "    shift",
     "  done",
     '  if [ "$_drill_action" = remove ] && [ -n "$_drill_id$_drill_only" ]; then snapshot_usage; exit 1; fi',
-    `  if [ ! -f ${DRILL_APPROVAL_FILE} ]; then`,
-    `    echo ${shellQuote(`A drill needs its one-time approval here (${DRILL_APPROVAL_FILE}), which opscrew restore --drill writes once you approve it, so nothing was changed. Run opscrew restore --drill.`)} >&2`,
-    "    exit 1",
-    "  fi",
-    ...readApproval(DRILL_APPROVAL_FILE).map((line) => `  ${line}`),
-    '  if [ "$approved" != "${_drill_id:--}" ] || [ "$choice" != "$_drill_action" ] || [ "$kept" != "${_drill_only:--}" ]; then',
-    `    echo ${shellQuote(`The one-time approval here (${DRILL_APPROVAL_FILE}) is for another drill, so OpsCrew removed it and changed nothing. Run opscrew restore --drill again.`)} >&2`,
-    "    exit 1",
-    "  fi",
-    ...approvalExpiry([
-      `echo ${shellQuote("The one-time approval of this drill expired before it started, so nothing was changed. Run opscrew restore --drill again.")} >&2`,
-      "exit 1",
-    ]).map((line) => `  ${line}`),
+    ...(local
+      ? approval.map((line) => `  ${line}`)
+      : [
+          '  if [ "$_drill_kind" = manual ]; then',
+          ...approval.map((line) => `    ${line}`),
+          "  fi",
+        ]),
     // 6. No overlap with a deploy, a snapshot or a restore: their lock, never waited for.
     `  exec 7> ${START_LOCK}`,
     local
@@ -247,6 +394,7 @@ export function drillCommand(plan: DeployPlan): string[] {
     "  fi",
     `  for _drill_k in ${DRILL_DIR}/*/kept; do`,
     '    if [ -f "$_drill_k" ]; then',
+    '      if [ "$_drill_kind" = scheduled ]; then drill_skip kept; fi',
     '      _drill_k="${_drill_k%/kept}"',
     `      ${said(`A kept copy of the snapshot %s is still here, so OpsCrew started no other drill: nothing was changed. Remove it with opscrew restore --drill --remove, then run the drill again.`)} "\${_drill_k#${DRILL_DIR}/}" >&2`,
     `      echo "drill-kept \${_drill_k#${DRILL_DIR}/}"`,
@@ -257,10 +405,11 @@ export function drillCommand(plan: DeployPlan): string[] {
     "    if ! drill_remove_all; then drill_record failed leftovers; exit 2; fi",
     "    _drill_cleaned=yes",
     "  fi",
-    // 2. The snapshot: the id given, else the latest complete one.
+    // 2. The snapshot: the id given, else the latest complete one (scheduled: the latest scheduled).
     '  if [ -z "$_drill_id" ]; then',
-    `    _drill_id="$(for _drill_f in ${SNAPSHOTS_DIR}/*/about.json; do case "$_drill_f" in *.partial/* | *.taking/*) continue ;; esac; _drill_f="\${_drill_f%/about.json}"; if [ -f "$_drill_f"/taken ]; then echo "$(cat "$_drill_f"/taken) \${_drill_f#${SNAPSHOTS_DIR}/}"; fi; done | sort -r | head -n 1 | cut -d ' ' -f 2)"`,
+    `    _drill_id="$(for _drill_f in ${SNAPSHOTS_DIR}/*/about.json; do case "$_drill_f" in *.partial/* | *.taking/*) continue ;; esac; if [ "$_drill_kind" = scheduled ] && ! grep -qF '"kind":"scheduled"' "$_drill_f" 2> /dev/null; then continue; fi; _drill_f="\${_drill_f%/about.json}"; if [ -f "$_drill_f"/taken ]; then echo "$(cat "$_drill_f"/taken) \${_drill_f#${SNAPSHOTS_DIR}/}"; fi; done | sort -r | head -n 1 | cut -d ' ' -f 2)"`,
     "  fi",
+    '  if [ "$_drill_kind" = scheduled ] && { [ -z "$_drill_id" ] || ! snapshot_complete "$_drill_id"; }; then drill_skip none; fi',
     '  if [ -z "$_drill_id" ] || ! snapshot_complete "$_drill_id"; then',
     `    ${said("There is no complete snapshot %s here to drill, so nothing was changed. opscrew snapshot list shows the snapshots.")} "$_drill_id" >&2`,
     "    exit 1",
@@ -286,23 +435,20 @@ export function drillCommand(plan: DeployPlan): string[] {
     '  _drill_free=""',
     `  if [ -r /proc/meminfo ]; then _drill_free="$(awk '/^MemAvailable:/ { a = $2 } /^MemFree:/ { f = $2 } END { if (a == "") a = f; if (a != "") print int(a / 1024) }' /proc/meminfo)"; fi`,
     '  if [ -n "$_drill_free" ] && [ "$_drill_free" -lt "$_drill_need" ]; then drill_skip memory; fi',
-    // 3. The copy's files, from stdin into its own folder: env files owner-only.
+    // 3. The copy's files, into its own folder.
     `  _drill_dir=${DRILL_DIR}/"$_drill_id"`,
     "  trap 'drill_finish failed stopped' HUP INT TERM",
     `  mkdir -p ${DIR} || drill_finish failed files`,
     '  _drill_image=""',
-    "  while IFS=' ' read -r _drill_what _drill_a _drill_b; do",
-    '    case "$_drill_what" in',
-    '      image) _drill_image="$_drill_a" ;;',
-    "      file)",
-    '        case "$_drill_a" in "" | /* | *..* | *[!A-Za-z0-9._/-]*) drill_finish failed files ;; esac',
-    `        case "$_drill_a" in */*) mkdir -p ${DIR}/"\${_drill_a%/*}" || drill_finish failed files ;; esac`,
-    '        _drill_mode=022; case "$_drill_a" in *.env) _drill_mode=077 ;; esac',
-    `        (umask "$_drill_mode" && printf '%s' "$_drill_b" | base64 -d > ${DIR}/"$_drill_a") || drill_finish failed files ;;`,
-    '      "") ;;',
-    "      *) drill_finish failed files ;;",
-    "    esac",
-    "  done",
+    ...(local
+      ? fromInput.map((line) => `  ${line}`)
+      : [
+          '  if [ "$_drill_kind" = scheduled ]; then',
+          ...fromRecipe.map((line) => `    ${line}`),
+          "  else",
+          ...fromInput.map((line) => `    ${line}`),
+          "  fi",
+        ]),
     `  [ -f ${DIR}/compose.yaml ] || drill_finish failed files`,
     '  case "$_drill_image" in',
     `    ghcr.io/*@sha256:*${local ? ` | opscrew-local/${plan.app.name}:*` : ""}) ;;`,
@@ -390,7 +536,7 @@ export function drillCommand(plan: DeployPlan): string[] {
   return [
     "snapshot_cmd_drill() (",
     "  umask 077",
-    '  _drill_id=""; _drill_only=""; _drill_action=drill; _drill_kind=manual; _drill_dir=""',
+    '  _drill_id=""; _drill_only=""; _drill_action=drill; _drill_kind=manual; _drill_dir=""; _drill_every=""',
     '  _drill_watch=""; _drill_version=""; _drill_parts=""; _drill_health=""; _drill_tables=""',
     '  _drill_removal=""; _drill_cleaned=no; _drill_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     ...lines,

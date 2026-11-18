@@ -11,7 +11,12 @@ import { previewTestPlan } from "../testing/previews";
 import { sitePlan } from "../testing/serverless";
 import { SH_AVAILABLE } from "./__fixtures__/server";
 import { stagingPlan } from "./__fixtures__/world";
-import { snapshotScheduleOff, snapshotScheduleOn } from "./schedule";
+import {
+  snapshotDrillScheduleOff,
+  snapshotDrillScheduleOn,
+  snapshotScheduleOff,
+  snapshotScheduleOn,
+} from "./schedule";
 
 /** `shop` in staging on a Hetzner server with PostgreSQL `db` and the stop-only Kafka `events`. */
 function serverPlan(fields?: Record<string, unknown>): DeployPlan {
@@ -163,6 +168,23 @@ describe("opscrew snapshot schedule off", () => {
     ]);
   });
 
+  it("takes the drill schedule off with it, saying so, and keeps drills by hand", async () => {
+    const { deps } = await world(
+      serverPlan({
+        snapshots: { schedule: { every: "daily", keep: 2 }, drills: { schedule: "weekly" } },
+      }),
+    );
+    const change = await snapshotScheduleOff(deps);
+
+    expect((await readArtifact("plan", deps.paths.files.plan)).snapshots).toEqual({ drills: {} });
+    expect(change.lines).toEqual([
+      "Scheduled snapshots of staging's data (snapshots.schedule in opscrew/environments/staging/plan.yaml): daily, the last 2 kept → off.",
+      "The scheduled restore drills (snapshots.drills.schedule) go too: each one proves the latest scheduled snapshot. Restore drills by hand stay: `opscrew restore --drill` runs one.",
+      "The scheduled snapshots already taken stay until you delete them with `opscrew snapshot delete <id>`; `opscrew snapshot list` lists them.",
+      "Run `opscrew provision` to take the schedule off the server.",
+    ]);
+  });
+
   it("keeps the off-server copy, and says when the schedule is already off", async () => {
     const offsite = { provider: "hetzner", bucket: "shop-staging-backups", region: "nbg1" };
     const { deps, before, onDisk } = await world(serverPlan({ snapshots: { offsite } }));
@@ -173,6 +195,100 @@ describe("opscrew snapshot schedule off", () => {
       lines: ["Scheduled snapshots of staging's data are already off. Nothing was changed."],
     });
     expect(await onDisk()).toBe(before);
+  });
+});
+
+describe("opscrew snapshot drill schedule on|off", () => {
+  const SCHEDULE = { every: "weekly", keep: 4 };
+
+  it("writes weekly by default, says what each drill does and to provision", async () => {
+    const { deps } = await world(serverPlan({ snapshots: { schedule: SCHEDULE } }));
+    const change = await snapshotDrillScheduleOn(deps);
+
+    expect(change.changed).toBe(true);
+    expect((await readArtifact("plan", deps.paths.files.plan)).snapshots).toEqual({
+      schedule: SCHEDULE,
+      drills: { schedule: "weekly" },
+    });
+    expect(change.lines).toEqual([
+      "Scheduled restore drills of staging (snapshots.drills.schedule in opscrew/environments/staging/plan.yaml): off → weekly, three hours after the scheduled snapshot.",
+      "Each one restores the latest scheduled snapshot into a throwaway copy with no internet and none of the production .env's values, checks it and removes it. A deploy or a snapshot running, or too little disk or memory, skips it.",
+      "Run `opscrew provision` to put the schedule on the server.",
+    ]);
+  });
+
+  it("takes --every daily, says when the plan already says so, and says where in Portainer", async () => {
+    const { deps, onDisk } = await world(
+      serverPlan({ snapshots: { schedule: SCHEDULE, drills: { schedule: "weekly" } } }),
+    );
+    const daily = await snapshotDrillScheduleOn(deps, { every: "daily" });
+    expect(daily.plan.snapshots?.drills).toEqual({ schedule: "daily" });
+    expect(daily.lines[0]).toContain(": weekly → daily, three hours after");
+    const before = await onDisk();
+    const again = await snapshotDrillScheduleOn(deps, { every: "daily" });
+    expect(again).toMatchObject({
+      changed: false,
+      lines: ["Scheduled restore drills of staging are already daily. Nothing was changed."],
+    });
+    expect(await onDisk()).toBe(before);
+
+    const portainer = await world(
+      stagingPlan([{ kind: "postgres", name: "db" }], {
+        base: portainerPlan({ deployed: true }),
+        fields: { snapshots: { schedule: SCHEDULE } },
+      }),
+    );
+    const stack = await snapshotDrillScheduleOn(portainer.deps);
+    expect(stack.lines.at(-1)).toBe(
+      "Run `opscrew provision` to put the schedule on the app's stack in your Portainer.",
+    );
+  });
+
+  it("needs the snapshot schedule: says so, offers both, and writes nothing", async () => {
+    const { deps, before, onDisk } = await world(serverPlan());
+    await expect(snapshotDrillScheduleOn(deps)).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "A scheduled restore drill proves the latest scheduled snapshot, and staging takes none on a schedule, so OpsCrew did not schedule drills. Nothing was changed.",
+      hint: "Turn both on: `opscrew snapshot schedule on`, then `opscrew snapshot drill schedule on`.",
+    });
+    expect(await onDisk()).toBe(before);
+  });
+
+  it("refuses this computer and a preview environment", async () => {
+    const local = await world(localPlan({ environment: "staging" }));
+    await expect(snapshotDrillScheduleOn(local.deps)).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "OpsCrew does not run scheduled restore drills on this computer: it isn't always on to run them. Nothing was changed.",
+      hint: "Run one when you need it with `opscrew restore --drill`.",
+    });
+    expect(await local.onDisk()).toBe(local.before);
+
+    const preview = await world(previewTestPlan());
+    await expect(snapshotDrillScheduleOn(preview.deps)).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("a preview environment"),
+    });
+  });
+
+  it("turns the schedule off, keeping drills by hand, and says when it is already off", async () => {
+    const { deps } = await world(
+      serverPlan({ snapshots: { schedule: SCHEDULE, drills: { schedule: "daily" } } }),
+    );
+    const change = await snapshotDrillScheduleOff(deps);
+    expect((await readArtifact("plan", deps.paths.files.plan)).snapshots).toEqual({
+      schedule: SCHEDULE,
+      drills: {},
+    });
+    expect(change.lines).toEqual([
+      "Scheduled restore drills of staging (snapshots.drills.schedule in opscrew/environments/staging/plan.yaml): daily → off.",
+      "Restore drills by hand stay: `opscrew restore --drill` runs one.",
+      "Run `opscrew provision` to take the schedule off the server.",
+    ]);
+    expect((await snapshotDrillScheduleOff(deps)).lines).toEqual([
+      "Scheduled restore drills of staging are already off. Nothing was changed.",
+    ]);
   });
 });
 

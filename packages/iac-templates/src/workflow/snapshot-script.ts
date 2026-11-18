@@ -540,7 +540,8 @@ function holdCommands(plan: DeployPlan): string[] {
  * - `restore <id> [--only <service>] [--no-wait <service>]...` (its approval: {@link restoreApprovalLine});
  * - on the app's server, `hold` and `resume` ({@link holdCommands}), and `drill [<id>] [--only
  *   <service>] [--keep]` and `drill --remove`, the restore drill by hand (`drillCommand`), which
- *   takes the start lock itself without waiting;
+ *   takes the start lock itself without waiting; on a server also `drill scheduled`, the scheduled
+ *   drill the deploy user's crontab runs each hour;
  * - `list` prints each snapshot's `about.json`, one per line;
  * - `delete <id>` removes a snapshot;
  * - `offsite <id>` copies a snapshot off the server ({@link offsiteFunctions}); without
@@ -567,6 +568,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     "restore <id> [--only <service>] [--no-wait <service>]...",
     ...(app ? ["hold", "resume"] : []),
     ...(app ? ["drill [<id>] [--only <service>] [--keep]", "drill --remove"] : []),
+    ...(app && plan.target.provider !== "localhost" ? ["drill scheduled"] : []),
     "list",
     "delete <id>",
     "offsite <id>",

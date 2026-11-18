@@ -19,7 +19,14 @@ export {
 export { restoreSnapshot } from "./restore";
 export type { RestoredSnapshot, RestoreSnapshotOptions } from "./restore-checks";
 export { offsiteRclone, RCLONE_NOT_FOUND, type RestoreServices } from "./restore-offsite";
-export { type ScheduleOnOptions, snapshotScheduleOff, snapshotScheduleOn } from "./schedule";
+export {
+  type DrillScheduleOnOptions,
+  type ScheduleOnOptions,
+  snapshotDrillScheduleOff,
+  snapshotDrillScheduleOn,
+  snapshotScheduleOff,
+  snapshotScheduleOn,
+} from "./schedule";
 export * from "./server";
 export type { SnapshotSettingChange } from "./settings";
 export { takeSnapshot } from "./take";

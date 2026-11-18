@@ -1068,6 +1068,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           #   sh snapshot.sh resume
           #   sh snapshot.sh drill [<id>] [--only <service>] [--keep]
           #   sh snapshot.sh drill --remove
+          #   sh snapshot.sh drill scheduled
           #   sh snapshot.sh list
           #   sh snapshot.sh delete <id>
           #   sh snapshot.sh offsite <id>
@@ -1263,7 +1264,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             done
           }
           snapshot_usage() {
-            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] [--no-wait <service>]... | hold | resume | drill [<id>] [--only <service>] [--keep] | drill --remove | list | delete <id> | offsite <id>' >&2
+            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] [--no-wait <service>]... | hold | resume | drill [<id>] [--only <service>] [--keep] | drill --remove | drill scheduled | list | delete <id> | offsite <id>' >&2
           }
           snapshot_id() {
             case "$1" in
@@ -1463,7 +1464,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           }
           snapshot_cmd_drill() (
             umask 077
-            _drill_id=""; _drill_only=""; _drill_action=drill; _drill_kind=manual; _drill_dir=""
+            _drill_id=""; _drill_only=""; _drill_action=drill; _drill_kind=manual; _drill_dir=""; _drill_every=""
             _drill_watch=""; _drill_version=""; _drill_parts=""; _drill_health=""; _drill_tables=""
             _drill_removal=""; _drill_cleaned=no; _drill_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             SNAPSHOT_PARTS='cache'
@@ -1543,6 +1544,8 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
                 rotation) echo 'OpsCrew skipped this drill: a credential rotation holds the app. Nothing was changed.' >&2 ;;
                 disk) echo 'OpsCrew skipped this drill: the disk has less free space than the snapshot'\\''s size and 1 GiB and 10% of the disk. Nothing was changed.' >&2 ;;
                 memory) echo 'OpsCrew skipped this drill: the machine has less free memory than the copy'\\''s memory limits add up to. Nothing was changed.' >&2 ;;
+                kept) echo 'OpsCrew skipped this drill: the copy of an earlier drill, kept with --keep, is still here; opscrew restore --drill --remove removes it. Nothing was changed.' >&2 ;;
+                none) echo 'OpsCrew skipped this drill: there is no complete scheduled snapshot here yet. Nothing was changed.' >&2 ;;
               esac
               drill_record skipped "$1"
               exit 3
@@ -1607,6 +1610,17 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               drill_record "$_drill_result" "$_drill_reason"
               case "$_drill_result" in healthy) exit 0 ;; *) exit 2 ;; esac
             }
+            if [ "\${1:-}" = scheduled ]; then
+              [ "$#" -eq 1 ] || { snapshot_usage; exit 1; }
+              shift
+              _drill_kind=scheduled
+              case "$(cat .drill-recipe/schedule 2> /dev/null || true)" in
+                weekly) _drill_every=168 ;;
+                daily) _drill_every=24 ;;
+                *) echo 'There is no schedule of restore drills here (.drill-recipe/schedule), so nothing was changed. opscrew snapshot drill schedule on, then opscrew provision, puts it here.' >&2; exit 1 ;;
+              esac
+              if [ $(( $(date +%s) / 3600 % _drill_every )) -ne 3 ]; then exit 0; fi
+            fi
             while [ "$#" -gt 0 ]; do
               case "$1" in
                 --keep | --remove)
@@ -1626,21 +1640,23 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               shift
             done
             if [ "$_drill_action" = remove ] && [ -n "$_drill_id$_drill_only" ]; then snapshot_usage; exit 1; fi
-            if [ ! -f .drill-snapshot ]; then
-              echo 'A drill needs its one-time approval here (.drill-snapshot), which opscrew restore --drill writes once you approve it, so nothing was changed. Run opscrew restore --drill.' >&2
-              exit 1
-            fi
-            approved=""; choice=""; expiry=""; kept=""
-            read -r approved choice expiry kept < .drill-snapshot || true
-            rm -f .drill-snapshot
-            if [ "$approved" != "\${_drill_id:--}" ] || [ "$choice" != "$_drill_action" ] || [ "$kept" != "\${_drill_only:--}" ]; then
-              echo 'The one-time approval here (.drill-snapshot) is for another drill, so OpsCrew removed it and changed nothing. Run opscrew restore --drill again.' >&2
-              exit 1
-            fi
-            case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
-            if [ "$expiry" -le "$(date +%s)" ]; then
-              echo 'The one-time approval of this drill expired before it started, so nothing was changed. Run opscrew restore --drill again.' >&2
-              exit 1
+            if [ "$_drill_kind" = manual ]; then
+              if [ ! -f .drill-snapshot ]; then
+                echo 'A drill needs its one-time approval here (.drill-snapshot), which opscrew restore --drill writes once you approve it, so nothing was changed. Run opscrew restore --drill.' >&2
+                exit 1
+              fi
+              approved=""; choice=""; expiry=""; kept=""
+              read -r approved choice expiry kept < .drill-snapshot || true
+              rm -f .drill-snapshot
+              if [ "$approved" != "\${_drill_id:--}" ] || [ "$choice" != "$_drill_action" ] || [ "$kept" != "\${_drill_only:--}" ]; then
+                echo 'The one-time approval here (.drill-snapshot) is for another drill, so OpsCrew removed it and changed nothing. Run opscrew restore --drill again.' >&2
+                exit 1
+              fi
+              case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo 'The one-time approval of this drill expired before it started, so nothing was changed. Run opscrew restore --drill again.' >&2
+                exit 1
+              fi
             fi
             exec 7> .start.lock
             if ! flock -n 7; then drill_skip locked; fi
@@ -1658,6 +1674,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             fi
             for _drill_k in .drill/*/kept; do
               if [ -f "$_drill_k" ]; then
+                if [ "$_drill_kind" = scheduled ]; then drill_skip kept; fi
                 _drill_k="\${_drill_k%/kept}"
                 printf 'A kept copy of the snapshot %s is still here, so OpsCrew started no other drill: nothing was changed. Remove it with opscrew restore --drill --remove, then run the drill again.\\n' "\${_drill_k#.drill/}" >&2
                 echo "drill-kept \${_drill_k#.drill/}"
@@ -1669,8 +1686,9 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               _drill_cleaned=yes
             fi
             if [ -z "$_drill_id" ]; then
-              _drill_id="$(for _drill_f in .snapshots/*/about.json; do case "$_drill_f" in *.partial/* | *.taking/*) continue ;; esac; _drill_f="\${_drill_f%/about.json}"; if [ -f "$_drill_f"/taken ]; then echo "$(cat "$_drill_f"/taken) \${_drill_f#.snapshots/}"; fi; done | sort -r | head -n 1 | cut -d ' ' -f 2)"
+              _drill_id="$(for _drill_f in .snapshots/*/about.json; do case "$_drill_f" in *.partial/* | *.taking/*) continue ;; esac; if [ "$_drill_kind" = scheduled ] && ! grep -qF '"kind":"scheduled"' "$_drill_f" 2> /dev/null; then continue; fi; _drill_f="\${_drill_f%/about.json}"; if [ -f "$_drill_f"/taken ]; then echo "$(cat "$_drill_f"/taken) \${_drill_f#.snapshots/}"; fi; done | sort -r | head -n 1 | cut -d ' ' -f 2)"
             fi
+            if [ "$_drill_kind" = scheduled ] && { [ -z "$_drill_id" ] || ! snapshot_complete "$_drill_id"; }; then drill_skip none; fi
             if [ -z "$_drill_id" ] || ! snapshot_complete "$_drill_id"; then
               printf 'There is no complete snapshot %s here to drill, so nothing was changed. opscrew snapshot list shows the snapshots.\\n' "$_drill_id" >&2
               exit 1
@@ -1699,18 +1717,32 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             trap 'drill_finish failed stopped' HUP INT TERM
             mkdir -p "$_drill_dir" || drill_finish failed files
             _drill_image=""
-            while IFS=' ' read -r _drill_what _drill_a _drill_b; do
-              case "$_drill_what" in
-                image) _drill_image="$_drill_a" ;;
-                file)
-                  case "$_drill_a" in "" | /* | *..* | *[!A-Za-z0-9._/-]*) drill_finish failed files ;; esac
-                  case "$_drill_a" in */*) mkdir -p "$_drill_dir"/"\${_drill_a%/*}" || drill_finish failed files ;; esac
-                  _drill_mode=022; case "$_drill_a" in *.env) _drill_mode=077 ;; esac
-                  (umask "$_drill_mode" && printf '%s' "$_drill_b" | base64 -d > "$_drill_dir"/"$_drill_a") || drill_finish failed files ;;
-                "") ;;
-                *) drill_finish failed files ;;
-              esac
-            done
+            if [ "$_drill_kind" = scheduled ]; then
+              _drill_hex="$(sed -n 's/.*"version":"sha256:\\([0-9a-f]\\{64\\}\\)".*/\\1/p' .snapshots/"$_drill_id"/about.json)"
+              [ -n "$_drill_hex" ] || drill_finish failed version
+              cp -Rp .drill-recipe/. "$_drill_dir"/ || drill_finish failed files
+              rm -f "$_drill_dir"/schedule
+              chmod 700 "$_drill_dir" || drill_finish failed files
+              for _drill_f in "$_drill_dir"/*.env; do if [ -f "$_drill_f" ]; then chmod 600 "$_drill_f" || drill_finish failed files; fi; done
+              [ -f "$_drill_dir"/compose.yaml ] || drill_finish failed files
+              _drill_image="$(sed -n 's|^ *image: *\\(ghcr\\.io/[a-z0-9._/-]*\\)@sha256:0\\{64\\}$|\\1|p' "$_drill_dir"/compose.yaml | head -n 1)"
+              [ -n "$_drill_image" ] || drill_finish failed files
+              _drill_image="$_drill_image@sha256:$_drill_hex"
+              { sed "s|@sha256:0\\{64\\}\\$|@sha256:$_drill_hex|" "$_drill_dir"/compose.yaml > "$_drill_dir"/compose.yaml.new && mv -f "$_drill_dir"/compose.yaml.new "$_drill_dir"/compose.yaml; } || drill_finish failed files
+            else
+              while IFS=' ' read -r _drill_what _drill_a _drill_b; do
+                case "$_drill_what" in
+                  image) _drill_image="$_drill_a" ;;
+                  file)
+                    case "$_drill_a" in "" | /* | *..* | *[!A-Za-z0-9._/-]*) drill_finish failed files ;; esac
+                    case "$_drill_a" in */*) mkdir -p "$_drill_dir"/"\${_drill_a%/*}" || drill_finish failed files ;; esac
+                    _drill_mode=022; case "$_drill_a" in *.env) _drill_mode=077 ;; esac
+                    (umask "$_drill_mode" && printf '%s' "$_drill_b" | base64 -d > "$_drill_dir"/"$_drill_a") || drill_finish failed files ;;
+                  "") ;;
+                  *) drill_finish failed files ;;
+                esac
+              done
+            fi
             [ -f "$_drill_dir"/compose.yaml ] || drill_finish failed files
             case "$_drill_image" in
               ghcr.io/*@sha256:*) ;;

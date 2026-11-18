@@ -276,6 +276,10 @@ export function checkKeyComment(repository: string): string {
   return `${CHECK_KEY_COMMENT}${repository}`;
 }
 
+/** The part of {@link CHECK_KEY_COMMAND} that reads an app's last scheduled restore drill. */
+const DRILL_READ =
+  "echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);";
+
 /**
  * The only command the check's key can run (OpenSSH's forced command), whatever the client asks.
  * It only reads, and it is one line with no `"`, as it sits inside `command="..."`. In the C
@@ -287,9 +291,11 @@ export function checkKeyComment(repository: string): string {
  * - `id <id>`: the log's last scheduled snapshot id line, which `snapshot.sh` prints once the
  *   snapshot is taken; none without one;
  * - `after <n>`: how many non-empty lines follow it (all of them without one);
- * - `running`: a snapshot is being taken (a `.partial` folder while the app's start lock is held).
+ * - `running`: a snapshot is being taken (a `.partial` folder while the app's start lock is held);
+ * - `drill`, then the end and result of the last scheduled restore drill that ran (feature 029),
+ *   from `.snapshots/drills.log`: nothing after `drill` when none has.
  *
- * Nothing else of the log. `CHECK_COMMAND` in `@opscrew/iac-templates`' `check.mjs` is a copy,
+ * Nothing else of the logs. `CHECK_COMMAND` in `@opscrew/iac-templates`' `check.mjs` is a copy,
  * which the server's own runner runs, and its `scheduledLog` the same reading of a log's lines.
  */
 export const CHECK_KEY_COMMAND = [
@@ -310,8 +316,12 @@ export const CHECK_KEY_COMMAND = [
   "if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi;",
   "break;",
   "done;",
+  DRILL_READ,
   "done",
 ].join(" ");
+
+/** The check key's command before it read restore drills (feature 024): an older form. */
+const SNAPSHOTS_CHECK_KEY_COMMAND = CHECK_KEY_COMMAND.replace(` ${DRILL_READ}`, "");
 
 /**
  * A repository's check key line in authorized_keys, as the spike tested it under OpsCrew's sshd
@@ -340,11 +350,12 @@ function literalRe(text: string): string {
 export const CHECK_KEY_LINE_RE = `^restrict,command="${literalRe(CHECK_KEY_COMMAND)}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
 
 /**
- * ERE (and JavaScript RegExp) for an older OpsCrew's check key line, which ran only `df`: the
- * deploy-key step keeps it too, and inspection lists it with neither the deploy keys nor the check
- * keys, so the check reads the disk until the check-key step replaces it.
+ * ERE (and JavaScript RegExp) for an older OpsCrew's check key line, which ran only `df`, or read
+ * the scheduled snapshots but not the restore drills: the deploy-key step keeps it too, and
+ * inspection lists it with neither the deploy keys nor the check keys, so the check reads what it
+ * reads until the check-key step replaces it.
  */
-export const OLD_CHECK_KEY_LINE_RE = `^restrict,command="df -P -B1 /" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
+export const OLD_CHECK_KEY_LINE_RE = `^restrict,command="(df -P -B1 /|${literalRe(SNAPSHOTS_CHECK_KEY_COMMAND)})" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
 
 /** The recipe file that is the preview command, the only one written runnable (0755). */
 export const PREVIEW_COMMAND_FILE = "bin/opscrew-preview";
