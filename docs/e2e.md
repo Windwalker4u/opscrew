@@ -3746,7 +3746,7 @@ OPSCREW_E2E_CPANEL=1 OPSCREW_E2E_CPANEL_URL=… OPSCREW_E2E_CPANEL_USER=… \
 up to 3 minutes for the agent's report and up to 5 for AutoSSL's certificate; two deploy runs
 per leg but the refused Laravel leg), so 2 to 3 hours in all, and about 30 minutes more for the
 drill steps 7b to 7d (each of their commands on the account waits for the next minute's cron run;
-one more deploy run, when provision's drill database comes with a pull request). It costs no money beyond the account
+the drill database's pull request changes only `opscrew/`, which starts no deploy run). It costs no money beyond the account
 the founder already pays, and GitHub Actions minutes. It leaves nothing on the account but what
 AutoSSL rewrites on its own (the zone's `_cpanel-dcv-test-record` value, R11) and the TXT records
 AutoSSL adds for its hostnames (`_acme-challenge.e2e-<tag>-…`, `_acme-challenge.www.e2e-<tag>-…`,

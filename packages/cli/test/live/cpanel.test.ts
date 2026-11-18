@@ -762,7 +762,20 @@ describe.skipIf(MISSING.length > 0)(
               "counts against your hosting plan's limit",
             );
             const sha = await run.mergeDeploySetup(`${leg.key}: the drill database`);
-            if (sha !== undefined) await deployed(sha, `${leg.key}: the drill database`, folder);
+            if (sha !== undefined) {
+              // Its pull request changes the plan and the recovery copy, in opscrew/, which the
+              // deploy workflow doesn't read (`!opscrew/**`), so no deploy run starts for it.
+              const changed = (await run.git("diff", "--name-only", `${sha}^1`, sha))
+                .split("\n")
+                .filter((path) => path !== "");
+              if (changed.some((path) => !path.startsWith("opscrew/"))) {
+                await deployed(sha, `${leg.key}: the drill database`, folder);
+              } else {
+                log(
+                  `the drill database's pull request changed only ${changed.join(", ")}: no deploy run`,
+                );
+              }
+            }
             const made = (await cpanel().panel.listDatabases()).filter(
               (name) => !before.includes(name),
             );
