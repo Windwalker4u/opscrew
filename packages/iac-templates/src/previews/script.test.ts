@@ -438,7 +438,8 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 300_000 }, () => 
       expect(s.state("flock.log")).toBe("flock -w 600 7\nflock -w 600 8\nflock -w 600 7\n");
       expect(s.previewFields(42)).toMatchObject({ state: "failed", commit: commit("1") });
       expect(Number(s.previewFields(42).created)).toBeGreaterThan(NOW() - 600);
-      expect(s.read(`${s.preview(42)}/secrets.env`)).not.toContain("db-password=00");
+      // The old value's whole line, never a prefix: a new random value can start with "00".
+      expect(s.read(`${s.preview(42)}/secrets.env`)).not.toMatch(/^db-password=00$/m);
     });
 
     it("never leaves the registry login behind when the caller went away", () => {
