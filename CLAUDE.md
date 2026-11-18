@@ -24,7 +24,10 @@ it is the source of truth and overrides this file.
 - `packages/secops` — `opscrew scan` engine, built-in rules, optional external scanners, policies.
 - `packages/agents` — Analyst, Interviewer, Architect, Code-change, Infra, Domain, SecOps, Verifier.
   `src/cloudflare-move` moves an app's Cloudflare setup to another Cloudflare account (prepare,
-  switch, finish, abort; ADR 0032).
+  switch, finish, abort; ADR 0032). `src/home` serves an app from a computer at the user's home at
+  its own address (the network read, the router's forwards, the address updater's token checks, the
+  outside check; ADR 0033). The restore drills of every target with snapshots are in `src/snapshot`
+  (ADR 0034).
 - `packages/iac-engine` — `tofu`/`terraform` abstraction (plan JSON, plan-hash-bound apply).
 - `packages/iac-templates` — vendored HCL modules + runtime templates (compose, Caddyfile,
   cloud-init, GitHub workflow) and the renderer.
