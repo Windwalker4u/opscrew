@@ -240,3 +240,11 @@ export function renderDrill(
 
 export * from "./portainer";
 export * from "./record";
+export {
+  DRILL_RECIPE_DIGEST,
+  DRILL_RECIPE_DIR,
+  DRILL_RECIPE_SCHEDULE,
+  DRILL_SLOT_AFTER_HOURS,
+  drillRecipe,
+  drillScheduleHours,
+} from "./script";
