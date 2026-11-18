@@ -107,8 +107,9 @@ function removalContents(session: MoveSession, environment: MoveEnvironment, roo
  * states; a copy of each bucket root without the bucket's guard (any guard left stops before a file
  * is deleted); A's buckets checked against B's and emptied (`emptyBuckets`, each after its name is
  * typed, only those A's former state still holds); each bucket root's destroy plan, from its copy;
- * A's origin certificate revoked (`revokeAOrigin`), and A's record (`aSharedRecordPath`)
- * deleted once nothing of it is left to revoke. Every destroy plan is approved by its hash with
+ * A's origin certificate revoked while A's zone is active, or left once it has moved
+ * (`revokeAOrigin`), and A's record (`aSharedRecordPath`) deleted once nothing of it is left to
+ * revoke. Every destroy plan is approved by its hash with
  * `allowDestroy` and the app's name typed. Resumable: a run plans each step again, and a step
  * that is done plans nothing. A refused approval leaves the app on B and the step to run again. A
  * script stops with each step's hash.

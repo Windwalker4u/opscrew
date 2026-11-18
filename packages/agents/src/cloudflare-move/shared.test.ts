@@ -366,9 +366,10 @@ describe.skipIf(!findExecutable("git"))(
       await noLeaks(m, finish.keys);
     });
 
-    it("revokes A's origin certificate with A's token once the server serves B's, after the typed name, and leaves A's rules, client certificate and origin pulls", async () => {
+    it("revokes A's origin certificate with A's token while A's zone is still active once the server serves B's, after the typed name, and leaves A's rules, client certificate and origin pulls", async () => {
       const m = await moving("a proxied cloud server");
       const finish = await finished(m);
+      m.a.status = "active";
       const aBefore = structuredClone(holdings(m.a));
       expect(aBefore.origin).toHaveLength(1);
       serving(m, finish.b);
@@ -422,9 +423,47 @@ describe.skipIf(!findExecutable("git"))(
       },
     );
 
-    it("revokes A's origin certificate once the app's Portainer stack holds B's", async () => {
+    it.each([
+      ["has moved, as the switch leaves it", "moved"],
+      ["can't be read", "unreadable"],
+    ] as const)(
+      "leaves A's origin certificate once the server serves B's when A's zone %s, and says why",
+      async (_, zone) => {
+        const m = await moving("a proxied cloud server");
+        const finish = await finished(m);
+        // B's activation moved A's zone: Cloudflare no longer revokes its origin certificates.
+        expect(m.a.status).toBe("moved");
+        if (zone === "unreadable") {
+          m.a.status = "active";
+          m.h.cloudflare.faults.push({
+            match: `GET /zones/${m.a.id}`,
+            reply: {
+              status: 403,
+              body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] },
+            },
+          });
+        }
+        const aBefore = structuredClone(holdings(m.a));
+        const aside = await readFile(aSharedRecordPath(m.env), "utf8");
+        serving(m, finish.b);
+        expect(await revokeAOrigin(m.session, m.env)).toBeUndefined();
+        expect(m.h.deps.reporter.text()).toContain(
+          `The origin certificate of ${ZONE} from the account the app moved from can't be revoked: Cloudflare no longer revokes the certificates of a zone that moved to another account.`,
+        );
+        expect(m.handler.requests).toEqual([]);
+        expect(m.h.cloudflare.calls.every((call) => call.method === "GET")).toBe(true);
+        expect(holdings(m.a)).toEqual(aBefore);
+        // A's record aside stays as it was: the finish deletes it (removeA).
+        expect(await readFile(aSharedRecordPath(m.env), "utf8")).toBe(aside);
+        expect((await readAppProgress(m.session.paths)).pending).toBeUndefined();
+        await noLeaks(m, finish.keys);
+      },
+    );
+
+    it("revokes A's origin certificate once the app's Portainer stack holds B's, while A's zone is still active", async () => {
       const m = await moving("Portainer in Caddy mode");
       const finish = await finished(m);
+      m.a.status = "active";
       const deps = { ...m.h.deps, paths: m.env.paths };
       const values = await readOriginTlsValues(deps);
       const portainer = fakePortainer({

@@ -251,9 +251,11 @@ async function servedOriginSha256(
  * origin shows it serves B's (the app's origin certificate since the finish's swap): a Cloudflare
  * plan with only those revocations, approved by its hash with `allowDestroy` and the app's name
  * typed. While the origin serves another (A's), or can't be read, nothing is planned and the run
- * stops, to come back after the deploy. A's rules, its client certificate and origin pull
- * settings are left to A's moved zone, which Cloudflare deletes; A's Zero Trust pieces are never
- * touched. Nothing is asked when A's record names no origin certificate, or A lists none of them.
+ * stops, to come back after the deploy. Once A's zone isn't active (moved, as the switch leaves
+ * it, or unreadable), Cloudflare no longer revokes its certificates: the run says so and plans
+ * nothing. A's rules, its client certificate and origin pull settings are left to A's moved zone,
+ * which Cloudflare deletes; A's Zero Trust pieces are never touched. Nothing is asked when A's
+ * record names no origin certificate, or A lists none of them.
  */
 export async function revokeAOrigin(
   session: MoveSession,

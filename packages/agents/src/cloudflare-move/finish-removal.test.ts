@@ -41,6 +41,50 @@ function serving(w: FinishWorld, cert: string): void {
   });
 }
 
+/**
+ * A cloud server's app after the switch with A's origin certificate still to revoke: A lists it,
+ * A's record aside names it, the app's origin TLS values hold B's, and the deploy login is here.
+ */
+async function originToRevoke() {
+  const w = await finishWorld("cloud");
+  await w.seedRemoval("main", [...SERVER_ADDRESSES, RECORD]);
+  const aZone = w.cloudflare.zone(ZONE, "Old");
+  aZone.data.originCertificates.push({
+    id: "a-origin",
+    hostnames: [`shop.${ZONE}`],
+    expires_on: "2041-10-16 23:53:00 +0000 UTC",
+    certificate: A_PEM,
+  });
+  const record = aSharedRecordPath(w.environment);
+  await mkdir(dirname(record), { recursive: true });
+  await writeFile(
+    record,
+    JSON.stringify({
+      zoneId: aZone.id,
+      hostnames: {},
+      createdEntrypoints: [],
+      tls: {
+        origin: {
+          id: "a-origin",
+          hostnames: [`shop.${ZONE}`],
+          expiresAt: "2041-10-16T23:53:00.000Z",
+          sha256: fingerprintSha256(A_PEM),
+          superseded: [],
+        },
+      },
+    }),
+  );
+  const deps = { ...w.session.deps, paths: w.environment.paths };
+  await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+  await writeFile(
+    generatedValuesFile(deps),
+    JSON.stringify({ originTls: { ORIGIN_TLS_CERT: B_PEM } }),
+  );
+  await mkdir(dirname(w.environment.paths.files.deployKey), { recursive: true });
+  await writeFile(w.environment.paths.files.deployKey, "a placeholder deploy key\n");
+  return { w, aZone, record };
+}
+
 async function caught(promise: Promise<unknown>): Promise<OpsCrewError> {
   const error = await promise.catch((e: unknown) => e);
   if (!(error instanceof OpsCrewError)) throw new Error(`expected a stop, got ${String(error)}`);
@@ -341,43 +385,35 @@ describe.skipIf(!findExecutable("git"))("removeA", () => {
     expect(w.leaks()).toBe(false);
   });
 
-  it("revokes A's origin certificate only once the server serves B's, then forgets A's record", async () => {
-    const w = await finishWorld("cloud");
-    await w.seedRemoval("main", [...SERVER_ADDRESSES, RECORD]);
-    const aZone = w.cloudflare.zone(ZONE, "Old");
-    aZone.data.originCertificates.push({
-      id: "a-origin",
-      hostnames: [`shop.${ZONE}`],
-      expires_on: "2041-10-16 23:53:00 +0000 UTC",
-      certificate: A_PEM,
+  it("leaves A's origin certificate once A's zone has moved and the server serves B's, then forgets A's record and the finish ends", async () => {
+    const { w, aZone, record } = await originToRevoke();
+    // The switch left A's zone moved: Cloudflare no longer reads or revokes its origin certificates.
+    expect(aZone.status).toBe("moved");
+
+    serving(w, A_PEM);
+    expect(await removeA(w.session, w.environment)).toEqual({
+      next: [
+        "Once the deploy has brought the new origin certificate to the server, run `opscrew cloudflare move --finish` again.",
+      ],
     });
-    const record = aSharedRecordPath(w.environment);
-    await mkdir(dirname(record), { recursive: true });
-    await writeFile(
-      record,
-      JSON.stringify({
-        zoneId: aZone.id,
-        hostnames: {},
-        createdEntrypoints: [],
-        tls: {
-          origin: {
-            id: "a-origin",
-            hostnames: [`shop.${ZONE}`],
-            expiresAt: "2041-10-16T23:53:00.000Z",
-            sha256: fingerprintSha256(A_PEM),
-            superseded: [],
-          },
-        },
-      }),
+    expect(await readFile(record, "utf8")).toContain("a-origin");
+
+    serving(w, B_PEM);
+    expect(await removeA(w.session, w.environment)).toBeUndefined();
+    expect(w.deps.reporter.text()).toContain(
+      `The origin certificate of ${ZONE} from the account the app moved from can't be revoked: Cloudflare no longer revokes the certificates of a zone that moved to another account. The server serves the new account's origin certificate, and no deploy secret holds the old one any more, so OpsCrew leaves it.`,
     );
-    const deps = { ...w.session.deps, paths: w.environment.paths };
-    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
-    await writeFile(
-      generatedValuesFile(deps),
-      JSON.stringify({ originTls: { ORIGIN_TLS_CERT: B_PEM } }),
-    );
-    await mkdir(dirname(w.environment.paths.files.deployKey), { recursive: true });
-    await writeFile(w.environment.paths.files.deployKey, "a placeholder deploy key\n");
+    expect(w.handler.requests).toEqual([]);
+    expect(aZone.data.originCertificates[0]?.revoked_at).toBeUndefined();
+    expect(w.aWrites()).toEqual([]);
+    await expect(readFile(record)).rejects.toThrow();
+    expect(await endFinish(w.session)).toMatchObject({ step: "finished", done: true });
+    expect(w.leaks()).toBe(false);
+  });
+
+  it("revokes A's origin certificate while A's zone is still active only once the server serves B's, then forgets A's record", async () => {
+    const { w, aZone, record } = await originToRevoke();
+    aZone.status = "active";
 
     serving(w, A_PEM);
     expect(await removeA(w.session, w.environment)).toEqual({
