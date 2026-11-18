@@ -7,6 +7,7 @@
 import { readFile } from "node:fs/promises";
 import { type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { CheckResult, RemoteExec, Scanner } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
@@ -348,5 +349,26 @@ describe("runSecure on a server at home", () => {
     expect(find(result.probes, "ssh-port-open").status).toBe("warn");
     expect([...result.hostChecks, ...result.probes].some((c) => c.status === "fail")).toBe(false);
     expect(result.passed).toBe(true);
+  });
+
+  it("an inspection that fails after the login worked is unread, never away from home", async () => {
+    const { deps, host, remote } = await homeSecureSetup();
+    const failing = {
+      inspect: async () => {
+        throw new OpsCrewError("COMMAND_FAILED", "The inspection of your server failed.");
+      },
+      apply: host.apply.bind(host),
+    };
+    const result = await runSecure(deps, {
+      scanners: noScanners,
+      tcpConnect: everyPort,
+      remote,
+      own: { host: failing },
+    });
+    expect(find(result.hostChecks, "home-server-checks")).toMatchObject({
+      status: "fail",
+      message: "The inspection of your server failed.",
+    });
+    expect(result.hostChecks.some((c) => c.message === NOT_CHECKED_AWAY)).toBe(false);
   });
 });
