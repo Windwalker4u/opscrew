@@ -1,9 +1,11 @@
 import type { HostPlan } from "@opscrew/connector-ssh-host";
+import { homeMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { OwnServerHardening } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
 import { lastHostSetup, passwordLoginChoice, portList, readServerAddresses } from "../shared";
+import type { OwnHome } from "../shared/server-record";
 
 /** How `opscrew secure` checks a server the user owns. Local state only; never committed. */
 export interface OwnSecureTarget {
@@ -19,6 +21,11 @@ export interface OwnSecureTarget {
   hardening: OwnServerHardening;
   /** Every address and host name of the server, which the committed report must not contain. */
   hidden: string[];
+  /**
+   * A server at home (`target.home`): this computer's record of it (SSH's sources, the last outside
+   * check). Its probes then go to the login's address on the home network.
+   */
+  home?: OwnHome;
 }
 
 /**
@@ -75,5 +82,6 @@ export async function ownSecureTarget(
     access,
     hardening,
     hidden: [...new Set(hidden)],
+    ...(homeMode(plan) ? { home: connection.home ?? {} } : {}),
   };
 }

@@ -1,5 +1,11 @@
+import type { HostFacts } from "@opscrew/connector-ssh-host";
 import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { portainerStackName, portainerTarget, publishedOnNetwork } from "@opscrew/iac-templates";
+import {
+  homeMode,
+  portainerStackName,
+  portainerTarget,
+  publishedOnNetwork,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -25,7 +31,7 @@ import {
   serverAddress,
   serverlessNotSupported,
 } from "../shared";
-import { connectAndInspectOwnServer } from "../shared/own-server";
+import { connectAndInspectOwnServer, readOwnServerRecord } from "../shared/own-server";
 import { appServers, extraServers } from "../shared/servers";
 import { type CheckState, checkStateReport } from "./check-state";
 import {
@@ -40,6 +46,7 @@ import {
 } from "./components";
 import { type DeployState, deployStateReport } from "./deploys";
 import { drillStatusReport } from "./drill";
+import { type HomeRead, hideHomeAddresses, homeStatusLines, readHomeServer } from "./home";
 import { monitoringStatusReport } from "./monitoring";
 import { networkStatusLines, type UnpublishedPort } from "./network";
 import {
@@ -74,6 +81,8 @@ export interface ComponentStatusOptions {
   };
   /** The private network's WireGuard read (tests; default the host adapter's). */
   network?: ReadNetworkServices;
+  /** A server at home: the facts its section already read, so it is inspected only once. */
+  inspected?: HostFacts;
 }
 
 /**
@@ -109,11 +118,15 @@ export async function readServerContainers(
     throw serverlessNotSupported("Reading the app's containers", plan.target.provider);
   }
   if (plan.target.provider === "own") {
-    const { facts } = await connectAndInspectOwnServer(deps, {
-      hostKey: options.hostKey,
-      services: services.own,
-      detail: "the app's components",
-    });
+    const facts =
+      options.inspected ??
+      (
+        await connectAndInspectOwnServer(deps, {
+          hostKey: options.hostKey,
+          services: services.own,
+          detail: "the app's components",
+        })
+      ).facts;
     return facts.containers
       .filter((container) => container.project === app)
       .map(({ name, running }) => ({ name, running }));
@@ -238,7 +251,8 @@ function readingLines(
  * deployment cannot be read. `check` runs first and may stop the read the same way (the MCP
  * server's host-key check). With extra servers (feature 018, FR-1811), each server's components
  * and figures follow under its name, and with a private network its section
- * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then with self-hosted
+ * (`networkStatusLines`). A server at home's section follows the components (`homeReport`: SSH's
+ * sources, the address updater, the last outside check). A self-hosted runner's state follows (FR-1530), then with self-hosted
  * monitoring one line on this environment's servers sending to the stack (FR-2021), then the version
  * running, the one before and whether deploys are paused once provision ran, whether or not
  * `verify` did (`deployStateReport`, FR-1913), then once the app was deployed the last snapshot and
@@ -282,14 +296,15 @@ export async function componentStatusReport(
       report = { lines: joinBlocks(site.lines, [deps.redactor.redact(note)]) };
     }
   } else {
-    const components = await componentsReport(deps, plan, options);
+    const home = await homeReport(deps, plan, options);
+    const components = await componentsReport(deps, plan, home.options);
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
     const remote = options.services?.remote;
     // Self-hosted monitoring's line (feature 020): this environment's servers still sending.
     const monitoring = await monitoringStatusReport(deps, plan, remote ? { remote } : {});
     report = {
       ...components,
-      lines: joinBlocks(components.lines, runner, monitoring.lines),
+      lines: joinBlocks(components.lines, home.lines, runner, monitoring.lines),
       ...(monitoring.monitoring !== undefined ? { monitoring: monitoring.monitoring } : {}),
     };
     // Nothing runs on a server, in Portainer or on this computer before provision ran.
@@ -331,6 +346,43 @@ export async function componentStatusReport(
     ...(deploys.deploys !== undefined ? { deploys: { ...versions, ...deploys.deploys } } : {}),
     ...(snapshots.snapshot !== undefined ? { snapshot: snapshots.snapshot } : {}),
     ...(state.check !== undefined ? { check: state.check } : {}),
+  };
+}
+
+/**
+ * A server at home (plan 13.), once provision ran: it is read once (`readHomeServer`), its section
+ * follows the components (`homeStatusLines`, redacted, a proxied app's addresses registered as
+ * names first), and the components are read from the same facts. When it could not be read, the
+ * components' read stops with the same reason, so a server away from home is tried only once.
+ */
+async function homeReport(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: ComponentStatusOptions & { check?: () => Promise<void> },
+): Promise<{ lines: string[]; options: ComponentStatusOptions & { check?: () => Promise<void> } }> {
+  if (!homeMode(plan) || !hasDeployment(plan)) return { lines: [], options };
+  const { check, ...rest } = options;
+  const read: HomeRead = await readHomeServer(deps, {
+    hostKey: options.hostKey,
+    services: options.services?.own,
+    check,
+  });
+  if ("facts" in read) hideHomeAddresses(deps, plan, read.facts);
+  const home = (await readOwnServerRecord(deps.paths).catch(() => undefined))?.home;
+  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const lines = homeStatusLines({ plan, home, read, now: deps.clock.now(), flags }).map((line) =>
+    deps.redactor.redact(line),
+  );
+  if ("facts" in read) return { lines, options: { ...rest, inspected: read.facts } };
+  const failed = "away" in read ? read.away : read.unread;
+  return {
+    lines,
+    options: {
+      ...rest,
+      check: async () => {
+        throw failed;
+      },
+    },
   };
 }
 

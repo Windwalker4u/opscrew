@@ -4,6 +4,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { planProvider, providerProfile } from "../providers";
 import { ipv6HttpsAnswers, providerConsole } from "../shared";
+import { fromInside } from "./home";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 
@@ -13,7 +14,10 @@ const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
  * Cloudflare's proxy only Cloudflare, so from here they should be closed, and answering is a
  * finding). Tunnel mode:
  * no web port is expected at all (the app is reached only through the Cloudflare Tunnel), and SSH
- * answering from this machine is informational (deploys reach it through the tunnel).
+ * answering from this machine is informational (deploys reach it through the tunnel). A server at
+ * home (`inside`, the words of `insideLabel`) is probed from inside the home network: each result
+ * carries those words and none is a failure (`fromInside`), and SSH is said without GitHub's
+ * machines, which never reach it.
  */
 export async function probeOwnServerPorts(
   host: string,
@@ -26,7 +30,19 @@ export async function probeOwnServerPorts(
     ipv6?: string;
     /** Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address). */
     ipv6Route?: () => Promise<boolean>;
+    /** A server at home: where the probes come from (`insideLabel`). */
+    inside?: string;
   },
+): Promise<CheckResult[]> {
+  const results = await probeOwnPorts(host, plan, options);
+  const { inside } = options;
+  return inside === undefined ? results : results.map((check) => fromInside(check, inside));
+}
+
+async function probeOwnPorts(
+  host: string,
+  plan: DeployPlan,
+  options: Parameters<typeof probeOwnServerPorts>[2],
 ): Promise<CheckResult[]> {
   const timeoutMs = options.timeoutMs ?? 3000;
   const port = options.sshPort;
@@ -50,7 +66,9 @@ export async function probeOwnServerPorts(
       status: "pass",
       message: tunnel
         ? `Port ${port} answers from this machine; deploys from GitHub Actions reach SSH through the Cloudflare Tunnel.`
-        : `Port ${port} answers; deploys from GitHub Actions can connect.`,
+        : options.inside !== undefined
+          ? `Port ${port} answers.`
+          : `Port ${port} answers; deploys from GitHub Actions can connect.`,
     });
   } else if (tunnel) {
     out.push({
@@ -64,7 +82,10 @@ export async function probeOwnServerPorts(
       ...sshBase,
       severity: "high",
       status: "fail",
-      message: `Port ${port} does not answer, so deploys cannot reach the server.`,
+      message:
+        options.inside !== undefined
+          ? `Port ${port} does not answer, so OpsCrew can't log in to your server from here.`
+          : `Port ${port} does not answer, so deploys cannot reach the server.`,
       remediation: `Check that your server is on, that sshd listens on port ${port} and that its firewall (ufw, and any firewall of your hosting provider or router) lets SSH in.`,
     });
   }

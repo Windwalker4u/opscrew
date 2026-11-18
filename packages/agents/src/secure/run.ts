@@ -54,7 +54,7 @@ import { planProvider, providerProfile } from "../providers";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
-import type { PortainerServices } from "../provision/types";
+import type { OwnServerServices, PortainerServices } from "../provision/types";
 import { type RunnerGitHubApi, runnerChecks } from "../runners";
 import { appServerShell, hidesServerAddress, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
@@ -67,6 +67,7 @@ import {
 import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { siteHost } from "../verify/serverless";
+import { fromInside, homeSecurityChecks, insideLabel } from "./home";
 import { monitoringSecurityChecks } from "./monitoring";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
@@ -127,6 +128,11 @@ export interface RunSecureOptions {
   serverRemote?: (host: string) => RemoteExec;
   /** Reads the private network's filter on a server (feature 018); none: not checked. */
   readNetworkFilter?: NetworkFilterReader;
+  /**
+   * A server at home: the admin login's shell and the host adapter its server-side checks read
+   * through (default: SSH with the recorded login, and `inspectHost`).
+   */
+  own?: Pick<OwnServerServices, "remote" | "homeDir" | "host">;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -248,16 +254,26 @@ async function checkServer(
       ...(previews?.unread ?? []),
     ];
   }
+  // A server at home is probed from inside its network: no result there proves the outside view.
+  const inside = own?.home === undefined ? undefined : insideLabel(own.home);
   reporter.step(
     own === undefined
       ? `Probing ${host} from outside`
       : own.access === "tunnel"
         ? "Probing your server from this machine (the app is served through the Cloudflare Tunnel, so no web port should answer)"
-        : "Probing your server from outside",
+        : inside !== undefined
+          ? "Probing your server from this computer, inside your home network (not proof: `opscrew verify` checks from outside)"
+          : "Probing your server from outside",
   );
   const connect = options.tcpConnect ?? defaultTcpConnect;
   const timeoutMs = options.probeTimeoutMs ?? 3000;
   const probeHost = own?.probeHost ?? host;
+  const services = await probePorts(probeHost, {
+    services: servicePorts(plan),
+    connect,
+    timeoutMs,
+    providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,
+  });
   const probes = [
     ...(own === undefined
       ? await probeExpectedPorts(host, plan, { connect, timeoutMs })
@@ -267,13 +283,9 @@ async function checkServer(
           sshPort: own.sshPort,
           ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
           ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
+          ...(inside !== undefined ? { inside } : {}),
         })),
-    ...(await probePorts(probeHost, {
-      services: servicePorts(plan),
-      connect,
-      timeoutMs,
-      providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,
-    })),
+    ...(inside === undefined ? services : services.map((check) => fromInside(check, inside))),
     await probeSshPasswordAuth(host, {
       runner: deps.runner,
       knownHostsFile: paths.files.knownHosts,
@@ -520,6 +532,14 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     probes = checked.probes;
     hostChecksSkipped = checked.skipped;
     remote = checked.remote;
+    // A server at home: what only its admin login reads (the SSH table, the web filter, the
+    // address updater, the power supply).
+    if (own?.home !== undefined) {
+      hostChecks = [
+        ...hostChecks,
+        ...(await homeSecurityChecks(deps, plan, own.home, options.own)),
+      ];
+    }
   }
   // An app with a private network (feature 018): every extra server as the app's, each service on
   // a private address held to it, named by server; their addresses never reach the report. When
