@@ -703,6 +703,13 @@ contract.
 
 ## Later, not yet placed
 
+- **Node.js and Python apps through cPanel's Application Manager and Plesk's Node.js, if users
+  ask** (founder, 2026-11-18, from 027's plan 8.): on a cPanel host without CloudLinux. 027 runs
+  such apps through CloudLinux's selector, which most shared hosts with cPanel have and which
+  installs the runtime and the app's packages itself; Application Manager
+  (`PassengerApps::register_application`) only registers an app already on disk, so OpsCrew would
+  bring the runtime and the packages, and the founder's test account (CloudLinux, LiteSpeed, no
+  `node` or `npm` outside the selector) can't test it live.
 - **Database replicas** (founder, 2026-11-15): a second database server that copies the main one
   continuously, for reads (Rails and Laravel send reads there by configuration; Django through a
   database router) and as a standby, at the same provider or a second one, so that 030's copies at
