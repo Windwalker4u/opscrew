@@ -345,6 +345,19 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 6: Wave 5
 
+- [ ] T2942 [P] [US4] The IPv6 web filter seen by the plan, kept through an nftables restart (lead, T2906's findings)
+  - Owns: `packages/connectors/ssh-host/src/{inspect,parse,facts,plan,steps,web-filter}.ts`, colocated tests and snapshots
+  - Reads: plan 8. (M11); T2906's `WEB_FILTER_TABLE`, `webFilterStep`, `webFilterScript`
+  - Depends: T2906
+  - Accept:
+    - Inspection reads whether `inet opscrew-web` is there and a hash of its rules (no address printed beyond what the step already shows); `webFilterStep` compares it, so a flushed or edited table is a change, and drift (T2914c) can report it.
+    - Proxied IPv6 → IPv4: when the fact shows the table and the desired filter has no `ipv6`, the plan removes the table (the IPv4-only render stays byte-identical otherwise).
+    - An nftables restart keeps the filter: with IPv6 only, a drop-in for the web-filter unit (`PartOf=`/`ReloadPropagatedFrom=nftables.service` or the like, tested) loads the table again; the IPv4-only unit text stays identical.
+    - With `ipv6` and no `nft` on the server, `webFilterStep` installs nftables (as the home `ssh-firewall` step does) or is blocked before any change; never a failure mid-apply.
+    - A Docker-gated test (`OPSCREW_DOCKER_TESTS=1`): a flushed table seen by inspection, `systemctl restart nftables` followed by the table back.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
+  - Effort: high
+
 - [ ] T2913a [US1] [US2] [US4] Provision for a home server: the checks and the host plan
   - Owns: `packages/agents/src/provision/{own,run}.ts`, `packages/agents/src/check/provision.ts`,
     colocated tests
