@@ -248,6 +248,65 @@ the account,** in `~/opscrew/<app>-<env>/dumps/`; how to keep a copy elsewhere i
 default), the agent also dumps the database before each release, and keeps the dumps of the
 releases it keeps.
 
+## Restore drills
+
+`npx opscrew restore --drill` proves a snapshot restores (see
+[Restore drills](snapshots.md#restore-drills) for what every drill shares). An account has one
+site per folder and hostname and no way to cut a second copy of the app off from the outside, so a
+drill here proves less than on a server: **the dump loads into an empty database and holds its
+tables; the app isn't started.** Whether the app runs on that data is not checked.
+
+### The drill database
+
+Drills load the dump into a database of their own, never the app's. Turn them on with
+`drills: {}` under `snapshots:` in `opscrew/plan.yaml` (or with
+`npx opscrew snapshot drill schedule on`), then run `npx opscrew provision`: plan B makes the
+drill database, named after the app's with `_drill` at the end, and its own user, which has no
+right on the app's database. Each drill empties that database, so you approve the plan by its hash
+with `<app>-drill` typed. Its password is generated then and kept only in
+`~/opscrew/<app>-<env>/keys/drill.cnf` (0600, outside every web root). **It is one more database
+on the account, so it counts against your hosting plan's limit on databases:** check there is room
+for it before you turn drills on. Removing `snapshots.drills` and running provision removes it, and
+so does `npx opscrew destroy`.
+
+### A drill
+
+The agent runs it under its lock, between releases, signed in with the drill database's own
+login, after you approve its request by typing `<app>-drill`. By default it takes the newest
+snapshot you took with `npx opscrew snapshot`; name another by its id. It:
+
+1. checks the dump is a valid gzip file and not empty;
+2. drops every table and view in the drill database, then loads the dump into it, with its
+   `DEFINER=` clauses left out, so its views and triggers are made with the drill's own user;
+3. counts the drill database's tables against the dump's `CREATE TABLE` lines (names and counts
+   only: no row is read);
+4. empties the drill database again, so no copy of the data stays beyond the dump itself;
+5. lists the snapshot's copy of the shared files as an archive; nothing is unpacked.
+
+A drill takes 30 minutes at most: then it is stopped, the drill database emptied and the drill
+recorded as failed. `--keep`, `--remove`, `--only` and `--allow-other-version` don't apply here.
+
+### On a schedule
+
+With `npx opscrew snapshot drill schedule on` (`--every daily` for daily drills), the next
+`npx opscrew provision` puts the schedule in the agent's settings, in a plan approved the same way
+(see [On a schedule](snapshots.md#on-a-schedule)). The account takes no snapshot on a schedule, so
+the agent drills the newest snapshot you took, once no drill has proved it yet (a skip doesn't
+count). Its slot is a server's: weekly on Thursdays from 03:00 UTC, or daily from 03:00 UTC, one
+run per slot, after the releases under the agent's lock, so never during a deploy, and with no
+call to the panel. It keeps
+a drill by hand's bounds, and is skipped, recorded and never a failure, when there is no snapshot
+yet, when the drill database's login isn't there yet, or when the room the account's disk quota
+leaves is smaller than the dump. **That quota is the account's file quota, which on many hosts
+doesn't count the space its databases use,** so the check can pass while the database server
+itself has no room left.
+
+The agent runs as the account's user, so anything that user can run, the app's own code included,
+can go past these bounds.
+
+Each drill leaves one line, with no value in it, in `~/opscrew/<app>-<env>/state/drills.log`,
+which `npx opscrew status` reads.
+
 ## Rolling back
 
 ```bash
@@ -273,7 +332,7 @@ typed:
 - the cron lines OpsCrew made, the agent's first;
 - the hostname, and its link in `public_html` when there is one;
 - the certificate issued for the hostname, when nothing else uses it;
-- the database and its user;
+- the database and its user, and the [drill database](#the-drill-database) and its user;
 - the app's folder (but the final dump), and `~/opscrew` when it is empty;
 - the DNS record on Cloudflare; on GitHub, the deploy key, the signing key and the release branch.
 

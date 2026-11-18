@@ -62,6 +62,7 @@ writing issues.
 | Each hostname's certificate | Fewer than 14 days left. Certificates are renewed 30 days before they expire, so this means the renewal is failing | The days left, and the command to see why |
 | Each server's disk | 85% full, and again at 95% | The server, its free space and what usually fills it (old images and logs) |
 | With [scheduled snapshots](snapshots.md#the-schedule) on, the last one of each app on each server with its data | The last scheduled snapshot failed, or its [copy off the server](snapshots.md#an-encrypted-copy-off-the-server) did. A snapshot being taken is checked at the next run | The server, when it failed, the snapshot's id for a failed copy, and to run `npx opscrew status` to see why |
+| With [scheduled restore drills](snapshots.md#on-a-schedule) on, the last one of each app on its server | The last scheduled drill that ran didn't restore the snapshot, or the app didn't become healthy on it, or the copy couldn't be made; or no scheduled drill ran within twice the schedule and an hour (since the last one, or with none yet, since the latest scheduled snapshot). A skipped drill never opens one | The server, when it failed and which of those it was, or since when none ran, and to run `npx opscrew status` to see why |
 
 On a hostname behind [Cloudflare](https://www.cloudflare.com/)'s proxy, the certificate the check sees is Cloudflare's.
 `npx opscrew secure` and `npx opscrew status` check the server's own.
@@ -83,14 +84,16 @@ The disk and the scheduled snapshots are read where the deploy job runs:
   - the disk's size and free space (`df -P -B1 /`);
   - for each app with a scheduled snapshot's log (`.snapshots/scheduled.log` in the app's folder),
     only when the log was last written, the id of its last scheduled snapshot, how many lines
-    followed that id, and whether a snapshot is being taken now. Nothing else of the log.
+    followed that id, and whether a snapshot is being taken now. Nothing else of the log;
+  - for each app with restore drills (`.snapshots/drills.log`), only the end and the result of
+    its last scheduled drill that ran.
 
-  A leaked check key reads those figures and ids.
+  A leaked check key reads those figures, ids and times.
   - A new cloud server gets the key's line when it is created, in the infrastructure plan.
   - An existing server, or your own, gets it through a host plan that you approve by its hash.
-  - A server set up before the check read snapshots has a key line that reads only the disk: the
-    check says so in its run. `npx opscrew provision` gives the app's server and your own servers
-    the new line; another server OpsCrew created gets it when it is created again.
+  - A server set up before the check read snapshots (or restore drills) has a key line that reads
+    less: the check says so in its run. `npx opscrew provision` gives the app's server and your
+    own servers the new line; another server OpsCrew created gets it when it is created again.
 - **On a [runner machine](runners.md#runner-machines),** a job on that machine uses the check key in
   the same way.
 - **On a server that deploys from [its own runner](runners.md#the-servers-runner),** a job on that
@@ -233,9 +236,12 @@ each.
   minutes, sometimes more), plus up to a minute of retries.
 - **Check your computer:** GitHub can't reach an app running [on your computer](localhost.md), so
   design offers no check there.
-- **Read the disk or the scheduled snapshots of a [Portainer](https://www.portainer.io/)'s server:** OpsCrew reaches your Portainer only through its API.
+- **Read the disk, the scheduled snapshots or the restore drills of a [Portainer](https://www.portainer.io/)'s server:** OpsCrew reaches your Portainer only through its API.
   The check still checks the app's hostnames, and `npx opscrew status` shows the last snapshot and
-  its result.
+  its result, and the last drills.
+- **Read the restore drills of a [hosting account](hosting-accounts.md#restore-drills):** the
+  check has no way into the account. `npx opscrew status` shows the last drill there (see
+  [Status and alerts](snapshots.md#status-and-alerts)).
 - **Read the disk of your own server reached through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/),** unless the server
   deploys from [its own runner](runners.md#the-servers-runner): the check's SSH can't pass the
   tunnel's [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) login.

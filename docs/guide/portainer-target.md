@@ -322,9 +322,57 @@ interview says the data matters, design proposes both.
   the host, which the stack has no access to. A snapshot by hand copies every service.
 - **`npx opscrew restore <id>`** puts a snapshot back through Portainer's API.
 - **The [scheduled check](alerts.md)** doesn't reach your Portainer: `npx opscrew status` shows the
-  last snapshot and its result.
+  last snapshot and its result, and the last [restore drills](#restore-drills).
 
 Your NAS's own snapshot or backup feature, if it has one, still covers the rest of the host.
+
+## Restore drills
+
+`npx opscrew restore --drill` proves a snapshot restores (see
+[Restore drills](snapshots.md#restore-drills) for what every drill shares). In your Portainer:
+
+- **The copy is a second stack,** `opscrew-<app>-drill`, made from a stack file OpsCrew sends
+  through Portainer's API, not from your repository. It mounts the `snapshots` volume read-only,
+  restores into volumes of its own, and has no ports and no tunnel. Every name in it starts with
+  `opscrew-<app>-drill`, so it can't touch the app's stack or its volumes.
+- **The approval** is a stack plan approved by its hash, listing the stack, the volumes it creates
+  and removes, its network and the snapshot, with `<app>-drill` typed.
+- **The network is read back** after the stack is deployed: when Portainer didn't make it
+  internal, OpsCrew removes the stack at once, before any data goes in.
+- **What isn't checked here:** free disk and memory, and a deploy or snapshot running at the same
+  time, which Portainer's API doesn't report reliably. The 30-minute limit is kept by this
+  computer.
+- **Afterwards,** OpsCrew removes the stack and its volumes and lists them again to prove they are
+  gone. When that fails, the next drill removes them first, or remove them in Portainer.
+  `--keep` and `--remove` don't apply here: the copy always goes.
+- **Its record** stays on this computer, in `drills.json` in `.opscrew/` (or
+  `.opscrew/environments/<env>/`), since no log of OpsCrew's is kept in your Portainer.
+
+### Scheduled dump drills
+
+With `npx opscrew snapshot drill schedule on` (and the snapshot schedule on), the app's stack gets
+one more small service per PostgreSQL, MySQL, MariaDB or MongoDB database, `drill-<service>`,
+from the next `npx opscrew provision`, which you approve with the stack plan by its hash. A stack
+can't make a second stack, and no Portainer token sits in it, so what it proves is narrower than a
+drill by hand: **that each dump restores, not that the app starts on it.** In its slot it:
+
+1. starts a scratch database server of its own, inside its own container, from the service's own
+   image, with no network at all;
+2. restores the latest scheduled snapshot's dump of that database into it, as a restore does;
+3. counts its tables (collections for MongoDB), stops the server and removes the scratch.
+
+It reads the `snapshots` volume read-only and writes only its own scratch volume,
+`<service>_drill`, never the database's own container or volumes. It skips, recorded and never a
+failure, when there is no scheduled snapshot with that dump yet, when free disk is below the
+dump's size plus 10% of the disk (at least 1 GiB), or when free memory is below the service's
+limit. It removes what a stopped run left first, and stops the scratch server after 30 minutes.
+Other services (Valkey, Kafka and the like) aren't drilled on a schedule; a drill by hand restores
+them.
+
+Each run prints one line, with no value in it, to that service's log: `opscrew status` reads the
+last one through Portainer's Docker proxy. **A recreated container starts a new log,** so its last
+record goes with the old one. The service holds no Portainer credential: what it can reach is its
+own stack's services and volumes. Anything with access to the host's Docker can go past its bounds.
 
 ## Removing the app
 

@@ -10,6 +10,7 @@ each off the server, so that losing the server doesn't lose your data.
 npx opscrew snapshot                          # a snapshot of the environment's data, now
 npx opscrew snapshot list                     # every snapshot, newest first
 npx opscrew restore <id>                      # put a snapshot's data back
+npx opscrew restore --drill                   # prove the latest snapshot restores, in a throwaway copy
 npx opscrew snapshot schedule on --every daily   # snapshots on a schedule, from the next provision
 npx opscrew snapshot offsite on --to r2       # an encrypted copy of each in a bucket of its own
 npx opscrew snapshot offsite on --to sftp --host backup.example.com --user shop-backups --path /backups
@@ -153,6 +154,136 @@ Data is restored under the version it was taken with:
   app stays stopped and no version runs on data that doesn't match. The message names each
   server's copy from just before (`opscrew restore <id>`). Once the cause is fixed, restore it:
   that starts the app again.
+
+## Restore drills
+
+```bash
+npx opscrew restore --drill                          # the latest snapshot
+npx opscrew restore --drill 20261106T190000Z --only db
+npx opscrew restore --drill --keep                   # keep the copy to look at
+npx opscrew restore --drill --remove                 # then remove it
+npx opscrew snapshot drill schedule on               # a drill every week, from the next provision
+```
+
+A drill proves that a snapshot restores, without touching the app's data: it restores the
+snapshot into a throwaway copy where the snapshot is, checks the copy, and removes it. The
+snapshot is read in place, read-only. A drill never runs on the [preview server](previews.md),
+where anyone who can push a branch runs code.
+
+### What a drill proves
+
+| Where the app runs | The copy | What is checked |
+|---|---|---|
+| A server OpsCrew created, [your own](own-server.md) (at [home](home-hosting.md) too), or [your computer](localhost.md) | A Compose project `<app>-drill` in `.drill/<id>/` of the app's folder | The app starts on the restored data and passes its own health check within 5 minutes (with no health check, it still runs after 60 seconds); then each PostgreSQL, MySQL, MariaDB and MongoDB service answers and holds at least one table or collection |
+| [Your Portainer](portainer-target.md#restore-drills) | A second stack, `opscrew-<app>-drill` | The same, the app's health read through Portainer's Docker proxy |
+| A [hosting account](hosting-accounts.md#restore-drills) with a panel | The account's drill database | The dump loads and holds as many tables as it makes; the app isn't started |
+| An [SFTP host](sftp.md), [Cloudflare's hosting](cloudflare-hosting.md), [GitHub Pages](github-pages.md) | None: they keep no snapshots, so there is nothing to drill | |
+
+A cache (Valkey, Redis, Dragonfly) may be empty, so its tables aren't counted. Because the proofs
+differ, the drill's report and `opscrew status` say which one ran: "healthy" where the app
+started on the copy, "the dump loaded with 42 tables" on a hosting account.
+
+`--only <service>` drills one service. On a [split plan](split-placement.md), the drill runs on
+the app's server with the parts there: parts on other servers aren't drilled.
+
+### Cut off from the outside
+
+The copy holds production's data, so it can reach nothing and nothing can reach it:
+
+- **No internet.** Its network is internal. The machine checks that before any data goes in, and
+  removes the copy at once when it isn't so. Mail, payments, webhooks and other APIs can't be
+  called, whatever the app's settings say.
+- **No route in:** no published port, no hostname, no DNS record, no site in the reverse proxy.
+- **Not your production `.env`.** The copy gets new passwords for its own services, the app's
+  plain settings, and the values of `.env.preview` when it exists (the
+  [preview values](previews.md#the-preview-values-test-keys-only)). If the app needs some value to
+  start, add it to `.env.preview` with a test value. Only the names of those values are shown.
+- **Only the app and the snapshot's services start:** no workers, no cron, no scheduler, so a
+  restored queue's jobs aren't run.
+
+A service that stops for its copy (Kafka, RabbitMQ and the like) is restored from a copy of its
+files, which keeps production's logins: the copy's app can't sign in to it, and the drill says so.
+
+### The version
+
+The copy runs the version the snapshot recorded: that image, pulled with the machine's own login
+when it isn't there. When it's gone, the drill says so; `--allow-other-version` starts the image
+the app runs today on the restored data instead. On your computer each local build gets a new
+image, so a drill there often needs it.
+
+### Approving a drill
+
+A drill removes the copy it made, so you approve it as a removal of its own: the approval names
+the snapshot, the project, what it creates and removes, the memory the copy takes, its network and
+its health check, and you type `<app>-drill` (`shop-staging-drill` for staging, `shop-drill` for
+prod). It never starts, stops or changes production's containers, volumes or database. In a
+script, see [In a script](#in-a-script).
+
+### What a drill tells you
+
+It ends one of three ways, and says which:
+
+- **The snapshot did not restore:** the backup is bad. Take a new snapshot now.
+- **It restored, but the app did not become healthy** with no internet and none of your production
+  values: the backup itself is fine. Add the app's test values to `.env.preview`, or accept the
+  result.
+- **It restored and the app became healthy.**
+
+A drill is **skipped**, changing nothing, while a deploy, a snapshot or a restore runs, when the
+disk has less free space than the snapshot's size plus 10% of the disk (at least 1 GiB), and when
+free memory is below the copy's memory limits added up (where the machine has no
+`/proc/meminfo`, the memory check is left out). A skip is never a failure. A drill stops after 30 minutes and removes
+its copy. When a copy can't be removed, that is its own line, with the command to run.
+`--json` prints the report.
+
+### On a schedule
+
+```bash
+npx opscrew snapshot drill schedule on                 # weekly
+npx opscrew snapshot drill schedule on --every daily
+npx opscrew snapshot drill schedule off
+```
+
+`drill schedule on` and `off` change only the plan (`snapshots.drills.schedule`); `npx opscrew
+provision` then puts the schedule on the target, or takes it away. A drill runs weekly (the
+default, on Thursdays) or daily, never more often, from 03:00 UTC: three hours after the
+[scheduled snapshot](#the-schedule)'s slot. It proves the latest scheduled snapshot, so it needs
+the snapshot schedule on; on a hosting account, which takes no snapshot on a schedule, the agent
+drills the newest one you took.
+
+| Where the app runs | What runs the drills |
+|---|---|
+| A server | One more line in the deploy user's crontab, `snapshot.sh drill scheduled`, beside the snapshot's, installed with the copy's files by the provision's host plan |
+| Your Portainer | One small service per database in the app's stack, which proves each dump, not the app: see [Scheduled dump drills](portainer-target.md#scheduled-dump-drills) |
+| A hosting account | OpsCrew's agent on the account: see [Restore drills](hosting-accounts.md#restore-drills) on the hosting page |
+| Your computer | None: it isn't always on to run them |
+
+On a server and a hosting account, each scheduled drill removes what it made, so you approve the
+plan that installs the schedule by its hash with `<app>-drill` typed (in a script,
+`--confirm <app>-drill` beside its `--approve`). On a server, the copy's values are the ones
+`.env.preview` held at that provision: run `npx opscrew provision` again after you change it.
+
+**Its bounds on a server,** which `snapshot.sh` keeps itself (a Portainer's and a hosting
+account's are on their pages):
+
+- only its own names: the project `<app>-drill`, the folder `.drill/`, its volumes and network,
+  each built from the app's name and the word `drill`; never production's containers, volumes or
+  database;
+- only the latest snapshot: never an older one, never the copy off the server;
+- no internet, no published port, and `.env` is never read;
+- it removes what it made, and first what a stopped run left, saying so;
+- it skips as a drill by hand does, also while a copy kept with `--keep` is still there and while
+  no complete scheduled snapshot exists yet;
+- 30 minutes at most, then it stops and removes the copy.
+
+**What root can do.** The schedule is a standing approval: the plan you approved installs a program
+that repeats one bounded change without asking again. Its bounds are kept on the machine, so
+anything with root there can go past them, including the server's own
+[runner](runners.md#the-servers-runner), which runs your repository's code in the docker group.
+
+Each run leaves one line, with no value in it, in `.snapshots/drills.log` in the app's folder.
+`drill schedule off` keeps drills by hand; `npx opscrew provision` then removes the crontab line,
+the copy's files and any copy left.
 
 ## Whole-server snapshots
 
@@ -431,9 +562,22 @@ With the copy off the server on, the second line says where the copies go, witho
 With the schedule on, it also names each server whose last scheduled snapshot, or its copy off the
 server, failed, and where its output is (`.snapshots/scheduled.log` in the app's folder).
 
+Then the last [restore drill](#restore-drills), read where it ran: its snapshot, time, how long it
+took, and how it ended, or that it was skipped and why:
+
+```text
+Last restore drill: 20261107T000000Z, scheduled, 2026-11-07 03:04 UTC, took 4 min 10 s, healthy, db 42 tables.
+```
+
+In your Portainer, each scheduled dump drill gets a line of its own beside the last drill by
+hand. With drills on a schedule, a warning follows when none ran within twice the schedule and an
+hour (two weeks for weekly drills, two days for daily ones); on a hosting account, when the newest
+snapshot has waited that long for its drill.
+
 The [scheduled check](alerts.md), when it is on, opens an issue when the last scheduled snapshot
-of an app on a server failed, or its copy off the server did. It doesn't reach your Portainer:
-there, `opscrew status` shows the snapshots.
+of an app on a server failed, or its copy off the server did, and for scheduled restore drills
+there (see [What it checks](alerts.md#what-it-checks)). It doesn't reach your Portainer, a hosting
+account or your computer: there, `opscrew status` shows the snapshots and the drills.
 
 In [Claude Code](claude-code-plugin.md), the status answer names the last snapshot, and the
 read-only tool `opscrew_snapshots` lists them. Taking and restoring snapshots stay terminal
@@ -481,7 +625,8 @@ npx opscrew restore <id>      # put them back, after you type the hostname
 - **A restore** first copies what is there now, and puts that copy back when the restore fails.
 
 The dumps the agent takes before each release are in
-[Snapshots](hosting-accounts.md#snapshots) on the hosting page.
+[Snapshots](hosting-accounts.md#snapshots) on the hosting page, and its restore drills in
+[Restore drills](hosting-accounts.md#restore-drills).
 
 An [SFTP host](sftp.md) runs no agent, so it has no snapshots.
 
@@ -493,6 +638,7 @@ An [SFTP host](sftp.md) runs no agent, so it has no snapshots.
 | `opscrew snapshot delete <id>` | `--confirm <id>` |
 | `opscrew restore <id>` | `--confirm <app name> --approve <hash>`, the hash from a run without them |
 | `opscrew restore --server <id>` | `--confirm <server name> --approve <hash>`, the hash from a run without them |
+| `opscrew restore --drill`, `restore --drill --remove` | `--confirm <app>-drill --approve <hash>`, the hash from a run without them |
 
 `--yes` approves none of them. Flags that don't go together, such as `--skip` with `--server`, are
 refused before any work. The exit code is 0 when done, 1 when refused or not approved, and 2 on an
