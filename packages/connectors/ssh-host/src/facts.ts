@@ -3,6 +3,7 @@ import { ALLOY_DESTINATIONS, RUNTIME_FILE_NAMES } from "./constants";
 import {
   AccessModeSchema,
   AddonFileNameSchema,
+  AppNameSchema,
   HostStepIdSchema,
   RecipePathSchema,
   StackPathSchema,
@@ -252,6 +253,56 @@ export const NetworkFactsSchema = z.object({
     .default([]),
 });
 export type NetworkFacts = z.infer<typeof NetworkFactsSchema>;
+
+/**
+ * The block device a folder lives on (`findmnt -n -o SOURCE -T <folder>`): the mounted source
+ * without a subvolume, its disk, and what the disk is. An `mmcblk` disk is an SD card (`sd`) or
+ * eMMC (`mmc`) by `/sys/block/<disk>/device/type`, or `mmc-unknown` when that file says neither.
+ */
+export const StorageDeviceSchema = z.object({
+  source: z.string().min(1),
+  disk: z.string().min(1),
+  kind: z.enum(["sd", "mmc", "mmc-unknown", "other"]),
+});
+export type StorageDevice = z.infer<typeof StorageDeviceSchema>;
+
+/**
+ * `/etc/opscrew/dns-updater/<app>.json`, the address updater's config (feature 029): no secret and
+ * no address.
+ */
+export const DnsUpdaterConfigSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  app: AppNameSchema,
+  zoneId: z.string().regex(/^[0-9a-f]{32}$/),
+  name: z.string().min(1).max(253),
+  proxied: z.boolean(),
+  ipv4: z.boolean(),
+  ipv6: z.boolean(),
+});
+export type DnsUpdaterConfig = z.infer<typeof DnsUpdaterConfigSchema>;
+
+/**
+ * One instance of the address updater on the server, as inspection reads it: whether its config
+ * parses, its token file's mode, owner and SHA-256 (never its content), its timer, and its state
+ * file's JSON (at most 4 KiB, not yet validated: agents checks it), null when absent or unreadable.
+ */
+export const DnsUpdaterFactSchema = z.object({
+  app: AppNameSchema,
+  config: z.boolean(),
+  token: z.object({
+    present: z.boolean(),
+    /** Octal permission bits as `stat -c %a` prints them, "" without the file. */
+    mode: z.string(),
+    owner: z.string(),
+    sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+  }),
+  timer: z.object({ enabled: z.boolean(), active: z.boolean() }),
+  state: z.unknown().nullable(),
+});
+export type DnsUpdaterFact = z.infer<typeof DnsUpdaterFactSchema>;
 
 /** Facts about the server found by `inspectHost`; read-only, zod-validated. */
 export const HostFactsSchema = z.object({
@@ -531,6 +582,26 @@ export const HostFactsSchema = z.object({
       enabled: z.boolean(),
     })
     .default({ nft: false, table: null, files: { rules: null, unit: null }, enabled: false }),
+  /** `/proc/device-tree/model` ("Raspberry Pi 5 Model B Rev 1.0"), null without one. */
+  board: z.string().nullable().optional(),
+  /** The devices of `/srv` (or `/` without it) and of Docker's data root, null when unknown. */
+  storage: z
+    .object({ srv: StorageDeviceSchema.nullable(), docker: StorageDeviceSchema.nullable() })
+    .optional(),
+  /**
+   * Under-voltage on a Raspberry Pi, from `vcgencmd get_throttled` (bit 0 now, bit 16 since boot),
+   * else this boot's kernel log; null when neither could be read.
+   */
+  power: z
+    .object({
+      underVoltageNow: z.boolean(),
+      underVoltageSinceBoot: z.boolean(),
+      source: z.enum(["vcgencmd", "kernel-log"]),
+    })
+    .nullable()
+    .optional(),
+  /** The address updater's instances (one per app config in `/etc/opscrew/dns-updater`), by app. */
+  dnsUpdaters: z.array(DnsUpdaterFactSchema).optional(),
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;

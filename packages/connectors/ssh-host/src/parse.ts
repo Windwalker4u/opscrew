@@ -19,12 +19,15 @@ import {
   type AppRecord,
   AppRecordSchema,
   type DirFact,
+  DnsUpdaterConfigSchema,
+  type DnsUpdaterFact,
   type HostFacts,
   type Listener,
   type NetworkFacts,
   type RunnerFact,
   type RuntimeFileFact,
   ServiceEnvFileSchema,
+  type StorageDevice,
   type WebFilterRules,
 } from "./facts";
 import type { NetworkFilterRule } from "./network-filter";
@@ -649,6 +652,11 @@ export function parseAptPeriodic(text: string): boolean {
 const VIRTUAL_INTERFACE =
   /^(docker\d*|br-|veth|cni|flannel|cali|virbr|lxcbr|lxdbr|tailscale|wg|zt)/;
 
+/** True for a container bridge's or a VPN's interface, whose addresses never come from outside. */
+export function isVirtualInterface(name: string): boolean {
+  return VIRTUAL_INTERFACE.test(name);
+}
+
 /**
  * True for an IPv4 or IPv6 address other machines on the internet can reach: not private,
  * loopback, link-local, shared (100.64.0.0/10) or in 0.0.0.0/8.
@@ -902,7 +910,8 @@ export function parseDockerUserChain(save: string): WebFilterRules["dockerUser"]
   };
 }
 
-function ipv4Value(address: string): number | null {
+/** The 32-bit value of a dotted IPv4 address (no leading zeros), or null. */
+export function ipv4Value(address: string): number | null {
   const parts = address.split(".");
   if (parts.length !== 4) return null;
   let value = 0;
@@ -931,7 +940,7 @@ export function canonicalIpv4Cidr(text: string): string | null {
 }
 
 /** The 128-bit value of an IPv6 address in hex groups (no embedded IPv4, no zone), or null. */
-function ipv6Value(address: string): bigint | null {
+export function ipv6Value(address: string): bigint | null {
   const halves = address.split("::");
   if (halves.length > 2) return null;
   const groups = (part: string | undefined) => (part ? part.split(":") : []);
@@ -1031,4 +1040,116 @@ export function parseNetworkFilterRules(lines: readonly string[]): NetworkFilter
     .filter(([, entry]) => entry.dropped && !entry.open)
     .sort(([a], [b]) => a - b)
     .map(([port, entry]) => ({ port, sources: [...new Set(entry.sources)].sort() }));
+}
+
+/** `/proc/device-tree/model` without its NUL: the board's name, null when there is none. */
+export function parseBoard(section: Section): string | null {
+  const model = section.exit === 0 ? section.text.replace(/\0/g, "").trim() : "";
+  return model !== "" && model.length <= 200 && /^[\x20-\x7e]+$/.test(model) ? model : null;
+}
+
+/**
+ * The storage section: `srv <source>` and `docker <source>` (`findmnt -n -o SOURCE -T`), then
+ * `type <disk> <type>` for each `mmcblk` disk (`/sys/block/<disk>/device/type`: `SD` or `MMC`).
+ */
+export function parseStorage(text: string): NonNullable<HostFacts["storage"]> {
+  const sources = new Map<string, string>();
+  const types = new Map<string, string>();
+  for (const line of linesOf(text)) {
+    const source = /^(srv|docker) (\S.*)$/.exec(line);
+    if (source?.[1] && source[2]) sources.set(source[1], source[2]);
+    const type = /^type (mmcblk\d+) (\S+)$/.exec(line);
+    if (type?.[1] && type[2]) types.set(type[1], type[2]);
+  }
+  const device = (source: string | undefined): StorageDevice | null => {
+    if (source === undefined) return null;
+    // A btrfs subvolume is printed after the device: `/dev/sda2[/@]`.
+    const bare = source.replace(/\[.*\]$/, "");
+    const name = bare.replace(/^\/dev\//, "");
+    const mmc = /^(mmcblk\d+)(?:p\d+)?$/.exec(name)?.[1];
+    if (mmc !== undefined) {
+      const type = types.get(mmc);
+      const kind = type === "SD" ? "sd" : type === "MMC" ? "mmc" : "mmc-unknown";
+      return { source: bare, disk: mmc, kind };
+    }
+    const disk =
+      /^(nvme\d+n\d+)(?:p\d+)?$/.exec(name)?.[1] ??
+      /^((?:sd|vd|xvd|hd)[a-z]+)\d*$/.exec(name)?.[1] ??
+      name;
+    return { source: bare, disk, kind: "other" };
+  };
+  return { srv: device(sources.get("srv")), docker: device(sources.get("docker")) };
+}
+
+const UNDER_VOLTAGE = /Undervoltage detected/i;
+const VOLTAGE_NORMAL = /Voltage normali[sz]ed/i;
+
+/**
+ * The power section: `vcgencmd throttled=0x<hex>` (bit 0: under-voltage now; bit 16: since boot),
+ * or `kernel-log` and this boot's kernel lines about the voltage (under-voltage since boot when
+ * any says so, now when the last one does). Null when neither could be read.
+ */
+export function parsePower(text: string): NonNullable<HostFacts["power"]> | null {
+  const [first = "", ...rest] = linesOf(text);
+  const throttled = /^vcgencmd throttled=0x([0-9a-fA-F]{1,8})$/.exec(first)?.[1];
+  if (throttled !== undefined) {
+    const bits = Number.parseInt(throttled, 16);
+    return {
+      underVoltageNow: (bits & 0x1) !== 0,
+      underVoltageSinceBoot: (bits & 0x10000) !== 0,
+      source: "vcgencmd",
+    };
+  }
+  if (first !== "kernel-log") return null;
+  const lines = rest.filter((line) => UNDER_VOLTAGE.test(line) || VOLTAGE_NORMAL.test(line));
+  return {
+    underVoltageNow: UNDER_VOLTAGE.test(lines.at(-1) ?? ""),
+    underVoltageSinceBoot: lines.some((line) => UNDER_VOLTAGE.test(line)),
+    source: "kernel-log",
+  };
+}
+
+/** The most inspection reads of the updater's config and state files. */
+export const DNS_UPDATER_READ_BYTES = 4096;
+
+function jsonOrNull(text: string | undefined): unknown {
+  if (text === undefined || Buffer.byteLength(text, "utf8") > DNS_UPDATER_READ_BYTES) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The address updaters' section, by app: `config <app> <json>`, `token <app> <mode> <owner>
+ * <sha256>` (or `token <app> absent`), `timer <app> <is-enabled> <is-active>` and `state <app>
+ * <json>`. An app is listed when its config file is there.
+ */
+export function parseDnsUpdaters(text: string): DnsUpdaterFact[] {
+  const lines = new Map<string, Map<string, string>>();
+  for (const line of linesOf(text)) {
+    const match = /^(config|token|timer|state) ([a-z0-9][a-z0-9-]{0,40})(?: (.*))?$/.exec(line);
+    if (!match?.[1] || !match[2]) continue;
+    const app = lines.get(match[2]) ?? new Map<string, string>();
+    app.set(match[1], match[3] ?? "");
+    lines.set(match[2], app);
+  }
+  return [...lines]
+    .filter(([, values]) => values.has("config"))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([app, values]) => {
+      const [mode = "", owner = "", sha256 = ""] = (values.get("token") ?? "").split(" ");
+      const present = /^[0-7]{3,4}$/.test(mode) && owner !== "" && /^[0-9a-f]{64}$/.test(sha256);
+      const [enabled, active] = (values.get("timer") ?? "").split(" ");
+      return {
+        app,
+        config: DnsUpdaterConfigSchema.safeParse(jsonOrNull(values.get("config"))).success,
+        token: present
+          ? { present, mode, owner, sha256 }
+          : { present: false, mode: "", owner: "", sha256: null },
+        timer: { enabled: enabled === "enabled", active: active === "active" },
+        state: jsonOrNull(values.get("state")) ?? null,
+      };
+    });
 }

@@ -57,6 +57,7 @@ import {
   networkFilterService,
 } from "./network-filter";
 import {
+  DNS_UPDATER_READ_BYTES,
   dockerdFlags,
   EXIT_MARK,
   engineVersion,
@@ -67,9 +68,11 @@ import {
   parseAppRecords,
   parseAptPeriodic,
   parseAvx,
+  parseBoard,
   parseContainers,
   parseDf,
   parseDirs,
+  parseDnsUpdaters,
   parseDockerUserChain,
   parseDpkg,
   parseFree,
@@ -80,11 +83,13 @@ import {
   parseOpensshVersion,
   parseOsRelease,
   parsePairs,
+  parsePower,
   parsePreviews,
   parseRunners,
   parseRuntimeFiles,
   parseSs,
   parseSshdT,
+  parseStorage,
   parseSysctl,
   parseUfwAdded,
   parseUfwDefaults,
@@ -463,6 +468,73 @@ for script in ${NETWORK_FILTER_SCRIPT_PREFIX}wg-opscrew*; do
   iptables -w -S "${networkFilterChain("$name")}" 2>/dev/null | sed "s/^/filter $name rule /"
 done`;
 
+/**
+ * The devices of `/srv` (or `/` without it) and of Docker's data root (`/var/lib/docker`, or
+ * `/var/lib` before Docker made it, where it will be), then each `mmcblk` disk's type.
+ */
+export const STORAGE_SNIPPET = `src_of() { findmnt -n -o SOURCE -T "$1" | head -n 1; }
+p=/srv
+[ -d "$p" ] || p=/
+echo "srv $(src_of "$p")"
+d=''
+if docker_up; then d=$(docker info --format '{{.DockerRootDir}}') || d=''; fi
+[ -n "$d" ] || d=/var/lib/docker
+[ -d "$d" ] || d=/var/lib
+echo "docker $(src_of "$d")"
+for f in /sys/block/mmcblk*/device/type; do
+  [ -f "$f" ] || continue
+  b=\${f#/sys/block/}
+  echo "type \${b%%/*} $(head -n 1 "$f")"
+done`;
+
+/** Under-voltage: `vcgencmd get_throttled`, else this boot's kernel lines about the voltage. */
+export const POWER_SNIPPET = `t=$(vcgencmd get_throttled) || t=''
+case "$t" in
+  throttled=0x*) printf 'vcgencmd %s\\n' "$t" ;;
+  *)
+    if journalctl -k -b -n 0 --no-pager >/dev/null; then
+      echo kernel-log
+      journalctl -k -b -o cat --no-pager | grep -E 'Undervoltage detected|Voltage normali[sz]ed' | tail -n 50
+    else
+      false
+    fi ;;
+esac`;
+
+/** The address updater's configs and tokens (root only), and each instance's state folder. */
+export const DNS_UPDATER_CONFIG_DIR = "/etc/opscrew/dns-updater";
+export const DNS_UPDATER_STATE_DIR = "/var/lib/opscrew-dns-updater";
+
+/**
+ * Each address updater instance, by its config `/etc/opscrew/dns-updater/<app>.json`: the config
+ * on one line (it holds no secret and no address), its token file's mode, owner and SHA-256
+ * (never its content), its timer's state, and its state file on one line. Never follows a link.
+ */
+export const DNS_UPDATERS_SNIPPET = `${APP_NAME_FN}
+for f in "${DNS_UPDATER_CONFIG_DIR}"/*.json; do
+  if [ -L "$f" ] || [ ! -f "$f" ]; then continue; fi
+  app=\${f##*/}
+  app=\${app%.json}
+  app_name "$app" || continue
+  printf 'config %s ' "$app"
+  head -c ${DNS_UPDATER_READ_BYTES + 1} "$f" | tr '\\r\\n' '  '
+  echo
+  t="${DNS_UPDATER_CONFIG_DIR}/$app.token"
+  if [ -f "$t" ] && [ ! -L "$t" ]; then
+    echo "token $app $(stat -c '%a %U' "$t") $(sha256sum "$t" | cut -d ' ' -f 1)"
+  else
+    echo "token $app absent"
+  fi
+  en=$(systemctl is-enabled "opscrew-dns-updater@$app.timer") || true
+  ac=$(systemctl is-active "opscrew-dns-updater@$app.timer") || true
+  echo "timer $app \${en:--} \${ac:--}"
+  s="${DNS_UPDATER_STATE_DIR}/$app/state.json"
+  if [ -f "$s" ] && [ ! -L "$s" ]; then
+    printf 'state %s ' "$app"
+    head -c ${DNS_UPDATER_READ_BYTES + 1} "$s" | tr '\\r\\n' '  '
+    echo
+  fi
+done`;
+
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */
 const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
 const PAM_FILES = [
@@ -570,10 +642,17 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
   ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
   ["ssh-firewall", SSH_FIREWALL_SNIPPET],
+  ["board", "tr -d '\\000' < /proc/device-tree/model"],
+  ["storage", STORAGE_SNIPPET],
+  ["power", POWER_SNIPPET],
+  ["dns-updaters", DNS_UPDATERS_SNIPPET],
 ];
 
 /** A read-only script of `sections`, each printed under its mark (a failing one never stops the rest). */
-function sectionsScript(name: string, sections: readonly (readonly [string, string])[]): string {
+export function sectionsScript(
+  name: string,
+  sections: readonly (readonly [string, string])[],
+): string {
   const body = sections
     .map(
       ([section, command]) =>
@@ -976,6 +1055,10 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     },
     sshClient: parseSshConnection(ok(sections, "ssh-connection")),
     sshFirewall: parseSshFirewall(text("ssh-firewall")),
+    board: parseBoard(section(sections, "board")),
+    storage: parseStorage(text("storage")),
+    power: parsePower(text("power")),
+    dnsUpdaters: parseDnsUpdaters(text("dns-updaters")),
   };
   const parsed = HostFactsSchema.safeParse(facts);
   if (!parsed.success) {

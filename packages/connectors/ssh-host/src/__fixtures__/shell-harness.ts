@@ -39,6 +39,8 @@ const MOVED = [
   "/etc/wireguard",
   "/run/opscrew-",
   "/proc/",
+  "/sys/block",
+  "/var/lib/opscrew-dns-updater",
 ];
 
 const SCRIPT_PATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";

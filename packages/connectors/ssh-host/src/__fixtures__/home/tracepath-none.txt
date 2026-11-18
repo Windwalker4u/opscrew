@@ -1,0 +1,6 @@
+ 1?: [LOCALHOST]                      pmtu 1500
+ 1:  no reply
+ 2:  no reply
+ 3:  no reply
+     Too many hops: pmtu 1500
+     Resume: pmtu 1500 

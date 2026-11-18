@@ -1,0 +1,1 @@
+[{"dst":"default","gateway":"fe80::1","dev":"eth0","protocol":"ra","metric":100,"flags":[],"pref":"medium"},{"dst":"default","gateway":"fe80::1","dev":"wlan0","protocol":"ra","metric":600,"flags":[],"pref":"medium"}]

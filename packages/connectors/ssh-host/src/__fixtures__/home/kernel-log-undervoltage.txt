@@ -1,0 +1,5 @@
+Booting Linux on physical CPU 0x0000000000 [0x414fd0b1]
+Linux version 6.12.25+rpt-rpi-2712 (serge@raspberrypi.com) (aarch64-linux-gnu-gcc-12 (Debian 12.2.0-14) 12.2.0) #1 SMP PREEMPT Debian 1:6.12.25-1+rpt1 (2025-04-30)
+hwmon hwmon2: Undervoltage detected!
+hwmon hwmon2: Voltage normalised
+mmc0: SDHCI controller on fe340000.mmc [fe340000.mmc] using ADMA

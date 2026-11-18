@@ -29,6 +29,9 @@
  * Origin CA certificate in `/srv/edge/tls/<app>` (supplied at apply as `previewTls`), the key
  * (`previewKeyLine`, which can run only the recipe's `opscrew-preview`) and the deploy user's cron
  * line for idle previews, in a plan that deletes data; `inspectHost` lists each recipe's previews.
+ * Hosting at home (feature 029): `detectHomeNetwork` reads the home's network from the server
+ * (read-only), and `inspectHost` reads the board, the storage devices, the power supply's
+ * under-voltage and the address updater's instances.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,
@@ -71,6 +74,9 @@ export {
 } from "./constants";
 export {
   type AppRecord,
+  type DnsUpdaterConfig,
+  DnsUpdaterConfigSchema,
+  type DnsUpdaterFact,
   type HostFacts,
   HostFactsSchema,
   otherActiveApps,
@@ -78,10 +84,17 @@ export {
   type RunnerFacts,
   readableRecords,
   runnerOf,
+  type StorageDevice,
   tunnelOf,
 } from "./facts";
 export { type GrantParams, GrantParamsSchema, MONITOR_LOGIN } from "./grant";
 export { hostPlanHash } from "./hash";
+export {
+  agreedIpv4,
+  detectHomeNetwork,
+  type HomeNetwork,
+  HomeNetworkSchema,
+} from "./home-network";
 export { inspectHost, inspectRunners, probePrivilege, readGrant } from "./inspect";
 export { localExec } from "./local";
 export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
