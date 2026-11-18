@@ -52,9 +52,9 @@ describe("opscrew init for a server at home", () => {
     });
     // The recipe of the guide and provision's refusal.
     for (const part of [
-      "Make it at https://dash.cloudflare.com/profile/api-tokens → Create Token → Create Custom Token:",
-      "Zone → DNS → Edit",
-      "  Zone Resources: Include → Specific zone → example.com",
+      "Make it at https://dash.cloudflare.com/profile/api-tokens → Create Token → Create Custom Token, with:",
+      "  permission Zone → DNS → Edit,",
+      "  zone resources Include → Specific zone → example.com.",
       "Then set OPSCREW_DNS_UPDATER_TOKEN to it and run `opscrew init` again.",
       "It stays only on your server, readable by root alone; OpsCrew keeps no copy.",
     ]) {

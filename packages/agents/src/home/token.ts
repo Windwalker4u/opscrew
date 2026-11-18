@@ -166,9 +166,9 @@ function reachText(zone: string): string {
  */
 export function updaterTokenRecipe(zone: string, variable: string, command: string): string {
   return [
-    `Make it at ${CLOUDFLARE_TOKEN_PAGE} → Create Token → Create Custom Token:`,
-    "  Permissions: Zone → DNS → Edit",
-    `  Zone Resources: Include → Specific zone → ${zone}`,
+    `Make it at ${CLOUDFLARE_TOKEN_PAGE} → Create Token → Create Custom Token, with:`,
+    "  permission Zone → DNS → Edit,",
+    `  zone resources Include → Specific zone → ${zone}.`,
     `Then set ${variable} to it and run \`${command}\` again.`,
     "It stays only on your server, readable by root alone; OpsCrew keeps no copy.",
   ].join("\n");
