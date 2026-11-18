@@ -1502,6 +1502,9 @@ export class FakeHost implements RemoteExec {
           ? this.check(ok, { table: this.sshFirewall.table === null ? "absent" : "present" })
           : this.verify(ok, p);
       }
+      case "ssh-firewall.install.apply":
+        this.nftInstalled = true;
+        return result();
       case "ssh-firewall.apply": {
         if (!this.nftInstalled) return fail("The nft command (from the nftables package) is not installed.");
         if (this.sshClient?.address !== p.FROM) {

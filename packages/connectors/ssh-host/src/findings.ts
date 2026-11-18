@@ -9,7 +9,10 @@ import {
 } from "./constants";
 import { type HostFacts, otherActiveApps, readableRecords } from "./facts";
 import { DOCKER_POOLS, hostAddress } from "./network";
-import type { AccessMode, HostFinding } from "./types";
+import type { AccessMode, HomeMode, HostFinding } from "./types";
+
+/** Over which address families a home app is served, for findings. */
+const homeServed = (home: HomeMode) => (home.ipv4 ? "over IPv4" : "over IPv6 only");
 
 /** How an app of each access mode is served, for findings. */
 const SERVED: Readonly<Record<AccessMode, string>> = {
@@ -57,12 +60,18 @@ export function damagedRecords(
  * used by another project, a hostname an app set up there holds, an app without a domain next to
  * another (it answers every name on port 80, so it must be alone), or an access mode other than
  * theirs (the apps share the firewall, and each mode needs its own stance: open, Cloudflare only,
- * or closed).
+ * or closed), or a `home` other than theirs (at home or not, and over which address families).
  */
 export function claimFindings(
   apps: HostFacts["apps"],
   listed: readonly string[],
-  claim: { app: string; projectId: string; access: AccessMode; hostnames: readonly string[] },
+  claim: {
+    app: string;
+    projectId: string;
+    access: AccessMode;
+    hostnames: readonly string[];
+    home?: HomeMode | undefined;
+  },
   findings: HostFindings,
 ): HostFinding[] {
   const found = damagedRecords(apps, listed, claim.app, findings);
@@ -85,6 +94,10 @@ export function claimFindings(
   const differs = others.find((record) => record.access !== null && record.access !== claim.access);
   if (differs?.access) {
     found.push(findings.accessModeConflict(differs.app, differs.access, claim.access));
+  }
+  const homeDiffers = others.find((record) => record.home?.ipv4 !== claim.home?.ipv4);
+  if (homeDiffers !== undefined) {
+    found.push(findings.homeModeConflict(homeDiffers.app, homeDiffers.home, claim.home));
   }
   return found;
 }
@@ -288,6 +301,18 @@ export function hostFindings(command: string) {
       code: "access-mode-conflict",
       message: `The OpsCrew app "${app}" on this server is served ${SERVED[theirs]}, and this app would be served ${SERVED[mine]}. The apps share the server's firewall: ${theirs === "tunnel" || mine === "tunnel" ? "opening the web ports would also serve the tunnelled app's site on them, past its tunnel" : "the filter that lets only Cloudflare reach the web ports would cut the direct app off, and without it the other app is open to everyone"}.`,
       hint: `Serve this app the same way as "${app}" (opscrew interview), or use another server for it, ${rerun}.`,
+    }),
+    homeModeConflict: (
+      app: string,
+      theirs: HomeMode | undefined,
+      mine: HomeMode | undefined,
+    ): HostFinding => ({
+      code: "home-mode-conflict",
+      message:
+        theirs !== undefined && mine !== undefined
+          ? `The OpsCrew app "${app}" on this server is served from home ${homeServed(theirs)}, and this app would be served ${homeServed(mine)}. The apps share the server's edge and its web filter, which serve every app's site over the same address families.`
+          : `The OpsCrew app "${app}" on this server is ${theirs === undefined ? "not hosted at home, and this app is" : "hosted at home, and this app is not"}. The apps share the server's firewall and its edge, which a home server sets up for the home network: SSH only from it, and the site on its own address families.`,
+      hint: `Host this app the same way as "${app}" (opscrew interview), or use another server for it, ${rerun}.`,
     }),
     reservedAppName: (app: string): HostFinding => ({
       code: "reserved-app-name",

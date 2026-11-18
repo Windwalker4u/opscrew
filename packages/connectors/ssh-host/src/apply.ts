@@ -683,12 +683,18 @@ async function appsCheck(ctx: Context, listed: readonly string[]): Promise<void>
 }
 
 /** What an `app-record` step claims on the server (its scripts check the rest). */
-const ClaimSchema = z.object({
-  app: z.string(),
-  projectId: z.string(),
-  access: AccessModeSchema,
-  hostnames: spaceList,
-});
+const ClaimSchema = z
+  .object({
+    app: z.string(),
+    projectId: z.string(),
+    access: AccessModeSchema,
+    hostnames: spaceList,
+    homeIpv4: z.boolean().optional(),
+  })
+  .transform(({ homeIpv4, ...claim }) => ({
+    ...claim,
+    home: homeIpv4 === undefined ? undefined : { ipv4: homeIpv4 },
+  }));
 
 /**
  * A host apply that stopped at a failed step: `applied` lists the steps of the plan that changed

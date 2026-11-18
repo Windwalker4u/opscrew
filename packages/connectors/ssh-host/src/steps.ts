@@ -150,6 +150,7 @@ import {
   ComposeTextSchema,
   DesiredRunnerSchema,
   EnvNameSchema,
+  type HomeMode,
   HostnameSchema,
   type HostPlan,
   type HostStep,
@@ -938,6 +939,8 @@ const SshFirewallParams = z.union([
       ),
     /** The address OpsCrew connected from when the plan was made, one of the sources'. */
     from: SshSourceSchema.refine((text) => !text.includes("/")),
+    /** A home server without nft: nftables is installed before the table is loaded. */
+    install: z.literal("nftables").optional(),
   }),
 ]);
 
@@ -1033,6 +1036,19 @@ systemctl enable --quiet "$SERVICE"
 # The unit loads the rules now and at boot, in one nft transaction that replaces OpsCrew's table.
 systemctl restart "$SERVICE"`,
     failed: "OpsCrew's SSH firewall is not in effect.",
+    ...(p.install === undefined
+      ? {}
+      : {
+          preApply: applyScript(
+            "ssh-firewall.install",
+            {},
+            "",
+            `if ! command -v nft >/dev/null 2>&1; then
+  apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
+  apt_get install --no-install-recommends nftables || fail 'Installing nftables failed; see ${APT_LOG} on the server.'
+fi`,
+          ),
+        }),
     deadMan: { step: "ssh-firewall", capture: SSH_FIREWALL_CAPTURE, params: {} },
     doing: "turning on OpsCrew's SSH firewall",
     timeoutMs: 2 * MINUTE,
@@ -2166,6 +2182,7 @@ export function appRecord(input: {
   services: readonly string[];
   memoryMb: number;
   deployKey: string;
+  home?: HomeMode | undefined;
 }): AppRecord {
   return {
     schemaVersion: 1,
@@ -2179,6 +2196,7 @@ export function appRecord(input: {
     services: [...new Set(input.services)].sort(),
     memoryMb: input.memoryMb,
     deployKey: input.deployKey,
+    ...(input.home === undefined ? {} : { home: { ipv4: input.home.ipv4 } }),
   };
 }
 
@@ -2210,6 +2228,8 @@ const AppRecordParams = z.object({
   memoryMb: z.number().int().positive(),
   deployKey: PublicKeySchema,
   ownProject: z.boolean(),
+  /** A home app's `home.ipv4`; absent for an app that is not at home. */
+  homeIpv4: z.boolean().optional(),
 });
 
 /** Refuses to touch `$RECORD_FILE` when it names another project than `$PROJECT_ID`. */
@@ -2271,7 +2291,10 @@ rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
     });
   }
   const p = params(step, AppRecordParams);
-  const record = appRecord(p);
+  const record = appRecord({
+    ...p,
+    home: p.homeIpv4 === undefined ? undefined : { ipv4: p.homeIpv4 },
+  });
   return scripts({
     name: "app-record",
     params: {

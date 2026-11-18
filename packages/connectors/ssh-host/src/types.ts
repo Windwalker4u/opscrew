@@ -329,6 +329,13 @@ export const DesiredDnsUpdaterSchema = z
   });
 export type DesiredDnsUpdater = z.infer<typeof DesiredDnsUpdaterSchema>;
 
+/**
+ * How a home app is served (`DesiredHost.home`, its record's `home`): `ipv4` false serves it over
+ * IPv6 only. The apps on one server are all at home, served alike, or none is.
+ */
+export const HomeModeSchema = z.strictObject({ ipv4: z.boolean() });
+export type HomeMode = z.infer<typeof HomeModeSchema>;
+
 /** More IPv4 ranges than Cloudflare has ever published. */
 export const MAX_WEB_FILTER_RANGES = 100;
 
@@ -443,6 +450,13 @@ export const DesiredHostSchema = z
      * has there is removed.
      */
     dnsUpdater: DesiredDnsUpdaterSchema.optional(),
+    /** A server at home (see {@link HomeModeSchema}), kept in the app's record. */
+    home: HomeModeSchema.optional(),
+    /**
+     * The addresses and networks that may reach SSH (a home server's: the home network), which
+     * add the `ssh-firewall` step: OpsCrew's nftables table `inet opscrew`, as on a runner machine.
+     */
+    sshFrom: z.array(SshSourceSchema).min(1).max(MAX_SSH_SOURCES).optional(),
     /**
      * Explicit choice for password logins, needed only when some login user has a password and no
      * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`

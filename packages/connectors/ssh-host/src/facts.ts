@@ -4,6 +4,7 @@ import {
   AccessModeSchema,
   AddonFileNameSchema,
   AppNameSchema,
+  HomeModeSchema,
   HostStepIdSchema,
   RecipePathSchema,
   StackPathSchema,
@@ -37,6 +38,8 @@ export const AppRecordSchema = z.object({
   memoryMb: z.number().int().nonnegative(),
   /** Its deploy key (a public key) in the deploy user's authorized_keys, "" when data-kept. */
   deployKey: z.string(),
+  /** How it is served from home; absent for an app that is not at home. */
+  home: HomeModeSchema.optional(),
 });
 export type AppRecord = z.infer<typeof AppRecordSchema>;
 

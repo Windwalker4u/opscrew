@@ -950,11 +950,13 @@ function runnerSshPorts(facts: HostFacts): number[] | null {
  * A runner machine's SSH firewall (`harden.firewall`): OpsCrew's own nftables table that lets
  * only `sshFrom` reach the ports SSH listens on, applied under the automatic undo. Blocked
  * without `nft`, when those ports are unknown, and when the address OpsCrew connects from is
- * unknown or not among the sources (the firewall would lock it out).
+ * unknown or not among the sources (the firewall would lock it out). With `installNft` (a server
+ * at home) a missing `nft` is installed first instead.
  */
 function sshFirewallStep(
   { facts, found, findings }: MachineContext,
   sshFrom: readonly string[],
+  installNft = false,
 ): HostStep {
   const sources = sshSources(sshFrom);
   const ports = runnerSshPorts(facts);
@@ -969,7 +971,8 @@ function sshFirewallStep(
     );
   };
   const firewall = facts.sshFirewall;
-  if (!firewall.nft) return blocked(findings.noNft(), "nft is not installed.");
+  const install = !firewall.nft && installNft;
+  if (!firewall.nft && !install) return blocked(findings.noNft(), "nft is not installed.");
   if (ports === null) return blocked(findings.sshPortsUnknown(), "SSH's ports are unknown.");
   const title = `SSH firewall: ${sshPortsText(ports)} only from ${listText(sources)}`;
   const params = { sources: sources.join(" "), ports: ports.join(" ") };
@@ -997,9 +1000,30 @@ function sshFirewallStep(
     "ssh-firewall",
     title,
     "change",
-    { ...params, from },
-    `OpsCrew adds its own nftables table ${SSH_FIREWALL_TABLE}, whose input chain accepts SSH (TCP ${sshPortsText(ports)}, where sshd listens) from these sources and drops other traffic to ${ports.length === 1 ? "that port" : "those ports"}, over IPv4 and IPv6. No other port, rule, table or default policy changes: ufw, firewalld and your own nftables tables stay as they are. OpsCrew applies it from ${from}, which the sources let in, and changes nothing if it then connects from another address. The machine undoes the change on its own unless a new login works afterwards. ${SSH_FIREWALL_SERVICE} loads the table at boot from ${SSH_FIREWALL_RULES}.`,
+    { ...params, from, ...(install ? { install: "nftables" } : {}) },
+    `${install ? "OpsCrew installs nftables (the nft command) first. " : ""}OpsCrew adds its own nftables table ${SSH_FIREWALL_TABLE}, whose input chain accepts SSH (TCP ${sshPortsText(ports)}, where sshd listens) from these sources and drops other traffic to ${ports.length === 1 ? "that port" : "those ports"}, over IPv4 and IPv6. No other port, rule, table or default policy changes: ufw, firewalld and your own nftables tables stay as they are. OpsCrew applies it from ${from}, which the sources let in, and changes nothing if it then connects from another address. The machine undoes the change on its own unless a new login works afterwards. ${SSH_FIREWALL_SERVICE} loads the table at boot from ${SSH_FIREWALL_RULES}.`,
   );
+}
+
+/**
+ * A server's `ssh-firewall` step, only when the desired host has `sshFrom` (a server at home,
+ * where a missing `nft` is installed). Shared: while other apps are on the server, OpsCrew's
+ * SSH firewall that is there stays as it is. Without `sshFrom` there is no step; `planUndo`
+ * removes the firewall.
+ */
+function serverSshFirewallStep(ctx: SetupContext): HostStep | undefined {
+  const { facts, desired, others } = ctx;
+  if (desired.sshFrom === undefined) return undefined;
+  if (others.length > 0 && sshFirewallPresent(facts) && !facts.pendingUndo.sshFirewall) {
+    return step(
+      "ssh-firewall",
+      "SSH firewall",
+      "in-place",
+      {},
+      `OpsCrew's SSH firewall is already set for ${quoted(others)}; OpsCrew leaves it as it is.`,
+    );
+  }
+  return sshFirewallStep(ctx, desired.sshFrom, desired.home !== undefined);
 }
 
 /**
@@ -1332,6 +1356,7 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
     services: desired.services,
     memoryMb: desired.memoryMb,
     deployKey: desired.deploy.publicKey,
+    home: desired.home,
   });
   // A Compose project named like the app may only exist when it is this project's (for example
   // data kept by a teardown); the apply checks again.
@@ -1344,6 +1369,7 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
     memoryMb: record.memoryMb,
     deployKey: record.deployKey,
     ownProject: own !== null,
+    ...(desired.home === undefined ? {} : { homeIpv4: desired.home.ipv4 }),
   };
   const title = `Record the OpsCrew app "${desired.app}" on this server`;
   if (conflict !== undefined) return step("app-record", title, "blocked", params, conflict);
@@ -1703,6 +1729,9 @@ function allBlocked(desired: DesiredHost): HostStep[] {
     step("deploy-key", `Authorize the deploy key of "${desired.app}"`, "blocked", {}, reason),
     step("sshd", TITLES.sshd, "blocked", {}, reason),
     step("ufw", TITLES.ufw, "blocked", {}, reason),
+    ...(desired.sshFrom !== undefined
+      ? [step("ssh-firewall", "SSH firewall", "blocked", {}, reason)]
+      : []),
     ...(desired.webFilter !== undefined
       ? [step("web-filter", TITLE_WEB_FILTER, "blocked", {}, reason)]
       : []),
@@ -1875,6 +1904,7 @@ export function planHost(
     deployKeyStep(ctx, [d.deploy.publicKey, ...(previous === undefined ? [] : [previous])]),
     sshdStep(ctx),
     ufwStep(ctx),
+    serverSshFirewallStep(ctx),
     webFilterStep(ctx),
     fail2banStep(ctx),
     upgradesStep(ctx),
