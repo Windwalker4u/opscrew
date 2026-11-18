@@ -30,7 +30,7 @@ import {
 } from "./plan";
 
 /** What a drill's stack name adds to the app's: `opscrew-<app>-drill`. */
-export const DRILL_STACK_SUFFIX = "-drill";
+const DRILL_STACK_SUFFIX = "-drill";
 
 /** The drill's stack of the app `app` (its plan's `app.name`): `opscrew-<app>-drill`. */
 export function drillStackName(app: string): string {

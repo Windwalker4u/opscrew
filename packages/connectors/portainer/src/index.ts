@@ -30,7 +30,6 @@ export { type ContainerFigures, type ContainerLogLine, sinceAfter } from "./dock
 export {
   createDrillStack,
   type DesiredDrillStack,
-  DRILL_STACK_SUFFIX,
   type DrillFound,
   type DrillRemoval,
   type DrillStackDeploy,
