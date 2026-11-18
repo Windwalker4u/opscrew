@@ -8,6 +8,7 @@
  * staying as they are, after an approval like a destroy's (`allowDestroy`, the hostname typed);
  * the agent copies what is there first, and puts that copy back if the restore fails.
  */
+import type { HostingFiles } from "@opscrew/contracts";
 import { canonicalJson, listText, OpsCrewError, realSleep, sha256Hex } from "@opscrew/core";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { hasDeployment } from "../shared";
@@ -25,7 +26,7 @@ import {
 } from "./status";
 
 /** What the snapshot commands reach the account with, each replaceable in tests. */
-interface HostingSnapshotServices extends HostingAccountServices {
+export interface HostingSnapshotServices extends HostingAccountServices {
   /** How a wait for the agent's answer sleeps (default: real time). */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -36,8 +37,18 @@ const SNAPSHOT_FILE = /\.sql\.gz$|\.shared\.tar\.gz$/;
 /** A snapshot's id from one of its files' names. */
 const idOf = (file: string) => file.replace(SNAPSHOT_FILE, "");
 
+/** The files in the app's `dumps/`, and the ids of the snapshots among them, sorted. */
+export async function keptSnapshots(
+  files: HostingFiles,
+  folder: string,
+): Promise<{ names: string[]; ids: string[] }> {
+  const names = (await files.list(`${folder}/dumps`)) ?? [];
+  const ids = [...new Set(names.filter((name) => SNAPSHOT_FILE.test(name)).map(idOf))].sort();
+  return { names, ids };
+}
+
 /** Where the snapshots stay, and how to keep one elsewhere. */
-function downloadNote(folder: string): string {
+export function downloadNote(folder: string): string {
   return `Snapshots stay on the hosting account in ~/${folder}/dumps/: download one from the panel's File Manager to keep a copy elsewhere.`;
 }
 
@@ -45,7 +56,7 @@ function downloadNote(folder: string): string {
  * The account with its files, after the refusals every snapshot command shares: before provision,
  * and an SFTP host, which runs no agent. `database` is the app's database's full name, if any.
  */
-async function reachDumps(
+export async function reachDumps(
   run: SnapshotRun,
   services: HostingSnapshotServices,
   nothing: string,
@@ -80,7 +91,7 @@ async function reachDumps(
  * The stop for an answer of the agent other than `done`: `what` it refused (`nothing` then says
  * what stayed as it was) or didn't finish (`after` then says where the data is).
  */
-function agentFailure(
+export function agentFailure(
   run: SnapshotRun,
   answer: RequestResult,
   input: { what: string; nothing: string; after?: string },
@@ -212,8 +223,7 @@ export async function restoreHostingSnapshot(
     );
   }
   const { files, folder, database, hostname } = await reachDumps(run, services, NOTHING_CHANGED);
-  const names = (await files.list(`${folder}/dumps`)) ?? [];
-  const kept = [...new Set(names.filter((name) => SNAPSHOT_FILE.test(name)).map(idOf))].sort();
+  const { names, ids: kept } = await keptSnapshots(files, folder);
   if (!kept.includes(id)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

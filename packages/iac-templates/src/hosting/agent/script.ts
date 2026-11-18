@@ -18,6 +18,13 @@ import {
 } from "../shell";
 
 /**
+ * The drill database's login in the app's folder (029 research R25), 0600: a `[client]` section
+ * with its own user, password and host, and a `[mysql]` section naming the drill database. The
+ * hosting plan writes it with the drill database and removes it with it.
+ */
+export const DRILL_LOGIN_FILE = "keys/drill.cnf";
+
+/**
  * The agent (027 plan 3, ADR 0030): a bash script, the same for every app, that cron runs every
  * minute as a hosting account's user from `~/opscrew/<app>-<env>/agent.sh`, its output appended to
  * `state/agent.log` (kept to 1,000 lines). It reads `settings.sh` beside it (`renderAgentSettings`)
@@ -35,8 +42,15 @@ import {
  *   then for a snapshot `dump=<file in dumps/>` and `shared=<file in dumps/>` (each when it has
  *   that part), for a restore `saved=<the id of the snapshot taken first>` (when there was anything
  *   to copy), for an app's create the selector refused `made=no` (nothing was made), for an app's
- *   removal `note=` (what it left, or that the selector had no such app). `pending=1` marks the
- *   placeholder, never a final answer.
+ *   removal `note=` (what it left, or that the selector had no such app), for a drill `record=`
+ *   (its line of `state/drills.log`) and `expected=` (the dump's table count, when it has a dump).
+ *   `pending=1` marks the placeholder, never a final answer.
+ * - A restore drill (029 research R25) of a snapshot, on a `drill` request: its dump checked
+ *   (`gzip -t`, its size), loaded into the drill database only, whose login
+ *   {@link DRILL_LOGIN_FILE} names it (every table and view in it dropped first), its tables counted
+ *   against the dump's `CREATE TABLE` lines and the drill database emptied again; its copy of the
+ *   shared files listed (`tar -tzf`). The app isn't started, and its database and files are never
+ *   read. One line per drill in `state/drills.log`, as `drillRecord` reads it, with no value.
  * - A snapshot `<id>` (`snapshot-<UTC time>`), taken on a `snapshot` request and before a
  *   `restore`: the app's database, when it has one, dumped into `dumps/<id>.sql.gz` and, when
  *   `shared/` holds more than the settings files (`.env`, `.env.next`, `env.php`, `mysql.cnf`),
@@ -47,8 +61,8 @@ import {
  * A request is `requests/<SHA-256 of its bytes>.req`, at most 4 KB of `key=value` lines whose
  * values hold letters, digits, `.`, `_` and `-` only: `kind`, `hash` (the approved plan's) and
  * `expires` (UTC epoch seconds), then by kind `release` and `restore` (`yes` or `no`) for
- * `rollback`, `snapshot` (a snapshot's id) for `restore`, `action` (`create` or `destroy`) for
- * `app`, nothing more for `env` and `snapshot`.
+ * `rollback`, `snapshot` (a snapshot's id) for `restore` and `drill`, `action` (`create` or
+ * `destroy`) for `app`, nothing more for `env` and `snapshot`.
  *
  * A Node.js or Python app (027 plan 8) runs through CloudLinux's selector, served at the hostname's
  * root from the release's `public/` (made when the release has none), so its source is never under
@@ -605,12 +619,24 @@ dump() {
   return 1
 }
 
-# Replaces the app's database with the dump $1: its tables and views go first, so the ones made
-# since the dump go too.
-load() {
+# The mysql client on the app's database, signed in with shared/mysql.cnf, the options $@ before
+# the database's name.
+app_mysql() {
+  mysql --defaults-extra-file=shared/mysql.cnf "$@" "$DATABASE"
+}
+
+# Replaces every table and view of the database the mysql client $2 (app_mysql or drill_mysql)
+# reaches with the dump $1, or with nothing for -: they go first, so the ones made since the dump
+# go too.
+replace_tables() {
   local drops
-  drops=$(mysql --defaults-extra-file=shared/mysql.cnf -N -B -e "SELECT CONCAT('DROP ', IF(table_type = 'VIEW', 'VIEW', 'TABLE'), ' IF EXISTS \\\`', REPLACE(table_name, '\\\`', '\\\`\\\`'), '\\\`;') FROM information_schema.tables WHERE table_schema = DATABASE()" "$DATABASE") || return 1
-  { printf 'SET FOREIGN_KEY_CHECKS=0;\\n%s\\n' "$drops" && gunzip -c "$1"; } | mysql --defaults-extra-file=shared/mysql.cnf "$DATABASE"
+  drops=$("$2" -N -B -e "SELECT CONCAT('DROP ', IF(table_type = 'VIEW', 'VIEW', 'TABLE'), ' IF EXISTS \\\`', REPLACE(table_name, '\\\`', '\\\`\\\`'), '\\\`;') FROM information_schema.tables WHERE table_schema = DATABASE()") || return 1
+  { printf 'SET FOREIGN_KEY_CHECKS=0;\\n%s\\n' "$drops" && if [ "$1" != - ]; then gunzip -c "$1"; fi; } | "$2"
+}
+
+# Replaces the app's database with the dump $1.
+load() {
+  replace_tables "$1" app_mysql
 }
 
 # In release folder $1: Laravel's caches first, as they change nothing outside the release, then
@@ -866,7 +892,7 @@ read_request() {
   case $kind in
     rollback) allowed="kind hash expires release restore" ;;
     env | snapshot) allowed="kind hash expires" ;;
-    restore) allowed="kind hash expires snapshot" ;;
+    restore | drill) allowed="kind hash expires snapshot" ;;
     app) allowed="kind hash expires action" ;;
     *)
       PROBLEM="the kind \${kind:-(none)} isn't one the agent carries out"
@@ -898,7 +924,7 @@ read_request() {
     PROBLEM="release isn't a release's id"
   elif [ "$kind" = rollback ] && ! [[ \${R[restore]} =~ ^(yes|no)$ ]]; then
     PROBLEM="restore isn't yes or no"
-  elif [ "$kind" = restore ] && ! [[ \${R[snapshot]} =~ $snapshot_re ]]; then
+  elif { [ "$kind" = restore ] || [ "$kind" = drill ]; } && ! [[ \${R[snapshot]} =~ $snapshot_re ]]; then
     PROBLEM="snapshot isn't a snapshot's id"
   elif [ "$kind" = app ] && ! [[ \${R[action]} =~ ^(create|destroy)$ ]]; then
     PROBLEM="action isn't create or destroy"
@@ -1094,6 +1120,80 @@ do_restore() {
     return 0
   fi
   answer "$name" done "" \${extra[@]+"\${extra[@]}"}
+}
+
+# The mysql client on the drill database, the options $@ after its login: ${DRILL_LOGIN_FILE} (0600)
+# names that database and its own user, which has no right on the app's. With --defaults-file no
+# other option file is read, so no login of the account's own (~/.my.cnf) takes its place.
+drill_mysql() {
+  mysql --defaults-file=${DRILL_LOGIN_FILE} "$@"
+}
+
+# A restore drill of snapshot $1, $2 manual or scheduled, which reads neither the app's database
+# nor its files. Its dump, when it has one: gzip -t and its size, then loaded into the drill
+# database only (every table and view in it dropped first), its tables counted against the dump's
+# CREATE TABLE lines (names and counts only, never a row), and the drill database emptied again.
+# Its copy of the shared files, when it has one: listed with tar -tzf, nothing unpacked. The app
+# isn't started. DRILL_RECORD is the run's line, appended to state/drills.log with no value in it:
+# the end, $2, the result (healthy or not-restored), then id=, start=, parts= (database and files,
+# each <size>:<seconds>), tables=database:<count>, removal= (the drill database emptied: removed or
+# failed), cleaned=no and reason= (what did not restore: dump, database, tables or files).
+# DRILL_EXPECTED is the dump's count of CREATE TABLE lines.
+drill_snapshot() {
+  local id=$1 dump=dumps/$1.sql.gz files=dumps/$1.shared.tar.gz start began size count
+  local result=healthy reason=- parts="" tables=- removal=-
+  start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  DRILL_EXPECTED=""
+  if [ -f "$dump" ]; then
+    began=$SECONDS
+    size=$(($(wc -c < "$dump")))
+    if [ "$size" -eq 0 ] || ! gzip -t "$dump" 2> /dev/null; then
+      result=not-restored reason=dump
+    else
+      DRILL_EXPECTED=$(gunzip -c "$dump" | grep -c '^CREATE TABLE ' || true)
+      if replace_tables "$dump" drill_mysql; then
+        parts=database:$size:$((SECONDS - began))
+        if count=$(drill_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'") && [[ $count =~ ^[0-9]+$ ]]; then
+          tables=database:$count
+          if [ "$count" != "$DRILL_EXPECTED" ] || [ "$count" -eq 0 ]; then result=not-restored reason=tables; fi
+        else
+          tables=database:failed result=not-restored reason=tables
+        fi
+      else
+        result=not-restored reason=database
+      fi
+      if replace_tables - drill_mysql; then removal=removed; else removal=failed; fi
+    fi
+  fi
+  if [ -f "$files" ]; then
+    began=$SECONDS
+    size=$(($(wc -c < "$files")))
+    if tar -tzf "$files" > /dev/null 2>&1; then
+      parts=\${parts:+$parts,}files:$size:$((SECONDS - began))
+    elif [ "$result" = healthy ]; then
+      result=not-restored reason=files
+    fi
+  fi
+  DRILL_RECORD="$(date -u +%Y-%m-%dT%H:%M:%SZ) $2 $result id=$id start=$start parts=\${parts:--} tables=$tables removal=$removal cleaned=no reason=$reason"
+  printf '%s\\n' "$DRILL_RECORD" >> state/drills.log || true
+  say "Restore drill of the snapshot $id: $result."
+}
+
+# A restore drill of snapshot R[snapshot] (drill_snapshot), answered with record= (its line) and,
+# when the snapshot holds a dump, expected= (the dump's table count); refused when the snapshot
+# isn't in dumps/, or holds a dump and the drill database's login isn't there (drills are off).
+do_drill() {
+  local name=$1 id=\${R[snapshot]}
+  if [ ! -f "dumps/$id.sql.gz" ] && [ ! -f "dumps/$id.shared.tar.gz" ]; then
+    answer "$name" refused "the snapshot $id isn't in dumps/"
+    return 0
+  fi
+  if [ -f "dumps/$id.sql.gz" ] && [ ! -f ${DRILL_LOGIN_FILE} ]; then
+    answer "$name" refused "restore drills are off here: ${DRILL_LOGIN_FILE}, the drill database's login, isn't there"
+    return 0
+  fi
+  drill_snapshot "$id" manual
+  answer "$name" done "" "record=$DRILL_RECORD" \${DRILL_EXPECTED:+"expected=$DRILL_EXPECTED"}
 }
 
 # The header lines of the sections of the selector's ~/.cl.selector/htaccess_cache.

@@ -86,6 +86,25 @@ export function databaseNames(
 }
 
 /**
+ * The drill database's full names (029 research R25): the app's database's name and `_drill`, the
+ * name shortened first where the panel's limits on a database's and its user's names, with the
+ * prefix, need it (an underscore counts twice, as cPanel counts it); the user is named the same.
+ */
+export function drillDatabaseNames(
+  target: HostingDeployTarget,
+  facts: Pick<HostingFacts, "databases">,
+): { name: string; user: string } | undefined {
+  if (target.database === undefined) return undefined;
+  const { prefix = "", maxDatabaseName = 64, maxUserName = 64 } = facts.databases;
+  const room = Math.min(maxDatabaseName, maxUserName);
+  const named = (base: string) => `${prefix}${base}_drill`;
+  const cost = (name: string) => name.length + name.split("_").length - 1;
+  let base = target.database.name;
+  while (base.length > 1 && cost(named(base)) > room) base = base.slice(0, -1).replace(/_+$/, "");
+  return { name: named(base), user: named(base) };
+}
+
+/**
  * The paths the agent links into each release from `shared/`: `.env` for a Laravel, Node.js or
  * Python app (a Node.js or Python app reads its settings from its environment, which the selector
  * gives it, or from the linked file), Laravel's `storage`, and the plan's kept folders
@@ -372,7 +391,41 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
       steps.push({ kind: "certificate", hostname });
     }
   }
+  steps.push(...(await drillDatabaseSteps({ plan, target, panel, record, facts })));
   return { plan: "app", ...header, steps };
+}
+
+/**
+ * The drill database (029 research R25), last in plan B so the app's own database comes first
+ * where the account has room for one more only: made when `snapshots.drills` is on for an app with
+ * a database and OpsCrew made none yet (a database of its name that OpsCrew didn't make stops it),
+ * and removed, with its login, once drills are off or the app has no database.
+ */
+async function drillDatabaseSteps(input: {
+  plan: DeployPlan;
+  target: HostingDeployTarget;
+  panel: HostingPanel;
+  record: HostingRecord | undefined;
+  facts: HostingFacts;
+}): Promise<AppStep[]> {
+  const { plan, target, panel, record, facts } = input;
+  const made = recordedObject(record, "drill-database");
+  const names =
+    plan.snapshots?.drills === undefined ? undefined : drillDatabaseNames(target, facts);
+  if (names === undefined) {
+    return made === undefined
+      ? []
+      : [{ kind: "remove-drill-database", name: made.key, user: made.key }];
+  }
+  if (made !== undefined) return [];
+  if ((await panel.listDatabases()).includes(names.name)) {
+    throw notOurs(
+      `The account already has the database ${names.name}, the name restore drills use`,
+      "it stopped before the app's plan.",
+      "remove it in the panel, or turn restore drills off (remove snapshots.drills from opscrew/plan.yaml); then run `opscrew provision` again.",
+    );
+  }
+  return [{ kind: "drill-database", ...names }];
 }
 
 /**

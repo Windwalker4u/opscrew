@@ -10,6 +10,7 @@ import { posix } from "node:path";
 import { tarStream } from "@opscrew/connector-docker";
 import type { HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, type Redactor, sha256Hex } from "@opscrew/core";
+import { DRILL_LOGIN_FILE } from "@opscrew/iac-templates";
 import { selectorApp } from "./apps";
 import { type AppStep, type HostingPlan, type HostingStep, hostingPlanHash } from "./plan";
 import type { HostingObject } from "./record";
@@ -86,6 +87,9 @@ export interface HostingApplyContext {
   newSigningKey?: () => SigningKeyPair;
 }
 
+/** A step's failure that left the account as it was: with no step before it, nothing changed. */
+class MadeNothingError extends OpsCrewError {}
+
 /**
  * An apply that stopped at a failure: `applied` lists the steps done before it; `who` answered
  * what OpsCrew can't read (`The panel`, `The SFTP host`).
@@ -99,7 +103,9 @@ export class HostingApplyError extends OpsCrewError {
       known ? cause.code : "PROVIDER_ERROR",
       `${known ? cause.message : `${who}'s answer was unexpected.`} ${
         applied.length === 0
-          ? "Nothing was changed before it."
+          ? cause instanceof MadeNothingError
+            ? "Nothing was changed."
+            : "Nothing was changed before it."
           : `OpsCrew made ${applied.length} of the plan's changes before it, each recorded in .opscrew/hosting.json.`
       }`,
       { ...(known && cause.hint !== undefined ? { hint: cause.hint } : {}), cause },
@@ -161,6 +167,34 @@ export function databaseValues(
 /** `mysql.cnf`'s `[client]` section for the dumps. */
 function mysqlCnf(database: { user: string; password: string }): string {
   return `[client]\nuser=${database.user}\npassword=${database.password}\nhost=localhost\n`;
+}
+
+/** The drill database's login (`DRILL_LOGIN_FILE`): its user's `[client]`, and the database. */
+function drillCnf(database: { name: string; user: string; password: string }): string {
+  return `${mysqlCnf(database)}[mysql]\ndatabase=${database.name}\n`;
+}
+
+/** Plesk's XML API code for "Limit reached", which its connector's messages end with. */
+const PLESK_LIMIT = /\(error 1024\)\.?$/;
+
+/**
+ * The stop for the panel's refusal to make the drill database, which made nothing: in plain words
+ * when the panel says the account is at its database limit (Plesk's code), otherwise the panel's
+ * own reason, redacted.
+ */
+function drillDatabaseRefusal(error: unknown, redactor: Redactor): MadeNothingError {
+  const said = error instanceof OpsCrewError ? error.message : String(error);
+  if (PLESK_LIMIT.test(said)) {
+    return new MadeNothingError(
+      "PHASE_PRECONDITION",
+      "Your hosting plan allows no more databases, so OpsCrew couldn't make the drill's database. Remove one in the panel or raise the plan's limit, then run again.",
+    );
+  }
+  return new MadeNothingError(
+    error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
+    redactor.redact(said),
+    error instanceof OpsCrewError && error.hint !== undefined ? { hint: error.hint } : {},
+  );
 }
 
 /** The archive's bytes. */
@@ -445,6 +479,28 @@ async function applyStep(
       return ctx.forget("cron", step.key);
     case "certificate":
       return panel.requestCertificate(step.hostname);
+    case "drill-database": {
+      const password = newPassword((ctx.randomBytes ?? randomBytes)(32));
+      ctx.redactor.addLiteral(password, "the drill database's password");
+      const login = `${folder}/${DRILL_LOGIN_FILE}`;
+      const database = { name: step.name, user: step.user, password };
+      // Written first, so a stop after the database is made never loses its password.
+      await files.writeFile(login, new TextEncoder().encode(drillCnf(database)), 0o600);
+      try {
+        await panel.addDatabase(database);
+      } catch (error) {
+        // A failure that may have made it after all (listed, or the list unread) stays as it is.
+        const listed = await panel.listDatabases().catch(() => [step.name]);
+        if (listed.includes(step.name)) throw error;
+        await files.remove(login);
+        throw drillDatabaseRefusal(error, ctx.redactor);
+      }
+      return ctx.made({ kind: "drill-database", key: step.name });
+    }
+    case "remove-drill-database":
+      await panel.removeDatabase({ name: step.name, user: step.user });
+      await files.remove(`${folder}/${DRILL_LOGIN_FILE}`);
+      return ctx.forget("drill-database", step.name);
     default:
       return step satisfies never;
   }

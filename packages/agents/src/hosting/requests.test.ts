@@ -47,6 +47,9 @@ describe("requestText", () => {
     expect(requestText({ kind: "restore", snapshot: "snapshot-1" }, HASH, NOW)).toContain(
       "snapshot=snapshot-1\n",
     );
+    expect(requestText({ kind: "drill", snapshot: "snapshot-1" }, HASH, NOW)).toBe(
+      `kind=drill\nhash=${HASH}\nexpires=${expires}\nsnapshot=snapshot-1\n`,
+    );
   });
 
   it.each([
@@ -54,6 +57,7 @@ describe("requestText", () => {
     [{ kind: "restore", snapshot: "snapshot-1.sql.gz" }, HASH, "a snapshot's id in dumps/"],
     [{ kind: "restore", snapshot: "-x" }, HASH, "a snapshot's id in dumps/"],
     [{ kind: "restore", snapshot: "" }, HASH, "a snapshot's id in dumps/"],
+    [{ kind: "drill", snapshot: "../x" }, HASH, "a snapshot's id in dumps/"],
     [{ kind: "rollback", release: "41-0", restore: false }, HASH, "a release's id"],
     [{ kind: "rollback", release: "latest", restore: false }, HASH, "a release's id"],
     [{ kind: "env" }, "not-a-hash", "a plan's SHA-256 hash"],

@@ -1,7 +1,7 @@
 import { ENVIRONMENT_NAME_PATTERN, OpsCrewError } from "@opscrew/core";
 import { shellQuote } from "../runtime/services";
 
-export { AGENT_SH } from "./agent/script";
+export { AGENT_SH, DRILL_LOGIN_FILE } from "./agent/script";
 
 /**
  * One app's environment on a hosting account, as the agent reads it from `settings.sh` (027 plan

@@ -15,6 +15,7 @@ import {
   plural,
   sha256Hex,
 } from "@opscrew/core";
+import { DRILL_LOGIN_FILE } from "@opscrew/iac-templates";
 import { z } from "zod";
 import { type AdapterPlanItem, describeAdapterPlan } from "../shared";
 import { RUNTIME_NAMES } from "./apps";
@@ -30,6 +31,8 @@ export const PathSchema = z
 /** A SHA-256 digest in lower-case hex. */
 export const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const ModeSchema = z.int().min(0).max(0o777);
+/** A database's or a database user's full name, the account's prefix included. */
+const DatabaseNameSchema = z.string().regex(/^[A-Za-z0-9_]{1,64}$/);
 /** A hostname, lower-case. */
 export const HostnameSchema = z.string().regex(/^[a-z0-9.-]+$/);
 const ScheduleSchema = z.string().regex(/^\S+(?: \S+){4}$/);
@@ -100,8 +103,8 @@ const AppStepSchema = z.discriminatedUnion("kind", [
   // the settings file and `shared/mysql.cnf`, both 0600.
   z.strictObject({
     kind: z.literal("database"),
-    name: z.string().regex(/^[A-Za-z0-9_]{1,64}$/),
-    user: z.string().regex(/^[A-Za-z0-9_]{1,64}$/),
+    name: DatabaseNameSchema,
+    user: DatabaseNameSchema,
   }),
   // The app's settings file (`shared/.env`, 0600), or on a later run `shared/.env.next` and an
   // `env` request the agent carries out. `digest` is the SHA-256 of the values outside the
@@ -150,6 +153,19 @@ const AppStepSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("remove-cron"), key: z.string().min(1), line: z.string() }),
   // The hostname's free certificate, asked of the panel.
   z.strictObject({ kind: z.literal("certificate"), hostname: HostnameSchema }),
+  // The drill database and its user (full names) for restore drills (029 research R25), last: its
+  // password generated at apply and written only into its login, `DRILL_LOGIN_FILE` (0600).
+  z.strictObject({
+    kind: z.literal("drill-database"),
+    name: DatabaseNameSchema,
+    user: DatabaseNameSchema,
+  }),
+  // The drill database OpsCrew made, with its user and its login, once drills are off.
+  z.strictObject({
+    kind: z.literal("remove-drill-database"),
+    name: DatabaseNameSchema,
+    user: DatabaseNameSchema,
+  }),
   PanelStepStep,
 ]);
 
@@ -292,6 +308,19 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       };
     case "certificate":
       return { title: `Ask ${panel} for ${step.hostname}'s free certificate`, state: "change" };
+    case "drill-database":
+      return {
+        title: `Make the drill database ${step.name} and its user ${step.user}, with every privilege on it, for restore drills`,
+        state: "change",
+        reason: `It is one more database on the account, so it counts against your hosting plan's limit on databases. A drill (\`opscrew restore --drill\`) loads a snapshot's dump into it, counts its tables and empties it again; the app never uses it, and its user has no right on the app's database. Its password is generated now and written only into ~/${folder}/${DRILL_LOGIN_FILE} (0600, outside every web root).`,
+      };
+    case "remove-drill-database":
+      return {
+        title: `Remove the drill database ${step.name}, its user ${step.user} and its login ~/${folder}/${DRILL_LOGIN_FILE}`,
+        state: "change",
+        reason:
+          "Restore drills are off for this environment now: opscrew/plan.yaml has no snapshots.drills.",
+      };
     case "panel-step":
       return {
         title: `You, in ${panel}: ${panelStepText(step.step)}`,

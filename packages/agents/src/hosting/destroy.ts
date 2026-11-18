@@ -80,7 +80,16 @@ const InterpreterSchema = z.enum(["nodejs", "python"]);
 
 /** The recorded object a step ends. */
 const ObjectRefSchema = z.strictObject({
-  kind: z.enum(["cron", "folder", "link", "certificate", "database", "hostname", "panel-step"]),
+  kind: z.enum([
+    "cron",
+    "folder",
+    "link",
+    "certificate",
+    "database",
+    "drill-database",
+    "hostname",
+    "panel-step",
+  ]),
   key: z.string().min(1),
 });
 
@@ -358,13 +367,15 @@ function buildHostingDestroyPlan(input: DestroyPlanInput): HostingDestroyPlan {
           }),
     );
   }
-  // Its user is named as the database (`databaseNames`).
-  for (const { key } of of("database")) {
-    steps.push(
-      panel.operations.has("removeDatabase")
-        ? { kind: "database", name: key, user: key }
-        : inPanel({ kind: "database", key }, "removeDatabase", { name: key, user: key }),
-    );
+  // Its user is named as the database (`databaseNames`), the drill database's too.
+  for (const kind of ["database", "drill-database"] as const) {
+    for (const { key } of of(kind)) {
+      steps.push(
+        panel.operations.has("removeDatabase")
+          ? { kind: "database", name: key, user: key }
+          : inPanel({ kind, key }, "removeDatabase", { name: key, user: key }),
+      );
+    }
   }
   const keepDump = dumped || steps.some((step) => step.kind === "dump");
   for (const { key } of of("folder")) {
@@ -571,7 +582,9 @@ async function destroyStep(
     case "database":
       await panel.removeDatabase({ name: step.name, user: step.user });
       state.databases.push({ name: step.name, user: step.user });
-      return ctx.forget((o) => o.kind === "database" && o.key === step.name);
+      return ctx.forget(
+        (o) => (o.kind === "database" || o.kind === "drill-database") && o.key === step.name,
+      );
     case "folder": {
       const files = filesOf(ctx);
       const kept = step.keepDump

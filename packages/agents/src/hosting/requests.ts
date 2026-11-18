@@ -1,7 +1,7 @@
 /**
  * One-time requests to the agent on a hosting account (027 plan 6, ADR 0030 D5): what the user
- * starts from this computer (a rollback, a settings change, a snapshot, a restore, a Node.js or
- * Python app made in or removed from CloudLinux's selector), written through
+ * starts from this computer (a rollback, a settings change, a snapshot, a restore, a restore drill,
+ * a Node.js or Python app made in or removed from CloudLinux's selector), written through
  * the panel's API after the approval and carried out once by the agent, which answers in a result
  * file. Only the holder of the panel's token can write one; CI never can.
  */
@@ -22,6 +22,12 @@ export type HostingRequest =
    * holds), the current ones copied first into a new snapshot.
    */
   | { kind: "restore"; snapshot: string }
+  /**
+   * A restore drill of the snapshot `<id>` in `dumps/` (029 research R25): its dump loaded into
+   * the drill database and its tables counted, the drill database emptied again, its copy of the
+   * shared files listed; the app's database and files untouched.
+   */
+  | { kind: "drill"; snapshot: string }
   /** A Node.js or Python app made in CloudLinux's selector, or removed from it (`apps.ts`). */
   | { kind: "app"; action: "create" | "destroy" };
 
@@ -77,7 +83,7 @@ export function requestText(request: HostingRequest, hash: string, now: Date): s
   ];
   if (request.kind === "rollback") {
     fields.push(["release", request.release], ["restore", request.restore ? "yes" : "no"]);
-  } else if (request.kind === "restore") {
+  } else if (request.kind === "restore" || request.kind === "drill") {
     fields.push(["snapshot", request.snapshot]);
   } else if (request.kind === "app") {
     fields.push(["action", request.action]);
@@ -117,6 +123,10 @@ const RequestResultSchema = z.strictObject({
   saved: z.string().min(1).optional(),
   /** What an app's removal left as it was, and why. */
   note: z.string().min(1).optional(),
+  /** A drill's line of `state/drills.log`, as `drillRecord` reads it. */
+  record: z.string().min(1).optional(),
+  /** A drill's count of the dump's `CREATE TABLE` lines, when the snapshot holds a dump. */
+  expected: z.string().regex(/^\d+$/).optional(),
 });
 
 export type RequestResult = z.infer<typeof RequestResultSchema>;
