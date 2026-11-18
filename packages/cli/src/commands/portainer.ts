@@ -1,5 +1,6 @@
 import {
   applyCommand,
+  changesNothing,
   findSavedPlan,
   type PhaseDeps,
   type PortainerResult,
@@ -66,10 +67,12 @@ async function plannedHashes(deps: PhaseDeps, result: PortainerResult): Promise<
   if (result.cloudflarePlanHash !== undefined) {
     planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
   }
-  if (
-    result.planHash !== undefined &&
-    (await findSavedPlan(deps.paths.files.plansDir, result.planHash)) !== undefined
-  ) {
+  // A saved plan that changes nothing can be approved too, but needs no approving.
+  const saved =
+    result.planHash === undefined
+      ? undefined
+      : await findSavedPlan(deps.paths.files.plansDir, result.planHash);
+  if (result.planHash !== undefined && saved !== undefined && !changesNothing(saved)) {
     planned.push({ label: "infrastructure (Cloudflare Tunnel and Access)", hash: result.planHash });
   }
   if (result.hostPlanHash !== undefined && (await planChanges(deps, "host", result.hostPlanHash))) {

@@ -3,6 +3,7 @@ import {
   applyCommand,
   BACKUPS_PLAN_SUFFIX,
   CHECK_MARK,
+  changesNothing,
   describeChanges,
   describePlan,
   findSavedPlan,
@@ -527,10 +528,12 @@ export function registerDeployTools(
           ...servicesOption(options),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
-        const saved =
+        // A saved plan that changes nothing can be approved too, but is not offered.
+        const found =
           result.planHash === undefined
             ? undefined
             : await findSavedPlan(phase.paths.files.plansDir, result.planHash);
+        const saved = found !== undefined && !changesNothing(found) ? found : undefined;
         if (plan.target.provider === "hosting") {
           return hostingPlanReply(
             call.reporter.messages,

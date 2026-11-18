@@ -378,6 +378,13 @@ export function isMovesOnly(saved: Pick<SavedPlan, "changes" | "moves">): boolea
   return saved.changes.length === 0 && (saved.moves?.length ?? 0) > 0;
 }
 
+/** True when the plan has nothing to apply: no changes, no state renames and no imports. */
+export function changesNothing(saved: Pick<SavedPlan, "changes" | "moves" | "planJson">): boolean {
+  return (
+    saved.changes.length === 0 && !isMovesOnly(saved) && plannedImports(saved.planJson).length === 0
+  );
+}
+
 /**
  * Plain-English plan summary shown before approval (resources, state renames and imports, cost,
  * policies, hash). A plan that only renames resources in the state says that nothing changes in
@@ -718,8 +725,9 @@ export function approveLaterHint(
  * changes is "already up to date" only when it has no state renames or imports either: a
  * moves-only plan is approved as a state rename (nothing changes in the cloud), and a plan that
  * imports a server another apply lost is approved with its imports, and both are applied like any
- * other. The hooks (`approvalNotes`, `beforeApply`, `applyFailed`) see the plan being approved
- * and applied. After a successful apply, and in a run (not `planOnly`) that finds nothing to
+ * other. With `planOnly` a plan that changes nothing is saved too, so its hash can be approved
+ * (that run applies nothing). The hooks (`approvalNotes`, `beforeApply`, `applyFailed`) see the
+ * plan being approved and applied. After a successful apply, and in a run (not `planOnly`) that finds nothing to
  * apply, the firewalls the providers' connectors apply follow the root's `wanted_firewalls`
  * (`syncFirewalls`); after an apply, those of the servers it removed are deleted first.
  */
@@ -808,8 +816,16 @@ export async function planAndApply(
     firewalls: options.firewalls,
     backups: options.providerBackups,
   };
-  if (saved.changes.length === 0 && !movesOnly && imports === 0) {
+  if (changesNothing(saved)) {
     deps.reporter.success("The infrastructure is already up to date.");
+    // Saved with --plan-only all the same: the hash shown above can then be approved (a script
+    // approves every hash it was shown), and that run lands here again.
+    if (options.planOnly === true && options.approvePlanHash === undefined) {
+      await writePlanSidecar(deps.redactor, saved);
+      deps.reporter.info(
+        `Saved the plan (hash ${saved.planHash}); it changes nothing, nothing was changed.`,
+      );
+    }
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
     // A run after a failed firewall sync plans nothing new and sets the firewalls again; it sends
     // again only the backups orders an earlier approved plan recorded as wanted. A move changes no

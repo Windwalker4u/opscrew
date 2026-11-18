@@ -40,6 +40,7 @@ export {
 } from "./own";
 export {
   approveLaterHint,
+  changesNothing,
   describePlan,
   findSavedPlan,
   isMovesOnly,

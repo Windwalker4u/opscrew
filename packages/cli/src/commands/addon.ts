@@ -7,6 +7,7 @@ import {
   addonEnable,
   addonOpen,
   addonStatus,
+  changesNothing,
   findSavedPlan,
   type PhaseDeps,
 } from "@opscrew/agents";
@@ -130,10 +131,12 @@ async function plannedHashes(deps: PhaseDeps, result: AddonResult): Promise<Plan
   if (result.cloudflarePlanHash !== undefined) {
     planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
   }
-  if (
-    result.planHash !== undefined &&
-    (await findSavedPlan(deps.paths.files.plansDir, result.planHash)) !== undefined
-  ) {
+  // A saved plan that changes nothing can be approved too, but needs no approving.
+  const saved =
+    result.planHash === undefined
+      ? undefined
+      : await findSavedPlan(deps.paths.files.plansDir, result.planHash);
+  if (result.planHash !== undefined && saved !== undefined && !changesNothing(saved)) {
     planned.push({ label: "infrastructure (Cloudflare Tunnel and Access)", hash: result.planHash });
   }
   for (const hash of result.hostPlanHashes) {

@@ -1,6 +1,7 @@
 import {
   applyCommand,
   approveLaterHint,
+  changesNothing,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
   isRemovalLiftRequest,
@@ -444,10 +445,13 @@ export async function runInfraCommand(
         if (result.backupsPlanHash !== undefined) {
           planned.push({ label: "bucket of the off-server copies", hash: result.backupsPlanHash });
         }
-        const saved =
+        // A saved plan that changes nothing can be approved too, but is not listed (like a host
+        // plan without changes): a run with no hash finishes such an app.
+        const found =
           result.planHash === undefined
             ? undefined
             : await findSavedPlan(deps.paths.files.plansDir, result.planHash);
+        const saved = found !== undefined && !changesNothing(found) ? found : undefined;
         if (result.planHash !== undefined && saved !== undefined) {
           if (saved.hasDestroy && named !== undefined) {
             // The extra servers the plan deletes by their names at the provider (`<app>-<server>`).

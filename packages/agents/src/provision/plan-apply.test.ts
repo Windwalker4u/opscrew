@@ -135,6 +135,46 @@ describe("planAndApply with state renames (moved blocks)", () => {
     ]);
   });
 
+  it("--plan-only saves a plan without changes, so --approve with its hash applies nothing", async () => {
+    const { deps, engine, handler, options } = await setup({ changes: [] });
+    const planned = await planAndApply(deps, { ...options, planOnly: true });
+    expect(planned.applied).toBe(false);
+    expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(deps.reporter.text()).toContain(
+      `Saved the plan (hash ${planned.planHash}); it changes nothing, nothing was changed.`,
+    );
+    const saved = await findSavedPlan(deps.paths.files.plansDir, planned.planHash as string);
+    expect(saved?.changes).toEqual([]);
+
+    const approved = await planAndApply(deps, {
+      ...options,
+      approvePlanHash: planned.planHash as string,
+    });
+    expect(approved).toMatchObject({ applied: false, planHash: planned.planHash });
+    expect(engine.calls).not.toContain("apply");
+    expect(engine.calls.filter((call) => call === "plan")).toHaveLength(1);
+    expect(handler.requests).toEqual([]);
+    expect(deps.reporter.text()).toContain("The infrastructure is already up to date.");
+
+    const wrong = await planAndApply(deps, { ...options, approvePlanHash: "c".repeat(64) }).catch(
+      (error: unknown) => error,
+    );
+    expect(wrong).toBeInstanceOf(OpsCrewError);
+    expect((wrong as OpsCrewError).code).toBe("PLAN_HASH_MISMATCH");
+    expect((wrong as OpsCrewError).message).toBe(`No saved plan has the hash ${"c".repeat(64)}.`);
+  });
+
+  it("saves no plan without changes in a run without --plan-only", async () => {
+    const { deps, options } = await setup({ changes: [] });
+    const result = await planAndApply(deps, options);
+    expect(result.applied).toBe(false);
+    const names = await readdir(deps.paths.files.plansDir);
+    expect(names.filter((name) => name.endsWith(".tfplan.json"))).toEqual([]);
+    expect(
+      await findSavedPlan(deps.paths.files.plansDir, result.planHash as string),
+    ).toBeUndefined();
+  });
+
   it("keeps the usual title and cost for a plan with changes and lists its renames too", async () => {
     const { deps, handler, options } = await setup({ moves: MOVES.slice(0, 1) });
     await planAndApply(deps, options);
