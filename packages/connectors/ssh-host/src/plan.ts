@@ -1016,12 +1016,19 @@ function sshFirewallStep(
  * A server's `ssh-firewall` step, only when the desired host has `sshFrom` (a server at home,
  * where a missing `nft` is installed). Shared: while other apps are on the server, OpsCrew's
  * SSH firewall that is there stays as it is, and its reason says so when this app's sources
- * differ from the table's (without naming any address). Without `sshFrom` there is no step;
+ * differ from the table's (without naming any address). Without `sshFrom` an app that leaves
+ * home removes OpsCrew's SSH firewall when no other app record on the server has `home` (in
+ * public mode it would block GitHub's deploys over SSH); otherwise there is no step, and
  * `planUndo` removes the firewall.
  */
 function serverSshFirewallStep(ctx: SetupContext): HostStep | undefined {
   const { facts, desired, others } = ctx;
-  if (desired.sshFrom === undefined) return undefined;
+  if (desired.sshFrom === undefined) {
+    const otherHome = readableRecords(facts.apps).some(
+      (record) => record.app !== desired.app && record.home !== undefined,
+    );
+    return sshFirewallPresent(facts) && !otherHome ? sshFirewallRemoval() : undefined;
+  }
   if (others.length > 0 && sshFirewallPresent(facts) && !facts.pendingUndo.sshFirewall) {
     const table = facts.sshFirewall.table;
     // The table's sources, from its accept rules (`ip saddr <source> tcp dport <port> accept`).
@@ -1276,7 +1283,7 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
   ];
   if (install) lines.unshift("OpsCrew installs nftables (the nft command) first.");
   lines.push(
-    `nftables.service flushes every table when it stops, restarts or reloads (with iptables-nft, iptables' rules too), so ${WEB_FILTER_SERVICE} follows it (a drop-in) and installs the filter again; restarting or stopping nftables.service restarts or stops Docker with it.`,
+    `nftables.service flushes every table when it stops, restarts or reloads (with iptables-nft, iptables' rules too), so ${WEB_FILTER_SERVICE} follows it (a drop-in) and installs the filter again; restarting or reloading nftables.service restarts Docker too, so its own rules come back, and stopping it stops Docker.`,
   );
   if (ipv6 && wf.files.script === hashes.script && wf.table6 !== table6) {
     lines.push(

@@ -226,7 +226,7 @@ NFT`);
       "/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf",
     );
     expect(WEB_FILTER_NFT_DROP_IN_TEXT).toContain(
-      "[Unit]\nPartOf=nftables.service\nReloadPropagatedFrom=nftables.service\n\n[Service]\nExecReload=/usr/local/sbin/opscrew-web-filter\n",
+      "[Unit]\nPartOf=nftables.service\nReloadPropagatedFrom=nftables.service\n\n[Service]\nExecReload=/usr/local/sbin/opscrew-web-filter\nExecReload=/bin/systemctl --no-block try-restart docker.service\n",
     );
     // It names no IPv6 table: the same file in both modes.
     expect(WEB_FILTER_NFT_DROP_IN_TEXT).not.toContain("opscrew-web ");

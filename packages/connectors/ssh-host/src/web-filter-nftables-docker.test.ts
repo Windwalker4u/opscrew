@@ -5,10 +5,11 @@
  * installs nftables, loads the IPv6 filter and the unit's nftables drop-in, and the inspection
  * reads the table's hash as the plan expects it. A flushed table is seen by the inspection;
  * `systemctl restart nftables` (which flushes every table) and `systemctl reload nftables` bring
- * it back through the drop-in, a restart restarts Docker with the filter, and stopping nftables
- * stops both. Back to IPv4 alone, the table goes and the drop-in stays: a flush wipes the IPv4
- * filter too (iptables-nft), and `systemctl restart nftables` puts it back and restarts Docker. It
- * pulls the images and installs packages, so it runs only with OPSCREW_DOCKER_TESTS=1.
+ * it back through the drop-in, both restart Docker (whose own chain comes back), and stopping
+ * nftables stops both. Back to IPv4 alone, the table goes and the drop-in stays: a flush wipes the
+ * IPv4 filter too (iptables-nft), and `systemctl restart nftables` or `reload nftables` puts it
+ * back and restarts Docker. It pulls the images and installs packages, so it runs only with
+ * OPSCREW_DOCKER_TESTS=1.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -67,13 +68,23 @@ chain_back() {
   return 1
 }
 docker_run() { systemctl show -p InvocationID --value docker.service; }
+# Docker ran again since $1 (the reload restarts it without waiting) and is active.
+docker_restarted() {
+  for i in $(seq 1 30); do
+    [ "$(docker_run)" != "$1" ] && [ "$(systemctl is-active docker.service)" = active ] && return 0
+    sleep 1
+  done
+  return 1
+}
 echo "iptables: $(iptables -V)"
-# A stand-in for Docker: it creates DOCKER-USER when it starts, as dockerd does.
+# A stand-in for Docker: it creates DOCKER-USER when it starts, as dockerd does, and its own
+# chain DOCKER (which only a restart of Docker puts back after a flush).
 cat > /etc/systemd/system/docker.service <<'UNIT'
 [Unit]
 Description=A stand-in for Docker
 [Service]
 ExecStartPre=/bin/sh -c 'iptables -w -n -L DOCKER-USER >/dev/null 2>&1 || iptables -w -N DOCKER-USER'
+ExecStartPre=/bin/sh -c 'iptables -w -n -L DOCKER >/dev/null 2>&1 || iptables -w -N DOCKER'
 ExecStart=/bin/sleep infinity
 UNIT
 systemctl daemon-reload && systemctl start docker && echo "docker: started"
@@ -92,9 +103,12 @@ table_back && echo "restart: table back"
 sh /t/verify.sh && echo "verify after restart: ok"
 [ "$(docker_run)" != "$before" ] && echo "restart: docker restarted"
 echo "@@inspect3"; sh /t/inspect.sh; echo "@@end3"
+before=$(docker_run)
 systemctl reload nftables
-sleep 1
 table_back && echo "reload: table back"
+docker_restarted "$before" && echo "reload: docker restarted"
+sh /t/verify.sh && echo "verify after reload: ok"
+iptables -w -n -L DOCKER >/dev/null 2>&1 && echo "reload: docker's chain back"
 systemctl stop nftables
 sleep 2
 echo "after stop: $(systemctl is-active opscrew-web-filter.service), docker $(systemctl is-active docker.service)"
@@ -113,6 +127,16 @@ chain_back && echo "ipv4 restart: filter back"
 sh /t/back-verify.sh && echo "ipv4 verify after restart: ok"
 [ "$(docker_run)" != "$before" ] && echo "ipv4 restart: docker restarted"
 echo "ipv4 docker: $(systemctl is-active docker.service)"
+# A reload flushes them too (a marker chain nothing puts back shows it): the filter's script runs
+# again, then Docker restarts.
+iptables -w -N FLUSH-MARK
+before=$(docker_run)
+systemctl reload nftables
+iptables -w -n -L FLUSH-MARK >/dev/null 2>&1 || echo "ipv4 reload: flushed"
+chain_back && echo "ipv4 reload: filter back"
+docker_restarted "$before" && echo "ipv4 reload: docker restarted"
+sh /t/back-verify.sh && echo "ipv4 verify after reload: ok"
+iptables -w -n -L DOCKER >/dev/null 2>&1 && echo "ipv4 reload: docker's chain back"
 `;
 
 /** The inspection between `@@inspect<n>` and `@@end<n>`. */
@@ -199,6 +223,9 @@ describe.skipIf(reason !== undefined)(
           expect(out, all).toContain("verify after restart: ok");
           expect(out, all).toContain("restart: docker restarted");
           expect(out, all).toContain("reload: table back");
+          expect(out, all).toContain("reload: docker restarted");
+          expect(out, all).toContain("verify after reload: ok");
+          expect(out, all).toContain("reload: docker's chain back");
           expect(out, all).toContain("after stop: inactive, docker inactive");
           expect(out, all).toContain("started again: active");
           expect(out, all).toContain("back: ok");
@@ -209,6 +236,11 @@ describe.skipIf(reason !== undefined)(
           expect(out, all).toContain("ipv4 verify after restart: ok");
           expect(out, all).toContain("ipv4 restart: docker restarted");
           expect(out, all).toContain("ipv4 docker: active");
+          expect(out, all).toContain("ipv4 reload: flushed");
+          expect(out, all).toContain("ipv4 reload: filter back");
+          expect(out, all).toContain("ipv4 reload: docker restarted");
+          expect(out, all).toContain("ipv4 verify after reload: ok");
+          expect(out, all).toContain("ipv4 reload: docker's chain back");
 
           // The inspection reads the table as the plan expects it, a flushed one as another.
           const expected = webFilterTable6Hash(IPV6);

@@ -1065,7 +1065,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(codes(plan)).toEqual([]);
     // The filter plan of this fake server, pinned (its reason names the unit's nftables drop-in).
     expect(hostPlanHash(plan)).toBe(
-      "f60f5a74c797ec15e423dac2f5808c5a85da44c7f37fe5185eaa91277e96503d",
+      "0ece5112629358fd3b4576195cbfaeeff26f7699f056a09a501fee48ee25a270",
     );
   });
 
@@ -1261,7 +1261,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
   });
 
   const FOLLOWS_NFTABLES =
-    "nftables.service flushes every table when it stops, restarts or reloads (with iptables-nft, iptables' rules too), so opscrew-web-filter.service follows it (a drop-in) and installs the filter again; restarting or stopping nftables.service restarts or stops Docker with it.";
+    "nftables.service flushes every table when it stops, restarts or reloads (with iptables-nft, iptables' rules too), so opscrew-web-filter.service follows it (a drop-in) and installs the filter again; restarting or reloading nftables.service restarts Docker too, so its own rules come back, and stopping it stops Docker.";
 
   it("in both modes: the reason says the filter follows nftables.service, and Docker with it", async () => {
     const fake = new FakeHost();

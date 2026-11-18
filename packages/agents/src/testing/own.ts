@@ -302,7 +302,12 @@ export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
   const hashes = webFilterFileHashes({ ipv4 });
   return {
     backend: "iptables",
-    files: { script: hashes.script, unit: hashes.unit, dropIn: hashes.dropIn },
+    files: {
+      script: hashes.script,
+      unit: hashes.unit,
+      dropIn: hashes.dropIn,
+      nftDropIn: hashes.nftDropIn,
+    },
     enabled: true,
     active: true,
     rules4: {

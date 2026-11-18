@@ -194,6 +194,48 @@ describe("SSH only from the home network", () => {
     expect(firewallStep(undo)).toMatchObject({ state: "change", params: { remove: true } });
   });
 
+  it("goes in the same plan when the server's last home app leaves home (it would block GitHub's deploys)", async () => {
+    const fake = homeServer();
+    await provision(fake, home(fake));
+    deployApp(fake, "shop");
+    expect(fake.sshFirewall.table).not.toBeNull();
+    const plan = await planFor(fake, desiredFor(fake));
+    expect(codes(plan)).toEqual([]);
+    expect(firewallStep(plan)).toMatchObject({
+      state: "change",
+      params: { remove: true },
+      title: "Remove OpsCrew's SSH firewall (its nftables table inet opscrew)",
+    });
+    await applyApproved(fake, plan);
+    expect(fake.sshFirewall.table).toBeNull();
+    expect(appRecord(fake, "shop")?.home).toBeUndefined();
+    // Gone: the next plan has no step.
+    expect(firewallStep(await planFor(fake, desiredFor(fake)))).toBeUndefined();
+  });
+
+  it("stays when another home app is on the server, and a server never at home gets no step", async () => {
+    const fake = homeServer();
+    await provision(fake, home(fake));
+    deployApp(fake, "shop");
+    await provision(fake, home(fake, blog(fake)));
+    deployApp(fake, "blog");
+    const table = fake.sshFirewall.table;
+    // "shop" leaves home while "blog" stays there: no removal (mixing them is refused anyway).
+    const leaving = await planFor(fake, desiredFor(fake));
+    expect(firewallStep(leaving)).toBeUndefined();
+    expect(codes(leaving)).toEqual(["home-mode-conflict"]);
+    expect(fake.sshFirewall.table).toBe(table);
+
+    const never = homeServer();
+    const first = await planFor(never);
+    await applyApproved(never, first);
+    deployApp(never, "shop");
+    const again = await planFor(never);
+    expect(firewallStep(first)).toBeUndefined();
+    expect(firewallStep(again)).toBeUndefined();
+    expect(again.steps.map((item) => item.id)).toEqual(first.steps.map((item) => item.id));
+  });
+
   it("stays on a runner machine that is also a home server, without harden.firewall", async () => {
     const fake = homeServer();
     await provision(fake, home(fake));

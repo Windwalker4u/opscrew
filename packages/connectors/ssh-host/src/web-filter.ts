@@ -312,18 +312,21 @@ After=${WEB_FILTER_SERVICE}
  * iptables-nft (Ubuntu's and Debian's default) iptables' tables too: Docker's, ufw's and the IPv4
  * filter's. So the filter follows it, as OpsCrew's SSH firewall does. A restart of nftables
  * restarts the filter, and Docker, which requires it, with it, so both put their rules back; a
- * reload runs the script again; a stop stops both (fail closed). The unit itself stays the same.
+ * reload runs the script again, then restarts Docker without waiting for it (`--no-block`: the
+ * restart waits for this reload, which waiting on it would deadlock), so Docker's chains come back
+ * too; a stop stops both (fail closed). The unit itself stays the same.
  */
 export const WEB_FILTER_NFT_DROP_IN_TEXT = `# Managed by OpsCrew: nftables.service flushes every table when it stops, restarts or reloads
 # (with iptables-nft, iptables' tables too), so OpsCrew's web filter follows it and installs its
-# rules again. Docker requires the filter, so it restarts or stops with it.
-# \`opscrew destroy --undo-host\` removes this file.
+# rules again. Docker requires the filter, so it restarts or stops with it; after a reload it
+# restarts too, so its own rules come back. \`opscrew destroy --undo-host\` removes this file.
 [Unit]
 PartOf=nftables.service
 ReloadPropagatedFrom=nftables.service
 
 [Service]
 ExecReload=${WEB_FILTER_SCRIPT}
+ExecReload=/bin/systemctl --no-block try-restart docker.service
 `;
 
 /** SHA-256 of the files the step writes for these ranges. */
