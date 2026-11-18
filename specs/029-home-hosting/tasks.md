@@ -277,6 +277,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Reads: plan 3., 12.; research R1, R3, R5, R10; contracts/plan-schema.md "Kept by a later
     design"; `requireNoSharedPreviews` (`agents/src/previews/host.ts`)
   - Depends: T2910a, T2902
+  - Also owns (lead, T2912's findings): `packages/agents/src/shared/own-server-design.ts` (`inspectOwnServerForDesign` reads the home network only at home, and the board and storage facts). Accepted deviations: `server.sshFrom` required whenever no IPv4 home network is found, and with a carrier-NAT address on the server's own interface (the carrier's network is shared); a user's `home.ipv4: false` with no IPv6 stops; large media said only behind the proxy; the Pi warning for any own server with a Pi board.
   - Also owns (lead, T2910a's findings): `packages/agents/src/testing/own.ts` (`FakeHostServer` gains a scripted `detectHomeNetwork`) and `packages/agents/src/home/token.ts` (only to export the token's recipe text for the summary). Design builds `own.home.network.lan` from `HomeNetwork.lan` (the network as `192.168.1.0/24`). The carrier-NAT warning names the kind of address, never the hop's.
   - Decided by the lead (T2911's notes): with `noNat` design leaves `network.lan` out (the record refuses a public LAN address); design and verify write `own.home.network` and `outsideCheck` again on each run (the interview keeps neither).
   - Accept:
