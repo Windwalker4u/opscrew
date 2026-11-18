@@ -18,7 +18,8 @@ import {
 import {
   DRILL_LIMIT_SECONDS,
   DRILL_LOGIN_FILE,
-  DRILL_SLOT_AFTER_HOURS,
+  drillSlotText,
+  HOSTING_DRILLS_LOG,
 } from "@opscrew/iac-templates";
 import { z } from "zod";
 import { type AdapterPlanItem, describeAdapterPlan } from "../shared";
@@ -238,13 +239,11 @@ const octal = (mode: number) => `0${mode.toString(8).padStart(3, "0")}`;
  * (constitution I).
  */
 function drillScheduleText(folder: string, every: "weekly" | "daily"): string {
-  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
-  const when = every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
   return [
-    `With these settings OpsCrew's agent runs a restore drill itself, ${when}, with no call to the panel: it loads the newest snapshot in ~/${folder}/dumps/ into the drill database through that database's own login (${DRILL_LOGIN_FILE}), counts its tables, empties it again and lists the snapshot's copy of the shared files.`,
+    `With these settings OpsCrew's agent runs a restore drill itself, ${drillSlotText(every)}, with no call to the panel: it loads the newest snapshot in ~/${folder}/dumps/ into the drill database through that database's own login (${DRILL_LOGIN_FILE}), counts its tables, empties it again and lists the snapshot's copy of the shared files.`,
     "Its bounds: only the drill database, never the app's database or its files; only the newest snapshot, once the last drill proved another; no network, and the app isn't started; what a stopped run left in the drill database is dropped first; at most one run a slot, under the agent's lock after its releases, so never during a deploy;",
     `skipped, never failed, when the account's disk quota leaves less room than the snapshot's dump; at most ${DRILL_LIMIT_SECONDS / 60} minutes, then it is stopped and the drill database emptied.`,
-    `Each run is a line in ~/${folder}/state/drills.log, which \`opscrew status\` shows. The agent runs as the account's user, so anything that user can run can exceed these bounds.`,
+    `Each run is a line in ~/${folder}/${HOSTING_DRILLS_LOG}, which \`opscrew status\` shows. The agent runs as the account's user, so anything that user can run can exceed these bounds.`,
   ].join(" ");
 }
 

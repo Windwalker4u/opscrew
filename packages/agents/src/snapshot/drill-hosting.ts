@@ -9,7 +9,12 @@
  * account and the panel's token on this computer.
  */
 import { canonicalJson, listText, OpsCrewError, plural, realSleep, sha256Hex } from "@opscrew/core";
-import { type DrillRecord, drillRecord } from "@opscrew/iac-templates";
+import {
+  type DrillRecord,
+  drillName,
+  drillRecord,
+  HOSTING_DRILLS_LOG,
+} from "@opscrew/iac-templates";
 import { hostingTarget } from "../hosting/provision-plans";
 import { recordedObject } from "../hosting/record";
 import { SNAPSHOT_ID, sendRequest } from "../hosting/requests";
@@ -22,7 +27,9 @@ import {
 } from "../hosting/snapshot";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { sizeText } from "../retarget/texts";
-import { drillReport } from "./drill-report";
+import { drillCommandText } from "./drill-core";
+import { drillReport, HOSTING_NOT_RESTORED } from "./drill-report";
+import { typedApprovalRefused } from "./restore-checks";
 import type { SnapshotRun } from "./run";
 import type { DrillReport, DrillRequest, SnapshotServices } from "./types";
 
@@ -32,40 +39,25 @@ const TAKEN = /^snapshot-\d{8}T\d{6}Z(?:-\d+)?$/;
 /** What a drill proves of a snapshot that holds no dump (research R27's row). */
 const FILES_ONLY = "the copy of the shared files is a valid archive; the app itself wasn't started";
 
-/** Why each option of a server's drill has no place on a hosting account. */
-const NO_OPTION: Readonly<Record<string, string>> = {
-  keep: "A drill on a hosting account leaves no copy to keep: it empties the drill database again at its end.",
-  remove:
-    "A drill on a hosting account leaves no copy to remove: it empties the drill database again at its end.",
-  only: "--only drills one service of a server's snapshot; on a hosting account a drill checks the dump and the shared files together.",
-  "allow-other-version":
-    "--allow-other-version starts today's version of the app on a server's copy; on a hosting account a drill starts no app.",
-};
-
 /** What did not restore, by the agent's fixed word. */
 function notRestored(record: DrillRecord, expected: number | undefined): string {
   const count = record.tables.find((entry) => entry.service === "database")?.count;
-  switch (record.reason) {
-    case "dump":
-      return "its dump is empty or not a valid gzip file";
-    case "database":
-      return "its dump did not load into the drill database";
-    case "tables":
-      if (count === undefined) return "the drill database did not answer once the dump loaded";
-      if (expected === 0) return "its dump makes no table";
-      return `the drill database holds ${plural(count, "table")} once the dump loaded, and the dump makes ${expected ?? "another number"}`;
-    case "files":
-      return "its copy of the shared files is not a valid archive";
-    default:
-      return `${record.reason ?? "a part of it"} did not restore`;
+  if (record.reason !== "tables") {
+    return (
+      HOSTING_NOT_RESTORED[record.reason ?? ""] ??
+      `${record.reason ?? "a part of it"} did not restore`
+    );
   }
+  if (count === undefined) return "the drill database did not answer once the dump loaded";
+  if (expected === 0) return "its dump makes no table";
+  return `the drill database holds ${plural(count, "table")} once the dump loaded, and the dump makes ${expected ?? "another number"}`;
 }
 
 /**
  * A hosting account's drill record in plain words (research R19, R27), with what to do next:
  * `expected` is the dump's count of tables, when the agent read it.
  */
-export function hostingDrillSummary(
+function hostingDrillSummary(
   record: DrillRecord,
   o: { id: string; flags: string; expected?: number },
 ): string {
@@ -101,36 +93,23 @@ function hostingDrillSteps(record: DrillRecord, expected: number | undefined): s
 }
 
 /**
- * The drill `request` asks on the hosting account of `run` (see the module's comment): the
- * snapshot `request.id` the account keeps in `dumps/`, by default the newest one `opscrew
- * snapshot` took. Refused, before any change, with a server's options (`--keep`, `--remove`,
- * `--only`, `--allow-other-version`), before provision, for an app with a database while its drill
+ * The drill `request` asks on the hosting account of `run` (see the module's comment), which takes
+ * none of a server's options (`drillSnapshot` refuses them): the snapshot `request.id` the account
+ * keeps in `dumps/`, by default the newest one `opscrew snapshot` took, through `run.services`.
+ * Refused, before any change, before provision, for an app with a database while its drill
  * database isn't made (drills off, or not provisioned since), for a snapshot the account doesn't
  * keep, and when the approval is not given; a drill that did not restore is a report, not an error.
- * @throws OpsCrewError `INVALID_INPUT` for those options or an id that can't be one,
- * `PHASE_PRECONDITION` for each refusal, `APPROVAL_REFUSED`, `COMMAND_FAILED` when the agent refuses
- * or doesn't finish, and `PROVIDER_ERROR` for an answer OpsCrew can't read.
+ * @throws OpsCrewError `INVALID_INPUT` for an id that can't be one, `PHASE_PRECONDITION` for each
+ * refusal, `APPROVAL_REFUSED`, `COMMAND_FAILED` when the agent refuses or doesn't finish, and
+ * `PROVIDER_ERROR` for an answer OpsCrew can't read.
  */
 export async function drillOnHosting(
   run: SnapshotRun,
-  services: SnapshotServices & HostingSnapshotServices,
   request: DrillRequest,
 ): Promise<DrillReport> {
   const { deps, plan, environment, flags } = run;
-  const name = `${plan.app.name}-drill`;
-  const option = (
-    [
-      ["keep", request.keep === true],
-      ["remove", request.remove === true],
-      ["only", request.only !== undefined],
-      ["allow-other-version", request.allowOtherVersion === true],
-    ] as const
-  ).find(([, given]) => given)?.[0];
-  if (option !== undefined) {
-    throw new OpsCrewError("INVALID_INPUT", `${NO_OPTION[option]} ${NOTHING_CHANGED}`, {
-      hint: `Run \`opscrew restore --drill${request.id === undefined ? "" : ` ${request.id}`}${flags}\` without --${option}.`,
-    });
-  }
+  const services: SnapshotServices & HostingSnapshotServices = run.services;
+  const name = drillName(plan.app.name);
   if (request.id !== undefined && !SNAPSHOT_ID.test(request.id)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -205,12 +184,12 @@ export async function drillOnHosting(
     confirmPhrase: name,
   });
   if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `The drill of the snapshot ${id} did not run${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
-      {
-        hint: `Run \`opscrew restore --drill ${id}${flags}\` again and type ${name} (in a script: --confirm ${name} --approve ${hash}).`,
-      },
+    throw typedApprovalRefused(
+      `The drill of the snapshot ${id} did not run`,
+      approval.reason,
+      drillCommandText(flags, { id }),
+      name,
+      hash,
     );
   }
 
@@ -243,7 +222,7 @@ export async function drillOnHosting(
       "PROVIDER_ERROR",
       "The agent on the hosting account ran the drill, but OpsCrew can't read its record.",
       {
-        hint: `\`opscrew logs${flags}\` shows the agent's lines; the drill's record is in ~/${folder}/state/drills.log.`,
+        hint: `\`opscrew logs${flags}\` shows the agent's lines; the drill's record is in ~/${folder}/${HOSTING_DRILLS_LOG}.`,
       },
     );
   }
@@ -269,7 +248,7 @@ export async function drillOnHosting(
   };
   if (drilled.removal === "failed") {
     deps.reporter.warn(
-      `The agent could not empty the drill database ${drillDatabase} again, so it still holds the snapshot's data: run \`opscrew restore --drill${flags}\` again, which empties it first.`,
+      `The agent could not empty the drill database ${drillDatabase} again, so it still holds the snapshot's data: run \`${drillCommandText(flags)}\` again, which empties it first.`,
     );
   }
   if (drilled.result === "healthy") {

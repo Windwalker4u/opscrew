@@ -16,29 +16,20 @@
  * - **SFTP hosts, Cloudflare's hosting, GitHub Pages:** refused with the reason, before any change.
  * Nothing it prints, audits or asks holds a password, a key, an address or a value.
  */
-import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
-import {
-  canonicalJson,
-  errorMessage,
-  listText,
-  OpsCrewError,
-  readTextIfExists,
-  sha256Hex,
-} from "@opscrew/core";
+import { canonicalJson, errorMessage, listText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
   appDir,
   DRILL_APPROVAL_FILE,
   DRILL_LIMIT_SECONDS,
-  DRILL_RECORD_PREFIX,
   DRILL_VALUES_FILE,
   type DrillAction,
   drillApprovalLine,
   drillDir,
+  drillName,
   drillPlan,
   drillProject,
-  drillRecord,
-  localBuildImage,
+  drillRecordsIn,
   localComposeProject,
   type RenderedFile,
   renderDrill,
@@ -47,49 +38,39 @@ import {
   shellQuote,
   snapshotParts,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, ghcrImageFor, isHostingTarget } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
-import { serviceEnvFiles } from "../provision/secrets";
 import { APPROVAL_SECONDS } from "../rollback/database";
 import { shortDigest } from "../rollback/versions";
-import { gitClient, githubCoordinates } from "../shared";
-import { assembleAppEnv, dotenvLine } from "../shared/app-env";
+import {
+  drillApprovalLines,
+  drillCommandText,
+  drillEnvFor,
+  drillImage,
+  ownLogins,
+  partWordsOf,
+  pickParts,
+  pickSnapshot,
+} from "./drill-core";
 import { drillOnHosting } from "./drill-hosting";
 import { drillInPortainer } from "./drill-portainer";
 import { type DrillTarget, drillReport, drillSteps } from "./drill-report";
 import { dataHosts, hostFailure, READ_TIMEOUT_MS, type ScriptHost, scriptCommand } from "./hosts";
-import { recordOf } from "./restore";
-import { partWords } from "./restore-checks";
+import { partWords, typedApprovalRefused } from "./restore-checks";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
-import { type About, KIND_WORDS, readListing, requireSnapshotId } from "./store";
+import { type About, KIND_WORDS, requireSnapshotId } from "./store";
 import type { DrillReport, DrillRequest, DrillSnapshotOptions } from "./types";
-
-/** The file the copy's own values come from: the previews', never prod's `.env` (research R16). */
-export const PREVIEW_VALUES_FILE = ".env.preview";
 
 /** How long the machine's drill may take: its own limit and the time to remove the copy. */
 const DRILL_TIMEOUT_MS = (DRILL_LIMIT_SECONDS + 5 * 60) * 1000;
 
-/** The words the approval and the hints use for the drill's command. */
-function drillCommandText(run: SnapshotRun, id: string | undefined, request: DrillRequest): string {
-  return [
-    "opscrew restore --drill",
-    ...(id === undefined ? [] : [id]),
-    ...(request.only === undefined ? [] : [`--only ${request.only}`]),
-    ...(request.keep === true ? ["--keep"] : []),
-    ...(request.allowOtherVersion === true ? ["--allow-other-version"] : []),
-  ]
-    .join(" ")
-    .concat(run.flags);
-}
-
 /** What one machine says before the approval, read-only. */
 interface Probe {
+  /** Its stdout: the snapshots' listing, then the lines below. */
   stdout: string;
-  abouts: About[];
   /**
    * With `--allow-other-version`, the version the app's running container has: `sha256:<hex>`
    * of its image's digest, or of a local build's image ID on this computer; empty when no
@@ -128,7 +109,7 @@ function runningVersion(plan: DeployPlan, stdout: string): string {
  */
 async function probe(run: SnapshotRun, host: ScriptHost, version = false): Promise<Probe> {
   const { plan } = run;
-  const name = `${plan.app.name}-drill`;
+  const name = drillName(plan.app.name);
   const project = plan.target.provider === "localhost" ? localComposeProject(plan) : plan.app.name;
   const command = [
     `${scriptCommand(["list"])} || exit $?`,
@@ -157,133 +138,21 @@ async function probe(run: SnapshotRun, host: ScriptHost, version = false): Promi
   const kept = /^kept ([0-9A-Za-z]+)$/m.exec(result.stdout)?.[1];
   return {
     stdout: result.stdout,
-    abouts: readListing(result.stdout).abouts,
     running: runningVersion(plan, result.stdout),
     ...(kept === undefined ? {} : { kept }),
     left: /^drill-left$/m.test(result.stdout),
   };
 }
 
-/** The snapshot `id`, or the newest complete one, with its `about.json` bytes. */
-function chooseSnapshot(
-  run: SnapshotRun,
-  host: ScriptHost,
-  read: Probe,
-  id: string | undefined,
-): { about: About; text: string } {
-  const newest = [...read.abouts].sort((a, b) => b.taken.localeCompare(a.taken))[0];
-  const chosen = id === undefined ? newest : read.abouts.find((about) => about.id === id);
-  const record = chosen === undefined ? undefined : recordOf(read.stdout, chosen.id).record;
-  if (record !== undefined) return record;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    id === undefined
-      ? `There is no snapshot ${host.where} yet, so there is nothing to drill. ${NOTHING_CHANGED}`
-      : `There is no snapshot ${id} ${host.where}. ${NOTHING_CHANGED}`,
-    {
-      hint:
-        id === undefined
-          ? `Take one with \`opscrew snapshot${run.flags}\`, then run the drill.`
-          : `\`opscrew snapshot list${run.flags}\` shows the snapshots.`,
-    },
-  );
+/** What of the rendered copy's `compose.yaml` its approval reads. */
+interface CopyCompose {
+  services?: Record<string, { healthcheck?: unknown; volumes?: string[] }>;
+  volumes?: Record<string, unknown>;
 }
 
-/**
- * The parts the copy restores: those the snapshot holds a copy of that the plan still has where
- * the drill runs, only `only` with `--only`.
- */
-function chooseParts(
-  run: SnapshotRun,
-  about: About,
-  planParts: readonly SnapshotPart[],
-  only: string | undefined,
-): SnapshotPart[] {
-  if (only !== undefined && !planParts.some((part) => part.name === only)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `${only} is no service with data in ${run.environment}. ${NOTHING_CHANGED}`,
-      {
-        hint: `Name one of ${listText(planParts.map((part) => part.name))} with --only, or leave it out.`,
-      },
-    );
-  }
-  const copied = new Set(
-    about.services.filter((entry) => "file" in entry).map((entry) => entry.name),
-  );
-  const parts = planParts.filter(
-    (part) => copied.has(part.name) && (only === undefined || part.name === only),
-  );
-  if (parts.length > 0) return parts;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The snapshot ${about.id} holds no copy of ${only ?? `any part ${run.environment} has now`}, so there is nothing to drill. ${NOTHING_CHANGED}`,
-    { hint: `\`opscrew snapshot list${run.flags}\` shows what each snapshot holds.` },
-  );
-}
-
-/**
- * The image the copy runs: the snapshot's version, or with `--allow-other-version` the one that
- * runs now; a local build's tag on this computer, else the app's image on GHCR by its digest.
- */
-async function drillImage(
-  run: SnapshotRun,
-  about: About,
-  running: string,
-  request: DrillRequest,
-): Promise<string> {
-  const { deps, plan } = run;
-  const allow = request.allowOtherVersion === true;
-  const version = allow ? running : about.version;
-  if (version === "") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      allow
-        ? `No container of the app runs with an image OpsCrew can pin, so there is no version of today's to run the copy of the snapshot ${about.id} with. ${NOTHING_CHANGED}`
-        : `The snapshot ${about.id} records no version (it was taken before a first deploy, or with an older OpsCrew), so OpsCrew can't tell which version of the app to start on it. ${NOTHING_CHANGED}`,
-      allow
-        ? {
-            hint: `Start the app or deploy it, then try again; or drill the snapshot with its own version: \`${drillCommandText(run, about.id, { ...request, allowOtherVersion: false })}\`.`,
-          }
-        : {
-            hint: `Run \`${drillCommandText(run, about.id, { ...request, allowOtherVersion: true })}\` to start today's version on it.`,
-          },
-    );
-  }
-  const hex = version.slice("sha256:".length);
-  if (plan.target.provider === "localhost" && plan.target.image === "local-build") {
-    return localBuildImage(plan, hex);
-  }
-  const { owner, repo } = await githubCoordinates(gitClient(deps));
-  return `${ghcrImageFor(`${owner}/${repo}`, plan.app.key)}@sha256:${hex}`;
-}
-
-/** The copy's env files and `.env.preview`'s values, which the redactor knows from here on. */
-async function drillEnv(deps: PhaseDeps, drill: DeployPlan) {
-  const dotenvText = await readTextIfExists(join(deps.paths.root, PREVIEW_VALUES_FILE));
-  const env = await assembleAppEnv({
-    plan: drill,
-    ...(dotenvText === undefined ? {} : { dotenvText }),
-    previewTemplates: true,
-  });
-  const own = env.preview?.values ?? {};
-  for (const value of Object.values(own)) deps.redactor.addLiteral(value, "preview-value");
-  const names = Object.keys(own).sort();
-  return {
-    templates: { app: env.appEnv, services: serviceEnvFiles(drill, env) },
-    values: names.map((name) => `${dotenvLine(name, own[name] as string)}\n`).join(""),
-    names,
-  };
-}
-
-/** The volumes and folders the rendered copy's Compose file makes (`compose.yaml` of `files`). */
-function madeByCopy(plan: DeployPlan, files: readonly RenderedFile[]): string[] {
-  const project = `${plan.app.name}-drill`;
-  const file = files.find((each) => each.path.endsWith("/compose.yaml"));
-  const document = parse(file?.content ?? "") as {
-    services?: Record<string, { volumes?: string[] }>;
-    volumes?: Record<string, unknown>;
-  };
+/** The volumes and folders the rendered copy's Compose file `document` makes. */
+function madeByCopy(plan: DeployPlan, document: CopyCompose): string[] {
+  const project = drillName(plan.app.name);
   const folders = Object.values(document.services ?? {}).flatMap((service) =>
     (service.volumes ?? [])
       .map((mount) => mount.split(":")[0] ?? "")
@@ -297,7 +166,6 @@ function madeByCopy(plan: DeployPlan, files: readonly RenderedFile[]): string[] 
 
 /** The drill's facts that its approval's words and hash cover. */
 interface DrillPlanned {
-  id: string;
   about: About;
   /** `about.json`'s bytes, as read. */
   text: string;
@@ -320,7 +188,7 @@ export function drillHash(run: SnapshotRun, input: DrillPlanned): string {
     canonicalJson({
       environment: run.environment,
       kind: "drill",
-      id: input.id,
+      id: input.about.id,
       about: input.text,
       action: input.request.keep === true ? "keep" : "drill",
       only: input.request.only ?? "",
@@ -330,13 +198,6 @@ export function drillHash(run: SnapshotRun, input: DrillPlanned): string {
       files: input.files.map((file) => ({ path: file.path, content: file.content })),
     }),
   );
-}
-
-/** Restored services of the stop-only kinds, whose copied files keep production's logins. */
-function ownLogins(parts: readonly SnapshotPart[]): string[] {
-  return parts
-    .filter((part) => !part.online && part.kind !== "sqlite" && part.kind !== "files")
-    .map((part) => part.name);
 }
 
 /**
@@ -351,46 +212,33 @@ async function approveDrill(
   host: ScriptHost,
   planned: DrillPlanned,
 ): Promise<void> {
-  const { deps, plan, environment } = run;
-  const { id, about, parts, request } = planned;
-  const name = `${plan.app.name}-drill`;
+  const { deps, plan, environment, flags } = run;
+  const { about, parts, request } = planned;
+  const { id } = about;
+  const name = drillName(plan.app.name);
   const hash = drillHash(run, planned);
   const local = host.local;
   const compose = parse(
     planned.files.find((file) => file.path.endsWith("/compose.yaml"))?.content ?? "",
-  ) as { services?: Record<string, { healthcheck?: unknown }> };
-  const checked = compose.services?.app?.healthcheck !== undefined;
-  const databases = parts.filter((part) =>
-    ["postgres", "mysql", "mariadb", "mongodb"].includes(part.kind),
-  );
-  const limits = [
-    { name: "the app", mb: plan.app.memoryMb },
-    ...plan.services
-      .filter((service) => parts.some((part) => part.name === service.name))
-      .map((service) => ({ name: service.name, mb: service.memoryMb })),
-  ];
-  const total = limits.reduce((sum, limit) => sum + limit.mb, 0);
+  ) as CopyCompose;
+  const common = drillApprovalLines({
+    plan,
+    parts,
+    checked: compose.services?.app?.healthcheck !== undefined,
+    valueNames: planned.valueNames,
+  });
   const prefix = `${drillDir(id)}/`;
-  const logins = ownLogins(parts);
   const kept = request.keep === true;
   const lines = [
     `The drill restores the snapshot ${id} (${KIND_WORDS[about.kind]}, ${formatUtc(about.taken)}) ${host.where} into a throwaway copy, starts the app on it and checks it${kept ? ", then keeps the copy for you to look at" : ", then removes the copy"}.`,
     `  Snapshot: ${id}${about.version === "" ? "" : `, version ${shortDigest(about.version)}`}: ${listText(parts.map(partWords))}, read in place and read-only.`,
     `  Project: ${name}, in ${local ? `${prefix} of the app's folder on this computer` : `${appDir(plan)}/${prefix}`} (${listText([...planned.files.map((file) => file.path.slice(prefix.length)), ...(planned.valueNames.length === 0 ? [] : [DRILL_VALUES_FILE])])}).`,
-    `  It creates and removes: ${listText(["the project's containers and network", ...madeByCopy(plan, planned.files)])}${kept ? "; with --keep they stay until `opscrew restore --drill --remove`" : ""}.`,
-    `  Memory: ${listText(limits.map((limit) => `${limit.name} ${limit.mb} MB`))} (${total} MB in all); with less free memory the drill is skipped.`,
+    `  It creates and removes: ${listText(["the project's containers and network", ...madeByCopy(plan, compose)])}${kept ? "; with --keep they stay until `opscrew restore --drill --remove`" : ""}.`,
+    `${common.memory}; with less free memory the drill is skipped.`,
     "  Network: one network with no internet (internal), no published port, no hostname, record or site; the machine checks it before any data goes in, and removes the copy at once if it isn't so.",
     `  Image: ${planned.image}, ${request.allowOtherVersion === true ? "the version that runs now (--allow-other-version)" : "the snapshot's version"}${planned.imageHere ? "" : `; it is not ${host.where}, so the drill pulls it first with the machine's own login`}.`,
-    `  Health check: ${checked ? `the app's own health check (${plan.app.healthPath}) until healthy, at most 5 minutes` : "the app has none, so it must still run after 60 seconds"}${databases.length === 0 ? "" : `; then ${listText(databases.map((part) => part.name))} must answer and hold at least one table`}.`,
-    "The copy runs with no internet and without your production `.env`. The app may need some values to start; add them to `.env.preview` with test values.",
-    planned.valueNames.length === 0
-      ? "There are no values in .env.preview: the app gets only its plain settings and the copy's own new passwords."
-      : `Values from .env.preview (names only): ${listText(planned.valueNames)}.`,
-    ...(logins.length === 0
-      ? []
-      : [
-          `${listText(logins)} ${logins.length === 1 ? "is" : "are"} restored from a copy of ${logins.length === 1 ? "its" : "their"} files, which keeps production's logins, so the copy can't sign in to ${logins.length === 1 ? "it" : "them"}.`,
-        ]),
+    common.health,
+    ...common.values,
     `Its bounds, which ${SNAPSHOT_SCRIPT} keeps itself: only the names ${name} and .drill/, never production's containers, volumes or .env; skipped while a deploy, a snapshot or a restore runs, or with too little disk or memory; at most ${DRILL_LIMIT_SECONDS / 60} minutes, then the copy is removed.`,
     `Typing ${name} approves it. OpsCrew then leaves a one-time approval in the app's folder ${host.where}, valid for ${APPROVAL_SECONDS / 60} minutes, which the drill uses once.`,
     `Drill hash: ${hash}`,
@@ -404,12 +252,12 @@ async function approveDrill(
     confirmPhrase: name,
   });
   if (approval.approved) return;
-  throw new OpsCrewError(
-    "APPROVAL_REFUSED",
-    `The drill of the snapshot ${id} did not run${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
-    {
-      hint: `Run \`${drillCommandText(run, id, request)}\` again and type ${name} (in a script: --confirm ${name} --approve ${hash}).`,
-    },
+  throw typedApprovalRefused(
+    `The drill of the snapshot ${id} did not run`,
+    approval.reason,
+    drillCommandText(flags, { ...request, id }),
+    name,
+    hash,
   );
 }
 
@@ -425,37 +273,50 @@ function unanswered(error: unknown): CommandResult {
 }
 
 /**
- * `snapshot.sh drill <args>` on `host` after its one-time approval for `action`, `input` on its
- * stdin, audited as `audit` (`<id>: <parts>: <outcome>`); the approval file goes when the drill did
- * not end well, should it not have been read.
+ * `snapshot.sh drill` on `host` for `action` after its one-time approval: the drill of the
+ * snapshot `id` (`--only`, `--keep` with `keep`), `input` on its stdin, or `--remove`; audited as
+ * `audit` (`<id>: <parts>: <outcome>`). The approval file goes when the drill did not end well,
+ * should it not have been read.
  */
 async function runDrill(
   run: SnapshotRun,
   host: ScriptHost,
-  o: {
-    id?: string;
-    action: DrillAction;
-    only?: string;
-    args: string[];
-    input?: string;
-    audit: (result: CommandResult) => string;
-  },
+  o: (
+    | { action: Exclude<DrillAction, "remove">; id: string; only?: string; input: string }
+    | { action: "remove" }
+  ) & { audit: (result: CommandResult) => string },
 ): Promise<CommandResult> {
   const { deps } = run;
   const expiresAt = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
-  const line = drillApprovalLine({
-    ...(o.id === undefined ? {} : { id: o.id }),
-    action: o.action,
-    expiresAt,
-    ...(o.only === undefined ? {} : { only: o.only }),
-  });
+  const line = drillApprovalLine(
+    o.action === "remove"
+      ? { action: o.action, expiresAt }
+      : {
+          id: o.id,
+          action: o.action,
+          expiresAt,
+          ...(o.only === undefined ? {} : { only: o.only }),
+        },
+  );
+  const args =
+    o.action === "remove"
+      ? ["--remove"]
+      : [
+          o.id,
+          ...(o.only === undefined ? [] : ["--only", o.only]),
+          ...(o.action === "keep" ? ["--keep"] : []),
+        ];
   let result: CommandResult | undefined;
   try {
     const written = await host.run(approvalCommand(line), READ_TIMEOUT_MS);
     result =
       written.exitCode === 0
         ? await host
-            .run(scriptCommand(["drill", ...o.args]), DRILL_TIMEOUT_MS, o.input)
+            .run(
+              scriptCommand(["drill", ...args]),
+              DRILL_TIMEOUT_MS,
+              o.action === "remove" ? undefined : o.input,
+            )
             .catch(unanswered)
         : written;
   } finally {
@@ -510,7 +371,7 @@ async function drillOn(
   target: DrillTarget,
 ): Promise<DrillReport> {
   const { deps, plan, flags } = run;
-  const name = `${plan.app.name}-drill`;
+  const name = drillName(plan.app.name);
   // 1. What the machine holds and runs, read-only.
   const read = await probe(run, host, request.allowOtherVersion === true);
   if (read.kept !== undefined) {
@@ -518,33 +379,35 @@ async function drillOn(
       "PHASE_PRECONDITION",
       `A kept copy of the snapshot ${read.kept} is still ${host.where}, from a drill with --keep, so OpsCrew starts no other drill. ${NOTHING_CHANGED}`,
       {
-        hint: `Remove it with \`opscrew restore --drill --remove${flags}\`, then run the drill again.`,
+        hint: `Remove it with \`${drillCommandText(flags, { remove: true })}\`, then run the drill again.`,
       },
     );
   }
-  const { about, text } = chooseSnapshot(run, host, read, request.id);
-  const parts = chooseParts(run, about, snapshotParts(plan), request.only);
-  const image = await drillImage(run, about, read.running, request);
+  const { about, text } = pickSnapshot(run, read.stdout, request.id, host.where);
+  const parts = pickParts(run, snapshotParts(plan), about, request.only);
+  const image = await drillImage(run, about, request, read.running, {
+    why: "No container of the app runs with an image OpsCrew can pin",
+    fix: "Start the app or deploy it",
+  });
   const here = await imageHere(run, host, image);
   if (!here && image.startsWith("opscrew-local/")) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `That snapshot's version of the app is gone from this computer: its local build (image ${shortDigest(about.version)}) was removed, so OpsCrew can't start a copy of it. ${NOTHING_CHANGED}`,
       {
-        hint: `Run \`${drillCommandText(run, about.id, { ...request, allowOtherVersion: true })}\` to start today's build on it.`,
+        hint: `Run \`${drillCommandText(flags, { ...request, id: about.id, allowOtherVersion: true })}\` to start today's build on it.`,
       },
     );
   }
   // 2. The copy, rendered here; its plan approved by its hash.
   const snapshot = { id: about.id, parts: parts.map((part) => part.name) };
-  const env = await drillEnv(deps, drillPlan(plan, snapshot));
+  const env = await drillEnvFor(deps, drillPlan(plan, snapshot));
   const files = renderDrill(plan, snapshot, {
     image,
     env: env.templates,
     previewValues: env.values !== "",
   });
   const planned: DrillPlanned = {
-    id: about.id,
     about,
     text,
     parts,
@@ -562,18 +425,13 @@ async function drillOn(
     id: about.id,
     action: request.keep === true ? "keep" : "drill",
     ...(request.only === undefined ? {} : { only: request.only }),
-    args: [
-      about.id,
-      ...(request.only === undefined ? [] : ["--only", request.only]),
-      ...(request.keep === true ? ["--keep"] : []),
-    ],
     input: drillInput(about.id, image, files, env.values),
     audit: (done) => {
-      const record = recordIn(done);
+      const [record] = drillRecordsIn(done.stdout);
       return `${about.id}: ${names.join(", ")}: ${record?.result ?? `exit code ${done.exitCode}`}`;
     },
   });
-  const record = recordIn(result);
+  const [record] = drillRecordsIn(result.stdout);
   if (record === undefined) {
     throw hostFailure(run, host, result, `run the drill of the snapshot ${about.id}`);
   }
@@ -588,14 +446,15 @@ async function drillOn(
     target,
     app: plan.app.name,
   });
+  const remove = drillCommandText(flags, { remove: true });
   if (record.removal === "kept") {
     deps.reporter.info(
-      `The copy stays ${host.where} as the Compose project ${name}, in ${drillProject(plan, about.id).file.replace(/\/compose\.yaml$/, "/")} of the app's folder: \`opscrew restore --drill --remove${flags}\` removes it.`,
+      `The copy stays ${host.where} as the Compose project ${name}, in ${drillProject(plan, about.id).file.replace(/\/compose\.yaml$/, "/")} of the app's folder: \`${remove}\` removes it.`,
     );
   }
   if (record.removal === "failed") {
     deps.reporter.warn(
-      `OpsCrew could not remove every part of the copy ${host.where}: run \`opscrew restore --drill --remove${flags}\`.`,
+      `OpsCrew could not remove every part of the copy ${host.where}: run \`${remove}\`.`,
     );
   }
   if (record.result === "healthy") {
@@ -607,27 +466,10 @@ async function drillOn(
   return report;
 }
 
-/** Each part's words by its name. */
-function partWordsOf(parts: readonly SnapshotPart[]): (name: string) => string {
-  return (name) => {
-    const part = parts.find((each) => each.name === name);
-    return part === undefined ? name : partWords(part);
-  };
-}
-
-/** The drill's record on the machine's stdout, if it printed one. */
-function recordIn(result: CommandResult) {
-  const line = result.stdout
-    .split(/\r?\n/)
-    .find((each) => each.startsWith(DRILL_RECORD_PREFIX))
-    ?.slice(DRILL_RECORD_PREFIX.length);
-  return line === undefined ? undefined : drillRecord(line);
-}
-
 /** `opscrew restore --drill --remove` on a server or this computer: a kept copy goes. */
 async function removeOn(run: SnapshotRun, host: ScriptHost): Promise<DrillReport> {
   const { deps, plan, environment, flags } = run;
-  const name = `${plan.app.name}-drill`;
+  const name = drillName(plan.app.name);
   const read = await probe(run, host);
   const base = {
     where: host.where,
@@ -664,18 +506,17 @@ async function removeOn(run: SnapshotRun, host: ScriptHost): Promise<DrillReport
     confirmPhrase: name,
   });
   if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `The drill's copy was not removed${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
-      {
-        hint: `Run \`opscrew restore --drill --remove${flags}\` again and type ${name} (in a script: --confirm ${name} --approve ${hash}).`,
-      },
+    throw typedApprovalRefused(
+      "The drill's copy was not removed",
+      approval.reason,
+      drillCommandText(flags, { remove: true }),
+      name,
+      hash,
     );
   }
   deps.reporter.step(`Removing the drill's copy ${host.where}`);
   const result = await runDrill(run, host, {
     action: "remove",
-    args: ["--remove"],
     audit: (done) =>
       `${read.kept ?? "-"}: ${/^drill-removal (\w+)$/m.exec(done.stdout)?.[1] ?? `exit code ${done.exitCode}`}`,
   });
@@ -691,6 +532,70 @@ async function removeOn(run: SnapshotRun, host: ScriptHost): Promise<DrillReport
     };
   }
   throw hostFailure(run, host, result, "remove the drill's copy");
+}
+
+/** A drill's option, by its flag's name. */
+type DrillOption = "keep" | "remove" | "only" | "allow-other-version";
+
+/** Whether `request` gives each option. */
+const GIVEN: Record<DrillOption, (request: DrillRequest) => boolean> = {
+  keep: (request) => request.keep === true,
+  remove: (request) => request.remove === true,
+  only: (request) => request.only !== undefined,
+  "allow-other-version": (request) => request.allowOtherVersion === true,
+};
+
+/** Why a drill on a hosting account has no copy to keep or remove. */
+const NO_COPY = (what: "keep" | "remove") =>
+  `A drill on a hosting account leaves no copy to ${what}: it empties the drill database again at its end.`;
+
+/**
+ * The options a target's drill doesn't take, in the order they are checked, each with why, and
+ * the refusal's code and hint; a server's and this computer's take every one.
+ */
+const NOT_TAKEN: Record<
+  "portainer" | "hosting",
+  {
+    code: "PHASE_PRECONDITION" | "INVALID_INPUT";
+    why: Partial<Record<DrillOption, string>>;
+    hint: (flags: string, request: DrillRequest, option: DrillOption) => string;
+  }
+> = {
+  portainer: {
+    code: "PHASE_PRECONDITION",
+    why: {
+      keep: "A drill in your Portainer always removes its copy when it ends, so --keep doesn't apply there.",
+      remove:
+        "A drill in your Portainer always removes its copy when it ends, so --remove doesn't apply there.",
+    },
+    hint: (flags) =>
+      `Run \`${drillCommandText(flags)}\` without it; a drill that stopped halfway is removed by the next one.`,
+  },
+  hosting: {
+    code: "INVALID_INPUT",
+    why: {
+      keep: NO_COPY("keep"),
+      remove: NO_COPY("remove"),
+      only: "--only drills one service of a server's snapshot; on a hosting account a drill checks the dump and the shared files together.",
+      "allow-other-version":
+        "--allow-other-version starts today's version of the app on a server's copy; on a hosting account a drill starts no app.",
+    },
+    hint: (flags, request, option) =>
+      `Run \`${drillCommandText(flags, { ...(request.id === undefined ? {} : { id: request.id }) })}\` without --${option}.`,
+  },
+};
+
+/**
+ * Refuses, before any change, an option of `request` the drill on `target` doesn't take.
+ * @throws OpsCrewError with the target's code ({@link NOT_TAKEN}).
+ */
+function refuseOptions(run: SnapshotRun, target: keyof typeof NOT_TAKEN, request: DrillRequest) {
+  const { code, why, hint } = NOT_TAKEN[target];
+  const option = (Object.keys(why) as DrillOption[]).find((each) => GIVEN[each](request));
+  if (option === undefined) return;
+  throw new OpsCrewError(code, `${why[option]} ${NOTHING_CHANGED}`, {
+    hint: hint(run.flags, request, option),
+  });
 }
 
 /**
@@ -722,12 +627,16 @@ export async function drillSnapshot(
         },
       );
     }
+    refuseOptions(run, "hosting", request);
     // A hosting account's ids (snapshot-<time>, a release's) are checked by its own drill.
-    return drillOnHosting(run, services, request);
+    return drillOnHosting(run, request);
   }
   if (id !== undefined) requireSnapshotId(id);
   const target = snapshotTarget(run);
-  if (target === "portainer") return drillInPortainer(run, services, request);
+  if (target === "portainer") {
+    refuseOptions(run, "portainer", request);
+    return drillInPortainer(run, request);
+  }
   await requireNoDeployOrMove(run, "run a restore drill");
   if (snapshotParts(plan, APP_SERVER).length === 0) {
     throw new OpsCrewError(

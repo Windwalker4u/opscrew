@@ -19,8 +19,10 @@ import {
 import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural, tfstateFile, writeFileAtomic } from "@opscrew/core";
 import {
-  DRILL_SLOT_AFTER_HOURS,
+  DRILL_LIMIT_SECONDS,
+  drillName,
   drillScheduleHours,
+  drillSlotText,
   PORTAINER_STACK_VARIABLES,
   portainerSecretVariables,
   portainerStackEnvKeys,
@@ -314,13 +316,11 @@ export function drillLoopChanges(plan: DeployPlan, committed: string): string[] 
 
 /** What the stack plan's approval says of the scheduled dump drills `services` (by service). */
 function drillLoopsText(plan: DeployPlan, services: readonly string[]): string {
-  const every = plan.snapshots?.drills?.schedule ?? "weekly";
-  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
-  const when = every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
+  const when = drillSlotText(plan.snapshots?.drills?.schedule ?? "weekly");
   return [
     `With this provision the app's stack runs scheduled restore drills (snapshots.drills.schedule): ${listText(services.map((service) => `drill-${service}`))}, ${when}. They reach your Portainer with the deploy branch once this provision's pull request is merged.`,
-    `Each one restores the latest scheduled snapshot's dump of its database into a scratch server of its own, with no network, counts its tables, then clears its scratch volume (${listText(services.map((service) => `${service}${DRILL_VOLUME}`))}); it reads the snapshots volume read-only, never touches the database's own container or volumes, holds no Portainer credential and stops after 30 minutes. Anything with access to the host's Docker can go past these bounds.`,
-    `Typing ${plan.app.name}-drill approves them.`,
+    `Each one restores the latest scheduled snapshot's dump of its database into a scratch server of its own, with no network, counts its tables, then clears its scratch volume (${listText(services.map((service) => `${service}${DRILL_VOLUME}`))}); it reads the snapshots volume read-only, never touches the database's own container or volumes, holds no Portainer credential and stops after ${DRILL_LIMIT_SECONDS / 60} minutes. Anything with access to the host's Docker can go past these bounds.`,
+    `Typing ${drillName(plan.app.name)} approves them.`,
   ].join(" ");
 }
 
@@ -601,7 +601,7 @@ export function preparePortainerStacks(
       // Scheduled dump drills the run adds or changes: the plan is approved like a removal then,
       // even when nothing else in Portainer changes (they reach it with the deploy branch).
       const loops = drillLoopChanges(plan, input.committed);
-      const typed = loops.length === 0 ? undefined : `${plan.app.name}-drill`;
+      const typed = loops.length === 0 ? undefined : drillName(plan.app.name);
       const confirm = typed === undefined ? "" : ` --confirm ${typed}`;
       if (planned.changes === 0 && typed === undefined) {
         if (!planOnly) return applyStep(planned);

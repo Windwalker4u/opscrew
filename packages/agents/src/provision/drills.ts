@@ -3,16 +3,18 @@
  * R28), the same on a server the user owns (`desiredHost`) and on one OpsCrew created (the deploy
  * login's plan, `cloudRunnerPlan`).
  */
-import { join } from "node:path";
 import type { DesiredHost } from "@opscrew/connector-ssh-host";
-import { readTextIfExists, sha256Hex } from "@opscrew/core";
-import { DRILL_RECIPE_DIR, drillPlan, drillRecipe, snapshotParts } from "@opscrew/iac-templates";
-import { type DeployPlan, ghcrImageFor, snapshotScheduleOf } from "@opscrew/plan-schema";
+import { sha256Hex } from "@opscrew/core";
+import {
+  DRILL_RECIPE_DIR,
+  drillPlan,
+  drillRecipe,
+  scheduledDrillParts,
+} from "@opscrew/iac-templates";
+import { type DeployPlan, ghcrImageFor } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { gitClient, githubCoordinates } from "../shared";
-import { assembleAppEnv, dotenvLine } from "../shared/app-env";
-import { PREVIEW_VALUES_FILE } from "../snapshot/drill";
-import { serviceEnvFiles } from "./secrets";
+import { drillEnvFor } from "../snapshot/drill-core";
 
 /**
  * The scheduled restore drills' part of the desired host: the copy's files as `drillRecipe`
@@ -42,29 +44,10 @@ export async function desiredDrills(
 }
 
 /**
- * The scheduled drill's env files, built for its copy of the parts a scheduled snapshot holds (as
- * `drillRecipe` picks them), and `.env.preview`'s values as the text of its `values.env`, each value
+ * The scheduled drill's env files, built for its copy of the parts a scheduled snapshot holds
+ * (`scheduledDrillParts`), and `.env.preview`'s values as the text of its `values.env`, each value
  * known to the redactor from here on; never a value of the app's `.env`.
  */
 export async function drillEnv(deps: Pick<PhaseDeps, "paths" | "redactor">, plan: DeployPlan) {
-  const stop = snapshotScheduleOf(plan)?.stop ?? [];
-  const parts = snapshotParts(plan)
-    .filter((part) => part.online || stop.includes(part.name))
-    .map((part) => part.name);
-  const drill = drillPlan(plan, { id: "scheduled", parts });
-  const dotenvText = await readTextIfExists(join(deps.paths.root, PREVIEW_VALUES_FILE));
-  const env = await assembleAppEnv({
-    plan: drill,
-    ...(dotenvText === undefined ? {} : { dotenvText }),
-    previewTemplates: true,
-  });
-  const own = env.preview?.values ?? {};
-  for (const value of Object.values(own)) deps.redactor.addLiteral(value, "preview-value");
-  return {
-    templates: { app: env.appEnv, services: serviceEnvFiles(drill, env) },
-    values: Object.keys(own)
-      .sort()
-      .map((name) => `${dotenvLine(name, own[name] as string)}\n`)
-      .join(""),
-  };
+  return drillEnvFor(deps, drillPlan(plan, { id: "scheduled", parts: scheduledDrillParts(plan) }));
 }

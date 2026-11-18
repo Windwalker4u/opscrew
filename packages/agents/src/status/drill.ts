@@ -13,10 +13,14 @@ import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector
 import type { HostingFiles } from "@opscrew/contracts";
 import { errorText, isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
 import {
+  DRILL_LIMIT_SECONDS,
   DRILL_RECORD_PREFIX,
   DRILLS_LOG,
   type DrillRecord,
   drillRecord,
+  drillRecordsIn,
+  drillScheduleHours,
+  HOSTING_DRILLS_LOG,
   snapshotParts,
 } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, onOneServer } from "@opscrew/plan-schema";
@@ -25,8 +29,13 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { hostingFolder } from "../hosting/provision-plans";
 import { appFolder } from "../localhost/services";
+import { drillCommandText } from "../snapshot/drill-core";
 import { readPortainerDrills } from "../snapshot/drill-portainer";
-import type { DrillTarget } from "../snapshot/drill-report";
+import {
+  DRILL_TARGET_WORDS,
+  type DrillTarget,
+  HOSTING_NOT_RESTORED,
+} from "../snapshot/drill-report";
 import { portainerPlace } from "../snapshot/portainer";
 import type { SnapshotServices } from "../snapshot/types";
 
@@ -43,29 +52,21 @@ const REASONS: Record<string, string> = {
   network: "the copy's network was not cut off",
   files: "the copy's files could not be written",
   start: "the copy could not be started",
-  timeout: "it ran past its 30-minute limit",
+  timeout: `it ran past its ${DRILL_LIMIT_SECONDS / 60}-minute limit`,
   leftovers: "an earlier drill's copy could not be removed",
   stopped: "it was stopped",
   login: "no drill database login yet",
   quota: "the account's quota leaves less room than the dump",
 };
 
-/** What did not restore on a hosting account, by the agent's fixed word. */
-const NOT_LOADED: Record<string, string> = {
-  dump: "its dump is empty or not a valid gzip file",
-  database: "its dump did not load into the drill database",
-  files: "its copy of the shared files is not a valid archive",
-};
-
 /** The line that says no drill ran yet, with drills on. */
 const NONE_YET = (flags: string) =>
-  `Restore drills: none yet; \`opscrew restore --drill${flags}\` runs one.`;
+  `Restore drills: none yet; \`${drillCommandText(flags)}\` runs one.`;
 
-/** A drill schedule's period, and the hour a drill may take past its slot (the check's). */
-const PERIOD_MS = { weekly: 7 * 86_400_000, daily: 86_400_000 } as const;
+/** The hour a drill may take past its slot (the check's). */
 const GRACE_MS = 3_600_000;
 
-type DrillEvery = keyof typeof PERIOD_MS;
+type DrillEvery = "weekly" | "daily";
 
 /** Minutes and seconds between two ISO times: `4 min 10 s`, `52 s`. */
 function took(start: string | undefined, end: string): string | undefined {
@@ -96,7 +97,8 @@ function hostingOutcome(record: DrillRecord): string {
       ? count === undefined
         ? "the drill database did not answer once the dump loaded"
         : `the drill database held ${plural(count, "table")} once the dump loaded, not the dump's count`
-      : (NOT_LOADED[record.reason ?? ""] ?? `${record.reason ?? "a part of it"} did not restore`);
+      : (HOSTING_NOT_RESTORED[record.reason ?? ""] ??
+        `${record.reason ?? "a part of it"} did not restore`);
   return `the snapshot did not restore: ${what}`;
 }
 
@@ -122,17 +124,9 @@ function outcome(record: DrillRecord, target: DrillTarget): string {
 /** What became of the drill's copy, when it isn't simply gone. */
 function copyWords(record: DrillRecord, target: DrillTarget, flags: string): string {
   if (record.removal === "kept") {
-    return `; its copy is kept: \`opscrew restore --drill --remove${flags}\` removes it`;
+    return `; its copy is kept: \`${drillCommandText(flags, { remove: true })}\` removes it`;
   }
-  if (record.removal !== "failed") return "";
-  switch (target) {
-    case "hosting":
-      return "; the drill database could not be emptied: the next drill empties it first";
-    case "portainer":
-      return `; its copy could not be removed: the next \`opscrew restore --drill${flags}\` removes it first`;
-    default:
-      return `; its copy could not be removed: run \`opscrew restore --drill --remove${flags}\``;
-  }
+  return record.removal === "failed" ? `; ${DRILL_TARGET_WORDS[target].notRemoved(flags)}` : "";
 }
 
 /**
@@ -176,18 +170,6 @@ function dumpDrillLine(service: string, record: DrillRecord): string {
   ].join(", ");
 }
 
-/** Where `target` keeps its scheduled drills' lines, for the warning. */
-function whereLogged(target: DrillTarget, flags: string): string {
-  switch (target) {
-    case "portainer":
-      return "each scheduled one's line is in the log of its drill-<service> container in your Portainer";
-    case "hosting":
-      return `\`opscrew logs${flags}\` shows the agent's lines`;
-    default:
-      return `each drill's line is in ${DRILLS_LOG} in the app's folder`;
-  }
-}
-
 /**
  * With a drill schedule, the warning when `since` (the last drill's end, or the time a snapshot
  * waiting for one was taken) is more than twice the schedule and an hour ago, as the scheduled
@@ -201,10 +183,15 @@ function overdueWarning(
   o: { target: DrillTarget; flags: string },
 ): string[] {
   if (every === undefined) return [];
-  if (deps.clock.now().getTime() - Date.parse(since) <= 2 * PERIOD_MS[every] + GRACE_MS) return [];
+  if (
+    deps.clock.now().getTime() - Date.parse(since) <=
+    2 * drillScheduleHours(every) * 3_600_000 + GRACE_MS
+  ) {
+    return [];
+  }
   const span = every === "weekly" ? "two weeks" : "two days";
   return [
-    `Warning: no restore drill within ${span}, though they are scheduled ${every}: ${what} ${formatUtc(since)}. \`opscrew restore --drill${o.flags}\` runs one now; ${whereLogged(o.target, o.flags)}.`,
+    `Warning: no restore drill within ${span}, though they are scheduled ${every}: ${what} ${formatUtc(since)}. \`${drillCommandText(o.flags)}\` runs one now; ${DRILL_TARGET_WORDS[o.target].logged(o.flags)}.`,
   ];
 }
 
@@ -261,13 +248,7 @@ async function readDumpDrills(
   const drills: { service: string; record: DrillRecord; ran?: DrillRecord }[] = [];
   for (const { container, name } of loops) {
     const { stdout } = await place.docker.containerLogs(container.id);
-    const records = drillRecords(
-      stdout
-        .split(/\r?\n/)
-        .filter((each) => each.startsWith(DRILL_RECORD_PREFIX))
-        .map((each) => each.slice(DRILL_RECORD_PREFIX.length))
-        .join("\n"),
-    );
+    const records = drillRecordsIn(stdout);
     const record = records.at(-1);
     const ran = lastRan(records);
     if (record !== undefined) {
@@ -301,7 +282,7 @@ export async function drillStatusReport(
   plan: DeployPlan,
   serverLog?: string,
   services: SnapshotServices = {},
-): Promise<{ lines: string[]; drill?: DrillRecord }> {
+): Promise<{ lines: string[] }> {
   const { provider } = plan.target;
   const target: DrillTarget =
     provider === "localhost" ? "computer" : provider === "portainer" ? "portainer" : "server";
@@ -330,7 +311,6 @@ export async function drillStatusReport(
             ? []
             : overdueWarning(deps, every, since, "the last one ended", { target, flags })),
         ]),
-        ...(manual === undefined ? {} : { drill: manual }),
       };
     }
     const records = drillRecords(
@@ -345,7 +325,7 @@ export async function drillStatusReport(
       ran === undefined
         ? []
         : overdueWarning(deps, every, ran.end, "the last one ended", { target, flags });
-    return { lines: redact([drillStatusLine(drill, flags, target), ...warning]), drill };
+    return { lines: redact([drillStatusLine(drill, flags, target), ...warning]) };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     return { lines: redact([`Restore drills: ${errorText(error)}`]) };
@@ -374,7 +354,7 @@ export async function hostingDrillStatusLines(
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const every = plan.snapshots?.drills?.schedule;
   try {
-    const records = drillRecords((await files.readFile(`${folder}/state/drills.log`)) ?? "");
+    const records = drillRecords((await files.readFile(`${folder}/${HOSTING_DRILLS_LOG}`)) ?? "");
     const last = records.at(-1);
     const lines =
       last !== undefined

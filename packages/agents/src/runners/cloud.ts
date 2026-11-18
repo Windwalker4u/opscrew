@@ -15,7 +15,7 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, orText, upperFirst } from "@opscrew/core";
-import { IMAGES } from "@opscrew/iac-templates";
+import { DRILLS_LOG, drillName, IMAGES } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
@@ -226,7 +226,7 @@ export async function applyCloudRunner(
     // The scheduled drills delete their copy's data each run (and their removal a kept copy): the
     // plan is approved as a destroy, with the copy's name typed.
     ...(drillsStep !== undefined
-      ? { allowDestroy: true, confirmPhrase: `${plan.app.name}-drill` }
+      ? { allowDestroy: true, confirmPhrase: drillName(plan.app.name) }
       : {}),
     ...(input.planOnly === true ? { planOnly: true } : {}),
     // The drill's values, when its step installs them: on stdin only, checked by their SHA-256.
@@ -261,7 +261,7 @@ export async function applyCloudRunner(
     deps.reporter.success(
       removesDrills
         ? "The server's scheduled restore drills are removed."
-        : "The server's restore drills are scheduled; each drill writes its line to .snapshots/drills.log there, which opscrew status shows.",
+        : `The server's restore drills are scheduled; each drill writes its line to ${DRILLS_LOG} there, which opscrew status shows.`,
     );
   }
   return outcome;

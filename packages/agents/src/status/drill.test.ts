@@ -52,11 +52,10 @@ describe.skipIf(!SH_AVAILABLE)("status's restore drill", () => {
       DRILLS_LOG,
       `${line("skipped", "parts=- health=- tables=- removal=- cleaned=no reason=locked")}\n${HEALTHY}\n`,
     );
-    const { lines, drill } = await serverReport(world);
+    const { lines } = await serverReport(world);
     expect(lines).toEqual([
       `Last restore drill: ${ID}, 2026-11-18 14:06 UTC, took 4 min 10 s, healthy, db 42 tables.`,
     ]);
-    expect(drill).toMatchObject({ result: "healthy", id: ID });
     expect(everythingShown(world)).not.toContain(SERVER_IPV4);
   });
 

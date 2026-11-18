@@ -296,11 +296,32 @@ export async function approveRestore(run: SnapshotRun, input: RestoreApproval): 
     ...(options.allowOtherVersion === true ? ["--allow-other-version"] : []),
     ...(options.from === undefined ? [] : [`--from ${options.from}`]),
   ].join(" ");
-  throw new OpsCrewError(
+  throw typedApprovalRefused(
+    `The snapshot ${id} was not restored`,
+    approval.reason,
+    again,
+    name,
+    hash,
+  );
+}
+
+/**
+ * The refusal of an approval with a name typed (a restore's, a drill's): `what` did not happen,
+ * with the approval's `reason`, and how to give it again by running `command`: typing `name`, or in
+ * a script `--confirm <name> --approve <hash>`.
+ */
+export function typedApprovalRefused(
+  what: string,
+  reason: string | undefined,
+  command: string,
+  name: string,
+  hash: string,
+): OpsCrewError {
+  return new OpsCrewError(
     "APPROVAL_REFUSED",
-    `The snapshot ${id} was not restored${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
+    `${what}${reason === undefined ? "" : `: ${reason}`}. ${NOTHING_CHANGED}`,
     {
-      hint: `Run \`${again}\` again and type ${name} (in a script: --confirm ${name} --approve ${hash}).`,
+      hint: `Run \`${command}\` again and type ${name} (in a script: --confirm ${name} --approve ${hash}).`,
     },
   );
 }

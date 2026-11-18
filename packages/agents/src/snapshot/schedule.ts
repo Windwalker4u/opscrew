@@ -6,11 +6,12 @@
  * the snapshot schedule. Only the plan changes here.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
-import { DRILL_SLOT_AFTER_HOURS, snapshotParts } from "@opscrew/iac-templates";
+import { drillSlotText, snapshotParts } from "@opscrew/iac-templates";
 import { type DeployPlan, isHostingTarget, snapshotScheduleOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { planFile } from "../runners/words";
+import { drillCommandText } from "./drill-core";
 import { dataServers } from "./hosts";
 import { type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
 import {
@@ -97,12 +98,6 @@ function onPanelAccount(run: SnapshotRun): boolean {
     );
   }
   return true;
-}
-
-/** When a scheduled drill runs: `weekly, on Thursdays from 03:00 UTC`, `daily, from 03:00 UTC`. */
-function slotText(every: "weekly" | "daily"): string {
-  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
-  return every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
 }
 
 /**
@@ -211,7 +206,7 @@ function withDrillSchedule(
 
 /** The line that says restore drills by hand stay. */
 function byHandLine(run: SnapshotRun): string {
-  return `Restore drills by hand stay: \`opscrew restore --drill${run.flags}\` runs one.`;
+  return `Restore drills by hand stay: \`${drillCommandText(run.flags)}\` runs one.`;
 }
 
 /**
@@ -234,7 +229,7 @@ export async function snapshotDrillScheduleOn(
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `OpsCrew does not run scheduled restore drills on this computer: it isn't always on to run them. ${NOTHING_CHANGED}`,
-      { hint: `Run one when you need it with \`opscrew restore --drill${run.flags}\`.` },
+      { hint: `Run one when you need it with \`${drillCommandText(run.flags)}\`.` },
     );
   }
   requireSettingsPlace(run, "drills", "run scheduled restore drills");
@@ -280,7 +275,7 @@ async function drillScheduleOnAccount(
     run,
     after,
     [
-      `Scheduled restore drills of ${run.environment} (snapshots.drills.schedule in ${planFile(plan)}): ${current ?? "off"} → ${slotText(every)}.`,
+      `Scheduled restore drills of ${run.environment} (snapshots.drills.schedule in ${planFile(plan)}): ${current ?? "off"} → ${drillSlotText(every)}.`,
       `Each one: OpsCrew's agent on the account loads the newest snapshot (\`opscrew snapshot${run.flags}\` takes one) into the drill database, counts its tables and empties it again, once there is a newer snapshot than the last drill proved; the app isn't started. It runs between deploys, and too little room under the account's disk quota skips it.`,
       ...(database && plan.snapshots?.drills === undefined
         ? [

@@ -11,12 +11,11 @@ import {
   playAgent,
 } from "../hosting/__fixtures__/account";
 import { recordObject } from "../hosting/record";
+import type { HostingSnapshotServices } from "../hosting/snapshot";
 import { ScriptedApprovalHandler } from "../testing";
 import { drillSnapshot } from "./drill";
-import { drillOnHosting } from "./drill-hosting";
-import { drillProves } from "./drill-report";
-import { snapshotRun } from "./run";
-import type { DrillRequest } from "./types";
+import { DRILL_TARGET_WORDS } from "./drill-report";
+import type { DrillRequest, SnapshotServices } from "./types";
 
 const OLDER = "snapshot-20261117T120000Z";
 const ID = "snapshot-20261118T120000Z";
@@ -63,8 +62,9 @@ async function drill(
   const handler = new ScriptedApprovalHandler(() => approve);
   const deps = await app.deps(handler);
   const agent = playAgent(app, answer);
-  const run = await snapshotRun(deps);
-  const outcome = await drillOnHosting(run, { sleep: agent.sleep }, request).then(
+  const { id, ...options } = request;
+  const services: SnapshotServices & HostingSnapshotServices = { sleep: agent.sleep };
+  const outcome = await drillSnapshot(deps, id, { ...options, services }).then(
     (report) => ({ report, error: undefined }),
     (error: unknown) => ({
       report: undefined,
@@ -111,7 +111,7 @@ describe("opscrew restore --drill on a hosting account", () => {
       where: "on the hosting account (~/opscrew/notes-prod/dumps/)",
       outcome: "healthy",
       summary: `The snapshot ${ID}'s dump loaded with 2 tables; the app itself wasn't started. Its copy of the shared files is a valid archive.`,
-      proves: drillProves("hosting", "notes"),
+      proves: DRILL_TARGET_WORDS.hosting.proves("notes"),
       parts: [
         { name: "database", size: 2048, seconds: 3 },
         { name: "files", size: 4, seconds: 0 },

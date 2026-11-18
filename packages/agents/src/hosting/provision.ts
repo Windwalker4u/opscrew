@@ -10,7 +10,12 @@ import { type GitClient, type GitHubClient, githubConnector } from "@opscrew/con
 import type { ApprovalRecord, HostingCertificate, HostingPanel } from "@opscrew/contracts";
 import { exists, OpsCrewError, realSleep } from "@opscrew/core";
 import { detectPhpNeeds } from "@opscrew/detect";
-import { AGENT_SH, RELEASE_SIGNING_KEY_SECRET, renderEnvPhp } from "@opscrew/iac-templates";
+import {
+  AGENT_SH,
+  drillName,
+  RELEASE_SIGNING_KEY_SECRET,
+  renderEnvPhp,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { hostingDatabaseVariables } from "../design/hosting";
@@ -385,7 +390,7 @@ async function panelPlanStep(
 ): Promise<PlanOutcome> {
   const { plan } = input;
   const hash = hostingPlanHash(plan);
-  const confirm = hostingPlanDrills(plan) ? `${input.app}-drill` : undefined;
+  const confirm = hostingPlanDrills(plan) ? drillName(input.app) : undefined;
   const done = await hostingPlanStep(deps, {
     ...input,
     hash,

@@ -15,6 +15,7 @@ import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, plural, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
   addressUpdaterName,
+  drillName,
   homeIpv4,
   homeIpv6Proxied,
   homeMode,
@@ -1128,7 +1129,7 @@ export async function applyOwnHostPlan(
     upToDate: input.upToDate ?? "Your server is already prepared; nothing on it changes.",
     command: input.command,
     phase: input.phase,
-    ...(drills ? { allowDestroy: true, confirmPhrase: `${input.plan.app.name}-drill` } : {}),
+    ...(drills ? { allowDestroy: true, confirmPhrase: drillName(input.plan.app.name) } : {}),
     ...(input.planOnly === true ? { planOnly: true } : {}),
     secrets: async (steps) => {
       const portainerStep = steps.find((step) => step.id === "portainer");

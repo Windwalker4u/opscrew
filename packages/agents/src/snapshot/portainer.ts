@@ -123,9 +123,12 @@ export function failed(what: string, exitCode: number, hint?: string): OpsCrewEr
  * before the volume exists, which a list never creates.
  */
 export async function portainerListing(place: PortainerPlace): Promise<Listing> {
-  if (!(await place.docker.volumeExists(place.volume))) {
-    return { abouts: [], offsite: new Set(), unreadable: 0 };
-  }
+  return readListing(await portainerListingText(place));
+}
+
+/** {@link portainerListing}'s text, as `readListing` reads it: `""` before the volume exists. */
+export async function portainerListingText(place: PortainerPlace): Promise<string> {
+  if (!(await place.docker.volumeExists(place.volume))) return "";
   const script = [
     `for d in ${DIR}/*; do`,
     '  case "$d" in *.partial | *.taking) continue ;; esac',
@@ -135,7 +138,7 @@ export async function portainerListing(place: PortainerPlace): Promise<Listing> 
   ].join("\n");
   const result = await box(place, script, { readOnly: true });
   if (result.exitCode !== 0) throw failed("list the snapshots", result.exitCode);
-  return readListing(result.stdout);
+  return result.stdout;
 }
 
 /** Deletes the snapshot `id` (checked letters and digits); `already gone` when it is not there. */
