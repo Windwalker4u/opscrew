@@ -582,10 +582,27 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
     `snapshot/drill-portainer.ts` and `snapshot/drill-hosting.ts`, each exporting its target's
     drill function that throws `INTERNAL` "not built yet", for T2934 and T2935),
     `packages/agents/src/status/drill.ts` (new) and its one call in `packages/agents/src/status/run.ts`,
-    `packages/cli/src/commands/restore.ts`, colocated tests and snapshots
+    `packages/cli/src/commands/restore.ts`, `packages/iac-templates/src/drill/**` (T2931's render),
+    `packages/iac-templates/src/previews/{index,script}.ts` (only to export the preview's fill of
+    generated values for reuse), colocated tests and snapshots
   - Reads: plan 19.; research R15–R19, R26, R27, R29; `snapshot/{restore,restore-checks,disk,run,computer}.ts`;
-    T2931's `src/drill/` render
+    T2931's `src/drill/` render (`renderDrill`, `drillPlan`, `drillProject`, `restoreFunctions`)
   - Depends: T2931
+  - Decided by the lead (T2931's findings):
+    - The env files keep their `@SECRET:…@` placeholders (so the plan's hash is stable); the
+      server fills them with the preview's own fill routine, exported from `previews/script.ts`
+      and reused by `snapshot.sh drill`, never a second copy of it.
+    - `.env.preview`'s values (`values.env`) reach the server on standard input with the host
+      plan's secrets, never in the plan.
+    - The drill's containers get `restart: "no"` (a kept copy never comes back after a reboot).
+    - The snapshot's image is used by its digest; when it isn't on the server it is pulled with
+      the server's existing credentials; when that fails, the drill fails in plain words ("that
+      snapshot's version of the app is gone") and offers `--allow-other-version` (today's image).
+    - Data folders under `/srv/data/<app>-drill/` are removed the way `opscrew-preview down`
+      removes a preview's.
+    - Services restored from a volume (stop-only kinds such as RabbitMQ) keep production's logins,
+      so the copy can't sign in to them: the report names them and says so, under R19's second
+      outcome.
   - Accept:
     - **The setting:** `snapshots.drills` in the plan (strict: `{ schedule?: "weekly" | "daily" }`;
       present means drills are on for the environment; the schedule needs `snapshots.schedule`),
