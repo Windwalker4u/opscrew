@@ -20,6 +20,8 @@ export const MOVE_PHASE: PhaseName = "cloudflare-move";
 export const A_TOKEN_VAR = "CLOUDFLARE_API_TOKEN";
 /** B's token: the account the zone moves to. */
 export const B_TOKEN_VAR = "OPSCREW_NEW_CLOUDFLARE_API_TOKEN";
+/** B's address updater token of a server at home: the finish gives it to the server. */
+export const B_UPDATER_TOKEN_VAR = "OPSCREW_NEW_DNS_UPDATER_TOKEN";
 
 /** A refusal before any change: `message` ends with "Nothing was changed.", `hint` says what next. */
 export function refusal(

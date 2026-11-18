@@ -41,9 +41,17 @@ export interface MoveServices
     | "askStorageKey"
     // The app's own values, offered from its env file in a terminal (Portainer's stack plans).
     | "askEnv"
+    // The server's GitHub Actions runner in a home server's host plan (the finish's updater).
+    | "runnerGitHub"
     | "sleep"
     | "now"
   > {
+  /**
+   * The new account's address updater token of a server at home, asked once in a terminal when
+   * `OPSCREW_NEW_DNS_UPDATER_TOKEN` is not set (CLI prompt, hidden input, with `prompt`'s recipe);
+   * `undefined` when the user cancels. Never logged or kept.
+   */
+  askUpdaterToken?: (question: { zone: string; prompt: string }) => Promise<string | undefined>;
   /** A's Cloudflare client (default: `CLOUDFLARE_API_TOKEN`'s). */
   cloudflare?: CloudflareClient;
   /** B's Cloudflare client (default: `OPSCREW_NEW_CLOUDFLARE_API_TOKEN`'s). */

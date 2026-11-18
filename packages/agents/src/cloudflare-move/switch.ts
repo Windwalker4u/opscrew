@@ -47,7 +47,7 @@ import {
   SWITCH_COMMAND,
 } from "./texts";
 import type { MoveResult, MoveSession, MoveZone, StepStop, SwitchMoveOptions } from "./types";
-import { aNameserversClash, type ListedRecords, recordInput } from "./zone";
+import { aNameserversClash, deleteStaleCopies, type ListedRecords, recordInput } from "./zone";
 
 /**
  * `opscrew cloudflare move --switch`: refused before any change unless this repository's app is
@@ -273,21 +273,26 @@ async function requireCoverage(session: MoveSession, listed: ListedRecords): Pro
   return found.marks;
 }
 
-/** Creates the zone copy's records in B (each with every field; SRV and CAA by their `data`). */
+/**
+ * Creates the zone copy's records in B (each with every field; SRV and CAA by their `data`), then
+ * deletes B's earlier copies of the address updater's records the copy refreshes.
+ */
 async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPlan): Promise<void> {
   const records = (plan.copy?.create ?? []).map(recordInput);
-  if (records.length === 0) return;
-  session.deps.reporter.step(
-    `Copying ${plural(records.length, "record")} into the new account's zone`,
-  );
-  await session.accounts.b.client.createZoneRecords(zone.id, records);
-  await moveAudit(session.deps, {
-    kind: "provider-call",
-    action: "cloudflare records created",
-    target: plan.planHash,
-    decision: "approved",
-    detail: `${plural(records.length, "record")} in ${session.zone} (the switch)`,
-  });
+  if (records.length > 0) {
+    session.deps.reporter.step(
+      `Copying ${plural(records.length, "record")} into the new account's zone`,
+    );
+    await session.accounts.b.client.createZoneRecords(zone.id, records);
+    await moveAudit(session.deps, {
+      kind: "provider-call",
+      action: "cloudflare records created",
+      target: plan.planHash,
+      decision: "approved",
+      detail: `${plural(records.length, "record")} in ${session.zone} (the switch)`,
+    });
+  }
+  if (plan.copy !== undefined) await deleteStaleCopies(session, zone.id, plan.copy, plan.planHash);
 }
 
 /**

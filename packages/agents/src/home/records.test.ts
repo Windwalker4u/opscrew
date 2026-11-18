@@ -211,6 +211,52 @@ describe("deleteUpdaterRecords", () => {
     expect(text).not.toContain(HOME_IPV6);
   });
 
+  it("applies a deletion approved earlier by its hash, and refuses before asking when the records changed since", async () => {
+    const { fake, zone, client } = setup();
+    const { a, aaaa } = withUpdaterRecords(fake);
+    const target = { app: APP, zoneId: zone.id, name: NAME };
+    const approvedHash = (await planRecordDeletion(client, target))?.planHash as string;
+
+    // The updater wrote a new AAAA since the plan was shown: nothing asked, nothing deleted.
+    const added = fake.addRecord(zone, {
+      type: "AAAA",
+      name: NAME,
+      content: "2001:db8:5::78",
+      proxied: true,
+      comment: UPDATER_RECORD_COMMENT,
+    });
+    const refusedHandler = new ScriptedApprovalHandler();
+    const refusedDeps = await createTestPhaseDeps({ approvalHandler: refusedHandler });
+    const error = await deleteUpdaterRecords(refusedDeps, client, {
+      ...request(zone.id),
+      approvedHash,
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PLAN_HASH_MISMATCH" });
+    expect((error as OpsCrewError).message).toContain("Nothing in Cloudflare was changed.");
+    expect((error as OpsCrewError).hint).toContain(COMMAND);
+    expect(refusedHandler.requests).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "DELETE")).toEqual([]);
+
+    // The records as shown: asked as ever (a script's --approve and --confirm answer it), deleted.
+    zone.records.splice(zone.records.indexOf(added), 1);
+    const handler = new ScriptedApprovalHandler();
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const plan = await deleteUpdaterRecords(deps, client, {
+      ...request(zone.id),
+      approvedHash: approvedHash.toUpperCase(),
+    });
+    expect(plan?.planHash).toBe(approvedHash);
+    expect(handler.requests).toMatchObject([
+      { kind: "cloudflare-apply", planHash: approvedHash, allowDestroy: true, confirmPhrase: APP },
+    ]);
+    expect(zone.records.map((record) => record.id)).not.toContain(a.id);
+    expect(zone.records.map((record) => record.id)).not.toContain(aaaa.id);
+    const text = seen(deps, fake, plan, error) + seen(refusedDeps, fake);
+    expect(text).not.toContain(HOME_IPV4);
+    expect(text).not.toContain(HOME_IPV6);
+    expect(text).not.toContain("2001:db8:5::78");
+  });
+
   it("reads the records again after the approval and deletes nothing when the hash changed", async () => {
     const { fake, zone, client } = setup();
     withUpdaterRecords(fake);

@@ -14,6 +14,7 @@ import {
 import { listText, type ProjectPaths } from "@opscrew/core";
 import { isMoveReady, opscrewRecordNames, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, previewEnvironmentOf, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { UPDATER_RECORD_COMMENT } from "../home/records";
 import { portainerCloudflare } from "../provision/credentials";
 import { planWhere } from "../runners/words";
 import { hasState, stateCopyPaths, stateNotHere } from "../shared";
@@ -200,7 +201,7 @@ async function requireMoveReady(session: MoveSession): Promise<void> {
 
 /** OpsCrew's names in a zone ({@link opscrewNamesInZone}). */
 export interface OpscrewZoneNames {
-  /** The zone's records with OpsCrew's comment. */
+  /** The zone's records with OpsCrew's comment, or its address updater's. */
   records: CloudflareDnsRecord[];
   /** The hostnames of the account's Workers custom domains in the zone. */
   domains: string[];
@@ -208,10 +209,16 @@ export interface OpscrewZoneNames {
   workers: boolean;
 }
 
+/** The comments of OpsCrew's records: its roots', and the address updater's on a server at home. */
+const OPSCREW_COMMENTS: ReadonlySet<string> = new Set([
+  OPSCREW_MANAGED_COMMENT,
+  UPDATER_RECORD_COMMENT,
+]);
+
 /**
- * OpsCrew's names in a zone, read-only: its records (by their comment; of `listed`, the zone's
- * records read just before, when given) and the account's Workers custom domains in it, unless the
- * token may not read the account's Workers.
+ * OpsCrew's names in a zone, read-only: its records (by their comment, OpsCrew's or its address
+ * updater's; of `listed`, the zone's records read just before, when given) and the account's
+ * Workers custom domains in it, unless the token may not read the account's Workers.
  */
 export async function opscrewNamesInZone(
   client: CloudflareClient,
@@ -219,8 +226,8 @@ export async function opscrewNamesInZone(
   zoneId: string,
   listed?: readonly CloudflareDnsRecord[],
 ): Promise<OpscrewZoneNames> {
-  const records = (listed ?? (await client.listDnsRecords(zoneId))).filter(
-    (record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT,
+  const records = (listed ?? (await client.listDnsRecords(zoneId))).filter((record) =>
+    OPSCREW_COMMENTS.has(record.comment?.trim() ?? ""),
   );
   const workers = (await client.workersPermissions(accountId)).missing.length === 0;
   const domains = workers
@@ -231,10 +238,10 @@ export async function opscrewNamesInZone(
 
 /**
  * The hostnames of the other OpsCrew apps in A's zone, sorted, read while A's zone is active (none
- * otherwise): OpsCrew's names there (its records with OpsCrew's comment and its Workers custom
- * domains) that none of the app's environments in the zone (covered or skipped) gives a record or
- * a custom domain, and none of the `_`-named records (verification records, not hostnames).
- * Read-only.
+ * otherwise): OpsCrew's names there (its records with OpsCrew's comment or its address updater's,
+ * and its Workers custom domains) that none of the app's environments in the zone (covered or
+ * skipped) gives a record or a custom domain, and none of the `_`-named records (verification
+ * records, not hostnames). Read-only.
  */
 export async function otherAppHostnames(session: MoveSession): Promise<string[]> {
   const { zone } = session;

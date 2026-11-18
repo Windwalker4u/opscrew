@@ -63,24 +63,42 @@ export interface UpdaterRecordsRequest extends UpdaterRecordsTarget {
   /** The command to run again: `opscrew destroy`. */
   command: string;
   phase: PhaseName;
+  /**
+   * The hash of the deletion plan an earlier run showed and stopped at, given back with
+   * `--approve <hash>`: the plan read now must have it, or nothing is asked or deleted.
+   */
+  approvedHash?: string;
+}
+
+/** Nothing deleted: the records changed since their deletion plan was shown or approved. */
+function recordsChanged(app: string, command: string): OpsCrewError {
+  return new OpsCrewError(
+    "PLAN_HASH_MISMATCH",
+    `The address updater's records of ${app} changed at Cloudflare since their deletion was approved, so OpsCrew did not delete them. Nothing in Cloudflare was changed.`,
+    { hint: `Run \`${command}\` again to see what is there now.` },
+  );
 }
 
 /**
  * Deletes the updater's records at the app's name: the plan (by type and name) approved as
  * `cloudflare-apply` with `allowDestroy` and the app's name typed (`--approve <hash> --confirm
- * <app>` in a script), read again, then each record through `deleteRecord`. Answers the plan it
- * applied, or `undefined` when there was no record (nothing asked).
+ * <app>` in a script), read again, then each record through `deleteRecord`. With
+ * `approvedHash`, the plan read first must have that hash. Answers the plan it applied, or
+ * `undefined` when there was no record (nothing asked).
  * @throws PlanRefusedError when the approval is refused; `PLAN_HASH_MISMATCH` when the records
- * changed since the plan was shown. Nothing is deleted in either case.
+ * changed since the plan was shown or approved. Nothing is deleted in either case.
  */
 export async function deleteUpdaterRecords(
   deps: Pick<PhaseDeps, "approvals" | "audit" | "reporter">,
   client: UpdaterRecordsClient,
   request: UpdaterRecordsRequest,
 ): Promise<UpdaterRecordsDeletion | undefined> {
-  const { app, command, phase } = request;
+  const { app, command, phase, approvedHash } = request;
   const plan = await planRecordDeletion(client, request);
   if (plan === undefined) return undefined;
+  if (approvedHash !== undefined && plan.planHash !== approvedHash.trim().toLowerCase()) {
+    throw recordsChanged(app, command);
+  }
   const listed = plan.records.map((record) => `${record.type} ${record.name}`).join(", ");
   const approval = await deps.approvals.request({
     kind: "cloudflare-apply",
@@ -104,13 +122,7 @@ export async function deleteUpdaterRecords(
   }
   await deps.approvals.assertApprovedCloudflarePlan(plan.planHash, { allowDestroy: true });
   const again = await planRecordDeletion(client, request);
-  if (again?.planHash !== plan.planHash) {
-    throw new OpsCrewError(
-      "PLAN_HASH_MISMATCH",
-      `The address updater's records of ${app} changed at Cloudflare since their deletion was approved, so OpsCrew did not delete them. Nothing in Cloudflare was changed.`,
-      { hint: `Run \`${command}\` again to see what is there now.` },
-    );
-  }
+  if (again?.planHash !== plan.planHash) throw recordsChanged(app, command);
   for (const record of plan.records) await client.deleteRecord(plan.zoneId, record.id);
   await deps.audit.append({
     kind: "provider-call",

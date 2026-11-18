@@ -1,9 +1,10 @@
 /**
  * The zone plan of a move (data model 5): B's zone added when it is missing, A's records that are
  * no OpsCrew app's copied to it create-only (records that differ, and those only in B, are listed
- * and never changed), and an app's mark written or deleted. Planned here, shown with the app's
- * servers' addresses masked, approved by its hash (`cloudflare-apply`) and applied through the
- * Cloudflare client. A's zone is only read.
+ * and never changed), and an app's mark written or deleted. The address updater's records of a
+ * server at home, which no shadow root makes, are copied too and kept as A's updater keeps them
+ * (refreshed). Planned here, shown with the app's servers' addresses masked, approved by its hash
+ * (`cloudflare-apply`) and applied through the Cloudflare client. A's zone is only read.
  */
 import {
   CLOUDFLARE_TOKEN_PAGE,
@@ -26,6 +27,7 @@ import {
 import { recordsMissingFromZone, sameRecordContent } from "../domain";
 import { recordText } from "../domain/connect-plan";
 import { hosts, sameHosts } from "../domain/switch";
+import { UPDATER_RECORD_COMMENT } from "../home/records";
 import { sharedDesired } from "../provision/shared-cloudflare";
 import { appliesNow } from "../retarget/steps";
 import { readServerAddresses, requestApproval } from "../shared";
@@ -92,6 +94,12 @@ export interface ZoneCopy {
   onlyInB: ZoneRecord[];
   /** A's records not copied, and why. */
   skipped: { record: ZoneRecord; reason: string }[];
+  /**
+   * The address updater's records in B that A's updater no longer has (the home's address changed
+   * since they were copied, or the updater removed a record): deleted once A's current ones, in
+   * `create`, are there. Ids, types and names only, sorted by id.
+   */
+  refresh: { id: string; type: string; name: string }[];
   marks?: ZoneMarks;
   planHash: string;
 }
@@ -118,6 +126,16 @@ function cloudflareManaged(record: Pick<CloudflareZoneRecord, "meta">): boolean 
 function isMarkRecord(record: Pick<CloudflareZoneRecord, "name" | "comment">): boolean {
   return record.comment?.trim() === MARK_COMMENT || record.name.startsWith(MARK_PREFIX);
 }
+
+/** True for an A or AAAA record the address updater of a server at home keeps (its comment). */
+function isUpdaterRecord(record: Pick<CloudflareZoneRecord, "type" | "comment">): boolean {
+  const type = record.type.toUpperCase();
+  return record.comment?.trim() === UPDATER_RECORD_COMMENT && (type === "A" || type === "AAAA");
+}
+
+/** True for a set (a type and a name) of the address updater's records only. */
+const updaterSet = (records: readonly CloudflareZoneRecord[]) =>
+  records.length > 0 && records.every(isUpdaterRecord);
 
 /** Why `record` is never copied nor compared, or `undefined` for a record a copy keeps. */
 function skipReason(record: CloudflareZoneRecord, zone: string): string | undefined {
@@ -182,10 +200,13 @@ function sets(records: readonly CloudflareZoneRecord[]): Map<string, CloudflareZ
 const byJson = <T>(items: readonly T[]): T[] =>
   [...items].sort((x, y) => canonicalJson(x).localeCompare(canonicalJson(y)));
 
-/** The plan's changes: the zone added, the records created, the mark's records written or deleted. */
+/**
+ * The plan's changes: the zone added, the records created, the updater's earlier copies deleted,
+ * the mark's records written or deleted.
+ */
 function changeCount(plan: ZoneCopy): number {
   const marks = (plan.marks?.create.length ?? 0) + (plan.marks?.delete.length ?? 0);
-  return (plan.createZone ? 1 : 0) + plan.create.length + marks;
+  return (plan.createZone ? 1 : 0) + plan.create.length + plan.refresh.length + marks;
 }
 
 /** True for a plan that only deletes a mark (the finish's, the abort's): it copies nothing. */
@@ -264,6 +285,8 @@ export async function planZone(
     });
     for (const record of setB) listed.add(record);
   };
+  /** B's copies of the updater's records that A's updater no longer keeps. */
+  const stale: CloudflareZoneRecord[] = [];
   for (const [key, setA] of inSetsA) {
     const first = setA[0] as CloudflareZoneRecord;
     const setB = inSetsB.get(key) ?? [];
@@ -273,10 +296,19 @@ export async function planZone(
       else create.push(...setA.map(zoneRecord));
       continue;
     }
+    // The updater's copies follow A's, where its updater keeps writing until the move's finish.
+    if (updaterSet(setA) && updaterSet(setB)) {
+      create.push(...recordsMissingFromZone(setA, setB).map(zoneRecord));
+      stale.push(...recordsMissingFromZone(setB, setA));
+      continue;
+    }
     // A value is added only where B has no other value of the set; otherwise the set is listed.
     const apart = setA.some((one) => setB.some((other) => proxiedApart(one, other)));
     if (recordsMissingFromZone(setB, setA).length > 0 || apart) differs(first, setA, setB);
     else create.push(...recordsMissingFromZone(setA, setB).map(zoneRecord));
+  }
+  for (const [key, setB] of inSetsB) {
+    if (!inSetsA.has(key) && updaterSet(setB)) stale.push(...setB);
   }
   const body: Omit<ZoneCopy, "planHash"> = {
     zone,
@@ -286,26 +318,35 @@ export async function planZone(
     create: byJson(create),
     differ: byJson(differ),
     onlyInB: byJson(
-      fromB.filter((record) => !inSetsA.has(keyOf(record)) && !listed.has(record)).map(zoneRecord),
+      fromB
+        .filter((record) => !inSetsA.has(keyOf(record)) && !listed.has(record))
+        .filter((record) => !stale.includes(record))
+        .map(zoneRecord),
     ),
     skipped: byJson(skipped),
+    refresh: stale
+      .map(({ id, type, name }) => ({ id, type, name }))
+      .sort((x, y) => x.id.localeCompare(y.id)),
     ...(marks === undefined ? {} : { marks }),
   };
   const plan: ZoneCopy = { ...body, planHash: sha256Hex(canonicalJson(body)) };
-  const addresses = await serverAddresses(session, inA);
+  const addresses = await serverAddresses(session, [...inA, ...inB]);
   return { ...plan, details: session.deps.redactor.redact(describeZone(session, plan, addresses)) };
 }
 
 /**
- * The addresses of the apps' servers: those OpsCrew's A and AAAA records in A's zone point at, and
- * the covered environments' servers this computer knows.
+ * The addresses of the apps' servers: those OpsCrew's A and AAAA records in either zone (`listed`)
+ * point at, its address updater's at a home's included, and the covered environments' servers
+ * this computer knows.
  */
 async function serverAddresses(
   session: MoveSession,
-  inA: readonly CloudflareZoneRecord[],
+  listed: readonly CloudflareZoneRecord[],
 ): Promise<string[]> {
-  const found = inA
-    .filter((record) => record.comment?.trim() === OPSCREW_MANAGED_COMMENT)
+  const found = listed
+    .filter(
+      (record) => isUpdaterRecord(record) || record.comment?.trim() === OPSCREW_MANAGED_COMMENT,
+    )
     .filter((record) => ["A", "AAAA"].includes(record.type.toUpperCase()))
     .map((record) => record.content);
   for (const env of session.environments) {
@@ -369,6 +410,11 @@ function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly 
     lines.push(
       `- Copy ${plural(plan.create.length, "record")} from the account ${aName}, each with its proxied state, TTL and comment:`,
       ...plan.create.map((record) => `  - ${text(record)}`),
+    );
+  }
+  if (plan.refresh.length > 0) {
+    lines.push(
+      `- Delete the new account's earlier copies of the address updater's records, which it has changed since in the account ${aName} (it keeps writing there until the move's finish): ${plan.refresh.map((record) => `${record.type} ${record.name}`).join(", ")}.`,
     );
   }
   if (a.zone?.status !== "active" && !deletesOnly(marks)) {
@@ -477,6 +523,29 @@ async function requireUsableZone(
   );
 }
 
+/**
+ * Deletes from B's zone `zoneId` the earlier copies of the address updater's records the zone plan
+ * names (`refresh`), once A's current ones are created there, so the name always has a record;
+ * audited by their ids and types under the approved plan's hash (`approved`).
+ */
+export async function deleteStaleCopies(
+  session: MoveSession,
+  zoneId: string,
+  plan: Pick<ZoneCopy, "refresh">,
+  approved: string,
+): Promise<void> {
+  if (plan.refresh.length === 0) return;
+  for (const record of plan.refresh)
+    await session.accounts.b.client.deleteRecord(zoneId, record.id);
+  await moveAudit(session.deps, {
+    kind: "provider-call",
+    action: "updater record copies refreshed",
+    target: approved,
+    decision: "approved",
+    detail: `${session.zone}: ${plan.refresh.map((record) => `${record.type} ${record.id}`).join(", ")} deleted, the current ones copied`,
+  });
+}
+
 /** Which of the move's waiting plans this is: the zone's, a mark's, or a mark's deletion. */
 function planKey(marks: ZoneMarks | undefined): MovePlanKey {
   if (marks === undefined) return { action: "zone" };
@@ -490,7 +559,8 @@ function planKey(marks: ZoneMarks | undefined): MovePlanKey {
  * records it as waiting and stops with the command that applies it. Otherwise it is approved by
  * its hash (`cloudflare-apply`), made again and refused when the hash differs (nothing changed),
  * then B's zone is added when the plan says so (and checked as above before any record), the
- * records and the mark's created in batches of 200, and the mark's records to delete deleted.
+ * records and the mark's created in batches of 200, the address updater's earlier copies deleted
+ * ({@link deleteStaleCopies}), and the mark's records to delete deleted.
  * `session` holds B's zone from then on.
  * @throws PlanRefusedError when the plan is not approved; `PLAN_HASH_MISMATCH` when the zones
  * changed since it was made.
@@ -573,6 +643,7 @@ export async function applyZone(
     await b.client.createZoneRecords(target.id, records);
     await audit("cloudflare records created", `${plural(records.length, "record")} in ${zone}`);
   }
+  await deleteStaleCopies(session, target.id, plan, plan.planHash);
   if (marks !== undefined && marks.delete.length > 0) {
     for (const id of marks.delete) await b.client.deleteRecord(target.id, id);
     await audit(

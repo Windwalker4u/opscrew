@@ -24,6 +24,7 @@ import { type MoveTunnel, moveTunnels, takeOverConnector } from "./connector";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
 import { endFinish, removeA } from "./finish-removal";
 import { adoptSite } from "./finish-site";
+import { updaterToB } from "./home";
 import {
   clearPending,
   type MovePlanKey,
@@ -75,6 +76,7 @@ export const FINISH_STEPS = {
   bucketWindow,
   lastCopyOnce,
   takeOverConnector,
+  updaterToB,
   adoptSite,
   removeA,
   endFinish,
@@ -286,10 +288,10 @@ async function swapStates(
 
 /**
  * Steps 1 to 6 of plan 7. for `environment`, in order, each skipped when done: B's origin
- * certificate, step 1 in the window, the last copy of the snapshots' copies, the connector, the
- * adoption of what the switch made in B, and the swap; then the record at `adopted`. Once the main
- * root's state was swapped (A's former one kept), the steps before the swap are done and only the
- * swap goes on.
+ * certificate, step 1 in the window, the last copy of the snapshots' copies, the connector, a
+ * home server's address updater on B's zone and token (plan 15.), the adoption of what the switch
+ * made in B, and the swap; then the record at `adopted`. Once the main root's state was swapped
+ * (A's former one kept), the steps before the swap are done and only the swap goes on.
  */
 async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop | undefined> {
   const { session, steps } = run;
@@ -302,6 +304,7 @@ async function adopt(run: Run, environment: MoveEnvironment): Promise<StepStop |
       () => pointStep(run, environment),
       () => steps.lastCopyOnce(session, environment),
       () => connectorStep(run, environment),
+      () => steps.updaterToB(session, environment),
       () => steps.adoptSite(session, environment),
     ];
     for (const step of before) {

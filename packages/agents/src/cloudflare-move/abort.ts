@@ -37,6 +37,7 @@ import {
 import { emptyBuckets, forgetBucketKeys, moveBuckets } from "./buckets";
 import { removeBesideConnector, waitForNoConnection } from "./connector";
 import { dropNewCredentials } from "./deploy-secrets";
+import { deleteUpdaterCopies } from "./home";
 import { appMark, deleteMark, markName, parseMarks } from "./marks";
 import { moveFolder } from "./paths";
 import {
@@ -395,8 +396,9 @@ async function destroyRoot(
 }
 
 /**
- * After B's pieces are gone: each environment's move folder deleted, B's zone deleted or kept,
- * B's kept bucket keys forgotten, the repository's switch file and DS notes deleted when no other
+ * After B's pieces are gone: each environment's move folder deleted, B's zone deleted or kept (a
+ * kept zone loses the address updater's records the move copied, `deleteUpdaterCopies`), B's
+ * kept bucket keys forgotten, the repository's switch file and DS notes deleted when no other
  * app of it records a move (an approved switch plan kept there would let a later move switch
  * without asking), then the record removed from every covered plan and the app's local file
  * deleted.
@@ -409,6 +411,11 @@ async function endAbort(session: MoveSession, move: CloudflareMove): Promise<Mov
   }
   const outcome = await deleteBZone(session);
   if ("stop" in outcome) return { step: move.step, done: false, ...outcome.stop };
+  // A zone that stays keeps the address updater's records the move copied: they go on their own.
+  if (outcome.kept !== undefined) {
+    const stop = await deleteUpdaterCopies(session);
+    if (stop !== undefined) return { step: move.step, done: false, ...stop };
+  }
   const zoneWords = outcome.deleted
     ? "the new account's zone is deleted"
     : outcome.kept === undefined

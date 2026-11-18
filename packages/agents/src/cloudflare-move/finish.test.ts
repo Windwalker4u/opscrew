@@ -88,6 +88,10 @@ beforeEach(() => {
     takeOverConnector: vi.fn<FinishSteps["takeOverConnector"]>(async (_s, _e, tunnels) => {
       trail.push(`connector ${tunnels.map((t) => `${t.module}=${t.tunnelId}`).join(" ")}`);
     }),
+    updaterToB: vi.fn<FinishSteps["updaterToB"]>(async () => {
+      trail.push("updater");
+      return undefined;
+    }),
     adoptSite: vi.fn<FinishSteps["adoptSite"]>(async () => {
       trail.push("adopt");
       return undefined;
@@ -235,6 +239,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
       "secrets",
       "deploy",
       "copy",
+      "updater",
       "adopt",
       "remove A adopted",
       "end",
@@ -274,6 +279,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
       "deploy",
       "copy",
       `connector tunnel=${B_TUNNEL}`,
+      "updater",
       "adopt",
       "remove A adopted",
       "end",
@@ -313,12 +319,26 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
     const w = await world("site");
     point = { done: true, pointing: false };
     await finish(w);
-    expect(trail).toEqual(["recover prod", "shared", "copy", "adopt", "remove A adopted", "end"]);
+    expect(trail).toEqual([
+      "recover prod",
+      "shared",
+      "copy",
+      "updater",
+      "adopt",
+      "remove A adopted",
+      "end",
+    ]);
     expect(await stepOf(w)).toBe("adopted");
     expect(w.leaks()).toBe(false);
   });
 
-  for (const name of ["planBShared", "bucketWindow", "lastCopyOnce", "adoptSite"] as const) {
+  for (const name of [
+    "planBShared",
+    "bucketWindow",
+    "lastCopyOnce",
+    "updaterToB",
+    "adoptSite",
+  ] as const) {
     it(`goes on after a stop at ${name}, the steps before it run again and find them done`, async () => {
       const w = await world("cloud", { buckets: true });
       point = { done: false, pointing: false };
@@ -653,7 +673,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
 
     const stop = await finish(w, script(w));
     expect(stop).toMatchObject({ step: "prepared", done: false, pendingPlanHash: hash });
-    expect(trail).toEqual(["recover prod", "recover staging", "copy", "adopt"]);
+    expect(trail).toEqual(["recover prod", "recover staging", "copy", "updater", "adopt"]);
     expect(await stepIn("prod")).toBe("adopted");
     expect(await stepIn("staging")).toBe("prepared");
     expect(steps.removeA).not.toHaveBeenCalled();
@@ -667,6 +687,7 @@ describe.skipIf(!findExecutable("git"))("finishMove", () => {
       "secrets",
       "deploy",
       "copy",
+      "updater",
       "adopt",
       "remove A adopted",
       "remove A adopted",

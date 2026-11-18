@@ -114,9 +114,13 @@ function describe(
     );
     return lines.join("\n");
   }
-  if (copy !== undefined && copy.create.length > 0) {
+  if (copy !== undefined && copy.create.length + copy.refresh.length > 0) {
+    const what =
+      copy.create.length > 0
+        ? `Copy ${plural(copy.create.length, "record")} the new account's zone lacks from ${aName}`
+        : `Refresh the address updater's records from ${aName}`;
     lines.push(
-      `- Copy ${plural(copy.create.length, "record")} the new account's zone lacks from ${aName} first (the zone plan, hash ${copy.planHash}):`,
+      `- ${what} first (the zone plan, hash ${copy.planHash}):`,
       ...copy.details.split("\n").map((line) => `  ${line}`),
     );
   }

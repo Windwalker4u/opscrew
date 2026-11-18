@@ -31,6 +31,7 @@ export const MOVE_PLAN_ACTIONS = [
   "finish-secrets",
   "swap-check",
   "site-adopt",
+  "updater",
   "a-removal",
   "a-revoke",
   "a-empty",
@@ -40,6 +41,7 @@ export const MOVE_PLAN_ACTIONS = [
   "abort-shadow",
   "abort-shared",
   "abort-zone",
+  "abort-updater",
 ] as const;
 export type MovePlanAction = (typeof MOVE_PLAN_ACTIONS)[number];
 
