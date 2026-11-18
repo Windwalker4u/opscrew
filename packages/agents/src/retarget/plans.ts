@@ -78,10 +78,26 @@ export interface InfraPlanInput {
   redesignHint?: string;
 }
 
+/** The DNS module's records that got a `count` (T2907), each renamed once to its index `[0]`. */
+const DNS_COUNT_RECORDS = [
+  "module.dns.cloudflare_dns_record.a",
+  "module.dns.cloudflare_dns_record.aaaa",
+] as const;
+
+/**
+ * True for the one-time state rename of the DNS module's A or AAAA record to its count's index
+ * (`a` → `a[0]`, `aaaa` → `aaaa[0]`): both engines make it by themselves in the first plan of a
+ * root rendered before the records had a `count`, and nothing changes at Cloudflare.
+ */
+export function isDnsRecordCountMove(move: ResourceMove): boolean {
+  return DNS_COUNT_RECORDS.some((record) => move.from === record && move.to === `${record}[0]`);
+}
+
 /**
  * A plan check that stops (`PHASE_PRECONDITION`, before any approval) with `lead` and `hint`
  * unless every change is one `change` lets through and every state move one `move` lets through:
- * without `change` no change is allowed, without `move` no move.
+ * without `change` no change is allowed, without `move` no move but the DNS records' one-time
+ * rename ({@link isDnsRecordCountMove}), which always passes.
  */
 export function planBounded(bounds: {
   lead: string;
@@ -95,7 +111,7 @@ export function planBounded(bounds: {
         .filter((change) => bounds.change?.(change) !== true)
         .map((change) => `${change.action} ${change.address}`),
       ...(saved.moves ?? [])
-        .filter((move) => bounds.move?.(move) !== true)
+        .filter((move) => !isDnsRecordCountMove(move) && bounds.move?.(move) !== true)
         .map((move) => `move ${move.from} → ${move.to}`),
     ];
     if (problems.length > 0) throw planStop(bounds.lead, problems, bounds.hint);

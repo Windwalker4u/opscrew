@@ -93,6 +93,28 @@ describe("dnsSwitchChange", () => {
       check({ changes: [change(A, "update"), change(AAAA, "create")], moves: [] }),
     ).toThrow(/would do more than update the DNS records in place[\s\S]*create .*aaaa\[0\]/);
   });
+
+  it("lets the one-time rename of the records to a[0] and aaaa[0] through, and no other (T2941)", () => {
+    const check = planBounded({
+      lead: dnsOnlyLead("DNS switch"),
+      change: dnsSwitchChange(true, true),
+      hint: "",
+    });
+    const renamed = [
+      { from: "module.dns.cloudflare_dns_record.a", to: A, type: "cloudflare_dns_record" },
+      { from: "module.dns.cloudflare_dns_record.aaaa", to: AAAA, type: "cloudflare_dns_record" },
+    ];
+    const other = {
+      from: "module.dns.cloudflare_dns_record.www",
+      to: "module.dns.cloudflare_dns_record.www[0]",
+      type: "cloudflare_dns_record",
+    };
+    const changes = [change(A, "update"), change(AAAA, "update")];
+    expect(() => check({ changes, moves: renamed })).not.toThrow();
+    expect(() => check({ changes, moves: [...renamed, other] })).toThrow(
+      /would do more than update the DNS records in place[\s\S]*move .*www → .*www\[0\]/,
+    );
+  });
 });
 
 /** The new side, or the old one, has an IPv4 address only, here and in OpsCrew's local state. */

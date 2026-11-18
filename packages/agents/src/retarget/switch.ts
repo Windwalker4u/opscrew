@@ -62,7 +62,8 @@ const AAAA_RECORD = "module.dns.cloudflare_dns_record.aaaa[0]";
  * (`from`, `to`: whether the records have the AAAA record on that side, {@link sideAaaa}): the
  * records' in-place updates, plus what a change of address family needs, the AAAA record's delete
  * when only `from` has it or its create when only `to` has. Nothing else: no other create, delete
- * or replacement, nothing outside DNS, no moves.
+ * or replacement, nothing outside DNS, no moves but the records' one-time rename to their count's
+ * index, which `planBounded` lets through.
  */
 export function dnsSwitchChange(from: boolean, to: boolean): (change: ResourceChange) => boolean {
   const family = from === to ? undefined : from ? "delete" : "create";

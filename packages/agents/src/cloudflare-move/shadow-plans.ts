@@ -277,18 +277,28 @@ export async function checkAfterSwap(session: MoveSession, root: ShadowRoot): Pr
  */
 export async function checkAdoption(session: MoveSession, root: ShadowRoot): Promise<PlanStep> {
   const what = rootWords(session, root);
-  const b = accountName(session.accounts.b);
   return shadowPlanStep(session, root, {
     action: "site-adopt",
     statePath: root.statePath,
     env: await shadowEngineEnv(session, root, "b", root.dataDir),
     vars: root.vars,
-    check: planBounded({
-      lead: `Once the custom domains and Access pieces are imported, the plan of ${what} in the Cloudflare account ${b} would do more than update Cloudflare pieces in place, so OpsCrew stopped. Nothing was changed.`,
-      change: (change) => cloudflare(change, "update"),
-      hint: `Run \`opscrew drift\` to see what differs between the app's files and what runs, put that right, then run \`${session.command}\` again.`,
-    }),
-    title: `Update ${what} in place in the Cloudflare account ${b}, after the import of what the switch made there`,
+    check: adoptionCheck(session, root),
+    title: `Update ${what} in place in the Cloudflare account ${accountName(session.accounts.b)}, after the import of what the switch made there`,
+  });
+}
+
+/**
+ * The check of {@link checkAdoption}'s plan: in-place updates of Cloudflare resources only, and
+ * no state move but the DNS records' one-time rename that `planBounded` lets through.
+ */
+export function adoptionCheck(
+  session: MoveSession,
+  root: ShadowRoot,
+): (saved: Pick<SavedPlan, "changes" | "moves">) => void {
+  return planBounded({
+    lead: `Once the custom domains and Access pieces are imported, the plan of ${rootWords(session, root)} in the Cloudflare account ${accountName(session.accounts.b)} would do more than update Cloudflare pieces in place, so OpsCrew stopped. Nothing was changed.`,
+    change: (change) => cloudflare(change, "update"),
+    hint: `Run \`opscrew drift\` to see what differs between the app's files and what runs, put that right, then run \`${session.command}\` again.`,
   });
 }
 
