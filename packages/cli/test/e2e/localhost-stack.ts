@@ -160,10 +160,23 @@ const SNAPSHOT = String.raw`opscrew/runtime/snapshot\.sh`;
 const LISTED: readonly ListedDifference[] = [
   {
     item: "R4: the scripts run with this computer's POSIX shell (Git Bash and macOS have no flock)",
-    server: new RegExp(`^(?:${SCRIPT}|${SNAPSHOT}): flock \\S`),
-    local: new RegExp(
-      `^(?:${SCRIPT}|${SNAPSHOT}): if command -v flock > /dev/null 2>&1; then flock \\S.*; fi$`,
+    server: new RegExp(
+      `^(?:(?:${SCRIPT}|${SNAPSHOT}): flock \\S|${SNAPSHOT}: if ! flock -n \\d+; then drill_skip \\w+; fi$)`,
     ),
+    local: new RegExp(
+      `^(?:(?:${SCRIPT}|${SNAPSHOT}): if command -v flock > /dev/null 2>&1; then flock \\S.*; fi$|${SNAPSHOT}: if command -v flock > /dev/null 2>&1 && ! flock -n \\d+; then drill_skip \\w+; fi$)`,
+    ),
+  },
+  {
+    item: "029: a restore drill on this computer runs its own build of the app, which is never pulled",
+    server: new RegExp(`^${SNAPSHOT}: ghcr\\.io/\\*@sha256:\\*\\) ;;$`),
+    local: new RegExp(
+      `^${SNAPSHOT}: ghcr\\.io/\\*@sha256:\\* \\| opscrew-local/[\\w-]+:\\*\\) ;;$`,
+    ),
+  },
+  {
+    item: "R4: no data folders on this computer, so a restore drill has none of its own to remove",
+    server: new RegExp(`^${SNAPSHOT}: .*/srv/data/[\\w-]+-drill\\b`),
   },
   {
     item: "024: no scheduled snapshots on this computer, so no crontab line to remove",
