@@ -250,6 +250,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     `packages/iac-templates/src/index.ts`, colocated tests and snapshots
   - Reads: contracts/outside-check-workflow.md "The file", "The rules", "Tests"; research R7
   - Depends: T2907
+  - Also (lead, T2907's finding 6; `src/workflow/index.ts` in Owns for it): `healthScript`'s `--resolve <domain>:443:$HOST` puts an IPv6 `$HOST` in brackets.
   - Accept: `OUTSIDE_CHECK_WORKFLOW_FILE = "opscrew-outside-check.yml"` and its renderer exactly as
     the contract: `workflow_dispatch` with `host`, `path`, `mode`, validated in the job and used only
     through `env:`; jobs `http` and `https` on `ubuntu-24.04` with `permissions: {}`; the
@@ -349,6 +350,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     colocated tests
   - Reads: plan 9., 10. (steps 1, 3–5, 7); data-model 2, 6; research R5, R6, R9
   - Depends: T2904–T2907, T2910a, T2910b
+  - Also (lead, T2907's finding 5): `ownEngineEnv` sets no `TF_VAR_server_ipv4`/`_ipv6` for the home root.
   - Accept:
     - Before any change, read-only: the detection (a plan with `home.ipv4: true` whose server now
       has no IPv4 stops: "run `opscrew design` again"; a warning is repeated); the token checks with
@@ -366,6 +368,14 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     - No public address persisted (M7); leak test over every fake.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision src/check && pnpm lint`
   - Effort: xhigh
+
+- [ ] T2941 [P] [US1] Bounded plans accept the one-time `a` → `a[0]` rename (lead, T2907's finding 4)
+  - Owns: `packages/agents/src/retarget/**`, `packages/agents/src/cloudflare-move/shadow-plans.ts`, colocated tests
+  - Reads: plan 4. (M2); `dnsSwitchChange` in `retarget/switch.ts`; `checkAdoption` in `cloudflare-move/shadow-plans.ts`; every other check that refuses a plan with state renames (`isMovesOnly`, `moves` in plan JSON: grep agents/src)
+  - Depends: T2907
+  - Accept: a plan whose only renames are `module.dns.cloudflare_dns_record.a` → `…a[0]` (and `aaaa` → `aaaa[0]`) passes every check that refuses renames, as a rename (nothing changes at Cloudflare); any other rename is still refused as today; a test per check, both with that rename alone and beside a refused one.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/retarget src/cloudflare-move && pnpm lint`
+  - Effort: medium
 
 ## Phase 7: Wave 6 (parallel)
 
@@ -761,7 +771,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
 ## Phase 12: Lead
 
 - [ ] T2920 (lead) The live pass H0–H8 (plan 18., quickstart), results in `docs/e2e-coverage.md`
-- [ ] T2921 (lead) /simplify over the feature, and the repeated strings gathered
+- [ ] T2921 (lead) /simplify over the feature, and the repeated strings gathered (noted: `dnsModule` in `infra/cloudflare.ts` takes an optional `ipv4Record` so `infra/own.ts`'s home `module "dns"` stops repeating five arguments; `token.ts`'s `reachText` beside `updaterTokenReach`; the token recipe's "run `opscrew provision` again" in design's summary; `detectHomeNetwork` made required on `HostAdapterApi` once the fakes have it)
 - [ ] T2922 (lead) CLAUDE.md and the roadmap (029 done)
 - [ ] T2923 (lead) The release (`docs/releasing.md`); the CHANGELOG names the moves-only plan every
   app with DNS on Cloudflare gets at its next provision (`a` → `a[0]`)
