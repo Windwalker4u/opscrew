@@ -797,6 +797,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
     dump loop) and the cPanel live test (the drill database made, the drill, removed at destroy);
     each step checks production unchanged and, on servers, that a request from the copy to the
     internet fails.
+    On the cPanel account (T2935's notes): whether `my_print_defaults` exists, and that the snapshot, the restore and the drill connect (with a socket found in the account's option files and with the built-in default); that a dump whose views or triggers carry `DEFINER=` loads in the drill; the Portainer step confirms that `internal: true` reaches the deployed network and how a gone image is reported (T2934).
   - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
   - Effort: high
 
