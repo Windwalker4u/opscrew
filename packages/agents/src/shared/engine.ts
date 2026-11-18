@@ -250,10 +250,16 @@ async function environmentStateKeyName(paths: ProjectPaths): Promise<StateKeyNam
 }
 
 /**
- * The project's IaC engine and its environment: the phase's, plus `TF_ENCRYPTION` from the
- * project's state passphrase when the plan encrypts its state and the engine is OpenTofu
- * (Terraform cannot; callers say so where it matters), under the key name the environment's state
- * has ({@link environmentStateKeyName}). The passphrase is handled as
+ * Variables of this computer the engine never gets: the address updater's tokens, which only a
+ * server at home holds (they reach it on the host adapter's standard input).
+ */
+const NOT_FOR_THE_ENGINE = ["OPSCREW_DNS_UPDATER_TOKEN", "OPSCREW_NEW_DNS_UPDATER_TOKEN"];
+
+/**
+ * The project's IaC engine and its environment: the phase's without {@link NOT_FOR_THE_ENGINE},
+ * plus `TF_ENCRYPTION` from the project's state passphrase when the plan encrypts its state and
+ * the engine is OpenTofu (Terraform cannot; callers say so where it matters), under the key name
+ * the environment's state has ({@link environmentStateKeyName}). The passphrase is handled as
  * {@link ProjectEngineOptions.passphrase} says; it is registered with the redactor, and a damaged
  * one stops, as does an unfinished rotation of it (`opscrew rotate state-passphrase` finishes it).
  * Says nothing.
@@ -269,6 +275,7 @@ export async function projectEngine(
     options.services?.engine,
   );
   const env: Record<string, string | undefined> = { ...deps.env };
+  for (const name of NOT_FOR_THE_ENGINE) delete env[name];
   if (!plan.infra.stateEncryption || engine.info.name !== "tofu") return { engine, env };
   if (await exists(nextStatePassphraseFile(deps.paths).file)) {
     const { root, environment, app } = deps.paths;

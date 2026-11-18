@@ -1215,8 +1215,11 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       hint: expect.stringContaining("another hostname"),
     });
     const message = (error as Error).message;
-    expect(message).toContain("A shop.example.com 198.51.100.7");
-    expect(message).toContain("CNAME www.shop.example.com old-host.example.net");
+    expect(message).toContain("  A shop.example.com\n");
+    expect(message).toContain("  CNAME www.shop.example.com\n");
+    // By type and name only: never a record's content.
+    expect(message).not.toContain("198.51.100.7");
+    expect(message).not.toContain("old-host.example.net");
     expect(message).not.toContain("TXT");
     expect(message).not.toContain("2001:db8::99");
     expect(cloudflare.listed).toEqual(["shop.example.com", "www.shop.example.com"]);

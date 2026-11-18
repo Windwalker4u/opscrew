@@ -4,10 +4,21 @@ import {
   FAKE_ZONE_ID,
   fakeCloudflareAccounts,
 } from "@opscrew/connector-cloudflare/testing";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps, fakeCloudflare, portainerPlan, testPlan } from "../testing";
+import { UPDATER_RECORD_COMMENT } from "../home/records";
+import {
+  createTestPhaseDeps,
+  fakeCloudflare,
+  HOME_IPV4,
+  HOME_IPV6,
+  opscrewRecord,
+  ownPlan,
+  portainerPlan,
+  testPlan,
+} from "../testing";
 import { setupCloudflare } from "./credentials";
 
 describe("setupCloudflare", () => {
@@ -36,6 +47,83 @@ describe("setupCloudflare", () => {
       message:
         "Cloudflare did not say which account holds example.com, and the token sees several accounts, so OpsCrew cannot tell which account OpsCrew's shared Cloudflare rules belong to.",
     });
+  });
+});
+
+describe("setupCloudflare: the address updater's records", () => {
+  /** `shop` on a server at home, deployed by the server's runner. */
+  function homePlan(www = false): DeployPlan {
+    const base = ownPlan();
+    return DeployPlanSchema.parse({
+      ...base,
+      target: { ...base.target, home: { ipv4: true } },
+      dns: { ...base.dns, www },
+      environment: { runner: "server" },
+    });
+  }
+
+  /** A record the updater keeps (its comment), or a foreign one (no comment). */
+  function record(type: string, name: string, content: string, comment?: string) {
+    const { comment: _opscrew, ...made } = opscrewRecord(name, type, content);
+    return {
+      ...made,
+      id: `${type}-${name}-${content}`,
+      ...(comment === undefined ? {} : { comment }),
+    };
+  }
+
+  async function refusal(plan: DeployPlan, records: ReturnType<typeof record>[]) {
+    const deps = await createTestPhaseDeps();
+    const error = await setupCloudflare(deps, plan, {
+      cloudflare: fakeCloudflare({ records }),
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(OpsCrewError);
+    return error as OpsCrewError;
+  }
+
+  it("lets a second provision of a home app pass: the updater's A and AAAA at the domain are its own", async () => {
+    const deps = await createTestPhaseDeps();
+    const records = [
+      record("A", "shop.example.com", HOME_IPV4, UPDATER_RECORD_COMMENT),
+      record("AAAA", "shop.example.com", HOME_IPV6, UPDATER_RECORD_COMMENT),
+    ];
+    const setup = await setupCloudflare(deps, homePlan(), {
+      cloudflare: fakeCloudflare({ records }),
+    });
+    expect(setup).toMatchObject({ zoneName: "example.com" });
+    expect(setup).not.toHaveProperty("foreignRecords");
+  });
+
+  it("still stops at home on a foreign record at the name, or the updater's comment elsewhere, naming no address", async () => {
+    const foreign = await refusal(homePlan(), [
+      record("A", "shop.example.com", HOME_IPV4, UPDATER_RECORD_COMMENT),
+      record("A", "shop.example.com", "198.51.100.9"),
+    ]);
+    expect(foreign.code).toBe("PHASE_PRECONDITION");
+    expect(foreign.message).toContain("that OpsCrew did not create:\n  A shop.example.com\n");
+    const elsewhere = await refusal(homePlan(true), [
+      record("A", "www.shop.example.com", HOME_IPV4, UPDATER_RECORD_COMMENT),
+      record("CNAME", "shop.example.com", "home.example.net", UPDATER_RECORD_COMMENT),
+    ]);
+    expect(elsewhere.message).toContain("  A www.shop.example.com\n");
+    expect(elsewhere.message).toContain("  CNAME shop.example.com\n");
+    for (const error of [foreign, elsewhere]) {
+      for (const content of [HOME_IPV4, "198.51.100.9", "home.example.net"]) {
+        expect(`${error.message}\n${error.hint}`).not.toContain(content);
+      }
+    }
+  });
+
+  it("treats a record with the updater's comment as foreign for an app not at home, as before", async () => {
+    const updaters = [record("A", "shop.example.com", HOME_IPV4, UPDATER_RECORD_COMMENT)];
+    for (const plan of [ownPlan(), testPlan({ domain: "shop.example.com" })]) {
+      const error = await refusal(plan, updaters);
+      expect(error.message).toContain("  A shop.example.com\n");
+      expect(error.message).not.toContain(HOME_IPV4);
+    }
   });
 });
 

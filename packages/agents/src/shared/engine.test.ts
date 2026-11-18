@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { IacEngine, IacEngineName, ResourceAction } from "@opscrew/contracts";
 import { tfstateFile } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it, vi } from "vitest";
@@ -53,6 +54,21 @@ const terraform = async (): Promise<IacEngine> =>
   });
 
 describe("projectEngine", () => {
+  it("never hands the engine the address updater's tokens, with or without encryption", async () => {
+    const deps = await createTestPhaseDeps();
+    deps.env.OPSCREW_DNS_UPDATER_TOKEN = fakeSecret("cloudflare-token", "updater");
+    deps.env.OPSCREW_NEW_DNS_UPDATER_TOKEN = fakeSecret("cloudflare-token", "new-updater");
+    deps.env.CLOUDFLARE_API_TOKEN = fakeSecret("cloudflare-token", "own");
+    for (const plan of [testPlan(), { infra: { ...testPlan().infra, stateEncryption: false } }]) {
+      const { env } = await projectEngine(deps, plan, { services: { engine: tofu } });
+      expect(env).not.toHaveProperty("OPSCREW_DNS_UPDATER_TOKEN");
+      expect(env).not.toHaveProperty("OPSCREW_NEW_DNS_UPDATER_TOKEN");
+      // The engine's provider still gets OpsCrew's own token; this computer's variables stay.
+      expect(env.CLOUDFLARE_API_TOKEN).toBe(deps.env.CLOUDFLARE_API_TOKEN);
+    }
+    expect(deps.env.OPSCREW_DNS_UPDATER_TOKEN).toBeDefined();
+  });
+
   it("makes the state passphrase once for OpenTofu and sets TF_ENCRYPTION", async () => {
     const deps = await createTestPhaseDeps();
     const plan = testPlan();

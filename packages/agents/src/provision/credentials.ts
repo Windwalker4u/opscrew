@@ -7,6 +7,7 @@ import { type GitClient, githubConnector } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
+  homeMode,
   managesPortainerRecords,
   portainerHostname,
   portainerWebhookHostname,
@@ -16,6 +17,7 @@ import {
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudflareTokenHint } from "../domain/common";
+import { UPDATER_RECORD_COMMENT } from "../home/records";
 import {
   credentialsNotSet,
   type ProviderProfile,
@@ -214,13 +216,16 @@ async function knownServers(deps: PhaseDeps, plan: DeployPlan): Promise<string[]
 /**
  * Records at the app's hostnames that OpsCrew did not create (no OpsCrew comment): A, AAAA and
  * CNAME records not pointing at a server OpsCrew already deployed (`clashing`), and CAA records
- * (`caa`). Doubles as the DNS-read permission check.
+ * (`caa`). A server at home's address updater keeps the A and AAAA records at `updaterName`
+ * (the app's domain) with its own comment, so those are not foreign either. Doubles as the
+ * DNS-read permission check.
  */
 async function foreignDnsRecords(
   api: CloudflareApi,
   zoneId: string,
   servers: readonly string[],
   hosts: readonly string[],
+  updaterName?: string,
 ): Promise<{ clashing: CloudflareDnsRecord[]; caa: CloudflareDnsRecord[] }> {
   const known = new Set(servers.filter((ip) => ip !== "").map(canonicalAddress));
   const clashing: CloudflareDnsRecord[] = [];
@@ -231,6 +236,10 @@ async function foreignDnsRecords(
       const type = record.type.toUpperCase();
       if (type === "CAA") caa.push(record);
       if (!CLASHING_RECORD_TYPES.has(type)) continue;
+      const updaters = type === "A" || type === "AAAA";
+      if (updaters && record.name === updaterName && record.comment === UPDATER_RECORD_COMMENT) {
+        continue;
+      }
       if (known.has(canonicalAddress(record.content))) continue;
       clashing.push(record);
     }
@@ -400,11 +409,14 @@ export async function setupCloudflare(
           ].filter((host): host is string => host !== undefined);
     // The user's Portainer has no server whose records OpsCrew could have made.
     const servers = portainer === undefined ? await knownServers(deps, plan) : [];
-    const found = await foreignDnsRecords(api, zone.id, servers, hosts);
+    // A server at home: the address updater's own records at the domain.
+    const updaterName = homeMode(plan) ? plan.dns.domain : undefined;
+    const found = await foreignDnsRecords(api, zone.id, servers, hosts, updaterName);
     const foreign = found.clashing;
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {
-      const lines = foreign.map((r) => `  ${r.type} ${r.name} ${r.content}`);
+      // By type and name only: a record's content may be an address that must stay private.
+      const lines = foreign.map((r) => `  ${r.type} ${r.name}`);
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         deps.redactor.redact(
