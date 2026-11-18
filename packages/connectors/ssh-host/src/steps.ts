@@ -1044,17 +1044,7 @@ systemctl restart "$SERVICE"`,
     failed: "OpsCrew's SSH firewall is not in effect.",
     ...(p.install === undefined
       ? {}
-      : {
-          preApply: applyScript(
-            "ssh-firewall.install",
-            {},
-            "",
-            `if ! command -v nft >/dev/null 2>&1; then
-  apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
-  apt_get install --no-install-recommends nftables || fail 'Installing nftables failed; see ${APT_LOG} on the server.'
-fi`,
-          ),
-        }),
+      : { preApply: applyScript("ssh-firewall.install", {}, "", NFT_INSTALL) }),
     deadMan: { step: "ssh-firewall", capture: SSH_FIREWALL_CAPTURE, params: {} },
     doing: "turning on OpsCrew's SSH firewall",
     timeoutMs: 2 * MINUTE,
@@ -1134,7 +1124,7 @@ const IPV6_REMOVAL = `# The site is no longer published on IPv6: OpsCrew's IPv6 
 ${REMOVE_TABLE6}
 `;
 
-/** Pre-apply with IPv6 on a server without nft: nftables is installed first. */
+/** Pre-apply on a server without nft (web filter with IPv6, SSH firewall): nftables goes in first. */
 const NFT_INSTALL = `if ! command -v nft >/dev/null 2>&1; then
   apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
   apt_get install --no-install-recommends nftables || fail 'Installing nftables failed; see ${APT_LOG} on the server.'
@@ -3755,26 +3745,40 @@ drop_cron() {
 }`;
 
 /**
+ * Shell helpers for a recipe's files in the folder `$<dir>`: `put`, which never writes through a
+ * symbolic link; `sums_ok`, whether each `<path>:<sha256>` of `$MANIFEST` matches; `stale_files`,
+ * the files `find` lists there that `$PATHS` does not name, after `comment`, which says what `find`
+ * leaves out.
+ */
+function recipeFileHelpers(dir: string, find: string, comment: string): string {
+  return `put() {
+  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
+  write_file "$1" "$2"
+}
+sums_ok() {
+  for entry in $MANIFEST; do [ "$(sha256sum "$${dir}/\${entry%%:*}" 2>/dev/null | cut -d ' ' -f 1)" = "\${entry#*:}" ] || return 1; done
+}
+${comment}
+stale_files() {
+  (cd "$${dir}" && ${find}) | while IFS= read -r f; do
+    f=\${f#./}
+    case " $PATHS " in *" $f "*) ;; *) printf '%s\\n' "$f" ;; esac
+  done
+}`;
+}
+
+/**
  * Shell helpers of the previews step, which runs as the deploy user: its keys, its crontab
  * ({@link CRON_HELPERS}) and the recipe's files.
  */
 const PREVIEW_HELPERS = `${KEY_HELPERS}
 ${CRON_HELPERS}
-put() {
-  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
-  write_file "$1" "$2"
-}
-sums_ok() {
-  for entry in $MANIFEST; do [ "$(sha256sum "$DIR/\${entry%%:*}" 2>/dev/null | cut -d ' ' -f 1)" = "\${entry#*:}" ] || return 1; done
-}
-# Files in the recipe's folder that the plan does not name: the values, the command's log and its
-# dot-files (its lock) aside.
-stale_files() {
-  (cd "$DIR" && find . -type f ! -name '.*' ${RECIPE_LEFT_OUT_FIND}) | while IFS= read -r f; do
-    f=\${f#./}
-    case " $PATHS " in *" $f "*) ;; *) printf '%s\\n' "$f" ;; esac
-  done
-}`;
+${recipeFileHelpers(
+  "DIR",
+  `find . -type f ! -name '.*' ${RECIPE_LEFT_OUT_FIND}`,
+  `# Files in the recipe's folder that the plan does not name: the values, the command's log and its
+# dot-files (its lock) aside.`,
+)}`;
 
 /** As root on a server the user owns, before the step: cron, which a minimal Debian lacks. */
 const CRON_INSTALL = `if ! command -v crontab >/dev/null 2>&1; then
@@ -4045,20 +4049,11 @@ export const DRILL_FIND = `find . -type f ! -name '.*' ! -path ./${DRILL_VALUES}
 
 /** Shell helpers of the drills step, which runs as the deploy user: its crontab and its files. */
 const DRILL_HELPERS = `${CRON_HELPERS}
-put() {
-  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
-  write_file "$1" "$2"
-}
-sums_ok() {
-  for entry in $MANIFEST; do [ "$(sha256sum "$RECIPE/\${entry%%:*}" 2>/dev/null | cut -d ' ' -f 1)" = "\${entry#*:}" ] || return 1; done
-}
-# Files of the recipe's folder that the plan does not name, the values and dot-files aside.
-stale_files() {
-  (cd "$RECIPE" && ${DRILL_FIND}) | while IFS= read -r f; do
-    f=\${f#./}
-    case " $PATHS " in *" $f "*) ;; *) printf '%s\\n' "$f" ;; esac
-  done
-}`;
+${recipeFileHelpers(
+  "RECIPE",
+  DRILL_FIND,
+  "# Files of the recipe's folder that the plan does not name, the values and dot-files aside.",
+)}`;
 
 /**
  * `drills`, the app's scheduled restore drills, which delete their copy each run, so only a plan
