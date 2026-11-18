@@ -2,7 +2,7 @@ import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
 import { tunnelProject } from "@opscrew/connector-ssh-host";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { certificateCoversHost, normalizeHostName, upperFirst } from "@opscrew/core";
-import { runtimeDir, tunnelMode } from "@opscrew/iac-templates";
+import { homeMode, runtimeDir, tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CERTIFICATE_WARN_DAYS, daysLeft, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -263,11 +263,11 @@ async function discard(response: Response): Promise<void> {
 /**
  * The site's public hosts: the domain (and `www.` when configured); empty without a domain. In the
  * user's Portainer the domain may be on any DNS (the user creates its record for `proxy` and
- * `caddy`).
+ * `caddy`), and so may a server at home's (the user adds its records with DNS elsewhere).
  */
 export function verifyHosts(plan: DeployPlan): string[] {
   const domain =
-    plan.dns.provider === "cloudflare" || plan.target.provider === "portainer"
+    plan.dns.provider === "cloudflare" || plan.target.provider === "portainer" || homeMode(plan)
       ? plan.dns.domain
       : undefined;
   if (!domain) return [];
@@ -1100,6 +1100,8 @@ export interface VerifyChecksOutcome {
   checks: CheckResult[];
   /** When the latest deploy run succeeded, the time it started. */
   latestDeployAt?: string;
+  /** This computer couldn't reach the site at all (its request to `/` got no answer). */
+  siteUnreachable: boolean;
 }
 
 /**
@@ -1263,5 +1265,6 @@ export async function runVerifyChecks(base: VerifyCheckContext): Promise<VerifyC
   return {
     checks,
     ...(deploy.latestDeployAt !== undefined ? { latestDeployAt: deploy.latestDeployAt } : {}),
+    siteUnreachable: site.error !== undefined,
   };
 }

@@ -9,7 +9,7 @@ import {
   replaceNames,
   toPosixRelative,
 } from "@opscrew/core";
-import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
+import { homeMode, renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   environmentsOf,
@@ -24,7 +24,7 @@ import { verifyHosting } from "../hosting/verify";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
 import type { ReadNetworkServices } from "../network";
-import { readOwnServerRecord } from "../provision";
+import { type OwnServerServices, readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import { withPlacement } from "../provision/servers";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
@@ -58,6 +58,7 @@ import {
   siteUrl,
   UNKNOWN_ADDRESS_REMEDIATION,
 } from "./checks";
+import { homeChecks } from "./home";
 import { monitoringChecks } from "./monitoring";
 import {
   type DnsResolver,
@@ -117,6 +118,11 @@ export interface RunVerifyOptions {
   network?: ReadNetworkServices;
   /** The localhost target: this computer's requests and Docker (fakes in tests). */
   localhost?: LocalhostServices;
+  /**
+   * A server at home: the admin login's shell and the host adapter (default: SSH with the recorded
+   * login, `inspectHost` and `detectHomeNetwork`; fakes in tests).
+   */
+  own?: Pick<OwnServerServices, "remote" | "homeDir" | "host">;
 }
 
 /** Outcome of {@link runVerify}. */
@@ -198,7 +204,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   // Through a Cloudflare Tunnel only the domain is checked: the server has no address to probe.
   const server = tunnelMode(plan) || portainer ? undefined : await serverAddress(deps, plan);
   // A server the user owns: terminal lines say "your server", never its addresses or login host.
-  const hidden = plan.target.provider === "own" ? await ownServerNames(deps, server) : [];
+  const hidden = plan.target.provider === "own" ? await ownServerNames(deps, plan, server) : [];
   const url = portainer ? portainerVerifyUrl(plan, options.url, flag) : siteUrl(plan, server);
   // The user's own route (`--url`): registered before any check, so no output or result shows
   // it; messages call it "your route".
@@ -227,7 +233,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const fetch = options.fetch ?? deps.fetch;
   const github = await githubContext(deps, fetch);
 
-  const { checks: checked, latestDeployAt } = await runVerifyChecks({
+  const outcome = await runVerifyChecks({
     plan,
     flag,
     ...(server !== undefined ? { server } : {}),
@@ -289,6 +295,18 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
       };
     },
   });
+  const { latestDeployAt } = outcome;
+  // A server at home: the outside check, and over SSH the updater and the power (plan 13.).
+  const checked = homeMode(plan)
+    ? await homeChecks(deps, plan, {
+        checks: outcome.checks,
+        siteUnreachable: outcome.siteUnreachable,
+        resolver: options.resolver ?? defaultDnsResolver,
+        github,
+        services: options.own,
+        flag,
+      })
+    : outcome.checks;
 
   // The app's Cloudflare record: its certificates, or how to fix it when it is damaged.
   try {
@@ -419,16 +437,20 @@ async function ownSshPort(deps: PhaseDeps, plan: DeployPlan): Promise<number | u
   return connection?.port ?? (await committed());
 }
 
-/** The addresses and login host name of a server the user owns, from OpsCrew's local state. */
+/**
+ * The addresses and login host name of a server the user owns, from OpsCrew's local state. A
+ * server at home keeps its login, its address on the home network, which the router lines name.
+ */
 async function ownServerNames(
   deps: PhaseDeps,
+  plan: DeployPlan,
   server: ServerAddress | undefined,
 ): Promise<string[]> {
   const connection = await readOwnServerRecord(deps.paths).catch(() => undefined);
   return [
     server?.ipv4,
     server?.ipv6,
-    connection?.host,
+    homeMode(plan) ? undefined : connection?.host,
     connection?.publicIpv4,
     connection?.publicIpv6,
   ].filter((name): name is string => name !== undefined && name !== "");
