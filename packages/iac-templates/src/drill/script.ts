@@ -20,22 +20,16 @@ import {
   snapshotParts,
 } from "../workflow/snapshots";
 import { appFolder, approvalExpiry, readApproval, START_LOCK } from "../workflow/switch";
-import { DRILL_DIR, renderDrill } from "./index";
+import { DRILL_DIR, drillName, renderDrill } from "./index";
 import {
   DRILL_APPROVAL_FILE,
+  DRILL_HEALTH_POLL_SECONDS,
+  DRILL_HEALTH_SECONDS,
   DRILL_LIMIT_SECONDS,
   DRILL_RECORD_PREFIX,
+  DRILL_RUNNING_SECONDS,
   DRILLS_LOG,
 } from "./record";
-
-/** How long the app's health check may take to pass (R17). */
-const HEALTH_SECONDS = 300;
-
-/** How long an app with no health check must keep running (R17). */
-const RUNNING_SECONDS = 60;
-
-/** The seconds between two reads of the app's health. */
-const HEALTH_POLL_SECONDS = 5;
 
 /** The copy's folder in the script: `.drill/<id>`. */
 const DIR = '"$_drill_dir"';
@@ -76,6 +70,26 @@ export function drillScheduleHours(every: "weekly" | "daily"): number {
 }
 
 /**
+ * When a scheduled drill runs, in words: `weekly, on Thursdays from 03:00 UTC`, `daily, from 03:00
+ * UTC` (the slots count from the epoch, a Thursday).
+ */
+export function drillSlotText(every: "weekly" | "daily"): string {
+  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
+  return every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
+}
+
+/**
+ * The parts a scheduled snapshot of `plan` holds, which its scheduled drill restores: those copied
+ * while they run, and the stop-only ones `snapshots.schedule.stop` names.
+ */
+export function scheduledDrillParts(plan: DeployPlan): string[] {
+  const stop = snapshotScheduleOf(plan)?.stop ?? [];
+  return snapshotParts(plan)
+    .filter((part) => part.online || stop.includes(part.name))
+    .map((part) => part.name);
+}
+
+/**
  * The files of the scheduled drill's copy, each under {@link DRILL_RECIPE_DIR}, for the host plan
  * that installs the schedule (`snapshots.drills.schedule`): the copy {@link renderDrill} renders
  * of the parts a scheduled snapshot holds (those copied while they run, and the stop-only ones
@@ -91,10 +105,7 @@ export function drillRecipe(
   o: { repository: string; env: PreviewEnvTemplates; previewValues?: boolean },
 ): RenderedFile[] {
   const every = plan.snapshots?.drills?.schedule;
-  const stop = snapshotScheduleOf(plan)?.stop ?? [];
-  const parts = snapshotParts(plan)
-    .filter((part) => part.online || stop.includes(part.name))
-    .map((part) => part.name);
+  const parts = scheduledDrillParts(plan);
   if (every === undefined || parts.length === 0) {
     throw wrongTarget(
       `${planFilePath(plan)} schedules no restore drill of data on the app's server (snapshots.drills.schedule).`,
@@ -121,6 +132,28 @@ export function drillRecipe(
       content: `${every}\n`,
       kind: "runtime",
     },
+  ];
+}
+
+/**
+ * A drill's time limit (research R29 8.), as lines of a function's body: a background subshell
+ * that, after {@link DRILL_LIMIT_SECONDS}, writes the file `timedOut` and runs `kill`, which ends
+ * the step that runs. Its variables start with `prefix`: its pid is `<prefix>watch`, and a TERM
+ * to it ends it at once.
+ */
+export function drillWatchdog(prefix: string, timedOut: string, kill: string): string[] {
+  const sleep = `${prefix}sleep`;
+  return [
+    "  (",
+    `    ${sleep}=""`,
+    `    trap 'kill "$${sleep}" 2> /dev/null; exit 0' TERM`,
+    `    sleep ${DRILL_LIMIT_SECONDS} &`,
+    `    ${sleep}=$!`,
+    `    wait "$${sleep}" || exit 0`,
+    `    : > ${timedOut}`,
+    `    ${kill}`,
+    "  ) < /dev/null > /dev/null 2>&1 &",
+    `  ${prefix}watch=$!`,
   ];
 }
 
@@ -167,7 +200,7 @@ export function drillRecipe(
 export function drillCommand(plan: DeployPlan): string[] {
   const parts = snapshotParts(plan);
   if (parts.length === 0) return [];
-  const name = `${plan.app.name}-drill`;
+  const name = drillName(plan.app.name);
   const local = plan.target.provider === "localhost";
   const project: RestoreProject = {
     name,
@@ -466,16 +499,7 @@ export function drillCommand(plan: DeployPlan): string[] {
     "  done",
     `  rm -f ${secrets} ${fill}`,
     // 8. The time limit: its containers are killed, so the step that runs ends, and the copy goes.
-    "  (",
-    '    _drill_sleep=""',
-    "    trap 'kill \"$_drill_sleep\" 2> /dev/null; exit 0' TERM",
-    `    sleep ${DRILL_LIMIT_SECONDS} &`,
-    "    _drill_sleep=$!",
-    '    wait "$_drill_sleep" || exit 0',
-    `    : > ${timedOut}`,
-    "    drill_kill",
-    "  ) < /dev/null > /dev/null 2>&1 &",
-    "  _drill_watch=$!",
+    ...drillWatchdog("_drill_", timedOut, "drill_kill"),
     // The snapshot's version of the app: a pinned image pulled with this machine's own login when
     // it is not here; a local build's never.
     `  if ! docker image inspect "$_drill_image" > /dev/null 2>&1; then`,
@@ -510,11 +534,11 @@ export function drillCommand(plan: DeployPlan): string[] {
     "      while :; do",
     `        _drill_state="$(docker inspect --format '{{.State.Health.Status}}' "$_drill_c" 2> /dev/null || echo stopped)"`,
     '        if [ "$_drill_state" = healthy ]; then break; fi',
-    `        if [ $(( $(date +%s) - _drill_t )) -ge ${HEALTH_SECONDS} ] || drill_timed_out; then break; fi`,
-    `        sleep ${HEALTH_POLL_SECONDS}`,
+    `        if [ $(( $(date +%s) - _drill_t )) -ge ${DRILL_HEALTH_SECONDS} ] || drill_timed_out; then break; fi`,
+    `        sleep ${DRILL_HEALTH_POLL_SECONDS}`,
     "      done",
     "    else",
-    `      sleep ${RUNNING_SECONDS}`,
+    `      sleep ${DRILL_RUNNING_SECONDS}`,
     `      _drill_state="$(docker inspect --format '{{.State.Status}}' "$_drill_c" 2> /dev/null || echo stopped)"`,
     '      if [ "$_drill_state" != running ]; then _drill_state=stopped; fi',
     "    fi",

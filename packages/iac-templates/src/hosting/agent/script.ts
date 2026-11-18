@@ -1,4 +1,4 @@
-import { DRILL_LIMIT_SECONDS } from "../../drill/record";
+import { DRILL_LIMIT_SECONDS, HOSTING_DRILLS_LOG } from "../../drill/record";
 import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours } from "../../drill/script";
 import { shellQuote } from "../../runtime/services";
 import {
@@ -1167,7 +1167,7 @@ without_definers() {
 # without_definers), its tables counted against the dump's
 # CREATE TABLE lines (names and counts only, never a row), and the drill database emptied again.
 # Its copy of the shared files, when it has one: listed with tar -tzf, nothing unpacked. The app
-# isn't started. DRILL_RECORD is the run's line, appended to state/drills.log with no value in it:
+# isn't started. DRILL_RECORD is the run's line, appended to ${HOSTING_DRILLS_LOG} with no value in it:
 # the end, $2, the result (healthy or not-restored), then id=, start=, parts= (database and files,
 # each <size>:<seconds>), tables=database:<count>, removal= (the drill database emptied: removed or
 # failed), cleaned=no and reason= (what did not restore: dump, database, tables or files).
@@ -1208,7 +1208,7 @@ drill_snapshot() {
     fi
   fi
   DRILL_RECORD="$(date -u +%Y-%m-%dT%H:%M:%SZ) $2 $result id=$id start=$start parts=\${parts:--} tables=$tables removal=$removal cleaned=no reason=$reason"
-  printf '%s\\n' "$DRILL_RECORD" >> state/drills.log || true
+  printf '%s\\n' "$DRILL_RECORD" >> ${HOSTING_DRILLS_LOG} || true
   say "Restore drill of the snapshot $id: $result."
 }
 
@@ -1276,11 +1276,11 @@ quota_room() {
   { quota -w 2> /dev/null || true; } | awk '$2 ~ /^[0-9]+\\*?$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { l = ($3 > 0) ? $3 : $4; if (l > 0) { r = l - ($2 + 0); if (m == "" || r < m) m = r } } END { if (m != "") print (m < 0 ? 0 : m) }'
 }
 
-# DRILL_RECORD, appended to state/drills.log, for a drill ($1 manual or scheduled) that didn't run
+# DRILL_RECORD, appended to ${HOSTING_DRILLS_LOG}, for a drill ($1 manual or scheduled) that didn't run
 # to its end: the result $2, the snapshot $3 (- for none), its start $4, removal= $5 and reason= $6.
 drill_line() {
   DRILL_RECORD="$(date -u +%Y-%m-%dT%H:%M:%SZ) $1 $2 id=$3 start=$4 parts=- tables=- removal=$5 cleaned=no reason=$6"
-  printf '%s\\n' "$DRILL_RECORD" >> state/drills.log || true
+  printf '%s\\n' "$DRILL_RECORD" >> ${HOSTING_DRILLS_LOG} || true
   say "Restore drill ($1) of the snapshot $3: $2 ($6)."
 }
 
@@ -1301,10 +1301,10 @@ scheduled_drill() {
   esac
   [ $(($(date +%s) / 3600 % every)) -eq ${DRILL_SLOT_AFTER_HOURS} ] || return 0
   now=$(date -u +%Y-%m-%dT%H)
-  last=$(grep ' scheduled ' state/drills.log 2> /dev/null | tail -n 1 || true)
+  last=$(grep ' scheduled ' ${HOSTING_DRILLS_LOG} 2> /dev/null | tail -n 1 || true)
   [ "\${last:0:13}" != "$now" ] || return 0
   id=$(newest_snapshot)
-  if [ -n "$id" ] && grep -v ' skipped ' state/drills.log 2> /dev/null | tail -n 1 | grep -q " id=$id "; then return 0; fi
+  if [ -n "$id" ] && grep -v ' skipped ' ${HOSTING_DRILLS_LOG} 2> /dev/null | tail -n 1 | grep -q " id=$id "; then return 0; fi
   start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if [ -z "$id" ]; then
     drill_line scheduled skipped - "$start" - none

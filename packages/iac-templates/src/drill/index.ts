@@ -93,13 +93,21 @@ export function drillDir(id: string): string {
 }
 
 /**
+ * The name of the app `app`'s drill (its plan's `app.name`): `<app>-drill`, its copy's Compose
+ * project and the app's name in {@link drillPlan}, which a drill's approval has typed.
+ */
+export function drillName(app: string): string {
+  return `${app}-drill`;
+}
+
+/**
  * The drill's Compose project for the snapshot `id` (`restoreFunctions` restores into it):
  * `<app>-drill`, its file `.drill/<id>/compose.yaml` and the restores' output in
  * `.drill/<id>/restore.log`, never in the snapshots' folder.
  */
 export function drillProject(plan: DeployPlan, id: string): RestoreProject {
   const dir = drillDir(id);
-  return { name: `${plan.app.name}-drill`, file: `${dir}/compose.yaml`, log: `${dir}/restore.log` };
+  return { name: drillName(plan.app.name), file: `${dir}/compose.yaml`, log: `${dir}/restore.log` };
 }
 
 /**
@@ -125,7 +133,7 @@ export function drillPlan(plan: DeployPlan, snapshot: DrillSnapshot): DeployPlan
   }
   return {
     ...plan,
-    app: { ...plan.app, name: `${plan.app.name}-drill`, releaseCommand: undefined },
+    app: { ...plan.app, name: drillName(plan.app.name), releaseCommand: undefined },
     processes: { workers: [], cron: [] },
     services: services.map((service) => ({ ...service, server: undefined })),
     servers: undefined,
@@ -247,4 +255,6 @@ export {
   DRILL_SLOT_AFTER_HOURS,
   drillRecipe,
   drillScheduleHours,
+  drillSlotText,
+  scheduledDrillParts,
 } from "./script";

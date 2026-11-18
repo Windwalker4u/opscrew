@@ -77,9 +77,22 @@ const DesiredDrillStackSchema = z.strictObject({
   external: z.array(VolumeNameSchema).max(8),
 });
 
+/** True for a volume of the drill's stack `name`: `<name>_<key>`. */
+function isDrillVolume(name: string, volume: string): boolean {
+  return volume.startsWith(`${name}_`);
+}
+
+/**
+ * True for the drill's own stack `name` (Portainer's names are case-insensitive): a string stack
+ * a drill made, never a Git stack of that name.
+ */
+function isDrillStack(name: string, stack: StackDetails | undefined): stack is StackDetails {
+  return stack?.name.toLowerCase() === name && stack.gitConfig === undefined;
+}
+
 /** True for a name of the drill's stack `name` or one of its volumes. */
 function ofDrill(name: string, candidate: string): boolean {
-  return candidate === name || candidate.startsWith(`${name}_`);
+  return candidate === name || isDrillVolume(name, candidate);
 }
 
 /**
@@ -103,7 +116,7 @@ export function planDrillStack(found: DrillFound, desired: DesiredDrillStack): S
   const name = drillStackName(d.app);
   const app = opscrewNames(d.app).app;
   const wrong = [
-    ...d.volumes.filter((volume) => !volume.startsWith(`${name}_`)),
+    ...d.volumes.filter((volume) => !isDrillVolume(name, volume)),
     ...d.external.filter((volume) => ofDrill(name, volume) || !volume.startsWith(`${app}_`)),
   ];
   if (wrong.length > 0) {
@@ -116,7 +129,7 @@ export function planDrillStack(found: DrillFound, desired: DesiredDrillStack): S
   const stack = found.stacks.find((each) => each.name.toLowerCase() === name);
   const volumes = found.volumes
     .map((volume) => volume.name)
-    .filter((volume) => volume.startsWith(`${name}_`))
+    .filter((volume) => isDrillVolume(name, volume))
     .sort();
   if (stack !== undefined || volumes.length > 0) {
     const what = [
@@ -244,7 +257,7 @@ function checked(client: PortainerClient, plan: StackPlan, opts: DrillStackOptio
     throw invalid("The drill's stack plan is not whole");
   const names = [drill, ...(leftover === undefined ? [] : [leftover])];
   for (const params of names) {
-    if (params.name !== name || !strings(params.volumes).every((v) => v.startsWith(`${name}_`))) {
+    if (params.name !== name || !strings(params.volumes).every((v) => isDrillVolume(name, v))) {
       throw invalid(`The drill's stack plan names something other than ${name} and its volumes`);
     }
   }
@@ -304,7 +317,7 @@ export async function createDrillStack(
     if (typeof stackId === "number") {
       const stack = await client.getStack(stackId);
       if (stack !== undefined) {
-        if (stack.name.toLowerCase() !== name || stack.gitConfig !== undefined) {
+        if (!isDrillStack(name, stack)) {
           throw invalid(`The stack ${stackId} is no longer a drill's stack`);
         }
         await client.removeStack(stackId, envId);
@@ -337,7 +350,7 @@ export async function startDrillApp(
 ): Promise<Omit<DrillStackDeploy, "stackId">> {
   const { plan: valid, name, drill, env } = checked(client, plan, opts);
   const stack = await client.getStack(stackId);
-  if (stack === undefined || stack.name.toLowerCase() !== name || stack.gitConfig !== undefined) {
+  if (!isDrillStack(name, stack)) {
     throw invalid(`The stack ${stackId} is not the drill's stack ${name}`);
   }
   try {
@@ -380,7 +393,7 @@ export async function removeDrillStack(
   const name = drillStackName(valid.app);
   const envId = valid.environmentId;
   const volumes = strings(drill.volumes);
-  if (drill.name !== name || !volumes.every((volume) => volume.startsWith(`${name}_`))) {
+  if (drill.name !== name || !volumes.every((volume) => isDrillVolume(name, volume))) {
     throw invalid(`The drill's stack plan names something other than ${name} and its volumes`);
   }
   const attempt = async (step: () => Promise<unknown>) => {
@@ -393,7 +406,7 @@ export async function removeDrillStack(
   if (stackId !== undefined) {
     await attempt(async () => {
       const stack = await client.getStack(stackId);
-      if (stack?.name.toLowerCase() === name && stack.gitConfig === undefined) {
+      if (isDrillStack(name, stack)) {
         await client.removeStack(stackId, envId);
       }
     });
@@ -403,7 +416,7 @@ export async function removeDrillStack(
   const listed = await client.listVolumes(envId);
   const left = [
     ...stacks.filter((stack) => stack.name.toLowerCase() === name).map((stack) => stack.name),
-    ...listed.map((volume) => volume.name).filter((volume) => volume.startsWith(`${name}_`)),
+    ...listed.map((volume) => volume.name).filter((volume) => isDrillVolume(name, volume)),
   ];
   return { removed: left.length === 0, left };
 }

@@ -10,7 +10,7 @@ import {
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
 import { DRILL_LIMIT_SECONDS, DRILL_RECORD_PREFIX } from "../drill/record";
-import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours } from "../drill/script";
+import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours, drillWatchdog } from "../drill/script";
 import { offsiteExpires } from "../infra/storage";
 import {
   AGE_BINARY,
@@ -599,16 +599,7 @@ function drillScript(part: DrillPart): string[] {
     `  ${server.run} < /dev/null >> "$S"/log 2>&1 &`,
     "  drill_pid=$!",
     // The time limit: the server is killed, so the step that runs ends, and the scratch goes.
-    "  (",
-    '    drill_sleep=""',
-    "    trap 'kill \"$drill_sleep\" 2> /dev/null; exit 0' TERM",
-    `    sleep ${DRILL_LIMIT_SECONDS} &`,
-    "    drill_sleep=$!",
-    '    wait "$drill_sleep" || exit 0',
-    '    : > "$S"/.timed-out',
-    '    kill -s KILL "$drill_pid"',
-    "  ) < /dev/null > /dev/null 2>&1 &",
-    "  drill_watch=$!",
+    ...drillWatchdog("drill_", '"$S"/.timed-out', 'kill -s KILL "$drill_pid"'),
     "  drill_wait=0",
     `  until (${server.ready}) < /dev/null > /dev/null 2>&1; do`,
     "    drill_wait=$((drill_wait + 1))",

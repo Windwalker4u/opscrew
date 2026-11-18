@@ -32,8 +32,20 @@ export function drillApprovalLine(input: {
 /** How long a drill may take in all, then it stops and removes its copy (research R29 8.). */
 export const DRILL_LIMIT_SECONDS = 30 * 60;
 
+/** How long the app's health check may take to pass on a drill's copy (R17). */
+export const DRILL_HEALTH_SECONDS = 5 * 60;
+
+/** How long an app with no health check must keep running on a drill's copy (R17). */
+export const DRILL_RUNNING_SECONDS = 60;
+
+/** The seconds between two reads of the app's health on a drill's copy. */
+export const DRILL_HEALTH_POLL_SECONDS = 5;
+
 /** Each drill's line, beside `scheduled.log` in the app's folder: never a value. */
 export const DRILLS_LOG = `${SNAPSHOTS_DIR}/drills.log`;
+
+/** Each drill's line on a hosting account, in the app's folder there: never a value. */
+export const HOSTING_DRILLS_LOG = "state/drills.log";
 
 /** The start of the line `snapshot.sh drill` prints on stdout: its line of {@link DRILLS_LOG}. */
 export const DRILL_RECORD_PREFIX = "drill-record ";
@@ -140,4 +152,16 @@ export function drillRecord(line: string): DrillRecord | undefined {
     cleaned: fields.get("cleaned") === "yes",
     ...(reason === undefined ? {} : { reason }),
   };
+}
+
+/**
+ * The records of the {@link DRILL_RECORD_PREFIX} lines in `stdout` (`snapshot.sh drill`'s, or the
+ * log of a Portainer stack's `drill-<service>` container), oldest first; other lines are left out.
+ */
+export function drillRecordsIn(stdout: string): DrillRecord[] {
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith(DRILL_RECORD_PREFIX))
+    .map((line) => drillRecord(line.slice(DRILL_RECORD_PREFIX.length)))
+    .filter((record) => record !== undefined);
 }
