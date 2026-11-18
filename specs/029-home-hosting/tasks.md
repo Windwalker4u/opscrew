@@ -539,6 +539,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Reads: spec.md; plan 3., 6., 7., 11., 13., 14.; quickstart "A user hosts an app at home"; the
     guide's other pages for tone
   - Depends: waves 1–7 (the real strings)
+  - Also (lead, T2943's findings): a restart or reload of nftables on an iptables-nft host (Ubuntu 24.04's default) wipes every iptables table, ufw's included; OpsCrew's filter and Docker come back by themselves, ufw doesn't: the own-server page says to run `sudo ufw reload` after one.
   - Accept (FR-2916): when to host at home versus the tunnel; what to forward and the DHCP
     reservation; the IPv6 router rule; the updater (a script and two units, what it writes, how
     often, the 60 s TTL) and its token's recipe and reach (R14 plainly); the outside check and
