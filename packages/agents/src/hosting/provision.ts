@@ -30,6 +30,7 @@ import {
   describeHostingPlan,
   type HostingPlan,
   type HostingStep,
+  hostingPlanDrills,
   hostingPlanFile,
   hostingPlanHash,
   hostingPlanTitle,
@@ -194,6 +195,7 @@ export async function provisionHosting(
   const agentPlan = await buildAgentPlan({ header, panel, files, record, contents: agentFiles });
   const a = await panelPlanStep(deps, {
     plan: agentPlan,
+    app: plan.app.name,
     planOnly,
     command,
     apply: (hash) =>
@@ -272,6 +274,7 @@ export async function provisionHosting(
         });
   const b = await panelPlanStep(deps, {
     plan: appPlan,
+    app: plan.app.name,
     planOnly,
     command,
     apply: (hash) =>
@@ -373,6 +376,8 @@ async function panelPlanStep(
   deps: PhaseDeps,
   input: {
     plan: HostingPlan;
+    /** The app's name: `<app>-drill` is typed for a plan with restore drills. */
+    app: string;
     planOnly: boolean;
     command: string;
     apply: (hash: string) => ReturnType<typeof applyHostingPlan>;
@@ -380,10 +385,12 @@ async function panelPlanStep(
 ): Promise<PlanOutcome> {
   const { plan } = input;
   const hash = hostingPlanHash(plan);
+  const confirm = hostingPlanDrills(plan) ? `${input.app}-drill` : undefined;
   const done = await hostingPlanStep(deps, {
     ...input,
     hash,
-    details: describeHostingPlan(plan, hash),
+    details: describeHostingPlan(plan, hash, confirm),
+    ...(confirm !== undefined ? { confirmPhrase: confirm } : {}),
     title: hostingPlanTitle(plan),
     file: hostingPlanFile(deps.paths, plan.environment, plan.plan),
     which: plan.plan === "agent" ? "Hosting plan A (the agent)" : "Hosting plan B (the app)",

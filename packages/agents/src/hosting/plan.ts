@@ -368,9 +368,27 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
   }
 }
 
-/** The hosting plan in plain English, as shown before its approval, ending with its hash. */
-export function describeHostingPlan(plan: HostingPlan, hash: string): string {
+/**
+ * True when `plan` makes the drill database or turns the agent's scheduled drills on (a settings
+ * step with `drills`): each drill empties that database, so the plan is approved like a destroy,
+ * with `allowDestroy` and `<app>-drill` typed (constitution I).
+ */
+export function hostingPlanDrills(plan: HostingPlan): boolean {
+  return plan.steps.some(
+    (step) => step.kind === "drill-database" || ("drills" in step && step.drills !== undefined),
+  );
+}
+
+/**
+ * The hosting plan in plain English, as shown before its approval, ending with its hash; with
+ * `confirm` (`<app>-drill`, for a plan {@link hostingPlanDrills} names), it says that name is typed.
+ */
+export function describeHostingPlan(plan: HostingPlan, hash: string, confirm?: string): string {
   const panel = PANEL_NAMES[plan.panel];
+  const typed =
+    confirm === undefined
+      ? ""
+      : ` Each restore drill empties the drill database again, so this plan is approved like a deletion: with allowDestroy and ${confirm} typed.`;
   return describeAdapterPlan({
     heading:
       plan.plan === "agent"
@@ -378,7 +396,7 @@ export function describeHostingPlan(plan: HostingPlan, hash: string): string {
         : `Hosting plan B (the app) for ${plan.hostname} on the ${panel} account ${plan.account}`,
     items: plan.steps.map((step) => stepItem(plan, step)),
     findings: [],
-    note: `OpsCrew makes only what this plan lists, through ${panel}'s API, records each object it makes in .opscrew/hosting.json, and never changes or removes anything it didn't make.`,
+    note: `OpsCrew makes only what this plan lists, through ${panel}'s API, records each object it makes in .opscrew/hosting.json, and never changes or removes anything it didn't make.${typed}`,
     hashLabel: "Hosting plan hash",
     hash,
   });

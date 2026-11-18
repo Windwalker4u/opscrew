@@ -53,6 +53,8 @@ export const DRILL_LOGIN_FILE = "keys/drill.cnf";
  *   against the dump's `CREATE TABLE` lines and the drill database emptied again; its copy of the
  *   shared files listed (`tar -tzf`). The app isn't started, and its database and files are never
  *   read. One line per drill in `state/drills.log`, as `drillRecord` reads it, with no value.
+ *   Each drill, by hand or scheduled, runs for {@link DRILL_LIMIT_SECONDS} at most: then it is
+ *   stopped, the drill database emptied and the drill recorded `failed` (`timeout`).
  * - The scheduled drill (029 research R28, R29), with `DRILL_SCHEDULE` (`weekly` or `daily`) in the
  *   settings: the agent itself, after the releases and with no panel call, drills the newest
  *   `snapshot-*` in its slot ({@link DRILL_SLOT_AFTER_HOURS} hours into each week or day, UTC)
@@ -1223,8 +1225,34 @@ do_drill() {
     answer "$name" refused "restore drills are off here: ${DRILL_LOGIN_FILE}, the drill database's login, isn't there"
     return 0
   fi
-  drill_snapshot "$id" manual
+  limited_drill "$id" manual
   answer "$name" done "" "record=$DRILL_RECORD" \${DRILL_EXPECTED:+"expected=$DRILL_EXPECTED"}
+}
+
+# drill_snapshot of snapshot $1 ($2 manual or scheduled) in a bash of its own for
+# ${DRILL_LIMIT_SECONDS / 60} minutes at most, setting DRILL_RECORD and DRILL_EXPECTED as it does
+# (through state/drill.out). Stopped at the limit (or otherwise): the drill database emptied again
+# and the run recorded failed, timeout (or stopped), with no expected count.
+limited_drill() {
+  local start code=0 removal=- reason=stopped
+  start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  rm -f state/drill.out
+  export MYSQL_SOCKET
+  export -f say drill_snapshot replace_tables drill_mysql without_definers
+  timeout ${DRILL_LIMIT_SECONDS} bash -c 'set -eu -o pipefail; drill_snapshot "$1" "$2"; printf "record=%s\\nexpected=%s\\n" "$DRILL_RECORD" "$DRILL_EXPECTED" > state/drill.out' _ "$1" "$2" || code=$?
+  if [ "$code" -eq 0 ] && [ -f state/drill.out ]; then
+    DRILL_RECORD=$(value_of state/drill.out record)
+    DRILL_EXPECTED=$(value_of state/drill.out expected)
+    rm -f state/drill.out
+    return 0
+  fi
+  rm -f state/drill.out
+  DRILL_EXPECTED=""
+  if [ -f "dumps/$1.sql.gz" ]; then
+    if replace_tables - drill_mysql; then removal=removed; else removal=failed; fi
+  fi
+  if [ "$code" -eq 124 ]; then reason=timeout; fi
+  drill_line "$2" failed "$1" "$start" "$removal" "$reason"
 }
 
 # The newest snapshot in dumps/ (snapshot-<UTC time>, -2, -3… within one second), by its name; nothing
@@ -1248,11 +1276,12 @@ quota_room() {
   { quota -w 2> /dev/null || true; } | awk '$2 ~ /^[0-9]+\\*?$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { l = ($3 > 0) ? $3 : $4; if (l > 0) { r = l - ($2 + 0); if (m == "" || r < m) m = r } } END { if (m != "") print (m < 0 ? 0 : m) }'
 }
 
-# A scheduled drill's line in state/drills.log for one that didn't run to its end: the result $1,
-# the snapshot $2 (- for none), its start $3, removal= $4 and reason= $5.
+# DRILL_RECORD, appended to state/drills.log, for a drill ($1 manual or scheduled) that didn't run
+# to its end: the result $2, the snapshot $3 (- for none), its start $4, removal= $5 and reason= $6.
 drill_line() {
-  printf '%s scheduled %s id=%s start=%s parts=- tables=- removal=%s cleaned=no reason=%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "$5" >> state/drills.log || true
-  say "Scheduled restore drill of the snapshot $2: $1 ($5)."
+  DRILL_RECORD="$(date -u +%Y-%m-%dT%H:%M:%SZ) $1 $2 id=$3 start=$4 parts=- tables=- removal=$5 cleaned=no reason=$6"
+  printf '%s\\n' "$DRILL_RECORD" >> state/drills.log || true
+  say "Restore drill ($1) of the snapshot $3: $2 ($6)."
 }
 
 # The scheduled restore drill (029 research R28, R29), with DRILL_SCHEDULE weekly or daily, run
@@ -1260,12 +1289,11 @@ drill_line() {
 # slot is the hour ${DRILL_SLOT_AFTER_HOURS} hours into each week or day (UTC), a server's; one run
 # per slot, and only when the newest snapshot (newest_snapshot) isn't the one the last drill that
 # wasn't skipped proved. It is drill_snapshot's on that snapshot alone, in the drill database only,
-# for ${DRILL_LIMIT_SECONDS / 60} minutes at most: then it is stopped, the drill database emptied
-# and the run recorded failed (timeout). Skipped, recorded and never a failure: no snapshot yet
-# (none), a dump without the drill database's login (login), or a dump larger than the room the
-# account's quota leaves (quota).
+# for ${DRILL_LIMIT_SECONDS / 60} minutes at most (limited_drill). Skipped, recorded and never a
+# failure: no snapshot yet (none), a dump without the drill database's login (login), or a dump
+# larger than the room the account's quota leaves (quota).
 scheduled_drill() {
-  local every last now id dump start room code=0 removal=- reason
+  local every last now id dump start room
   case \${DRILL_SCHEDULE:-} in
     weekly) every=${drillScheduleHours("weekly")} ;;
     daily) every=${drillScheduleHours("daily")} ;;
@@ -1279,32 +1307,23 @@ scheduled_drill() {
   if [ -n "$id" ] && grep -v ' skipped ' state/drills.log 2> /dev/null | tail -n 1 | grep -q " id=$id "; then return 0; fi
   start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if [ -z "$id" ]; then
-    drill_line skipped - "$start" - none
+    drill_line scheduled skipped - "$start" - none
     return 0
   fi
   dump=dumps/$id.sql.gz
   if [ -f "$dump" ] && [ ! -f ${DRILL_LOGIN_FILE} ]; then
-    drill_line skipped "$id" "$start" - login
+    drill_line scheduled skipped "$id" "$start" - login
     return 0
   fi
   if [ -f "$dump" ]; then
     room=$(quota_room)
     if [ -n "$room" ] && [ "$room" -lt $((($(wc -c < "$dump") + 1023) / 1024)) ]; then
-      drill_line skipped "$id" "$start" - quota
+      drill_line scheduled skipped "$id" "$start" - quota
       return 0
     fi
   fi
   say "Scheduled restore drill of the snapshot $id."
-  export MYSQL_SOCKET
-  export -f say drill_snapshot replace_tables drill_mysql without_definers
-  timeout ${DRILL_LIMIT_SECONDS} bash -c 'set -eu -o pipefail; drill_snapshot "$1" scheduled' _ "$id" || code=$?
-  [ "$code" -ne 0 ] || return 0
-  if [ -f "$dump" ]; then
-    if replace_tables - drill_mysql; then removal=removed; else removal=failed; fi
-  fi
-  reason=stopped
-  if [ "$code" -eq 124 ]; then reason=timeout; fi
-  drill_line failed "$id" "$start" "$removal" "$reason"
+  limited_drill "$id" scheduled
 }
 
 # The header lines of the sections of the selector's ~/.cl.selector/htaccess_cache.

@@ -259,6 +259,40 @@ describe.skipIf(reason !== undefined)(
       expect(records(a)).toHaveLength(1);
     });
 
+    it("stops a drill by hand at the same limit, answering its failed record", () => {
+      const a = account();
+      snapshot(a, NEWER);
+      writeFileSync(`${a.stub}/drill-db`, "CREATE TABLE `notes` (\n");
+      writeFileSync(`${a.stub}/expire`, "");
+      at(a, slotStart("weekly") - 3600);
+      const expires = slotStart("weekly");
+      const request = (seconds: number) =>
+        a.request(`kind=drill\nhash=${"cd".repeat(32)}\nexpires=${seconds}\nsnapshot=${NEWER}\n`);
+      const name = request(expires);
+      expect(a.run().status).toBe(0);
+      const answer = a.keyValues(`state/${name}.result`);
+      expect(answer).toEqual({ result: "done", record: expect.any(String) });
+      expect(drillRecord(answer.record ?? "")).toMatchObject({
+        kind: "manual",
+        result: "failed",
+        id: NEWER,
+        removal: "removed",
+        reason: "timeout",
+      });
+      expect(a.file("state/drills.log")).toBe(`${answer.record}\n`);
+      expect(a.stubFile("drill-db")).toBe("");
+      expect(a.stubFile("timeout.log")).toContain("timeout 1800 bash");
+      expect(a.file("state/drill.out")).toBeUndefined();
+
+      // Within the limit, the answer carries the drill's own record and the expected count.
+      rmSync(`${a.stub}/expire`);
+      const again = request(expires + 1);
+      expect(a.run().status).toBe(0);
+      const done = a.keyValues(`state/${again}.result`);
+      expect(done).toMatchObject({ result: "done", expected: "2" });
+      expect(drillRecord(done.record ?? "")).toMatchObject({ kind: "manual", result: "healthy" });
+    });
+
     // A deploy switches a link (Git for Windows' ln copies a folder instead).
     it.skipIf(!CAN_LINK)("deploys a release first, in the same run under the agent's lock", () => {
       const a = account();
@@ -285,7 +319,13 @@ function functionText(name: string): string {
 
 describe("the hosting agent's scheduled drill routine", () => {
   it("never names the app's database, its login or its files, nor a panel", () => {
-    for (const name of ["newest_snapshot", "quota_room", "drill_line", "scheduled_drill"]) {
+    for (const name of [
+      "newest_snapshot",
+      "quota_room",
+      "drill_line",
+      "limited_drill",
+      "scheduled_drill",
+    ]) {
       const text = functionText(name);
       expect(text, name).not.toMatch(/\$\{?DATABASE\b/);
       for (const word of [
@@ -302,10 +342,13 @@ describe("the hosting agent's scheduled drill routine", () => {
         expect(text, `${name}: ${word}`).not.toContain(word);
       }
     }
-    const scheduled = functionText("scheduled_drill");
-    expect(scheduled).toContain(
-      "timeout 1800 bash -c 'set -eu -o pipefail; drill_snapshot \"$1\" scheduled'",
+    // Both kinds of drill run for 30 minutes at most.
+    expect(functionText("limited_drill")).toContain(
+      'timeout 1800 bash -c \'set -eu -o pipefail; drill_snapshot "$1" "$2";',
     );
+    expect(functionText("do_drill")).toContain('limited_drill "$id" manual');
+    const scheduled = functionText("scheduled_drill");
+    expect(scheduled).toContain('limited_drill "$id" scheduled');
     expect(scheduled).toContain("weekly) every=168 ;;");
     expect(scheduled).toContain("daily) every=24 ;;");
     expect(scheduled).toContain("% every)) -eq 3 ]");

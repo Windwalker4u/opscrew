@@ -67,10 +67,12 @@ export async function hostingPlanStep<Result extends { applied: readonly string[
     auditLabel: string;
     planOnly: boolean;
     command: string;
+    /** The name typed with `allowDestroy` for a plan that deletes data (`<app>-drill`). */
+    confirmPhrase?: string;
     apply: (hash: string) => Promise<Result>;
   },
 ): Promise<(Result & { approval: ApprovalRecord }) | undefined> {
-  const { plan, hash, details, which, place } = input;
+  const { plan, hash, details, which, place, confirmPhrase } = input;
   deps.reporter.info(details);
   if (plan.steps.length === 0) {
     deps.reporter.success(
@@ -88,6 +90,7 @@ export async function hostingPlanStep<Result extends { applied: readonly string[
     title: input.title,
     details,
     planHash: hash,
+    ...(confirmPhrase !== undefined ? { allowDestroy: true, confirmPhrase } : {}),
   });
   if (!approval.approved) {
     throw new PlanRefusedError({
@@ -95,10 +98,13 @@ export async function hostingPlanStep<Result extends { applied: readonly string[
       plan: which.replace(/^the /, ""),
       ...(approval.reason ? { reason: approval.reason } : {}),
       unchanged: `Nothing on the ${place} was changed by it.`,
-      hint: approveLaterHint(input.command, hash),
+      hint: approveLaterHint(input.command, hash, confirmPhrase),
     });
   }
-  await deps.approvals.assertApprovedHostingPlan(hash);
+  await deps.approvals.assertApprovedHostingPlan(
+    hash,
+    confirmPhrase !== undefined ? { allowDestroy: true } : {},
+  );
   deps.reporter.step(`Changing the ${input.changing} (${plural(plan.steps.length, "change")})`);
   const audit = auditOf(deps, hash);
   const changes = (kinds: readonly string[]) => kinds.filter((kind) => kind !== "panel-step");

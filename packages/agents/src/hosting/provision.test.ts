@@ -655,6 +655,54 @@ describe("provision on a cPanel account", () => {
     expect(again.result?.hostingPlanHashes).toBeUndefined();
   });
 
+  it("approves the plans that turn drills on with allowDestroy and <app>-drill typed, and the others as before", async () => {
+    const s = await setup();
+    const paths = (
+      await createTestPhaseDeps({
+        root: s.root,
+        env: { OPSCREW_HOME: join(s.root, ".home-opscrew") },
+      })
+    ).paths;
+    const designed = await readArtifact("plan", paths.files.plan);
+    const name = `${designed.app.name}-drill`;
+    await writeArtifact("plan", paths.files.plan, {
+      ...designed,
+      snapshots: { drills: { schedule: "weekly" } },
+    });
+    const hostingApprovals = (requests: readonly ApprovalRequest[]) =>
+      requests
+        .filter((request) => request.kind === "hosting-apply")
+        .map((request) => [request.allowDestroy, request.confirmPhrase]);
+
+    // Refused without the typed name: nothing on the account changes, and the hint says how.
+    const refused = await s.run({ answer: () => ({ approved: true, confirmation: "notes" }) });
+    expect(refused.error).toBeInstanceOf(OpsCrewError);
+    expect(changes(s.fake)).toEqual([]);
+
+    const on = await s.run();
+    expect(on.error).toBeUndefined();
+    expect(hostingApprovals(on.handler.requests)).toEqual([
+      [true, name],
+      [true, name],
+    ]);
+    const [a, b] = on.handler.requests.filter((request) => request.kind === "hosting-apply");
+    for (const request of [a, b]) {
+      expect(request?.details).toContain(
+        `Each restore drill empties the drill database again, so this plan is approved like a deletion: with allowDestroy and ${name} typed.`,
+      );
+    }
+    expect(b?.details).toContain("Make the drill database");
+
+    // Turning the schedule and the drills off asks as before.
+    await s.merge();
+    await writeArtifact("plan", paths.files.plan, designed);
+    const off = await s.run();
+    expect(off.error).toBeUndefined();
+    expect(hostingApprovals(off.handler.requests)).toEqual([[undefined, undefined]]);
+    expect(off.handler.requests[0]?.details).toContain("Remove the drill database");
+    expect(off.handler.requests[0]?.details).not.toContain("allowDestroy");
+  });
+
   it("changes nothing on a run again with nothing new", async () => {
     const s = await setup();
     expect((await s.run()).error).toBeUndefined();
