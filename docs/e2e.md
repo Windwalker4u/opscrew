@@ -3944,6 +3944,177 @@ throwaway server `opscrew-e2e-move-cf-b-<run id>` (labelled `managed-by=opscrew-
 key and firewall; reset both repositories; then the pass's folder. Never A's moved zone, a real app
 or anything the pass didn't make.
 
+## Hosting at home
+
+`packages/cli/test/live/home.test.ts`, with `OPSCREW_E2E_HOME=1`, runs feature 029's live pass
+([the guide](guide/home-hosting.md)) in legs run one at a time. A Hetzner server plays the home
+server; everything but the home line itself is real: Cloudflare, GitHub's machines, the address
+updater, the firewall and the deploys. Its results go to [e2e-coverage.md](e2e-coverage.md).
+
+**The stand-ins:**
+
+| At home | In the pass |
+|---|---|
+| The home server | a Hetzner Arm server of the cheapest `cax` type, set up as the user's own (root's login with the test's key, the host key confirmed at design) |
+| The router | a Hetzner Cloud firewall on it: TCP 80 and 443 from anywhere, SSH from this computer only |
+| The home network | `server.sshFrom` = this computer's public IPv4 address `/32` |
+| A new home address | the updater's A record set by the test to a `192.0.2.<n>` address (TEST-NET-1) |
+| An outside scanner | a second throwaway Hetzner server (x86, its own SSH key), made the first time a leg scans; it prints only `<family> <port> open\|refused\|filtered` |
+
+The app is `examples/flask-sqlite` with PostgreSQL added in `plan.yaml` (for H8), named
+`e2e-home-<run id>`, on `e2e-<run id>-home.<zone>`, in `OPSCREW_E2E_GITHUB_REPO`, which must be
+private (the server's runner never serves a public repository).
+
+**Between legs.** Each leg is its own vitest process. The pass keeps everything it needs in the
+folder `opscrew-e2e-home` under `OPSCREW_TEST_TMP`: `pass.json` (the run id, this computer's
+address, the zone, the app and its servers, which updater token the server holds, each leg's
+outcome and the figures for the coverage page), the checkout with OpsCrew's home and keys, every CLI
+output, and every version of the saved plans, the state files, `.opscrew/server.json` and
+`.opscrew/cloudflare.json` seen after a CLI run. The tokens are never written there: each leg reads
+them again from the environment. H0 to H6 run in that order, each once the one before it passed and
+never once a later one ran; H8 runs any time after H1 passed and before H7, which removes the
+server; H7 runs after anything, and no leg runs once it ran (run H7 again to its end, then start
+with H0). One leg runs in a process, and no step's title names another leg, so `-t "H<n>:"` takes
+that leg alone. Every command runs as a script runs it: each printed hash approved, and only the
+app's name typed.
+
+### The legs
+
+1. **H0, preflight** (read only): the zone of the pass's hostnames, with the hostname directly below
+   it; this computer's public address; no record of an earlier `e2e-` run left in the zone. Both
+   updater tokens: active user tokens, neither OpsCrew's nor the same token, each reading the zone's
+   DNS, and the inverse probes (the zone's Config, WAF and redirect rules, SSL and settings, the
+   account's tunnels, Access, R2 and Workers) all refused, recorded per token. The repository is
+   private.
+2. **H1, proxied over IPv4:** the server and its firewall; `init --fix`, `analyze`, the interview
+   (`server.home yes`, `server.serve proxy`, `server.sshFrom`), design (the public IPv4 address is
+   on the server's interface: "your router needs no forwards"; the server's runner; proxied), then
+   PostgreSQL added in `plan.yaml` and design again. Adapt, provision (the SSH table, the updater,
+   the web filter), the merges and the first deploy, whose jobs ran on the server's runner. On the
+   server: OpsCrew's SSH table names this computer, the updater's timer is active, its token file is
+   `600 root`; the proxied A record holds the server's address and there is no AAAA. Then the site
+   through Cloudflare, `verify` with the outside check passing on both ports, and the minutes from the
+   interview to a working site (SC-2901).
+3. **H2, a new address behind the proxy:** the A record set to `192.0.2.<n>`; the time until the
+   updater writes the server's address back (SC-2902), then until Cloudflare's edge answers from the
+   restored origin (O10). `status` shows the updater's last write and "hidden: behind Cloudflare's
+   proxy", with no address (SC-2905).
+4. **H3, a port not answering:** 443 removed at the router; `verify` fails, says port 443 didn't
+   answer from outside and offers the tunnel; the outside check records 443 as failed, and the
+   host plan's hash (`provision --plan-only`) and the state files' SHA-256 are the same before and
+   after. Then 443 back, and `verify` passes (run even after a failure, so the router is put back).
+5. **H4, DNS only:** the interview again with `server.serve dns-only`, design, provision (the app's
+   name typed) and the deploy; the updater's A and AAAA records, not proxied, with a 60 s TTL; a Let's
+   Encrypt certificate; the deploy workflow's health check through `--resolve`; the outside check
+   passing in direct mode. Then the router lets SSH in from anywhere, as a router forwarding it by
+   mistake would: the scanner finds 80 and 443 open and 22 filtered or refused over IPv4 and IPv6
+   (SC-2904, FR-2909), while root still logs in from this computer; SSH goes back to this computer
+   only (run even after a failure). Then the address change again, with DNS only (SC-2902).
+6. **H5, the AAAA record:** it holds the server's IPv6 address; the server's global IPv6 addresses
+   are taken off its interface (kept in a file on the server) and the AAAA goes on the updater's
+   next run while the A stays; the addresses back (and the default route, when it went), and the
+   AAAA returns (run even after a failure).
+7. **H6, behind the proxy over IPv6:** the interview again with `server.serve proxy`, design,
+   `target.home.ipv4: false` set in `plan.yaml`, design again (it keeps the setting), provision and
+   the deploy: a proxied AAAA and no A record, and OpsCrew's table `inet opscrew-web` on the server.
+   The site answers through Cloudflare to this computer and to GitHub's machines (`verify`), both
+   over IPv4 (O9); the scanner finds 443 filtered over IPv6 (its IPv4 result is recorded).
+8. **H8, a restore drill and the database check** (run it before H7): a table in PostgreSQL and a
+   snapshot. `restore --drill <id>` as a script runs it (the drill hash and `<app>-drill` typed):
+   healthy, PostgreSQL restored with its tables, the copy removed, production's containers (their
+   ids and start times) and volumes unchanged, nothing of `<app>-drill` left. Then `--keep`: every
+   network of the copy is internal and a request from the copy's app container to the internet
+   fails; `restore --drill --remove` (its removal hash) leaves nothing, and `status` shows the last
+   drill. Then two sessions of the test's own (`opscrew-e2e-holder`, a transaction left open that
+   holds a lock, and `opscrew-e2e-waiter`, waiting for it); after five and a half minutes (advise's
+   threshold for an open transaction is five), `advise --json` names both (`db.<server>.blocked`,
+   `db.<server>.idle-transaction`), its database check without a timeout finding (its limit is 20
+   seconds), and production, the states and the two sessions are as before. The sessions end at
+   the leg's end, even after a failure.
+9. **H7, rotate, the switch out, destroy, the leak scan and the cleanup:** `rotate dns-updater`
+   with the second token (its host plan approved by its hash), which names the page where the old
+   token is deleted; the server's token file holds the second token (compared by SHA-256). The
+   interview again with `server.serve tunnel`, design (no `target.home`), provision: the host plan
+   that removes the updater, the deletion of its records with the app's name typed, then the tunnel;
+   the tunnel serving, no updater record or token file left, and the outside check's workflow gone
+   from `main`. `destroy` (the app, its containers and the server's runner gone, the deploy user
+   kept), then `destroy --undo-host` (the deploy user and the tables `inet opscrew` and
+   `inet opscrew-web` gone, root still logs in). Then, even after a failure, the leak scan (SC-2906)
+   and the cleanup.
+
+**The leak scan** looks for every secret the pass knows (the tokens, the test's and OpsCrew's keys,
+the state passphrase, OpsCrew's generated values, the tunnel's outputs) in every CLI output of every
+leg, every kept version of the local files, the commits of every branch, the pull requests since
+the pass started, the audit log and the logs of every outside check run. It looks for the home
+server's addresses in commits, pull requests, those run logs and every CLI output except those of
+DNS only (H4, H5, or a plan neither proxied nor a tunnel), where design and status show them on
+purpose; and for its IPv6 address in `server.json`, which never keeps a public address. The
+stand-in's IPv4 address is also its address on the home network, which `server.json`, the saved
+plans and the state files keep, so they are searched for secrets only. This computer's address and
+the scanner's are never searched for.
+
+**The cleanup** deletes every server, SSH key and firewall labelled with the run at Hetzner (the
+home server, its firewall and the scanner); removes at Cloudflare what holds the app's name or the
+run's hostnames (records, tunnels, Access applications, policies and service tokens), its origin
+TLS not there before H1, and its hostnames in OpsCrew's shared rules; deletes the app's runner from
+the repository; puts `main` back to the example's commit and resets the repository. What it found
+and removed is listed (and recorded as a figure); anything it couldn't remove fails the leg and
+keeps the pass's folder. With nothing left, it logs every figure for the coverage page and removes
+the folder.
+
+After a failed leg, fix the cause, rebuild the CLI and run the leg again, or run H7 to clean up.
+H1 doesn't run twice: after a failed H1, run H7, then H0 and H1.
+
+### Variables and running it
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_HOME` | `1` runs the pass. |
+| `OPSCREW_E2E_HCLOUD_TOKEN` | The home server, its firewall and the scanner. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [your own server](#your-own-server), with the tunnel and Access permissions for H7's switch to the tunnel. |
+| `OPSCREW_E2E_DNS_UPDATER_TOKEN` | The updater's token: a user token with only Zone → DNS → Edit on the zone. |
+| `OPSCREW_E2E_DNS_UPDATER_TOKEN_B` | A second such token, for H7's rotation. |
+| `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_GITHUB_REPO` | As for your own server; the repository must be private. |
+| `OPSCREW_TEST_TMP` | Where the pass keeps its folder: a drive with space, never inside a Git checkout. |
+| `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional: an Arm type other than the cheapest. |
+| `OPSCREW_E2E_REGION` | Optional, as for your own server (Hetzner's Arm types are in `eu-central`). |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_TEST_TMP=D:/opscrew-test-tmp \
+  OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=example.com \
+  OPSCREW_E2E_DNS_UPDATER_TOKEN=… OPSCREW_E2E_DNS_UPDATER_TOKEN_B=… \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e
+export PATH="$PWD/../../.tools/bin:$PATH"
+for leg in H0 H1 H2 H3 H4 H5 H6 H8 H7; do
+  OPSCREW_E2E_HOME=1 npx vitest run test/live/home.test.ts -t "$leg:" || break
+done
+```
+
+When a leg fails, the loop stops there: fix the cause, run that leg again, and go on from it; or
+run H7 alone to clean up.
+
+**Expected time and cost** (not measured yet): H0 a few minutes; H1 about 1 to 1.5 hours (a
+provision and a deploy built on the Arm server); H2 and H5 about 10 to 15 minutes each (each
+address change waits for the updater's next run, every 2 minutes); H3 about 15 minutes (two
+outside checks); H4 and H6 about 45 minutes each (a provision, a deploy, Let's Encrypt in H4, the
+scanner made in H4); H8 about 30 minutes (two drills and the five and a half minutes' wait); H7 about
+an hour. In all about 5 hours: the Arm server (about 0.006 EUR an hour) from H1 to H7 and the
+scanner (about 0.006 EUR an hour) from H4 to H7 cost a few cents; the firewall, the zone on
+Cloudflare's free plan and the tokens cost nothing, plus a few GitHub Actions minutes for the
+outside checks (the deploys run on the server's own runner).
+
+### Cleanup
+
+H7 is the cleanup; run it after the last leg, or after a failure that leaves the pass where it can't
+go on. **If H7 can't run**, delete by hand only what the pass made: at Hetzner, the servers
+`opscrew-e2e-home-<run id>` and `opscrew-e2e-home-scan-<run id>`, their SSH keys and the firewall
+(all labelled `managed-by=opscrew-e2e` and `run=<run id>`); at Cloudflare, the records holding
+`e2e-<run id>` and the tunnel, Access applications, policies and service tokens holding
+`e2e-home-<run id>`; the app's runner in the repository; reset the repository; then the pass's
+folder. Never a record, tunnel or server that isn't the pass's.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
