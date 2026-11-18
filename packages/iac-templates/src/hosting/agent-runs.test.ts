@@ -741,7 +741,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     expect(taken).toEqual({ result: "done", dump: `${id}.sql.gz`, shared: copy });
     expect(dumpOf(a, taken.dump ?? "")).toContain("state=before");
     expect(a.stubFile("mysql.log")).toContain(
-      "mysqldump --defaults-extra-file=shared/mysql.cnf --single-transaction --no-tablespaces acct_notes\n",
+      "mysqldump --defaults-file=shared/mysql.cnf --single-transaction --no-tablespaces acct_notes\n",
     );
     expect(readdirSync(`${a.dir}/dumps`).sort()).toEqual([taken.dump, copy].sort());
     expect(tarNames(`${a.dir}/dumps`, copy)).toEqual([
@@ -782,6 +782,26 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
       result: "refused",
       reason: "the snapshot nope isn't in dumps/",
     });
+  });
+
+  it("signs in to the app's database with shared/mysql.cnf alone, whatever ~/.my.cnf says", () => {
+    const a = account();
+    a.run();
+    // The account's own login, which the client would read after an extra option file.
+    writeFileSync(`${a.home}/.my.cnf`, "[client]\nuser=acct\npassword=other\n");
+    writeFileSync(`${a.stub}/db`, "state=before\n");
+    const snapshot = a.request(requestText({ kind: "snapshot" }));
+    a.run();
+    const taken = a.keyValues(`state/${snapshot}.result`);
+    expect(taken.result).toBe("done");
+    writeFileSync(`${a.stub}/db`, "state=after\n");
+    const restore = a.request(requestText({ kind: "restore", snapshot: idOf(taken.dump) }));
+    a.run();
+    expect(a.keyValues(`state/${restore}.result`).result).toBe("done");
+    expect(a.stubFile("db")).toBe("state=before\n");
+    const logins = new Set(a.stubFile("logins").split("\n").filter(Boolean));
+    expect(logins).toEqual(new Set(["mysqldump acct_notes", "mysql acct_notes"]));
+    expect(a.stubFile("mysql.log")).not.toContain("--defaults-extra-file");
   });
 
   it("snapshots and restores the shared files of an app without a database, and refuses one with neither", () => {

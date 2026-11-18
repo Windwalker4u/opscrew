@@ -608,9 +608,10 @@ serve() {
 # Step 9, on the hostname (user_ini_block turns opcache.revalidate_path on):
 ${healthCheck('"$(site_url)$HEALTH_PATH"', '[ "$APP_KIND" = php ]')}
 
-# Dumps the app's database into file $1 (gzip), 0600; fails without leaving a partial file.
+# Dumps the app's database into file $1 (gzip), 0600; fails without leaving a partial file. Like
+# app_mysql, it reads shared/mysql.cnf alone.
 dump() {
-  if mysqldump --defaults-extra-file=shared/mysql.cnf --single-transaction --no-tablespaces "$DATABASE" | gzip > "$1.partial"; then
+  if mysqldump --defaults-file=shared/mysql.cnf --single-transaction --no-tablespaces "$DATABASE" | gzip > "$1.partial"; then
     chmod 0600 "$1.partial"
     mv -f "$1.partial" "$1"
     return 0
@@ -619,19 +620,21 @@ dump() {
   return 1
 }
 
-# The mysql client on the app's database, signed in with shared/mysql.cnf, the options $@ before
-# the database's name.
+# The mysql client on the app's database, the options $@ before the database's name, signed in
+# with shared/mysql.cnf ([client]: the app's user, its password and the host): with
+# --defaults-file no other option file is read, so no login of the account's own (~/.my.cnf)
+# takes the app's place.
 app_mysql() {
-  mysql --defaults-extra-file=shared/mysql.cnf "$@" "$DATABASE"
+  mysql --defaults-file=shared/mysql.cnf "$@" "$DATABASE"
 }
 
 # Replaces every table and view of the database the mysql client $2 (app_mysql or drill_mysql)
-# reaches with the dump $1, or with nothing for -: they go first, so the ones made since the dump
-# go too.
+# reaches with the dump $1, read through the filter $3 when there is one, or with nothing for -:
+# they go first, so the ones made since the dump go too.
 replace_tables() {
   local drops
   drops=$("$2" -N -B -e "SELECT CONCAT('DROP ', IF(table_type = 'VIEW', 'VIEW', 'TABLE'), ' IF EXISTS \\\`', REPLACE(table_name, '\\\`', '\\\`\\\`'), '\\\`;') FROM information_schema.tables WHERE table_schema = DATABASE()") || return 1
-  { printf 'SET FOREIGN_KEY_CHECKS=0;\\n%s\\n' "$drops" && if [ "$1" != - ]; then gunzip -c "$1"; fi; } | "$2"
+  { printf 'SET FOREIGN_KEY_CHECKS=0;\\n%s\\n' "$drops" && if [ "$1" != - ]; then gunzip -c "$1" | "\${3:-cat}"; fi; } | "$2"
 }
 
 # Replaces the app's database with the dump $1.
@@ -1129,9 +1132,18 @@ drill_mysql() {
   mysql --defaults-file=${DRILL_LOGIN_FILE} "$@"
 }
 
+# The dump on standard input without its DEFINER= clauses, for the drill database: its views,
+# triggers and routines name the app's database user as their definer, which the drill's user may
+# not set, so they are made with the drill's user as theirs. Rows (INSERT lines) pass as they are;
+# the dump file itself is never changed.
+without_definers() {
+  sed '/^INSERT /!s/DEFINER=\`[^\`]*\`@\`[^\`]*\`//g'
+}
+
 # A restore drill of snapshot $1, $2 manual or scheduled, which reads neither the app's database
 # nor its files. Its dump, when it has one: gzip -t and its size, then loaded into the drill
-# database only (every table and view in it dropped first), its tables counted against the dump's
+# database only (every table and view in it dropped first, the dump's DEFINER= clauses left out:
+# without_definers), its tables counted against the dump's
 # CREATE TABLE lines (names and counts only, never a row), and the drill database emptied again.
 # Its copy of the shared files, when it has one: listed with tar -tzf, nothing unpacked. The app
 # isn't started. DRILL_RECORD is the run's line, appended to state/drills.log with no value in it:
@@ -1151,7 +1163,7 @@ drill_snapshot() {
       result=not-restored reason=dump
     else
       DRILL_EXPECTED=$(gunzip -c "$dump" | grep -c '^CREATE TABLE ' || true)
-      if replace_tables "$dump" drill_mysql; then
+      if replace_tables "$dump" drill_mysql without_definers; then
         parts=database:$size:$((SECONDS - began))
         if count=$(drill_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'") && [[ $count =~ ^[0-9]+$ ]]; then
           tables=database:$count

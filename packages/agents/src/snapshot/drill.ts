@@ -711,7 +711,6 @@ export async function drillSnapshot(
   const { services = {}, ...rest } = options;
   const request: DrillRequest = { ...(id === undefined ? {} : { id }), ...rest };
   const run = await snapshotRun(deps, services);
-  if (id !== undefined) requireSnapshotId(id);
   const { plan, environment } = run;
   if (isHostingTarget(plan.target)) {
     if (plan.target.panel === "sftp") {
@@ -723,8 +722,10 @@ export async function drillSnapshot(
         },
       );
     }
+    // A hosting account's ids (snapshot-<time>, a release's) are checked by its own drill.
     return drillOnHosting(run, services, request);
   }
+  if (id !== undefined) requireSnapshotId(id);
   const target = snapshotTarget(run);
   if (target === "portainer") return drillInPortainer(run, services, request);
   await requireNoDeployOrMove(run, "run a restore drill");

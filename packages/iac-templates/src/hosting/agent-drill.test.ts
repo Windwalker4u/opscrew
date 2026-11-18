@@ -144,6 +144,41 @@ describe.skipIf(reason !== undefined)(
       expect(a.file("state/agent.log")).toContain(`Restore drill of the snapshot ${ID}: healthy.`);
     });
 
+    it("loads views and triggers without their DEFINER=, as the drill's own user, the dump unchanged", () => {
+      const a = account();
+      // The account's own login, which must never take the drill user's place.
+      writeFileSync(`${a.home}/.my.cnf`, "[client]\nuser=acct\npassword=other\n");
+      const definer = "DEFINER=`acct_notes`@`localhost`";
+      const dump = [
+        DUMP,
+        "INSERT INTO `notes` VALUES (2,'a note quoting DEFINER=`x`@`y`');",
+        "/*!50001 CREATE ALGORITHM=UNDEFINED */",
+        `/*!50013 ${definer} SQL SECURITY DEFINER */`,
+        "/*!50001 VIEW `recent` AS select `notes`.`id` AS `id` from `notes` */;",
+        `/*!50003 CREATE*/ /*!50017 ${definer}*/ /*!50003 TRIGGER \`notes_bi\` BEFORE INSERT ON \`notes\` FOR EACH ROW SET NEW.id = NEW.id */;;`,
+        "",
+      ].join("\n");
+      snapshot(a, { dump, shared: false });
+      const before = readFileSync(`${a.dir}/dumps/${ID}.sql.gz`);
+
+      expect(recordOf(drill(a))).toMatchObject({
+        result: "healthy",
+        tables: [{ service: "database", count: 2 }],
+      });
+      const loaded = a.stubFile("drill-input");
+      expect(loaded).not.toContain(definer);
+      expect(loaded).toContain("/*!50013  SQL SECURITY DEFINER */");
+      expect(loaded).toContain("/*!50017 */ /*!50003 TRIGGER `notes_bi` BEFORE INSERT ON `notes`");
+      expect(loaded).toContain("VIEW `recent` AS select");
+      // A row's text passes as it is.
+      expect(loaded).toContain("'a note quoting DEFINER=`x`@`y`'");
+      expect(readFileSync(`${a.dir}/dumps/${ID}.sql.gz`)).toEqual(before);
+      // Every call signed in as the drill's user, never as the account's.
+      expect(new Set(a.stubFile("logins").split("\n").filter(Boolean))).toEqual(
+        new Set(["mysql acct_notes_drill"]),
+      );
+    });
+
     it("tells a dump that is no gzip file, one that doesn't load and tables that don't match apart", () => {
       const a = account();
       snapshot(a, { dump: Buffer.from("not a gzip file"), shared: false }, "snapshot-a");

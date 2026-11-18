@@ -410,7 +410,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --drill on a server", () => {
     const panel = await snapshotWorld(hosting("cpanel"));
     expect(
       (await failure(drillSnapshot(panel.deps, undefined, { services: panel.services }))).code,
-    ).toBe("INTERNAL");
+    ).toBe("PHASE_PRECONDITION");
   });
 });
 

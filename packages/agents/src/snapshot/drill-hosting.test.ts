@@ -253,6 +253,18 @@ describe("opscrew restore --drill on a hosting account", () => {
     });
   });
 
+  it("takes a hosting account's snapshot id through `opscrew restore --drill <id>`", async () => {
+    const app = await drillWorld();
+    const handler = new ScriptedApprovalHandler(() => false);
+    const deps = await app.deps(handler);
+    // Refused at the approval: the account's own drill was reached with that id, nothing asked.
+    await expect(drillSnapshot(deps, ID)).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    expect(handler.requests.map((request) => request.title)).toEqual([
+      `Run a restore drill of the snapshot ${ID} of prod on the hosting account`,
+    ]);
+    expect(app.account.paths().some((path) => path.includes("/requests/"))).toBe(false);
+  });
+
   it("is refused on an SFTP host, which keeps no snapshots", async () => {
     const app = await hostedApp({ database: false });
     const deps = await app.deps();
