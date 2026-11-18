@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { hasDeployment } from "../shared";
+import { hostingDrillStatusLines } from "../status/drill";
 import { hostingAccountLines, readHostingAccount } from "./facts";
 import { connectPanel, hostingFiles, PANEL_NAMES } from "./panels";
 import { hostingFolder, hostingTarget, hostnameOf } from "./provision-plans";
@@ -205,7 +206,8 @@ async function certificateLine(panel: HostingPanel, hostname: string): Promise<s
 /**
  * What `status` shows of an app on a hosting account (027 plan 6), read-only: the account and the
  * app's folder, the running release and those kept, the last attempt and its reason (from the
- * agent's `state/status`), the hostname's certificate, the account's facts with its disk left
+ * agent's `state/status`), the last restore drill (`hostingDrillStatusLines`, 029), the
+ * hostname's certificate, the account's facts with its disk left
  * (`hostingAccountLines`), and for a PHP app on Apache that a switch reaches every PHP process in
  * about 2 minutes (research R16). A part that can't be read says why in its place; nothing is read
  * before provision ran. Redacted.
@@ -264,6 +266,9 @@ export async function hostingStatusReport(
       );
     } catch (error) {
       lines.push(...note("the agent's status", error));
+    }
+    if (reach.files !== undefined) {
+      lines.push(...(await hostingDrillStatusLines(deps, plan, reach.files)));
     }
     try {
       lines.push(await certificateLine(reach.panel, reach.hostname));

@@ -208,11 +208,23 @@ function overdueWarning(
   ];
 }
 
-/** The last line of the drills' log in the app's folder on this computer, `""` without one. */
+/** The records of the drills' log lines in `text`, oldest first. */
+function drillRecords(text: string): DrillRecord[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => drillRecord(line))
+    .filter((record) => record !== undefined);
+}
+
+/** The last of `records` that ran (not a skip), whose end the overdue warning counts from. */
+function lastRan(records: readonly DrillRecord[]): DrillRecord | undefined {
+  return records.findLast((record) => record.result !== "skipped");
+}
+
+/** The drills' log in the app's folder on this computer, `""` without one. */
 async function computerDrillLog(deps: PhaseDeps, plan: DeployPlan): Promise<string> {
   try {
-    const text = await readFile(join(appFolder(deps.paths, plan), DRILLS_LOG), "utf8");
-    return text.split(/\r?\n/).findLast((line) => line.trim() !== "") ?? "";
+    return await readFile(join(appFolder(deps.paths, plan), DRILLS_LOG), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw new OpsCrewError(
@@ -224,16 +236,17 @@ async function computerDrillLog(deps: PhaseDeps, plan: DeployPlan): Promise<stri
 }
 
 /**
- * Each scheduled dump drill's last record in the user's Portainer, by its service: the last
- * {@link DRILL_RECORD_PREFIX} line of each `drill-<service>` container of the app's stack, through
- * Portainer's Docker proxy. A recreated container starts a new log, so its record is gone then.
+ * Each scheduled dump drill's last record in the user's Portainer, by its service, and its last
+ * that ran (not a skip): the {@link DRILL_RECORD_PREFIX} lines of each `drill-<service>`
+ * container of the app's stack, through Portainer's Docker proxy. A recreated container starts a
+ * new log, so its records are gone then.
  */
 async function readDumpDrills(
   deps: PhaseDeps,
   plan: DeployPlan,
   flags: string,
   services: SnapshotServices,
-): Promise<{ service: string; record: DrillRecord }[]> {
+): Promise<{ service: string; record: DrillRecord; ran?: DrillRecord }[]> {
   const place = await portainerPlace({
     deps,
     plan,
@@ -245,15 +258,21 @@ async function readDumpDrills(
     .map((container) => ({ container, name: container.labels[COMPOSE_SERVICE_LABEL] ?? "" }))
     .filter(({ name }) => name.startsWith("drill-"))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const drills: { service: string; record: DrillRecord }[] = [];
+  const drills: { service: string; record: DrillRecord; ran?: DrillRecord }[] = [];
   for (const { container, name } of loops) {
     const { stdout } = await place.docker.containerLogs(container.id);
-    const line = stdout
-      .split(/\r?\n/)
-      .findLast((each) => each.startsWith(DRILL_RECORD_PREFIX))
-      ?.slice(DRILL_RECORD_PREFIX.length);
-    const record = line === undefined ? undefined : drillRecord(line);
-    if (record !== undefined) drills.push({ service: name.slice("drill-".length), record });
+    const records = drillRecords(
+      stdout
+        .split(/\r?\n/)
+        .filter((each) => each.startsWith(DRILL_RECORD_PREFIX))
+        .map((each) => each.slice(DRILL_RECORD_PREFIX.length))
+        .join("\n"),
+    );
+    const record = records.at(-1);
+    const ran = lastRan(records);
+    if (record !== undefined) {
+      drills.push({ service: name.slice("drill-".length), record, ...(ran ? { ran } : {}) });
+    }
   }
   return drills;
 }
@@ -270,9 +289,10 @@ function newestEnd(records: readonly DrillRecord[]): string | undefined {
  * The lines on restore drills of the app's server, this computer or the user's Portainer when it
  * holds data: the last drill (in a Portainer the last by hand and each dump's last scheduled
  * one), or with `snapshots.drills` on and none yet a line that says so; with a schedule, a warning
- * when the newest ended more than twice the schedule and an hour ago; a note when they cannot be
- * read. None elsewhere, or with neither a drill nor the setting. On a server the drills' log's
- * last line is `serverLog`, read with the snapshots (`snapshotStatusReport`), and none without it;
+ * when the newest drill that ran (skips aside) ended more than twice the schedule and an hour ago;
+ * a note when they cannot be read. None elsewhere, or with neither a drill nor the setting. On a
+ * server `serverLog` holds the drills' log's last line that ran and its last line, read with the
+ * snapshots (`snapshotStatusReport`), and there is none without it;
  * on this computer it is read from the app's folder, with no shell; in a Portainer through
  * `services`' client, the scheduled ones only with the schedule on.
  */
@@ -293,30 +313,38 @@ export async function drillStatusReport(
   const redact = (lines: string[]) => lines.map((line) => deps.redactor.redact(line));
   try {
     if (target === "portainer") {
-      const manual = (await readPortainerDrills(deps.paths)).at(-1);
+      const manuals = await readPortainerDrills(deps.paths);
+      const manual = manuals.at(-1);
       const dumps = every === undefined ? [] : await readDumpDrills(deps, plan, flags, services);
-      const since = newestEnd([
-        ...(manual === undefined ? [] : [manual]),
-        ...dumps.map((each) => each.record),
-      ]);
-      if (since === undefined) {
+      if (manual === undefined && dumps.length === 0) {
         return { lines: plan.snapshots?.drills === undefined ? [] : [NONE_YET(flags)] };
       }
+      const since = newestEnd(
+        [lastRan(manuals), ...dumps.map((each) => each.ran)].filter((each) => each !== undefined),
+      );
       return {
         lines: redact([
           ...(manual === undefined ? [] : [drillStatusLine(manual, flags, target)]),
           ...dumps.map(({ service, record }) => dumpDrillLine(service, record)),
-          ...overdueWarning(deps, every, since, "the last one ended", { target, flags }),
+          ...(since === undefined
+            ? []
+            : overdueWarning(deps, every, since, "the last one ended", { target, flags })),
         ]),
         ...(manual === undefined ? {} : { drill: manual }),
       };
     }
-    const log = target === "computer" ? await computerDrillLog(deps, plan) : (serverLog ?? "");
-    const drill = log === "" ? undefined : drillRecord(log);
+    const records = drillRecords(
+      target === "computer" ? await computerDrillLog(deps, plan) : (serverLog ?? ""),
+    );
+    const drill = records.at(-1);
     if (drill === undefined) {
       return { lines: plan.snapshots?.drills === undefined ? [] : [NONE_YET(flags)] };
     }
-    const warning = overdueWarning(deps, every, drill.end, "the last one ended", { target, flags });
+    const ran = lastRan(records);
+    const warning =
+      ran === undefined
+        ? []
+        : overdueWarning(deps, every, ran.end, "the last one ended", { target, flags });
     return { lines: redact([drillStatusLine(drill, flags, target), ...warning]), drill };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
@@ -346,10 +374,7 @@ export async function hostingDrillStatusLines(
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const every = plan.snapshots?.drills?.schedule;
   try {
-    const records = ((await files.readFile(`${folder}/state/drills.log`)) ?? "")
-      .split(/\r?\n/)
-      .map((line) => drillRecord(line))
-      .filter((record) => record !== undefined);
+    const records = drillRecords((await files.readFile(`${folder}/state/drills.log`)) ?? "");
     const last = records.at(-1);
     const lines =
       last !== undefined
@@ -358,7 +383,7 @@ export async function hostingDrillStatusLines(
           ? []
           : [NONE_YET(flags)];
     if (every !== undefined) {
-      const proved = records.findLast((record) => record.result !== "skipped")?.id;
+      const proved = lastRan(records)?.id;
       const newest = ((await files.list(`${folder}/dumps`)) ?? [])
         .map((name) => ACCOUNT_SNAPSHOT.exec(name))
         .filter((match) => match !== null)

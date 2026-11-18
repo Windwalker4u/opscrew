@@ -292,15 +292,33 @@ describe.skipIf(!SH_AVAILABLE)("status's restore drill with a schedule on a serv
     const world = await snapshotWorld(scheduled("daily"));
     await world.servers.app?.write(
       DRILLS_LOG,
-      `${line("skipped", "parts=- health=- tables=- removal=- cleaned=no reason=memory")}\n`,
+      `${HEALTHY}\n2026-11-19T03:00:02Z scheduled skipped id=- version=- start=2026-11-19T03:00:01Z parts=- health=- tables=- removal=- cleaned=no reason=memory\n`,
     );
     world.deps.clock = { now: () => new Date("2026-11-20T15:10:00Z") };
     const { lines } = await serverReport(world);
     expect(lines).toEqual([
-      `Last restore drill: ${ID}, 2026-11-18 14:06 UTC, skipped: too little free memory.`,
+      "Last restore drill: no snapshot, scheduled, 2026-11-19 03:00 UTC, skipped: too little free memory.",
       `Warning: no restore drill within two days, though they are scheduled daily: the last one ended 2026-11-18 14:06 UTC. ${NO_DRILL.server}`,
     ]);
     expect(lines.join("\n")).not.toMatch(/failed/);
+  });
+
+  it("counts from the last drill that ran, so a string of skips doesn't hide the warning", async () => {
+    const world = await snapshotWorld(scheduled());
+    const skip = (day: string) =>
+      `2026-${day}T03:00:02Z scheduled skipped id=${ID} version=- start=2026-${day}T03:00:01Z parts=- health=- tables=- removal=- cleaned=no reason=locked`;
+    await world.servers.app?.write(
+      DRILLS_LOG,
+      `${HEALTHY}\n${skip("11-25")}\n${skip("12-02")}\n${skip("12-09")}\n`,
+    );
+    world.deps.clock = { now: () => new Date("2026-12-10T12:00:00Z") };
+    expect((await serverReport(world)).lines).toEqual([
+      `Last restore drill: ${ID}, scheduled, 2026-12-09 03:00 UTC, skipped: a deploy, a snapshot or a restore was running.`,
+      `Warning: no restore drill within two weeks, though they are scheduled weekly: the last one ended 2026-11-18 14:06 UTC. ${NO_DRILL.server}`,
+    ]);
+    // Only skips, and no drill that ran: nothing to count from.
+    await world.servers.app?.write(DRILLS_LOG, `${skip("11-25")}\n${skip("12-09")}\n`);
+    expect((await serverReport(world)).lines).toHaveLength(1);
   });
 });
 

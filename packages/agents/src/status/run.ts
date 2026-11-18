@@ -333,7 +333,7 @@ export async function componentStatusReport(
     report.status === undefined ||
     (plan.target.provider !== "localhost" && snapshots.snapshot === undefined)
       ? { lines: [] }
-      : await drillStatusReport(deps, plan, snapshots.drillLog);
+      : await drillStatusReport(deps, plan, snapshots.drillLog, snapshotServices);
   const state = await checkStateReport(deps, plan, options.services?.github);
   return {
     ...report,

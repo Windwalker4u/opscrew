@@ -17,11 +17,15 @@ import {
   valueFingerprints,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, plural, tfstateFile, writeFileAtomic } from "@opscrew/core";
+import { listText, OpsCrewError, plural, tfstateFile, writeFileAtomic } from "@opscrew/core";
 import {
+  DRILL_SLOT_AFTER_HOURS,
+  drillScheduleHours,
   PORTAINER_STACK_VARIABLES,
   portainerSecretVariables,
   portainerStackEnvKeys,
+  portainerStackName,
+  portainerStackVolumes,
   portainerTarget,
   portainerWebhookHostname,
   type RuntimeContext,
@@ -36,6 +40,7 @@ import {
   type Requirements,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { parse } from "yaml";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
@@ -265,6 +270,58 @@ export interface PortainerStacksInput {
   offsite?: () => Promise<Record<string, string>>;
   /** The stack Caddy's origin TLS and its bundle as rendered: none until known. */
   origin: () => { tls?: RuntimeContext["originTls"]; bundle?: string };
+}
+
+/** The suffix of a scheduled dump drill's scratch volume (`<service>_drill`, iac-templates'). */
+const DRILL_VOLUME = "_drill";
+
+/** A scheduled dump drill's service in a stack file, and its period in seconds. */
+const drillLoop = (service: string, every: string) => `drill-${service} ${every}`;
+
+/**
+ * The scheduled dump drills' loops `plan` gives the app's stack (029 research R28), each
+ * `drill-<service> <period in seconds>`, when they differ from those of the committed stack template
+ * `committed` (`""` before it is committed): the loops it adds or changes, which reach Portainer
+ * with the deploy branch. Empty without a change, and when the plan has none (removing them clears
+ * nothing). Each loop clears its own scratch data, so the stack plan of a run that brings them is
+ * approved like a removal (`<app>-drill` typed). A template OpsCrew can't read counts as having
+ * none.
+ */
+export function drillLoopChanges(plan: DeployPlan, committed: string): string[] {
+  const every = plan.snapshots?.drills?.schedule;
+  if (every === undefined) return [];
+  const period = String(drillScheduleHours(every) * 3600);
+  const prefix = `${portainerStackName(plan)}_`;
+  const wanted = portainerStackVolumes(plan)
+    .filter((volume) => volume.endsWith(DRILL_VOLUME))
+    .map((volume) => volume.slice(prefix.length, -DRILL_VOLUME.length))
+    .sort();
+  let services: Record<string, { environment?: Record<string, unknown> } | null> = {};
+  try {
+    services = (parse(committed) as { services?: typeof services } | null)?.services ?? {};
+  } catch {
+    services = {};
+  }
+  const have = new Set(
+    Object.entries(services)
+      .filter(([name]) => name.startsWith("drill-"))
+      .map(
+        ([name, service]) => `${name} ${String(service?.environment?.OPSCREW_DRILL_EVERY ?? "")}`,
+      ),
+  );
+  return wanted.every((service) => have.has(drillLoop(service, period))) ? [] : wanted;
+}
+
+/** What the stack plan's approval says of the scheduled dump drills `services` (by service). */
+function drillLoopsText(plan: DeployPlan, services: readonly string[]): string {
+  const every = plan.snapshots?.drills?.schedule ?? "weekly";
+  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
+  const when = every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
+  return [
+    `With this provision the app's stack runs scheduled restore drills (snapshots.drills.schedule): ${listText(services.map((service) => `drill-${service}`))}, ${when}. They reach your Portainer with the deploy branch once this provision's pull request is merged.`,
+    `Each one restores the latest scheduled snapshot's dump of its database into a scratch server of its own, with no network, counts its tables, then clears its scratch volume (${listText(services.map((service) => `${service}${DRILL_VOLUME}`))}); it reads the snapshots volume read-only, never touches the database's own container or volumes, holds no Portainer credential and stops after 30 minutes. Anything with access to the host's Docker can go past these bounds.`,
+    `Typing ${plan.app.name}-drill approves them.`,
+  ].join(" ");
 }
 
 /** A stack plan bound to the values it sends (which stay with {@link PortainerStacks}). */
@@ -541,33 +598,45 @@ export function preparePortainerStacks(
     async step(outputs, { planOnly, note }) {
       const planned = await planStep(outputs);
       const { hash } = planned;
-      if (planned.changes === 0) {
+      // Scheduled dump drills the run adds or changes: the plan is approved like a removal then,
+      // even when nothing else in Portainer changes (they reach it with the deploy branch).
+      const loops = drillLoopChanges(plan, input.committed);
+      const typed = loops.length === 0 ? undefined : `${plan.app.name}-drill`;
+      const confirm = typed === undefined ? "" : ` --confirm ${typed}`;
+      if (planned.changes === 0 && typed === undefined) {
         if (!planOnly) return applyStep(planned);
         deps.reporter.success(ALREADY_SET_UP);
         return { plan: planned.plan, hash, applied: false };
       }
       if (planOnly) {
         deps.reporter.info(
-          `Saved the stack plan (hash ${hash}); nothing in Portainer was changed.`,
+          `Saved the stack plan (hash ${hash}); nothing in Portainer was changed.${typed === undefined ? "" : ` It brings scheduled restore drills, so a script approves it with --approve ${hash}${confirm}.`}`,
         );
         return { plan: planned.plan, hash, applied: false };
       }
       if (note !== undefined) deps.reporter.info(note);
       const approval = await deps.approvals.request({
         kind: "stack-apply",
-        title: `Apply the stack plan to your Portainer (${plural(planned.changes, "change")})`,
-        details: planned.details,
+        title: `Apply the stack plan to your Portainer (${plural(planned.changes, "change")})${typed === undefined ? "" : ", with scheduled restore drills"}`,
+        details:
+          typed === undefined
+            ? planned.details
+            : `${planned.details}\n${drillLoopsText(plan, loops)}`,
         planHash: hash,
+        ...(typed === undefined ? {} : { allowDestroy: true, confirmPhrase: typed }),
       });
       if (!approval.approved) {
         throw new PlanRefusedError({
           plan: "stack plan",
           ...(approval.reason ? { reason: approval.reason } : {}),
           unchanged: "Nothing in Portainer was changed.",
-          hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}`,
+          hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}${confirm}`,
         });
       }
-      await deps.approvals.assertApprovedStackPlan(hash);
+      await deps.approvals.assertApprovedStackPlan(
+        hash,
+        typed === undefined ? undefined : { allowDestroy: true },
+      );
       return applyStep(planned, approval);
     },
   };

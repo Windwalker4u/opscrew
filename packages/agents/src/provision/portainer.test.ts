@@ -1366,6 +1366,88 @@ describe.skipIf(!findExecutable("git"))("the off-server copy in the user's Porta
   });
 });
 
+describe.skipIf(!findExecutable("git"))(
+  "scheduled dump drills in the user's Portainer (029)",
+  () => {
+    /** `shop` in Portainer behind the user's proxy, with snapshots and drills on `every`. */
+    const drilled = (every?: "weekly" | "daily") =>
+      DeployPlanSchema.parse({
+        ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+        snapshots: {
+          schedule: {},
+          ...(every === undefined ? {} : { drills: { schedule: every } }),
+        },
+      });
+    const stackRequests = (s: Setup) => s.handler.requests.filter((r) => r.kind === "stack-apply");
+    /** `plan`'s stack template, committed on the default branch as a merged pull request leaves it. */
+    const commitTemplate = async (s: Setup, plan: DeployPlan) => {
+      const template = renderPortainerStack(plan, {
+        opscrewVersion: s.deps.version,
+        github: { owner: "acme", repo: "shop" },
+        deploySshPublicKey: "",
+      });
+      await mkdir(join(s.root, "opscrew/runtime"), { recursive: true });
+      await writeFile(join(s.root, STACK_TEMPLATE), template.content);
+      await s.git(s.root, "add", "-A");
+      await s.git(s.root, "commit", "-qm", "the stack template");
+    };
+
+    it("approves the stack plan that brings them like a removal, with <app>-drill typed", async () => {
+      const s = await setup({ plan: drilled("weekly") });
+      await s.run();
+      const [request] = stackRequests(s);
+      expect(request).toMatchObject({ allowDestroy: true, confirmPhrase: "shop-drill" });
+      expect(request?.title).toContain("with scheduled restore drills");
+      expect(request?.details).toContain("drill-db, weekly, on Thursdays from 03:00 UTC");
+      expect(request?.details).toContain("clears its scratch volume (db_drill)");
+      expect(request?.details).toContain("Typing shop-drill approves them.");
+    });
+
+    it("asks as before once the committed template has the same drills, and without drills", async () => {
+      const same = await setup({ plan: drilled("weekly") });
+      await commitTemplate(same, drilled("weekly"));
+      await same.run();
+      expect(stackRequests(same)[0]).not.toHaveProperty("confirmPhrase");
+      expect(stackRequests(same)[0]).not.toHaveProperty("allowDestroy");
+      const none = await setup({ plan: drilled() });
+      await none.run();
+      expect(stackRequests(none)[0]).not.toHaveProperty("confirmPhrase");
+    });
+
+    it("asks again when the schedule changes, even when nothing else in Portainer changes", async () => {
+      const s = await setup({ plan: drilled("weekly") });
+      await commitTemplate(s, drilled("weekly"));
+      await s.run();
+      s.github.openPull = OPEN_PULL;
+      s.handler.requests.length = 0;
+      const daily = drilled("daily");
+      await writeArtifact("plan", s.deps.paths.files.plan, daily);
+      await s.run();
+      const requests = stackRequests(s);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ allowDestroy: true, confirmPhrase: "shop-drill" });
+      expect(requests[0]?.title).toMatch(/^Apply the stack plan to your Portainer \(0 changes\)/);
+      expect(requests[0]?.details).toContain("drill-db, daily, from 03:00 UTC");
+    });
+
+    it("names --confirm <app>-drill beside the hash, in --plan-only and when refused", async () => {
+      const planned = await setup({ plan: drilled("weekly") });
+      const { stackPlanHash } = await planned.run({ planOnly: true });
+      expect(planned.deps.reporter.text()).toContain(
+        `a script approves it with --approve ${stackPlanHash} --confirm shop-drill.`,
+      );
+      const refused = await setup({
+        plan: drilled("weekly"),
+        answer: (request) => request.kind !== "stack-apply",
+      });
+      const error = (await refused.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("APPROVAL_REFUSED");
+      expect(error.hint).toMatch(/--approve [0-9a-f]{64} --confirm shop-drill$/);
+      expect(refused.fake.mutations()).toEqual([]);
+    });
+  },
+);
+
 describe("portainerContainerUrl", () => {
   it.each([
     ["https://localhost:9443", "https://host.docker.internal:9443"],

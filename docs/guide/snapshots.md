@@ -258,9 +258,9 @@ drills the newest one you took.
 | A hosting account | OpsCrew's agent on the account: see [Restore drills](hosting-accounts.md#restore-drills) on the hosting page |
 | Your computer | None: it isn't always on to run them |
 
-On a server and a hosting account, each scheduled drill removes what it made, so you approve the
-plan that installs the schedule by its hash with `<app>-drill` typed (in a script,
-`--confirm <app>-drill` beside its `--approve`). On a server, the copy's values are the ones
+Each scheduled drill removes what it made, so you approve the plan that installs or changes the
+schedule by its hash with `<app>-drill` typed (in a script, `--confirm <app>-drill` beside its
+`--approve`). On a server, the copy's values are the ones
 `.env.preview` held at that provision: run `npx opscrew provision` again after you change it.
 
 **Its bounds on a server,** which `snapshot.sh` keeps itself (a Portainer's and a hosting

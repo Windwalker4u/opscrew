@@ -351,8 +351,11 @@ Your NAS's own snapshot or backup feature, if it has one, still covers the rest 
 ### Scheduled dump drills
 
 With `npx opscrew snapshot drill schedule on` (and the snapshot schedule on), the app's stack gets
-one more small service per PostgreSQL, MySQL, MariaDB or MongoDB database, `drill-<service>`,
-from the next `npx opscrew provision`, which you approve with the stack plan by its hash. A stack
+one more small service per PostgreSQL, MySQL, MariaDB or MongoDB database, `drill-<service>`.
+Each one clears its scratch data, so the `npx opscrew provision` that adds them or changes their
+schedule asks you to approve its stack plan by its hash with `<app>-drill` typed (in a script,
+`--approve <hash> --confirm <app>-drill`), even when nothing else in Portainer changes; they reach
+the stack with the deploy branch once that provision's pull request is merged. A stack
 can't make a second stack, and no Portainer token sits in it, so what it proves is narrower than a
 drill by hand: **that each dump restores, not that the app starts on it.** In its slot it:
 

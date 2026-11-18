@@ -73,15 +73,19 @@ const SCHEDULED_PROBE = [
 ].join(" ");
 
 /**
- * After the listing on the app's server, the last line of its restore drills' log (029), for
- * `status`'s drill line, read in the same connection.
+ * After the listing on the app's server, for `status`'s drill lines (029), read in the same
+ * connection: the last line of its restore drills' log that ran (not a skip, so a string of skips
+ * doesn't hide how long ago a drill last ran), then its last line (a skip's reason).
  */
-const DRILL_PROBE = `if [ -f ${DRILLS_LOG} ]; then tail -n 1 ${DRILLS_LOG} | sed 's/^/${DRILL} /'; fi`;
+const DRILL_PROBE = `if [ -f ${DRILLS_LOG} ]; then grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z (manual|scheduled) (healthy|unhealthy|not-restored|failed) ' ${DRILLS_LOG} | tail -n 1 | sed 's/^/${DRILL} /'; tail -n 1 ${DRILLS_LOG} | sed 's/^/${DRILL} /'; fi`;
 
-/** The last drill's line the probe printed in `stdout`, `""` without one. */
+/** The drills' log lines the probe printed in `stdout`, oldest first; `""` without one. */
 function drillLogOf(stdout: string): string {
-  const line = stdout.split(/\r?\n/).find((each) => each.startsWith(`${DRILL} `));
-  return line === undefined ? "" : line.slice(DRILL.length + 1);
+  return stdout
+    .split(/\r?\n/)
+    .filter((each) => each.startsWith(`${DRILL} `))
+    .map((each) => each.slice(DRILL.length + 1))
+    .join("\n");
 }
 
 /**
@@ -117,8 +121,8 @@ function failureOn(
  * The newest snapshot of `run`'s environment and, with the schedule on, the servers whose last
  * scheduled run failed ({@link SnapshotStatus}): on each server with data through its
  * `snapshot.sh`, or in the user's Portainer (whose scheduled parts that failed are in the snapshot
- * itself). On one server with data on the app's server, also the last line of its drills' log
- * (`drillLog`, `""` without one), so the drill line opens no second connection.
+ * itself). On one server with data on the app's server, also its drills' log's last line that ran
+ * and its last line (`drillLog`, `""` without one), so the drill lines open no second connection.
  */
 async function readSnapshotStatus(
   run: SnapshotRun,
@@ -194,8 +198,8 @@ export function snapshotStatusLines(status: SnapshotStatus, flags: string): stri
 /**
  * {@link readSnapshotStatus}'s lines with data to snapshot on a server or in Portainer, and a note
  * instead when they cannot be read; none otherwise (this computer among them, which takes no
- * scheduled snapshot: `opscrew snapshot list` lists its snapshots there). `drillLog` is the last
- * line of the app's server's drills' log when it was read.
+ * scheduled snapshot: `opscrew snapshot list` lists its snapshots there). `drillLog` holds the app's
+ * server's drills' log's last line that ran and its last line, when they were read.
  */
 export async function snapshotStatusReport(
   deps: PhaseDeps,
