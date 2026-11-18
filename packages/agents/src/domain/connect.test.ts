@@ -1752,4 +1752,26 @@ describe("connectDomain: the registry's own answer", () => {
     expect(run.handler.requests).toEqual([]);
     expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
   });
+
+  it("without a note, a copy the registry no longer publishes waits from the registry's change time", async () => {
+    const { cp, pb } = await porkbunHosted();
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 600 });
+    const run = await cp.run();
+    withRegistry(run.deps, { answer: { kind: "none", changedAt: "2026-10-11T09:00:00Z" } });
+
+    const result = await connectDomain(run.deps, { domain: DOMAIN, services: run.services });
+
+    // The 24-hour floor from the registry's change at 09:00, not from this run at 12:00.
+    expect(result).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-12T09:00:00.000Z",
+    });
+    expect(await readState(run.deps)).toEqual({
+      domain: DOMAIN,
+      registrar: "porkbun",
+      switchAfter: "2026-10-12T09:00:00.000Z",
+      waitSeconds: 86_400,
+    });
+    expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
+  });
 });

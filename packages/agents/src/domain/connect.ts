@@ -462,7 +462,12 @@ async function waitForOldDs(
   let switchAfter = state.switchAfter;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
     // Gone since the last run: resolvers may hold them for the whole wait from when they went.
-    switchAfter = await startDsWait(ctx.stateFile, state, dsGoneAt(ds, state.dsSeen, now));
+    // Only a noted sighting bounds the registry's change time: without a note, RDAP's `last
+    // changed` (which moves with every update at the registry, the DS removal included) is at or
+    // after the removal, and a resolver's copy was fetched before it, so the wait from it covers
+    // that copy.
+    const sighted = ctx.state?.dsSeen;
+    switchAfter = await startDsWait(ctx.stateFile, state, dsGoneAt(ds, sighted, now));
     const where =
       ds.registry.kind === "unreadable" ? "the registry and the public DNS" : "the registry";
     deps.reporter.info(`The old DNSSEC (DS) records of ${domain} are gone from ${where}.`);

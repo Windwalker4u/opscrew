@@ -165,6 +165,32 @@ describe("the switch's DS wait from the registry's own answer", () => {
     expect(h.deps.reporter.text()).not.toContain("OpsCrew waits before");
   });
 
+  it.each([
+    // The 24-hour floor from the registry's change at 08:00, not from this run at 09:00.
+    ["from the registry's change time", { changedAt: "2026-11-21T08:00:00Z" }, "2026-11-22T08:00"],
+    ["from this run without a change time", {}, "2026-11-22T09:00"],
+  ])(
+    "Namecheap, no note: a copy the registry no longer publishes waits %s",
+    async (_case, rdap, until) => {
+      const h = await switchHarness({ registrar: "namecheap", dsAtStart: true });
+      h.deps.interactive = true;
+      Object.assign(h.deps, { registryDs: async () => ({ kind: "none", ...rdap }) });
+      h.web.ds = [OLD_DS];
+
+      const waiting = await h.run();
+
+      expect(waiting.done).toBe(false);
+      expect(h.asked()).toEqual([]);
+      const note = join(h.deps.paths.root, ".opscrew", "cloudflare-move-switch-ds.json");
+      expect(JSON.parse(await readFile(note, "utf8"))).toEqual({
+        domain: ZONE,
+        registrar: "namecheap",
+        switchAfter: `${until}:00.000Z`,
+        waitSeconds: 86_400,
+      });
+    },
+  );
+
   it("Cloudflare Registrar, no note: a copy the registry no longer publishes starts the wait now", async () => {
     const h = await switchHarness({ registrar: "cloudflare" });
     h.deps.interactive = true;

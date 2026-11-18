@@ -202,8 +202,13 @@ async function apiGate(
   let status = await dsWaitStatus(file, now, ds);
   if (status === undefined && (dsAtStart || ds.shown.length > 0)) {
     // Gone before the switch ever saw it (or only a resolver's copy is left): resolvers may hold
-    // it for the whole wait from now on.
-    await writeConnectState(file, seenState({ ...ctx, state: undefined }, undefined, ds));
+    // it for the whole wait from when it went. The note has no sighting (no run saw it published),
+    // so `dsWaitStatus` starts the wait from the registry's change time when it gives one: RDAP's
+    // `last changed` moves with every update at the registry, the DS removal included, and any
+    // resolver's copy was fetched before the removal, so the wait from it covers that copy. Else
+    // from now.
+    const { dsSeen: _, ...note } = seenState({ ...ctx, state: undefined }, undefined, ds);
+    await writeConnectState(file, note);
     status = await dsWaitStatus(file, now, ds);
   }
   if (status?.waiting && status.switchAfter !== undefined) {
