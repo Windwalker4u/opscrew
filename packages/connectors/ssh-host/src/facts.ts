@@ -597,6 +597,27 @@ export const HostFactsSchema = z.object({
   snapshotSchedules: z.array(z.string()).default([]),
   /** The apps whose folder holds a snapshots folder (`snapshotsDir(app)`, not a link), in order. */
   snapshotDirs: z.array(z.string()).default([]),
+  /**
+   * Each app's scheduled restore drills (the `drills` step), by app, in order: `recipe`, its folder
+   * has `.drill-recipe/` (not a link), with the SHA-256 of each file there by path (never
+   * `values.env` or dot-files); `values`, the mode and SHA-256 of its `values.env` (never its
+   * content), null without one; `cron`, the deploy user's lines that end in `drillScheduleTag(app)`;
+   * and `left`, a drill's copy is there (`.drill/` in the folder, or `/srv/data/<app>-drill`).
+   */
+  drills: z
+    .array(
+      z.object({
+        app: z.string(),
+        recipe: z.boolean(),
+        files: z.record(RecipePathSchema, z.string().regex(/^[0-9a-f]{64}$/)),
+        values: z
+          .object({ mode: z.string(), sha256: z.string().regex(/^[0-9a-f]{64}$/) })
+          .nullable(),
+        cron: z.array(z.string()),
+        left: z.boolean(),
+      }),
+    )
+    .default([]),
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
   /**

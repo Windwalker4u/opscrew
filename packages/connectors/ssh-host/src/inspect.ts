@@ -83,6 +83,7 @@ import {
   parseDnsUpdaters,
   parseDockerUserChain,
   parseDpkg,
+  parseDrills,
   parseFree,
   parseIpv4Routes,
   parseMonitoring,
@@ -117,7 +118,7 @@ import {
   SSH_FIREWALL_SERVICE,
   SSH_FIREWALL_UNIT,
 } from "./ssh-firewall";
-import { stepScripts } from "./steps";
+import { DRILL_FIND, DRILL_RECIPE, DRILL_VALUES, drillScheduleTag, stepScripts } from "./steps";
 import { AppNameSchema, HOST_PLAN_SCHEMA_VERSION, type HostPlan, type HostStep } from "./types";
 import {
   WEB_FILTER_DROP_IN,
@@ -426,6 +427,35 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
   done
 fi`;
 
+/**
+ * Each app's scheduled restore drills (the `drills` step): the deploy user's lines that end in
+ * `drillScheduleTag(<app>)` (`cron <app> <line>`), and for each app folder in /srv/apps with its
+ * recipe (`recipe <app>`, `.drill-recipe/`) the SHA-256 of each file there (never `values.env` or
+ * dot-files) and the mode and SHA-256 of its `values.env` (never its content); then `left <app>`
+ * when a drill's copy is there (`.drill/` in the folder, or `/srv/data/<app>-drill`). Never
+ * follows a symbolic link.
+ */
+export const DRILLS_SNIPPET = `${APP_NAME_FN}
+${DEPLOY_TAB}
+printf '%s\\n' "$tab" | sed -n 's/^\\(.*${drillScheduleTag("")}\\([a-z0-9][a-z0-9-]*\\)\\)$/cron \\2 \\1/p'
+if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
+  for d in "${APPS_DIR}"/*; do
+    app=\${d##*/}
+    app_name "$app" || continue
+    if [ -L "$d" ] || [ ! -d "$d" ]; then continue; fi
+    r="$d/${DRILL_RECIPE}"
+    if [ -d "$r" ] && [ ! -L "$r" ]; then
+      echo "recipe $app"
+      (cd "$r" && ${DRILL_FIND}) | while IFS= read -r f; do
+        echo "file $app \${f#./} $(sha256sum "$r/\${f#./}" | cut -d ' ' -f 1)"
+      done
+      v="$r/${DRILL_VALUES}"
+      if [ -f "$v" ] && [ ! -L "$v" ]; then echo "values $app $(stat -c %a "$v") $(sha256sum "$v" | cut -d ' ' -f 1)"; fi
+    fi
+    if [ -e "$d/.drill" ] || [ -L "$d/.drill" ] || [ -e "${DATA_DIR}/$app-drill" ] || [ -L "${DATA_DIR}/$app-drill" ]; then echo "left $app"; fi
+  done
+fi`;
+
 /** OpsCrew's web filter: its files' SHA-256, its unit's state and its IPv6 table's SHA-256. */
 const WEB_FILTER_SNIPPET = `${WEB_FILTER_TABLE6_HASH}
 for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN} nftdropin:${WEB_FILTER_NFT_DROP_IN}; do
@@ -664,6 +694,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["previews", PREVIEWS_SNIPPET],
   ["snapshot-schedules", SNAPSHOT_SCHEDULES_SNIPPET],
   ["snapshot-dirs", SNAPSHOT_DIRS_SNIPPET],
+  ["drills", DRILLS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
   ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
@@ -1081,6 +1112,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     previews: parsePreviews(text("previews")),
     snapshotSchedules: parseAppNames(text("snapshot-schedules")),
     snapshotDirs: parseAppNames(text("snapshot-dirs")),
+    drills: parseDrills(text("drills")),
     webFilter: {
       ...dockerFirewall({
         daemonJson: section(sections, "docker-daemon"),

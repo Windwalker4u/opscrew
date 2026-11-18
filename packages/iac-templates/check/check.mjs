@@ -95,6 +95,17 @@ export const CHECK_COMMAND = [
 /** A scheduled snapshot's id: the hour of its slot, `20261107T030000Z`. */
 const SCHEDULED_ID = /^\d{8}T\d{6}Z$/;
 
+/**
+ * The slot a scheduled snapshot's id names, `20261107T030000Z`.
+ * @param {string} id
+ * @returns {Date}
+ */
+function scheduledSlot(id) {
+  return new Date(
+    `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}T${id.slice(9, 11)}:${id.slice(11, 13)}:${id.slice(13, 15)}Z`,
+  );
+}
+
 /** The answer's line on the last scheduled restore drill that ran: its end and its result. */
 const DRILL_LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (healthy|unhealthy|not-restored|failed)$/;
 
@@ -732,8 +743,9 @@ async function checkSnapshot(check, read, io) {
  * The last scheduled restore drill of the app on the server, from its `scheduled <app> drill`
  * line: a failure when it did not restore, did not become healthy or failed otherwise, or when
  * none ran within twice its schedule (and an hour). A skipped drill never reaches the line, so it
- * never fails the check. Unknown when none ran yet, and when the server's check key is from before
- * the check read drills. Nothing the drills' log says reaches any text but the end and result.
+ * never fails the check. When none ran yet, a failure once the app's last scheduled snapshot there
+ * is that old too, and unknown before; unknown when the server's check key is from before the
+ * check read drills. Nothing the drills' log says reaches any text but the end and result.
  */
 async function checkDrill(check, read, io) {
   const { server, app, every } = check;
@@ -748,12 +760,31 @@ async function checkDrill(check, read, io) {
     return undefined;
   }
   const rest = line.slice(prefix.length).trim();
+  const period = DRILL_PERIOD_MS[every];
+  const title = `OpsCrew check: ${appLabel(check.key)}`;
   if (rest === "") {
+    // None ran yet: a failure only once the last scheduled snapshot is older than twice the
+    // schedule (and an hour), so a drill had its slots on it.
+    const id = output
+      .split("\n")
+      .find((each) => each.startsWith(`scheduled ${app} id `))
+      ?.slice(`scheduled ${app} id `.length);
+    const due = id !== undefined && SCHEDULED_ID.test(id) ? scheduledSlot(id) : undefined;
+    if (
+      due !== undefined &&
+      period !== undefined &&
+      io.now().getTime() - due.getTime() > 2 * period + DRILL_GRACE_MS
+    ) {
+      return {
+        title: `${title} no scheduled restore drill on ${server.id}`,
+        what: `No scheduled restore drill of ${app} has run on the server ${server.id}, and its latest scheduled snapshot there, due at ${utc(due)}, is older than twice its ${every} schedule: each drill was skipped or did not start.`,
+        hint: DRILL_HINT,
+      };
+    }
     io.log(`${server.id}: no scheduled restore drill of ${app} has run there yet.`);
     return undefined;
   }
   const match = DRILL_LINE.exec(rest);
-  const period = DRILL_PERIOD_MS[every];
   if (match === null || period === undefined) {
     io.log(
       `::warning::The server ${server.id} answered about ${app}'s restore drills in a form the check cannot read.`,
@@ -762,7 +793,6 @@ async function checkDrill(check, read, io) {
   }
   const [, end, result] = match;
   const at = utc(new Date(end));
-  const title = `OpsCrew check: ${appLabel(check.key)}`;
   if (result !== "healthy") {
     return {
       title: `${title} scheduled restore drill failed on ${server.id}`,

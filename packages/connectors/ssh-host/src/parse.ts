@@ -838,6 +838,42 @@ export function parsePreviews(text: string): HostFacts["previews"] {
     .sort((a, b) => a.app.localeCompare(b.app));
 }
 
+/**
+ * The drills section (see `DRILLS_SNIPPET`): `cron <app> <line>`, `recipe <app>`, `file <app>
+ * <path> <sha256>`, `values <app> <mode> <sha256>` and `left <app>` lines, by app, in order. Odd
+ * names, paths, modes and hashes, and other lines, are ignored.
+ */
+export function parseDrills(text: string): HostFacts["drills"] {
+  const apps = new Map<string, HostFacts["drills"][number]>();
+  const entry = (app: string) => {
+    const found = apps.get(app) ?? {
+      app,
+      recipe: false,
+      files: {},
+      values: null,
+      cron: [],
+      left: false,
+    };
+    apps.set(app, found);
+    return found;
+  };
+  const hash = /^[0-9a-f]{64}$/;
+  for (const line of linesOf(text)) {
+    const [kind = "", app = "", first = "", second = ""] = line.split(" ");
+    if (!AppNameSchema.safeParse(app).success) continue;
+    if (kind === "cron") entry(app).cron.push(line.slice(`cron ${app} `.length));
+    if (kind === "recipe") entry(app).recipe = true;
+    if (kind === "file" && RecipePathSchema.safeParse(first).success && hash.test(second)) {
+      entry(app).files[first] = second;
+    }
+    if (kind === "values" && /^[0-7]{3,4}$/.test(first) && hash.test(second)) {
+      entry(app).values = { mode: first, sha256: second };
+    }
+    if (kind === "left") entry(app).left = true;
+  }
+  return [...apps.values()].sort((a, b) => a.app.localeCompare(b.app));
+}
+
 /** The app names of a section with one per line (such as `snapshot-schedules`), each once, in order. */
 export function parseAppNames(text: string): string[] {
   const apps = linesOf(text).filter((app) => AppNameSchema.safeParse(app).success);

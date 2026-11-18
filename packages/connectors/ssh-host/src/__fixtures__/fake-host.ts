@@ -583,6 +583,15 @@ export class FakeHost implements RemoteExec {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.previewsScript(name, params, input ?? "");
     }
+    // The drills step's own scripts run as deploy; its removal's as root.
+    if (/^drills\.(check|apply|verify)$/.test(name)) {
+      if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
+      return this.drillsScript(name, params, input ?? "");
+    }
+    if (/^drills\.remove\.(check|apply|verify)$/.test(name)) {
+      if (!root || asUser !== undefined) throw new Error(`fake host: ${name} must run as root`);
+      return this.drillsRemoveScript(name, params);
+    }
     if (/^check-key(\.remove)?\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.checkKeyScript(name, params);
@@ -1046,6 +1055,7 @@ export class FakeHost implements RemoteExec {
     add("previews", this.previewLines());
     add("snapshot-schedules", this.snapshotScheduleLines());
     add("snapshot-dirs", this.snapshotDirLines());
+    add("drills", this.drillLines());
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
       return `file ${name} ${content === undefined ? "-" : sha256(content)}`;
@@ -2291,6 +2301,11 @@ export class FakeHost implements RemoteExec {
         if (!root) throw new Error("fake host: previews.cron.apply must run as root");
         this.cron = true;
         return result();
+      // and the drills step's
+      case "drills.cron.apply":
+        if (!root) throw new Error("fake host: drills.cron.apply must run as root");
+        this.cron = true;
+        return result();
     }
     throw new Error(`fake host: unknown script ${name}`);
   }
@@ -2436,6 +2451,111 @@ export class FakeHost implements RemoteExec {
     this.fileModes.set(`${p.TLS_DIR}/origin.key`, "600");
     deploy.keys =[...deploy.keys.filter((key) => !comment.test(key)), p.LINE ?? ""];
     this.crontab = [...tab.filter((line) => !cron.test(line)), p.CRON_LINE ?? ""];
+    return result();
+  }
+
+  /** True when a file or folder the fake keeps is `path` or under it. */
+  private holds(path: string): boolean {
+    return [...this.files.keys(), ...this.dirs.keys()].some((each) => each === path || each.startsWith(`${path}/`));
+  }
+
+  /** Removes `path`, a file or a folder, with everything under it. */
+  private removeAll(path: string): void {
+    this.files.delete(path);
+    this.removeDir(path);
+  }
+
+  /**
+   * The drills section as `DRILLS_SNIPPET` prints it: the deploy user's lines with an app's drill
+   * tag, then each app folder's recipe (its files' SHA-256, its values' mode and SHA-256) and
+   * whether a drill's copy is there.
+   */
+  private drillLines(): string {
+    const tag = / # opscrew-drill ([a-z0-9][a-z0-9-]*)$/;
+    const cron = (this.crontab ?? []).flatMap((line) => {
+      const app = tag.exec(line)?.[1];
+      return app === undefined ? [] : [`cron ${app} ${line}`];
+    });
+    const folder = new RegExp(`^${APPS_DIR}/([a-z0-9-]+)$`);
+    const apps = [...new Set([...this.dirs.keys()].flatMap((path) => folder.exec(path)?.[1] ?? []))].sort();
+    return [
+      ...cron,
+      ...apps.flatMap((app) => {
+        const dir = `${APPS_DIR}/${app}`;
+        const recipe = `${dir}/.drill-recipe`;
+        const values = this.files.get(`${recipe}/values.env`);
+        return [
+          ...(this.holds(recipe)
+            ? [
+                `recipe ${app}`,
+                ...this.recipeFiles(recipe).map((name) => `file ${app} ${name} ${sha256(this.files.get(`${recipe}/${name}`) ?? "")}`),
+                ...(values === undefined ? [] : [`values ${app} ${this.fileModes.get(`${recipe}/values.env`) ?? "644"} ${sha256(values)}`]),
+              ]
+            : []),
+          ...(this.holds(`${dir}/.drill`) || this.holds(`/srv/data/${app}-drill`) ? [`left ${app}`] : []),
+        ];
+      }),
+    ].join("\n");
+  }
+
+  /**
+   * The drills step's scripts, as the deploy user: the values (one line of base64, checked by
+   * their SHA-256), then the recipe's files from stdin, and the app's hourly line.
+   */
+  private drillsScript(name: string, p: Record<string, string>, input: string): CommandResult {
+    const recipe = p.RECIPE ?? "";
+    const values = `${recipe}/values.env`;
+    const cron = new RegExp(p.CRON_RE ?? "");
+    const tab = this.crontab ?? [];
+    const manifest = FakeHost.words(p.MANIFEST).map((entry) => [entry.slice(0, entry.indexOf(":")), entry.slice(entry.indexOf(":") + 1)]);
+    const ok =
+      manifest.every(([path, sum]) => sha256(this.files.get(`${recipe}/${path}`) ?? "") === sum) &&
+      this.recipeFiles(recipe).join(" ") === [...FakeHost.words(p.PATHS)].sort().join(" ") &&
+      this.files.has(values) &&
+      this.fileModes.get(values) === "600" &&
+      sha256(this.files.get(values) ?? "") === p.VALUES_SHA256 &&
+      tab.filter((line) => cron.test(line)).length === 1 &&
+      tab.includes(p.CRON_LINE ?? "");
+    if (name.endsWith(".check")) return this.check(ok);
+    if (name.endsWith(".verify")) return this.verify(ok, p);
+    if (!this.cron) return fail("This server has no crontab command, so OpsCrew cannot schedule the restore drills.");
+    if (!this.dirs.has(p.DIR ?? "")) return fail(`${p.DIR} is not the app's folder, so OpsCrew did not set up its restore drills.`);
+    const [valuesB64 = "", ...lines] = input.split("\n");
+    const text = Buffer.from(valuesB64, "base64").toString("utf8");
+    if (sha256(text) !== p.VALUES_SHA256) {
+      return fail("The drill's values supplied (.env.preview's) are not the ones this plan names, so OpsCrew changed nothing.");
+    }
+    const paths = FakeHost.words(p.PATHS);
+    for (const [index, path] of paths.entries()) {
+      const b64 = lines[index] ?? "";
+      if (b64 === "") return fail(`The drill's file ${path} did not arrive on standard input, so OpsCrew stopped.`);
+      this.files.set(`${recipe}/${path}`, Buffer.from(b64, "base64").toString("utf8"));
+      this.fileModes.set(`${recipe}/${path}`, path.endsWith(".env") ? "600" : "644");
+    }
+    for (const stale of this.recipeFiles(recipe)) if (!paths.includes(stale)) this.files.delete(`${recipe}/${stale}`);
+    this.files.set(values, text);
+    this.fileModes.set(values, "600");
+    this.crontab = [...tab.filter((line) => !cron.test(line)), p.CRON_LINE ?? ""];
+    return result();
+  }
+
+  /**
+   * The drills' removal, as root: the app's line, then the drill's project with its volumes, the
+   * recipe, `.drill/` and the copy's data folder.
+   */
+  private drillsRemoveScript(name: string, p: Record<string, string>): CommandResult {
+    const cron = new RegExp(p.CRON_RE ?? "");
+    const project = p.PROJECT ?? "";
+    const ok =
+      !(this.crontab ?? []).some((line) => cron.test(line)) &&
+      ![p.RECIPE, p.DRILLS, p.DATA].some((path) => this.holds(path ?? "")) &&
+      !this.containers.some((container) => container.project === project) &&
+      !this.volumes.has(project);
+    if (name.endsWith(".check")) return this.check(ok);
+    if (name.endsWith(".verify")) return this.verify(ok, p);
+    if (this.crontab !== null) this.crontab = this.crontab.filter((line) => !cron.test(line));
+    this.removeProject(project, true);
+    for (const path of [p.RECIPE, p.DRILLS, p.DATA]) this.removeAll(path ?? "");
     return result();
   }
 

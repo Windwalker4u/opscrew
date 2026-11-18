@@ -12,8 +12,18 @@ import {
   planUndo,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, plural, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
+  OpsCrewError,
+  type ProjectPaths,
+  plural,
+  readTextIfExists,
+  sha256Hex,
+  toPosixRelative,
+} from "@opscrew/core";
+import {
+  DRILL_RECIPE_DIR,
+  drillPlan,
+  drillRecipe,
   homeIpv6Proxied,
   homeMode,
   hostSysctl,
@@ -21,6 +31,7 @@ import {
   renderPortainerCompose,
   renderTunnelConnectorCompose,
   siteHosts,
+  snapshotParts,
   sshHostname,
   usesTunnel,
   wrongTarget,
@@ -28,8 +39,10 @@ import {
 import {
   APP_SERVER,
   type DeployPlan,
+  ghcrImageFor,
   type OwnDeployTarget,
   servicesOn,
+  snapshotScheduleOf,
 } from "@opscrew/plan-schema";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
@@ -69,6 +82,7 @@ import {
   stringOutput,
   updateServerAddresses,
 } from "../shared";
+import { assembleAppEnv, dotenvLine } from "../shared/app-env";
 import { boundHostAdapter, keepServerSetup } from "../shared/host-plan";
 import {
   connectAndInspectOwnServer,
@@ -84,10 +98,11 @@ import {
   type HostChangeResult,
   tunnelChange,
 } from "../shared/tunnel-connections";
+import { PREVIEW_VALUES_FILE } from "../snapshot/drill";
 import { hasAppInterface } from "../vpn/dashboards";
 import { type CloudflareSetup, cloudflareTokenMissing } from "./credentials";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
-import type { ServerReach } from "./secrets";
+import { type ServerReach, serviceEnvFiles } from "./secrets";
 import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types";
 
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
@@ -277,7 +292,8 @@ export async function ownWebSources(
  * the site is served directly behind Cloudflare's proxy. The connector's Compose file keeps the
  * newer pins of its committed copy, so the server runs what Dependabot updated. A server at home
  * ({@link homeHost}) also gets SSH only from the home network, `home` in the app's record and,
- * with its DNS on Cloudflare, the address updater.
+ * with its DNS on Cloudflare, the address updater. With `snapshots.drills.schedule`, the scheduled
+ * restore drills ({@link desiredDrills}).
  * @throws Error when the plan needs the web filter but `run.webSources` is missing, or is served
  * at home but `run.home` is missing: a host plan must never drop the filter, the SSH firewall or
  * the address updater because the server was not read.
@@ -336,6 +352,7 @@ export async function desiredHost(
     : undefined;
   // Kernel settings the services need (vm.max_map_count for the search engines).
   const sysctl = hostSysctl(plan);
+  const drills = await desiredDrills(deps, plan);
   return {
     ...(await hostLogin(deps, run, input)),
     hostnames: siteHosts(plan),
@@ -348,6 +365,62 @@ export async function desiredHost(
     ...(run.runner !== undefined ? { runner: run.runner } : {}),
     ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
     ...(homeMode(plan) && run.home !== undefined ? homeHost(plan, run.home) : {}),
+    ...(drills !== undefined ? { drills } : {}),
+  };
+}
+
+/**
+ * The scheduled restore drills' part of the desired host (`snapshots.drills.schedule`, research
+ * R28): the copy's files as `drillRecipe` renders them, by path in their folder on the server, the
+ * copy's generated values left as the server's placeholders and the app's image named as the
+ * manual drill names it (`ghcr.io/<owner>/<repo>[/<key>]`), and the SHA-256 of `.env.preview`'s
+ * values, which reach the server only at apply ({@link drillEnv}). `undefined` without a schedule.
+ */
+async function desiredDrills(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
+  plan: DeployPlan,
+): Promise<DesiredHost["drills"]> {
+  if (plan.snapshots?.drills?.schedule === undefined) return undefined;
+  const { owner, repo } = await githubCoordinates(gitClient(deps));
+  const env = await drillEnv(deps, plan);
+  const files = drillRecipe(plan, {
+    repository: ghcrImageFor(`${owner}/${repo}`, plan.app.key),
+    env: env.templates,
+    ...(env.values === "" ? {} : { previewValues: true }),
+  });
+  return {
+    files: Object.fromEntries(
+      files.map((file) => [file.path.slice(DRILL_RECIPE_DIR.length + 1), file.content]),
+    ),
+    valuesSha256: sha256Hex(env.values),
+  };
+}
+
+/**
+ * The scheduled drill's env files, built for its copy of the parts a scheduled snapshot holds (as
+ * `drillRecipe` picks them), and `.env.preview`'s values as the text of its `values.env`, each value
+ * known to the redactor from here on; never a value of the app's `.env`.
+ */
+async function drillEnv(deps: Pick<PhaseDeps, "paths" | "redactor">, plan: DeployPlan) {
+  const stop = snapshotScheduleOf(plan)?.stop ?? [];
+  const parts = snapshotParts(plan)
+    .filter((part) => part.online || stop.includes(part.name))
+    .map((part) => part.name);
+  const drill = drillPlan(plan, { id: "scheduled", parts });
+  const dotenvText = await readTextIfExists(join(deps.paths.root, PREVIEW_VALUES_FILE));
+  const env = await assembleAppEnv({
+    plan: drill,
+    ...(dotenvText === undefined ? {} : { dotenvText }),
+    previewTemplates: true,
+  });
+  const own = env.preview?.values ?? {};
+  for (const value of Object.values(own)) deps.redactor.addLiteral(value, "preview-value");
+  return {
+    templates: { app: env.appEnv, services: serviceEnvFiles(drill, env) },
+    values: Object.keys(own)
+      .sort()
+      .map((name) => `${dotenvLine(name, own[name] as string)}\n`)
+      .join(""),
   };
 }
 
@@ -1119,6 +1192,9 @@ export async function applyOwnHostPlan(
     { previousDeployKey: input.previousDeployKey },
   );
   const changes = plural(plan.steps.filter((step) => step.state === "change").length, "change");
+  // The scheduled drills delete their copy's data each run (and their removal a kept copy): the
+  // plan is approved as a destroy, with the copy's name typed.
+  const drills = plan.steps.some((step) => step.id === "drills" && step.state === "change");
   const outcome = await approveAndApplyHostPlan(deps, {
     plan,
     remote: run.session.remote,
@@ -1129,6 +1205,7 @@ export async function applyOwnHostPlan(
     upToDate: input.upToDate ?? "Your server is already prepared; nothing on it changes.",
     command: input.command,
     phase: input.phase,
+    ...(drills ? { allowDestroy: true, confirmPhrase: `${input.plan.app.name}-drill` } : {}),
     ...(input.planOnly === true ? { planOnly: true } : {}),
     secrets: async (steps) => {
       const portainerStep = steps.find((step) => step.id === "portainer");
@@ -1140,10 +1217,14 @@ export async function applyOwnHostPlan(
       const updater = steps.find((step) => step.id === "dns-updater");
       const dnsUpdaterToken =
         updater?.params.tokenSha256 === undefined ? undefined : run.home?.updater?.token;
+      // The drill's values, when its step installs them: on stdin only, checked by their SHA-256.
+      const installs = steps.some((step) => step.id === "drills" && step.params.remove !== true);
+      const previewValues = installs ? (await drillEnv(deps, input.plan)).values : undefined;
       return {
         ...(tunnel !== undefined ? { tunnelToken: tunnel.token } : {}),
         ...(portainerPassword !== undefined ? { portainerPassword } : {}),
         ...(dnsUpdaterToken !== undefined ? { dnsUpdaterToken } : {}),
+        ...(previewValues !== undefined ? { previewValues } : {}),
       };
     },
     runnerToken: runnerTokens(deps, run.repository),

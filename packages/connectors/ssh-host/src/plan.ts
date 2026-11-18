@@ -135,7 +135,12 @@ import {
 import {
   ADDON_FILE_PARAM,
   appRecord,
+  DRILL_MINUTE,
+  DRILL_RECIPE,
+  DRILL_VALUES,
   dataKeptRecord,
+  drillCronLine,
+  drillProject,
   HubPublicKeySchema,
   type RunAs,
   stepScripts,
@@ -230,6 +235,7 @@ const APP_STEPS: ReadonlySet<HostStepId> = new Set([
   "app-dirs",
   "app-record",
   "dns-updater",
+  "drills",
   "github-runner",
   "tunnel-connector",
   "network",
@@ -1478,6 +1484,69 @@ function updaterStep({ facts, desired, found }: SetupContext, command: string) {
   return planned?.step;
 }
 
+/** A drill schedule's period in words (`snapshots.drills.schedule`). */
+const DRILL_PERIOD = { weekly: "week", daily: "day" } as const;
+
+/**
+ * The app's scheduled restore drills (`DesiredHost.drills`, ADR 0034): the `drills` step, whose
+ * text names every bound the server's script keeps (research R29) and what anything with root
+ * there can do. In place when the facts show the recipe's files, its values (by their SHA-256,
+ * only the deploy user's) and the app's one line as planned. Without drills, their removal while
+ * the server still has their recipe or line.
+ */
+function drillsStep({ facts, desired }: SetupContext): HostStep | undefined {
+  const { app, drills } = desired;
+  const found = facts.drills.find((item) => item.app === app);
+  if (drills === undefined) {
+    return found?.recipe === true || (found?.cron.length ?? 0) > 0 ? drillsRemoval(app) : undefined;
+  }
+  const period = DRILL_PERIOD[drills.files.schedule === "daily\n" ? "daily" : "weekly"];
+  const params = {
+    app,
+    valuesSha256: drills.valuesSha256,
+    ...Object.fromEntries(
+      Object.entries(drills.files).map(([path, text]) => [`${ADDON_FILE_PARAM}${path}`, text]),
+    ),
+  };
+  const title = `Run a restore drill of "${app}" once a ${period} on this server: its latest scheduled snapshot restored into a copy with no internet, checked, then removed`;
+  const values = found?.values ?? null;
+  if (
+    found?.recipe === true &&
+    sameFiles(found.files, drills.files) &&
+    values !== null &&
+    values.sha256 === drills.valuesSha256 &&
+    values.mode === "600" &&
+    sameList(found.cron, [drillCronLine(app)])
+  ) {
+    return step("drills", title, "in-place", params, "Already set.");
+  }
+  const dir = appDirs(app).app;
+  const project = drillProject(app);
+  return step(
+    "drills",
+    title,
+    "change",
+    params,
+    `The deploy user's crontab runs "sh ${dir}/snapshot.sh drill scheduled" at minute ${DRILL_MINUTE} of every hour, with cron installed first when it is missing; the script drills only in its slot, 3 hours after the scheduled snapshot's, once a ${period}. The copy's files go to ${dir}/${DRILL_RECIPE}, and the values of .env.preview to its ${DRILL_VALUES}, which only the deploy user can read; the values are supplied at apply time, and this plan holds only their SHA-256. The script on this server keeps every drill within these bounds: only its own things (the Compose project ${project.name}, ${dir}/.drill and ${project.data}), never a container, volume or file of the app's; only the latest scheduled snapshot, never an older one or the copy off the server; no internet and no published port, and the app's .env never read; it removes what it made, and at its next start what a crashed run left; once a ${period}, never more often than once a day; never beside a deploy, a snapshot or a restore of the app (it takes their lock, and is skipped while it is held); skipped when the disk has less free space than the snapshot's size and 1 GiB and 10% of the disk, or the memory is short of the copy's limits; at most 30 minutes, then its containers are stopped and removed. Each drill writes one line to ${dir}/.snapshots/drills.log, which opscrew status shows. Each drill deletes its copy's data, so this plan is approved with the typed name ${project.name}. snapshot.sh comes with each deploy of the app, so a change to the repository's deploy can change what a drill does, and anything with root on this server, the docker group included (the deploy user, and the server's own deploy runner, which runs the repository's code), can go beyond these bounds. Changing a bound is a new plan and a new approval.`,
+  );
+}
+
+/**
+ * The removal of the app's scheduled restore drills, by a setup plan without them or a teardown:
+ * their line, their recipe with its values, and whatever a drill left, a kept copy included.
+ */
+function drillsRemoval(app: string): HostStep {
+  const dir = appDirs(app).app;
+  const project = drillProject(app);
+  return step(
+    "drills",
+    `Remove the scheduled restore drills of "${app}": their hourly line, their recipe and values, and any copy a drill left`,
+    "change",
+    { app, remove: true },
+    `Their line in the deploy user's crontab goes first, so no drill starts, and a drill that is running finishes first; then ${dir}/${DRILL_RECIPE} with its values, ${dir}/.drill, the containers, networks and volumes of the Compose project ${project.name}, and ${project.data}, a copy kept with --keep included. The app's own containers, data and snapshots stay.`,
+  );
+}
+
 /** `version` is `pinned` or newer (`2.338.0` style). */
 function atLeast(version: string, pinned: string): boolean {
   const [a = [], b = []] = [version, pinned].map((text) => text.split(".").map(Number));
@@ -1843,6 +1912,9 @@ function allBlocked(desired: DesiredHost): HostStep[] {
           ),
         ]
       : []),
+    ...(desired.drills !== undefined
+      ? [step("drills", `Schedule the restore drills of "${desired.app}"`, "blocked", {}, reason)]
+      : []),
   ];
   if (desired.runner !== undefined) {
     steps.push(step("github-runner", "Install the GitHub Actions runner", "blocked", {}, reason));
@@ -1897,6 +1969,11 @@ function conflicts(
  * comes with a finding that says what was found and what to do, and to run `command` (for
  * example `opscrew provision`) again once it is fixed.
  *
+ * With `desired.drills`, the app's scheduled restore drills (the `drills` step); a plan in which
+ * that step, or its removal, is a change deletes data (`deleteData`): approve it with allowDestroy
+ * and the typed name `<app>-drill`. Its values reach the server only at apply
+ * (`ApplySecrets.previewValues`).
+ *
  * `options.previousDeployKey`: a rotation's old deploy key of the app (`opscrew rotate
  * deploy-key`), which the deploy-key step keeps beside `desired.deploy.publicKey` until the new
  * key proved itself; the next plan without it removes it.
@@ -1937,6 +2014,10 @@ export function planHost(
     steps,
     findings: found,
     otherApps: assumedApps(others),
+    // Scheduled drills delete their copy's data each run, and their removal a kept copy.
+    ...(steps.some((item) => item.id === "drills" && item.state === "change")
+      ? { deleteData: true }
+      : {}),
   });
   const findings = hostFindings(command);
   const fatal = fatalFindings(f, findings);
@@ -1994,6 +2075,7 @@ export function planHost(
     appDirsStep(ctx),
     appRecordStep(ctx),
     updaterStep(ctx, command),
+    drillsStep(ctx),
     ownRunnerStep(ctx, d.app, d.runner, d.repositoryUrl),
     tunnelStep(ctx),
     portainerStep(ctx),
@@ -2005,7 +2087,8 @@ export function planHost(
  * The host plan that removes the app `opts.app` from the server, and only its own parts: its
  * GitHub Actions runner (first, so no deploy job runs meanwhile), its containers (by their Compose
  * project label, so they go without a record too), its folder `/srv/apps/<app>`, the line of its
- * scheduled snapshots in the deploy user's crontab (feature 024), its site and kamal-proxy service
+ * scheduled snapshots in the deploy user's crontab (feature 024), its scheduled restore drills
+ * (their line, recipe and values) with whatever a drill left, its site and kamal-proxy service
  * on the shared edge, its tunnel connector, its deploy key while other apps stay, and its record.
  * Its data (`/srv/data/<app>`, its Compose volumes, its snapshots in `/srv/apps/<app>/.snapshots`)
  * is deleted only with `deleteData`; otherwise its record stays as `data-kept`, so only its
@@ -2083,6 +2166,17 @@ export function planTeardown(
             repository,
           ),
     );
+  }
+
+  // The scheduled drills go before the app, so none starts while it goes, and so does whatever a
+  // drill left: its copy is never the app's data.
+  const drill = drillProject(app).name;
+  if (
+    f.drills.some((item) => item.app === app) ||
+    f.containers.some((container) => container.project === drill) ||
+    f.volumeProjects.includes(drill)
+  ) {
+    steps.push(drillsRemoval(app));
   }
 
   // Data goes only together with the app (its containers or its folder, or files in its data

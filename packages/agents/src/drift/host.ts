@@ -125,6 +125,7 @@ export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "app-dirs": "The app's folders (in /srv/apps and /srv/data)",
   "app-record": "The app's record (in /etc/opscrew/apps)",
   "dns-updater": "The address updater (keeps the app's DNS records at this server's address)",
+  drills: "Scheduled restore drills (their recipe, values and cron line)",
   "github-runner": "The GitHub Actions runner",
   edge: "The shared edge (/srv/edge)",
   "tunnel-connector": "Cloudflare Tunnel connector",
@@ -811,6 +812,10 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
       return appRecordDetails(facts, app);
     case "dns-updater":
       return dnsUpdaterDetails(facts, step, app);
+    case "drills":
+      return [
+        "The scheduled restore drill's recipe, its values file or its line in the deploy user's crontab is not as planned.",
+      ];
     // T1511 adds the runner's drift.
     case "github-runner":
       return [];

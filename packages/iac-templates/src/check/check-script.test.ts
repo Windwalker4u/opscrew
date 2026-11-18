@@ -1116,6 +1116,35 @@ describe("scheduled restore drills", () => {
     expect(older.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
   });
 
+  it("opens an issue when none ran yet though the last scheduled snapshot is older than twice the schedule and an hour", async () => {
+    // START is 2026-10-28 12:00 UTC: twice a weekly schedule and an hour before it is 10-14 11:00.
+    const at = (id: string) => {
+      const w = new World();
+      w.config = config({ environments: [DRILLED()] });
+      w.disks.set(
+        SERVER_HOST,
+        `${df(40)}${scheduled("example-app", RAN, [id])}${drilled("example-app")}`,
+      );
+      return w;
+    };
+    const old = at("20261014T100000Z");
+    await run(env(), old.io());
+    const [issue] = old.open();
+    expect(issue?.title).toBe(
+      "OpsCrew check: example-app (prod) no scheduled restore drill on hetzner-example-app",
+    );
+    expect(issue?.body).toContain(
+      "No scheduled restore drill of example-app has run on the server hetzner-example-app, and its latest scheduled snapshot there, due at 2026-10-14 10:00 UTC, is older than twice its weekly schedule: each drill was skipped or did not start.",
+    );
+    // A newer snapshot still leaves time for the first drill: not checked yet.
+    const young = at("20261014T120000Z");
+    await run(env(), young.io());
+    expect(young.open()).toEqual([]);
+    expect(young.logs).toContain(
+      "hetzner-example-app: no scheduled restore drill of example-app has run there yet.",
+    );
+  });
+
   it("reads a line in another form as one it cannot read, and never lets it reach any text", async () => {
     const w = world(`scheduled example-app drill 2026-10-27T12:00:00Z ${SECRETS.inBody}\n`);
     await run(env(), w.io());

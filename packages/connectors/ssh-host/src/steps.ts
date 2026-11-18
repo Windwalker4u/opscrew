@@ -3992,6 +3992,220 @@ fi`,
 }
 
 // ---------------------------------------------------------------------------------------------
+// drills: the app's scheduled restore drills (029 plan.md 19., research R28 and R29, ADR 0034)
+
+/**
+ * The scheduled drills' copy in the app's folder, which `snapshot.sh drill scheduled` reads: a
+ * copy of `DRILL_RECIPE_DIR` in `@opscrew/iac-templates`' `drill/script.ts`.
+ */
+export const DRILL_RECIPE = ".drill-recipe";
+
+/** The file of {@link DRILL_RECIPE} with the copy's values (`.env.preview`'s), never planned. */
+export const DRILL_VALUES = "values.env";
+
+/** The minute of each hour at which the deploy user's crontab starts the scheduled drill. */
+export const DRILL_MINUTE = 30;
+
+/**
+ * The end of the app's line for scheduled restore drills in the deploy user's crontab, matched
+ * only at the end of the line, so `shop`'s never matches `shop-admin`'s.
+ */
+export function drillScheduleTag(app: string): string {
+  return ` # opscrew-drill ${app}`;
+}
+
+/**
+ * The deploy user's line that runs the app's scheduled drill each hour at {@link DRILL_MINUTE}:
+ * the script drills only in its slot, three hours after the scheduled snapshot's.
+ */
+export function drillCronLine(app: string): string {
+  return `${DRILL_MINUTE} * * * * sh ${appDirs(app).app}/snapshot.sh drill scheduled > /dev/null 2>&1${drillScheduleTag(app)}`;
+}
+
+/** The drill's Compose project, `<app>-drill`, and its data folder in /srv/data. */
+export function drillProject(app: string): { name: string; data: string } {
+  const name = `${app}-drill`;
+  return { name, data: appDirs(name).data };
+}
+
+/**
+ * The recipe's files: by path in {@link DRILL_RECIPE}, each non-empty text without NUL bytes
+ * within 64 KiB, the copy's `compose.yaml` among them; never {@link DRILL_VALUES}.
+ */
+const DRILL_FILE_RULES: FileRules = {
+  name: RecipePathSchema,
+  text: textUpTo(MAX_RECIPE_FILE_BYTES),
+  reserved: new Set([DRILL_VALUES]),
+  required: "compose.yaml",
+};
+
+/** `find`'s tests, from the recipe's folder, for its files but the values and dot-files. */
+export const DRILL_FIND = `find . -type f ! -name '.*' ! -path ./${DRILL_VALUES}`;
+
+/** Shell helpers of the drills step, which runs as the deploy user: its crontab and its files. */
+const DRILL_HELPERS = `${CRON_HELPERS}
+put() {
+  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
+  write_file "$1" "$2"
+}
+sums_ok() {
+  for entry in $MANIFEST; do [ "$(sha256sum "$RECIPE/\${entry%%:*}" 2>/dev/null | cut -d ' ' -f 1)" = "\${entry#*:}" ] || return 1; done
+}
+# Files of the recipe's folder that the plan does not name, the values and dot-files aside.
+stale_files() {
+  (cd "$RECIPE" && ${DRILL_FIND}) | while IFS= read -r f; do
+    f=\${f#./}
+    case " $PATHS " in *" $f "*) ;; *) printf '%s\\n' "$f" ;; esac
+  done
+}`;
+
+/**
+ * `drills`, the app's scheduled restore drills, which delete their copy each run, so only a plan
+ * that deletes data may hold the step: as the deploy user in the app's folder `/srv/apps/<app>`,
+ * the recipe's files in {@link DRILL_RECIPE} (`file:<path>` parameters, compared by their SHA-256;
+ * `*.env` 0600, the others 0644; files of an earlier recipe removed), its {@link DRILL_VALUES}
+ * (0600) from the values on stdin, whose SHA-256 must be `valuesSha256`, and the deploy user's
+ * line ({@link drillCronLine}; a line with the app's tag is replaced). The files reach the server
+ * on stdin after the values. As root, before it, cron is installed when it is missing. Removed
+ * (`remove`, also by a teardown, which may keep the app's data), as root: the line goes first, a
+ * running drill holds the app's lock until it is done, then the recipe, `.drill/`, the Compose
+ * project `<app>-drill` with its volumes and `/srv/data/<app>-drill`.
+ */
+function drillsScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const p = params(step, z.object({ app: AppNameSchema }));
+  if (p.app !== plan.app) throw invalid(step, "app");
+  const dir = appDirs(p.app).app;
+  const project = drillProject(p.app);
+  const shared = {
+    DIR: dir,
+    RECIPE: `${dir}/${DRILL_RECIPE}`,
+    CRON_RE: `${drillScheduleTag(p.app)}$`,
+  };
+  if (step.params.remove === true) {
+    params(step, z.strictObject({ app: AppNameSchema, remove: z.literal(true) }));
+    if (plan.purpose === "undo") throw invalid(step, "purpose");
+    if (plan.purpose === "setup" && plan.deleteData !== true) throw invalid(step, "deleteData");
+    return scripts({
+      name: "drills.remove",
+      params: {
+        ...shared,
+        DRILLS: `${dir}/.drill`,
+        LOCK: `${dir}/.start.lock`,
+        PROJECT: project.name,
+        DATA: project.data,
+      },
+      helpers: `${PROJECT_HELPERS}
+${CRON_HELPERS}
+# The deploy user's crontab, read as root; a server without the deploy user has none.
+read_schedule() {
+  tab=''
+  if getent passwd deploy >/dev/null; then read_tab -u deploy; fi
+}
+gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }`,
+      verify: `  read_schedule || return 1
+  [ "$(cron_count)" = 0 ] || return 1
+  gone "$RECIPE" && gone "$DRILLS" && gone "$DATA" || return 1
+  project_gone "$PROJECT" true`,
+      apply: `if [ -L "$DIR" ]; then fail "$DIR is a symbolic link; OpsCrew does not follow it."; fi
+# The line goes first, so no drill starts; other apps' lines stay.
+read_schedule || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the scheduled restore drills."
+if [ "$(cron_count)" != 0 ]; then drop_cron -u deploy; fi
+# A drill that runs holds the app's lock (30 minutes at most) and removes its copy itself.
+if [ -f "$LOCK" ] && [ ! -L "$LOCK" ] && command -v flock >/dev/null 2>&1; then
+  flock -w 2400 "$LOCK" true || fail "A deploy, a snapshot or a drill of the app held its lock for 40 minutes, so OpsCrew removed only the drills' line in the crontab. Run the command again."
+fi
+remove_project "$PROJECT" "" "" true
+project_gone "$PROJECT" true || fail "Some containers or volumes of the drill's copy ($PROJECT) could not be removed."
+rm -rf "$RECIPE" "$DRILLS"
+if [ -L "$DATA" ]; then rm -f "$DATA"
+elif [ -d "$DATA" ]; then
+  find "$DATA" -xdev -mindepth 1 -delete
+  rmdir "$DATA" || fail "OpsCrew could not remove $DATA completely."
+fi`,
+      failed:
+        "The scheduled restore drills, their recipe or a drill's copy are still on the server.",
+      doing: "removing the scheduled restore drills",
+      timeoutMs: 45 * MINUTE,
+    });
+  }
+  if (plan.purpose !== "setup") throw invalid(step, "purpose");
+  if (plan.deleteData !== true) throw invalid(step, "deleteData");
+  const q = params(step, z.object({ valuesSha256: z.string().regex(/^[0-9a-f]{64}$/) }));
+  const files = addonFiles(step, DRILL_FILE_RULES);
+  if (!files.some(([path]) => path === "schedule")) throw invalid(step, "schedule");
+  const paths = files.map(([path]) => path);
+  return scripts({
+    name: "drills",
+    params: {
+      ...shared,
+      CRON_LINE: drillCronLine(p.app),
+      VALUES_SHA256: q.valuesSha256,
+      PATHS: paths.join(" "),
+      DIRS: stackDirs(paths).join(" "),
+      MANIFEST: files.map(([path, content]) => `${path}:${sha256Hex(content)}`).join(" "),
+    },
+    helpers: DRILL_HELPERS,
+    verify: `  [ -d "$RECIPE" ] && [ ! -L "$RECIPE" ] || return 1
+  sums_ok || return 1
+  [ -z "$(stale_files)" ] || return 1
+  v="$RECIPE/${DRILL_VALUES}"
+  [ -f "$v" ] && [ ! -L "$v" ] && [ "$(stat -c %a "$v")" = 600 ] || return 1
+  [ "$(sha256sum "$v" | cut -d ' ' -f 1)" = "$VALUES_SHA256" ] || return 1
+  read_tab || return 1
+  [ "$(cron_count)" = 1 ] || return 1
+  printf '%s\\n' "$tab" | grep -qxF "$CRON_LINE"`,
+    apply: `umask 077
+command -v crontab >/dev/null 2>&1 || fail "This server has no crontab command, so OpsCrew cannot schedule the restore drills. Install the cron package, then try again."
+if [ ! -d "$DIR" ] || [ -L "$DIR" ]; then fail "$DIR is not the app's folder, so OpsCrew did not set up its restore drills."; fi
+# The values first, checked against the SHA-256 this plan names before anything is written.
+values=''
+IFS= read -r values || true
+if [ "$(printf '%s' "$values" | base64 -d 2>/dev/null | sha256sum | cut -d ' ' -f 1)" != "$VALUES_SHA256" ]; then
+  values=''
+  fail "The drill's values supplied (.env.preview's) are not the ones this plan names, so OpsCrew changed nothing."
+fi
+# The recipe's files, one line of base64 each in the order of $PATHS, none of them secret.
+if [ -L "$RECIPE" ]; then values=''; fail "$RECIPE is a symbolic link; OpsCrew does not follow it."; fi
+install -d -m 0700 "$RECIPE"
+for d in $DIRS; do
+  if [ -L "$RECIPE/$d" ]; then values=''; fail "$RECIPE/$d is a symbolic link; OpsCrew does not follow it."; fi
+  install -d -m 0755 "$RECIPE/$d"
+done
+for path in $PATHS; do
+  b64=''
+  IFS= read -r b64 || true
+  [ -n "$b64" ] || { values=''; fail "The drill's file $path did not arrive on standard input, so OpsCrew stopped."; }
+  mode=0644
+  case "$path" in *.env) mode=0600 ;; esac
+  printf '%s' "$b64" | base64 -d | put "$RECIPE/$path" "$mode"
+done
+sums_ok || { values=''; fail "The drill's files on the server are not the planned ones, so OpsCrew stopped."; }
+# Files of an earlier recipe that this one does not have go, and so do folders left empty.
+stale_files | while IFS= read -r f; do rm -f "$RECIPE/$f"; done
+find "$RECIPE" -mindepth 1 -type d -empty -delete
+printf '%s' "$values" | base64 -d | put "$RECIPE/${DRILL_VALUES}" 0600
+values=''
+# The hourly line; a line with the app's tag is replaced.
+read_tab || fail "OpsCrew could not read the deploy user's crontab, so it did not schedule the restore drills."
+if [ "$(cron_count)" != 1 ] || ! printf '%s\\n' "$tab" | grep -qxF "$CRON_LINE"; then
+  rest=$(printf '%s\\n' "$tab" | grep -vE "$CRON_RE") || rest=''
+  {
+    if [ -n "$rest" ]; then printf '%s\\n' "$rest"; fi
+    printf '%s\\n' "$CRON_LINE"
+  } | crontab - || fail "OpsCrew could not write the deploy user's crontab."
+fi`,
+    failed:
+      "The scheduled restore drills, their recipe, their values or their line are not on the server as planned.",
+    secrets: { names: ["previewValues"], required: true },
+    payload: files.map(([, content]) => `${base64(content)}\n`).join(""),
+    asDeploy: true,
+    preApply: applyScript("drills.cron", {}, "", CRON_INSTALL),
+    doing: "scheduling the restore drills",
+    timeoutMs: 5 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // github-runner: the app's GitHub Actions runner, deploy's systemd user service
 
 /**
@@ -4333,6 +4547,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return appRecordScripts(plan, step);
     case "dns-updater":
       return dnsUpdaterScripts(plan, step);
+    case "drills":
+      return drillsScripts(plan, step);
     case "github-runner":
       return runnerScripts(plan, step);
     case "edge":

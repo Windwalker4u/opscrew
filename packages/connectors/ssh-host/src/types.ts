@@ -4,6 +4,7 @@ import {
   HOST_SYSCTL_KEYS,
   HOSTNAME_RE,
   MAX_COMPOSE_BYTES,
+  MAX_RECIPE_FILE_BYTES,
 } from "./constants";
 import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 
@@ -13,7 +14,8 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 /**
  * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
  * `github-runner`, `tunnel-connector`, `network`, `network-filter` and `grant` are the app's own;
- * `edge` only appears in a teardown (the edge goes with the last app). `check-key`, `monitoring`,
+ * `edge` only appears in a teardown (the edge goes with the last app). `drills` is the app's own
+ * too, planned from `DesiredHost.drills` (and removed by a teardown). `check-key`, `monitoring`,
  * `beszel` and `alloy` are planned by `planAddon` (and removed by a teardown), `previews` by
  * `planAddon` alone, `network` and `network-filter` by `planNetwork` (and removed by a teardown or
  * an undo), `public-ssh` by `planPublicSsh` and `grant` by `planGrant`.
@@ -38,6 +40,7 @@ export const HOST_STEP_IDS = [
   "app-dirs",
   "app-record",
   "dns-updater",
+  "drills",
   "github-runner",
   "edge",
   "tunnel-connector",
@@ -330,6 +333,33 @@ export const DesiredDnsUpdaterSchema = z
 export type DesiredDnsUpdater = z.infer<typeof DesiredDnsUpdaterSchema>;
 
 /**
+ * The app's scheduled restore drills (`DesiredHost.drills`, ADR 0034): `files`, the copy's files as
+ * `drillRecipe` in `@opscrew/iac-templates` renders them, by path in `.drill-recipe/` of the app's
+ * folder (`compose.yaml`, `app.env`, `services/<service>/<file>` and `schedule`, which says
+ * `weekly` or `daily`; never `values.env`), each within 64 KiB; and `valuesSha256`, the SHA-256 of
+ * the copy's `values.env` (`.env.preview`'s values, empty for none), which reaches the server only
+ * at apply (`ApplySecrets.previewValues`).
+ */
+export const DesiredDrillsSchema = z
+  .strictObject({
+    files: z.record(RecipePathSchema, textUpTo(MAX_RECIPE_FILE_BYTES)),
+    valuesSha256: Sha256Schema,
+  })
+  .refine((drills) => drills.files["compose.yaml"] !== undefined, {
+    message: "must hold the copy's compose.yaml",
+    path: ["files"],
+  })
+  .refine((drills) => /^(weekly|daily)\n$/.test(drills.files.schedule ?? ""), {
+    message: "must hold the schedule, weekly or daily",
+    path: ["files", "schedule"],
+  })
+  .refine((drills) => drills.files["values.env"] === undefined, {
+    message: "must leave values.env out: its values are supplied at apply",
+    path: ["files"],
+  });
+export type DesiredDrills = z.infer<typeof DesiredDrillsSchema>;
+
+/**
  * How a home app is served (`DesiredHost.home`, its record's `home`): `ipv4` false serves it over
  * IPv6 only. The apps on one server are all at home, served alike, or none is.
  */
@@ -463,6 +493,13 @@ export const DesiredHostSchema = z
      * has there is removed.
      */
     dnsUpdater: DesiredDnsUpdaterSchema.optional(),
+    /**
+     * Scheduled restore drills (`snapshots.drills.schedule`), installed by the `drills` step: the
+     * copy's files in `.drill-recipe/` of the app's folder, `values.env` beside them, and the deploy
+     * user's hourly line that runs `snapshot.sh drill scheduled`. Absent: the drills the app has
+     * there are removed.
+     */
+    drills: DesiredDrillsSchema.optional(),
     /** A server at home (see {@link HomeModeSchema}), kept in the app's record. */
     home: HomeModeSchema.optional(),
     /**
@@ -538,7 +575,9 @@ export interface ApplySecrets {
   /**
    * A preview environment's values (`previews`): the text of its `values.env`, one `NAME=value`
    * per line (empty for none), with exactly the names the plan lists, in that order. The step
-   * writes it to `/srv/apps/<app>/values.env`, which only the deploy user can read.
+   * writes it to `/srv/apps/<app>/values.env`, which only the deploy user can read. For `drills`:
+   * the drill's copy's values (`.env.preview`'s), whose SHA-256 the step names; it writes them to
+   * `/srv/apps/<app>/.drill-recipe/values.env`, which only the deploy user can read.
    */
   previewValues?: string;
   /**
