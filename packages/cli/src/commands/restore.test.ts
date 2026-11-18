@@ -296,6 +296,16 @@ const DRILL: ApprovalRequest = {
   confirmPhrase: "shop-staging-drill",
 };
 
+/** The same drill in a Portainer, which asks it as a stack plan by its hash. */
+const PORTAINER_DRILL: ApprovalRequest = {
+  kind: "stack-apply",
+  title: `Run a restore drill of the snapshot ${ID} of staging in your Portainer`,
+  details: `Typing shop-staging-drill approves it.\nStack plan hash: ${HASH}`,
+  planHash: HASH,
+  allowDestroy: true,
+  confirmPhrase: "shop-staging-drill",
+};
+
 /** A drill that ended healthy, as `drillSnapshot` reports it. */
 const DRILLED = {
   id: ID,
@@ -374,6 +384,25 @@ describe("opscrew restore --drill", () => {
     expect(ctx.output).toContain(`✓ ${DRILL.title} (confirmed with --confirm shop-staging-drill)`);
     expect(await run(ctx, ...base, "--confirm", "shop-staging", "--approve", HASH)).toBe(1);
     expect(await run(ctx, ...base, "--approve", HASH)).toBe(1);
+    expect(decisions[0]).toBe("approved");
+    expect(decisions.slice(1).every((decision) => decision !== "approved")).toBe(true);
+  });
+
+  it("drills in a Portainer in a script with --confirm <app>-drill and its stack plan's hash", async () => {
+    const ctx = await setup();
+    const decisions: (string | undefined)[] = [];
+    fake.answers.drillSnapshot = asking(PORTAINER_DRILL, decisions, DRILLED, REFUSED);
+    const base = ["restore", "--drill", ID, "--env", "staging"];
+    expect(
+      await run(ctx, ...base, "--confirm", "shop-staging-drill", "--approve", HASH),
+      ctx.errors,
+    ).toBe(0);
+    expect(ctx.output).toContain(`Stack plan hash: ${HASH}`);
+    expect(ctx.output).toContain(
+      `✓ ${PORTAINER_DRILL.title} (confirmed with --confirm shop-staging-drill)`,
+    );
+    expect(await run(ctx, ...base, "--approve", HASH)).toBe(1);
+    expect(await run(ctx, ...base, "--confirm", "shop-staging-drill", "--approve", OTHER)).toBe(1);
     expect(decisions[0]).toBe("approved");
     expect(decisions.slice(1).every((decision) => decision !== "approved")).toBe(true);
   });

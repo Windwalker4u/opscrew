@@ -162,7 +162,9 @@ function restoreApprovals(
 ): (base: ApprovalHandler, clock: Clock) => ApprovalHandler {
   return (base, clock) =>
     new FlagConfirmation(base, {
-      kinds: ["remote-exec"],
+      // A Portainer's drill asks as a stack plan by its hash; every other restore and drill as a
+      // command on the machine.
+      kinds: ["remote-exec", "stack-apply"],
       what: "a restore",
       names: confirm === undefined ? [] : [confirm],
       hashes: approve === undefined ? [] : [approve],
