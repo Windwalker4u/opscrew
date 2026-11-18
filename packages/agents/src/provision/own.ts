@@ -848,9 +848,6 @@ export async function ownEngineEnv(
   setAddressVariables(env, address);
 }
 
-// The switch's steps (`home-switch.ts`) read the mode from here.
-export { ownAccessMode };
-
 /** Each {@link OwnAccessMode} in words. */
 export const MODE_TEXT: Record<OwnAccessMode, string> = {
   public: "serving the app directly on its public address",

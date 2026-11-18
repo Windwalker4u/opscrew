@@ -158,14 +158,20 @@ async function reachesAccount(
 
 /**
  * How to make the updater's token for `zone`, and where it goes: lines joined by newlines, ending
- * with setting `variable` and running `command` again.
+ * with setting `variable` and running `command` again (`first`: running it, as design says before
+ * the first provision).
  */
-export function updaterTokenRecipe(zone: string, variable: string, command: string): string {
+export function updaterTokenRecipe(
+  zone: string,
+  variable: string,
+  command: string,
+  first = false,
+): string {
   return [
     `Make it at ${CLOUDFLARE_TOKEN_PAGE} → Create Token → Create Custom Token, with:`,
     "  permission Zone → DNS → Edit,",
     `  zone resources Include → Specific zone → ${zone}.`,
-    `Then set ${variable} to it and run \`${command}\` again.`,
+    `Then set ${variable} to it and run \`${command}\`${first ? "" : " again"}.`,
     "It stays only on your server, readable by root alone; OpsCrew keeps no copy.",
   ].join("\n");
 }

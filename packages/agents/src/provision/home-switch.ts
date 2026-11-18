@@ -8,6 +8,7 @@
  * mode's setup. Every other switch is the removal's alone.
  */
 import { cloudflareConnector } from "@opscrew/connector-cloudflare";
+import { ownAccessMode } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
 import { deleteUpdaterRecords, planRecordDeletion } from "../home/records";
 import { type HostPlanOutcome, infrastructureOutputs } from "../shared";
@@ -18,7 +19,6 @@ import {
   applyOwnHostPlan,
   inspectAgain,
   MODE_TEXT,
-  ownAccessMode,
   removeOldAccessMode,
 } from "./own";
 import type { PlanAndApplyResult } from "./plan-apply";

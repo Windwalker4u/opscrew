@@ -123,7 +123,7 @@ export async function designHome(
   else {
     lines.push(
       "The address updater on your server keeps the site's DNS records at your home's address, with a Cloudflare token of its own.",
-      ...updaterTokenRecipe(zone, UPDATER_TOKEN_VAR, `opscrew provision${flags}`).split("\n"),
+      ...updaterTokenRecipe(zone, UPDATER_TOKEN_VAR, `opscrew provision${flags}`, true).split("\n"),
       updaterTokenReach(zone),
     );
   }

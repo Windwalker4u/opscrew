@@ -157,7 +157,7 @@ describe("design for a server at home", () => {
         LARGE_MEDIA,
         "  permission Zone → DNS → Edit,",
         "  zone resources Include → Specific zone → example.com.",
-        "Then set OPSCREW_DNS_UPDATER_TOKEN to it and run `opscrew provision` again.",
+        "Then set OPSCREW_DNS_UPDATER_TOKEN to it and run `opscrew provision`.",
         updaterTokenReach("example.com"),
       ]),
     );
