@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { testContext, testPlan } from "../__fixtures__/plans";
+import { homePlan, testContext, testPlan } from "../__fixtures__/plans";
 import type { RenderContext } from "../types";
 import { renderRunbook } from "./index";
 
@@ -130,6 +130,96 @@ describe("renderRunbook for a server the user owns", () => {
       ),
     ).toBe(plain);
     expect(plain).not.toContain("-p ");
+  });
+
+  describe("a server at home", () => {
+    const home = (o: Parameters<typeof homePlan>[0] = {}) =>
+      renderRunbook(homePlan(o), ctx).content;
+
+    it("has a home section only for a home app", () => {
+      expect(home()).toContain("## Hosting at home");
+      for (const text of [
+        runbook({}),
+        runbook({ domain: "shop.example.com" }),
+        runbook({ access: "tunnel", domain: "shop.example.com" }),
+      ]) {
+        expect(text).not.toContain("## Hosting at home");
+        expect(text).not.toContain("opscrew-dns-updater");
+      }
+    });
+
+    it("names the forwards, never an address", () => {
+      const text = home();
+      expect(text).toContain(
+        "Forward TCP 80 and TCP 443 to the server's address on your home network",
+      );
+      expect(text).toContain("DHCP");
+      expect(text).toContain("Don't forward SSH");
+      expect(text).toContain(
+        "its public IPv4 address on its own interface, no forwards are needed",
+      );
+      // Proxied over IPv4: only an A record, so no IPv6 firewall rule.
+      expect(text).not.toContain("router's IPv6 firewall");
+      expect(home({ proxied: false })).toContain(
+        "allow inbound TCP 80 and 443 to this server in your router's IPv6 firewall",
+      );
+      const v6 = home({ ipv4: false });
+      expect(v6).toContain("served over IPv6 behind Cloudflare's proxy");
+      expect(v6).toContain(
+        "allow inbound TCP 80 and 443 to this server in your router's IPv6 firewall",
+      );
+      expect(v6).not.toContain("Forward TCP 80 and TCP 443");
+      for (const o of [{}, { ipv4: false }, { proxied: false }, { dnsElsewhere: true }]) {
+        const t = home(o);
+        expect(t).not.toContain(IPV4);
+        expect(t).not.toContain(IPV6);
+        expect(t).not.toMatch(/\b(?:192\.168|10)\.\d+\.\d+/);
+      }
+    });
+
+    it("names the updater's files and units and says what its token can reach", () => {
+      const text = home();
+      expect(text).toContain("`opscrew-dns-updater@shop.timer`");
+      expect(text).toContain("every 2 minutes");
+      expect(text).toContain("`/etc/opscrew/dns-updater/shop.json`");
+      expect(text).toContain("`/etc/opscrew/dns-updater/shop.token`");
+      expect(text).toContain("`/var/lib/opscrew-dns-updater/shop/`");
+      expect(text).toContain("but its token can change any record in example.com");
+      expect(text).toContain("the deploy runner included");
+      expect(text).toContain("`OPSCREW_DNS_UPDATER_TOKEN`");
+      expect(text).toContain("`opscrew rotate dns-updater`");
+      expect(text).toContain("journalctl -u opscrew-dns-updater@shop.service");
+      const elsewhere = home({ dnsElsewhere: true });
+      expect(elsewhere).not.toContain("opscrew-dns-updater");
+      expect(elsewhere).toContain("there is no address updater");
+    });
+
+    it("explains SSH from the home network, the outside check and console recovery", () => {
+      const text = home();
+      expect(text).toContain("`inet opscrew`");
+      expect(text).toContain("`server.sshFrom`");
+      expect(text).toContain("answers SSH only on your home network");
+      expect(text).toContain("`.github/workflows/opscrew-outside-check.yml`");
+      expect(text).toContain("A request from inside your network is not proof");
+      expect(text).toContain("Cloudflare answered on port 80");
+      expect(home({ proxied: false })).not.toContain("Cloudflare answered on port 80");
+      expect(text).toContain("### If SSH stops answering after your network changed");
+      expect(text).toContain("sudo nft delete table inet opscrew");
+      expect(text).toContain("`opscrew interview --answers <file>` with the new network");
+      expect(text).toContain("this app's A record at Cloudflare");
+      expect(home({ proxied: false })).toContain("A (and AAAA, while your connection has IPv6)");
+      expect(home({ ipv4: false })).toContain("this app's AAAA record");
+    });
+
+    it("uses the environment's commands", () => {
+      const text = renderRunbook(homePlan(), { ...ctx, environments: ["prod", "staging"] }).content;
+      expect(text).toContain("`opscrew rotate dns-updater --env prod`");
+      expect(text).toContain("`opscrew verify --env prod`");
+    });
+
+    it("matches the snapshot", () => {
+      expect(home()).toMatchSnapshot("home");
+    });
   });
 
   it("matches the snapshots", () => {
