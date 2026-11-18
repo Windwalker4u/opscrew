@@ -284,33 +284,38 @@ async function checkServer(
   const connect = options.tcpConnect ?? defaultTcpConnect;
   const timeoutMs = options.probeTimeoutMs ?? 3000;
   const probeHost = own?.probeHost ?? host;
-  const services = await probePorts(probeHost, {
-    services: servicePorts(plan),
-    connect,
-    timeoutMs,
-    providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,
-  });
-  const probes = [
-    ...(own === undefined
-      ? await probeExpectedPorts(host, plan, { connect, timeoutMs })
-      : await probeOwnServerPorts(probeHost, plan, {
+  // The three probe groups run together; their results keep this order.
+  const [expected, services, password] = await Promise.all([
+    own === undefined
+      ? probeExpectedPorts(host, plan, { connect, timeoutMs })
+      : probeOwnServerPorts(probeHost, plan, {
           connect,
           timeoutMs,
           sshPort: own.sshPort,
           ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
           ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
           ...(inside !== undefined ? { inside } : {}),
-        })),
-    ...(inside === undefined ? services : services.map((check) => fromInside(check, inside))),
+        }),
+    probePorts(probeHost, {
+      services: servicePorts(plan),
+      connect,
+      timeoutMs,
+      providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,
+    }),
     away !== undefined
       ? awayFromHome(PASSWORD_PROBE, away)
-      : await probeSshPasswordAuth(host, {
+      : probeSshPasswordAuth(host, {
           runner: deps.runner,
           knownHostsFile: paths.files.knownHosts,
           ...(own !== undefined
             ? { port: own.sshPort, passwordsKept: own.hardening.passwordsKept }
             : {}),
         }),
+  ]);
+  const probes = [
+    ...expected,
+    ...(inside === undefined ? services : services.map((check) => fromInside(check, inside))),
+    password,
   ];
   return {
     hostChecks,

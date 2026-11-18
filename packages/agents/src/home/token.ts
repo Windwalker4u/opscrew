@@ -118,22 +118,26 @@ export async function checkUpdaterToken(input: UpdaterTokenCheck): Promise<Check
   return { token, ...(check.expiresOn ? { expiresOn: check.expiresOn } : {}) };
 }
 
-/** What else than the zone's DNS the token reaches, of what OpsCrew can probe (in plain words). */
+/**
+ * What else than the zone's DNS the token reaches, of what OpsCrew can probe (in plain words, in
+ * the tables' order); the probes run together.
+ */
 async function widerReach(
   client: CloudflareClient,
   zone: UpdaterTokenCheck["zone"],
 ): Promise<string[]> {
-  const wider: string[] = [];
-  for (const [need, words] of Object.entries(OTHER_ZONE_NEEDS)) {
-    const { missing } = await client.zonePermissions(zone.id, [need as ZonePermissionNeed]);
-    if (missing.length === 0) wider.push(words);
-  }
-  for (const [need, words] of Object.entries(ACCOUNT_NEEDS)) {
-    if (await reachesAccount(client, zone.accountId, need as AccountPermissionNeed)) {
-      wider.push(words);
-    }
-  }
-  return wider;
+  const reached = await Promise.all([
+    ...Object.entries(OTHER_ZONE_NEEDS).map(async ([need, words]) => {
+      const { missing } = await client.zonePermissions(zone.id, [need as ZonePermissionNeed]);
+      return missing.length === 0 ? words : undefined;
+    }),
+    ...Object.entries(ACCOUNT_NEEDS).map(async ([need, words]) =>
+      (await reachesAccount(client, zone.accountId, need as AccountPermissionNeed))
+        ? words
+        : undefined,
+    ),
+  ]);
+  return reached.filter((words) => words !== undefined);
 }
 
 /** Whether the token has the account need; an account without Access gives no token Access. */
