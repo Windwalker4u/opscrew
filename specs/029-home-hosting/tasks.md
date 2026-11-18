@@ -757,8 +757,9 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Effort: high
 
 - [ ] T2938 [P] [US7] Scheduled drills on a hosting account
-  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/agents/src/hosting/{provision-plans,plan}.ts`
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts` (the settings renderer), `packages/agents/src/hosting/{provision-plans,plan}.ts`
     (the agent's settings), colocated tests
+  - Also (lead, T2935's findings): the scheduled run calls `drill_snapshot <id> scheduled` on the newest `snapshot-*` id, with a 30-minute limit and a skip (recorded, never a failure) when the account's quota leaves less free space than the dump's size; a cPanel `addDatabase` that fails after the database was made removes it again before reporting, so the next provision doesn't stop at "not OpsCrew's"
   - Reads: plan 19.; research R28, R29; T2935's drill routine
   - Depends: T2935, T2936
   - Accept: with `snapshots.drills.schedule`, the agent's settings carry it, and the agent starts a
