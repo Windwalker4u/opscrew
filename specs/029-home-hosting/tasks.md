@@ -480,6 +480,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Effort: medium
 
 - [ ] T2915b [P] [US2] destroy for a home app
+  - Also (lead, T2913b's finding 2): when an app switches out of home (`provision/home-switch.ts`) and it was the repository's last home app, the same pull-request removal takes `.github/workflows/opscrew-outside-check.yml` out; a test for the switch and for destroy.
   - Owns: `packages/agents/src/destroy/**`, colocated tests
   - Reads: plan 14. (destroy); research R12
   - Depends: T2913b
