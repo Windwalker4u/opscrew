@@ -68,7 +68,8 @@ restarts by itself and starts with the server.
   installs the runner's system packages, makes `/srv/runners` the `deploy` user's, and lets
   `deploy`'s services run without a login session. That happens on every server OpsCrew creates,
   whatever the runner choice, so choosing a runner later never replaces the server. The host plan
-  then holds only the `github-runner` step, applied over SSH as `deploy`.
+  then holds only the steps `deploy` can apply itself, over SSH: the `github-runner` step, and the
+  [scheduled restore drills](snapshots.md#restore-drills) when they're on.
 - **On a server you already have**, the host plan's root part installs the packages and lets
   `deploy`'s services run, like its other steps.
 
