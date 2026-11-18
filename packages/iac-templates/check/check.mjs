@@ -68,7 +68,10 @@ const PAUSE_REASONS = {
  * snapshot is being taken: a `.partial` folder while the app's start lock is held). Nothing else
  * of the log. Then `scheduled <app> drill`, with the end and result of the last scheduled restore
  * drill that ran (not one that was skipped) from `.snapshots/drills.log`, if any: nothing else of
- * that log either.
+ * that log either. Then, while the app has scheduled restore drills (`.drill-recipe/schedule`) and
+ * a scheduled snapshot, `scheduled <app> since <Unix seconds>`: the later of the times of the
+ * schedule's file (the drills step writes it when it installs or changes the schedule) and of the
+ * oldest scheduled snapshot's folder, from when its drills had a snapshot to restore.
  */
 export const CHECK_COMMAND = [
   "export LC_ALL=C; df -P -B1 / && echo scheduled &&",
@@ -89,22 +92,12 @@ export const CHECK_COMMAND = [
   "break;",
   "done;",
   "echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);",
+  "s=$(stat -c %Y $d.drill-recipe/schedule 2>/dev/null) && o=$(ls $d.snapshots 2>/dev/null | grep -xE '[0-9]{8}T[0-9]{6}Z' | head -n 1) && test x$o != x && t=$(stat -c %Y $d.snapshots/$o) && echo scheduled $a since $((s>t?s:t)) || true;",
   "done",
 ].join(" ");
 
 /** A scheduled snapshot's id: the hour of its slot, `20261107T030000Z`. */
 const SCHEDULED_ID = /^\d{8}T\d{6}Z$/;
-
-/**
- * The slot a scheduled snapshot's id names, `20261107T030000Z`.
- * @param {string} id
- * @returns {Date}
- */
-function scheduledSlot(id) {
-  return new Date(
-    `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}T${id.slice(9, 11)}:${id.slice(11, 13)}:${id.slice(13, 15)}Z`,
-  );
-}
 
 /** The answer's line on the last scheduled restore drill that ran: its end and its result. */
 const DRILL_LINE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (healthy|unhealthy|not-restored|failed)$/;
@@ -743,9 +736,9 @@ async function checkSnapshot(check, read, io) {
  * The last scheduled restore drill of the app on the server, from its `scheduled <app> drill`
  * line: a failure when it did not restore, did not become healthy or failed otherwise, or when
  * none ran within twice its schedule (and an hour). A skipped drill never reaches the line, so it
- * never fails the check. When none ran yet, a failure once the app's last scheduled snapshot there
- * is that old too, and unknown before; unknown when the server's check key is from before the
- * check read drills. Nothing the drills' log says reaches any text but the end and result.
+ * never fails the check. When none ran yet, a failure once its `scheduled <app> since` time (the
+ * later of the schedule's and the oldest scheduled snapshot's) is that old too, and unknown before;
+ * unknown when the server's check key is from before the check read drills. Nothing the drills' log says reaches any text but the end and result.
  */
 async function checkDrill(check, read, io) {
   const { server, app, every } = check;
@@ -763,21 +756,21 @@ async function checkDrill(check, read, io) {
   const period = DRILL_PERIOD_MS[every];
   const title = `OpsCrew check: ${appLabel(check.key)}`;
   if (rest === "") {
-    // None ran yet: a failure only once the last scheduled snapshot is older than twice the
-    // schedule (and an hour), so a drill had its slots on it.
-    const id = output
+    // None ran yet: a failure only once the schedule has had a snapshot to restore for twice its
+    // period (and an hour), so turning drills on never opens the issue before their slots came.
+    const since = output
       .split("\n")
-      .find((each) => each.startsWith(`scheduled ${app} id `))
-      ?.slice(`scheduled ${app} id `.length);
-    const due = id !== undefined && SCHEDULED_ID.test(id) ? scheduledSlot(id) : undefined;
+      .find((each) => each.startsWith(`scheduled ${app} since `))
+      ?.slice(`scheduled ${app} since `.length);
+    const from = since !== undefined && /^\d{1,12}$/.test(since) ? Number(since) * 1000 : undefined;
     if (
-      due !== undefined &&
+      from !== undefined &&
       period !== undefined &&
-      io.now().getTime() - due.getTime() > 2 * period + DRILL_GRACE_MS
+      io.now().getTime() - from > 2 * period + DRILL_GRACE_MS
     ) {
       return {
         title: `${title} no scheduled restore drill on ${server.id}`,
-        what: `No scheduled restore drill of ${app} has run on the server ${server.id}, and its latest scheduled snapshot there, due at ${utc(due)}, is older than twice its ${every} schedule: each drill was skipped or did not start.`,
+        what: `No scheduled restore drill of ${app} has run on the server ${server.id} since ${utc(new Date(from))}, when its ${every} schedule had a scheduled snapshot to restore, more than twice the schedule ago: each drill was skipped or did not start.`,
         hint: DRILL_HINT,
       };
     }

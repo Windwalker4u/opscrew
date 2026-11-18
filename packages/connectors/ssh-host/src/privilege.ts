@@ -14,8 +14,8 @@ import { asRoot, pipedScript } from "./shell";
 /** How the login becomes root: it is root, uses passwordless `sudo -n`, or runs Docker. */
 export type HostPrivilege = "root" | "sudo" | "docker";
 
-/** An image pinned by its digest, as `IMAGES.caddy.ref` is. */
-const PINNED_IMAGE_RE = /^[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$/;
+/** An image pinned by its digest, as `IMAGES.caddy.ref` is (also the drills' removal's, as deploy). */
+export const PINNED_IMAGE_RE = /^[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$/;
 
 /** The command that runs the host's `sh` as root on its standard input, in a container of `image`. */
 export function dockerRootCommand(image: string): string {

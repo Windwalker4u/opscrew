@@ -159,7 +159,7 @@ describe("check-key", () => {
       false,
     );
     // The form that read the scheduled snapshots but not the restore drills is older too.
-    const drill = CHECK_KEY_COMMAND.match(/ echo scheduled \$a drill [^;]*;/)?.[0];
+    const drill = CHECK_KEY_COMMAND.match(/ echo scheduled \$a drill .*since[^;]*;/)?.[0];
     expect(drill).toBeDefined();
     const snapshotsOnly = checkKeyLine(check, "acme/shop").replace(drill ?? "", "");
     expect(re.test(snapshotsOnly)).toBe(false);

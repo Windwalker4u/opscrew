@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -1116,33 +1116,58 @@ describe("scheduled restore drills", () => {
     expect(older.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
   });
 
-  it("opens an issue when none ran yet though the last scheduled snapshot is older than twice the schedule and an hour", async () => {
-    // START is 2026-10-28 12:00 UTC: twice a weekly schedule and an hour before it is 10-14 11:00.
-    const at = (id: string) => {
-      const w = new World();
-      w.config = config({ environments: [DRILLED()] });
-      w.disks.set(
-        SERVER_HOST,
-        `${df(40)}${scheduled("example-app", RAN, [id])}${drilled("example-app")}`,
+  describe("when none ran yet, from the later of the schedule's time and the oldest scheduled snapshot's", () => {
+    /** The line `since <seconds>` CHECK_COMMAND prints after the drill's. */
+    const since = (at: Date) => `scheduled example-app since ${Math.floor(at.getTime() / 1000)}\n`;
+
+    it("opens no issue for drills just turned on, though snapshots ran for weeks before", async () => {
+      // Snapshots ran every week: the newest is today's, so the line says the schedule's time.
+      const w = world(`${drilled("example-app")}${since(daysAgo(0, 3))}`);
+      await run(env(), w.io());
+      expect(w.open()).toEqual([]);
+      expect(w.logs).toContain(
+        "hetzner-example-app: no scheduled restore drill of example-app has run there yet.",
       );
-      return w;
-    };
-    const old = at("20261014T100000Z");
-    await run(env(), old.io());
-    const [issue] = old.open();
-    expect(issue?.title).toBe(
-      "OpsCrew check: example-app (prod) no scheduled restore drill on hetzner-example-app",
-    );
-    expect(issue?.body).toContain(
-      "No scheduled restore drill of example-app has run on the server hetzner-example-app, and its latest scheduled snapshot there, due at 2026-10-14 10:00 UTC, is older than twice its weekly schedule: each drill was skipped or did not start.",
-    );
-    // A newer snapshot still leaves time for the first drill: not checked yet.
-    const young = at("20261014T120000Z");
-    await run(env(), young.io());
-    expect(young.open()).toEqual([]);
-    expect(young.logs).toContain(
-      "hetzner-example-app: no scheduled restore drill of example-app has run there yet.",
-    );
+      expect(w.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+    });
+
+    it("opens the issue once twice the schedule and an hour passed with no drill, snapshots still running", async () => {
+      // START is 2026-10-28 12:00 UTC: twice a weekly schedule and an hour before it is 10-14 11:00.
+      const w = world(`${drilled("example-app")}${since(daysAgo(14, 2))}`);
+      await run(env(), w.io());
+      const [issue] = w.open();
+      expect(issue?.title).toBe(
+        "OpsCrew check: example-app (prod) no scheduled restore drill on hetzner-example-app",
+      );
+      expect(issue?.body).toContain(
+        "No scheduled restore drill of example-app has run on the server hetzner-example-app since 2026-10-14 10:00 UTC, when its weekly schedule had a scheduled snapshot to restore, more than twice the schedule ago: each drill was skipped or did not start.",
+      );
+      // Just within twice the schedule and an hour: not yet.
+      const young = world(`${drilled("example-app")}${since(daysAgo(14, 0))}`);
+      await run(env(), young.io());
+      expect(young.open()).toEqual([]);
+      // Daily: twice its schedule is two days.
+      const daily = world(`${drilled("example-app")}${since(daysAgo(2, 2))}`, "daily");
+      await run(env(), daily.io());
+      expect(daily.open().map((each) => each.title)).toEqual([
+        "OpsCrew check: example-app (prod) no scheduled restore drill on hetzner-example-app",
+      ]);
+    });
+
+    it("opens no issue once a drill ran, whatever the line says", async () => {
+      const w = world(
+        `${drilled("example-app", { end: daysAgo(1), result: "healthy" })}${since(daysAgo(30))}`,
+      );
+      await run(env(), w.io());
+      expect(w.open()).toEqual([]);
+      expect(w.summaries.at(-1)).toContain(`- ${KEY}: passed`);
+    });
+
+    it("reads a line in another form as none", async () => {
+      const w = world(`${drilled("example-app")}scheduled example-app since 1e9\n`);
+      await run(env(), w.io());
+      expect(w.open()).toEqual([]);
+    });
   });
 
   it("reads a line in another form as one it cannot read, and never lets it reach any text", async () => {
@@ -1223,6 +1248,24 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
       "2026-10-28T03:05:00Z scheduled skipped id=- version=- start=2026-10-28T03:05:00Z parts=- health=- tables=- removal=- cleaned=no reason=memory\n",
     );
     await mkdir(join(dir, "apps/blog/.snapshots/20261028T030000Z.partial"), { recursive: true });
+    // Drill schedules: shop's since a week, after its oldest scheduled snapshot (two weeks old),
+    // and a release snapshot that is no scheduled one; example-app's with no scheduled snapshot.
+    const seconds = (iso: string) => new Date(iso).getTime() / 1000;
+    await write("apps/shop/.drill-recipe/schedule", "weekly\n");
+    await utimes(
+      join(dir, "apps/shop/.drill-recipe/schedule"),
+      seconds("2026-10-21T10:00:00Z"),
+      seconds("2026-10-21T10:00:00Z"),
+    );
+    for (const [id, at] of [
+      ["20261014T030000Z", "2026-10-14T03:05:00Z"],
+      ["20261021T030000Z", "2026-10-21T03:05:00Z"],
+      ["0123456789abcdef", "2026-10-01T00:00:00Z"],
+    ] as const) {
+      await mkdir(join(dir, "apps/shop/.snapshots", id), { recursive: true });
+      await utimes(join(dir, "apps/shop/.snapshots", id), seconds(at), seconds(at));
+    }
+    await write("apps/example-app/.drill-recipe/schedule", "weekly\n");
     await write("apps/Odd name/.snapshots/scheduled.log", "failed\n");
     await mkdir(join(dir, "apps/no-log"), { recursive: true });
     // A stand-in for flock: the start lock is held.
@@ -1244,7 +1287,10 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     }
     // Each app's lines are what scheduledLog reads of its log, then the last scheduled drill that ran.
     for (const [app, lines] of Object.entries(logs)) {
-      const printed = out.filter((line) => line.startsWith(`scheduled ${app} `));
+      const printed = out.filter(
+        (line) =>
+          line.startsWith(`scheduled ${app} `) && !line.startsWith(`scheduled ${app} since `),
+      );
       expect(printed[0]).toMatch(new RegExp(`^scheduled ${app} at \\d+$`));
       const expected = scheduled(app, new Date(0), lines, app === "blog").split("\n");
       expect(printed.slice(1, -1)).toEqual(expected.slice(1, -1));
@@ -1253,6 +1299,18 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     expect(out).toContain("scheduled shop drill 2026-10-28T03:20:00Z not-restored");
     expect(out).toContain("scheduled example-app drill");
     expect(out).toContain("scheduled blog drill");
+    // The later of shop's schedule and its oldest scheduled snapshot; none without either.
+    expect(out).toContain(`scheduled shop since ${seconds("2026-10-21T10:00:00Z")}`);
+    expect(out.filter((line) => line.includes(" since "))).toHaveLength(1);
+    await utimes(
+      join(dir, "apps/shop/.drill-recipe/schedule"),
+      seconds("2026-10-01T10:00:00Z"),
+      seconds("2026-10-01T10:00:00Z"),
+    );
+    const again = spawnSync("sh", ["-c", command], { encoding: "utf8" });
+    expect(again.stdout.split("\n")).toContain(
+      `scheduled shop since ${seconds("2026-10-14T03:05:00Z")}`,
+    );
     expect(result.stdout).not.toContain("locked");
 
     // The check reads that answer: the disk, a success, a failed copy and a snapshot being taken.

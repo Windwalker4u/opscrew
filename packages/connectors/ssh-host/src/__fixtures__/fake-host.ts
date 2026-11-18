@@ -583,13 +583,17 @@ export class FakeHost implements RemoteExec {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.previewsScript(name, params, input ?? "");
     }
-    // The drills step's own scripts run as deploy; its removal's as root.
+    // The drills step's own scripts run as deploy; its removal's as root, or as the login (the
+    // deploy user) on a server OpsCrew created.
     if (/^drills\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.drillsScript(name, params, input ?? "");
     }
     if (/^drills\.remove\.(check|apply|verify)$/.test(name)) {
-      if (!root || asUser !== undefined) throw new Error(`fake host: ${name} must run as root`);
+      const asLogin = params.RUN_AS === "login" && deploy && !root;
+      if (!asLogin && (!root || asUser !== undefined)) {
+        throw new Error(`fake host: ${name} must run as root`);
+      }
       return this.drillsRemoveScript(name, params);
     }
     if (/^check-key(\.remove)?\.(check|apply|verify)$/.test(name)) {
@@ -791,11 +795,15 @@ export class FakeHost implements RemoteExec {
       .join("\n");
   }
 
-  /** What `inspectRunners` reads: the server's architecture, the runners, and their root parts. */
+  /**
+   * What `inspectRunners` reads: the server's architecture, the runners, the apps' drills and the
+   * runners' root parts.
+   */
   private runnersInspection(): string {
     return [
       ["dpkg-arch", this.arch, 0],
       ["runners", this.runnerLines(), 0],
+      ["drills", this.drillLines(), 0],
       ["runners-prepared", "", this.runnerPrepared ? 0 : 1],
     ]
       .map(([name, text, exit]) => `\n${SECTION_MARK}${name}\n${text}\n${EXIT_MARK}${exit}`)
@@ -2519,6 +2527,8 @@ export class FakeHost implements RemoteExec {
     if (name.endsWith(".check")) return this.check(ok);
     if (name.endsWith(".verify")) return this.verify(ok, p);
     if (!this.cron) return fail("This server has no crontab command, so OpsCrew cannot schedule the restore drills.");
+    // As the login, the app's folder is made when the first deploy has not made it yet.
+    if (p.RUN_AS === "login" && !this.holds(p.DIR ?? "")) this.dirs.set(p.DIR ?? "", { owner: "deploy", group: "deploy", mode: "755", entries: 0 });
     if (!this.dirs.has(p.DIR ?? "")) return fail(`${p.DIR} is not the app's folder, so OpsCrew did not set up its restore drills.`);
     const [valuesB64 = "", ...lines] = input.split("\n");
     const text = Buffer.from(valuesB64, "base64").toString("utf8");

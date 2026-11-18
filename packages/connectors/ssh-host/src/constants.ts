@@ -276,9 +276,14 @@ export function checkKeyComment(repository: string): string {
   return `${CHECK_KEY_COMMENT}${repository}`;
 }
 
-/** The part of {@link CHECK_KEY_COMMAND} that reads an app's last scheduled restore drill. */
-const DRILL_READ =
-  "echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);";
+/**
+ * The part of {@link CHECK_KEY_COMMAND} that reads an app's last scheduled restore drill, and
+ * since when its schedule has had a scheduled snapshot to restore.
+ */
+const DRILL_READ = [
+  "echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);",
+  "s=$(stat -c %Y $d.drill-recipe/schedule 2>/dev/null) && o=$(ls $d.snapshots 2>/dev/null | grep -xE '[0-9]{8}T[0-9]{6}Z' | head -n 1) && test x$o != x && t=$(stat -c %Y $d.snapshots/$o) && echo scheduled $a since $((s>t?s:t)) || true;",
+].join(" ");
 
 /**
  * The only command the check's key can run (OpenSSH's forced command), whatever the client asks.
@@ -293,7 +298,10 @@ const DRILL_READ =
  * - `after <n>`: how many non-empty lines follow it (all of them without one);
  * - `running`: a snapshot is being taken (a `.partial` folder while the app's start lock is held);
  * - `drill`, then the end and result of the last scheduled restore drill that ran (feature 029),
- *   from `.snapshots/drills.log`: nothing after `drill` when none has.
+ *   from `.snapshots/drills.log`: nothing after `drill` when none has;
+ * - `since <seconds>`, while the app has scheduled restore drills (`.drill-recipe/schedule`) and a
+ *   scheduled snapshot: the later of the schedule file's time (the drills step writes it when it
+ *   installs or changes the schedule) and the oldest scheduled snapshot folder's, in Unix seconds.
  *
  * Nothing else of the logs. `CHECK_COMMAND` in `@opscrew/iac-templates`' `check.mjs` is a copy,
  * which the server's own runner runs, and its `scheduledLog` the same reading of a log's lines.

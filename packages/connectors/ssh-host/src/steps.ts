@@ -128,6 +128,7 @@ import {
   networkFilterService,
 } from "./network-filter";
 import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
+import { PINNED_IMAGE_RE } from "./privilege";
 import { networkSshRule, PublicSshFieldsSchema, publicSshRules } from "./public-ssh";
 import { runnerUnitText } from "./runner-unit";
 import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
@@ -4070,21 +4071,57 @@ stale_files() {
  * (`remove`, also by a teardown, which may keep the app's data), as root: the line goes first, a
  * running drill holds the app's lock until it is done, then the recipe, `.drill/`, the Compose
  * project `<app>-drill` with its volumes and `/srv/data/<app>-drill`.
+ *
+ * With `runAs: "login"` (a server OpsCrew created, whose login is the deploy user, with no root)
+ * every script runs as that login: the install makes the app's folder when the first deploy has
+ * not yet, and installs no cron (the servers OpsCrew creates have it); the removal reads and
+ * writes the login's own crontab, and removes `/srv/data/<app>-drill`, whose files belong to the
+ * copy's containers' users, as a drill removes it: in a container of the pinned `image` that
+ * Docker runs as root with no network, which the deploy user can already do through the docker
+ * group. That folder is built only from the app's name and the fixed `-drill`.
  */
 function drillsScripts(plan: HostPlan, step: HostStep): StepScripts {
-  const p = params(step, z.object({ app: AppNameSchema }));
+  const p = params(step, z.object({ app: AppNameSchema, runAs: RunAsSchema.optional() }));
   if (p.app !== plan.app) throw invalid(step, "app");
+  const login = p.runAs === "login";
   const dir = appDirs(p.app).app;
   const project = drillProject(p.app);
   const shared = {
     DIR: dir,
     RECIPE: `${dir}/${DRILL_RECIPE}`,
     CRON_RE: `${drillScheduleTag(p.app)}$`,
+    RUN_AS: login ? "login" : "root",
   };
   if (step.params.remove === true) {
-    params(step, z.strictObject({ app: AppNameSchema, remove: z.literal(true) }));
+    const r = params(
+      step,
+      login
+        ? z.strictObject({
+            app: AppNameSchema,
+            remove: z.literal(true),
+            runAs: z.literal("login"),
+            image: z.string().regex(PINNED_IMAGE_RE),
+          })
+        : z.strictObject({
+            app: AppNameSchema,
+            remove: z.literal(true),
+            runAs: z.literal("root").optional(),
+          }),
+    );
     if (plan.purpose === "undo") throw invalid(step, "purpose");
     if (plan.purpose === "setup" && plan.deleteData !== true) throw invalid(step, "deleteData");
+    // As the login, the copy's data goes as the drill removes it: through Docker, as root there.
+    const data =
+      "image" in r
+        ? `if [ -L "$DATA" ]; then rm -f "$DATA"
+elif [ -d "$DATA" ]; then
+  docker run --rm --network none --user 0:0 --entrypoint rm -v "$DATA_ROOT:/d" "$IMAGE" -rf "/d/$DATA_NAME" >/dev/null 2>&1 || fail "OpsCrew could not remove $DATA completely."
+fi`
+        : `if [ -L "$DATA" ]; then rm -f "$DATA"
+elif [ -d "$DATA" ]; then
+  find "$DATA" -xdev -mindepth 1 -delete
+  rmdir "$DATA" || fail "OpsCrew could not remove $DATA completely."
+fi`;
     return scripts({
       name: "drills.remove",
       params: {
@@ -4093,13 +4130,25 @@ function drillsScripts(plan: HostPlan, step: HostStep): StepScripts {
         LOCK: `${dir}/.start.lock`,
         PROJECT: project.name,
         DATA: project.data,
+        ...("image" in r
+          ? {
+              DATA_ROOT: project.data.slice(0, project.data.lastIndexOf("/")),
+              DATA_NAME: project.name,
+              IMAGE: r.image,
+            }
+          : {}),
       },
       helpers: `${PROJECT_HELPERS}
 ${CRON_HELPERS}
-# The deploy user's crontab, read as root; a server without the deploy user has none.
+# The deploy user's crontab: the login's own, or read as root (a server without the deploy user
+# has none).
 read_schedule() {
   tab=''
-  if getent passwd deploy >/dev/null; then read_tab -u deploy; fi
+  if [ "$RUN_AS" = login ]; then read_tab
+  elif getent passwd deploy >/dev/null; then read_tab -u deploy; fi
+}
+drop_schedule() {
+  if [ "$RUN_AS" = login ]; then drop_cron; else drop_cron -u deploy; fi
 }
 gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }`,
       verify: `  read_schedule || return 1
@@ -4109,7 +4158,7 @@ gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }`,
       apply: `if [ -L "$DIR" ]; then fail "$DIR is a symbolic link; OpsCrew does not follow it."; fi
 # The line goes first, so no drill starts; other apps' lines stay.
 read_schedule || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the scheduled restore drills."
-if [ "$(cron_count)" != 0 ]; then drop_cron -u deploy; fi
+if [ "$(cron_count)" != 0 ]; then drop_schedule; fi
 # A drill that runs holds the app's lock (30 minutes at most) and removes its copy itself.
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ] && command -v flock >/dev/null 2>&1; then
   flock -w 2400 "$LOCK" true || fail "A deploy, a snapshot or a drill of the app held its lock for 40 minutes, so OpsCrew removed only the drills' line in the crontab. Run the command again."
@@ -4117,11 +4166,8 @@ fi
 remove_project "$PROJECT" "" "" true
 project_gone "$PROJECT" true || fail "Some containers or volumes of the drill's copy ($PROJECT) could not be removed."
 rm -rf "$RECIPE" "$DRILLS"
-if [ -L "$DATA" ]; then rm -f "$DATA"
-elif [ -d "$DATA" ]; then
-  find "$DATA" -xdev -mindepth 1 -delete
-  rmdir "$DATA" || fail "OpsCrew could not remove $DATA completely."
-fi`,
+${data}
+gone "$DATA" || fail "OpsCrew could not remove $DATA completely."`,
       failed:
         "The scheduled restore drills, their recipe or a drill's copy are still on the server.",
       doing: "removing the scheduled restore drills",
@@ -4156,6 +4202,8 @@ fi`,
   printf '%s\\n' "$tab" | grep -qxF "$CRON_LINE"`,
     apply: `umask 077
 command -v crontab >/dev/null 2>&1 || fail "This server has no crontab command, so OpsCrew cannot schedule the restore drills. Install the cron package, then try again."
+# As the login, the app's folder is made when the first deploy has not made it yet.
+if [ "$RUN_AS" = login ] && [ ! -e "$DIR" ] && [ ! -L "$DIR" ]; then install -d -m 0755 "$DIR"; fi
 if [ ! -d "$DIR" ] || [ -L "$DIR" ]; then fail "$DIR is not the app's folder, so OpsCrew did not set up its restore drills."; fi
 # The values first, checked against the SHA-256 this plan names before anything is written.
 values=''
@@ -4199,7 +4247,7 @@ fi`,
     secrets: { names: ["previewValues"], required: true },
     payload: files.map(([, content]) => `${base64(content)}\n`).join(""),
     asDeploy: true,
-    preApply: applyScript("drills.cron", {}, "", CRON_INSTALL),
+    ...(login ? {} : { preApply: applyScript("drills.cron", {}, "", CRON_INSTALL) }),
     doing: "scheduling the restore drills",
     timeoutMs: 5 * MINUTE,
   });
@@ -4490,12 +4538,13 @@ const LOGIN_STEPS: ReadonlySet<HostStepId> = new Set([
   "github-runner",
   "check-key",
   "previews",
+  "drills",
   "beszel",
   "alloy",
 ]);
 
 /**
- * How a step's scripts run: the Portainer, tunnel connector, runner, check key, previews and add-on steps
+ * How a step's scripts run: the Portainer, tunnel connector, runner, check key, previews, drills and add-on steps
  * for Hetzner and DigitalOcean run as the login (the deploy user); everything else as root.
  */
 export function runAsOf(step: HostStep): RunAs {

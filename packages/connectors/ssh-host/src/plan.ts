@@ -116,6 +116,7 @@ import {
   ufwRuleCovers,
   WEB_FILTER_PORTS,
 } from "./parse";
+import { PINNED_IMAGE_RE } from "./privilege";
 import {
   networkSshRule,
   type PublicSshParams,
@@ -148,6 +149,8 @@ import {
 import {
   type AccessMode,
   AppNameSchema,
+  type DesiredDrills,
+  DesiredDrillsSchema,
   type DesiredHost,
   DesiredHostSchema,
   type DesiredRunner,
@@ -1495,14 +1498,31 @@ const DRILL_PERIOD = { weekly: "week", daily: "day" } as const;
  * the server still has their recipe or line.
  */
 function drillsStep({ facts, desired }: SetupContext): HostStep | undefined {
-  const { app, drills } = desired;
-  const found = facts.drills.find((item) => item.app === app);
+  return drillsFor(facts.drills, desired.app, desired.drills);
+}
+
+/**
+ * {@link drillsStep} from the drills the server has (`found`), for `app` with `drills` or none.
+ * With `login` (a server OpsCrew created, its login the deploy user, with no root), the step runs
+ * as the login (`runAs: "login"`), and its removal deletes the copy's data in a container of the
+ * pinned `login.image` (the drill's own way), not as root.
+ */
+function drillsFor(
+  facts: HostFacts["drills"],
+  app: string,
+  drills: DesiredDrills | undefined,
+  login?: { image: string },
+): HostStep | undefined {
+  const found = facts.find((item) => item.app === app);
   if (drills === undefined) {
-    return found?.recipe === true || (found?.cron.length ?? 0) > 0 ? drillsRemoval(app) : undefined;
+    return found?.recipe === true || (found?.cron.length ?? 0) > 0
+      ? drillsRemoval(app, login)
+      : undefined;
   }
   const period = DRILL_PERIOD[drills.files.schedule === "daily\n" ? "daily" : "weekly"];
   const params = {
     app,
+    ...(login !== undefined ? { runAs: "login" } : {}),
     valuesSha256: drills.valuesSha256,
     ...Object.fromEntries(
       Object.entries(drills.files).map(([path, text]) => [`${ADDON_FILE_PARAM}${path}`, text]),
@@ -1527,7 +1547,7 @@ function drillsStep({ facts, desired }: SetupContext): HostStep | undefined {
     title,
     "change",
     params,
-    `The deploy user's crontab runs "sh ${dir}/snapshot.sh drill scheduled" at minute ${DRILL_MINUTE} of every hour, with cron installed first when it is missing; the script drills only in its slot, 3 hours after the scheduled snapshot's, once a ${period}. The copy's files go to ${dir}/${DRILL_RECIPE}, and the values of .env.preview to its ${DRILL_VALUES}, which only the deploy user can read; the values are supplied at apply time, and this plan holds only their SHA-256. The script on this server keeps every drill within these bounds: only its own things (the Compose project ${project.name}, ${dir}/.drill and ${project.data}), never a container, volume or file of the app's; only the latest scheduled snapshot, never an older one or the copy off the server; no internet and no published port, and the app's .env never read; it removes what it made, and at its next start what a crashed run left; once a ${period}, never more often than once a day; never beside a deploy, a snapshot or a restore of the app (it takes their lock, and is skipped while it is held); skipped when the disk has less free space than the snapshot's size and 1 GiB and 10% of the disk, or the memory is short of the copy's limits; at most 30 minutes, then its containers are stopped and removed. Each drill writes one line to ${dir}/.snapshots/drills.log, which opscrew status shows. Each drill deletes its copy's data, so this plan is approved with the typed name ${project.name}. snapshot.sh comes with each deploy of the app, so a change to the repository's deploy can change what a drill does, and anything with root on this server, the docker group included (the deploy user, and the server's own deploy runner, which runs the repository's code), can go beyond these bounds. Changing a bound is a new plan and a new approval.`,
+    `The deploy user's crontab runs "sh ${dir}/snapshot.sh drill scheduled" at minute ${DRILL_MINUTE} of every hour, ${login === undefined ? "with cron installed first when it is missing" : "all of it as the deploy user, which makes the app's folder when the first deploy has not yet"}; the script drills only in its slot, 3 hours after the scheduled snapshot's, once a ${period}. The copy's files go to ${dir}/${DRILL_RECIPE}, and the values of .env.preview to its ${DRILL_VALUES}, which only the deploy user can read; the values are supplied at apply time, and this plan holds only their SHA-256. The script on this server keeps every drill within these bounds: only its own things (the Compose project ${project.name}, ${dir}/.drill and ${project.data}), never a container, volume or file of the app's; only the latest scheduled snapshot, never an older one or the copy off the server; no internet and no published port, and the app's .env never read; it removes what it made, and at its next start what a crashed run left; once a ${period}, never more often than once a day; never beside a deploy, a snapshot or a restore of the app (it takes their lock, and is skipped while it is held); skipped when the disk has less free space than the snapshot's size and 1 GiB and 10% of the disk, or the memory is short of the copy's limits; at most 30 minutes, then its containers are stopped and removed. Each drill writes one line to ${dir}/.snapshots/drills.log, which opscrew status shows. Each drill deletes its copy's data, so this plan is approved with the typed name ${project.name}. snapshot.sh comes with each deploy of the app, so a change to the repository's deploy can change what a drill does, and anything with root on this server, the docker group included (the deploy user, and the server's own deploy runner, which runs the repository's code), can go beyond these bounds. Changing a bound is a new plan and a new approval.`,
   );
 }
 
@@ -1535,15 +1555,15 @@ function drillsStep({ facts, desired }: SetupContext): HostStep | undefined {
  * The removal of the app's scheduled restore drills, by a setup plan without them or a teardown:
  * their line, their recipe with its values, and whatever a drill left, a kept copy included.
  */
-function drillsRemoval(app: string): HostStep {
+function drillsRemoval(app: string, login?: { image: string }): HostStep {
   const dir = appDirs(app).app;
   const project = drillProject(app);
   return step(
     "drills",
     `Remove the scheduled restore drills of "${app}": their hourly line, their recipe and values, and any copy a drill left`,
     "change",
-    { app, remove: true },
-    `Their line in the deploy user's crontab goes first, so no drill starts, and a drill that is running finishes first; then ${dir}/${DRILL_RECIPE} with its values, ${dir}/.drill, the containers, networks and volumes of the Compose project ${project.name}, and ${project.data}, a copy kept with --keep included. The app's own containers, data and snapshots stay.`,
+    login === undefined ? { app, remove: true } : { app, remove: true, runAs: "login", ...login },
+    `Their line in the deploy user's crontab goes first, so no drill starts, and a drill that is running finishes first; then ${dir}/${DRILL_RECIPE} with its values, ${dir}/.drill, the containers, networks and volumes of the Compose project ${project.name}, and ${project.data}, a copy kept with --keep included${login === undefined ? "" : `, as the deploy user (${project.data}, whose files belong to the copy's containers, in a container of ${login.image} that Docker runs with no network, as a drill removes it)`}. The app's own containers, data and snapshots stay.`,
   );
 }
 
@@ -3916,36 +3936,55 @@ function addonStep(
 }
 
 /**
- * The host plan of the app's GitHub Actions runner on a server OpsCrew created (Hetzner,
- * DigitalOcean), from `inspectRunners`: only the `github-runner` step, run as the login (the deploy
- * user, who has no root there: the server's first boot installed the runner's system libraries,
- * made `/srv/runners` deploy's and lets deploy's services run without a login). The runner is
+ * The deploy login's host plan on a server OpsCrew created (Hetzner, DigitalOcean, Contabo), from
+ * `inspectRunners`: the `drills` and `github-runner` steps, run as the login (the deploy user, who
+ * has no root there: the server's first boot installed the runner's system libraries, made
+ * `/srv/runners` deploy's and lets deploy's services run without a login). The runner is
  * installed, or installed again, when `runner` is given, and removed when it is not and the app
- * has one; otherwise the plan has no step. It needs no root and writes no host record. Apply it
- * with `applyHostPlan` like any host plan.
+ * has one. The scheduled restore drills are installed with `drills`, as on a server the user
+ * owns, and removed without when the server has them; `drillImage` is the pinned image their
+ * removal deletes the copy's data in (`IMAGES.busybox.ref`, which a drill uses itself). A plan
+ * with the drills step as a change deletes data. Otherwise the plan has no step. It needs no root
+ * and writes no host record. Apply it with `applyHostPlan` like any host plan.
  */
 export function planRunner(
   facts: RunnerFacts,
-  input: { app: string; runner?: DesiredRunner },
+  input: { app: string; runner?: DesiredRunner; drills?: DesiredDrills; drillImage: string },
 ): HostPlan {
   const f = RunnerFactsSchema.safeParse(facts);
   const app = AppNameSchema.safeParse(input.app);
   const runner =
     input.runner === undefined ? undefined : DesiredRunnerSchema.safeParse(input.runner);
-  if (!f.success || !app.success || runner?.success === false) {
+  const drills =
+    input.drills === undefined ? undefined : DesiredDrillsSchema.safeParse(input.drills);
+  if (
+    !f.success ||
+    !app.success ||
+    runner?.success === false ||
+    drills?.success === false ||
+    !PINNED_IMAGE_RE.test(input.drillImage)
+  ) {
     throw new OpsCrewError("INVALID_INPUT", "The runner's plan input is not valid.", {
       hint: "Inspect the server again with OpsCrew before planning.",
     });
   }
-  const item = runnerStep(f.data, app.data, runner?.data, "login");
+  const steps = [
+    drillsFor(f.data.drills, app.data, drills?.data, { image: input.drillImage }),
+    runnerStep(f.data, app.data, runner?.data, "login"),
+  ].filter((item): item is HostStep => item !== undefined);
   const plan: HostPlan = {
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
     purpose: "setup",
     app: app.data,
-    steps: item === undefined ? [] : [item],
+    steps,
     findings: [],
+    // Scheduled drills delete their copy's data each run, and their removal a kept copy.
+    ...(steps.some((item) => item.id === "drills" && item.state === "change")
+      ? { deleteData: true }
+      : {}),
   };
-  for (const each of plan.steps) stepScripts(plan, each);
+  // The changes' scripts, as the apply builds them: bad parameters fail here, before any approval.
+  for (const each of plan.steps) if (each.state === "change") stepScripts(plan, each);
   return plan;
 }
 

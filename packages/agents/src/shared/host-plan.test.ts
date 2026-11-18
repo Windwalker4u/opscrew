@@ -94,6 +94,58 @@ describe("approveAndApplyHostPlan", () => {
     expect(s.handler.requests[0]).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
   });
 
+  it("names --confirm beside --approve for a plan that deletes data, and that script approves it", async () => {
+    // A run nobody can answer, as the CLI's typed-name handler decides it: approved only with
+    // `--approve` and the plan's hash, and one `--confirm` per word of the name.
+    const scripted = (flags: readonly string[]) => {
+      const value = (flag: string) => flags.flatMap((f, i) => (f === flag ? [flags[i + 1]] : []));
+      return (request: { planHash?: string; confirmPhrase?: string }) => {
+        const words = request.confirmPhrase?.split(" ") ?? [];
+        const named = words.every((word) => value("--confirm").includes(word));
+        return value("--approve").includes(request.planHash) && named
+          ? { approved: true, confirmation: request.confirmPhrase }
+          : false;
+      };
+    };
+    let flags: readonly string[] = [];
+    const handler = new ScriptedApprovalHandler((request) => scripted(flags)(request));
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const applied: string[] = [];
+    const step: HostPlanStep = {
+      plan: PLAN,
+      remote: REMOTE,
+      apply: async (_remote, _plan, options) => {
+        applied.push(options.approvedHash);
+        return { applied: ["docker"], skipped: [] };
+      },
+      verifyLogin: async () => true,
+      title: "Apply the host plan to the server (1 change)",
+      server: "the server",
+      upToDate: "Nothing changes.",
+      command: "opscrew provision",
+      phase: "provision",
+      allowDestroy: true,
+      confirmPhrase: "shop-drill",
+      secrets: async () => ({}),
+    };
+    const hash = hostPlanHash(PLAN);
+    const error = await approveAndApplyHostPlan(deps, step).catch((e) => e);
+    expect(error).toBeInstanceOf(PlanRefusedError);
+    const hint = (error as OpsCrewError).hint ?? "";
+    expect(hint).toBe(
+      `To apply it later without prompts, run: opscrew provision --approve ${hash} --confirm shop-drill`,
+    );
+    expect(applied).toEqual([]);
+    // The hint's command, run in a script, approves and applies the plan.
+    flags = hint.slice(hint.indexOf("--approve")).split(" ");
+    const outcome = await approveAndApplyHostPlan(deps, step);
+    expect(outcome).toMatchObject({ hash, applied: true, steps: ["docker"] });
+    expect(applied).toEqual([hash]);
+    // `--approve` alone does not.
+    flags = ["--approve", hash];
+    await expect(approveAndApplyHostPlan(deps, step)).rejects.toBeInstanceOf(PlanRefusedError);
+  });
+
   it("changes nothing with --plan-only, or when refused, and reads no secret", async () => {
     const s = await setup(() => false);
     let read = 0;

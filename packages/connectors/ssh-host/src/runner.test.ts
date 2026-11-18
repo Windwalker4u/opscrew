@@ -481,18 +481,27 @@ describe("removing the runner", () => {
   });
 });
 
+/** The pinned image the drills' removal deletes the copy's data in (a stand-in digest). */
+const DRILL_IMAGE = `busybox:1.37.0@sha256:${"a".repeat(64)}`;
+
 describe("the runner on a server OpsCrew created", () => {
   /** Inspects the cloud server as deploy and plans its runner (`null`: none, so its removal). */
   async function cloudPlan(fake: FakeHost, runner: DesiredRunner | null = runnerDesired()) {
     return planRunner(await inspectRunners(fake), {
       app: "shop",
+      drillImage: DRILL_IMAGE,
       ...(runner !== null ? { runner } : {}),
     });
   }
 
   it("is a plan of only the github-runner step, run as deploy, planned from what deploy reads", async () => {
     const fake = cloudServer();
-    expect(await inspectRunners(fake)).toEqual({ arch: "amd64", runners: [], prepared: true });
+    expect(await inspectRunners(fake)).toEqual({
+      arch: "amd64",
+      runners: [],
+      drills: [],
+      prepared: true,
+    });
     const plan = await cloudPlan(fake);
     expect(plan).toMatchObject({ schemaVersion: 1, purpose: "setup", app: "shop", findings: [] });
     expect(plan.otherApps).toBeUndefined();
@@ -563,7 +572,11 @@ describe("the runner on a server OpsCrew created", () => {
         repositoryUrl: "https://github.com/acme/shop",
       },
     ]);
-    const again = planRunner(facts, { app: "shop", runner: runnerDesired() });
+    const again = planRunner(facts, {
+      app: "shop",
+      runner: runnerDesired(),
+      drillImage: DRILL_IMAGE,
+    });
     expect(runnerStepOf(again).state).toBe("in-place");
   });
 
@@ -627,14 +640,23 @@ describe("the runner on a server OpsCrew created", () => {
   it("refuses input that is not a runner plan's", async () => {
     const fake = cloudServer();
     const facts = await inspectRunners(fake);
-    expect(() => planRunner(facts, { app: "Not An App" })).toThrow(OpsCrewError);
+    expect(() => planRunner(facts, { app: "Not An App", drillImage: DRILL_IMAGE })).toThrow(
+      OpsCrewError,
+    );
     expect(() =>
-      planRunner(facts, { app: "shop", runner: runnerDesired({ sha256: "nope" }) }),
+      planRunner(facts, {
+        app: "shop",
+        runner: runnerDesired({ sha256: "nope" }),
+        drillImage: DRILL_IMAGE,
+      }),
     ).toThrow("The runner's plan input is not valid.");
+    expect(() => planRunner(facts, { app: "shop", drillImage: "busybox:latest" })).toThrow(
+      "The runner's plan input is not valid.",
+    );
     expect(() =>
       planRunner(
-        { arch: "arm64", runners: [], prepared: true },
-        { app: "shop", runner: runnerDesired() },
+        { arch: "arm64", runners: [], drills: [], prepared: true },
+        { app: "shop", runner: runnerDesired(), drillImage: DRILL_IMAGE },
       ),
     ).toThrow("The runner's archive is for linux-x64, but this server is arm64.");
   });

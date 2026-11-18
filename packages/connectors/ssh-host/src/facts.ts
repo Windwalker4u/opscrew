@@ -668,9 +668,14 @@ export type HostFacts = z.infer<typeof HostFactsSchema>;
 /**
  * What `inspectRunners` reads as the deploy user on a server OpsCrew created: the server's
  * architecture, each app's runner, and whether its first boot prepared what a runner needs from
- * root (`prepared`: `/srv/runners` is deploy's to write, and deploy lingers).
+ * root (`prepared`: `/srv/runners` is deploy's to write, and deploy lingers), and each app's
+ * scheduled restore drills as `HostFacts` has them (read as deploy, its own crontab).
  */
-export const RunnerFactsSchema = HostFactsSchema.pick({ arch: true, runners: true }).extend({
+export const RunnerFactsSchema = HostFactsSchema.pick({
+  arch: true,
+  runners: true,
+  drills: true,
+}).extend({
   prepared: z.boolean(),
 });
 export type RunnerFacts = z.infer<typeof RunnerFactsSchema>;

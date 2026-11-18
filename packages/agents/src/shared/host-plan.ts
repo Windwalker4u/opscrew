@@ -296,12 +296,13 @@ export async function approveHostPlan(
     return { hash, changes };
   }
   const allowDestroy = step.allowDestroy === true;
+  const phrase = step.confirmPhrase ?? plan.app;
   const approval = await deps.approvals.request({
     kind: "host-apply",
     title: step.title,
     details,
     planHash: hash,
-    ...(allowDestroy ? { allowDestroy: true, confirmPhrase: step.confirmPhrase ?? plan.app } : {}),
+    ...(allowDestroy ? { allowDestroy: true, confirmPhrase: phrase } : {}),
   });
   if (!approval.approved) {
     if (step.refused !== undefined) {
@@ -315,7 +316,15 @@ export async function approveHostPlan(
       plan: "host plan",
       ...(approval.reason ? { reason: approval.reason } : {}),
       unchanged: `Nothing on ${server} was changed.`,
-      hint: `To apply it later without prompts, run: ${step.command} --approve ${hash}`,
+      // A plan that deletes data also needs its name typed: in a script, one --confirm per word.
+      hint: `To apply it later without prompts, run: ${step.command} --approve ${hash}${
+        allowDestroy
+          ? phrase
+              .split(" ")
+              .map((word) => ` --confirm ${word}`)
+              .join("")
+          : ""
+      }`,
     });
   }
   return { hash, changes, approval };

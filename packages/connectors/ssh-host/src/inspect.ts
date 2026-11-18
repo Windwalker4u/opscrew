@@ -731,7 +731,7 @@ export function inspectScript(): string {
  * the server's first boot made `/srv/runners` deploy's and lets deploy linger.
  */
 const RUNNER_SECTIONS = [
-  ...INSPECT_SECTIONS.filter(([name]) => name === "dpkg-arch" || name === "runners"),
+  ...INSPECT_SECTIONS.filter(([name]) => ["dpkg-arch", "runners", "drills"].includes(name)),
   [
     "runners-prepared",
     `[ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ] && [ -w "${RUNNERS_DIR}" ] && [ -e /var/lib/systemd/linger/deploy ]`,
@@ -1195,8 +1195,9 @@ export async function inspectHost(
 }
 
 /**
- * Reads the apps' GitHub Actions runners, the server's architecture, and whether its first boot
- * prepared what a runner needs from root, as the login itself with no root: the deploy user on a
+ * Reads the apps' GitHub Actions runners, the server's architecture, whether its first boot
+ * prepared what a runner needs from root, and the apps' scheduled restore drills, as the login
+ * itself with no root: the deploy user on a
  * server OpsCrew created (Hetzner, DigitalOcean), for `planRunner`. Read-only.
  */
 export async function inspectRunners(remote: RemoteExec): Promise<RunnerFacts> {
@@ -1210,6 +1211,7 @@ export async function inspectRunners(remote: RemoteExec): Promise<RunnerFacts> {
   const parsed = RunnerFactsSchema.safeParse({
     arch: ok(sections, "dpkg-arch").trim(),
     runners: parseRunners(section(sections, "runners").text),
+    drills: parseDrills(section(sections, "drills").text),
     prepared: section(sections, "runners-prepared").exit === 0,
   });
   if (!parsed.success) {

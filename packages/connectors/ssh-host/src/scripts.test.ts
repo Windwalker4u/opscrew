@@ -220,13 +220,15 @@ async function everyPlan(): Promise<HostPlan[]> {
   );
   // The runner on a server OpsCrew created, as deploy: installed, then removed.
   const cloud = cloudServer();
+  const drillImage = `busybox:1.37.0@sha256:${"a".repeat(64)}`;
   const cloudRunner = planRunner(await inspectRunners(cloud), {
     app: "shop",
     runner: runnerDesired(),
+    drillImage,
   });
   plans.push(cloudRunner);
   await applyApproved(cloud, cloudRunner, tokens);
-  plans.push(planRunner(await inspectRunners(cloud), { app: "shop" }));
+  plans.push(planRunner(await inspectRunners(cloud), { app: "shop", drillImage }));
   // A runner machine's hardening: on, turned off again, and its undo.
   const machine = new FakeHost({ login: "ana" });
   const add = "opscrew runner host add home";

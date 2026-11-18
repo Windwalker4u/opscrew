@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { FakeHost } from "./__fixtures__/fake-host";
 import {
   applyApproved,
+  cloudServer,
   desiredFor,
   everythingButStdin,
   planFor,
@@ -17,9 +18,9 @@ import {
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { hostPlanHash } from "./hash";
-import { DRILLS_SNIPPET, inspectHost } from "./inspect";
+import { DRILLS_SNIPPET, inspectHost, inspectRunners } from "./inspect";
 import { parseDrills } from "./parse";
-import { planHost, planTeardown } from "./plan";
+import { planHost, planRunner, planTeardown } from "./plan";
 import { buildScript } from "./shell";
 import { drillCronLine, stepScripts } from "./steps";
 import type { DesiredHost, HostPlan, HostStep } from "./types";
@@ -354,6 +355,108 @@ describe("the drills' removal", () => {
   });
 });
 
+describe("the drills on a server OpsCrew created, as its deploy login", () => {
+  /** The pinned image the removal deletes the copy's data in (a stand-in digest). */
+  const IMAGE = `busybox:1.37.0@sha256:${"b".repeat(64)}`;
+  const loginPlan = async (fake: FakeHost, values?: string) =>
+    planRunner(await inspectRunners(fake), {
+      app: APP,
+      drillImage: IMAGE,
+      ...(values !== undefined
+        ? { drills: { files: FILES, valuesSha256: sha256Hex(values) } }
+        : {}),
+    });
+
+  it("installs the same step as deploy, with no root and no cron install, making the app's folder; then it is in place", async () => {
+    const fake = cloudServer();
+    const values = previewValues();
+    const plan = await loginPlan(fake, values);
+    expect(plan.deleteData).toBe(true);
+    expect(plan.steps.map((item) => item.id)).toEqual(["drills"]);
+    const step = drillsOf(plan);
+    expect(step).toMatchObject({ state: "change", params: { app: APP, runAs: "login" } });
+    expect(step.title).toBe(
+      'Run a restore drill of "shop" once a week on this server: its latest scheduled snapshot restored into a copy with no internet, checked, then removed',
+    );
+    expect(step.reason).toContain("all of it as the deploy user");
+    expect(step.reason).not.toContain("cron installed first");
+    expect(stepScripts(plan, step).preApply).toBeUndefined();
+    // The app's folder is not there before the first deploy.
+    expect(fake.dirs.has(DIR)).toBe(false);
+    fake.calls.length = 0;
+    await applyApproved(fake, plan, { secrets: { previewValues: values } });
+    // Every call ran as the login: the fake has no root and refuses root's scripts.
+    expect(fake.calls.map((call) => call.name)).toEqual([
+      "drills.check",
+      "drills.apply",
+      "drills.verify",
+    ]);
+    expect(fake.dirs.has(DIR)).toBe(true);
+    expect(fake.files.get(`${RECIPE}/values.env`)).toBe(values);
+    expect(fake.crontab).toEqual([drillCronLine(APP)]);
+    const again = await loginPlan(fake, values);
+    expect(drillsOf(again).state).toBe("in-place");
+    expect(again.deleteData).toBeUndefined();
+  });
+
+  it("off: removes the line, the recipe and a drill's leftovers as deploy, the copy's data in the pinned container", async () => {
+    const fake = cloudServer();
+    const values = previewValues();
+    await applyApproved(fake, await loginPlan(fake, values), {
+      secrets: { previewValues: values },
+    });
+    fake.crontab = [SNAPSHOT_LINE, ...(fake.crontab ?? [])];
+    fake.files.set(`${DIR}/.drill/20261118T030000Z/compose.yaml`, "name: shop-drill\n");
+    fake.dirs.set("/srv/data/shop-drill", { owner: "999", group: "999", mode: "700", entries: 1 });
+    fake.dirs.set("/srv/data/shop", { owner: "999", group: "999", mode: "700", entries: 1 });
+    fake.volumes.set("shop-drill", 1);
+    const plan = await loginPlan(fake);
+    expect(plan.deleteData).toBe(true);
+    const step = drillsOf(plan);
+    expect(step).toMatchObject({
+      state: "change",
+      params: { app: APP, remove: true, runAs: "login", image: IMAGE },
+    });
+    expect(step.reason).toContain(
+      `as the deploy user (/srv/data/shop-drill, whose files belong to the copy's containers, in a container of ${IMAGE} that Docker runs with no network, as a drill removes it)`,
+    );
+    fake.calls.length = 0;
+    await applyApproved(fake, plan);
+    expect(fake.calls.map((call) => call.name)).toEqual([
+      "drills.remove.check",
+      "drills.remove.apply",
+      "drills.remove.verify",
+    ]);
+    expect(fake.crontab).toEqual([SNAPSHOT_LINE]);
+    expect([...fake.files.keys()].some((path) => path.startsWith(RECIPE))).toBe(false);
+    expect(fake.dirs.has("/srv/data/shop-drill")).toBe(false);
+    expect(fake.dirs.has("/srv/data/shop")).toBe(true);
+    expect(fake.volumes.has("shop-drill")).toBe(false);
+    expect((await loginPlan(fake)).steps).toEqual([]);
+  });
+
+  it("refuses a login removal without a pinned image, and a root removal with one", () => {
+    const plan = (params: HostStep["params"]): HostPlan => ({
+      schemaVersion: 1,
+      purpose: "setup",
+      app: APP,
+      steps: [{ id: "drills", title: "drills", state: "change", scope: "app", params }],
+      findings: [],
+      deleteData: true,
+    });
+    const scriptsOf = (params: HostStep["params"]) => {
+      const p = plan(params);
+      return () => stepScripts(p, p.steps[0] as HostStep);
+    };
+    expect(scriptsOf({ app: APP, remove: true, runAs: "login" })).toThrow();
+    expect(
+      scriptsOf({ app: APP, remove: true, runAs: "login", image: "busybox:latest" }),
+    ).toThrow();
+    expect(scriptsOf({ app: APP, remove: true, image: IMAGE })).toThrow();
+    expect(scriptsOf({ app: APP, remove: true, runAs: "login", image: IMAGE })).not.toThrow();
+  });
+});
+
 describe.skipIf(!SH_AVAILABLE)("the drills step's scripts in a real shell", () => {
   /** A harness with the deploy user, a crontab kept in its state, Docker and systemd stubbed. */
   function harness(): ShellHarness {
@@ -506,6 +609,78 @@ esac`,
       expect(h.calls()).toContain("docker volume rm shop-drill_db");
       expect(h.run(scripts.verify).status).toBe(0);
       expect(h.run(scripts.check).stdout).toContain("state=in-place");
+      expect(h.run(scripts.apply).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("login removal: as deploy, its own crontab, and the copy's data in the pinned container, never the app's", () => {
+    const image = `busybox:1.37.0@sha256:${"c".repeat(64)}`;
+    const plan: HostPlan = {
+      schemaVersion: 1,
+      purpose: "setup",
+      app: APP,
+      steps: [
+        {
+          id: "drills",
+          title: "drills",
+          state: "change",
+          scope: "app",
+          params: { app: APP, remove: true, runAs: "login", image },
+        },
+      ],
+      findings: [],
+      deleteData: true,
+    };
+    const [step] = plan.steps;
+    if (step === undefined) throw new Error("no step");
+    const scripts = stepScripts(plan, step);
+    expect(scripts.preApply).toBeUndefined();
+    const h = harness();
+    try {
+      // Docker's `run` here removes what the container's `rm -rf /d/<name>` names in the mount.
+      h.stub(
+        "docker",
+        `case "$1 $2" in
+  "ps -aq") cat "$S/containers" 2>/dev/null || true ;;
+  "rm -f") : > "$S/containers" ;;
+  "network ls") cat "$S/networks" 2>/dev/null || true ;;
+  "volume ls") cat "$S/volumes" 2>/dev/null || true ;;
+  "volume rm") : > "$S/volumes" ;;
+  run*)
+    prev=''; mount=''; last=''
+    for a in "$@"; do if [ "$prev" = -v ]; then mount="$a"; fi; prev="$a"; last="$a"; done
+    rm -rf "\${mount%%:*}\${last#/d}" ;;
+  *) exit 0 ;;
+esac`,
+      );
+      h.write(`${DIR}/compose.yaml`, "services: {}\n");
+      h.write(`${RECIPE}/compose.yaml`, FILES["compose.yaml"]);
+      h.write(`${DIR}/.drill/20261118T030000Z/compose.yaml`, "x\n");
+      h.write("/srv/data/shop-drill/db/PG_VERSION", "17\n");
+      h.write("/srv/data/shop/db/PG_VERSION", "17\n");
+      h.write("/srv/data/shop-drill-old/x", "1\n");
+      h.write("/state/volumes", "shop-drill_db\n");
+      h.write("/state/crontab", `${rooted(h, SNAPSHOT_LINE)}\n${rooted(h, drillCronLine(APP))}\n`);
+      expect(h.run(scripts.check).stdout).toContain("state=change");
+      const removed = h.run(scripts.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(h.read("/state/crontab")).toBe(`${rooted(h, SNAPSHOT_LINE)}\n`);
+      for (const path of [RECIPE, `${DIR}/.drill`, "/srv/data/shop-drill"]) {
+        expect(h.exists(path), path).toBe(false);
+      }
+      // Only <app>-drill: the app's own data, and a folder whose name only starts so, stay.
+      expect(h.read("/srv/data/shop/db/PG_VERSION")).toBe("17\n");
+      expect(h.read("/srv/data/shop-drill-old/x")).toBe("1\n");
+      expect(h.read(`${DIR}/compose.yaml`)).toBe("services: {}\n");
+      const run = h.calls().filter((call) => call.startsWith("docker run"));
+      expect(run).toEqual([
+        `docker run --rm --network none --user 0:0 --entrypoint rm -v ${h.root}/srv/data:/d ${image} -rf /d/shop-drill`,
+      ]);
+      // The crontab is the login's own: never another user's.
+      expect(h.calls().some((call) => call.startsWith("crontab -u"))).toBe(false);
+      expect(h.run(scripts.verify).status).toBe(0);
       expect(h.run(scripts.apply).status).toBe(0);
     } finally {
       h.dispose();

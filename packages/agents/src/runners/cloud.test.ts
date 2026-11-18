@@ -1,11 +1,12 @@
+import { randomBytes } from "node:crypto";
 import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { RunnerInfo } from "@opscrew/connector-github";
 import type { ApprovalRequest } from "@opscrew/contracts";
-import { findExecutable, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { canonicalJson, findExecutable, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { DEPLOY_SECRETS, IMAGES } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -510,3 +511,129 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
     expect(engine.applied).toEqual([]);
   });
 });
+
+/** `testPlan()` with a value of the user's own, the snapshot schedule and weekly drills. */
+function drilledPlan(): DeployPlan {
+  const plan = testPlan();
+  return DeployPlanSchema.parse({
+    ...plan,
+    app: { ...plan.app, env: [...plan.app.env, { name: "API_KEY", secret: true, source: "user" }] },
+    snapshots: { schedule: { every: "daily", keep: 2 }, drills: { schedule: "weekly" } },
+  });
+}
+
+describe.skipIf(!findExecutable("git"))(
+  "scheduled restore drills on a server OpsCrew creates",
+  () => {
+    /** The project of {@link cloudProject}, its production .env with a value of API_KEY's too. */
+    async function drilled(o: Parameters<typeof cloudProject>[0] = {}) {
+      const s = await cloudProject(o);
+      const production = randomBytes(16).toString("hex");
+      await writeFile(
+        join(s.root, "production.env"),
+        `STRIPE_SECRET_KEY=${STRIPE}\nAPI_KEY=${production}\n`,
+      );
+      return { ...s, production };
+    }
+
+    it("schedules them in the deploy login's host plan, approved like a destroy with shop-drill typed, its values on stdin only", async () => {
+      const s = await drilled({ plan: drilledPlan() });
+      const value = randomBytes(16).toString("hex");
+      const values = `API_KEY=${value}\n`;
+      await writeFile(join(s.root, ".env.preview"), values);
+      const result = await provision(s);
+      const request = s.handler.requests.find((r) => r.kind === "host-apply");
+      expect(request).toMatchObject({
+        title: "Schedule the restore drills on the server, run as deploy",
+        planHash: result.hostPlanHash,
+        allowDestroy: true,
+        confirmPhrase: "shop-drill",
+      });
+      const [apply] = s.host.applies;
+      expect(s.host.applies).toHaveLength(1);
+      expect(apply?.remote.host).toBe(SERVER_IPV4);
+      expect(apply?.options.approvedHash).toBe(result.hostPlanHash);
+      expect(apply?.plan.deleteData).toBe(true);
+      expect(apply?.plan.steps.map((step) => step.id)).toEqual(["drills"]);
+      const step = apply?.plan.steps[0];
+      expect(step).toMatchObject({ state: "change", params: { app: "shop", runAs: "login" } });
+      expect(step?.params["file:schedule"]).toBe("weekly\n");
+      expect(step?.params.valuesSha256).toBe(sha256Hex(values));
+      expect(String(step?.params["file:compose.yaml"])).toContain("internal: true");
+      // The values reach the adapter only as the apply's secret, and nothing else holds them.
+      expect(apply?.options.secrets?.previewValues).toBe(values);
+      // (.env.preview itself, the user's own file, aside.)
+      await rm(join(s.root, ".env.preview"));
+      expect(await everywhere(s)).not.toContain(value);
+      expect(canonicalJson(apply?.plan)).not.toContain(value);
+      // Production's value never reaches the drill's copy.
+      expect(canonicalJson(apply?.plan)).not.toContain(s.production);
+      expect(apply?.options.secrets?.previewValues).not.toContain(s.production);
+      expect(s.deps.reporter.text()).toContain("The server's restore drills are scheduled");
+
+      // In place on the next run: no destroy to approve.
+      await writeFile(join(s.root, ".env.preview"), values);
+      await mergeAndSetRunner(s, "github");
+      s.handler.requests.length = 0;
+      await provision(s);
+      expect(s.handler.requests.map((r) => r.kind)).not.toContain("host-apply");
+      expect(s.host.applies).toHaveLength(1);
+      expect(s.deps.reporter.text()).toContain(
+        "The server's restore drills are scheduled as planned; nothing on the server changes.",
+      );
+    });
+
+    it("schedule off: removes them as deploy, the copy's data in the pinned busybox, approved with shop-drill typed, no values sent", async () => {
+      const s = await drilled({ plan: drilledPlan() });
+      await provision(s);
+      await mergeAndSetRunner(s, "github");
+      const on = await readPlan(s);
+      await writeArtifact(
+        "plan",
+        s.deps.paths.files.plan,
+        DeployPlanSchema.parse({ ...on, snapshots: { schedule: on.snapshots?.schedule } }),
+      );
+      s.handler.requests.length = 0;
+      await provision(s);
+      const request = s.handler.requests.find((r) => r.kind === "host-apply");
+      expect(request).toMatchObject({
+        title: "Remove the scheduled restore drills on the server, run as deploy",
+        allowDestroy: true,
+        confirmPhrase: "shop-drill",
+      });
+      const apply = s.host.applies.at(-1);
+      expect(apply?.plan.steps[0]).toMatchObject({
+        state: "change",
+        params: { app: "shop", remove: true, runAs: "login", image: IMAGES.busybox.ref },
+      });
+      expect(apply?.options.secrets).not.toHaveProperty("previewValues");
+      expect(s.host.facts.drills).toEqual([]);
+    });
+
+    it("with the server's runner too: one plan of both steps, the drills first, approved once with shop-drill typed", async () => {
+      const s = await drilled({ plan: onRunner(drilledPlan()) });
+      await provision(s);
+      const requests = s.handler.requests.filter((r) => r.kind === "host-apply");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        title:
+          "Install the GitHub Actions runner and schedule the restore drills on the server, run as deploy",
+        confirmPhrase: "shop-drill",
+      });
+      expect(s.host.applies[0]?.plan.steps.map((step) => step.id)).toEqual([
+        "drills",
+        "github-runner",
+      ]);
+    });
+
+    it("a script approves it with --approve and --confirm, as the refusal's hint says", async () => {
+      // First refused, as a run nobody answers without --confirm: the hint names both flags.
+      const s = await drilled({ plan: drilledPlan(), answer: (r) => r.kind !== "host-apply" });
+      const error = await provision(s).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      const hint = (error as OpsCrewError).hint ?? "";
+      expect(hint).toMatch(/--approve [0-9a-f]{64} --confirm shop-drill$/);
+      expect(s.host.applies).toEqual([]);
+    });
+  },
+);
