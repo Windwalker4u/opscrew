@@ -35,6 +35,14 @@ governs every specification, plan, task and line of code in this repository.
   exception is a server the user chooses for it: one named environment's, never prod's. The user
   is told plainly what the approval can then reach, and the plan and its approval name that
   environment. Changing a bound is a new plan and a new approval.
+- A program OpsCrew installs on a server through a host plan approved by its hash MAY repeat one
+  bounded kind of change without asking again (ADR 0033: the address updater keeps the app's own
+  A/AAAA records at the server's own address). The plan MUST name every bound, the program keeps
+  to them, and each change it makes is recorded on the server and shown by `opscrew status`. Its
+  credential is on the server, so anything with root there can exceed those bounds, including the
+  server's own deploy runner, which runs the repository's code in the docker group: the plan,
+  design's summary and the guide MUST say so plainly. Changing a bound is a new plan and a new
+  approval.
 - Purchases (for example registering a domain) cost money and cannot be undone: they need an
   approval of their own kind with the price shown and a typed confirmation of the item, are never
   granted by a blanket flag, and in non-interactive mode need the exact item and a price bound.
@@ -189,4 +197,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.11.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-14
+**Version**: 1.12.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-18
