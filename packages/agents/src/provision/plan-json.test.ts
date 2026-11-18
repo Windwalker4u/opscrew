@@ -150,6 +150,28 @@ describe("maskSensitivePlanJson", () => {
   });
 });
 
+describe("an Access service token's client ID", () => {
+  it("is always masked, though the provider marks only the client secret sensitive", () => {
+    const TOKEN = "cloudflare_zero_trust_access_service_token";
+    const clientId = `${"a1b2c3d4e5f6"}.access`;
+    const values = { name: "OpsCrew deploy (shop)", client_id: clientId, duration: "8760h" };
+    const plan = {
+      resource_changes: [
+        {
+          type: TOKEN,
+          change: { actions: ["update"], before: values, after: values, after_sensitive: {} },
+        },
+      ],
+      planned_values: {
+        root_module: { child_modules: [{ resources: [{ type: TOKEN, values }] }] },
+      },
+    };
+    const masked = maskSensitivePlanJson(plan);
+    expect(JSON.stringify(masked)).not.toContain(clientId);
+    expect(JSON.stringify(masked)).toContain("OpsCrew deploy (shop)");
+  });
+});
+
 describe("a Cloudflare Tunnel's connections", () => {
   // A documentation address (RFC 5737): the public address of a host running the connector.
   const ORIGIN_IP = "198.51.100.23";
