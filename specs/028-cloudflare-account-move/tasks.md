@@ -613,7 +613,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-engine --filter=@opscrew/agents && npx vitest run --root packages/iac-engine && npx vitest run --root packages/agents src/provision src/shared && pnpm lint`
   - Effort: high
 
-- [ ] T2847 The DNSSEC wait counts from the registry's own change time (founder, 2026-11-17; the lead's change, its tests owed)
+- [x] T2847 The DNSSEC wait counts from the registry's own change time (founder, 2026-11-17; the lead's change, its tests owed)
   - Why: the wait started at the first run that saw the DS record gone. At the real move the .dev registry had dropped it about 19 hours before OpsCrew's next run (RDAP `last changed` 2026-11-17 01:21 UTC), and the switch still waited 2 hours.
   - Done by the lead (a91aa187, committed without new tests on the founder's call, to switch that night): `RegistryNetwork.rdapRecord` (the TLD's RDAP server from IANA's bootstrap file, RFC 9224), `rdapUnsignedSince`, `RegistryDsTtl`'s `none` with `changedAt`, and `dsGoneAt`, used where a wait starts: `dsWaitStatus`, `domain connect`'s `waitForOldDs` and the move's own gate (`ownGate`).
   - Owns: `packages/agents/src/domain/{registry-ds,connect-ds}*.ts`, `packages/agents/src/domain/connect.ts` (only the wait's start), `packages/agents/src/cloudflare-move/switch-ds*.ts`, their tests
@@ -623,7 +623,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
   - Effort: high
 
-- [ ] T2848 The switch at Cloudflare Registrar sees the change at the registry and finishes the new account's side as soon as its zone is active (found at the real move, 2026-11-17)
+- [x] T2848 The switch at Cloudflare Registrar sees the change at the registry and finishes the new account's side as soon as its zone is active (found at the real move, 2026-11-17)
   - Why: at L4b the registry named the new account's nameservers at 21:30 UTC, but `currentNameservers` (`switch-registrar.ts`) asked the public DNS (`publicNameservers`, DNS over HTTPS at Cloudflare's resolver), which held the old answer for about 3 hours (the `.dev` delegation's TTL is a day). Cloudflare activated B's zone at 22:13 (right after the lead asked for an activation check; its own checks would have done it too). Until the switch attached the Workers custom domains (around 00:15) and resolvers' negative caching ran out, the Workers sites (the landing, `www`, the docs, pay) answered HTTP 530 or "no such host" to most visitors: about 65% of L4b's requests to them failed over about 2.5 hours. The server apps, whose records the prepare had copied, kept answering.
   - Owns: `packages/agents/src/cloudflare-move/switch*.ts` except `switch-ds*.ts`, `packages/agents/src/domain/registry-ns.ts` (new) and its test, `packages/agents/src/domain/index.ts` (its export), `packages/agents/src/context.ts` (the dependency), `packages/cli/src/deps.ts` (its wiring, as `registryDs`'s), `packages/connectors/cloudflare/src/**` (only what the switch calls newly), `docs/guide/cloudflare-move.md`, their tests
   - Accept:
@@ -634,7 +634,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/cloudflare-move src/domain && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2849 The old account's origin certificate once its zone has moved (found at the real move, 2026-11-18; the lead's change, its tests owed)
+- [x] T2849 The old account's origin certificate once its zone has moved (found at the real move, 2026-11-18; the lead's change, its tests owed)
   - Why: SEOcc's finish stopped on revoking the old account's Origin CA certificate. Once a zone has moved, Cloudflare neither reads nor revokes its origin certificates ("Failed to read certificate from Database", "User is not authorized to perform this action", with either account's token, even with SSL and Certificates Edit on all zones). After the switch the old zone has always moved, so the revocation could never run.
   - Done by the lead: `revokeAOrigin` (`cloudflare-move/shared.ts`) reads A's zone; when it isn't active (or can't be read) it says why the certificate stays and returns, so the finish removes A's record and ends. Three tests still expect a revocation after the switch.
   - Owns: `packages/agents/src/cloudflare-move/{shared,finish-removal}*.ts` and the fakes they use
@@ -642,7 +642,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move && pnpm lint`
   - Effort: medium
 
-- [ ] T2850 The move's live pass: slips found at the real move
+- [x] T2850 The move's live pass: slips found at the real move
   - Owns: `packages/cli/test/live/cloudflare-move*.ts`, `docs/e2e.md` (the move's section)
   - Accept:
     - L3's coverage step tells a DNSSEC wait from coverage that names hostnames: a refusal for the wait says so, with its time, and doesn't name coverage.
@@ -814,7 +814,7 @@ Asked for through the control plane's session: a non-secret build setting whatev
 
 ## Phase 8: Wave 7
 
-- [ ] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
+- [x] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
   - Lead note (after T2824): the CLI e2e runs each step against its own world (cloud and site through the finish and abort, own-tunnel through prepare only, no `--allow-downtime` window); the rehearsal's legs run the whole move continuously, so they cover the own-tunnel finish and abort and the window through the CLI.
   - Lead note (after T2819's review): record Cloudflare's real status, code and text when a Workers custom domain is refused because another Worker holds the hostname, before anything matches on it.
   - Lead note (after T2817): check whether Cloudflare fills `content` for TLSA, HTTPS and similar records created from `data` (the fake leaves it empty); if not, a re-plan would list them as differences.
@@ -872,7 +872,7 @@ Codex, Cursor and VS Code. Research: R11. It ships in 0.2.10 beside the move.
 
 ## Phase 9: The real move and the release (lead)
 
-- [ ] T2827 The rehearsal and the real move of opscrew.dev (lead): T2826's legs on the final code,
+- [x] T2827 The rehearsal and the real move of opscrew.dev (lead): T2826's legs on the final code,
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
   - Lead note (after T2825): opscrew.dev's mail goes through Cloudflare Email Routing (its MX records are Cloudflare's, skipped by the zone copy as made by Cloudflare): in the rehearsal, record whether Email Routing can be set up in B while B's zone is pending; tell the founder before the real switch that mail stops until it is set up in B, and set it up right after the activation; check that the switch plan's skipped lines name Email Routing plainly (T2828 otherwise). opscrew.dev is at Cloudflare Registrar and the old account's token can't read it (R10.8's 403): after T2836 the switch tells it from B's zone's `original_registrar`; check that line in the rehearsal.
@@ -911,7 +911,7 @@ Codex, Cursor and VS Code. Research: R11. It ships in 0.2.10 beside the move.
     - From wave S3: `MOVE_PHASE` (in `connector-stacks.ts`) moves to `texts.ts`, and the `"cloudflare-move"` phase literals elsewhere use it; prepare's B setup refresh shares `session.ts`'s `setupCloudflare` call (a helper there).
   - Left for T2827: from T2819's fixes, `attachWorkerDomain` throws a typed refusal for "the hostname already has an assigned Worker", typed by the status, code and text the rehearsal records (not 100117, which the fake uses for externally managed DNS records), so the switch stops matching the message text.
   - Accepted, not changed: from wave S4: a move back while the old account still holds the moved zone gets past the session (a `moved` zone counts as none) but stops at the zone step (adding the zone again, then `setupCloudflare` on the moved one); the guide says a move back waits until Cloudflare deletes the moved zone; whether Cloudflare lets an account add a zone it holds as moved is unknown; from wave S3's review: `finish-point.ts`'s `provisionServices` beside `connector.ts`'s `serverServices` (different inputs); from wave S3: the check before the Portainer takeover's restart (optional), `waitForTunnelToClose` taking a client and `nextStacksStep` through `applyStackPlanAudited` (both in shared files with other callers), `serverAppEnv` (no reader of `app.env` alone to share), and the Portainer takeover's restart stopping a script with APPROVAL_REFUSED and its `--approve` hint (a rerun with it goes on: the stacks already hold B's tokens); `approvedPending` beside `planAndApply` and retarget's `approvedSavedPlan` (its checks run before `planAndApply`'s, whose hints name `--plan-only`, which the move has no use for); `deleteSecretAt` for `destroy/common.ts`'s and `rotate/app-site.ts`'s delete loops, and an `environmentSecretExists` in the GitHub connector so `dropNewCredentials` also skips environment secrets GitHub doesn't have (later, outside the move); one DS wait note shape for the switch and `domain connect` (it needs `connect-state.ts`'s `registrar` optional; about 35 lines saved, left as is); a Portainer rerun after a failed stack apply in step 1 asks the stack's approval again while the app is stopped (after an error only); the two rclone call sites already share `shared/rclone.ts`.
-- [ ] T2829 `CLAUDE.md`'s package notes (the move's folder), and the roadmap: 028 done (lead).
+- [x] T2829 `CLAUDE.md`'s package notes (the move's folder), and the roadmap: 028 done (lead).
 - [ ] T2830 The release 0.2.10, following `docs/releasing.md` (lead).
 
 ## Dependencies and waves
