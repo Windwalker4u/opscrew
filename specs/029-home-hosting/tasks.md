@@ -390,6 +390,17 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/retarget src/cloudflare-move && pnpm lint`
   - Effort: medium
 
+- [ ] T2943 [P] [US4] The web filter on every supported OS, and after an nftables restart in both modes (lead, T2942's findings 3–5)
+  - Owns: `packages/connectors/ssh-host/src/{web-filter,plan,steps,inspect,parse,facts}.ts`, colocated tests, snapshots and fixtures
+  - Reads: T2906's and T2942's web-filter code and Docker-gated tests; plan 8. (M11); the target platforms (Ubuntu 22.04/24.04/26.04, Debian 12/13)
+  - Depends: T2942
+  - Accept:
+    - The IPv6 table loads and filters on nft 1.0.2 (Ubuntu 22.04), 1.0.6 (Debian 12) and the newer ones: the forward chain's match of the original destination port written in a form each accepts (e.g. one rule per protocol and port with `meta l4proto`), listing stably so the inspection hash (T2942) stays meaningful. The Docker-gated test runs on `ubuntu:22.04`, `debian:12`, `ubuntu:24.04` and `debian:13` (the allowed range reaches 80/443, another is dropped, on both paths).
+    - IPv4 mode gets the same nftables drop-in (`PartOf`/`ReloadPropagatedFrom`), so a restart of nftables restarts Docker and the filter together and the origin protection comes back (T2942's finding 4). Existing servers get one plan change at their next provision; the changelog says so (T2923).
+    - Going from IPv6 back to IPv4 keeps the IPv6 table while inspection still shows a listener on IPv6 port 80 or 443 (T2942's finding 5); the next run after the deploy rebinds removes it.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && pnpm lint`, and the Docker-gated tests with `OPSCREW_DOCKER_TESTS=1`
+  - Effort: xhigh
+
 ## Phase 7: Wave 6 (parallel)
 
 - [ ] T2913b [P] [US1] Provision: mode switches, the check workflow and the pull request
@@ -789,7 +800,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
 - [ ] T2921 (lead) /simplify over the feature, and the repeated strings gathered (noted: `dnsModule` in `infra/cloudflare.ts` takes an optional `ipv4Record` so `infra/own.ts`'s home `module "dns"` stops repeating five arguments; `token.ts`'s `reachText` beside `updaterTokenReach`; the token recipe's "run `opscrew provision` again" in design's summary; `detectHomeNetwork` made required on `HostAdapterApi` once the fakes have it; a test in agents that `runbook/own.ts`'s updater unit names and paths equal ssh-host's `dns-updater.ts` constants, as iac-templates doesn't depend on ssh-host)
 - [ ] T2922 (lead) CLAUDE.md and the roadmap (029 done)
 - [ ] T2923 (lead) The release (`docs/releasing.md`); the CHANGELOG names the moves-only plan every
-  app with DNS on Cloudflare gets at its next provision (`a` → `a[0]`)
+  app with DNS on Cloudflare gets at its next provision (`a` → `a[0]`), and the web filter's new nftables drop-in every server with origin protection gets (T2943)
 
 ## Dependencies
 
