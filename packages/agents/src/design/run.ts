@@ -1,3 +1,4 @@
+import type { HomeNetwork, HostFacts } from "@opscrew/connector-ssh-host";
 import type { ComputeCatalog, VpsProviderId } from "@opscrew/contracts";
 import {
   canonicalJson,
@@ -122,6 +123,7 @@ import {
   uncallableRouteJobs,
 } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE, offerTerms, priceLabel } from "./cost";
+import { designHome, type HomeDesign, homePlan, piStorageWarning, recordHomeDesign } from "./home";
 import { designHosting, type HostingDesignChoice, hostingDeployLine } from "./hosting";
 import { keptEdits } from "./kept-edits";
 import { buildDesignOptionSet, lowHeadroomText, minimumMonthlyCost } from "./options";
@@ -257,6 +259,14 @@ export interface OwnServerDesignInput {
    * private network on it, when design creates one for extra servers.
    */
   network?: NetworkHostFacts;
+  /** Its board and the devices of its data (inspection's facts), for the Raspberry Pi warning. */
+  board?: HostFacts["board"];
+  storage?: HostFacts["storage"];
+  /**
+   * A server at home: what `detectHomeNetwork` read on it after inspection (read again on every
+   * run, never persisted; a proxied app's addresses are hidden from every line).
+   */
+  homeNetwork?: HomeNetwork;
 }
 
 export interface DesignResult {
@@ -438,7 +448,9 @@ async function prodPlanOf(deps: PhaseDeps): Promise<DeployPlan> {
  * How the user's own server serves the site: `input.serving`, else from `input.access` or the
  * interview's answers (`server.reachable` and `server.serve`, see `ownServerServing`): the tunnel
  * by default whenever the domain is on Cloudflare, behind Cloudflare's proxy with the web filter
- * only as the explicit `proxy` answer, DNS only without a Cloudflare domain or as the answer.
+ * only as the explicit `proxy` answer, DNS only without a Cloudflare domain or as the answer. A
+ * server at home has no `server.reachable`: the router's forwards reach it, and what it sees of
+ * its network decides the rest (`designHome`).
  * @throws OpsCrewError `PHASE_PRECONDITION` when the interview has no answers about the server.
  */
 async function ownServerAccess(
@@ -449,7 +461,8 @@ async function ownServerAccess(
   if (input?.serving !== undefined) return input.serving;
   if (input?.access === "tunnel") return "tunnel";
   const recorded = await readOwnServer(deps.paths);
-  const reachable = input?.access === "public" ? true : recorded?.reachable;
+  const home = recorded?.home !== undefined;
+  const reachable = input?.access === "public" || home ? true : recorded?.reachable;
   if (reachable === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -460,7 +473,7 @@ async function ownServerAccess(
     );
   }
   const serving = ownServerServing({ reachable, serve: recorded?.serve, requirements });
-  if (serving === "proxy" && recorded !== undefined && !mayHavePublicIpv4(recorded)) {
+  if (serving === "proxy" && recorded !== undefined && !home && !mayHavePublicIpv4(recorded)) {
     const { message, hint } = proxyNeedsIpv4Message();
     throw new OpsCrewError("PHASE_PRECONDITION", message, { hint });
   }
@@ -1010,6 +1023,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   );
 
   let ownServer = options.ownServer;
+  let home: HomeDesign | undefined;
   if (inputs.requirements.provider === "own") {
     // A tunnel without a Cloudflare domain cannot be provisioned: stop before writing anything.
     const serving = await ownServerAccess(deps, ownServer, inputs.requirements);
@@ -1019,6 +1033,14 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       throw new OpsCrewError("PHASE_PRECONDITION", message, { hint });
     }
     ownServer = { ...ownServer, access, serving };
+    // A server at home: what it sees of its network decides how it serves, or stops design,
+    // before anything is said (a proxied app's address is hidden from here on) or written.
+    home = await designHome(deps, {
+      serving,
+      network: ownServer.homeNetwork,
+      previous,
+      requirements: inputs.requirements,
+    });
   }
 
   // On another environment's server, what that environment's own containers take there
@@ -1214,10 +1236,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const answeredLater =
     previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const whole = read?.whole;
+  // A server at home: `target.home` and the server's runner, on the plan as the user keeps it.
+  const designed = home === undefined ? placement.plan : homePlan(placement.plan, home);
   const plan =
-    whole !== undefined && !answeredLater && samePlan(placement.plan, whole)
-      ? whole
-      : placement.plan;
+    whole !== undefined && !answeredLater && samePlan(designed, whole) ? whole : designed;
   const servers = plan.servers ?? [];
   // What runs on the app's server: the services placed elsewhere run on theirs.
   const onApp = onAppServer(plan);
@@ -1252,6 +1274,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       });
     }
     if (memory?.warning !== undefined) warn(memory.warning);
+  }
+  // A Raspberry Pi whose data would live on an SD card: warned of, never refused.
+  if (chosen.target.provider === "own" && ownServer !== undefined) {
+    const pi = piStorageWarning(ownServer, plan);
+    if (pi !== undefined) warn(pi);
   }
   // A value the user set where design follows analysis is kept, and said with what it found.
   for (const line of keptLines) reporter.info(say(line));
@@ -1293,6 +1320,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     }
     await writeArtifact("plan", paths.files.plan, plan);
   }
+  // What design read of the home's network this run, and SSH's sources, on this computer only.
+  if (home !== undefined) await recordHomeDesign(paths, home.record);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
   const onComputer = chosen.target.provider === "localhost";
@@ -1380,6 +1409,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const placementLines = placement.lines.map(say);
   for (const line of placementLines) reporter.info(line);
   for (const warning of placement.warnings) warn(warning);
+  // A server at home: the address found, the router's lines, the terms and the updater's token.
+  const homeLines = (home?.lines ?? []).map(say);
+  for (const line of homeLines) reporter.info(line);
   const headroom = memoryHeadroom(serverMb, onAppMb + (sharedPreviews?.memoryMb ?? 0), edgeMb);
   if (!ownsServer && !noServer && headroom.low) {
     warn(lowHeadroomText(chosen.target.serverType, headroom.free));
@@ -1436,6 +1468,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ...componentLines,
       ...snapshotLines,
       ...placementLines,
+      ...homeLines,
       ...supplyLines,
       ...additionLines,
       ...checkLines,

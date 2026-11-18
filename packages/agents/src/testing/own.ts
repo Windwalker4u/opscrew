@@ -10,6 +10,7 @@ import {
   type DesiredHost,
   EDGE_DIR,
   EDGE_PROJECT,
+  type HomeNetwork,
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
@@ -44,6 +45,26 @@ import { noProviderSchemas, plainStateResources } from "./state";
 export const OWN_IPV4 = "203.0.113.20";
 /** A home server's LAN address (not public). */
 export const LAN_IPV4 = "192.168.1.20";
+/** The home's public IPv4 address as a home server sees it (RFC 5737): never shown when proxied. */
+export const HOME_IPV4 = "198.51.100.7";
+/** The home server's stable global IPv6 address (RFC 3849): never shown when proxied. */
+export const HOME_IPV6 = "2001:db8:1:2::30";
+
+/**
+ * What `detectHomeNetwork` reads on a home server at {@link LAN_IPV4} behind its router: both
+ * sources see {@link HOME_IPV4}, the stable IPv6 address is {@link HOME_IPV6}, and the hops after
+ * the router are public. `over` replaces whole parts.
+ */
+export function homeNetworkFacts(over: Partial<HomeNetwork> = {}): HomeNetwork {
+  return {
+    lan: { address: LAN_IPV4, prefix: 24, interface: "eth0", gateway: "192.168.1.1" },
+    ipv4: { route: true, cloudflare: HOME_IPV4, aws: HOME_IPV4 },
+    ipv6: { state: "present", stable: HOME_IPV6 },
+    hops: ["192.168.1.1", "203.0.113.1", "203.0.113.9"],
+    tools: ["curl", "tracepath"],
+    ...over,
+  };
+}
 export const TUNNEL_ID = "6f1f3a2e-7b1c-4d2e-9f00-112233445566";
 /** The Cloudflare account of the fake zone (the one `fakeSharedCloudflare`'s zone is in). */
 export const ACCOUNT_ID = FAKE_ACCOUNT_ID;
@@ -681,18 +702,30 @@ export interface FakeApply {
  * hash is not the approved one (as the real adapter does), calls `verifyLogin` around the SSH and
  * firewall steps, and leaves the server as the plan would: prepared after a setup plan with the
  * app record ({@link preparedFacts}), unchanged after a Portainer or connector add-on, without the
- * app after a teardown and without OpsCrew's host settings after an undo.
+ * app after a teardown and without OpsCrew's host settings after an undo. `detectHomeNetwork`
+ * reports the scripted {@link FakeHostServer.homeNetwork}.
  */
 export class FakeHostServer implements HostAdapterApi {
   readonly applies: FakeApply[] = [];
   inspections = 0;
+  detections = 0;
   /** Thrown by the next `apply` (after its hash check), as a failing step would. */
   fail: Error | undefined;
+  /** What `detectHomeNetwork` reports (for example {@link homeNetworkFacts}); unset, it throws. */
+  homeNetwork: HomeNetwork | undefined;
   constructor(public facts: HostFacts = freshFacts()) {}
 
   async inspect(_remote: RemoteExec): Promise<HostFacts> {
     this.inspections++;
     return this.facts;
+  }
+
+  async detectHomeNetwork(_remote: RemoteExec): Promise<HomeNetwork> {
+    this.detections++;
+    if (this.homeNetwork === undefined) {
+      throw new Error("the fake server has no home network scripted");
+    }
+    return this.homeNetwork;
   }
 
   async apply(_remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult> {

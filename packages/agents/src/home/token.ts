@@ -73,7 +73,7 @@ const ACCESS_NEEDS = new Set<AccountPermissionNeed>([
 export async function checkUpdaterToken(input: UpdaterTokenCheck): Promise<CheckedUpdaterToken> {
   const { zone, deps } = input;
   const variable = input.variable ?? UPDATER_TOKEN_VAR;
-  const howTo = recipe(zone.name, variable, input.command);
+  const howTo = updaterTokenRecipe(zone.name, variable, input.command);
   const refused = (message: string, hint = howTo, code: ErrorCode = "CREDENTIALS_INVALID") =>
     new OpsCrewError(code, `${deps.redactor.redact(message)} Nothing was changed.`, { hint });
   const token = input.token?.trim();
@@ -160,8 +160,11 @@ function reachText(zone: string): string {
   ].join("\n");
 }
 
-/** How to make the updater's token, and where it goes. */
-function recipe(zone: string, variable: string, command: string): string {
+/**
+ * How to make the updater's token for `zone`, and where it goes: lines joined by newlines, ending
+ * with setting `variable` and running `command` again.
+ */
+export function updaterTokenRecipe(zone: string, variable: string, command: string): string {
   return [
     `Make it at ${CLOUDFLARE_TOKEN_PAGE} → Create Token → Create Custom Token:`,
     "  Permissions: Zone → DNS → Edit",
