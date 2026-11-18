@@ -652,6 +652,10 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cloudflare-move-support.test.ts && pnpm lint`
   - Effort: medium
 
+- [x] T2851 The finish's check after importing what the switch made accepts in-place updates, approved by hash (found by L5, 2026-11-18; done by the lead)
+  - Why: Q's finish stopped: once the switch's Access application was imported into the main shadow state, the check plan would update it in place, setting `auto_redirect_to_identity`, `enable_binding_cookie` and `options_preflight_bypass` from `false` (Cloudflare's defaults, which the import brings along) to unset, as the module leaves them. The check had to be empty.
+  - Done: `checkAdoption` takes in-place updates of Cloudflare resources, shown and approved by hash, as `checkAfterSwap` does; anything else still stops before an approval; `adoptSite` returns the approval's stop. Tests: a create still stops; an in-place update waits for its hash as a script and, approved, is applied before the credentials are promoted.
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
