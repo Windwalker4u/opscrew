@@ -138,8 +138,7 @@ function homeNoMove(): OpsCrewError {
 
 /** Whether the new own server's answers say it is at the user's home (`server.home`). */
 function answersAtHome(answers: RetargetOptions["ownServer"]): boolean {
-  const home = (answers as { home?: unknown } | undefined)?.home;
-  return home !== undefined && home !== false;
+  return answers?.home !== undefined;
 }
 
 /** A site and a server are different designs: no move between them. */

@@ -43,6 +43,8 @@ export async function askQuestions(
       answers.dnsProvider = "none";
       continue;
     }
+    // A server at home is reached through the router's forwards, never asked how.
+    if (question.id === "server.reachable" && answers["server.home"] === true) continue;
     const choices = (question.options ?? []).map((option) => ({
       value: option.value,
       label: option.label,

@@ -268,8 +268,8 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
 
     const to = await moveHarness();
     const before = await snapshot(to);
-    // `home` is the interview's `server.home` answer.
-    const ownServer = { ...OWN_ANSWERS, home: true } as OwnServerAnswers;
+    const { reachable: _reachable, ...answers } = OWN_ANSWERS;
+    const ownServer: OwnServerAnswers = { ...answers, home: {} };
     const home = await refused(to, { to: "own", ownServer });
     expect(home.code).toBe("PHASE_PRECONDITION");
     expect(home.message).toBe(says);

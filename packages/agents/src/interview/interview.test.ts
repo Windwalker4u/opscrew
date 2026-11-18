@@ -303,7 +303,7 @@ describe("provider question", () => {
         {
           value: "own",
           label: "A server you already have",
-          hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere or at home; you already pay for it",
+          hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere, also a computer at home; you already pay for it",
         },
         {
           value: "portainer",
