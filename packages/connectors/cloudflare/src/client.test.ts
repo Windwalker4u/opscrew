@@ -84,15 +84,14 @@ describe("CloudflareClient", () => {
     expect(JSON.stringify(check)).not.toContain(TOKEN);
   });
 
-  it("gives no id or status when the verify answer lacks the token's id", async () => {
-    const { fetch } = fakeFetch({
-      "/user/tokens/verify": ok({ status: "active" }),
-      "/zones?per_page=1": ok([]),
-    });
+  it("keeps the status, without an id, when the verify answer lacks the token's id", async () => {
+    const { fetch, calls } = fakeFetch({ "/user/tokens/verify": ok({ status: "active" }) });
     const check = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).verifyToken();
-    expect(check).toMatchObject({ ok: true, identity: "account API token" });
+    expect(check).toMatchObject({ ok: true, identity: "user API token", status: "active" });
     expect(check).not.toHaveProperty("id");
-    expect(check).not.toHaveProperty("status");
+    expect(calls.map((call) => call.url)).not.toContain(
+      "https://api.cloudflare.com/client/v4/zones?per_page=1",
+    );
   });
 
   it("accepts account tokens that can list zones", async () => {

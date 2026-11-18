@@ -457,7 +457,8 @@ interface RawAnswer {
 }
 
 const TokenVerifySchema = z.looseObject({
-  id: z.string().min(1),
+  // Cloudflare always sends it; an answer without it is still the token's status.
+  id: z.string().min(1).optional(),
   status: z.enum(["active", "disabled", "expired"]),
   expires_on: z.string().optional(),
 });
@@ -1406,7 +1407,7 @@ export class CloudflareClient {
     const token: Pick<CloudflareTokenCheck, "id" | "status" | "expiresOn"> =
       body.success && result.success
         ? {
-            id: result.data.id,
+            ...(result.data.id ? { id: result.data.id } : {}),
             status: result.data.status,
             ...(result.data.expires_on ? { expiresOn: result.data.expires_on } : {}),
           }
