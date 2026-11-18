@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { dsQuery, type RegistryNetwork, readDsAnswer, registryDsLookup } from "./registry-ds";
+import {
+  dsQuery,
+  type RegistryNetwork,
+  rdapUnsignedSince,
+  readDsAnswer,
+  registryDsLookup,
+} from "./registry-ds";
 
 const ID = 0x1234;
 const AA = 0x0400;
@@ -134,10 +140,59 @@ describe("readDsAnswer", () => {
   });
 });
 
-/** A network whose nameservers answer as `replies` says, logging every call. */
+/** When the .dev registry last changed the domain, as its RDAP record gives it. */
+const CHANGED = "2026-11-17T01:21:37Z";
+
+/** A domain's RDAP record (RFC 9083) as a registry answers it: not signed, last changed `CHANGED`. */
+function rdapDomain(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    objectClassName: "domain",
+    ldhName: "opscrew.dev",
+    status: ["client transfer prohibited"],
+    secureDNS: { delegationSigned: false },
+    events: [
+      { eventAction: "registration", eventDate: "2025-03-01T10:00:00Z" },
+      { eventAction: "expiration", eventDate: "2027-03-01T10:00:00Z" },
+      { eventAction: "last changed", eventDate: CHANGED },
+      { eventAction: "last update of RDAP database", eventDate: "2026-11-17T20:04:11Z" },
+    ],
+    ...overrides,
+  };
+}
+
+describe("rdapUnsignedSince", () => {
+  it("gives the domain's last change when its RDAP record says it is not signed", () => {
+    expect(rdapUnsignedSince(rdapDomain())).toBe(CHANGED);
+  });
+
+  it.each([
+    ["the domain is signed", rdapDomain({ secureDNS: { delegationSigned: true } })],
+    ["the record says nothing about DNSSEC", rdapDomain({ secureDNS: undefined })],
+    [
+      "the record has no `last changed` event",
+      rdapDomain({ events: [{ eventAction: "registration", eventDate: CHANGED }] }),
+    ],
+    ["the record has no events", rdapDomain({ events: undefined })],
+    [
+      "the change's date cannot be read",
+      rdapDomain({ events: [{ eventAction: "last changed", eventDate: "yesterday-ish" }] }),
+    ],
+    ["the record is not an object", "<html>Not found</html>"],
+    ["there is no record", undefined],
+    ["the record is null", null],
+  ])("gives nothing when %s", (_case, record) => {
+    expect(rdapUnsignedSince(record)).toBeUndefined();
+  });
+});
+
+/**
+ * A network whose nameservers answer as `replies` says, logging every call; `rdap` (when given)
+ * answers the registry's RDAP record.
+ */
 function network(
   replies: Record<string, (query: Uint8Array) => Uint8Array>,
   addresses: string[] | Error = Object.keys(replies),
+  rdap?: (domain: string) => Promise<unknown>,
 ) {
   const calls: string[] = [];
   const net: RegistryNetwork = {
@@ -153,6 +208,14 @@ function network(
       return reply(query);
     },
     randomId: () => ID,
+    ...(rdap === undefined
+      ? {}
+      : {
+          rdapRecord: (domain: string) => {
+            calls.push(`rdap ${domain}`);
+            return rdap(domain);
+          },
+        }),
   };
   return { net, calls };
 }
@@ -198,6 +261,48 @@ describe("registryDsLookup", () => {
   it("says the registry publishes none when its nameserver answers so", async () => {
     const { net } = network({ "192.0.2.1": () => answer("example.com", []) });
     expect(await registryDsLookup(net)("example.com")).toEqual({ kind: "none" });
+  });
+
+  describe("when the registry publishes none", () => {
+    const none = { "192.0.2.1": () => answer("opscrew.dev", []) };
+
+    it("adds the registry's change time from the domain's RDAP record", async () => {
+      const { net, calls } = network(none, undefined, async () => rdapDomain());
+
+      expect(await registryDsLookup(net)("OpsCrew.dev.")).toEqual({
+        kind: "none",
+        changedAt: CHANGED,
+      });
+      expect(calls).toEqual(["ns dev", "ask 192.0.2.1", "rdap opscrew.dev"]);
+    });
+
+    it("says none without a change time when the network cannot read RDAP records", async () => {
+      const { net } = network(none);
+      expect(net.rdapRecord).toBeUndefined();
+      expect(await registryDsLookup(net)("opscrew.dev")).toEqual({ kind: "none" });
+    });
+
+    it("says none without a change time when the RDAP lookup fails", async () => {
+      const { net, calls } = network(none, undefined, () =>
+        Promise.reject(new Error("RDAP answered 503")),
+      );
+
+      expect(await registryDsLookup(net)("opscrew.dev")).toEqual({ kind: "none" });
+      expect(calls.at(-1)).toBe("rdap opscrew.dev");
+    });
+
+    it("says none without a change time when the RDAP record says the domain is signed", async () => {
+      const signed = async () => rdapDomain({ secureDNS: { delegationSigned: true } });
+      const { net } = network(none, undefined, signed);
+      expect(await registryDsLookup(net)("opscrew.dev")).toEqual({ kind: "none" });
+    });
+
+    it("reads no RDAP record while the registry publishes the DS record", async () => {
+      const { net, calls } = network({ "192.0.2.1": ttl1800 }, undefined, async () => rdapDomain());
+
+      expect(await registryDsLookup(net)("opscrew.dev")).toMatchObject({ kind: "published" });
+      expect(calls).toEqual(["ns dev", "ask 192.0.2.1"]);
+    });
   });
 
   it.each([

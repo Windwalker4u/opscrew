@@ -1659,6 +1659,76 @@ describe("connectDomain: the registry's own answer", () => {
     expect(pb.nameservers.get(DOMAIN)).toEqual(ZONE_NAMESERVERS);
   });
 
+  /**
+   * shopapp.com at Namecheap, whose API cannot remove DS records: run 1 at 12:00 sees OLD_DS
+   * published (TTL 1800: a 2-hour wait), notes the sighting and stops. The user then removes it in
+   * Namecheap's dashboard, and the registry's RDAP record says it last changed the domain at 12:30.
+   */
+  async function removedInDashboard() {
+    const cp = await connectProject({ plan: domainTestPlan(), requirements: testRequirements() });
+    const nc = cp.other("namecheap");
+    nc.own(DOMAIN);
+    nc.records.set(DOMAIN, [{ ...MX }, { ...TXT }]);
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 600 });
+    const registry = { answer: PUBLISHED_1800 as RegistryDsTtl };
+    const first = await cp.run();
+    withRegistry(first.deps, registry);
+    const stopped = await connectDomain(first.deps, { domain: DOMAIN, services: first.services });
+    expect(stopped.outcome).toBe("waiting-for-ds");
+    expect(await readState(first.deps)).toMatchObject({ dsSeen: RUN_NOW, waitSeconds: 7200 });
+
+    cp.dns.ds.delete(DOMAIN);
+    registry.answer = { kind: "none", changedAt: "2026-10-11T12:30:00Z" };
+    /** A run of `domain connect` at `now`, with the registry answering. */
+    const run = async (now: string) => {
+      const r = await cp.run({ now });
+      withRegistry(r.deps, registry);
+      return {
+        ...r,
+        result: await connectDomain(r.deps, { domain: DOMAIN, services: r.services }),
+      };
+    };
+    return { nc, run };
+  }
+
+  it("counts the wait from the registry's change time, not from the run that sees the records gone", async () => {
+    const { nc, run } = await removedInDashboard();
+
+    // 13:00: two hours from 12:30, not from this run.
+    const early = await run("2026-10-11T13:00:00.000Z");
+    expect(early.result).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-11T14:30:00.000Z",
+    });
+    expect(early.deps.reporter.text()).toContain(
+      "The old DNSSEC (DS) records of shopapp.com are gone from the registry.",
+    );
+    expect(await readState(early.deps)).toEqual({
+      domain: DOMAIN,
+      registrar: "namecheap",
+      switchAfter: "2026-10-11T14:30:00.000Z",
+      waitSeconds: 7200,
+    });
+    expect(early.handler.requests).toEqual([]);
+
+    const late = await run("2026-10-11T14:30:00.000Z");
+    expect(late.result).toMatchObject({ outcome: "connected", copied: 2 });
+    expect(nc.nameservers.get(DOMAIN)).toEqual(ZONE_NAMESERVERS);
+  });
+
+  it("switches at once when the wait from the registry's change time ended before this run", async () => {
+    const { nc, run } = await removedInDashboard();
+
+    // The next run, 19 hours after the registry's change.
+    const next = await run("2026-10-12T07:30:00.000Z");
+
+    expect(next.result).toMatchObject({ outcome: "connected", copied: 2 });
+    expect(next.deps.reporter.text()).not.toContain("OpsCrew waits before");
+    expect(next.handler.requests).toHaveLength(1);
+    expect(nc.nameservers.get(DOMAIN)).toEqual(ZONE_NAMESERVERS);
+    expect(await exists(stateFile(next.deps))).toBe(false);
+  });
+
   it("without a note, a copy the registry no longer publishes starts the wait in this run", async () => {
     const { cp, pb } = await porkbunHosted();
     cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 600 });

@@ -217,8 +217,9 @@ async function apiGate(
  * dashboard; while A's zone's DNSSEC is `active` or `pending` the registry publishes, or is about
  * to publish, its DS record, and `pending-disabled` counts as gone once the public DNS shows none)
  * and at any other registrar: while a DS record is published, the run notes it and stops; the
- * first run that sees it gone waits the noted wait (`dsWaitSeconds`) from its reading when the
- * registry answered that it publishes none, else plus `REMOVAL_MARGIN_SECONDS` from then.
+ * first run that sees it gone waits the noted wait (`dsWaitSeconds`) from when it went (`dsGoneAt`:
+ * the registry's own change time, else this reading) when the registry answered that it publishes
+ * none, else plus `REMOVAL_MARGIN_SECONDS` from now.
  */
 async function ownGate(
   session: MoveSession,
@@ -266,7 +267,8 @@ async function ownGate(
   let switchAfter = note?.switchAfter;
   if (switchAfter === undefined || note?.dsSeen !== undefined) {
     const waitSeconds = note?.waitSeconds ?? dsWaitSeconds(undefined);
-    // The registry publishes none as of this reading: every cached copy is gone within the wait.
+    // The registry publishes none (since its change time, else as of this reading): every cached
+    // copy is gone within the wait from then.
     const at =
       ds.registry.kind === "none"
         ? dsGoneAt(ds, note?.dsSeen, ds.at).getTime() + waitSeconds * 1000

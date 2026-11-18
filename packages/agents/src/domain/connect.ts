@@ -446,8 +446,8 @@ async function stillPublished(
  * an old DS record. When earlier runs saw or removed some, or a resolver still shows a copy the
  * registry no longer publishes, the switch waits until the note's switch time (the first run that
  * sees them gone, unless OpsCrew removed them and no run saw them published since, sets it to the
- * noted wait from then); returns the `waiting-for-ds` result until then, undefined once nothing
- * has to wait.
+ * noted wait from when they went, `dsGoneAt`); returns the `waiting-for-ds` result until then,
+ * undefined once nothing has to wait.
  */
 async function waitForOldDs(
   ctx: ConnectContext,
@@ -461,7 +461,7 @@ async function waitForOldDs(
   const now = deps.clock.now();
   let switchAfter = state.switchAfter;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
-    // Gone since the last run: resolvers may hold them for the whole wait from now on.
+    // Gone since the last run: resolvers may hold them for the whole wait from when they went.
     switchAfter = await startDsWait(ctx.stateFile, state, dsGoneAt(ds, state.dsSeen, now));
     const where =
       ds.registry.kind === "unreadable" ? "the registry and the public DNS" : "the registry";

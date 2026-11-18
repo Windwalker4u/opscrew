@@ -94,6 +94,77 @@ describe("the switch's DS wait from the registry's own answer", () => {
     expect(h.asked()).toHaveLength(1);
   });
 
+  /**
+   * The zone at `registrar` with its DS record published by the registry (TTL 1800: a 2-hour wait)
+   * and shown by the public DNS; for Cloudflare Registrar, DNSSEC is being turned off in A. The
+   * first run (09:00) notes the sighting and stops; then the registry drops the record and its
+   * RDAP record says it last changed the zone at 10:00. `run` moves the clock to `at` and runs.
+   */
+  async function droppedAtTen(registrar: "cloudflare" | "namecheap") {
+    const h = await switchHarness({ registrar, dsAtStart: true });
+    h.deps.interactive = true;
+    let answer: RegistryDsTtl = { kind: "published", ttlSeconds: 1800, records: [OLD_DS] };
+    Object.assign(h.deps, { registryDs: async () => answer });
+    if (registrar === "cloudflare") {
+      (h.aZone.dnssec as { status: string }).status = "pending-disabled";
+    }
+    h.web.ds = [OLD_DS];
+
+    const seen = await h.run();
+    expect(seen.done).toBe(false);
+    const name = registrar === "cloudflare" ? "switch-ds-wait" : "switch-ds";
+    const note = join(h.deps.paths.root, ".opscrew", `cloudflare-move-${name}.json`);
+    expect(JSON.parse(await readFile(note, "utf8"))).toMatchObject({
+      dsSeen: "2026-11-21T09:00:00.000Z",
+      waitSeconds: 7200,
+    });
+
+    answer = { kind: "none", changedAt: "2026-11-21T10:00:00Z" };
+    h.web.ds = [];
+    const run = (at: string) => {
+      h.time.ms = Date.parse(at) - Date.parse("2026-11-21T09:00:00.000Z");
+      return h.run();
+    };
+    return { h, note, run };
+  }
+
+  it("Cloudflare Registrar: the wait counts from the registry's change time, not from the run that sees it gone", async () => {
+    const { h, note, run } = await droppedAtTen("cloudflare");
+
+    // 11:00: two hours from 10:00, not from this run.
+    const waiting = await run("2026-11-21T11:00:00.000Z");
+    expect(waiting.done).toBe(false);
+    expect(waiting.next[0]).toContain("after 2026-11-21 12:00 UTC");
+    expect(JSON.parse(await readFile(note, "utf8"))).toEqual({
+      zone: ZONE,
+      switchAfter: "2026-11-21T12:00:00.000Z",
+      waitSeconds: 7200,
+    });
+    expect(h.asked()).toEqual([]);
+
+    await run("2026-11-21T12:00:00.000Z");
+    expect(h.asked()).toHaveLength(1);
+  });
+
+  it("Cloudflare Registrar: goes on at once when the wait from the registry's change time ended before this run", async () => {
+    const { h, run } = await droppedAtTen("cloudflare");
+
+    await run("2026-11-21T13:00:00.000Z");
+
+    expect(h.asked()).toHaveLength(1);
+    expect(h.deps.reporter.text()).not.toContain("OpsCrew waits before");
+  });
+
+  it("Namecheap, removed in its dashboard: goes on at once when the wait from the registry's change time ended", async () => {
+    const { h, run } = await droppedAtTen("namecheap");
+
+    // From this run (13:00) the wait would last until 15:00.
+    await run("2026-11-21T13:00:00.000Z");
+
+    expect(h.asked()).toHaveLength(1);
+    expect(h.deps.reporter.text()).not.toContain("OpsCrew waits before");
+  });
+
   it("Cloudflare Registrar, no note: a copy the registry no longer publishes starts the wait now", async () => {
     const h = await switchHarness({ registrar: "cloudflare" });
     h.deps.interactive = true;

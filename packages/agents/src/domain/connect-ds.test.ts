@@ -4,7 +4,14 @@ import type { Registrar } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { connectProject, OLD_DS, RUN_NOW, TOKEN, visibleText } from "../testing";
-import { dsWaitStatus, readDs, removeDsAndWait, waitFor } from "./connect-ds";
+import {
+  type DsReading,
+  dsGoneAt,
+  dsWaitStatus,
+  readDs,
+  removeDsAndWait,
+  waitFor,
+} from "./connect-ds";
 import { writeConnectState } from "./connect-state";
 import type { RegistryDsTtl } from "./registry-ds";
 
@@ -336,18 +343,13 @@ describe("the registry's own answer decides whether old DS records are gone", ()
    */
   async function afterSighting(
     answer: RegistryDsTtl,
-    { shown = true, noted = true, waitSeconds = 7200 } = {},
+    { shown = true, noted = true, waitSeconds = 7200, dsSeen = "2026-10-11T10:00:00.000Z" } = {},
   ) {
     const { cp, pb, deps: base, registrar, stateFile } = await porkbunWithDs();
     pb.dsRecords.set(DOMAIN, []);
     if (!shown) cp.dns.ds.delete(DOMAIN);
     const state = noted
-      ? {
-          domain: DOMAIN,
-          registrar: "porkbun" as const,
-          dsSeen: "2026-10-11T10:00:00.000Z",
-          waitSeconds,
-        }
+      ? { domain: DOMAIN, registrar: "porkbun" as const, dsSeen, waitSeconds }
       : undefined;
     if (state !== undefined) await writeConnectState(stateFile, state);
     const { deps, asked } = withRegistry(base, answer);
@@ -402,5 +404,97 @@ describe("the registry's own answer decides whether old DS records are gone", ()
     expect(asked).toEqual([DOMAIN]);
     expect(ds.records).toEqual([]);
     expect(ds.shown).toEqual([OLD_DS, SECOND_DS]);
+  });
+
+  it("counts the wait from the registry's change time, not from this reading", async () => {
+    // Seen published at 10:00, dropped by the registry at 10:30; this run reads none at 12:00.
+    const changedAt = "2026-10-11T10:30:00Z";
+    const { ds, stateFile } = await afterSighting({ kind: "none", changedAt });
+
+    const started = { waiting: true, switchAfter: "2026-10-11T12:30:00.000Z", waitSeconds: 7200 };
+    expect(await dsWaitStatus(stateFile, ds.at, ds)).toEqual(started);
+    const note = JSON.parse(await readFile(stateFile, "utf8"));
+    expect(note.switchAfter).toBe(started.switchAfter);
+    expect(note.dsSeen).toBeUndefined();
+  });
+
+  it("goes on at once when the wait from the registry's change time has passed", async () => {
+    // Seen published at 08:00, dropped at 09:00: the 2 hours ended at 11:00, before this run.
+    const changedAt = "2026-10-11T09:00:00Z";
+    const { ds, stateFile } = await afterSighting(
+      { kind: "none", changedAt },
+      { dsSeen: "2026-10-11T08:00:00.000Z" },
+    );
+
+    expect(await dsWaitStatus(stateFile, ds.at, ds)).toEqual({
+      waiting: false,
+      switchAfter: "2026-10-11T11:00:00.000Z",
+      waitSeconds: 7200,
+    });
+  });
+
+  it("waits from this reading when the registry's change is older than a sighting of the record", async () => {
+    // Changed at 09:00, but a run saw the record published at 10:00: not its removal.
+    const { ds, stateFile } = await afterSighting({
+      kind: "none",
+      changedAt: "2026-10-11T09:00:00Z",
+    });
+
+    expect(await dsWaitStatus(stateFile, ds.at, ds)).toEqual({
+      waiting: true,
+      switchAfter: "2026-10-11T14:00:00.000Z",
+      waitSeconds: 7200,
+    });
+  });
+
+  it("keeps a longer wait an earlier run noted, from the registry's change time", async () => {
+    const { ds, stateFile } = await afterSighting(
+      { kind: "none", changedAt: "2026-10-11T10:30:00Z" },
+      { waitSeconds: 86_400 },
+    );
+
+    expect(await dsWaitStatus(stateFile, ds.at, ds)).toEqual({
+      waiting: true,
+      switchAfter: "2026-10-12T10:30:00.000Z",
+      waitSeconds: 86_400,
+    });
+  });
+});
+
+describe("dsGoneAt", () => {
+  const NOW = new Date(RUN_NOW);
+  const SEEN = "2026-10-11T10:00:00.000Z";
+  /** A reading at 12:00 in which the registry answered `registry`. */
+  const reading = (registry: RegistryDsTtl): DsReading => ({
+    shown: [],
+    public: [],
+    records: [],
+    registry,
+    at: NOW,
+  });
+
+  it("gives the registry's change time when it is after the sighting and not in the future", () => {
+    const ds = reading({ kind: "none", changedAt: "2026-10-11T10:30:00Z" });
+    expect(dsGoneAt(ds, SEEN, NOW)).toEqual(new Date("2026-10-11T10:30:00.000Z"));
+    // A change at the sighting itself counts, and so does one without a noted sighting.
+    expect(dsGoneAt(reading({ kind: "none", changedAt: SEEN }), SEEN, NOW)).toEqual(new Date(SEEN));
+    expect(dsGoneAt(ds, undefined, NOW)).toEqual(new Date("2026-10-11T10:30:00.000Z"));
+  });
+
+  it.each<[string, RegistryDsTtl]>([
+    [
+      "the change is before a run saw the record published",
+      { kind: "none", changedAt: "2026-10-11T09:59:59Z" },
+    ],
+    ["the change is in the future", { kind: "none", changedAt: "2026-10-11T12:00:01Z" }],
+    ["the change's time cannot be read", { kind: "none", changedAt: "soon" }],
+    ["the registry gives no change time", { kind: "none" }],
+    ["the registry cannot be read", { kind: "unreadable" }],
+    [
+      "the registry still publishes the record",
+      { kind: "published", ttlSeconds: 1800, records: [OLD_DS] },
+    ],
+  ])("gives now when %s", (_case, registry) => {
+    expect(dsGoneAt(reading(registry), SEEN, NOW)).toBe(NOW);
   });
 });

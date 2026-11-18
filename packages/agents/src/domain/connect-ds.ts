@@ -159,7 +159,7 @@ export function waitFor(
 /**
  * The note after a removal while the registry still publishes the old DS records (`ds` shows
  * them, the API lists none): the wait (`waitFor`), and no switch time when the registry answered,
- * so the first run that finds them gone starts the wait from its reading (`startDsWait`); when
+ * so the first run that finds them gone starts the wait from when they went (`dsGoneAt`); when
  * the registry cannot be read, the switch time after the public DNS's copy expires
  * (`switchAfterRemoval`). Returns the note and the switch time to show.
  */
@@ -328,7 +328,8 @@ export async function dsWaitStatus(
   const { waitSeconds } = state;
   let { switchAfter } = state;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
-    // Seen published (or still published after a removal) until now: the wait starts now.
+    // Seen published (or still published after a removal) until now: the wait starts when they
+    // went (`dsGoneAt`).
     if ((ds.api ?? []).length > 0) return { waiting: true, waitSeconds };
     switchAfter = await startDsWait(stateFile, state, dsGoneAt(ds, state.dsSeen, now));
   }
