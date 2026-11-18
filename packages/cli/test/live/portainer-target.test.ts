@@ -292,6 +292,12 @@ describe.skipIf(MISSING.length > 0)(
         fingerprint,
       );
       await app.opscrewOkWith(overrides, "design");
+      // For an app whose data matters, design proposes an encrypted copy off the host in R2. The
+      // copies off the server have passes of their own (snapshots.test.ts), so this one keeps the
+      // snapshots on the host, with no bucket and no age key in its provisions.
+      if ((await app.readPlan()).snapshots?.offsite !== undefined) {
+        await app.opscrewOkWith(overrides, "snapshot", "offsite", "off");
+      }
       const plan = await app.readPlan();
       expect(plan.target, "design planned the user's Portainer as answered").toMatchObject({
         provider: "portainer",
