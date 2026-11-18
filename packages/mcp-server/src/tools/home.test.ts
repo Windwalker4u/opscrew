@@ -4,8 +4,7 @@
  * `opscrew_verify` return the same lines as the terminal, through the redactor, so no reply holds
  * the home's public address or the updater's token; only `opscrew_verify` starts the outside check.
  */
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -27,7 +26,7 @@ import {
 } from "@opscrew/agents/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeSecret, tempDir } from "@opscrew/core/testing";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
@@ -155,8 +154,7 @@ function fakeWorld() {
 
 /** The MCP server over a deployed home app, connected to a client. */
 async function connect() {
-  const root = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-home-"));
-  cleanups.push(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
+  const root = await tempDir("opscrew-mcp-home-");
   const git = new NodeCommandRunner();
   for (const args of [
     ["init", "-q", "-b", "main"],
