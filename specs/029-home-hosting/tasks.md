@@ -781,6 +781,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
     (a Portainer's manual drills: `readPortainerDrills(paths)` in `snapshot/drill-portainer.ts`, `.opscrew/…/drills.json`; a hosting account's: `state/drills.log` on the account, `hostingDrillSummary`; a server's and this computer's: `.snapshots/drills.log`); on hosting a successful drill's outcome reads "the dump loaded with N tables", never "healthy"
   - Depends: T2934, T2935, T2937, T2938
   - Words for the scheduled drill's new reasons (T2936): `kept` (a kept copy is still there), `none` (no scheduled snapshot yet), `version` (the snapshot names no version).
+  - And hosting's (T2938): `login` (no drill database login yet), `quota` (the account's quota leaves less room than the dump), `timeout`, `stopped`; hosting's `failed` lines carry `parts=-` and `tables=-`. The guide says the quota check reads the account's file quota, which on many hosts doesn't count the database's space.
   - The guide also says (T2933, accepted by the lead): on a split plan a drill runs on the app's server with its parts, and parts on other servers aren't drilled; the table check covers PostgreSQL, MySQL, MariaDB and MongoDB (a cache may be empty); the copy uses `.env.preview`'s values; `--allow-other-version` uses the image the app runs today; where the server has no `/proc/meminfo` the memory check is skipped.
   - Accept: `opscrew status` shows the last drill on each target (snapshot, time, duration, the
     outcome or "skipped" with the reason, R27's row), and with a schedule "no drill within two
