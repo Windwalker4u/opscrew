@@ -849,7 +849,7 @@ OPEN list carries those.
 
 ## Also in 029's release: restore drills and the database check (2026-11-18)
 
-R15–R19 are the restore drill (roadmap 029, "Also in 029's release"); R20–R23 are the read-only
+R15–R19 and R24–R30 are the restore drill (roadmap 029, "Also in 029's release"); R20–R23 are the read-only
 database check in `advise`. Code is cited as it is today. **UNCONFIRMED** marks what the plan's spike
 or the founder settles.
 
@@ -942,7 +942,7 @@ or the founder settles.
 ### R18 Targets, the schedule, the command and the report
 
 - **Decision**:
-  - **Targets in this release:** servers OpsCrew created and a server the user owns (the `servers`
+  - **Targets in this release:** *superseded by the founder, 2026-11-18: every target that has snapshots, see R24–R27.* Original text: servers OpsCrew created and a server the user owns (the `servers`
     target in `snapshotTarget`, `snapshot/run.ts`, including a home server of 029). Not in this release:
     - Portainer: its snapshots live in a volume (`opscrew-<app>_snapshots`) and a drill means a second
       stack through Portainer's API (`restore-portainer.ts`); later;
@@ -951,7 +951,7 @@ or the founder settles.
       Docker, and a second database is the user's panel; the report says so;
     - Cloudflare hosting and GitHub Pages: no data.
     A drill refuses these with the reason, as `snapshotTarget` does for `snapshot` today.
-  - **The schedule: later (030 or the release after).** This release ships the command and its report.
+  - **The schedule:** *superseded by the founder, 2026-11-18: scheduled drills are built in this release, see R28–R30.* Original text: later (030 or the release after). This release ships the command and its report.
     A scheduled drill would be a program on the server repeating one bounded change with no approval at
     the time; it needs the constitution's "program OpsCrew installs through a host plan" clause (R14,
     ADR 0033) extended to name it, a wording the founder agrees first. The guide says to run
@@ -1106,4 +1106,223 @@ none comes from PostgreSQL's documentation, which states no figures.
   first one seen); a parser of the SQL (a project of its own).
 - **MySQL and MariaDB, later:** the same shape (`performance_schema` and `information_schema`, a read-only
   session with `max_execution_time`), in a feature of its own.
+
+### R24 Drills in a Portainer (founder, 2026-11-18)
+
+- **Decision**: `opscrew restore --drill` in a Portainer makes a **second stack**, `opscrew-<app>-drill`,
+  from the drill render T2931 builds (`packages/iac-templates/src/drill/`: one Compose project, a network
+  with `internal: true`, no ports, no `.env`), and removes it after the check. What differs from a server:
+  - **The snapshot volume** `opscrew-<app>_snapshots` (`portainerSnapshotsVolume`,
+    `packages/iac-templates/src/portainer-target/snapshots.ts`) is declared `external` in the drill stack
+    and mounted **read-only** in the drill's restoring one-off containers, with the long syntax
+    `read_only: true` (Compose: "Flag to set the volume as read-only",
+    [services, volumes](https://docs.docker.com/reference/compose-file/services/)). The part restores are
+    the ones `restore-portainer.ts` runs today (one-off containers of each service's image through the
+    Docker proxy, `runOneOff` of `@opscrew/connector-docker`), pointed at the drill stack's own volumes.
+  - **The network:** Portainer's standalone stacks are deployed by Compose, which honours `internal: true`
+    ([networks](https://docs.docker.com/reference/compose-file/networks/): "an externally isolated
+    network"). Swarm, Kubernetes and Edge are refused already (ADR 0012), so only standalone Compose
+    matters. That Portainer's stack deployment passes `internal` through is **UNCONFIRMED**; the plan's
+    live spike checks it on Portainer 2.45, and the check after deploy reads the network back
+    (`Internal: true`, through the Docker proxy) and removes the stack at once when it is false.
+  - **The stack's creation:** the Portainer connector creates Git stacks only
+    (`POST /api/stacks/create/standalone/repository`, `packages/connectors/portainer/src/client.ts`). A
+    drill has no repository, so the connector gains one method, a stack from a string
+    (`POST /api/stacks/create/standalone/string`, Portainer's own API; **UNCONFIRMED**, from general
+    knowledge, the spike reads it). That is the connector's change, not the agent's.
+  - **The approval:** a **stack plan approved by its hash** (`planStacks` / `stackPlanHash`,
+    `packages/connectors/portainer/src/plan.ts`; the `stack-apply` kind of ADR 0012), `allowDestroy` and the
+    typed `<app>-drill`, listing the stack, the volumes it creates and removes, the network flags and the
+    snapshot's id. Everything is named `opscrew-<app>-drill…`: ADR 0012's "only what OpsCrew recorded is
+    changed or removed" keeps it from touching `opscrew-<app>`.
+  - **Removal:** `removeStack` and `removeVolume` (the client has both), then a list proving the stack and
+    its volumes are gone.
+  - **The health check:** the app container's own Compose healthcheck, read with `containerInspect`
+    (`State.Health.Status`), as on a server (R17); no public route, since the drill stack has no tunnel
+    service and no ports.
+- **Rationale**: the same drill project, the same approval kind as the user's other Portainer changes, and
+  no new reach: OpsCrew uses Portainer's API only, never SSH (ADR 0012).
+- **Alternatives considered**: the restored services inside the app's own stack under a Compose profile
+  (beside prod's containers and volumes, in the stack OpsCrew must not endanger); a Git stack for the
+  drill (a branch and a commit per drill).
+
+### R25 Drills on a hosting account (cPanel, Plesk, DirectAdmin)
+
+- **Decision**: a drill on a panel account proves **that the database dump imports into an empty database
+  and holds the tables**, not that the app runs. The app is not run a second time: an account has one
+  site per folder and domain, with no second hostname, no internal network and no way to cut a copy off
+  from the outside. What is checked, in order:
+  1. the dump is a valid gzip (`gzip -t`) and not empty, with its time and size;
+  2. it **imports** with the `mysql` client into a database of its own, the **drill database**, with its
+     own login: every table and view goes first, then the dump loads (the agent's existing replace
+     routine, `packages/iac-templates/src/hosting/agent/script.ts`, "Replaces the app's database with
+     the dump", pointed at another database);
+  3. the tables in it match the dump's `CREATE TABLE` count (only table names and counts are read; no row
+     is read or printed);
+  4. the drill database is emptied again, so no copy of the data stays at rest beyond the dump itself.
+  - **The drill database is made once, at provision, by the hosting plan** (approved by its hash, like the
+    app's own database, ADR 0030): a database and a login for the app, through the panel connector's
+    existing `addDatabase({ name, user, password })`, removed with `removeDatabase` at destroy or when
+    drills are turned off. The panel calls, from the docs the connectors cite:
+    - cPanel: UAPI `Mysql::create_database`, `create_user`, `set_privileges_on_database`, then
+      `delete_user` and `delete_database` (`packages/connectors/cpanel/src/panel.ts`). The create page
+      lists `name` and `prefix-size` and says nothing of an account's own `CREATE DATABASE`
+      ([create_database](https://api.docs.cpanel.net/openapi/cpanel/operation/create_database/)), so the
+      database is made through the panel, never by SQL;
+    - Plesk: the XML API's `database` operator, add and delete, with one user of that database
+      (`packages/connectors/plesk/src/panel.ts`);
+    - DirectAdmin: the new API's `/api/db-show/databases` and `DELETE /api/db-manage/databases/{database}`
+      (`packages/connectors/directadmin/src/panel.ts`). The DirectAdmin API overview I fetched names no
+      database endpoint and points to the server's own `swagger.json`, so the calls stay as the connector
+      has them.
+    Why a standing drill database and not one per drill: a run then needs **no panel credential on the
+    account**. The panel's token never leaves this computer, and the agent only writes to the drill
+    database, whose login sits in a mode-600 file there and never in output.
+  - **The request:** `opscrew restore --drill` sends the agent a one-time drill request (`requests.ts`,
+    hash-bound and expiring, like `snapshot` and `restore`: a new `drill` kind with the snapshot's id).
+    The agent runs it under its lock, between releases, and answers with the facts above.
+  - **Limits:** a plan may allow few databases. Provision says before the approval that drills use one,
+    and refuses to turn them on when the account has no room (the connectors list the databases).
+  - **A dump imports as is:** the agent's dump (`mysqldump --single-transaction --no-tablespaces
+    "$DATABASE"`, no `--databases`) holds no `USE` and no `CREATE DATABASE`, so it loads into any
+    database; **UNCONFIRMED** on the three panels' servers, which the live pass checks.
+  - **The shared files** (`<id>.shared.tar.gz`) get an archive check only (`tar -tzf`).
+  - **SFTP-only hosts** run no agent and have **no snapshots** (`docs/guide/snapshots.md`: "An SFTP host
+    runs no agent, so it has no snapshots"), so there is nothing to drill: `restore --drill` refuses with
+    that reason, as `snapshot` does. Nothing can be checked without a panel and an agent.
+- **Rationale**: the strongest claim the account can honestly back. A dump that loads and holds its tables
+  is the proof a backup works; whether the app starts on it is not provable in one site's folder.
+- **Alternatives considered**: a database per drill through the panel at run time (its token would have
+  to sit on the account for a scheduled run); the app's own database (it would overwrite live data);
+  integrity of the dump only (`gzip -t` passes a dump cut off at a table boundary).
+
+### R26 Drills on this computer, and where there is no drill
+
+- **Decision**:
+  - **This computer** (`snapshotTarget` "computer", `snapshot/computer.ts`): the same drill project as on
+    a server, through the local executor (`localShell`, which `computerHost` uses): `.drill/<id>/` in
+    `~/.opscrew/local/srv/apps/<app>/`, an `internal: true` network, no ports, the snapshot read in place.
+    Approved like a server's drill (R15), at the terminal; no schedule (R28). A local build gets a new
+    image each time, so the drill uses the image the snapshot recorded; when it is gone the drill says so
+    and offers `--allow-other-version`, as `restore` does.
+  - **Cloudflare hosting and GitHub Pages** keep no data on a server and have no snapshots
+    (`snapshotTarget`), so there is no drill: `restore --drill` refuses with the reason `snapshot` gives.
+- **Rationale**: `snapshot/computer.ts` already runs the server's script locally.
+- **Alternatives considered**: no drill on this computer (the founder said every target with snapshots).
+
+### R27 What a drill proves on each target
+
+| Target | Restores into | App started | Health check | Public route |
+|---|---|---|---|---|
+| Server (created, owned, home) | a `<app>-drill` Compose project | yes, no internet, no `.env` | the container's healthcheck | none |
+| Portainer | a `opscrew-<app>-drill` stack | yes, same flags | `State.Health.Status` through the Docker proxy | none |
+| This computer | a local drill project | yes, same flags | the container's healthcheck | none |
+| Hosting account (panel) | the account's drill database | no | the dump loads and holds the tables | none |
+| SFTP host, Cloudflare hosting, GitHub Pages | nothing: no snapshots | | | |
+
+The report (R18) records which row ran, so "restored and healthy" on a server and "the dump loaded with 42
+tables" on an account are not read as the same claim.
+
+### R28 Scheduled drills, per target
+
+- **Decision**: a drill schedule in the plan beside `snapshots.schedule` (`snapshotScheduleOf`,
+  `packages/plan-schema`): `opscrew snapshot drill schedule on|off`, `--every weekly` (the default) or
+  `daily`, never more often. It changes only the plan; `opscrew provision` puts it on the target, as the
+  snapshot schedule is. It needs the snapshot schedule on (a drill proves the latest snapshot); turning it
+  on without says so and offers both.
+  - **Servers (created, owned, home):** one more line in the deploy user's crontab, tagged
+    `# opscrew-drill <app>`, beside the snapshot line (`scheduleTag`, `workflow/snapshots.ts`); it runs
+    `sh snapshot.sh drill scheduled` each hour and the script drills only in the schedule's hour, 3 hours
+    after the snapshot's slot, as `take scheduled` does. Output goes to `.snapshots/drills.log`, beside
+    `scheduled.log`. The cron install and the "no crontab: install cron" refusal are the snapshot
+    schedule's. (024 uses the deploy user's crontab, not a systemd timer.)
+  - **Portainer:** what runs on a schedule there today are **services inside the app's stack**, one loop
+    per part, from the part's own image, with no Docker access (the guide: stopping a service "needs Docker
+    on the host, which the stack has no access to"). A loop in a stack cannot create a second stack, and
+    no Portainer token may sit in it. So the scheduled drill there is a loop service per **database part**
+    (PostgreSQL, MySQL, MariaDB, MongoDB) from the part's own image, with `network_mode: none`
+    ([services](https://docs.docker.com/reference/compose-file/services/): "Turns off all container
+    networking"), the snapshots volume `read_only: true` and a scratch volume: it starts a throwaway
+    server of its own in the container, restores the latest dump into it, counts tables or collections,
+    stops and clears the scratch. It proves **that each dump restores**, never the app (no app container
+    runs). The app's drill with its health check stays the manual one (R24). That each image's entrypoint
+    can run so on a scratch directory is **UNCONFIRMED**; the spike runs all four, and a kind that cannot
+    is left out with a line saying so, never failing the stack.
+  - **Hosting accounts (panel):** the agent's cron runs every minute (`docs/guide/hosting-accounts.md`);
+    the schedule goes in the agent's settings, and the agent starts a drill itself in the schedule's hour
+    when the latest snapshot is newer than the last drill: the R25 import into the drill database, no
+    panel call, under its lock between releases.
+  - **This computer:** no schedule, for the snapshots' reason: it is not always on (`snapshots.md`).
+  - **SFTP, Cloudflare hosting, GitHub Pages:** no snapshots, no drill.
+- **Rationale**: each target already has a scheduling place that holds no credential of the user's
+  accounts; the drill uses the same place.
+- **Alternatives considered**: the CI workflow running the drill (it would need a key to the server and a
+  Portainer token, a standing credential with reach into production); a cron line on the account that
+  calls the panel (the panel's token on the account).
+
+### R29 The bounds, frequency, resources, records and alerts
+
+- **Decision**: the program (`snapshot.sh drill`, the Portainer loop, the agent's drill) keeps to these
+  bounds, which the host plan, stack plan or hosting plan names and the target enforces:
+  1. **only its own things:** the project `<app>-drill`, the folder `.drill/`, its volumes and network;
+     the Portainer stack `opscrew-<app>-drill…`; the account's drill database. It never starts, stops,
+     writes or removes a container, volume or database of prod's. The script builds every name from the
+     app's name and the fixed word `drill`; no argument carries a name, and the snapshot id is checked
+     against `SNAPSHOT_ID` (`snapshot/store.ts`);
+  2. **only the latest snapshot**, never an older one and never the off-server copy;
+  3. **no outbound network**, no published port, `.env` never read (R16);
+  4. **it removes what it made**, and at its next start whatever a crashed run left under its own names,
+     saying so in the log;
+  5. **frequency:** weekly by default, daily at most; its slot is 3 hours after the snapshot's;
+  6. **no overlap:** it takes the app folder's lock, the one a deploy and a snapshot hold; a run that
+     finds it held ends "skipped: a deploy or a snapshot was running", recorded, not an error; the agent
+     drills only between releases;
+  7. **resources:** it skips, with the reason, when free disk is below the snapshot's size plus the rule of
+     `snapshot/disk.ts` (1 GiB and 10%), or free memory is below the memory limits the plan gives the
+     restored services and the app; a skip is "skipped", not "failed";
+  8. **a time limit:** 30 minutes for the whole run, then it stops and removes its project.
+  Each run is **recorded on the target** (`.snapshots/drills.log` on a server; the loop's log in the
+  Portainer stack; the agent's `state/` on an account), and `opscrew status` shows the last: the snapshot,
+  the time, how long it took, and healthy, failed or skipped with the reason.
+  **Alerts:** the scheduled check (017, `docs/guide/alerts.md`) already reads the last scheduled snapshot's
+  result on servers with the check key (a fixed read-only script, "nothing else of the log") and opens an
+  issue on a failure. It gains one fixed line for the drill's last result in the same read: a **failed**
+  drill opens an issue ("the last restore drill failed: the snapshot did not restore" or "the app did not
+  become healthy"), a skipped one never does, and no drill within twice its schedule (14 days for weekly)
+  does. The check reaches no Portainer, hosting account or computer (alerts.md: a Portainer is reached
+  only through its API), so there `opscrew status` shows it and the guide says so. 020's monitoring has no
+  alert path for jobs; nothing is added there.
+- **Rationale**: each bound is one thing a reviewer can find in the script's text, and a skip that is not
+  a failure keeps the alert meaningful.
+- **Alternatives considered**: a daily default (a restore every day costs more than it tells); alerting on
+  a skip (a busy week would cry wolf).
+
+### R30 The constitution: extending Principle I's 1.12.0 clause
+
+- **Decision**: a MINOR amendment, **1.13.0** (R14's 1.12.0 clause is not yet released, so the lead may
+  fold both into 1.12.0), extending the clause. The wording, in substance, with the new words marked by
+  asterisks:
+
+  > A program OpsCrew installs on a server through a host plan approved by its hash MAY repeat one
+  > bounded kind of change without asking again. For example, the address updater keeps the app's own
+  > A/AAAA records at the server's own address, *and the restore drill restores the app's latest
+  > snapshot into a throwaway copy with no outside network, checks it and removes it*. *The same holds
+  > for a program installed in the user's Portainer through a stack plan approved by its hash, and on a
+  > shared hosting account through a hosting plan approved by its hash.* The plan names every bound, the
+  > program keeps to them, and each change it makes is recorded on the target and shown by `opscrew
+  > status`. Its credential is on the target, so anything with root there can exceed those bounds,
+  > including the server's own deploy runner, which runs the repository's code in the docker group.
+  > *On a hosting account the program runs as the account's user, so anything that user can run can
+  > exceed them; in a Portainer the program holds no Portainer credential, so what it can reach is its
+  > own stack's services and volumes.* The plan, design's summary and the guide say so plainly.
+
+  ADR 0033 records it with the rest of the feature, or an ADR of its own (the lead's choice).
+- **Rationale**: the clause names servers and host plans only, and the founder's scope puts the same kind
+  of standing change on two more targets, each with its own adapter (ADR 0012's stack plans, ADR 0030's
+  hosting plans). The honesty about root stays; the two new sentences say what is true of the two new
+  places. A drill deletes only what it made itself, and `allowDestroy` with the typed name is asked once,
+  at the plan that installs it, as the previews' recipe does.
+- **Alternatives considered**: one clause per target (three near-copies to keep in step); reading the
+  1.12.0 clause as covering it (it names a server and the address updater); a PATCH (a new program kind
+  and two new targets are a material expansion).
 

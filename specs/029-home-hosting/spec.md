@@ -188,8 +188,16 @@ volumes and data are unchanged, and nothing from the copy reached the internet.
 3. **Given** an app that needs the internet or a production value to start, **When** the drill
    runs, **Then** it says the backup restored but the app didn't start without them, and to add test
    values for previews.
-4. **Given** a target with no drill in this release (Portainer, this computer, a hosting account,
-   Cloudflare's hosting), **When** the user asks for a drill, **Then** it is refused with the reason.
+4. **Given** an app in a Portainer or on this computer, **When** the user runs a drill, **Then** it
+   runs as on a server (a second stack in the Portainer); **given** an app on a hosting account
+   (cPanel, Plesk, DirectAdmin), **Then** the dump is imported into the account's drill database
+   and its tables counted, and the report says the app itself wasn't started.
+5. **Given** a target without snapshots (an SFTP-only host, Cloudflare's hosting, GitHub Pages),
+   **When** the user asks for a drill, **Then** it is refused with the reason.
+6. **Given** drills scheduled weekly, **When** a week passes, **Then** the target runs one by
+   itself, three hours after the snapshot, skipping (never failing) while a deploy or snapshot
+   runs or when disk or memory is short; `opscrew status` shows the last run, and on a server a
+   failed drill, or none within two weeks, opens the scheduled check's issue.
 
 ---
 
@@ -300,16 +308,22 @@ database's settings, roles and data are unchanged; no statement text with values
 - **FR-2916**: A user guide page MUST explain hosting at home: when to use it versus tunnel mode,
   the router forwards, the address checks, the updater, IPv6, the Raspberry Pi advice, the deploy
   paths and the terms.
-- **FR-2917**: `opscrew restore --drill` MUST restore a snapshot into a separate copy of the app on
-  the server holding it, through a host plan approved by its hash (`allowDestroy` and the copy's
-  name typed, since it removes the copy's own volumes), and MUST NOT touch production's containers,
-  volumes or data.
+- **FR-2917**: `opscrew restore --drill` MUST restore a snapshot into a separate copy on the
+  target holding it (a Compose project on a server or this computer, a second stack in a Portainer,
+  the drill database on a hosting account), through that target's plan approved by its hash
+  (`allowDestroy` and the copy's name typed, since it removes what it made), and MUST NOT touch
+  production's containers, volumes, stacks, databases or data. Targets without snapshots refuse.
+- **FR-2923**: Drills MUST be schedulable (weekly by default, daily at most) on servers, in a
+  Portainer (each database dump restored into a scratch server with no network) and on hosting
+  accounts, as a program the target's plan installs, keeping the bounds of constitution I's clause
+  for such programs; each run recorded on the target, a skip never a failure.
 - **FR-2918**: The drill's copy MUST have no outbound network, none of production's own values, no
   workers or scheduled jobs, and no public hostname, record, proxy site or published port.
 - **FR-2919**: The drill MUST report, per part, the size and time to restore, then the health
   result and the removal, telling apart "the backup didn't restore", "restored but the app didn't
-  start without the internet or production values" and "restored and healthy"; the report is kept
-  on the server and its last result shown by `opscrew status`.
+  start without the internet or production values" and "restored and healthy", and on a hosting
+  account "the dump loaded with its tables"; the report is kept on the target and its last result
+  shown by `opscrew status`.
 - **FR-2920**: `opscrew advise` MUST read an app's PostgreSQL on servers it reaches over SSH:
   blocked sessions, open and long transactions, connections against the limit, slow queries where
   `pg_stat_statements` is on, the database's share of its disk, and tables scanned in full, each

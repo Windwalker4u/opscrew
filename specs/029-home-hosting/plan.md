@@ -638,10 +638,40 @@ plan and the tokens cost nothing, plus a few Actions minutes.
   container's own healthcheck read with `docker inspect` until `healthy` or 5 minutes; with probe
   `none`, the container still running after 60 seconds. Then each SQL service answers `pg_isready`
   (or its kind's) and holds at least one table or key.
-- **Targets** (R18): servers OpsCrew created and a server the user owns (home included). Portainer,
-  this computer, hosting accounts, Cloudflare's hosting and GitHub Pages are refused with the
-  reason. **No schedule in this release** (it would need the constitution's 1.12.0 clause extended:
-  the founder's call, asked on 2026-11-18).
+- **Targets** (founder, 2026-11-18: every target with snapshots; R24–R27):
+  - servers OpsCrew created and a server the user owns, home included: as above;
+  - this computer: the same project through the local executor; a gone image offers
+    `--allow-other-version` as `restore` does (R26);
+  - a Portainer: a second stack `opscrew-<app>-drill` from the same render, created from a string
+    (the connector's one new call), the snapshots volume external and read-only, approved as a
+    stack plan by its hash with `allowDestroy` and the typed name; the network read back as
+    internal after deploy, or the stack removed at once (R24);
+  - a hosting account (cPanel, Plesk, DirectAdmin): the dump imported into a standing drill
+    database (made by the hosting plan at provision through `addDatabase`, counted against the
+    plan's limit and said so, removed at destroy or when drills are turned off), its tables
+    counted against the dump's, then emptied; a hash-bound `drill` request to the agent; the app
+    isn't started (R25);
+  - SFTP-only hosts, Cloudflare's hosting, GitHub Pages: no snapshots, refused with the reason.
+  R27's table is what the report says each proves.
+- **The schedule** (founder, 2026-11-18: built now; R28, R29; constitution 1.12.0's clause for a
+  program a plan installs): `opscrew snapshot drill schedule on|off`, `--every weekly` (default)
+  or `daily`, a plan setting beside the snapshot schedule, which it needs; `opscrew provision`
+  installs it:
+  - servers: a tagged line in the deploy user's crontab, `snapshot.sh drill scheduled`, three hours
+    after the snapshot's slot, logging to `.snapshots/drills.log`;
+  - a Portainer: one loop service per database part (PostgreSQL, MySQL, MariaDB, MongoDB) from the
+    part's image, `network_mode: none`, the snapshots volume read-only and a scratch volume,
+    restoring the latest dump into a scratch server of its own and counting its tables; the dumps
+    proven, not the app; a kind whose image can't run so is left out with a line saying so;
+  - a hosting account: the agent's own schedule, into the drill database, no panel call;
+  - this computer: none (it isn't always on).
+  The bounds (R29), enforced by the target's script: only its own names (built from the app's name
+  and the fixed word `drill`, the snapshot id checked); only the latest snapshot; no outbound
+  network, no port, `.env` never read; it removes what it made and a crashed run's leftovers; the
+  app folder's lock (held: "skipped"); disk and memory checked (short: "skipped"); 30 minutes at
+  most. Each run recorded on the target; `opscrew status` shows the last. On servers the scheduled
+  check (017) reads the last drill with the last snapshot: a failed drill, or none within twice the
+  schedule, opens its issue; a skip never does.
 - **The command:** `opscrew restore --drill [<id>]` (latest by default; `--only` carries over),
   `--keep` leaves the copy's volumes for inspection, `opscrew restore --drill --remove` removes a
   kept copy. `--from offsite` is not offered for drills. One line per step; `--json` the same.
@@ -695,7 +725,7 @@ plan and the tokens cost nothing, plus a few Actions minutes.
 | 2914 the ISP's terms and large media | 1., 3., T2918 |
 | 2915 no token, key or proxied home address anywhere | Constitution IV, 2., 4., 14., 18. |
 | 2916 the guide page | T2918 |
-| 2917–2919 the restore drill: its plan, isolation, report | 19. |
+| 2917–2919, 2923 the restore drill: every target, its plan, isolation, report, the schedule | 19. |
 | 2920–2922 the database check: what it reads, its bounds, index proposals | 20. |
 
 ## Order
@@ -799,9 +829,9 @@ ssh-host task, an iac-templates task and an agents task, plus a live leg.
 - **O10:** how soon Cloudflare's edge uses a changed origin address, measured in H2.
 - **O11:** restore drills and a read-only database check in `advise` ship in 029's release, as
   tasks of their own (founder, 2026-11-15). Written 2026-11-18: research R15–R23, US7, US8,
-  FR-2917–FR-2922, plan 19. and 20., tasks T2931–T2933. Asked of the founder on 2026-11-18, built
-  on the recommendation meanwhile: the drill's schedule comes later (it needs the 1.12.0 clause
-  extended), and the drill covers servers only in this release.
+  FR-2917–FR-2923, plan 19. and 20., tasks T2931–T2938, ADR 0034. The founder decided on
+  2026-11-18: scheduled drills now, and drills on every target with snapshots (research R24–R30);
+  constitution 1.12.0's clause names the drill and the Portainer and hosting plans.
 
 (O6, the token's narrowness through `GET /zones`, is gone: inverse probes replace it.)
 

@@ -7,7 +7,7 @@ description: "Tasks for 029-home-hosting"
 **Status**: building since 2026-11-18 (the founder's go-ahead of 2026-11-17, with 0.2.10 staged).
 
 **Input**: `specs/029-home-hosting/` (spec.md, plan.md, data-model.md, contracts/, quickstart.md,
-research.md R1–R14, R15+ for the release's two additions) + features 011 (own server), 014 (origin
+research.md R1–R14, R15–R30 for the release's two additions) + features 011 (own server), 014 (origin
 protection), 016 (runners), 022 (previews), 024 (snapshots), 021 (advise), 025 (rotation), 028
 (the move); ADR 0011, 0026, 0033; constitution 1.12.0.
 
@@ -573,30 +573,162 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/advise && pnpm lint`
   - Effort: high
 
-- [ ] T2933 [US7] `opscrew restore --drill`
-  - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/status/drill.ts` (new) and its one
-    call in `packages/agents/src/status/run.ts`, `packages/cli/src/commands/restore.ts`,
-    `docs/guide/snapshots.md`, colocated tests
-  - Reads: plan 19.; research R15–R19; `snapshot/{restore,restore-checks,disk,run}.ts`;
-    `docs/guide/snapshots.md`
+- [ ] T2933 [US7] `opscrew restore --drill` on servers and this computer, and the drill setting
+  - Owns: `packages/iac-templates/src/workflow/{snapshot-script,snapshots}.ts` (the script's `drill`
+    subcommand), `packages/plan-schema/src/**` and `packages/plan-schema/schemas/**` (the drill
+    setting), `packages/agents/src/snapshot/**` except `schedule.ts` (with two stubs,
+    `snapshot/drill-portainer.ts` and `snapshot/drill-hosting.ts`, each exporting its target's
+    drill function that throws `INTERNAL` "not built yet", for T2934 and T2935),
+    `packages/agents/src/status/drill.ts` (new) and its one call in `packages/agents/src/status/run.ts`,
+    `packages/cli/src/commands/restore.ts`, colocated tests and snapshots
+  - Reads: plan 19.; research R15–R19, R26, R27, R29; `snapshot/{restore,restore-checks,disk,run,computer}.ts`;
+    T2931's `src/drill/` render
   - Depends: T2931
   - Accept:
-    - `opscrew restore --drill [<id>]` (latest by default; `--only` carries over; `--from offsite`
-      refused for drills), `--keep`, `--drill --remove`; targets as plan 19. (others refused with
-      the reason, before any change).
-    - Its host plan names the snapshot, the project, the volumes it creates and removes, the memory,
-      the network flags and the health check; approved by its hash through `approveRestore`'s kind
-      with a drill hash (plan 19.), `allowDestroy` and `<app>-drill` typed (`--approve <hash>
-      --confirm <app>-drill` in a script); the approval text says the copy runs with no internet and
-      without the production `.env`.
-    - The free-disk guard with the snapshot's size added; the copy's health read as plan 19.;
-      `pg_isready` and a table or key per SQL service; the copy removed unless `--keep`.
-    - The report in `.snapshots/drills.log` and its three outcomes in plain words (R19);
-      `opscrew status` shows the last drill. Production's containers and volumes never named in any
-      command it runs (a test over the scripted remote's commands).
-    - `docs/guide/snapshots.md` gains the drill.
-  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/snapshot src/status && npx vitest run --root packages/cli src/commands/restore && pnpm lint`
+    - **The setting:** `snapshots.drills` in the plan (strict: `{ schedule?: "weekly" | "daily" }`;
+      present means drills are on for the environment; the schedule needs `snapshots.schedule`),
+      refused with plain messages where there are no snapshots; JSON schemas regenerated, every
+      fixture parses as before.
+    - **On the target:** `snapshot.sh drill [<id>] [--keep | --remove]` enforces the bounds itself
+      (R29 1–4, 6–8): every name built from the app's name and the fixed word `drill`, the id
+      checked against `SNAPSHOT_ID` and only the latest unless an id is given by hand, the part
+      restores into the drill project's volumes (T2931), `internal: true` checked after start, no
+      `.env`, the app folder's lock (held: "skipped"), the disk rule of `snapshot/disk.ts` with the
+      snapshot's size added and the memory the plan gives (short: "skipped"), a 30-minute limit,
+      a crashed run's leftovers removed at the next start; the health read (the container's
+      healthcheck until healthy or 5 minutes; probe `none`: still running after 60 s; `pg_isready`
+      and a table or key per SQL service); the copy removed unless `--keep`; one line per run in
+      `.snapshots/drills.log` (no values).
+    - **The command:** `opscrew restore --drill [<id>]` (latest by default; `--only` carries over;
+      `--from offsite` refused for drills), `--keep`, `--drill --remove`, `--json`. Servers
+      OpsCrew created and own servers (home included) through a host plan; this computer through
+      the local executor (R26: the recorded image, `--allow-other-version` when it's gone).
+      Portainer and hosting accounts call the stubs; SFTP-only hosts, Cloudflare's hosting and
+      GitHub Pages are refused with `snapshotTarget`'s reasons, before any change.
+    - **The approval:** the host plan names the snapshot, the project, the volumes it creates and
+      removes, the memory, the network flags and the health check; approved by its hash through
+      `approveRestore`'s kind with a drill hash (plan 19.), `allowDestroy` and `<app>-drill` typed
+      (`--approve <hash> --confirm <app>-drill` in a script); its text says the copy runs with no
+      internet and without the production `.env`.
+    - **The report:** R19's outcomes in plain words, R27's row named; `opscrew status` shows the
+      last drill of a server or this computer (`status/drill.ts`).
+    - Production's containers, volumes and `.env` never named in any command it runs (a test over
+      the scripted remote's commands); a leak test.
+  - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow && npx vitest run --root packages/agents src/snapshot src/status && npx vitest run --root packages/cli src/commands/restore && pnpm lint`
   - Effort: xhigh
+
+- [ ] T2934 [P] [US7] Drills in a Portainer
+  - Owns: `packages/connectors/portainer/src/**` (a stack from a string), `packages/agents/src/snapshot/drill-portainer.ts`,
+    `packages/iac-templates/src/drill/**` (only if the render needs a Portainer option: the
+    snapshots volume external), colocated tests
+  - Reads: plan 19.; research R24, R27, R29; ADR 0012; `snapshot/{portainer,restore-portainer}.ts`;
+    `packages/connectors/portainer/src/{client,plan}.ts`; Portainer's official API reference for the
+    string stack endpoint (one fetch)
+  - Depends: T2933
+  - Accept: the connector's `createStackFromString` (zod-checked, tested with `fetch` fakes); the drill
+    as a second stack `opscrew-<app>-drill` from T2931's render, the snapshots volume external and
+    mounted read-only in the restoring one-off containers, approved as a stack plan by its hash
+    (`stack-apply`, `allowDestroy`, the typed name), the network read back as internal after deploy
+    (else the stack removed at once and the drill failed in plain words), the app's
+    `State.Health.Status` through the Docker proxy, then `removeStack` and `removeVolume` and a list
+    proving they're gone; the record and R19's outcomes; nothing named `opscrew-<app>` touched (a
+    test over the fake's calls); leak test.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-portainer --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/connectors/portainer && npx vitest run --root packages/agents src/snapshot && pnpm lint`
+  - Effort: high
+
+- [ ] T2935 [P] [US7] Drills on a hosting account
+  - Owns: `packages/iac-templates/src/hosting/**` (the agent's `drill` request and routine),
+    `packages/agents/src/hosting/**`, `packages/agents/src/snapshot/drill-hosting.ts`, colocated tests
+  - Reads: plan 19.; research R25, R27, R29; ADR 0030; `docs/guide/hosting-accounts.md`; the panel
+    connectors' `addDatabase` and `removeDatabase`
+  - Depends: T2933
+  - Accept: with `snapshots.drills` on a panel account (cPanel, Plesk, DirectAdmin), the hosting
+    plan makes the drill database and its login through `addDatabase` (approved by its hash; it
+    says the database counts against the plan's limit, and refuses when there's no room), and
+    removes it at destroy or when drills are turned off; the login kept in a mode-600 file on the
+    account, never in output; `opscrew restore --drill` sends a hash-bound, expiring `drill` request
+    with the snapshot's id; the agent, under its lock between releases: `gzip -t` and size, the
+    import into the drill database only (every table and view dropped first), the table count
+    against the dump's `CREATE TABLE` count (names and counts only), the drill database emptied, a
+    `tar -tzf` of the shared files; the answer in R27's row ("the dump loaded with N tables; the
+    app itself wasn't started"); SFTP-only hosts refused with the reason; the app's own database
+    never named in the routine (a test over the rendered script); leak test.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting src/snapshot && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T2936 [P] [US7] Scheduled drills on servers, and the scheduled check
+  - Owns: `packages/iac-templates/src/workflow/{snapshot-script,snapshots}.ts` (the crontab line and
+    `drill scheduled`), the scheduled check's script (its source and `src/generated/check.ts`),
+    `packages/agents/src/snapshot/schedule.ts`, `packages/cli/src/commands/snapshot.ts`, colocated
+    tests and snapshots
+  - Reads: plan 19.; research R28, R29; `docs/guide/alerts.md`; `docs/guide/snapshots.md` "The
+    schedule"
+  - Depends: T2933
+  - Accept: `opscrew snapshot drill schedule on|off`, `--every weekly` (default) or `daily`, changes
+    only the plan (needs the snapshot schedule: says so and offers both); `opscrew provision` puts a
+    tagged line `# opscrew-drill <app>` in the deploy user's crontab beside the snapshot's, running
+    `snapshot.sh drill scheduled` hourly, drilling only in its slot three hours after the snapshot's;
+    the host plan's step text names every bound (R29) and what root on the server can do (the
+    clause's honesty); the scheduled check reads the last drill's line with the last snapshot's (one
+    fixed line added to its read-only command): a failed drill, or none within twice the schedule,
+    opens its issue with a fixed sentence; a skip never does; existing check renders otherwise
+    unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/iac-templates src/workflow src/check && npx vitest run --root packages/agents src/snapshot && npx vitest run --root packages/cli src/commands/snapshot && pnpm lint`
+  - Effort: high
+
+- [ ] T2937 [P] [US7] Scheduled dump drills in a Portainer
+  - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
+    snapshots and `snapshots.docker.test.ts`
+  - Reads: plan 19.; research R28, R29; `docs/guide/portainer-target.md`
+  - Depends: T2936
+  - Accept: with `snapshots.drills.schedule`, the stack gains one loop service per database part
+    (PostgreSQL, MySQL, MariaDB, MongoDB) from the part's image, `network_mode: none`, the snapshots
+    volume `read_only: true` and a scratch volume: in its slot it starts a scratch server of its own,
+    restores the latest dump, counts tables or collections, stops and clears the scratch, and logs
+    one line (no values); a kind whose image can't run so is left out with a line saying so; the
+    Docker-gated test runs each kind (`OPSCREW_DOCKER_TESTS=1`); stacks without the setting are
+    byte-identical.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/portainer-target && pnpm lint`
+  - Effort: high
+
+- [ ] T2938 [P] [US7] Scheduled drills on a hosting account
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/agents/src/hosting/{provision-plans,plan}.ts`
+    (the agent's settings), colocated tests
+  - Reads: plan 19.; research R28, R29; T2935's drill routine
+  - Depends: T2935, T2936
+  - Accept: with `snapshots.drills.schedule`, the agent's settings carry it, and the agent starts a
+    drill itself in the slot when the latest snapshot is newer than the last drill: T2935's routine,
+    no panel call, under its lock between releases, recorded in its `state/`; turned off by the
+    setting's removal.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: high
+
+- [ ] T2939 [US7] Drills in status for every target, and the guide
+  - Owns: `packages/agents/src/status/drill.ts`, `docs/guide/{snapshots,alerts,portainer-target,hosting-accounts}.md`,
+    colocated tests
+  - Reads: plan 19.; research R27, R29; the records T2934, T2935, T2937 and T2938 write
+  - Depends: T2934, T2935, T2937, T2938
+  - Accept: `opscrew status` shows the last drill on each target (snapshot, time, duration, the
+    outcome or "skipped" with the reason, R27's row), and with a schedule "no drill within two
+    weeks" as a warning; the guide: what a drill proves on each target (R27's table), the command,
+    the approval, the isolation and what the user may need in the preview values, the schedule and
+    its bounds with what root (or the account's user) can do, the alerts and where there are none,
+    the drill database on a hosting account and its limit.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/status && pnpm lint`
+  - Effort: high
+
+- [ ] T2940 [US7] The drill steps in the live tests
+  - Owns: `packages/cli/test/live/{snapshots-checks,snapshots-support,portainer-support,portainer-target.test,cpanel-support,cpanel.test}.ts`,
+    `docs/e2e.md` (their sections)
+  - Reads: plan 18. (H8), 19.; the live files' patterns
+  - Depends: T2939
+  - Accept: a drill step and a scheduled-drill step (the script's `drill scheduled` run at its slot
+    by the test) in the server snapshots live test, the Portainer live test (the manual drill and the
+    dump loop) and the cPanel live test (the drill database made, the drill, removed at destroy);
+    each step checks production unchanged and, on servers, that a request from the copy to the
+    internet fails.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
+  - Effort: high
 
 ## Phase 12: Lead
 
@@ -611,7 +743,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
 Wave 1 (T2902, T2903, T2909, T2911) → wave 2 (T2904, T2907, T2910a, T2910b) → wave 3 (T2905, T2908,
 T2910c, T2912) → wave 4 (T2906, T2910d, T2914d) → wave 5 (T2913a) → wave 6 (T2913b, T2914a, T2914b,
 T2915a) → wave 7 (T2914c, T2915b, T2916a, T2916b) → wave 8 (T2917, T2918) → wave 9 (T2919) → lead.
-T2931 and T2932 run beside wave 1, T2933 beside wave 2. A wave's tasks share no file.
+Drills: T2931 and T2932 beside wave 1; T2933 beside wave 2; T2934, T2935, T2936 beside wave 3; T2937, T2938 beside wave 4; T2939 beside wave 5; T2940 beside wave 9. A wave's tasks share no file.
 
 ## User stories
 
@@ -619,4 +751,4 @@ US1 static home address (T2902, T2903, T2907, T2908, T2910a, T2910d, T2911, T291
 T2914a, T2914d); US2 changing address (T2904, T2909, T2910b, T2910c, T2913a, T2914a–c, T2915a, T2915b,
 T2916b); US3 no public IPv4 or blocked ports (T2903, T2910a, T2910d, T2912, T2914a); US4 IPv6
 (T2906, T2907, T2910a, T2912, T2913a); US5 a Raspberry Pi (T2903, T2912, T2914a, T2914b). US6 cut.
-MVP: US1 and US2 together (a home server is unusable without the updater on a dynamic line).
+MVP: US1 and US2 together (a home server is unusable without the updater on a dynamic line). US7 restore drills (T2931, T2933–T2940); US8 the database check (T2932).

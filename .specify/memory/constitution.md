@@ -36,13 +36,19 @@ governs every specification, plan, task and line of code in this repository.
   is told plainly what the approval can then reach, and the plan and its approval name that
   environment. Changing a bound is a new plan and a new approval.
 - A program OpsCrew installs on a server through a host plan approved by its hash MAY repeat one
-  bounded kind of change without asking again (ADR 0033: the address updater keeps the app's own
-  A/AAAA records at the server's own address). The plan MUST name every bound, the program keeps
-  to them, and each change it makes is recorded on the server and shown by `opscrew status`. Its
-  credential is on the server, so anything with root there can exceed those bounds, including the
-  server's own deploy runner, which runs the repository's code in the docker group: the plan,
-  design's summary and the guide MUST say so plainly. Changing a bound is a new plan and a new
-  approval.
+  bounded kind of change without asking again: the address updater keeps the app's own A/AAAA
+  records at the server's own address (ADR 0033), and the scheduled restore drill restores the
+  app's latest snapshot into a throwaway copy with no outside network, checks it and removes it
+  (ADR 0034). The same holds for a program installed in the user's Portainer through a stack plan
+  approved by its hash, and on a shared hosting account through a hosting plan approved by its
+  hash. The plan MUST name every bound, the program keeps to them, and each change it makes is
+  recorded on the target and shown by `opscrew status`. Its credential is on the target, so
+  anything with root there can exceed those bounds, including the server's own deploy runner,
+  which runs the repository's code in the docker group; on a hosting account the program runs as
+  the account's user, so anything that user can run can exceed them; in a Portainer the program
+  holds no Portainer credential, so it reaches only its own stack's services and volumes. The
+  plan, design's summary and the guide MUST say so plainly. Changing a bound is a new plan and a
+  new approval.
 - Purchases (for example registering a domain) cost money and cannot be undone: they need an
   approval of their own kind with the price shown and a typed confirmation of the item, are never
   granted by a blanket flag, and in non-interactive mode need the exact item and a price bound.

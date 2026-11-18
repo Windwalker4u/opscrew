@@ -88,10 +88,11 @@ engine tests, never at a folder inside a Git checkout.
 
 - No code path applies infrastructure changes without a plan, policy checks and an approval bound
   to the plan's SHA-256 hash. Destroys need `allowDestroy` + typed resource-name confirmation.
-  Two standing approvals exist, each installed by a host plan approved that way: CI creates and
-  removes previews only within a recipe enforced on the preview server (ADR 0026), and a home
-  server's address updater keeps only its app's A/AAAA records at the server's own address
-  (ADR 0033).
+  Three standing approvals exist, each installed by a plan approved that way and enforced on the
+  target: CI creates and removes previews only within a recipe on the preview server (ADR 0026);
+  a home server's address updater keeps only its app's A/AAAA records at the server's own address
+  (ADR 0033); a scheduled restore drill restores only the latest snapshot into a throwaway copy
+  with no outside network and removes it (ADR 0034).
 - Secrets never go into prompts, logs, audit entries, reports, generated files or fixtures.
 - Mutations go through typed adapters or the IaC engine, never ad-hoc shell commands.
 
