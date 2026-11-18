@@ -720,25 +720,25 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting src/snapshot && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2936 [P] [US7] Scheduled drills on servers, and the scheduled check
-  - Owns: `packages/iac-templates/src/workflow/{snapshot-script,snapshots}.ts` (the crontab line and
-    `drill scheduled`), the scheduled check's script (its source and `src/generated/check.ts`),
-    `packages/agents/src/snapshot/schedule.ts`, `packages/cli/src/commands/snapshot.ts`, colocated
-    tests and snapshots
-  - Reads: plan 19.; research R28, R29; `docs/guide/alerts.md`; `docs/guide/snapshots.md` "The
-    schedule"
+- [ ] T2936 [P] [US7] The scheduled drill on the target, the check's drill line and the command
+  - Re-scoped by the lead (2026-11-18, T2936's report): the crontab line and the copy's files are installed by a host plan approved by its hash (T2944), as constitution I's clause asks, never by the deploy's start script.
+  - Owns: `packages/iac-templates/src/drill/script.ts` (the scheduled mode), `packages/iac-templates/src/workflow/{snapshot-script,snapshots}.ts` (only what the scheduled mode needs; no crontab line there), `packages/iac-templates/src/check/index.ts` (`check.json` carries the drill schedule), the scheduled check's script (its source and `src/generated/check.ts`, regenerated), `packages/connectors/ssh-host/src/constants.ts` (`CHECK_KEY_COMMAND` and its line pattern only), `packages/agents/src/snapshot/{schedule,index}.ts`, `packages/cli/src/commands/snapshot.ts`, colocated tests and snapshots (`agents/src/check/host.test.ts` included)
+  - Reads: plan 19.; research R28, R29; T2933's `snapshot_cmd_drill`, `drill_left`, `drill_remove_all`; `docs/guide/alerts.md`
   - Depends: T2933
-  - Accept: `opscrew snapshot drill schedule on|off`, `--every weekly` (default) or `daily`, changes
-    only the plan (needs the snapshot schedule: says so and offers both); `opscrew provision` puts a
-    tagged line `# opscrew-drill <app>` in the deploy user's crontab beside the snapshot's, running
-    `snapshot.sh drill scheduled` hourly, drilling only in its slot three hours after the snapshot's;
-    the host plan's step text names every bound (R29) and what root on the server can do (the
-    clause's honesty); the scheduled check reads the last drill's line with the last snapshot's (one
-    fixed line added to its read-only command): a failed drill, or none within twice the schedule,
-    opens its issue with a fixed sentence; a skip never does; existing check renders otherwise
-    unchanged.
-  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/iac-templates src/workflow src/check && npx vitest run --root packages/agents src/snapshot && npx vitest run --root packages/cli src/commands/snapshot && pnpm lint`
+  - Accept:
+    - `snapshot.sh drill scheduled`: no one-time approval file (the standing approval is T2944's host plan); it drills only in its slot (three hours after the snapshot's, weekly or daily from the drill settings on the server), only the latest snapshot, never `--keep`; the copy's files read from `.drill-recipe/` (outside `.drill/`, which a run clears) with `values.env` there; every R29 bound kept in the script; one `scheduled` line in `drills.log`; a skip is `skipped` with its reason.
+    - `opscrew snapshot drill schedule on|off`, `--every weekly` (default) or `daily`, changes only the plan; it needs the snapshot schedule (says so and offers both), and `snapshot schedule off` also removes the drill schedule, saying so.
+    - The scheduled check: `check.json` carries the drill schedule; its read-only command reads the last `scheduled` line of `drills.log` (`CHECK_KEY_COMMAND` and `check.mjs`'s `CHECK_COMMAND` stay identical); a failed, not-restored or unhealthy drill, or none within twice the schedule, opens its issue with a fixed sentence; a skip never does; checks without a drill schedule are unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/iac-templates src/drill src/workflow src/check && npx vitest run --root packages/agents src/snapshot src/check && npx vitest run --root packages/cli src/commands/snapshot && pnpm lint`
   - Effort: high
+
+- [ ] T2944 [US7] The drills host step: the schedule installed by a plan approved by its hash
+  - Owns: `packages/connectors/ssh-host/src/{types,plan,steps,inspect,parse,facts}.ts` (a `drills` step, modelled on the previews step: `AddonEnableSchemas.previews`), `packages/connectors/ssh-host/src/__fixtures__/fake-host.ts`, `packages/agents/src/provision/own.ts` (`desiredHost`'s drills), colocated tests and snapshots
+  - Reads: plan 19.; research R28, R29; constitution I's clause for a program a plan installs; the previews step and its `values.env` supplied at apply time
+  - Depends: T2936, T2943, T2913a
+  - Accept: with `snapshots.drills.schedule`, the host plan has a `drills` step that writes `.drill-recipe/` (the copy's rendered files with their `@SECRET:…@` placeholders, filled on the server), `values.env` from `.env.preview` (mode 600, given on standard input at apply time, never in the plan or its hash beyond a SHA-256), the drill settings, and the tagged crontab line `# opscrew-drill <app>` running `snapshot.sh drill scheduled` hourly; approved by its hash with `allowDestroy` and `<app>-drill` typed, since the program removes what it makes; its text names every R29 bound and what root on the server can do (the clause's honesty); the schedule's removal and destroy's teardown remove the line, the recipe and `values.env` (and any `<app>-drill` leftovers); inspection reads them so a second plan is in place and drift can see a change.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/agents src/provision && pnpm lint`
+  - Effort: xhigh
 
 - [ ] T2937 [P] [US7] Scheduled dump drills in a Portainer
   - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
@@ -808,7 +808,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
 Wave 1 (T2902, T2903, T2909, T2911) → wave 2 (T2904, T2907, T2910a, T2910b) → wave 3 (T2905, T2908,
 T2910c, T2912) → wave 4 (T2906, T2910d, T2914d) → wave 5 (T2913a) → wave 6 (T2913b, T2914a, T2914b,
 T2915a) → wave 7 (T2914c, T2915b, T2916a, T2916b) → wave 8 (T2917, T2918) → wave 9 (T2919) → lead.
-Drills: T2931 and T2932 beside wave 1; T2933 beside wave 2; T2934, T2935, T2936 beside wave 3; T2937, T2938 beside wave 4; T2939 beside wave 5; T2940 beside wave 9. A wave's tasks share no file.
+Drills: T2931 and T2932 beside wave 1; T2933 beside wave 2; T2934, T2935, T2936 beside wave 3; T2937, T2938 and T2944 beside wave 4 (T2944 after T2943); T2939 beside wave 5; T2940 beside wave 9. A wave's tasks share no file.
 
 ## User stories
 
