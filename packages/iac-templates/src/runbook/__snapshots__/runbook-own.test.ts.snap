@@ -162,8 +162,8 @@ On the server's console (a screen and keyboard attached to it), remove OpsCrew's
 sudo nft delete table inet opscrew
 \`\`\`
 
-Then run \`opscrew interview --answers <file>\` with the new network in \`server.sshFrom\` (or without it
-for the default) and \`opscrew provision\`, which puts the table back for the new network after your approval. Check that
+Then run \`opscrew interview --answers <file>\` with the new network in \`server.sshFrom\` (name it: leaving it
+out keeps the old one) and \`opscrew provision\`, which puts the table back for the new network after your approval. Check that
 the router's forwards point at the server's new address on your home network.
 
 ## Backups

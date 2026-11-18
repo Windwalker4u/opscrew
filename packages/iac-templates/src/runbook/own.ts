@@ -365,8 +365,8 @@ function homeSection(plan: DeployPlan, environments: readonly string[] | undefin
     "sudo nft delete table inet opscrew",
     "```",
     "",
-    `Then run \`${opscrew(plan, "interview --answers <file>")}\` with the new network in \`server.sshFrom\` (or without it`,
-    `for the default) and \`${provision}\`, which puts the table back for the new network after your approval. Check that`,
+    `Then run \`${opscrew(plan, "interview --answers <file>")}\` with the new network in \`server.sshFrom\` (name it: leaving it`,
+    `out keeps the old one) and \`${provision}\`, which puts the table back for the new network after your approval. Check that`,
     "the router's forwards point at the server's new address on your home network.",
     "",
   );
