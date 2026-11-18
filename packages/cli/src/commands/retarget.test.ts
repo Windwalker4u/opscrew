@@ -451,6 +451,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     move = await moveProject();
     const prompts = new ScriptedPrompts([
       OWN_NEW_IPV4,
+      false, // not at home
       "22",
       "root",
       "agent",
@@ -470,6 +471,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     ).toBe(1);
     expect(prompts.calls.map((call) => call.message.split("\n")[0])).toEqual([
       "What is your server's address?",
+      "Is this server at your home, on your home internet connection?",
       "Which port do you connect to for SSH?",
       "Which user should OpsCrew log in as?",
       "Which SSH key should OpsCrew use?",
