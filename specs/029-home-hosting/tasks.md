@@ -268,11 +268,12 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Effort: high
 
 - [ ] T2912 [P] [US1] [US3] [US4] [US5] Design for a home server
-  - Owns: `packages/agents/src/design/{own,own-servers}.ts`, a new `packages/agents/src/design/home.ts`,
+  - Owns: `packages/agents/src/design/{own,own-servers,run}.ts` (`run.ts`: `ownServerAccess` reads a home record, which has no `reachable`), a new `packages/agents/src/design/home.ts`,
     colocated tests and `__fixtures__`
   - Reads: plan 3., 12.; research R1, R3, R5, R10; contracts/plan-schema.md "Kept by a later
     design"; `requireNoSharedPreviews` (`agents/src/previews/host.ts`)
   - Depends: T2910a, T2902
+  - Decided by the lead (T2911's notes): with `noNat` design leaves `network.lan` out (the record refuses a public LAN address); design and verify write `own.home.network` and `outsideCheck` again on each run (the interview keeps neither).
   - Accept:
     - After connecting and inspecting: the detection, then `requireNoSharedPreviews(paths, "serving
       it at home", again, true)` (M5).
@@ -478,6 +479,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     `plugin/skills/opscrew-deploy/**`, colocated tests and snapshots
   - Reads: contracts/cli.md (all); quickstart "A user hosts an app at home"
   - Depends: waves 1–7
+  - Decided by the lead (T2911's notes): the terminal interview asks `server.home` with the address-based default for the host typed in the same run (a second round after `server.host` if needed); the MCP server's `SERVER_ANSWER_HELP` gains `server.home` and `server.sshFrom`, and its `server.reachable` help no longer says "false for a home server".
   - Accept: the new answers, variables (`OPSCREW_DNS_UPDATER_TOKEN`, `OPSCREW_NEW_DNS_UPDATER_TOKEN`)
     registered with the redactor, `rotate dns-updater`, `--confirm <app>` for the records' deletion,
     and the output lines; the MCP server's status and verify pass the same data through the
