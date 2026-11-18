@@ -22,6 +22,14 @@ import {
   STORAGE_ENDPOINTS,
 } from "@opscrew/agents";
 import {
+  appDir,
+  DRILL_RECIPE_DIR,
+  DRILL_RECIPE_SCHEDULE,
+  DRILL_SLOT_AFTER_HOURS,
+  DRILLS_LOG,
+  type DrillRecord,
+  drillRecord,
+  drillScheduleHours,
   OFFSITE_LOG,
   OFFSITE_PREFIX,
   PORTAINER_VERSION_PATH,
@@ -29,6 +37,7 @@ import {
   RESTORED_IMAGE_FILE,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { expect } from "vitest";
 import {
   api,
   HETZNER_API,
@@ -36,17 +45,21 @@ import {
   minutes,
   type RootShell,
   retryDelete,
+  sleep,
   waitFor,
 } from "./cloud";
 import type { BucketPass, ServerExec } from "./component-checks";
 import type { AppEnvironments } from "./environment-checks";
 import type { CliRun, LiveRun } from "./harness";
+import { type DrillReport, drillReportOf } from "./home-support";
 import { jobLog } from "./portainer-cloud";
 import { BUSYBOX_IMAGE } from "./portainer-support";
 import { readData as readMovedData, seedData as seedMovedData } from "./retarget-anywhere-checks";
 import { inContainer, MOVE_SERVICES, seedScripts } from "./retarget-anywhere-support";
 import {
   changeScripts,
+  copyWatchScript,
+  drillTestDir,
   KAFKA_READ_SCRIPT,
   KAFKA_SERVICE,
   kafkaDigest,
@@ -59,9 +72,11 @@ import {
   SFTP_MACHINE_LABEL,
   type SnapshotData,
   SQLITE_CONTENT_SCRIPT,
+  scheduledDrillScript,
   shownRestore,
+  watchedCopy,
 } from "./snapshots-support";
-import { leakedLabels, SERVER_DEPLOY_JOB } from "./support";
+import { approveHashes, leakedLabels, printedHash, SERVER_DEPLOY_JOB } from "./support";
 
 // ---------------------------------------------------------------------------------------------
 // The run's own app name.
@@ -215,6 +230,286 @@ export async function approvedRestore(
     approval.hash,
   );
   return { shown: shown.output, confirm: approval.confirm, applied };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Restore drills, as a script runs them.
+
+/** A drill a script approved: what its first run showed, its approving run and its report. */
+export interface ApprovedDrill {
+  shown: string;
+  applied: CliRun;
+  report: DrillReport;
+}
+
+/**
+ * `opscrew restore --drill <args> --json` as a script runs it: first without `--approve`, which
+ * must stop at the approval (exit 1) with its hash after `label` (`Drill hash` on a server or a
+ * hosting account, `Stack plan hash` in a Portainer) and `<app>-drill` to type; then with
+ * `--confirm <app>-drill --approve <hash>`. A drill that ran and failed exits non-zero with its
+ * report, which is returned all the same; a run with no report throws.
+ */
+export async function approvedDrill(
+  run: LiveRun,
+  args: readonly string[],
+  label: "Drill hash" | "Stack plan hash",
+  app = run.app(),
+): Promise<ApprovedDrill> {
+  const shown = await run.opscrew("restore", "--drill", ...args);
+  const hash = printedHash(shown.output, label);
+  const confirm = [...shown.output.matchAll(/Typing (\S+) approves it\./g)].at(-1)?.[1];
+  if (shown.exitCode !== 1 || hash === undefined || confirm === undefined) {
+    throw new Error(
+      `opscrew restore --drill without --approve must stop at its approval with its ${label} (exit 1), but exited with ${shown.exitCode}:\n${run.tail(shown.output)}`,
+    );
+  }
+  if (confirm !== `${app}-drill`) {
+    throw new Error(`The drill asks to type ${confirm}, not ${app}-drill.`);
+  }
+  const applied = await run.opscrew(
+    "restore",
+    "--drill",
+    ...args,
+    "--confirm",
+    confirm,
+    "--approve",
+    hash,
+    "--json",
+  );
+  if (applied.stdout.search(/^\{/m) < 0) {
+    throw new Error(
+      `opscrew restore --drill --confirm … --approve … exited with ${applied.exitCode} and no report:\n${run.tail(applied.output)}`,
+    );
+  }
+  return { shown: shown.output, applied, report: drillReportOf(applied.stdout) };
+}
+
+/**
+ * `opscrew provision <args>` as a script runs it when a plan needs a name typed, as the drills'
+ * plans need `<app>-drill`: `--plan-only`, then runs with every hash the runs printed (`--approve
+ * <hash>`, `Host plan hash: …`, `Stack plan hash: …`) and every `--confirm <name>` they asked for
+ * among `names`, until one exits 0 (with nothing to approve, `provision --yes`). A name outside
+ * `names` is never typed. Returns every run's output and the names typed.
+ */
+export async function provisionTyping(
+  run: LiveRun,
+  label: string,
+  names: readonly string[],
+  args: readonly string[] = [],
+): Promise<{ output: string; typed: string[] }> {
+  const flags = [...args, ...run.provisionFlags, "--yes"];
+  const all: string[] = [];
+  const hashes = new Set<string>();
+  const typed = new Set<string>();
+  /** The hashes and names `output` asks for; whether any is new. */
+  const take = (output: string): boolean => {
+    const before = hashes.size + typed.size;
+    for (const hash of [
+      ...approveHashes(output),
+      printedHash(output, "Host plan hash"),
+      printedHash(output, "Stack plan hash"),
+    ]) {
+      if (hash !== undefined) hashes.add(hash);
+    }
+    for (const [, name] of output.matchAll(/--confirm (\S+)/g)) {
+      const plain = (name ?? "").replace(/[.,;:`)'"]+$/, "");
+      if (names.includes(plain)) typed.add(plain);
+    }
+    return hashes.size + typed.size > before;
+  };
+  const planned = await run.opscrewOk("provision", "--plan-only", ...flags);
+  all.push(planned.output);
+  take(planned.output);
+  if (hashes.size === 0) {
+    all.push((await run.opscrewOk("provision", ...flags)).output);
+    return { output: all.join("\n"), typed: [] };
+  }
+  for (let round = 1; round <= 5; round++) {
+    const applied = await run.opscrew(
+      "provision",
+      ...[...hashes].flatMap((hash) => ["--approve", hash]),
+      ...[...typed].flatMap((name) => ["--confirm", name]),
+      ...flags,
+    );
+    all.push(applied.output);
+    if (applied.exitCode === 0) return { output: all.join("\n"), typed: [...typed] };
+    if (!take(applied.output)) {
+      throw new Error(
+        `${label}: opscrew provision --approve … exited with ${applied.exitCode}, asking for no other hash or name among ${names.join(", ")}:\n${run.tail(applied.output)}`,
+      );
+    }
+    run.log(`${label}: provision asks for another plan or name; approving what it printed`);
+  }
+  throw new Error(`${label}: opscrew provision did not finish after 5 rounds of approvals.`);
+}
+
+/**
+ * A Compose project's containers (id and start) and volumes on a server, sorted, read through
+ * `exec`: what a drill must leave as it was.
+ */
+export async function projectState(exec: ServerExec, project: string): Promise<string> {
+  const label = `label=com.docker.compose.project=${project}`;
+  return [
+    await exec(
+      `docker ps -aq --no-trunc --filter ${label} | xargs -r docker inspect -f '{{.Id}} {{.State.StartedAt}}' | sort`,
+    ),
+    await exec(`docker volume ls -q --filter ${label} | sort`),
+  ].join("\n");
+}
+
+/** What is left of the Compose project `project` (a drill's copy): its containers, volumes and networks. */
+export function projectLeft(exec: ServerExec, project: string): Promise<string> {
+  const label = `label=com.docker.compose.project=${project}`;
+  return exec(
+    `docker ps -aq --filter ${label}; docker volume ls -q --filter ${label}; docker network ls -q --filter ${label}`,
+  );
+}
+
+/** The drills' log of the app's folder `dir` on its server, each line read as a record. */
+export async function drillsLog(exec: ServerExec, dir: string): Promise<DrillRecord[]> {
+  const log = `${dir}/${DRILLS_LOG}`;
+  const text = await exec(`if [ -f ${log} ]; then cat ${log}; fi`);
+  return text
+    .split(/\r?\n/)
+    .map((line) => drillRecord(line.trim()))
+    .filter((record): record is DrillRecord => record !== undefined);
+}
+
+/** Whether the scheduled drills' recipe folder is in the app's folder `dir` on its server. */
+export async function drillRecipeThere(exec: ServerExec, dir: string): Promise<boolean> {
+  const there = await exec(`if [ -e ${dir}/${DRILL_RECIPE_DIR} ]; then echo yes; else echo no; fi`);
+  return there.trim() === "yes";
+}
+
+/** What the scheduled drill's steps on a server read of their pass. */
+export interface ScheduledDrillPass {
+  run: LiveRun;
+  /** The deploy user's login to the app's server (the crontab's user). */
+  shell: () => Promise<RootShell>;
+  /** The environment's flags (`--env staging`). */
+  env: readonly string[];
+  /** The environment's app name, and its plan. */
+  app: () => string;
+  plan: () => Promise<DeployPlan>;
+  /** The app's Compose project: production, which a drill must leave as it was. */
+  project: () => string;
+  /** Provision and deploy, the plans that need `<app>-drill` approved with it; the names typed. */
+  provision: (what: string) => Promise<string[]>;
+  /** The deploy user's crontab line of the app's drills, or `""`. */
+  crontabLine: () => Promise<string>;
+  /** The steps' options (their skip). */
+  options: { skip?: string };
+}
+
+/**
+ * The scheduled restore drill on a server (029 plan.md 19., research R28, R29), for a pass whose
+ * app takes scheduled snapshots: SD1 turns the drill schedule on (`--every daily`) and provisions
+ * it, the drills host plan approved with `<app>-drill` typed; SD2 runs the crontab's command as the
+ * deploy user, once outside its slot (it must do nothing) and once in it, with a clock moved for
+ * the script alone ({@link scheduledDrillScript}): the latest scheduled snapshot drilled, the
+ * copy watched while it runs (its networks internal, a request from it to the internet failing),
+ * its line in `drills.log`, production's containers and volumes as they were, nothing of the copy
+ * left, and `status` naming it. The step's own files on the server are removed.
+ */
+export function scheduledDrillSteps(pass: ScheduledDrillPass): void {
+  const { run, env, options } = pass;
+  const dir = drillTestDir(run.runId);
+  const every = drillScheduleHours("daily");
+  const ok = async (command: string, ms = minutes(10)) => (await pass.shell()).ok(command, ms);
+
+  run.step(
+    "SD1. snapshot drill schedule on --every daily, then provision (the drills host plan approved by its hash with <app>-drill typed) and deploy: the deploy user's crontab line # opscrew-drill <app> and the copy's files in .drill-recipe/",
+    minutes(60),
+    async () => {
+      await run.opscrewOk("snapshot", "drill", "schedule", "on", ...env, "--every", "daily");
+      const typed = await pass.provision("the drill schedule turned on");
+      expect(typed, "the names provision's script typed").toContain(`${pass.app()}-drill`);
+      expect(await pass.crontabLine(), "the deploy user's drill line").not.toBe("");
+      const folder = appDir(await pass.plan());
+      expect(
+        (await ok(`cat ${folder}/${DRILL_RECIPE_DIR}/${DRILL_RECIPE_SCHEDULE}`)).trim(),
+        "the drills' schedule on the server",
+      ).toBe("daily");
+    },
+    options,
+  );
+
+  run.step(
+    "SD2. the crontab's drill command as the deploy user: outside its slot it does nothing; in its slot (the clock moved for the script alone) it drills the latest scheduled snapshot, the copy's networks internal and a request from it to the internet failing; a scheduled line in drills.log, healthy and removed; production's containers and volumes unchanged, nothing of the copy left; status names it",
+    minutes(75),
+    async () => {
+      const exec: ServerExec = (command) => ok(command);
+      const folder = appDir(await pass.plan());
+      const copy = `${pass.app()}-drill`;
+      const production = pass.project();
+      const latest = (await listSnapshots(run, env)).find((s) => s.kind === "scheduled");
+      if (latest === undefined) throw new Error("There is no scheduled snapshot to drill yet.");
+      // Clear of the scheduled snapshot at minute 0, whose lock would skip the drill.
+      const minute = new Date().getUTCMinutes();
+      if (minute >= 50 || minute < 5) {
+        await sleep(((65 - minute) % 60) * 60_000);
+      }
+      const before = {
+        production: await projectState(exec, production),
+        drills: (await drillsLog(exec, folder)).length,
+      };
+      const script = (slotHour: number, background: boolean) =>
+        scheduledDrillScript({ dir, appDir: folder, everyHours: every, slotHour, background });
+      try {
+        const outside = await ok(script((DRILL_SLOT_AFTER_HOURS + 1) % every, false));
+        expect(outside.trim(), "the exit code outside the slot").toBe("0");
+        expect(
+          (await drillsLog(exec, folder)).length,
+          "drills.log's lines after a run outside the slot",
+        ).toBe(before.drills);
+        expect(await projectLeft(exec, copy), "a copy after a run outside the slot").toBe("");
+
+        await ok(script(DRILL_SLOT_AFTER_HOURS, true));
+        const watched = watchedCopy(await ok(copyWatchScript(dir, copy), minutes(45)));
+        const code = await waitFor(
+          "the scheduled drill's end",
+          minutes(35),
+          async () => (await ok(`cat ${dir}/exit 2> /dev/null; true`)).trim() || undefined,
+          15_000,
+        );
+        const records = await drillsLog(exec, folder);
+        const last = records.at(-1);
+        if (code !== "0" || last?.result !== "healthy") {
+          throw new Error(
+            `The scheduled drill exited with ${code} (${last?.result ?? "no record"}, ${last?.reason ?? "no reason"}); its last lines:\n${run.tail(await ok(`tail -n 40 ${dir}/out.log`))}`,
+          );
+        }
+        if (watched === undefined) throw new Error("The copy's app was never seen running.");
+        expect(watched.internal, "the copy's networks' Internal flags").toEqual(["true"]);
+        expect(watched.outbound, "a request from the copy to the internet").toBe("failed");
+        expect(records.length, "drills.log's lines after the drill in its slot").toBe(
+          before.drills + 1,
+        );
+        expect(last.kind, "the drill's kind").toBe("scheduled");
+        expect(last.id, "the snapshot it drilled").toBe(latest.id);
+        expect(last.removal, "the copy").toBe("removed");
+        expect(
+          last.tables.filter((table) => (table.count ?? 0) === 0).map((table) => table.service),
+          "the restored databases without a table",
+        ).toEqual([]);
+        expect(await projectState(exec, production), "production's containers and volumes").toBe(
+          before.production,
+        );
+        expect(await projectLeft(exec, copy), "what is left of the copy").toBe("");
+        const status = await run.opscrewOk("status", ...env);
+        expect(
+          status.output.includes(`Last restore drill: ${latest.id}, scheduled`),
+          `status names the scheduled drill:\n${run.tail(status.output)}`,
+        ).toBe(true);
+        run.log(
+          `observed: the scheduled drill of ${latest.id} was healthy after ${last.health?.seconds ?? "?"} s; parts ${last.parts.map((part) => part.name).join(", ")}`,
+        );
+      } finally {
+        await ok(`touch ${dir}/stop 2> /dev/null; rm -rf ${dir}`).catch(() => undefined);
+      }
+    },
+    options,
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

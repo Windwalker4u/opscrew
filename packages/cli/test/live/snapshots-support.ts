@@ -31,7 +31,7 @@ import { leakedLabels, printedHash } from "./support";
 
 /** The data pass on staging at Hetzner: a snapshot by hand with Kafka stopped, and its restore. */
 export const SNAPSHOTS_GATE = "OPSCREW_E2E_SNAPSHOTS";
-/** The data pass's schedule at `1h` (about two hours more): its own gate, off by default. */
+/** The data pass's schedule at `1h` (about two and a half hours more, with the scheduled drill): its own gate, off by default. */
 export const SCHEDULE_GATE = "OPSCREW_E2E_SNAPSHOTS_SCHEDULE";
 /** The off-server copy, restored after the server is destroyed. */
 export const OFFSITE_GATE = "OPSCREW_E2E_SNAPSHOTS_OFFSITE";
@@ -440,6 +440,184 @@ export function sftpMachineAddresses(
   return entries
     .filter(({ label }) => label.startsWith("server-"))
     .map(({ label, value }) => ({ label: `${SFTP_MACHINE_LABEL}${label.slice(7)}`, value }));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The restore drills.
+
+/**
+ * The folder on a server where a pass keeps its own files for a drill (the moved clock, the
+ * scheduled drill's output, the watch's stop mark), named after the run; the step removes it.
+ */
+export function drillTestDir(runId: string): string {
+  const plain = runId.toLowerCase().replace(/[^a-z0-9-]/g, "");
+  if (plain === "") throw new Error(`Cannot name a folder after the run id "${runId}".`);
+  return `/tmp/opscrew-e2e-drill-${plain}`;
+}
+
+/**
+ * The moved clock the scheduled drill runs with, as `<dir>/bin/date`: `date +%s` answers the time
+ * `OPSCREW_E2E_CLOCK_SHIFT` seconds on, every other use is the system's `date`. The script's slot
+ * check (`$(date +%s) / 3600 % <hours>`) then sees the hour the test chose, and its durations stay
+ * right; the times it writes (`date -u +…`) stay the real ones.
+ */
+const CLOCK_SHIM = [
+  "#!/bin/sh",
+  "# The live test's moved clock: `date +%s` alone, OPSCREW_E2E_CLOCK_SHIFT seconds on.",
+  'if [ "$#" -eq 1 ] && [ "$1" = +%s ]; then',
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's variable.
+  "  echo $(( $(/usr/bin/date +%s) + ${OPSCREW_E2E_CLOCK_SHIFT:-0} ))",
+  "else",
+  '  exec /usr/bin/date "$@"',
+  "fi",
+].join("\n");
+
+/** A script written to `file` through base64, so no quoting of its text is needed. */
+function writtenScript(file: string, text: string, mode: string): string {
+  return `echo ${Buffer.from(`${text}\n`).toString("base64")} | base64 -d > ${file} && chmod ${mode} ${file}`;
+}
+
+/**
+ * The script (as the deploy user, the crontab's) that runs the crontab's command of the scheduled
+ * drill, `sh <app dir>/snapshot.sh drill scheduled`, with the moved clock in `<dir>/bin` set to
+ * the hour `slotHour` of the schedule's `everyHours` (counted from the epoch in UTC, as the script
+ * counts them): its output goes to `<dir>/out.log` and its exit code to `<dir>/exit`. With
+ * `background`, it runs detached and the command returns at once.
+ */
+export function scheduledDrillScript(o: {
+  dir: string;
+  appDir: string;
+  everyHours: number;
+  slotHour: number;
+  background: boolean;
+}): string {
+  const { dir, appDir, everyHours, slotHour } = o;
+  const run = [
+    `h=$(( $(/usr/bin/date +%s) / 3600 % ${everyHours} ))`,
+    `OPSCREW_E2E_CLOCK_SHIFT=$(( ((${slotHour} - h + ${everyHours}) % ${everyHours}) * 3600 ))`,
+    "export OPSCREW_E2E_CLOCK_SHIFT",
+    `PATH=${dir}/bin:$PATH sh ${appDir}/snapshot.sh drill scheduled > ${dir}/out.log 2>&1`,
+    `echo $? > ${dir}/exit`,
+  ].join("\n");
+  return [
+    `mkdir -p ${dir}/bin && rm -f ${dir}/exit ${dir}/out.log`,
+    writtenScript(`${dir}/bin/date`, CLOCK_SHIM, "755"),
+    writtenScript(`${dir}/run.sh`, run, "700"),
+    o.background
+      ? `setsid -f sh ${dir}/run.sh > /dev/null 2>&1 < /dev/null`
+      : `sh ${dir}/run.sh; cat ${dir}/exit`,
+  ].join(" && ");
+}
+
+/** A request from inside a container to the internet, by address (no DNS), within 5 seconds. */
+export const OUTBOUND_PYTHON = `python -c "import urllib.request; urllib.request.urlopen('http://1.1.1.1', timeout=5)"`;
+
+/**
+ * The script that watches a drill's copy while it runs, until `<dir>/exit` or `<dir>/stop` is
+ * there (or 40 minutes): once the Compose project `project`'s `app` container runs, it reads the
+ * project's networks' `Internal` flags and runs {@link OUTBOUND_PYTHON} in that container, then
+ * prints `seen internal=<flags> outbound=<reached|failed>`; `unseen` when the copy's app never
+ * ran.
+ */
+export function copyWatchScript(dir: string, project: string): string {
+  const label = `label=com.docker.compose.project=${project}`;
+  return [
+    "i=0",
+    `until [ -f ${dir}/exit ] || [ -f ${dir}/stop ] || [ "$i" -ge 2400 ]; do`,
+    `  c=$(docker ps -q --filter ${label} --filter label=com.docker.compose.service=app)`,
+    '  if [ -n "$c" ]; then',
+    `    flags=$(docker network ls -q --filter ${label} | xargs -r docker network inspect -f '{{.Internal}}' | sort -u | tr '\\n' ',')`,
+    `    if docker exec "$c" ${OUTBOUND_PYTHON} > /dev/null 2>&1; then out=reached; else out=failed; fi`,
+    '    echo "seen internal=$flags outbound=$out"',
+    "    exit 0",
+    "  fi",
+    "  i=$((i + 1))",
+    "  sleep 1",
+    "done",
+    "echo unseen",
+  ].join("\n");
+}
+
+/**
+ * The script (as root on a Portainer host) that watches for a drill stack's network `network`
+ * until `<dir>/stop` is there (or 30 minutes): once Docker has it, it reads its `Internal` flag
+ * and sends a request to the internet from a one-off `image` (busybox) on it, then prints `seen
+ * internal=<flag> outbound=<reached|failed>`; `unseen` when the network never came.
+ */
+export function networkWatchScript(dir: string, network: string, image: string): string {
+  return [
+    `mkdir -p ${dir}`,
+    "i=0",
+    `until [ -f ${dir}/stop ] || [ "$i" -ge 1800 ]; do`,
+    `  if docker network inspect ${network} > /dev/null 2>&1; then`,
+    `    flag=$(docker network inspect -f '{{.Internal}}' ${network})`,
+    `    if docker run --rm --network ${network} ${image} wget -q -T 5 -O /dev/null http://1.1.1.1 > /dev/null 2>&1; then out=reached; else out=failed; fi`,
+    '    echo "seen internal=$flag outbound=$out"',
+    "    exit 0",
+    "  fi",
+    "  i=$((i + 1))",
+    "  sleep 1",
+    "done",
+    "echo unseen",
+  ].join("\n");
+}
+
+/**
+ * What a watch ({@link copyWatchScript}, {@link networkWatchScript}) printed: the networks'
+ * `Internal` flags and whether the request to the internet got through; `undefined` when it never
+ * saw the copy.
+ */
+export function watchedCopy(
+  output: string,
+): { internal: string[]; outbound: "reached" | "failed" } | undefined {
+  const seen = /seen internal=(\S*) outbound=(reached|failed)/.exec(output);
+  if (seen === undefined || seen === null) return undefined;
+  return {
+    internal: (seen[1] ?? "").split(",").filter((flag) => flag !== ""),
+    outbound: seen[2] as "reached" | "failed",
+  };
+}
+
+/**
+ * The script (as root) that runs a Portainer drill loop's drill once, in its own container `c`
+ * (the drill-<service> service's: no network, the snapshots volume read-only, its scratch volume),
+ * as its slot would: the container's own entrypoint script up to its loop, then `drill`, its
+ * output also written to the container's log (its PID 1's standard output), which `opscrew status`
+ * reads. Prints what the drill printed.
+ */
+export function loopDrillScript(dir: string, container: string): string {
+  return [
+    `mkdir -p ${dir}`,
+    `docker inspect -f '{{index .Config.Entrypoint 2}}' ${container} | sed '/^while :; do$/,$d' > ${dir}/loop.sh`,
+    `echo drill >> ${dir}/loop.sh`,
+    `docker exec -i ${container} sh -c 'sh -s 2> /dev/null | tee /proc/1/fd/1' < ${dir}/loop.sh`,
+  ].join(" && ");
+}
+
+/**
+ * The id of a planted snapshot that stands for one whose version is gone: `id` (a data
+ * snapshot's UTC time) one second on.
+ */
+export function plantedSnapshotId(id: string): string {
+  const at = Date.parse(
+    id.replace(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/, "$1-$2-$3T$4:$5:$6Z"),
+  );
+  if (Number.isNaN(at)) throw new Error(`${id} is no data snapshot's id.`);
+  return snapshotIdAt(new Date(at + 1000));
+}
+
+/** A version no registry has: the digest a planted snapshot records instead of its own. */
+export const GONE_VERSION = `sha256:${"0".repeat(63)}1`;
+
+/**
+ * The script (in a one-off with the snapshots volume at `/snapshots`) that plants `planted`, a
+ * copy of the snapshot `id` whose `about.json` names `planted` and records {@link GONE_VERSION}.
+ */
+export function plantGoneSnapshotScript(id: string, planted: string): string {
+  return [
+    `cp -a /snapshots/${id} /snapshots/${planted}`,
+    `sed -i 's/${id}/${planted}/g; s/"version":"sha256:[0-9a-f]*"/"version":"${GONE_VERSION}"/' /snapshots/${planted}/about.json`,
+  ].join(" && ");
 }
 
 // ---------------------------------------------------------------------------------------------

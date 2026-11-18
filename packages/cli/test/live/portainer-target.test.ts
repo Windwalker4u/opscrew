@@ -12,12 +12,18 @@ import {
   COMPOSE_PROJECT_LABEL,
   DEPLOY_BRANCH,
   DEPLOY_REFERENCE,
+  drillStackName,
   inspectCertificate,
   opscrewNames,
   sameCertFingerprint,
 } from "@opscrew/connector-portainer";
-import { PORTAINER_VERSION_PATH } from "@opscrew/iac-templates";
-import { writeArtifact } from "@opscrew/plan-schema";
+import {
+  DRILL_RECORD_PREFIX,
+  drillRecord,
+  PORTAINER_VERSION_PATH,
+  portainerSnapshotsVolume,
+} from "@opscrew/iac-templates";
+import { PlanServiceSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
 import {
@@ -90,6 +96,23 @@ import {
   stepNumber,
   valueShape,
 } from "./portainer-support";
+import { inContainer, psql } from "./retarget-anywhere-support";
+import {
+  approvedDrill,
+  listSnapshots,
+  projectLeft,
+  projectState,
+  provisionTyping,
+} from "./snapshots-checks";
+import {
+  drillTestDir,
+  loopDrillScript,
+  networkWatchScript,
+  plantedSnapshotId,
+  plantGoneSnapshotScript,
+  takenSnapshotId,
+  watchedCopy,
+} from "./snapshots-support";
 import {
   approveHashes,
   duration,
@@ -2176,6 +2199,275 @@ describe.skipIf(MISSING.length > 0)(
       ).toBe(statusBefore);
       observe("OpenSearch in plan.yaml was refused for its kernel setting, before any change");
     }
+
+    /** A command as root on the Portainer host. */
+    const hostExec: ServerExec = (command) => run.shell().ok(command, minutes(10));
+
+    /** The enabled service of `kind` in `app`'s plan (A's PostgreSQL, B's MongoDB). */
+    async function serviceOf(kind: "postgres" | "mongodb", app = run): Promise<string> {
+      const found = (await app.readPlan()).services.find(
+        (service) => service.kind === kind && service.enabled,
+      );
+      if (found === undefined) {
+        throw new Error(`${app.app()}'s plan has no ${kind} service, which this step needs.`);
+      }
+      return found.name;
+    }
+
+    step(
+      "7c. restore drills by hand: a snapshot, then restore --drill approved by its stack plan hash with <app>-drill typed: the copy's network deployed internal and a request from it to the internet failing, the app healthy on the restored PostgreSQL, the copy's stack and volumes removed, the app's stack unchanged, status naming the drill; then a planted copy of the snapshot that records a version no registry has: the drill reports it gone and removes its copy too",
+      minutes(60),
+      async () => {
+        const stack = names().app;
+        const db = await serviceOf("postgres");
+        const copy = drillStackName(run.app());
+        const dir = drillTestDir(run.runId);
+        await waitFor(
+          "PostgreSQL taking the test's table",
+          minutes(5),
+          () =>
+            hostExec(
+              inContainer(
+                stack,
+                db,
+                psql(
+                  "create table if not exists e2e_drill (id int primary key); insert into e2e_drill values (1) on conflict do nothing",
+                ),
+              ),
+            ),
+          10_000,
+        );
+        const taken = await run.opscrewOk("snapshot");
+        const id = takenSnapshotId(taken.output);
+        if (id === undefined) throw new Error(`No snapshot id:\n${run.tail(taken.output)}`);
+        const before = await projectState(hostExec, stack);
+
+        // The copy's network, watched on the host while the drill runs.
+        const watching = run
+          .shell()
+          .ok(networkWatchScript(dir, `${copy}_internal`, BUSYBOX_IMAGE), minutes(40))
+          .catch((error: unknown) => String(error));
+        let drill: Awaited<ReturnType<typeof approvedDrill>>;
+        try {
+          drill = await approvedDrill(run, [id], "Stack plan hash");
+        } finally {
+          await hostExec(`mkdir -p ${dir} && touch ${dir}/stop`);
+        }
+        const watched = watchedCopy(await watching);
+        await hostExec(`rm -rf ${dir}`);
+        const { report } = drill;
+        expect(report.outcome, report.summary).toBe("healthy");
+        expect(report.removal, "the copy").toBe("removed");
+        expect(
+          report.tables.find((table) => table.service === db)?.count ?? 0,
+          "the restored PostgreSQL's tables",
+        ).toBeGreaterThan(0);
+        if (watched === undefined)
+          throw new Error(`The copy's network ${copy}_internal was never seen.`);
+        expect(watched.internal, "the copy's network as deployed: Internal").toEqual(["true"]);
+        expect(watched.outbound, "a request from the copy's network to the internet").toBe(
+          "failed",
+        );
+        expect(await projectState(hostExec, stack), "the app's containers and volumes").toBe(
+          before,
+        );
+        expect(await stackNames(), "the stacks after the drill").not.toContain(copy);
+        expect(await projectLeft(hostExec, copy), "what is left of the copy").toBe("");
+        const status = await run.opscrewOk("status");
+        expect(
+          status.output.includes(`Last restore drill: ${id}`),
+          `status names the drill:\n${run.tail(status.output)}`,
+        ).toBe(true);
+        observe(
+          `a drill by hand in your Portainer: ${report.outcome} after ${report.health?.seconds ?? "?"} s; the copy's network was internal as deployed and a request from it failed`,
+        );
+
+        // A snapshot whose version is gone: a copy of it planted with a version no registry has.
+        const volume = portainerSnapshotsVolume(await run.readPlan());
+        const planted = plantedSnapshotId(id);
+        const inVolume = (script: string) =>
+          hostExec(
+            `docker run --rm -v ${volume}:/snapshots ${BUSYBOX_IMAGE} sh -c "$(echo ${Buffer.from(script).toString("base64")} | base64 -d)"`,
+          );
+        await inVolume(plantGoneSnapshotScript(id, planted));
+        try {
+          const gone = await approvedDrill(run, [planted], "Stack plan hash");
+          observe(`a drill of a version that is gone ends: ${run.scrub(gone.report.summary)}`);
+          expect(gone.report.outcome, gone.report.summary).toBe("failed");
+          expect(gone.report.summary, "the drill's words for a gone version").toContain(
+            "That snapshot's version of the app is gone",
+          );
+          expect(gone.report.removal, "the copy").toBe("removed");
+          expect(await projectLeft(hostExec, copy), "what is left of the copy").toBe("");
+          expect(await projectState(hostExec, stack), "the app's containers and volumes").toBe(
+            before,
+          );
+        } finally {
+          await inVolume(`rm -rf /snapshots/${planted}`);
+        }
+      },
+    );
+
+    step(
+      "7d. scheduled dump drills: snapshot schedule on --every 1h and snapshot drill schedule on --every daily, provision (the stack plan approved by its hash with <app>-drill typed) and the deploy: a drill-<db> service with no network and the snapshots volume read-only; once a scheduled snapshot is taken, the loop's drill run once by the test in its own container, as its slot would: the dump restored with its tables, its line in the service's log and in status, the app's containers and volumes unchanged; then both schedules off, provisioned and deployed: the loop and its scratch volume gone",
+      minutes(150),
+      async () => {
+        const stack = names().app;
+        const db = await serviceOf("postgres");
+        const loop = `drill-${db}`;
+        const dir = drillTestDir(run.runId);
+        const typing = [run.app(), `${run.app()}-drill`];
+        const loopContainer = async () =>
+          (
+            await hostExec(
+              `docker ps -aq --filter label=${COMPOSE_PROJECT_LABEL}=${stack} --filter label=com.docker.compose.service=${loop}`,
+            )
+          ).trim();
+        await run.opscrewOk("snapshot", "schedule", "on", "--every", "1h");
+        await run.opscrewOk("snapshot", "drill", "schedule", "on", "--every", "daily");
+        const on = await provisionTyping(run, "the scheduled dump drills turned on", typing);
+        expect(on.typed, "the names provision's script typed").toContain(`${run.app()}-drill`);
+        await run.deployAny("the scheduled dump drills");
+        const container = await waitFor(
+          `the ${loop} service running`,
+          minutes(15),
+          async () => (await loopContainer()) || undefined,
+          15_000,
+        );
+        expect(
+          (await hostExec(`docker inspect -f '{{.HostConfig.NetworkMode}}' ${container}`)).trim(),
+          "the loop's network",
+        ).toBe("none");
+        const volume = portainerSnapshotsVolume(await run.readPlan());
+        expect(
+          (
+            await hostExec(
+              `docker inspect -f '{{range .Mounts}}{{if eq .Name "${volume}"}}{{.RW}}{{end}}{{end}}' ${container}`,
+            )
+          ).trim(),
+          "the loop's snapshots volume writable",
+        ).toBe("false");
+        await waitFor(
+          "a scheduled snapshot",
+          minutes(70),
+          async () => (await listSnapshots(run)).find((snapshot) => snapshot.kind === "scheduled"),
+          minutes(2),
+        );
+        const before = await projectState(hostExec, stack);
+        const printed = await run
+          .shell()
+          .ok(loopDrillScript(dir, container), minutes(35))
+          .finally(() => hostExec(`rm -rf ${dir}`).catch(() => undefined));
+        const line = printed.split(/\r?\n/).find((entry) => entry.startsWith(DRILL_RECORD_PREFIX));
+        const record =
+          line === undefined ? undefined : drillRecord(line.slice(DRILL_RECORD_PREFIX.length));
+        if (record === undefined) {
+          throw new Error(`The loop's drill printed no record:\n${run.tail(printed)}`);
+        }
+        expect(record.result, `the loop's drill (${record.reason ?? "no reason"})`).toBe("healthy");
+        expect(record.kind, "its kind").toBe("scheduled");
+        expect(
+          (await listSnapshots(run)).some(
+            (snapshot) => snapshot.kind === "scheduled" && snapshot.id === record.id,
+          ),
+          `the snapshot it drilled (${record.id ?? "none"}) is a scheduled one`,
+        ).toBe(true);
+        expect(
+          record.tables.find((table) => table.service === db)?.count ?? 0,
+          "the restored dump's tables",
+        ).toBeGreaterThan(0);
+        expect(record.removal, "the scratch").toBe("removed");
+        expect(await projectState(hostExec, stack), "the app's containers and volumes").toBe(
+          before,
+        );
+        const status = await run.opscrewOk("status");
+        if (status.output.includes(`Last scheduled dump drill of ${db}: ${record.id}`)) {
+          observe(`status reads the scheduled dump drill of ${db} from ${loop}'s log`);
+        } else {
+          const logged = await hostExec(
+            `docker logs ${container} 2>&1 | grep -c '^${DRILL_RECORD_PREFIX}'; true`,
+          );
+          if (logged.trim() === "0") {
+            run.findings.push(
+              `the test could not write the loop's drill line to ${loop}'s log, so status was not checked`,
+            );
+          } else {
+            expect.fail(
+              `status doesn't name the scheduled dump drill of ${db}:\n${run.tail(status.output)}`,
+            );
+          }
+        }
+
+        await run.opscrewOk("snapshot", "schedule", "off");
+        await provisionTyping(run, "the schedules turned off", typing);
+        await run.deployAny("the schedules turned off");
+        await waitFor(
+          `the ${loop} service gone`,
+          minutes(15),
+          async () => ((await loopContainer()) === "" ? true : undefined),
+          15_000,
+        );
+        const scratch = (await appVolumes()).filter((name) => name.endsWith(`_${db}_drill`));
+        if (scratch.length > 0) {
+          run.findings.push(
+            `the scheduled dump drills' scratch volume stayed in your Portainer after their schedule's removal (${scratch.join(", ")}); the test removed it`,
+          );
+          await hostExec(`docker volume rm ${scratch.join(" ")}`);
+        }
+      },
+    );
+
+    step(
+      "7e. MongoDB as a one-node replica set in the second app's stack: options.replicaSet: true in plan.yaml, design keeps it, provision and the deploy: its one member is the primary of rs0, and the app writes and reads a value through it",
+      minutes(60),
+      async () => {
+        const app = b;
+        const mongo = await serviceOf("mongodb", app);
+        const plan = await app.readPlan();
+        await writeArtifact("plan", app.paths().files.plan, {
+          ...plan,
+          services: plan.services.map((service) =>
+            service.name === mongo && service.kind === "mongodb"
+              ? PlanServiceSchema.parse({
+                  ...service,
+                  options: { ...service.options, replicaSet: true },
+                })
+              : service,
+          ),
+        });
+        await app.opscrewOk("design");
+        const kept = (await app.readPlan()).services.find((service) => service.name === mongo);
+        expect(
+          kept?.kind === "mongodb" && kept.options.replicaSet,
+          "design keeps options.replicaSet",
+        ).toBe(true);
+        await app.provisionUntilDone("the second app's MongoDB as a replica set");
+        await app.deployAny("the second app's MongoDB as a replica set");
+        await app.waitForHealth();
+        await waitFor(
+          "MongoDB the primary of its replica set",
+          minutes(5),
+          async () => {
+            const said = await hostExec(
+              inContainer(
+                names(app).app,
+                mongo,
+                `mongosh --quiet --eval 'const h = db.hello(); print(h.setName + " " + h.isWritablePrimary)'`,
+              ),
+            );
+            return said.trim() === "rs0 true" ? true : undefined;
+          },
+          10_000,
+        );
+        const site = `https://${app.appHost}`;
+        const value = `value-${randomBytes(6).toString("hex")}`;
+        await writeValue(site, value);
+        await readValue(site, value);
+        observe(
+          "the second app's MongoDB runs as the primary of a one-node replica set in its stack",
+        );
+      },
+    );
 
     step(
       "8. destroy keeps the data volumes; Portainer, its settings and the decoys stay; the second app keeps working",

@@ -888,6 +888,39 @@ other value skips the whole test and names the variable.
    must exit with an error that names that setting, with no container on the host changed (the
    same containers, started at the same time); the plan is put back afterwards, and `git status
    --porcelain` in the second app's project is then empty.
+
+   7c. **A restore drill by hand** (feature 029): a table written into the app's PostgreSQL, then
+   `opscrew snapshot` and `restore --drill <id>` as a script runs it: without `--approve` it must
+   stop with its `Stack plan hash` and "Typing <app>-drill approves it."; then `--confirm
+   <app>-drill --approve <hash> --json`. While it runs, a watch as root on the host waits for the
+   copy's network `opscrew-<app>-drill_internal`, reads its `Internal` flag (it must be `true` as
+   deployed) and sends a request to `http://1.1.1.1` from a one-off busybox on it, which must fail.
+   The report must say healthy with the PostgreSQL's tables counted and the copy removed; the app's
+   stack keeps its containers (ids and start times) and volumes; no stack, container, volume or
+   network of the copy is left; `status` names the drill. Then **a gone version**: as root, a copy
+   of the snapshot is planted in the snapshots volume, one second on, whose `about.json` records a
+   digest no registry has. Its drill must fail with "That snapshot's version of the app is gone"
+   and remove its copy; the planted copy is removed afterwards.
+
+   7d. **Scheduled dump drills** (expected about two hours, most of it waiting for the first
+   scheduled snapshot): `snapshot schedule on --every 1h` and `snapshot drill schedule on --every
+   daily`, then provision, its stack plan approved by its hash with `<app>-drill` typed (the
+   names a run prints are typed only when they are the app's or `<app>-drill`), and the deploy. The
+   stack's `drill-<db>` service must run with network mode `none` and the snapshots volume
+   mounted read-only. Once a scheduled snapshot is listed (up to 70 minutes), the test runs the
+   loop's drill once, as its slot would (the slot is 03:00 UTC): as root, in the loop's own
+   container, its entrypoint script up to its loop and then `drill`, with the output also written
+   to the container's log. Its line must say healthy, name a scheduled snapshot, count the dump's
+   tables and say the scratch was removed; the app's containers and volumes stay as they were;
+   `status` must name `Last scheduled dump drill of <db>` (when the test could not write the line
+   to the container's log, that is a finding instead). Then `snapshot schedule off` (which takes
+   the drill schedule too), provision and the deploy: the loop must be gone. A scratch volume
+   `<stack>_<db>_drill` left behind is a finding, and the test removes it.
+
+   7e. **MongoDB as a replica set** (feature 029): `options.replicaSet: true`
+   on the second app's MongoDB in its `plan.yaml`, which `design` must keep; provision and the
+   deploy. Within 5 minutes, `db.hello()` in its container must name the set `rs0` with this member
+   the writable primary, and a value written through the app is read back.
 8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels; in the core pass updater +
    tunnel, one tunnel), with the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: no stack of the app, no
    registry entry of OpsCrew, no DNS record, tunnel, Access application, policy or service token of
@@ -1006,8 +1039,9 @@ server, which it deletes at the end like every run (a server is never kept betwe
 | 1, 1b, 12 | (always taken) |
 | 2a | 1 |
 | 2, 10, 11 | 2a |
-| 3, 3b, 4, 5, 6, 7, 7b, 8 | 2 |
+| 3, 3b, 4, 5, 6, 7, 7b, 7c, 7d, 8 | 2 |
 | 5b | 5 |
+| 7e | 7b |
 | 9 | 8 |
 | 9b | 7b, 8 |
 
@@ -1027,6 +1061,8 @@ Steps run in their usual order. Examples:
   step 8 does not run.
 - `OPSCREW_E2E_PORTAINER_STEPS=7b` runs steps 1, 1b, 2a, 2, 7b, 8, 9b and 12: the second app next
   to the first one's updater + tunnel setup, then both destroys.
+- `OPSCREW_E2E_PORTAINER_STEPS=7c,7d,7e` runs steps 1, 1b, 2a, 2, 7b, 7c, 7d, 7e, 8, 9b and 12
+  (expected about 3 hours, not measured yet): the restore drills and the replica set.
 
 An unknown step skips the whole test and names the variable.
 
@@ -2817,8 +2853,8 @@ messages, and another value written through the app. Each change must make every
    changed rows) are searched for there and in the deploy job's log of each
    deploy run. No snapshot or restore output may name the server's address.
 
-**The schedule** (with `OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1` too, about two hours more; its steps run
-between 5 and 6):
+**The schedule** (with `OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1` too, about two and a half hours more
+with the scheduled drill; its steps run between 5 and 6):
 - **S1.** `snapshot schedule on --env staging --every 1h --keep 1`, then provision and deploy. The
   deploy user's crontab must have the app's line (`# opscrew-snapshots <app>`). A `scheduled`
   snapshot must appear within 70 minutes, taken within the first 10 minutes of an hour (the line
@@ -2827,8 +2863,26 @@ between 5 and 6):
 - **S2** (SC-2403): the next scheduled snapshot must come an hour after the first. Within 10
   minutes the first must be gone (`--keep 1`), while the snapshot by hand stays. `status --env staging` must say
   `Last snapshot: <the second's id>, scheduled`.
-- **S3.** `snapshot schedule off`, then provision and deploy. The crontab line must be gone, and
-  the scheduled snapshot must still be listed.
+- **SD1** (feature 029's scheduled restore drill): `snapshot drill schedule on --env staging
+  --every daily`, then provision and deploy. The drills' host plan is approved by its hash with
+  `<app>-drill` typed (the names a run prints are typed only when they are the app's or
+  `<app>-drill`). The deploy user's crontab must have the app's drill line (`# opscrew-drill
+  <app>`), and `.drill-recipe/schedule` in the app's folder must say `daily`.
+- **SD2.** The test runs the crontab's command, `sh <app dir>/snapshot.sh drill scheduled`, as the
+  deploy user, the crontab's own, with a clock moved for the script alone: a `date` on its `PATH`
+  answers `date +%s` some whole hours on, so the script's slot check sees the hour the test chose,
+  while the times it writes stay real (the slot itself is 03:00 UTC). It starts clear of the
+  scheduled snapshot at minute 0, whose lock would skip the drill. Outside the slot (04:00) it
+  must exit 0 and add no line to `.snapshots/drills.log`. In the slot (03:00) it runs detached,
+  and a watch waits for the copy's `app` container: the copy's networks must all be internal, and
+  a request from it to `http://1.1.1.1` must fail. Then the drill must exit 0 with one more line
+  in `drills.log`: `scheduled`, healthy, the latest scheduled snapshot, every restored database
+  holding a table, the copy removed. Production's containers (ids and start times) and volumes
+  stay as they were, nothing of `<app>-drill` is left, and `status --env staging` names `Last
+  restore drill: <id>, scheduled`. The test's files in `/tmp` on the server are removed.
+- **S3.** `snapshot schedule off`, which takes the drill schedule too, then provision (the drills'
+  removal approved with `<app>-drill` typed) and deploy. Both crontab lines and `.drill-recipe/`
+  must be gone, and the scheduled snapshot must still be listed.
 
 **The off-server copy** (`OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`), in four legs:
 - to Cloudflare R2 (`-t "Cloudflare R2"`, with `OPSCREW_E2E_R2=1`);
@@ -2975,7 +3029,7 @@ records in Cloudflare, and the repository reset. Then, per pass:
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_SNAPSHOTS` | `1` runs the data pass. |
-| `OPSCREW_E2E_SNAPSHOTS_SCHEDULE` | With the data pass, `1` also runs the schedule's steps (about two hours more). |
+| `OPSCREW_E2E_SNAPSHOTS_SCHEDULE` | With the data pass, `1` also runs the schedule's steps (about two and a half hours more, the scheduled drill included). |
 | `OPSCREW_E2E_SNAPSHOTS_OFFSITE` | `1` runs the off-server copy, once for each leg whose variables are set; the SFTP leg needs nothing more. |
 | `OPSCREW_E2E_SNAPSHOTS_SERVER` | `1` runs the whole-server pass. |
 | `OPSCREW_E2E_SNAPSHOTS_PORTAINER` | `1` runs the Portainer pass. |
@@ -3013,7 +3067,7 @@ OPSCREW_E2E_SNAPSHOTS_PORTAINER=1 OPSCREW_E2E_GHCR_READ_TOKEN=… \
 Not measured yet. What each pass runs, at about 0.01–0.02 EUR an hour per server of the sizes
 design picks (check Hetzner's price list):
 - **data:** one staging server (with Kafka and MySQL, a few GB of memory) for about an hour, and
-  one deploy run. With the schedule, about 2.5 hours more and two more deploy runs;
+  one deploy run. With the schedule and its drill, about 3 hours more and three more deploy runs;
 - **off-server copy:** per leg, two servers in turn for about 1.5–2 hours, and two deploy runs.
   R2 stays within its free tier. Hetzner Object Storage is billed monthly in part (about 5 EUR a
   month, a few cents for the run's hours), your own S3 bucket's leg too. The SFTP leg adds the
@@ -3569,15 +3623,42 @@ Then, for each leg (its steps numbered `<leg>.<step>`: 1 for `php`, 2 `site`, 3 
 7. **A snapshot and its restore** (the plain PHP app only): `snapshot`, a changed note, then
    `restore <id>` run first without `--approve` and then with `--confirm <hostname> --approve
    <hash>`; the note must be back in MySQL and in storage.
+
+   **Restore drills** (feature 029, the plain PHP app only). The test runs a few shell commands on
+   the account the only way it can, through a cron line of the run's own: it writes a script into
+   the app's folder, adds a line that starts it each minute (it runs once), reads its output (only
+   `key=value` lines, never a value of a login), then removes the line and the files. A drill runs
+   as a script runs it: without `--approve` it must stop with its `Drill hash` and "Typing
+   <app>-drill approves it.", then `--confirm <app>-drill --approve <hash> --json`; it must say "…'s
+   dump loaded with N tables", and the app's database (its number of tables and a hash of its
+   tables' `CHECKSUM TABLE`) and the note must be as before it.
+   - **7b.** `drills: {}` under `snapshots:` in `plan.yaml`, then provision: plan B makes the drill
+     database, approved by its hash with `<app>-drill` typed (the names a run prints are typed only
+     when they are the app's or `<app>-drill`), and must say it "counts against your hosting plan's
+     limit". Exactly one new database, ending in `_drill`; its password, read from
+     `keys/drill.cnf` (mode 0600) through cPanel's API, goes into the scrubber. The probe logs
+     whether the account has `my_print_defaults`, whether its option files name a socket, and
+     whether `~/.my.cnf` is there, so the log says which way the snapshot, the restore and the
+     drill reached the database. Then the drill of the newest snapshot.
+   - **7c.** A table of the test's own, a view on it and a trigger in the app's database, made with
+     the app's login, so the next snapshot's dump carries `DEFINER=` (counted in the dump, it must
+     be above 0). Its drill must load it with its tables. The three are dropped again.
+   - **7d.** The other way to the socket. Only when the account has `my_print_defaults`, no socket
+     in its option files and no `~/.my.cnf`: the test writes a `~/.my.cnf` (0600) naming the
+     clients' built-in socket (`mysql --no-defaults --verbose --help`), the probe must then find a
+     socket in the option files, and a snapshot, its restore (the note back) and its drill must
+     pass; the file is removed again, also by the cleanup when a failure stopped the step. On
+     another account, the reason it wasn't tried is a finding.
 8. **Destroy:** `destroy --confirm <hostname> --no-snapshot`, each plan approved by its hash. The
-   account must no longer serve the hostname or have the app's cron lines, database or folder (nor,
+   account must no longer serve the hostname or have the app's cron lines, database (and drill
+   database) or folder (nor,
    for the Node.js app, its `~/nodevenv` folder), and GitHub no deploy key of the agent. Then the
    leg's own leak search: its commits (every branch), pull requests, audit log, saved plans,
    reports and folder copy, and the agent's log on the account (read before the destroy), for the
    token, the agent's key, the app's settings and the age identity.
 
 The legs, in order:
-- `php`: `examples/php-plain-mysql`, steps 1 to 8;
+- `php`: `examples/php-plain-mysql`, steps 1 to 8 (7b to 7d among them);
 - `site`: `examples/static-vite`, steps 1 to 6 and 8;
 - `node`: `examples/hono-api` through CloudLinux's selector, steps 1 to 6 and 8, with one setting
   of its own (`OPSCREW_E2E_SETTING`, a random value) to see where the selector keeps it;
@@ -3628,6 +3709,7 @@ After every step and always:
   ever touched. The zone is never edited: the TXT records AutoSSL added for the run's hostnames
   (`_acme-challenge.e2e-<tag>-<leg>`, `_acme-challenge.www.e2e-<tag>-<leg>`) stay, and the log names
   each for removal by hand in cPanel's Zone Editor;
+- the `~/.my.cnf` of the drill steps (7d), when a failure stopped the step before it removed it;
 - the inventory again: any difference from the one before is a problem that fails the run.
 
 **If a run was interrupted:** in cPanel, remove the cron lines naming `opscrew/e2e-<tag>`, the
@@ -3636,7 +3718,8 @@ subdomains `e2e-<tag>-…`, the databases and users `<prefix>e2e_<tag>_…`, the
 those subdomains. For the Node.js app, first the app in Setup Node.js App, then the folder
 `~/nodevenv/opscrew/e2e-<tag>-…` and the run's section in `~/.cl.selector/htaccess_cache` (the
 lines naming `opscrew/e2e-<tag>-…`). Remove `~/.lsphp_restart.txt`, `~/.cache` and `~/.npm` if
-they weren't there before the run. In the Zone Editor, remove the TXT records
+they weren't there before the run, and `~/.my.cnf` when a stopped step 7d left the one it wrote
+(it names only a socket). In the Zone Editor, remove the TXT records
 `_acme-challenge.e2e-<tag>-…` and `_acme-challenge.www.e2e-<tag>-…` AutoSSL added. In the throwaway repository, delete the deploy keys
 `opscrew-e2e-<tag>-…` and the `prod` environment if the run made it.
 
@@ -3661,7 +3744,9 @@ OPSCREW_E2E_CPANEL=1 OPSCREW_E2E_CPANEL_URL=… OPSCREW_E2E_CPANEL_USER=… \
 
 **Expected time and cost** (not measured yet): about 30–45 minutes per leg (each provision waits
 up to 3 minutes for the agent's report and up to 5 for AutoSSL's certificate; two deploy runs
-per leg but the refused Laravel leg), so 2 to 3 hours in all. It costs no money beyond the account
+per leg but the refused Laravel leg), so 2 to 3 hours in all, and about 30 minutes more for the
+drill steps 7b to 7d (each of their commands on the account waits for the next minute's cron run;
+one more deploy run, when provision's drill database comes with a pull request). It costs no money beyond the account
 the founder already pays, and GitHub Actions minutes. It leaves nothing on the account but what
 AutoSSL rewrites on its own (the zone's `_cpanel-dcv-test-record` value, R11) and the TXT records
 AutoSSL adds for its hostnames (`_acme-challenge.e2e-<tag>-…`, `_acme-challenge.www.e2e-<tag>-…`,

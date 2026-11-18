@@ -9,7 +9,8 @@
  *   data changed, `opscrew restore` puts every service back exactly, the version unchanged
  *   (SC-2401); `--only db` puts back only the database. `snapshot delete` needs the id typed. With
  *   `OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1` too, a schedule at `1h` with `--keep 1`: two scheduled
- *   snapshots on the hour, the first pruned (SC-2403), then `schedule off` removes the crontab line.
+ *   snapshots on the hour, the first pruned (SC-2403), the scheduled restore drill (its crontab
+ *   command run by the test in and out of its slot), then `schedule off` removes both lines.
  * - **the off-server copy**, with `OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`, to R2 (`OPSCREW_E2E_R2=1`),
  *   to Hetzner Object Storage (its S3 key), to the user's own S3-compatible bucket (one the test
  *   makes in Hetzner Object Storage with that key) and to the user's own machine over SFTP (a
@@ -78,14 +79,17 @@ import {
   type DeployRun,
   deployLogLeaks,
   designRunApp,
+  drillRecipeThere,
   hetznerImageExists,
   hetznerServer,
   listSnapshots,
   offsiteLogTail,
+  provisionTyping,
   readData,
   removeServerSnapshots,
   restoredMark,
   SftpMachine,
+  scheduledDrillSteps,
   seedData,
   snapshotOf,
   waitForVersion,
@@ -249,20 +253,31 @@ describe.skipIf(MISSING.data.length > 0)(
     const exec = async () => execOn(await envs.shell(STAGING));
     const data = () => seeded as SnapshotData;
 
-    /** Provision staging until done, then its deploy run (provision must open a pull request). */
-    async function provisionAndDeploy(what: string): Promise<void> {
-      await envs.provision(STAGING, what);
+    /**
+     * Provision staging until done, then its deploy run (provision must open a pull request). With
+     * `typing`, the plans that need `<app>-drill` typed (the drills') are approved with it too; the
+     * names typed are returned.
+     */
+    async function provisionAndDeploy(what: string, typing = false): Promise<string[]> {
+      const app = envs.app(STAGING);
+      const args = [...envs.appArgs, "--env", STAGING];
+      const typed = typing
+        ? (await provisionTyping(run, what, [app, `${app}-drill`], args)).typed
+        : [];
+      if (typing) await envs.remember(STAGING);
+      else await envs.provision(STAGING, what);
       const id = await run.deploy(what, [workflow]);
       if (id === undefined)
         throw new Error(`${what}: provision opened no deploy-setup pull request.`);
       deployRuns.push({ what, id });
       await run.waitForHealth(minutes(10), true, health);
+      return typed;
     }
 
-    /** The deploy user's crontab line of staging's scheduled snapshots, or `""`. */
-    async function crontabLine(): Promise<string> {
+    /** The deploy user's crontab line of staging's scheduled snapshots (or drills), or `""`. */
+    async function crontabLine(of: "snapshots" | "drill" = "snapshots"): Promise<string> {
       return (await exec())(
-        `crontab -l 2> /dev/null | grep -F '# opscrew-snapshots ${envs.app(STAGING)}'; s=$?; [ "$s" -le 1 ]`,
+        `crontab -l 2> /dev/null | grep -F '# opscrew-${of} ${envs.app(STAGING)}'; s=$?; [ "$s" -le 1 ]`,
       );
     }
 
@@ -494,13 +509,30 @@ describe.skipIf(MISSING.data.length > 0)(
       scheduleSkip,
     );
 
+    scheduledDrillSteps({
+      run,
+      shell: () => envs.shell(STAGING),
+      env,
+      app: () => envs.app(STAGING),
+      plan: () => envs.readPlan(STAGING),
+      project: () => project,
+      provision: (what) => provisionAndDeploy(what, true),
+      crontabLine: () => crontabLine("drill"),
+      options: scheduleSkip,
+    });
+
     run.step(
-      "S3. snapshot schedule off, provision and deploy: the crontab line is gone and the scheduled snapshot stays (US5)",
+      "S3. snapshot schedule off, which takes the drill schedule too, provision (the drills' removal approved with <app>-drill typed) and deploy: both crontab lines and .drill-recipe/ are gone, and the scheduled snapshot stays (US5)",
       minutes(60),
       async () => {
         await run.opscrewOk("snapshot", "schedule", "off", ...env);
-        await provisionAndDeploy("the schedule turned off");
+        await provisionAndDeploy("the schedule turned off", true);
         expect(await crontabLine(), "the deploy user's crontab line").toBe("");
+        expect(await crontabLine("drill"), "the deploy user's drill line").toBe("");
+        expect(
+          await drillRecipeThere(await exec(), appDir(await envs.readPlan(STAGING))),
+          "the drills' recipe folder",
+        ).toBe(false);
         expect(
           (await listSnapshots(run, env)).some((snapshot) => snapshot.kind === "scheduled"),
           "a scheduled snapshot is still listed",

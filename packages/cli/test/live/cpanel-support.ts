@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { CpanelPanel } from "@opscrew/connector-cpanel";
 import type { FetchLike, HostingPanelAccess } from "@opscrew/contracts";
 import { z } from "zod";
-import type { DeployRun, HttpAnswer } from "./cloud";
+import { type DeployRun, type HttpAnswer, waitFor } from "./cloud";
 import { removeGithubLeftovers } from "./environment-checks";
 import type { LiveRun } from "./harness";
 import { type DeployJob, jobSucceeded } from "./support";
@@ -726,6 +726,125 @@ function namesOtherRun(entry: string, tag: string): boolean {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Restore drills on the account: the scripts the run's cron line runs (`runByCron`).
+
+/** A database's or a path's name as the scripts take it: letters, digits, `_`, `-`, `.`, `/`. */
+function plainName(value: string, what: string): string {
+  if (!/^[A-Za-z0-9_./-]+$/.test(value)) throw new Error(`The ${what} "${value}" is not plain.`);
+  return value;
+}
+
+/**
+ * The start of each script on the account: `S`, the socket the account's option files name, as
+ * the agent reads it (`my_print_defaults client mysql`, the last `--socket=` line), and `m`, the
+ * app's own MySQL client in the leg's folder `folder` on its `database`, as the agent signs in.
+ */
+function mysqlClient(folder: string, database: string): string[] {
+  return [
+    'cd "$HOME" || exit 1',
+    "S=$(my_print_defaults client mysql 2> /dev/null | sed -n 's/^--socket=//p' | tail -n 1)",
+    `m() { mysql --defaults-file=${plainName(folder, "folder")}/shared/mysql.cnf \${S:+"--socket=$S"} -N -B "$@" ${plainName(database, "database")}; }`,
+  ];
+}
+
+/**
+ * The script that tells, as `key=value` lines and never a value of a login, what the agent's
+ * MySQL clients meet on the account: whether `my_print_defaults` is there (`tool.my_print_defaults`),
+ * whether the account's option files name a socket (`option_socket`), the clients' built-in
+ * socket (`default_socket`, a path), whether `~/.my.cnf` is there (`my_cnf`), and the app's
+ * database `database` as it is: its number of tables (`tables`) and a hash of its tables'
+ * checksums (`checksum`).
+ */
+export function mysqlProbeScript(folder: string, database: string): string {
+  return [
+    ...mysqlClient(folder, database),
+    "if command -v my_print_defaults > /dev/null; then echo tool.my_print_defaults=yes; else echo tool.my_print_defaults=no; fi",
+    'if [ -n "$S" ]; then echo option_socket=yes; else echo option_socket=no; fi',
+    "D=$(mysql --no-defaults --verbose --help 2> /dev/null | sed -n 's/^socket[[:space:]][[:space:]]*\\(\\/[^[:space:]]*\\)$/\\1/p' | tail -n 1)",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's variable.
+    'echo "default_socket=${D:--}"',
+    "if [ -f .my.cnf ]; then echo my_cnf=yes; else echo my_cnf=no; fi",
+    `echo "tables=$(m -e 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()')"`,
+    `echo "checksum=$(for t in $(m -e "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY 1"); do m -e "CHECKSUM TABLE $t"; done | sha256sum | cut -c 1-16)"`,
+  ].join("\n");
+}
+
+/** The view, trigger and table the definer check makes in the app's database, named for it. */
+const DEFINER_OBJECTS = {
+  table: "e2e_drill_rows",
+  view: "e2e_drill_view",
+  trigger: "e2e_drill_trigger",
+} as const;
+
+/**
+ * The script that makes (`make`) or drops (`drop`) a table of the test's own in the app's
+ * database `database`, with a view on it and a trigger, which MySQL gives a `DEFINER=` the
+ * snapshot's dump then carries; it prints `definer_objects=made` or `definer_objects=dropped`.
+ */
+export function definerObjectsScript(
+  folder: string,
+  database: string,
+  action: "make" | "drop",
+): string {
+  const { table, view, trigger } = DEFINER_OBJECTS;
+  const sql =
+    action === "make"
+      ? `CREATE TABLE IF NOT EXISTS ${table} (id INT PRIMARY KEY); CREATE OR REPLACE VIEW ${view} AS SELECT id FROM ${table}; DROP TRIGGER IF EXISTS ${trigger}; CREATE TRIGGER ${trigger} BEFORE INSERT ON ${table} FOR EACH ROW SET NEW.id = NEW.id; INSERT IGNORE INTO ${table} VALUES (1)`
+      : `DROP TRIGGER IF EXISTS ${trigger}; DROP VIEW IF EXISTS ${view}; DROP TABLE IF EXISTS ${table}`;
+  return [
+    ...mysqlClient(folder, database),
+    `m -e "${sql}" && echo definer_objects=${action === "make" ? "made" : "dropped"}`,
+  ].join("\n");
+}
+
+/** The script that counts the `DEFINER=` clauses of the snapshot `id`'s dump (`dump_definers`). */
+export function dumpDefinersScript(folder: string, id: string): string {
+  const dump = `${plainName(folder, "folder")}/dumps/${plainName(id, "snapshot id")}.sql.gz`;
+  return [
+    'cd "$HOME" || exit 1',
+    `echo "dump_definers=$(gzip -dc ${dump} | grep -o 'DEFINER=' | wc -l | tr -d ' ')"`,
+  ].join("\n");
+}
+
+/** The `key=value` lines a script on the account printed. */
+export function printedValues(output: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of output.split(/\r?\n/)) {
+    const at = /^([a-z_.]+)=(.*)$/.exec(line.trim());
+    if (at !== null) values[at[1] as string] = at[2] as string;
+  }
+  return values;
+}
+
+/**
+ * Why the drill steps can't try the other way to the database's socket on this account, from what
+ * {@link mysqlProbeScript} found (`found`); `undefined` when they can: the account has
+ * `my_print_defaults`, no socket in its option files and no `~/.my.cnf`, and the clients name a
+ * built-in socket, which a `~/.my.cnf` of the test's then names. The test never changes a file the
+ * account already has.
+ */
+export function otherSocketWay(found: Readonly<Record<string, string>>): string | undefined {
+  if (found["tool.my_print_defaults"] !== "yes") {
+    return "the account has no my_print_defaults, so the agent's clients always use their built-in socket; a socket from the option files wasn't tried";
+  }
+  if (found.option_socket === "yes") {
+    return "the account's option files name a socket, so the clients' built-in default wasn't tried (the test doesn't change the account's own files)";
+  }
+  if (found.my_cnf === "yes") {
+    return "the account has a ~/.my.cnf naming no socket, which the test leaves, so a socket from the option files wasn't tried";
+  }
+  if ((found.default_socket ?? "-") === "-") {
+    return "the account's mysql names no built-in socket, so a socket from the option files wasn't tried";
+  }
+  return undefined;
+}
+
+/** The `~/.my.cnf` that names `socket` for the account's clients, standing in for the host's own. */
+export function socketOptionFile(socket: string): string {
+  return `[client]\nsocket=${plainName(socket, "socket")}\n`;
+}
+
+// ---------------------------------------------------------------------------------------------
 // The account, through its API (reads, and the cleanup's removals).
 
 const flag = z.union([z.number(), z.string()]).transform(Number);
@@ -870,6 +989,54 @@ export class CpanelAccount {
     if ((answer.error ?? "") !== "")
       throw new Error(`cPanel refused ${module}::${func}: ${answer.error}`);
     return answer.data;
+  }
+
+  /** The mode cPanel shows for the file `name` in `dir` (such as `0600`), if it is there. */
+  async fileMode(dir: string, name: string): Promise<string | undefined> {
+    return (await this.files(dir))?.find((entry) => entry.file === name)?.nicemode ?? undefined;
+  }
+
+  /**
+   * Runs the sh `script` once on the account as its user, through a cron line of the run's that
+   * starts each minute: the script, a wrapper and the output are files `e2e-run*` in `folder` (a
+   * leg's app folder, whose name names the run, so a cleanup removes a line left behind). Once the
+   * output is complete (within `ms`), the line goes, then the files. Returns the output, which the
+   * script keeps free of values.
+   */
+  async runByCron(folder: string, script: string, ms = 5 * 60_000): Promise<string> {
+    const base = `${folder}/e2e-run`;
+    const wrapper = [
+      'cd "$HOME" || exit 1',
+      // One run only: a second start in the next minute finds the mark and stops.
+      `[ -e ${base}.ran ] && exit 0`,
+      `: > ${base}.ran`,
+      `sh ${base}.sh > ${base}.tmp 2>&1`,
+      `echo e2e-run-done >> ${base}.tmp`,
+      `mv ${base}.tmp ${base}.out`,
+    ].join("\n");
+    const encode = (text: string) => new TextEncoder().encode(`${text}\n`);
+    await this.panel.writeFile(`${base}.sh`, encode(script), 0o600);
+    await this.panel.writeFile(`${base}-cron.sh`, encode(wrapper), 0o700);
+    const job = await this.panel.addCron({
+      schedule: "* * * * *",
+      command: `sh $HOME/${base}-cron.sh > /dev/null 2>&1`,
+    });
+    try {
+      return await waitFor(
+        "the run's cron line running its script on the account",
+        ms,
+        async () => {
+          const out = await this.panel.readFile(`${base}.out`);
+          return out?.includes("e2e-run-done") === true ? out : undefined;
+        },
+        15_000,
+      );
+    } finally {
+      await this.panel.removeCron(job.key);
+      for (const suffix of [".sh", "-cron.sh", ".ran", ".tmp", ".out"]) {
+        await this.panel.remove(`${base}${suffix}`).catch(() => undefined);
+      }
+    }
   }
 
   /** The prefix cPanel gives database and database user names (`<user>_`, cut), if it says. */

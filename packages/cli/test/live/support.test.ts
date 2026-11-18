@@ -581,6 +581,9 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
       "6",
       "7",
       "7b",
+      "7c",
+      "7d",
+      "7e",
       "8",
       "9",
       "9b",
@@ -610,6 +613,8 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
     expect(portainerSteps("9")).toEqual(["1", "1b", "2a", "2", "8", "9", "12"]);
     expect(portainerSteps("5,6")).toEqual(["1", "1b", "2a", "2", "5", "6", "12"]);
     expect(portainerSteps("10")).toEqual(["1", "1b", "2a", "10", "12"]);
+    expect(portainerSteps("7c,7d")).toEqual(["1", "1b", "2a", "2", "7c", "7d", "12"]);
+    expect(portainerSteps("7e")).toEqual(["1", "1b", "2a", "2", "7b", "7e", "8", "9b", "12"]);
   });
 
   it("empties OpsCrew's record before a fresh setup when step 2 set the app up", () => {

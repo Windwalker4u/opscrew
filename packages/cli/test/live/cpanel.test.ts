@@ -3,7 +3,8 @@
  * SC-2701 to SC-2704): one leg per app, one after the other on the throwaway repository, each on its
  * own `e2e-<tag>-<leg>` subdomain of `OPSCREW_E2E_CPANEL_DOMAIN`:
  * - `php`: `examples/php-plain-mysql` (PHP through the hostname's handler line; its database, cron
- *   job, settings and kept storage), with a snapshot and its restore;
+ *   job, settings and kept storage), with a snapshot and its restore, then feature 029's restore
+ *   drills (the drill database, a dump with `DEFINER=`, both ways to the database's socket);
  * - `site`: `examples/static-vite`;
  * - `node`: `examples/hono-api` through CloudLinux's selector (its findings printed);
  * - `laravel`: `examples/laravel-app`, whole with `OPSCREW_E2E_CPANEL_LARAVEL=1`; otherwise its
@@ -35,6 +36,8 @@ import {
   CPANEL_LARAVEL_GATE,
   CPANEL_VARIABLES,
   CpanelAccount,
+  definerObjectsScript,
+  dumpDefinersScript,
   envNames,
   hostingAnswers,
   hostingEnv,
@@ -43,12 +46,15 @@ import {
   inventoryProblems,
   legNames,
   type Marker,
+  mysqlProbeScript,
   namesRun,
   nothingDeployed,
   otherRunsObjects,
+  otherSocketWay,
   PANEL_DEPLOY_JOB,
   PHP_MARKER,
   panelAccess,
+  printedValues,
   releaseOf,
   runCertificates,
   runTag,
@@ -56,6 +62,7 @@ import {
   SITE_MARKER,
   type SwitchPages,
   selectorEnvNames,
+  socketOptionFile,
   switchVerdict,
   watchSwitch,
 } from "./cpanel-support";
@@ -69,7 +76,7 @@ import {
   serverSettings,
 } from "./harness";
 import { shownRollback } from "./rollback-support";
-import { approvedRestore } from "./snapshots-checks";
+import { approvedDrill, approvedRestore, provisionTyping } from "./snapshots-checks";
 import { approveHashes, duration, leakedLabels, missingVariables } from "./support";
 
 const ENV = process.env;
@@ -179,6 +186,8 @@ describe.skipIf(MISSING.length > 0)(
       | undefined;
     /** The leak search's problems of the legs done (their commits, audit logs, files, agent's log). */
     const legLeaks: string[] = [];
+    /** Whether the drill steps' ~/.my.cnf is on the account (the cleanup removes it). */
+    let myCnfWritten = false;
 
     const cpanel = () => account as CpanelAccount;
     const secrets = () =>
@@ -329,7 +338,9 @@ describe.skipIf(MISSING.length > 0)(
       let first = "";
       let second = "";
       const value = (n: number) => `value-${tag}-${n}`;
-      const n = (step: number) => `${LEGS.indexOf(leg) + 1}.${step} ${leg.key}`;
+      const n = (step: number | string) => `${LEGS.indexOf(leg) + 1}.${step} ${leg.key}`;
+      /** The drill database the drill steps made (`<app's database>_drill`), once made. */
+      let drillDatabase: string | undefined;
 
       run.step(
         `${n(1)}: examples/${leg.example} as ${app}: init, analyze, the interview (it finds cPanel by itself) and design`,
@@ -444,7 +455,9 @@ describe.skipIf(MISSING.length > 0)(
             (await cpanel().panel.listDatabases()).filter((name) =>
               namesRun(name, `${tag}_${leg.key}`),
             ),
-            "the app's database",
+            drillDatabase === undefined
+              ? "the app's database"
+              : "the app's database and its drill database",
           ).toEqual([]);
           expect(
             ((await cpanel().panel.list("opscrew")) ?? []).filter((name) => name.startsWith(app)),
@@ -677,6 +690,164 @@ describe.skipIf(MISSING.length > 0)(
             log(`observed: the snapshot ${id} put the note back in MySQL and storage`);
           },
         );
+        drillSteps();
+      }
+
+      /**
+       * Restore drills on the account (029 plan.md 19., research R25): the drill database made,
+       * the drills, a dump whose view and trigger carry `DEFINER=`, and the other way to the
+       * database's socket; the drill database goes at destroy (step 8).
+       */
+      function drillSteps(): void {
+        /** The app's own database on the account, by its full name. */
+        const appDatabase = async () => {
+          const found = (await cpanel().panel.listDatabases()).find(
+            (name) => namesRun(name, tag) && name !== drillDatabase,
+          );
+          if (found === undefined) throw new Error("The account lists no database of the app.");
+          return found;
+        };
+        /** What the account's MySQL clients meet, and the app's database as it is. */
+        const probe = async () =>
+          printedValues(
+            await cpanel().runByCron(folder, mysqlProbeScript(folder, await appDatabase())),
+          );
+        /** The app's database's tables and checksums, and the note: what a drill must keep. */
+        const production = async () => {
+          const now = await probe();
+          return {
+            tables: now.tables,
+            checksum: now.checksum,
+            note: (await request(url("/data"))).body,
+          };
+        };
+        /** A drill approved as a script does, which must load the dump with its tables. */
+        const drill = async (args: readonly string[], what: string) => {
+          const before = await production();
+          const { applied, report } = await approvedDrill(run, args, "Drill hash", app);
+          expect(applied.exitCode, `${what}: ${report.summary}`).toBe(0);
+          expect(report.outcome, report.summary).toBe("healthy");
+          expect(report.summary, "what the drill proves").toMatch(/dump loaded with \d+ tables?/);
+          expect(await production(), `${what}: the app's database and the note`).toEqual(before);
+          log(`observed: ${what}: ${run.scrub(report.summary)}`);
+        };
+        /** `opscrew snapshot`'s id. */
+        const snapshot = async () => {
+          const taken = await run.opscrewOk("snapshot");
+          const id = /Took the snapshot (\S+) of /.exec(taken.output)?.[1];
+          if (id === undefined) throw new Error(`No snapshot id:\n${run.tail(taken.output)}`);
+          return id;
+        };
+        /** What the first probe found on the account. */
+        let found: Record<string, string> = {};
+
+        run.step(
+          `${n("7b")}: restore drills: drills: {} in plan.yaml, then provision: plan B makes the drill database and its user, approved by its hash with <app>-drill typed and saying it counts against the plan's limit, its login only in keys/drill.cnf (0600); the account's MySQL clients probed; restore --drill: the dump loaded with its tables, the app's database and the note unchanged`,
+          minutes(40),
+          async () => {
+            const current = await run.readPlan();
+            await writeArtifact("plan", run.paths().files.plan, {
+              ...current,
+              snapshots: { ...current.snapshots, drills: {} },
+            });
+            const before = await cpanel().panel.listDatabases();
+            const provisioned = await provisionTyping(run, `${leg.key}: the drill database`, [
+              app,
+              `${app}-drill`,
+            ]);
+            expect(provisioned.typed, "the names provision's script typed").toContain(
+              `${app}-drill`,
+            );
+            expect(provisioned.output, "provision names the plan's limit on databases").toContain(
+              "counts against your hosting plan's limit",
+            );
+            const sha = await run.mergeDeploySetup(`${leg.key}: the drill database`);
+            if (sha !== undefined) await deployed(sha, `${leg.key}: the drill database`, folder);
+            const made = (await cpanel().panel.listDatabases()).filter(
+              (name) => !before.includes(name),
+            );
+            expect(made.length, "the databases provision made").toBe(1);
+            drillDatabase = made[0] as string;
+            expect(drillDatabase, "the drill database's name").toMatch(/_drill$/);
+            const login = (await cpanel().panel.readFile(`${folder}/keys/drill.cnf`)) ?? "";
+            const passwords = [...login.matchAll(/^\s*password\s*=\s*"?([^"\r\n]+?)"?\s*$/gm)];
+            for (const [, password] of passwords) {
+              run.scrubber.add(password as string, "drill-database-password");
+            }
+            expect(passwords.length, "the drill database's password in keys/drill.cnf").toBe(1);
+            expect(
+              await cpanel().fileMode(`${folder}/keys`, "drill.cnf"),
+              "the drill login's mode",
+            ).toMatch(/^0?600$/);
+            found = await probe();
+            log(
+              `observed: my_print_defaults on the account: ${found["tool.my_print_defaults"]}; a socket in its option files: ${found.option_socket}; ~/.my.cnf: ${found.my_cnf}; so the snapshot, the restore and the drill connect with ${found.option_socket === "yes" ? "the socket of the account's option files" : "the clients' built-in default socket"}`,
+            );
+            await drill([], `${leg.key}: the drill of the newest snapshot`);
+          },
+        );
+
+        run.step(
+          `${n("7c")}: a view and a trigger in the app's database, so the snapshot's dump carries DEFINER=: the drill loads it with its tables; they are dropped again`,
+          minutes(30),
+          async () => {
+            const database = await appDatabase();
+            const made = printedValues(
+              await cpanel().runByCron(folder, definerObjectsScript(folder, database, "make")),
+            );
+            try {
+              expect(made.definer_objects, "the view and the trigger").toBe("made");
+              const id = await snapshot();
+              const dumped = printedValues(
+                await cpanel().runByCron(folder, dumpDefinersScript(folder, id)),
+              );
+              expect(
+                Number(dumped.dump_definers),
+                "the DEFINER= clauses in the dump",
+              ).toBeGreaterThan(0);
+              await drill([id], `${leg.key}: the drill of a dump with DEFINER=`);
+            } finally {
+              const dropped = printedValues(
+                await cpanel().runByCron(folder, definerObjectsScript(folder, database, "drop")),
+              );
+              expect(dropped.definer_objects, "the view and the trigger dropped").toBe("dropped");
+            }
+          },
+        );
+
+        run.step(
+          `${n("7d")}: the other way to the database's socket: with a ~/.my.cnf naming the clients' own socket (only where the account has neither that file nor a socket in its option files), the snapshot, its restore and the drill connect too; the file is removed again`,
+          minutes(40),
+          async () => {
+            const other = otherSocketWay(found);
+            if (other !== undefined) {
+              run.findings.push(`${leg.key}: ${other}`);
+              log(`finding: ${other}`);
+              return;
+            }
+            myCnfWritten = true;
+            await cpanel().panel.writeFile(
+              ".my.cnf",
+              new TextEncoder().encode(socketOptionFile(found.default_socket as string)),
+              0o600,
+            );
+            try {
+              expect((await probe()).option_socket, "the option files name a socket now").toBe(
+                "yes",
+              );
+              const id = await snapshot();
+              const restored = await approvedRestore(run, [id]);
+              expect(restored.confirm, "the name the restore asks to type").toBe(hostname);
+              expect((await request(url("/data"))).body, "the note after the restore").toBe(
+                value(1),
+              );
+              await drill([id], `${leg.key}: the drill with the socket of ~/.my.cnf`);
+            } finally {
+              await cpanel().panel.remove(".my.cnf");
+              myCnfWritten = false;
+            }
+          },
+        );
       }
 
       /**
@@ -832,6 +1003,12 @@ describe.skipIf(MISSING.length > 0)(
       },
       last: async (attempt) => {
         if (account === undefined) return;
+        if (myCnfWritten) {
+          await attempt("remove the drill steps' ~/.my.cnf", async () => {
+            await cpanel().panel.remove(".my.cnf");
+            return [];
+          });
+        }
         if (before === undefined) {
           await attempt("clean up the account", async () => [
             "there is no inventory from before the run, so the cleanup changed nothing on the account; look for e2e-… objects in cPanel",
