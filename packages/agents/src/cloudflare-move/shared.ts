@@ -282,6 +282,18 @@ export async function revokeAOrigin(
       ],
     };
   }
+  // Once A's zone has moved, Cloudflare no longer reads or revokes its origin certificates (live,
+  // 2026-11-18: "Failed to read certificate from Database" for either account's token).
+  const zoneStatus = await a.client
+    .getZone(record.zoneId)
+    .then((zone) => zone.status)
+    .catch(() => "unreadable");
+  if (zoneStatus !== "active") {
+    deps.reporter.info(
+      `The origin certificate of ${session.zone} from the account the app moved from can't be revoked: Cloudflare no longer revokes the certificates of a zone that moved to another account. The server serves the new account's origin certificate, and no deploy secret holds the old one any more, so OpsCrew leaves it.`,
+    );
+    return undefined;
+  }
   // Only the origin certificate: no rule, client certificate or setting of A's is read or planned.
   const only: SharedRecord = {
     zoneId: record.zoneId,
