@@ -27,12 +27,13 @@ import {
   orText,
 } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
-import { CHECK_PAUSED_VARIABLE, usesTunnel } from "@opscrew/iac-templates";
+import { CHECK_PAUSED_VARIABLE, homeMode, usesTunnel } from "@opscrew/iac-templates";
 import {
   type ArtifactKind,
   type ArtifactOf,
   type DeployPlan,
   isServerlessProvider,
+  likelyCloudflareZone,
   type Requirements,
   readArtifact,
   type ServerlessProvider,
@@ -50,6 +51,7 @@ import {
   registrarFor,
   registrarLinks,
 } from "../domain/registrars";
+import { UPDATER_TOKEN_VAR, updaterTokenRecipe } from "../home/token";
 import { HOSTING_TOKEN_VAR, hostingReach } from "../hosting/panels";
 import {
   PORTAINER_TOKEN_VAR,
@@ -102,6 +104,11 @@ export type InitCheckId =
   /** Optional, listed only for a Portainer target: the read-only GitHub tokens Portainer pulls with. */
   | "portainer-tokens"
   | "cloudflare"
+  /**
+   * Optional, listed only for a server at home with its DNS on Cloudflare: the address updater's
+   * own token, with its recipe while it is not set.
+   */
+  | "dns-updater"
   /**
    * Optional, listed only for a server-rendered app on Cloudflare hosting: whether the Cloudflare
    * token can read the Worker's logs (FR-1714).
@@ -272,6 +279,7 @@ export async function runInitChecks(
     HOSTING_TOKEN_VAR,
     REGISTRY_TOKEN_VAR,
     REPOSITORY_TOKEN_VAR,
+    UPDATER_TOKEN_VAR,
     ...registrarSecrets,
   ]) {
     const value = env[name]?.trim();
@@ -299,6 +307,7 @@ export async function runInitChecks(
     target?.provider === "cloudflare-workers" && target.render === "ssr"
       ? target.worker
       : undefined;
+  const updaterZone = homeUpdaterZone(artifacts.plan);
 
   const checks = await Promise.all([
     guard("node", "Node.js", true, async () => checkNode(services.nodeVersion)),
@@ -360,6 +369,13 @@ export async function runInitChecks(
         usage.needed === true,
       );
     }),
+    ...(updaterZone !== undefined
+      ? [
+          guard("dns-updater", "Cloudflare token for the address updater", false, async () =>
+            checkUpdaterTokenSet(env, updaterZone),
+          ),
+        ]
+      : []),
     ...(loggedWorker !== undefined
       ? [
           guard("cloudflare-logs", "Cloudflare token for `opscrew logs` (optional)", false, () =>
@@ -963,6 +979,32 @@ async function checkCloudflare(
   return {
     status: "pass",
     message: `CLOUDFLARE_API_TOKEN works and can see the zone ${zone.name}.${tunnelNote(usage)}`,
+  };
+}
+
+/** The zone of a server at home whose address updater keeps its records on Cloudflare. */
+function homeUpdaterZone(plan: DeployPlan | undefined): string | undefined {
+  if (plan === undefined || !homeMode(plan) || plan.dns.provider !== "cloudflare") return undefined;
+  const domain = plan.dns.domain;
+  return domain === undefined ? undefined : (plan.dns.zone ?? likelyCloudflareZone(domain));
+}
+
+/**
+ * The address updater's own token: set, or its recipe (plan 6.). It's needed the first time
+ * provision sets the updater up; provision and `opscrew rotate dns-updater` check what it can
+ * reach before any change.
+ */
+function checkUpdaterTokenSet(env: Record<string, string | undefined>, zone: string): CheckResult {
+  if (hasEnv(env, UPDATER_TOKEN_VAR)) {
+    return {
+      status: "pass",
+      message: `${UPDATER_TOKEN_VAR} is set. \`opscrew provision\` checks that it is limited to ${zone}'s DNS before it changes anything.`,
+    };
+  }
+  return {
+    status: "warn",
+    message: `${UPDATER_TOKEN_VAR} is not set. Your server's address updater needs a Cloudflare token of its own, limited to ${zone}'s DNS, the first time \`opscrew provision\` sets it up.`,
+    fix: updaterTokenRecipe(zone, UPDATER_TOKEN_VAR, "opscrew init"),
   };
 }
 

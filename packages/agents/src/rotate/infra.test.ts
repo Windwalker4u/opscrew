@@ -19,8 +19,10 @@ import type {
   PlanSummary,
   ResourceChange,
   ResourceDrift,
+  ResourceMove,
 } from "@opscrew/contracts";
 import { exists, OpsCrewError, tfstateFile } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { stateKeyName } from "@opscrew/iac-engine";
 import { checkEnvironmentKey, storageRootDir } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
@@ -121,6 +123,8 @@ class CryptEngine implements IacEngine {
   readonly calls: string[] = [];
   /** The environment of each plan. */
   readonly envs: Record<string, string | undefined>[] = [];
+  /** Every environment the engine got, by any command. */
+  readonly seen: Record<string, string | undefined>[] = [];
   statePath: string | undefined;
   #count = 0;
   /** The state each plan was made from, by the plan's hash: a plan the state outgrew is stale. */
@@ -146,6 +150,8 @@ class CryptEngine implements IacEngine {
       writesFallback?: boolean;
       /** Managed resources changed outside the engine, which each plan reports. */
       drift?: ResourceDrift[];
+      /** State renames each plan reports. */
+      moves?: ResourceMove[];
     } = {},
   ) {}
 
@@ -162,6 +168,7 @@ class CryptEngine implements IacEngine {
 
   async init(_dir: string, options?: IacInitOptions): Promise<void> {
     this.calls.push("init");
+    this.seen.push({ ...options?.env });
     this.statePath = options?.backendConfig?.path;
   }
 
@@ -175,6 +182,7 @@ class CryptEngine implements IacEngine {
     options: IacRunOptions & { replace?: readonly string[]; refreshOnly?: boolean } = {},
   ): Promise<PlanSummary> {
     this.calls.push("plan");
+    this.seen.push({ ...options.env });
     if (
       this.statePath !== undefined &&
       !(await this.opens(this.statePath, options.env?.TF_ENCRYPTION))
@@ -218,6 +226,7 @@ class CryptEngine implements IacEngine {
       hasDestroy: changes.some((c) => c.action === "delete" || c.action === "replace"),
       planJson: this.scenario.planJson ?? { resource_changes: [] },
       ...(this.scenario.drift !== undefined ? { drift: this.scenario.drift } : {}),
+      ...(this.scenario.moves !== undefined ? { moves: this.scenario.moves } : {}),
     };
   }
 
@@ -228,6 +237,7 @@ class CryptEngine implements IacEngine {
     options: IacRunOptions = {},
   ): Promise<IacApplyResult> {
     this.calls.push("apply");
+    this.seen.push({ ...options.env });
     if (sha256(await readFile(planFile)) !== approval.approvedPlanHash) {
       throw new Error("plan hash mismatch");
     }
@@ -254,12 +264,14 @@ class CryptEngine implements IacEngine {
     return { ok: true, outputs: this.scenario.outputs ?? {}, log: "Apply complete!" };
   }
 
-  async output(): Promise<Record<string, unknown>> {
+  async output(_dir: string, options: IacRunOptions = {}): Promise<Record<string, unknown>> {
+    this.seen.push({ ...options.env });
     return this.scenario.stateOutputs ?? {};
   }
 
   async stateResources(file: string, options: IacRunOptions = {}): Promise<string[]> {
     this.calls.push("state list");
+    this.seen.push({ ...options.env });
     if (!(await this.opens(file, options.env?.TF_ENCRYPTION))) {
       throw new OpsCrewError("ENGINE_FAILED", "OpenTofu could not decrypt the state.");
     }
@@ -748,6 +760,72 @@ function accessOutputs() {
     deploy_service_token_client_secret: randomBytes(32).toString("hex"),
   };
 }
+
+describe("the rotations' engine", () => {
+  it("never gets the address updater's tokens, which only a server at home holds", async () => {
+    const tokens = [
+      fakeSecret("cloudflare-token", "infra-updater"),
+      fakeSecret("cloudflare-token", "infra-new-updater"),
+    ];
+    const withTokens = (w: World) => {
+      w.deps.env.OPSCREW_DNS_UPDATER_TOKEN = tokens[0];
+      w.deps.env.OPSCREW_NEW_DNS_UPDATER_TOKEN = tokens[1];
+      return w;
+    };
+    const passphrase = withTokens(await world(withBucket(testPlan({ deployed: true }), "r2")));
+    const storage = join(passphrase.deps.paths.files.tfstateDir, "storage.tfstate");
+    await writeFile(storage, lockedState("opscrew", passphrase.passphrase));
+    await rotateStatePassphrase(passphrase.deps, passphrase.plan, services(passphrase));
+    const access = withTokens(
+      await world(
+        ownPlan({ access: "tunnel", deployed: true }),
+        new CryptEngine({
+          changes: [change(ACCESS, "replace", "cloudflare_zero_trust_access_service_token")],
+          outputs: accessOutputs(),
+        }),
+      ),
+    );
+    await rotateAccessToken(access.deps, access.plan, services(access));
+
+    for (const w of [passphrase, access]) {
+      expect(w.engine.seen.length).toBeGreaterThan(0);
+      for (const env of w.engine.seen) {
+        expect(env).not.toHaveProperty("OPSCREW_DNS_UPDATER_TOKEN");
+        expect(env).not.toHaveProperty("OPSCREW_NEW_DNS_UPDATER_TOKEN");
+        for (const token of tokens) expect(JSON.stringify(env)).not.toContain(token);
+      }
+    }
+    // Both states were rewritten under the new passphrase.
+    expect(passphrase.engine.applied).toHaveLength(2);
+  });
+
+  it("lets the DNS records' one-time rename to their count's index through, and no other", async () => {
+    const dns = "module.dns.cloudflare_dns_record";
+    const renamed = await world(
+      testPlan({ deployed: true }),
+      new CryptEngine({
+        moves: [
+          { from: `${dns}.a`, to: `${dns}.a[0]`, type: "cloudflare_dns_record" },
+          { from: `${dns}.aaaa`, to: `${dns}.aaaa[0]`, type: "cloudflare_dns_record" },
+        ],
+      }),
+    );
+    const result = await rotateStatePassphrase(renamed.deps, renamed.plan, services(renamed));
+    expect(renamed.engine.applied).toEqual([
+      { approvedPlanHash: result.hash, allowDestroy: false },
+    ]);
+
+    const other = await world(
+      testPlan({ deployed: true }),
+      new CryptEngine({
+        moves: [{ from: `${dns}.www`, to: `${dns}.www[0]`, type: "cloudflare_dns_record" }],
+      }),
+    );
+    const error = await failure(rotateStatePassphrase(other.deps, other.plan, services(other)));
+    expect(error.message).toContain(`${dns}.www (renamed to ${dns}.www[0])`);
+    expect(other.engine.applied).toEqual([]);
+  });
+});
 
 describe("rotateAccessToken", () => {
   it("replaces the token by an approved -replace plan with the deploys paused, then the deploy's secrets", async () => {

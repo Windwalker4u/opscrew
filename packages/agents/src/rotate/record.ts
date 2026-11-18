@@ -20,7 +20,14 @@ import { changeGenerated, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
 
 /** The user's own tokens that are not a cloud provider's. */
-const OTHER_TOKEN_NAMES = ["cloudflare", "github", "cloudflare-deploy", "ghcr", "ntfy"] as const;
+const OTHER_TOKEN_NAMES = [
+  "cloudflare",
+  "github",
+  "cloudflare-deploy",
+  "ghcr",
+  "ntfy",
+  "dns-updater",
+] as const;
 
 /** The name a user's token has in `opscrew rotate`: a cloud provider's id, or another token's. */
 export type UserTokenName = CloudProvider | (typeof OTHER_TOKEN_NAMES)[number];

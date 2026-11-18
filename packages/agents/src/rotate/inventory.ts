@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { exists } from "@opscrew/core";
 import {
   hasLogin,
+  homeMode,
   type RotationMode,
   serviceSpec,
   tunnelMode,
@@ -19,6 +20,7 @@ import {
   type PlanService,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { UPDATER_TOKEN_VAR } from "../home/token";
 import { credentialVars, providerProfile, VPS_PROVIDERS } from "../providers";
 import { copyPath } from "../secrets/files";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
@@ -218,6 +220,12 @@ export const USER_TOKENS: readonly UserTokenEntry[] = [
     uses: (plan) =>
       plan.observability?.check?.enabled === true && plan.observability.check.webhook === "ntfy",
     optional: true,
+  },
+  // A server at home's address updater, whose token only the server holds.
+  {
+    name: "dns-updater",
+    vars: [UPDATER_TOKEN_VAR],
+    uses: (plan) => homeMode(plan) && plan.dns.provider === "cloudflare",
   },
 ];
 

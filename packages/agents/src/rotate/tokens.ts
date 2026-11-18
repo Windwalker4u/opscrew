@@ -27,10 +27,11 @@ import {
   secretsEnvironment,
   setSecretAt,
 } from "../provision/secrets";
-import type { GitHubApi, ProvisionResult } from "../provision/types";
+import type { GitHubApi, ProvisionResult, ProvisionServices } from "../provision/types";
 import { requestApproval } from "../shared/approvals";
 import { gitClient, githubClientFromToken } from "../shared/github";
 import { readPortainerConnection } from "../shared/server-record";
+import { replaceUpdaterToken } from "./dns-updater";
 import { credentialInventory, USER_TOKENS, type UserTokenEntry, userTokenValue } from "./inventory";
 import { readCredentialsRecord, recordRotation, type UserTokenName } from "./record";
 import { tokenFirstSeen, tokenSeenAt } from "./record-tokens";
@@ -48,8 +49,14 @@ export interface TokenExpiry {
   notRead?: string;
 }
 
-/** A copy OpsCrew made of a user's token: a GitHub secret, or Portainer's registry entry. */
-export type TokenCopy = ({ kind: "github-secret" } & SecretPlace) | { kind: "portainer-registry" };
+/**
+ * A copy OpsCrew made of a user's token: a GitHub secret, Portainer's registry entry, or the
+ * address updater's token file on a server at home.
+ */
+export type TokenCopy =
+  | ({ kind: "github-secret" } & SecretPlace)
+  | { kind: "portainer-registry" }
+  | { kind: "server-file" };
 
 /** What {@link replaceToken} did. */
 export interface ReplacedToken {
@@ -68,6 +75,8 @@ export interface ReplaceTokenOptions {
   github?: GitHubApi;
   /** The provision run that replaces Portainer's registry entry (default: `runProvision`). */
   provision?: (options: RunProvisionOptions) => Promise<ProvisionResult>;
+  /** The server and Cloudflare of the host plan that replaces the address updater's token. */
+  server?: ProvisionServices;
 }
 
 /** How each of the user's tokens is named and where its expiry comes from. */
@@ -91,6 +100,11 @@ const TOKEN_WORDS: Readonly<Record<Exclude<UserTokenName, CloudProvider>, TokenW
   },
   ghcr: { title: "GitHub Container Registry read token", expiry: "github", perEnvironment: true },
   ntfy: { title: "ntfy access token" },
+  "dns-updater": {
+    title: "address updater's Cloudflare token",
+    expiry: "cloudflare",
+    perEnvironment: true,
+  },
 };
 
 /**
@@ -141,6 +155,7 @@ function deletePage(name: UserTokenName): string {
   switch (name) {
     case "cloudflare":
     case "cloudflare-deploy":
+    case "dns-updater":
       return CLOUDFLARE_TOKEN_PAGE;
     case "github":
       return "https://github.com/settings/personal-access-tokens (a classic token: https://github.com/settings/tokens)";
@@ -182,11 +197,11 @@ async function readExpiry(
       env: { CLOUDFLARE_API_TOKEN: set.value },
       ...common,
     }).client;
-    // Cloudflare's own words name CLOUDFLARE_API_TOKEN, so the deploy token gets its own.
+    // Cloudflare's own words name CLOUDFLARE_API_TOKEN, so the other tokens get their own.
     const deploy =
-      name === "cloudflare-deploy"
-        ? `The Cloudflare deploy token in ${set.variable} could not be verified (Cloudflare refused it or did not answer).`
-        : undefined;
+      name === "cloudflare"
+        ? undefined
+        : `The ${token.title} in ${set.variable} could not be verified (Cloudflare refused it or did not answer).`;
     let check: Awaited<ReturnType<CloudflareClient["verifyToken"]>> | undefined;
     try {
       check = await client?.verifyToken();
@@ -210,9 +225,9 @@ async function readExpiry(
 
 /**
  * Each of the user's tokens the environment of `deps.paths` uses (as `credentialInventory` lists
- * them), with its expiry where the provider gives it (Cloudflare's verify answer for the Cloudflare
- * and deploy tokens, GitHub's expiry header for the GitHub and GHCR tokens; Hetzner, DigitalOcean
- * and ntfy give none) and the date this computer first saw it (`tokenSeenAt`, recording nothing).
+ * them), with its expiry where the provider gives it (Cloudflare's verify answer for the Cloudflare,
+ * deploy and address updater's tokens, GitHub's expiry header for the GitHub and GHCR tokens;
+ * Hetzner, DigitalOcean and ntfy give none) and the date this computer first saw it (`tokenSeenAt`, recording nothing).
  * Read-only; a provider that does not answer is `notRead`, redacted. Values are registered with the
  * redactor and never returned.
  */
@@ -257,8 +272,10 @@ function initChecksOf(name: UserTokenName, plan: DeployPlan): InitCheckId[] {
         : ["cloudflare"];
     case "github":
       return ["github", "scheduled-check"];
+    // The address updater's token is checked (`checkUpdaterToken`) before its host plan.
     case "ghcr":
     case "ntfy":
+    case "dns-updater":
       return [];
   }
 }
@@ -286,6 +303,8 @@ async function tokenCopies(
         (await readPortainerConnection(deps.paths))?.publicImage !== true
         ? [{ kind: "portainer-registry" }]
         : [];
+    case "dns-updater":
+      return [{ kind: "server-file" }];
     default:
       return [];
   }
@@ -317,6 +336,9 @@ function copyText(copy: TokenCopy): string {
   if (copy.kind === "portainer-registry") {
     return "  Portainer's registry entry for ghcr.io, by provision's stack plan, which shows its own hash";
   }
+  if (copy.kind === "server-file") {
+    return "  the address updater's token file on your server (root only), by its host plan, which shows its own hash";
+  }
   return copy.environment === undefined
     ? `  ${copy.name} (a repository secret)`
     : `  ${copy.name} (in the GitHub environment ${copy.environment})`;
@@ -330,7 +352,9 @@ function copyText(copy: TokenCopy): string {
  * and replaces them: the GitHub secrets after one `github-secrets` approval bound to the hash of
  * the secrets, the repository and the new token's fingerprint (`--approve <hash>` in a script),
  * Portainer's registry entry through provision's stack plan (`replaceTokens.registry`, approved by
- * its own hash). Then it records the new token's first-seen date and the rotation, and names the
+ * its own hash), the address updater's token file on a server at home through the server's host
+ * plan, approved by its own hash, after `checkUpdaterToken` ({@link replaceUpdaterToken}). Then it
+ * records the new token's first-seen date and the rotation, and names the
  * page to delete the old token on. The new value is registered with the redactor first; the old
  * value is never read.
  * @throws OpsCrewError `CREDENTIALS_MISSING`, `INVALID_INPUT` or `CREDENTIALS_INVALID` before
@@ -442,6 +466,9 @@ export async function replaceToken(
     );
     const provision = options.provision ?? ((input) => runProvision(deps, input));
     await provision({ replaceTokens: { registry: true }, push: false, secrets: false });
+  }
+  if (copies.some((copy) => copy.kind === "server-file")) {
+    await replaceUpdaterToken(deps, plan, options.server ?? {});
   }
 
   // One clock reading for both: another environment knows this token as the one put in place now.

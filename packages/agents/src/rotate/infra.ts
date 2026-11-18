@@ -82,11 +82,10 @@ import {
   storageStateFile,
 } from "../provision/storage";
 import type { ProvisionServices, SavedPlan } from "../provision/types";
-import { discardSaved } from "../retarget/plans";
+import { discardSaved, isDnsRecordCountMove } from "../retarget/plans";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { PlanRefusedError, requestApproval } from "../shared/approvals";
 import {
-  chooseEngine,
   type EngineFactory,
   hasState,
   infrastructureOutputs,
@@ -300,7 +299,8 @@ function changeText(change: Pick<ResourceChange, "action" | "address">): string 
  * earlier run's, checked like this one before it was saved), that plan, its file's hash checked.
  * Stops, its plan file removed, with the next step when a replaced resource is not in the state
  * yet (the engine refuses to plan it), when the plan changes anything the rotation does not
- * (`allowed`) or renames resources, when a refresh-only plan finds a managed resource changed
+ * (`allowed`) or renames resources (but the DNS records' one-time `a` → `a[0]` rename, which
+ * changes nothing at Cloudflare), when a refresh-only plan finds a managed resource changed
  * outside OpsCrew, or when a policy blocks it.
  * @throws OpsCrewError `PHASE_PRECONDITION` for those stops; `PLAN_HASH_MISMATCH` for a saved
  * plan that changed; `ENGINE_FAILED` from the engine.
@@ -366,7 +366,8 @@ async function planRotation(
   };
   const replaced = new Set(replace);
   const others = saved.changes.filter((c) => !replaced.has(c.address) && !input.allowed(c));
-  const moves = saved.moves ?? [];
+  // The DNS records' one-time rename to their count's index changes nothing at Cloudflare.
+  const moves = (saved.moves ?? []).filter((move) => !isDnsRecordCountMove(move));
   // A refresh-only apply would accept every change made outside OpsCrew into the state, where
   // `opscrew drift` no longer sees it (managed resources only: data sources are read anew).
   const drift = input.refreshOnly === true ? (summary.drift ?? []) : [];
@@ -869,16 +870,18 @@ export async function rotateTunnelToken(
   return { hash, copy: await refreshRecoveryCopy(deps, plan) };
 }
 
-/** True when `passphrase` alone, under the key name `name`, opens the state at `statePath`. */
+/**
+ * True when `passphrase` alone, under the key name `name`, opens the state at `statePath` (the
+ * engine of `setup` with its environment).
+ */
 async function opensState(
-  deps: PhaseDeps,
-  engine: IacEngine,
+  setup: ProjectEngine,
   statePath: string,
   passphrase: string,
   name: StateKeyName,
 ): Promise<boolean> {
-  const env = { ...deps.env, TF_ENCRYPTION: tofuEncryptionEnv(passphrase, { name }) };
-  return engine.stateResources(statePath, { env }).then(
+  const env = { ...setup.env, TF_ENCRYPTION: tofuEncryptionEnv(passphrase, { name }) };
+  return setup.engine.stateResources(statePath, { env }).then(
     () => true,
     () => false,
   );
@@ -913,7 +916,7 @@ interface PassphraseRoot {
 async function passphraseRoots(
   deps: PhaseDeps,
   plan: DeployPlan,
-  engine: IacEngine,
+  setup: ProjectEngine,
   again: string,
 ): Promise<PassphraseRoot[]> {
   const { root } = deps.paths;
@@ -935,8 +938,8 @@ async function passphraseRoots(
       dir: join(root, plan.infra.dir),
       statePath: main,
       env: async (encryption) => {
-        const env = { ...deps.env, TF_ENCRYPTION: encryption };
-        await rootVariables(deps, plan, { engine, env }, again);
+        const env = { ...setup.env, TF_ENCRYPTION: encryption };
+        await rootVariables(deps, plan, { engine: setup.engine, env }, again);
         return env;
       },
     });
@@ -955,7 +958,7 @@ async function passphraseRoots(
       dir: join(root, storageRootDir(plan)),
       statePath: storage,
       env: async (encryption) =>
-        storageEngineEnv({ ...deps.env, TF_ENCRYPTION: encryption }, plan, key),
+        storageEngineEnv({ ...setup.env, TF_ENCRYPTION: encryption }, plan, key),
     });
   }
   const backups = backupsStateFile(deps.paths);
@@ -973,7 +976,7 @@ async function passphraseRoots(
       dir: join(root, backupsRootDir(plan)),
       statePath: backups,
       env: async (encryption) =>
-        backupsEngineEnv({ ...deps.env, TF_ENCRYPTION: encryption }, plan, key),
+        backupsEngineEnv({ ...setup.env, TF_ENCRYPTION: encryption }, plan, key),
     });
   }
   const verification = pagesVerificationStateFile(deps.paths);
@@ -983,7 +986,7 @@ async function passphraseRoots(
       label: "verification",
       dir: join(root, pagesVerificationRootDir(plan)),
       statePath: verification,
-      env: async (encryption) => ({ ...deps.env, TF_ENCRYPTION: encryption }),
+      env: async (encryption) => ({ ...setup.env, TF_ENCRYPTION: encryption }),
     });
   }
   return roots;
@@ -1000,14 +1003,14 @@ async function passphraseRoots(
 async function undoStatePassphrase(
   deps: PhaseDeps,
   input: {
-    engine: IacEngine;
+    setup: ProjectEngine;
     roots: readonly PassphraseRoot[];
     current: string;
     kept: string | undefined;
     again: string;
   },
 ): Promise<void> {
-  const { engine, roots, current, again } = input;
+  const { setup, roots, current, again } = input;
   const { root, environment } = deps.paths;
   if (input.kept === undefined) {
     throw new OpsCrewError(
@@ -1017,7 +1020,7 @@ async function undoStatePassphrase(
   }
   for (const each of roots) {
     const name = (await stateName(each.statePath)) as StateKeyName;
-    if (!(await opensState(deps, engine, each.statePath, current, name))) {
+    if (!(await opensState(setup, each.statePath, current, name))) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `${upperFirst(each.noun)} (${toPosixRelative(root, each.statePath)}) is already encrypted with the new passphrase, and the rotation only goes forward from there, so OpsCrew can't undo it. Nothing was changed.`,
@@ -1073,11 +1076,17 @@ export async function rotateStatePassphrase(
       { hint: `\`opscrew rotate${flags}\` lists what can be rotated.` },
     );
   }
-  const engine = await chooseEngine(
+  // The project's engine and environment (no updater token reaches it), without the state's
+  // encryption: each step below sets the `TF_ENCRYPTION` it needs.
+  const base = await projectEngine(
     deps,
-    options.preference ?? plan.infra.engine,
-    options.services?.engine,
+    { infra: { ...plan.infra, stateEncryption: false } },
+    {
+      ...(options.preference !== undefined ? { preference: options.preference } : {}),
+      ...(options.services !== undefined ? { services: options.services } : {}),
+    },
   );
+  const { engine } = base;
   if (engine.info.name !== "tofu") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -1097,11 +1106,11 @@ export async function rotateStatePassphrase(
     );
   }
   deps.redactor.addLiteral(current, "state-passphrase");
-  const roots = await passphraseRoots(deps, plan, engine, again);
+  const roots = await passphraseRoots(deps, plan, base, again);
   // An unfinished rotation's new passphrase, which some states may already be encrypted with.
   const kept = await readSecretFile(nextStatePassphraseFile(deps.paths));
   if (options.undo === true) {
-    await undoStatePassphrase(deps, { engine, roots, current, kept, again });
+    await undoStatePassphrase(deps, { setup: base, roots, current, kept, again });
     return { copy: { changed: false } };
   }
   const next = kept ?? newStatePassphrase();
@@ -1111,8 +1120,7 @@ export async function rotateStatePassphrase(
     const pending: { root: PassphraseRoot; name: StateKeyName }[] = [];
     for (const each of roots) {
       const name = (await stateName(each.statePath)) as StateKeyName;
-      const done =
-        kept !== undefined && (await opensState(deps, engine, each.statePath, next, name));
+      const done = kept !== undefined && (await opensState(base, each.statePath, next, name));
       if (!done) pending.push({ root: each, name });
     }
     const record = toPosixRelative(root, credentialsRecordFile(deps.paths));
@@ -1182,7 +1190,7 @@ export async function rotateStatePassphrase(
     }
     for (const each of roots) {
       const name = await stateName(each.statePath);
-      if (name === undefined || !(await opensState(deps, engine, each.statePath, next, name))) {
+      if (name === undefined || !(await opensState(base, each.statePath, next, name))) {
         throw new OpsCrewError(
           "ENGINE_FAILED",
           `${upperFirst(each.noun)} (${toPosixRelative(root, each.statePath)}) does not open with the new passphrase alone, so OpsCrew kept both passphrases on this computer (${file} and ${nextStatePassphraseFile(deps.paths).file}).`,
