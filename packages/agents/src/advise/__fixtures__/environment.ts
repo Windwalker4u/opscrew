@@ -26,7 +26,9 @@ import {
   ScriptedRunner,
   type TestPhaseDeps,
 } from "../../testing";
+import type { DatabaseQuery } from "../database";
 import type { AdviseGitHub, ReadingsOptions } from "../readings";
+import { type DatabaseAnswer, QUIET, queryOf, resultOf } from "./database";
 import { type Answer, type Figure, prometheusOutput } from "./prometheus";
 
 export { recordedHistory } from "./prometheus";
@@ -67,19 +69,23 @@ export interface FakeHost {
   checks?: Record<string, string | Error>;
   /** The monitoring stack's recorded answers (`shop`, prod), when the stack runs here. */
   prometheus?: Partial<Record<Figure, Answer | string>>;
+  /** The database queries answered otherwise than a quiet PostgreSQL (by the SQL on stdin). */
+  database?: Partial<Record<DatabaseQuery, DatabaseAnswer>>;
 }
 
 /**
  * The servers by address: each answers the figures command, `secure`'s host checks (healthy unless
- * `checks` say) and Prometheus's queries; any other command exits 1. An address not in `hosts` is
+ * `checks` say), Prometheus's queries and advise's database queries (a quiet PostgreSQL unless
+ * `database` says); any other command exits 1. An address not in `hosts` is
  * out of reach, with ssh's message naming it.
  */
 export function fakeServers(hosts: Record<string, FakeHost>) {
-  const commands: { host: string; command: string }[] = [];
+  const commands: { host: string; command: string; input?: string }[] = [];
   const remote = (host: string): RemoteExec => ({
     host,
-    async run(command): Promise<CommandResult> {
-      commands.push({ host, command });
+    async run(command, options): Promise<CommandResult> {
+      const input = options?.input;
+      commands.push({ host, command, ...(input === undefined ? {} : { input }) });
       const fake = hosts[host];
       const down = {
         exitCode: 255,
@@ -93,6 +99,8 @@ export function fakeServers(hosts: Record<string, FakeHost>) {
       if (command.includes("==opscrew-monitoring:") && fake.prometheus !== undefined) {
         return { exitCode: 0, stdout: prometheusOutput(command, fake.prometheus), stderr: "" };
       }
+      const query = command.includes(" psql ") ? queryOf(input) : undefined;
+      if (query !== undefined) return resultOf(fake.database?.[query] ?? QUIET[query]);
       const check = HOST_CHECKS.find((c) => c.command === command);
       if (check !== undefined) {
         const answer = fake.checks?.[check.id] ?? HEALTHY[check.id] ?? "";

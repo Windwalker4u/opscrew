@@ -141,7 +141,105 @@ export const THRESHOLDS = Object.freeze({
   tokenDaysNow: 7,
   /** Postgres's share of a short server's memory (p95 of its container): its own server. */
   databaseShare: 0.5,
+  /** A session waiting for a lock this many seconds (`soon`). */
+  dbBlockedSec: 30,
+  /** A session waiting for a lock this many seconds (`now`). */
+  dbBlockedSecNow: 300,
+  /** A transaction left open (idle in it) this many seconds (`soon`). */
+  dbIdleSec: 300,
+  /** A transaction left open (idle in it) this many seconds (`now`). */
+  dbIdleSecNow: 3600,
+  /** A query active this many seconds (`soon`). */
+  dbQuerySec: 300,
+  /** A query active this many seconds (`now`). */
+  dbQuerySecNow: 1800,
+  /** Client connections at this share of `max_connections` minus the reserved ones (`soon`). */
+  dbConnections: 0.8,
+  /** Client connections at this share of `max_connections` minus the reserved ones (`now`). */
+  dbConnectionsNow: 0.95,
+  /** A statement's mean time, in ms, with at least `dbSlowCalls` calls: slow (`soon`). */
+  dbSlowMs: 500,
+  /** A statement's mean time, in ms, with at least `dbSlowCalls` calls: slow (`now`). */
+  dbSlowMsNow: 2000,
+  /** The calls a slow statement has at least: fewer is a one-off report. */
+  dbSlowCalls: 50,
+  /** The database's share of its disk (`soon`; `now` with the disk itself at `diskHigh`). */
+  dbDiskShare: 0.5,
+  /** A table flagged for an index has at least this many live rows. */
+  dbIndexRows: 10_000,
+  /** A table flagged for an index was read in full at least this many times. */
+  dbIndexSeqScans: 100,
+  /** A table flagged for an index gave at least this many rows a full read, on average. */
+  dbIndexRowsPerScan: 5000,
+  /** A table flagged for an index had index scans under this share of its full reads. */
+  dbIndexScanShare: 0.1,
 });
+
+/** A session `pg_stat_activity` shows waiting for a lock (R21's first query). */
+export interface BlockedSession {
+  pid: number;
+  user: string;
+  application: string;
+  /** Seconds since its state last changed: how long it has waited. */
+  waitedSec: number;
+  /** The sessions holding the lock it waits for. */
+  blockers: number[];
+  /** The first blocker's `application_name`, when it has one. */
+  blockerApplication?: string;
+}
+
+/** A session with a transaction open, not idle (R21's second query). */
+export interface OpenSession {
+  pid: number;
+  user: string;
+  application: string;
+  /** `active`, `idle in transaction`, `idle in transaction (aborted)`. */
+  state: string;
+  /** Seconds its transaction has been open. */
+  openSec: number;
+  /** Seconds its current (or last) query has run. */
+  querySec: number;
+}
+
+/** A statement of `pg_stat_statements`, by total time: its normalized text, cut and redacted. */
+export interface SlowStatement {
+  text: string;
+  calls: number;
+  meanMs: number;
+  /** Its share of every statement's time in the database (0–1). */
+  share: number;
+}
+
+/** A table of `pg_stat_user_tables` (R23). */
+export interface TableScans {
+  name: string;
+  seqScan: number;
+  seqRows: number;
+  idxScan: number;
+  liveRows: number;
+}
+
+/**
+ * One PostgreSQL service's statistics, read once with fixed read-only queries (research R20–R23).
+ * A part absent was not read: the check stopped before it (`timedOut`, a failure) or, for
+ * `statements`, `pg_stat_statements` is off or the version is below 13 (then in `notRead`).
+ */
+export interface DatabaseReading {
+  /** The plan's name of the server it runs on. */
+  server: string;
+  /** Its Compose service. */
+  service: string;
+  /** When it was read (ISO 8601). */
+  at: string;
+  blocked?: BlockedSession[];
+  sessions?: OpenSession[];
+  connections?: { count: number; max: number; reserved: number };
+  statements?: SlowStatement[];
+  sizeBytes?: number;
+  tables?: TableScans[];
+  /** A query hit its time limit, which stopped the check. */
+  timedOut?: boolean;
+}
 
 /** A server's 14 days from the self-hosted stack (shares 0–1, memory in bytes). */
 export interface ServerHistory {
@@ -210,6 +308,8 @@ export interface Readings {
   };
   /** The scheduled check's issues opened in the period; absent when not read. */
   check?: IssueDates[];
+  /** Each PostgreSQL service read over SSH; absent when there is none to read. */
+  databases?: DatabaseReading[];
   /** What couldn't be read, each with why. */
   notRead: string[];
   /**

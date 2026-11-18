@@ -15,6 +15,7 @@ import {
   type DeployPlan,
   isCloudProvider,
   isCloudTarget,
+  isHostingTarget,
   isServerlessProvider,
   type Requirements,
 } from "@opscrew/plan-schema";
@@ -39,8 +40,10 @@ import {
 import { appServers } from "../shared/servers";
 import { type ResourceReading, readResources, readServerResources } from "../status/resources";
 import { serverShell } from "../status/servers";
+import { databaseWords, readDatabase } from "./database";
 import { readHistory } from "./history";
 import {
+  type DatabaseReading,
   type PriceList,
   type Readings,
   type ServerHistory,
@@ -199,6 +202,88 @@ async function readServer(
         .filter(couldNotRun)
         .map((r) => `server ${name}'s host check "${r.title}": its command could not run`),
     ],
+  };
+}
+
+/** Advise reads a database only where it has a shell. */
+const ONLY_OVER_SSH = "advise reads a database only on a server it reaches over SSH";
+
+/**
+ * The statistics of each PostgreSQL service in `plan` (research R20), on the server it runs on
+ * (the app's or an extra one), over the shell that reaches Docker there, audited as `remote-exec`
+ * without the address. In a Portainer, on this computer and a hosting account's own database:
+ * not read, with the reason.
+ */
+async function readDatabases(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: ReadingsOptions["services"],
+  flags: string,
+): Promise<Lines & { databases: DatabaseReading[] }> {
+  const { target } = plan;
+  if (isHostingTarget(target)) {
+    const engine = target.database?.engine;
+    return {
+      databases: [],
+      checked: [],
+      notRead:
+        engine === undefined
+          ? []
+          : [
+              `the statistics of the hosting account's ${engine === "mysql" ? "MySQL" : "MariaDB"} database: ${ONLY_OVER_SSH}, and only PostgreSQL`,
+            ],
+    };
+  }
+  const postgres = plan.services.filter((s) => s.kind === "postgres" && s.enabled);
+  const read = await Promise.all(
+    postgres.map(async (service): Promise<Read<DatabaseReading>> => {
+      const server = service.server ?? APP_SERVER;
+      const what = `the statistics of ${databaseWords(server, service.name)}`;
+      if (!overSsh(plan, server)) {
+        const where =
+          target.provider === "portainer"
+            ? "and it reaches your Portainer through its API"
+            : "not on this computer";
+        return { checked: [], notRead: [`${what}: ${ONLY_OVER_SSH}, ${where}`] };
+      }
+      const { value, checked, notRead } = await attempt(
+        deps,
+        what,
+        async () => {
+          const { docker } = await serverShell(deps, plan, server, services);
+          deps.reporter.step(`Reading ${what} (read-only)`);
+          const result = await readDatabase(docker, {
+            app: plan.app.name,
+            server,
+            service: service.name,
+            major: Number.parseInt(service.version, 10),
+            now: () => deps.clock.now(),
+            redact: (text) => deps.redactor.redact(text),
+          });
+          await deps.audit.append({
+            kind: "remote-exec",
+            actor: "opscrew",
+            action: `read the statistics of PostgreSQL ${service.name} (read-only)`,
+            target: `server ${server}`,
+            decision: "allow",
+          });
+          return result;
+        },
+        unreachable(`opscrew status${flags}`),
+      );
+      // A check whose first query failed read nothing.
+      const anything = value?.reading.blocked !== undefined || value?.reading.timedOut === true;
+      return {
+        ...(value === undefined ? {} : { value: value.reading }),
+        checked: anything ? checked : [],
+        notRead: [...notRead, ...(value?.notRead ?? [])],
+      };
+    }),
+  );
+  return {
+    databases: read.flatMap((r) => (r.value === undefined ? [] : [r.value])),
+    checked: read.flatMap((r) => r.checked),
+    notRead: read.flatMap((r) => r.notRead),
   };
 }
 
@@ -414,9 +499,9 @@ async function readServerHistory(
  * (as `status` reads them) and its 14 days from the self-hosted stack, `secure`'s host checks, the
  * plan (each server OpsCrew created as provision last rendered it), the interview's answers, the
  * providers' prices, Dependabot's alerts and pull requests, the GitHub and Cloudflare tokens' expiry,
- * the scheduled check's issues and the credentials' dates (names and dates only, nothing
- * recorded); with what was read (`checked`). Every remote command is fixed
- * and read-only, audited by its reader as `remote-exec`. `flags` are the environment's ` --app …`/
+ * the scheduled check's issues, the credentials' dates (names and dates only, nothing
+ * recorded) and each PostgreSQL service's statistics; with what was read (`checked`). Every
+ * remote command is fixed and read-only, audited by its reader as `remote-exec`. `flags` are the environment's ` --app …`/
  * ` --env …` for the commands it names.
  */
 export async function readAdvice(
@@ -434,7 +519,7 @@ export async function readAdvice(
     asDeployed(deps, plan),
     sharedPreviewsLimit(deps.paths),
   ]);
-  const [prices, servers, history, github, cloudflare, credentials] = await Promise.all([
+  const [prices, servers, history, github, cloudflare, credentials, databases] = await Promise.all([
     priceLists(deps, deployedPlan, requirements.value),
     Promise.all(names.map((name) => readServer(deps, plan, name, services, flags))),
     readServerHistory(deps, plan, services, flags),
@@ -442,6 +527,8 @@ export async function readAdvice(
     readCloudflare(deps, options.cloudflare),
     // Read only: the listing never records a token seen for the first time.
     attempt(deps, "the credentials' dates", () => credentialInventory(deps, plan)),
+    // Cloudflare's hosting and GitHub Pages run no database of the plan.
+    names.length === 0 ? undefined : readDatabases(deps, plan, services, flags),
   ]);
   const read: Lines[] = [
     requirements,
@@ -451,6 +538,7 @@ export async function readAdvice(
     github,
     cloudflare,
     credentials,
+    ...(databases === undefined ? [] : [databases]),
   ];
   const readings: Readings = {
     at: at.toISOString(),
@@ -480,6 +568,9 @@ export async function readAdvice(
       ),
     },
     ...(github.check === undefined ? {} : { check: github.check }),
+    ...(databases === undefined || databases.databases.length === 0
+      ? {}
+      : { databases: databases.databases }),
     notRead: read.flatMap((r) => r.notRead),
     flags,
   };

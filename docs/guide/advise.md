@@ -32,6 +32,8 @@ through `opscrew provision` and your approval (see [Applying a proposal](#applyi
 - **[Cloudflare](https://www.cloudflare.com/):** when your Cloudflare token expires, when it has an expiry date.
 - **[`secure`](security.md)'s host checks** on each server it reaches over SSH: pending security
   updates, a required reboot, and any check that fails.
+- **Each [PostgreSQL](https://www.postgresql.org/) database** on a server it reaches over SSH, the app's
+  or another one: what waits and how long, as [the database check](#the-database-check) reads it.
 
 Every command it runs on a server is fixed and read-only, and written to OpsCrew's audit log
 without the server's address. What it couldn't read (a server that didn't answer, a missing
@@ -107,6 +109,49 @@ matters; dev and staging rely on OpsCrew's own snapshots.
 | **A flapping check** | The scheduled check opened its issue 3 times or more in 14 days: the app keeps failing and recovering. It suggests reading the logs around those dates |
 | **A restart loop** | A container restarted 3 times or more in 14 days (deploys don't count, as each starts a new container); on one reading, since it was last deployed |
 
+### The database check
+
+On a server OpsCrew created or [a server you own](own-server.md), advise reads each PostgreSQL
+database once, through `docker compose exec` and `psql` in its container, signed in as the image's
+`app` login over the container's own socket. It creates no login and reads no password. Each
+question is a fixed `SELECT`, sent on standard input, in a session that is read-only and gives up
+on a statement after 3 seconds and on a lock after half a second; the whole check stops after 20
+seconds. It never reads the text of a running statement (it can hold a password or an email
+address): statements come only from `pg_stat_statements`, with their values replaced by `$1`,
+`$2`, cut at 120 characters and with any secret OpsCrew knows taken out.
+
+| Proposal | Soon | Now |
+|---|---|---|
+| **A session waiting for a lock** (`db.app.blocked`): which session holds it, and the app it belongs to | 30 seconds or more | 5 minutes or more |
+| **A transaction left open** (`db.app.idle-transaction`): it holds locks and keeps vacuum from cleaning | 5 minutes or more | 1 hour or more |
+| **A long query** (`db.app.long-query`) | 5 minutes or more | 30 minutes or more |
+| **Connections near the limit** (`db.app.connections`): of `max_connections` less the superuser's reserved ones | 80% | 95% |
+| **Slow statements** (`db.app.slow-queries`): among the 5 with the most time, those of 500 ms or more on average with 50 calls or more | 500 ms | 2 seconds |
+| **The database's size** (`db.app.size`) | half of its server's disk or more | the same, with the disk 85% full |
+| **No answer in time** (`db.app.timeout`): a question took longer than 3 seconds, so the database is under strain now; advise stops reading it | | always |
+
+Each says when it was read: one reading shows a moment, so a lock seen once may already be gone.
+Ending a session is your decision; advise names the `pg_terminate_backend` or `pg_cancel_backend`
+call to run as the database's owner. The id ends with the service's name when it isn't `db`
+(`db.app.blocked-pg`), and names the server the database runs on.
+
+**A missing index** (`db.app.index-orders`, when convenient): a table of 10,000 rows or more that was
+read in full 100 times or more, 5,000 rows a time on average, against fewer index scans than a tenth
+of that. Advise names the table and the slowest statement that mentions it, never a column: without
+running your queries it can't know which one. Look at the query's plan (`EXPLAIN`), then add the
+index yourself with `CREATE INDEX CONCURRENTLY`. Advise never adds one, and `--apply` changes
+nothing for it.
+
+**Slow statements need `pg_stat_statements`.** Without it, advise lists "slow queries are not read"
+under what it couldn't read, with the two steps: add `pg_stat_statements` to the database's
+`shared_preload_libraries` setting and restart it, then run `CREATE EXTENSION pg_stat_statements;`
+in it. Advise doesn't turn it on, as that needs a restart. On PostgreSQL 12 and older the slow
+statements are skipped, with that reason.
+
+In [a Portainer](portainer-target.md) and on [your computer](localhost.md), advise doesn't read the
+database, and a hosting account's MariaDB or MySQL isn't read either: each says so, with the
+reason, under what it couldn't read.
+
 ### Upkeep and security
 
 | Proposal | When |
@@ -131,7 +176,7 @@ matters; dev and staging rely on OpsCrew's own snapshots.
 |---|---|
 | **Now** | About to break: a container at its memory limit, a disk full within 7 days, a required reboot, a token expiring within 7 days, a move in progress |
 | **Soon** | A server short of memory or CPUs, a filling disk, security findings, the alerts off, over budget, a flapping check, a restart loop, a token expiring within 30 days |
-| **When convenient** | Savings, backups, the scheduled check, Postgres on its own server |
+| **When convenient** | Savings, backups, the scheduled check, Postgres on its own server, a missing index |
 
 Within an urgency, the size of a server comes first, then security, upkeep, cost, reliability and
 components.

@@ -11,6 +11,8 @@ import { extraServerVariables } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { HOST_CHECKS } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
+import { hostingTestPlan } from "../hosting/__fixtures__/account";
+import { localPlan } from "../localhost/__fixtures__/computer";
 import { monitoredPlan, networked, splitPlan } from "../network/__fixtures__/plans";
 import { serverServiceChecks } from "../secure/services";
 import { recordOwnServer, recordPortainerConnection } from "../shared";
@@ -29,6 +31,7 @@ import {
   testPlan,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
+import { row, rows, STATEMENT_TIMEOUT, TROUBLED } from "./__fixtures__/database";
 import {
   deployed,
   FakeAdviseGitHub,
@@ -45,6 +48,7 @@ import {
   scenario,
   tree,
 } from "./__fixtures__/environment";
+import { DATABASE_QUERIES, databaseCommand } from "./database";
 import { type RunAdviseOptions, runAdvise } from "./run";
 import { type AdviceReport, type Proposal, ProposalSchema } from "./types";
 
@@ -174,6 +178,7 @@ describe("runAdvise: one server", () => {
       "Dependabot's open pull requests",
       "the GitHub token's expiry",
       "the credentials' dates",
+      "the statistics of PostgreSQL db on server app",
     ]);
     // No tokens here: the dated static prices, said so.
     expect(report.notRead).toEqual([
@@ -545,13 +550,20 @@ describe("runAdvise: changes nothing", () => {
       expect(entry).toMatchObject({ kind: "remote-exec", decision: "allow" });
       expect(entry.action).toContain("(read-only)");
     }
-    // The server got `status`'s fixed figures command and `secure`'s host checks, nothing else.
+    // The server got `status`'s fixed figures command, `secure`'s host checks and the database
+    // check's fixed command with its fixed SQL on standard input, nothing else.
     const fixed = new Set([
       serverFiguresCommand("shop"),
+      databaseCommand("shop", "db"),
       ...[...HOST_CHECKS, ...serverServiceChecks(s.plan)].map((check) => check.command),
     ]);
+    const sql = new Set<string>(Object.values(DATABASE_QUERIES));
     expect(s.servers.commands.length).toBeGreaterThan(1);
-    for (const { command } of s.servers.commands) expect(fixed).toContain(command);
+    for (const { command, input } of s.servers.commands) {
+      expect(fixed).toContain(command);
+      if (input !== undefined) expect(sql).toContain(input);
+    }
+    expect(s.servers.commands.filter((c) => c.input !== undefined)).toHaveLength(7);
   });
 
   it("keeps the address of a server the user owns out when reaching it fails", async () => {
@@ -823,5 +835,137 @@ describe("runAdvise: a proposal the plan already holds", () => {
     expect(byId(report, "size.app.app-limit")).toMatchObject({
       apply: { kind: "command", command: "opscrew provision" },
     });
+  });
+});
+
+describe("runAdvise: the database check", () => {
+  /** The commands with SQL on standard input, by host. */
+  const sqlHosts = (servers: Scenario["servers"]) =>
+    servers.commands.filter((c) => c.input !== undefined).map((c) => c.host);
+
+  it("finds a lock wait and an open transaction on the app's server, read once and audited", async () => {
+    const s = await oneServer({ host: { ...SHORT, database: TROUBLED } });
+    const report = valid(await runAdvise(s.deps, s.plan, s.options));
+    expect(ids(report).filter((id) => id.startsWith("db."))).toEqual([
+      // now, then soon, then when convenient
+      "db.app.blocked",
+      "db.app.idle-transaction",
+      "db.app.slow-queries",
+      "db.app.long-query",
+      "db.app.connections",
+      "db.app.size",
+      "db.app.index-orders",
+    ]);
+    expect(byId(report, "db.app.blocked")).toMatchObject({
+      category: "reliability",
+      urgency: "now",
+      reasons: [
+        {
+          text: "Session 4321 waits for a lock held by session 4310 (the app `web`)",
+          figure: "waited 6 minutes, read once, at 2026-11-04 12:00 UTC",
+          basis: { kind: "one-reading", at: NOW.toISOString() },
+        },
+      ],
+    });
+    expect(report.checked).toContain("the statistics of PostgreSQL db on server app");
+    expect(sqlHosts(s.servers)).toEqual(Array(7).fill(IPS.app));
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "remote-exec",
+        action: "read the statistics of PostgreSQL db (read-only)",
+        target: "server app",
+      }),
+    );
+  });
+
+  it("reads a database on an extra server there", async () => {
+    const plan = deployed(networked(monitoredPlan({ on: "app" })).plan);
+    const deps = await project({
+      plan,
+      addresses: { app: IPS.app, servers: { data: IPS.data } },
+      requirements: REQUIREMENTS,
+    });
+    const servers = fakeServers({
+      [IPS.app]: { figures: figuresOutput("shop") },
+      [IPS.data]: { figures: figuresOutput("shop"), database: TROUBLED },
+    });
+    const report = await runAdvise(deps, plan, {
+      services: { remote: servers.remote },
+      github: new FakeAdviseGitHub(),
+      cloudflare: null,
+    });
+    expect(ids(report)).toContain("db.data.blocked");
+    expect(new Set(sqlHosts(servers))).toEqual(new Set([IPS.data]));
+    expectNoLeak(deps, [], report);
+  });
+
+  it("stops at the first query that times out, and says the database is under strain", async () => {
+    const s = await oneServer({ host: { ...SHORT, database: { sessions: STATEMENT_TIMEOUT } } });
+    const report = valid(await runAdvise(s.deps, s.plan, s.options));
+    expect(byId(report, "db.app.timeout")).toMatchObject({
+      urgency: "now",
+      apply: { kind: "command", command: "opscrew status" },
+    });
+    expect(sqlHosts(s.servers)).toHaveLength(2);
+  });
+
+  it("lists slow queries as not read while pg_stat_statements is off", async () => {
+    const s = await oneServer({ host: { ...SHORT, database: { extension: "" } } });
+    const report = await runAdvise(s.deps, s.plan, s.options);
+    expect(report.notRead).toContain(
+      "PostgreSQL db on server app: slow queries are not read: turn `pg_stat_statements` on (add it to the database's `shared_preload_libraries` setting and restart the database, then run `CREATE EXTENSION pg_stat_statements;` in it)",
+    );
+  });
+
+  it("says why a database in a Portainer, on this computer or of a hosting account isn't read", async () => {
+    const portainer = portainerPlan({ deployed: true });
+    const p = await project({ plan: portainer, requirements: REQUIREMENTS });
+    const down = async (): Promise<never> => {
+      throw new OpsCrewError("PROVIDER_ERROR", "Portainer did not answer.");
+    };
+    const client = () => ({ listContainers: down, dockerInfo: down }) as unknown as PortainerClient;
+    const options = { github: new FakeAdviseGitHub(), cloudflare: null };
+    const inPortainer = await runAdvise(p, portainer, {
+      ...options,
+      services: { portainer: { client } },
+    });
+    expect(inPortainer.notRead).toContain(
+      "the statistics of PostgreSQL db on server app: advise reads a database only on a server it reaches over SSH, and it reaches your Portainer through its API",
+    );
+    const local = deployed(localPlan());
+    const here = await runAdvise(await project({ plan: local }), local, options);
+    expect(here.notRead).toContain(
+      "the statistics of PostgreSQL db on server app: advise reads a database only on a server it reaches over SSH, not on this computer",
+    );
+    const hosting = deployed(hostingTestPlan());
+    const account = await runAdvise(await project({ plan: hosting }), hosting, options);
+    expect(account.notRead).toContain(
+      "the statistics of the hosting account's MariaDB database: advise reads a database only on a server it reaches over SSH, and only PostgreSQL",
+    );
+  });
+
+  it("keeps a statement's secret, the users' texts and the address out of everything", async () => {
+    const secret = fakeSecret("generic-password", "in-a-statement");
+    const s = await oneServer({
+      host: {
+        ...SHORT,
+        database: {
+          ...TROUBLED,
+          blocked: rows(row(4321, "app", secret, 360, "{4310}", secret)),
+          statements: rows(
+            row(800, 2_000_000, 2500, 2_500_000, `SELECT 1 FROM t WHERE x = '${secret}'`),
+          ),
+        },
+      },
+    });
+    s.deps.redactor.addLiteral(secret);
+    const report = await runAdvise(s.deps, s.plan, s.options);
+    expect(ids(report)).toContain("db.app.slow-queries");
+    expectNoLeak(s.deps, [secret], report);
+    // The SQL reaching the server is OpsCrew's own, fixed.
+    for (const { command, input } of s.servers.commands) {
+      expect(command).not.toContain(secret);
+      if (input !== undefined) expect(Object.values(DATABASE_QUERIES)).toContain(input);
+    }
   });
 });

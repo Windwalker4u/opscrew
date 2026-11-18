@@ -221,6 +221,23 @@ describe("THRESHOLDS", () => {
       tokenDays: 30,
       tokenDaysNow: 7,
       databaseShare: 0.5,
+      // The database check's (research R22, R23).
+      dbBlockedSec: 30,
+      dbBlockedSecNow: 300,
+      dbIdleSec: 300,
+      dbIdleSecNow: 3600,
+      dbQuerySec: 300,
+      dbQuerySecNow: 1800,
+      dbConnections: 0.8,
+      dbConnectionsNow: 0.95,
+      dbSlowMs: 500,
+      dbSlowMsNow: 2000,
+      dbSlowCalls: 50,
+      dbDiskShare: 0.5,
+      dbIndexRows: 10_000,
+      dbIndexSeqScans: 100,
+      dbIndexRowsPerScan: 5000,
+      dbIndexScanShare: 0.1,
     });
     expect(Object.isFrozen(THRESHOLDS)).toBe(true);
   });
