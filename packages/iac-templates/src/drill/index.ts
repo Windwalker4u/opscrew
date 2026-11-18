@@ -1,12 +1,13 @@
 /**
- * A restore drill's copy (029 plan.md 19., research R15–R17): a snapshot restored on the server
- * that holds it into a throwaway Compose project, `<app>-drill` in `.drill/<snapshot id>/` of the
- * app's folder, to prove that the snapshot restores and the app starts on it. The copy reaches
- * nothing outside the server and nothing reaches it: one network with no internet, no published
- * port, no hostname or proxy site, and none of the production `.env`'s values.
+ * A restore drill's copy (029 plan.md 19., research R15–R17, R26): a snapshot restored on the
+ * server that holds it, or this computer, into a throwaway Compose project, `<app>-drill` in
+ * `.drill/<snapshot id>/` of the app's folder, to prove that the snapshot restores and the app
+ * starts on it. The copy reaches nothing outside the machine and nothing reaches it: one network
+ * with no internet, no published port, no hostname or proxy site, and none of the production
+ * `.env`'s values. `snapshot.sh drill` (`./script`) runs it; `./record` is its approval and log.
  */
 import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
-import { parse, stringify } from "yaml";
+import { parse, Scalar, stringify } from "yaml";
 import type { PreviewEnvTemplates } from "../previews";
 import { wrongTarget } from "../providers";
 import { renderCompose } from "../runtime";
@@ -29,6 +30,26 @@ export const DRILL_VALUES_FILE = "values.env";
 /** A snapshot's id: letters and digits only, as `snapshot.sh` checks it. */
 const SNAPSHOT_ID = /^[0-9A-Za-z]+$/;
 
+/**
+ * The image of a local build on this computer whose image ID a snapshot recorded (`hex`, 64 hex
+ * digits): the local deploy tags each build `opscrew-local/<app>:<first 12 digits of its ID>`.
+ */
+export function localBuildImage(plan: Pick<DeployPlan, "app">, hex: string): string {
+  return `opscrew-local/${plan.app.name}:${hex.slice(0, 12)}`;
+}
+
+/**
+ * True for an image a drill of `plan` may run: one pinned by its digest, or on this computer a
+ * local build's tag ({@link localBuildImage}).
+ */
+export function drillImageOk(plan: DeployPlan, image: string): boolean {
+  if (new RegExp(DIGEST_REF_PATTERN).test(image)) return true;
+  return (
+    plan.target.provider === "localhost" &&
+    new RegExp(`^opscrew-local/${plan.app.name}:[0-9a-f]{12}$`).test(image)
+  );
+}
+
 /** The snapshot a drill restores. */
 export interface DrillSnapshot {
   /** Its id, the folder `.snapshots/<id>` on the server. */
@@ -42,7 +63,10 @@ export interface DrillSnapshot {
 
 /** What a drill's copy needs besides the plan and the snapshot. */
 export interface DrillOptions {
-  /** The app's image, pinned by its digest: `ghcr.io/<owner>/<repo>[/<key>]@sha256:<hex>`. */
+  /**
+   * The app's image, pinned by its digest: `ghcr.io/<owner>/<repo>[/<key>]@sha256:<hex>`; on this
+   * computer also a local build's tag ({@link localBuildImage}), which is never pulled.
+   */
   image: string;
   /**
    * The copy's env files, built for {@link drillPlan} with none of `.env`'s values: the app's (its
@@ -119,14 +143,17 @@ type ComposeService = Record<string, unknown> & { depends_on?: Record<string, un
  * services' files) from {@link drillPlan}:
  * - `compose.yaml`, the project `<app>-drill`: the app at `o.image`, with its health check and
  *   memory limit, and the snapshot's services with their pinned images, health checks and limits,
- *   their data in `/srv/data/<app>-drill/`; no workers, cron, release command or host-settings
- *   container; one network, `internal: true` (no internet), and no published port or site. The app
- *   reads `app.env` (after {@link DRILL_VALUES_FILE} with `o.previewValues`), never the app's
- *   `.env`, and the image is named in the file, so no `.env` is read for it either;
+ *   their data in `/srv/data/<app>-drill/` (on this computer in the project's own volumes); no
+ *   workers, cron, release command or host-settings container; one network, `internal: true` (no
+ *   internet), and no published port or site; every container `restart: "no"`, so a kept copy
+ *   never comes back after a reboot, and a local build's image is never pulled. The app reads
+ *   `app.env` (after {@link DRILL_VALUES_FILE} with `o.previewValues`), never the app's `.env`,
+ *   and the image is named in the file, so no `.env` is read for it either;
  * - `app.env` and `<service>.env` from `o.env`;
  * - the services' settings files, `services/<service>/<file>`.
- * @throws OpsCrewError for a target with no server, an image not pinned by its digest, a snapshot
- * id or part the plan can't restore, or `o.env` without a service's env file.
+ * @throws OpsCrewError for a target that is neither a server nor this computer, an image a drill
+ * may not run ({@link drillImageOk}), a snapshot id or part the plan can't restore, or `o.env`
+ * without a service's env file.
  */
 export function renderDrill(
   plan: DeployPlan,
@@ -134,15 +161,10 @@ export function renderDrill(
   o: DrillOptions,
 ): RenderedFile[] {
   const { target } = plan;
-  if (
-    target.provider === "localhost" ||
-    target.provider === "portainer" ||
-    isHostingTarget(target) ||
-    isServerlessTarget(target)
-  ) {
-    throw wrongTarget("A restore drill runs on a server: OpsCrew's or your own.");
+  if (target.provider === "portainer" || isHostingTarget(target) || isServerlessTarget(target)) {
+    throw wrongTarget("A restore drill runs on a server, OpsCrew's or your own, or this computer.");
   }
-  if (!new RegExp(DIGEST_REF_PATTERN).test(o.image)) {
+  if (!drillImageOk(plan, o.image)) {
     throw wrongTarget(
       `The image ${JSON.stringify(o.image)} is not pinned by its digest (ghcr.io/…@sha256:<hex>).`,
     );
@@ -167,14 +189,19 @@ export function renderDrill(
         name === "app"
           ? {
               image: o.image,
+              ...(o.image.startsWith("opscrew-local/") ? { pull_policy: "never" } : {}),
               env_file: o.previewValues ? [DRILL_VALUES_FILE, "app.env"] : ["app.env"],
             }
           : {};
+      // Quoted: a YAML 1.1 reader takes a plain `no` for false.
+      const restart = new Scalar("no");
+      restart.type = Scalar.QUOTE_DOUBLE;
       return [
         name,
         {
           ...service,
           ...app,
+          restart,
           networks: ["internal"],
           ...(after.length > 0 ? { depends_on: Object.fromEntries(after) } : {}),
         },
@@ -210,3 +237,5 @@ export function renderDrill(
     })),
   ].map((file) => ({ path: `${dir}/${file.path}`, content: file.content, kind: "runtime" }));
 }
+
+export * from "./record";

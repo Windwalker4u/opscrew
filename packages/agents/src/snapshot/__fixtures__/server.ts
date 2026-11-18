@@ -26,9 +26,13 @@ export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
  * `restore.exit` with `restore.stderr` every restore. On the app's server (no file `extra`), a
  * restore that ends without `hold`'s marker (`.snapshots/.held`) starts the app, which it logs as
  * `app started`, as the real script lets the requests through then. `hold` leaves the marker and
- * `resume` removes it; they fail with `hold.exit` and `resume.exit`.
+ * `resume` removes it; they fail with `hold.exit` and `resume.exit`. `drill` (the script has
+ * `snapshot_cmd_drill`) needs its one-time approval, which it keeps as `approval.drill` and removes,
+ * keeps its stdin as `drill.in`, prints `drill.out` (a healthy record of its id by default) and
+ * exits `drill.exit`; `drill --remove` prints `drill-removal removed`.
  */
 const SHIM = `echo "$*" >> calls.log
+# snapshot_cmd_drill
 case "$1" in
   list)
     for f in .snapshots/*/about.json; do
@@ -45,6 +49,13 @@ case "$1" in
     if [ "$code" != 5 ] && [ ! -f extra ] && [ ! -f .snapshots/.held ]; then echo "app started" >> calls.log; fi
     if [ "$code" != 0 ]; then cat "$f.stderr" >&2; exit "$code"; fi
     echo "OpsCrew restored the snapshot $2. The data from just before the restore is the snapshot 20261107T120000Z." >&2 ;;
+  drill)
+    if [ ! -f .drill-snapshot ]; then echo "A drill needs its one-time approval here." >&2; exit 1; fi
+    cp .drill-snapshot approval.drill; rm -f .drill-snapshot
+    cat > drill.in
+    if [ "$2" = --remove ]; then echo "drill-removal removed"; exit 0; fi
+    if [ -f drill.out ]; then cat drill.out; else echo "drill-record 2026-11-18T14:06:10Z manual healthy id=$2 version=aaaaaaaaaaaa start=2026-11-18T14:02:00Z parts=db:100:12 health=healthy:31 tables=db:42 removal=removed cleaned=no reason=-"; fi
+    if [ -f drill.exit ]; then exit "$(cat drill.exit)"; fi ;;
   hold)
     if [ -f hold.exit ]; then exit "$(cat hold.exit)"; fi
     mkdir -p .snapshots && : > .snapshots/.held ;;
@@ -150,7 +161,9 @@ export class FakeSnapshotServer {
    * Runs the command under `sh` in the folder, with `df` answering `df.out`, `flock` failing
    * while `lock.held` exists (the start lock held by another run), and `docker` the services'
    * containers: `images/<service>` holds the image a service's container runs (none without the
-   * file); `docker compose up` and `docker exec` are logged in `docker.log`, each exec as
+   * file), `images/missing` makes `docker image inspect` find no image, `drill.left` that a drill's
+   * container is there, and `docker ps` by the label of the service `app` finds `c-app` with
+   * `images/app` (`<image> sha256:<id>`); `docker compose up` and `docker exec` are logged in `docker.log`, each exec as
    * `<OPSCREW_OLD>|<OPSCREW_NEW>|<arguments>` in `exec.log` (fake values only), failing with
    * `exec.exit`. `input` is the command's stdin.
    */
@@ -171,6 +184,8 @@ export class FakeSnapshotServer {
       '    compose) if [ "$2" = up ]; then echo "$*" >> docker.log; elif [ -f "images/$4" ]; then echo "c-$4"; fi ;;',
       '    exec) echo "$*" >> docker.log; shift; printf "%s|%s|%s\n" "${OPSCREW_OLD:-}" "${OPSCREW_NEW:-}" "$*" >> exec.log; if [ -f exec.fails ] && [ "$(cat exec.fails)" -gt 0 ]; then echo $(( $(cat exec.fails) - 1 )) > exec.fails; return 1; fi; if [ -f exec.exit ]; then return "$(cat exec.exit)"; fi ;;',
       '    inspect) cat "images/${4#c-}" ;;',
+      '    image) [ ! -f images/missing ] ;;',
+      '    ps) case "$*" in *com.docker.compose.service=app*) if [ -f images/app ]; then echo c-app; fi ;; *) if [ -f drill.left ]; then echo c-drill; fi ;; esac ;;',
       "  esac",
       "}",
     ].join("\n");

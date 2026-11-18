@@ -200,7 +200,10 @@ describe.skipIf(!bashWorks())("the SSH steps on a runner machine", { timeout: 18
       `ssh() { printf 'ssh %s\\n' "$*" >> "${work}/calls"; cat > /dev/null; }`,
       `scp() { printf 'scp %s\\n' "$*" >> "${work}/calls"; }`,
     ].join("\n");
-    const upload = spawnSync("bash", ["-c", `${fakes}\n${stepOf(deploy, UPLOAD).run ?? ""}`], {
+    // From a file, as GitHub runs a step: the step is longer than Windows lets one argument be.
+    const script = `${work}/upload.sh`;
+    writeFileSync(script, `${fakes}\n${stepOf(deploy, UPLOAD).run ?? ""}`);
+    const upload = spawnSync("bash", [script], {
       env: {
         ...env,
         HOST: "ssh-shop-staging.example.com",

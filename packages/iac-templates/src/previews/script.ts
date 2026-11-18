@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import { EDGE_PROJECT } from "../edge";
 import { IMAGES } from "../pins";
 import { shellQuote } from "../runtime/services";
@@ -21,6 +22,52 @@ export const PREVIEW_SECRET_PLACEHOLDER = `@SECRET:[A-Za-z][A-Za-z0-9_-]*:(${PRE
 
 /** A generated value's name in a placeholder: a letter, then letters, digits, `_` or `-`. */
 export const PREVIEW_SECRET_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * The preview server's `generate <format>` (POSIX sh): a new random value in one of
+ * {@link PREVIEW_SECRET_FORMATS}, from `/dev/urandom`. A restore drill's copy fills its generated
+ * values with it too.
+ */
+export function previewGenerate(): string {
+  return `generate() {
+  case "$1" in
+    hex32) od -An -tx1 -N32 /dev/urandom | tr -d ' \\n' ;;
+    hex64) od -An -tx1 -N64 /dev/urandom | tr -d ' \\n' ;;
+    b64k32) printf 'base64:%s' "$(head -c 32 /dev/urandom | base64 | tr -d '\\n')" ;;
+    gk) printf 'GK%s' "$(od -An -tx1 -N12 /dev/urandom | tr -d ' \\n')" ;;
+  esac
+}`;
+}
+
+/**
+ * The preview server's fill of generated values (POSIX sh lines, `indent` before each): for each
+ * `@SECRET:<name>:<format>@` placeholder in the files under the folder `files` (a shell word), the
+ * value the file `secrets` keeps for the name, made with {@link previewGenerate} and kept there the
+ * first time the name appears, as a `sed` line appended to the file `script`; run with umask 077.
+ * A restore drill's copy fills its env files with it too.
+ */
+export function previewSecretFill(
+  files: string,
+  secrets: string,
+  script: string,
+  indent: string,
+): string {
+  return [
+    `for placeholder in $(grep -rhoE '${PREVIEW_SECRET_PLACEHOLDER}' ${files} | sort -u); do`,
+    '  rest="${placeholder#@SECRET:}"',
+    '  name="${rest%%:*}"',
+    '  format="${rest#*:}"',
+    `  value="$(sed -n "s/^$name=//p" ${secrets} | head -n 1)"`,
+    '  if [ -z "$value" ]; then',
+    '    value="$(generate "${format%@}")"',
+    `    printf '%s=%s\\n' "$name" "$value" >> ${secrets}`,
+    "  fi",
+    `  printf 's|%s|%s|g\\n' "$placeholder" "$value" >> ${script}`,
+    "done",
+  ]
+    .map((line) => `${indent}${line}`)
+    .join("\n");
+}
 
 /**
  * How `opscrew-preview` tells which step of the start script failed: the start of the line that
@@ -262,14 +309,7 @@ enter() {
 }
 
 # A new random value in the format $1.
-generate() {
-  case "$1" in
-    hex32) od -An -tx1 -N32 /dev/urandom | tr -d ' \\n' ;;
-    hex64) od -An -tx1 -N64 /dev/urandom | tr -d ' \\n' ;;
-    b64k32) printf 'base64:%s' "$(head -c 32 /dev/urandom | base64 | tr -d '\\n')" ;;
-    gk) printf 'GK%s' "$(od -An -tx1 -N12 /dev/urandom | tr -d ' \\n')" ;;
-  esac
-}
+${previewGenerate()}
 
 # template/ filled into the preview's folder: @N@ is its number, @R@ its address's random part,
 # each @SECRET:<name>:<format>@ the value secrets.env keeps for the name, made the first time the
@@ -281,17 +321,7 @@ fill() {
     umask 077
     touch "$P/secrets.env"
     printf 's|@N@|%s|g\\ns|@R@|%s|g\\n' "$n" "$random" > "$script"
-    for placeholder in $(grep -rhoE '${PREVIEW_SECRET_PLACEHOLDER}' "$RECIPE/template" | sort -u); do
-      rest="\${placeholder#@SECRET:}"
-      name="\${rest%%:*}"
-      format="\${rest#*:}"
-      value="$(sed -n "s/^$name=//p" "$P/secrets.env" | head -n 1)"
-      if [ -z "$value" ]; then
-        value="$(generate "\${format%@}")"
-        printf '%s=%s\\n' "$name" "$value" >> "$P/secrets.env"
-      fi
-      printf 's|%s|%s|g\\n' "$placeholder" "$value" >> "$script"
-    done
+${previewSecretFill('"$RECIPE/template"', '"$P/secrets.env"', '"$script"', "    ")}
   )
   (cd "$RECIPE/template" && find . -type f) | while IFS= read -r file; do
     file="\${file#./}"

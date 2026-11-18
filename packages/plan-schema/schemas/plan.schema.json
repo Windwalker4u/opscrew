@@ -979,6 +979,16 @@
               "additionalProperties": false
             }
           ]
+        },
+        "drills": {
+          "type": "object",
+          "properties": {
+            "schedule": {
+              "type": "string",
+              "enum": ["weekly", "daily"]
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

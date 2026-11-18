@@ -139,7 +139,7 @@ async function probe(
 }
 
 /** The record of `id` among the `about.json` lines `stdout` holds. */
-function recordOf(stdout: string, id: string): { record?: BucketAbout } {
+export function recordOf(stdout: string, id: string): { record?: BucketAbout } {
   for (const raw of stdout.split(/\r?\n/)) {
     const text = raw.trim();
     const about = text.startsWith("{") ? aboutOf(text) : undefined;

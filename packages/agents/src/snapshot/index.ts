@@ -3,9 +3,11 @@
  * and `opscrew restore` (feature 024, US1, US2, US3, US5 and US6): data snapshots by hand on the
  * app's servers, this computer and the user's Portainer, listed with the providers' whole-server
  * snapshots and the off-server bucket's copies, deleted after a destroy-grade approval, restored
- * where their data lives, also from the bucket, and the plan's schedule and off-server copy.
+ * where their data lives, also from the bucket, and the plan's schedule and off-server copy; and
+ * `opscrew restore --drill` (029 US7), a snapshot restored into a throwaway copy where it is.
  */
 export { type DeleteSnapshotOptions, deleteSnapshot } from "./delete";
+export { drillSnapshot } from "./drill";
 export { type ListSnapshotsOptions, listSnapshots, snapshotListLines } from "./list";
 export {
   backupsBucketName,

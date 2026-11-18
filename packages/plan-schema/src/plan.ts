@@ -1926,6 +1926,17 @@ export const SnapshotsSchema = z.strictObject({
       }),
     ])
     .optional(),
+  /**
+   * Restore drills (029 plan.md 19.): present, drills are on for the environment; `schedule` runs
+   * one weekly or daily, three hours after the scheduled snapshot's slot, which it needs. Absent:
+   * no drill setting.
+   */
+  drills: z
+    .strictObject({
+      /** How often a scheduled drill proves the latest snapshot. Absent: drills by hand only. */
+      schedule: z.enum(["weekly", "daily"]).optional(),
+    })
+    .optional(),
 });
 export type Snapshots = z.output<typeof SnapshotsSchema>;
 
@@ -2537,6 +2548,7 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
       : isServerlessTarget(plan.target)
         ? "a site target, which keeps no data"
         : undefined;
+  checkDrills(plan, where, ctx);
   for (const field of ["schedule", "offsite"] as const) {
     if (snapshots[field] === undefined) continue;
     if (where !== undefined) {
@@ -2555,6 +2567,50 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
             : "is refused with the localhost target: its snapshots stay on this computer, beside the data; copy the snapshots folder yourself if you need a copy elsewhere, and remove snapshots.offsite",
       });
     }
+  }
+}
+
+/**
+ * Restore drills (`snapshots.drills`) only where there are snapshots: not on a site target, in a
+ * preview environment (`where` names either) or on an SFTP host; a drill schedule needs the
+ * snapshot schedule, and never runs on this computer, which isn't always on.
+ */
+function checkDrills(
+  plan: DeployPlanFields,
+  where: string | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  const drills = plan.snapshots?.drills;
+  if (drills === undefined) return;
+  const nowhere =
+    where ??
+    (isHostingTarget(plan.target) && plan.target.panel === "sftp"
+      ? "an SFTP host, which keeps no snapshots: no agent of OpsCrew's runs there to take them"
+      : undefined);
+  if (nowhere !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["snapshots", "drills"],
+      message: `is refused on ${nowhere}; remove snapshots.drills`,
+    });
+    return;
+  }
+  if (drills.schedule === undefined) return;
+  const path = ["snapshots", "drills", "schedule"];
+  if (plan.target.provider === "localhost") {
+    ctx.addIssue({
+      code: "custom",
+      path,
+      message:
+        "is refused with the localhost target: this computer isn't always on to run them; run a drill when you need one with opscrew restore --drill, and remove snapshots.drills.schedule",
+    });
+  } else if (plan.snapshots?.schedule === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path,
+      message:
+        "needs snapshots.schedule: a scheduled drill proves the latest scheduled snapshot, three hours after it is taken; turn the snapshot schedule on with opscrew snapshot schedule on, or remove snapshots.drills.schedule",
+    });
   }
 }
 

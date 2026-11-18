@@ -32,6 +32,7 @@ vi.mock("@opscrew/agents", async (importOriginal) => {
     ...agents,
     restoreServerSnapshot: faked("restoreServerSnapshot"),
     restoreSnapshot: faked("restoreSnapshot"),
+    drillSnapshot: faked("drillSnapshot"),
   };
 });
 
@@ -282,5 +283,106 @@ describe("opscrew restore --server", () => {
     expect(await run(ctx, "restore", "--server", "9001", "--env", "staging")).toBe(2);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(token);
     expect(await auditText(project())).not.toContain(token);
+  });
+});
+
+/** A drill's approval, as `drillSnapshot` asks it: destroy-grade, `<app>-drill`, its hash. */
+const DRILL: ApprovalRequest = {
+  kind: "remote-exec",
+  title: `Run a restore drill of the snapshot ${ID} of staging on the app's server`,
+  details: `The copy runs with no internet and without your production \`.env\`.\nDrill hash: ${HASH}`,
+  planHash: HASH,
+  allowDestroy: true,
+  confirmPhrase: "shop-staging-drill",
+};
+
+/** A drill that ended healthy, as `drillSnapshot` reports it. */
+const DRILLED = {
+  id: ID,
+  where: "on the app's server",
+  outcome: "healthy",
+  summary: `The snapshot ${ID} restored, and the app became healthy on it in 31 seconds.`,
+  proves: "the snapshot restored into a throwaway shop-staging-drill Compose project",
+  parts: [{ name: "db", size: 100, seconds: 12 }],
+  health: { state: "healthy", seconds: 31 },
+  tables: [{ service: "db", count: 42 }],
+  removal: "removed",
+  ownLogins: [],
+};
+
+describe("opscrew restore --drill", () => {
+  it.each([
+    [["--keep"], "--keep goes only with --drill."],
+    [[ID, "--json"], "--json goes only with --drill."],
+    [["--drill", "--server"], "--drill restores the snapshot where it is, into a throwaway copy"],
+    [
+      ["--drill", ID, "--from", "offsite", "--key-file", "age.txt"],
+      "so it takes no --server, --from or --key-file",
+    ],
+    [["--drill", "--remove", ID], "--drill --remove takes no snapshot id"],
+    [["--drill", "--remove", "--keep", "--only", "db"], "--drill --remove takes no --only, --keep"],
+    [["--drill", "--approve", "abc"], "--approve expects the 64-character SHA-256 drill hash"],
+    [[], "opscrew restore needs the snapshot's id."],
+  ])("refuses %j", async (flags, message) => {
+    const ctx = await setup();
+    expect(await run(ctx, "restore", ...flags, "--env", "staging")).toBe(2);
+    expect(ctx.errors).toContain(message);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("drills the latest by default, or the id given with --only, --keep and --allow-other-version", async () => {
+    const ctx = await setup();
+    fake.answers.drillSnapshot = async () => DRILLED;
+    expect(await run(ctx, "restore", "--drill", "--env", "staging"), ctx.errors).toBe(0);
+    expect(lastCall(fake.calls, "drillSnapshot").args).toEqual([undefined, {}]);
+    expect(lastCall(fake.calls, "drillSnapshot").deps.paths.environment).toBe("staging");
+    const flags = ["--only", " db ", "--keep", "--allow-other-version"];
+    expect(await run(ctx, "restore", "--drill", ` ${ID} `, ...flags, "--env", "staging")).toBe(0);
+    expect(lastCall(fake.calls, "drillSnapshot").args).toEqual([
+      ID,
+      { only: "db", keep: true, allowOtherVersion: true },
+    ]);
+    expect(await run(ctx, "restore", "--drill", "--remove", "--env", "staging")).toBe(0);
+    expect(lastCall(fake.calls, "drillSnapshot").args).toEqual([undefined, { remove: true }]);
+    expect(fake.calls.map((call) => call.name)).not.toContain("restoreSnapshot");
+  });
+
+  it("prints the report with --json, and fails a drill that did not end healthy", async () => {
+    const ctx = await setup();
+    fake.answers.drillSnapshot = async (deps) => {
+      deps.reporter.step("Running the restore drill");
+      return DRILLED;
+    };
+    expect(await run(ctx, "restore", "--drill", "--json", "--env", "staging"), ctx.errors).toBe(0);
+    expect(JSON.parse(ctx.output)).toEqual(DRILLED);
+    fake.answers.drillSnapshot = async () => ({ ...DRILLED, outcome: "unhealthy" });
+    expect(await run(ctx, "restore", "--drill", "--env", "staging")).toBe(1);
+    fake.answers.drillSnapshot = async () => ({ ...DRILLED, outcome: "skipped", reason: "locked" });
+    expect(await run(ctx, "restore", "--drill", "--env", "staging")).toBe(1);
+  });
+
+  it("drills in a script only with --confirm <app>-drill and --approve <hash>", async () => {
+    const ctx = await setup();
+    const decisions: (string | undefined)[] = [];
+    fake.answers.drillSnapshot = asking(DRILL, decisions, DRILLED, REFUSED);
+    const base = ["restore", "--drill", ID, "--env", "staging"];
+    expect(
+      await run(ctx, ...base, "--confirm", "shop-staging-drill", "--approve", HASH),
+      ctx.errors,
+    ).toBe(0);
+    expect(ctx.output).toContain(`Drill hash: ${HASH}`);
+    expect(ctx.output).toContain(`✓ ${DRILL.title} (confirmed with --confirm shop-staging-drill)`);
+    expect(await run(ctx, ...base, "--confirm", "shop-staging", "--approve", HASH)).toBe(1);
+    expect(await run(ctx, ...base, "--approve", HASH)).toBe(1);
+    expect(decisions[0]).toBe("approved");
+    expect(decisions.slice(1).every((decision) => decision !== "approved")).toBe(true);
+  });
+
+  it("lists the drill's flags in its help", async () => {
+    const ctx = await setup();
+    expect(await run(ctx, "restore", "--help")).toBe(0);
+    for (const flag of ["[id]", "--drill", "--keep", "--remove", "--json", "<app>-drill"]) {
+      expect(ctx.output).toContain(flag);
+    }
   });
 });

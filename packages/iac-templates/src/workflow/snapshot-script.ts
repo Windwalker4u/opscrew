@@ -8,6 +8,7 @@ import {
   snapshotStopOf,
   targetArch,
 } from "@opscrew/plan-schema";
+import { drillCommand } from "../drill/script";
 import { offsiteExpires } from "../infra/storage";
 import {
   AGE_BINARY,
@@ -537,7 +538,9 @@ function holdCommands(plan: DeployPlan): string[] {
  *   [--version sha256:<hex>]` prints the new snapshot's id; exits 1 when a copy failed, 2 when the
  *   disk is too full;
  * - `restore <id> [--only <service>] [--no-wait <service>]...` (its approval: {@link restoreApprovalLine});
- * - on the app's server, `hold` and `resume` ({@link holdCommands});
+ * - on the app's server, `hold` and `resume` ({@link holdCommands}), and `drill [<id>] [--only
+ *   <service>] [--keep]` and `drill --remove`, the restore drill by hand (`drillCommand`), which
+ *   takes the start lock itself without waiting;
  * - `list` prints each snapshot's `about.json`, one per line;
  * - `delete <id>` removes a snapshot;
  * - `offsite <id>` copies a snapshot off the server ({@link offsiteFunctions}); without
@@ -563,6 +566,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     take,
     "restore <id> [--only <service>] [--no-wait <service>]...",
     ...(app ? ["hold", "resume"] : []),
+    ...(app ? ["drill [<id>] [--only <service>] [--keep]", "drill --remove"] : []),
     "list",
     "delete <id>",
     "offsite <id>",
@@ -599,6 +603,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     ...takeCommand(plan, server),
     ...restoreCommand(plan, server),
     ...(app ? holdCommands(plan) : []),
+    ...(app ? drillCommand(plan) : []),
     // Read by the start and rollback scripts for these functions alone.
     'if [ "${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi',
     'case "${1:-}" in',
@@ -614,6 +619,8 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     ...(snapshotOffsiteOf(plan) === undefined
       ? ['    snapshot_id "$2" ;;']
       : ['    snapshot_id "$2"', '    snapshot_offsite "$2" ;;']),
+    // The drill takes the start lock itself, without waiting for it.
+    ...(app ? ["  drill)", "    shift", '    snapshot_cmd_drill "$@" ;;'] : []),
     `  take | restore | delete${app ? " | hold | resume" : ""})`,
     ...startLock(plan).map((line) => `    ${line}`),
     '    _command="$1"',

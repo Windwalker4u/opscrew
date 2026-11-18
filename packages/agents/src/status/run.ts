@@ -39,6 +39,7 @@ import {
   serviceContainers,
 } from "./components";
 import { type DeployState, deployStateReport } from "./deploys";
+import { drillStatusReport } from "./drill";
 import { monitoringStatusReport } from "./monitoring";
 import { networkStatusLines, type UnpublishedPort } from "./network";
 import {
@@ -301,21 +302,32 @@ export async function componentStatusReport(
       deploys = await deployStateReport(deps, plan, options, read);
     }
   }
-  // The last snapshot and a scheduled one that failed, once the app's components were read: a
-  // server that could not be read is not read again (024 US5 #2).
+  // The last snapshot and a scheduled one that failed, then the last restore drill (029), once
+  // the app's components were read: a server that could not be read is not read again (024 US5 #2),
+  // nor for its drill when its snapshots could not be read (this computer has no snapshot section).
+  const snapshotServices = {
+    ...(options.services?.remote !== undefined ? { remote: options.services.remote } : {}),
+    ...(options.services?.portainer !== undefined ? { portainer: options.services.portainer } : {}),
+  };
   const snapshots =
     serverless || report.status === undefined
       ? { lines: [] }
-      : await snapshotStatusReport(deps, plan, {
-          ...(options.services?.remote !== undefined ? { remote: options.services.remote } : {}),
-          ...(options.services?.portainer !== undefined
-            ? { portainer: options.services.portainer }
-            : {}),
-        });
+      : await snapshotStatusReport(deps, plan, snapshotServices);
+  const drills =
+    serverless ||
+    report.status === undefined ||
+    (plan.target.provider !== "localhost" && snapshots.snapshot === undefined)
+      ? { lines: [] }
+      : await drillStatusReport(deps, plan, snapshotServices);
   const state = await checkStateReport(deps, plan, options.services?.github);
   return {
     ...report,
-    lines: joinBlocks(report.lines, deploys.lines, snapshots.lines, state.lines),
+    lines: joinBlocks(
+      report.lines,
+      deploys.lines,
+      [...snapshots.lines, ...drills.lines],
+      state.lines,
+    ),
     ...(deploys.deploys !== undefined ? { deploys: { ...versions, ...deploys.deploys } } : {}),
     ...(snapshots.snapshot !== undefined ? { snapshot: snapshots.snapshot } : {}),
     ...(state.check !== undefined ? { check: state.check } : {}),

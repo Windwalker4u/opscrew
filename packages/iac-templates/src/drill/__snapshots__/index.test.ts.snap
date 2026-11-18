@@ -8,7 +8,7 @@ name: shop-drill
 services:
   app:
     image: ghcr.io/acme/shop@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - app.env
     environment:
@@ -45,7 +45,7 @@ services:
         condition: service_healthy
   db:
     image: <pin:IMAGES.postgres>
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - db.env
     volumes:
@@ -69,7 +69,7 @@ services:
       - internal
   cache:
     image: <pin:IMAGES.redis>
-    restart: unless-stopped
+    restart: "no"
     command:
       - sh
       - -c

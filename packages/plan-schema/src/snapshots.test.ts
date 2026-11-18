@@ -410,3 +410,96 @@ describe("snapshots where there is nothing to keep", () => {
     );
   });
 });
+
+describe("snapshots.drills", () => {
+  /** `plan` on a hosting account of `panel`, its hostname `app.example.com`, with no services. */
+  const onHosting = (plan: Loose, panel: string): Loose => ({
+    ...plan,
+    target: { provider: "hosting", panel, app: "php", webRoot: "public" },
+    services: [],
+    externalServices: [],
+    dns: { provider: "none", domain: "app.example.com", proxied: false, www: false },
+    security: { ...plan.security, httpAllowedFrom: "any" },
+  });
+
+  it("turns drills on when present, by hand only or on a weekly or daily schedule beside the snapshots'", async () => {
+    const plan = await prodPlan();
+    expect(parse(plan)).not.toHaveProperty("snapshots");
+    expect(parse({ ...plan, snapshots: { drills: {} } }).snapshots).toEqual({ drills: {} });
+    for (const schedule of ["weekly", "daily"]) {
+      const value = { schedule: {}, drills: { schedule } };
+      expect(parse({ ...plan, snapshots: value }).snapshots, schedule).toEqual(value);
+    }
+    for (const kind of ["hetzner", "digitalocean", "own", "portainer", "localhost"]) {
+      const parsed = DeployPlanSchema.safeParse({
+        ...(await targetPlan(kind)),
+        snapshots: { drills: {} },
+      });
+      expect(parsed.error?.issues, kind).toBeUndefined();
+    }
+    for (const panel of ["cpanel", "plesk", "directadmin"]) {
+      const parsed = DeployPlanSchema.safeParse({
+        ...onHosting(plan, panel),
+        snapshots: { drills: {} },
+      });
+      expect(parsed.error?.issues, panel).toBeUndefined();
+    }
+  });
+
+  it("is strict: only weekly or daily, and no other field", async () => {
+    const plan = await prodPlan();
+    for (const drills of [{ schedule: "12h" }, { schedule: "hourly" }, { every: "weekly" }, true]) {
+      const found = issues({ ...plan, snapshots: { schedule: {}, drills } });
+      expect(found.length, JSON.stringify(drills)).toBe(1);
+      expect(found[0]?.path, JSON.stringify(drills)).toMatch(/^snapshots\.drills/);
+    }
+  });
+
+  it("needs the snapshot schedule for a drill schedule, and has none on this computer", async () => {
+    expect(
+      issues({ ...(await prodPlan()), snapshots: { drills: { schedule: "weekly" } } }),
+    ).toEqual([
+      {
+        path: "snapshots.drills.schedule",
+        message:
+          "needs snapshots.schedule: a scheduled drill proves the latest scheduled snapshot, three hours after it is taken; turn the snapshot schedule on with opscrew snapshot schedule on, or remove snapshots.drills.schedule",
+      },
+    ]);
+    const local = await targetPlan("localhost");
+    expect(issues({ ...local, snapshots: { drills: { schedule: "daily" } } })).toEqual([
+      {
+        path: "snapshots.drills.schedule",
+        message:
+          "is refused with the localhost target: this computer isn't always on to run them; run a drill when you need one with opscrew restore --drill, and remove snapshots.drills.schedule",
+      },
+    ]);
+  });
+
+  it("is refused where there are no snapshots: site targets, preview environments, SFTP hosts", async () => {
+    for (const kind of ["cloudflare-workers", "github-pages"]) {
+      const found = issues({ ...(await targetPlan(kind)), snapshots: { drills: {} } });
+      expect(found, kind).toEqual([
+        {
+          path: "snapshots.drills",
+          message: "is refused on a site target, which keeps no data; remove snapshots.drills",
+        },
+      ]);
+    }
+    const preview: Loose = previewPlanOf(parse(await prodPlan()));
+    expect(issues({ ...preview, snapshots: { drills: {} } })).toEqual([
+      {
+        path: "snapshots.drills",
+        message:
+          "is refused on a preview environment, whose previews come and go; remove snapshots.drills",
+      },
+    ]);
+    const sftp = onHosting(await prodPlan(), "sftp");
+    expect(issues({ ...sftp, snapshots: { drills: {} } })).toEqual([
+      {
+        path: "snapshots.drills",
+        message:
+          "is refused on an SFTP host, which keeps no snapshots: no agent of OpsCrew's runs there to take them; remove snapshots.drills",
+      },
+    ]);
+  });
+});

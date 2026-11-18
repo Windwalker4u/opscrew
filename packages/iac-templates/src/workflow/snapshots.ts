@@ -338,6 +338,32 @@ const DATABASES: Record<(typeof DATABASE_KINDS)[number], DatabaseCommands> = {
 };
 
 /**
+ * A restore drill's read of the restored database `part` (029 research R17): sh inside its running
+ * container, with its environment and its login from there (no password in an argument), that
+ * prints one number once the server answers (`pg_isready` for PostgreSQL): the tables of the
+ * database `app`, or for MongoDB its collections. Undefined for a part that is none of the four
+ * databases.
+ */
+export function databaseCount(part: SnapshotPart): string | undefined {
+  const { name: host, kind } = part;
+  if (!databaseKind(kind)) return undefined;
+  const { login } = DATABASES[kind];
+  const tables = "SELECT COUNT(*) FROM information_schema.tables";
+  switch (kind) {
+    case "postgres":
+      return `${login} && pg_isready -q -h ${host} -U app -d app && psql -X -q -At -h ${host} -U app -d app -c "${tables} WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"`;
+    case "mysql":
+    case "mariadb": {
+      const [client, admin] =
+        kind === "mysql" ? ["mysql", "mysqladmin"] : ["mariadb", "mariadb-admin"];
+      return `${login} && ${admin} -h ${host} -u root ping > /dev/null && ${client} -h ${host} -u root -N -B -e "${tables} WHERE table_schema = 'app'"`;
+    }
+    case "mongodb":
+      return `HOME=/tmp mongosh --quiet --nodb --eval 'const c = connect("mongodb://${host}:27017/admin"); c.auth("app", process.env.MONGO_INITDB_ROOT_PASSWORD); print(c.getSiblingDB("app").getCollectionNames().length)'`;
+  }
+}
+
+/**
  * Valkey's, Redis's and Dragonfly's client in their own image, and the variable of the service's
  * env file that holds the default user's password (`catalog/entries.ts`).
  */
@@ -554,7 +580,9 @@ export function partRestore(part: SnapshotPart): PartRestore {
 
 /**
  * The Compose project a server's part restores put the data in, other than the app's own: a
- * restore drill's `<app>-drill`. Its names hold only letters, digits, `.`, `-`, `_` and `/`.
+ * restore drill's `<app>-drill`. Its names hold only letters, digits, `.`, `-`, `_` and `/`; its
+ * file and log may start with a quoted shell variable instead (`"$_drill_dir"/compose.yaml`), which
+ * the script sets to a folder of such a name.
  */
 export interface RestoreProject {
   /** The project's name, which its volumes' names start with (`<name>_sqlite`). */

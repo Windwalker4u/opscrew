@@ -1,4 +1,4 @@
-import { restoreServerSnapshot, restoreSnapshot } from "@opscrew/agents";
+import { drillSnapshot, restoreServerSnapshot, restoreSnapshot } from "@opscrew/agents";
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
@@ -6,6 +6,8 @@ import { type Command, Option } from "commander";
 import { FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
+import { CliExit, REFUSED_EXIT_CODE } from "../exit";
+import { quietReporter } from "../reporter";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { readKeyFile } from "./secrets";
@@ -25,22 +27,93 @@ interface RestoreFlags extends AppEnvFlags {
   confirm?: string;
   /** `--approve <hash>`: in a script, the restore's hash an earlier run showed. */
   approve?: string;
+  /** `--drill`: restore the snapshot into a throwaway copy to prove it, never the app's data. */
+  drill?: boolean;
+  /** `--keep`: with --drill, the copy stays for inspection. */
+  keep?: boolean;
+  /** `--remove`: with --drill, a kept copy goes. */
+  remove?: boolean;
+  /** `--json`: with --drill, the drill's report as JSON. */
+  json?: boolean;
+}
+
+/**
+ * Refuses a drill's flags that don't go together, before any work (exit code 2): `--drill` takes
+ * no `--server`, `--from` or `--key-file` (a drill restores the snapshot where it is), and
+ * `--remove` nothing but itself; `--keep`, `--remove` and `--json` need `--drill`.
+ */
+function checkDrillFlags(flags: RestoreFlags, id: string | undefined, given: string): void {
+  const drill = `opscrew restore --drill${id === undefined ? "" : ` ${id}`}`;
+  const needDrill = [
+    [flags.keep === true, "--keep"],
+    [flags.remove === true, "--remove"],
+    [flags.json === true, "--json"],
+  ] as const;
+  const without = needDrill.filter(([set]) => set).map(([, name]) => name);
+  if (flags.drill !== true) {
+    if (without.length === 0) return;
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${without.join(", ")} ${without.length === 1 ? "goes" : "go"} only with --drill.`,
+      {
+        hint: `Run \`${drill} ${without.join(" ")}${given}\`.`,
+      },
+    );
+  }
+  if (flags.server === true || flags.from !== undefined || flags.keyFile !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "--drill restores the snapshot where it is, into a throwaway copy, so it takes no --server, --from or --key-file.",
+      { hint: `Run \`${drill}${given}\` without them.` },
+    );
+  }
+  if (flags.remove !== true) return;
+  const extra = [
+    [id !== undefined, "snapshot id"],
+    [flags.only !== undefined, "--only"],
+    [flags.keep === true, "--keep"],
+    [flags.allowOtherVersion === true, "--allow-other-version"],
+  ] as const;
+  const named = extra.filter(([set]) => set).map(([, name]) => name);
+  if (named.length === 0) return;
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `--drill --remove takes no ${named.join(", ")}: it removes the drill's kept copy, whichever snapshot it holds.`,
+    { hint: `Run \`opscrew restore --drill --remove${given}\`.` },
+  );
 }
 
 /**
  * Refuses flags that don't go together, before any work (exit code 2), and returns the trimmed
- * `--approve` hash. `given` holds the `--app`/`--env` flags the user gave, for the hints.
+ * `--approve` hash. `given` holds the `--app`/`--env` flags the user gave, for the hints. Only a
+ * drill goes without the snapshot's id (then the latest).
  */
-function checkFlags(flags: RestoreFlags, id: string, given: string): string | undefined {
-  const command = `opscrew restore${flags.server === true ? " --server" : ""} ${id}${given}`;
+function checkFlags(
+  flags: RestoreFlags,
+  raw: string | undefined,
+  given: string,
+): string | undefined {
+  checkDrillFlags(flags, raw, given);
+  const drill = flags.drill === true;
+  if (raw === undefined && !drill) {
+    throw new OpsCrewError("INVALID_INPUT", "opscrew restore needs the snapshot's id.", {
+      hint: `\`opscrew snapshot list${given}\` shows the snapshots and their ids; \`opscrew restore --drill${given}\` drills the latest.`,
+    });
+  }
+  const id = raw ?? "";
+  const command = drill
+    ? `opscrew restore --drill${raw === undefined ? "" : ` ${raw}`}${given}`
+    : `opscrew restore${flags.server === true ? " --server" : ""} ${id}${given}`;
+  const what = drill ? "drill" : "restore";
   const approve = flags.approve?.trim();
   if (approve !== undefined && !isPlanHash(approve)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "--approve expects the 64-character SHA-256 restore hash an earlier run showed.",
-      { hint: `Run \`${command}\` to see the restore and its hash.` },
+      `--approve expects the 64-character SHA-256 ${what} hash an earlier run showed.`,
+      { hint: `Run \`${command}\` to see the ${what} and its hash.` },
     );
   }
+  if (drill) return approve;
   const data = [
     [flags.only !== undefined, "--only"],
     [flags.allowOtherVersion === true, "--allow-other-version"],
@@ -102,7 +175,7 @@ function restoreApprovals(
 
 /** The command's line in `opscrew --help`, and the first line of its own help. */
 const SUMMARY =
-  "Put a snapshot's data back in an environment without changing the version that runs, or with --server rebuild a server from its whole-server snapshot";
+  "Put a snapshot's data back in an environment without changing the version that runs, with --drill prove it restores in a throwaway copy, or with --server rebuild a server from its whole-server snapshot";
 
 /**
  * `opscrew restore` (feature 024, US3, US4, US6), through the agents' restores:
@@ -111,9 +184,14 @@ const SUMMARY =
  *   snapshot of another version is refused unless `--allow-other-version`.
  * - `opscrew restore --server <id>`: the provider rebuilds the server from its whole-server
  *   snapshot in place; OpsCrew then checks the app answers.
- * Destroy-grade: a terminal asks for the name (the app's, or with `--server` the server's); a
- * script gives `--confirm <name>` and `--approve <hash>`, which an earlier run showed; `--yes`
- * never approves it. Exit codes: 0 restored, 1 refused or not approved, 2 error.
+ * - `opscrew restore --drill [<id>] [--only <service>] [--keep] [--allow-other-version] [--json]`
+ *   (029 US7): the snapshot, the latest by default, restored into a throwaway copy where it is,
+ *   with no internet and none of the production `.env`, the app started on it and checked, then
+ *   the copy removed; `opscrew restore --drill --remove` removes a kept copy.
+ * Destroy-grade: a terminal asks for the name (the app's, with `--server` the server's, with
+ * `--drill` `<app>-drill`); a script gives `--confirm <name>` and `--approve <hash>`, which an
+ * earlier run showed; `--yes` never approves it. Exit codes: 0 restored (a drill healthy, or its
+ * copy removed), 1 refused, not approved, or a drill that did not end healthy, 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
@@ -127,9 +205,16 @@ export function register(program: Command, ctx: CliContext): void {
         "the app's name (with --server, the server's); in a script, --confirm <name> with",
         "--approve <hash>. A copy of the data as it is now is taken first and put back if the",
         "restore fails.",
+        "",
+        "With --drill, the snapshot is restored into a throwaway copy where it is, with no",
+        "internet, no published port and none of your production .env; the app starts on it and",
+        "is checked, then the copy goes. You approve it by typing <app>-drill.",
       ].join("\n"),
     )
-    .argument("<id>", "The snapshot's id, as `opscrew snapshot list` shows it")
+    .argument(
+      "[id]",
+      "The snapshot's id, as `opscrew snapshot list` shows it (with --drill, the latest by default)",
+    )
     .option("--only <service>", "Put back only this service's data")
     .option(
       "--allow-other-version",
@@ -150,8 +235,15 @@ export function register(program: Command, ctx: CliContext): void {
       `Rebuild the server from this whole-server snapshot at its provider (${CLOUD_PROVIDERS.map((provider) => provider.name).join(", ")})`,
     )
     .option(
+      "--drill",
+      "Prove the snapshot restores: restore it into a throwaway copy with no internet, start the app on it and check it, then remove the copy",
+    )
+    .option("--keep", "With --drill: keep the copy for you to look at")
+    .option("--remove", "With --drill: remove a copy kept with --keep")
+    .option("--json", "With --drill: print the drill's report as JSON")
+    .option(
       "--confirm <name>",
-      "In a script, with --approve: the app's name (with --server, the server's), typed to approve it",
+      "In a script, with --approve: the app's name (with --server, the server's; with --drill, <app>-drill), typed to approve it",
     )
     .option(
       "--approve <hash>",
@@ -167,21 +259,42 @@ export function register(program: Command, ctx: CliContext): void {
         "  opscrew restore <id> --only db                only the service db",
         "  opscrew restore <id> --from offsite --key-file <path>   from the copy off the server",
         "  opscrew restore --server <id>                 rebuild the server from it",
+        "  opscrew restore --drill                       prove the latest snapshot restores",
+        "  opscrew restore --drill --remove              remove a copy kept with --keep",
       ].join("\n"),
     )
-    .action(async (raw: string, flags: RestoreFlags) => {
-      const id = raw.trim();
+    .action(async (raw: string | undefined, flags: RestoreFlags) => {
+      const trimmed = raw?.trim();
       const given = givenFlags(flags);
-      const approve = checkFlags(flags, id, given);
+      const approve = checkFlags(flags, trimmed, given);
+      const id = trimmed ?? "";
+      const json = flags.json === true;
       const { app, name, flag } = await chooseEnvironment(ctx, flags, "restore");
       const deps = createPhaseDeps(ctx, {
         ai: false,
         app,
         environment: name,
         wrapApprovals: restoreApprovals(ctx, flags.confirm?.trim(), approve),
+        // Progress is dropped for `--json`, so stdout holds only the report; problems go to stderr.
+        ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
       });
       const services = servicesOf(ctx).snapshot;
       const withServices = services === undefined ? {} : { services };
+      if (flags.drill === true) {
+        const only = flags.only?.trim();
+        const report = await drillSnapshot(deps, trimmed, {
+          ...(only === undefined ? {} : { only }),
+          ...(flags.keep === true ? { keep: true } : {}),
+          ...(flags.remove === true ? { remove: true } : {}),
+          ...(flags.allowOtherVersion === true ? { allowOtherVersion: true } : {}),
+          ...withServices,
+        });
+        if (json) ctx.stdout(`${JSON.stringify(report, null, 2)}\n`);
+        if (!["healthy", "removed", "none"].includes(report.outcome)) {
+          throw new CliExit(REFUSED_EXIT_CODE);
+        }
+        return;
+      }
       if (flags.server === true) {
         const restored = await restoreServerSnapshot(deps, id, withServices);
         if (!restored.checked) {

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
 import { withServices } from "../catalog/__fixtures__/plans";
+import { onThisComputer } from "../edge/__fixtures__/localhost";
 import { renderCompose } from "../runtime";
 import {
   NIGHTLY,
@@ -16,8 +17,10 @@ import {
   DRILL_VALUES_FILE,
   type DrillOptions,
   drillDir,
+  drillImageOk,
   drillPlan,
   drillProject,
+  localBuildImage,
   renderDrill,
 } from "./index";
 
@@ -210,12 +213,41 @@ describe("renderDrill", () => {
     expect(run({ env: { app: "", services: {} } })).toThrow(/none for the service db/);
   });
 
-  it("refuses a target with no server", () => {
-    const plan = { ...withRelease, target: { ...withRelease.target, provider: "localhost" } };
+  it("refuses a target that is neither a server nor this computer", () => {
+    const plan = { ...withRelease, target: { ...withRelease.target, provider: "portainer" } };
     expect(() =>
       // biome-ignore lint/suspicious/noExplicitAny: a target the plan's type doesn't allow here.
       renderDrill(plan as any, { id: ID, parts: ["db"] }, { image: DIGEST, env: ENV }),
-    ).toThrow(/runs on a server/);
+    ).toThrow(/runs on a server, OpsCrew's or your own, or this computer/);
+  });
+
+  it("never restarts a container by itself, so a kept copy stays down after a reboot", () => {
+    const text = drill()["compose.yaml"] ?? "";
+    const { services } = compose(drill());
+    for (const name of ["app", "db", "cache"]) expect(services[name].restart, name).toBe("no");
+    expect(text).not.toContain("unless-stopped");
+    expect(text.match(/^ {4}restart: "no"$/gm)).toHaveLength(3);
+  });
+
+  it("runs on this computer, a local build's tag never pulled, its services in the project's volumes", () => {
+    const local = onThisComputer(shop);
+    const image = localBuildImage(local, "b".repeat(64));
+    expect(image).toBe("opscrew-local/shop:bbbbbbbbbbbb");
+    const files = renderDrill(local, { id: ID, parts: ["db"] }, { image, env: ENV });
+    const document = parse(files.find((file) => file.path.endsWith("compose.yaml"))?.content ?? "");
+    expect(document.name).toBe("shop-drill");
+    expect(document.services.app.image).toBe(image);
+    expect(document.services.app.pull_policy).toBe("never");
+    expect(document.services.db.volumes).toEqual(["db_data:/var/lib/postgresql/data"]);
+    expect(document.networks).toEqual({ internal: { internal: true } });
+    // An image pinned by its digest runs there too, and is pulled when missing.
+    const pinned = renderDrill(local, { id: ID, parts: ["db"] }, { image: DIGEST, env: ENV });
+    expect(parse(pinned[0]?.content ?? "").services.app.pull_policy).toBe("missing");
+    expect(drillImageOk(local, "opscrew-local/other:bbbbbbbbbbbb")).toBe(false);
+    expect(drillImageOk(withRelease, image)).toBe(false);
+    expect(() => renderDrill(withRelease, { id: ID, parts: ["db"] }, { image, env: ENV })).toThrow(
+      /not pinned by its digest/,
+    );
   });
 });
 

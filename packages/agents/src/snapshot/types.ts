@@ -104,3 +104,54 @@ export interface DeletedSnapshot {
   where: string;
   outcome: "deleted" | "already gone";
 }
+
+/**
+ * What `opscrew restore --drill` asks (029 plan.md 19.): a drill of the snapshot `id` (the latest
+ * when absent) or with `remove` the removal of a kept copy.
+ */
+export interface DrillRequest {
+  /** The snapshot's id; the latest complete one when absent. */
+  id?: string;
+  /** `--only <service>`: the one part the copy restores; every one by default. */
+  only?: string;
+  /** `--keep`: the copy stays for inspection until `--drill --remove`. */
+  keep?: boolean;
+  /** `--allow-other-version`: the copy runs today's version when the snapshot's is gone. */
+  allowOtherVersion?: boolean;
+  /** `--drill --remove`: the removal of a kept copy, alone. */
+  remove?: boolean;
+}
+
+/** `opscrew restore --drill`'s options. */
+export interface DrillSnapshotOptions extends Omit<DrillRequest, "id"> {
+  services?: SnapshotServices;
+}
+
+/** How a drill by hand ended, the same in `--json`. */
+export interface DrillReport {
+  /** The snapshot drilled, once chosen. */
+  id?: string;
+  /** Where, in words: `on the app's server`, `on this computer`. */
+  where: string;
+  /**
+   * `healthy`, `unhealthy`, `not-restored`, `skipped` or `failed` (research R19, R29); `removed`
+   * for a removal of a kept copy, and `none` when there was none.
+   */
+  outcome: "healthy" | "unhealthy" | "not-restored" | "skipped" | "failed" | "removed" | "none";
+  /** The outcome in plain words, with what to do next. */
+  summary: string;
+  /** What this drill proves on its target (research R27's row). */
+  proves: string;
+  /** Each part restored, its file's size in bytes and seconds. */
+  parts: { name: string; size: number; seconds: number }[];
+  /** The app's health at the end and the seconds it took. */
+  health?: { state: string; seconds: number };
+  /** Each restored database's tables (collections for MongoDB), when read. */
+  tables: { service: string; count?: number }[];
+  /** What became of the copy. */
+  removal?: "removed" | "kept" | "failed";
+  /** A fixed word: why it was skipped or failed, or the part that did not restore. */
+  reason?: string;
+  /** Restored services of the stop-only kinds: their data keeps production's logins. */
+  ownLogins: string[];
+}
