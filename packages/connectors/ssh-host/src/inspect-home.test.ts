@@ -5,8 +5,14 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { FakeHost } from "./__fixtures__/fake-host";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
+import {
+  DNS_UPDATER_SERVICE_TEXT,
+  DNS_UPDATER_VERSION,
+  renderDnsUpdaterScript,
+} from "./dns-updater";
 import { HostFactsSchema } from "./facts";
 import {
+  DNS_UPDATER_FILES_SNIPPET,
   DNS_UPDATERS_SNIPPET,
   inspectHost,
   inspectScript,
@@ -16,6 +22,7 @@ import {
 import {
   EXIT_MARK,
   parseBoard,
+  parseDnsUpdaterFiles,
   parseDnsUpdaters,
   parsePower,
   parseStorage,
@@ -54,8 +61,16 @@ describe("inspectHost on a home server", () => {
       storage: { srv: null, docker: null },
       power: null,
       dnsUpdaters: [],
+      dnsUpdaterFiles: { version: null, script: null, service: null, timer: null, dir: null },
     });
-    const { board: _b, storage: _s, power: _p, dnsUpdaters: _d, ...older } = facts;
+    const {
+      board: _b,
+      storage: _s,
+      power: _p,
+      dnsUpdaters: _d,
+      dnsUpdaterFiles: _f,
+      ...older
+    } = facts;
     expect(HostFactsSchema.safeParse(older).success).toBe(true);
   });
 
@@ -67,7 +82,7 @@ describe("inspectHost on a home server", () => {
       ["power", `vcgencmd ${fixture("vcgencmd-throttled.txt")}`, 0],
       [
         "dns-updaters",
-        `config shop ${JSON.stringify(CONFIG)}\ntoken shop absent\ntimer shop - -`,
+        `config shop ${JSON.stringify(CONFIG)}\nfile shop 600 root\ntoken shop absent\ntimer shop - -`,
         0,
       ],
     ]
@@ -93,7 +108,8 @@ describe("inspectHost on a home server", () => {
       dnsUpdaters: [
         {
           app: "shop",
-          config: true,
+          config: CONFIG,
+          configFile: { mode: "600", owner: "root" },
           token: { present: false, mode: "", owner: "", sha256: null },
           timer: { enabled: false, active: false },
           state: null,
@@ -282,12 +298,21 @@ esac`,
         expect(result.stdout).not.toContain(token);
         const absent = { present: false, mode: "", owner: "", sha256: null };
         const off = { enabled: false, active: false };
+        const configFile = { mode: "600", owner: "root" };
         expect(parseDnsUpdaters(result.stdout)).toEqual([
-          { app: "blog", config: false, token: absent, timer: off, state: null },
-          { app: "news", config: true, token: absent, timer: off, state: null },
+          { app: "blog", config: null, configFile, token: absent, timer: off, state: null },
+          {
+            app: "news",
+            config: { ...CONFIG, app: "news" },
+            configFile,
+            token: absent,
+            timer: off,
+            state: null,
+          },
           {
             app: "shop",
-            config: true,
+            config: CONFIG,
+            configFile,
             token: {
               present: true,
               mode: "600",
@@ -304,12 +329,59 @@ esac`,
     },
   );
 
-  it("counts only the updater's own config as one that parses", () => {
+  it("keeps only a config that parses as the updater's own", () => {
     const line = (config: object) => `config shop ${JSON.stringify(config)}`;
-    expect(parseDnsUpdaters(line(CONFIG))[0]?.config).toBe(true);
-    expect(parseDnsUpdaters(line({ ...CONFIG, token: "x" }))[0]?.config).toBe(false);
-    expect(parseDnsUpdaters(line({ ...CONFIG, zoneId: "nope" }))[0]?.config).toBe(false);
+    expect(parseDnsUpdaters(line(CONFIG))[0]?.config).toEqual(CONFIG);
+    expect(parseDnsUpdaters(line({ ...CONFIG, token: "x" }))[0]?.config).toBeNull();
+    expect(parseDnsUpdaters(line({ ...CONFIG, zoneId: "nope" }))[0]?.config).toBeNull();
+    // Without its file line, the config file's mode is unknown.
+    expect(parseDnsUpdaters(line(CONFIG))[0]?.configFile).toEqual({ mode: "", owner: "" });
     // An instance is listed by its config: lines without one are left out.
     expect(parseDnsUpdaters("timer blog enabled active\ntoken blog absent")).toEqual([]);
   });
+
+  it.skipIf(!BASH_AVAILABLE)(
+    "reads the shared script's version and the script's, units' and folder's mode, owner and hash",
+    () => {
+      const sh = new ShellHarness();
+      try {
+        const script = renderDnsUpdaterScript();
+        const sum = (text: string) => createHash("sha256").update(text).digest("hex");
+        sh.write("/usr/local/sbin/opscrew-dns-updater", script);
+        sh.write("/etc/systemd/system/opscrew-dns-updater@.service", DNS_UPDATER_SERVICE_TEXT);
+        sh.write("/etc/opscrew/dns-updater/shop.json", "{}");
+        sh.stub(
+          "stat",
+          `case "$3" in
+  */opscrew-dns-updater) echo '755 root' ;;
+  */dns-updater) echo '700 root' ;;
+  *) echo '644 root' ;;
+esac`,
+          { log: false },
+        );
+        const { stdout } = runSnippet(sh, DNS_UPDATER_FILES_SNIPPET);
+        expect(parseDnsUpdaterFiles(stdout)).toEqual({
+          version: DNS_UPDATER_VERSION,
+          script: { mode: "755", owner: "root", sha256: sum(script) },
+          service: { mode: "644", owner: "root", sha256: sum(DNS_UPDATER_SERVICE_TEXT) },
+          timer: null,
+          dir: { mode: "700", owner: "root" },
+        });
+        // Nothing there: every file null.
+        sh.write("/usr/local/sbin/opscrew-dns-updater", "#!/bin/sh\n# something else\n");
+        expect(parseDnsUpdaterFiles(runSnippet(sh, DNS_UPDATER_FILES_SNIPPET).stdout).version).toBe(
+          null,
+        );
+        expect(parseDnsUpdaterFiles("")).toEqual({
+          version: null,
+          script: null,
+          service: null,
+          timer: null,
+          dir: null,
+        });
+      } finally {
+        sh.dispose();
+      }
+    },
+  );
 });

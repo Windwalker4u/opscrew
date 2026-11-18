@@ -42,6 +42,13 @@ import {
   SYSCTL_FILE,
   TUNNELS_DIR,
 } from "../constants";
+import {
+  DNS_UPDATER_CONFIG_DIR,
+  DNS_UPDATER_SCRIPT,
+  DNS_UPDATER_SERVICE_UNIT,
+  DNS_UPDATER_STATE_DIR,
+  DNS_UPDATER_TIMER_UNIT,
+} from "../dns-updater";
 import { NETWORK_DROP_IN, networkPort } from "../network";
 import { NETWORK_FILTER_SCRIPT_PREFIX, NETWORK_FILTER_UNIT, networkFilterDropInPath } from "../network-filter";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
@@ -338,6 +345,12 @@ export class FakeHost implements RemoteExec {
   nftInstalled = true;
   /** OpsCrew's nftables table `inet opscrew` as `nft_table` prints it, and its unit's state. */
   sshFirewall: { table: string | null; enabled: boolean } = { table: null, enabled: false };
+  /** The address updater's instances whose timer is enabled and active, by app. */
+  dnsUpdaterTimers = new Set<string>();
+  /** The error code the updater's next run records instead of a success. */
+  dnsUpdaterRunError: string | undefined = undefined;
+  /** The address updater's files whose `stat -c '%a %U'` differs from what OpsCrew writes, by path. */
+  updaterModes = new Map<string, string>();
   iptables = "";
   ip6tables = "";
   nft = "";
@@ -1058,7 +1071,92 @@ export class FakeHost implements RemoteExec {
         `table ${this.sshFirewall.table ?? ""}`,
       ].join("\n"),
     );
+    add("dns-updaters", this.dnsUpdaterLines());
+    add("dns-updater-files", this.dnsUpdaterFileLines());
     return sectionsOutput(sections);
+  }
+
+  /** `stat -c '%a %U'` of a file OpsCrew wrote. */
+  private modeOf(path: string, written: string): string {
+    return this.updaterModes.get(path) ?? written;
+  }
+
+  /** The apps that have an updater config, sorted. */
+  private dnsUpdaterApps(): string[] {
+    const prefix = `${DNS_UPDATER_CONFIG_DIR}/`;
+    return [...this.files.keys()]
+      .filter((path) => path.startsWith(prefix) && path.endsWith(".json"))
+      .map((path) => path.slice(prefix.length, -".json".length))
+      .sort();
+  }
+
+  /** The updaters' section as `DNS_UPDATERS_SNIPPET` prints it (never a token). */
+  private dnsUpdaterLines(): string {
+    return this.dnsUpdaterApps()
+      .flatMap((app) => {
+        const config = `${DNS_UPDATER_CONFIG_DIR}/${app}.json`;
+        const tokenPath = `${DNS_UPDATER_CONFIG_DIR}/${app}.token`;
+        const token = this.files.get(tokenPath);
+        const state = this.files.get(`${DNS_UPDATER_STATE_DIR}/${app}/state.json`);
+        const on = this.dnsUpdaterTimers.has(app);
+        return [
+          `config ${app} ${(this.files.get(config) ?? "").replace(/[\r\n]/g, " ")}`,
+          `file ${app} ${this.modeOf(config, "600 root")}`,
+          token === undefined ? `token ${app} absent` : `token ${app} ${this.modeOf(tokenPath, "600 root")} ${sha256(token)}`,
+          `timer ${app} ${on ? "enabled active" : "disabled inactive"}`,
+          ...(state === undefined ? [] : [`state ${app} ${state.replace(/[\r\n]/g, " ")}`]),
+        ];
+      })
+      .join("\n");
+  }
+
+  /** The updater's shared files as `DNS_UPDATER_FILES_SNIPPET` prints them. */
+  private dnsUpdaterFileLines(): string {
+    const hashed = (name: string, path: string, written: string) => {
+      const content = this.files.get(path);
+      return content === undefined ? [] : [`${name} ${this.modeOf(path, written)} ${sha256(content)}`];
+    };
+    const version = /^# opscrew-dns-updater version (\d+)$/.exec(
+      (this.files.get(DNS_UPDATER_SCRIPT) ?? "").split("\n")[1] ?? "",
+    )?.[1];
+    return [
+      ...hashed("script", DNS_UPDATER_SCRIPT, "755 root"),
+      ...hashed("service", DNS_UPDATER_SERVICE_UNIT, "644 root"),
+      ...hashed("timer", DNS_UPDATER_TIMER_UNIT, "644 root"),
+      ...(this.madeDirs.has(DNS_UPDATER_CONFIG_DIR) ? [`dir ${this.modeOf(DNS_UPDATER_CONFIG_DIR, "700 root")}`] : []),
+      ...(version === undefined ? [] : [`version ${version}`]),
+    ].join("\n");
+  }
+
+  /** The `dns-updater` step's check: the shared files and the app's instance as planned. */
+  private dnsUpdaterOk(p: Record<string, string>): boolean {
+    const is = (path: string | undefined, sum: string | undefined) => {
+      const content = this.files.get(path ?? "");
+      return content !== undefined && sha256(content) === sum;
+    };
+    const mode = (path: string | undefined, want: string) => this.files.has(path ?? "") && this.modeOf(path ?? "", want) === want;
+    const version = Number(/^# opscrew-dns-updater version (\d+)$/.exec((this.files.get(DNS_UPDATER_SCRIPT) ?? "").split("\n")[1] ?? "")?.[1] ?? 0);
+    const shared =
+      version > Number(p.VERSION)
+        ? this.files.has(DNS_UPDATER_SERVICE_UNIT) && this.files.has(DNS_UPDATER_TIMER_UNIT)
+        : version === Number(p.VERSION) &&
+          is(DNS_UPDATER_SCRIPT, p.SCRIPT_SHA256) &&
+          is(DNS_UPDATER_SERVICE_UNIT, p.SERVICE_SHA256) &&
+          is(DNS_UPDATER_TIMER_UNIT, p.TIMER_SHA256) &&
+          mode(DNS_UPDATER_SCRIPT, "755 root") &&
+          mode(DNS_UPDATER_SERVICE_UNIT, "644 root") &&
+          mode(DNS_UPDATER_TIMER_UNIT, "644 root");
+    const token = p.TOKEN_SHA256 ? is(p.TOKEN_FILE, p.TOKEN_SHA256) : this.files.has(p.TOKEN_FILE ?? "");
+    return (
+      shared &&
+      this.madeDirs.has(DNS_UPDATER_CONFIG_DIR) &&
+      this.modeOf(DNS_UPDATER_CONFIG_DIR, "700 root") === "700 root" &&
+      is(p.CONFIG, p.CONFIG_SHA256) &&
+      mode(p.CONFIG, "600 root") &&
+      token &&
+      mode(p.TOKEN_FILE, "600 root") &&
+      this.dnsUpdaterTimers.has(p.APP ?? "")
+    );
   }
 
   /**
@@ -1469,6 +1567,96 @@ export class FakeHost implements RemoteExec {
         this.files.delete(WEB_FILTER_SCRIPT);
         this.webFilterLog.push("remove");
         return result();
+
+      // dns-updater (a home app's address updater)
+      case "dns-updater.check":
+        return this.check(this.dnsUpdaterOk(p), {
+          installed: this.files.has(DNS_UPDATER_SCRIPT),
+          instance: this.files.has(p.CONFIG ?? ""),
+        });
+      case "dns-updater.verify": {
+        if (!this.dnsUpdaterOk(p)) return this.verify(false, p);
+        const state = JSON.parse(this.files.get(p.STATE_FILE ?? "") ?? "{}") as { lastSuccess?: string; lastError?: { code: string } };
+        return state.lastSuccess !== undefined
+          ? result()
+          : fail(`The address updater's first run failed: ${state.lastError?.code ?? "no run"}, then run the command again.`, 5);
+      }
+      case "dns-updater.packages.apply":
+        if (!root) throw new Error("fake host: dns-updater.packages.apply must run as root");
+        for (const name of (p.PACKAGES ?? "").split(" ").filter(Boolean)) this.packages.set(name, "1.0");
+        return result();
+      case "dns-updater.apply": {
+        if (!root) throw new Error("fake host: dns-updater.apply must run as root");
+        const tokenPath = p.TOKEN_FILE ?? "";
+        let token = "";
+        if (p.TOKEN_SHA256) {
+          token = (input ?? "").split("\n")[0] ?? "";
+          if (!/^[\x21-\x7e]{40,255}$/.test(token)) return fail("No valid updater token arrived on standard input, so the address updater was not set up. Nothing was changed.");
+          if (sha256(token) !== p.TOKEN_SHA256) return fail("The updater token that arrived on standard input is not the one the plan names, so it was not written. Nothing was changed.");
+        }
+        if (token === "" && !this.files.has(tokenPath)) return fail(`No updater token arrived on standard input, and the server has none for ${p.APP}. Nothing was changed.`);
+        for (const tool of ["curl", "jq"]) if (!this.installed(tool)) return fail(`${tool} is not installed, so the address updater cannot run. Nothing was changed.`);
+        const decode = (value: string | undefined) => Buffer.from(value ?? "", "base64").toString("utf8");
+        const version = Number(/^# opscrew-dns-updater version (\d+)$/.exec((this.files.get(DNS_UPDATER_SCRIPT) ?? "").split("\n")[1] ?? "")?.[1] ?? 0);
+        if (version < Number(p.VERSION) || (version === Number(p.VERSION) && sha256(this.files.get(DNS_UPDATER_SCRIPT) ?? "") !== p.SCRIPT_SHA256)) {
+          this.files.set(DNS_UPDATER_SCRIPT, decode(p.SCRIPT_B64));
+          this.files.set(DNS_UPDATER_SERVICE_UNIT, decode(p.SERVICE_B64));
+          this.files.set(DNS_UPDATER_TIMER_UNIT, decode(p.TIMER_B64));
+          for (const path of [DNS_UPDATER_SCRIPT, DNS_UPDATER_SERVICE_UNIT, DNS_UPDATER_TIMER_UNIT]) this.updaterModes.delete(path);
+        }
+        this.madeDirs.add(DNS_UPDATER_CONFIG_DIR);
+        this.updaterModes.delete(DNS_UPDATER_CONFIG_DIR);
+        this.files.set(p.CONFIG ?? "", decode(p.CONFIG_B64));
+        this.updaterModes.delete(p.CONFIG ?? "");
+        if (token !== "") this.files.set(tokenPath, token);
+        this.updaterModes.delete(tokenPath);
+        this.dnsUpdaterTimers.add(p.APP ?? "");
+        // The run right after: its result is in the state.
+        const error = this.dnsUpdaterRunError;
+        this.files.set(
+          p.STATE_FILE ?? "",
+          JSON.stringify({
+            schemaVersion: 1,
+            version: Number(p.VERSION),
+            lastRun: "2026-11-20T10:04:12Z",
+            ...(error === undefined ? { lastSuccess: "2026-11-20T10:04:12Z" } : { lastError: { at: "2026-11-20T10:04:12Z", code: error } }),
+            seen: { ipv4: null, ipv6: null },
+            records: { ipv4: null, ipv6: null },
+          }),
+        );
+        return result();
+      }
+      case "dns-updater.remove.check":
+      case "dns-updater.remove.verify": {
+        const apps = (p.APPS ?? "").split(" ").filter(Boolean);
+        const others = this.dnsUpdaterApps().some((app) => !apps.includes(app));
+        const ok =
+          apps.every(
+            (app) =>
+              !this.files.has(`${DNS_UPDATER_CONFIG_DIR}/${app}.json`) &&
+              !this.files.has(`${DNS_UPDATER_CONFIG_DIR}/${app}.token`) &&
+              !this.files.has(`${DNS_UPDATER_STATE_DIR}/${app}/state.json`) &&
+              !this.dnsUpdaterTimers.has(app),
+          ) &&
+          (p.SHARED !== "true" || others || (!this.files.has(DNS_UPDATER_SCRIPT) && !this.files.has(DNS_UPDATER_SERVICE_UNIT) && !this.files.has(DNS_UPDATER_TIMER_UNIT) && !this.madeDirs.has(DNS_UPDATER_CONFIG_DIR)));
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "dns-updater.remove.apply": {
+        if (!root) throw new Error("fake host: dns-updater.remove.apply must run as root");
+        const apps = (p.APPS ?? "").split(" ").filter(Boolean);
+        for (const app of apps) {
+          this.dnsUpdaterTimers.delete(app);
+          this.files.delete(`${DNS_UPDATER_CONFIG_DIR}/${app}.json`);
+          this.files.delete(`${DNS_UPDATER_CONFIG_DIR}/${app}.token`);
+          this.files.delete(`${DNS_UPDATER_STATE_DIR}/${app}/state.json`);
+        }
+        if (p.SHARED === "true" && this.dnsUpdaterApps().every((app) => apps.includes(app))) {
+          for (const path of [DNS_UPDATER_SCRIPT, DNS_UPDATER_SERVICE_UNIT, DNS_UPDATER_TIMER_UNIT]) this.files.delete(path);
+          for (const path of [...this.files.keys()]) if (path.startsWith(`${DNS_UPDATER_CONFIG_DIR}/`)) this.files.delete(path);
+          this.madeDirs.delete(DNS_UPDATER_CONFIG_DIR);
+        }
+        return result();
+      }
 
       // network (the app's private WireGuard network)
       case "network.inspect":

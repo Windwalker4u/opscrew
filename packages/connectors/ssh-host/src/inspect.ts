@@ -39,6 +39,13 @@ import {
   tunnelProject,
 } from "./constants";
 import {
+  DNS_UPDATER_CONFIG_DIR,
+  DNS_UPDATER_SCRIPT,
+  DNS_UPDATER_SERVICE_UNIT,
+  DNS_UPDATER_STATE_DIR,
+  DNS_UPDATER_TIMER_UNIT,
+} from "./dns-updater";
+import {
   type HostFacts,
   HostFactsSchema,
   HostRecordSchema,
@@ -72,6 +79,7 @@ import {
   parseContainers,
   parseDf,
   parseDirs,
+  parseDnsUpdaterFiles,
   parseDnsUpdaters,
   parseDockerUserChain,
   parseDpkg,
@@ -136,6 +144,7 @@ export const INSPECTED_PACKAGES = [
   "unattended-upgrades",
   "curl",
   "fail2ban",
+  "jq",
 ] as const;
 
 /** Distribution packages Docker lists as conflicting with Docker Engine. */
@@ -500,14 +509,11 @@ case "$t" in
     fi ;;
 esac`;
 
-/** The address updater's configs and tokens (root only), and each instance's state folder. */
-export const DNS_UPDATER_CONFIG_DIR = "/etc/opscrew/dns-updater";
-export const DNS_UPDATER_STATE_DIR = "/var/lib/opscrew-dns-updater";
-
 /**
  * Each address updater instance, by its config `/etc/opscrew/dns-updater/<app>.json`: the config
- * on one line (it holds no secret and no address), its token file's mode, owner and SHA-256
- * (never its content), its timer's state, and its state file on one line. Never follows a link.
+ * on one line (it holds no secret and no address) with the file's mode and owner, its token file's
+ * mode, owner and SHA-256 (never its content), its timer's state, and its state file on one line.
+ * Never follows a link.
  */
 export const DNS_UPDATERS_SNIPPET = `${APP_NAME_FN}
 for f in "${DNS_UPDATER_CONFIG_DIR}"/*.json; do
@@ -518,6 +524,7 @@ for f in "${DNS_UPDATER_CONFIG_DIR}"/*.json; do
   printf 'config %s ' "$app"
   head -c ${DNS_UPDATER_READ_BYTES + 1} "$f" | tr '\\r\\n' '  '
   echo
+  echo "file $app $(stat -c '%a %U' "$f")"
   t="${DNS_UPDATER_CONFIG_DIR}/$app.token"
   if [ -f "$t" ] && [ ! -L "$t" ]; then
     echo "token $app $(stat -c '%a %U' "$t") $(sha256sum "$t" | cut -d ' ' -f 1)"
@@ -534,6 +541,21 @@ for f in "${DNS_UPDATER_CONFIG_DIR}"/*.json; do
     echo
   fi
 done`;
+
+/**
+ * The updater's shared files: the script's and the template units' mode, owner and SHA-256, the
+ * config folder's mode and owner, and the script's version (its line 2). Never follows a link.
+ */
+export const DNS_UPDATER_FILES_SNIPPET = `hashed() {
+  if [ -f "$2" ] && [ ! -L "$2" ]; then echo "$1 $(stat -c '%a %U' "$2") $(sha256sum "$2" | cut -d ' ' -f 1)"; fi
+}
+hashed script ${DNS_UPDATER_SCRIPT}
+hashed service ${DNS_UPDATER_SERVICE_UNIT}
+hashed timer ${DNS_UPDATER_TIMER_UNIT}
+if [ -d ${DNS_UPDATER_CONFIG_DIR} ] && [ ! -L ${DNS_UPDATER_CONFIG_DIR} ]; then echo "dir $(stat -c '%a %U' ${DNS_UPDATER_CONFIG_DIR})"; fi
+if [ -f ${DNS_UPDATER_SCRIPT} ] && [ ! -L ${DNS_UPDATER_SCRIPT} ]; then
+  sed -n '2s/^# opscrew-dns-updater version \\([0-9][0-9]*\\)$/version \\1/p' ${DNS_UPDATER_SCRIPT}
+fi`;
 
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */
 const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
@@ -646,6 +668,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["storage", STORAGE_SNIPPET],
   ["power", POWER_SNIPPET],
   ["dns-updaters", DNS_UPDATERS_SNIPPET],
+  ["dns-updater-files", DNS_UPDATER_FILES_SNIPPET],
 ];
 
 /** A read-only script of `sections`, each printed under its mark (a failing one never stops the rest). */
@@ -994,6 +1017,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
       unattendedUpgrades: packages.has("unattended-upgrades"),
       curl: packages.has("curl"),
       fail2ban: packages.has("fail2ban"),
+      jq: packages.has("jq"),
     },
     autoUpgrades: parseAptPeriodic(text("apt-periodic")),
     autoUpgradesService: text("upgrades-enabled").trim() === "enabled",
@@ -1059,6 +1083,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     storage: parseStorage(text("storage")),
     power: parsePower(text("power")),
     dnsUpdaters: parseDnsUpdaters(text("dns-updaters")),
+    dnsUpdaterFiles: parseDnsUpdaterFiles(text("dns-updater-files")),
   };
   const parsed = HostFactsSchema.safeParse(facts);
   if (!parsed.success) {

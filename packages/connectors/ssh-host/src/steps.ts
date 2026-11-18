@@ -81,6 +81,22 @@ import {
   UFW_WEB_COMMENT,
   WEB_RULES,
 } from "./constants";
+import {
+  DNS_UPDATER_CONFIG_DIR,
+  DNS_UPDATER_PRIVATE_STATE_DIR,
+  DNS_UPDATER_SCRIPT,
+  DNS_UPDATER_SERVICE_TEXT,
+  DNS_UPDATER_SERVICE_UNIT,
+  DNS_UPDATER_STATE_DIR,
+  DNS_UPDATER_TIMER_TEXT,
+  DNS_UPDATER_TIMER_UNIT,
+  DNS_UPDATER_VERSION,
+  dnsUpdaterConfig,
+  dnsUpdaterConfigText,
+  dnsUpdaterService,
+  dnsUpdaterTimer,
+  renderDnsUpdaterScript,
+} from "./dns-updater";
 import type { AppRecord } from "./facts";
 import { GrantParamsSchema, grantEngine, MONITOR_LOGIN } from "./grant";
 import {
@@ -2294,6 +2310,278 @@ touch "$READY_FLAG"`,
 }
 
 // ---------------------------------------------------------------------------------------------
+// dns-updater: a home app's address updater, a script and two template units (see dns-updater.ts)
+
+const DnsUpdaterParams = z
+  .strictObject({
+    app: AppNameSchema,
+    zoneId: z.string().regex(/^[0-9a-f]{32}$/),
+    name: HostnameSchema,
+    proxied: z.boolean(),
+    ipv4: z.boolean(),
+    ipv6: z.boolean(),
+    version: z.literal(DNS_UPDATER_VERSION),
+    /** The packages the script needs that the server lacks. */
+    packages: z.enum(["", "curl", "jq", "curl jq"]),
+    /** The SHA-256 of the token on standard input; absent, the server's token file stays. */
+    tokenSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+  })
+  .refine((p) => p.ipv4 || p.ipv6, { message: "must keep an A or an AAAA record" });
+
+const DnsUpdaterRemoveParams = z.strictObject({
+  remove: z.literal(true),
+  /** The instances to remove. */
+  apps: words(AppNameSchema),
+  /** The script and units go too once no other config is left. */
+  shared: z.boolean(),
+});
+
+/**
+ * `owned <path> '<mode> <owner>'`, `script_version` (line 2 of the script on the server),
+ * `shared_ok` (the script and units are this version's, or a newer version's) and `instance_ok`
+ * (the app's config, token and timer are as planned).
+ */
+const DNS_UPDATER_HELPERS = `${FILE_IS}
+owned() { [ -e "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%a %U' "$1" 2>/dev/null)" = "$2" ]; }
+script_version() {
+  if [ -f "$SCRIPT" ]; then sed -n '2s/^# opscrew-dns-updater version \\([0-9][0-9]*\\)$/\\1/p' "$SCRIPT"; fi
+}
+shared_ok() {
+  v=$(script_version)
+  [ -n "$v" ] || return 1
+  if [ "$v" -gt "$VERSION" ]; then
+    [ -f "$SERVICE_UNIT" ] && [ -f "$TIMER_UNIT" ]
+    return
+  fi
+  [ "$v" -eq "$VERSION" ] || return 1
+  file_is "$SCRIPT" "$SCRIPT_SHA256" && file_is "$SERVICE_UNIT" "$SERVICE_SHA256" && file_is "$TIMER_UNIT" "$TIMER_SHA256" || return 1
+  owned "$SCRIPT" '755 root' && owned "$SERVICE_UNIT" '644 root' && owned "$TIMER_UNIT" '644 root'
+}
+instance_ok() {
+  owned "$CONFIG_DIR" '700 root' || return 1
+  file_is "$CONFIG" "$CONFIG_SHA256" && owned "$CONFIG" '600 root' || return 1
+  if [ -n "$TOKEN_SHA256" ]; then
+    file_is "$TOKEN_FILE" "$TOKEN_SHA256" || return 1
+  else
+    [ -f "$TOKEN_FILE" ] || return 1
+  fi
+  owned "$TOKEN_FILE" '600 root' || return 1
+  [ "$(systemctl is-enabled "$TIMER" 2>/dev/null)" = enabled ] && systemctl is-active --quiet "$TIMER"
+}`;
+
+/** What the verify says for each error code of the state, after "the address updater's first run". */
+const DNS_UPDATER_ERRORS = `case "$code" in
+  token-refused) why="Cloudflare refused its token (HTTP $http): the token can't change the DNS of $NAME. Give it Zone → DNS → Edit on that zone, set OPSCREW_DNS_UPDATER_TOKEN to it" ;;
+  rate-limited) why="Cloudflare limited its requests (HTTP 429). Wait a few minutes" ;;
+  cloudflare-unreachable) why="it could not reach Cloudflare. Check the server's internet connection" ;;
+  cloudflare-error) why="Cloudflare answered with an error (HTTP $http). Try again, and report it if it stays" ;;
+  foreign-record) why="an A or AAAA record without the updater's comment holds $NAME. Remove that record at Cloudflare" ;;
+  cname-at-name) why="a CNAME record holds $NAME. Finish the switch of how the app is served with opscrew provision" ;;
+  address-unknown) why="it could not read this server's public address. Check the server's outbound HTTPS" ;;
+  sources-disagree) why="the two IPv4 sources gave different addresses (a router with two connections can cause it). Wait a few minutes" ;;
+  config-invalid) why="its config or its token is not valid" ;;
+  *) why="it did not finish a run within 60 seconds. See journalctl -u $SERVICE on the server" ;;
+esac`;
+
+function dnsUpdaterScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "setup" || step.params.remove === true) {
+    return dnsUpdaterRemoveScripts(plan, step);
+  }
+  const p = params(step, DnsUpdaterParams);
+  if (p.app !== plan.app) throw invalid(step, "app");
+  const script = renderDnsUpdaterScript();
+  const config = dnsUpdaterConfigText(dnsUpdaterConfig(p.app, p));
+  const files = {
+    APP: p.app,
+    NAME: p.name,
+    VERSION: DNS_UPDATER_VERSION,
+    OPSCREW_DIR,
+    SCRIPT: DNS_UPDATER_SCRIPT,
+    SERVICE_UNIT: DNS_UPDATER_SERVICE_UNIT,
+    TIMER_UNIT: DNS_UPDATER_TIMER_UNIT,
+    CONFIG_DIR: DNS_UPDATER_CONFIG_DIR,
+    CONFIG: `${DNS_UPDATER_CONFIG_DIR}/${p.app}.json`,
+    TOKEN_FILE: `${DNS_UPDATER_CONFIG_DIR}/${p.app}.token`,
+    STATE_FILE: `${DNS_UPDATER_STATE_DIR}/${p.app}/state.json`,
+    TIMER: dnsUpdaterTimer(p.app),
+    SERVICE: dnsUpdaterService(p.app),
+    SCRIPT_SHA256: sha256Hex(script),
+    SERVICE_SHA256: sha256Hex(DNS_UPDATER_SERVICE_TEXT),
+    TIMER_SHA256: sha256Hex(DNS_UPDATER_TIMER_TEXT),
+    CONFIG_SHA256: sha256Hex(config),
+    TOKEN_SHA256: p.tokenSha256 ?? "",
+  };
+  const failed = "OpsCrew's address updater is not set up as planned.";
+  const spec = scripts({
+    name: "dns-updater",
+    params: {
+      ...files,
+      SCRIPT_B64: base64(script),
+      SERVICE_B64: base64(DNS_UPDATER_SERVICE_TEXT),
+      TIMER_B64: base64(DNS_UPDATER_TIMER_TEXT),
+      CONFIG_B64: base64(config),
+    },
+    helpers: DNS_UPDATER_HELPERS,
+    verify: "  shared_ok && instance_ok",
+    snapshot: `if [ -e "$SCRIPT" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if [ -e "$CONFIG" ]; then echo prev.instance=true; else echo prev.instance=false; fi`,
+    apply: `umask 077
+# The token, only when the plan names its hash, read before anything else can read the session's
+# stdin. Only builtins and sha256sum's stdin see it; it is checked before it is written.
+token=''
+if [ -n "$TOKEN_SHA256" ]; then
+  IFS= read -r token || true
+  case "$token" in *[!!-~]*) token='' ;; esac
+  if [ "\${#token}" -lt 40 ] || [ "\${#token}" -gt 255 ]; then
+    token=''
+    fail 'No valid updater token arrived on standard input, so the address updater was not set up. Nothing was changed.'
+  fi
+  if [ "$(printf '%s' "$token" | sha256sum | cut -d ' ' -f 1)" != "$TOKEN_SHA256" ]; then
+    token=''
+    fail 'The updater token that arrived on standard input is not the one the plan names, so it was not written. Nothing was changed.'
+  fi
+fi
+[ -n "$token" ] || [ -f "$TOKEN_FILE" ] || fail "No updater token arrived on standard input, and the server has none for $APP. Set OPSCREW_DNS_UPDATER_TOKEN (the guide's recipe). Nothing was changed."
+systemd=$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \\([0-9][0-9]*\\).*$/\\1/p')
+if [ -z "$systemd" ] || [ "$systemd" -lt 247 ]; then
+  token=''
+  fail "The address updater needs systemd 247 or newer (for LoadCredential=), and this server has \${systemd:-an unknown version}. Nothing was changed."
+fi
+for tool in curl jq ip; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    token=''
+    fail "$tool is not installed, so the address updater cannot run. Nothing was changed."
+  fi
+done
+# 1. The shared script and units, when they are missing or older: a newer version stays.
+v=$(script_version)
+if [ -z "$v" ] || [ "$v" -lt "$VERSION" ] || { [ "$v" -eq "$VERSION" ] && ! shared_ok; }; then
+  install -d -m 0755 "$(dirname "$SCRIPT")" "$(dirname "$SERVICE_UNIT")"
+  printf '%s' "$SCRIPT_B64" | base64 -d | write_file "$SCRIPT" 0755
+  printf '%s' "$SERVICE_B64" | base64 -d | write_file "$SERVICE_UNIT" 0644
+  printf '%s' "$TIMER_B64" | base64 -d | write_file "$TIMER_UNIT" 0644
+fi
+# 2. The config, and the token: root's only, in a root-only folder.
+install -d -m 0700 "$OPSCREW_DIR" "$CONFIG_DIR"
+chmod 0700 "$CONFIG_DIR"
+printf '%s' "$CONFIG_B64" | base64 -d | write_file "$CONFIG" 0600
+if [ -n "$token" ]; then
+  printf '%s' "$token" | write_file "$TOKEN_FILE" 0600
+  token=''
+fi
+chown root:root "$TOKEN_FILE"
+chmod 0600 "$TOKEN_FILE"
+# 3. The timer, then a fresh run with this config and token (a run already going restarts). A
+# failed run is the state's to tell: the verify reads it.
+systemctl daemon-reload
+systemctl enable --now --quiet "$TIMER"
+systemctl restart "$SERVICE" >/dev/null 2>&1 || true`,
+    failed,
+    ...(p.packages === ""
+      ? {}
+      : {
+          preApply: applyScript(
+            "dns-updater.packages",
+            { PACKAGES: p.packages },
+            "",
+            `apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
+# shellcheck disable=SC2086 # the package names the plan checked.
+apt_get install --no-install-recommends $PACKAGES || fail "Installing $PACKAGES failed; see ${APT_LOG} on the server."`,
+          ),
+        }),
+    ...(p.tokenSha256 === undefined
+      ? {}
+      : { secrets: { names: ["dnsUpdaterToken"] as const, required: true } }),
+    doing: "setting up the address updater",
+    timeoutMs: 5 * MINUTE,
+  });
+  // The verify also waits up to 60 seconds for a run that succeeded after the config was written.
+  const verify = buildScript(
+    "dns-updater.verify",
+    { ...files, VERIFY_FAILED: failed },
+    `${APT_FUNCTIONS}
+${DNS_UPDATER_HELPERS}
+{ shared_ok && instance_ok; } || fail "$VERIFY_FAILED" 5
+since=$(stat -c %Y "$CONFIG")
+i=0
+while :; do
+  at=$(jq -r '.lastSuccess // empty | fromdateiso8601' "$STATE_FILE" 2>/dev/null) || at=''
+  if [ -n "$at" ] && [ "$at" -ge "$since" ]; then exit 0; fi
+  i=$((i + 1))
+  [ "$i" -lt 30 ] || break
+  sleep 2
+done
+code=$(jq -r '.lastError.code // empty' "$STATE_FILE" 2>/dev/null) || code=''
+http=$(jq -r '.lastError.http // empty' "$STATE_FILE" 2>/dev/null) || http=''
+${DNS_UPDATER_ERRORS}
+fail "The address updater's first run failed: $why, then run the command again." 5`,
+  );
+  return { ...spec, verify };
+}
+
+/**
+ * The removal of the instances `apps`: each one's timer, config, token and state; with `shared`,
+ * the script, the units and the folder once no other config is left. A setup or teardown plan
+ * removes only its own app's instance; an undo removes any left behind.
+ */
+function dnsUpdaterRemoveScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const p = params(step, DnsUpdaterRemoveParams);
+  if (plan.purpose !== "undo" && p.apps.join(" ") !== plan.app) throw invalid(step, "apps");
+  return scripts({
+    name: "dns-updater.remove",
+    params: {
+      APPS: p.apps.join(" "),
+      SHARED: p.shared,
+      SCRIPT: DNS_UPDATER_SCRIPT,
+      SERVICE_UNIT: DNS_UPDATER_SERVICE_UNIT,
+      TIMER_UNIT: DNS_UPDATER_TIMER_UNIT,
+      CONFIG_DIR: DNS_UPDATER_CONFIG_DIR,
+      STATE_DIR: DNS_UPDATER_STATE_DIR,
+      PRIVATE_STATE_DIR: DNS_UPDATER_PRIVATE_STATE_DIR,
+    },
+    helpers: `gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
+# A config of an app this removal does not name.
+others_left() {
+  for f in "$CONFIG_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    a=\${f##*/}
+    case " $APPS " in *" \${a%.json} "*) ;; *) return 0 ;; esac
+  done
+  return 1
+}`,
+    verify: `  for app in $APPS; do
+    gone "$CONFIG_DIR/$app.json" && gone "$CONFIG_DIR/$app.token" || return 1
+    gone "$STATE_DIR/$app" && gone "$PRIVATE_STATE_DIR/$app" || return 1
+    [ "$(systemctl is-enabled "opscrew-dns-updater@$app.timer" 2>/dev/null)" != enabled ] || return 1
+  done
+  if [ "$SHARED" = true ] && ! others_left; then
+    gone "$SCRIPT" && gone "$SERVICE_UNIT" && gone "$TIMER_UNIT" && gone "$CONFIG_DIR" || return 1
+  fi
+  return 0`,
+    apply: `for app in $APPS; do
+  systemctl disable --now --quiet "opscrew-dns-updater@$app.timer" >/dev/null 2>&1 || true
+  systemctl stop "opscrew-dns-updater@$app.service" >/dev/null 2>&1 || true
+  rm -f "$CONFIG_DIR/$app.json" "$CONFIG_DIR/$app.token"
+  rm -rf "$STATE_DIR/$app" "$PRIVATE_STATE_DIR/$app"
+done
+if [ "$SHARED" = true ] && ! others_left; then
+  rm -f "$SCRIPT" "$SERVICE_UNIT" "$TIMER_UNIT"
+  rm -rf "$CONFIG_DIR"
+  for d in "$STATE_DIR" "$PRIVATE_STATE_DIR"; do
+    if [ -d "$d" ] && [ ! -L "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+systemctl daemon-reload`,
+    failed: "OpsCrew's address updater is still on the server.",
+    doing: "removing the address updater",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // edge: the shared edge goes with the last app (a teardown step only)
 
 function edgeScripts(plan: HostPlan, step: HostStep): StepScripts {
@@ -3937,6 +4225,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return appDirsScripts(plan, step);
     case "app-record":
       return appRecordScripts(plan, step);
+    case "dns-updater":
+      return dnsUpdaterScripts(plan, step);
     case "github-runner":
       return runnerScripts(plan, step);
     case "edge":

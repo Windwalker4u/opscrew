@@ -173,6 +173,13 @@ const SECRET_CHECKS: { [K in SecretName]: SecretCheck<K> } = {
     invalid: "The previews' certificate must be a PEM certificate and its key a PEM private key.",
     hint: "Set up the preview environment again with OpsCrew to make a new certificate.",
   },
+  dnsUpdaterToken: {
+    label: "dns-updater-token",
+    needs: "the address updater's Cloudflare token",
+    valid: (value) => /^[\x21-\x7e]{40,255}$/.test(value),
+    invalid: "The address updater's token must be 40 to 255 printable characters without spaces.",
+    hint: "Copy the token again into OPSCREW_DNS_UPDATER_TOKEN, then try again.",
+  },
 };
 
 /**

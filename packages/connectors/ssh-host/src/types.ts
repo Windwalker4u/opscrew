@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { ECDSA_HOST_KEY_TYPES, HOST_SYSCTL_KEYS, MAX_COMPOSE_BYTES } from "./constants";
+import {
+  ECDSA_HOST_KEY_TYPES,
+  HOST_SYSCTL_KEYS,
+  HOSTNAME_RE,
+  MAX_COMPOSE_BYTES,
+} from "./constants";
 import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
@@ -32,6 +37,7 @@ export const HOST_STEP_IDS = [
   "runtime-dirs",
   "app-dirs",
   "app-record",
+  "dns-updater",
   "github-runner",
   "edge",
   "tunnel-connector",
@@ -62,12 +68,9 @@ export const AppNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
 export const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/);
 
 /** A lower-case domain name such as `shop.example.com`. */
-export const HostnameSchema = z
-  .string()
-  .regex(
-    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/,
-    { message: "must be a lower-case domain name such as shop.example.com" },
-  );
+export const HostnameSchema = z.string().regex(HOSTNAME_RE, {
+  message: "must be a lower-case domain name such as shop.example.com",
+});
 
 /**
  * How an app is served, which sets the server's firewall stance: `public` (DNS only: the web
@@ -299,6 +302,33 @@ export const DesiredRunnerHostSchema = z
   );
 export type DesiredRunnerHost = z.infer<typeof DesiredRunnerHostSchema>;
 
+/** A SHA-256 in lower-case hex. */
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, {
+  message: "must be a SHA-256 in lower-case hex",
+});
+
+/**
+ * The address updater of a home app with its DNS on Cloudflare (`DesiredHost.dnsUpdater`): the
+ * zone, the record name (`dns.domain`), whether it is proxied, and the families it keeps (A for
+ * `ipv4`, AAAA for `ipv6`). `tokenSha256`: the SHA-256 of the token supplied at apply
+ * (`ApplySecrets.dnsUpdaterToken`), which the server's file must then hold; absent, the token file
+ * on the server stays, and a server without one blocks the step.
+ */
+export const DesiredDnsUpdaterSchema = z
+  .strictObject({
+    zoneId: z.string().regex(/^[0-9a-f]{32}$/, { message: "must be a Cloudflare zone id" }),
+    name: HostnameSchema,
+    proxied: z.boolean(),
+    ipv4: z.boolean(),
+    ipv6: z.boolean(),
+    tokenSha256: Sha256Schema.optional(),
+  })
+  .refine((updater) => updater.ipv4 || updater.ipv6, {
+    message: "must keep an A or an AAAA record",
+    path: ["ipv4"],
+  });
+export type DesiredDnsUpdater = z.infer<typeof DesiredDnsUpdaterSchema>;
+
 /** More IPv4 ranges than Cloudflare has ever published. */
 export const MAX_WEB_FILTER_RANGES = 100;
 
@@ -408,6 +438,12 @@ export const DesiredHostSchema = z
      */
     runner: DesiredRunnerSchema.optional(),
     /**
+     * A home app's address updater (DNS on Cloudflare), installed by the `dns-updater` step: its
+     * timer keeps the app's A/AAAA records at this server's own address. Absent: an updater the app
+     * has there is removed.
+     */
+    dnsUpdater: DesiredDnsUpdaterSchema.optional(),
+    /**
      * Explicit choice for password logins, needed only when some login user has a password and no
      * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`
      * leaves the server's password setting alone. Ignored when every password user has a key.
@@ -421,6 +457,10 @@ export const DesiredHostSchema = z
   .refine((desired) => desired.access === "public" || desired.webFilter === undefined, {
     message: "the web filter is only for a site served directly (public mode)",
     path: ["webFilter"],
+  })
+  .refine((desired) => desired.access === "public" || desired.dnsUpdater === undefined, {
+    message: "the address updater is only for a site served directly (public mode)",
+    path: ["dnsUpdater"],
   })
   .refine(
     (desired) =>
@@ -479,6 +519,12 @@ export interface ApplySecrets {
    * step writes them to `/srv/edge/tls/<app>/origin.pem` (0644) and `origin.key` (0600).
    */
   previewTls?: { certificate: string; key: string };
+  /**
+   * The address updater's Cloudflare token (`dns-updater`): 40 to 255 printable characters, no
+   * whitespace. Needed when the step names its SHA-256 (`tokenSha256`); the step checks it against
+   * that hash, then writes it to the app's root-only token file.
+   */
+  dnsUpdaterToken?: string;
 }
 
 export type SecretName = keyof ApplySecrets;

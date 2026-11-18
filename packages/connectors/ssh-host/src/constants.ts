@@ -517,3 +517,10 @@ export const MAX_STACK_FILE_BYTES = 256 * 1024;
 
 /** Largest script the adapter sends (well under Linux's 128 KiB per-argument limit). */
 export const MAX_SCRIPT_BYTES = 100 * 1024;
+
+/**
+ * A lower-case domain name such as `shop.example.com` (`HostnameSchema`'s pattern); the address
+ * updater's script checks its config's record name with it.
+ */
+export const HOSTNAME_RE =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;

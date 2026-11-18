@@ -41,6 +41,8 @@ const MOVED = [
   "/proc/",
   "/sys/block",
   "/var/lib/opscrew-dns-updater",
+  "/var/lib/private/opscrew-dns-updater",
+  "/usr/local/sbin/opscrew-dns-updater",
 ];
 
 const SCRIPT_PATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";

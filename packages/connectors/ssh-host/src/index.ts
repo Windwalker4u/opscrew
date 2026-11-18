@@ -31,7 +31,11 @@
  * line for idle previews, in a plan that deletes data; `inspectHost` lists each recipe's previews.
  * Hosting at home (feature 029): `detectHomeNetwork` reads the home's network from the server
  * (read-only), and `inspectHost` reads the board, the storage devices, the power supply's
- * under-voltage and the address updater's instances.
+ * under-voltage and the address updater's instances and files. `DesiredHost.dnsUpdater` adds the
+ * `dns-updater` step: the address updater (a script and two systemd template units) keeps a home
+ * app's A/AAAA records at the server's own address, with the token supplied at apply
+ * (`ApplySecrets.dnsUpdaterToken`); a teardown removes the app's instance, and the shared files
+ * with the last one.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,
@@ -73,10 +77,17 @@ export {
   UFW_WEB_COMMENT,
 } from "./constants";
 export {
+  DNS_UPDATER_RECORD_COMMENT,
+  DNS_UPDATER_VERSION,
+  dnsUpdaterConfig,
+  renderDnsUpdaterScript,
+} from "./dns-updater";
+export {
   type AppRecord,
   type DnsUpdaterConfig,
   DnsUpdaterConfigSchema,
   type DnsUpdaterFact,
+  type DnsUpdaterFiles,
   type HostFacts,
   HostFactsSchema,
   otherActiveApps,
@@ -131,6 +142,7 @@ export {
   type ApplyOptions,
   type ApplyResult,
   type ApplySecrets,
+  type DesiredDnsUpdater,
   type DesiredHost,
   type DesiredRunner,
   type DesiredRunnerHost,

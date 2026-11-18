@@ -60,6 +60,7 @@ import {
   UFW_WEB_COMMENT,
   WEB_RULES,
 } from "./constants";
+import { dnsUpdaterStep, dnsUpdaterTeardownStep, dnsUpdaterUndoStep } from "./dns-updater";
 import {
   type AppRecord,
   assumedApps,
@@ -221,6 +222,7 @@ const APP_STEPS: ReadonlySet<HostStepId> = new Set([
   "deploy-key",
   "app-dirs",
   "app-record",
+  "dns-updater",
   "github-runner",
   "tunnel-connector",
   "network",
@@ -1362,6 +1364,13 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
   );
 }
 
+/** The `dns-updater` step of the app (see `dnsUpdaterStep`), its finding in `found`. */
+function updaterStep({ facts, desired, found }: SetupContext, command: string) {
+  const planned = dnsUpdaterStep(facts, desired.app, desired.dnsUpdater, command);
+  if (planned?.finding !== undefined) found.push(planned.finding);
+  return planned?.step;
+}
+
 /** `version` is `pinned` or newer (`2.338.0` style). */
 function atLeast(version: string, pinned: string): boolean {
   const [a = [], b = []] = [version, pinned].map((text) => text.split(".").map(Number));
@@ -1713,6 +1722,17 @@ function allBlocked(desired: DesiredHost): HostStep[] {
     step("runtime-dirs", TITLES.runtime, "blocked", {}, reason),
     step("app-dirs", `Create the folders of "${desired.app}"`, "blocked", {}, reason),
     step("app-record", `Record the OpsCrew app "${desired.app}"`, "blocked", {}, reason),
+    ...(desired.dnsUpdater !== undefined
+      ? [
+          step(
+            "dns-updater",
+            `Set up the address updater of "${desired.app}"`,
+            "blocked",
+            {},
+            reason,
+          ),
+        ]
+      : []),
   ];
   if (desired.runner !== undefined) {
     steps.push(step("github-runner", "Install the GitHub Actions runner", "blocked", {}, reason));
@@ -1862,6 +1882,7 @@ export function planHost(
     runtimeStep(ctx),
     appDirsStep(ctx),
     appRecordStep(ctx),
+    updaterStep(ctx, command),
     ownRunnerStep(ctx, d.app, d.runner, d.repositoryUrl),
     tunnelStep(ctx),
     portainerStep(ctx),
@@ -2031,6 +2052,9 @@ export function planTeardown(
       ),
     );
   }
+  // The app's address updater, and its script and units with the last instance.
+  const updater = dnsUpdaterTeardownStep(f, app);
+  if (updater !== undefined) steps.push(updater);
   // The add-ons the app turned on (or left without a record, with the last app); Beszel's
   // history and the monitoring stack's volumes only with the app's data.
   for (const kind of ADDON_KINDS) {
@@ -2307,6 +2331,9 @@ export function planUndo(
     );
   }
   if (sshFirewallPresent(f)) steps.push(sshFirewallRemoval());
+  // Each app's teardown removes its address updater; what is left goes here.
+  const updater = dnsUpdaterUndoStep(f);
+  if (updater !== undefined) steps.push(updater);
   const ufw = entry("ufw");
   if (ufw) {
     const removeRules = rulesToRemove(f, ufw.previous);

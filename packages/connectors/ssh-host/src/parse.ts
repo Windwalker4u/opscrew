@@ -21,6 +21,7 @@ import {
   type DirFact,
   DnsUpdaterConfigSchema,
   type DnsUpdaterFact,
+  type DnsUpdaterFiles,
   type HostFacts,
   type Listener,
   type NetworkFacts,
@@ -1121,15 +1122,24 @@ function jsonOrNull(text: string | undefined): unknown {
   }
 }
 
+/** `<mode> <owner>` as `stat -c '%a %U'` prints them, or none. */
+function fileMode(text: string | undefined): { mode: string; owner: string } | null {
+  const match = /^([0-7]{3,4}) (\S+)$/.exec(text ?? "");
+  return match?.[1] && match[2] ? { mode: match[1], owner: match[2] } : null;
+}
+
 /**
- * The address updaters' section, by app: `config <app> <json>`, `token <app> <mode> <owner>
- * <sha256>` (or `token <app> absent`), `timer <app> <is-enabled> <is-active>` and `state <app>
- * <json>`. An app is listed when its config file is there.
+ * The address updaters' section, by app: `config <app> <json>`, `file <app> <mode> <owner>` (the
+ * config file's), `token <app> <mode> <owner> <sha256>` (or `token <app> absent`), `timer <app>
+ * <is-enabled> <is-active>` and `state <app> <json>`. An app is listed when its config file is
+ * there.
  */
 export function parseDnsUpdaters(text: string): DnsUpdaterFact[] {
   const lines = new Map<string, Map<string, string>>();
   for (const line of linesOf(text)) {
-    const match = /^(config|token|timer|state) ([a-z0-9][a-z0-9-]{0,40})(?: (.*))?$/.exec(line);
+    const match = /^(config|file|token|timer|state) ([a-z0-9][a-z0-9-]{0,40})(?: (.*))?$/.exec(
+      line,
+    );
     if (!match?.[1] || !match[2]) continue;
     const app = lines.get(match[2]) ?? new Map<string, string>();
     app.set(match[1], match[3] ?? "");
@@ -1142,9 +1152,11 @@ export function parseDnsUpdaters(text: string): DnsUpdaterFact[] {
       const [mode = "", owner = "", sha256 = ""] = (values.get("token") ?? "").split(" ");
       const present = /^[0-7]{3,4}$/.test(mode) && owner !== "" && /^[0-9a-f]{64}$/.test(sha256);
       const [enabled, active] = (values.get("timer") ?? "").split(" ");
+      const config = DnsUpdaterConfigSchema.safeParse(jsonOrNull(values.get("config")));
       return {
         app,
-        config: DnsUpdaterConfigSchema.safeParse(jsonOrNull(values.get("config"))).success,
+        config: config.success ? config.data : null,
+        configFile: fileMode(values.get("file")) ?? { mode: "", owner: "" },
         token: present
           ? { present, mode, owner, sha256 }
           : { present: false, mode: "", owner: "", sha256: null },
@@ -1152,4 +1164,31 @@ export function parseDnsUpdaters(text: string): DnsUpdaterFact[] {
         state: jsonOrNull(values.get("state")) ?? null,
       };
     });
+}
+
+/**
+ * The updater's shared files: `script|service|timer <mode> <owner> <sha256>`, `dir <mode> <owner>`
+ * and `version <n>` (the script's line 2), each line only when there is such a file.
+ */
+export function parseDnsUpdaterFiles(text: string): DnsUpdaterFiles {
+  const values = new Map<string, string>();
+  for (const line of linesOf(text)) {
+    const match = /^(script|service|timer|dir|version) (.*)$/.exec(line);
+    if (match?.[1] && match[2] !== undefined) values.set(match[1], match[2]);
+  }
+  const hashed = (name: string) => {
+    const match = /^(\S+ \S+) ([0-9a-f]{64})$/.exec(values.get(name) ?? "");
+    const mode = fileMode(match?.[1]);
+    return mode !== null && match?.[2] ? { ...mode, sha256: match[2] } : null;
+  };
+  const version = /^[1-9][0-9]{0,8}$/.test(values.get("version") ?? "")
+    ? Number(values.get("version"))
+    : null;
+  return {
+    version,
+    script: hashed("script"),
+    service: hashed("service"),
+    timer: hashed("timer"),
+    dir: fileMode(values.get("dir")),
+  };
 }

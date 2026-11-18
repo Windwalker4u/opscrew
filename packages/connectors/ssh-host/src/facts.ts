@@ -281,14 +281,22 @@ export const DnsUpdaterConfigSchema = z.strictObject({
 });
 export type DnsUpdaterConfig = z.infer<typeof DnsUpdaterConfigSchema>;
 
+/** A file's permission bits as `stat -c %a` prints them (`600`), and its owner. */
+const FileModeSchema = z.object({ mode: z.string(), owner: z.string() });
+
+/** A file's mode, owner and SHA-256. */
+const HashedFileSchema = FileModeSchema.extend({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
+
 /**
- * One instance of the address updater on the server, as inspection reads it: whether its config
- * parses, its token file's mode, owner and SHA-256 (never its content), its timer, and its state
- * file's JSON (at most 4 KiB, not yet validated: agents checks it), null when absent or unreadable.
+ * One instance of the address updater on the server, as inspection reads it: its config when it
+ * parses as the updater's own (null otherwise), the config file's mode and owner, its token file's
+ * mode, owner and SHA-256 (never its content), its timer, and its state file's JSON (at most 4 KiB,
+ * not yet validated: agents checks it), null when absent or unreadable.
  */
 export const DnsUpdaterFactSchema = z.object({
   app: AppNameSchema,
-  config: z.boolean(),
+  config: DnsUpdaterConfigSchema.nullable(),
+  configFile: FileModeSchema,
   token: z.object({
     present: z.boolean(),
     /** Octal permission bits as `stat -c %a` prints them, "" without the file. */
@@ -303,6 +311,20 @@ export const DnsUpdaterFactSchema = z.object({
   state: z.unknown().nullable(),
 });
 export type DnsUpdaterFact = z.infer<typeof DnsUpdaterFactSchema>;
+
+/**
+ * The updater's shared files, as inspection reads them: the script's version (its line 2, null
+ * without it), the script's and the two template units' mode, owner and SHA-256, and the config
+ * folder's mode and owner; each null when absent.
+ */
+export const DnsUpdaterFilesSchema = z.object({
+  version: z.number().int().positive().nullable(),
+  script: HashedFileSchema.nullable(),
+  service: HashedFileSchema.nullable(),
+  timer: HashedFileSchema.nullable(),
+  dir: FileModeSchema.nullable(),
+});
+export type DnsUpdaterFiles = z.infer<typeof DnsUpdaterFilesSchema>;
 
 /** Facts about the server found by `inspectHost`; read-only, zod-validated. */
 export const HostFactsSchema = z.object({
@@ -452,6 +474,8 @@ export const HostFactsSchema = z.object({
     unattendedUpgrades: z.boolean(),
     curl: z.boolean(),
     fail2ban: z.boolean(),
+    /** The address updater's script needs jq. */
+    jq: z.boolean().optional(),
   }),
   /** Effective `APT::Periodic::Update-Package-Lists` and `Unattended-Upgrade` are both "1". */
   autoUpgrades: z.boolean(),
@@ -602,6 +626,8 @@ export const HostFactsSchema = z.object({
     .optional(),
   /** The address updater's instances (one per app config in `/etc/opscrew/dns-updater`), by app. */
   dnsUpdaters: z.array(DnsUpdaterFactSchema).optional(),
+  /** The address updater's shared script, units and config folder. */
+  dnsUpdaterFiles: DnsUpdaterFilesSchema.optional(),
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;

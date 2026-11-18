@@ -1,0 +1,51 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the address updater's files > has the units and the config as the contract > service 1`] = `
+"# /etc/systemd/system/opscrew-dns-updater@.service
+# Managed by OpsCrew: keeps the DNS records of the app %i pointed at this server's address.
+# \`opscrew destroy\` removes it.
+[Unit]
+Description=OpsCrew address updater for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+LoadCredential=config:/etc/opscrew/dns-updater/%i.json
+LoadCredential=token:/etc/opscrew/dns-updater/%i.token
+StateDirectory=opscrew-dns-updater/%i
+ExecStart=/usr/local/sbin/opscrew-dns-updater
+TimeoutStartSec=90
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+"
+`;
+
+exports[`the address updater's files > has the units and the config as the contract > timer 1`] = `
+"# /etc/systemd/system/opscrew-dns-updater@.timer
+# Managed by OpsCrew: runs the address updater of %i every 2 minutes.
+[Unit]
+Description=OpsCrew address updater for %i, every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+RandomizedDelaySec=20s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+"
+`;

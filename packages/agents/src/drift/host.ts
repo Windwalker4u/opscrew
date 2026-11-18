@@ -108,6 +108,7 @@ export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "runtime-dirs": "Shared folders (/srv/edge, /srv/apps and /srv/data)",
   "app-dirs": "The app's folders (in /srv/apps and /srv/data)",
   "app-record": "The app's record (in /etc/opscrew/apps)",
+  "dns-updater": "The address updater (keeps the app's DNS records at this server's address)",
   "github-runner": "The GitHub Actions runner",
   edge: "The shared edge (/srv/edge)",
   "tunnel-connector": "Cloudflare Tunnel connector",
@@ -652,6 +653,9 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     }
     case "app-record":
       return appRecordDetails(facts, app);
+    // T2914c adds the address updater's drift.
+    case "dns-updater":
+      return [];
     // T1511 adds the runner's drift.
     case "github-runner":
       return [];
