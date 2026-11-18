@@ -15,7 +15,11 @@ import {
   plural,
   sha256Hex,
 } from "@opscrew/core";
-import { DRILL_LOGIN_FILE } from "@opscrew/iac-templates";
+import {
+  DRILL_LIMIT_SECONDS,
+  DRILL_LOGIN_FILE,
+  DRILL_SLOT_AFTER_HOURS,
+} from "@opscrew/iac-templates";
 import { z } from "zod";
 import { type AdapterPlanItem, describeAdapterPlan } from "../shared";
 import { RUNTIME_NAMES } from "./apps";
@@ -81,11 +85,21 @@ const PanelStepStep = z.strictObject({
 /** A file of the app's folder: its path there, its mode and the SHA-256 of its content. */
 const FileShape = { path: PathSchema, mode: ModeSchema, sha256: Sha256Schema };
 
+/**
+ * The drill schedule the agent's settings carry, on the step that writes them (029 research R28):
+ * the agent then runs restore drills itself, within the bounds the plan names.
+ */
+const DrillsShape = { drills: z.enum(["weekly", "daily"]).optional() };
+
 /** Plan A: the agent's folder, its files, and its cron line. */
 const AgentStepSchema = z.discriminatedUnion("kind", [
   // Makes the app's folder (`keys/`, `state/`, `requests/`, `dumps/` 0700; `releases/`, `shared/`
   // 0711) with these files, in one archive unpacked in the home folder.
-  z.strictObject({ kind: z.literal("folder"), files: z.array(z.strictObject(FileShape)).min(1) }),
+  z.strictObject({
+    kind: z.literal("folder"),
+    files: z.array(z.strictObject(FileShape)).min(1),
+    ...DrillsShape,
+  }),
   // Replaces a file of the folder that differs.
   z.strictObject({ kind: z.literal("file"), ...FileShape }),
   // The agent's cron line.
@@ -117,8 +131,8 @@ const AppStepSchema = z.discriminatedUnion("kind", [
     generated: z.array(z.string()),
     digest: Sha256Schema,
   }),
-  // A file of the app's folder: `settings.sh`, `shared/env.php`.
-  z.strictObject({ kind: z.literal("file"), ...FileShape }),
+  // A file of the app's folder: `settings.sh` (with the drill schedule it carries), `shared/env.php`.
+  z.strictObject({ kind: z.literal("file"), ...FileShape, ...DrillsShape }),
   // A link at `path` (from the home folder) to `target` (relative to the link's folder): the
   // document root inside `public_html` on a restricted cPanel, made before the hostname.
   z.strictObject({ kind: z.literal("link"), path: PathSchema, target: z.string().min(1) }),
@@ -218,6 +232,22 @@ export function panelStepText(step: { what: string; value?: string | undefined }
 /** A mode as `0600`. */
 const octal = (mode: number) => `0${mode.toString(8).padStart(3, "0")}`;
 
+/**
+ * What the agent's scheduled restore drill does and the bounds it keeps (research R29), for the
+ * step that writes the settings carrying `every`, and that the account's user can exceed them
+ * (constitution I).
+ */
+function drillScheduleText(folder: string, every: "weekly" | "daily"): string {
+  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
+  const when = every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
+  return [
+    `With these settings OpsCrew's agent runs a restore drill itself, ${when}, with no call to the panel: it loads the newest snapshot in ~/${folder}/dumps/ into the drill database through that database's own login (${DRILL_LOGIN_FILE}), counts its tables, empties it again and lists the snapshot's copy of the shared files.`,
+    "Its bounds: only the drill database, never the app's database or its files; only the newest snapshot, once the last drill proved another; no network, and the app isn't started; what a stopped run left in the drill database is dropped first; at most one run a slot, under the agent's lock after its releases, so never during a deploy;",
+    `skipped, never failed, when the account's disk quota leaves less room than the snapshot's dump; at most ${DRILL_LIMIT_SECONDS / 60} minutes, then it is stopped and the drill database emptied.`,
+    `Each run is a line in ~/${folder}/state/drills.log, which \`opscrew status\` shows. The agent runs as the account's user, so anything that user can run can exceed these bounds.`,
+  ].join(" ");
+}
+
 /** One step in plain English, as the plan shows it. */
 function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
   const { folder } = plan;
@@ -227,11 +257,19 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       return {
         title: `Make ~/${folder}/ with ${listText(step.files.map((file) => `${file.path} (${octal(file.mode)})`))}`,
         state: "change",
-        reason:
+        reason: [
           "agent.sh is OpsCrew's agent, the same as opscrew/hosting/agent.sh in your repository; settings.sh holds the app's settings, no secret; keys/known_hosts holds GitHub's SSH host keys.",
+          ...(step.drills === undefined ? [] : [drillScheduleText(folder, step.drills)]),
+        ].join(" "),
       };
     case "file":
-      return { title: `Write ~/${folder}/${step.path} (${octal(step.mode)})`, state: "change" };
+      return {
+        title: `Write ~/${folder}/${step.path} (${octal(step.mode)})`,
+        state: "change",
+        ...("drills" in step && step.drills !== undefined
+          ? { reason: drillScheduleText(folder, step.drills) }
+          : {}),
+      };
     case "signing-key":
       return {
         title: `Make a new release signing key (ECDSA P-256): its private half into GitHub, its public half into ~/${folder}/keys/release.pub`,

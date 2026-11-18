@@ -23,7 +23,14 @@ import {
 import { applyHostingPlan, type HostingApplyContext } from "./apply";
 import { panelConnector } from "./panels";
 import { type AppPlan, describeHostingPlan, hostingPlanHash } from "./plan";
-import { buildAppPlan, drillDatabaseNames, hostingTarget } from "./provision-plans";
+import {
+  agentContents,
+  agentSettingsText,
+  buildAgentPlan,
+  buildAppPlan,
+  drillDatabaseNames,
+  hostingTarget,
+} from "./provision-plans";
 import { type HostingObject, readHostingRecord, recordObject } from "./record";
 
 const FOLDER = "opscrew/notes-prod";
@@ -275,6 +282,145 @@ describe("applying the drill database", () => {
     expect(da.databases()).toEqual([]);
     expect(da.read(`${FOLDER}/${DRILL_LOGIN_FILE}`)).toBeUndefined();
     expect(daContext.made).toEqual([]);
+  });
+});
+
+describe("the drill schedule in the agent's settings", () => {
+  /** `plan` with drills on a schedule of `every`. */
+  const scheduled = (plan: DeployPlan, every: "weekly" | "daily"): DeployPlan =>
+    DeployPlanSchema.parse({ ...plan, snapshots: { drills: { schedule: every } } });
+  const settingsOf = (plan: DeployPlan) =>
+    agentSettingsText(plan, { repository: "acme/notes", laravel: false, database: "acct_notes" });
+
+  it("carries snapshots.drills.schedule, and none with drills by hand or off", () => {
+    const plan = hostingTestPlan();
+    expect(settingsOf(scheduled(plan, "weekly"))).toContain("\nDRILL_SCHEDULE='weekly'\n");
+    expect(settingsOf(scheduled(plan, "daily"))).toContain("\nDRILL_SCHEDULE='daily'\n");
+    expect(settingsOf(withDrills(plan))).toContain("\nDRILL_SCHEDULE=''\n");
+    expect(settingsOf(plan)).toContain("\nDRILL_SCHEDULE=''\n");
+  });
+
+  it("names the schedule and every bound on the step that writes the settings, in either plan", async () => {
+    const app = await hostedApp();
+    const plan = scheduled(app.plan, "weekly");
+    const deps = await app.deps();
+    const b = await buildAppPlan({
+      header: HEADER,
+      plan,
+      panel: app.panel,
+      files: app.files,
+      record: await readHostingRecord(deps.paths),
+      facts: await app.panel.inspect(),
+      php: undefined,
+      values: undefined,
+      contents: new Map([["settings.sh", settingsOf(plan)]]),
+    });
+    expect(b.steps.find((step) => step.kind === "file")).toMatchObject({
+      path: "settings.sh",
+      drills: "weekly",
+    });
+    const words = describeHostingPlan(b, hostingPlanHash(b));
+    for (const part of [
+      "OpsCrew's agent runs a restore drill itself, weekly, on Thursdays from 03:00 UTC, with no call to the panel",
+      `the newest snapshot in ~/${FOLDER}/dumps/ into the drill database through that database's own login (${DRILL_LOGIN_FILE})`,
+      "only the drill database, never the app's database or its files",
+      "only the newest snapshot",
+      "no network, and the app isn't started",
+      "what a stopped run left in the drill database is dropped first",
+      "under the agent's lock after its releases",
+      "skipped, never failed, when the account's disk quota leaves less room than the snapshot's dump",
+      "at most 30 minutes, then it is stopped and the drill database emptied",
+      `~/${FOLDER}/state/drills.log, which \`opscrew status\` shows`,
+      "The agent runs as the account's user, so anything that user can run can exceed these bounds.",
+    ]) {
+      expect(words).toContain(part);
+    }
+    // The schedule is in the plan's hash: daily is another plan.
+    const daily = scheduled(app.plan, "daily");
+    const d = await buildAppPlan({
+      header: HEADER,
+      plan: daily,
+      panel: app.panel,
+      files: app.files,
+      record: await readHostingRecord(deps.paths),
+      facts: await app.panel.inspect(),
+      php: undefined,
+      values: undefined,
+      contents: new Map([["settings.sh", settingsOf(daily)]]),
+    });
+    expect(hostingPlanHash(d)).not.toBe(hostingPlanHash(b));
+    expect(describeHostingPlan(d, hostingPlanHash(d))).toContain("daily, from 03:00 UTC");
+
+    // Plan A's first settings carry it too, and its folder step says so.
+    const a = await buildAgentPlan({
+      header: HEADER,
+      panel: app.panel,
+      files: new MemoryFiles(),
+      record: undefined,
+      contents: agentContents(settingsOf(plan), []),
+    });
+    expect(a.steps[0]).toMatchObject({ kind: "folder", drills: "weekly" });
+    expect(describeHostingPlan(a, hostingPlanHash(a))).toContain(
+      "OpsCrew's agent runs a restore drill itself, weekly",
+    );
+
+    // Without a schedule, the settings' step says nothing of drills.
+    const off = await buildAgentPlan({
+      header: HEADER,
+      panel: app.panel,
+      files: new MemoryFiles(),
+      record: undefined,
+      contents: agentContents(settingsOf(app.plan), []),
+    });
+    expect(off.steps[0]).not.toHaveProperty("drills");
+    expect(describeHostingPlan(off, hostingPlanHash(off))).not.toContain("restore drill");
+  });
+});
+
+describe("a drill database cPanel made before refusing its user", () => {
+  const step = {
+    kind: "drill-database",
+    name: "acct_notes_drill",
+    user: "acct_notes_drill",
+  } as const;
+
+  it("is removed again before the stop, so the next provision makes it anew", async () => {
+    const account = cpanelAccount();
+    const redactor = new Redactor();
+    const panel = connect(account, redactor);
+    account.cpanel?.failNext("Mysql", "create_user", "The account has reached its limit of users.");
+    const { ctx, made } = context(panel, panel, redactor);
+    const error = await apply(ctx, [step]);
+    expect(error?.message).toBe(
+      "cPanel refused to create the database user acct_notes_drill: The account has reached its limit of users. Nothing was changed.",
+    );
+    expect(account.databases()).toEqual([]);
+    expect(account.read(`${FOLDER}/${DRILL_LOGIN_FILE}`)).toBeUndefined();
+    expect(made).toEqual([]);
+
+    // The next run makes it: no database of its name is left to stop at.
+    const again = context(panel, panel, redactor);
+    expect(await apply(again.ctx, [step])).toBeUndefined();
+    expect(account.databases()).toEqual(["acct_notes_drill"]);
+  });
+
+  it("says so, with what to remove in the panel, when removing it again fails too", async () => {
+    const account = cpanelAccount();
+    const redactor = new Redactor();
+    const panel = connect(account, redactor);
+    account.cpanel?.failNext("Mysql", "create_user", `No more users (${PASSWORD}).`);
+    account.cpanel?.failNext("Mysql", "delete_database", "The database is busy.");
+    const { ctx, made } = context(panel, panel, redactor);
+    const error = await apply(ctx, [step]);
+    expect(error?.message).toMatch(
+      /^cPanel refused to create the database user acct_notes_drill: No more users \(.+\)\. The panel had made the drill database acct_notes_drill before that, and removing it again failed too: .*The database is busy\..* Nothing was changed before it\.$/,
+    );
+    expect(error?.message).not.toContain(PASSWORD);
+    expect(error).toMatchObject({
+      hint: "Remove the database acct_notes_drill and its user acct_notes_drill in the panel, then run `opscrew provision` again.",
+    });
+    expect(account.databases()).toEqual(["acct_notes_drill"]);
+    expect(made).toEqual([]);
   });
 });
 

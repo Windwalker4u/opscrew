@@ -46,6 +46,11 @@ export interface AgentSettings {
    * `current/<file>` from `app/`. Those apps only.
    */
   startupFile?: string;
+  /**
+   * How often the agent runs a restore drill itself (029 research R28): `snapshots.drills.schedule`.
+   * Absent: drills by hand only.
+   */
+  drillSchedule?: "weekly" | "daily";
 }
 
 const APP_NAME = /^[a-z0-9][a-z0-9-]{0,40}$/;
@@ -117,6 +122,11 @@ function problemOf(s: AgentSettings): [field: string, rule: string] | undefined 
       selected ? isPath(s.startupFile ?? "") : s.startupFile === undefined,
       "a relative path without . or .. for a Node.js or Python app, absent otherwise",
     ],
+    [
+      "drillSchedule",
+      s.drillSchedule === undefined || ["weekly", "daily"].includes(s.drillSchedule),
+      "weekly, daily or absent",
+    ],
   ];
   const failed = checks.find(([, ok]) => !ok);
   return failed && [failed[0], failed[2]];
@@ -154,6 +164,7 @@ export function renderAgentSettings(settings: AgentSettings): string {
     ["DATABASE", settings.database ?? ""],
     ["RUNTIME_VERSION", settings.runtimeVersion ?? ""],
     ["STARTUP_FILE", settings.startupFile ?? ""],
+    ["DRILL_SCHEDULE", settings.drillSchedule ?? ""],
   ];
   return [
     `# OpsCrew's agent settings for ${settings.app} in ${settings.environment}, rendered by OpsCrew. No secret.`,

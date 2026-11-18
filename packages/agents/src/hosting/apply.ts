@@ -197,6 +197,26 @@ function drillDatabaseRefusal(error: unknown, redactor: Redactor): MadeNothingEr
   );
 }
 
+/**
+ * The stop for a drill database the panel made before refusing the rest of it, which OpsCrew
+ * couldn't remove again either: both reasons, redacted, and the database to remove in the panel.
+ */
+function drillDatabaseLeft(
+  error: unknown,
+  removal: unknown,
+  database: { name: string; user: string },
+  redactor: Redactor,
+): OpsCrewError {
+  const said = (e: unknown) => redactor.redact(e instanceof OpsCrewError ? e.message : String(e));
+  return new OpsCrewError(
+    error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
+    `${said(error)} The panel had made the drill database ${database.name} before that, and removing it again failed too: ${said(removal)}`,
+    {
+      hint: `Remove the database ${database.name} and its user ${database.user} in the panel, then run \`opscrew provision\` again.`,
+    },
+  );
+}
+
 /** The archive's bytes. */
 export async function tarBytes(entries: Parameters<typeof tarStream>[0]): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
@@ -489,10 +509,21 @@ async function applyStep(
       try {
         await panel.addDatabase(database);
       } catch (error) {
-        // A failure that may have made it after all (listed, or the list unread) stays as it is.
-        const listed = await panel.listDatabases().catch(() => [step.name]);
-        if (listed.includes(step.name)) throw error;
-        await files.remove(login);
+        // A failure whose list can't be read stays as it is: the database may have been made.
+        const listed = await panel.listDatabases().catch(() => undefined);
+        if (listed === undefined) throw error;
+        if (listed.includes(step.name)) {
+          // Made before a later part failed (cPanel's user or privileges): removed again, so
+          // the next provision doesn't stop at a database OpsCrew's record doesn't list.
+          const removal = await panel.removeDatabase({ name: step.name, user: step.user }).then(
+            () => undefined,
+            (removeError: unknown) => removeError,
+          );
+          await files.remove(login);
+          if (removal !== undefined) throw drillDatabaseLeft(error, removal, step, ctx.redactor);
+        } else {
+          await files.remove(login);
+        }
         throw drillDatabaseRefusal(error, ctx.redactor);
       }
       return ctx.made({ kind: "drill-database", key: step.name });

@@ -2572,8 +2572,9 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
 
 /**
  * Restore drills (`snapshots.drills`) only where there are snapshots: not on a site target, in a
- * preview environment (`where` names either) or on an SFTP host; a drill schedule needs the
- * snapshot schedule, and never runs on this computer, which isn't always on.
+ * preview environment (`where` names either) or on an SFTP host; a drill schedule never runs on
+ * this computer, which isn't always on, and needs the snapshot schedule, except on a hosting
+ * account, where the agent drills the newest snapshot taken by hand (it takes none on a schedule).
  */
 function checkDrills(
   plan: DeployPlanFields,
@@ -2604,7 +2605,7 @@ function checkDrills(
       message:
         "is refused with the localhost target: this computer isn't always on to run them; run a drill when you need one with opscrew restore --drill, and remove snapshots.drills.schedule",
     });
-  } else if (plan.snapshots?.schedule === undefined) {
+  } else if (plan.snapshots?.schedule === undefined && !isHostingTarget(plan.target)) {
     ctx.addIssue({
       code: "custom",
       path,

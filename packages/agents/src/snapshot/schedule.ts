@@ -6,8 +6,8 @@
  * the snapshot schedule. Only the plan changes here.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
-import { snapshotParts } from "@opscrew/iac-templates";
-import { type DeployPlan, snapshotScheduleOf } from "@opscrew/plan-schema";
+import { DRILL_SLOT_AFTER_HOURS, snapshotParts } from "@opscrew/iac-templates";
+import { type DeployPlan, isHostingTarget, snapshotScheduleOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { planFile } from "../runners/words";
@@ -76,7 +76,33 @@ function leftOutLine(run: SnapshotRun, plan: DeployPlan): string | undefined {
 
 /** Where provision puts the schedule, or takes it away from. */
 function where(plan: DeployPlan): string {
-  return plan.target.provider === "portainer" ? "the app's stack in your Portainer" : "the server";
+  if (plan.target.provider === "portainer") return "the app's stack in your Portainer";
+  return isHostingTarget(plan.target)
+    ? "the agent's settings on the hosting account"
+    : "the server";
+}
+
+/**
+ * True on a panel's hosting account (cPanel, Plesk, DirectAdmin), whose agent drills the newest
+ * snapshot taken by hand itself (research R28): it takes none on a schedule.
+ * @throws OpsCrewError `PHASE_PRECONDITION` on an SFTP host, which keeps no snapshots.
+ */
+function onPanelAccount(run: SnapshotRun): boolean {
+  const { target } = run.plan;
+  if (!isHostingTarget(target)) return false;
+  if (target.panel === "sftp") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${run.environment} runs on an SFTP host, which keeps no snapshots: no agent of OpsCrew's runs there to take them, so there is nothing to drill. ${NOTHING_CHANGED}`,
+    );
+  }
+  return true;
+}
+
+/** When a scheduled drill runs: `weekly, on Thursdays from 03:00 UTC`, `daily, from 03:00 UTC`. */
+function slotText(every: "weekly" | "daily"): string {
+  const hour = `0${DRILL_SLOT_AFTER_HOURS}:00 UTC`.slice(-9);
+  return every === "weekly" ? `weekly, on Thursdays from ${hour}` : `daily, from ${hour}`;
 }
 
 /**
@@ -192,8 +218,10 @@ function byHandLine(run: SnapshotRun): string {
  * `opscrew snapshot drill schedule on` (research R28): `snapshots.drills.schedule` in the plan,
  * `options.every` over the plan's value, else weekly, written through the plan-writing path; once
  * provision puts it on the target, each drill runs three hours after the scheduled snapshot's slot.
+ * On a panel's hosting account the agent runs them, with no snapshot schedule needed.
  * @throws OpsCrewError `PHASE_PRECONDITION` on this computer, where snapshots can't be scheduled,
- * and without the snapshot schedule (offering both commands). Nothing is written then.
+ * on an SFTP host, and elsewhere without the snapshot schedule (offering both commands). Nothing is
+ * written then.
  */
 export async function snapshotDrillScheduleOn(
   deps: PhaseDeps,
@@ -201,6 +229,7 @@ export async function snapshotDrillScheduleOn(
 ): Promise<SnapshotSettingChange> {
   const run = await snapshotRun(deps);
   const { plan } = run;
+  if (onPanelAccount(run)) return drillScheduleOnAccount(run, options);
   if (snapshotTarget(run) === "computer") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -228,6 +257,37 @@ export async function snapshotDrillScheduleOn(
       `Scheduled restore drills of ${run.environment} (snapshots.drills.schedule in ${planFile(plan)}): ${current ?? "off"} → ${every}, three hours after the scheduled snapshot.`,
       "Each one restores the latest scheduled snapshot into a throwaway copy with no internet and none of the production .env's values, checks it and removes it. A deploy or a snapshot running, or too little disk or memory, skips it.",
       provisionLine(run, `put the schedule on ${where(after)}`),
+    ],
+    `Scheduled restore drills of ${run.environment} are already ${every}.`,
+  );
+}
+
+/**
+ * `opscrew snapshot drill schedule on` on a panel's hosting account: the agent drills the newest
+ * snapshot into the drill database itself, so no snapshot schedule is needed; the lines say when,
+ * what each drill does and, when drills were off, that provision makes the drill database.
+ */
+async function drillScheduleOnAccount(
+  run: SnapshotRun,
+  options: DrillScheduleOnOptions,
+): Promise<SnapshotSettingChange> {
+  const { plan } = run;
+  const current = plan.snapshots?.drills?.schedule;
+  const every = options.every ?? current ?? "weekly";
+  const after = withDrillSchedule(plan, every, "schedule restore drills");
+  const database = isHostingTarget(plan.target) && plan.target.database !== undefined;
+  return writeSnapshotSetting(
+    run,
+    after,
+    [
+      `Scheduled restore drills of ${run.environment} (snapshots.drills.schedule in ${planFile(plan)}): ${current ?? "off"} → ${slotText(every)}.`,
+      `Each one: OpsCrew's agent on the account loads the newest snapshot (\`opscrew snapshot${run.flags}\` takes one) into the drill database, counts its tables and empties it again, once there is a newer snapshot than the last drill proved; the app isn't started. It runs between deploys, and too little room under the account's disk quota skips it.`,
+      ...(database && plan.snapshots?.drills === undefined
+        ? [
+            "Provision makes the drill database first: one more database, which counts against your hosting plan's limit.",
+          ]
+        : []),
+      provisionLine(run, `put the schedule in ${where(after)}`),
     ],
     `Scheduled restore drills of ${run.environment} are already ${every}.`,
   );

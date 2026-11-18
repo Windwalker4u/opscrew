@@ -1,3 +1,5 @@
+import { DRILL_LIMIT_SECONDS } from "../../drill/record";
+import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours } from "../../drill/script";
 import { shellQuote } from "../../runtime/services";
 import {
   FALLBACK,
@@ -51,6 +53,11 @@ export const DRILL_LOGIN_FILE = "keys/drill.cnf";
  *   against the dump's `CREATE TABLE` lines and the drill database emptied again; its copy of the
  *   shared files listed (`tar -tzf`). The app isn't started, and its database and files are never
  *   read. One line per drill in `state/drills.log`, as `drillRecord` reads it, with no value.
+ * - The scheduled drill (029 research R28, R29), with `DRILL_SCHEDULE` (`weekly` or `daily`) in the
+ *   settings: the agent itself, after the releases and with no panel call, drills the newest
+ *   `snapshot-*` in its slot ({@link DRILL_SLOT_AFTER_HOURS} hours into each week or day, UTC)
+ *   when the last drill that wasn't skipped proved another, for {@link DRILL_LIMIT_SECONDS} at
+ *   most; one `scheduled` line per slot, a skip (`none`, `login`, `quota`) never a failure.
  * - A snapshot `<id>` (`snapshot-<UTC time>`), taken on a `snapshot` request and before a
  *   `restore`: the app's database, when it has one, dumped into `dumps/<id>.sql.gz` and, when
  *   `shared/` holds more than the settings files (`.env`, `.env.next`, `env.php`, `mysql.cnf`),
@@ -1220,6 +1227,86 @@ do_drill() {
   answer "$name" done "" "record=$DRILL_RECORD" \${DRILL_EXPECTED:+"expected=$DRILL_EXPECTED"}
 }
 
+# The newest snapshot in dumps/ (snapshot-<UTC time>, -2, -3… within one second), by its name; nothing
+# when there is none. A release's dump (<release>.sql.gz) is never one.
+newest_snapshot() {
+  local file id newest="" id_re='^snapshot-[0-9]{8}T[0-9]{6}Z(-[0-9]+)?$'
+  for file in dumps/snapshot-*.sql.gz dumps/snapshot-*.shared.tar.gz; do
+    [ -f "$file" ] || continue
+    id=\${file#dumps/}
+    id=\${id%.sql.gz}
+    id=\${id%.shared.tar.gz}
+    if [[ $id =~ $id_re ]] && [[ $id > $newest ]]; then newest=$id; fi
+  done
+  printf '%s' "$newest"
+}
+
+# The room the account's disk quota leaves, in KiB: of each file system quota lists, its quota (else
+# its hard limit) less what is used, the smallest; nothing without quota or a limit.
+quota_room() {
+  command -v quota > /dev/null || return 0
+  { quota -w 2> /dev/null || true; } | awk '$2 ~ /^[0-9]+\\*?$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { l = ($3 > 0) ? $3 : $4; if (l > 0) { r = l - ($2 + 0); if (m == "" || r < m) m = r } } END { if (m != "") print (m < 0 ? 0 : m) }'
+}
+
+# A scheduled drill's line in state/drills.log for one that didn't run to its end: the result $1,
+# the snapshot $2 (- for none), its start $3, removal= $4 and reason= $5.
+drill_line() {
+  printf '%s scheduled %s id=%s start=%s parts=- tables=- removal=%s cleaned=no reason=%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "$5" >> state/drills.log || true
+  say "Scheduled restore drill of the snapshot $2: $1 ($5)."
+}
+
+# The scheduled restore drill (029 research R28, R29), with DRILL_SCHEDULE weekly or daily, run
+# under the agent's lock after the releases, so never during one, and with no panel call. Its
+# slot is the hour ${DRILL_SLOT_AFTER_HOURS} hours into each week or day (UTC), a server's; one run
+# per slot, and only when the newest snapshot (newest_snapshot) isn't the one the last drill that
+# wasn't skipped proved. It is drill_snapshot's on that snapshot alone, in the drill database only,
+# for ${DRILL_LIMIT_SECONDS / 60} minutes at most: then it is stopped, the drill database emptied
+# and the run recorded failed (timeout). Skipped, recorded and never a failure: no snapshot yet
+# (none), a dump without the drill database's login (login), or a dump larger than the room the
+# account's quota leaves (quota).
+scheduled_drill() {
+  local every last now id dump start room code=0 removal=- reason
+  case \${DRILL_SCHEDULE:-} in
+    weekly) every=${drillScheduleHours("weekly")} ;;
+    daily) every=${drillScheduleHours("daily")} ;;
+    *) return 0 ;;
+  esac
+  [ $(($(date +%s) / 3600 % every)) -eq ${DRILL_SLOT_AFTER_HOURS} ] || return 0
+  now=$(date -u +%Y-%m-%dT%H)
+  last=$(grep ' scheduled ' state/drills.log 2> /dev/null | tail -n 1 || true)
+  [ "\${last:0:13}" != "$now" ] || return 0
+  id=$(newest_snapshot)
+  if [ -n "$id" ] && grep -v ' skipped ' state/drills.log 2> /dev/null | tail -n 1 | grep -q " id=$id "; then return 0; fi
+  start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ -z "$id" ]; then
+    drill_line skipped - "$start" - none
+    return 0
+  fi
+  dump=dumps/$id.sql.gz
+  if [ -f "$dump" ] && [ ! -f ${DRILL_LOGIN_FILE} ]; then
+    drill_line skipped "$id" "$start" - login
+    return 0
+  fi
+  if [ -f "$dump" ]; then
+    room=$(quota_room)
+    if [ -n "$room" ] && [ "$room" -lt $((($(wc -c < "$dump") + 1023) / 1024)) ]; then
+      drill_line skipped "$id" "$start" - quota
+      return 0
+    fi
+  fi
+  say "Scheduled restore drill of the snapshot $id."
+  export MYSQL_SOCKET
+  export -f say drill_snapshot replace_tables drill_mysql without_definers
+  timeout ${DRILL_LIMIT_SECONDS} bash -c 'set -eu -o pipefail; drill_snapshot "$1" scheduled' _ "$id" || code=$?
+  [ "$code" -ne 0 ] || return 0
+  if [ -f "$dump" ]; then
+    if replace_tables - drill_mysql; then removal=removed; else removal=failed; fi
+  fi
+  reason=stopped
+  if [ "$code" -eq 124 ]; then reason=timeout; fi
+  drill_line failed "$id" "$start" "$removal" "$reason"
+}
+
 # The header lines of the sections of the selector's ~/.cl.selector/htaccess_cache.
 cache_headers() {
   local cache=$HOME/.cl.selector/htaccess_cache
@@ -1520,6 +1607,7 @@ main() {
   # A first release's certificate often verifies by the end of its deploy: HTTPS is forced now, not
   # a run later.
   https_check
+  scheduled_drill
 }
 
 main "$@"; exit

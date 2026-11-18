@@ -475,6 +475,28 @@ describe("snapshots.drills", () => {
     ]);
   });
 
+  it("schedules drills on a panel's account without the snapshot schedule, which it has none of", async () => {
+    for (const panel of ["cpanel", "plesk", "directadmin"]) {
+      for (const schedule of ["weekly", "daily"]) {
+        const parsed = DeployPlanSchema.safeParse({
+          ...onHosting(await prodPlan(), panel),
+          snapshots: { drills: { schedule } },
+        });
+        expect(parsed.error?.issues, `${panel} ${schedule}`).toBeUndefined();
+        expect(parsed.data?.snapshots).toEqual({ drills: { schedule } });
+      }
+    }
+    // Elsewhere it still needs the snapshot schedule (above); an SFTP host refuses drills at all.
+    const sftp = onHosting(await prodPlan(), "sftp");
+    expect(issues({ ...sftp, snapshots: { drills: { schedule: "weekly" } } })).toEqual([
+      {
+        path: "snapshots.drills",
+        message:
+          "is refused on an SFTP host, which keeps no snapshots: no agent of OpsCrew's runs there to take them; remove snapshots.drills",
+      },
+    ]);
+  });
+
   it("is refused where there are no snapshots: site targets, preview environments, SFTP hosts", async () => {
     for (const kind of ["cloudflare-workers", "github-pages"]) {
       const found = issues({ ...(await targetPlan(kind)), snapshots: { drills: {} } });

@@ -146,7 +146,17 @@ export function agentSettingsText(
     ...(target.runtime !== undefined
       ? { runtimeVersion: target.runtime.version, startupFile: target.runtime.startup }
       : {}),
+    // The agent's own restore drills (029 research R28): `snapshots.drills.schedule`.
+    ...(plan.snapshots?.drills?.schedule !== undefined
+      ? { drillSchedule: plan.snapshots.drills.schedule }
+      : {}),
   });
+}
+
+/** The drill schedule the agent's settings `text` carry, for the step that writes them. */
+function drillsOf(text: string): { drills?: "weekly" | "daily" } {
+  const every = /^DRILL_SCHEDULE='(weekly|daily)'$/m.exec(text)?.[1];
+  return every === "weekly" || every === "daily" ? { drills: every } : {};
 }
 
 /** What the plans' file steps write, by their path in the app's folder. */
@@ -235,6 +245,7 @@ export async function buildAgentPlan(input: AgentPlanInput): Promise<AgentPlan> 
         fileStep("settings.sh", 0o600, text("settings.sh")),
         fileStep("keys/known_hosts", 0o600, text("keys/known_hosts")),
       ],
+      ...drillsOf(text("settings.sh")),
     });
   } else {
     for (const [path, mode] of [
@@ -340,7 +351,11 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
     const content = contents.get(path);
     if (content === undefined) continue;
     if ((await files.readFile(`${folder}/${path}`)) !== content) {
-      steps.push({ kind: "file", ...fileStep(path, 0o600, content) });
+      steps.push({
+        kind: "file",
+        ...fileStep(path, 0o600, content),
+        ...(path === "settings.sh" ? drillsOf(content) : {}),
+      });
     }
   }
   const served = currentRoot(folder, target.webRoot);

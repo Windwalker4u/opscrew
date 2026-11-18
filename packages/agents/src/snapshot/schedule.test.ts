@@ -2,8 +2,14 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { snapshotScheduleTag } from "@opscrew/connector-ssh-host";
 import { switchCommands } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { hostingTestPlan } from "../hosting/__fixtures__/account";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { createTestPhaseDeps, testPlan } from "../testing";
 import { portainerPlan } from "../testing/portainer";
@@ -289,6 +295,57 @@ describe("opscrew snapshot drill schedule on|off", () => {
     expect((await snapshotDrillScheduleOff(deps)).lines).toEqual([
       "Scheduled restore drills of staging are already off. Nothing was changed.",
     ]);
+  });
+});
+
+describe("opscrew snapshot drill schedule on|off on a hosting account", () => {
+  it("schedules a panel account's drills without a snapshot schedule, saying when and what they do", async () => {
+    for (const panel of ["cpanel", "plesk", "directadmin"] as const) {
+      const { deps } = await world(hostingTestPlan({ panel }));
+      const change = await snapshotDrillScheduleOn(deps);
+
+      expect(change.changed, panel).toBe(true);
+      expect((await readArtifact("plan", deps.paths.files.plan)).snapshots).toEqual({
+        drills: { schedule: "weekly" },
+      });
+      expect(change.lines, panel).toEqual([
+        "Scheduled restore drills of prod (snapshots.drills.schedule in opscrew/plan.yaml): off → weekly, on Thursdays from 03:00 UTC.",
+        "Each one: OpsCrew's agent on the account loads the newest snapshot (`opscrew snapshot` takes one) into the drill database, counts its tables and empties it again, once there is a newer snapshot than the last drill proved; the app isn't started. It runs between deploys, and too little room under the account's disk quota skips it.",
+        "Provision makes the drill database first: one more database, which counts against your hosting plan's limit.",
+        "Run `opscrew provision` to put the schedule in the agent's settings on the hosting account.",
+      ]);
+    }
+  });
+
+  it("takes --every daily over drills already on, and turns the schedule off", async () => {
+    const { deps } = await world(
+      DeployPlanSchema.parse({ ...hostingTestPlan(), snapshots: { drills: {} } }),
+    );
+    const daily = await snapshotDrillScheduleOn(deps, { every: "daily" });
+    expect(daily.plan.snapshots).toEqual({ drills: { schedule: "daily" } });
+    expect(daily.lines[0]).toContain(": off → daily, from 03:00 UTC.");
+    expect(daily.lines.join("\n")).not.toContain("Provision makes the drill database");
+
+    const off = await snapshotDrillScheduleOff(deps);
+    expect((await readArtifact("plan", deps.paths.files.plan)).snapshots).toEqual({ drills: {} });
+    expect(off.lines.at(-1)).toBe(
+      "Run `opscrew provision` to take the schedule off the agent's settings on the hosting account.",
+    );
+  });
+
+  it("refuses an SFTP host, which keeps no snapshots, and writes nothing", async () => {
+    const base = hostingTestPlan({ database: false });
+    const sftp = DeployPlanSchema.parse({
+      ...base,
+      target: { ...base.target, panel: "sftp", cron: [], php: { version: "8.3", via: "account" } },
+    });
+    const { deps, before, onDisk } = await world(sftp);
+    await expect(snapshotDrillScheduleOn(deps)).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "prod runs on an SFTP host, which keeps no snapshots: no agent of OpsCrew's runs there to take them, so there is nothing to drill. Nothing was changed.",
+    });
+    expect(await onDisk()).toBe(before);
   });
 });
 
