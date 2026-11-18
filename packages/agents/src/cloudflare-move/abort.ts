@@ -176,8 +176,9 @@ async function confirmDelegation(session: MoveSession): Promise<void> {
 /**
  * Why the switch has begun, in words, or `undefined` while it changed nothing (plan 8.): an
  * environment is `adopted`, B's zone is active, A's is no longer active, the delegation (the
- * registrar's API, else the public DNS) no longer names A's nameservers, or the registry published
- * a DS record when the move started and publishes none now. Read-only.
+ * registry's record, else the registrar's API, else the public DNS) no longer names A's
+ * nameservers, or the registry published a DS record when the move started and publishes none now.
+ * Read-only.
  */
 async function switchBegun(session: MoveSession, move: CloudflareMove): Promise<SwitchReading> {
   const { zone } = session;

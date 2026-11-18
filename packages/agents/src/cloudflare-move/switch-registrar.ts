@@ -112,13 +112,17 @@ export async function registrarAfterSwitch(
 }
 
 /**
- * The zone's nameservers now: the registrar's API when it reads them, else the public DNS
- * (`publicNameservers`); lower case, without a trailing dot.
+ * The zone's nameservers now: the registry's (its RDAP record, `deps.registryNs`) when it can be
+ * read, else the registrar's API when it reads them, else the public DNS (`publicNameservers`,
+ * which can show the old delegation for as long as resolvers keep it: a day for `.dev`); lower
+ * case, without a trailing dot, sorted.
  */
 export async function currentNameservers(
   session: MoveSession,
   registrar: DomainRegistrar,
 ): Promise<string[]> {
+  const atRegistry = await session.deps.registryNs?.(session.zone);
+  if (atRegistry !== undefined) return atRegistry;
   const api = registrar.kind === "api" ? registrar.registrar : undefined;
   if (api?.getNameservers !== undefined)
     return hosts(await api.getNameservers(session.zone)).sort();

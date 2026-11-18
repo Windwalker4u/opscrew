@@ -76,7 +76,9 @@ const registration = (domain: string): RegisteredDomain => ({
  * The switch's harness: {@link moveHarness} with New's pending zone, this app's record at
  * `prepared` (or `step`), its record and the other apps' records and marks in New, New's Worker
  * `docs`, and the zone registered at `registrar`. `web` is the public DNS (NS and DS) and each
- * hostname's HTTPS status; `time.ms` is the clock `sleep` moves, `onSleep` runs at each sleep.
+ * hostname's HTTPS status; `registry.ns` the registry's RDAP nameservers (unreadable by default);
+ * `time.ms` is the clock `sleep` moves, `onSleep` runs at each sleep, and New's zone becomes
+ * active at a sleep once the delegation names its nameservers (unless `activation.auto` is false).
  */
 export async function switchHarness(o: SwitchHarnessOptions = {}) {
   const h = await moveHarness({
@@ -151,8 +153,13 @@ export async function switchHarness(o: SwitchHarnessOptions = {}) {
     registrars: viaApi ? { [api.id]: connectApi(api, events) } : {},
   };
 
-  /** The delegation now: the API registrar's nameservers, else the public DNS's. */
-  const delegation = () => (viaApi ? (api.nameservers.get(ZONE) ?? []) : web.ns);
+  /** The registry's RDAP record (`deps.registryNs`): its nameservers, or unreadable (default). */
+  const registry = { ns: undefined as string[] | undefined };
+  h.deps.registryNs = async (domain) => (domain === ZONE ? registry.ns : undefined);
+  /** The delegation now: the registry's, else the API registrar's, else the public DNS's. */
+  const delegation = () => registry.ns ?? (viaApi ? (api.nameservers.get(ZONE) ?? []) : web.ns);
+  /** False keeps New's zone pending whatever the delegation (Cloudflare's checks miss it). */
+  const activation = { auto: true };
   const sleeps = { count: 0, onSleep: undefined as (() => void) | undefined };
   const sleep = async (ms: number) => {
     sleeps.count++;
@@ -160,7 +167,7 @@ export async function switchHarness(o: SwitchHarnessOptions = {}) {
     cloudflare.now = new Date(START + time.ms);
     // Cloudflare sees New's nameservers at the registry: New's zone is active.
     const pointed = [...delegation()].sort().join() === [...bZone.nameServers].sort().join();
-    if (pointed && bZone.status === "pending") cloudflare.activate(bZone);
+    if (activation.auto && pointed && bZone.status === "pending") cloudflare.activate(bZone);
     sleeps.onSleep?.();
   };
   const fetch: FetchLike = async (input, init) => {
@@ -208,6 +215,8 @@ export async function switchHarness(o: SwitchHarnessOptions = {}) {
     bZone: bZone as FakeCloudflareZone,
     b,
     web,
+    registry,
+    activation,
     time,
     sleeps,
     api,

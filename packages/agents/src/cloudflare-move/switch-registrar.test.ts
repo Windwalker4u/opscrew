@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { abortHarness } from "./abort.fakes";
 import { ZONE } from "./session.fakes";
 import { switchHarness } from "./switch.fakes";
+import { currentNameservers, findSwitchRegistrar } from "./switch-registrar";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -101,4 +102,26 @@ describe("findSwitchRegistrar: A's token without a Registrar permission", () => 
       expect(h.deps.reporter.text()).toContain(FROM_RECORD);
     },
   );
+});
+
+describe("currentNameservers", () => {
+  it("the registry's RDAP nameservers first, then Porkbun's API", async () => {
+    const h = await switchHarness();
+    const session = await h.open({ services: h.services });
+    const registrar = await findSwitchRegistrar(session);
+    h.registry.ns = [...h.bZone.nameServers].sort();
+    expect(await currentNameservers(session, registrar)).toEqual(h.registry.ns);
+    h.registry.ns = undefined;
+    expect(await currentNameservers(session, registrar)).toEqual([...h.aZone.nameServers].sort());
+  });
+
+  it("without the registry's record or a registrar's API: the public DNS", async () => {
+    const h = await switchHarness({ registrar: "cloudflare" });
+    const session = await h.open({ services: h.services });
+    const registrar = await findSwitchRegistrar(session);
+    h.web.ns = [...h.bZone.nameServers];
+    expect(await currentNameservers(session, registrar)).toEqual([...h.bZone.nameServers].sort());
+    h.registry.ns = [...h.aZone.nameServers].sort();
+    expect(await currentNameservers(session, registrar)).toEqual(h.registry.ns);
+  });
 });

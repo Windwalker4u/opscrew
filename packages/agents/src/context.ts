@@ -15,6 +15,7 @@ import type {
   Redactor,
 } from "@opscrew/core";
 import type { RegistryDsLookup } from "./domain/registry-ds";
+import type { RegistryNsLookup } from "./domain/registry-ns";
 
 /**
  * Everything a phase needs, injected by the CLI or the MCP server. Phases never reach for globals
@@ -38,6 +39,11 @@ export interface PhaseDeps {
   fetch: FetchLike;
   /** Asks a registry's own nameservers for a domain's DS record and its full TTL; unset, the DS wait keeps its 24-hour floor. */
   registryDs?: RegistryDsLookup;
+  /**
+   * Asks a registry's RDAP record which nameservers it names for a domain; unset, the Cloudflare
+   * move's switch reads the delegation from the registrar's API or the public DNS.
+   */
+  registryNs?: RegistryNsLookup;
   env: Record<string, string | undefined>;
   clock: Clock;
   redactor: Redactor;

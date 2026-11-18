@@ -154,7 +154,7 @@ function describe(
   );
   if (plan.sites.length > 0) {
     lines.push(
-      "- A site on Cloudflare's hosting answers once its custom domains are attached, right after activation.",
+      "- A site on Cloudflare's hosting answers once its custom domains are attached, right after activation. Until then, a visitor whose resolver already asks the new account's nameservers gets no address for it, and that resolver may keep the answer for 30 minutes (the new zone's negative-caching time).",
     );
   }
   lines.push(

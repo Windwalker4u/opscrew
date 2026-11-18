@@ -193,8 +193,12 @@ zone uses it, set it up there right after the switch.
 Then:
 
 1. The nameservers change (see [The registrar](#the-registrar)).
-2. OpsCrew asks Cloudflare to check them and waits until the new zone is active: usually within an
-   hour, at worst 24 hours. On the Free plan Cloudflare allows such a check once an hour.
+2. As soon as the registry names the new account's nameservers, OpsCrew asks Cloudflare to check
+   them and waits for the new zone to become active. OpsCrew reads the registry's own record of the
+   domain (RDAP), which changes as soon as the registrar's change is accepted; the public DNS can
+   show the old nameservers for as long as resolvers keep them, a day for a `.dev` domain. On the
+   Free plan Cloudflare allows one such check an hour, so when OpsCrew can read the registry's
+   record, it asks only once the registry has the change.
 3. Right after activation, for every prepared app in the zone: its Access applications, then the
    records of the hostnames they protect, then a site's custom domains attached to its Worker in
    the new account (detached from the old account's Worker first, when Cloudflare says it still
@@ -204,8 +208,30 @@ Then:
    reports how long each took (see [The HTTPS gap](#the-https-gap)).
 6. It lists the finish to run in each repository, origin-protected apps first.
 
-A run waits at most two hours. If the zone isn't active, the certificate isn't issued or a hostname
-doesn't answer over HTTPS yet by then, it stops and says so: run it again later, and it goes on with the times measured so far.
+A run waits at most 15 minutes for the activation, then at most two hours for the certificate and
+the hostnames. If the zone isn't active, the certificate isn't issued or a hostname doesn't answer
+over HTTPS yet by then, it stops and says so: run it again later, and it goes on with the times
+measured so far. Cloudflare's own checks go on meanwhile; a run within an hour of OpsCrew's last
+request only waits for them.
+
+### What visitors see during the switch
+
+- **Until the registry names the new nameservers,** nothing changes: the old account serves every
+  request.
+- **From then until Cloudflare activates the new zone** (minutes once Cloudflare's check runs):
+  resolvers keep the old delegation until their copy expires, so most visitors are still served by
+  the old account. A visitor whose resolver already asks the new nameservers gets the pending
+  zone's answers: no address for a site on [Cloudflare's hosting](cloudflare-hosting.md) or a
+  hostname behind Cloudflare Access, which have no record there yet.
+- **Right after activation,** within seconds, the switch makes the Access applications and their
+  records and attaches the sites' custom domains. From then Cloudflare serves each hostname from the
+  new zone, whichever nameservers a visitor's resolver asked, once the new zone's certificate is
+  issued (see [The HTTPS gap](#the-https-gap)).
+- **For up to 30 minutes after that,** a resolver that got no address for a site from Cloudflare's
+  nameservers before then keeps that answer: 30 minutes is the new zone's negative-caching time,
+  [Cloudflare's default](https://developers.cloudflare.com/dns/manage-dns-records/reference/dns-record-types/)
+  (the SOA record's minimum TTL), which only Enterprise zones can change. Its visitors reach the
+  site once it expires.
 
 ### The registrar
 
@@ -216,7 +242,9 @@ doesn't answer over HTTPS yet by then, it stops and says so: run it again later,
 | Any other registrar | Prints the new account's nameservers for you to set at the registrar, and stops |
 
 When OpsCrew can't set the nameservers itself, run `npx opscrew cloudflare move --switch` again
-once you made the change: it finds the new nameservers and goes on.
+once you made the change: it finds the new nameservers in the registry's record and goes on. When
+that record can't be read, it goes by the registrar's API, or else by the public DNS, which can take
+longer to show them.
 
 At Cloudflare Registrar, the registration's settings in the old account are not kept. Cloudflare's
 page above lists what its move needs, for example a domain older than 10 days and a verified
@@ -271,7 +299,9 @@ certificate, and to each hostname's first good answer.
   plan or higher). OpsCrew doesn't use either.
 - **A site on [Cloudflare's hosting](cloudflare-hosting.md)** answers from the new account once the
   switch attaches its custom domains, right after activation, and then needs the certificate like
-  any hostname.
+  any hostname. Cloudflare attaches a custom domain only on an active zone, and the new zone gives no
+  address for the site before that (see
+  [What visitors see during the switch](#what-visitors-see-during-the-switch)).
 - **Hostnames behind Cloudflare Access** (a tunnel's SSH hostname, Portainer or Beszel on a
   subdomain) have no record in the new zone until the switch makes their Access applications and
   records, right after activation. So from the nameserver change until then, resolvers that

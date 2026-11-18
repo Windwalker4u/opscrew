@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dsQuery,
+  nodeRegistryNetwork,
   type RegistryNetwork,
   rdapUnsignedSince,
   readDsAnswer,
@@ -323,5 +324,41 @@ describe("registryDsLookup", () => {
     const { net, calls } = network({ "192.0.2.1": ttl1800 });
     expect(await registryDsLookup(net)("dev")).toEqual({ kind: "unreadable" });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("nodeRegistryNetwork's RDAP record", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads IANA's bootstrap file once for the network's lifetime, and again after a failed read", async () => {
+    const BOOTSTRAP = "https://data.iana.org/rdap/dns.json";
+    const asked: string[] = [];
+    let down = true;
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = String(input);
+      asked.push(url);
+      if (url !== BOOTSTRAP) return Response.json({ ldhName: url });
+      if (down) {
+        down = false;
+        throw new TypeError("fetch failed");
+      }
+      return Response.json({
+        services: [[["dev"], ["http://rdap.example/", "https://rdap.example/"]]],
+      });
+    });
+    const network = nodeRegistryNetwork();
+    await expect(network.rdapRecord?.("a.dev")).rejects.toThrow("fetch failed");
+    expect(await network.rdapRecord?.("a.dev")).toEqual({
+      ldhName: "https://rdap.example/domain/a.dev",
+    });
+    await network.rdapRecord?.("b.dev");
+    expect(asked).toEqual([
+      BOOTSTRAP,
+      BOOTSTRAP,
+      "https://rdap.example/domain/a.dev",
+      "https://rdap.example/domain/b.dev",
+    ]);
   });
 });

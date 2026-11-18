@@ -16,6 +16,7 @@ import {
   type PromoteServices,
   type ProvisionServices,
   type RegistryDsLookup,
+  type RegistryNsLookup,
   type RestoreServices,
   type RetargetServices,
   type RollbackServices,
@@ -24,6 +25,7 @@ import {
   type RunSecureOptions,
   type RunVerifyOptions,
   registryDsLookup,
+  registryNsLookup,
   type ServerSnapshotServices,
   type SiteRotationOptions,
   type SshKeyGitHub,
@@ -64,6 +66,11 @@ export interface CliServices {
    * network, unless `fetch` is faked (a test), when no registry is asked.
    */
   registryDs?: RegistryDsLookup;
+  /**
+   * Asks a registry's RDAP record for a domain's nameservers (the Cloudflare move's switch);
+   * default: over the network, unless `fetch` is faked (a test), when no registry is asked.
+   */
+  registryNs?: RegistryNsLookup;
   runner?: CommandRunner;
   /** Byte pipes to servers (`ssh … docker system dial-stdio`); default core's `NodeStreamRunner`. */
   streams?: StreamRunner;
@@ -238,9 +245,14 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     version: ctx.version,
   });
   const streamed = extra.streams === undefined ? built : { ...built, streams: extra.streams };
-  const registryDs =
-    extra.registryDs ?? (extra.fetch === undefined ? registryDsLookup() : undefined);
-  const deps = registryDs === undefined ? streamed : { ...streamed, registryDs };
+  const real = extra.fetch === undefined;
+  const registryDs = extra.registryDs ?? (real ? registryDsLookup() : undefined);
+  const registryNs = extra.registryNs ?? (real ? registryNsLookup() : undefined);
+  const deps = {
+    ...streamed,
+    ...(registryDs === undefined ? {} : { registryDs }),
+    ...(registryNs === undefined ? {} : { registryNs }),
+  };
   if (options.ai === false) return deps;
   if (extra.runtime !== undefined) return { ...deps, runtime: extra.runtime };
   if (!claudeConfigured(ctx.env)) return deps;

@@ -29,14 +29,15 @@ const zoneOf = (h: SwitchHarness) => ({
 });
 
 describe("measureGap", () => {
-  it("looks every 30 seconds, asks for an activation check as often as Cloudflare allows while pending, and probes only once active", async () => {
+  it("stamps the activation and runs the steps after it once, then looks every 30 seconds until the certificate is issued and every hostname answers", async () => {
     const { h, session, progress } = await started();
+    h.cloudflare.activate(h.bZone);
+    for (const pack of h.bZone.certificatePacks) pack.status = "initializing";
     const sleeps: number[] = [];
-    let probedWhilePending = 0;
     h.sleeps.onSleep = () => {
       sleeps.push(h.time.ms);
-      if (h.bZone.status === "pending") probedWhilePending += h.web.probes.length;
-      if (h.time.ms >= 20 * 60_000 && h.bZone.status === "pending") h.cloudflare.activate(h.bZone);
+      if (h.time.ms < 5 * 60_000) return;
+      for (const pack of h.bZone.certificatePacks) pack.status = "active";
     };
     const activated = vi.fn(async () => [`docs.${ZONE}`]);
     const result = await measureGap(session, progress, {
@@ -45,51 +46,16 @@ describe("measureGap", () => {
       activated,
     });
     expect(result.done).toBe(true);
-    expect(sleeps[1]).toBe(2 * GAP_INTERVAL_MS);
-    expect(probedWhilePending).toBe(0);
     expect(activated).toHaveBeenCalledTimes(1);
+    expect(sleeps.slice(0, 2)).toEqual([GAP_INTERVAL_MS, 2 * GAP_INTERVAL_MS]);
     expect(new Set(h.web.probes)).toEqual(new Set([`shop.${ZONE}`, `docs.${ZONE}`]));
-    // Accepted at the start; asked again after 5 minutes (refused: once an hour on a free zone).
-    const checks = h.cloudflare.calls.filter((c) => c.path.endsWith("/activation_check"));
-    expect(checks).toHaveLength(2);
-    expect(h.bZone.activationChecks).toHaveLength(1);
-    expect(h.deps.audit.entries.filter((e) => e.action === "activation check")).toHaveLength(1);
+    expect(result.hostnames).toEqual([`shop.${ZONE}`, `docs.${ZONE}`]);
     const times = result.progress;
-    expect(gapText(times.nameserversSetAt as string, times.activeAt as string)).toBe("20 min 0 s");
+    expect(times.activeAt).toBe(progress.nameserversSetAt);
+    expect(gapText(times.activeAt as string, times.certificateAt as string)).toBe("5 min 0 s");
+    // Nothing asks Cloudflare to activate a zone that is active.
+    expect(h.cloudflare.calls.some((c) => c.path.endsWith("/activation_check"))).toBe(false);
     expect(await readSwitchProgress(h.deps.paths)).toEqual(times);
-  });
-
-  it("takes a failed activation check as harmless and asks again five minutes later", async () => {
-    const { h, session, progress } = await started();
-    h.cloudflare.faults.push({
-      match: `PUT /zones/${h.bZone.id}/activation_check`,
-      reply: {
-        status: 403,
-        body: {
-          success: false,
-          errors: [{ code: 10000, message: "Authentication error" }],
-          messages: [],
-          result: null,
-        },
-      },
-    });
-    h.sleeps.onSleep = () => {
-      if (h.time.ms >= 10 * 60_000 && h.bZone.status === "pending") h.cloudflare.activate(h.bZone);
-    };
-    const result = await measureGap(session, progress, {
-      zone: zoneOf(h),
-      hostnames: [`shop.${ZONE}`],
-      activated: async () => [],
-    });
-    expect(result.done).toBe(true);
-    const checks = h.cloudflare.calls.filter((c) => c.path.endsWith("/activation_check"));
-    expect(checks.map((c) => c.status)).toEqual([403, 200]);
-    const warned = h.deps.reporter.lines.filter((l) =>
-      l.message.includes("Cloudflare checks the nameservers on its own"),
-    );
-    expect(warned).toHaveLength(1);
-    expect(warned[0]?.level).toBe("warn");
-    expect(h.bZone.activationChecks).toHaveLength(1);
   });
 
   it("stops at the two-hour limit without counting a 52x or 530 answer, and the next run goes on with the same times", async () => {

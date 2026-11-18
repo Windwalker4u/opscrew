@@ -25,6 +25,7 @@ import {
 import { openMoveSession } from "./session";
 import { pendingStop } from "./shared";
 import { protectInB } from "./switch-access";
+import { waitForActive } from "./switch-activation";
 import { clearDsNotes, type DsGate, dsGate, removeDs, warnPublishedDs } from "./switch-ds";
 import { planSwitch, type SwitchPlan } from "./switch-plan";
 import {
@@ -53,9 +54,10 @@ import { aNameserversClash, type ListedRecords, recordInput } from "./zone";
  * prepared and every OpsCrew name in A's zone is in some mark; then plan 5.'s steps in order,
  * each checked before it acts. Stops on purpose (`done: false`, `next` says what to do) for the
  * plan's approval in a run nobody can answer, a DS record and its wait, a nameserver change the
- * user makes, and the gap's two-hour limit. Nameservers found at B without this repository's
- * approval (changed by hand) get a plan and an approval of their own before anything is written,
- * except in another repository's run once B's zone is active (no switch file here at all).
+ * user makes, B's zone still pending after the wait for its activation, and the gap's two-hour
+ * limit. Nameservers found at B without this repository's approval (changed by hand) get a plan
+ * and an approval of their own before anything is written, except in another repository's run
+ * once B's zone is active (no switch file here at all).
  */
 export async function switchMove(
   deps: PhaseDeps,
@@ -121,8 +123,9 @@ interface Delegation {
 
 /**
  * B's zone (read again) and where the zone points: at B once B's zone is active, the switch file
- * holds the nameserver change, or the registrar's API or the public DNS names B's nameservers.
- * While B's zone is not active, refused before any change when B's nameservers are A's.
+ * holds the nameserver change, or the registry, the registrar's API or the public DNS names B's
+ * nameservers (`currentNameservers`). While B's zone is not active, refused before any change when
+ * B's nameservers are A's.
  */
 async function readDelegation(
   session: MoveSession,
@@ -288,12 +291,13 @@ async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPla
 }
 
 /**
- * Once the nameservers point at B: the steps right after activation (Access, protected records,
- * custom domains, DNSSEC) and each app's finish, origin-protected apps first. The gap is measured
- * with the times kept (`nameserversSetAt` from the switch file; else from this run while B's zone
- * is pending, and unknown once it is active), except in a run that finds B's zone active with no
- * switch file at all (another repository's, after the switch): that one only makes what is
- * missing and gives the finishes.
+ * Once the nameservers point at B: while B's zone is pending, the wait for its activation (at most
+ * 15 minutes, then a stop the next run goes on from), then the steps right after activation
+ * (Access, protected records, custom domains, DNSSEC) at once and each app's finish,
+ * origin-protected apps first. The gap is measured with the times kept (`nameserversSetAt` from
+ * the switch file; else from this run while B's zone is pending, and unknown once it is active),
+ * except in a run that finds B's zone active with no switch file at all (another repository's,
+ * after the switch): that one only makes what is missing and gives the finishes.
  */
 async function afterSwitch(
   session: MoveSession,
@@ -337,6 +341,15 @@ async function afterSwitch(
       ? kept
       : { ...kept, nameserversSetAt: deps.clock.now().toISOString() };
   await writeSwitchProgress(session.paths, progress);
+  const pending = active ? undefined : await waitForActive(session, state.zone);
+  if (pending !== undefined) {
+    deps.reporter.warn(pending);
+    return {
+      step: move.step,
+      done: false,
+      next: [`Run \`${command}\` again later to go on: it keeps the times measured so far.`],
+    };
+  }
   const protectedNames = new Set(
     marks.flatMap((read) => read.mark.access.map((one) => one.hostname)),
   );
@@ -350,16 +363,14 @@ async function afterSwitch(
     activated,
   });
   const times = result.progress;
-  const finishes =
-    times.activeAt === undefined ? [] : await finishLines(session, marks, state.zone);
+  // B's zone is active by now: the measure starts once it is.
+  const finishes = await finishLines(session, marks, state.zone);
   if (!result.done) {
     const left = result.hostnames.filter((name) => times.okAt?.[name] === undefined);
     const status =
-      times.activeAt === undefined
-        ? `Cloudflare has not activated ${zone} in the new account yet: it does once the registry publishes the new nameservers, usually within an hour and at worst in 24 hours.`
-        : times.certificateAt === undefined
-          ? `The new account's Universal SSL certificate for ${zone} is not issued yet.`
-          : `${listText(left)} ${left.length === 1 ? "does" : "do"} not answer over HTTPS from the new account yet.`;
+      times.certificateAt === undefined
+        ? `The new account's Universal SSL certificate for ${zone} is not issued yet.`
+        : `${listText(left)} ${left.length === 1 ? "does" : "do"} not answer over HTTPS from the new account yet.`;
     deps.reporter.warn(status);
     return {
       step: move.step,

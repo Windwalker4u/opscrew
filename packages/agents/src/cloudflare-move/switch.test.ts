@@ -5,6 +5,7 @@ import { OLD_DS } from "../testing";
 import { readMarks } from "./marks";
 import { ZONE } from "./session.fakes";
 import { BLOG, DOCS, OPS, type SwitchHarness, switchHarness } from "./switch.fakes";
+import { ACTIVATION_LIMIT_MS } from "./switch-activation";
 import type { MoveResult } from "./types";
 
 afterEach(() => {
@@ -46,6 +47,7 @@ describe("switchMove: Porkbun", () => {
     for (const words of [
       "HTTPS visitors may get certificate errors",
       "A site on Cloudflare's hosting answers once its custom domains are attached",
+      "that resolver may keep the answer for 30 minutes",
       "may answer 526 from activation until its finish",
       `mail.${ZONE}`,
       "set at Porkbun through its API now",
@@ -313,6 +315,170 @@ describe("switchMove: Cloudflare Registrar and another registrar", () => {
     const result = await h.run();
     expect(result.done).toBe(true);
     expect(h.asked()).toHaveLength(1);
+  });
+});
+
+/** The activation checks asked of Cloudflare for New's zone (accepted or not). */
+const activationChecks = (h: SwitchHarness) =>
+  h.cloudflare.calls.filter((c) => c.path === `/zones/${h.bZone.id}/activation_check`);
+
+describe("switchMove: the registry and the activation", () => {
+  it("Cloudflare Registrar: goes on once the registry names New's nameservers while the public DNS still shows the old ones, and attaches the sites right after activation", async () => {
+    const h = await switchHarness({ registrar: "cloudflare" });
+    h.deps.interactive = true;
+    const stopped = await h.run();
+    expect(stopped.next.join("\n")).toContain("Domain Registration");
+
+    // The move between accounts accepted: the registry names New's nameservers at once.
+    h.holder.accountId = h.b.id;
+    h.registry.ns = [...h.bZone.nameServers].sort();
+    const result = await h.run();
+    expect(result).toEqual(expect.objectContaining({ step: "switched", done: true }));
+    expect(h.web.ns).toEqual(h.aZone.nameServers);
+    expect(h.asked()).toHaveLength(1);
+    // Asked for the check at once; active at the next look, and the site attached then: one sleep.
+    expect(activationChecks(h)).toHaveLength(1);
+    expect(h.sleeps.count).toBe(1);
+    expect(h.b.workerDomains.map((d) => [d.hostname, d.service])).toEqual([
+      [`docs.${ZONE}`, "docs"],
+    ]);
+    expect(h.writes("Old")).toEqual([]);
+  });
+
+  it("asks for the activation check only once the registry names New's nameservers, after Porkbun took them", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.registry.ns = [...h.aZone.nameServers];
+    let checksBefore: number | undefined;
+    h.sleeps.onSleep = () => {
+      if (h.sleeps.count !== 3) return;
+      checksBefore = activationChecks(h).length;
+      h.registry.ns = [...h.bZone.nameServers];
+    };
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    expect(h.api.count("setNameservers")).toBe(1);
+    expect(checksBefore).toBe(0);
+    expect(activationChecks(h)).toHaveLength(1);
+    expect(h.bZone.activationChecks).toHaveLength(1);
+  });
+
+  it("waits at most 15 minutes for activation, then stops plainly; the next run attaches the sites at once and keeps the times", async () => {
+    const h = await switchHarness({ registrar: "other" });
+    h.deps.interactive = true;
+    await h.run();
+    h.registry.ns = [...h.bZone.nameServers];
+    h.activation.auto = false;
+    const waiting = await h.run();
+    expect(waiting).toEqual(expect.objectContaining({ step: "prepared", done: false }));
+    expect(h.time.ms).toBe(ACTIVATION_LIMIT_MS);
+    expect(h.deps.reporter.text()).toContain(
+      `Cloudflare has not activated ${ZONE} in the new account yet. OpsCrew asked it to check the nameservers, and its own checks go on; it takes one requested check an hour on the Free plan, so a run within the hour only waits for them.`,
+    );
+    expect(waiting.next).toEqual([
+      "Run `opscrew cloudflare move --switch` again later to go on: it keeps the times measured so far.",
+    ]);
+    expect(activationChecks(h)).toHaveLength(1);
+    expect(h.b.workerDomains).toEqual([]);
+    const kept = await h.progress();
+    expect(kept?.nameserversSetAt).toBe("2026-11-21T09:00:00.000Z");
+    expect(kept?.activeAt).toBeUndefined();
+
+    h.cloudflare.activate(h.bZone);
+    const sleptBefore = h.sleeps.count;
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    expect(h.sleeps.count).toBe(sleptBefore);
+    expect(h.b.workerDomains.map((d) => d.hostname)).toEqual([`docs.${ZONE}`]);
+    expect(h.deps.reporter.text()).toContain(
+      `${ZONE} switched: active in the new account 15 min 0 s after the nameserver change`,
+    );
+    expect(h.asked()).toHaveLength(1);
+  });
+
+  it("asks nothing while the registry, read once, can't be read for a round: only once it names New's nameservers", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.registry.ns = [...h.aZone.nameServers];
+    h.activation.auto = false;
+    let checksBefore: number | undefined;
+    h.sleeps.onSleep = () => {
+      if (h.sleeps.count === 1) h.registry.ns = undefined;
+      if (h.sleeps.count !== 2) return;
+      checksBefore = activationChecks(h).length;
+      h.registry.ns = [...h.bZone.nameServers];
+      h.activation.auto = true;
+    };
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    expect(checksBefore).toBe(0);
+    expect(activationChecks(h)).toHaveLength(1);
+  });
+
+  it("asks at once when the registry can't be read on any round", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.activation.auto = false;
+    h.sleeps.onSleep = () => {
+      h.activation.auto = true;
+    };
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    expect(activationChecks(h)).toHaveLength(1);
+    expect(h.sleeps.count).toBe(2);
+  });
+
+  it("takes a refused activation check as harmless: one warning, and the zone Cloudflare activates on its own goes on", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.cloudflare.faults.push({
+      match: `PUT /zones/${h.bZone.id}/activation_check`,
+      reply: {
+        status: 403,
+        body: {
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+          messages: [],
+          result: null,
+        },
+      },
+    });
+    const result = await h.run();
+    expect(result.done).toBe(true);
+    const warned = h.deps.reporter.lines.filter((l) =>
+      l.message.includes("Cloudflare checks the nameservers on its own"),
+    );
+    expect(warned.map((l) => l.level)).toEqual(["warn"]);
+    expect(h.deps.audit.entries.map((e) => e.action)).not.toContain("activation check");
+  });
+
+  it("stops after 15 minutes without asking for a check while the registry still names the old nameservers", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.registry.ns = [...h.aZone.nameServers];
+    const waiting = await h.run();
+    expect(waiting.done).toBe(false);
+    expect(h.api.count("setNameservers")).toBe(1);
+    expect(h.time.ms).toBe(ACTIVATION_LIMIT_MS);
+    expect(activationChecks(h)).toEqual([]);
+    expect(h.deps.reporter.text()).toContain(
+      `The registry still names ${[...h.aZone.nameServers].join(" and ")} for ${ZONE}, not the new account's nameservers`,
+    );
+    expect(h.bZone.status).toBe("pending");
+  });
+
+  it("names the extra nameservers to remove when the registry names New's and others", async () => {
+    const h = await switchHarness();
+    h.deps.interactive = true;
+    h.registry.ns = [...h.bZone.nameServers, "ns1.old-host.example"];
+    const waiting = await h.run();
+    expect(waiting.done).toBe(false);
+    expect(activationChecks(h)).toEqual([]);
+    const text = h.deps.reporter.text();
+    expect(text).toContain(
+      `The registry names ns1.old-host.example for ${ZONE} besides the new account's nameservers: remove it at the registrar, so that it names only ${[...h.bZone.nameServers].sort().join(" and ")}.`,
+    );
+    expect(text).not.toContain("still names");
   });
 });
 

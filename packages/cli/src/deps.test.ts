@@ -27,6 +27,26 @@ describe("createPhaseDeps", () => {
     expect(deps.runtime).toBeUndefined();
   });
 
+  it("asks the registries over the network, unless fetch is faked; attached lookups win", async () => {
+    const ctx = createTestContext({ cwd: root, env: { OPSCREW_HOME: home } });
+    const real = createPhaseDeps(ctx);
+    expect(typeof real.registryDs).toBe("function");
+    expect(typeof real.registryNs).toBe("function");
+    const faked = createPhaseDeps(
+      withServices(createTestContext({ cwd: root }), { fetch: async () => new Response("") }),
+    );
+    expect(faked.registryDs).toBeUndefined();
+    expect(faked.registryNs).toBeUndefined();
+    const registryNs = async () => ["ns1.example.net"];
+    const attached = createPhaseDeps(
+      withServices(createTestContext({ cwd: root }), {
+        fetch: async () => new Response(""),
+        registryNs,
+      }),
+    );
+    expect(attached.registryNs).toBe(registryNs);
+  });
+
   it("registers the environment's secrets with the redactor", () => {
     const token = fakeSecret("hcloud-token");
     const ctx = createTestContext({ cwd: root, env: { HCLOUD_TOKEN: token } });

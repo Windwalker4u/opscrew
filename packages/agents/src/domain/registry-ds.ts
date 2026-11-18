@@ -218,9 +218,16 @@ export function registryDsLookup(
 
 /**
  * The real network: the parent zone's nameservers through the system's resolver (`node:dns`),
- * then one UDP datagram to each (`node:dgram`), waiting `TIMEOUT_MS` for its reply.
+ * then one UDP datagram to each (`node:dgram`), waiting `TIMEOUT_MS` for its reply. IANA's RDAP
+ * bootstrap file is read once for the network's lifetime (again after a failed read).
  */
 export function nodeRegistryNetwork(): RegistryNetwork {
+  const signal = () => AbortSignal.timeout(TIMEOUT_MS * 3);
+  let bootstrap: Promise<z.infer<typeof RdapBootstrapSchema>> | undefined;
+  const readBootstrap = async () =>
+    RdapBootstrapSchema.parse(
+      await (await fetch("https://data.iana.org/rdap/dns.json", { signal: signal() })).json(),
+    );
   return {
     async nameserverAddresses(zone) {
       const names = await resolveNs(zone);
@@ -245,12 +252,12 @@ export function nodeRegistryNetwork(): RegistryNetwork {
     randomId: () => randomInt(0x10000),
     // The TLD's RDAP server from IANA's bootstrap file (RFC 9224), then the domain's record there.
     async rdapRecord(domain) {
-      const signal = () => AbortSignal.timeout(TIMEOUT_MS * 3);
       const tld = domain.split(".").at(-1) ?? "";
-      const bootstrap = RdapBootstrapSchema.parse(
-        await (await fetch("https://data.iana.org/rdap/dns.json", { signal: signal() })).json(),
-      );
-      const base = bootstrap.services
+      bootstrap ??= readBootstrap().catch((error: unknown) => {
+        bootstrap = undefined;
+        throw error;
+      });
+      const base = (await bootstrap).services
         .find(([tlds]) => tlds.includes(tld))?.[1]
         .find((url) => url.startsWith("https://"));
       if (base === undefined) throw new Error(`no RDAP server for .${tld}`);

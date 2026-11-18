@@ -21,6 +21,7 @@ export {
   REGISTRAR_NAMES,
 } from "./registrars";
 export { type RegistryDsLookup, registryDsLookup } from "./registry-ds";
+export { type RegistryNsLookup, registryNsLookup } from "./registry-ns";
 export { searchDomains } from "./search";
 export { domainZonesFrom } from "./services";
 export type * from "./types";
