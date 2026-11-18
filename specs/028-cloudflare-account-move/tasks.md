@@ -613,6 +613,45 @@ Asked for through the control plane's session: a non-secret build setting whatev
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-engine --filter=@opscrew/agents && npx vitest run --root packages/iac-engine && npx vitest run --root packages/agents src/provision src/shared && pnpm lint`
   - Effort: high
 
+- [ ] T2847 The DNSSEC wait counts from the registry's own change time (founder, 2026-11-17; the lead's change, its tests owed)
+  - Why: the wait started at the first run that saw the DS record gone. At the real move the .dev registry had dropped it about 19 hours before OpsCrew's next run (RDAP `last changed` 2026-11-17 01:21 UTC), and the switch still waited 2 hours.
+  - Done by the lead (a91aa187, committed without new tests on the founder's call, to switch that night): `RegistryNetwork.rdapRecord` (the TLD's RDAP server from IANA's bootstrap file, RFC 9224), `rdapUnsignedSince`, `RegistryDsTtl`'s `none` with `changedAt`, and `dsGoneAt`, used where a wait starts: `dsWaitStatus`, `domain connect`'s `waitForOldDs` and the move's own gate (`ownGate`).
+  - Owns: `packages/agents/src/domain/{registry-ds,connect-ds}*.ts`, `packages/agents/src/domain/connect.ts` (only the wait's start), `packages/agents/src/cloudflare-move/switch-ds*.ts`, their tests
+  - Accept:
+    - Review the lead's change against this task; keep its behaviour, simplify where it is clearer.
+    - Tests: `rdapUnsignedSince` (unsigned with a `last changed` event → that time; signed, no `secureDNS`, no such event, an unparsable date, not an object → undefined); `registryDsLookup` when the registry publishes none: with an RDAP record (→ `changedAt`), without `rdapRecord`, with a rejecting one (→ plain `none`); `dsGoneAt` (a change before `dsSeen` → now; in the future → now; otherwise the change); `dsWaitStatus`, `waitForOldDs` and `ownGate` count the wait from `changedAt`, so a switch whose `changedAt` plus the wait has passed goes on at once; nothing changes without `changedAt`.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/cloudflare-move/switch && pnpm lint`
+  - Effort: high
+
+- [ ] T2848 The switch at Cloudflare Registrar sees the change at the registry and finishes the new account's side as soon as its zone is active (found at the real move, 2026-11-17)
+  - Why: at L4b the registry named the new account's nameservers at 21:30 UTC, but `currentNameservers` (`switch-registrar.ts`) asked the public DNS (`publicNameservers`, DNS over HTTPS at Cloudflare's resolver), which held the old answer for about 3 hours (the `.dev` delegation's TTL is a day). Cloudflare activated B's zone at 22:13 (right after the lead asked for an activation check; its own checks would have done it too). Until the switch attached the Workers custom domains (around 00:15) and resolvers' negative caching ran out, the Workers sites (the landing, `www`, the docs, pay) answered HTTP 530 or "no such host" to most visitors: about 65% of L4b's requests to them failed over about 2.5 hours. The server apps, whose records the prepare had copied, kept answering.
+  - Owns: `packages/agents/src/cloudflare-move/switch*.ts` except `switch-ds*.ts`, `packages/agents/src/domain/registry-ns.ts` (new) and its test, `packages/agents/src/domain/index.ts` (its export), `packages/agents/src/context.ts` (the dependency), `packages/cli/src/deps.ts` (its wiring, as `registryDs`'s), `packages/connectors/cloudflare/src/**` (only what the switch calls newly), `docs/guide/cloudflare-move.md`, their tests
+  - Accept:
+    - The zone's nameservers come from the registry's RDAP record (`nameservers[].ldhName`, lower case, sorted) when it can be read, through a lookup in `PhaseDeps` wired like `registryDs` (reuse `nodeRegistryNetwork().rdapRecord`); else the registrar's API; else the public DNS as today.
+    - Once the registry names B's nameservers, the run asks Cloudflare for B's zone's activation check and waits for B's zone to become active (bounded, about 15 minutes, with a plain stop to run again after), then does B's side at once: the Workers custom domains attached and the rest of the switch's steps.
+    - Research, checked against Cloudflare's documentation, then implement what works: keeping B's nameservers from answering "no such host" for a Workers hostname before its custom domain is attached (B's SOA negative-caching TTL lowered for the move through the zone's DNS settings, a placeholder record, or attaching the custom domain while the zone is pending, if Cloudflare allows it). Report what you checked and why the choice works; if none works, say so and keep the wait for activation short.
+    - Tests for each path; `docs/guide/cloudflare-move.md` says what visitors see during the switch and for how long.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/cloudflare-move src/domain && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T2849 The old account's origin certificate once its zone has moved (found at the real move, 2026-11-18; the lead's change, its tests owed)
+  - Why: SEOcc's finish stopped on revoking the old account's Origin CA certificate. Once a zone has moved, Cloudflare neither reads nor revokes its origin certificates ("Failed to read certificate from Database", "User is not authorized to perform this action", with either account's token, even with SSL and Certificates Edit on all zones). After the switch the old zone has always moved, so the revocation could never run.
+  - Done by the lead: `revokeAOrigin` (`cloudflare-move/shared.ts`) reads A's zone; when it isn't active (or can't be read) it says why the certificate stays and returns, so the finish removes A's record and ends. Three tests still expect a revocation after the switch.
+  - Owns: `packages/agents/src/cloudflare-move/{shared,finish-removal}*.ts` and the fakes they use
+  - Accept: those tests follow the real behaviour (A's zone moved → the note, no revocation, A's record gone, the finish ends; A's zone still active → revoked as before; A's zone unreadable → left, with the note); report one line for the guide's "what stays behind" list (the lead adds it).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move && pnpm lint`
+  - Effort: medium
+
+- [ ] T2850 The move's live pass: slips found at the real move
+  - Owns: `packages/cli/test/live/cloudflare-move*.ts`, `docs/e2e.md` (the move's section)
+  - Accept:
+    - L3's coverage step tells a DNSSEC wait from coverage that names hostnames: a refusal for the wait says so, with its time, and doesn't name coverage.
+    - A leg filter matches only that leg: L0's step "the registrar, and so the switch's leg (L4a or L4b)" no longer contains a leg's name, so `-t "L4b"` doesn't also select L0 (it did, and the pass refused two legs in one run).
+    - `delegatedToB` reads the registry's RDAP nameservers first (T2848's lookup, or the RDAP record directly), then the public DNS.
+    - The pass's support tests cover each.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cloudflare-move-support.test.ts && pnpm lint`
+  - Effort: medium
+
 ## Phase 5: Wave 4 (parallel)
 
 - [x] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
@@ -878,7 +917,8 @@ Codex, Cursor and VS Code. Research: R11. It ships in 0.2.10 beside the move.
 | 6 | T2824, T2825 | waves 4 and 5 |
 | 7 | T2826 | T2824 |
 | 8b | T2846 | — (independent of the move) |
-| Lead | T2827, T2828, T2829, T2830 | T2826; T2830 also T2846 |
+| 9 | T2847, T2848, T2849, T2850 | found at the real move; T2850 after T2848 for the RDAP lookup |
+| Lead | T2827, T2828, T2829, T2830 | T2826; T2830 also T2846 to T2850 |
 
 No two tasks of a wave share an `Owns` path. Wave 1's connector files are T2804's (`client.ts`,
 `index.ts`) and T2805's (`testing/**`, `shared.ts`); its template files are T2807's (new files and
