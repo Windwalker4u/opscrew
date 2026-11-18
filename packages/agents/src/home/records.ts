@@ -6,13 +6,14 @@
  */
 
 import type { CloudflareClient } from "@opscrew/connector-cloudflare";
+import { DNS_UPDATER_RECORD_COMMENT } from "@opscrew/connector-ssh-host";
 import type { PhaseName } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { PlanRefusedError } from "../shared";
 
 /** The comment the updater writes on its own A and AAAA records, and the only ones it touches. */
-export const UPDATER_RECORD_COMMENT = "Managed by OpsCrew (address updater)";
+export const UPDATER_RECORD_COMMENT = DNS_UPDATER_RECORD_COMMENT;
 
 /** The plan that deletes the updater's records at one name: never their content. */
 export interface UpdaterRecordsDeletion {
