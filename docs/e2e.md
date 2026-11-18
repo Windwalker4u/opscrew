@@ -3773,7 +3773,8 @@ output, every version of the move's local files (the shadow states, the pending 
 plans), the probes' samples and the inventories. The tokens and R2 keys are never written there:
 each leg derives them again from the environment. Each leg starts only when the leg before it
 passed (L4a or L4b counts as one), and never once a later leg ran; L6 runs after anything. One leg
-runs in a process: a run whose `-t` takes two legs stops at the second.
+runs in a process: a run whose `-t` takes two legs stops at the second. No step's title names
+another leg, so `-t "<leg>"` takes that leg alone.
 
 **Every command runs as a script runs it.** A stop's printed command (`--approve <hash>` with its
 `--confirm` names) is run next, and only with the names the leg expects: the app's, its buckets' and
@@ -3826,14 +3827,15 @@ Run them in this order, each alone with `-t`:
    On B's pending zone, read only: Email Routing's answers (`email/routing` and `email/routing/dns`,
    never turned on), whether Cloudflare filled `content` for the records made from `data` (TLSA,
    HTTPS…), and both apps' marks. Last, `--switch` without `--approve`: when it only shows its plan,
-   every OpsCrew name in the zone is in a mark and the leg passes; when it names hostnames, the lead
+   every OpsCrew name in the zone is in a mark and the leg passes; when it waits for DNSSEC (it
+   checks the coverage first), the leg waits and says after when; when it names hostnames, the lead
    prepares those real apps from their repositories and runs L3 again.
 5. **L4a or L4b, the switch** (SC-2803), whichever L0 found, under load and with the probes:
    `--switch` with the zone typed; with a DS record still published, the DS run, the wait it prints
    and the second approval (the leg waits and says after when); at Cloudflare Registrar, the
    dashboard steps it prints: the founder starts the move in A's dashboard and accepts it in B's,
-   while the leg waits up to 6 hours for the delegation to name B's nameservers, then runs the
-   switch again (after that, run L4b again). The switch's own waits (the activation, the
+   while the leg waits up to 6 hours for the delegation to name B's nameservers (the registry's
+   RDAP record, else the public DNS), then runs the switch again (after that, run L4b again). The switch's own waits (the activation, the
    certificate, each hostname's first good answer) run again as it says. The probes, every 5 s for
    P, Q and each real hostname: this computer's resolver with an HTTPS request; DNS over HTTPS, then
    an HTTPS request to the edge address it gave with the hostname as SNI; A's and B's nameservers
@@ -3858,7 +3860,11 @@ Run them in this order, each alone with `-t`:
    otherwise L6 stops there, nothing is removed, and its log says to run L4 again, or to abort by
    hand in a terminal after checking the nameservers at the registrar. Then the leak search over every
    output, kept file, commit, pull request, audit entry, saved plan and state file of the whole
-   pass; P and Q destroyed with `--delete-data` in the account that serves the zone; the throwaway
+   pass (a kept version that leaks is named with its file in the pass's folder: when a command run
+   by hand outside the pass made it, such as a plan made to look into a leg, delete that file and
+   the plan in the app's checkout, then run L6 again); P's bucket emptied with rclone, as the user
+   empties it (Cloudflare deletes only an empty R2 bucket, and OpsCrew never deletes its files);
+   P and Q destroyed with `--delete-data` in the account that serves the zone; the throwaway
    server deleted; then, in either account, what is left of P and Q (their tunnels, Access
    applications, policies and service tokens, the records holding the run's id, their marks and
    their R2 buckets, matched by the apps' names, and P's Origin CA certificate, origin pull settings
@@ -3884,7 +3890,8 @@ done), or run L6 to clean up. L1 doesn't run twice: after a failed L1, run L6, t
 | `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY`, `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY`, or `GODADDY_API_TOKEN` | L4a only, for the registrar that holds the zone. |
 | `OPSCREW_E2E_REGION` | Optional, as for your own server. |
 
-L1 and L5 read Q's copies with rclone in Docker, so Docker runs on this computer.
+L1 and L5 read Q's copies and L6 empties P's bucket with rclone in Docker, so Docker runs on this
+computer.
 
 ```bash
 pnpm --filter opscrew build

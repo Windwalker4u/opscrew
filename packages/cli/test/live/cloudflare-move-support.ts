@@ -7,7 +7,10 @@
  */
 import { isIP } from "node:net";
 import { join } from "node:path";
+import type { RegistryNsLookup } from "@opscrew/agents";
 import { OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
+import { providerBucket } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { confirmNames } from "./retarget-anywhere-support";
 
@@ -97,6 +100,14 @@ export function switchLegSkip(
   if (found.leg === leg) return undefined;
   if (found.leg === undefined) return `L0 found ${found.why ?? "no registrar the pass supports"}`;
   return `L0 found ${found.registrar}: run ${found.leg} instead`;
+}
+
+/**
+ * The other legs whose names `title` (a leg's or a step's) holds: `-t "<leg>"` selects every test
+ * whose name holds the leg's, so such a title would run with that leg too.
+ */
+export function otherLegsNamed(leg: MoveLeg, title: string): MoveLeg[] {
+  return MOVE_LEGS.filter((name) => name !== leg && title.includes(name));
 }
 
 /** The pass's folder, outside every vitest run folder so it outlasts each leg. */
@@ -320,6 +331,18 @@ export function waitOf(steps: readonly string[]): SwitchWait {
   return { kind: "other" };
 }
 
+/**
+ * What L3 makes of a `--switch` run's `output`: `undefined` when it shows its plan (every OpsCrew
+ * name in the zone is in a mark); DNSSEC's wait with its time, when it waits for that (the switch
+ * checks its coverage first); else the coverage's refusal.
+ */
+export function coverageWait(output: string): string | undefined {
+  if (nextMoveCommand(output) !== undefined) return undefined;
+  const wait = waitOf(nextSteps(output));
+  if (wait.kind === "time") return `DNSSEC's wait: after ${wait.after}.`;
+  return "the switch's coverage names hostnames no prepared app holds (above, masked): prepare each real app from its repository (`opscrew cloudflare move --to <B>`).";
+}
+
 // ---------------------------------------------------------------------------------------------
 // The zone's records and the accounts' pieces.
 
@@ -488,6 +511,19 @@ export function sameNameservers(a: readonly string[], b: readonly string[]): boo
   return a.length > 0 && key(a) === key(b);
 }
 
+/**
+ * The nameservers `zone` is delegated to now: the registry's (its RDAP record, `registry`), which
+ * change as soon as the registrar's change is accepted; without them, the public DNS's
+ * (`publicDns`), which can show the old delegation for as long as the TLD lets resolvers keep it
+ * (a day for `.dev`); none when neither answers.
+ */
+export async function currentNameservers(
+  zone: string,
+  lookups: { registry: RegistryNsLookup; publicDns: (zone: string) => Promise<string[]> },
+): Promise<string[]> {
+  return (await lookups.registry(zone)) ?? (await lookups.publicDns(zone).catch(() => []));
+}
+
 /** `text` with every character a regular expression gives a meaning escaped. */
 function escaped(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -521,6 +557,16 @@ export function leftoverMatch(
       return labels.some((label) => tagged(label) || piece(label));
     },
   };
+}
+
+/**
+ * The bucket L6 empties before an app's `opscrew destroy --delete-data`, as the user does: the
+ * app's own R2 bucket, since Cloudflare deletes only an empty one and OpsCrew never deletes its
+ * files (a Hetzner or Spaces bucket goes with its files); `undefined` for an app without one.
+ */
+export function bucketEmptiedFirst(plan: Pick<DeployPlan, "storage">): string | undefined {
+  const bucket = providerBucket(plan);
+  return bucket?.provider === "r2" ? bucket.bucket : undefined;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -676,6 +722,16 @@ export function leakSearchValues(entries: readonly { label: string; value: strin
     secrets: searched.filter(({ label }) => !label.startsWith("server-")),
     addresses: searched.filter(({ label }) => label.startsWith("server-")),
   };
+}
+
+/**
+ * The leak search's line for `kept`, the pass's kept version of the move's local file `label`,
+ * which holds `found` (labels): where it is, and how to remove a version that a command run by
+ * hand outside the pass made (a plan the lead made to diagnose a leg), which the pass kept at its
+ * next run as it keeps every version it finds.
+ */
+export function keptVersionLeak(label: string, kept: string, found: readonly string[]): string {
+  return `a kept version of ${label} contains: ${found.join(", ")}. If a command run by hand outside the pass made that version, delete ${kept} (and ${label} in the app's checkout, if it is still there) and run L6 again; else it is a leak`;
 }
 
 // ---------------------------------------------------------------------------------------------

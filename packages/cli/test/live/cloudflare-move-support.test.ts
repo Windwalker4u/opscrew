@@ -1,14 +1,19 @@
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   abortProblem,
+  bucketEmptiedFirst,
   configuredRegistrars,
+  coverageWait,
+  currentNameservers,
   dataRecords,
   edgeAnswer,
   type Inventory,
   inventoryChanges,
   inventoryLines,
+  keptVersionLeak,
   LEG_VARIABLES,
   leakSearchValues,
   leftoverMatch,
@@ -22,6 +27,7 @@ import {
   nextSteps,
   oneAccount,
   otherLegProblem,
+  otherLegsNamed,
   type PassState,
   parsePass,
   passFolder,
@@ -81,6 +87,16 @@ describe("the legs' gates", () => {
     expect(switchLegSkip("L4a", cloudflare)).toBe("L0 found Cloudflare Registrar: run L4b instead");
     const other = registrarFinding({ cloudflare: "absent", publicName: "Gandi", configured: [] });
     expect(switchLegSkip("L4a", other)).toContain("a registrar the pass doesn't drive");
+  });
+
+  it("names the other legs a title holds, so -t selects only its own leg", () => {
+    expect(otherLegsNamed("L0", "the registrar, and so the switch's leg (L4a or L4b)")).toEqual([
+      "L4a",
+      "L4b",
+    ]);
+    expect(otherLegsNamed("L0", "the registrar, and so which switch leg runs")).toEqual([]);
+    expect(otherLegsNamed("L4b", "live Cloudflare move, L4b: the switch")).toEqual([]);
+    expect(otherLegsNamed("L6", "run L5 first")).toEqual(["L5"]);
   });
 
   it("keeps the pass's state under OPSCREW_TEST_TMP, never in vitest's run folder", () => {
@@ -225,6 +241,24 @@ describe("what the move printed", () => {
       ]),
     ).toEqual({ kind: "measuring" });
     expect(waitOf(["Fix it."])).toEqual({ kind: "other" });
+  });
+
+  it("tells L3 a DNSSEC wait from coverage that names hostnames", () => {
+    expect(
+      coverageWait(
+        `Plan hash (SHA-256): ${HASH}\n\nNext: run: opscrew cloudflare move --switch --confirm ${ZONE} --approve ${HASH}\n`,
+      ),
+    ).toBeUndefined();
+    const dnssec = coverageWait(
+      "DNSSEC is off.\n\nNext:\n  - Run `opscrew cloudflare move --switch` again after 2026-11-17 10:00 UTC; it plans the switch again and asks before changing anything.\n",
+    );
+    expect(dnssec).toBe("DNSSEC's wait: after 2026-11-17 10:00 UTC.");
+    expect(dnssec).not.toContain("coverage");
+    expect(
+      coverageWait(
+        `Error: shop.${ZONE} in ${ZONE} belongs to OpsCrew apps not prepared in the new Cloudflare account yet, so ${ZONE} can't switch.\nNext: Run \`opscrew cloudflare move --to b1\` in the repository that deploys them.\n`,
+      ),
+    ).toContain("the switch's coverage names hostnames no prepared app holds");
   });
 });
 
@@ -400,6 +434,28 @@ describe("the accounts and the registrar", () => {
       "an unknown registrar",
     );
   });
+
+  it("reads the zone's nameservers at the registry first, the public DNS only without them", async () => {
+    const b = ["b1.ns.cloudflare.com", "b2.ns.cloudflare.com"];
+    const a = ["a1.ns.cloudflare.com", "a2.ns.cloudflare.com"];
+    const asked: string[] = [];
+    const publicDns = async (zone: string) => {
+      asked.push(zone);
+      return a;
+    };
+    expect(await currentNameservers(ZONE, { registry: async () => b, publicDns })).toEqual(b);
+    expect(asked).toEqual([]);
+    expect(await currentNameservers(ZONE, { registry: async () => undefined, publicDns })).toEqual(
+      a,
+    );
+    expect(asked).toEqual([ZONE]);
+    const failing = async () => {
+      throw new Error("no answer");
+    };
+    expect(
+      await currentNameservers(ZONE, { registry: async () => undefined, publicDns: failing }),
+    ).toEqual([]);
+  });
 });
 
 describe("the cleanup's matching", () => {
@@ -451,6 +507,17 @@ describe("the cleanup's matching", () => {
     }
   });
 
+  it("empties only the app's own R2 bucket before its destroy, which deletes it only empty", () => {
+    const withStorage = (provider: string) =>
+      ({
+        storage: { objectStorage: { provider, bucket: `${p}-uploads`, region: "auto" } },
+      }) as Pick<DeployPlan, "storage">;
+    expect(bucketEmptiedFirst(withStorage("r2"))).toBe(`${p}-uploads`);
+    expect(bucketEmptiedFirst(withStorage("hetzner"))).toBeUndefined();
+    expect(bucketEmptiedFirst(withStorage("garage"))).toBeUndefined();
+    expect(bucketEmptiedFirst({})).toBeUndefined();
+  });
+
   it("takes nothing without an app", () => {
     const none = leftoverMatch([], "e2e-run1");
     expect(none.piece("opscrew-shop")).toBe(false);
@@ -479,6 +546,19 @@ describe("the masks, the load and the probes", () => {
     ]);
     expect(values.secrets).toEqual([{ label: "cloudflare-token", value: token }]);
     expect(values.addresses).toEqual([{ label: "server-ipv4", value: "192.0.2.1" }]);
+  });
+
+  it("names the kept file of a version that leaks, and how to remove one made outside the pass", () => {
+    const kept = join("D:/tmp", "opscrew-e2e-cloudflare-move", "kept", "0a1b.txt");
+    const line = keptVersionLeak(".opscrew/plans/shop.tfplan.json", kept, [
+      "deploy-service-token-client-id",
+    ]);
+    expect(line).toContain(
+      "a kept version of .opscrew/plans/shop.tfplan.json contains: deploy-service-token-client-id",
+    );
+    expect(line).toContain(`delete ${kept}`);
+    expect(line).toContain("a command run by hand outside the pass");
+    expect(line).toContain("and run L6 again");
   });
 
   it("counts a real app's answer as fine unless it is a 5xx", () => {

@@ -32,14 +32,15 @@ import {
 import { doh, Leg, MovePass, result, type StepWait, zoneName } from "./cloudflare-move-pass";
 import {
   abortProblem,
+  bucketEmptiedFirst,
   configuredRegistrars,
+  coverageWait,
   dataRecords,
   inventoryChanges,
   inventoryLines,
   legSkip,
   MOVE_GATE,
   type MoveLeg,
-  nextMoveCommand,
   oneAccount,
   type PassState,
   parsePass,
@@ -159,7 +160,7 @@ describe.skipIf(L0.skip)(L0.title, () => {
     },
   );
 
-  leg.step("the registrar, and so the switch's leg (L4a or L4b)", minutes(5), async () => {
+  leg.step("the registrar, and so which switch leg runs", minutes(5), async () => {
     const state = pass.pass();
     const read = await pass.a.call(
       "GET",
@@ -566,16 +567,15 @@ describe.skipIf(L3.skip)(L3.title, () => {
         p.opscrew("cloudflare", "move", "--switch"),
       );
       expect(failures, "requests that failed during the coverage check (SC-2802)").toEqual([]);
-      if (nextMoveCommand(ran.output) !== undefined) {
+      const wait = coverageWait(ran.output);
+      if (wait === undefined) {
         pass.log(
           "the switch's coverage holds every OpsCrew name in the zone: it shows its plan, not approved here",
         );
         return undefined;
       }
-      pass.log(`the switch refused:\n${p.tail(ran.output, 30)}`);
-      return {
-        wait: `the switch's coverage names hostnames no prepared app holds (above, masked): prepare each real app from its repository (\`opscrew cloudflare move --to <B>\`).`,
-      };
+      pass.log(`the switch stopped:\n${p.tail(ran.output, 30)}`);
+      return { wait };
     },
   );
 });
@@ -913,6 +913,11 @@ describe.skipIf(L6.skip)(L6.title, () => {
       for (const { which, app, run } of apps()) {
         if (app.destroyed === true) continue;
         run.env = await pass.cliEnv(run, { moved: side === "b" });
+        const bucket = bucketEmptiedFirst(await run.readPlan());
+        if (bucket !== undefined) {
+          await requireDocker("L6 empties P's bucket with rclone, from its pinned image in Docker");
+          await pass.emptyBucket(side, bucket);
+        }
         await (which === "p" ? pass.pEnvs : pass.qEnvs).destroy("prod", undefined, [
           "--delete-data",
         ]);

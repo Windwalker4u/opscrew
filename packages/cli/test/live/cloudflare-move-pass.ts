@@ -16,8 +16,12 @@ import { join, relative } from "node:path";
 import {
   NEW_STORAGE_KEY_VARS,
   OFFSITE_KEY_VARS,
+  offsiteRclone,
   type ProviderBucket,
   publicNameservers,
+  RCLONE_NOT_FOUND,
+  r2Endpoint,
+  registryNsLookup,
 } from "@opscrew/agents";
 import { sshHostname } from "@opscrew/iac-templates";
 import { backupsBucketOf, type DeployPlan } from "@opscrew/plan-schema";
@@ -26,8 +30,10 @@ import { Cloudflare, type CloudflareZone, minutes, retryDelete, sleep } from "./
 import {
   type AccountPieces,
   type AppState,
+  currentNameservers,
   edgeAnswer,
   type Inventory,
+  keptVersionLeak,
   type ListedRecord,
   leakSearchValues,
   leftoverMatch,
@@ -39,6 +45,7 @@ import {
   nextMoveCommand,
   nextSteps,
   otherLegProblem,
+  otherLegsNamed,
   type PassState,
   type ProbeSample,
   parsePass,
@@ -133,6 +140,8 @@ export class MovePass {
   /** The pass's state; set by {@link open} once L0 made it. */
   state: PassState | undefined;
   private r2: { a?: R2Key; b?: R2Key } = {};
+  /** The registry's nameservers for a domain (its RDAP record), as the switch reads them. */
+  private readonly registryNs = registryNsLookup();
   /** How many outputs of this process are saved already. */
   private savedOutputs = 0;
   /** The pass's folder was removed (L6's end): nothing is saved any more. */
@@ -790,8 +799,8 @@ export class MovePass {
    * hostname (labels only in what is kept): this computer's resolver and an HTTPS request; DNS
    * over HTTPS, then an HTTPS request to the edge address it gave, with the hostname as SNI; and
    * A's and B's nameservers asked directly. Samples go to `probes.jsonl`; also notes when the
-   * public delegation first named B's nameservers. Returns `body`'s result, the samples, and that
-   * time (epoch ms) when seen.
+   * delegation first named B's nameservers ({@link delegatedToB}). Returns `body`'s result, the
+   * samples, and that time (epoch ms) when seen.
    */
   async withProbes<T>(
     body: () => Promise<T>,
@@ -854,10 +863,16 @@ export class MovePass {
     }
   }
 
-  /** Whether the public delegation names B's nameservers now. */
+  /**
+   * Whether the delegation names B's nameservers now: the registry's, else the public DNS's
+   * ({@link currentNameservers}).
+   */
   async delegatedToB(): Promise<boolean> {
     const b = await this.zoneIn("b").catch(() => undefined);
-    const now = await publicNameservers(fetch, zoneName(this.settings.domain)).catch(() => []);
+    const now = await currentNameservers(zoneName(this.settings.domain), {
+      registry: this.registryNs,
+      publicDns: (zone) => publicNameservers(fetch, zone),
+    });
     return sameNameservers(b?.name_servers ?? [], now);
   }
 
@@ -971,21 +986,51 @@ export class MovePass {
     }
     for (const dir of ["outputs", "kept"] as const) {
       for (const file of await readdir(join(this.folder, dir)).catch(() => [] as string[])) {
-        const text = await readFile(join(this.folder, dir, file), "utf8");
+        const path = join(this.folder, dir, file);
+        const text = await readFile(path, "utf8");
         const [label = file, ...rest] = text.split("\n");
         const body = rest.join("\n");
-        const where = dir === "outputs" ? `the output of ${label}` : `a kept version of ${label}`;
-        search(where, body, secrets);
-        if (dir === "outputs") {
-          const lines = addressLinesOutsidePurpose(
-            body,
-            addresses.map(({ value }) => value),
-          );
-          if (lines > 0) problems.push(`${where} printed a server's address on ${lines} line(s)`);
+        if (dir === "kept") {
+          const found = leakedLabels(body, secrets);
+          if (found.length > 0) problems.push(keptVersionLeak(label, path, found));
+          continue;
         }
+        const where = `the output of ${label}`;
+        search(where, body, secrets);
+        const lines = addressLinesOutsidePurpose(
+          body,
+          addresses.map(({ value }) => value),
+        );
+        if (lines > 0) problems.push(`${where} printed a server's address on ${lines} line(s)`);
       }
     }
     return problems;
+  }
+
+  /**
+   * Deletes every file in the R2 bucket `name` of `side`'s account (rclone's pinned image in
+   * Docker, with that account's R2 key), as the user empties an app's bucket before `opscrew
+   * destroy --delete-data`: Cloudflare deletes only an empty R2 bucket, and OpsCrew never deletes
+   * the files itself. A bucket that isn't there is left so.
+   */
+  async emptyBucket(side: "a" | "b", name: string): Promise<void> {
+    const accountId = this.pass().accounts[side];
+    const { settings, docker } = offsiteRclone(
+      { provider: "r2", region: "auto" },
+      r2Endpoint(accountId),
+      (await this.r2Keys())[side],
+    );
+    this.log(`emptying the bucket ${name}, as the user does before destroy --delete-data`);
+    const emptied = await this.p.runner.run("docker", [...docker, "delete", `offsite:${name}`], {
+      env: { ...this.p.env, ...settings },
+      timeoutMs: minutes(10),
+    });
+    if (emptied.exitCode !== 0 && emptied.exitCode !== RCLONE_NOT_FOUND) {
+      const said = emptied.stderr.trim().split(/\r?\n/).at(-1) ?? "";
+      throw new Error(
+        `rclone could not empty the bucket ${name} (exit ${emptied.exitCode}): ${this.scrub(said).slice(0, 300)}`,
+      );
+    }
   }
 
   /**
@@ -1182,6 +1227,12 @@ export class Leg {
     body: () => Promise<StepWait | undefined>,
     options: { always?: boolean } = {},
   ): void {
+    const others = otherLegsNamed(this.leg, title);
+    if (others.length > 0) {
+      throw new Error(
+        `${this.leg}'s step "${title}" names ${others.join(" and ")}: -t would select it with that leg too.`,
+      );
+    }
     it(`${this.leg}: ${title}`, { timeout: timeoutMs }, async (context) => {
       if (this.ended !== undefined && options.always !== true) context.skip();
       context.onTestFailed(() => {
