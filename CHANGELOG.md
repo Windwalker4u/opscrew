@@ -4,6 +4,61 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.10] - 2026-11-18
+
+Nothing to redo. At your next `npx opscrew provision`, the Cloudflare plan of every app in a zone
+shows a new rule, "OpsCrew: redirect plain HTTP to HTTPS", once a site in the zone is on
+Cloudflare's hosting, so its hash changes; approve it as usual. A site on Cloudflare's hosting now
+needs the token permission Zone → Single Redirect → Edit.
+
+### Added
+
+- **Moving an app to another Cloudflare account.** `npx opscrew cloudflare move --to <account>`
+  prepares the app's whole Cloudflare setup in an account you own: the zone and its records,
+  OpsCrew's rules, Tunnels, Access, Workers and the R2 buckets, which are copied. `--switch` then
+  moves the domain over (at Cloudflare Registrar, you start and accept the move in the two
+  dashboards), and `--finish` moves each app onto the new account and removes its pieces from the
+  old one, each removal after an approval and the app's name typed. `--abort` undoes a prepare
+  before the switch. Several OpsCrew apps in one zone move together, each from its own repository,
+  and deploys keep working throughout. The move also lists what it doesn't move, such as Email
+  Routing, so you can set it up in the new account. See
+  [Moving your app to another Cloudflare account](docs/guide/cloudflare-move.md).
+- **OpsCrew in other AI apps.** `npx opscrew mcp install` adds OpsCrew's MCP server to Claude Code,
+  Claude Desktop, Codex, Cursor and VS Code in one command, and `npx opscrew mcp uninstall` removes
+  it. It writes no token. See [OpsCrew in other AI apps](docs/guide/mcp-clients.md).
+- **Ignore rules for the scan.** `opscrew/scan.yaml` lists paths (and, optionally, rules) the scan
+  leaves out, each with a reason, and the report counts what was left out. Test code, mocks and
+  fixtures are left out by default. A recognisable secret keeps its severity anywhere. See
+  [What the scan leaves out](docs/guide/security.md#what-the-scan-leaves-out).
+
+### Changed
+
+- **Plain HTTP to HTTPS on Cloudflare's hosting.** A site on Cloudflare Workers now redirects
+  `http://` to `https://` with a 301 before the Worker runs, through one rule OpsCrew keeps in the
+  zone for all its sites. See [Plain HTTP](docs/guide/cloudflare-hosting.md#plain-http).
+- **A shorter wait before a nameserver switch.** Before `domain connect` or the move switches
+  nameservers after DNSSEC was turned off, OpsCrew asks the registry itself: how long resolvers may
+  keep the old DS record (for `.dev`, about 2 hours rather than a day), and, from its public
+  record, when the record was removed, so a record removed long before doesn't hold the switch.
+- **Each app's recovery copy follows its own rule** in `opscrew/.sops.yaml` when a repository has
+  several apps, so a further app's copy can be sealed to keys of its own. See
+  [Each app's copy](docs/guide/secrets-recovery.md#each-apps-copy).
+
+### Fixed
+
+- **The `www` redirect** of a site on Cloudflare's hosting no longer loops on plain HTTP.
+- **The scan's client-exposed-secret check** skips test code and test fixtures, like the other
+  configuration checks.
+- **On Windows, a project opened as `d:\…` in one terminal and `D:\…` in another** no longer stops
+  with "Backend configuration changed".
+
+### Security
+
+- **A saved plan no longer holds an Access service token's client ID.** The plans OpsCrew keeps in
+  `.opscrew/plans` while they wait for an approval mask it, as they already masked the client
+  secret. It is half of the credential your deploy workflow reaches your server or Portainer with
+  through Cloudflare Access.
+
 ## [0.2.9] - 2026-11-15
 
 Nothing to redo.
@@ -714,6 +769,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.10]: https://github.com/opscrew-hub/opscrew/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/opscrew-hub/opscrew/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/opscrew-hub/opscrew/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/opscrew-hub/opscrew/compare/v0.2.6...v0.2.7
