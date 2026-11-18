@@ -179,6 +179,16 @@ const LISTED: readonly ListedDifference[] = [
     server: new RegExp(`^${SNAPSHOT}: .*/srv/data/[\\w-]+-drill\\b`),
   },
   {
+    // Its own lines, and the `if`, `else`, `fi`, `esac` and `shift` its branch adds.
+    item: "029: no scheduled restore drills on this computer (it isn't always on), so snapshot.sh has no `drill scheduled`",
+    server: new RegExp(
+      String.raw`^${SNAPSHOT}: (?:echo 'Usage: .*\| drill scheduled \||.*(?:= scheduled\b|_drill_kind=scheduled|\.drill-recipe|_drill_every|_drill_hex|_drill_image|"\$_drill_dir"/(?:\*\.env|compose\.yaml|schedule)|chmod 700 "\$_drill_dir")|if \[ "\$_drill_kind" = manual \]; then$|\[ "\$#" -eq 1 \] \|\| \{ snapshot_usage; exit 1; \}$|(?:else|fi|esac|shift)$)`,
+    ),
+    local: new RegExp(
+      String.raw`^${SNAPSHOT}: echo 'Usage: sh snapshot\.sh .*\| drill --remove \| list \|`,
+    ),
+  },
+  {
     item: "024: no scheduled snapshots on this computer, so no crontab line to remove",
     server: new RegExp(`^${SCRIPT}: if crontab -l 2> /dev/null \\| grep -q ' # opscrew-snapshots `),
   },

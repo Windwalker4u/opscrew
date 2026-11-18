@@ -10,6 +10,8 @@ on:
       - packages/agents/src/localhost/**
       - packages/iac-templates/src/edge/**
       - packages/iac-templates/src/runtime/**
+      - packages/iac-templates/src/workflow/**
+      - packages/iac-templates/src/drill/**
       - packages/connectors/ssh-host/src/local.ts
       - packages/connectors/ssh-host/src/local.test.ts
       - packages/core/src/crypto/x509.ts
@@ -22,6 +24,8 @@ on:
       - packages/agents/src/localhost/**
       - packages/iac-templates/src/edge/**
       - packages/iac-templates/src/runtime/**
+      - packages/iac-templates/src/workflow/**
+      - packages/iac-templates/src/drill/**
       - packages/connectors/ssh-host/src/local.ts
       - packages/connectors/ssh-host/src/local.test.ts
       - packages/core/src/crypto/x509.ts
