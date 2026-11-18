@@ -3,6 +3,8 @@ import {
   type ApplyOptions,
   type ApplyResult,
   applyHostPlan,
+  detectHomeNetwork,
+  type HomeNetwork,
   HostApplyError,
   type HostFacts,
   type HostPlan,
@@ -25,17 +27,24 @@ import type { HostChangeResult } from "./tunnel-connections";
 export interface HostAdapterApi {
   inspect(remote: RemoteExec): Promise<HostFacts>;
   apply(remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult>;
+  /** Reads a home server's network, read-only (default ssh-host's `detectHomeNetwork`). */
+  detectHomeNetwork?(remote: RemoteExec): Promise<HomeNetwork>;
 }
 
 /**
- * `host` (default ssh-host's `inspectHost` and `applyHostPlan`) with its calls bound, so its
- * `apply` can be passed on as a function.
+ * `host` (default ssh-host's `inspectHost`, `applyHostPlan` and `detectHomeNetwork`) with its calls
+ * bound, so each can be passed on as a function. An adapter without `detectHomeNetwork` gets
+ * ssh-host's.
  */
-export function boundHostAdapter(host?: HostAdapterApi): HostAdapterApi {
-  const adapter = host ?? { inspect: inspectHost, apply: applyHostPlan };
+export function boundHostAdapter(host?: HostAdapterApi): Required<HostAdapterApi> {
+  const adapter: HostAdapterApi = host ?? { inspect: inspectHost, apply: applyHostPlan };
   return {
     inspect: (remote) => adapter.inspect(remote),
     apply: (remote, plan, options) => adapter.apply(remote, plan, options),
+    detectHomeNetwork: (remote) =>
+      adapter.detectHomeNetwork === undefined
+        ? detectHomeNetwork(remote)
+        : adapter.detectHomeNetwork(remote),
   };
 }
 

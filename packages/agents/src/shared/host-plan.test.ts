@@ -1,12 +1,22 @@
 import { existsSync } from "node:fs";
-import { HostApplyError, type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
+import {
+  type HomeNetwork,
+  HostApplyError,
+  type HostPlan,
+  hostPlanHash,
+} from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { PlanRefusedError } from "./approvals";
-import { approveAndApplyHostPlan, type HostPlanStep, hostPlanFile } from "./host-plan";
+import {
+  approveAndApplyHostPlan,
+  boundHostAdapter,
+  type HostPlanStep,
+  hostPlanFile,
+} from "./host-plan";
 
 const PLAN: HostPlan = {
   schemaVersion: 1,
@@ -197,5 +207,55 @@ describe("approveAndApplyHostPlan", () => {
       expect(s.applied).toEqual([]);
       expect(s.deps.audit.entries.map((e) => e.action)).not.toContain("host apply started");
     }
+  });
+});
+
+describe("boundHostAdapter", () => {
+  const NETWORK: HomeNetwork = {
+    lan: { address: "192.168.1.30", prefix: 24, interface: "eth0", gateway: "192.168.1.1" },
+    ipv4: { route: true, cloudflare: "203.0.113.7", aws: "203.0.113.7" },
+    ipv6: { state: "absent" },
+    hops: ["192.168.1.1"],
+    tools: ["curl"],
+  };
+
+  it("binds the adapter's home network read like its other calls", async () => {
+    const adapter = {
+      seen: [] as string[],
+      inspect: async () => {
+        throw new Error("not used");
+      },
+      apply: async () => {
+        throw new Error("not used");
+      },
+      async detectHomeNetwork(this: { seen: string[] }, remote: RemoteExec) {
+        this.seen.push(remote.host);
+        return NETWORK;
+      },
+    };
+    const { detectHomeNetwork } = boundHostAdapter(adapter);
+    await expect(detectHomeNetwork(REMOTE)).resolves.toEqual(NETWORK);
+    expect(adapter.seen).toEqual(["server"]);
+  });
+
+  it("reads the home network with ssh-host's script when the adapter has no read of its own", async () => {
+    const scripts: string[] = [];
+    const remote: RemoteExec = {
+      host: "server",
+      run: async (command) => {
+        scripts.push(command);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    const bound = boundHostAdapter({
+      inspect: async () => {
+        throw new Error("not used");
+      },
+      apply: async () => {
+        throw new Error("not used");
+      },
+    });
+    await expect(bound.detectHomeNetwork(remote)).rejects.toThrow(OpsCrewError);
+    expect(scripts.join("\n")).toContain("cdn-cgi/trace");
   });
 });
