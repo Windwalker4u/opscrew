@@ -298,7 +298,7 @@ function adoptingImports(shape: RootShape, ctx: RenderContext): string[] {
   return [
     "# The app's DNS records were yours: OpsCrew adopts them into the DNS module, so that the move",
     "# switches them in place. Importing a record changes nothing in Cloudflare.",
-    ...block("a", ids.a),
+    ...block("a[0]", ids.a),
     ...(ids.aaaa === undefined ? [] : block("aaaa[0]", ids.aaaa)),
     ...(ids.www === undefined ? [] : block("www[0]", ids.www)),
   ];
@@ -621,6 +621,11 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  *   SSH; outputs `url`, `tunnel_id`, `tunnel_token` (sensitive), `ssh_hostname`,
  *   `deploy_service_token_client_id` and `deploy_service_token_client_secret` (sensitive), plus
  *   `portainer_url` with a Portainer subdomain.
+ * - at home (`target.home`): no address variables. With DNS on Cloudflare, `module "dns"` passes
+ *   `ipv4_record = false` and `ipv6_record = false`, since the address updater on the server keeps
+ *   the A and AAAA records, and keeps `www.` and the CAA records; outputs `url` and
+ *   `address_updater = true`. With the DNS elsewhere, no Cloudflare resources; output `url`. No
+ *   `server_ipv4`, `server_ipv6` or `servers` output either way.
  *
  * For a Portainer target (`target.provider === "portainer"`) the root module has Cloudflare
  * Tunnels: the app's for web mode `tunnel`, and in redeploy mode `cloudflare` one and Access for

@@ -13,6 +13,7 @@ import {
 } from "../../scripts/gen-modules";
 import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
 import {
+  homePlan,
   ONE_TIME_PIN_ID,
   testCloudflareAccount,
   testContext,
@@ -308,6 +309,9 @@ const validatedPlans = {
     }),
   "own server (tunnel)": () =>
     testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
+  "own server at home (proxied)": () => homePlan(),
+  "own server at home (DNS only, www)": () => homePlan({ proxied: false, www: true }),
+  "own server at home (DNS elsewhere)": () => homePlan({ dnsElsewhere: true }),
   "hetzner plus a hetzner db": () =>
     splitPlan({
       app: { domain: "example.com", www: true },

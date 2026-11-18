@@ -238,7 +238,7 @@ describe("previewDeletion", () => {
 
   it("passes variables and the destroy flag through (opscrew destroy's whole-root preview)", async () => {
     const { session, engine } = await setup({
-      next: () => ({ changes: [at("module.dns.cloudflare_dns_record.a")], planJson: {} }),
+      next: () => ({ changes: [at("module.dns.cloudflare_dns_record.a[0]")], planJson: {} }),
     });
     const result = await previewDeletion(session, {
       suffix: "destroy-preview",

@@ -148,7 +148,7 @@ describe.skipIf(!runIt)("the hosting DNS root validates and plans (integration)"
           { cwd, env },
         );
         expect(planned.exitCode, planned.stdout + planned.stderr).toBe(0);
-        expect(planned.stdout).toContain("module.dns.cloudflare_dns_record.a will be created");
+        expect(planned.stdout).toContain("module.dns.cloudflare_dns_record.a[0] will be created");
         expect(planned.stdout).toContain("Plan: 1 to add, 0 to change, 0 to destroy.");
       },
       600_000,

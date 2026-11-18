@@ -14,7 +14,13 @@ import { notOnServer, wrongTarget } from "../providers";
 import { memoryLimit } from "../runtime/components";
 import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
 import { artefactsFolder, runtimeDir } from "../runtime-dir";
-import { CONNECTOR_MEMORY_MB, TUNNEL_ORIGIN_PORT, tunnelMode, webFilterMode } from "../tunnel";
+import {
+  CONNECTOR_MEMORY_MB,
+  homeIpv6Proxied,
+  TUNNEL_ORIGIN_PORT,
+  tunnelMode,
+  webFilterMode,
+} from "../tunnel";
 import type { RenderedFile } from "../types";
 import {
   ACME_WEBROOT,
@@ -244,7 +250,8 @@ function caddyfile(ranges: readonly string[], local: boolean): string {
  * The proxy's published ports, to its `http` and `https` ports in the container: on this computer
  * the target's HTTP and HTTPS ports on its loopback only, loopback in tunnel mode (the tunnel
  * connector reaches it there), IPv4 only behind OpsCrew's web filter (the filter covers IPv4
- * only), otherwise HTTP, HTTPS and HTTP/3.
+ * only) unless a server at home is served over IPv6 behind the proxy (the filter covers IPv6
+ * there too), otherwise HTTP, HTTPS and HTTP/3.
  */
 function edgePorts(plan: DeployPlan, http: number, https: number): string[] {
   if (plan.target.provider === "localhost") {
@@ -252,7 +259,7 @@ function edgePorts(plan: DeployPlan, http: number, https: number): string[] {
     return [`127.0.0.1:${ports.http}:${http}`, `127.0.0.1:${ports.https}:${https}`];
   }
   if (tunnelMode(plan)) return [`127.0.0.1:${TUNNEL_ORIGIN_PORT}:${http}`];
-  const host = webFilterMode(plan) ? "0.0.0.0:" : "";
+  const host = webFilterMode(plan) && !homeIpv6Proxied(plan) ? "0.0.0.0:" : "";
   return [`${host}80:${http}`, `${host}443:${https}`, `${host}443:${https}/udp`];
 }
 

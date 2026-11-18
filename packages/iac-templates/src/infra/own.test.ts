@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { testTarget } from "../__fixtures__/layouts";
 import {
   ACCOUNT_ID,
+  homePlan,
   ONE_TIME_PIN_ID,
   testCloudflare,
   testCloudflareAccount,
@@ -145,6 +146,83 @@ describe("renderInfra for a server the user owns (public)", () => {
     const tf = files.filter((f) => f.path.endsWith(".tf"));
     expect(checkDialect(tf)).toEqual([]);
     expect(renderInfra(plan, ownContext({ cloudflare: testCloudflare() }))).toEqual(files);
+  });
+});
+
+describe("renderInfra for a server at home", () => {
+  const context = ownContext({ cloudflare: testCloudflare() });
+  /** The same plan on a server that isn't at home. */
+  const away = (plan: DeployPlan) =>
+    DeployPlanSchema.parse({ ...plan, target: { ...plan.target, home: undefined } });
+  const dnsBlock = (files: readonly RenderedFile[]) =>
+    /module "dns" \{[\s\S]*?\n\}/.exec(file(files, "prod/main.tf"))?.[0] ?? "";
+
+  it("leaves the A and AAAA records to the address updater, with no address variable", () => {
+    for (const o of [{}, { proxied: false }, { ipv4: false }, { ipv4: false, proxied: false }]) {
+      const files = renderInfra(homePlan(o), context);
+      const what = JSON.stringify(o);
+      expect(dnsBlock(files), what).toMatch(/^ {2}ipv4_record += false$/m);
+      expect(dnsBlock(files), what).toMatch(/^ {2}ipv6_record += false$/m);
+      expect(dnsBlock(files), what).not.toMatch(/^ {2}ipv[46] +=/m);
+      for (const name of ["main.tf", "variables.tf", "outputs.tf", "terraform.tfvars.json"]) {
+        expect(file(files, `prod/${name}`), `${what} ${name}`).not.toMatch(/server_ipv|"servers"/);
+      }
+      expectNoAddress(files);
+    }
+    const files = renderInfra(homePlan(), context);
+    expect(file(files, "prod/main.tf")).toMatchSnapshot("main.tf");
+    expect(file(files, "prod/variables.tf")).toMatchSnapshot("variables.tf");
+  });
+
+  it("outputs the URL and that the address updater keeps the records", () => {
+    const outputs = file(renderInfra(homePlan(), context), "prod/outputs.tf");
+    expect(outputs).toContain('output "url" {\n  value = module.dns.url\n}');
+    expect(outputs).toContain('output "address_updater" {\n  value = true\n}');
+    expect(outputs).toMatchSnapshot("outputs.tf");
+  });
+
+  it("keeps www. and the CAA records, with the variables of a server that isn't at home", () => {
+    const plan = homePlan({ proxied: false, www: true });
+    const files = renderInfra(plan, context);
+    expect(dnsBlock(files)).toContain("  www         = var.www\n");
+    expect(dnsBlock(files)).toContain("  caa_issuers = var.caa_issuers\n");
+    const values = JSON.parse(file(files, "terraform.tfvars.json"));
+    expect(values).toMatchObject({ www: true, caa_issuers: ["letsencrypt.org", "sectigo.com"] });
+    expect(values).toEqual(
+      JSON.parse(file(renderInfra(away(plan), context), "terraform.tfvars.json")),
+    );
+    expect(files.filter((f) => f.path.includes("/modules/")).map((f) => f.path)).toEqual([
+      "opscrew/infra/modules/cloudflare-dns/main.tf",
+      "opscrew/infra/modules/cloudflare-dns/outputs.tf",
+      "opscrew/infra/modules/cloudflare-dns/variables.tf",
+      "opscrew/infra/modules/cloudflare-dns/versions.tf",
+    ]);
+  });
+
+  it("has no Cloudflare resource and no address updater with the DNS elsewhere", () => {
+    const files = renderInfra(homePlan({ dnsElsewhere: true }), ownContext());
+    expect(files.map((f) => f.path.replace("opscrew/infra/prod/", ""))).toEqual([
+      "versions.tf",
+      "main.tf",
+      "variables.tf",
+      "outputs.tf",
+      "terraform.tfvars.json",
+    ]);
+    expect(file(files, "versions.tf")).not.toContain("cloudflare");
+    expect(file(files, "main.tf")).not.toMatch(/^(?:module|provider|resource) /m);
+    expect(file(files, "variables.tf")).not.toContain("server_ipv");
+    const outputs = file(files, "outputs.tf");
+    expect(outputs).toContain('output "url" {\n  value = "https://shop.example.com"\n}');
+    expect(outputs).not.toMatch(/address_updater|server_ipv|"servers"/);
+    expect(JSON.parse(file(files, "terraform.tfvars.json"))).toEqual({ app_name: "shop" });
+    expectNoAddress(files);
+  });
+
+  it("is dialect-neutral", () => {
+    for (const plan of [homePlan(), homePlan({ dnsElsewhere: true })]) {
+      const files = renderInfra(plan, context);
+      expect(checkDialect(files.filter((f) => f.path.endsWith(".tf")))).toEqual([]);
+    }
   });
 });
 

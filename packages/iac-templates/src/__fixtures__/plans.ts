@@ -164,6 +164,40 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
   });
 }
 
+export interface HomePlanOptions {
+  /** `target.home.ipv4` (default true). */
+  ipv4?: boolean;
+  /** Behind Cloudflare's proxy (default true); DNS only otherwise. */
+  proxied?: boolean;
+  /** The DNS is elsewhere (`dns.provider: none`), so DNS only. */
+  dnsElsewhere?: boolean;
+  /** `environment.runner` (default `server`); `host` is the runner machine `builder`. */
+  runner?: "server" | "host";
+  /** Default `shop.example.com`. */
+  domain?: string;
+  www?: boolean;
+}
+
+/** `shop` on a server at the user's home (`target.home`). */
+export function homePlan(o: HomePlanOptions = {}): DeployPlan {
+  const domain = o.domain ?? "shop.example.com";
+  const plan = testPlan({ provider: "own", domain });
+  const proxied = (o.proxied ?? true) && o.dnsElsewhere !== true;
+  const www = o.www ?? false;
+  return DeployPlanSchema.parse({
+    ...plan,
+    target: { ...plan.target, home: { ipv4: o.ipv4 ?? true } },
+    dns: o.dnsElsewhere
+      ? { provider: "none", domain, proxied: false, www }
+      : { ...plan.dns, proxied, www },
+    security: { ...plan.security, httpAllowedFrom: proxied ? "cloudflare" : "any" },
+    environment:
+      o.runner === "host"
+        ? { runner: "host", runnerHost: { name: "builder", arch: "amd64" } }
+        : { runner: "server" },
+  });
+}
+
 /** Render context with the fixed test deploy key. */
 export function testContext(overrides: Partial<RenderContext> = {}): RenderContext {
   return {

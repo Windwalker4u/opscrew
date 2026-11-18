@@ -261,7 +261,7 @@ function addressesOf(files: readonly RenderedFile[], root: Root) {
 
 describe("cloudflareAddressScope", () => {
   it.each([
-    ["module.dns.cloudflare_dns_record.a", "zone"],
+    ["module.dns.cloudflare_dns_record.a[0]", "zone"],
     ['module.dns.cloudflare_dns_record.caa["letsencrypt.org"]', "zone"],
     ["module.dns.cloudflare_dns_record.www[0]", "zone"],
     ['module.tunnel.cloudflare_dns_record.route["www.example.com"]', "zone"],

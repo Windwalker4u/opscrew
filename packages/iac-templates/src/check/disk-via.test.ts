@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { testPlan } from "../__fixtures__/plans";
+import { homePlan, testPlan } from "../__fixtures__/plans";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { pagesPlan, ssrPlan } from "../serverless/__fixtures__/plans";
 import { inEnvironment } from "../workflow/__fixtures__/plans";
@@ -21,6 +21,13 @@ describe("checkDiskVia", () => {
     const tunnel = testPlan({ provider: "own", access: "tunnel", domain: "example.com" });
     expect(checkDiskVia(tunnel)).toBeUndefined();
     expect(checkDiskVia(inEnvironment(tunnel, { runner: "server" }))).toBe("own-runner");
+  });
+
+  it("reads a server at home only on its own runner", () => {
+    expect(checkDiskVia(homePlan())).toBe("own-runner");
+    expect(checkDiskVia(homePlan({ proxied: false }))).toBe("own-runner");
+    expect(checkDiskVia(homePlan({ runner: "host" }))).toBeUndefined();
+    expect(checkDiskVia(homePlan({ runner: "host", dnsElsewhere: true }))).toBeUndefined();
   });
 
   it("reads none without a server of the app's", () => {

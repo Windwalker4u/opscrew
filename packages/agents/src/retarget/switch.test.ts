@@ -17,7 +17,7 @@ import { moveOf } from "./session";
 import { dnsOnlyLead, dnsSwitchChange, sideAaaa, switchStep } from "./switch";
 
 const MAIN_TF = "opscrew/infra/prod/main.tf";
-const A = "module.dns.cloudflare_dns_record.a";
+const A = "module.dns.cloudflare_dns_record.a[0]";
 const AAAA = "module.dns.cloudflare_dns_record.aaaa[0]";
 
 const change = (address: string, action: ResourceChange["action"]): ResourceChange => ({

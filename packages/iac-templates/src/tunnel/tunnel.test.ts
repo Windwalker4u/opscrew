@@ -1,7 +1,7 @@
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testContext, testPlan } from "../__fixtures__/plans";
+import { homePlan, testContext, testPlan } from "../__fixtures__/plans";
 import { BESZEL_SUBDOMAIN, observabilityPlan } from "../addons/__fixtures__/plans";
 import { renderEdgeCompose } from "../edge";
 import { IMAGES } from "../pins";
@@ -9,6 +9,8 @@ import { renderCaddyfile, renderCompose, renderTunnelConnectorCompose } from "..
 import {
   beszelHostname,
   CONNECTOR_METRICS,
+  homeIpv6Proxied,
+  homeMode,
   sshHostname,
   TUNNEL_ORIGIN_PORT,
   usesTunnel,
@@ -51,6 +53,25 @@ describe("tunnel hostnames", () => {
     const off = observabilityPlan({ beszel: { ...BESZEL_SUBDOMAIN, enabled: false } }, domain);
     expect(beszelHostname(off)).toBeUndefined();
     expect(usesTunnel(off)).toBe(false);
+  });
+});
+
+describe("a server at home", () => {
+  it("is home mode with target.home, in public mode only", () => {
+    for (const o of [{}, { proxied: false }, { ipv4: false }, { dnsElsewhere: true }]) {
+      expect(homeMode(homePlan(o)), JSON.stringify(o)).toBe(true);
+    }
+    expect(homeMode(testPlan({ provider: "own", domain: "shop.example.com" }))).toBe(false);
+    expect(homeMode(tunnelPlan())).toBe(false);
+    expect(homeMode(testPlan({ domain: "shop.example.com" }))).toBe(false);
+  });
+
+  it("is served over IPv6 behind the proxy only without IPv4, proxied by Cloudflare", () => {
+    expect(homeIpv6Proxied(homePlan({ ipv4: false }))).toBe(true);
+    expect(homeIpv6Proxied(homePlan())).toBe(false);
+    expect(homeIpv6Proxied(homePlan({ ipv4: false, proxied: false }))).toBe(false);
+    expect(homeIpv6Proxied(homePlan({ ipv4: false, dnsElsewhere: true }))).toBe(false);
+    expect(homeIpv6Proxied(testPlan({ provider: "own", domain: "shop.example.com" }))).toBe(false);
   });
 });
 

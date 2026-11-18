@@ -18,6 +18,7 @@ import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { renderSftpWorkflow, SFTP_DEPLOY_SECRETS } from "../hosting/sftp-workflow";
 import { RELEASE_SIGNING_KEY_SECRET, renderHostingWorkflow } from "../hosting/workflow";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import { usesCloudflare } from "../predicates";
 import { previousValueVariables } from "../previous-values";
 import {
   certbotHosts,
@@ -30,7 +31,7 @@ import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import { siteEnvSecret } from "../serverless/site";
-import { sshHostname, tunnelMode } from "../tunnel";
+import { homeMode, sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { buildReads } from "./build";
 import {
@@ -263,6 +264,26 @@ export interface LocalEdge {
   port: number;
 }
 
+/** True for a DNS-only app on a server at home: its health check reaches the edge directly. */
+function homeDnsOnly(plan: DeployPlan): boolean {
+  return homeMode(plan) && !(usesCloudflare(plan) && plan.dns.proxied);
+}
+
+/**
+ * curl's `--resolve` options for a DNS-only app on a server at home, none otherwise: the domain
+ * goes to the edge directly, as on the local runner, so the router's hairpin NAT can't fail a
+ * deploy. On the server's own runner that is its loopback; on a runner machine, the server's LAN
+ * address in the `HOST` deploy secret, which the health step gets. Behind the proxy the check goes
+ * out to Cloudflare, which comes back in from outside.
+ */
+function homeResolve(plan: DeployPlan): string {
+  if (!homeDnsOnly(plan)) return "";
+  const { domain } = plan.dns;
+  return onRunnerMachine(plan)
+    ? ` --resolve ${domain}:443:$HOST`
+    : ` --resolve ${domain}:443:127.0.0.1 --resolve ${domain}:80:127.0.0.1`;
+}
+
 /**
  * The health check's script. With `tlsHint`, curl's exit codes and HTTP statuses are recorded
  * and, when every attempt failed a TLS handshake, the error says that the server has no
@@ -270,13 +291,15 @@ export interface LocalEdge {
  * answer. On this computer (`local`), curl connects to 127.0.0.1 and trusts only OpsCrew's local
  * CA, whose certificate the local runner names in `OPSCREW_LOCAL_CA_FILE`. That CA publishes no
  * revocation list, so `--ssl-no-revoke` keeps Windows' curl (Schannel, as in Git for Windows) from
- * refusing its certificate as of unknown revocation status; other TLS libraries ignore it.
+ * refusing its certificate as of unknown revocation status; other TLS libraries ignore it. For a
+ * DNS-only app on a server at home, curl resolves the domain itself ({@link homeResolve}).
  */
 function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): string[] {
   const failed = 'echo "::error::The new version did not answer at $URL."';
+  const resolve = homeResolve(plan);
   const curl =
     local === undefined
-      ? "curl -fsS --max-time 10"
+      ? `curl -fsS --max-time 10${resolve}`
       : `curl -fsS --max-time 10 --resolve ${local.hostname}:${local.port}:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE" --ssl-no-revoke`;
   return [
     "    set -euo pipefail",
@@ -293,7 +316,7 @@ function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): st
     ...(tlsHint
       ? [
           "      code=0",
-          '      status="$(curl -fsS --max-time 10 -o /dev/null -w \'%{http_code}\' "$URL")" || code=$?',
+          `      status="$(curl -fsS --max-time 10${resolve} -o /dev/null -w '%{http_code}' "$URL")" || code=$?`,
           '      if [ "$code" -eq 0 ]; then',
         ]
       : // bash discards the body: Windows' curl gets `/dev/null` unchanged on the local runner
@@ -1723,6 +1746,9 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     "  name: Check that the app is healthy",
     "  env:",
     `    URL: ${healthUrl(plan, local)}`,
+    ...(homeDnsOnly(plan) && onRunnerMachine(plan)
+      ? [`    HOST: ${secret(plan, DEPLOY_SECRETS.host)}`]
+      : []),
     "  run: |",
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
     ...healthScript(plan, edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls, local),

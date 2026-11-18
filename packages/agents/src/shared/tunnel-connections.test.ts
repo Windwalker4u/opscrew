@@ -366,7 +366,7 @@ const TUNNEL_CHANGES: PlanSummary["changes"] = [
 
 const DNS_CHANGES: PlanSummary["changes"] = [
   {
-    address: "module.dns.cloudflare_dns_record.a",
+    address: "module.dns.cloudflare_dns_record.a[0]",
     type: "cloudflare_dns_record",
     name: "a",
     provider: "cf",

@@ -297,7 +297,7 @@ describe("opscrew provision on a hosting account", () => {
         createdAt: "2026-11-12T12:00:00.000Z",
         changes: [
           {
-            address: "module.dns.cloudflare_dns_record.a",
+            address: "module.dns.cloudflare_dns_record.a[0]",
             type: "cloudflare_dns_record",
             name: "a",
             provider: "registry.opentofu.org/cloudflare/cloudflare",

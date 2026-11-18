@@ -1,9 +1,9 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash syntax, not JavaScript templates.
 import { spawnSync } from "node:child_process";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testContext, testPlan } from "../__fixtures__/plans";
+import { homePlan, testContext, testPlan } from "../__fixtures__/plans";
 import { renderWorkflow } from "./index";
 
 /*
@@ -12,7 +12,7 @@ import { renderWorkflow } from "./index";
  * HTTP 525 to `-w`) and a `sleep` that returns.
  */
 
-type Step = { id?: string; run?: string };
+type Step = { id?: string; run?: string; env?: Record<string, string> };
 const healthScript = (plan: DeployPlan) =>
   (parse(renderWorkflow(plan, testContext()).content).jobs.deploy.steps as Step[]).find(
     (s) => s.id === "health",
@@ -83,7 +83,64 @@ describe("the health check's rendered script", () => {
   });
 });
 
+describe("the health check of a server at home", () => {
+  const step = (plan: DeployPlan) =>
+    (parse(renderWorkflow(plan, testContext()).content).jobs.deploy.steps as Step[]).find(
+      (s) => s.id === "health",
+    );
+  const curl = (resolve: string) =>
+    `status="$(curl -fsS --max-time 10 ${resolve} -o /dev/null -w '%{http_code}' "$URL")" || code=$?`;
+
+  it("reaches the edge on the server itself from its runner, DNS only, so hairpin NAT can't fail it", () => {
+    for (const plan of [homePlan({ proxied: false }), homePlan({ dnsElsewhere: true })]) {
+      expect(healthScript(plan)).toContain(
+        curl("--resolve shop.example.com:443:127.0.0.1 --resolve shop.example.com:80:127.0.0.1"),
+      );
+      expect(step(plan)?.env).toEqual({ URL: "https://shop.example.com/api/health" });
+    }
+  });
+
+  it("reaches the server's LAN address in the HOST secret from a runner machine, DNS only", () => {
+    const health = step(homePlan({ proxied: false, runner: "host" }));
+    expect(health?.run).toContain(curl("--resolve shop.example.com:443:$HOST"));
+    expect(health?.env).toEqual({
+      URL: "https://shop.example.com/api/health",
+      HOST: "${{ secrets.OPSCREW_HOST }}",
+    });
+  });
+
+  it("is unchanged behind the proxy: the check goes out to Cloudflare", () => {
+    for (const runner of ["server", "host"] as const) {
+      const home = homePlan({ runner });
+      const away = DeployPlanSchema.parse({
+        ...home,
+        target: { ...home.target, home: undefined },
+      });
+      expect(step(home)).toEqual(step(away));
+      expect(step(home)?.run).not.toContain("--resolve");
+    }
+  });
+});
+
 describe.skipIf(!bashWorks())("the health check in bash", { timeout: 180_000 }, () => {
+  it("gives curl the LAN address of a server at home from HOST", () => {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `curl() { echo "curl $*" >&2; }\n${healthScript(homePlan({ proxied: false, runner: "host" }))}`,
+      ],
+      {
+        env: { ...process.env, URL: "https://shop.example.com/api/health", HOST: "192.168.1.30" },
+        encoding: "utf8",
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      "curl -fsS --max-time 10 --resolve shop.example.com:443:192.168.1.30 -o /dev/null",
+    );
+  });
+
   it("says the server has no certificate yet when every attempt fails with 35 or 60", () => {
     for (const codes of ["35", "60", "35 60 35"]) {
       const result = run(healthScript(direct), codes);

@@ -19,7 +19,7 @@ import { CHECK_SCRIPT } from "../generated/check";
 import { ACTIONS, RUNTIME_DEFAULTS } from "../pins";
 import { siteHosts } from "../runtime";
 import { artefactsFolder } from "../runtime-dir";
-import { tunnelMode } from "../tunnel";
+import { homeMode, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import {
   block,
@@ -257,7 +257,7 @@ const SERVER_ID = /^[A-Za-z0-9_-]+$/;
  * environment in the repository has. Read where the environment's deploys run: from GitHub's
  * machines or its runner machine over SSH with the check key, or on the server's own runner. An
  * own server in tunnel mode is reached over SSH only through Cloudflare Access, so it gets a disk
- * check only from its own runner.
+ * check only from its own runner, as a server at home does.
  * @throws OpsCrewError `INTERNAL` for a given id with other characters than {@link SERVER_ID}'s.
  */
 function serverOf(plan: DeployPlan, given: string | undefined): CheckServer | undefined {
@@ -315,13 +315,14 @@ function scheduledSnapshots(
  * How the check reads the disk of `plan`'s server: where the environment's deploys run, over SSH
  * with the check key from GitHub's machines (`github`) or its runner machine (`runner-host`), or
  * on the server's own runner (`own-runner`). `undefined` when it reads none: no server of the
- * app's (Portainer, the server-less targets, a hosting account), or an own server in tunnel mode
- * deployed over SSH, which the check's SSH can't reach through the tunnel's Cloudflare Access login.
+ * app's (Portainer, the server-less targets, a hosting account), an own server in tunnel mode
+ * deployed over SSH, which the check's SSH can't reach through the tunnel's Cloudflare Access login,
+ * or a server at home deployed from a runner machine: only the server's own runner reads its disk.
  */
 export function checkDiskVia(plan: DeployPlan): CheckServer["via"] | undefined {
   if (isHostingTarget(plan.target) || plan.target.mode !== "vps-compose") return undefined;
   if (deploysInPlace(plan)) return "own-runner";
-  if (tunnelMode(plan)) return undefined;
+  if (tunnelMode(plan) || homeMode(plan)) return undefined;
   return selfHosted(plan) ? "runner-host" : "github";
 }
 

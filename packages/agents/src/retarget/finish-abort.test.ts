@@ -434,7 +434,7 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
   it.each([
     {
       what: "a resource outside the old server's module",
-      address: "module.dns.cloudflare_dns_record.a",
+      address: "module.dns.cloudflare_dns_record.a[0]",
       says: "would do more than delete resources under module.server_previous.",
     },
     {

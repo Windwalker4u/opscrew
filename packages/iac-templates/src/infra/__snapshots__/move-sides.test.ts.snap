@@ -43,7 +43,7 @@ module "dns" {
 # The app's DNS records were yours: OpsCrew adopts them into the DNS module, so that the move
 # switches them in place. Importing a record changes nothing in Cloudflare.
 import {
-  to = module.dns.cloudflare_dns_record.a
+  to = module.dns.cloudflare_dns_record.a[0]
   id = "0123456789abcdef0123456789abcdef/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 

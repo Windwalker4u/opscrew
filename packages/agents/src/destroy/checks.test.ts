@@ -338,14 +338,14 @@ describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
     const changes = [
       ...PREVIOUS,
       at("module.server.hcloud_server.this"),
-      at("module.dns.cloudflare_dns_record.a"),
+      at("module.dns.cloudflare_dns_record.a[0]"),
       at("module.server_previous_x.hcloud_server.this"),
       at("hcloud_server.loose", "update"),
     ];
     const problems = deletionPlanProblems(changes, { prefix, confirmed });
     expect(problems.outsidePrefix).toEqual([
       "delete module.server.hcloud_server.this",
-      "delete module.dns.cloudflare_dns_record.a",
+      "delete module.dns.cloudflare_dns_record.a[0]",
       "delete module.server_previous_x.hcloud_server.this",
       "update hcloud_server.loose",
     ]);

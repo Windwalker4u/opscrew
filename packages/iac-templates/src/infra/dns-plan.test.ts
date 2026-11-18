@@ -5,7 +5,7 @@ import { NodeCommandRunner } from "@opscrew/core";
 import { detectEngines } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, type TestContext } from "vitest";
-import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
+import { homePlan, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import { renderInfra, tfvars } from "./index";
 
@@ -19,6 +19,20 @@ describe("cloudflare-dns module", () => {
     expect(main).not.toContain("moved {");
     const variables = MODULE_FILES["cloudflare-dns/variables.tf"] ?? "";
     expect(variables).toMatch(/variable "ipv6_record" \{[^}]*default {5}= true\n\}/);
+  });
+
+  it("creates the A record only when asked, with no address without it", () => {
+    expect(main).toMatch(
+      /resource "cloudflare_dns_record" "a" \{\n {2}count {3}= var\.ipv4_record \? 1 : 0\n/,
+    );
+    const variables = MODULE_FILES["cloudflare-dns/variables.tf"] ?? "";
+    expect(variables).toMatch(
+      /variable "ipv4_record" \{[^}]*type {8}= bool\n {2}default {5}= true\n\}/,
+    );
+    expect(variables).toMatch(/variable "ipv4" \{[^}]*default {5}= null\n\}/);
+    // Beside ipv6_record.
+    const names = [...variables.matchAll(/^variable "(\w+)"/gm)].map((match) => match[1]);
+    expect(names.indexOf("ipv4_record")).toBe(names.indexOf("ipv6_record") - 1);
   });
 
   it("writes CAA at the domain, one per issuer, only when not proxied", () => {
@@ -88,26 +102,72 @@ const NETWORK_ERROR =
 // Not a credential: a placeholder of the right shape, so the provider configures without a network.
 const PLACEHOLDER_TOKEN = "0".repeat(40);
 
+/**
+ * A local state holding the proxied A record at `module.dns.cloudflare_dns_record.a`, without an
+ * index, as the module left it before its `count`, written by `engine` with its registry's provider.
+ */
+function unindexedARecordState(engine: { name: string; version: string }): unknown {
+  const registry = engine.name === "tofu" ? "registry.opentofu.org" : "registry.terraform.io";
+  return {
+    version: 4,
+    terraform_version: engine.version,
+    serial: 1,
+    lineage: "6f1d2c3b-0000-4000-8000-000000000001",
+    outputs: {},
+    resources: [
+      {
+        module: "module.dns",
+        mode: "managed",
+        type: "cloudflare_dns_record",
+        name: "a",
+        provider: `provider["${registry}/cloudflare/cloudflare"]`,
+        instances: [
+          {
+            schema_version: 500,
+            attributes: {
+              id: "a".repeat(32),
+              zone_id: testCloudflare().zoneId,
+              name: "shop.example.com",
+              type: "A",
+              content: "203.0.113.10",
+              ttl: 1,
+              proxied: true,
+              comment: "Managed by OpsCrew",
+            },
+            sensitive_attributes: [],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
   for (const name of ["tofu", "terraform"] as const) {
     const engine = detected.find((d) => d.name === name && d.supported);
     const bin = engine?.binary ?? name;
 
-    /** DNS only by default; `filtered` serves behind Cloudflare's proxy with the web filter. */
+    /**
+     * DNS only by default; `filtered` serves behind Cloudflare's proxy with the web filter, and
+     * `deployPlan` is another plan's root. `state` is the state the plan starts from.
+     */
     async function plan(
       test: TestContext,
       vars: Record<string, string>,
       filtered = false,
+      o: { deployPlan?: DeployPlan; state?: unknown } = {},
     ): Promise<string> {
       const root = await mkdtemp(join(tmpdir(), `opscrew-dns-plan-${name}-`));
       const proxied = testPlan({ provider: "own", domain: "shop.example.com" });
-      const deployPlan = filtered
-        ? proxied
-        : DeployPlanSchema.parse({
-            ...proxied,
-            dns: { ...proxied.dns, proxied: false },
-            security: { ...proxied.security, httpAllowedFrom: "any" },
-          });
+      const deployPlan =
+        o.deployPlan ??
+        (filtered
+          ? proxied
+          : DeployPlanSchema.parse({
+              ...proxied,
+              dns: { ...proxied.dns, proxied: false },
+              security: { ...proxied.security, httpAllowedFrom: "any" },
+            }));
       const files = renderInfra(deployPlan, testContext({ cloudflare: testCloudflare() }));
       for (const file of files) {
         const target = join(root, file.path);
@@ -115,6 +175,7 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
         await writeFile(target, file.content);
       }
       const statePath = join(root, "state.tfstate");
+      if (o.state !== undefined) await writeFile(statePath, JSON.stringify(o.state));
       const runner = new NodeCommandRunner();
       const cwd = join(root, "opscrew/infra/prod");
       const init = await runner.run(
@@ -144,7 +205,7 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
       `gives an IPv4-only own server no AAAA record (${name})`,
       async (test) => {
         const out = await plan(test, { server_ipv4: "203.0.113.10" });
-        expect(out).toContain("module.dns.cloudflare_dns_record.a will be created");
+        expect(out).toContain("module.dns.cloudflare_dns_record.a[0] will be created");
         expect(out).not.toContain("cloudflare_dns_record.aaaa");
       },
       300_000,
@@ -180,9 +241,34 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
           { server_ipv4: "203.0.113.10", server_ipv6: "2001:db8::10" },
           true,
         );
-        expect(out).toContain("module.dns.cloudflare_dns_record.a will be created");
+        expect(out).toContain("module.dns.cloudflare_dns_record.a[0] will be created");
         expect(out).not.toContain("cloudflare_dns_record.aaaa");
         expect(out).not.toContain("cloudflare_dns_record.caa");
+      },
+      300_000,
+    );
+
+    it.skipIf(!engine)(
+      `moves an A record from before the module's count to a[0] by itself, with no moved block (${name})`,
+      async (test) => {
+        const state = engine ? unindexedARecordState(engine) : undefined;
+        const out = await plan(test, { server_ipv4: "203.0.113.10" }, true, { state });
+        expect(out).toContain("# (moved from module.dns.cloudflare_dns_record.a)");
+        expect(out).toMatch(/Plan: 0 to add, \d+ to change, 0 to destroy\./);
+      },
+      300_000,
+    );
+
+    it.skipIf(!engine)(
+      `leaves a server at home's A and AAAA records to its address updater (${name})`,
+      async (test) => {
+        const deployPlan = homePlan({ proxied: false, www: true });
+        const out = await plan(test, {}, false, { deployPlan });
+        expect(out).not.toMatch(/cloudflare_dns_record\.(?:a|aaaa)\[/);
+        expect(out).toContain("module.dns.cloudflare_dns_record.www[0] will be created");
+        expect(out).toContain(
+          'module.dns.cloudflare_dns_record.caa["letsencrypt.org"] will be created',
+        );
       },
       300_000,
     );

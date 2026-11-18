@@ -3,7 +3,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testContext, testPlan } from "../__fixtures__/plans";
+import { homePlan, testContext, testPlan } from "../__fixtures__/plans";
 import { SERVER_MODULE_FILES } from "../generated/modules";
 import { MODULE_FILES } from "../infra/modules";
 import { IMAGES } from "../pins";
@@ -146,6 +146,15 @@ describe("the edge's Compose project", () => {
     ]);
     // Tunnel mode: only the connector on the server's loopback reaches it.
     expect(edge(tunnelled).services.caddy?.ports).toEqual([`127.0.0.1:${TUNNEL_ORIGIN_PORT}:80`]);
+  });
+
+  it("publishes both families at home behind the proxy without IPv4, else as on other own servers", () => {
+    const both = ["80:80", "443:443", "443:443/udp"];
+    expect(edge(homePlan({ ipv4: false })).services.caddy?.ports).toEqual(both);
+    expect(renderEdgeCompose(homePlan())).toEqual(renderEdgeCompose(filtered));
+    for (const o of [{ proxied: false }, { ipv4: false, proxied: false }, { dnsElsewhere: true }]) {
+      expect(edge(homePlan(o)).services.caddy?.ports, JSON.stringify(o)).toEqual(both);
+    }
   });
 
   it("carries its version stamp, OpsCrew's edge date and change number, right after its name", () => {

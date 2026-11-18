@@ -1874,7 +1874,7 @@ describe.skipIf(!findExecutable("git"))("runProvision apply hints on both provid
   it.each(providers)("blames the Cloudflare token for a Cloudflare 403 ($provider)", async (p) => {
     const hint = await hintFor(
       p.provider,
-      'Error: failed to make http request: POST "https://api.cloudflare.com/client/v4/zones/zone-123/dns_records": 403 Forbidden {"errors":[{"code":10000,"message":"Authentication error"}]}\n\n  with module.dns.cloudflare_dns_record.a',
+      'Error: failed to make http request: POST "https://api.cloudflare.com/client/v4/zones/zone-123/dns_records": 403 Forbidden {"errors":[{"code":10000,"message":"Authentication error"}]}\n\n  with module.dns.cloudflare_dns_record.a[0]',
     );
     expect(hint).toContain("CLOUDFLARE_API_TOKEN");
     expect(hint).toContain("Zone → DNS → Edit");
@@ -1900,7 +1900,7 @@ describe.skipIf(!findExecutable("git"))("runProvision apply hints on both provid
         "╷",
         '│ Error: failed to make http request: POST "https://api.cloudflare.com/client/v4/zones/zone-123/dns_records": 403 Forbidden',
         "│ ",
-        "│   with module.dns.cloudflare_dns_record.a,",
+        "│   with module.dns.cloudflare_dns_record.a[0],",
         '│   on ../modules/cloudflare-dns/main.tf line 5, in resource "cloudflare_dns_record" "a":',
         '│    5: resource "cloudflare_dns_record" "a" {',
         "│ ",

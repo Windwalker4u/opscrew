@@ -506,7 +506,7 @@ describe("renderInfra adopting a Portainer side's records", () => {
       for (const name of MOVE_LAYOUTS) {
         expect(imports(render(name, "portainer", to, adopt(RECORD_IDS))), `${to}, ${name}`).toEqual(
           [
-            block("a", RECORD_IDS.a),
+            block("a[0]", RECORD_IDS.a),
             block("aaaa[0]", RECORD_IDS.aaaa),
             block("www[0]", RECORD_IDS.www),
           ],
@@ -514,7 +514,7 @@ describe("renderInfra adopting a Portainer side's records", () => {
       }
     }
     expect(imports(render("switched", "portainer", "hetzner", adopt({ a: RECORD_IDS.a })))).toEqual(
-      [block("a", RECORD_IDS.a)],
+      [block("a[0]", RECORD_IDS.a)],
     );
   });
 
@@ -655,7 +655,7 @@ describe.skipIf(!runIt)("the AAAA record of a move's layouts (integration)", () 
           "module.dns.cloudflare_dns_record.aaaa[0] will be created",
         );
         const switched = await plan("switched");
-        expect(switched).toContain("module.dns.cloudflare_dns_record.a will be created");
+        expect(switched).toContain("module.dns.cloudflare_dns_record.a[0] will be created");
         expect(switched).not.toContain("cloudflare_dns_record.aaaa");
       },
       300_000,

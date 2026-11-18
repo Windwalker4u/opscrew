@@ -1,6 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { webOnlyFromCloudflare } from "../predicates";
+import { usesCloudflare, webOnlyFromCloudflare } from "../predicates";
 
 /**
  * Loopback port the shared edge's Caddy publishes on in tunnel mode (`127.0.0.1:18080` → Caddy's
@@ -48,6 +48,24 @@ export function tunnelMode(plan: DeployPlan): boolean {
 export function webFilterMode(plan: DeployPlan): boolean {
   return (
     plan.target.provider === "own" && plan.target.access === "public" && webOnlyFromCloudflare(plan)
+  );
+}
+
+/** A server at home serving at the home's own address (`target.home` with access public). */
+export function homeMode(plan: DeployPlan): boolean {
+  const { target } = plan;
+  return target.provider === "own" && target.access === "public" && target.home !== undefined;
+}
+
+/** homeMode, behind Cloudflare's proxy, over IPv6 (`home.ipv4: false`, proxied). */
+export function homeIpv6Proxied(plan: DeployPlan): boolean {
+  const { target } = plan;
+  return (
+    homeMode(plan) &&
+    target.provider === "own" &&
+    target.home?.ipv4 === false &&
+    usesCloudflare(plan) &&
+    plan.dns.proxied
   );
 }
 

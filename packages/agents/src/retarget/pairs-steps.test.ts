@@ -330,7 +330,7 @@ describe.skipIf(!findExecutable("git"))("the DNS switch's layouts, for every pai
     expect(h.session.adoptRecords).toEqual({ a: expect.any(String), aaaa: expect.any(String) });
     await useLayout(h.session, "switched");
     const main = await readFile(join(h.root, MAIN_TF), "utf8");
-    expect(main).toContain("to = module.dns.cloudflare_dns_record.a");
+    expect(main).toContain("to = module.dns.cloudflare_dns_record.a[0]");
     expect(main).toContain(`id = "`);
     // The old side's address is where the user's record points.
     expect(h.session.env.TF_VAR_previous_server_ipv4).toBe(OLD_IPV4);
@@ -344,7 +344,7 @@ describe.skipIf(!findExecutable("git"))("the DNS switch's layouts, for every pai
     expect(moveOf(h.session).step).toBe("switched");
     // The records were imported and updated in place to the new side's address.
     const main = await readFile(join(h.root, MAIN_TF), "utf8");
-    expect(main).toContain("to = module.dns.cloudflare_dns_record.a");
+    expect(main).toContain("to = module.dns.cloudflare_dns_record.a[0]");
     expect(h.events.filter((e) => e.type === "apply")).toEqual([
       expect.objectContaining({
         updates: expect.arrayContaining([expect.stringMatching(/^module\.dns\./)]),
@@ -363,7 +363,7 @@ describe.skipIf(!findExecutable("git"))("the DNS switch's layouts, for every pai
     expect(await prepareStep(h.session, {})).toBeUndefined();
     expect(moveOf(h.session).step).toBe("created");
     const main = await readFile(join(h.root, MAIN_TF), "utf8");
-    expect(main).toContain("to = module.dns.cloudflare_dns_record.a");
+    expect(main).toContain("to = module.dns.cloudflare_dns_record.a[0]");
     const from = moveOf(h.session).from.target;
     expect(from).toMatchObject({ provider: "portainer", web: { mode: "caddy", records: true } });
     expect(h.session.adoptRecords).toBeUndefined();

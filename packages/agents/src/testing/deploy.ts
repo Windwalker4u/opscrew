@@ -224,7 +224,7 @@ export function planJsonFor(options: PlanJsonOptions = {}) {
   const dns = options.proxied
     ? [
         {
-          address: "module.dns.cloudflare_dns_record.a",
+          address: "module.dns.cloudflare_dns_record.a[0]",
           mode: "managed",
           type: "cloudflare_dns_record",
           name: "a",
@@ -262,7 +262,7 @@ function dnsModule(proxied: boolean | undefined, domain: string) {
           address: "module.dns",
           resources: [
             {
-              address: "module.dns.cloudflare_dns_record.a",
+              address: "module.dns.cloudflare_dns_record.a[0]",
               mode: "managed",
               type: "cloudflare_dns_record",
               name: "a",

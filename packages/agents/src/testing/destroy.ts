@@ -60,7 +60,12 @@ export function deployedResources(
   const resources = serverResources(options.provider ?? "hetzner", options.server !== false);
   if (options.dns) {
     resources.unshift(
-      change("module.dns.cloudflare_dns_record.a", "cloudflare_dns_record", "delete", CLOUDFLARE),
+      change(
+        "module.dns.cloudflare_dns_record.a[0]",
+        "cloudflare_dns_record",
+        "delete",
+        CLOUDFLARE,
+      ),
       change(
         "module.dns.cloudflare_dns_record.aaaa",
         "cloudflare_dns_record",

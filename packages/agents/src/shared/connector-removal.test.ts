@@ -294,12 +294,12 @@ describe("applyWithConnectorRemoval", () => {
       // Something changed in between: the secret is gone, and a record appeared.
       s.engine.scenario.changes = [
         ...TEARDOWN.filter((c) => c.type !== "contabo_secret"),
-        change("module.dns.cloudflare_dns_record.a", "create"),
+        change("module.dns.cloudflare_dns_record.a[0]", "create"),
       ];
     };
     const error = await stopOf(s);
     const differences = [
-      "create module.dns.cloudflare_dns_record.a: not in the approved plan",
+      "create module.dns.cloudflare_dns_record.a[0]: not in the approved plan",
       "delete module.server.contabo_secret.deploy: in the approved plan, not in the plan made again",
     ];
     expect(error).toMatchObject({

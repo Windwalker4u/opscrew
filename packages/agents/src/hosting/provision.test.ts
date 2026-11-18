@@ -361,7 +361,7 @@ async function project(account: Account, o: ProjectOptions = {}) {
   const engine = new FakeEngine({
     changes: [
       {
-        address: "module.dns.cloudflare_dns_record.a",
+        address: "module.dns.cloudflare_dns_record.a[0]",
         type: "cloudflare_dns_record",
         name: "a",
         provider: "registry.opentofu.org/cloudflare/cloudflare",

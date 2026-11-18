@@ -818,7 +818,7 @@ export class OwnEngine implements IacEngine {
       ? Object.keys(this.state).length > 0
         ? [
             {
-              address: "module.dns.cloudflare_dns_record.a",
+              address: "module.dns.cloudflare_dns_record.a[0]",
               type: "cloudflare_dns_record",
               name: "a",
               provider: "registry.opentofu.org/cloudflare/cloudflare",
@@ -883,7 +883,7 @@ export class OwnEngine implements IacEngine {
 /** The DNS records an own public-mode plan creates. */
 export const PUBLIC_CHANGES: ResourceChange[] = [
   {
-    address: "module.dns.cloudflare_dns_record.a",
+    address: "module.dns.cloudflare_dns_record.a[0]",
     type: "cloudflare_dns_record",
     name: "a",
     provider: "registry.opentofu.org/cloudflare/cloudflare",

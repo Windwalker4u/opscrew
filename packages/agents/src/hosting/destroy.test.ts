@@ -423,7 +423,7 @@ describe("destroy on a cPanel account", () => {
       {
         resources: [
           {
-            address: "module.dns.cloudflare_dns_record.a",
+            address: "module.dns.cloudflare_dns_record.a[0]",
             type: "cloudflare_dns_record",
             name: "a",
             provider: "registry.opentofu.org/cloudflare/cloudflare",
@@ -446,7 +446,7 @@ describe("destroy on a cPanel account", () => {
       "Delete notes.example.com's DNS record on Cloudflare",
     );
     expect(result?.destroyed.map((change) => change.address)).toEqual([
-      "module.dns.cloudflare_dns_record.a",
+      "module.dns.cloudflare_dns_record.a[0]",
     ]);
     // The account first, then the record, then GitHub.
     expect(w.events.filter((event) => !event.startsWith("plan:"))).toEqual([

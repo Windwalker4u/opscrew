@@ -2,7 +2,7 @@
 import type { CloudProviderDefinition } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
-import { tunnelMode, webFilterMode } from "../tunnel";
+import { homeMode, tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderContext } from "../types";
 import {
   dnsModule,
@@ -16,6 +16,7 @@ import {
   APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
+  moduleBlock,
   output,
   type RootFiles,
   rootHeader,
@@ -52,6 +53,29 @@ const ADDRESS_NOTE = [
   "# (.opscrew/server.json) as TF_VAR_server_ipv4 and TF_VAR_server_ipv6 when it runs the engine.",
 ];
 
+const HOME_NOTE = [
+  "# The server is at your home, whose address can change: the address updater on the server keeps",
+  "# the app's A and AAAA records, so neither they nor the address are in this configuration.",
+];
+
+/**
+ * `module "dns"` of a server at home: `www.` and the CAA records only ({@link dnsModule}'s
+ * `records`), without the A and AAAA records the address updater keeps.
+ */
+const HOME_DNS_MODULE = moduleBlock({
+  name: "dns",
+  source: "cloudflare-dns",
+  args: [
+    ["zone_id", "var.cloudflare_zone_id"],
+    ["domain", "var.domain"],
+    ["ipv4_record", "false"],
+    ["ipv6_record", "false"],
+    ["proxied", "var.proxied"],
+    ["www", "var.www"],
+    ["caa_issuers", "var.caa_issuers"],
+  ],
+});
+
 function variables(
   plan: DeployPlan,
   pieces: TunnelPieces | undefined,
@@ -60,7 +84,7 @@ function variables(
   zone: ZoneUse | undefined,
 ): VariableSpec[] {
   const specs: VariableSpec[] = [APP_NAME_VARIABLE];
-  if (!tunnelMode(plan)) specs.push(...addressVariables("", "your server"));
+  if (!tunnelMode(plan) && !homeMode(plan)) specs.push(...addressVariables("", "your server"));
   if (extras.length > 0) {
     specs.push(
       ...extras.flatMap((extra) => serverVariables(extra, extra.name)),
@@ -92,10 +116,16 @@ function mainTf(
   for (const provider of providers) lines.push(...providerBlock(provider));
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   lines.push(...(extras.length > 0 ? OWN_NOTE_WITH_EXTRAS : OWN_NOTE));
-  if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
+  if (homeMode(plan)) {
+    if (zone === "records") lines.push("#", ...HOME_NOTE);
+  } else if (!tunnelMode(plan)) {
+    lines.push("#", ...ADDRESS_NOTE);
+  }
   lines.push("");
   lines.push(...extraServerModules(plan, extras, { bothSides: false, finishing: false }, checkKey));
-  if (zone === "records" || zone === "previews") {
+  if (zone === "records" && homeMode(plan)) {
+    lines.push(...HOME_DNS_MODULE);
+  } else if (zone === "records" || zone === "previews") {
     lines.push(
       ...dnsModule(
         zone,
@@ -119,6 +149,17 @@ function outputsTf(
   const lines = [rootHeader(plan), ""];
   if (tunnelMode(plan)) {
     lines.push(...output("url", '"https://${var.domain}"'));
+  } else if (homeMode(plan)) {
+    if (usesCloudflare(plan)) {
+      lines.push(
+        ...output("url", "module.dns.url"),
+        "# The address updater on the server keeps the app's A and AAAA records.",
+        ...output("address_updater", "true"),
+      );
+    } else {
+      // The DNS is elsewhere: the user's records point the domain at the home.
+      lines.push(...output("url", JSON.stringify(`https://${plan.dns.domain}`)));
+    }
   } else {
     lines.push(
       ...output("server_ipv4", "var.server_ipv4"),
@@ -147,8 +188,11 @@ function outputsTf(
  * DNS module at the `server_ipv4`/`server_ipv6` variables, which the CLI supplies as `TF_VAR_*`
  * and which never appear in `terraform.tfvars.json` (FR-902). Tunnel mode serves the app, SSH (and
  * Portainer when opted in) through a Cloudflare Tunnel behind Access instead of DNS records to an
- * address. The plan's extra cloud servers are `module "server_<name>"` each, with the
- * `extra_servers` output.
+ * address. A server at home ({@link homeMode}) has no address variables: with DNS on Cloudflare
+ * the DNS module keeps only `www.` and the CAA records, since the address updater on the server
+ * keeps the A and AAAA records, and the root outputs `address_updater = true`; with the DNS
+ * elsewhere the root holds nothing. The plan's extra cloud servers are `module "server_<name>"`
+ * each, with the `extra_servers` output.
  */
 export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const pieces = tunnelPieces(plan, ctx);
