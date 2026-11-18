@@ -98,7 +98,11 @@ export async function designHome(
   const planned = plannedHome(input.previous)?.ipv4;
   const ipv4 = servedOverIpv4(found, proxied, planned, { planFile, flags });
   const lan = found.noNat ? undefined : homeLan(network);
-  const sshFrom = own.home.sshFrom ?? (lan === undefined ? undefined : [lan.network, LINK_LOCAL]);
+  // A carrier-grade NAT address on the server's own interface: its network is the provider's,
+  // shared with other customers, so it is never SSH's default.
+  const sshDefault = found.warning === "cgnat-interface" ? undefined : lan;
+  const sshFrom =
+    own.home.sshFrom ?? (sshDefault === undefined ? undefined : [sshDefault.network, LINK_LOCAL]);
   if (sshFrom === undefined) throw sshFromNeeded(found, flags);
   const record: OwnHome = {
     ...own.home,
@@ -196,13 +200,18 @@ function homeLan(
   };
 }
 
-/** The stop when SSH's sources have no default: the server holds its public IPv4, or has no LAN. */
+/**
+ * The stop when SSH's sources have no default: the server holds its public IPv4, its own address is
+ * a carrier-grade NAT one (the provider's network), or it has no IPv4 home network.
+ */
 function sshFromNeeded(found: HomeNetworkClass, flags: string): OpsCrewError {
   return refusedBeforeChange(
     "PHASE_PRECONDITION",
     found.noNat
       ? "Your server at home has its public IPv4 address itself, so there is no home network OpsCrew can keep SSH to."
-      : "OpsCrew found no IPv4 home network for your server at home, so there is no home network it can keep SSH to.",
+      : found.warning === "cgnat-interface"
+        ? "Your server at home has a carrier-grade NAT address (100.64.0.0/10) on its own interface, so its network is your internet provider's, shared with other customers: OpsCrew can't keep SSH to it."
+        : "OpsCrew found no IPv4 home network for your server at home, so there is no home network it can keep SSH to.",
     `Name the networks that may reach SSH in server.sshFrom in an answers file (for example \`server.sshFrom: 192.168.1.0/24 2001:db8:1::/64\`), run \`opscrew interview${flags} --answers <file>\`, then run \`opscrew design${flags}\` again.`,
   );
 }

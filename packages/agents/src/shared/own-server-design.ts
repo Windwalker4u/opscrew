@@ -10,6 +10,7 @@ import type { OwnServerDesignInput } from "../design";
 import { onAppServer } from "../design/placement";
 import { hostDeployLogin, type PreviewServer, previewServer } from "../previews/host";
 import type { OwnServerServices } from "../provision";
+import { boundHostAdapter } from "./host-plan";
 import { appMemoryMb } from "./memory";
 import {
   connectOwnServer,
@@ -29,8 +30,10 @@ interface DesignInspectOptions {
  * What design needs from the user's own server: connects with the login the interview recorded
  * (confirming and pinning the host key on the first connection, see {@link connectOwnServer}) and
  * inspects the server read-only: its size, whether its CPU has AVX, the OpsCrew apps set up there
- * with their memory limits, and its WireGuard interfaces and UDP ports in use (the port of the
- * app's private network there). A preview environment on another environment's server
+ * with their memory limits, its WireGuard interfaces and UDP ports in use (the port of the app's
+ * private network there), and its board and the devices of its data (the Raspberry Pi warning).
+ * For a server at home (`own.home`) it then reads the home's network in the same session, through
+ * the host adapter's `detectHomeNetwork`. A preview environment on another environment's server
  * (`previews.server`) gets that server's ({@link sharedServerDesign}). Design itself never
  * connects.
  */
@@ -50,11 +53,19 @@ export async function inspectOwnServerForDesign(
     host === undefined ? {} : { inspect: (shell) => host.inspect(shell) },
   );
   const { facts } = inspected;
+  // A server at home: what it sees of its network, read again on every run and never persisted.
+  const homeNetwork =
+    session.connection.home === undefined
+      ? undefined
+      : await boundHostAdapter(host).detectHomeNetwork(session.remote);
   return {
     facts: inspected.server,
     apps: activeApps(facts),
     avx: facts.avx,
     network: { udpPortsInUse: facts.udpPortsInUse, wireguardInterfaces: facts.wireguardInterfaces },
+    board: facts.board,
+    storage: facts.storage,
+    ...(homeNetwork === undefined ? {} : { homeNetwork }),
   };
 }
 

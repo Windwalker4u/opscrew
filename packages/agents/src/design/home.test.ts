@@ -365,6 +365,31 @@ describe("design for a server at home", () => {
     });
   });
 
+  it("never defaults SSH's sources to a carrier-grade NAT network on the server's own interface", async () => {
+    const carrier = homeNetworkFacts({
+      lan: { address: "100.64.3.4", prefix: 10, interface: "eth0", gateway: "100.64.0.1" },
+      ipv4: { route: true, cloudflare: HOME_IPV4, aws: HOME_IPV4, interface: "100.64.3.4" },
+      hops: ["100.64.0.1"],
+    });
+    const deps = await setup();
+    const error = await refusal(runDesign(deps, { ownServer: inspected(carrier) }));
+    expect(error.message).toBe(
+      "Your server at home has a carrier-grade NAT address (100.64.0.0/10) on its own interface, so its network is your internet provider's, shared with other customers: OpsCrew can't keep SSH to it. Nothing was changed.",
+    );
+    expect(error.hint).toContain("server.sshFrom");
+    await expectNothingWritten(deps, error);
+
+    // Answered: design goes on with the warning, and the record keeps the answer, never 100.64.0.0/10.
+    await recordOwnServerAnswers(deps.paths, homeAnswers("proxy", ["2001:db8:1:2::/64"]));
+    const result = await runDesign(await again(deps), { ownServer: inspected(carrier) });
+    expect(result.lines.join("\n")).toContain(
+      "your server's own address is a carrier-grade NAT address (100.64.0.0/10)",
+    );
+    const home = (await readServerAddresses(deps.paths)).own?.home;
+    expect(home?.sshFrom).toEqual(["2001:db8:1:2::/64"]);
+    expect(home?.network).toMatchObject({ ipv4: "seen", warning: "cgnat-interface" });
+  });
+
   it("keeps a runner machine the plan names, and puts the deploys on the server's runner otherwise", async () => {
     const deps = await setup();
     const first = await runDesign(deps, { ownServer: inspected() });
