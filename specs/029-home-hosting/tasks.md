@@ -127,7 +127,11 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 - [ ] T2904 [P] [US2] The address updater: script, units and the `dns-updater` host step
   - Owns: `packages/connectors/ssh-host/src/dns-updater.ts` (new), `packages/connectors/ssh-host/src/{steps,types}.ts`,
     `packages/connectors/ssh-host/src/plan.ts` (only the step's registration and its params),
-    `packages/connectors/ssh-host/src/index.ts`, `packages/agents/src/drift/host.ts` (only the
+    `packages/connectors/ssh-host/src/index.ts`, `packages/connectors/ssh-host/src/apply.ts` (only the
+    `SECRET_CHECKS` entry for `dnsUpdaterToken`), `packages/connectors/ssh-host/src/{inspect,parse,facts}.ts`
+    (the `dnsUpdaters` facts gain each instance's parsed config with its mode and owner, and a shared
+    `dnsUpdaterFiles` with the script's version and the units' SHA-256, so a plan can tell in-place
+    from a change; lead, 2026-11-18), `packages/agents/src/drift/host.ts` (only the
     `AREA_TITLES` entry, M1), colocated tests, `packages/connectors/ssh-host/src/dns-updater-docker.test.ts` (new)
   - Reads: contracts/dns-updater.md (all of it); data-model 4, 5, 6; research R2, R4, R5, R6; plan 5.;
     the `web-filter` and `ssh-firewall` steps as the pattern for scripts, verify and teardown
