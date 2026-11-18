@@ -156,7 +156,7 @@ function fakeWorld() {
 /** The MCP server over a deployed home app, connected to a client. */
 async function connect() {
   const root = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-home-"));
-  cleanups.push(() => rm(root, { recursive: true, force: true, maxRetries: 3 }));
+  cleanups.push(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const git = new NodeCommandRunner();
   for (const args of [
     ["init", "-q", "-b", "main"],
