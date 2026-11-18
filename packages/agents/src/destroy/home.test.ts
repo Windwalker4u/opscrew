@@ -32,6 +32,11 @@ import {
   provisionOwn,
 } from "../drift/__fixtures__/own-project";
 import {
+  OUTSIDE_CHECK_PATH,
+  outsideCheckUnused,
+  removeUnusedOutsideCheck,
+} from "../home/outside-check";
+import {
   ACCOUNT_ID,
   createProject,
   createTestPhaseDeps,
@@ -41,12 +46,7 @@ import {
   HOME_IPV6,
   ownPlan,
 } from "../testing";
-import {
-  OUTSIDE_CHECK_PATH,
-  outsideCheckUnused,
-  removeUnusedOutsideCheck,
-  TOKEN_PAGE,
-} from "./home";
+import { TOKEN_PAGE } from "./home";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
 
@@ -330,8 +330,22 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for an app at home", ()
     const result = await runDestroy(s.deps, { services: services(s) });
     expect(s.github.pulls).toHaveLength(0);
     expect(result.remaining.join("\n")).toContain(
-      `The outside check's workflow (${OUTSIDE_CHECK_PATH}): no app of this repository is at home any more, but no pull request removes it yet (its removal is committed on the branch opscrew/deploy-setup-2). Push opscrew/deploy-setup-2 and open a pull request into main.`,
+      `The outside check's workflow (${OUTSIDE_CHECK_PATH}): no app of this repository is at home any more; no pull request removes it yet (its removal is committed on the branch opscrew/deploy-setup-2). Push opscrew/deploy-setup-2 and open a pull request into main.`,
     );
+  });
+
+  it("on another branch, says in destroy's words why no pull request removes the outside check", async () => {
+    const s = await deployedAtHome();
+    await s.git(s.root, "checkout", "-b", "feature");
+    const result = await runDestroy(s.deps, { services: services(s) });
+    expect(s.github.pulls).toHaveLength(0);
+    const remaining = result.remaining.join("\n");
+    expect(remaining).toContain(
+      `The outside check's workflow (${OUTSIDE_CHECK_PATH}): no app of this repository is at home any more; this clone is on feature, but the deployment files go on a new branch from the latest main, so OpsCrew opened no pull request. Run \`git checkout main && git pull\`, then make the change on a new branch and open a pull request yourself.`,
+    );
+    const item = result.remaining.find((line) => line.startsWith("The outside check's workflow"));
+    expect(item).not.toContain("opscrew provision");
+    expect(await s.git(s.root, "ls-files", "--deleted")).toBe("");
   });
 
   it("--undo-host also removes the IPv6 filter", async () => {

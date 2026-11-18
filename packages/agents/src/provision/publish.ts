@@ -489,8 +489,28 @@ export interface DeployBranch {
   pullRequest?: PullRequest;
 }
 
-/** Phases that publish the deployment files. */
-export type PublishPhase = Extract<PhaseName, "provision" | "dns" | "retarget">;
+/**
+ * Commands that publish the deployment files: the phases, and destroy, which removes the outside
+ * check's workflow with the repository's last app at home (audited as `provision`, as the rest of
+ * a teardown).
+ */
+export type PublishPhase = Extract<PhaseName, "provision" | "dns" | "retarget"> | "destroy";
+
+/** The phase a publishing command's audit entries name. */
+const auditPhase = (phase: PublishPhase): PhaseName => (phase === "destroy" ? "provision" : phase);
+
+/** The GitHub calls the choice of the deploy branch makes, and the repository. */
+export type BranchGitHub = Omit<GitHubSetup, "api"> & {
+  api: Pick<GitHubSetup["api"], "findOpenPullRequest">;
+};
+
+/** The GitHub calls a pull request of OpsCrew's makes, and the repository. */
+export type PullRequestGitHub = Omit<GitHubSetup, "api"> & {
+  api: Pick<GitHubSetup["api"], "findOpenPullRequest" | "createPullRequest" | "updatePullRequest">;
+};
+
+/** What to do when destroy opened no pull request: the app is gone already, so no rerun helps. */
+const PROPOSE_BY_HAND = "make the change on a new branch and open a pull request yourself.";
 
 /** What to do when the final files of a finished move were not published. */
 const PUBLISH_BY_HAND =
@@ -499,13 +519,21 @@ const PUBLISH_BY_HAND =
 /**
  * A branch-check stop. Before a provision (or dns) run nothing has changed yet, and the user runs
  * the command again; at the end of a finished retarget only the final files were not published,
- * and the user publishes them by hand.
+ * and the user publishes them by hand; at the end of a destroy only its pull request was not
+ * opened, and the user opens one by hand.
  */
 function branchStop(
   phase: PublishPhase,
   reason: string,
-  hints: { rerun: string; retarget: string },
+  hints: { rerun: string; retarget: string; destroy: string },
 ): OpsCrewError {
+  if (phase === "destroy") {
+    return new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${upperFirst(reason)}, so OpsCrew opened no pull request.`,
+      { hint: hints.destroy },
+    );
+  }
   if (phase === "retarget") {
     return new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -537,6 +565,7 @@ function baseStop(check: BaseCheck, reason: string, rerun: string): OpsCrewError
   return branchStop(phase, reason, {
     rerun: `${rerun}, then run \`opscrew ${phase}\` again.`,
     retarget: `Switch to the latest ${base} (\`git checkout ${base} && git pull\`), then ${PUBLISH_BY_HAND}`,
+    destroy: `${rerun}, then ${PROPOSE_BY_HAND}`,
   });
 }
 
@@ -650,7 +679,7 @@ export async function localDeployBranch(
 export async function chooseDeployBranch(
   deps: PhaseDeps,
   git: GitClient,
-  github: GitHubSetup,
+  github: BranchGitHub,
   plan: Pick<DeployPlan, "app" | "cicd" | "environment">,
   phase: PublishPhase = "provision",
 ): Promise<DeployBranch> {
@@ -706,6 +735,7 @@ export async function chooseDeployBranch(
         {
           rerun: `Run \`git checkout ${branch}\`, then run \`${command}\` again. To start a new pull request instead, merge or close ${open.url} first.`,
           retarget: `Add them to ${open.url} by committing the changed files under opscrew/ on ${branch} and pushing it, or merge or close that pull request, then ${PUBLISH_BY_HAND}`,
+          destroy: `Merge or close ${open.url} on GitHub, then ${PROPOSE_BY_HAND}`,
         },
       );
     }
@@ -715,12 +745,14 @@ export async function chooseDeployBranch(
       {
         rerun: `Merge or close it on GitHub, then run \`${command}\` again. To add to it instead, bring its commits here first (\`git fetch origin ${branch}\`, \`git checkout ${branch}\`, \`git pull\`).`,
         retarget: `Merge or close it on GitHub, then ${PUBLISH_BY_HAND}`,
+        destroy: `Merge or close it on GitHub, then ${PROPOSE_BY_HAND}`,
       },
     );
   }
   throw branchStop(phase, `there are already 100 ${names[0]} branches on GitHub`, {
     rerun: "Delete the old ones on GitHub, then try again.",
     retarget: `Delete the old ones on GitHub, then ${PUBLISH_BY_HAND}`,
+    destroy: `Delete the old ones on GitHub, then ${PROPOSE_BY_HAND}`,
   });
 }
 
@@ -910,7 +942,12 @@ function changeGroups(plan: DeployPlan, copy: string, flag: string): ChangeGroup
     {
       has: (path) => path === OUTSIDE_CHECK_WORKFLOW_PATH,
       phrase: named("the outside check"),
-      lines: () => [outsideCheckLine(flag)],
+      // It changes for a plan away from home only when the repository's last app left home.
+      lines: () => [
+        homeMode(plan)
+          ? outsideCheckLine(flag)
+          : `- \`${OUTSIDE_CHECK_WORKFLOW_PATH}\`: removed, since no app of this repository is at home any more.`,
+      ],
     },
     {
       // The scheduled check matched above.
@@ -1183,7 +1220,7 @@ export async function commitAndPropose(
   deps: PhaseDeps,
   input: {
     git: GitClient;
-    github: GitHubSetup;
+    github: PullRequestGitHub;
     plan: Pick<DeployPlan, "cicd" | "environment">;
     chosen: DeployBranch;
     files: readonly RenderedFile[];
@@ -1223,7 +1260,7 @@ export async function commitAndPropose(
     }
     return input.describe(changes);
   };
-  const phase = input.phase !== undefined ? { phase: input.phase } : {};
+  const phase = input.phase !== undefined ? { phase: auditPhase(input.phase) } : {};
   const current = await git.currentBranch();
   for (const file of input.files) {
     await writeFileAtomic(join(deps.paths.root, file.path), file.content, {

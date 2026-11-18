@@ -26,7 +26,12 @@ import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderOutsideCheckWorkflow } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { type OwnServerConnectionInput, recordOwnServer } from "../shared";
 import { deleteTunnelIn, fakeTunnelApi } from "../shared/__fixtures__/tunnel";
@@ -504,6 +509,65 @@ describe.skipIf(!findExecutable("git"))("leaving home on one server", () => {
     );
     expect(deletion?.planHash).toBe(recordsHash);
     expect(s.updaterRecords()).toEqual([]);
+  });
+
+  /** A switch to public mode of a repository whose merged pull request brought the outside check. */
+  async function leavingWithOutsideCheck(o: { stagingAtHome?: boolean } = {}) {
+    const s = await setup({
+      plan: ownPlan({ access: "public" }),
+      last: HOME_OUTPUTS,
+      changes: PUBLIC_CHANGES,
+      next: publicOutputs(),
+      facts: withUpdater,
+      own: PUBLIC_LOGIN,
+    });
+    // The deploy workflow is there too, so this run's pull request updates the deployment.
+    const workflow = renderOutsideCheckWorkflow();
+    const deploy = (await readArtifact("plan", s.deps.paths.files.plan)).cicd.workflowPath;
+    await mkdir(join(s.root, ".github", "workflows"), { recursive: true });
+    await writeFile(join(s.root, workflow.path), workflow.content);
+    await writeFile(join(s.root, deploy), "name: an earlier deploy workflow\n");
+    await s.git(s.root, "add", workflow.path, deploy);
+    await s.git(s.root, "commit", "-m", "the deployment at home");
+    if (o.stagingAtHome === true) {
+      // Another environment of the repository is deployed at home.
+      const home = homePlan();
+      await writeArtifact(
+        "plan",
+        join(s.root, "opscrew", "environments", "staging", "plan.yaml"),
+        DeployPlanSchema.parse({
+          ...home,
+          app: { ...home.app, name: "shop-staging" },
+          dns: { ...home.dns, domain: "staging.example.com" },
+          environment: { ...home.environment, name: "staging" },
+          deployment: { ...home.deployment, lastApplyAt: "2026-10-14T12:00:00.000Z" },
+        }),
+      );
+    }
+    return { s, path: workflow.path };
+  }
+
+  it("with the repository's last app at home, the pull request removes the outside check's workflow", async () => {
+    const { s, path } = await leavingWithOutsideCheck();
+    await provision(s);
+    expect(await s.git(s.root, "ls-tree", "-r", "--name-only", "HEAD")).not.toContain(path);
+    expect(await s.git(s.root, "ls-tree", "-r", "--name-only", "main")).toContain(path);
+    expect(s.github.pulls).toHaveLength(1);
+    expect(s.github.pulls[0]?.body).toContain(
+      `- \`${path}\`: removed, since no app of this repository is at home any more.`,
+    );
+    expect(s.deps.reporter.text()).toContain(
+      "No app of this repository is at home any more, so the pull request removes the outside check's workflow.",
+    );
+    const text = await seen(s);
+    for (const value of [HOME_IPV4, HOME_IPV6, UPDATER]) expect(text).not.toContain(value);
+  });
+
+  it("keeps the outside check's workflow while another environment is at home", async () => {
+    const { s, path } = await leavingWithOutsideCheck({ stagingAtHome: true });
+    await provision(s);
+    expect(await s.git(s.root, "ls-tree", "-r", "--name-only", "HEAD")).toContain(path);
+    expect(s.deps.reporter.text()).not.toContain("removes the outside check's workflow");
   });
 });
 

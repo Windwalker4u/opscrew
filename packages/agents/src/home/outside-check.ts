@@ -5,15 +5,22 @@
  * and needs no approval. It never gets the home's address: the runner resolves the hostname
  * itself. No request from this computer ever counts as the check.
  */
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { GitHubClient, RunJob } from "@opscrew/connector-github";
 import { OpsCrewError } from "@opscrew/core";
 import {
+  homeMode,
   OUTSIDE_CHECK_JOBS,
   OUTSIDE_CHECK_WORKFLOW_FILE,
   type OutsideCheckJob,
 } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
+import { otherPlans } from "../check/files";
 import type { PhaseDeps } from "../context";
+import { environmentDeployed } from "../environments/list";
 import { codeOf } from "../shared/errors";
+import { trackedFiles } from "../shared/github";
 import { type OwnHome, updateServerAddresses } from "../shared/server-record";
 import { type HomeForwardsInput, homeForwards } from "./forwards";
 
@@ -194,4 +201,41 @@ export function outsideCheckLines(
     );
   }
   return lines;
+}
+
+/** The outside check's workflow in the repository: one file every app at home shares. */
+export const OUTSIDE_CHECK_PATH = `.github/workflows/${OUTSIDE_CHECK_WORKFLOW_FILE}`;
+
+/**
+ * True when the repository tracks the outside check's workflow and no app needs it any more: no
+ * other app or environment at home may still have something running (`environmentDeployed`), and
+ * `plan` is no longer at home or `leaving` it (destroy).
+ */
+export async function outsideCheckUnused(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  plan: DeployPlan,
+  options: { leaving: boolean },
+): Promise<boolean> {
+  if (!options.leaving && homeMode(plan)) return false;
+  for (const other of await otherPlans(deps.paths, plan)) {
+    if (homeMode(other.plan) && (await environmentDeployed(other.paths, other.plan))) return false;
+  }
+  return (await trackedFiles(deps, [OUTSIDE_CHECK_PATH])).length > 0;
+}
+
+/**
+ * The outside check's part of a deploy-setup pull request after a switch out of home: when no app
+ * of the repository is at home any more ({@link outsideCheckUnused}), the workflow is deleted in
+ * the working copy and its path answered, so the pull request removes it; otherwise none.
+ */
+export async function removeUnusedOutsideCheck(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "reporter">,
+  plan: DeployPlan,
+): Promise<string[]> {
+  if (!(await outsideCheckUnused(deps, plan, { leaving: false }))) return [];
+  await rm(join(deps.paths.root, OUTSIDE_CHECK_PATH), { force: true });
+  deps.reporter.info(
+    "No app of this repository is at home any more, so the pull request removes the outside check's workflow.",
+  );
+  return [OUTSIDE_CHECK_PATH];
 }

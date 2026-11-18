@@ -42,6 +42,7 @@ import { builderBranch, workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
+import { removeUnusedOutsideCheck } from "../home/outside-check";
 import { provisionHosting } from "../hosting/provision";
 import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
@@ -1694,6 +1695,8 @@ async function provisionFlow(
       ...files.map((f) => f.path),
       ...(ctx.additions === true ? [additionsPath(plan)] : []),
       ...check.removed,
+      // Out of home with the repository's last app there: the outside check's workflow goes.
+      ...(await removeUnusedOutsideCheck(deps, plan)),
     ],
     push: options.push !== false,
     secretsStored,
