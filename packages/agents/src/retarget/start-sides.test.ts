@@ -244,6 +244,39 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
     expect(await snapshot(o)).toBe(kept);
   });
 
+  it("refuses a move from a server at home and to one, before any change", async () => {
+    const says =
+      "retarget can't move an app to or from a server at home yet: destroy it there and provision the other target, or add an environment. Nothing was changed.";
+
+    const from = await moveHarness();
+    await writeArtifact(
+      "plan",
+      from.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...from.plan,
+        target: { ...own("public"), home: { ipv4: true } },
+        environment: { ...from.plan.environment, runner: "server" },
+      }),
+    );
+    await recordOwnServer(from.paths, { ...OWN_ANSWERS, host: OLD_IPV4 });
+    const kept = await snapshot(from);
+    const away = await refused(from, { to: "hetzner" });
+    expect(away.code).toBe("PHASE_PRECONDITION");
+    expect(away.message).toBe(says);
+    expect(await snapshot(from)).toBe(kept);
+    expect(from.events).toEqual([]);
+
+    const to = await moveHarness();
+    const before = await snapshot(to);
+    // `home` is the interview's `server.home` answer.
+    const ownServer = { ...OWN_ANSWERS, home: true } as OwnServerAnswers;
+    const home = await refused(to, { to: "own", ownServer });
+    expect(home.code).toBe("PHASE_PRECONDITION");
+    expect(home.message).toBe(says);
+    expect(await snapshot(to)).toBe(before);
+    expect(to.events).toEqual([]);
+  });
+
   it("refuses an Edge Agent environment when it inspects the new side, before any change there or in the cloud", async () => {
     const h = await moveHarness();
     h.deps.env.PORTAINER_API_KEY = PORTAINER_TOKEN;

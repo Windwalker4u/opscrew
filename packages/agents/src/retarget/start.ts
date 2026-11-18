@@ -128,6 +128,20 @@ function thisComputerNoMove(): OpsCrewError {
   );
 }
 
+/** A server at home is no side of a move yet (plan.md "14."). */
+function homeNoMove(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "retarget can't move an app to or from a server at home yet: destroy it there and provision the other target, or add an environment. Nothing was changed.",
+  );
+}
+
+/** Whether the new own server's answers say it is at the user's home (`server.home`). */
+function answersAtHome(answers: RetargetOptions["ownServer"]): boolean {
+  const home = (answers as { home?: unknown } | undefined)?.home;
+  return home !== undefined && home !== false;
+}
+
 /** A site and a server are different designs: no move between them. */
 export function siteServerNoMove(plan: Pick<DeployPlan, "app">): OpsCrewError {
   return new OpsCrewError(
@@ -739,7 +753,7 @@ async function newTargetId(
 
 /**
  * Step 1 of a move (plan.md "2." started): every refusal of plan.md "4." and the spec's edge cases
- * before any change (this computer, a site and a server, previews, a tunnel or Portainer behind the
+ * before any change (this computer, a server at home, a site and a server, previews, a tunnel or Portainer behind the
  * user's own proxy with Cloudflare DNS on either side, two Portainers, the same place, public SSH
  * closed, an app that cannot be built for the new side, Portainer for an
  * app with a private network or self-hosted monitoring); the new side
@@ -762,6 +776,7 @@ export async function startMove(
   const from = plan.target;
   if (from.provider === "localhost") throw thisComputerNoMove();
   if (isServerlessProvider(from.provider)) throw siteServerNoMove(plan);
+  if (from.provider === "own" && from.home !== undefined) throw homeNoMove();
   // A side over SSH is reached at its public address before it joins the app's private network.
   if (plan.network?.publicSsh === false) {
     throw new OpsCrewError(
@@ -775,6 +790,7 @@ export async function startMove(
   requireAddressedOldSide(plan);
   const oldAddress = await liveOldSide(deps, plan, options);
   const to = await newTargetId(deps, plan, options);
+  if (to === "own" && answersAtHome(options.ownServer)) throw homeNoMove();
   if (to === "portainer" && (plan.network !== undefined || monitoringOf(plan) !== undefined)) {
     throw portainerNoNetwork(plan);
   }
