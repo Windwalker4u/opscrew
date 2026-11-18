@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { CloudflareClient } from "@opscrew/connector-cloudflare";
+import { CloudflareClient, cloudflareConnector } from "@opscrew/connector-cloudflare";
 import {
   type DesiredHost,
   type DesiredRunner,
@@ -12,8 +12,10 @@ import {
   planUndo,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, plural, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
+  homeIpv6Proxied,
+  homeMode,
   hostSysctl,
   keepNewerPins,
   renderPortainerCompose,
@@ -31,6 +33,11 @@ import {
 } from "@opscrew/plan-schema";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
+import { homeForwards } from "../home/forwards";
+import { classifyHomeNetwork, type HomeNetworkClass, registerHomeAddresses } from "../home/network";
+import { carrierNatWarning } from "../home/texts";
+import { checkUpdaterToken, UPDATER_TOKEN_VAR } from "../home/token";
 import { serverNetworkInputs } from "../network";
 import {
   applyRunnerSettings,
@@ -79,6 +86,7 @@ import {
   tunnelChange,
 } from "../shared/tunnel-connections";
 import { hasAppInterface } from "../vpn/dashboards";
+import { type CloudflareSetup, cloudflareTokenMissing } from "./credentials";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { ServerReach } from "./secrets";
 import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types";
@@ -86,13 +94,34 @@ import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
 export type OwnWebSources = NonNullable<DesiredHost["webFilter"]>;
 
+/**
+ * What provision read of a server at home this run (`homeMode`). It holds no public address: the
+ * home's addresses are detected again on every run and stay in the run's memory (a proxied app's
+ * registered with the redactor).
+ */
+export interface OwnHomeRun {
+  /** The classification of what the server sees of its network. */
+  network: HomeNetworkClass;
+  /** The server's address on the home network, which the router forwards to (none without NAT). */
+  lanAddress?: string;
+  /** The networks that may reach SSH (`.opscrew/server.json` → `own.home.sshFrom`). */
+  sshFrom: string[];
+  /**
+   * The address updater, with the domain's DNS on Cloudflare: the zone, the record's name and,
+   * when given this run and checked, its token (on standard input at apply, never kept).
+   */
+  updater?: { zoneId: string; name: string; token?: string };
+}
+
 /** What provision knows about the user's own server once it connected and inspected it. */
 export interface OwnServerRun {
   session: OwnServerSession;
   facts: HostFacts;
   target: OwnDeployTarget;
-  /** Public mode: the addresses DNS points to (local state only, never committed). */
+  /** Public mode: the addresses DNS points to (local state only, never committed); none at home. */
   address?: ServerAddress;
+  /** A server at home ({@link OwnHomeRun}). */
+  home?: OwnHomeRun;
   /**
    * Served directly behind Cloudflare's proxy ({@link ownWebFromCloudflare}): Cloudflare's IP
    * ranges as read at the start of this run, for the host plan's web filter.
@@ -216,10 +245,11 @@ function rangesUnreadable(cause?: unknown): OpsCrewError {
 
 /**
  * Cloudflare's current IP ranges for an own server behind Cloudflare's proxy
- * ({@link ownWebFromCloudflare}); `undefined` for any other plan. Read from `api` (the provision
- * services' Cloudflare client) or, without one, from Cloudflare's public endpoint (no token).
- * Throws `PROVIDER_ERROR` in plain English when they cannot be read: OpsCrew never falls back to
- * opening the web ports to every address.
+ * ({@link ownWebFromCloudflare}); `undefined` for any other plan. The IPv4 ranges, and the IPv6
+ * ones too for a server at home served over IPv6 behind the proxy (`homeIpv6Proxied`). Read from
+ * `api` (the provision services' Cloudflare client) or, without one, from Cloudflare's public
+ * endpoint (no token). Throws `PROVIDER_ERROR` in plain English when they cannot be read: OpsCrew
+ * never falls back to opening the web ports to every address.
  */
 export async function ownWebSources(
   deps: Pick<PhaseDeps, "fetch" | "version">,
@@ -228,14 +258,15 @@ export async function ownWebSources(
 ): Promise<OwnWebSources | undefined> {
   if (!ownWebFromCloudflare(plan)) return undefined;
   const client = api ?? new CloudflareClient({ fetch: deps.fetch, version: deps.version });
-  let ranges: { ipv4: string[] };
+  let ranges: { ipv4: string[]; ipv6: string[] };
   try {
     ranges = await client.getIpRanges();
   } catch (error) {
     throw rangesUnreadable(error);
   }
-  if (ranges.ipv4.length === 0) throw rangesUnreadable();
-  return { ipv4: [...ranges.ipv4] };
+  const ipv6 = homeIpv6Proxied(plan);
+  if (ranges.ipv4.length === 0 || (ipv6 && ranges.ipv6.length === 0)) throw rangesUnreadable();
+  return { ipv4: [...ranges.ipv4], ...(ipv6 ? { ipv6: [...ranges.ipv6] } : {}) };
 }
 
 /**
@@ -245,13 +276,16 @@ export async function ownWebSources(
  * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode), Portainer
  * when the plan turns it on, and the web filter with Cloudflare's ranges (`run.webSources`) when
  * the site is served directly behind Cloudflare's proxy. The connector's Compose file keeps the
- * newer pins of its committed copy, so the server runs what Dependabot updated.
- * @throws Error when the plan needs the web filter but `run.webSources` is missing: a host plan
- * must never drop the filter because the ranges were not read.
+ * newer pins of its committed copy, so the server runs what Dependabot updated. A server at home
+ * ({@link homeHost}) also gets SSH only from the home network, `home` in the app's record and,
+ * with its DNS on Cloudflare, the address updater.
+ * @throws Error when the plan needs the web filter but `run.webSources` is missing, or is served
+ * at home but `run.home` is missing: a host plan must never drop the filter, the SSH firewall or
+ * the address updater because the server was not read.
  */
 export async function desiredHost(
   deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
-  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner">,
+  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner" | "home">,
   input: {
     plan: DeployPlan;
     deployPublicKey: string;
@@ -268,6 +302,9 @@ export async function desiredHost(
   const filtered = ownWebFromCloudflare(plan);
   if (filtered && run.webSources === undefined) {
     throw new Error("The web filter needs Cloudflare's IP ranges (read them with ownWebSources).");
+  }
+  if (homeMode(plan) && run.home === undefined) {
+    throw new Error("A server at home needs what prepareOwnServer read of it (run.home).");
   }
   const connector = renderTunnelConnectorCompose(plan);
   const tunnel =
@@ -311,6 +348,38 @@ export async function desiredHost(
     ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
     ...(run.runner !== undefined ? { runner: run.runner } : {}),
     ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
+    ...(homeMode(plan) && run.home !== undefined ? homeHost(plan, run.home) : {}),
+  };
+}
+
+/**
+ * A server at home's part of the desired host: SSH only from `sshFrom`, `home` in the app's
+ * record, and with the DNS on Cloudflare the address updater, which keeps the A record when the
+ * site is served over IPv4 and the AAAA record over IPv6 (with DNS only, also beside the A, while
+ * the server has IPv6). The token's SHA-256 is in the plan only when its token is sent at apply.
+ */
+function homeHost(
+  plan: DeployPlan,
+  home: OwnHomeRun,
+): Pick<DesiredHost, "home" | "sshFrom" | "dnsUpdater"> {
+  const ipv4 = ownTarget(plan).home?.ipv4 === true;
+  const { proxied } = plan.dns;
+  const { updater } = home;
+  return {
+    home: { ipv4 },
+    sshFrom: [...home.sshFrom],
+    ...(updater === undefined
+      ? {}
+      : {
+          dnsUpdater: {
+            zoneId: updater.zoneId,
+            name: updater.name,
+            proxied,
+            ipv4,
+            ipv6: !proxied || !ipv4,
+            ...(updater.token === undefined ? {} : { tokenSha256: sha256Hex(updater.token) }),
+          },
+        }),
   };
 }
 
@@ -444,7 +513,8 @@ type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer" | "reta
  * to another, a password choice to make, and so on (the stop says to run `command` again). Other
  * OpsCrew apps on the server are welcome otherwise: the host plan sets up only what this app needs
  * that is not there yet. Also checks that the plan's architecture is the server's, and in public
- * mode finds the public address DNS points to.
+ * mode finds the public address DNS points to. A server at home ({@link prepareHome}) has no such
+ * address: it reads the home's network instead, and checks the address updater's token.
  */
 export async function prepareOwnServer(
   deps: PhaseDeps,
@@ -459,6 +529,11 @@ export async function prepareOwnServer(
     command: string;
     /** The connection and inspection made earlier in this run (a preview environment's). */
     inspected?: { session: OwnServerSession; facts: HostFacts };
+    /**
+     * The app's Cloudflare zone (`setupCloudflare`), which a server at home's address updater
+     * keeps the records in. Without it the updater stays as the server has it.
+     */
+    cloudflare?: Pick<CloudflareSetup, "zoneId" | "zoneName" | "accountId">;
   },
 ): Promise<OwnServerRun> {
   const { plan } = input;
@@ -496,10 +571,22 @@ export async function prepareOwnServer(
           host: session.connection.host,
         })
       : {};
+  const home = homeMode(plan)
+    ? await prepareHome(deps, {
+        plan,
+        session,
+        facts,
+        host,
+        phase: input.phase,
+        command: input.command,
+        ...(input.cloudflare !== undefined ? { cloudflare: input.cloudflare } : {}),
+      })
+    : undefined;
   const run: OwnServerRun = {
     session,
     facts,
     target,
+    ...(home !== undefined ? { home } : {}),
     // Public mode: the login's port, which differs from sshd's when a router forwards it (2222 to
     // 22). Only the tunnel's SSH route, on the server itself, needs sshd's own port.
     sshPort:
@@ -537,7 +624,7 @@ export async function prepareOwnServer(
       ...(input.phase === "retarget" ? { passwordLogins: input.command } : {}),
     },
   );
-  if (target.access === "public") {
+  if (target.access === "public" && home === undefined) {
     const address = ownServerPublicAddress(session.connection, facts);
     if (address === undefined) {
       throw new OpsCrewError(
@@ -567,11 +654,175 @@ export async function prepareOwnServer(
   return run;
 }
 
+/** A stop before any change on a server at home. */
+function homeStop(message: string, hint: string): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", `${message} Nothing was changed.`, { hint });
+}
+
+/**
+ * A server at home, before any change and read-only (plan 10., step 1): reads what the server sees
+ * of its network (registering a proxied app's addresses with the redactor first), stops when the
+ * address family the plan serves the site over is gone (design decides again), repeats design's
+ * warning of a connection that looks like it has no public IPv4 address, and takes SSH's sources
+ * from `.opscrew/server.json`. With the DNS on Cloudflare, the address updater's zone and token
+ * ({@link homeUpdater}).
+ */
+async function prepareHome(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    session: OwnServerSession;
+    facts: HostFacts;
+    host: Required<HostAdapterApi>;
+    phase: OwnHostPhase;
+    command: string;
+    cloudflare?: Pick<CloudflareSetup, "zoneId" | "zoneName" | "accountId">;
+  },
+): Promise<OwnHomeRun> {
+  const { plan, session } = input;
+  const ipv4 = ownTarget(plan).home?.ipv4 === true;
+  const proxied = plan.dns.provider === "cloudflare" && plan.dns.proxied;
+  deps.reporter.step("Reading your home network from your server (read-only)");
+  const detected = await input.host.detectHomeNetwork(session.remote);
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "detect home network (read-only)",
+    phase: input.phase,
+    target: "own server",
+    decision: "allow",
+  });
+  registerHomeAddresses(deps.redactor, detected, proxied);
+  const network = classifyHomeNetwork(detected);
+  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const planFile = toPosixRelative(deps.paths.root, deps.paths.files.plan);
+  const design = `Run \`opscrew design${flags}\` again: it decides how your server at home serves the site now. Then run \`${input.command}${flags}\` again.`;
+  if (ipv4 && network.ipv4 === "none") {
+    throw homeStop(
+      `Your server at home has no IPv4 connection to the internet now, and ${planFile} serves the site over IPv4 (target.home.ipv4: true).`,
+      design,
+    );
+  }
+  if (ipv4 && network.ipv4 === "unknown") {
+    throw homeStop(
+      "Your server at home couldn't see its public IPv4 address: the two address checks over HTTPS didn't answer, or gave different addresses.",
+      `Check that the server can make outgoing HTTPS connections, then run \`${input.command}${flags}\` again.`,
+    );
+  }
+  if (!ipv4 && network.ipv6 !== "present") {
+    throw homeStop(
+      `Your server at home has no IPv6 address now, and ${planFile} serves the site over IPv6 only (target.home.ipv4: false).`,
+      design,
+    );
+  }
+  if (ipv4 && network.warning !== undefined) {
+    const ipv6 = network.ipv6 === "present";
+    for (const line of carrierNatWarning(network.warning, { ipv6, proxied })) {
+      deps.reporter.info(line);
+    }
+  }
+  const sshFrom = session.connection.home?.sshFrom;
+  if (sshFrom === undefined) {
+    throw homeStop(
+      "OpsCrew doesn't know on this computer which networks may reach your server's SSH at home.",
+      `Run \`opscrew design${flags}\` again: it finds your home network. Then run \`${input.command}${flags}\` again.`,
+    );
+  }
+  const updater = await homeUpdater(deps, { ...input, flags });
+  const lanAddress = network.noNat ? undefined : detected.lan?.address;
+  return {
+    network,
+    ...(lanAddress !== undefined ? { lanAddress } : {}),
+    sshFrom: [...sshFrom],
+    ...(updater !== undefined ? { updater } : {}),
+  };
+}
+
+/**
+ * The address updater of a server at home with its DNS on Cloudflare (research R6): with the
+ * app's zone, its token is checked (`checkUpdaterToken`) when `OPSCREW_DNS_UPDATER_TOKEN` is set
+ * or the server has no token for the app yet; without the variable, the server's token stays.
+ * Without the zone (a command that changes the server only), the updater stays as the server
+ * has it: its zone, and its token. `undefined` with the DNS elsewhere.
+ * @throws OpsCrewError from the token's checks, and `PHASE_PRECONDITION` when the server has no
+ * updater to keep and no zone was given.
+ */
+async function homeUpdater(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    facts: HostFacts;
+    command: string;
+    /** The app's and environment's command flags. */
+    flags: string;
+    cloudflare?: Pick<CloudflareSetup, "zoneId" | "zoneName" | "accountId">;
+  },
+): Promise<OwnHomeRun["updater"]> {
+  const { plan, cloudflare: zone, flags } = input;
+  const name = plan.dns.domain;
+  if (plan.dns.provider !== "cloudflare" || name === undefined) return undefined;
+  const onServer = input.facts.dnsUpdaters?.find((item) => item.app === plan.app.name);
+  if (zone === undefined) {
+    const zoneId = onServer?.config?.zoneId;
+    if (zoneId === undefined) {
+      throw homeStop(
+        "Your server's address updater isn't set up yet, which keeps the site's DNS records at your home's address.",
+        `Run \`opscrew provision${flags}\` first, then \`${input.command}${flags}\` again.`,
+      );
+    }
+    return { zoneId, name };
+  }
+  const given = deps.env[UPDATER_TOKEN_VAR];
+  if (!given?.trim() && onServer?.token.present === true) return { zoneId: zone.zoneId, name };
+  const ownToken = deps.env.CLOUDFLARE_API_TOKEN?.trim();
+  const client = cloudflareConnector(deps).client;
+  if (!ownToken || client === undefined) throw cloudflareTokenMissing(deps);
+  const checked = await checkUpdaterToken({
+    token: given,
+    own: { token: ownToken, client },
+    zone: { id: zone.zoneId, name: zone.zoneName, accountId: zone.accountId },
+    command: `${input.command}${flags}`,
+    deps,
+  });
+  return { zoneId: zone.zoneId, name, token: checked.token };
+}
+
+/**
+ * What provision says last for a server at home (plan 10., step 7): the router's settings, which
+ * the site needs before the deploy pull request is merged (with DNS only, the first deploy fetches
+ * its certificate through them), then the outside check. None for any other server.
+ */
+export function homeProvisionLines(plan: DeployPlan, home: OwnHomeRun | undefined): string[] {
+  if (home === undefined || !homeMode(plan)) return [];
+  const ipv4 = ownTarget(plan).home?.ipv4 === true;
+  const proxied = plan.dns.provider === "cloudflare" && plan.dns.proxied;
+  // An AAAA record is published behind the proxy without IPv4, and with DNS only while there is IPv6.
+  const aaaa = proxied ? !ipv4 : home.network.ipv6 === "present";
+  const router = homeForwards({
+    ...(home.lanAddress !== undefined ? { lanAddress: home.lanAddress } : {}),
+    ipv4,
+    noNat: home.network.noNat,
+    aaaa,
+    sshFrom: home.sshFrom,
+  });
+  const settings = (ipv4 && !home.network.noNat) || aaaa;
+  const when = proxied
+    ? "so Cloudflare reaches your server"
+    : "set them before you merge: the first deploy fetches its certificate through them";
+  return [
+    ...(settings
+      ? [`Your router's settings (${when}):`, ...router.map((line) => `  ${line}`)]
+      : router),
+    "Merge, then run `npx opscrew verify`, which checks from outside your home.",
+  ];
+}
+
 /**
  * The engine environment for an own server: its public address as `TF_VAR_server_ipv4` and
  * `TF_VAR_server_ipv6`, never in a file (FR-902). In tunnel mode the address of an earlier public
  * setup still feeds the old configuration while its records are removed: from the local state, else
- * from the infrastructure state's outputs (`outputs`, read only when needed).
+ * from the infrastructure state's outputs (`outputs`, read only when needed). A server at home sets
+ * none: its root has no address variables, and the home's address never reaches the engine.
  */
 export async function ownEngineEnv(
   deps: Pick<PhaseDeps, "paths">,
@@ -579,6 +830,10 @@ export async function ownEngineEnv(
   env: Record<string, string | undefined>,
   outputs?: () => Promise<Record<string, unknown> | undefined>,
 ): Promise<void> {
+  if (run.target.access === "public" && run.target.home !== undefined) {
+    setAddressVariables(env, undefined);
+    return;
+  }
   const recorded = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
   const address =
     run.address ??
@@ -841,9 +1096,14 @@ export async function applyOwnHostPlan(
         portainerStep === undefined || portainerStep.params.remove === true
           ? undefined
           : await portainerPasswordToSend(deps, portainerStep.params.needsPassword === true);
+      // The updater's token, when the step names its hash: it reaches the server on stdin only.
+      const updater = steps.find((step) => step.id === "dns-updater");
+      const dnsUpdaterToken =
+        updater?.params.tokenSha256 === undefined ? undefined : run.home?.updater?.token;
       return {
         ...(tunnel !== undefined ? { tunnelToken: tunnel.token } : {}),
         ...(portainerPassword !== undefined ? { portainerPassword } : {}),
+        ...(dnsUpdaterToken !== undefined ? { dnsUpdaterToken } : {}),
       };
     },
     runnerToken: runnerTokens(deps, run.repository),
@@ -893,7 +1153,11 @@ function switchesToWebFilter(
 /**
  * What the deploy secrets hold for the user's own server: the host GitHub Actions connects to
  * (the public address, or the tunnel's SSH hostname) and the pinned host key under that name, and
- * in tunnel mode the Access service token from the infrastructure outputs.
+ * in tunnel mode the Access service token from the infrastructure outputs. A server at home is
+ * never reached from GitHub's machines: a runner machine on the home network (`runner: host`)
+ * reaches the login's address there (`connection.host`) with the pinned key, and the server's own
+ * runner deploys in place, so the deploy reads no host at all (`deploysInPlace`): GitHub never
+ * holds a home address.
  */
 export function ownDeployTarget(
   deps: Pick<PhaseDeps, "redactor">,
@@ -905,6 +1169,10 @@ export function ownDeployTarget(
   tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
 } {
   const key = run.session.hostKey;
+  if (run.target.access === "public" && run.target.home !== undefined) {
+    const { host } = run.session.connection;
+    return { host, knownHosts: `${knownHostsName(host, run.sshPort)} ${key.type} ${key.key}\n` };
+  }
   if (run.target.access === "tunnel") {
     const host = sshHostname(input.plan) as string;
     const serviceTokenId = stringOutput(input.outputs, "deploy_service_token_client_id");

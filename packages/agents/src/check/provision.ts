@@ -6,6 +6,7 @@ import type { ProjectPaths } from "@opscrew/core";
 import {
   CHECK_SECRETS,
   deploySecretName,
+  homeMode,
   type RenderedFile,
   tunnelMode,
 } from "@opscrew/iac-templates";
@@ -27,14 +28,16 @@ import { repositoryCheckSettings } from "./settings";
 /**
  * True when the check reads the disk of `plan`'s app server over SSH with the check key: a cloud or
  * own server deployed from GitHub's machines or a runner machine, never through a tunnel (the
- * check's `ssh` can't pass Cloudflare Access). The server's own runner reads it there, with no key.
+ * check's `ssh` can't pass Cloudflare Access) nor at home (SSH answers only on the home network).
+ * The server's own runner reads it there, with no key.
  */
 export function checkReachesOverSsh(plan: DeployPlan): boolean {
   return (
     !isHostingTarget(plan.target) &&
     plan.target.mode === "vps-compose" &&
     plan.environment?.runner !== "server" &&
-    !tunnelMode(plan)
+    !tunnelMode(plan) &&
+    !homeMode(plan)
   );
 }
 

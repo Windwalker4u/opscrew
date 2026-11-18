@@ -6,6 +6,7 @@ import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opsc
 import {
   additionsPath,
   checkEnvironmentKey,
+  homeMode,
   previewRecipeDir,
   renderBackups,
   renderStorage,
@@ -150,6 +151,7 @@ import {
   dashboardsOnNetwork,
   type ExtraOwnServerRun,
   extraOwnReach,
+  homeProvisionLines,
   type OwnServerRun,
   ownConnectorFirst,
   ownDeployTarget,
@@ -516,6 +518,8 @@ async function provisionFlow(
       true,
     );
   }
+  // Nor at home (M5): SSH answers only on the home network, and the address changes.
+  if (homeMode(plan)) await requireNoSharedPreviews(deps.paths, "serving it at home", rerun, true);
   // Nor a private network on it: a preview's containers would reach what it connects.
   await requireNoNetworkBesidePreviews(deps.paths, plan, rerun);
 
@@ -852,6 +856,7 @@ async function provisionFlow(
       phase,
       command,
       ...(inspected !== undefined ? { inspected } : {}),
+      ...(cloudflare !== undefined ? { cloudflare } : {}),
     });
     // Never beside previews it doesn't host by its own choice: pull requests' code runs there.
     await requireNoForeignPreviews(deps.paths, plan, ownRun.facts, rerun);
@@ -1702,6 +1707,8 @@ async function provisionFlow(
     ? previewsMergeNote(plan, published.published)
     : mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // A server at home: the router's settings, then the check from outside the home.
+  for (const line of homeProvisionLines(plan, ownRun?.home)) deps.reporter.info(line);
   const pausedNote = await pausedMergeNote(deps, plan, pinned);
   if (pausedNote !== undefined) deps.reporter.info(pausedNote);
   // The environment is set up again: a pause of its check (a move's window, a teardown) ends.
