@@ -517,11 +517,12 @@ export async function drillInPortainer(
   const drill = drillPlan(plan, snapshot);
   const stack = renderPortainerDrill(plan, snapshot, { image });
   const values = await drillValues(run, drill);
+  const [stacks, volumes] = await Promise.all([
+    client.listStacks(environmentId),
+    client.listVolumes(environmentId),
+  ]);
   const stackPlan = planDrillStack(
-    {
-      stacks: await client.listStacks(environmentId),
-      volumes: await client.listVolumes(environmentId),
-    },
+    { stacks, volumes },
     {
       app: plan.app.name,
       environmentId,

@@ -354,7 +354,12 @@ export async function hostingDrillStatusLines(
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const every = plan.snapshots?.drills?.schedule;
   try {
-    const records = drillRecords((await files.readFile(`${folder}/${HOSTING_DRILLS_LOG}`)) ?? "");
+    // The log, and with a schedule the dumps the warning reads, read together.
+    const [log, dumps] = await Promise.all([
+      files.readFile(`${folder}/${HOSTING_DRILLS_LOG}`),
+      every === undefined ? undefined : files.list(`${folder}/dumps`),
+    ]);
+    const records = drillRecords(log ?? "");
     const last = records.at(-1);
     const lines =
       last !== undefined
@@ -364,7 +369,7 @@ export async function hostingDrillStatusLines(
           : [NONE_YET(flags)];
     if (every !== undefined) {
       const proved = lastRan(records)?.id;
-      const newest = ((await files.list(`${folder}/dumps`)) ?? [])
+      const newest = (dumps ?? [])
         .map((name) => ACCOUNT_SNAPSHOT.exec(name))
         .filter((match) => match !== null)
         .sort((a, b) => (a[1] as string).localeCompare(b[1] as string))

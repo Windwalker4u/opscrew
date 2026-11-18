@@ -835,8 +835,9 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     expect(new Set(a.stubFile("logins").split("\n").filter(Boolean))).toEqual(
       new Set(["mysqldump acct_notes", "mysql acct_notes"]),
     );
-    // Asked once each run, and nothing of its answer printed.
-    expect(a.stubFile("print-defaults.log")).toBe("client mysql\n".repeat(3));
+    // Asked once by each run that signs in to the database (not the first, which has nothing to
+    // do), and nothing of its answer printed.
+    expect(a.stubFile("print-defaults.log")).toBe("client mysql\n".repeat(2));
     for (const file of ["state/agent.log", `state/${snapshot}.result`, `state/${restore}.result`]) {
       expect(a.file(file)).not.toMatch(/neighbour|mysql\.sock|db\.example\.com/);
     }

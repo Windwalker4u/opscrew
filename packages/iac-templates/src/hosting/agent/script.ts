@@ -48,7 +48,7 @@ export const DRILL_LOGIN_FILE = "keys/drill.cnf";
  *   (its line of `state/drills.log`) and `expected=` (the dump's table count, when it has a dump).
  *   `pending=1` marks the placeholder, never a final answer.
  * - A restore drill (029 research R25) of a snapshot, on a `drill` request: its dump checked
- *   (`gzip -t`, its size), loaded into the drill database only, whose login
+ *   (its size, and `gunzip` reading it whole), loaded into the drill database only, whose login
  *   {@link DRILL_LOGIN_FILE} names it (every table and view in it dropped first), its tables counted
  *   against the dump's `CREATE TABLE` lines and the drill database emptied again; its copy of the
  *   shared files listed (`tar -tzf`). The app isn't started, and its database and files are never
@@ -621,8 +621,11 @@ ${healthCheck('"$(site_url)$HEALTH_PATH"', '[ "$APP_KIND" = php ]')}
 # my_print_defaults gives for [client] and [mysql], only the last --socket= line is kept, never a
 # user, a password or a host, and nothing of it is printed. Empty without my_print_defaults or a
 # socket line: the clients' built-in default. The app's and the drill's clients read their own
-# login file alone (--defaults-file), which leaves out the files that may name the socket.
+# login file alone (--defaults-file), which leaves out the files that may name the socket. Read
+# once a run, and only by a run that signs in to a database (dump, load, limited_drill).
 mysql_socket() {
+  [ -z "\${MYSQL_SOCKET_READ:-}" ] || return 0
+  MYSQL_SOCKET_READ=1
   MYSQL_SOCKET=""
   command -v my_print_defaults > /dev/null || return 0
   MYSQL_SOCKET=$(my_print_defaults client mysql 2> /dev/null | sed -n 's/^--socket=//p' | tail -n 1) || MYSQL_SOCKET=""
@@ -631,6 +634,7 @@ mysql_socket() {
 # Dumps the app's database into file $1 (gzip), 0600; fails without leaving a partial file. Like
 # app_mysql, it reads shared/mysql.cnf alone, with the account's socket (mysql_socket).
 dump() {
+  mysql_socket
   if mysqldump --defaults-file=shared/mysql.cnf \${MYSQL_SOCKET:+"--socket=$MYSQL_SOCKET"} --single-transaction --no-tablespaces "$DATABASE" | gzip > "$1.partial"; then
     chmod 0600 "$1.partial"
     mv -f "$1.partial" "$1"
@@ -659,6 +663,7 @@ replace_tables() {
 
 # Replaces the app's database with the dump $1.
 load() {
+  mysql_socket
   replace_tables "$1" app_mysql
 }
 
@@ -1162,7 +1167,7 @@ without_definers() {
 }
 
 # A restore drill of snapshot $1, $2 manual or scheduled, which reads neither the app's database
-# nor its files. Its dump, when it has one: gzip -t and its size, then loaded into the drill
+# nor its files. Its dump, when it has one: its size and gunzip, then loaded into the drill
 # database only (every table and view in it dropped first, the dump's DEFINER= clauses left out:
 # without_definers), its tables counted against the dump's
 # CREATE TABLE lines (names and counts only, never a row), and the drill database emptied again.
@@ -1180,10 +1185,10 @@ drill_snapshot() {
   if [ -f "$dump" ]; then
     began=$SECONDS
     size=$(($(wc -c < "$dump")))
-    if [ "$size" -eq 0 ] || ! gzip -t "$dump" 2> /dev/null; then
-      result=not-restored reason=dump
+    # The count's pass is the dump's check too: under pipefail, a dump gunzip can't read fails it.
+    if [ "$size" -eq 0 ] || ! DRILL_EXPECTED=$(gunzip -c "$dump" 2> /dev/null | { grep -c '^CREATE TABLE ' || true; }); then
+      DRILL_EXPECTED="" result=not-restored reason=dump
     else
-      DRILL_EXPECTED=$(gunzip -c "$dump" | grep -c '^CREATE TABLE ' || true)
       if replace_tables "$dump" drill_mysql without_definers; then
         parts=database:$size:$((SECONDS - began))
         if count=$(drill_mysql -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'") && [[ $count =~ ^[0-9]+$ ]]; then
@@ -1237,6 +1242,7 @@ limited_drill() {
   local start code=0 removal=- reason=stopped
   start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   rm -f state/drill.out
+  mysql_socket
   export MYSQL_SOCKET
   export -f say drill_snapshot replace_tables drill_mysql without_definers
   timeout ${DRILL_LIMIT_SECONDS} bash -c 'set -eu -o pipefail; drill_snapshot "$1" "$2"; printf "record=%s\\nexpected=%s\\n" "$DRILL_RECORD" "$DRILL_EXPECTED" > state/drill.out' _ "$1" "$2" || code=$?
@@ -1603,7 +1609,6 @@ main() {
     return 0
   fi
   trim_log
-  mysql_socket
   SSH=(ssh -F /dev/null -i "$DIR/keys/github" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$DIR/keys/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
   if [ ! -f state/report ]; then first_run; fi
   command -v flock > /dev/null || fail "flock is missing on this account, and the agent doesn't deploy without it: ask the host for util-linux's flock."

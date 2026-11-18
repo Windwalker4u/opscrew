@@ -315,6 +315,12 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
   const { folder, hostname } = header;
   const target = hostingTarget(plan);
   const steps: AppStep[] = [];
+  // The panel's databases, listed once for the app's database and the drill's.
+  let listed: Promise<string[]> | undefined;
+  const databases = () => {
+    listed ??= panel.listDatabases();
+    return listed;
+  };
   const publicKey = await files.readFile(`${folder}/keys/release.pub`);
   const stored =
     publicKey !== undefined &&
@@ -326,7 +332,7 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
   }
   const names = databaseNames(target, facts);
   if (names !== undefined && recordedObject(record, "database", names.name) === undefined) {
-    if ((await panel.listDatabases()).includes(names.name)) {
+    if ((await databases()).includes(names.name)) {
       throw notOurs(
         `The account already has the database ${names.name}`,
         "it stopped before the app's plan, with only its agent installed.",
@@ -406,7 +412,7 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
       steps.push({ kind: "certificate", hostname });
     }
   }
-  steps.push(...(await drillDatabaseSteps({ plan, target, panel, record, facts })));
+  steps.push(...(await drillDatabaseSteps({ plan, target, databases, record, facts })));
   return { plan: "app", ...header, steps };
 }
 
@@ -419,11 +425,12 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
 async function drillDatabaseSteps(input: {
   plan: DeployPlan;
   target: HostingDeployTarget;
-  panel: HostingPanel;
+  /** The panel's databases (listed once a plan). */
+  databases: () => Promise<string[]>;
   record: HostingRecord | undefined;
   facts: HostingFacts;
 }): Promise<AppStep[]> {
-  const { plan, target, panel, record, facts } = input;
+  const { plan, target, databases, record, facts } = input;
   const made = recordedObject(record, "drill-database");
   const names =
     plan.snapshots?.drills === undefined ? undefined : drillDatabaseNames(target, facts);
@@ -433,7 +440,7 @@ async function drillDatabaseSteps(input: {
       : [{ kind: "remove-drill-database", name: made.key, user: made.key }];
   }
   if (made !== undefined) return [];
-  if ((await panel.listDatabases()).includes(names.name)) {
+  if ((await databases()).includes(names.name)) {
     throw notOurs(
       `The account already has the database ${names.name}, the name restore drills use`,
       "it stopped before the app's plan.",

@@ -261,10 +261,20 @@ async function approveDrill(
   );
 }
 
-/** The one-time approval of the drill, written in the app's folder as the deploy user's. */
-function approvalCommand(line: string): string {
+/**
+ * `command` after the drill's one-time approval `line`, written in the app's folder as the deploy
+ * user's, in one session with `command`'s stdin; the approval file goes again when they did not end
+ * well, should `command` not have read it.
+ */
+function approvedCommand(line: string, command: string): string {
   const file = DRILL_APPROVAL_FILE;
-  return `umask 077 && printf '%s\\n' ${shellQuote(line)} > ${file} && chmod 600 ${file}`;
+  return [
+    `(umask 077 && printf '%s\\n' ${shellQuote(line)} > ${file} && chmod 600 ${file}) || { c=$?; rm -f ${file}; exit "$c"; }`,
+    `(${command})`,
+    "c=$?",
+    `if [ "$c" -ne 0 ]; then rm -f ${file}; fi`,
+    'exit "$c"',
+  ].join("; ");
 }
 
 /** A machine that threw, as one that did not answer. */
@@ -273,10 +283,9 @@ function unanswered(error: unknown): CommandResult {
 }
 
 /**
- * `snapshot.sh drill` on `host` for `action` after its one-time approval: the drill of the
- * snapshot `id` (`--only`, `--keep` with `keep`), `input` on its stdin, or `--remove`; audited as
- * `audit` (`<id>: <parts>: <outcome>`). The approval file goes when the drill did not end well,
- * should it not have been read.
+ * `snapshot.sh drill` on `host` for `action` after its one-time approval, in one session
+ * ({@link approvedCommand}): the drill of the snapshot `id` (`--only`, `--keep` with `keep`),
+ * `input` on its stdin, or `--remove`; audited as `audit` (`<id>: <parts>: <outcome>`).
  */
 async function runDrill(
   run: SnapshotRun,
@@ -306,24 +315,17 @@ async function runDrill(
           ...(o.only === undefined ? [] : ["--only", o.only]),
           ...(o.action === "keep" ? ["--keep"] : []),
         ];
-  let result: CommandResult | undefined;
-  try {
-    const written = await host.run(approvalCommand(line), READ_TIMEOUT_MS);
-    result =
-      written.exitCode === 0
-        ? await host
-            .run(
-              scriptCommand(["drill", ...args]),
-              DRILL_TIMEOUT_MS,
-              o.action === "remove" ? undefined : o.input,
-            )
-            .catch(unanswered)
-        : written;
-  } finally {
-    if (result?.exitCode !== 0) {
+  const result = await host
+    .run(
+      approvedCommand(line, scriptCommand(["drill", ...args])),
+      DRILL_TIMEOUT_MS,
+      o.action === "remove" ? undefined : o.input,
+    )
+    .catch(async (error: unknown) => {
+      // The session broke: its approval goes in a session of its own.
       await host.run(`rm -f ${DRILL_APPROVAL_FILE}`, READ_TIMEOUT_MS).catch(() => undefined);
-    }
-  }
+      return unanswered(error);
+    });
   await deps.audit
     .append({
       kind: "remote-exec",
