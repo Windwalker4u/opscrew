@@ -143,7 +143,14 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
     const refused = await call(fake, unknown, "GET", "/zones");
     expect([refused.status, ...codes(refused)]).toEqual([401, 1000]);
     expect(await clientOf(fake, unknown).verifyToken()).toMatchObject({ ok: false });
-    expect(await clientB.verifyToken()).toMatchObject({ ok: true, status: "active" });
+    const checkB = await clientB.verifyToken();
+    expect(checkB).toMatchObject({ ok: true, status: "active", id: expect.any(String) });
+    // Each token has its own id, the same on every verify, and never the token itself.
+    const checkA = await clientA.verifyToken();
+    expect(checkA.id).toEqual(expect.any(String));
+    expect(checkA.id).not.toBe(checkB.id);
+    expect((await clientB.verifyToken()).id).toBe(checkB.id);
+    expect(checkA.id).not.toContain(TOKEN_A);
 
     // Every call recorded, with the account it named and its status, never with a token.
     expect(fake.calls.find((c) => c.path === `/zones/${zoneB.id}/dns_records`)).toEqual({

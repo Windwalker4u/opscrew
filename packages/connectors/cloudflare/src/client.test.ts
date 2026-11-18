@@ -40,9 +40,11 @@ describe("zoneCandidates", () => {
 
 describe("CloudflareClient", () => {
   it("verifies an active user token", async () => {
-    const { fetch, calls } = fakeFetch({ "/user/tokens/verify": ok({ status: "active" }) });
+    const { fetch, calls } = fakeFetch({
+      "/user/tokens/verify": ok({ id: "t1", status: "active" }),
+    });
     const check = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).verifyToken();
-    expect(check).toMatchObject({ ok: true, identity: "user API token" });
+    expect(check).toMatchObject({ ok: true, identity: "user API token", id: "t1" });
     expect(calls[0]?.headers.Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
@@ -56,11 +58,12 @@ describe("CloudflareClient", () => {
     const client = new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep });
     expect(await client.verifyToken()).toMatchObject({
       ok: true,
+      id: "t1",
       status: "active",
       expiresOn: "2026-12-01T00:00:00Z",
     });
     const check = await client.verifyToken();
-    expect(check).toMatchObject({ ok: true, status: "active" });
+    expect(check).toMatchObject({ ok: true, id: "t1", status: "active" });
     expect(check).not.toHaveProperty("expiresOn");
   });
 
@@ -75,9 +78,21 @@ describe("CloudflareClient", () => {
     });
     const check = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).verifyToken();
     expect(check.ok).toBe(false);
+    expect(check).not.toHaveProperty("id");
     expect(check).not.toHaveProperty("status");
     expect(check).not.toHaveProperty("expiresOn");
     expect(JSON.stringify(check)).not.toContain(TOKEN);
+  });
+
+  it("gives no id or status when the verify answer lacks the token's id", async () => {
+    const { fetch } = fakeFetch({
+      "/user/tokens/verify": ok({ status: "active" }),
+      "/zones?per_page=1": ok([]),
+    });
+    const check = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).verifyToken();
+    expect(check).toMatchObject({ ok: true, identity: "account API token" });
+    expect(check).not.toHaveProperty("id");
+    expect(check).not.toHaveProperty("status");
   });
 
   it("accepts account tokens that can list zones", async () => {
@@ -556,7 +571,7 @@ describe("CloudflareClient.rotateTunnelSecret", () => {
 
 describe("cloudflareConnector", () => {
   it("exposes the credentials and a client when a token is set", async () => {
-    const { fetch } = fakeFetch({ "/user/tokens/verify": ok({ status: "active" }) });
+    const { fetch } = fakeFetch({ "/user/tokens/verify": ok({ id: "t1", status: "active" }) });
     const connector = cloudflareConnector({
       env: { CLOUDFLARE_API_TOKEN: TOKEN },
       fetch,

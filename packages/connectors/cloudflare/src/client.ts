@@ -228,10 +228,12 @@ export interface CloudflareZone {
 }
 
 /**
- * {@link CloudflareClient.verifyToken}'s answer; a usable token's answer has its status and expiry
- * (ISO 8601) when Cloudflare's verify answer gives them (an expiry only when one is set).
+ * {@link CloudflareClient.verifyToken}'s answer; a usable token's answer has its id, status and
+ * expiry (ISO 8601) when Cloudflare's verify answer gives them (an expiry only when one is set).
+ * The id tells two tokens apart without comparing their values.
  */
 interface CloudflareTokenCheck extends CredentialCheck {
+  id?: string;
   status?: "active" | "disabled" | "expired";
   expiresOn?: string;
 }
@@ -455,6 +457,7 @@ interface RawAnswer {
 }
 
 const TokenVerifySchema = z.looseObject({
+  id: z.string().min(1),
   status: z.enum(["active", "disabled", "expired"]),
   expires_on: z.string().optional(),
 });
@@ -1391,8 +1394,8 @@ export class CloudflareClient {
   }
 
   /**
-   * Checks the token works, with its status and expiry when it does and Cloudflare's verify answer
-   * gives them. Falls back to listing zones for account-owned tokens.
+   * Checks the token works, with its id, status and expiry when it does and Cloudflare's verify
+   * answer gives them. Falls back to listing zones for account-owned tokens.
    */
   async verifyToken(): Promise<CloudflareTokenCheck> {
     if (!this.#token) {
@@ -1400,9 +1403,10 @@ export class CloudflareClient {
     }
     const { status, body } = await this.#request("/user/tokens/verify");
     const result = TokenVerifySchema.safeParse(body.result);
-    const token: Pick<CloudflareTokenCheck, "status" | "expiresOn"> =
+    const token: Pick<CloudflareTokenCheck, "id" | "status" | "expiresOn"> =
       body.success && result.success
         ? {
+            id: result.data.id,
             status: result.data.status,
             ...(result.data.expires_on ? { expiresOn: result.data.expires_on } : {}),
           }
