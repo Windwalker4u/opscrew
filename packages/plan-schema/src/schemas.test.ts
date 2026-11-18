@@ -614,6 +614,7 @@ describe("DeployPlan target on a server the user owns", () => {
       mode: "vps-compose";
       arch: "amd64" | "arm64";
       access: "public" | "tunnel";
+      home?: { ipv4: boolean } | undefined;
       edge: "caddy" | "nginx" | "openlitespeed";
     }>();
     expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();

@@ -38,6 +38,7 @@ import {
   VpsProviderSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
+import { checkHome } from "./home";
 import { MigrationsSchema } from "./migrations";
 import { isOutsideMember, monitoringOf } from "./monitoring";
 import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
@@ -87,6 +88,13 @@ export const OwnTargetSchema = z.strictObject({
    * and is served through a Cloudflare Tunnel (which needs a domain on Cloudflare).
    */
   access: z.enum(["public", "tunnel"]),
+  /**
+   * The server is at the user's home and serves at the home's own address (behind Cloudflare's
+   * proxy when `dns.proxied`, DNS only otherwise). `ipv4: false`: served over IPv6 only; with DNS
+   * only, the user's acceptance that visitors without IPv6 can't reach the site. Absent: not at
+   * home, or served through the tunnel. No address or LAN fact is ever here.
+   */
+  home: z.strictObject({ ipv4: z.boolean() }).optional(),
   edge: EdgeSchema,
 });
 
@@ -2431,6 +2439,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
   if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
   if (isHostingTarget(plan.target)) checkHostingTarget(plan, ctx);
+  checkHome(plan, ctx);
   if (environment !== undefined) checkEnvironment(environment, plan, ctx);
   if (environment?.previews !== undefined) {
     checkPreviews(environment, environment.previews, plan, ctx);

@@ -353,6 +353,16 @@
               "type": "string",
               "enum": ["public", "tunnel"]
             },
+            "home": {
+              "type": "object",
+              "properties": {
+                "ipv4": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["ipv4"],
+              "additionalProperties": false
+            },
             "edge": {
               "default": "caddy",
               "type": "string",
@@ -2436,6 +2446,16 @@
                     "access": {
                       "type": "string",
                       "enum": ["public", "tunnel"]
+                    },
+                    "home": {
+                      "type": "object",
+                      "properties": {
+                        "ipv4": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": ["ipv4"],
+                      "additionalProperties": false
                     },
                     "edge": {
                       "default": "caddy",
