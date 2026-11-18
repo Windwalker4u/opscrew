@@ -20,6 +20,30 @@ export interface HomeForwardsInput {
   sshFrom?: readonly string[];
 }
 
+/**
+ * {@link HomeForwardsInput} from what is known of the home: the network's `noNat` and `ipv6` (none
+ * when it wasn't read: no NAT then isn't assumed), the server's address on the home network (only
+ * through NAT is it forwarded to), and an AAAA record published behind the proxy without IPv4, and
+ * with DNS only while there is IPv6.
+ */
+export function homeForwardsInput(input: {
+  ipv4: boolean;
+  proxied: boolean;
+  network: { noNat: boolean; ipv6: string } | undefined;
+  lanAddress?: string | undefined;
+  sshFrom?: readonly string[] | undefined;
+}): HomeForwardsInput {
+  const { ipv4, network, lanAddress, sshFrom } = input;
+  const noNat = network?.noNat ?? false;
+  return {
+    ...(lanAddress !== undefined && !noNat ? { lanAddress } : {}),
+    ipv4,
+    noNat,
+    aaaa: input.proxied ? !ipv4 : network?.ipv6 === "present",
+    ...(sshFrom !== undefined ? { sshFrom } : {}),
+  };
+}
+
 /** The rule for the router's IPv6 firewall, said whenever an AAAA record is published. */
 export const ROUTER_IPV6_RULE =
   "Allow inbound TCP 80 and 443 to this server in your router's IPv6 firewall.";

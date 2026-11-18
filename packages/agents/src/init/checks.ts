@@ -27,7 +27,7 @@ import {
   orText,
 } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
-import { CHECK_PAUSED_VARIABLE, homeMode, usesTunnel } from "@opscrew/iac-templates";
+import { addressUpdaterName, CHECK_PAUSED_VARIABLE, usesTunnel } from "@opscrew/iac-templates";
 import {
   type ArtifactKind,
   type ArtifactOf,
@@ -984,9 +984,8 @@ async function checkCloudflare(
 
 /** The zone of a server at home whose address updater keeps its records on Cloudflare. */
 function homeUpdaterZone(plan: DeployPlan | undefined): string | undefined {
-  if (plan === undefined || !homeMode(plan) || plan.dns.provider !== "cloudflare") return undefined;
-  const domain = plan.dns.domain;
-  return domain === undefined ? undefined : (plan.dns.zone ?? likelyCloudflareZone(domain));
+  const domain = plan === undefined ? undefined : addressUpdaterName(plan);
+  return domain === undefined ? undefined : (plan?.dns.zone ?? likelyCloudflareZone(domain));
 }
 
 /**

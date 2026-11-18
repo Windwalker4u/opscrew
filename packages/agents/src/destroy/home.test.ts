@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
 import { fakeCloudflareAccounts } from "@opscrew/connector-cloudflare/testing";
 import {
   DNS_UPDATER_RECORD_COMMENT,
@@ -46,7 +47,6 @@ import {
   HOME_IPV6,
   ownPlan,
 } from "../testing";
-import { TOKEN_PAGE } from "./home";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
 
@@ -285,10 +285,10 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for an app at home", ()
     // The output names the token page; the workflow is not left behind.
     const remaining = result.remaining.join("\n");
     expect(remaining).toContain(
-      `The address updater's Cloudflare token: OpsCrew removed your server's copy, but the token works until you delete it at ${TOKEN_PAGE}.`,
+      `The address updater's Cloudflare token: OpsCrew removed your server's copy, but the token works until you delete it at ${CLOUDFLARE_TOKEN_PAGE}.`,
     );
     expect(remaining).not.toContain("outside check");
-    expect(s.deps.reporter.text()).toContain(TOKEN_PAGE);
+    expect(s.deps.reporter.text()).toContain(CLOUDFLARE_TOKEN_PAGE);
 
     // No token or address of the home anywhere.
     const seen = await everythingSeen(s);

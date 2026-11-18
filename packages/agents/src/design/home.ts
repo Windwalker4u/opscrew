@@ -22,7 +22,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { homeForwards } from "../home/forwards";
+import { homeForwards, homeForwardsInput } from "../home/forwards";
 import { classifyHomeNetwork, type HomeNetworkClass, registerHomeAddresses } from "../home/network";
 import {
   carrierNatWarning,
@@ -234,14 +234,19 @@ interface SummaryInput {
  */
 function summary(input: SummaryInput, planFile: string): string[] {
   const { network, found, proxied, ipv4, planned } = input;
-  // An AAAA record is published with DNS only when there is IPv6, and behind the proxy without IPv4.
-  const aaaa = proxied ? !ipv4 : found.ipv6 === "present";
+  const forwards = homeForwardsInput({
+    ipv4,
+    proxied,
+    network: found,
+    lanAddress: input.lan?.address,
+    sshFrom: input.sshFrom,
+  });
   const v6 = network.ipv6.stable;
   let address: string;
   if (ipv4) {
     address = proxied
       ? "OpsCrew found your home's public IPv4 address from your server. It isn't shown: behind Cloudflare's proxy no visitor sees it."
-      : `Your home's public address is ${agreedIpv4(network.ipv4)}${aaaa && v6 !== undefined ? ` and ${v6}` : ""}: the site's DNS records point there, so anyone can look it up.`;
+      : `Your home's public address is ${agreedIpv4(network.ipv4)}${forwards.aaaa && v6 !== undefined ? ` and ${v6}` : ""}: the site's DNS records point there, so anyone can look it up.`;
   } else if (planned !== false) {
     address =
       "Your server has no IPv4 connection to the internet, but it has IPv6: OpsCrew serves the site over IPv6 behind Cloudflare's proxy (target.home.ipv4: false), and Cloudflare still answers visitors over IPv4. A Cloudflare Tunnel works on any connection too (answer server.serve tunnel).";
@@ -255,13 +260,7 @@ function summary(input: SummaryInput, planFile: string): string[] {
     ...(ipv4 && found.warning !== undefined
       ? carrierNatWarning(found.warning, { ipv6: found.ipv6 === "present", proxied })
       : []),
-    ...homeForwards({
-      ...(input.lan === undefined ? {} : { lanAddress: input.lan.address }),
-      ipv4,
-      noNat: found.noNat,
-      aaaa,
-      sshFrom: input.sshFrom,
-    }),
+    ...homeForwards(forwards),
     ISP_TERMS,
     ...(proxied ? [LARGE_MEDIA] : []),
   ];

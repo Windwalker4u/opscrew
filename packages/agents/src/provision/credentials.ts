@@ -7,7 +7,7 @@ import { type GitClient, githubConnector } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
-  homeMode,
+  addressUpdaterName,
   managesPortainerRecords,
   portainerHostname,
   portainerWebhookHostname,
@@ -410,8 +410,7 @@ export async function setupCloudflare(
     // The user's Portainer has no server whose records OpsCrew could have made.
     const servers = portainer === undefined ? await knownServers(deps, plan) : [];
     // A server at home: the address updater's own records at the domain.
-    const updaterName = homeMode(plan) ? plan.dns.domain : undefined;
-    const found = await foreignDnsRecords(api, zone.id, servers, hosts, updaterName);
+    const found = await foreignDnsRecords(api, zone.id, servers, hosts, addressUpdaterName(plan));
     const foreign = found.clashing;
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {

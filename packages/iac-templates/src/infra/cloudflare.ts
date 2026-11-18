@@ -115,18 +115,22 @@ function caaIssuers(plan: DeployPlan): string[] {
 }
 
 /**
- * `module "dns"` pointing the records of `use` at `ipv4` and `ipv6` (HCL expressions): the app's
- * domain with its proxy, `www.` and CAA settings, or a preview environment's wildcard `*.<base>`
- * through Cloudflare's proxy, without `www.` or CAA (the preview server serves Cloudflare's Origin
- * CA certificate for `*.<base>`).
+ * `module "dns"` pointing the records of `use` at `ipv4` and `ipv6` (HCL expressions; none when
+ * the module makes no A and AAAA record): the app's domain with its proxy, `www.` and CAA
+ * settings, or a preview environment's wildcard `*.<base>` through Cloudflare's proxy, without
+ * `www.` or CAA (the preview server serves Cloudflare's Origin CA certificate for `*.<base>`).
+ * `ipv6Record` and `ipv4Record` (HCL booleans) say whether it makes the AAAA and the A record.
  */
 export function dnsModule(
   use: "records" | "previews",
-  ipv4: string,
-  ipv6: string,
+  ipv4: string | undefined,
+  ipv6: string | undefined,
   ipv6Record?: string,
+  ipv4Record?: string,
 ): string[] {
   const previews = use === "previews";
+  const optional = (name: string, value: string | undefined) =>
+    value === undefined ? [] : [[name, value] as const];
   return moduleBlock({
     comment: previews
       ? [
@@ -139,15 +143,28 @@ export function dnsModule(
     args: [
       ["zone_id", "var.cloudflare_zone_id"],
       ["domain", previews ? '"*.${var.preview_domain}"' : "var.domain"],
-      ["ipv4", ipv4],
-      ["ipv6", ipv6],
-      ...(ipv6Record === undefined ? [] : [["ipv6_record", ipv6Record] as const]),
+      ...optional("ipv4", ipv4),
+      ...optional("ipv6", ipv6),
+      ...optional("ipv4_record", ipv4Record),
+      ...optional("ipv6_record", ipv6Record),
       ["proxied", previews ? "true" : "var.proxied"],
       ["www", previews ? "false" : "var.www"],
       ["caa_issuers", previews ? "[]" : "var.caa_issuers"],
     ],
   });
 }
+
+/**
+ * The DNS module's one-time state renames: its A and AAAA records got a `count` (T2907), so both
+ * engines move each to its index `[0]` by themselves in the first plan of a root rendered before,
+ * and nothing changes at Cloudflare.
+ */
+export const DNS_STATE_RENAMES: readonly { from: string; to: string }[] = ["a", "aaaa"].map(
+  (record) => ({
+    from: `module.dns.cloudflare_dns_record.${record}`,
+    to: `module.dns.cloudflare_dns_record.${record}[0]`,
+  }),
+);
 
 /**
  * The preview root's advanced certificate pack, for previews below the app's zone

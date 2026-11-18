@@ -9,7 +9,7 @@ import type {
 } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, upperFirst } from "@opscrew/core";
 import { engineLabel, hashFile } from "@opscrew/iac-engine";
-import type { RenderedFile } from "@opscrew/iac-templates";
+import { DNS_STATE_RENAMES, type RenderedFile } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -78,19 +78,12 @@ export interface InfraPlanInput {
   redesignHint?: string;
 }
 
-/** The DNS module's records that got a `count` (T2907), each renamed once to its index `[0]`. */
-const DNS_COUNT_RECORDS = [
-  "module.dns.cloudflare_dns_record.a",
-  "module.dns.cloudflare_dns_record.aaaa",
-] as const;
-
 /**
- * True for the one-time state rename of the DNS module's A or AAAA record to its count's index
- * (`a` → `a[0]`, `aaaa` → `aaaa[0]`): both engines make it by themselves in the first plan of a
- * root rendered before the records had a `count`, and nothing changes at Cloudflare.
+ * True for one of the DNS module's one-time state renames ({@link DNS_STATE_RENAMES}: its A or
+ * AAAA record to its count's index), which change nothing at Cloudflare.
  */
 export function isDnsRecordCountMove(move: ResourceMove): boolean {
-  return DNS_COUNT_RECORDS.some((record) => move.from === record && move.to === `${record}[0]`);
+  return DNS_STATE_RENAMES.some((rename) => move.from === rename.from && move.to === rename.to);
 }
 
 /**

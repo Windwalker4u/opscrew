@@ -57,16 +57,30 @@ export function homeMode(plan: DeployPlan): boolean {
   return target.provider === "own" && target.access === "public" && target.home !== undefined;
 }
 
+/** How the app on a server the user owns is served: directly, through the tunnel, or from home. */
+export type OwnAccessMode = "public" | "tunnel" | "home";
+
+/** The plan's {@link OwnAccessMode}: a server at home ({@link homeMode}) is a mode of its own. */
+export function ownAccessMode(plan: DeployPlan): OwnAccessMode {
+  return homeMode(plan) ? "home" : tunnelMode(plan) ? "tunnel" : "public";
+}
+
+/** A server at home serving the site over IPv4 (`target.home.ipv4: true`): an A record is published. */
+export function homeIpv4(plan: DeployPlan): boolean {
+  return plan.target.provider === "own" && plan.target.home?.ipv4 === true;
+}
+
+/**
+ * The name the address updater keeps the records of: a server at home's domain with its DNS on
+ * Cloudflare; `undefined` otherwise (no updater).
+ */
+export function addressUpdaterName(plan: DeployPlan): string | undefined {
+  return homeMode(plan) && plan.dns.provider === "cloudflare" ? plan.dns.domain : undefined;
+}
+
 /** homeMode, behind Cloudflare's proxy, over IPv6 (`home.ipv4: false`, proxied). */
 export function homeIpv6Proxied(plan: DeployPlan): boolean {
-  const { target } = plan;
-  return (
-    homeMode(plan) &&
-    target.provider === "own" &&
-    target.home?.ipv4 === false &&
-    usesCloudflare(plan) &&
-    plan.dns.proxied
-  );
+  return homeMode(plan) && !homeIpv4(plan) && usesCloudflare(plan) && plan.dns.proxied;
 }
 
 /** Portainer's hostname when the plan serves Portainer on a subdomain (behind Access). */

@@ -9,6 +9,7 @@ import { usesCloudflare } from "../predicates";
 import { siteHosts } from "../runtime";
 import { artefactsFolder } from "../runtime-dir";
 import {
+  homeIpv4,
   homeIpv6Proxied,
   homeMode,
   PORTAINER_PORT,
@@ -274,7 +275,7 @@ function homeSection(plan: DeployPlan, environments: readonly string[] | undefin
   const name = plan.app.name;
   const updater = usesCloudflare(plan);
   const proxied = updater && plan.dns.proxied;
-  const ipv4 = plan.target.provider === "own" && plan.target.home?.ipv4 !== false;
+  const ipv4 = homeIpv4(plan);
   const status = opscrew(plan, "status", environments);
   const verify = opscrew(plan, "verify", environments);
   const provision = opscrew(plan, "provision", environments);

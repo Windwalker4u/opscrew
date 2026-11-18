@@ -8,8 +8,7 @@
  * abort deletes the updater's records the zone plan copied into B's zone when that zone stays.
  */
 import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
-import { homeMode, usesTunnel } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { addressUpdaterName, usesTunnel } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
 import { deleteUpdaterRecords, planRecordDeletion } from "../home/records";
 import { checkUpdaterToken } from "../home/token";
@@ -34,12 +33,6 @@ import {
   MOVE_PHASE,
 } from "./texts";
 import type { MoveEnvironment, MoveSession, StepStop } from "./types";
-
-/** The name the address updater keeps: a server at home's with its DNS on Cloudflare; else none. */
-function updaterName(plan: DeployPlan): string | undefined {
-  const { dns } = plan;
-  return homeMode(plan) && dns.provider === "cloudflare" ? dns.domain : undefined;
-}
 
 /**
  * The provision services a home server's host plan is made with: the move's server seams, and
@@ -107,7 +100,7 @@ export async function updaterToB(
   environment: MoveEnvironment,
 ): Promise<StepStop | undefined> {
   const { plan } = environment;
-  const name = updaterName(plan);
+  const name = addressUpdaterName(plan);
   if (name === undefined) return undefined;
   const deps = environmentDeps(session, environment);
   const { b } = session.accounts;
@@ -179,7 +172,7 @@ export async function deleteUpdaterCopies(session: MoveSession): Promise<StepSto
   const { b } = session.accounts;
   if (b.zone === undefined) return undefined;
   for (const environment of session.environments) {
-    const name = updaterName(environment.plan);
+    const name = addressUpdaterName(environment.plan);
     if (name === undefined) continue;
     const deps = environmentDeps(session, environment);
     const app = environment.plan.app.name;

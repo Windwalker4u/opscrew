@@ -8,9 +8,9 @@
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { cloudflareConnector } from "@opscrew/connector-cloudflare";
+import { CLOUDFLARE_TOKEN_PAGE, cloudflareConnector } from "@opscrew/connector-cloudflare";
 import { isUserFacingError, lowerFirst } from "@opscrew/core";
-import { homeMode } from "@opscrew/iac-templates";
+import { addressUpdaterName, homeMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { OUTSIDE_CHECK_PATH, outsideCheckUnused } from "../home/outside-check";
@@ -21,14 +21,6 @@ import { gitClient } from "../shared";
 import { hintOf, reasonOf } from "../shared/errors";
 import type { GitHubTarget } from "./common";
 import type { DestroyGitHubApi } from "./types";
-
-/** Where the user deletes the updater's token, which OpsCrew never holds the power to revoke. */
-export const TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
-
-/** True when `plan` is served from home with its DNS on Cloudflare: the address updater keeps it. */
-function hasUpdater(plan: DeployPlan): boolean {
-  return homeMode(plan) && plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
-}
 
 /**
  * Deletes the address updater's records at the app's name, once the teardown removed the updater
@@ -42,8 +34,8 @@ export async function deleteHomeRecords(
   plan: DeployPlan,
   command: string,
 ): Promise<void> {
-  const name = plan.dns.domain;
-  if (!hasUpdater(plan) || name === undefined) return;
+  const name = addressUpdaterName(plan);
+  if (name === undefined) return;
   const client = cloudflareConnector(deps).client;
   if (client === undefined) throw cloudflareTokenMissing(deps);
   const zone = await client.findZone(plan.dns.zone ?? name);
@@ -64,9 +56,9 @@ export async function deleteHomeRecords(
 
 /** What remains of the address updater after the teardown: its token, which only the user deletes. */
 export function updaterTokenLeft(plan: DeployPlan): string[] {
-  return hasUpdater(plan)
+  return addressUpdaterName(plan) !== undefined
     ? [
-        `The address updater's Cloudflare token: OpsCrew removed your server's copy, but the token works until you delete it at ${TOKEN_PAGE}.`,
+        `The address updater's Cloudflare token: OpsCrew removed your server's copy, but the token works until you delete it at ${CLOUDFLARE_TOKEN_PAGE}.`,
       ]
     : [];
 }

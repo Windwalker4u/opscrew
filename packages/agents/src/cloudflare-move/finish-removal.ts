@@ -8,7 +8,7 @@
 import { rm } from "node:fs/promises";
 import { basename } from "node:path";
 import { exists, listText, toPosixRelative } from "@opscrew/core";
-import { homeMode } from "@opscrew/iac-templates";
+import { addressUpdaterName } from "@opscrew/iac-templates";
 import { backupsBucketOf } from "@opscrew/plan-schema";
 import { UPDATER_TOKEN_VAR } from "../home/token";
 import { providerProfile } from "../providers";
@@ -205,7 +205,7 @@ function renames(session: MoveSession): [string, string][] {
     pairs.push([NEW_DEPLOY_TOKEN_VAR, providerProfile("cloudflare-workers").deployTokenVar]);
   }
   // A server at home: its address updater's token is the new account's from now on.
-  if (plans.some((plan) => homeMode(plan) && plan.dns.provider === "cloudflare")) {
+  if (plans.some((plan) => addressUpdaterName(plan) !== undefined)) {
     pairs.push([B_UPDATER_TOKEN_VAR, UPDATER_TOKEN_VAR]);
   }
   return pairs;

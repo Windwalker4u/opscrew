@@ -38,7 +38,7 @@ export {
 } from "./edge/vercel-routing";
 export * from "./hosting";
 export * from "./infra";
-export { CAA_ISSUERS } from "./infra/cloudflare";
+export { CAA_ISSUERS, DNS_STATE_RENAMES } from "./infra/cloudflare";
 export * from "./monitoring";
 export {
   OFFSITE_PREFIX,

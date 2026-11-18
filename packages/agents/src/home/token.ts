@@ -11,6 +11,7 @@ import {
 } from "@opscrew/connector-cloudflare";
 import { type ErrorCode, listText, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
+import { updaterTokenReach } from "./texts";
 
 /** The variable the updater's token is read from. */
 export const UPDATER_TOKEN_VAR = "OPSCREW_DNS_UPDATER_TOKEN";
@@ -80,7 +81,7 @@ export async function checkUpdaterToken(input: UpdaterTokenCheck): Promise<Check
   if (!token) {
     throw refused(
       `Your server's address updater needs a Cloudflare token of its own, limited to ${zone.name}'s DNS.`,
-      `${howTo}\n${reachText(zone.name)}`,
+      `${howTo}\n${updaterTokenReach(zone.name)}`,
       "CREDENTIALS_MISSING",
     );
   }
@@ -149,15 +150,6 @@ async function reachesAccount(
     if (noAccess && ACCESS_NEEDS.has(need)) return false;
     throw error;
   }
-}
-
-/** What the updater's token can reach, said plainly. */
-function reachText(zone: string): string {
-  return [
-    `The updater changes only this app's A/AAAA records, but the token can change any record in ${zone}.`,
-    "Anything with root on your server can use it, the deploy runner included: it runs your repository's code",
-    "in the docker group, which is as good as root.",
-  ].join("\n");
 }
 
 /**

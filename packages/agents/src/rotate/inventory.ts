@@ -6,8 +6,8 @@
 import { join } from "node:path";
 import { exists } from "@opscrew/core";
 import {
+  addressUpdaterName,
   hasLogin,
-  homeMode,
   type RotationMode,
   serviceSpec,
   tunnelMode,
@@ -225,7 +225,7 @@ export const USER_TOKENS: readonly UserTokenEntry[] = [
   {
     name: "dns-updater",
     vars: [UPDATER_TOKEN_VAR],
-    uses: (plan) => homeMode(plan) && plan.dns.provider === "cloudflare",
+    uses: (plan) => addressUpdaterName(plan) !== undefined,
   },
 ];
 
