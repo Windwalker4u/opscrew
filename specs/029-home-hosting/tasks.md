@@ -303,9 +303,10 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2906 [P] [US4] The IPv6 web filter behind the proxy
   - Owns: `packages/connectors/ssh-host/src/web-filter.ts`, `packages/connectors/ssh-host/src/types.ts`
-    (`webFilter.ipv6` only), colocated tests, `packages/connectors/ssh-host/src/web-filter-docker.test.ts`
+    (`webFilter.ipv6` only), `packages/connectors/ssh-host/src/{plan,findings}.ts` (the two items below), colocated tests, `packages/connectors/ssh-host/src/web-filter-docker.test.ts`
   - Reads: plan 8. (M11); research R5
   - Depends: T2905
+  - Also (lead, T2905's findings; `plan.ts` in Owns for these): `planRunnerHost` keeps OpsCrew's SSH table while an app record on the machine has `home` (a runner machine that is also a home server keeps its SSH limit); a home app whose `sshFrom` differs from the shared table's sources gets a warning finding naming that the table keeps its sources (no address in it: "the networks you named for <app> differ from the ones SSH already allows").
   - Accept: `DesiredHost.webFilter.ipv6`; `webFilterScript` also loads `inet opscrew-web` with two
     base chains, policy accept: `input` lets `ip6 saddr` in the ranges reach TCP 80, TCP 443, UDP 443
     and drops other IPv6 packets to those ports, except on `lo`; `forward` does the same for
