@@ -1155,22 +1155,31 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
   );
 }
 
-/** OpsCrew's IPv6 web filter is (partly) on the server: its table or the unit's nftables drop-in. */
-function webFilter6Present(facts: HostFacts): boolean {
-  const { files, table6 } = facts.webFilter;
-  return table6 !== undefined || files.nftDropIn !== undefined;
-}
-
 /** OpsCrew's web filter is (partly) on the server: a file, its chain, a jump to it or its table. */
 function webFilterPresent(facts: HostFacts): boolean {
-  const { files, rules4 } = facts.webFilter;
+  const { files, rules4, table6 } = facts.webFilter;
   return (
     files.script !== null ||
     files.unit !== null ||
     files.dropIn !== null ||
+    files.nftDropIn !== undefined ||
     rules4.chain !== null ||
     rules4.dockerUser.jumps > 0 ||
-    webFilter6Present(facts)
+    table6 !== undefined
+  );
+}
+
+/**
+ * Something listens on IPv6 on a web port, not on loopback (`ss` prints an IPv6 address in
+ * brackets, and `*` for a socket on both families): after a switch back to IPv4 the edge's
+ * docker-proxy does until the next deploy binds it to IPv4 alone.
+ */
+function listensOnIpv6Web(facts: HostFacts): boolean {
+  return facts.listeners.some(
+    ({ proto, port, address }) =>
+      isWebPort(proto, port) &&
+      (address === "*" || address.startsWith("[")) &&
+      !isLoopback(address),
   );
 }
 
@@ -1217,8 +1226,12 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
   const ipv6 =
     desired.webFilter.ipv6 === undefined ? undefined : sortedIpv6Networks(desired.webFilter.ipv6);
   const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4), ...(ipv6 ? { ipv6 } : {}) };
-  // Back to IPv4 alone: OpsCrew's IPv6 table and drop-in go (the IPv4 render is otherwise the same).
-  const removeIpv6 = ipv6 === undefined && webFilter6Present(facts);
+  // Back to IPv4 alone: OpsCrew's IPv6 table goes, but only once nothing listens on IPv6 on the
+  // web ports (the deploy after the switch binds the edge to IPv4 alone). Until then the IPv6
+  // filter stays as it is (its script loads the table at boot, the ranges of the plan before).
+  const left6 = ipv6 === undefined && wf.table6 !== undefined;
+  const keepIpv6 = left6 && listensOnIpv6Web(facts);
+  const removeIpv6 = left6 && !keepIpv6;
   // The IPv6 table needs nft; a home server without it gets nftables first (as its SSH firewall).
   const install = ipv6 !== undefined && !facts.sshFirewall.nft;
   const params = {
@@ -1240,38 +1253,42 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
   }
   const hashes = webFilterFileHashes(ranges);
   const table6 = ipv6 === undefined ? undefined : webFilterTable6Hash(ipv6);
-  const inPlace =
-    wf.files.script === hashes.script &&
+  const rest =
     wf.files.unit === hashes.unit &&
     wf.files.dropIn === hashes.dropIn &&
     wf.files.nftDropIn === hashes.nftDropIn &&
-    wf.table6 === table6 &&
     wf.enabled &&
     wf.active &&
     webRulesMatch(wf.rules4, ranges.ipv4);
-  if (inPlace) return step("web-filter", title, "in-place", params, "Already set.");
+  const kept = `OpsCrew's nftables table ${WEB_FILTER_TABLE} stays while something still listens on IPv6 on port 80 or 443 (the edge, until its next deploy binds it to IPv4 alone); the next run after that removes it.`;
+  // While the IPv6 filter is kept, its script (which loads the table) is the one already there.
+  if (keepIpv6 && rest && wf.files.script !== null) {
+    return step("web-filter", title, "in-place", params, `Already set. ${kept}`);
+  }
+  if (rest && wf.files.script === hashes.script && wf.table6 === table6) {
+    return step("web-filter", title, "in-place", params, "Already set.");
+  }
   const lines = [
     ipv6
       ? `The site is served directly behind Cloudflare's proxy, over IPv4 and IPv6, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges and ${ipv6.length} IPv6 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The IPv4 filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw; the IPv6 filter is OpsCrew's own nftables table ${WEB_FILTER_TABLE}, whose input and forward chains drop other IPv6 packets to those ports (not on the server itself, lo) and change nothing else.`
       : `The site is served directly behind Cloudflare's proxy, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw. The site is published on IPv4 only (visitors still reach it over IPv6 through Cloudflare).`,
     `${WEB_FILTER_SERVICE} installs it at boot before Docker, and Docker requires it: if the filter cannot be installed, Docker does not start (fail closed). Docker is not restarted now; your own DOCKER-USER rules stay.`,
   ];
-  if (ipv6) {
-    if (install) lines.unshift("OpsCrew installs nftables (the nft command) first.");
+  if (install) lines.unshift("OpsCrew installs nftables (the nft command) first.");
+  lines.push(
+    `nftables.service flushes every table when it stops, restarts or reloads (with iptables-nft, iptables' rules too), so ${WEB_FILTER_SERVICE} follows it (a drop-in) and installs the filter again; restarting or stopping nftables.service restarts or stops Docker with it.`,
+  );
+  if (ipv6 && wf.files.script === hashes.script && wf.table6 !== table6) {
     lines.push(
-      `nftables.service flushes every table when it stops, restarts or reloads, so ${WEB_FILTER_SERVICE} follows it (a drop-in) and loads the table again; restarting or stopping nftables.service restarts or stops Docker with it.`,
+      `OpsCrew's nftables table ${WEB_FILTER_TABLE} is not as OpsCrew set it up (missing, flushed or changed); it is loaded again.`,
     );
-    if (wf.files.script === hashes.script && wf.table6 !== table6) {
-      lines.push(
-        `OpsCrew's nftables table ${WEB_FILTER_TABLE} is not as OpsCrew set it up (missing, flushed or changed); it is loaded again.`,
-      );
-    }
   }
   if (removeIpv6) {
     lines.push(
-      `The site is no longer published on IPv6, so OpsCrew's nftables table ${WEB_FILTER_TABLE} and the drop-in that ties ${WEB_FILTER_SERVICE} to nftables.service are removed.`,
+      `The site is no longer published on IPv6, so OpsCrew's nftables table ${WEB_FILTER_TABLE} is removed.`,
     );
   }
+  if (keepIpv6) lines.push(kept);
   const current = wf.rules4.chain;
   if (current !== null) {
     const known = new Set(current.sources);

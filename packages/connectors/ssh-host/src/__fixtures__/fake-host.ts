@@ -1230,6 +1230,11 @@ export class FakeHost implements RemoteExec {
     );
   }
 
+  /** The web filter's step script (check, apply or verify) removes or rules out the IPv6 table. */
+  private removesTable6(p: Record<string, string>): boolean {
+    return p.IPV6 === undefined && (this.calls.at(-1)?.script ?? "").includes("nft list table inet opscrew-web");
+  }
+
   private webFilterOk(p: Record<string, string>): boolean {
     const is = (path: string, sum: string | undefined) => {
       const content = this.files.get(path);
@@ -1239,14 +1244,13 @@ export class FakeHost implements RemoteExec {
       is(WEB_FILTER_SCRIPT, p.SCRIPT_SHA256) &&
       is(WEB_FILTER_UNIT, p.UNIT_SHA256) &&
       is(WEB_FILTER_DROP_IN, p.DROPIN_SHA256) &&
+      is(WEB_FILTER_NFT_DROP_IN, p.NFTDROPIN_SHA256) &&
       this.webFilterUnit.enabled &&
       this.webFilterUnit.active &&
       this.webRulesOk(this.web4, p.IPV4 ?? "") &&
       (p.IPV6 !== undefined
-        ? this.web6 === webFilterTable6Hash(p.IPV6.split(" ")) &&
-          is(WEB_FILTER_NFT_DROP_IN, p.NFTDROPIN_SHA256)
-        : p.NFT_DROP_IN === undefined ||
-          (this.web6 === null && !this.files.has(WEB_FILTER_NFT_DROP_IN)))
+        ? this.web6 === webFilterTable6Hash(p.IPV6.split(" "))
+        : !this.removesTable6(p) || this.web6 === null)
     );
   }
 
@@ -1568,11 +1572,8 @@ export class FakeHost implements RemoteExec {
           this.web6 = webFilterTable6Hash(p.IPV6.split(" "));
         }
         this.files.set(WEB_FILTER_DROP_IN, decode(p.DROPIN_B64));
-        if (p.IPV6 !== undefined) this.files.set(WEB_FILTER_NFT_DROP_IN, decode(p.NFTDROPIN_B64));
-        else if (p.NFT_DROP_IN !== undefined) {
-          this.web6 = null;
-          this.files.delete(WEB_FILTER_NFT_DROP_IN);
-        }
+        this.files.set(WEB_FILTER_NFT_DROP_IN, decode(p.NFTDROPIN_B64));
+        if (this.removesTable6(p)) this.web6 = null;
         this.webFilterUnit = { enabled: true, active: true };
         this.webFilterLog.push(`install ${p.IPV4}`);
         return result();

@@ -1063,9 +1063,9 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(filter?.reason).toMatch(/published on IPv4 only/);
     expect(filter?.reason).toMatch(/Docker does not start \(fail closed\)/);
     expect(codes(plan)).toEqual([]);
-    // The filter plan of this fake server, pinned.
+    // The filter plan of this fake server, pinned (its reason names the unit's nftables drop-in).
     expect(hostPlanHash(plan)).toBe(
-      "aaf10441f9cd1990c174871e58eb54bebfea965cfbba951c923bbc6e01299fd0",
+      "f60f5a74c797ec15e423dac2f5808c5a85da44c7f37fe5185eaa91277e96503d",
     );
   });
 
@@ -1227,6 +1227,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
   });
 
   const BOTH = { ipv4: CF.ipv4, ipv6: ["2400:cb00::/32", "2606:4700::/32"] };
+  const NFT_DROP_IN = "/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf";
 
   it("with IPv6: a flushed or edited table is a change (the inspection's hash), and the drop-in is checked", async () => {
     const fake = new FakeHost();
@@ -1259,35 +1260,52 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(stateOf(await planFor(fake, filtered(fake, BOTH)), "web-filter")).toBe("change");
   });
 
-  it("with IPv6: the reason says the filter follows nftables.service, and Docker with it", async () => {
+  const FOLLOWS_NFTABLES =
+    "nftables.service flushes every table when it stops, restarts or reloads (with iptables-nft, iptables' rules too), so opscrew-web-filter.service follows it (a drop-in) and installs the filter again; restarting or stopping nftables.service restarts or stops Docker with it.";
+
+  it("in both modes: the reason says the filter follows nftables.service, and Docker with it", async () => {
     const fake = new FakeHost();
     const reason = (await planFor(fake, filtered(fake, BOTH))).steps.find(
       (s) => s.id === "web-filter",
     )?.reason;
-    expect(reason).toContain(
-      "nftables.service flushes every table when it stops, restarts or reloads, so opscrew-web-filter.service follows it (a drop-in) and loads the table again; restarting or stopping nftables.service restarts or stops Docker with it.",
-    );
+    expect(reason).toContain(FOLLOWS_NFTABLES);
     expect(reason).not.toContain("installs nftables");
-    // IPv4 alone: no such sentence.
     expect(
       (await planFor(fake, filtered(fake))).steps.find((s) => s.id === "web-filter")?.reason,
-    ).not.toContain("nftables.service");
+    ).toContain(FOLLOWS_NFTABLES);
   });
 
-  it("proxied IPv6 back to IPv4: the plan removes the table and the drop-in, then is in place", async () => {
+  it("IPv4 alone: the unit's nftables drop-in is written and checked, the same file as with IPv6", async () => {
+    const fake = new FakeHost();
+    await provision(fake, filtered(fake));
+    const dropIn = fake.files.get(NFT_DROP_IN);
+    expect(dropIn).toContain("PartOf=nftables.service\nReloadPropagatedFrom=nftables.service\n");
+    expect(stateOf(await planFor(fake, filtered(fake)), "web-filter")).toBe("in-place");
+    // A filter set up before the drop-in (or with it removed): one change, which writes it.
+    fake.files.delete(NFT_DROP_IN);
+    const plan = await planFor(fake, filtered(fake));
+    expect(plan.steps.filter((s) => s.state === "change").map((s) => s.id)).toEqual(["web-filter"]);
+    expect(paramsOf(plan, "web-filter")).toEqual({ ipv4: V4 });
+    await applyApproved(fake, plan);
+    expect(fake.files.get(NFT_DROP_IN)).toBe(dropIn);
+    expect(stateOf(await planFor(fake, filtered(fake)), "web-filter")).toBe("in-place");
+    // With IPv6 the drop-in stays the same file.
+    await applyApproved(fake, await planFor(fake, filtered(fake, BOTH)));
+    expect(fake.files.get(NFT_DROP_IN)).toBe(dropIn);
+  });
+
+  it("proxied IPv6 back to IPv4: the plan removes the table, keeps the drop-in, then is in place", async () => {
     const fake = new FakeHost();
     await applyApproved(fake, await planFor(fake, filtered(fake, BOTH)));
     const back = await planFor(fake, filtered(fake));
     const step = back.steps.find((s) => s.id === "web-filter");
     expect(step).toMatchObject({ state: "change", params: { ipv4: V4, removeIpv6: true } });
     expect(step?.reason).toContain(
-      "The site is no longer published on IPv6, so OpsCrew's nftables table inet opscrew-web and the drop-in that ties opscrew-web-filter.service to nftables.service are removed.",
+      "The site is no longer published on IPv6, so OpsCrew's nftables table inet opscrew-web is removed.",
     );
     await applyApproved(fake, back);
     expect(fake.web6).toBeNull();
-    expect(fake.files.has("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf")).toBe(
-      false,
-    );
+    expect(fake.files.has(NFT_DROP_IN)).toBe(true);
     const again = await planFor(fake, filtered(fake));
     expect(again.steps.find((s) => s.id === "web-filter")).toMatchObject({
       state: "in-place",
@@ -1296,9 +1314,82 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     expect(again.steps.find((s) => s.id === "web-filter")?.params).not.toHaveProperty("removeIpv6");
     // A table left alone (no drop-in) goes the same way.
     fake.web6 = "0".repeat(64);
+    fake.files.delete(NFT_DROP_IN);
     expect(
       (await planFor(fake, filtered(fake))).steps.find((s) => s.id === "web-filter")?.params,
     ).toEqual({ ipv4: V4, removeIpv6: true });
+  });
+
+  /** The edge before its next deploy: docker-proxy still listens on IPv6 on 80 and 443. */
+  const edgeOnIpv6 = (fake: FakeHost) => {
+    fake.containers.push({
+      name: "opscrew-edge-caddy-1",
+      project: "opscrew-edge",
+      ports: "0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp",
+    });
+    for (const address of ["0.0.0.0", "[::]"]) {
+      for (const port of [80, 443]) {
+        fake.listeners.push({ proto: "tcp", address, port, process: "docker-proxy" });
+      }
+    }
+  };
+  const IPV6_WEB = (l: { address: string; port: number }) =>
+    l.address === "[::]" && (l.port === 80 || l.port === 443);
+
+  it("proxied IPv6 back to IPv4: the IPv6 filter stays while the edge still listens on IPv6, the next run after the deploy removes the table", async () => {
+    const fake = new FakeHost();
+    await applyApproved(fake, await planFor(fake, filtered(fake, BOTH)));
+    expect(fake.dockerRunning).toBe(true);
+    edgeOnIpv6(fake);
+    const script = fake.files.get("/usr/local/sbin/opscrew-web-filter");
+    const table = fake.web6;
+    // The switch to IPv4: the edge has not been deployed again yet, so nothing changes.
+    const kept = await planFor(fake, filtered(fake));
+    const step = kept.steps.find((s) => s.id === "web-filter");
+    expect(step).toMatchObject({ state: "in-place", params: { ipv4: V4 } });
+    expect(step?.reason).toBe(
+      "Already set. OpsCrew's nftables table inet opscrew-web stays while something still listens on IPv6 on port 80 or 443 (the edge, until its next deploy binds it to IPv4 alone); the next run after that removes it.",
+    );
+    expect(codes(kept)).toEqual([]);
+    await applyApproved(fake, kept);
+    expect(fake.web6).toBe(table);
+    expect(fake.files.get("/usr/local/sbin/opscrew-web-filter")).toBe(script);
+    // A socket on both families (`*`) counts too; one on loopback does not.
+    fake.listeners = fake.listeners.filter((l) => !IPV6_WEB(l));
+    fake.listeners.push({ proto: "tcp", address: "*", port: 443, process: "caddy" });
+    expect(stateOf(await planFor(fake, filtered(fake)), "web-filter")).toBe("in-place");
+    fake.listeners = fake.listeners.filter((l) => l.address !== "*");
+    fake.listeners.push({ proto: "tcp", address: "[::1]", port: 443, process: "caddy" });
+    expect(paramsOf(await planFor(fake, filtered(fake)), "web-filter")).toEqual({
+      ipv4: V4,
+      removeIpv6: true,
+    });
+    fake.listeners = fake.listeners.filter((l) => l.address !== "[::1]");
+
+    // Cloudflare's IPv4 list changed meanwhile: the IPv4 script is written, the table stays.
+    fake.listeners.push({ proto: "tcp", address: "[::]", port: 80, process: "docker-proxy" });
+    const changed = { ipv4: [...CF.ipv4, "131.0.72.0/22"] };
+    const rewrite = await planFor(fake, filtered(fake, changed));
+    const rewritten = rewrite.steps.find((s) => s.id === "web-filter");
+    expect(rewritten).toMatchObject({ state: "change" });
+    expect(rewritten?.params).not.toHaveProperty("removeIpv6");
+    expect(rewritten?.reason).toContain(
+      "OpsCrew's nftables table inet opscrew-web stays while something still listens on IPv6 on port 80 or 443 (the edge, until its next deploy binds it to IPv4 alone); the next run after that removes it.",
+    );
+    await applyApproved(fake, rewrite);
+    expect(fake.web6).toBe(table);
+    expect(stateOf(await planFor(fake, filtered(fake, changed)), "web-filter")).toBe("in-place");
+
+    // The deploy bound the edge to IPv4 alone: the next run removes the table.
+    fake.listeners = fake.listeners.filter((l) => !IPV6_WEB(l));
+    const after = await planFor(fake, filtered(fake, changed));
+    expect(after.steps.find((s) => s.id === "web-filter")).toMatchObject({
+      state: "change",
+      params: { removeIpv6: true },
+    });
+    await applyApproved(fake, after);
+    expect(fake.web6).toBeNull();
+    expect(stateOf(await planFor(fake, filtered(fake, changed)), "web-filter")).toBe("in-place");
   });
 
   it("with IPv6 and no nft: nftables is installed first (before any change), never a failure mid-apply", async () => {

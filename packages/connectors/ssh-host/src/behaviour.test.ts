@@ -508,6 +508,10 @@ esac`;
       expect(h.read("/etc/systemd/system/opscrew-web-filter.service")).toContain(
         "Before=docker.service",
       );
+      // The unit follows nftables.service, whose restart flushes iptables-nft's tables too.
+      expect(h.read("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf")).toBe(
+        WEB_FILTER_NFT_DROP_IN_TEXT,
+      );
       const systemctl = h.calls().filter((call) => call.startsWith("systemctl "));
       expect(systemctl).toEqual(
         expect.arrayContaining([
@@ -766,7 +770,7 @@ esac`;
         );
       });
 
-      it("back to IPv4 alone: the IPv4 script, then the table and the drop-in go", () => {
+      it("back to IPv4 alone: the IPv4 script, then the table goes; the drop-in stays", () => {
         const h = filterHarness();
         h.stub("nft", NFT);
         expect(h.run(scriptsFor("setup", "web-filter", IPV6).apply).status).toBe(0);
@@ -780,14 +784,16 @@ esac`;
           "nft delete table inet opscrew-web",
         ]);
         expect(h.exists("/state/nft-table")).toBe(false);
-        expect(h.exists(NFT_DROP_IN)).toBe(false);
-        expect(h.exists("/etc/systemd/system/opscrew-web-filter.service.d")).toBe(false);
+        expect(h.read(NFT_DROP_IN)).toBe(WEB_FILTER_NFT_DROP_IN_TEXT);
         expect(h.read("/usr/local/sbin/opscrew-web-filter")).toBe(
           webFilterScript({ ipv4: PARAMS.ipv4.split(" ") }),
         );
         expect(lines(h, "/state/iptables/OPSCREW-WEB")).toHaveLength(3);
         expect(h.run(back.verify).status).toBe(0);
         expect(h.run(back.check).stdout).toContain("state=in-place");
+        // A table there again is not in place for the removal.
+        h.write("/state/nft-table", "table inet opscrew-web {\n}\n");
+        expect(h.run(back.verify).status).not.toBe(0);
       });
 
       it("removal deletes the unit's nftables drop-in too", () => {

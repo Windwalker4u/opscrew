@@ -197,8 +197,8 @@ export const WebFilterFactsSchema = z.object({
    */
   backend: z.enum(["iptables", "nftables", "off"]),
   /**
-   * SHA-256 of OpsCrew's script, unit and Docker drop-in; null when the file is absent. With IPv6
-   * the unit's nftables drop-in too, absent when there is none.
+   * SHA-256 of OpsCrew's script, unit and Docker drop-in; null when the file is absent. The unit's
+   * nftables drop-in too, absent when there is none (a filter set up before it).
    */
   files: z.object({
     script: z.string().nullable(),

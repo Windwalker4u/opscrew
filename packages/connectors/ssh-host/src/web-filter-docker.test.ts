@@ -1,13 +1,15 @@
 /**
- * The web filter with IPv6 against a real nft and real packets: in a privileged `ubuntu:24.04`
- * container (network namespaces for a client and an app), the step loads the IPv4 chain and
- * OpsCrew's table `inet opscrew-web`, its check and verify find the table in place, and running
- * the script again (a reboot) adds no second copy. Over IPv6 only Cloudflare's stand-in range
- * reaches ports 80 and 443 on the server (docker-proxy's input path) and a DNAT'd port 443 (the
- * forward path of an edge network with IPv6); IPv4 and `lo` are untouched. Without nft the script
- * fails, so Docker would not start. The removal deletes only OpsCrew's table, and the other
- * address gets through again. systemctl is a stand-in (no init runs in the container). It pulls
- * the image and installs packages, so it runs only with OPSCREW_DOCKER_TESTS=1.
+ * The web filter with IPv6 against a real nft and real packets, on every supported Debian and
+ * Ubuntu release (nft 1.0.2 on ubuntu:22.04, 1.0.6 on debian:12, 1.0.9 on ubuntu:24.04, 1.1.3 on
+ * debian:13): in a privileged container (network namespaces for a client and an app), the step
+ * loads the IPv4 chain and OpsCrew's table `inet opscrew-web`, its check and verify find the table
+ * in place, and running the script again (a reboot) adds no second copy. Over IPv6 only
+ * Cloudflare's stand-in range reaches ports 80 and 443 on the server (docker-proxy's input path)
+ * and DNAT'd ports 80 and 443 (the forward path of an edge network with IPv6); IPv4 and `lo` are
+ * untouched. Without nft the script fails, so Docker would not start. The removal deletes only
+ * OpsCrew's table, and the other address gets through again. systemctl is a stand-in (no init
+ * runs in the container). It pulls the images and installs packages, so it runs only with
+ * OPSCREW_DOCKER_TESTS=1.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -25,8 +27,10 @@ function skipReason(): string | undefined {
 }
 
 const reason = skipReason();
-if (reason)
-  console.warn(`[connector-ssh-host] skipping the IPv6 web filter on ubuntu:24.04: ${reason}`);
+if (reason) console.warn(`[connector-ssh-host] skipping the IPv6 web filter with nft: ${reason}`);
+
+/** The supported releases, each with the nft it ships. */
+const IMAGES = ["ubuntu:22.04", "debian:12", "ubuntu:24.04", "debian:13"];
 
 /** Stand-ins for Cloudflare's ranges: the client's first address is in the IPv6 one. */
 const PARAMS = { ipv4: "203.0.113.0/24", ipv6: "2001:db8:1:0:cf::/80 2001:db8:ff::/48" };
@@ -37,7 +41,8 @@ const SERVER = "2001:db8:1::1";
 const SCRIPT = `set -u
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
-apt-get install -y -qq --no-install-recommends nftables iptables iproute2 netcat-openbsd >/dev/null 2>&1 || { echo "apt failed"; exit 1; }
+apt-get install -y -qq --no-install-recommends nftables iptables iproute2 netcat-openbsd procps >/dev/null 2>&1 || { echo "apt failed"; exit 1; }
+echo "nft: $(nft --version)"
 cat > /usr/local/sbin/systemctl <<'STUB'
 #!/bin/sh
 [ "$1" = --quiet ] && shift
@@ -54,7 +59,7 @@ exit 0
 STUB
 chmod 0755 /usr/local/sbin/systemctl
 sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 net.ipv6.conf.lo.disable_ipv6=0
-# The server's two links: to a client (IPv6 and IPv4) and to an app it DNATs port 443 to.
+# The server's two links: to a client (IPv6 and IPv4) and to an app it DNATs ports 80 and 443 to.
 ip netns add client
 ip netns add app
 ip link add c0 type veth peer name c1 netns client
@@ -77,6 +82,7 @@ sysctl -qw net.ipv6.conf.all.forwarding=1
 nc -6 -lk 80 >/dev/null 2>&1 &
 nc -6 -lk 443 >/dev/null 2>&1 &
 nc -4 -lk 80 >/dev/null 2>&1 &
+ip netns exec app nc -6 -lk 8080 >/dev/null 2>&1 &
 ip netns exec app nc -6 -lk 8443 >/dev/null 2>&1 &
 sleep 1
 reach() {
@@ -98,84 +104,98 @@ echo "other 80: $(reach ${OTHER} ${SERVER} 80)"
 echo "other 443: $(reach ${OTHER} ${SERVER} 443)"
 echo "ipv4 80: $(reach 10.9.0.2 10.9.0.1 80)"
 if nc -z -w 2 ::1 80 >/dev/null 2>&1; then echo "lo 80: open"; else echo "lo 80: closed"; fi
-# The forward path: port 443 DNAT'd to the app, as Docker does for an edge network with IPv6.
+# The forward path: ports 80 and 443 DNAT'd to the app, as Docker does for an edge network with IPv6.
 nft add table ip6 testnat
 nft add chain ip6 testnat pre '{ type nat hook prerouting priority -100; }'
+nft add rule ip6 testnat pre iifname c0 tcp dport 80 dnat to '[2001:db8:2::2]:8080'
 nft add rule ip6 testnat pre iifname c0 tcp dport 443 dnat to '[2001:db8:2::2]:8443'
-echo "dnat cloudflare: $(reach ${ALLOWED} ${SERVER} 443)"
-echo "dnat other: $(reach ${OTHER} ${SERVER} 443)"
+echo "dnat cloudflare 80: $(reach ${ALLOWED} ${SERVER} 80)"
+echo "dnat cloudflare 443: $(reach ${ALLOWED} ${SERVER} 443)"
+echo "dnat other 80: $(reach ${OTHER} ${SERVER} 80)"
+echo "dnat other 443: $(reach ${OTHER} ${SERVER} 443)"
 # A reboot runs the script again: the same table, no second copy.
 /usr/local/sbin/opscrew-web-filter && echo "boot again: $(nft list table inet opscrew-web | grep -c 'ip6 saddr')"
-mv /usr/sbin/nft /usr/sbin/nft.off
+NFT=$(command -v nft)
+mv "$NFT" "$NFT.off"
 /usr/local/sbin/opscrew-web-filter 2>/tmp/nonft; echo "no nft: $?"
 cat /tmp/nonft
-mv /usr/sbin/nft.off /usr/sbin/nft
+mv "$NFT.off" "$NFT"
 sh /t/remove-apply.sh && echo "remove: ok"
 sh /t/remove-verify.sh && echo "removed: ok"
 echo "tables: $(nft list tables | tr '\\n' ' ')"
 echo "after removal: $(reach ${OTHER} ${SERVER} 443)"
 `;
 
-describe.skipIf(reason !== undefined)("the IPv6 web filter on ubuntu:24.04 with nft", () => {
-  it("lets only Cloudflare's IPv6 ranges reach the web ports, on the input and forward paths", {
-    timeout: 300_000,
-  }, () => {
-    const setup = scriptsFor({ id: "web-filter", params: PARAMS });
-    const removal = scriptsFor({ id: "web-filter", params: { remove: true } });
-    const dir = mkdtempSync(join(tmpdir(), "opscrew-web6-"));
-    try {
-      writeFileSync(join(dir, "check.sh"), setup.check);
-      writeFileSync(join(dir, "apply.sh"), setup.apply);
-      writeFileSync(join(dir, "verify.sh"), setup.verify);
-      writeFileSync(join(dir, "remove-apply.sh"), removal.apply);
-      writeFileSync(join(dir, "remove-verify.sh"), removal.verify);
-      writeFileSync(join(dir, "run.sh"), SCRIPT);
-      const run = spawnSync(
-        "docker",
-        [
-          "run",
-          "--rm",
-          "--label",
-          "opscrew-test=web-filter",
-          "--privileged",
-          "-v",
-          `${dir}:/t:ro`,
-          "ubuntu:24.04",
-          "sh",
-          "/t/run.sh",
-        ],
-        { encoding: "utf8", env: { ...process.env, MSYS_NO_PATHCONV: "1" } },
-      );
-      const out = run.stdout;
-      const all = `${out}\n${run.stderr}`;
-      expect(run.status, all).toBe(0);
-      expect(out, all).toContain("before: open");
-      expect(out, all).toContain("check: state=change");
-      expect(out, all).toContain("apply: ok");
-      expect(out, all).toContain("verify: ok");
-      expect(out, all).toContain("check again: state=in-place");
-      expect(out, all).toContain("cloudflare 80: open");
-      expect(out, all).toContain("cloudflare 443: open");
-      expect(out, all).toContain("other 80: closed");
-      expect(out, all).toContain("other 443: closed");
-      expect(out, all).toContain("ipv4 80: open");
-      expect(out, all).toContain("lo 80: open");
-      expect(out, all).toContain("dnat cloudflare: open");
-      expect(out, all).toContain("dnat other: closed");
-      expect(out, all).toContain("boot again: 6");
-      expect(out, all).toContain("no nft: 1");
-      expect(out, all).toContain("opscrew-web-filter: nft is not installed.");
-      expect(out, all).toContain("remove: ok");
-      expect(out, all).toContain("removed: ok");
-      expect(out, all).toMatch(/tables: .*table inet filter /);
-      expect(out, all).not.toMatch(/tables: .*opscrew-web/);
-      expect(out, all).toContain("after removal: open");
-      // Both base chains, policy accept.
-      const listing = out.slice(out.indexOf("@@listing\n"), out.indexOf("@@end"));
-      expect(listing).toMatch(/type filter hook input priority (0|filter); policy accept;/);
-      expect(listing).toMatch(/type filter hook forward priority (0|filter); policy accept;/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
+describe.skipIf(reason !== undefined)(
+  "the IPv6 web filter with nft, on each supported release",
+  () => {
+    it.each(IMAGES)(
+      "%s: only Cloudflare's IPv6 ranges reach the web ports, on the input and forward paths",
+      {
+        timeout: 300_000,
+      },
+      (image) => {
+        const setup = scriptsFor({ id: "web-filter", params: PARAMS });
+        const removal = scriptsFor({ id: "web-filter", params: { remove: true } });
+        const dir = mkdtempSync(join(tmpdir(), "opscrew-web6-"));
+        try {
+          writeFileSync(join(dir, "check.sh"), setup.check);
+          writeFileSync(join(dir, "apply.sh"), setup.apply);
+          writeFileSync(join(dir, "verify.sh"), setup.verify);
+          writeFileSync(join(dir, "remove-apply.sh"), removal.apply);
+          writeFileSync(join(dir, "remove-verify.sh"), removal.verify);
+          writeFileSync(join(dir, "run.sh"), SCRIPT);
+          const run = spawnSync(
+            "docker",
+            [
+              "run",
+              "--rm",
+              "--label",
+              "opscrew-test=web-filter",
+              "--privileged",
+              "-v",
+              `${dir}:/t:ro`,
+              image,
+              "sh",
+              "/t/run.sh",
+            ],
+            { encoding: "utf8", env: { ...process.env, MSYS_NO_PATHCONV: "1" } },
+          );
+          const out = run.stdout;
+          const all = `${out}\n${run.stderr}`;
+          expect(run.status, all).toBe(0);
+          expect(out, all).toContain("before: open");
+          expect(out, all).toContain("check: state=change");
+          expect(out, all).toContain("apply: ok");
+          expect(out, all).toContain("verify: ok");
+          expect(out, all).toContain("check again: state=in-place");
+          expect(out, all).toContain("cloudflare 80: open");
+          expect(out, all).toContain("cloudflare 443: open");
+          expect(out, all).toContain("other 80: closed");
+          expect(out, all).toContain("other 443: closed");
+          expect(out, all).toContain("ipv4 80: open");
+          expect(out, all).toContain("lo 80: open");
+          expect(out, all).toContain("dnat cloudflare 80: open");
+          expect(out, all).toContain("dnat cloudflare 443: open");
+          expect(out, all).toContain("dnat other 80: closed");
+          expect(out, all).toContain("dnat other 443: closed");
+          expect(out, all).toContain("boot again: 10");
+          expect(out, all).toContain("no nft: 1");
+          expect(out, all).toContain("opscrew-web-filter: nft is not installed.");
+          expect(out, all).toContain("remove: ok");
+          expect(out, all).toContain("removed: ok");
+          expect(out, all).toMatch(/tables: .*table inet filter /);
+          expect(out, all).not.toMatch(/tables: .*opscrew-web/);
+          expect(out, all).toContain("after removal: open");
+          // Both base chains, policy accept; every port listed as a port.
+          const listing = out.slice(out.indexOf("@@listing\n"), out.indexOf("@@end"));
+          expect(listing).toMatch(/type filter hook input priority (0|filter); policy accept;/);
+          expect(listing).toMatch(/type filter hook forward priority (0|filter); policy accept;/);
+          expect(listing).not.toContain("invalid");
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
+  },
+);

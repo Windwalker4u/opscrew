@@ -20,16 +20,35 @@ const IPV6 = ["2400:cb00::/32", "2606:4700::/32"];
 
 describe("the web filter's renders", () => {
   it("IPv4 only: the script and its files keep their hashes", () => {
+    // The unit's nftables drop-in is new in this mode (the same file as with IPv6).
     expect(webFilterFileHashes({ ipv4: IPV4 })).toEqual({
       script: "7041f46b3e89fd34e397c4bfda5053ef8c22c52a80f69a6919c0cc96405a962a",
       unit: "5ba0c4e7fc47da79c43dd085a0191a240f49e8b3499c4ca253bad677b4893782",
       dropIn: "97c2a952b4f120ec2d2868592b8fc4fc5e02ce2bc7109fff45f5ce1d4df9ef0a",
+      nftDropIn: sha256Hex(WEB_FILTER_NFT_DROP_IN_TEXT),
     });
     expect(webFilterScript({ ipv4: IPV4 })).toMatchSnapshot();
   });
 
   it("IPv4 only: the step's scripts match their snapshot", () => {
     expect(scriptsFor({ id: "web-filter", params: { ipv4: IPV4.join(" ") } })).toMatchSnapshot();
+  });
+
+  it("IPv4 only: the step writes and checks the unit's nftables drop-in, and nothing else is new", () => {
+    const scripts = scriptsFor({ id: "web-filter", params: { ipv4: IPV4.join(" ") } });
+    expect(scripts.apply).toContain(
+      `printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644\n# nftables.service flushes every table`,
+    );
+    expect(scripts.apply).toContain(
+      `printf '%s' "$NFTDROPIN_B64" | base64 -d | write_file "$NFT_DROP_IN" 0644\nsystemctl daemon-reload\n`,
+    );
+    expect(scripts.verify).toContain(
+      '  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1\n  file_is "$NFT_DROP_IN" "$NFTDROPIN_SHA256" || return 1\n',
+    );
+    for (const text of [scripts.check, scripts.apply, scripts.verify]) {
+      expect(text).toContain(`NFTDROPIN_SHA256='${sha256Hex(WEB_FILTER_NFT_DROP_IN_TEXT)}'`);
+      expect(text).not.toMatch(/nft |table6_ok|IPV6=/);
+    }
   });
 
   it("the removal's scripts match their snapshot", () => {
@@ -66,16 +85,20 @@ describe("the web filter's renders", () => {
     expect(scripts.apply).toBe(without.apply);
   });
 
-  it("back to IPv4 alone with the IPv6 filter left: the table and drop-in go; the snapshot pins it", () => {
+  it("back to IPv4 alone with the IPv6 filter left: the table goes, the drop-in stays; the snapshot pins it", () => {
     const scripts = scriptsFor({
       id: "web-filter",
       params: { ipv4: IPV4.join(" "), removeIpv6: true },
     });
     expect(scripts.apply).toContain(
-      `rm -f "$NFT_DROP_IN"\nrmdir "$(dirname "$NFT_DROP_IN")" 2>/dev/null || true\nsystemctl daemon-reload\n`,
+      "nft delete table inet opscrew-web\nfi\nsystemctl daemon-reload\n",
     );
-    expect(scripts.apply).toContain("nft delete table inet opscrew-web\n");
-    expect(scripts.verify).toContain('  [ ! -e "$NFT_DROP_IN" ] || return 1\n');
+    expect(scripts.apply).not.toContain('rm -f "$NFT_DROP_IN"');
+    expect(scripts.apply).toContain(
+      `printf '%s' "$NFTDROPIN_B64" | base64 -d | write_file "$NFT_DROP_IN" 0644\n`,
+    );
+    expect(scripts.verify).toContain('  file_is "$NFT_DROP_IN" "$NFTDROPIN_SHA256" || return 1\n');
+    expect(scripts.verify).toContain("nft list table inet opscrew-web >/dev/null 2>&1; then\n");
     expect(scripts.verify).not.toContain("table6_ok");
     // The script on the server is the IPv4 one.
     const ipv4 = scriptsFor({ id: "web-filter", params: { ipv4: IPV4.join(" ") } });
@@ -134,12 +157,23 @@ table inet opscrew-web {
 \t}
 \tchain forward {
 \t\ttype filter hook forward priority 0; policy accept;
-\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } ip6 saddr 2400:cb00::/32 accept
-\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } ip6 saddr 2606:4700::/32 accept
-\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } meta nfproto ipv6 drop
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 443 ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat meta l4proto udp ct original proto-dst 443 ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 443 ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat meta l4proto udp ct original proto-dst 443 ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 meta nfproto ipv6 drop
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 443 meta nfproto ipv6 drop
+\t\tct direction original ct status dnat meta l4proto udp ct original proto-dst 443 meta nfproto ipv6 drop
 \t}
 }
 NFT`);
+  });
+
+  it("the forward chain never puts a set after `ct original proto-dst` (nft 1.0.2 refuses it, 1.0.6 lists it as [invalid type])", () => {
+    expect(script).not.toMatch(/proto-dst \{/);
+    expect(script).not.toMatch(/l4proto \{/);
   });
 
   it("changes the script's hash, so a server with the IPv4 filter alone gets it", () => {
@@ -148,8 +182,9 @@ NFT`);
     );
   });
 
-  it("webFilterTable6Hash: the SHA-256 of the table as nft 1.0.9 lists it (indentation gone, |-joined)", () => {
-    // What `nft list table inet opscrew-web` printed on ubuntu:24.04 after the script loaded it.
+  it("webFilterTable6Hash: the SHA-256 of the table as nft 1.0.2, 1.0.6, 1.0.9 and 1.1.3 list it (indentation gone, |-joined)", () => {
+    // What `nft list table inet opscrew-web` printed, the same byte for byte, on ubuntu:22.04,
+    // debian:12, ubuntu:24.04 and debian:13 after the script loaded it.
     const listing = `table inet opscrew-web {
 \tchain input {
 \t\ttype filter hook input priority filter; policy accept;
@@ -164,9 +199,15 @@ NFT`);
 
 \tchain forward {
 \t\ttype filter hook forward priority filter; policy accept;
-\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } ip6 saddr 2400:cb00::/32 accept
-\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } ip6 saddr 2606:4700::/32 accept
-\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } meta nfproto ipv6 drop
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 443 ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat meta l4proto udp ct original proto-dst 443 ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 443 ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat meta l4proto udp ct original proto-dst 443 ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 meta nfproto ipv6 drop
+\t\tct direction original ct status dnat meta l4proto tcp ct original proto-dst 443 meta nfproto ipv6 drop
+\t\tct direction original ct status dnat meta l4proto udp ct original proto-dst 443 meta nfproto ipv6 drop
 \t}
 }
 `;
@@ -187,13 +228,16 @@ NFT`);
     expect(WEB_FILTER_NFT_DROP_IN_TEXT).toContain(
       "[Unit]\nPartOf=nftables.service\nReloadPropagatedFrom=nftables.service\n\n[Service]\nExecReload=/usr/local/sbin/opscrew-web-filter\n",
     );
+    // It names no IPv6 table: the same file in both modes.
+    expect(WEB_FILTER_NFT_DROP_IN_TEXT).not.toContain("opscrew-web ");
+    expect(WEB_FILTER_NFT_DROP_IN_TEXT).toContain("iptables-nft");
     expect(webFilterFileHashes({ ipv4: IPV4, ipv6: IPV6 }).nftDropIn).toBe(
       sha256Hex(WEB_FILTER_NFT_DROP_IN_TEXT),
     );
-    // The unit is the same in both modes.
-    expect(webFilterFileHashes({ ipv4: IPV4, ipv6: IPV6 }).unit).toBe(
-      webFilterFileHashes({ ipv4: IPV4 }).unit,
-    );
+    // The unit and the drop-ins are the same in both modes.
+    const { script: _v6, ...ipv6Files } = webFilterFileHashes({ ipv4: IPV4, ipv6: IPV6 });
+    const { script: _v4, ...ipv4Files } = webFilterFileHashes({ ipv4: IPV4 });
+    expect(ipv6Files).toEqual(ipv4Files);
   });
 
   it("sortedIpv6Networks: as nft prints them, sorted, without duplicates; IPv4 refused", () => {
