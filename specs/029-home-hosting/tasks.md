@@ -759,6 +759,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
     colocated tests
   - Reads: plan 19.; research R27, R29; the records T2934, T2935, T2937 and T2938 write
   - Depends: T2934, T2935, T2937, T2938
+  - The guide also says (T2933, accepted by the lead): on a split plan a drill runs on the app's server with its parts, and parts on other servers aren't drilled; the table check covers PostgreSQL, MySQL, MariaDB and MongoDB (a cache may be empty); the copy uses `.env.preview`'s values; `--allow-other-version` uses the image the app runs today; where the server has no `/proc/meminfo` the memory check is skipped.
   - Accept: `opscrew status` shows the last drill on each target (snapshot, time, duration, the
     outcome or "skipped" with the reason, R27's row), and with a schedule "no drill within two
     weeks" as a warning; the guide: what a drill proves on each target (R27's table), the command,
