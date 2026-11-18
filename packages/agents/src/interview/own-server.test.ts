@@ -51,6 +51,7 @@ describe("questions for a server the user already has", () => {
     const questions = buildServerQuestions();
     expect(questions.map((q) => q.id)).toEqual([
       "server.host",
+      "server.home",
       "server.port",
       "server.user",
       "server.key",
@@ -90,6 +91,7 @@ describe("questions for a server the user already has", () => {
     const defaults = Object.fromEntries(questions.map((q) => [q.id, q.default]));
     expect(defaults).toEqual({
       "server.host": IPV4,
+      "server.home": false,
       "server.port": "2222",
       "server.user": "admin",
       "server.key": "~/.ssh/id_ed25519",
@@ -200,7 +202,7 @@ describe("answersToOwnServer", () => {
   });
 
   it("suggests reachability from inspection, then the address", () => {
-    const answers = split({ host: "192.168.1.20", user: "pi", key: "agent" });
+    const answers = split({ host: "192.168.1.20", home: "no", user: "pi", key: "agent" });
     expect(answersToOwnServer(answers).reachable).toBe(false);
     expect(answersToOwnServer(answers, { suggestedReachable: true }).reachable).toBe(true);
   });
@@ -415,6 +417,7 @@ describe("runInterview with a server the user already has", () => {
     });
     expect(asked).toEqual([
       "server.host",
+      "server.home",
       "server.port",
       "server.user",
       "server.key",
@@ -577,5 +580,252 @@ describe("runInterview with a server the user already has", () => {
     await writeFile(serverAddressesFile(d.paths), "{ not json");
     await runInterview(d, { answers: { ...BASE, region: "eu-central" } });
     expect(await readFile(serverAddressesFile(d.paths), "utf8")).toBe("{ not json");
+  });
+});
+
+describe("a server at home", () => {
+  const LAN = "192.168.1.30";
+  const base = { host: LAN, user: "ana", key: "agent" };
+  const cloudflare = { cloudflareDomain: true, domain: "shop.example.com" };
+
+  it("asks whether the server is at home right after its address, with the ISP's terms", () => {
+    const questions = buildServerQuestions();
+    expect(questions.map((q) => q.id).slice(0, 2)).toEqual(["server.host", "server.home"]);
+    const home = questions.find((q) => q.id === "server.home");
+    expect(home).toMatchObject({ kind: "confirm", default: false, required: true });
+    expect(home?.help).toMatch(/internet provider's terms.*residential plans often restrict/);
+    expect(home?.help).toMatch(/large media.*Cloudflare's proxy/);
+    // server.sshFrom is for answers files only.
+    expect(questions.map((q) => q.id)).not.toContain("server.sshFrom");
+    expect(SERVER_FIELDS).toContain("sshFrom");
+  });
+
+  it("defaults to home for a private or local address, else the earlier answer, else no", () => {
+    expect(answersToOwnServer(split(base)).home).toEqual({});
+    expect(answersToOwnServer(split({ ...base, host: "pi.local" })).home).toEqual({});
+    expect(answersToOwnServer(split({ ...base, host: IPV4 })).home).toBeUndefined();
+    const previous = { host: IPV4, port: 22, user: "ana", agent: true, serve: "proxy" as const };
+    const atHome = { ...previous, home: {} };
+    expect(answersToOwnServer(split({}), { previous: atHome }).home).toEqual({});
+    expect(
+      buildServerQuestions({ previous: atHome }).find((q) => q.id === "server.home"),
+    ).toMatchObject({ default: true });
+    // The earlier "no" for the same address stays, even when it is private.
+    const notHome = { ...previous, host: LAN, reachable: false, serve: "tunnel" as const };
+    expect(answersToOwnServer(split({}), { previous: notHome })).toMatchObject({
+      reachable: false,
+      serve: "tunnel",
+    });
+    expect(answersToOwnServer(split({}), { previous: notHome }).home).toBeUndefined();
+    // A new private address is at home again.
+    expect(answersToOwnServer(split({ host: "10.0.0.5" }), { previous: notHome }).home).toEqual({});
+    expect(answersToOwnServer(split({ ...base, home: "no" })).home).toBeUndefined();
+    expect(() => answersToOwnServer(split({ ...base, home: "maybe" }))).toThrow(
+      expect.objectContaining({ message: expect.stringMatching(/server\.home: answer yes or no/) }),
+    );
+  });
+
+  it("doesn't take server.reachable at home, and refuses it in plain words", () => {
+    const answers = answersToOwnServer(split({ ...base, home: "yes" }), cloudflare);
+    expect(answers).toEqual({
+      host: LAN,
+      port: 22,
+      user: "ana",
+      agent: true,
+      home: {},
+      serve: "proxy",
+    });
+    expect(answers.reachable).toBeUndefined();
+    for (const reachable of ["yes", "no"]) {
+      expect(() => answersToOwnServer(split({ ...base, home: "yes", reachable }))).toThrow(
+        expect.objectContaining({
+          code: "INVALID_INPUT",
+          message: expect.stringContaining(
+            "server.reachable: a server at home is reached through your router's forwards; remove `server.reachable`",
+          ),
+        }),
+      );
+    }
+    // Away from home it is taken as before.
+    expect(answersToOwnServer(split({ ...base, home: "no", reachable: "yes" })).reachable).toBe(
+      true,
+    );
+  });
+
+  it("offers the proxy first at home, DNS only without a Cloudflare domain, and the tunnel", () => {
+    const previous = { host: LAN, port: 22, user: "ana", agent: true, home: {} };
+    const serve = buildServerQuestions({ previous, ...cloudflare }).find(
+      (q) => q.id === "server.serve",
+    );
+    expect(serve).toMatchObject({ kind: "single-select", default: "proxy" });
+    expect(serve?.options?.map((o) => o.value)).toEqual(["proxy", "dns-only", "tunnel"]);
+    expect(serve?.options?.[0]?.label).toMatch(/home's address, behind Cloudflare's proxy/);
+    expect(serve?.options?.[1]?.label).toMatch(/home's address, DNS only/);
+    expect(serve?.options?.[2]?.hint).toMatch(/any connection, with no forwards/);
+    const only = buildServerQuestions({ previous, cloudflareDomain: false }).find(
+      (q) => q.id === "server.serve",
+    );
+    expect(only?.options?.map((o) => o.value)).toEqual(["dns-only"]);
+
+    expect(answersToOwnServer(split(base), cloudflare).serve).toBe("proxy");
+    expect(answersToOwnServer(split(base), { cloudflareDomain: false }).serve).toBe("dns-only");
+    for (const value of ["tunnel", "dns-only"]) {
+      expect(answersToOwnServer(split({ ...base, serve: value }), cloudflare).serve).toBe(value);
+    }
+    expect(() =>
+      answersToOwnServer(split({ ...base, serve: "tunnel" }), { cloudflareDomain: false }),
+    ).toThrow(
+      expect.objectContaining({ message: expect.stringMatching(/only be served with DNS only/) }),
+    );
+    // The earlier home answer is kept; an earlier answer away from home is not.
+    const tunnelAtHome = { ...previous, serve: "tunnel" as const };
+    expect(answersToOwnServer(split({}), { previous: tunnelAtHome, ...cloudflare }).serve).toBe(
+      "tunnel",
+    );
+    const away = { host: IPV4, port: 22, user: "ana", agent: true, reachable: true };
+    expect(
+      answersToOwnServer(split({ home: "yes" }), {
+        previous: { ...away, serve: "dns-only" },
+        ...cloudflare,
+      }).serve,
+    ).toBe("proxy");
+  });
+
+  it("serves an IPv6-only home address behind the proxy, and keeps the domain check", () => {
+    expect(
+      answersToOwnServer(split({ ...base, host: "fd00::30", serve: "proxy" }), cloudflare).serve,
+    ).toBe("proxy");
+    const deep = { cloudflareDomain: true, domain: "api.shop.example.com" };
+    for (const serve of ["proxy", "tunnel"]) {
+      expect(() => answersToOwnServer(split({ ...base, serve }), deep)).toThrow(
+        expect.objectContaining({
+          message: expect.stringMatching(
+            /would fail HTTPS at Cloudflare's edge.*serve it with DNS only \(server\.serve dns-only\)/,
+          ),
+        }),
+      );
+    }
+    expect(answersToOwnServer(split({ ...base, serve: "dns-only" }), deep).serve).toBe("dns-only");
+  });
+
+  it("takes server.sshFrom at home: up to 32 sources, in the form nft prints them", () => {
+    const answers = answersToOwnServer(
+      split({ ...base, sshFrom: "192.168.1.7/24  10.8.0.0/24 2001:DB8::/32 192.168.1.0/24" }),
+    );
+    expect(answers.home).toEqual({ sshFrom: ["192.168.1.0/24", "10.8.0.0/24", "2001:db8::/32"] });
+    expect(answersToOwnServer(split({ ...base, sshFrom: ["203.0.113.7/32"] })).home).toEqual({
+      sshFrom: ["203.0.113.7"],
+    });
+    // The earlier sources stay for the same server.
+    const previous = {
+      host: LAN,
+      port: 22,
+      user: "ana",
+      agent: true,
+      home: { sshFrom: ["10.8.0.0/24"] },
+    };
+    expect(answersToOwnServer(split({}), { previous }).home).toEqual({ sshFrom: ["10.8.0.0/24"] });
+    expect(answersToOwnServer(split({ host: "192.168.2.30" }), { previous }).home).toEqual({});
+
+    const many = Array.from({ length: 33 }, (_, i) => `10.${i}.0.0/16`).join(" ");
+    expect(() => answersToOwnServer(split({ ...base, sshFrom: many }))).toThrow(
+      expect.objectContaining({
+        message: expect.stringMatching(/at most 32 sources \(there are 33\)/),
+      }),
+    );
+    expect(() => answersToOwnServer(split({ ...base, home: "no", sshFrom: "10.0.0.0/8" }))).toThrow(
+      expect.objectContaining({
+        message: expect.stringMatching(/server\.sshFrom: only a server at home/),
+      }),
+    );
+  });
+
+  it("refuses sources that aren't addresses or networks without echoing them", () => {
+    const near = "203.0.113.77/33";
+    const error = (() => {
+      try {
+        answersToOwnServer(split({ ...base, sshFrom: `10.0.0.0/8 ${near} 0.0.0.0/0 ::1` }));
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    expect(error?.message).toMatch(
+      /server\.sshFrom: sources 2, 3 and 4 are not addresses or networks/,
+    );
+    expect(error?.message).not.toContain("203.0.113.77");
+  });
+
+  it("saves the answers on this computer only, with no public address", async () => {
+    const d = await deps();
+    // A public address an earlier run kept for the same server is dropped.
+    const detected = "198.51.100.73";
+    await recordOwnServer(d.paths, {
+      host: LAN,
+      user: "ana",
+      agent: true,
+      reachable: true,
+      serve: "proxy",
+      hostKey: HOST_KEY,
+      publicIpv4: detected,
+    });
+    const result = await runInterview(d, {
+      answers: {
+        ...BASE,
+        provider: "own",
+        domain: "shop.example.com",
+        dnsProvider: "cloudflare",
+        server: { ...base, home: "yes", serve: "proxy", sshFrom: "192.168.1.0/24 10.8.0.0/24" },
+      },
+    });
+    const home = { sshFrom: ["192.168.1.0/24", "10.8.0.0/24"] };
+    expect(result.ownServer).toEqual({
+      host: LAN,
+      port: 22,
+      user: "ana",
+      agent: true,
+      home,
+      serve: "proxy",
+    });
+    expect(await readOwnServer(d.paths)).toEqual({
+      host: LAN,
+      port: 22,
+      user: "ana",
+      agent: true,
+      home,
+      serve: "proxy",
+      hostKey: HOST_KEY,
+    });
+    // Leak check: the home's addresses reach no output and no committed file.
+    const everything = [
+      await readFile(d.paths.files.requirements, "utf8"),
+      JSON.stringify(await d.state.read()),
+      d.reporter.text(),
+    ].join("\n");
+    for (const hidden of [LAN, detected, "192.168.1.0/24", "10.8.0.0/24"]) {
+      expect(everything).not.toContain(hidden);
+    }
+    expect(await readFile(serverAddressesFile(d.paths), "utf8")).not.toContain(detected);
+  });
+
+  it("asks server.home in a terminal and leaves server.reachable out at home", async () => {
+    const d = await deps();
+    let asked: string[] = [];
+    const result = await runInterview(d, {
+      ask: async () => ({ ...BASE, provider: "own" }),
+      // A terminal skips server.reachable once server.home is yes.
+      askServer: async (questions) => {
+        asked = questions.map((q) => q.id);
+        return {
+          "server.host": LAN,
+          "server.home": true,
+          "server.user": "ana",
+          "server.key": "agent",
+        };
+      },
+    });
+    expect(asked.slice(0, 2)).toEqual(["server.host", "server.home"]);
+    expect(result.ownServer).toMatchObject({ host: LAN, home: {} });
+    expect(result.ownServer?.reachable).toBeUndefined();
   });
 });

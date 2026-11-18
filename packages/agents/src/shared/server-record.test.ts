@@ -1,3 +1,5 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, LAN_IPV4, OWN_IPV4 } from "../testing";
 import {
@@ -134,5 +136,124 @@ describe("a move's connections in server.json", () => {
     expect(record.own).toBeUndefined();
     expect(record.portainer?.environmentId).toBe(2);
     expect(record.retarget?.fromPortainer).toBeUndefined();
+  });
+});
+
+describe("a server at home in server.json", () => {
+  const LAN = "192.168.1.30";
+  const HOME_OWN = {
+    host: LAN,
+    port: 22,
+    user: "ana",
+    agent: true,
+    serve: "proxy" as const,
+    home: {
+      sshFrom: ["192.168.1.0/24", "fe80::/10"],
+      network: {
+        detectedAt: "2026-11-20T10:00:00Z",
+        lan: { address: LAN, network: "192.168.1.0/24", interface: "eth0", gateway: "192.168.1.1" },
+        ipv4: "seen" as const,
+        noNat: false,
+        warning: "cgnat-hop" as const,
+        ipv6: "present" as const,
+      },
+      outsideCheck: {
+        at: "2026-11-20T10:30:00Z",
+        host: "shop.example.com",
+        mode: "proxied" as const,
+        http: "ok" as const,
+        https: "ok" as const,
+        runUrl: "https://github.com/owner/repo/actions/runs/123",
+      },
+    },
+  } satisfies OwnServerConnectionInput;
+
+  it("keeps the answers, the LAN facts, the classification and the last outside check", async () => {
+    const p = await paths();
+    await recordOwnServer(p, HOME_OWN);
+    expect((await readServerAddresses(p)).own).toEqual(HOME_OWN);
+    // Without NAT the server's own address is public: the LAN facts are left out.
+    const { lan: _lan, ...network } = HOME_OWN.home.network;
+    const noNat = { ...HOME_OWN, home: { network: { ...network, noNat: true } } };
+    await recordOwnServer(p, noNat);
+    expect((await readServerAddresses(p)).own).toEqual(noNat);
+  });
+
+  it("never keeps a public address or reachability for a server at home", async () => {
+    const p = await paths();
+    const detected = "198.51.100.73";
+    const refused: OwnServerConnectionInput[] = [
+      { ...HOME_OWN, publicIpv4: detected },
+      { ...HOME_OWN, publicIpv6: "2001:db8:1:2::30" },
+      { ...HOME_OWN, reachable: true },
+      {
+        ...HOME_OWN,
+        home: {
+          network: {
+            ...HOME_OWN.home.network,
+            lan: { ...HOME_OWN.home.network.lan, address: detected },
+          },
+        },
+      },
+      {
+        ...HOME_OWN,
+        home: {
+          network: {
+            ...HOME_OWN.home.network,
+            lan: { ...HOME_OWN.home.network.lan, gateway: detected },
+          },
+        },
+      },
+      {
+        ...HOME_OWN,
+        home: {
+          network: {
+            ...HOME_OWN.home.network,
+            lan: { ...HOME_OWN.home.network.lan, network: "198.51.100.0/24" },
+          },
+        },
+      },
+      // Only the known keys: no hop, no public address field.
+      {
+        ...HOME_OWN,
+        home: { network: { ...HOME_OWN.home.network, publicIpv4: detected } },
+      } as never,
+      { ...HOME_OWN, home: { ...HOME_OWN.home, publicIpv4: detected } } as never,
+    ];
+    for (const own of refused) {
+      await expect(recordOwnServer(p, own)).rejects.toThrow();
+    }
+    expect(await readServerAddresses(p)).toEqual({ schemaVersion: 1 });
+  });
+
+  it("takes SSH's sources only as nft prints them, at most 32", async () => {
+    const p = await paths();
+    const withSources = (sshFrom: string[]) => ({ ...HOME_OWN, home: { sshFrom } });
+    for (const sshFrom of [
+      [],
+      ["192.168.1.7/24"],
+      ["203.0.113.7/32"],
+      ["0.0.0.0/0"],
+      Array.from({ length: 33 }, (_, i) => `10.${i}.0.0/16`),
+    ]) {
+      await expect(recordOwnServer(p, withSources(sshFrom))).rejects.toThrow();
+    }
+    await recordOwnServer(p, withSources(["203.0.113.7", "2001:db8::/32"]));
+    expect((await readServerAddresses(p)).own?.home?.sshFrom).toEqual([
+      "203.0.113.7",
+      "2001:db8::/32",
+    ]);
+  });
+
+  it("reads a damaged home record as damaged, never as a server away from home", async () => {
+    const p = await paths();
+    await updateServerAddresses(p, () => ({ schemaVersion: 1, own: HOME_OWN }));
+    const file = join(p.stateDir, "server.json");
+    const text = await readFile(file, "utf8");
+    await writeFile(file, text.replace('"seen"', '"maybe"'));
+    await expect(readServerAddresses(p)).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+      message: expect.stringContaining("own.home.network.ipv4 is not valid"),
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { rename, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { canonicalSshSource, isPublicAddress, MAX_SSH_SOURCES } from "@opscrew/connector-ssh-host";
 import {
   ensureStateDir,
   OpsCrewError,
@@ -83,6 +84,75 @@ export const SshLoginSchema = z
   .strictObject(SSH_LOGIN)
   .refine((login) => login.agent || login.keyPath !== undefined, KEY_OR_AGENT);
 
+/** An SSH source as nft prints it (ssh-host's `canonicalSshSource`). */
+const SshSourceSchema = z.string().refine((source) => canonicalSshSource(source) === source, {
+  message: "must be an IPv4 or IPv6 address or network such as 192.168.1.0/24",
+});
+
+/** An address on the home network: never one the internet reaches. */
+const LanAddressSchema = z
+  .union([z.ipv4(), z.ipv6()])
+  .refine((address) => !isPublicAddress(address), { message: "must be a home network address" });
+
+/**
+ * What design last found about the home's network (`detectHomeNetwork`, classified): the LAN facts
+ * and the classification, never a public address or a hop. Without NAT the server's own address
+ * is public, so `lan` is left out.
+ */
+const HomeNetworkRecordSchema = z.strictObject({
+  /** When the network was read. */
+  detectedAt: z.iso.datetime(),
+  /** The server's address and network on the home network, its interface and the router. */
+  lan: z
+    .strictObject({
+      address: LanAddressSchema,
+      network: SshSourceSchema.refine(
+        (network) => network.includes("/") && !isPublicAddress(network.split("/")[0] ?? ""),
+        { message: "must be the home network, such as 192.168.1.0/24" },
+      ),
+      interface: z.string().regex(/^[A-Za-z0-9_.@-]{1,15}$/, { message: "must be an interface" }),
+      gateway: LanAddressSchema.optional(),
+    })
+    .optional(),
+  /** Whether the server sees a public IPv4 address from outside. */
+  ipv4: z.enum(["seen", "none", "unknown"]),
+  /** The public IPv4 address is on the server's own interface. */
+  noNat: z.boolean(),
+  /** A sign the connection may have no public IPv4 address of its own. */
+  warning: z.enum(["cgnat-hop", "private-hop", "cgnat-interface"]).optional(),
+  ipv6: z.enum(["present", "absent", "unknown"]),
+});
+
+const CHECK_RESULT = z.enum(["ok", "failed", "unfinished", "skipped"]);
+
+/** The last check of the site from outside the home (GitHub's machines), by verify. */
+const OutsideCheckRecordSchema = z.strictObject({
+  /** When the check was started. */
+  at: z.iso.datetime(),
+  /** The hostname checked. */
+  host: HostNameSchema,
+  /** Behind Cloudflare's proxy, or straight to the home's address. */
+  mode: z.enum(["proxied", "direct"]),
+  http: CHECK_RESULT,
+  https: CHECK_RESULT,
+  /** The GitHub Actions run that checked it. */
+  runUrl: z.url({ protocol: /^https$/ }),
+});
+
+/**
+ * A server at home (the interview's `server.home yes`): SSH's sources, what design found about the
+ * network and the last check from outside. No public address: it is detected again on every run.
+ */
+const OwnHomeSchema = z.strictObject({
+  /** The networks that may reach SSH: the answer, or design's default, written once. */
+  sshFrom: z.array(SshSourceSchema).min(1).max(MAX_SSH_SOURCES).optional(),
+  network: HomeNetworkRecordSchema.optional(),
+  outsideCheck: OutsideCheckRecordSchema.optional(),
+});
+
+/** A server at home as recorded in `.opscrew/server.json` → `own.home`. */
+export type OwnHome = z.output<typeof OwnHomeSchema>;
+
 /**
  * How OpsCrew reaches a server the user owns over SSH. Local only: the address and the login never
  * reach `opscrew/plan.yaml`, pull requests or commit messages. No passwords or passphrases: the key
@@ -104,11 +174,26 @@ const OwnServerSchema = z
      * `dns.proxied`.
      */
     serve: z.enum(["tunnel", "proxy", "dns-only"]).optional(),
-    /** The addresses DNS points to in public mode. */
+    /** The addresses DNS points to in public mode (never for a server at home). */
     publicIpv4: z.ipv4().optional(),
     publicIpv6: z.ipv6().optional(),
+    /** Present for a server at home (the interview's `server.home yes`). */
+    home: OwnHomeSchema.optional(),
   })
-  .refine((own) => own.agent || own.keyPath !== undefined, KEY_OR_AGENT);
+  .refine((own) => own.agent || own.keyPath !== undefined, KEY_OR_AGENT)
+  .superRefine((own, ctx) => {
+    if (own.home === undefined) return;
+    // The home's public address is never kept, and the router's forwards make it reachable.
+    for (const key of ["reachable", "publicIpv4", "publicIpv6"] as const) {
+      if (own[key] !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "is never kept for a server at home",
+        });
+      }
+    }
+  });
 
 /** An SSH login with the user's own key ({@link SshLoginSchema}); `port` is 22 by default. */
 export type SshLogin = z.output<typeof SshLoginSchema>;
