@@ -363,6 +363,21 @@
               "required": ["ipv4"],
               "additionalProperties": false
             },
+            "shares": {
+              "type": "object",
+              "properties": {
+                "app": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,40}$"
+                },
+                "provider": {
+                  "type": "string",
+                  "enum": ["hetzner", "digitalocean", "contabo"]
+                }
+              },
+              "required": ["app", "provider"],
+              "additionalProperties": false
+            },
             "edge": {
               "default": "caddy",
               "type": "string",
@@ -2465,6 +2480,21 @@
                         }
                       },
                       "required": ["ipv4"],
+                      "additionalProperties": false
+                    },
+                    "shares": {
+                      "type": "object",
+                      "properties": {
+                        "app": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,40}$"
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": ["hetzner", "digitalocean", "contabo"]
+                        }
+                      },
+                      "required": ["app", "provider"],
                       "additionalProperties": false
                     },
                     "edge": {

@@ -615,6 +615,7 @@ describe("DeployPlan target on a server the user owns", () => {
       arch: "amd64" | "arm64";
       access: "public" | "tunnel";
       home?: { ipv4: boolean } | undefined;
+      shares?: { app: string; provider: "hetzner" | "digitalocean" | "contabo" } | undefined;
       edge: "caddy" | "nginx" | "openlitespeed";
     }>();
     expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();

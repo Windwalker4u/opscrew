@@ -73,30 +73,55 @@ export const CloudTargetSchema = z.strictObject({
   edge: EdgeSchema,
 });
 
+/** An app's name (`plan.app.name`): DNS-label safe, as resource names derive from it. */
+const AppNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
+  message: "must be 1-41 lower-case letters, digits or hyphens and start with a letter or digit",
+});
+
 /**
  * A server the user already owns. OpsCrew neither creates nor deletes it and has no say over its
  * location, size, operating system or backups. Its address and SSH login are never committed:
  * they live in OpsCrew's local state (`.opscrew/server.json`).
  */
-export const OwnTargetSchema = z.strictObject({
-  provider: z.literal("own"),
-  mode: z.literal("vps-compose"),
-  /** The server's CPU architecture, from inspection; the app image is built for it. */
-  arch: z.enum(["amd64", "arm64"]),
-  /**
-   * `public`: the internet reaches the server directly. `tunnel`: the server has no public address
-   * and is served through a Cloudflare Tunnel (which needs a domain on Cloudflare).
-   */
-  access: z.enum(["public", "tunnel"]),
-  /**
-   * The server is at the user's home and serves at the home's own address (behind Cloudflare's
-   * proxy when `dns.proxied`, DNS only otherwise). `ipv4: false`: served over IPv6 only; with DNS
-   * only, the user's acceptance that visitors without IPv6 can't reach the site. Absent: not at
-   * home, or served through the tunnel. No address or LAN fact is ever here.
-   */
-  home: z.strictObject({ ipv4: z.boolean() }).optional(),
-  edge: EdgeSchema,
-});
+export const OwnTargetSchema = z
+  .strictObject({
+    provider: z.literal("own"),
+    mode: z.literal("vps-compose"),
+    /** The server's CPU architecture, from inspection; the app image is built for it. */
+    arch: z.enum(["amd64", "arm64"]),
+    /**
+     * `public`: the internet reaches the server directly. `tunnel`: the server has no public address
+     * and is served through a Cloudflare Tunnel (which needs a domain on Cloudflare).
+     */
+    access: z.enum(["public", "tunnel"]),
+    /**
+     * The server is at the user's home and serves at the home's own address (behind Cloudflare's
+     * proxy when `dns.proxied`, DNS only otherwise). `ipv4: false`: served over IPv6 only; with DNS
+     * only, the user's acceptance that visitors without IPv6 can't reach the site. Absent: not at
+     * home, or served through the tunnel. No address or LAN fact is ever here.
+     */
+    home: z.strictObject({ ipv4: z.boolean() }).optional(),
+    /** The server is one OpsCrew created for another app, which this app shares (030). */
+    shares: z
+      .strictObject({
+        /** The first app's name on the server (its plan's `app.name`). */
+        app: AppNameSchema,
+        /** Where OpsCrew created that server. */
+        provider: CloudProviderSchema,
+      })
+      .optional(),
+    edge: EdgeSchema,
+  })
+  .superRefine((target, ctx) => {
+    if (target.shares !== undefined && (target.access === "tunnel" || target.home !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["shares"],
+        message:
+          'can go only with target.access "public" and no target.home: a server OpsCrew created is reached at its public address',
+      });
+    }
+  });
 
 /**
  * An extra server OpsCrew creates: {@link CloudTargetSchema} without `edge`, as it serves no web
@@ -2136,10 +2161,7 @@ const DeployPlanFieldsSchema = z.strictObject({
      * key unless the user names it, and another environment's is `<name>-<env>`. A later design
      * keeps it.
      */
-    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
-      message:
-        "must be 1-41 lower-case letters, digits or hyphens and start with a letter or digit",
-    }),
+    name: AppNameSchema,
     /**
      * A further app's key (`opscrew/apps/<key>/`), in every environment's plan of the app; absent
      * for the repository's first app. Every per-repository name derives from it (`workflowPathFor`,
