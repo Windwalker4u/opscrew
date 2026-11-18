@@ -28,7 +28,8 @@ generated values on your computer, which the [recovery copy](secrets-recovery.md
 is ever in a plan, a log, a report or your repository.
 
 It works on servers OpsCrew creates ([Hetzner Cloud](hetzner.md), [DigitalOcean](digitalocean.md)), on
-[a server you already have](own-server.md) with either [proxy](reverse-proxy.md), and in
+[a server you already have](own-server.md) with either [proxy](reverse-proxy.md), including one
+[at home](home-hosting.md) behind Cloudflare's proxy, and in
 [your Portainer](portainer-target.md) when OpsCrew's [Caddy](https://caddyserver.com/) serves the app's stack (web mode
 `caddy`).
 

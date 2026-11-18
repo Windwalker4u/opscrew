@@ -24,9 +24,9 @@ change it would make, and changes nothing until you approve that exact list.
   DNS only (see [How visitors reach your server](#how-visitors-reach-your-server)). A domain on
   [Cloudflare](https://www.cloudflare.com/) and a Cloudflare API token (`CLOUDFLARE_API_TOKEN`) are needed only for the [Cloudflare
   Tunnel](https://www.cloudflare.com/products/tunnel/), for serving behind Cloudflare's proxy and for a [Portainer](portainer.md) subdomain. A
-  server that the internet cannot reach (see
-  [Home servers](#home-servers-and-the-cloudflare-tunnel)) always uses the tunnel, so it always
-  needs them.
+  server that the internet cannot reach (see [The Cloudflare Tunnel](#the-cloudflare-tunnel))
+  uses the tunnel, so it needs them; a computer at home can also serve at your home's own address
+  (see [Host your app at home](home-hosting.md)).
 
 If your sudo user needs a password, OpsCrew stops and tells you how to allow passwordless sudo for
 that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
@@ -36,8 +36,9 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 1. `npx opscrew interview`: choose **A server you already have**. OpsCrew then asks for the server's
    address (IP address or host name), the SSH port this computer and [GitHub Actions](https://github.com/features/actions) connect to
    (usually 22; when a router forwards another port to the server, the forwarded one), the SSH
-   user, which key to use (a path such as `~/.ssh/id_ed25519`, or `agent`), whether the internet
-   can reach the server and how your site is served
+   user, which key to use (a path such as `~/.ssh/id_ed25519`, or `agent`), whether the server is
+   at your home (see [Host your app at home](home-hosting.md)), whether the internet can reach the
+   server and how your site is served
    (see [How visitors reach your server](#how-visitors-reach-your-server)).
    In scripts, put the same answers in a file and pass `--answers <file>`:
 
@@ -47,6 +48,7 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
    server.port: 22
    server.user: root
    server.key: ~/.ssh/id_ed25519
+   server.home: no
    server.reachable: true
    server.serve: tunnel   # tunnel, proxy (behind Cloudflare's proxy) or dns-only (directly)
    ```
@@ -168,6 +170,11 @@ undo; afterwards OpsCrew opens new SSH connections as `deploy` and as your own u
 both work does it cancel the undo. If they do not work, the server puts the previous settings back
 by itself, even if OpsCrew lost its connection.
 
+A restart or reload of nftables (`systemctl restart nftables`, or `reload`) on a server whose
+iptables runs on nftables, as Ubuntu 24.04's does by default, empties every iptables table, ufw's
+included. OpsCrew's own tables come back by themselves, and with the Cloudflare-only filter Docker
+restarts too, so its rules come back. ufw's rules don't: run `sudo ufw reload` after one.
+
 OpsCrew changes nothing it did not list, never removes software, users, containers or files it did
 not install, and records every change (and the value it replaced) in `/etc/opscrew/host.json` on
 the server. If the connection drops while it works, the next `npx opscrew provision` shows only what
@@ -215,7 +222,8 @@ Before any change, OpsCrew refuses an app when:
 - another app already serves one of its hostnames;
 - one of them has no domain (each app needs its own hostnames on a shared edge);
 - the apps would reach visitors in different ways: all apps on a server use the same one of the
-  three ways below (the tunnel, behind Cloudflare's proxy with the filter, or DNS only);
+  three ways below (the tunnel, behind Cloudflare's proxy with the filter, or DNS only), and are
+  all [at home](home-hosting.md#several-apps-on-one-server-at-home) or none;
 - the app asks for a different proxy (`target.edge`) than the server runs. A server's proxy can be
   switched while it holds only one OpsCrew app.
 
@@ -250,7 +258,7 @@ The interview asks how your site is served. There are three ways:
    also for a server with a public address, and the only way for a server the internet cannot
    reach). The server connects out to Cloudflare and opens no web port at all, so nobody can reach
    the app around Cloudflare. It needs Cloudflare Zero Trust turned on (free); see
-   [Cloudflare Tunnel](#home-servers-and-the-cloudflare-tunnel) below. Pick this unless you have a
+   [The Cloudflare Tunnel](#the-cloudflare-tunnel) below. Pick this unless you have a
    reason not to.
 2. **Directly behind Cloudflare's proxy, with a Cloudflare-only filter** (an explicit choice for a
    server with a public address and a domain on Cloudflare). Your domain points at the server
@@ -268,10 +276,14 @@ The interview asks how your site is served. There are three ways:
    Pick this only when you do not use Cloudflare. With another DNS provider you add the record
    yourself.
 
-## Home servers and the Cloudflare Tunnel
+A computer at home can serve the site in the second or third way too, at your home connection's
+own address, with your router's forwards: see [Host your app at home](home-hosting.md).
 
-When the internet cannot reach your server (at home, behind a router), or when you choose the
-tunnel for a server with a public address, OpsCrew serves the app through a **Cloudflare Tunnel**:
+## The Cloudflare Tunnel
+
+When the internet cannot reach your server (behind a router that doesn't forward to it), or when
+you choose the tunnel for a server with a public address or at home, OpsCrew serves the app
+through a **Cloudflare Tunnel**:
 the server connects out to Cloudflare, and no inbound web port is opened. The firewall then allows
 only SSH.
 
@@ -322,7 +334,8 @@ The address, SSH port, user, key path and the pinned host key are kept on your c
 `.opscrew/server.json` (which `opscrew init --fix` adds to `.gitignore`). They never go into
 `opscrew/plan.yaml`, other files in your repository, pull requests or commit messages. GitHub
 Actions gets the address it deploys to as an encrypted deploy secret; with the Cloudflare Tunnel
-it gets only the SSH hostname behind Cloudflare Access instead, never the server's address. If
+it gets only the SSH hostname behind Cloudflare Access instead, never the server's address, and a
+[server at home](home-hosting.md) gives GitHub no address at all. If
 `.opscrew/server.json` is damaged, fix it rather than deleting it: it holds the host key you
 confirmed.
 
@@ -377,3 +390,5 @@ never deletes, rebuilds or reinstalls your server.
 To move an app to or from your server (from a cloud provider, your Portainer or another server of
 yours), use [`npx opscrew retarget`](retarget.md): at `--finish` it removes only the app from the
 old server, never the server itself ([Your own server and your Portainer](retarget.md#your-own-server-and-your-portainer)).
+A server at home is the exception: see
+[Switching away from home, and removing the app](home-hosting.md#switching-away-from-home-and-removing-the-app).

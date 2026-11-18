@@ -203,6 +203,11 @@ has the rest, including the backup key's options.
 | `cloudflare-deploy` | `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` |
 | `ghcr` | `OPSCREW_GHCR_READ_TOKEN` |
 | `ntfy` | `OPSCREW_CHECK_NTFY_TOKEN` |
+| `dns-updater` | `OPSCREW_DNS_UPDATER_TOKEN` |
+
+`dns-updater` is the address updater's token of a [server at home](home-hosting.md): its only copy
+is on the server, which OpsCrew replaces through the server's host plan, approved by its hash (see
+[Rotating the updater's token](home-hosting.md#rotating-the-updaters-token)).
 
 OpsCrew never makes these. Make the new token at the provider, set it in its variable, then run
 `npx opscrew rotate <name>`. OpsCrew checks that the token has the permissions it needs. Then it

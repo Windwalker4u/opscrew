@@ -44,7 +44,9 @@ leave your computer for GitHub.
 
 **OpsCrew's own management still uses SSH.** `provision`, `drift`, `status`, `secure` and `destroy`
 connect to the server over SSH from your computer, so the server keeps accepting SSH.
-The runner only means GitHub does not need to.
+The runner only means GitHub does not need to. A [server at home](home-hosting.md) deploys only
+from the server's runner or a runner machine on your home network, and accepts SSH only from that
+network.
 
 ### What the host plan shows
 

@@ -9,6 +9,7 @@ an app yet.
 - [Deploy to DigitalOcean](digitalocean.md)
 - [Deploy to Contabo](contabo.md)
 - [Deploy to a server you already have](own-server.md)
+- [Host your app at home](home-hosting.md)
 - [Deploy to a Portainer you already run](portainer-target.md)
 - [Your app's production stack on your own computer](localhost.md)
 - [Host your site on Cloudflare, with no server](cloudflare-hosting.md)

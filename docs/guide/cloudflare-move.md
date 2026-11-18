@@ -43,6 +43,9 @@ infrastructure state still names the old account's pieces, so the next provision
 - **A token for the new account,** in `OPSCREW_NEW_CLOUDFLARE_API_TOKEN`. `CLOUDFLARE_API_TOKEN`
   stays the old account's token until the move is finished (see
   [The token for the new account](#the-token-for-the-new-account)).
+- **For an app [at home](home-hosting.md),** an address updater token for the new account, for
+  the finish (see [A server at home](#a-server-at-home)), and this computer on your home network
+  for it.
 - **Up-to-date files.** An app set up by an earlier version of OpsCrew may have a deploy workflow,
   or a site's infrastructure files, that can't deploy to two accounts during a move. The move then
   stops before any change and says so: run `npx opscrew provision`, commit and push what it wrote,
@@ -98,6 +101,22 @@ A site on Cloudflare's hosting also needs a deploy token for the new account, in
 Edit for the new account, as [its deploy token](cloudflare-hosting.md#the-tokens) has for the old
 one. OpsCrew checks it before it stores it in GitHub.
 
+### A server at home
+
+An app [at home](home-hosting.md) with its DNS on Cloudflare has an address updater on its server,
+with a token of its own for the old account's zone. The finish gives it the new account's zone and
+a new token, which you make in the new account with the
+[updater token's recipe](home-hosting.md#the-updaters-token): Zone → DNS → Edit, Include →
+Specific zone → your zone. Make it once the prepare has added the zone to the new account.
+
+```bash
+export OPSCREW_NEW_DNS_UPDATER_TOKEN=...   # the new account's updater token
+```
+
+Without the variable, the finish asks for it once in a terminal, hidden; a script needs the
+variable. OpsCrew checks it as provision checks the updater's token, then sends it to your server
+only, and keeps no copy.
+
 ### Cloudflare Registrar and the old account's token
 
 When the domain isn't in a Porkbun, Namecheap or GoDaddy account whose credentials are set, the
@@ -145,7 +164,9 @@ Then, each from a plan you approve:
    The old zone's records that belong to no OpsCrew app are copied into it with their proxied
    state, comments and TTL. A record that is in the new zone already with other content, or only
    there, is listed and never changed. Records Cloudflare manages itself (Email Routing's, a
-   Worker's custom domains) aren't copied.
+   Worker's custom domains) aren't copied. The records a [server at home](home-hosting.md)'s address
+   updater keeps are copied too, with their content (your home's address) masked in the plan, and
+   the switch updates them from the old zone.
 2. **Each environment's pieces:** OpsCrew's rules for its hostnames, its DNS records, its tunnel,
    its Access policies and service tokens, a site's Worker with the code it runs, its R2 buckets
    (with the same names), and [origin protection](origin-protection.md)'s client certificate with
@@ -333,11 +354,15 @@ until every environment of the app is prepared. It handles one environment at a 
 3. **The snapshots' copies** made since the first copy are copied once more.
 4. **The connector.** The server's connector takes the new account's tunnel token, then the one
    beside it goes.
-5. **What the switch made** (the Access applications and their records, a site's custom domains)
+5. **The address updater**, on a server at home: a host plan, approved by its hash, gives it the
+   new account's zone and updater token (see [A server at home](#a-server-at-home)). Until then it
+   keeps writing the old account's zone, which serves nothing after the switch, so run the finish
+   soon after it: an address change in between reaches visitors only with the finish.
+6. **What the switch made** (the Access applications and their records, a site's custom domains)
    joins the app's infrastructure state. Then, in an approval of their own, the deploy's
    credentials take the new account's values (the Access deploy credentials, or a site's account id
    and deploy token), and the `_NEW` secrets are deleted.
-6. **The state swap.** The new account's states become the app's, and only the ids change in each
+7. **The state swap.** The new account's states become the app's, and only the ids change in each
    root's committed `terraform.tfvars.json`: the account's, the zone's and, with Access, the
    one-time PIN login's. A check plan follows: no change needs no
    approval. From here the move can't be aborted.
@@ -480,6 +505,12 @@ those the app uses:
 | `OPSCREW_OFFSITE_ACCESS_KEY_ID`, `OPSCREW_OFFSITE_SECRET_ACCESS_KEY` | `OPSCREW_NEW_OFFSITE_ACCESS_KEY_ID`, `OPSCREW_NEW_OFFSITE_SECRET_ACCESS_KEY` |
 | `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` | `OPSCREW_NEW_CLOUDFLARE_DEPLOY_TOKEN` |
 
+For an app at home, the finish doesn't list `OPSCREW_DNS_UPDATER_TOKEN`: your server already has
+the new account's updater token. If you keep the variable set, give it that token
+(`OPSCREW_NEW_DNS_UPDATER_TOKEN`'s value), since provision refuses a token that can't read the
+zone's records. Then delete the old account's updater token at its
+[API tokens page](https://dash.cloudflare.com/profile/api-tokens).
+
 While `CLOUDFLARE_API_TOKEN` is still the old account's, which shows the zone as moved,
 `opscrew provision`, the add-on commands, Portainer's, and a site's `drift` and `status` stop and
 say to set it to the new account's token; other commands fail on the new account's pieces. With
@@ -498,8 +529,10 @@ In order, each after its approval: the app's mark goes (so no switch can start),
 secrets, the connectors beside the old ones, the new buckets (each emptied after you type its name),
 the app's other pieces in the new account (after you type the app's name) and its rules there. The
 new zone is deleted after you type its name, only when it holds no other app's mark, no other
-OpsCrew record and no rule of another app; otherwise it stays, and the abort says why. The old
-account was never changed, and keeps serving.
+OpsCrew record and no rule of another app; otherwise it stays, and the abort says why. When it
+stays, the abort also deletes the records of a [server at home](home-hosting.md)'s address updater
+that the prepare copied there, from a plan of their own that lists them by type and name, after
+you type the app's name. The old account was never changed, and keeps serving.
 
 Once an abort has begun, run it to its end: prepare and finish refuse until then.
 
