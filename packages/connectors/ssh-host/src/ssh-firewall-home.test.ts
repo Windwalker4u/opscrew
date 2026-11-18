@@ -20,7 +20,7 @@ import {
 import { AppRecordSchema } from "./facts";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
-import { planUndo } from "./plan";
+import { planRunnerHost, planUndo } from "./plan";
 import { sshFirewallListing } from "./ssh-firewall";
 import { stepScripts } from "./steps";
 import type { DesiredHost, HostPlan, HostStep } from "./types";
@@ -165,10 +165,21 @@ describe("SSH only from the home network", () => {
     await provision(fake, home(fake));
     deployApp(fake, "shop");
     const table = fake.sshFirewall.table;
+    // The same sources in another order: nothing to say.
+    const same = await planFor(
+      fake,
+      home(fake, { ...blog(fake), sshFrom: [...SSH_FROM].reverse() }),
+    );
+    expect(firewallStep(same)?.reason).toBe(
+      'OpsCrew\'s SSH firewall is already set for "shop"; OpsCrew leaves it as it is.',
+    );
     const plan = await planFor(fake, home(fake, { ...blog(fake), sshFrom: ["192.168.1.0/25"] }));
     expect(codes(plan)).toEqual([]);
     expect(firewallStep(plan)).toMatchObject({ state: "in-place" });
-    expect(firewallStep(plan)?.reason).toContain('"shop"');
+    // Other sources: a warning in the step (it does not block), naming no address.
+    expect(firewallStep(plan)?.reason).toBe(
+      'OpsCrew\'s SSH firewall is already set for "shop"; OpsCrew leaves it as it is. The networks you named for "blog" differ from the ones SSH already allows: the SSH firewall keeps the ones it has.',
+    );
     await applyApproved(fake, plan);
     expect(fake.sshFirewall.table).toBe(table);
 
@@ -181,6 +192,31 @@ describe("SSH only from the home network", () => {
       "opscrew destroy --undo-host",
     );
     expect(firewallStep(undo)).toMatchObject({ state: "change", params: { remove: true } });
+  });
+
+  it("stays on a runner machine that is also a home server, without harden.firewall", async () => {
+    const fake = homeServer();
+    await provision(fake, home(fake));
+    const table = fake.sshFirewall.table;
+    const runnerPlan = () =>
+      inspectHost(fake).then((facts) =>
+        planRunnerHost(
+          facts,
+          { repositoryUrl: SHOP_REPOSITORY, runners: [] },
+          "opscrew runner host add home",
+        ),
+      );
+    const plan = await runnerPlan();
+    expect(firewallStep(plan)).toBeUndefined();
+    await applyApproved(fake, plan);
+    expect(fake.sshFirewall.table).toBe(table);
+
+    // Without a home app's record, the runner machine's plan removes it, as before.
+    await removeApp(fake, "shop", false);
+    expect(firewallStep(await runnerPlan())).toMatchObject({
+      state: "change",
+      params: { remove: true },
+    });
   });
 
   it("plans the table again for another home app when it is missing", async () => {

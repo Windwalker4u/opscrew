@@ -169,14 +169,17 @@ import {
 } from "./types";
 import {
   dockerBackendCheck,
+  sortedIpv6Networks,
   sortedNetworks,
   WEB_FILTER_BACKEND_CHECK,
   WEB_FILTER_CHAIN,
   WEB_FILTER_DROP_IN,
   WEB_FILTER_DROP_IN_TEXT,
   WEB_FILTER_FUNCTIONS,
+  WEB_FILTER_IPV6_FUNCTIONS,
   WEB_FILTER_SCRIPT,
   WEB_FILTER_SERVICE,
+  WEB_FILTER_TABLE,
   WEB_FILTER_UNIT,
   WEB_FILTER_UNIT_TEXT,
   webFilterScript,
@@ -1073,10 +1076,30 @@ const Ipv4NetworksSchema = z
     { message: "must be sorted IPv4 networks without duplicates" },
   );
 
+/** Space-separated IPv6 networks as {@link sortedIpv6Networks} gives them. */
+const Ipv6NetworksSchema = z
+  .string()
+  .regex(/^[0-9a-f:/]{2,43}( [0-9a-f:/]{2,43})*$/)
+  .refine(
+    (value) => {
+      const list = value.split(" ");
+      return (
+        list.every((net) => net.includes(":") && canonicalSshSource(net) === net) &&
+        sortedIpv6Networks(list).join(" ") === value
+      );
+    },
+    { message: "must be sorted IPv6 networks without duplicates" },
+  );
+
 const WebFilterParams = z.union([
   z.strictObject({ remove: z.literal(true) }),
-  z.strictObject({ ipv4: Ipv4NetworksSchema }),
+  z.strictObject({ ipv4: Ipv4NetworksSchema, ipv6: Ipv6NetworksSchema.optional() }),
 ]);
+
+/** Lines that remove OpsCrew's IPv6 table when it is there (`nft` may be missing then). */
+const REMOVE_TABLE6 = `if command -v nft >/dev/null 2>&1 && nft list table ${WEB_FILTER_TABLE} >/dev/null 2>&1; then
+  nft delete table ${WEB_FILTER_TABLE}
+fi`;
 
 const WEB_FILTER_HELPERS = `${WEB_FILTER_FUNCTIONS}
 ${FILE_IS}
@@ -1113,6 +1136,9 @@ function webFilterScripts(step: HostStep): StepScripts {
       verify: `  [ ! -e "$SCRIPT" ] && [ ! -e "$UNIT_FILE" ] && [ ! -e "$DROP_IN" ] || return 1
   if command -v iptables >/dev/null 2>&1 && iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then
     return 1
+  fi
+  if command -v nft >/dev/null 2>&1 && nft list table ${WEB_FILTER_TABLE} >/dev/null 2>&1; then
+    return 1
   fi`,
       // Docker first stops requiring the filter (it keeps running), then the rules and files go.
       apply: `rm -f "$DROP_IN"
@@ -1120,6 +1146,7 @@ systemctl daemon-reload
 systemctl disable "$SERVICE" >/dev/null 2>&1 || true
 systemctl stop "$SERVICE" >/dev/null 2>&1 || true
 remove_rules
+${REMOVE_TABLE6}
 rm -f "$UNIT_FILE" "$SCRIPT"
 systemctl daemon-reload`,
       failed: "OpsCrew's web filter is still on the server.",
@@ -1127,7 +1154,12 @@ systemctl daemon-reload`,
       timeoutMs: 2 * MINUTE,
     });
   }
-  const script = webFilterScript({ ipv4: p.ipv4.split(" ") });
+  // With IPv6 the script also loads OpsCrew's nftables table; IPv4 alone renders as before.
+  const ipv6 = p.ipv6;
+  const script = webFilterScript({
+    ipv4: p.ipv4.split(" "),
+    ...(ipv6 === undefined ? {} : { ipv6: ipv6.split(" ") }),
+  });
   return scripts({
     name: "web-filter",
     params: {
@@ -1139,15 +1171,19 @@ systemctl daemon-reload`,
       UNIT_SHA256: sha256Hex(WEB_FILTER_UNIT_TEXT),
       DROPIN_SHA256: sha256Hex(WEB_FILTER_DROP_IN_TEXT),
       IPV4: p.ipv4,
+      ...(ipv6 === undefined ? {} : { IPV6: ipv6 }),
     },
-    helpers: WEB_FILTER_HELPERS,
+    helpers:
+      ipv6 === undefined
+        ? WEB_FILTER_HELPERS
+        : `${WEB_FILTER_HELPERS}\n${WEB_FILTER_IPV6_FUNCTIONS}`,
     verify: `  file_is "$SCRIPT" "$SCRIPT_SHA256" || return 1
   file_is "$UNIT_FILE" "$UNIT_SHA256" || return 1
   file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
   [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
   systemctl is-active --quiet "$SERVICE" || return 1
   chain_ok "$IPV4" || return 1
-  leading_ok || return 1`,
+  leading_ok || return 1${ipv6 === undefined ? "" : '\n  table6_ok "$IPV6" || return 1'}`,
     snapshot: `if [ -e "$SCRIPT" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
     // The script installs the rules right away (an atomic change of OpsCrew's chain; Docker keeps
     // running). Only once it worked does Docker start to require the unit, so a failure here never

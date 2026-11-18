@@ -344,6 +344,13 @@ const Ipv4NetworkSchema = z.string().refine((text) => canonicalIpv4Cidr(text) !=
   message: "must be an IPv4 network such as 173.245.48.0/20",
 });
 
+/** An IPv6 network (Cloudflare's ranges). */
+const Ipv6NetworkSchema = z
+  .string()
+  .refine((text) => text.includes(":") && canonicalSshSource(text) !== null, {
+    message: "must be an IPv6 network such as 2001:db8::/32",
+  });
+
 export const DesiredHostSchema = z
   .strictObject({
     app: AppNameSchema,
@@ -423,13 +430,19 @@ export const DesiredHostSchema = z
     /**
      * Only when the site is served directly behind Cloudflare's proxy (the user's explicit choice):
      * Cloudflare's current IPv4 ranges for the `web-filter` step, which lets only them reach the web
-     * ports (80 and 443) Docker publishes. The site is published on IPv4 only in this mode (nothing
-     * listens on IPv6 80/443). The plan stores them sorted and without duplicates, so the same ranges
-     * in any order give the same plan hash.
+     * ports (80 and 443) Docker publishes. Without `ipv6` the site is published on IPv4 only in this
+     * mode (nothing listens on IPv6 80/443). The plan stores them sorted and without duplicates, so
+     * the same ranges in any order give the same plan hash.
      */
     webFilter: z
       .strictObject({
         ipv4: z.array(Ipv4NetworkSchema).min(1).max(MAX_WEB_FILTER_RANGES),
+        /**
+         * Cloudflare's current IPv6 ranges, only for a home server behind the proxy without IPv4:
+         * the site is published on IPv6 too, and OpsCrew's nftables table `inet opscrew-web` lets
+         * only these ranges reach the web ports over IPv6. Stored like `ipv4`.
+         */
+        ipv6: z.array(Ipv6NetworkSchema).min(1).max(MAX_WEB_FILTER_RANGES).optional(),
       })
       .optional(),
     /**

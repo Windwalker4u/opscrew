@@ -640,6 +640,98 @@ esac`;
       expect(h.exists("/usr/local/sbin/opscrew-web-filter")).toBe(false);
       expect(h.run(remove.verify).status).toBe(0);
     });
+
+    describe("with IPv6 (OpsCrew's nftables table inet opscrew-web)", () => {
+      /** nft over a file: `-f -` loads the table (without its add/delete lines), `list` prints it. */
+      const NFT = `T="$S/nft-table"
+case "$1" in
+  -f) [ ! -e "$S/fail-nft" ] || exit 1; sed -e '/^add table /d' -e '/^delete table /d' > "$T" ;;
+  list) [ -e "$T" ] || exit 1; cat "$T" ;;
+  delete) [ -e "$T" ] || exit 1; rm -f "$T" ;;
+  *) exit 2 ;;
+esac`;
+      const IPV6 = { ...PARAMS, ipv6: "2400:cb00::/32 2606:4700::/32" };
+      const nftCalls = (h: ShellHarness) => h.calls().filter((call) => call.startsWith("nft "));
+
+      it("loads the table after the IPv4 filter, in one transaction, and its checks read it", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        const { check, apply, verify } = scriptsFor("setup", "web-filter", IPV6);
+        expect(h.run(check).stdout).toContain("state=change");
+        h.clearCalls();
+        const run = h.run(apply);
+        expect(run.status, run.stderr).toBe(0);
+        const calls = h.calls();
+        expect(calls.indexOf("nft -f -")).toBeGreaterThan(
+          calls.indexOf("iptables-restore -w --noflush"),
+        );
+        expect(lines(h, "/state/iptables/OPSCREW-WEB")).toHaveLength(3);
+        const table = h.read("/state/nft-table") ?? "";
+        expect(table).toContain("table inet opscrew-web {");
+        expect(table).toContain("\t\tip6 saddr 2606:4700::/32 udp dport 443 accept\n");
+        expect(h.run(verify).status).toBe(0);
+        expect(h.run(check).stdout).toContain("state=in-place");
+
+        // A table that lost a range, or its drops, is no longer in place.
+        h.write("/state/nft-table", table.replace(/.*ip6 saddr 2400:cb00::\/32 tcp.*\n/, ""));
+        expect(h.run(check).stdout).toContain("state=change");
+        h.write("/state/nft-table", table.replace(/.*nfproto ipv6 udp dport 443 drop\n/, ""));
+        expect(h.run(check).stdout).toContain("state=change");
+        expect(h.run(verify).status).not.toBe(0);
+      });
+
+      it("at boot, fails before any change without nft (so Docker does not start)", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        expect(h.run(scriptsFor("setup", "web-filter", IPV6).apply).status).toBe(0);
+        rmSync(h.native("/bin/nft"), { force: true });
+        h.clearCalls();
+        const boot = h.run(BOOT);
+        expect(boot.status).not.toBe(0);
+        expect(boot.stderr).toContain("opscrew-web-filter: nft is not installed.");
+        expect(iptablesCalls(h)).toEqual([]);
+
+        // When nft refuses the table, the script fails too.
+        h.stub("nft", NFT);
+        h.write("/state/fail-nft", "");
+        expect(h.run(BOOT).status).not.toBe(0);
+      });
+
+      it("removal deletes the table too, and needs no nft when there is none", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        expect(h.run(scriptsFor("setup", "web-filter", IPV6).apply).status).toBe(0);
+        h.clearCalls();
+        const remove = scriptsFor("undo", "web-filter", { remove: true });
+        const run = h.run(remove.apply);
+        expect(run.status, run.stderr).toBe(0);
+        expect(nftCalls(h)).toEqual([
+          "nft list table inet opscrew-web",
+          "nft delete table inet opscrew-web",
+        ]);
+        expect(h.exists("/state/nft-table")).toBe(false);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([USER_RULE]);
+        expect(h.run(remove.verify).status).toBe(0);
+
+        // An IPv4-only filter's removal on a server without nft.
+        rmSync(h.native("/bin/nft"), { force: true });
+        expect(h.run(scriptsFor("setup", "web-filter", PARAMS).apply).status).toBe(0);
+        const removed = h.run(remove.apply);
+        expect(removed.status, removed.stderr).toBe(0);
+        expect(h.run(remove.verify).status).toBe(0);
+      });
+
+      it("refuses IPv6 ranges that are unsorted, duplicated or not IPv6", () => {
+        for (const ipv6 of [
+          "2606:4700::/32 2400:cb00::/32",
+          "2400:cb00::/32 2400:cb00::/32",
+          "173.245.48.0/20",
+          "2400:CB00::/32",
+        ]) {
+          expect(() => scriptsFor("setup", "web-filter", { ...PARAMS, ipv6 }), ipv6).toThrow();
+        }
+      });
+    });
   });
 
   describe("teardown", () => {

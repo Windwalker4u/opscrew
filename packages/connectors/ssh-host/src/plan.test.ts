@@ -1097,7 +1097,10 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
       { ipv4: ["0.0.0.0/33"] },
       { ipv4: ["2400:cb00::/32"] },
       { ipv4: ["1.2.3.0/24; reboot"] },
-      { ipv4: CF.ipv4, ipv6: ["2400:cb00::/32"] },
+      { ipv4: CF.ipv4, ipv6: [] },
+      { ipv4: CF.ipv4, ipv6: ["173.245.48.0/20"] },
+      { ipv4: CF.ipv4, ipv6: ["2400:cb00::/32; reboot"] },
+      { ipv4: CF.ipv4, ipv6: ["::/0"] },
     ]) {
       expect(() =>
         planHost(facts, filtered(fake, webFilter as never), "opscrew provision"),
@@ -1186,6 +1189,41 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     await applyApproved(undone, undo);
     expect(undone.web4.chain).toBeNull();
     expect(undone.files.has("/usr/local/sbin/opscrew-web-filter")).toBe(false);
+  });
+
+  it("with IPv6 ranges (behind the proxy without IPv4): sorted, the table in the plan, in place on a re-run", async () => {
+    const fake = new FakeHost();
+    const both = {
+      ipv4: CF.ipv4,
+      ipv6: ["2606:4700::/32", "2400:CB00::/32", "2400:cb00:0::/32"],
+    };
+    const plan = await planFor(fake, filtered(fake, both));
+    expect(codes(plan)).toEqual([]);
+    const step = plan.steps.find((s) => s.id === "web-filter");
+    expect(step).toMatchObject({
+      state: "change",
+      title:
+        "Let only Cloudflare reach the web ports (a filter in Docker's DOCKER-USER chain for IPv4, OpsCrew's nftables table inet opscrew-web for IPv6)",
+      params: { ipv4: V4, ipv6: "2400:cb00::/32 2606:4700::/32" },
+    });
+    expect(step?.reason).toMatch(/Cloudflare's 3 IPv4 ranges and 2 IPv6 ranges/);
+    expect(step?.reason).toMatch(/nftables table inet opscrew-web/);
+    expect(step?.reason).toMatch(/Docker does not start \(fail closed\)/);
+    expect(step?.reason).not.toMatch(/IPv4 only/);
+    // The same ranges in another order give the same plan; the IPv4 filter alone another one.
+    const reversed = { ...both, ipv6: [...both.ipv6].reverse() };
+    expect(hostPlanHash(await planFor(fake, filtered(fake, reversed)))).toBe(hostPlanHash(plan));
+    expect(hostPlanHash(await planFor(fake, filtered(fake)))).not.toBe(hostPlanHash(plan));
+
+    await applyApproved(fake, plan);
+    expect(stateOf(await planFor(fake, filtered(fake, both)), "web-filter")).toBe("in-place");
+    // Dropping IPv6 rewrites the script (it no longer loads the table at boot).
+    expect(stateOf(await planFor(fake, filtered(fake)), "web-filter")).toBe("change");
+    // The removal deletes the table too.
+    const dnsOnly = await planFor(fake, desiredFor(fake));
+    expect(dnsOnly.steps.find((s) => s.id === "web-filter")?.reason).toContain(
+      "its nftables table inet opscrew-web when there is one",
+    );
   });
 });
 

@@ -163,7 +163,13 @@ import {
   ServiceNameSchema,
   sameRepository,
 } from "./types";
-import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-filter";
+import {
+  sortedIpv6Networks,
+  sortedNetworks,
+  WEB_FILTER_SERVICE,
+  WEB_FILTER_TABLE,
+  webFilterFileHashes,
+} from "./web-filter";
 
 function parseFacts(facts: HostFacts): HostFacts {
   const parsed = HostFactsSchema.safeParse(facts);
@@ -1008,19 +1014,26 @@ function sshFirewallStep(
 /**
  * A server's `ssh-firewall` step, only when the desired host has `sshFrom` (a server at home,
  * where a missing `nft` is installed). Shared: while other apps are on the server, OpsCrew's
- * SSH firewall that is there stays as it is. Without `sshFrom` there is no step; `planUndo`
- * removes the firewall.
+ * SSH firewall that is there stays as it is, and its reason says so when this app's sources
+ * differ from the table's (without naming any address). Without `sshFrom` there is no step;
+ * `planUndo` removes the firewall.
  */
 function serverSshFirewallStep(ctx: SetupContext): HostStep | undefined {
   const { facts, desired, others } = ctx;
   if (desired.sshFrom === undefined) return undefined;
   if (others.length > 0 && sshFirewallPresent(facts) && !facts.pendingUndo.sshFirewall) {
+    const table = facts.sshFirewall.table;
+    // The table's sources, from its accept rules (`ip saddr <source> tcp dport <port> accept`).
+    const allowed = (table ?? "")
+      .split("|")
+      .flatMap((line) => /^ip6? saddr (\S+) tcp dport \d+ accept$/.exec(line)?.[1] ?? []);
+    const differs = table !== null && !sameList([...new Set(allowed)], sshSources(desired.sshFrom));
     return step(
       "ssh-firewall",
       "SSH firewall",
       "in-place",
       {},
-      `OpsCrew's SSH firewall is already set for ${quoted(others)}; OpsCrew leaves it as it is.`,
+      `OpsCrew's SSH firewall is already set for ${quoted(others)}; OpsCrew leaves it as it is.${differs ? ` The networks you named for "${desired.app}" differ from the ones SSH already allows: the SSH firewall keeps the ones it has.` : ""}`,
     );
   }
   return sshFirewallStep(ctx, desired.sshFrom, desired.home !== undefined);
@@ -1170,6 +1183,9 @@ function webRulesMatch(rules: WebFilterRules, networks: readonly string[]): bool
 
 const TITLE_WEB_FILTER =
   "Let only Cloudflare reach the web ports (a filter in Docker's DOCKER-USER chain)";
+/** What the web filter's removal does, in a setup that no longer wants it and in an undo. */
+const WEB_FILTER_REMOVAL = `Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its nftables table ${WEB_FILTER_TABLE} when there is one, its unit and its script are removed; your own rules stay.`;
+const TITLE_WEB_FILTER_IPV6 = `Let only Cloudflare reach the web ports (a filter in Docker's DOCKER-USER chain for IPv4, OpsCrew's nftables table ${WEB_FILTER_TABLE} for IPv6)`;
 
 /**
  * The `web-filter` step: behind Cloudflare's proxy (the user's explicit choice) only Cloudflare's
@@ -1187,11 +1203,14 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
       TITLES.removeWebFilter,
       "change",
       { remove: true },
-      "The site is no longer served directly behind Cloudflare's proxy. Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
+      `The site is no longer served directly behind Cloudflare's proxy. ${WEB_FILTER_REMOVAL}`,
     );
   }
-  const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4) };
-  const params = { ipv4: ranges.ipv4.join(" ") };
+  const ipv6 =
+    desired.webFilter.ipv6 === undefined ? undefined : sortedIpv6Networks(desired.webFilter.ipv6);
+  const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4), ...(ipv6 ? { ipv6 } : {}) };
+  const params = { ipv4: ranges.ipv4.join(" "), ...(ipv6 ? { ipv6: ipv6.join(" ") } : {}) };
+  const title = ipv6 ? TITLE_WEB_FILTER_IPV6 : TITLE_WEB_FILTER;
   const blocker =
     wf.backend === "nftables"
       ? findings.dockerNftables()
@@ -1200,7 +1219,7 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
         : undefined;
   if (blocker !== undefined) {
     found.push(blocker);
-    return step("web-filter", TITLE_WEB_FILTER, "blocked", params, blocker.message);
+    return step("web-filter", title, "blocked", params, blocker.message);
   }
   const hashes = webFilterFileHashes(ranges);
   const inPlace =
@@ -1210,9 +1229,11 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
     wf.enabled &&
     wf.active &&
     webRulesMatch(wf.rules4, ranges.ipv4);
-  if (inPlace) return step("web-filter", TITLE_WEB_FILTER, "in-place", params, "Already set.");
+  if (inPlace) return step("web-filter", title, "in-place", params, "Already set.");
   const lines = [
-    `The site is served directly behind Cloudflare's proxy, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw. The site is published on IPv4 only (visitors still reach it over IPv6 through Cloudflare).`,
+    ipv6
+      ? `The site is served directly behind Cloudflare's proxy, over IPv4 and IPv6, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges and ${ipv6.length} IPv6 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The IPv4 filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw; the IPv6 filter is OpsCrew's own nftables table ${WEB_FILTER_TABLE}, whose input and forward chains drop other IPv6 packets to those ports (not on the server itself, lo) and change nothing else.`
+      : `The site is served directly behind Cloudflare's proxy, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw. The site is published on IPv4 only (visitors still reach it over IPv6 through Cloudflare).`,
     `${WEB_FILTER_SERVICE} installs it at boot before Docker, and Docker requires it: if the filter cannot be installed, Docker does not start (fail closed). Docker is not restarted now; your own DOCKER-USER rules stay.`,
   ];
   const current = wf.rules4.chain;
@@ -1227,7 +1248,7 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
       );
     }
   }
-  return step("web-filter", TITLE_WEB_FILTER, "change", params, lines.join(" "));
+  return step("web-filter", title, "change", params, lines.join(" "));
 }
 
 function upgradesStep({ facts }: SetupContext): HostStep {
@@ -2351,13 +2372,7 @@ export function planUndo(
   steps.push(...networkRemovals(f, Object.keys(record.networks ?? {}), "shared"));
   if (entry("web-filter") && webFilterPresent(f)) {
     steps.push(
-      step(
-        "web-filter",
-        TITLES.removeWebFilter,
-        "change",
-        { remove: true },
-        "Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
-      ),
+      step("web-filter", TITLES.removeWebFilter, "change", { remove: true }, WEB_FILTER_REMOVAL),
     );
   }
   if (sshFirewallPresent(f)) steps.push(sshFirewallRemoval());
@@ -3794,8 +3809,10 @@ export function planRunner(
  * server's `sshd` step (refused while OpsCrew logs in as root or a login has a password and no
  * key), `firewall` the `ssh-firewall` step (port 22 only from `sshFrom`, refused when that would
  * leave out the address OpsCrew connects from). A part OpsCrew put on the machine that `harden`
- * leaves out is removed. Without `harden` and without OpsCrew's hardening on the machine, the
- * plan has no hardening step; a plan that only removes runners leaves the hardening as it is.
+ * leaves out is removed, except what a server's apps there still need (the SSH firewall stays
+ * while an app record has `home`). Without `harden` and without OpsCrew's hardening on the
+ * machine, the plan has no hardening step; a plan that only removes runners leaves the hardening
+ * as it is.
  * The plan is no one app's (`app` is ""); findings say to run `command` again once fixed.
  * {@link planUndo} takes the machine back.
  */
@@ -3845,7 +3862,8 @@ export function planRunnerHost(
 /**
  * A runner machine's hardening steps as `desired.harden` asks: each part it names, and the
  * removal of each part OpsCrew put there that it leaves out (the SSH settings only while no app
- * of a server is on the machine: they are that server's too).
+ * of a server is on the machine, and the SSH firewall only while no app record there has `home`:
+ * they are that server's too).
  */
 function hardeningSteps(ctx: MachineContext, desired: DesiredRunnerHost): HostStep[] {
   const { facts } = ctx;
@@ -3858,6 +3876,11 @@ function hardeningSteps(ctx: MachineContext, desired: DesiredRunnerHost): HostSt
     if (removal.state === "change") steps.push(removal);
   }
   if (harden?.firewall) steps.push(sshFirewallStep(ctx, harden.firewall.sshFrom));
-  else if (sshFirewallPresent(facts)) steps.push(sshFirewallRemoval());
+  else if (
+    sshFirewallPresent(facts) &&
+    !readableRecords(facts.apps).some((record) => record.home !== undefined)
+  ) {
+    steps.push(sshFirewallRemoval());
+  }
   return steps;
 }

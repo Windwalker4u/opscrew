@@ -7,10 +7,17 @@
  * else is dropped. A unit runs it before Docker, and Docker requires that unit, so Docker never
  * publishes ports without the filter (fail closed).
  *
- * IPv4 only: in this mode the site is published on IPv4 only (Caddy binds `0.0.0.0`, no AAAA
- * record), because Docker serves an IPv6 host port of a container without IPv6 through
- * docker-proxy on the INPUT path, which `DOCKER-USER` never sees. A kernel without IPv6 therefore
- * never stops Docker at boot.
+ * IPv4 by default: the site is published on IPv4 only (Caddy binds `0.0.0.0`, no AAAA record),
+ * because Docker serves an IPv6 host port of a container without IPv6 through docker-proxy on the
+ * INPUT path, which `DOCKER-USER` never sees. A kernel without IPv6 therefore never stops Docker
+ * at boot.
+ *
+ * With IPv6 ranges (a home server behind the proxy without IPv4, published on both families), the
+ * script also loads OpsCrew's own nftables table {@link WEB_FILTER_TABLE}, with two base chains
+ * whose policy is accept (so they only ever add a restriction): `input` covers docker-proxy's
+ * path, `forward` the DNAT'd connections of a Docker that gives the edge's network IPv6. Both let
+ * Cloudflare's IPv6 ranges reach the web ports and drop other IPv6 packets to them (`input` not on
+ * `lo`). The same unit loads it, so Docker does not start without it either.
  *
  * Docker keeps an existing `DOCKER-USER` chain and its rules when it starts (moby's
  * `setupUserChain` only creates the chain when it is missing and adds the jump from `FORWARD`), so
@@ -18,7 +25,7 @@
  * the filter refuses it.
  */
 import { sha256Hex } from "@opscrew/core";
-import { canonicalIpv4Cidr } from "./parse";
+import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 
 /** The script that installs the rules (run by the unit at boot, and by the step's apply). */
 export const WEB_FILTER_SCRIPT = "/usr/local/sbin/opscrew-web-filter";
@@ -29,10 +36,14 @@ export const WEB_FILTER_UNIT = `/etc/systemd/system/${WEB_FILTER_SERVICE}`;
 export const WEB_FILTER_DROP_IN = "/etc/systemd/system/docker.service.d/opscrew-web-filter.conf";
 /** OpsCrew's own chain; `DOCKER-USER` jumps to it. */
 export const WEB_FILTER_CHAIN = "OPSCREW-WEB";
+/** OpsCrew's own nftables table for IPv6 (family and name). */
+export const WEB_FILTER_TABLE = "inet opscrew-web";
 
-/** The `web-filter` step's ranges: Cloudflare's IPv4 ranges, canonical, sorted, without duplicates. */
+/** The `web-filter` step's ranges: Cloudflare's, canonical, sorted, without duplicates. */
 export interface WebFilterRanges {
   ipv4: string[];
+  /** Cloudflare's IPv6 ranges, only for a site published on IPv6 behind the proxy. */
+  ipv6?: string[];
 }
 
 /** IPv4 networks in the form iptables prints them, sorted and without duplicates. */
@@ -41,6 +52,17 @@ export function sortedNetworks(list: readonly string[]): string[] {
   for (const text of list) {
     const network = canonicalIpv4Cidr(text);
     if (network === null) throw new Error(`not an IPv4 network: ${text.slice(0, 60)}`);
+    networks.add(network);
+  }
+  return [...networks].sort();
+}
+
+/** IPv6 networks in the form nft prints them ({@link canonicalSshSource}), sorted, without duplicates. */
+export function sortedIpv6Networks(list: readonly string[]): string[] {
+  const networks = new Set<string>();
+  for (const text of list) {
+    const network = text.includes(":") ? canonicalSshSource(text) : null;
+    if (network === null) throw new Error(`not an IPv6 network: ${text.slice(0, 60)}`);
     networks.add(network);
   }
   return [...networks].sort();
@@ -95,11 +117,79 @@ chain_ok() {
   [ "$(iptables -w -S ${WEB_FILTER_CHAIN} | grep '^-A ' | tail -n 1)" = "-A ${WEB_FILTER_CHAIN} -j DROP" ]
 }`;
 
+/**
+ * `table6_ok <networks>`, for the step's checks with IPv6: OpsCrew's table {@link WEB_FILTER_TABLE}
+ * has its input and forward chains, the three rules of each of those networks and nothing else
+ * but the `lo` exception and the three drops.
+ */
+export const WEB_FILTER_IPV6_FUNCTIONS = `table6_ok() {
+  listing=$(nft list table ${WEB_FILTER_TABLE} 2>/dev/null) || return 1
+  printf '%s\\n' "$listing" | grep -q 'hook input ' || return 1
+  printf '%s\\n' "$listing" | grep -q 'hook forward ' || return 1
+  n=0
+  for net in $1; do
+    n=$((n + 1))
+    [ "$(printf '%s\\n' "$listing" | grep -cF -- "ip6 saddr $net ")" -eq 3 ] || return 1
+  done
+  [ "$(printf '%s\\n' "$listing" | grep -c ' accept$')" -eq $((3 * n + 1)) ] || return 1
+  [ "$(printf '%s\\n' "$listing" | grep -c ' drop$')" -eq 3 ]
+}`;
+
+/**
+ * The IPv6 table's rules, loaded in one transaction (the table is created first, so the delete
+ * never fails, and loading it again never adds a second copy). One rule per range, so ranges that
+ * overlap never make nft refuse a set.
+ */
+function ipv6TableRules(ranges: readonly string[]): string {
+  const rules = [
+    '\t\tiifname "lo" accept',
+    ...ranges.flatMap((net) => [
+      `\t\tip6 saddr ${net} tcp dport { 80, 443 } accept`,
+      `\t\tip6 saddr ${net} udp dport 443 accept`,
+    ]),
+    "\t\tmeta nfproto ipv6 tcp dport { 80, 443 } drop",
+    "\t\tmeta nfproto ipv6 udp dport 443 drop",
+  ];
+  const dnat = "ct direction original ct status dnat ct original proto-dst { 80, 443 }";
+  const forward = [
+    ...ranges.map((net) => `\t\t${dnat} ip6 saddr ${net} accept`),
+    `\t\t${dnat} meta nfproto ipv6 drop`,
+  ];
+  return `add table ${WEB_FILTER_TABLE}
+delete table ${WEB_FILTER_TABLE}
+table ${WEB_FILTER_TABLE} {
+\tchain input {
+\t\ttype filter hook input priority 0; policy accept;
+${rules.join("\n")}
+\t}
+\tchain forward {
+\t\ttype filter hook forward priority 0; policy accept;
+${forward.join("\n")}
+\t}
+}`;
+}
+
+/** The script's lines that load {@link WEB_FILTER_TABLE} for `ipv6` (after the IPv4 filter). */
+function ipv6Part(ipv6: readonly string[]): string {
+  return `# IPv6: OpsCrew's own nftables table, replaced in one transaction. Its input chain covers
+# docker-proxy (an IPv6 host port of a container without IPv6), its forward chain a Docker that
+# gives the edge's network IPv6 (DNAT'd connections to 80 and 443, which DOCKER-USER never sees).
+nft -f - <<'NFT'
+${ipv6TableRules(ipv6)}
+NFT
+`;
+}
+
 /** The script on the server, with the ranges in it (its SHA-256 is what the step checks). */
 export function webFilterScript(ranges: WebFilterRanges): string {
+  const { ipv6 } = ranges;
+  const families =
+    ipv6 === undefined
+      ? "IPv4; the site is not published on IPv6"
+      : `IPv4 in DOCKER-USER,\n# IPv6 in OpsCrew's nftables table ${WEB_FILTER_TABLE}`;
   return `#!/bin/sh
 # Managed by OpsCrew: only Cloudflare's addresses reach the web ports (80 and 443) that Docker
-# publishes (IPv4; the site is not published on IPv6). ${WEB_FILTER_SERVICE} runs this before
+# publishes (${families}). ${WEB_FILTER_SERVICE} runs this before
 # Docker, and Docker requires that service: when the filter cannot be installed, Docker does not
 # start. \`opscrew destroy --undo-host\` removes it; \`opscrew provision\` updates the ranges.
 set -eu
@@ -113,7 +203,7 @@ ${WEB_FILTER_BACKEND_CHECK}
 ${WEB_FILTER_FUNCTIONS}
 command -v iptables >/dev/null 2>&1 || fail "iptables is not installed."
 command -v iptables-restore >/dev/null 2>&1 || fail "iptables-restore is not installed."
-# OpsCrew's chain in one atomic change: Cloudflare's ranges pass, everything else is dropped.
+${ipv6 === undefined ? "" : 'command -v nft >/dev/null 2>&1 || fail "nft is not installed."\n'}# OpsCrew's chain in one atomic change: Cloudflare's ranges pass, everything else is dropped.
 {
   echo '*filter'
   echo ':${WEB_FILTER_CHAIN} - [0:0]'
@@ -140,7 +230,7 @@ if ! leading_ok; then
       esac
     done
 fi
-`;
+${ipv6 === undefined ? "" : ipv6Part(ipv6)}`;
 }
 
 /** The unit that runs the script before Docker (Docker requires it through the drop-in). */
