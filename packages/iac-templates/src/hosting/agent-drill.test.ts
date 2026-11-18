@@ -146,8 +146,13 @@ describe.skipIf(reason !== undefined)(
 
     it("loads views and triggers without their DEFINER=, as the drill's own user, the dump unchanged", () => {
       const a = account();
-      // The account's own login, which must never take the drill user's place.
+      // The account's own login, which must never take the drill user's place, and the socket
+      // its option files name, which is all the drill takes of them.
       writeFileSync(`${a.home}/.my.cnf`, "[client]\nuser=acct\npassword=other\n");
+      writeFileSync(
+        `${a.stub}/print-defaults`,
+        "--user=acct\n--password=other\n--socket=/var/lib/mysql/mysql.sock\n",
+      );
       const definer = "DEFINER=`acct_notes`@`localhost`";
       const dump = [
         DUMP,
@@ -173,10 +178,16 @@ describe.skipIf(reason !== undefined)(
       // A row's text passes as it is.
       expect(loaded).toContain("'a note quoting DEFINER=`x`@`y`'");
       expect(readFileSync(`${a.dir}/dumps/${ID}.sql.gz`)).toEqual(before);
-      // Every call signed in as the drill's user, never as the account's.
+      // Every call signed in as the drill's user, never as the account's, on the account's socket.
       expect(new Set(a.stubFile("logins").split("\n").filter(Boolean))).toEqual(
         new Set(["mysql acct_notes_drill"]),
       );
+      for (const call of a.stubFile("mysql.log").split("\n").filter(Boolean)) {
+        expect(call).toMatch(
+          /^mysql --defaults-file=keys\/drill\.cnf --socket=\/var\/lib\/mysql\/mysql\.sock( |$)/,
+        );
+        expect(call).not.toMatch(/--user|--password|other/);
+      }
     });
 
     it("tells a dump that is no gzip file, one that doesn't load and tables that don't match apart", () => {
@@ -298,7 +309,9 @@ describe("the hosting agent's drill routine", () => {
       }
     }
     // Its login alone: no other option file of the account's is read.
-    expect(functionText("drill_mysql")).toContain(`mysql --defaults-file=${DRILL_LOGIN_FILE} "$@"`);
+    expect(functionText("drill_mysql")).toMatch(
+      /\n {2}mysql --defaults-file=keys\/drill\.cnf \$\{MYSQL_SOCKET:\+"--socket=\$MYSQL_SOCKET"\} "\$@"\n/,
+    );
     expect(functionText("drill_snapshot")).toContain('replace_tables "$dump" drill_mysql');
     // The replace routine both share takes its database from its caller.
     expect(functionText("replace_tables")).not.toMatch(/\$\{?DATABASE\b|mysql\.cnf/);

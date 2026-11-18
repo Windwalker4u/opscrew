@@ -608,10 +608,21 @@ serve() {
 # Step 9, on the hostname (user_ini_block turns opcache.revalidate_path on):
 ${healthCheck('"$(site_url)$HEALTH_PATH"', '[ "$APP_KIND" = php ]')}
 
+# The client's socket from the account's standard option files, into MYSQL_SOCKET: of what
+# my_print_defaults gives for [client] and [mysql], only the last --socket= line is kept, never a
+# user, a password or a host, and nothing of it is printed. Empty without my_print_defaults or a
+# socket line: the clients' built-in default. The app's and the drill's clients read their own
+# login file alone (--defaults-file), which leaves out the files that may name the socket.
+mysql_socket() {
+  MYSQL_SOCKET=""
+  command -v my_print_defaults > /dev/null || return 0
+  MYSQL_SOCKET=$(my_print_defaults client mysql 2> /dev/null | sed -n 's/^--socket=//p' | tail -n 1) || MYSQL_SOCKET=""
+}
+
 # Dumps the app's database into file $1 (gzip), 0600; fails without leaving a partial file. Like
-# app_mysql, it reads shared/mysql.cnf alone.
+# app_mysql, it reads shared/mysql.cnf alone, with the account's socket (mysql_socket).
 dump() {
-  if mysqldump --defaults-file=shared/mysql.cnf --single-transaction --no-tablespaces "$DATABASE" | gzip > "$1.partial"; then
+  if mysqldump --defaults-file=shared/mysql.cnf \${MYSQL_SOCKET:+"--socket=$MYSQL_SOCKET"} --single-transaction --no-tablespaces "$DATABASE" | gzip > "$1.partial"; then
     chmod 0600 "$1.partial"
     mv -f "$1.partial" "$1"
     return 0
@@ -623,9 +634,9 @@ dump() {
 # The mysql client on the app's database, the options $@ before the database's name, signed in
 # with shared/mysql.cnf ([client]: the app's user, its password and the host): with
 # --defaults-file no other option file is read, so no login of the account's own (~/.my.cnf)
-# takes the app's place.
+# takes the app's place; the account's socket comes from mysql_socket.
 app_mysql() {
-  mysql --defaults-file=shared/mysql.cnf "$@" "$DATABASE"
+  mysql --defaults-file=shared/mysql.cnf \${MYSQL_SOCKET:+"--socket=$MYSQL_SOCKET"} "$@" "$DATABASE"
 }
 
 # Replaces every table and view of the database the mysql client $2 (app_mysql or drill_mysql)
@@ -1127,9 +1138,10 @@ do_restore() {
 
 # The mysql client on the drill database, the options $@ after its login: ${DRILL_LOGIN_FILE} (0600)
 # names that database and its own user, which has no right on the app's. With --defaults-file no
-# other option file is read, so no login of the account's own (~/.my.cnf) takes its place.
+# other option file is read, so no login of the account's own (~/.my.cnf) takes its place; the
+# account's socket comes from mysql_socket.
 drill_mysql() {
-  mysql --defaults-file=${DRILL_LOGIN_FILE} "$@"
+  mysql --defaults-file=${DRILL_LOGIN_FILE} \${MYSQL_SOCKET:+"--socket=$MYSQL_SOCKET"} "$@"
 }
 
 # The dump on standard input without its DEFINER= clauses, for the drill database: its views,
@@ -1485,6 +1497,7 @@ main() {
     return 0
   fi
   trim_log
+  mysql_socket
   SSH=(ssh -F /dev/null -i "$DIR/keys/github" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$DIR/keys/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
   if [ ! -f state/report ]; then first_run; fi
   command -v flock > /dev/null || fail "flock is missing on this account, and the agent doesn't deploy without it: ask the host for util-linux's flock."

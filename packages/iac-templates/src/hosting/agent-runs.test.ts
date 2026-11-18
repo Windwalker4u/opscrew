@@ -44,6 +44,9 @@ if (reason === undefined && !HAS_FLOCK) {
 
 /** A case that switches a release, so needs real symbolic links. */
 const switching = it.skipIf(!CAN_LINK);
+/** Whether this machine has a my_print_defaults of its own, beside the fake one. */
+const BASH_PRINT_DEFAULTS =
+  spawnSync("bash", ["-c", "command -v my_print_defaults"], { encoding: "utf8" }).status === 0;
 const POSIX = process.platform !== "win32";
 const HASH = "ab".repeat(32);
 
@@ -802,6 +805,62 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     const logins = new Set(a.stubFile("logins").split("\n").filter(Boolean));
     expect(logins).toEqual(new Set(["mysqldump acct_notes", "mysql acct_notes"]));
     expect(a.stubFile("mysql.log")).not.toContain("--defaults-extra-file");
+  });
+
+  it("takes only the socket of the account's option files, once a run, the login its own file's", () => {
+    const a = account();
+    a.run();
+    const neighbours = "--user=acct\n--password=neighbour-password\n--host=db.example.com\n";
+    writeFileSync(
+      `${a.stub}/print-defaults`,
+      `--socket=/var/lib/mysql/old.sock\n${neighbours}--socket=/var/lib/mysql/mysql.sock\n`,
+    );
+    writeFileSync(`${a.stub}/db`, "state=before\n");
+    const snapshot = a.request(requestText({ kind: "snapshot" }));
+    a.run();
+    const taken = a.keyValues(`state/${snapshot}.result`);
+    writeFileSync(`${a.stub}/db`, "state=after\n");
+    const restore = a.request(requestText({ kind: "restore", snapshot: idOf(taken.dump) }));
+    a.run();
+    expect(a.keyValues(`state/${restore}.result`).result).toBe("done");
+    expect(a.stubFile("db")).toBe("state=before\n");
+    const calls = a.stubFile("mysql.log").split("\n").filter(Boolean);
+    expect(calls.length).toBeGreaterThan(2);
+    for (const call of calls) {
+      expect(call).toMatch(
+        /^(mysql|mysqldump) --defaults-file=shared\/mysql\.cnf --socket=\/var\/lib\/mysql\/mysql\.sock( |$)/,
+      );
+      expect(call).not.toMatch(/--user|--password|--host|neighbour|old\.sock/);
+    }
+    expect(new Set(a.stubFile("logins").split("\n").filter(Boolean))).toEqual(
+      new Set(["mysqldump acct_notes", "mysql acct_notes"]),
+    );
+    // Asked once each run, and nothing of its answer printed.
+    expect(a.stubFile("print-defaults.log")).toBe("client mysql\n".repeat(3));
+    for (const file of ["state/agent.log", `state/${snapshot}.result`, `state/${restore}.result`]) {
+      expect(a.file(file)).not.toMatch(/neighbour|mysql\.sock|db\.example\.com/);
+    }
+
+    // Without a socket line, the clients' built-in default.
+    writeFileSync(`${a.stub}/print-defaults`, neighbours);
+    writeFileSync(`${a.stub}/mysql.log`, "");
+    a.request(requestText({ kind: "snapshot" }, Math.floor(Date.now() / 1000) + 1801));
+    a.run();
+    expect(a.stubFile("mysql.log")).toBe(
+      "mysqldump --defaults-file=shared/mysql.cnf --single-transaction --no-tablespaces acct_notes\n",
+    );
+  });
+
+  // Where this machine has a my_print_defaults of its own, it would answer in the fake's place.
+  it.skipIf(BASH_PRINT_DEFAULTS)("passes no socket without my_print_defaults", () => {
+    const a = account();
+    rmSync(`${a.root}/bin/my_print_defaults`);
+    a.run();
+    a.request(requestText({ kind: "snapshot" }));
+    a.run();
+    expect(a.stubFile("mysql.log")).toBe(
+      "mysqldump --defaults-file=shared/mysql.cnf --single-transaction --no-tablespaces acct_notes\n",
+    );
   });
 
   it("snapshots and restores the shared files of an app without a database, and refuses one with neither", () => {
