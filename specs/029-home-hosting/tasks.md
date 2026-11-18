@@ -469,6 +469,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 ## Phase 8: Wave 7 (parallel)
 
 - [ ] T2914c [P] [US2] drift for the updater and the IPv6 filter
+  - Also (lead, T2913a's finding 2): `drift/host.ts` builds `run.home` (as provision's `prepareHome` does, read-only, the token left as the server has it) before calling `desiredHost` on a home plan, which otherwise stops at its internal guard.
   - Owns: `packages/agents/src/drift/**`, colocated tests
   - Reads: plan 13. (drift, M10)
   - Depends: T2906, T2913b
