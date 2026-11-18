@@ -124,6 +124,33 @@ reviews' cited lines itself; line numbers are as of `a3c010b8`-era main and may 
    (`snapshots-checks.ts`); the move pass's `Leg` doesn't record a leg refused before it opens
    (as `home-support.ts` already does).
 
+## Outcome (2026-11-18)
+
+Applied as written except the items below, each left out because it would change output, a
+hashed plan or a script users carry, or needed a dependency for little gain. One intended change:
+`secure` calls an inspection that fails after a working login unread (a failed check with its
+reason), no longer away (G2.1). Smaller wording changes: design's token recipe ends "run
+`opscrew provision`", not "again" (the first provision is still to come); a drill command in a hint
+lists `--only` and `--allow-other-version` in a Portainer too, with `--app`/`--env` last.
+
+- **G1.3** `DrillRecordSchema` stays in agents: iac-templates has no zod.
+- **G1.4** `drillOverdue` stays out of `check.mjs`: one formula, and the check script's bytes are in
+  every user's repository.
+- **G1.7** `drillStatusReport` keeps `{ lines }`, the shape of `snapshotStatusReport` beside it.
+- **G1.8** `imageHere` stays its own session: the image is known only after the listing is read. A
+  server drill takes 3 sessions (it took 4 to 5).
+- **G2.2** design doesn't use `readHomeNetwork` (it would add an audit entry and a step line); drift
+  still reads the network; `desiredHost` keeps its run-time guard (it proves the server was read);
+  `detectHomeNetwork` stays optional (fakes in other phases build adapters without it).
+- **G2.3** `facts.ts` doesn't validate the updater's state (an invalid one would fail the whole
+  inspection rather than show as "can't be read"); status and verify keep their own words per code.
+- **G2.4** secure keeps its pi-power check (its own title, severity and any board); the runbook
+  and ssh-host's plan text keep their words, with a test that they agree.
+- **G2.7** verify keeps two SSH sessions and starts the outside check after its local checks (it
+  would start a workflow run a local check may stop); the token check doesn't reuse OpsCrew's
+  token id from the earlier verify; the updater script keeps its `jq` calls (its bytes are in every
+  home host plan's hash).
+
 ## Skipped
 
 - **`sshTableSources` exported from ssh-host** (one parser of the SSH table in two packages): the two
