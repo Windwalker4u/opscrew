@@ -745,6 +745,14 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/agents src/provision && pnpm lint`
   - Effort: xhigh
 
+- [ ] T2945 [US7] Scheduled drills on servers OpsCrew creates, the check's "never drilled" case, the approval hint (lead, T2944's findings)
+  - Owns: the provision path that applies host plans as the deploy login on servers OpsCrew creates (find it: the `github-runner` step's path), `packages/connectors/ssh-host/src/constants.ts` (`CHECK_KEY_COMMAND`), the scheduled check's script (source and `src/generated/check.ts`), `packages/agents/src/shared/host-plan.ts` (the refusal hint), colocated tests
+  - Reads: T2944's `drills` step (ssh-host `steps.ts`, `plan.ts`), `provision/own.ts`'s `desiredHost` drills; plan 19.
+  - Depends: T2944
+  - Accept: on a server OpsCrew creates (Hetzner, DigitalOcean, Contabo), `snapshots.drills.schedule` installs the same `drills` step through the deploy login's host plan, approved the same way (`allowDestroy`, `<app>-drill` typed); the check's read-only command also prints the oldest scheduled snapshot's time, so "no scheduled restore drill" fires when the schedule has had twice its period plus an hour without a drill, snapshots still running (`CHECK_KEY_COMMAND` and `check.mjs`'s `CHECK_COMMAND` stay identical); a host plan that needs `allowDestroy` names `--confirm <phrase>` beside `--approve <hash>` in its script hint, and a non-interactive approve of such a plan works (a test).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/iac-templates src/check && npx vitest run --root packages/agents src/provision src/shared src/check && pnpm lint`
+  - Effort: high
+
 - [ ] T2937 [P] [US7] Scheduled dump drills in a Portainer
   - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
     snapshots and `snapshots.docker.test.ts`
@@ -809,7 +817,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
 ## Phase 12: Lead
 
 - [ ] T2920 (lead) The live pass H0–H8 (plan 18., quickstart), results in `docs/e2e-coverage.md`
-- [ ] T2921 (lead) /simplify over the feature, and the repeated strings gathered (noted: `dnsModule` in `infra/cloudflare.ts` takes an optional `ipv4Record` so `infra/own.ts`'s home `module "dns"` stops repeating five arguments; `token.ts`'s `reachText` beside `updaterTokenReach`; the token recipe's "run `opscrew provision` again" in design's summary; `detectHomeNetwork` made required on `HostAdapterApi` once the fakes have it; a test in agents that `runbook/own.ts`'s updater unit names and paths equal ssh-host's `dns-updater.ts` constants, as iac-templates doesn't depend on ssh-host; one `UpdaterStateSchema` in `home/` for status and verify; one pi-power text; one away-from-home helper for status, verify and secure; who owns the SSH table on a machine that is both a runner host with `harden.firewall` and an app server, so neither plan removes the other's, T2943's finding)
+- [ ] T2921 (lead) /simplify over the feature, and the repeated strings gathered (noted: `dnsModule` in `infra/cloudflare.ts` takes an optional `ipv4Record` so `infra/own.ts`'s home `module "dns"` stops repeating five arguments; `token.ts`'s `reachText` beside `updaterTokenReach`; the token recipe's "run `opscrew provision` again" in design's summary; `detectHomeNetwork` made required on `HostAdapterApi` once the fakes have it; a test in agents that `runbook/own.ts`'s updater unit names and paths equal ssh-host's `dns-updater.ts` constants, as iac-templates doesn't depend on ssh-host; one `drillEnv` (exported from `snapshot/drill.ts`, not copied in `provision/own.ts`) and the drill constants in ssh-host's `constants.ts`, `index.ts`'s TSDoc naming the `drills` step; one `UpdaterStateSchema` in `home/` for status and verify; one pi-power text; one away-from-home helper for status, verify and secure; who owns the SSH table on a machine that is both a runner host with `harden.firewall` and an app server, so neither plan removes the other's, T2943's finding)
 - [ ] T2922 (lead) CLAUDE.md and the roadmap (029 done)
 - [ ] T2923 (lead) The release (`docs/releasing.md`); the CHANGELOG names the moves-only plan every
   app with DNS on Cloudflare gets at its next provision (`a` → `a[0]`), and the web filter's new nftables drop-in every server with origin protection gets (T2943)
