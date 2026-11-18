@@ -191,15 +191,12 @@ describe.skipIf(reason !== undefined).each([
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
-    // This computer's Docker can take seconds per `docker compose exec`, a server's well under
-    // one: the check's clock runs at a tenth of the real one, so its 20 seconds hold 7 queries here.
-    const start = Date.now();
     const { reading, notRead } = await readDatabase(shell, {
       app: project,
       server: "app",
       service: "db",
       major,
-      now: () => new Date(start + (Date.now() - start) / 10),
+      now: () => new Date(),
       redact: (text) => text,
     });
 

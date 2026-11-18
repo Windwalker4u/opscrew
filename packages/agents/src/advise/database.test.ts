@@ -1,8 +1,9 @@
 /**
  * Advise's database check (plan.md "20.", research R20–R21): the fixed SQL texts only read, never
- * `pg_stat_activity.query`; one fixed command, the SQL on standard input; the session's bounds; the
- * parts parsed from psql's answers; the first timeout stops the check; `pg_stat_statements` off or a
- * version below 13 skips the slow statements with the reason; texts redacted. Fakes only.
+ * `pg_stat_activity.query`; one fixed command, one session's script on standard input; the
+ * session's bounds; the parts parsed from psql's answers; the first timeout stops the check;
+ * `pg_stat_statements` off or a version below 13 skips the slow statements with the reason; texts
+ * redacted. Fakes only.
  */
 import { Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -10,17 +11,18 @@ import { describe, expect, it } from "vitest";
 import {
   databaseShell,
   QUIET,
-  queryOf,
   row,
   rows,
   STATEMENT_TIMEOUT,
   TROUBLED,
 } from "./__fixtures__/database";
 import {
+  CANCELLED_CHECK,
   DATABASE_CHECK_CAP_MS,
   DATABASE_QUERIES,
   type DatabaseCheck,
   databaseCommand,
+  databaseScript,
   PGOPTIONS,
   readDatabase,
 } from "./database";
@@ -84,6 +86,28 @@ describe("the database check's SQL", () => {
     );
   });
 
+  it("sends only those, and one SELECT of the statements' error code, in one psql script", () => {
+    expect(CANCELLED_CHECK).toBe(
+      "SELECT :'SQLSTATE' IN ('57014', '55P03') AS opscrew_cancelled \\gset",
+    );
+    expect(withoutLiterals(CANCELLED_CHECK)).not.toMatch(WRITES);
+    const sql = new Set<string>([...Object.values(DATABASE_QUERIES), CANCELLED_CHECK]);
+    for (const major of [12, 17]) {
+      const lines = databaseScript(major).split("\n");
+      for (const line of lines.filter((l) => l !== "" && !l.startsWith("\\"))) {
+        expect(sql).toContain(line);
+      }
+      // psql's own commands: the marks, the statements' condition, quitting at their limit.
+      for (const line of lines.filter((l) => l.startsWith("\\"))) {
+        expect(line).toMatch(
+          /^\\(echo ==opscrew-db:[a-z-]+|if :\w+|else|endif|set ON_ERROR_STOP [01]|q)$/,
+        );
+      }
+    }
+    expect(databaseScript(12)).not.toContain(DATABASE_QUERIES.extension);
+    expect(databaseScript(12)).not.toContain(DATABASE_QUERIES.statements);
+  });
+
   it("runs one fixed command, the session bounded, the SQL never in it", () => {
     expect(PGOPTIONS).toBe(
       "-c statement_timeout=3000 -c lock_timeout=500 -c idle_in_transaction_session_timeout=5000 -c default_transaction_read_only=on",
@@ -95,10 +119,11 @@ describe("the database check's SQL", () => {
 });
 
 describe("readDatabase", () => {
-  it("reads the six queries in order, each SQL on standard input, within the cap", async () => {
+  it("reads the six queries in order, in one session within the cap", async () => {
     const shell = databaseShell();
     const { reading, notRead } = await readDatabase(shell.remote, check());
-    expect(shell.calls.map((c) => queryOf(c.options?.input))).toEqual([
+    expect(shell.calls).toHaveLength(1);
+    expect(shell.calls[0]?.ran).toEqual([
       "blocked",
       "sessions",
       "connections",
@@ -107,10 +132,10 @@ describe("readDatabase", () => {
       "size",
       "tables",
     ]);
-    for (const call of shell.calls) {
-      expect(call.command).toBe(databaseCommand("shop", "db"));
-      expect(call.options?.timeoutMs).toBe(DATABASE_CHECK_CAP_MS);
-    }
+    expect(shell.calls[0]).toMatchObject({
+      command: databaseCommand("shop", "db"),
+      options: { input: databaseScript(17), timeoutMs: DATABASE_CHECK_CAP_MS },
+    });
     expect(notRead).toEqual([]);
     expect(reading).toEqual({
       server: "app",
@@ -162,7 +187,7 @@ describe("readDatabase", () => {
   it("stops at the first query that hits the session's limit, and says it timed out", async () => {
     const shell = databaseShell({ sessions: STATEMENT_TIMEOUT });
     const { reading, notRead } = await readDatabase(shell.remote, check());
-    expect(shell.calls.map((c) => queryOf(c.options?.input))).toEqual(["blocked", "sessions"]);
+    expect(shell.calls[0]?.ran).toEqual(["blocked", "sessions"]);
     expect(reading).toEqual({
       server: "app",
       service: "db",
@@ -182,19 +207,12 @@ describe("readDatabase", () => {
     }
   });
 
-  it("gives each query only what is left of the 20 seconds, and stops past them", async () => {
-    let clock = AT.getTime();
-    const shell = databaseShell();
-    const remote = {
-      ...shell.remote,
-      run: async (command: string, options?: Parameters<typeof shell.remote.run>[1]) => {
-        const result = await shell.remote.run(command, options);
-        clock += 7000;
-        return result;
-      },
-    };
-    const { reading } = await readDatabase(remote, check({ now: () => new Date(clock) }));
-    expect(shell.calls.map((c) => c.options?.timeoutMs)).toEqual([20_000, 13_000, 6000]);
+  it("keeps what it read before the 20 seconds ran out, and says it timed out", async () => {
+    const shell = databaseShell({
+      statements: { exitCode: 124, stdout: "", stderr: "", timedOut: true },
+    });
+    const { reading } = await readDatabase(shell.remote, check());
+    expect(shell.calls[0]?.options?.timeoutMs).toBe(20_000);
     expect(reading.timedOut).toBe(true);
     expect(reading.connections).toEqual({ count: 3, max: 100, reserved: 3 });
     expect(reading.statements).toBeUndefined();
@@ -203,33 +221,49 @@ describe("readDatabase", () => {
   it("says slow queries are not read while pg_stat_statements is off, with the two steps", async () => {
     const off = databaseShell({ extension: "" });
     const { reading, notRead } = await readDatabase(off.remote, check());
-    expect(off.calls.map((c) => queryOf(c.options?.input))).not.toContain("statements");
+    expect(off.calls[0]?.ran).not.toContain("statements");
     expect(reading.statements).toBeUndefined();
     expect(reading.tables).toBeDefined();
     const line =
       "PostgreSQL db on server app: slow queries are not read: turn `pg_stat_statements` on (add it to the database's `shared_preload_libraries` setting and restart the database, then run `CREATE EXTENSION pg_stat_statements;` in it)";
     expect(notRead).toEqual([line]);
     // Installed but not loaded when the server started: psql fails, the same line.
-    const unloaded = databaseShell({
-      statements: {
-        exitCode: 3,
-        stdout: "",
-        stderr: 'ERROR:  pg_stat_statements must be loaded via "shared_preload_libraries"\n',
-      },
-    });
-    expect((await readDatabase(unloaded.remote, check())).notRead).toEqual([line]);
+    const notLoaded = {
+      exitCode: 3,
+      stdout: "",
+      stderr: 'ERROR:  pg_stat_statements must be loaded via "shared_preload_libraries"\n',
+    };
+    const failed = await readDatabase(databaseShell({ statements: notLoaded }).remote, check());
+    expect(failed.notRead).toEqual([line]);
+    expect(failed.reading.tables).toBeDefined();
+    // Then the size past its limit: the line, and the check stopped there.
+    const late = databaseShell({ statements: notLoaded, size: STATEMENT_TIMEOUT });
+    const both = await readDatabase(late.remote, check());
+    expect(both.notRead).toEqual([line]);
+    expect(both.reading).toMatchObject({ timedOut: true });
+    expect(both.reading.sizeBytes).toBeUndefined();
+  });
+
+  it("stops at the slow statements' limit, and says it timed out", async () => {
+    const shell = databaseShell({ statements: STATEMENT_TIMEOUT });
+    const { reading, notRead } = await readDatabase(shell.remote, check());
+    expect(shell.calls[0]?.ran).toEqual([
+      "blocked",
+      "sessions",
+      "connections",
+      "extension",
+      "statements",
+    ]);
+    expect(reading.timedOut).toBe(true);
+    expect(reading.statements).toBeUndefined();
+    expect(reading.sizeBytes).toBeUndefined();
+    expect(notRead).toEqual([]);
   });
 
   it("skips the slow queries below PostgreSQL 13, with the reason", async () => {
     const shell = databaseShell();
     const { reading, notRead } = await readDatabase(shell.remote, check({ major: 12 }));
-    expect(shell.calls.map((c) => queryOf(c.options?.input))).toEqual([
-      "blocked",
-      "sessions",
-      "connections",
-      "size",
-      "tables",
-    ]);
+    expect(shell.calls[0]?.ran).toEqual(["blocked", "sessions", "connections", "size", "tables"]);
     expect(reading.statements).toBeUndefined();
     expect(notRead).toEqual([
       "PostgreSQL db on server app: slow queries are not read: they need PostgreSQL 13 or later, and this one is 12",
@@ -241,7 +275,7 @@ describe("readDatabase", () => {
       blocked: { exitCode: 1, stdout: "", stderr: 'service "db" is not running' },
     });
     const { reading, notRead } = await readDatabase(shell.remote, check({ server: "data" }));
-    expect(shell.calls).toHaveLength(1);
+    expect(shell.calls[0]?.ran).toEqual(["blocked"]);
     expect(reading.blocked).toBeUndefined();
     expect(notRead).toEqual([
       "the statistics of PostgreSQL db on server data: psql in its container failed (exit code 1); check that it runs with `opscrew status`",

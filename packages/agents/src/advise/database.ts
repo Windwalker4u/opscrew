@@ -75,9 +75,10 @@ const STATEMENTS_FROM = 13;
 export const APPLICATION_NAME = "opscrew-advise";
 
 /**
- * The fixed command one query runs through, its SQL on standard input: `psql` in the service's
- * container of the Compose project `app`, unaligned, tuples only, fields split by a zero byte.
- * The session is named through `PGAPPNAME`: psql's own name would win over one in `PGOPTIONS`.
+ * The fixed command the check's one session runs through, its script on standard input: `psql` in
+ * the service's container of the Compose project `app`, unaligned, tuples only, fields split by a
+ * zero byte, stopping at the first error. The session is named through `PGAPPNAME`: psql's own
+ * name would win over one in `PGOPTIONS`.
  */
 export function databaseCommand(app: string, service: string): string {
   return `docker compose -p ${shellQuote(app)} exec -T -e PGAPPNAME=${APPLICATION_NAME} -e ${shellQuote(`PGOPTIONS=${PGOPTIONS}`)} ${shellQuote(service)} psql -X -q -At -z -v ON_ERROR_STOP=1 -U app -d app`;
@@ -104,8 +105,73 @@ export function databaseWords(server: string, service: string): string {
   return `PostgreSQL ${service} on server ${server}`;
 }
 
-/** A query's answer: its rows, or that it timed out or failed. */
-type Answer = { rows: string[][] } | { timedOut: true } | { failed: CommandResult };
+/** What psql prints after a query's rows: the query read in full. */
+export const DATABASE_MARK = "==opscrew-db:";
+
+/** The mark's name when the slow statements' query failed for another reason than a limit. */
+export const STATEMENTS_FAILED = "statements-failed";
+
+/**
+ * The one `SELECT` besides {@link DATABASE_QUERIES}: whether the slow statements' query failed on
+ * the session's statement or lock limit (SQLSTATE `57014`, `55P03`), as psql's `opscrew_cancelled`.
+ */
+export const CANCELLED_CHECK =
+  "SELECT :'SQLSTATE' IN ('57014', '55P03') AS opscrew_cancelled \\gset";
+
+/**
+ * The check's psql script for PostgreSQL `major`: the queries in order, each followed by its mark.
+ * The slow statements run only when `pg_stat_statements` is installed (the extension's query has a
+ * row) and from version 13; their failure doesn't stop the session (installed but not loaded, psql
+ * says so), unless it hit the session's limit.
+ */
+export function databaseScript(major: number): string {
+  const query = (name: DatabaseQuery) => [DATABASE_QUERIES[name], `\\echo ${DATABASE_MARK}${name}`];
+  const statements =
+    major < STATEMENTS_FROM
+      ? []
+      : [
+          ...query("extension"),
+          "\\if :ROW_COUNT",
+          "\\set ON_ERROR_STOP 0",
+          DATABASE_QUERIES.statements,
+          "\\set ON_ERROR_STOP 1",
+          "\\if :ERROR",
+          CANCELLED_CHECK,
+          "\\if :opscrew_cancelled",
+          "\\q",
+          "\\endif",
+          `\\echo ${DATABASE_MARK}${STATEMENTS_FAILED}`,
+          "\\else",
+          `\\echo ${DATABASE_MARK}statements`,
+          "\\endif",
+          "\\endif",
+        ];
+  return [
+    ...query("blocked"),
+    ...query("sessions"),
+    ...query("connections"),
+    ...statements,
+    ...query("size"),
+    ...query("tables"),
+    "",
+  ].join("\n");
+}
+
+/** Each query's rows by the mark psql printed after them; a query cut short has none. */
+function marked(stdout: string): Map<string, string[][]> {
+  const found = new Map<string, string[][]>();
+  let rows: string[][] = [];
+  for (const line of stdout.split("\n")) {
+    if (line === "") continue;
+    if (line.startsWith(DATABASE_MARK) && !line.includes("\0")) {
+      found.set(line.slice(DATABASE_MARK.length), rows);
+      rows = [];
+    } else {
+      rows.push(line.split("\0"));
+    }
+  }
+  return found;
+}
 
 /** True when psql says a statement was cancelled by the session's statement or lock limit. */
 function cancelled(result: CommandResult): boolean {
@@ -131,7 +197,7 @@ function parsed<T extends z.ZodType>(rows: string[][], schema: T): z.output<T>[]
 
 /**
  * The statistics of one PostgreSQL service over `remote` (a shell that reaches Docker), with what
- * could not be read in words. The queries run one at a time, each with what is left of
+ * could not be read in words. The queries run in one psql session ({@link databaseScript}) within
  * {@link DATABASE_CHECK_CAP_MS}; the first that times out stops the check (`timedOut`), and one
  * that fails stops it too, said in `notRead`. `pg_stat_statements` off, or a version below 13,
  * skips the slow statements with the reason.
@@ -151,34 +217,28 @@ export async function readDatabase(
   const notRead: string[] = [];
   const text = (value: string) => check.redact(value);
 
-  const ask = async (query: DatabaseQuery): Promise<Answer> => {
-    const left = DATABASE_CHECK_CAP_MS - (check.now().getTime() - start.getTime());
-    if (left <= 0) return { timedOut: true };
-    const result = await remote.run(command, { input: DATABASE_QUERIES[query], timeoutMs: left });
-    if (result.timedOut === true || cancelled(result)) return { timedOut: true };
-    if (result.exitCode !== 0) return { failed: result };
-    const rows = result.stdout
-      .split("\n")
-      .filter((line) => line !== "")
-      .map((line) => line.split("\0"));
-    return { rows };
-  };
+  const result = await remote.run(command, {
+    input: databaseScript(check.major),
+    timeoutMs: DATABASE_CHECK_CAP_MS,
+  });
+  const read = marked(result.stdout);
 
-  /** The rows of `query`, or `undefined` once the check stopped (said in `reading`/`notRead`). */
-  const rowsOf = async (query: DatabaseQuery): Promise<string[][] | undefined> => {
-    const answer = await ask(query);
-    if ("rows" in answer) return answer.rows;
-    if ("timedOut" in answer) {
+  /** Says why the session stopped before a query: its limit, or psql's failure. */
+  const stopped = (): undefined => {
+    if (result.timedOut === true || cancelled(result)) {
       reading.timedOut = true;
     } else {
       notRead.push(
-        `the statistics of ${words}: psql in its container failed (exit code ${answer.failed.exitCode}); check that it runs with \`opscrew status\``,
+        `the statistics of ${words}: psql in its container failed (exit code ${result.exitCode}); check that it runs with \`opscrew status\``,
       );
     }
     return undefined;
   };
 
-  const blocked = await rowsOf("blocked");
+  /** The rows of `query`, or `undefined` where the session stopped (`stopped` says why). */
+  const rowsOf = (query: DatabaseQuery): string[][] | undefined => read.get(query) ?? stopped();
+
+  const blocked = rowsOf("blocked");
   if (blocked === undefined) return { reading, notRead };
   reading.blocked = parsed(
     blocked,
@@ -194,7 +254,7 @@ export async function readDatabase(
     ),
   );
 
-  const sessions = await rowsOf("sessions");
+  const sessions = rowsOf("sessions");
   if (sessions === undefined) return { reading, notRead };
   reading.sessions = parsed(
     sessions,
@@ -210,7 +270,7 @@ export async function readDatabase(
     ),
   );
 
-  const connections = await rowsOf("connections");
+  const connections = rowsOf("connections");
   if (connections === undefined) return { reading, notRead };
   const [counts] = parsed(connections, z.tuple([Int, Int, Int]));
   if (counts !== undefined) {
@@ -223,21 +283,21 @@ export async function readDatabase(
       `${slow}: they need PostgreSQL ${STATEMENTS_FROM} or later, and this one is ${check.major}`,
     );
   } else {
-    const extension = await rowsOf("extension");
+    const extension = rowsOf("extension");
     if (extension === undefined) return { reading, notRead };
-    const answer = extension.length === 0 ? undefined : await ask("statements");
-    if (answer !== undefined && "timedOut" in answer) {
-      reading.timedOut = true;
+    const statements = extension.length === 0 ? undefined : read.get("statements");
+    if (extension.length > 0 && statements === undefined && !read.has(STATEMENTS_FAILED)) {
+      stopped();
       return { reading, notRead };
     }
-    if (answer === undefined || "failed" in answer) {
+    if (statements === undefined) {
       // Installed but not loaded at the server's start, psql says so: the same two steps.
       notRead.push(
         `${slow}: turn \`pg_stat_statements\` on (add it to the database's \`shared_preload_libraries\` setting and restart the database, then run \`CREATE EXTENSION pg_stat_statements;\` in it)`,
       );
     } else {
       reading.statements = parsed(
-        answer.rows,
+        statements,
         z.tuple([Int, Num, Num, Num, z.string()]).transform(
           ([calls, totalMs, meanMs, allMs, statement]): SlowStatement => ({
             text: text(statement),
@@ -250,12 +310,12 @@ export async function readDatabase(
     }
   }
 
-  const size = await rowsOf("size");
+  const size = rowsOf("size");
   if (size === undefined) return { reading, notRead };
   const [bytes] = parsed(size, z.tuple([Int]));
   if (bytes !== undefined) reading.sizeBytes = bytes[0];
 
-  const tables = await rowsOf("tables");
+  const tables = rowsOf("tables");
   if (tables === undefined) return { reading, notRead };
   reading.tables = parsed(
     tables,

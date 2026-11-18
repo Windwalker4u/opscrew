@@ -48,7 +48,7 @@ import {
   scenario,
   tree,
 } from "./__fixtures__/environment";
-import { DATABASE_QUERIES, databaseCommand } from "./database";
+import { databaseCommand, databaseScript } from "./database";
 import { type RunAdviseOptions, runAdvise } from "./run";
 import { type AdviceReport, type Proposal, ProposalSchema } from "./types";
 
@@ -551,19 +551,19 @@ describe("runAdvise: changes nothing", () => {
       expect(entry.action).toContain("(read-only)");
     }
     // The server got `status`'s fixed figures command, `secure`'s host checks and the database
-    // check's fixed command with its fixed SQL on standard input, nothing else.
+    // check's fixed command with its fixed script on standard input (the same from PostgreSQL 13
+    // on), nothing else.
     const fixed = new Set([
       serverFiguresCommand("shop"),
       databaseCommand("shop", "db"),
       ...[...HOST_CHECKS, ...serverServiceChecks(s.plan)].map((check) => check.command),
     ]);
-    const sql = new Set<string>(Object.values(DATABASE_QUERIES));
     expect(s.servers.commands.length).toBeGreaterThan(1);
     for (const { command, input } of s.servers.commands) {
       expect(fixed).toContain(command);
-      if (input !== undefined) expect(sql).toContain(input);
+      if (input !== undefined) expect(input).toBe(databaseScript(17));
     }
-    expect(s.servers.commands.filter((c) => c.input !== undefined)).toHaveLength(7);
+    expect(s.servers.commands.filter((c) => c.input !== undefined)).toHaveLength(1);
   });
 
   it("keeps the address of a server the user owns out when reaching it fails", async () => {
@@ -839,7 +839,7 @@ describe("runAdvise: a proposal the plan already holds", () => {
 });
 
 describe("runAdvise: the database check", () => {
-  /** The commands with SQL on standard input, by host. */
+  /** The commands with a script on standard input, by host. */
   const sqlHosts = (servers: Scenario["servers"]) =>
     servers.commands.filter((c) => c.input !== undefined).map((c) => c.host);
 
@@ -868,7 +868,7 @@ describe("runAdvise: the database check", () => {
       ],
     });
     expect(report.checked).toContain("the statistics of PostgreSQL db on server app");
-    expect(sqlHosts(s.servers)).toEqual(Array(7).fill(IPS.app));
+    expect(sqlHosts(s.servers)).toEqual([IPS.app]);
     expect(s.deps.audit.entries).toContainEqual(
       expect.objectContaining({
         kind: "remote-exec",
@@ -906,7 +906,7 @@ describe("runAdvise: the database check", () => {
       urgency: "now",
       apply: { kind: "command", command: "opscrew status" },
     });
-    expect(sqlHosts(s.servers)).toHaveLength(2);
+    expect(sqlHosts(s.servers)).toHaveLength(1);
   });
 
   it("lists slow queries as not read while pg_stat_statements is off", async () => {
@@ -965,7 +965,7 @@ describe("runAdvise: the database check", () => {
     // The SQL reaching the server is OpsCrew's own, fixed.
     for (const { command, input } of s.servers.commands) {
       expect(command).not.toContain(secret);
-      if (input !== undefined) expect(Object.values(DATABASE_QUERIES)).toContain(input);
+      if (input !== undefined) expect(input).toBe(databaseScript(17));
     }
   });
 });

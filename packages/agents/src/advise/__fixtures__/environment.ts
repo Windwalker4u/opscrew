@@ -28,7 +28,7 @@ import {
 } from "../../testing";
 import type { DatabaseQuery } from "../database";
 import type { AdviseGitHub, ReadingsOptions } from "../readings";
-import { type DatabaseAnswer, QUIET, queryOf, resultOf } from "./database";
+import { type DatabaseAnswer, psqlSession } from "./database";
 import { type Answer, type Figure, prometheusOutput } from "./prometheus";
 
 export { recordedHistory } from "./prometheus";
@@ -69,7 +69,7 @@ export interface FakeHost {
   checks?: Record<string, string | Error>;
   /** The monitoring stack's recorded answers (`shop`, prod), when the stack runs here. */
   prometheus?: Partial<Record<Figure, Answer | string>>;
-  /** The database queries answered otherwise than a quiet PostgreSQL (by the SQL on stdin). */
+  /** The database queries answered otherwise than a quiet PostgreSQL (in the script on stdin). */
   database?: Partial<Record<DatabaseQuery, DatabaseAnswer>>;
 }
 
@@ -99,8 +99,9 @@ export function fakeServers(hosts: Record<string, FakeHost>) {
       if (command.includes("==opscrew-monitoring:") && fake.prometheus !== undefined) {
         return { exitCode: 0, stdout: prometheusOutput(command, fake.prometheus), stderr: "" };
       }
-      const query = command.includes(" psql ") ? queryOf(input) : undefined;
-      if (query !== undefined) return resultOf(fake.database?.[query] ?? QUIET[query]);
+      if (command.includes(" psql ") && input !== undefined) {
+        return psqlSession(input, fake.database).result;
+      }
       const check = HOST_CHECKS.find((c) => c.command === command);
       if (check !== undefined) {
         const answer = fake.checks?.[check.id] ?? HEALTHY[check.id] ?? "";

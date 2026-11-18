@@ -1,11 +1,15 @@
 /**
  * `psql -X -q -At -z` answers to advise's database queries (fields split by a zero byte, one row a
  * line), as a quiet PostgreSQL gives them and with a planted lock wait, an open transaction, a long
- * query, slow statements and a table read in full; and a shell answering them by the SQL on its
- * standard input.
+ * query, slow statements and a table read in full; and psql running the check's script with them.
  */
 import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
-import { DATABASE_QUERIES, type DatabaseQuery } from "../database";
+import {
+  DATABASE_MARK,
+  DATABASE_QUERIES,
+  type DatabaseQuery,
+  STATEMENTS_FAILED,
+} from "../database";
 
 /** One row of fields as psql prints it. */
 export function row(...fields: (string | number)[]): string {
@@ -55,13 +59,6 @@ export const TROUBLED: Record<DatabaseQuery, string> = {
 /** What the shell answers one query: its output, or a whole result (a failure, a timeout). */
 export type DatabaseAnswer = string | CommandResult;
 
-/** The query whose SQL `input` is, or `undefined`. */
-export function queryOf(input: string | undefined): DatabaseQuery | undefined {
-  return (Object.keys(DATABASE_QUERIES) as DatabaseQuery[]).find(
-    (query) => DATABASE_QUERIES[query] === input,
-  );
-}
-
 /** A result: exit code 0 with `stdout`, or `answer` itself. */
 export function resultOf(answer: DatabaseAnswer): CommandResult {
   return typeof answer === "string" ? { exitCode: 0, stdout: answer, stderr: "" } : answer;
@@ -74,19 +71,61 @@ export const STATEMENT_TIMEOUT: CommandResult = {
   stderr: "ERROR:  canceling statement due to statement timeout\n",
 };
 
+/** A query's mark, as psql prints it. */
+const mark = (name: string) => `${DATABASE_MARK}${name}\n`;
+
 /**
- * A shell that answers advise's database queries by the SQL on standard input (`answers`, then
- * {@link QUIET}); every call is recorded.
+ * psql running advise's script `input` (as real psql does, in the database tests against Docker):
+ * the queries in the script in order, each answered by `answers` (then {@link QUIET}) and followed
+ * by its mark; the first failure or timeout stops it, except the slow statements' failure other
+ * than a limit, marked; the statements only when the extension's query has a row. Also the
+ * queries it ran.
+ */
+export function psqlSession(
+  input: string,
+  answers: Partial<Record<DatabaseQuery, DatabaseAnswer>> = {},
+): { result: CommandResult; ran: DatabaseQuery[] } {
+  const queries = (Object.keys(DATABASE_QUERIES) as DatabaseQuery[]).filter((query) =>
+    input.split("\n").includes(DATABASE_QUERIES[query]),
+  );
+  const ran: DatabaseQuery[] = [];
+  let stdout = "";
+  let stderr = "";
+  let extension = false;
+  for (const query of queries) {
+    if (query === "statements" && !extension) continue;
+    ran.push(query);
+    const answer = resultOf(answers[query] ?? QUIET[query]);
+    stderr += answer.stderr;
+    if (answer.timedOut === true) return { result: { ...answer, stdout, stderr }, ran };
+    if (answer.exitCode !== 0) {
+      if (query !== "statements") return { result: { ...answer, stdout, stderr }, ran };
+      // The script quits (exit code 0) when the statements hit a limit.
+      if (/canceling statement due to/.test(answer.stderr)) {
+        return { result: { exitCode: 0, stdout, stderr }, ran };
+      }
+      stdout += mark(STATEMENTS_FAILED);
+      continue;
+    }
+    stdout += answer.stdout + mark(query);
+    if (query === "extension") extension = answer.stdout !== "";
+  }
+  return { result: { exitCode: 0, stdout, stderr }, ran };
+}
+
+/**
+ * A shell that runs advise's database script on standard input as {@link psqlSession} with
+ * `answers`; every call is recorded, with the queries each ran.
  */
 export function databaseShell(answers: Partial<Record<DatabaseQuery, DatabaseAnswer>> = {}) {
-  const calls: { command: string; options: RemoteRunOptions | undefined }[] = [];
+  const calls: { command: string; options: RemoteRunOptions | undefined; ran: DatabaseQuery[] }[] =
+    [];
   const remote: RemoteExec = {
     host: "192.168.1.30",
     async run(command, options) {
-      calls.push({ command, options });
-      const query = queryOf(options?.input);
-      if (query === undefined) return { exitCode: 1, stdout: "", stderr: "" };
-      return resultOf(answers[query] ?? QUIET[query]);
+      const { result, ran } = psqlSession(options?.input ?? "", answers);
+      calls.push({ command, options, ran });
+      return result;
     },
   };
   return { remote, calls };
