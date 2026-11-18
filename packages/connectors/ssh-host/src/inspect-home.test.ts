@@ -210,7 +210,7 @@ describe("power", () => {
   });
 
   it.skipIf(!BASH_AVAILABLE)(
-    "asks vcgencmd first, else this boot's kernel log, else nothing",
+    "asks vcgencmd first, else this boot's kernel log on a board, else nothing",
     () => {
       const sh = new ShellHarness();
       try {
@@ -220,13 +220,20 @@ describe("power", () => {
         sh.stub("vcgencmd", `cat '${dir}/vcgencmd.txt'`);
         expect(parsePower(runSnippet(sh, POWER_SNIPPET).stdout)?.source).toBe("vcgencmd");
 
-        // Without vcgencmd: the kernel log, where the voltage came back.
+        // Without vcgencmd and not a board (no device tree): the kernel log is not read.
         sh.stub("vcgencmd", "exit 127");
         sh.stub(
           "journalctl",
           `case "$*" in *"-n 0"*) exit 0 ;; esac
 cat '${dir}/kernel.txt'`,
         );
+        sh.clearCalls();
+        const server = runSnippet(sh, POWER_SNIPPET);
+        expect(parsePower(server.stdout)).toBeNull();
+        expect(sh.calls().filter((call) => call.startsWith("journalctl "))).toEqual([]);
+
+        // Without vcgencmd on a board: the kernel log, where the voltage came back.
+        sh.write("/proc/device-tree/model", "Raspberry Pi 5 Model B Rev 1.0\0");
         expect(parsePower(runSnippet(sh, POWER_SNIPPET).stdout)).toEqual({
           underVoltageNow: false,
           underVoltageSinceBoot: true,

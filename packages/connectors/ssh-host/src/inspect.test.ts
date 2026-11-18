@@ -7,11 +7,13 @@ import { desiredFor, planFor, provision } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
 import {
   dockerFirewall,
+  INSPECT_SECTIONS,
   inspectHost,
   inspectScript,
   networkInspectScript,
   RUNTIME_FILES_SNIPPET,
   SYSCTL_SNIPPET,
+  sectionsScript,
 } from "./inspect";
 import {
   parseAddons,
@@ -485,6 +487,66 @@ describe("inspectHost: the apps' records and folders (real shell)", () => {
           ["/srv/apps/shop", "dir"],
           ["/srv/data/shop", "dir"],
         ]);
+      } finally {
+        sh.dispose();
+      }
+    },
+  );
+});
+
+describe("docker info", () => {
+  it.skipIf(!BASH_AVAILABLE)(
+    "is asked once for the swarm, the firewall backend and the data root",
+    () => {
+      const sh = new ShellHarness();
+      try {
+        sh.write("/srv/docker/.keep", "");
+        const info = {
+          ID: "x",
+          Driver: "overlay2",
+          // Under the harness root, as the data root must exist.
+          DockerRootDir: sh.posix("/srv/docker"),
+          Swarm: { NodeID: "", LocalNodeState: "active", ControlAvailable: false },
+          FirewallBackend: { Driver: "nftables", Info: [["ReloadedAt", "2026-11-18T10:00:00Z"]] },
+          Warnings: null,
+        };
+        sh.write("/fixtures/info.json", `${JSON.stringify(info)}\n`);
+        const dir = sh.posix("/fixtures");
+        sh.stub("systemctl", 'case "$*" in "is-active --quiet docker") exit 0 ;; esac\nexit 1');
+        sh.stub("docker", `[ "$*" = "info --format {{json .}}" ] && cat '${dir}/info.json'`);
+        sh.stub("findmnt", 'echo "/dev/for$5"');
+        const names = ["docker-swarm", "docker-firewall", "storage"];
+        const script = sectionsScript(
+          "t",
+          INSPECT_SECTIONS.filter(([name]) => names.includes(name)),
+        );
+        const sections = splitSections(sh.run(script).stdout.replaceAll(sh.root, ""));
+        expect(sh.calls().filter((call) => call.startsWith("docker "))).toEqual([
+          "docker info --format {{json .}}",
+        ]);
+        expect(sections.get("docker-swarm")).toEqual({ text: "active", exit: 0 });
+        const firewall = sections.get("docker-firewall") ?? { text: "", exit: 1 };
+        expect(JSON.parse(firewall.text)).toEqual(info.FirewallBackend);
+        expect(
+          dockerFirewall({ daemonJson: { text: "", exit: 1 }, execStart: "", info: firewall.text }),
+        ).toEqual({ backend: "nftables" });
+        expect(sections.get("storage")?.text).toContain("docker /dev/for/srv/docker");
+
+        // An older Docker has no FirewallBackend: the swarm still reads, the backend is empty.
+        const { FirewallBackend: _, ...older } = info;
+        sh.write("/fixtures/info.json", `${JSON.stringify(older)}\n`);
+        const again = splitSections(sh.run(script).stdout.replaceAll(sh.root, ""));
+        expect(again.get("docker-swarm")).toEqual({ text: "active", exit: 0 });
+        expect(again.get("docker-firewall")).toEqual({ text: "", exit: 0 });
+
+        // Docker not running: nothing is asked, and the sections fail as before.
+        sh.stub("systemctl", "exit 3");
+        sh.clearCalls();
+        const down = splitSections(sh.run(script).stdout.replaceAll(sh.root, ""));
+        expect(sh.calls().filter((call) => call.startsWith("docker "))).toEqual([]);
+        expect(down.get("docker-swarm")?.exit).not.toBe(0);
+        expect(down.get("docker-firewall")?.exit).not.toBe(0);
+        expect(down.get("storage")?.text).toMatch(/^docker \/dev\/for\/var\/lib/m);
       } finally {
         sh.dispose();
       }

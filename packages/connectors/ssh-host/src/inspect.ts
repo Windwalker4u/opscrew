@@ -517,15 +517,35 @@ for script in ${NETWORK_FILTER_SCRIPT_PREFIX}wg-opscrew*; do
 done`;
 
 /**
+ * `docker_info`: true when a running Docker answered `docker info`, whose JSON (one line) it keeps
+ * in `$docker_info_json`. Docker is asked once per script: the sections share one shell, and each
+ * that reads it starts with this function. `{{json .}}` never fails on a field an older Docker
+ * lacks (`FirewallBackend` before 28.2), as a template naming that field would.
+ */
+const DOCKER_INFO_FN = `docker_info() {
+  if [ -z "\${docker_info_json+x}" ]; then
+    docker_info_json=$(docker_up && docker info --format '{{json .}}') || docker_info_json=''
+  fi
+  [ -n "$docker_info_json" ]
+}`;
+
+/** The value of `"<key>":"<value>"` in {@link DOCKER_INFO_FN}'s JSON (`$1`, a key of one word). */
+const DOCKER_INFO_TEXT_FN = `${DOCKER_INFO_FN}
+docker_info_text() {
+  printf '%s\\n' "$docker_info_json" | sed -n "s/.*\\"$1\\":\\"\\([^\\"]*\\)\\".*/\\1/p"
+}`;
+
+/**
  * The devices of `/srv` (or `/` without it) and of Docker's data root (`/var/lib/docker`, or
  * `/var/lib` before Docker made it, where it will be), then each `mmcblk` disk's type.
  */
-export const STORAGE_SNIPPET = `src_of() { findmnt -n -o SOURCE -T "$1" | head -n 1; }
+export const STORAGE_SNIPPET = `${DOCKER_INFO_TEXT_FN}
+src_of() { findmnt -n -o SOURCE -T "$1" | head -n 1; }
 p=/srv
 [ -d "$p" ] || p=/
 echo "srv $(src_of "$p")"
 d=''
-if docker_up; then d=$(docker info --format '{{.DockerRootDir}}') || d=''; fi
+if docker_info; then d=$(docker_info_text DockerRootDir); fi
 [ -n "$d" ] || d=/var/lib/docker
 [ -d "$d" ] || d=/var/lib
 echo "docker $(src_of "$d")"
@@ -535,12 +555,15 @@ for f in /sys/block/mmcblk*/device/type; do
   echo "type \${b%%/*} $(head -n 1 "$f")"
 done`;
 
-/** Under-voltage: `vcgencmd get_throttled`, else this boot's kernel lines about the voltage. */
+/**
+ * Under-voltage: `vcgencmd get_throttled`, else, on a board (`/proc/device-tree/model`), this
+ * boot's kernel lines about the voltage.
+ */
 export const POWER_SNIPPET = `t=$(vcgencmd get_throttled) || t=''
 case "$t" in
   throttled=0x*) printf 'vcgencmd %s\\n' "$t" ;;
   *)
-    if journalctl -k -b -n 0 --no-pager >/dev/null; then
+    if [ -f /proc/device-tree/model ] && journalctl -k -b -n 0 --no-pager >/dev/null; then
       echo kernel-log
       journalctl -k -b -o cat --no-pager | grep -E 'Undervoltage detected|Voltage normali[sz]ed' | tail -n 50
     else
@@ -664,7 +687,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["docker-compose", "docker compose version --short"],
   ["docker-buildx", "docker buildx version"],
   ["docker-exec", "systemctl show -p ExecStart -p Environment docker"],
-  ["docker-swarm", "docker_up && docker info --format '{{.Swarm.LocalNodeState}}'"],
+  ["docker-swarm", `${DOCKER_INFO_TEXT_FN}\ndocker_info && docker_info_text LocalNodeState`],
   [
     "docker-sources",
     "grep -ls 'download.docker.com' /etc/apt/sources.list /etc/apt/sources.list.d/*",
@@ -701,7 +724,11 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["snapshot-dirs", SNAPSHOT_DIRS_SNIPPET],
   ["drills", DRILLS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
-  ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
+  [
+    "docker-firewall",
+    `${DOCKER_INFO_FN}
+docker_info && printf '%s\\n' "$docker_info_json" | sed -n 's/.*"FirewallBackend":\\({[^}]*}\\).*/\\1/p'`,
+  ],
   ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
   ["ssh-firewall", SSH_FIREWALL_SNIPPET],
   ["board", "tr -d '\\000' < /proc/device-tree/model"],
