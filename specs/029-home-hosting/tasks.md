@@ -443,6 +443,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Effort: high
 
 - [ ] T2915a [P] [US2] rotate `dns-updater` and init's recipe
+  - Also (lead, T2941's finding): `rotate/infra.ts`'s refusal of a plan with renames lets the one-time `a` → `a[0]` rename through, with `isDnsRecordCountMove` (`retarget/plans.ts`, moved to `shared/` if rotate shouldn't import from retarget), and a test.
   - Owns: `packages/agents/src/rotate/**`, `packages/agents/src/init/**`, colocated tests and snapshots
   - Reads: plan 6.; contracts/cli.md "`opscrew rotate`", "Variables"; data-model 8, 9
   - Depends: T2913a
