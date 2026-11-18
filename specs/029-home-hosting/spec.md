@@ -163,6 +163,64 @@ address.
 
 ---
 
+### User Story 7 - A restore drill proves the backups restore (Priority: P2; in 029's release)
+
+A backup nobody has restored is a hope. `opscrew restore --drill` restores the latest snapshot into
+a throwaway copy of the app on the server that holds it, with no internet and without the
+production values, checks that the app comes up healthy on the restored data, reports how long it
+took, and removes the copy. Production keeps running and is never touched.
+
+**Why this priority**: it turns 024's snapshots into proven restores; the founder put it in 029's
+release (2026-11-15).
+
+**Independent Test**: on a server with a snapshot of an app with a database: the drill reports each
+part restored with its size and time, the app healthy, the copy removed; production's containers,
+volumes and data are unchanged, and nothing from the copy reached the internet.
+
+**Acceptance Scenarios**:
+
+1. **Given** an app on a server with snapshots, **When** the user runs `opscrew restore --drill`
+   and approves its plan, **Then** the latest snapshot is restored into a separate copy with no
+   outbound network and no public route, its health check runs, and the copy is removed; the report
+   is kept on the server and shown by `opscrew status`.
+2. **Given** a snapshot part that fails to restore, **When** the drill runs, **Then** it says the
+   backup is bad and to take a new snapshot now.
+3. **Given** an app that needs the internet or a production value to start, **When** the drill
+   runs, **Then** it says the backup restored but the app didn't start without them, and to add test
+   values for previews.
+4. **Given** a target with no drill in this release (Portainer, this computer, a hosting account,
+   Cloudflare's hosting), **When** the user asks for a drill, **Then** it is refused with the reason.
+
+---
+
+### User Story 8 - A read-only database check in `advise` (Priority: P2; in 029's release)
+
+`opscrew advise` reads the app's PostgreSQL database and says what hurts it now or soon: sessions
+blocked by locks, transactions left open, long queries, connections near the limit, slow queries
+(where `pg_stat_statements` is on), the database's share of its disk, and tables read in full again
+and again. Every query is read-only and bounded by a strict timeout, so the check never weighs on a
+struggling database. An index it points to is a proposal; nothing is applied.
+
+**Why this priority**: the database is where most slow or stuck apps hurt; the founder put it in
+029's release (2026-11-15).
+
+**Independent Test**: a PostgreSQL with a session holding a lock another waits for, an idle open
+transaction and a table read in full: advise names each with its figures and plain advice; the
+database's settings, roles and data are unchanged; no statement text with values appears.
+
+**Acceptance Scenarios**:
+
+1. **Given** a session blocked by another, **When** advise runs, **Then** it names both sessions'
+   apps, the wait, and what to look for, without ending either.
+2. **Given** `pg_stat_statements` isn't on, **When** advise runs, **Then** it says slow queries
+   weren't read and how to turn it on, without turning it on.
+3. **Given** a database too busy to answer in 3 seconds, **When** advise runs, **Then** it stops
+   reading it and says so as a finding.
+4. **Given** a target where advise has no shell to the database, **When** advise runs, **Then** it
+   lists the database as not read, with the reason.
+
+---
+
 ### Edge Cases
 
 - **The server's LAN address changes** (the router's DHCP gives it another): the forwards point
@@ -242,6 +300,26 @@ address.
 - **FR-2916**: A user guide page MUST explain hosting at home: when to use it versus tunnel mode,
   the router forwards, the address checks, the updater, IPv6, the Raspberry Pi advice, the deploy
   paths and the terms.
+- **FR-2917**: `opscrew restore --drill` MUST restore a snapshot into a separate copy of the app on
+  the server holding it, through a host plan approved by its hash (`allowDestroy` and the copy's
+  name typed, since it removes the copy's own volumes), and MUST NOT touch production's containers,
+  volumes or data.
+- **FR-2918**: The drill's copy MUST have no outbound network, none of production's own values, no
+  workers or scheduled jobs, and no public hostname, record, proxy site or published port.
+- **FR-2919**: The drill MUST report, per part, the size and time to restore, then the health
+  result and the removal, telling apart "the backup didn't restore", "restored but the app didn't
+  start without the internet or production values" and "restored and healthy"; the report is kept
+  on the server and its last result shown by `opscrew status`.
+- **FR-2920**: `opscrew advise` MUST read an app's PostgreSQL on servers it reaches over SSH:
+  blocked sessions, open and long transactions, connections against the limit, slow queries where
+  `pg_stat_statements` is on, the database's share of its disk, and tables scanned in full, each
+  finding with its figures and plain advice.
+- **FR-2921**: The database check MUST be read-only (fixed `SELECT`s in a read-only session), each
+  query under a statement timeout of 3 seconds and a lock timeout of 0.5 seconds, the whole check
+  within 20 seconds; it MUST NOT create roles, change settings, enable extensions or end sessions,
+  and MUST NOT show a running statement's text.
+- **FR-2922**: An index the check points to MUST be a proposal naming the table and the statement
+  that reads it; nothing is applied, and no column is guessed.
 
 ### Key Entities
 
@@ -266,6 +344,11 @@ address.
   logging in to the server.
 - **SC-2906**: No token, key or proxied home address appears in any output, log, commit or report
   of the feature's live pass.
+- **SC-2907**: A restore drill of an app with a database finishes with a health result and the copy
+  removed, with production's containers and volumes unchanged and no connection from the copy to
+  the internet.
+- **SC-2908**: The database check reads a live PostgreSQL in under 20 seconds, finds a planted lock
+  wait and an open transaction, and leaves the database unchanged.
 
 ## Assumptions
 

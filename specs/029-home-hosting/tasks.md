@@ -204,6 +204,10 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Reads: research R6; plan 6.; data-model 8; `zonePermissions`, `accountPermissions` in
     `connectors/cloudflare/src/client.ts`
   - Depends: T2909
+  - Decided by the lead (T2909's finding): an account-owned token gets no id or status from
+    `verifyToken` (it falls back to the zone listing); `checkUpdaterToken` refuses a token without
+    an id or status in plain words, naming the recipe's user token (My Profile → API Tokens). No
+    account-token verify is added.
   - Accept: `checkUpdaterToken(...)`, before any change: set (`OPSCREW_DNS_UPDATER_TOKEN`); not
     `CLOUDFLARE_API_TOKEN`'s value nor the same token (by `verifyToken`'s id); active;
     `zonePermissions(zoneId, ["dns"])` passes; the inverse probes (the zone's other needs, the
@@ -495,7 +499,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Reads: plan 18.; quickstart "The lead's live pass"; `packages/cli/test/live/cloudflare-move*.ts`
     for the patterns (one leg per `-t`, the pass state file, cleanup, the leak scan)
   - Depends: T2917
-  - Accept: legs H0–H7 as plan 18., gated on `OPSCREW_E2E_HOME=1`, each runnable alone with
+  - Accept: legs H0–H8 as plan 18., gated on `OPSCREW_E2E_HOME=1`, each runnable alone with
     `-t "H<n>:"`; the stand-ins (a Hetzner `cax` server as home, a Hetzner Cloud firewall as the
     router, a second server as the scanner); every server and firewall deleted at the end or on
     failure, leftovers listed; the leak scan of H7 over every output, commit, pull request, audit
@@ -505,21 +509,89 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 11: Also in 029's release (founder, 2026-11-15)
 
-Restore drills and a read-only database check in `advise`, as tasks of their own (plan O11; scope in
-`specs/roadmap.md`, 029's section). Research R15+ first; their spec and plan sections and tasks
-T2930+ follow it, written by the lead.
+Restore drills and a read-only database check in `advise`, as tasks of their own (plan O11; US7,
+US8; FR-2917–FR-2922; plan 19., 20.; research R15–R23). T2931 and T2932 run beside wave 1, T2933
+beside wave 2; none shares a file with 029's other tasks of its wave.
 
-- [ ] T2930 (lead) Research R15+, the spec and plan sections, and the tasks for both
-  - Owns: `specs/029-home-hosting/{research,spec,plan,tasks}.md`
-  - Accept: research R15+ (drills: reuse of 022 and 024, approvals, isolation from outside services,
-    no outside reach to the restored data, targets, schedule; the database check: connection,
-    read-only role, bounded queries, thresholds, index proposals); the spec's user stories and FRs;
-    the plan's sections; tasks T2931+ in waves that share no files with 029's open waves.
+- [x] T2930 (lead) Research R15–R23, US7 and US8, FR-2917–FR-2922, plan 19. and 20., these tasks
   - Effort: lead
+
+- [ ] T2931 [P] [US7] The drill's copy and its part restores
+  - Owns: `packages/iac-templates/src/drill/**` (new), `packages/iac-templates/src/workflow/snapshots.ts`
+    (the part restores taking a project and volumes), its export line in
+    `packages/iac-templates/src/index.ts`, colocated tests and snapshots
+  - Reads: plan 19.; research R15–R17; `src/previews` (`previewTemplatePlan`, the recipe),
+    `src/runtime/healthcheck.ts`, `src/workflow/snapshots.ts`
+  - Depends: T2901
+  - Accept:
+    - `renderDrill(plan, snapshot, ...)`: the Compose project `<app>-drill` for `.drill/<snapshot
+      id>/` from the preview recipe's rendering: the app (its pinned image digest) and the
+      snapshot's services only, the services' limits, new generated service values, no workers or
+      cron, one network with `internal: true`, no published port, no proxy site, the app's
+      healthcheck kept.
+    - The env: the app's plain settings and the drill's own service values; no `.env` value; the
+      `.env.preview` file used when given.
+    - `snapshot.sh`'s part restores target a given project's volumes (default: the app's, so every
+      existing render is unchanged), reading the snapshot read-only.
+    - Tests: the drill render for an app with PostgreSQL and Redis; no `ports:`, `internal: true`,
+      no `.env`; existing snapshot renders unchanged (snapshots).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/drill src/workflow src/previews && pnpm lint`
+  - Effort: high
+
+- [ ] T2932 [P] [US8] The database check in `advise`
+  - Owns: `packages/agents/src/advise/**`, `docs/guide/advise.md`, colocated tests and `__fixtures__`,
+    a new Docker-gated `packages/agents/src/advise/database-docker.test.ts`
+  - Reads: plan 20.; research R20–R23; `docs/guide/advise.md`; `serverShell` and
+    `readServerResources` (`agents/src/status/`); `planGrant` in `connectors/ssh-host/src/plan.ts`
+    for how the socket sign-in works
+  - Depends: T2901
+  - Accept:
+    - For each PostgreSQL service on a server advise reaches over SSH: R21's six queries, each one
+      `docker compose -p <app> exec -T <db> psql -X -q -At` with the SQL on standard input and
+      `PGOPTIONS` as R21; a 20-second cap; the first timeout stops the check and is a finding.
+    - A test asserts the SQL texts hold only `SELECT`s and never `pg_stat_activity.query`.
+    - Findings with R22's thresholds (into `THRESHOLDS`) and plain texts, as **Reliability**,
+      `now`/`soon`, each with its figures and "read once, at <time>"; R23's index proposals (table
+      and statement, no column, never applied, never in `--apply`); `pg_stat_statements` missing:
+      "slow queries are not read: turn `pg_stat_statements` on" with the two steps; below 13 the
+      slow-query step skipped with the reason.
+    - Portainer, this computer and hosting accounts: "not read" with the reason.
+    - Statement text redacted; leak test.
+    - The Docker-gated test (`OPSCREW_DOCKER_TESTS=1`) on `postgres:14-alpine` and
+      `postgres:17-alpine` with a planted lock wait and an open transaction: both found, the
+      database unchanged.
+    - `docs/guide/advise.md` gains the database check.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/advise && pnpm lint`
+  - Effort: high
+
+- [ ] T2933 [US7] `opscrew restore --drill`
+  - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/status/drill.ts` (new) and its one
+    call in `packages/agents/src/status/run.ts`, `packages/cli/src/commands/restore.ts`,
+    `docs/guide/snapshots.md`, colocated tests
+  - Reads: plan 19.; research R15–R19; `snapshot/{restore,restore-checks,disk,run}.ts`;
+    `docs/guide/snapshots.md`
+  - Depends: T2931
+  - Accept:
+    - `opscrew restore --drill [<id>]` (latest by default; `--only` carries over; `--from offsite`
+      refused for drills), `--keep`, `--drill --remove`; targets as plan 19. (others refused with
+      the reason, before any change).
+    - Its host plan names the snapshot, the project, the volumes it creates and removes, the memory,
+      the network flags and the health check; approved by its hash through `approveRestore`'s kind
+      with a drill hash (plan 19.), `allowDestroy` and `<app>-drill` typed (`--approve <hash>
+      --confirm <app>-drill` in a script); the approval text says the copy runs with no internet and
+      without the production `.env`.
+    - The free-disk guard with the snapshot's size added; the copy's health read as plan 19.;
+      `pg_isready` and a table or key per SQL service; the copy removed unless `--keep`.
+    - The report in `.snapshots/drills.log` and its three outcomes in plain words (R19);
+      `opscrew status` shows the last drill. Production's containers and volumes never named in any
+      command it runs (a test over the scripted remote's commands).
+    - `docs/guide/snapshots.md` gains the drill.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/snapshot src/status && npx vitest run --root packages/cli src/commands/restore && pnpm lint`
+  - Effort: xhigh
 
 ## Phase 12: Lead
 
-- [ ] T2920 (lead) The live pass H0–H7 (plan 18., quickstart), results in `docs/e2e-coverage.md`
+- [ ] T2920 (lead) The live pass H0–H8 (plan 18., quickstart), results in `docs/e2e-coverage.md`
 - [ ] T2921 (lead) /simplify over the feature, and the repeated strings gathered
 - [ ] T2922 (lead) CLAUDE.md and the roadmap (029 done)
 - [ ] T2923 (lead) The release (`docs/releasing.md`); the CHANGELOG names the moves-only plan every
@@ -530,7 +602,7 @@ T2930+ follow it, written by the lead.
 Wave 1 (T2902, T2903, T2909, T2911) → wave 2 (T2904, T2907, T2910a, T2910b) → wave 3 (T2905, T2908,
 T2910c, T2912) → wave 4 (T2906, T2910d, T2914d) → wave 5 (T2913a) → wave 6 (T2913b, T2914a, T2914b,
 T2915a) → wave 7 (T2914c, T2915b, T2916a, T2916b) → wave 8 (T2917, T2918) → wave 9 (T2919) → lead.
-T2930's tasks run beside waves 2–8 where their files don't overlap. A wave's tasks share no file.
+T2931 and T2932 run beside wave 1, T2933 beside wave 2. A wave's tasks share no file.
 
 ## User stories
 

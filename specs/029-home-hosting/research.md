@@ -847,3 +847,263 @@ OPEN list carries those.
 - **Alternatives considered**: reading the current clause as covering it (it names CI); a PATCH
   (the clause gains a case, a material expansion).
 
+## Also in 029's release: restore drills and the database check (2026-11-18)
+
+R15–R19 are the restore drill (roadmap 029, "Also in 029's release"); R20–R23 are the read-only
+database check in `advise`. Code is cited as it is today. **UNCONFIRMED** marks what the plan's spike
+or the founder settles.
+
+### R15 Where a drill runs, and what approves it
+
+- **Decision**: a drill does **not** run on the preview server and **not** under the preview standing
+  approval. It runs on the machine that holds the snapshot (the app's server, or each server with data),
+  as a throwaway Compose project in the app's folder, `.drill/<snapshot id>/`, project name
+  `<app>-drill`, which reuses two things only:
+  - **024's restore.** The same `snapshot.sh` part restores (`part_restore`, `snapshot_restore`,
+    `packages/iac-templates/src/workflow/snapshots.ts`), pointed at the drill project's own volumes
+    instead of the running service's. The snapshot is read in place (read-only mount), so nothing is
+    copied between machines. `--from offsite` is not offered for drills in this release.
+  - **022's recipe rendering, not its server.** The services, memory limits and the app's pinned image
+    digest are rendered by the same code the preview recipe uses (`packages/iac-templates/src/previews`,
+    `previewTemplatePlan`), with a drill's own network (R16) and no reverse-proxy site.
+  Approval: **its own host plan, approved by its hash**, run by `opscrew restore --drill` at a terminal
+  (no standing approval). The plan names the snapshot, the project, the volumes it creates and removes,
+  the memory it takes, the network flags (R16) and the health check (R17). It creates and then removes
+  only what the plan names, never prod's containers or volumes, so it touches no production data; the
+  removal of the drill's own volumes is a destroy of its own resources, so the plan is `allowDestroy`
+  with the typed name `<app>-drill` (constitution I), once per drill run. The approval is the same
+  one-time-file kind 024's restore uses (`approveRestore`, `restoreHash` in
+  `packages/agents/src/snapshot/restore-checks.ts`: `kind: "remote-exec"`), with a drill hash over the
+  environment, the snapshot's id and `about.json` bytes, and the drill's settings. No new approval kind.
+  A schedule is R18.
+- **Rationale**:
+  - ADR 0026 D4 and constitution I's standing-approval clause say a standing approval "MUST reach no
+    other environment's servers or data". Restoring prod's snapshot onto the preview server would
+    break that, and the preview server is the least trusted machine OpsCrew runs: anyone who can push
+    a branch runs code there and reads its values (ADR 0026, Consequences). Production data on it
+    would be readable by every contributor.
+  - 022 gives no way to send a snapshot to a preview, and a preview's services start empty.
+  - On the app's own server the snapshot is already there, no data crosses the network, and the drill
+    runs as the deploy user that already owns the snapshots. The cost is the memory and disk of a
+    second copy for some minutes; the free-disk guard in `snapshot/disk.ts`
+    (1 GiB and 10% free) is reused, with the snapshot's size added.
+- **Alternatives considered**:
+  - the preview server under the standing approval: breaks D4, exposes prod data to PR authors;
+  - a server created only for the drill: a new paid resource and a copy of the data to another machine
+    per drill;
+  - a new standing-approval kind for scheduled drills: not needed (R18).
+
+### R16 Keeping the copy from the production app's outside services
+
+- **Decision**: three layers, none of which needs the user to list the services:
+  1. **No outbound network.** The drill's Compose network is `internal: true`, so its containers
+     reach each other and nothing outside. Docker: "`internal`, when set to `true`, lets you create an
+     externally isolated network" ([Compose file, networks](https://docs.docker.com/reference/compose-file/networks/)).
+     This stops mail, payments, webhooks, OAuth callbacks and third-party APIs whatever the env holds.
+     That Docker blocks published ports on an internal network is **UNCONFIRMED** (the page does not
+     say); the drill publishes none, and the plan's spike checks it.
+  2. **No production secrets it doesn't need.** The drill's env is the generated service connection
+     values (new passwords made for the drill's own services) and the app's plain settings, with every
+     value of `.env` (prod's user-given values) **left out** and replaced by `.env.preview`'s values
+     when the environment has one for previews, otherwise by none. 022 already does this for previews:
+     "Prod's `.env` never goes to previews" (`docs/guide/previews.md`, "The preview values").
+  3. **Nothing runs by itself.** Only the app and the services the snapshot holds start. Workers, cron
+     and the scheduler do not, so queued jobs in a restored Redis are not consumed.
+- **Rationale**: a block on the network is the one control that doesn't depend on guessing which env
+  names are outbound credentials, which no tool can know. Layer 2 means a drill that is wrongly
+  allowed out would still hold no live key. The cost is an app that must call out to start: its health
+  check fails and the report says "the app did not start with no internet", not "the backup is bad"
+  (R19).
+- **What the user confirms** (the one question in the approval): "The copy runs with no internet and
+  without your production `.env`. The app may need some values to start; add them to `.env.preview`
+  with test values." Nothing else.
+- **Alternatives considered**: blanking named env vars (needs a list the user maintains); a dummy SMTP
+  (covers one service of many); an nftables egress rule per container (a host rule to keep in step with
+  Docker's own, and more to break than `internal`); the preview's env alone (leaves the network open).
+
+### R17 The restored data must not be reachable from outside, and the health check
+
+- **Decision**: **no public hostname, no DNS record, no proxy site, no published port.** The check runs
+  on the server: the app container's own Compose healthcheck, which `packages/iac-templates/src/runtime/healthcheck.ts`
+  already builds from the plan's probe (`app.build.probe`, `app.healthPath`: fetches
+  `http://127.0.0.1:<port><healthPath>` inside the container), read with `docker compose ps` / `docker
+  inspect` `State.Health.Status` until `healthy` or a 5 minute limit. When the plan has probe `none`,
+  the drill reports "no health check defined" and checks that the app container is still running after
+  60 seconds. After the check, the database parts get one more read: each SQL service answers
+  `pg_isready` (or its kind's equivalent) and holds at least one table or key.
+- **Rationale**: previews are public today (022: `pr-<n>-<random>.<domain>`, behind Cloudflare's proxy,
+  "no login in front", `noindex`, hidden only by an unguessable name); that is fine for test data and
+  wrong for production data. A drill with no route cannot leak by a shared link. This also works on
+  servers whose edge is not public (home hosting, 029's own feature).
+- **Alternatives considered**: Cloudflare Access in front of a hostname (needs a zone, Zero Trust and a
+  certificate for a throwaway name, and still exposes the server's edge); a health check through the
+  local edge (needs a site for the drill in the reverse proxy).
+
+### R18 Targets, the schedule, the command and the report
+
+- **Decision**:
+  - **Targets in this release:** servers OpsCrew created and a server the user owns (the `servers`
+    target in `snapshotTarget`, `snapshot/run.ts`, including a home server of 029). Not in this release:
+    - Portainer: its snapshots live in a volume (`opscrew-<app>_snapshots`) and a drill means a second
+      stack through Portainer's API (`restore-portainer.ts`); later;
+    - this computer: no data worth proving;
+    - hosting accounts: a panel's agent dumps and restores one database (`<id>.sql.gz`) with no
+      Docker, and a second database is the user's panel; the report says so;
+    - Cloudflare hosting and GitHub Pages: no data.
+    A drill refuses these with the reason, as `snapshotTarget` does for `snapshot` today.
+  - **The schedule: later (030 or the release after).** This release ships the command and its report.
+    A scheduled drill would be a program on the server repeating one bounded change with no approval at
+    the time; it needs the constitution's "program OpsCrew installs through a host plan" clause (R14,
+    ADR 0033) extended to name it, a wording the founder agrees first. The guide says to run
+    `opscrew restore --drill` after each schedule change; the scheduled check (017) may remind when no
+    drill has passed in 30 days (a line in `opscrew status`, no new job).
+  - **The command:** `opscrew restore --drill [<id>]`, the latest snapshot by default (so `restore`'s
+    approval, version rule and `--only` carry over), with `--keep` to leave the drill's volumes for
+    inspection (then `opscrew restore --drill --remove`). Output, one line per step: hold space check,
+    parts restored (with sizes), app started, health result, removal. `--json` gives the same.
+  - **The report:** kept **on the server**, in
+    `.snapshots/drills.log` beside `scheduled.log`, and shown by `opscrew status` ("Last restore drill:
+    <snapshot id>, 2026-11-18 14:02 UTC, restored in 4 min 10 s, healthy"). It holds: the snapshot id and
+    version, start and end times, per part its size and seconds to restore, the health result and
+    seconds to healthy, the removal's result, and the first lines of any failure, redacted. No values.
+- **Rationale**: one machine kind covers nearly all users and reuses `snapshot.sh`; the schedule's
+  constitution question is a founder decision, not a technical one, and the manual drill is already
+  the proof the roadmap wants.
+- **Alternatives considered**: a separate `opscrew drill` command (a second approval path to keep in
+  step with `restore`); a record in the repository (a log nobody commits, with times in it).
+
+### R19 What a failure tells the user
+
+- **Decision**: the report separates three outcomes in plain words:
+  - **the snapshot did not restore** (a part failed): the backup is bad; take a new snapshot now;
+  - **it restored, the app did not become healthy with no internet and no production values**: the
+    backup is fine; add the app's test values to `.env.preview` or accept the result;
+  - **restored and healthy**.
+  A failed removal is its own line with the command to run; the drill leaves nothing running that
+  names production's volumes.
+- **Rationale**: a drill that says only "failed" would teach users to ignore it.
+- **Alternatives considered**: one pass/fail.
+
+### R20 How the database check reaches PostgreSQL
+
+- **Decision**: advise runs one fixed SQL text per query through
+  `docker compose -p <app> exec -T <db service> psql -X -q -At` on the server it already reaches over
+  SSH (`serverShell`, `packages/agents/src/status/servers.ts`, as `readServerResources` does in
+  `status/resources.ts`), the SQL on **standard input**, never in a command. It signs in as the
+  app's own login over the container's local socket: the image's `app` login is the superuser the socket
+  lets in with no password (`packages/iac-templates/src/catalog/entries.ts`, `POSTGRES`; the same way
+  the grant step signs in, `planGrant` in `packages/connectors/ssh-host/src/plan.ts`). So no role is
+  created (advise changes nothing, `docs/guide/advise.md`), no password is read, and no secret can be in
+  the output. Session settings come from `PGOPTIONS` set in the exec's environment (R21).
+  - Output is counts, durations, states, `pid`s, `usename`, `application_name`, `wait_event`, table
+    names, and a query's **normalized text** from `pg_stat_statements` only, cut at 120 characters and
+    redacted. **The `query` column of `pg_stat_activity` is never selected:** it holds the literals of
+    the running statement (a password in an `ALTER ROLE`, an email in a `WHERE`).
+  - Where the monitoring add-on is on (feature 020), its `opscrew_monitor` login (`LOGIN`, 3
+    connections, `pg_monitor`, `MONITOR_LOGIN` in `connectors/ssh-host/src/grant.ts`) could read the same
+    views with less than superuser. Not used in this release: its password lives on the server for Alloy,
+    and the socket needs no password.
+  - Targets: servers OpsCrew created and a server the user owns, where `advise` already has a shell. A
+    database on another server (split placement, 018) is read on that server. Portainer, this computer
+    and hosting accounts say "not read" with the reason, as advise lists what it couldn't read today.
+- **Rationale**: a read through the container's own socket needs nothing new, and the grant step is
+  the precedent. Not selecting statement text removes the one way a secret reaches the screen.
+- **Alternatives considered**: a new read-only role created by a host plan (a change, so not advise's
+  "it only reads"); the app's `DATABASE_URL` with the password (a secret in a command or its output);
+  `pg_stat_activity.query` redacted after (redaction cannot know every literal).
+
+### R21 The queries and the session that bounds them
+
+Sources: [pg_stat_activity and the statistics views](https://www.postgresql.org/docs/current/monitoring-stats.html),
+[`pg_blocking_pids`](https://www.postgresql.org/docs/current/functions-info.html),
+[pg_stat_statements](https://www.postgresql.org/docs/current/pgstatstatements.html),
+[client connection defaults](https://www.postgresql.org/docs/current/runtime-config-client.html).
+
+- **Decision**: one `psql` per query, each with
+  `PGOPTIONS='-c statement_timeout=3000 -c lock_timeout=500 -c idle_in_transaction_session_timeout=5000 -c default_transaction_read_only=on -c application_name=opscrew-advise'`
+  (the page's four settings take milliseconds; `statement_timeout` applies per statement, `lock_timeout`
+  only while waiting for a lock; the docs say a `lock_timeout` at or above `statement_timeout` is
+  pointless, so 500 < 3000). The whole check has a 20 second overall cap on the SSH side and stops at
+  the first query that times out, reporting "the database was too busy to answer in 3 seconds", itself a
+  finding. `application_name` marks the sessions in `pg_stat_activity` and the logs. The queries:
+  1. **Blocked sessions:**
+     `SELECT pid, usename, application_name, wait_event_type, wait_event, now() - state_change, pg_blocking_pids(pid) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;`
+     (the docs' own example, without `query`). The docs warn frequent calls briefly need exclusive access
+     to the lock manager's state, so it runs once per advise.
+  2. **Long and idle-in-transaction sessions:**
+     `SELECT pid, usename, application_name, state, now() - xact_start AS open_for, wait_event FROM pg_stat_activity WHERE backend_type = 'client backend' AND xact_start IS NOT NULL AND state <> 'idle' ORDER BY xact_start LIMIT 10;`
+     with `state IN ('idle in transaction', 'idle in transaction (aborted)')` as the docs' example for the
+     idle ones.
+  3. **Connections near the limit:**
+     `SELECT (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'), current_setting('max_connections')::int, current_setting('superuser_reserved_connections')::int;`
+  4. **Slow queries, where `pg_stat_statements` is on:** first
+     `SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'`, then
+     `SELECT queryid, left(query, 120), calls, total_exec_time, mean_exec_time, rows FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 5;`
+     (the docs' example). If the extension is missing, one line: "slow queries are not read: turn
+     `pg_stat_statements` on" with the docs' two steps (`shared_preload_libraries` plus a restart, and
+     `CREATE EXTENSION`) named for the user to do. OpsCrew does not enable it here: it needs a restart.
+  5. **Size and headroom:**
+     `SELECT pg_database_size(current_database());` against the data volume's free space advise
+     already reads from the server (`ResourceReading`), so the database's share of the disk is
+     `pg_database_size / disk size`.
+  6. **Per-table scans (R23):**
+     `SELECT relname, seq_scan, seq_tup_read, idx_scan, n_live_tup FROM pg_stat_user_tables ORDER BY seq_tup_read DESC LIMIT 10;`
+  `default_transaction_read_only=on` bounds the transaction, not the superuser's rights: the SQL is fixed
+  text in OpsCrew, and a test asserts it holds only `SELECT`s (no `;` other than the last).
+- **Versions:** OpsCrew pins `postgres:17-alpine` (`packages/iac-templates/src/pins.ts`,
+  `defaultVersion: "17"` in `catalog/entries.ts`), but a plan's `version` is any `<major>` (the schema
+  checks the shape only), so users may run 14 to 18. Every query above works from **13** on:
+  `pg_blocking_pids` (9.6), `backend_type` in `pg_stat_activity` (10), `total_exec_time` and
+  `mean_exec_time` (13; before it `total_time`: the page says nothing of the version, general knowledge,
+  **UNCONFIRMED**). The 17 renames of block-time columns in pg_stat_statements are not used. Below 13 the
+  slow-query step is skipped with "needs PostgreSQL 13 or later". The spike runs the SQL on 14 and 17.
+- **Rationale**: every limit is in the server's own documented settings, so a struggling database cannot
+  be made worse than a 3 second statement; the lock check cannot queue behind the locks it inspects.
+- **Alternatives considered**: `SET` statements inside the SQL (the same effect, but one `psql` per
+  query is already needed for separate timeouts); `pg_terminate_backend` to clear a blocker (a change,
+  never in advise); `EXPLAIN ANALYZE` of user queries (it runs them).
+
+### R22 Thresholds and what each finding says
+
+Thresholds are OpsCrew's own, stated here with why, like the others in `advise/types.ts` (`THRESHOLDS`);
+none comes from PostgreSQL's documentation, which states no figures.
+
+| Finding | Soon | Now | Plain advice |
+|---|---|---|---|
+| Blocked session | blocked 30 s or more | blocked 5 min or more | "Session X has waited Y for a lock held by session Z (the app `W`). Find what the app does in a long transaction; ending the blocking session is your decision (`SELECT pg_terminate_backend(Z)` as the database's owner)." |
+| Idle in transaction | open 5 min or more | open 1 h or more | "A transaction was left open: it holds locks and keeps vacuum from cleaning. Look for code that opens one and waits (for a web call). `idle_in_transaction_session_timeout` in the database's settings ends them by itself." |
+| Long-running query | active 5 min or more | 30 min or more | "A query has run for Y." |
+| Connections | 80% of `max_connections` minus the reserved ones | 95% | "The app opens nearly all connections the database allows: lower its pool size, add a pooler (PgBouncer), or raise `max_connections` (costs memory)." |
+| Slow query | `mean_exec_time` of 500 ms or more with 50 calls or more, in the top 5 by total time | the same at 2 s | "This statement (its normalized text) takes X on average and Y of all the database's time. Look at its filters for a missing index." |
+| Database size | the database is 50% or more of its disk | with the disk's own figure at 85% (existing `diskHigh`) | "The database is X GB of the Y disk; it grows Z a week" (growth only with monitoring history; one reading says none) |
+| Timeout | none | a query hit the 3 s limit | "The database did not answer a simple question in 3 seconds. It is under strain now; check `opscrew status` and the logs first." |
+
+- **Rationale**: 80/95% on connections leaves room for the superuser's reserved slots and for a deploy's
+  overlap, where two copies of the app run; 5 minutes open is long for a web app's transaction, an hour
+  can hold back vacuum for the whole table; 500 ms with at least 50 calls leaves out one-off reports.
+  Findings join advise's urgency (`now`, `soon`, `convenient`) and its kinds: **Reliability**, with ids
+  like `db.app.blocked`. Each carries its figures and "read once, at <time>", as advise says of one
+  reading; a lock seen once is flagged as "one reading".
+- **Alternatives considered**: thresholds the user sets (a setting nobody changes); alerting on a single
+  blocked reading as `now` (a lock held 2 s is normal).
+
+### R23 Index suggestions, and MySQL later
+
+- **Decision**: **a proposal that names the table, never one that writes SQL for the user to run
+  unseen.** From `pg_stat_user_tables` alone (the docs' "tables with many sequential scans relative to
+  index scans"): a table is flagged when `n_live_tup >= 10000`, `seq_scan >= 100`,
+  `seq_tup_read / seq_scan >= 5000` and `idx_scan < seq_scan / 10`. The proposal says "`orders` has been read
+  in full N times (X rows each) against M index scans; an index on the column its queries filter on may
+  help", then names the top slow statement that mentions the table, **as its normalized text with the
+  user's own words (columns)**. It names **no column**: with no `hypopg` and no `EXPLAIN` of the user's
+  queries, OpsCrew cannot know which column. The how-to-apply line is the user's, or Claude Code's in the
+  plugin: "CREATE INDEX CONCURRENTLY, after looking at the query's plan". Never applied, never in
+  `--apply`.
+- **Rationale**: the smallest honest version is a pointer, not a guess. Parsing a statement's `WHERE` to
+  guess a column is the thing that gives a wrong index (more writes, no gain).
+- **Alternatives considered**: `hypopg` (an extension to install on the server); `EXPLAIN` of statements
+  from `pg_stat_statements` (parameters are `$1`, so they cannot run, and the docs say the text is the
+  first one seen); a parser of the SQL (a project of its own).
+- **MySQL and MariaDB, later:** the same shape (`performance_schema` and `information_schema`, a read-only
+  session with `max_execution_time`), in a feature of its own.
+

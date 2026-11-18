@@ -607,6 +607,74 @@ with `-t`. quickstart.md has the steps and variables.
 **Cost:** two Hetzner servers for a few hours (cents). The firewall, the zone on Cloudflare's free
 plan and the tokens cost nothing, plus a few Actions minutes.
 
+- **H8 the release's two additions,** on the H1 server with an app that has PostgreSQL: a snapshot,
+  `opscrew restore --drill` (the plan approved by hash; the parts restored, healthy, removed;
+  production's containers and volumes unchanged; a request to the internet from the copy fails);
+  `opscrew status` shows the drill; then a session holding a lock another waits for and an open
+  transaction, and `opscrew advise` names both within 20 seconds and changes nothing.
+
+### 19. Restore drills (T2931, T2933; research R15–R19)
+
+- **Where and what approves it** (R15): on the server that holds the snapshot, as a throwaway
+  Compose project `<app>-drill` in `.drill/<snapshot id>/` of the app's folder. Never the preview
+  server and never under the preview standing approval (constitution I: a standing approval reaches
+  no other environment's data). Its own host plan, run by `opscrew restore --drill` at a terminal,
+  approved by its hash with `allowDestroy` and `<app>-drill` typed, since it removes the copy's own
+  volumes. The approval reuses 024's one-time-file kind (`approveRestore`, `restoreHash` in
+  `snapshot/restore-checks.ts`) with a drill hash over the environment, the snapshot's id and
+  `about.json` bytes, and the drill's settings. No new approval kind.
+- **What it reuses:** 024's `snapshot.sh` part restores (`iac-templates/src/workflow/snapshots.ts`),
+  pointed at the drill project's own volumes, the snapshot read in place (read-only); 022's recipe
+  rendering (`iac-templates/src/previews`) for the services, limits and the app's pinned image
+  digest; the free-disk guard (`snapshot/disk.ts`) with the snapshot's size added; the app's
+  Compose healthcheck (`runtime/healthcheck.ts`).
+- **Isolation** (R16): the drill's network is `internal: true`; its env is the drill's own
+  generated service values plus the app's plain settings, with `.env`'s values left out and
+  `.env.preview`'s used when there is one; only the app and the snapshot's services start, no
+  workers or cron. The approval says once: "The copy runs with no internet and without your
+  production `.env`. The app may need some values to start; add them to `.env.preview` with test
+  values."
+- **No outside reach** (R17): no hostname, record, proxy site or published port. The check is the
+  container's own healthcheck read with `docker inspect` until `healthy` or 5 minutes; with probe
+  `none`, the container still running after 60 seconds. Then each SQL service answers `pg_isready`
+  (or its kind's) and holds at least one table or key.
+- **Targets** (R18): servers OpsCrew created and a server the user owns (home included). Portainer,
+  this computer, hosting accounts, Cloudflare's hosting and GitHub Pages are refused with the
+  reason. **No schedule in this release** (it would need the constitution's 1.12.0 clause extended:
+  the founder's call, asked on 2026-11-18).
+- **The command:** `opscrew restore --drill [<id>]` (latest by default; `--only` carries over),
+  `--keep` leaves the copy's volumes for inspection, `opscrew restore --drill --remove` removes a
+  kept copy. `--from offsite` is not offered for drills. One line per step; `--json` the same.
+- **The report** (R18, R19): `.snapshots/drills.log` beside `scheduled.log`: the snapshot id and
+  version, start and end, per part its size and seconds, the health result and seconds to healthy,
+  the removal's result, the first lines of a failure redacted, no values. `opscrew status` shows
+  the last drill. Three outcomes in plain words: the backup didn't restore (take a new snapshot
+  now); restored but not healthy with no internet and no production values (add test values to
+  `.env.preview`); restored and healthy. A failed removal is its own line with the command to run.
+
+### 20. The database check in `advise` (T2932; research R20–R23)
+
+- **The connection** (R20): `docker compose -p <app> exec -T <db service> psql -X -q -At` over the
+  SSH shell advise already has (`serverShell`, `status/servers.ts`), one fixed SQL text per query on
+  standard input, as the image's `app` login over the container's socket (as `planGrant` signs in).
+  No role created, no password read. `pg_stat_activity.query` is never selected; a statement's text
+  comes only from `pg_stat_statements`, normalized, cut at 120 characters and redacted. A database
+  on another server (018) is read there. Portainer, this computer and hosting accounts: "not read",
+  with the reason.
+- **The bounds** (R21): `PGOPTIONS` with `statement_timeout=3000`, `lock_timeout=500`,
+  `idle_in_transaction_session_timeout=5000`, `default_transaction_read_only=on`,
+  `application_name=opscrew-advise`; a 20-second cap on the whole check; the first timeout stops it
+  and is itself a finding. The six queries are R21's, fixed text with a test asserting only
+  `SELECT`s. PostgreSQL 13 and later; below 13 the slow-query step is skipped with the reason.
+- **Findings** (R22): R22's table of thresholds and texts, as advise's **Reliability** findings
+  (`db.<app>.blocked` and the like) with `now`/`soon` urgency, each with its figures and "read once,
+  at <time>". The thresholds go into `advise/types.ts`' `THRESHOLDS`.
+- **Index proposals** (R23): from `pg_stat_user_tables` with R23's rule; the table and the top slow
+  statement that mentions it, no column; never applied, never in `--apply`.
+- **Tests:** fixtures of `psql -At` output for every query; a Docker-gated test
+  (`OPSCREW_DOCKER_TESTS=1`) that runs the six queries on `postgres:14-alpine` and
+  `postgres:17-alpine` with a planted lock wait and an open transaction.
+
 ## Requirements coverage
 
 | FR | Where |
@@ -627,6 +695,8 @@ plan and the tokens cost nothing, plus a few Actions minutes.
 | 2914 the ISP's terms and large media | 1., 3., T2918 |
 | 2915 no token, key or proxied home address anywhere | Constitution IV, 2., 4., 14., 18. |
 | 2916 the guide page | T2918 |
+| 2917–2919 the restore drill: its plan, isolation, report | 19. |
+| 2920–2922 the database check: what it reads, its bounds, index proposals | 20. |
 
 ## Order
 
@@ -728,8 +798,10 @@ ssh-host task, an iac-templates task and an agents task, plus a live leg.
   fails, O3 is cut.
 - **O10:** how soon Cloudflare's edge uses a changed origin address, measured in H2.
 - **O11:** restore drills and a read-only database check in `advise` ship in 029's release, as
-  tasks of their own (founder, 2026-11-15; scope in `specs/roadmap.md`, 029's section). Their
-  spec and plan sections are written when the build starts, before the tasks.
+  tasks of their own (founder, 2026-11-15). Written 2026-11-18: research R15–R23, US7, US8,
+  FR-2917–FR-2922, plan 19. and 20., tasks T2931–T2933. Asked of the founder on 2026-11-18, built
+  on the recommendation meanwhile: the drill's schedule comes later (it needs the 1.12.0 clause
+  extended), and the drill covers servers only in this release.
 
 (O6, the token's narrowness through `GET /zones`, is gone: inverse probes replace it.)
 
