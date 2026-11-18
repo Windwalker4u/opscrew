@@ -132,6 +132,10 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Reads: contracts/dns-updater.md (all of it); data-model 4, 5, 6; research R2, R4, R5, R6; plan 5.;
     the `web-filter` and `ssh-firewall` steps as the pattern for scripts, verify and teardown
   - Depends: T2903
+  - Decided by the lead (T2910c's finding): the updater's record comment has one owner, this
+    task: `DNS_UPDATER_RECORD_COMMENT = "Managed by OpsCrew (address updater)"` exported from the
+    package root and used by the script's render. At the merge the lead points
+    `agents/src/home/records.ts`' `UPDATER_RECORD_COMMENT` at it.
   - Accept:
     - The shared script (POSIX `sh`, curl, jq) and the template units exactly as the contract's
       "Files", "The units", "A run, in order" and "The rules the script keeps": oneshot service with
@@ -450,9 +454,14 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Effort: medium
 
 - [ ] T2916b [P] [US2] A home app in a move to another Cloudflare account
-  - Owns: `packages/agents/src/cloudflare-move/**`, colocated tests and fakes
+  - Owns: `packages/agents/src/cloudflare-move/**`, colocated tests and fakes;
+    `packages/agents/src/home/records.ts` (only an option for a deletion approved earlier, below)
   - Reads: plan 15. (M8); research R12; ADR 0032; `docs/guide/cloudflare-move.md`
   - Depends: T2910b, T2910c, T2913a
+  - Decided by the lead (T2910c's finding): the abort's deletion stops with a pending hash as the
+    move's other steps do (`pendingStop`); `deleteUpdaterRecords` gains an option to apply a
+    deletion whose hash was approved earlier (`--approve`), still reading the records again and
+    refusing on a changed hash. The comment comes from `UPDATER_RECORD_COMMENT` (`home/records.ts`).
   - Accept: `opscrewNamesInZone` counts the updater's comment; the zone plan copies those records
     with their content masked and the switch refreshes them from A; the finish asks for B's updater
     token (`OPSCREW_NEW_DNS_UPDATER_TOKEN`, else once in a terminal, hidden, never kept), checks it
