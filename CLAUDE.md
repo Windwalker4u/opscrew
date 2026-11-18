@@ -23,6 +23,8 @@ it is the source of truth and overrides this file.
 - `packages/detect` — deterministic repository analysis (frameworks, platform exports, env vars).
 - `packages/secops` — `opscrew scan` engine, built-in rules, optional external scanners, policies.
 - `packages/agents` — Analyst, Interviewer, Architect, Code-change, Infra, Domain, SecOps, Verifier.
+  `src/cloudflare-move` moves an app's Cloudflare setup to another Cloudflare account (prepare,
+  switch, finish, abort; ADR 0032).
 - `packages/iac-engine` — `tofu`/`terraform` abstraction (plan JSON, plan-hash-bound apply).
 - `packages/iac-templates` — vendored HCL modules + runtime templates (compose, Caddyfile,
   cloud-init, GitHub workflow) and the renderer.

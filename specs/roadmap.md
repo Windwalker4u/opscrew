@@ -5,9 +5,9 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–027. [026 Contabo](026-contabo-provider-plugins/) shipped as 0.2.7 on 2026-11-12, and
-[027 shared hosting](027-shared-hosting/) as 0.2.8 on 2026-11-14. Now: [028 moving an app to
-another Cloudflare account](028-cloudflare-account-move/), for 0.2.10; 0.2.9 ships build arguments from the plan and a further app's analysis fix first. Then 029 hosting at
+Done: 000–028. [027 shared hosting](027-shared-hosting/) shipped as 0.2.8 on 2026-11-14, build
+arguments from the plan as 0.2.9 on 2026-11-15, and [028 moving an app to another Cloudflare
+account](028-cloudflare-account-move/) as 0.2.10. Next: 029 hosting at
 home (the founder's choice on 2026-11-15, before AWS), then 030 scaling across servers (the
 founder's choice on 2026-11-15, also before AWS), then 031 AWS, then more providers in phases
 (032–036), each once the founder gives the go-ahead.
@@ -407,6 +407,11 @@ servers.
 - **Built in**, like the other targets: installing provider packages comes with AWS (031).
 
 ## 028 Moving an app to another Cloudflare account
+
+Done (2026-11-18): [spec](028-cloudflare-account-move/spec.md), [plan](028-cloudflare-account-move/plan.md),
+[tasks](028-cloudflare-account-move/tasks.md), ADR 0032, and the guide page
+`docs/guide/cloudflare-move.md`; opscrew.dev itself moved to its new account on 2026-11-17 and 18.
+The sketch below is the roadmap's, kept as the founder's input.
 
 `opscrew` moves an app's whole Cloudflare setup to another Cloudflare account the user owns
 (founder, 2026-11-14, for 0.2.10). Cloudflare moves nothing between accounts by itself: the domain
