@@ -70,6 +70,12 @@ export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";
 export { schemaRecordPath } from "./workflow/migrations";
+export {
+  OUTSIDE_CHECK_JOBS,
+  OUTSIDE_CHECK_WORKFLOW_FILE,
+  type OutsideCheckJob,
+  renderOutsideCheckWorkflow,
+} from "./workflow/outside-check";
 export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
 export {
   inContainer,

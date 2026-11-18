@@ -1,0 +1,89 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the outside check's workflow file > is one file per repository, at its fixed name 1`] = `
+"# Managed by OpsCrew: checks from outside your home that your app answers on ports 80 and 443.
+# \`opscrew verify\` starts it. It changes nothing, and it never gets your home's address.
+name: OpsCrew outside check
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "The app's hostname"
+        required: true
+        type: string
+      path:
+        description: "The app's health path"
+        required: true
+        type: string
+      mode:
+        description: "proxied or direct"
+        required: true
+        type: choice
+        options: [proxied, direct]
+permissions: {}
+concurrency:
+  group: opscrew-outside-check-\${{ inputs.host }}
+  cancel-in-progress: false
+jobs:
+  http:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Port 80 answers from outside
+        env:
+          HOST: \${{ inputs.host }}
+          CHECK_PATH: \${{ inputs.path }}
+          MODE: \${{ inputs.mode }}
+        run: |
+          host_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$'
+          path_re='^/[A-Za-z0-9._~/-]{0,200}$'
+          if (( \${#HOST} > 253 )) || [[ ! $HOST =~ $host_re || ! $CHECK_PATH =~ $path_re ]] || [[ $MODE != proxied && $MODE != direct ]]; then
+            echo "invalid input"
+            exit 1
+          fi
+          URL="http://$HOST/"
+          for try in 1 2 3 4 5 6; do
+            rm -f "$RUNNER_TEMP/h"
+            rc=0
+            code=$(curl -s -o /dev/null -D "$RUNNER_TEMP/h" --max-time 15 -w '%{http_code}' "$URL") || rc=$?
+            challenged=""
+            if grep -qi '^cf-mitigated:' "$RUNNER_TEMP/h" 2> /dev/null; then challenged=", challenged"; fi
+            echo "http try $try: code $code, curl $rc$challenged"
+            if (( rc == 0 )) && [[ -z $challenged ]]; then
+              case $code in 000 | 52[0-7] | 530) ;; *) exit 0 ;; esac
+            fi
+            if (( try < 6 )); then sleep 20; fi
+          done
+          exit 1
+  https:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Port 443 answers from outside
+        env:
+          HOST: \${{ inputs.host }}
+          CHECK_PATH: \${{ inputs.path }}
+          MODE: \${{ inputs.mode }}
+        run: |
+          host_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$'
+          path_re='^/[A-Za-z0-9._~/-]{0,200}$'
+          if (( \${#HOST} > 253 )) || [[ ! $HOST =~ $host_re || ! $CHECK_PATH =~ $path_re ]] || [[ $MODE != proxied && $MODE != direct ]]; then
+            echo "invalid input"
+            exit 1
+          fi
+          URL="https://$HOST$CHECK_PATH?opscrew-outside-check=$GITHUB_RUN_ID"
+          for try in 1 2 3 4 5 6; do
+            rm -f "$RUNNER_TEMP/h"
+            rc=0
+            code=$(curl -s -o /dev/null -D "$RUNNER_TEMP/h" --max-time 15 -w '%{http_code}' "$URL") || rc=$?
+            challenged=""
+            if grep -qi '^cf-mitigated:' "$RUNNER_TEMP/h" 2> /dev/null; then challenged=", challenged"; fi
+            echo "https try $try: code $code, curl $rc$challenged"
+            if (( rc == 0 )) && [[ -z $challenged ]]; then
+              case $code in 000 | 52[0-7] | 530) ;; *) exit 0 ;; esac
+            fi
+            if (( try < 6 )); then sleep 20; fi
+          done
+          exit 1
+"
+`;

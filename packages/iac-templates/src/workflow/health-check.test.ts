@@ -102,7 +102,7 @@ describe("the health check of a server at home", () => {
 
   it("reaches the server's LAN address in the HOST secret from a runner machine, DNS only", () => {
     const health = step(homePlan({ proxied: false, runner: "host" }));
-    expect(health?.run).toContain(curl("--resolve shop.example.com:443:$HOST"));
+    expect(health?.run).toContain(curl("--resolve shop.example.com:443:$edge"));
     expect(health?.env).toEqual({
       URL: "https://shop.example.com/api/health",
       HOST: "${{ secrets.OPSCREW_HOST }}",
@@ -123,22 +123,27 @@ describe("the health check of a server at home", () => {
 });
 
 describe.skipIf(!bashWorks())("the health check in bash", { timeout: 180_000 }, () => {
-  it("gives curl the LAN address of a server at home from HOST", () => {
-    const result = spawnSync(
-      "bash",
-      [
-        "-c",
-        `curl() { echo "curl $*" >&2; }\n${healthScript(homePlan({ proxied: false, runner: "host" }))}`,
-      ],
-      {
-        env: { ...process.env, URL: "https://shop.example.com/api/health", HOST: "192.168.1.30" },
-        encoding: "utf8",
-      },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain(
-      "curl -fsS --max-time 10 --resolve shop.example.com:443:192.168.1.30 -o /dev/null",
-    );
+  it("gives curl the LAN address of a server at home from HOST, an IPv6 one in brackets", () => {
+    for (const [host, edge] of [
+      ["192.168.1.30", "192.168.1.30"],
+      ["fd00::30", "[fd00::30]"],
+    ]) {
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `curl() { echo "curl $*" >&2; }\n${healthScript(homePlan({ proxied: false, runner: "host" }))}`,
+        ],
+        {
+          env: { ...process.env, URL: "https://shop.example.com/api/health", HOST: host },
+          encoding: "utf8",
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain(
+        `curl -fsS --max-time 10 --resolve shop.example.com:443:${edge} -o /dev/null`,
+      );
+    }
   });
 
   it("says the server has no certificate yet when every attempt fails with 35 or 60", () => {

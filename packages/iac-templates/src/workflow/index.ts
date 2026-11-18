@@ -269,18 +269,22 @@ function homeDnsOnly(plan: DeployPlan): boolean {
   return homeMode(plan) && !(usesCloudflare(plan) && plan.dns.proxied);
 }
 
+/** Sets `edge` to the `HOST` deploy secret, an IPv6 address in brackets as curl's `--resolve` takes it. */
+const HOME_EDGE_ADDRESS = '    if [[ $HOST == *:* ]]; then edge="[$HOST]"; else edge="$HOST"; fi';
+
 /**
  * curl's `--resolve` options for a DNS-only app on a server at home, none otherwise: the domain
  * goes to the edge directly, as on the local runner, so the router's hairpin NAT can't fail a
  * deploy. On the server's own runner that is its loopback; on a runner machine, the server's LAN
- * address in the `HOST` deploy secret, which the health step gets. Behind the proxy the check goes
- * out to Cloudflare, which comes back in from outside.
+ * address in the `HOST` deploy secret, which the health step gets, as `$edge`
+ * ({@link HOME_EDGE_ADDRESS}). Behind the proxy the check goes out to Cloudflare, which comes back
+ * in from outside.
  */
 function homeResolve(plan: DeployPlan): string {
   if (!homeDnsOnly(plan)) return "";
   const { domain } = plan.dns;
   return onRunnerMachine(plan)
-    ? ` --resolve ${domain}:443:$HOST`
+    ? ` --resolve ${domain}:443:$edge`
     : ` --resolve ${domain}:443:127.0.0.1 --resolve ${domain}:80:127.0.0.1`;
 }
 
@@ -303,6 +307,7 @@ function healthScript(plan: DeployPlan, tlsHint: boolean, local?: LocalEdge): st
       : `curl -fsS --max-time 10 --resolve ${local.hostname}:${local.port}:127.0.0.1 --cacert "$OPSCREW_LOCAL_CA_FILE" --ssl-no-revoke`;
   return [
     "    set -euo pipefail",
+    ...(homeDnsOnly(plan) && onRunnerMachine(plan) ? [HOME_EDGE_ADDRESS] : []),
     ...(local === undefined
       ? []
       : [
