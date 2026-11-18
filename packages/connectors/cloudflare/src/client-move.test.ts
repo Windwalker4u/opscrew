@@ -365,6 +365,32 @@ describe("CloudflareClient records with every field", () => {
     expect(error.hint).toContain("200 were created by earlier calls");
   });
 
+  it("updates one record's fields in place, once, and reads Cloudflare's answer", async () => {
+    const record = { id: "r1", type: "A", name: "shop.example.com", content: "198.51.100.8" };
+    const { cf, calls } = client({
+      [`PATCH ${RECORDS}/r1`]: [
+        ok({ ...record, ttl: 1, proxied: true, comment: "kept" }),
+        { status: 500, body: { success: false } },
+        ok({ id: "r1" }),
+      ],
+    });
+    const fields = { content: "198.51.100.8", ttl: 1, proxied: true, comment: "kept" };
+    expect(await cf.updateRecord(ZONE_A, "r1", fields)).toEqual({
+      ...record,
+      ttl: 1,
+      proxied: true,
+      comment: "kept",
+    });
+    expect(calls[0]).toMatchObject({ method: "PATCH", body: fields });
+    for (let i = 0; i < 2; i++) {
+      // A server error, then an answer without the record: either may hide a change.
+      expect((await rejection(cf.updateRecord(ZONE_A, "r1", fields))).message).toContain(
+        "may still have reached Cloudflare",
+      );
+    }
+    expect(calls).toHaveLength(3);
+  });
+
   it("deletes one record, once", async () => {
     const { cf, calls } = client({
       [`DELETE ${RECORDS}/r1`]: [ok({ id: "r1" }), { status: 500, body: { success: false } }],

@@ -33,17 +33,19 @@ import { shadowRoots } from "./shadow";
 import { BLOG, DOCS, switchHarness } from "./switch.fakes";
 import { B_UPDATER_TOKEN_VAR } from "./texts";
 import type { MoveResult } from "./types";
-import { applyZone, planZone } from "./zone";
+import { applyZone, planZone, type ZonePlan } from "./zone";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** The home's new IPv4 address once its provider gave it another, and an IPv6 address gone. */
+/** The home's next IPv4 addresses as its provider gives it others, and an IPv6 address gone. */
 const NEXT_IPV4 = "198.51.100.8";
+const THIRD_IPV4 = "198.51.100.9";
+const FOURTH_IPV4 = "198.51.100.11";
 const OLD_IPV6 = "2001:db8:1:2::31";
 /** Every home address of these tests: none is ever said, asked, recorded or saved. */
-const ADDRESSES = [HOME_IPV4, HOME_IPV6, NEXT_IPV4, OLD_IPV6];
+const ADDRESSES = [HOME_IPV4, HOME_IPV6, NEXT_IPV4, THIRD_IPV4, FOURTH_IPV4, OLD_IPV6];
 
 /** Another app at home in the zone, prepared from its own repository. */
 const CAM: MoveMark = { app: "cam", envs: ["prod"], hosts: [`cam.${ZONE}`], sites: [], access: [] };
@@ -60,7 +62,8 @@ async function failure(run: Promise<unknown>): Promise<OpsCrewError> {
 
 /**
  * The home addresses found in anything said, asked or recorded (`texts` too), and in a call to
- * Cloudflare other than the batch that creates the copies in New's zone (which must hold them).
+ * Cloudflare other than those that write the copies in New's zone (which must hold them): its
+ * batch of new records and an update of one.
  */
 function addressLeaks(h: MoveHarness, ...texts: string[]): string[] {
   const handler = h.deps.approvalHandler as ScriptedApprovalHandler;
@@ -73,7 +76,12 @@ function addressLeaks(h: MoveHarness, ...texts: string[]): string[] {
   const fresh = h.cloudflare.account("New").id;
   const sent = JSON.stringify(
     h.cloudflare.calls.filter(
-      (call) => !(call.accountId === fresh && call.path.endsWith("/dns_records/batch")),
+      (call) =>
+        !(
+          call.accountId === fresh &&
+          (call.path.endsWith("/dns_records/batch") ||
+            (call.method === "PATCH" && call.path.includes("/dns_records/")))
+        ),
     ),
   );
   return ADDRESSES.filter((address) => said.includes(address) || sent.includes(address));
@@ -103,63 +111,74 @@ describe.skipIf(!findExecutable("git"))("a server at home in a move: its records
     expect(h.readOnly()).toBe(true);
   });
 
-  it("copies the updater's records with their content masked, then refreshes the copies from Old as its updater changes them", async () => {
+  it("copies the updater's records with their content masked, updates the copies in place as Old's updater changes them, and keeps for the switch one it no longer has", async () => {
     const h = await moveHarness({ plans: () => ({ prod: homePlan() }) });
     const aZone = h.cloudflare.zone(ZONE, "Old");
     const own = updaterRecords(h.cloudflare, aZone, { ipv4: HOME_IPV4, ipv6: HOME_IPV6 });
+    const aaaa = own.aaaa as NonNullable<typeof own.aaaa>;
     h.deps.interactive = true;
     const session = await h.open({ to: "New" });
 
     const first = await planZone(session);
-    expect(
-      first.create
-        .filter((r) => r.name === HOME_NAME)
-        .map((r) => r.type)
-        .sort(),
-    ).toEqual(["A", "AAAA"]);
+    expect(first.create.map((r) => r.name)).not.toContain(HOME_NAME);
     expect(first.skipped.map((s) => s.record.name)).not.toContain(HOME_NAME);
-    expect(first.refresh).toEqual([]);
+    expect(first.updater).toEqual({
+      create: [
+        { from: own.a.id, type: "A", name: HOME_NAME },
+        { from: aaaa.id, type: "AAAA", name: HOME_NAME },
+      ].sort((x, y) => x.from.localeCompare(y.from)),
+      update: [],
+      delete: [],
+    });
     expect(first.details).toContain(`A ${HOME_NAME} <server address> (proxied)`);
     expect(first.details).toContain(`AAAA ${HOME_NAME} <server address> (proxied)`);
     expect(await applyZone(session, first)).toBeUndefined();
     const bZone = h.cloudflare.zone(ZONE, "New");
     expect(updaterAt(bZone)).toEqual([`A ${HOME_IPV4}`, `AAAA ${HOME_IPV6}`]);
+    const copyOf = (type: string) =>
+      bZone.records.find((r) => r.name === HOME_NAME && r.type === type);
+    const copy = copyOf("A");
 
     // Old's updater writes the home's new IPv4 address and removes its AAAA, IPv6 being gone.
     own.a.content = NEXT_IPV4;
-    aZone.records.splice(aZone.records.indexOf(own.aaaa as (typeof aZone.records)[number]), 1);
+    aZone.records.splice(aZone.records.indexOf(aaaa), 1);
     const later = await planZone(session);
-    expect(later.create).toEqual([
-      expect.objectContaining({ type: "A", name: HOME_NAME, content: NEXT_IPV4 }),
-    ]);
-    const copies = bZone.records.filter((r) => r.name === HOME_NAME);
-    expect(later.refresh).toEqual(
-      copies
-        .map(({ id, type, name }) => ({ id, type, name }))
-        .sort((x, y) => x.id.localeCompare(y.id)),
-    );
+    expect(later.create).toEqual([]);
+    expect(later.updater).toEqual({
+      create: [],
+      update: [{ id: copy?.id, from: own.a.id, type: "A", name: HOME_NAME }],
+      delete: [],
+    });
     expect(later.differ).toEqual([]);
     expect(later.onlyInB).toEqual([]);
     expect(later.details).toContain(
-      "- Delete the new account's earlier copies of the address updater's records, which it has changed since in the account Old (it keeps writing there until the move's finish):",
+      `- Update the new account's copies of the address updater's records in place to what it keeps in the account Old now (it writes there until the move's finish): A ${HOME_NAME}.`,
     );
-    expect(later.details).toContain(`AAAA ${HOME_NAME}`);
+    expect(later.details).toContain(
+      `- Kept until the switch, which deletes them with the zone's name typed: the new account's copies of the address updater's records that it no longer keeps in the account Old: AAAA ${HOME_NAME}.`,
+    );
     expect(await applyZone(session, later)).toBeUndefined();
-    expect(updaterAt(bZone)).toEqual([`A ${NEXT_IPV4}`]);
-    // The new copy is created before the earlier ones go, so the name always has a record.
+    // Updated in place, the same record; the AAAA is the switch's to delete.
+    expect(copyOf("A")).toBe(copy);
+    expect(updaterAt(bZone)).toEqual([`A ${NEXT_IPV4}`, `AAAA ${HOME_IPV6}`]);
     const writes = h.cloudflare.calls.filter((call) => call.method !== "GET");
-    const created = writes.findLastIndex((call) => call.path.endsWith("/dns_records/batch"));
-    const deleted = writes.findIndex((call) => call.method === "DELETE");
-    expect(created).toBeLessThan(deleted);
+    expect(writes.filter((call) => call.method === "DELETE")).toEqual([]);
+    expect(writes.filter((call) => call.method === "PATCH").map((call) => call.path)).toEqual([
+      `/zones/${bZone.id}/dns_records/${copy?.id}`,
+    ]);
     const entry = h.deps.audit.entries.find((e) => e.action === "updater record copies refreshed");
     expect(entry).toMatchObject({
       kind: "provider-call",
       decision: "approved",
       target: later.planHash,
     });
-    expect(entry?.detail).toContain(copies[0]?.id);
+    expect(entry?.detail).toBe(`${ZONE}: updated A ${copy?.id}; deleted none`);
     // Nothing more to do, and Old saw no write.
-    expect(await planZone(session)).toMatchObject({ create: [], refresh: [], differ: [] });
+    expect(await planZone(session)).toMatchObject({
+      create: [],
+      updater: { create: [], update: [], delete: [] },
+      differ: [],
+    });
     expect(
       h.cloudflare.calls.filter(
         (call) => call.method !== "GET" && call.accountId === h.cloudflare.account("Old").id,
@@ -169,7 +188,40 @@ describe.skipIf(!findExecutable("git"))("a server at home in a move: its records
     expect(h.leaks(first.details, later.details)).toBe(false);
   });
 
-  it("the switch refuses while an app at home is in no mark, then refreshes its copies from Old with the zone's name typed", async () => {
+  it("hashes the updater's records without their content: two home addresses give one plan, and the apply writes the one read then", async () => {
+    const h = await moveHarness({ plans: () => ({ prod: homePlan() }) });
+    const aZone = h.cloudflare.zone(ZONE, "Old");
+    const own = updaterRecords(h.cloudflare, aZone, { ipv4: HOME_IPV4 });
+    h.deps.interactive = true;
+    const session = await h.open({ to: "New" });
+    /** The plan's hashed part: everything but its text and the values read for it. */
+    const hashedPart = (plan: ZonePlan) => {
+      const { details: _details, values: _values, ...rest } = plan;
+      return JSON.stringify(rest);
+    };
+
+    // A copy to create.
+    const create = await planZone(session);
+    own.a.content = NEXT_IPV4;
+    expect((await planZone(session)).planHash).toBe(create.planHash);
+    expect(hashedPart(create)).not.toContain(HOME_IPV4);
+    expect(await applyZone(session, create)).toBeUndefined();
+    const bZone = h.cloudflare.zone(ZONE, "New");
+    expect(updaterAt(bZone)).toEqual([`A ${NEXT_IPV4}`]);
+
+    // A copy to update in place.
+    own.a.content = THIRD_IPV4;
+    const update = await planZone(session);
+    own.a.content = FOURTH_IPV4;
+    expect((await planZone(session)).planHash).toBe(update.planHash);
+    expect(hashedPart(update)).not.toContain(THIRD_IPV4);
+    expect(hashedPart(update)).not.toContain(NEXT_IPV4);
+    expect(await applyZone(session, update)).toBeUndefined();
+    expect(updaterAt(bZone)).toEqual([`A ${FOURTH_IPV4}`]);
+    expect(addressLeaks(h, create.details, update.details)).toEqual([]);
+  });
+
+  it("the switch refuses while an app at home is in no mark, then updates its copies from Old in place and deletes the one Old no longer has, with the zone's name typed", async () => {
     const uncovered = await switchHarness();
     updaterRecords(uncovered.cloudflare, uncovered.aZone, { name: `cam.${ZONE}` });
     uncovered.deps.interactive = true;
@@ -183,19 +235,28 @@ describe.skipIf(!findExecutable("git"))("a server at home in a move: its records
     const h = await switchHarness({ marks: [BLOG, DOCS, CAM] });
     const cam = `cam.${ZONE}`;
     updaterRecords(h.cloudflare, h.aZone, { name: cam, ipv4: NEXT_IPV4 });
-    updaterRecords(h.cloudflare, h.bZone, { name: cam, ipv4: HOME_IPV4, ipv6: OLD_IPV6 });
+    const copies = updaterRecords(h.cloudflare, h.bZone, {
+      name: cam,
+      ipv4: HOME_IPV4,
+      ipv6: OLD_IPV6,
+    });
     h.deps.interactive = true;
     const result = await h.run();
     expect(result).toMatchObject({ step: "switched", done: true });
     const [approval] = h.asked();
     expect(approval).toMatchObject({ kind: "domain-settings", confirmPhrase: ZONE });
-    expect(approval?.details).toContain(`A ${cam} <server address> (proxied)`);
     expect(approval?.details).toContain(
-      `the account Old (it keeps writing there until the move's finish): `,
+      `Update the new account's copies of the address updater's records in place to what it keeps in the account Old now (it writes there until the move's finish): A ${cam}.`,
     );
-    expect(approval?.details).toContain(`AAAA ${cam}`);
+    expect(approval?.details).toContain(
+      `Delete the new account's copies of the address updater's records that it no longer keeps in the account Old: AAAA ${cam}.`,
+    );
     expect(updaterAt(h.bZone, cam)).toEqual([`A ${NEXT_IPV4}`]);
-    expect(h.deps.audit.entries.map((e) => e.action)).toContain("updater record copies refreshed");
+    expect(h.bZone.records.find((r) => r.name === cam)).toBe(copies.a);
+    const entry = h.deps.audit.entries.find((e) => e.action === "updater record copies refreshed");
+    expect(entry?.detail).toBe(
+      `${ZONE}: updated A ${copies.a.id}; deleted AAAA ${copies.aaaa?.id}`,
+    );
     expect(h.writes("Old")).toEqual([]);
     expect(addressLeaks(h, JSON.stringify(result))).toEqual([]);
     expect(h.leaks(JSON.stringify(result), JSON.stringify(h.asked()))).toBe(false);
@@ -223,6 +284,9 @@ describe.skipIf(!findExecutable("git"))("a server at home in a move: the finish'
       },
     });
     expect(apply?.options.secrets?.dnsUpdaterToken).toBe(B_UPDATER);
+    // Audited under the move's own phase.
+    const applied = w.deps.audit.entries.filter((e) => e.action === "host apply started");
+    expect(applied.map((e) => e.phase)).toEqual(["cloudflare-move"]);
     expect(await w.leaksOf(w.secrets)).toEqual([]);
 
     // The next run finds the updater on New's zone: nothing asked, and no token needed.

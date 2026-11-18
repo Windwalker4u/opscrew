@@ -453,6 +453,27 @@ describe("fakeCloudflareAccounts: records", () => {
       }),
     ).rejects.toThrow("only its posts are answered");
 
+    // A record updated in place: its id, type and name stay; Cloudflare's checks apply.
+    const [one = "", two = ""] = await clientB.createZoneRecords(created.id, [
+      { type: "TXT", name: `dup.${ZONE}`, content: '"one"', ttl: 1 },
+      { type: "TXT", name: `dup.${ZONE}`, content: '"two"', ttl: 1 },
+    ]);
+    const held = zoneB.records.find((r) => r.id === two);
+    const updated = await clientB.updateRecord(created.id, two, {
+      content: '"three"',
+      ttl: 120,
+      comment: "changed",
+    });
+    expect(updated).toMatchObject({ id: two, type: "TXT", name: `dup.${ZONE}`, ttl: 120 });
+    expect(zoneB.records.find((r) => r.id === two)).toBe(held);
+    expect(held).toMatchObject({ content: '"three"', ttl: 120, comment: "changed" });
+    const patch = (id: string, fields: unknown) =>
+      call(fake, TOKEN_B, "PATCH", `/zones/${created.id}/dns_records/${id}`, fields);
+    expect(codes(await patch(two, { content: '"one"' }))).toEqual([81058]);
+    expect(codes(await patch(one, { proxied: true }))).toEqual([9004]);
+    expect(codes(await patch("0".repeat(32), { ttl: 1 }))).toEqual([81044]);
+    expect(held?.content).toBe('"three"');
+
     await clientB.deleteRecord(created.id, ids[0] ?? "");
     expect(zoneB.records.some((r) => r.id === ids[0])).toBe(false);
     const missing = await call(

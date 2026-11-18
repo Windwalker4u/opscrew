@@ -502,7 +502,10 @@ function requireMongoAvx(
 }
 
 /** The phases that change a server the user owns through its host plan (a move's new side too). */
-type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer" | "retarget">;
+type OwnHostPhase = Extract<
+  PhaseName,
+  "provision" | "dns" | "portainer" | "retarget" | "cloudflare-move"
+>;
 
 /**
  * Connects to the user's own server (host key confirmed or `--host-key`, pinned), inspects it

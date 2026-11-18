@@ -633,14 +633,52 @@ class FakeCloudflareAccounts {
     if (rest === "/batch" && method === "POST") return this.#batch(zone, body);
     const id = /^\/([^/]+)$/.exec(rest)?.[1];
     const at = zone.records.findIndex((r) => r.id === id);
-    if (id === undefined || method !== "DELETE") {
+    if (id === undefined || (method !== "DELETE" && method !== "PATCH")) {
       throw new Error(
         `fake cloudflare: no route for ${method} /zones/${zone.id}/dns_records${rest}`,
       );
     }
     if (at === -1) return refuse(404, 81044, "Record does not exist.");
+    if (method === "PATCH") return this.#updateRecord(zone, at, body);
     zone.records.splice(at, 1);
     return ok({ id });
+  }
+
+  /**
+   * `PATCH` of the record at `at`: its content, TTL, proxied state and comment, as Cloudflare
+   * checks them (a type that can't be proxied, an identical record of the name); its id, type and
+   * name stay.
+   */
+  #updateRecord(zone: FakeCloudflareZone, at: number, body: unknown): FakeReply {
+    const record = zone.records[at] as FakeDnsRecord;
+    const sent = (body ?? {}) as Pick<FakeRecordInput, "content" | "ttl" | "proxied" | "comment">;
+    const unknown = Object.keys(sent).filter(
+      (key) => !["content", "ttl", "proxied", "comment"].includes(key),
+    );
+    if (unknown.length > 0) {
+      throw new Error(`fake cloudflare: a record update answers only its fields, not ${unknown}`);
+    }
+    const updated: FakeDnsRecord = {
+      ...record,
+      ...(sent.content === undefined ? {} : { content: sent.content }),
+      ...(sent.ttl === undefined ? {} : { ttl: sent.ttl }),
+      ...(sent.proxied === undefined ? {} : { proxied: sent.proxied }),
+      ...(sent.comment === undefined ? {} : { comment: sent.comment }),
+      modified_on: this.now.toISOString(),
+    };
+    if (updated.proxied && !PROXIABLE.has(updated.type)) {
+      return refuse(400, 9004, "This record type cannot be proxied.");
+    }
+    const identical = zone.records.some(
+      (r) =>
+        r !== record &&
+        r.type === updated.type &&
+        r.name === updated.name &&
+        r.content === updated.content,
+    );
+    if (identical) return refuse(400, 81058, "An identical record already exists.");
+    Object.assign(record, updated);
+    return ok(this.#listed(zone, record));
   }
 
   /** One transaction of posts (at most 200): any refusal creates none of them. */

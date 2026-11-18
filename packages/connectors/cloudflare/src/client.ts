@@ -204,6 +204,11 @@ export type CloudflareZoneRecordInput = Omit<CloudflareZoneRecord, "id" | "meta"
   content?: string;
 };
 
+/** The fields {@link CloudflareClient.updateRecord} changes on a record; its type and name stay. */
+export type CloudflareRecordUpdate = Partial<
+  Pick<CloudflareZoneRecord, "content" | "ttl" | "proxied" | "comment">
+>;
+
 /** The account-level permissions {@link CloudflareClient.accountPermissions} probes. */
 export type AccountPermissionNeed =
   | "tunnel"
@@ -483,6 +488,22 @@ const RecordSchema = z.looseObject({
   data: z.record(z.string(), z.unknown()).nullish(),
   meta: z.record(z.string(), z.unknown()).nullish(),
 });
+
+/** A record Cloudflare sent, with every field it has. */
+function toZoneRecord(r: z.infer<typeof RecordSchema>): CloudflareZoneRecord {
+  return {
+    id: r.id,
+    type: r.type,
+    name: r.name,
+    content: r.content,
+    ...(r.data == null ? {} : { data: r.data }),
+    ttl: r.ttl,
+    ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
+    ...(r.priority == null ? {} : { priority: r.priority }),
+    ...(r.comment ? { comment: r.comment } : {}),
+    ...(r.meta == null ? {} : { meta: r.meta }),
+  };
+}
 
 const ZoneHoldSchema = z.looseObject({ hold: z.boolean() });
 
@@ -1541,18 +1562,25 @@ export class CloudflareClient {
       "list DNS records",
       { perPage: 100, filter },
     );
-    return records.map((r) => ({
-      id: r.id,
-      type: r.type,
-      name: r.name,
-      content: r.content,
-      ...(r.data == null ? {} : { data: r.data }),
-      ttl: r.ttl,
-      ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
-      ...(r.priority == null ? {} : { priority: r.priority }),
-      ...(r.comment ? { comment: r.comment } : {}),
-      ...(r.meta == null ? {} : { meta: r.meta }),
-    }));
+    return records.map(toZoneRecord);
+  }
+
+  /**
+   * Changes `fields` of one DNS record in place (`PATCH /zones/{id}/dns_records/{id}`), keeping
+   * its id, type and name. Sent once. Returns the record as Cloudflare answers it.
+   */
+  async updateRecord(
+    zoneId: string,
+    recordId: string,
+    fields: CloudflareRecordUpdate,
+  ): Promise<CloudflareZoneRecord> {
+    const what = `update the DNS record ${recordId}`;
+    const answer = await this.#send(
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      what,
+      { method: "PATCH", body: fields, hints: ZONE_COVERAGE_HINTS },
+    );
+    return toZoneRecord(this.#parseWrite(RecordSchema, answer.body.result, what));
   }
 
   /** Deletes one DNS record (`DELETE /zones/{id}/dns_records/{id}`). Sent once. */

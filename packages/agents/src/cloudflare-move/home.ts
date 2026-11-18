@@ -119,7 +119,8 @@ export async function updaterToB(
   const base = {
     plan,
     deployPublicKey: deployKey.publicKeyOpenSsh,
-    phase: "provision" as const,
+    // MOVE_PHASE, as the host plan's phase type names it.
+    phase: "cloudflare-move" as const,
     command,
   };
   // Without the zone: the updater as the server has it, A's zone and the token there.

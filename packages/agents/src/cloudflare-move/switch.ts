@@ -47,7 +47,13 @@ import {
   SWITCH_COMMAND,
 } from "./texts";
 import type { MoveResult, MoveSession, MoveZone, StepStop, SwitchMoveOptions } from "./types";
-import { aNameserversClash, deleteStaleCopies, type ListedRecords, recordInput } from "./zone";
+import {
+  aNameserversClash,
+  type ListedRecords,
+  recordInput,
+  updaterCreates,
+  writeUpdaterCopies,
+} from "./zone";
 
 /**
  * `opscrew cloudflare move --switch`: refused before any change unless this repository's app is
@@ -274,11 +280,15 @@ async function requireCoverage(session: MoveSession, listed: ListedRecords): Pro
 }
 
 /**
- * Creates the zone copy's records in B (each with every field; SRV and CAA by their `data`), then
- * deletes B's earlier copies of the address updater's records the copy refreshes.
+ * Creates the zone copy's records in B (each with every field; SRV and CAA by their `data`; the
+ * address updater's with A's values as read for the approved plan), then brings B's copies of the
+ * updater's records to A's: updated in place, and deleted where A's updater no longer keeps them
+ * (the switch's approval has the zone's name typed).
  */
 async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPlan): Promise<void> {
-  const records = (plan.copy?.create ?? []).map(recordInput);
+  const { copy } = plan;
+  if (copy === undefined) return;
+  const records = [...copy.create, ...updaterCreates(copy)].map(recordInput);
   if (records.length > 0) {
     session.deps.reporter.step(
       `Copying ${plural(records.length, "record")} into the new account's zone`,
@@ -292,7 +302,7 @@ async function copyRecords(session: MoveSession, zone: MoveZone, plan: SwitchPla
       detail: `${plural(records.length, "record")} in ${session.zone} (the switch)`,
     });
   }
-  if (plan.copy !== undefined) await deleteStaleCopies(session, zone.id, plan.copy, plan.planHash);
+  await writeUpdaterCopies(session, zone.id, copy, plan.planHash);
 }
 
 /**

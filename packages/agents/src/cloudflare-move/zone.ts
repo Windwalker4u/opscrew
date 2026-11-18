@@ -2,9 +2,10 @@
  * The zone plan of a move (data model 5): B's zone added when it is missing, A's records that are
  * no OpsCrew app's copied to it create-only (records that differ, and those only in B, are listed
  * and never changed), and an app's mark written or deleted. The address updater's records of a
- * server at home, which no shadow root makes, are copied too and kept as A's updater keeps them
- * (refreshed). Planned here, shown with the app's servers' addresses masked, approved by its hash
- * (`cloudflare-apply`) and applied through the Cloudflare client. A's zone is only read.
+ * server at home, which no shadow root makes, are copied too and kept as A's updater keeps them,
+ * planned by id and never by their content. Planned here, shown with the app's servers' addresses
+ * masked, approved by its hash (`cloudflare-apply`) and applied through the Cloudflare client.
+ * A's zone is only read.
  */
 import {
   CLOUDFLARE_TOKEN_PAGE,
@@ -95,18 +96,33 @@ export interface ZoneCopy {
   /** A's records not copied, and why. */
   skipped: { record: ZoneRecord; reason: string }[];
   /**
-   * The address updater's records in B that A's updater no longer has (the home's address changed
-   * since they were copied, or the updater removed a record): deleted once A's current ones, in
-   * `create`, are there. Ids, types and names only, sorted by id.
+   * The address updater's records of a server at home, which no shadow root makes: B's copies kept
+   * as A's updater keeps A's records (it writes there until the move's finish). By ids, types and
+   * names only, never by content (the home's address), so the hash can't reveal it; the apply
+   * writes A's records as the plan made after the approval reads them (`values`).
    */
-  refresh: { id: string; type: string; name: string }[];
+  updater: {
+    /** A's records (`from`) B has no copy of: created in B. */
+    create: { from: string; type: string; name: string }[];
+    /** B's copies (`id`) whose value isn't A's record `from` any more: updated in place. */
+    update: { id: string; from: string; type: string; name: string }[];
+    /**
+     * B's copies of records A's updater no longer keeps (an address family gone): deleted by the
+     * switch's plan only, approved with the zone's name typed; a prepare's plan keeps them.
+     */
+    delete: { id: string; type: string; name: string }[];
+  };
   marks?: ZoneMarks;
   planHash: string;
 }
 
-/** A zone plan with its text as shown before the approval (addresses masked; not hashed). */
+/**
+ * A zone plan with what isn't hashed: its text as shown before the approval (addresses masked),
+ * and A's records of the address updater by id, with their values as read for this plan.
+ */
 export interface ZonePlan extends ZoneCopy {
   details: string;
+  values: ReadonlyMap<string, ZoneRecord>;
 }
 
 /** Shown in place of an app's server's address. */
@@ -162,6 +178,19 @@ function zoneRecord(record: CloudflareZoneRecord): ZoneRecord {
   return rest;
 }
 
+/** {@link zoneRecord}, an address updater's record without its content (the home's address). */
+function hashed(record: CloudflareZoneRecord): ZoneRecord {
+  return isUpdaterRecord(record)
+    ? { ...zoneRecord(record), content: MASKED_ADDRESS }
+    : zoneRecord(record);
+}
+
+/** A record's id, type and name, as a plan names an address updater's. */
+const named = ({ id, type, name }: CloudflareZoneRecord) => ({ id, type, name });
+
+const byId = <T extends { id: string }>(items: T[]): T[] =>
+  items.sort((x, y) => x.id.localeCompare(y.id));
+
 /** `record` as the client creates it: a record with `data` (SRV, CAA) without its `content`. */
 export function recordInput(record: ZoneRecord): ZoneRecord {
   if (record.data === undefined) return record;
@@ -200,13 +229,19 @@ function sets(records: readonly CloudflareZoneRecord[]): Map<string, CloudflareZ
 const byJson = <T>(items: readonly T[]): T[] =>
   [...items].sort((x, y) => canonicalJson(x).localeCompare(canonicalJson(y)));
 
+/** The plan's changes to the address updater's copies in B. */
+export function updaterChanges(plan: Pick<ZoneCopy, "updater">): number {
+  const { create, update, delete: gone } = plan.updater;
+  return create.length + update.length + gone.length;
+}
+
 /**
- * The plan's changes: the zone added, the records created, the updater's earlier copies deleted,
- * the mark's records written or deleted.
+ * The plan's changes: the zone added, the records created, the address updater's copies created,
+ * updated or deleted, the mark's records written or deleted.
  */
 function changeCount(plan: ZoneCopy): number {
   const marks = (plan.marks?.create.length ?? 0) + (plan.marks?.delete.length ?? 0);
-  return (plan.createZone ? 1 : 0) + plan.create.length + plan.refresh.length + marks;
+  return (plan.createZone ? 1 : 0) + plan.create.length + updaterChanges(plan) + marks;
 }
 
 /** True for a plan that only deletes a mark (the finish's, the abort's): it copies nothing. */
@@ -239,13 +274,15 @@ function requireMarks(marks: ZoneMarks, inB: readonly CloudflareZoneRecord[]): v
  * created when B has no other value of the set and none proxied differently; otherwise, or when
  * B has a CNAME clash Cloudflare would refuse, the set is listed and never changed. B's sets that
  * A doesn't have are listed; B's zone is added when it has none; and the mark's records
- * (`marks`, a mark's name, deleting only its TXT records). A's records are read only while A's
- * zone is active (it is authoritative) and never for a plan that only deletes a mark. `listed`:
- * either zone's records read just before, which are not listed again.
+ * (`marks`, a mark's name, deleting only its TXT records). The address updater's records follow
+ * A's ({@link ZoneCopy.updater}): created, updated in place, and deleted only by the switch's plan
+ * (`switching`); any other set holding one of them is listed, its content masked. A's records are
+ * read only while A's zone is active (it is authoritative) and never for a plan that only deletes
+ * a mark. `listed`: either zone's records read just before, which are not listed again.
  */
 export async function planZone(
   session: MoveSession,
-  options: { marks?: ZoneMarks; listed?: ListedRecords } = {},
+  options: { marks?: ZoneMarks; listed?: ListedRecords; switching?: boolean } = {},
 ): Promise<ZonePlan> {
   const { zone } = session;
   const { a, b } = session.accounts;
@@ -280,26 +317,52 @@ export async function planZone(
     differ.push({
       type: first.type,
       name: first.name,
-      a: byJson(setA.map(zoneRecord)),
-      b: byJson(setB.map(zoneRecord)),
+      a: byJson(setA.map(hashed)),
+      b: byJson(setB.map(hashed)),
     });
     for (const record of setB) listed.add(record);
   };
-  /** B's copies of the updater's records that A's updater no longer keeps. */
-  const stale: CloudflareZoneRecord[] = [];
+  const updater: ZoneCopy["updater"] = { create: [], update: [], delete: [] };
+  /** B's copies of records A's updater no longer keeps, which a prepare keeps for the switch. */
+  const kept: CloudflareZoneRecord[] = [];
+  const gone = (copies: readonly CloudflareZoneRecord[]) => {
+    if (options.switching === true) updater.delete.push(...copies.map(named));
+    else kept.push(...copies);
+    for (const record of copies) listed.add(record);
+  };
+  /**
+   * B's copies follow A's records of the set: each value B lacks takes one of B's copies that A
+   * no longer has (in id order, an update in place) or is created; copies left over are gone.
+   */
+  const follow = (setA: readonly CloudflareZoneRecord[], setB: readonly CloudflareZoneRecord[]) => {
+    const newer = byId(recordsMissingFromZone(setA, setB));
+    const older = byId(recordsMissingFromZone(setB, setA));
+    newer.forEach(({ id: from, type, name }, at) => {
+      const copy = older[at];
+      if (copy === undefined) updater.create.push({ from, type, name });
+      else updater.update.push({ id: copy.id, from, type, name });
+    });
+    gone(older.slice(newer.length));
+    for (const record of setB) listed.add(record);
+  };
   for (const [key, setA] of inSetsA) {
     const first = setA[0] as CloudflareZoneRecord;
     const setB = inSetsB.get(key) ?? [];
+    if (updaterSet(setA) && setB.every(isUpdaterRecord)) {
+      const clash = setB.length === 0 ? fromB.filter((r) => cnameClash(first, r, zone)) : [];
+      if (clash.length > 0) differs(first, setA, clash);
+      else follow(setA, setB);
+      continue;
+    }
+    // A set the updater shares with other records is listed, and never copied.
+    if ([...setA, ...setB].some(isUpdaterRecord)) {
+      differs(first, setA, setB);
+      continue;
+    }
     if (setB.length === 0) {
       const clash = fromB.filter((record) => cnameClash(first, record, zone));
       if (clash.length > 0) differs(first, setA, clash);
       else create.push(...setA.map(zoneRecord));
-      continue;
-    }
-    // The updater's copies follow A's, where its updater keeps writing until the move's finish.
-    if (updaterSet(setA) && updaterSet(setB)) {
-      create.push(...recordsMissingFromZone(setA, setB).map(zoneRecord));
-      stale.push(...recordsMissingFromZone(setB, setA));
       continue;
     }
     // A value is added only where B has no other value of the set; otherwise the set is listed.
@@ -308,7 +371,7 @@ export async function planZone(
     else create.push(...recordsMissingFromZone(setA, setB).map(zoneRecord));
   }
   for (const [key, setB] of inSetsB) {
-    if (!inSetsA.has(key) && updaterSet(setB)) stale.push(...setB);
+    if (!inSetsA.has(key) && updaterSet(setB)) gone(setB);
   }
   const body: Omit<ZoneCopy, "planHash"> = {
     zone,
@@ -318,20 +381,21 @@ export async function planZone(
     create: byJson(create),
     differ: byJson(differ),
     onlyInB: byJson(
-      fromB
-        .filter((record) => !inSetsA.has(keyOf(record)) && !listed.has(record))
-        .filter((record) => !stale.includes(record))
-        .map(zoneRecord),
+      fromB.filter((record) => !inSetsA.has(keyOf(record)) && !listed.has(record)).map(hashed),
     ),
     skipped: byJson(skipped),
-    refresh: stale
-      .map(({ id, type, name }) => ({ id, type, name }))
-      .sort((x, y) => x.id.localeCompare(y.id)),
+    updater: {
+      create: updater.create.sort((x, y) => x.from.localeCompare(y.from)),
+      update: byId(updater.update),
+      delete: byId(updater.delete),
+    },
     ...(marks === undefined ? {} : { marks }),
   };
   const plan: ZoneCopy = { ...body, planHash: sha256Hex(canonicalJson(body)) };
+  const values = new Map(fromA.filter(isUpdaterRecord).map((r) => [r.id, zoneRecord(r)]));
   const addresses = await serverAddresses(session, [...inA, ...inB]);
-  return { ...plan, details: session.deps.redactor.redact(describeZone(session, plan, addresses)) };
+  const text = describeZone(session, plan, { addresses, values, kept: kept.map(named) });
+  return { ...plan, values, details: session.deps.redactor.redact(text) };
 }
 
 /**
@@ -392,12 +456,24 @@ function differenceText(
 }
 
 /** The plan in words, as its approval shows it. */
-function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly string[]): string {
-  const { zone, marks } = plan;
+function describeZone(
+  session: MoveSession,
+  plan: ZoneCopy,
+  read: {
+    addresses: readonly string[];
+    /** A's records of the address updater, by id, as read for the plan. */
+    values: ReadonlyMap<string, ZoneRecord>;
+    /** B's copies of records A's updater no longer keeps, which a prepare leaves to the switch. */
+    kept: readonly { type: string; name: string }[];
+  },
+): string {
+  const { zone, marks, updater } = plan;
   const { a, b } = session.accounts;
   const bName = accountName(b);
   const aName = accountName(a);
-  const text = (record: ZoneRecord) => shownRecord(record, addresses);
+  const text = (record: ZoneRecord) => shownRecord(record, read.addresses);
+  const names = (records: readonly { type: string; name: string }[]) =>
+    records.map((record) => `${record.type} ${record.name}`).join(", ");
   const lines = [
     `The zone plan for ${zone} in the Cloudflare account ${bName} (hash ${plan.planHash}):`,
   ];
@@ -412,9 +488,29 @@ function describeZone(session: MoveSession, plan: ZoneCopy, addresses: readonly 
       ...plan.create.map((record) => `  - ${text(record)}`),
     );
   }
-  if (plan.refresh.length > 0) {
+  if (updater.create.length > 0) {
     lines.push(
-      `- Delete the new account's earlier copies of the address updater's records, which it has changed since in the account ${aName} (it keeps writing there until the move's finish): ${plan.refresh.map((record) => `${record.type} ${record.name}`).join(", ")}.`,
+      `- Copy ${plural(updater.create.length, "record")} of the address updater's from the account ${aName}, each with its proxied state, TTL and comment, its content (your home's address) as the account holds it when the plan is applied:`,
+      ...updater.create.map(({ from, type, name }) => {
+        const proxied = read.values.get(from)?.proxied === true;
+        return `  - ${type} ${name} ${MASKED_ADDRESS}${proxied ? " (proxied)" : ""}`;
+      }),
+    );
+  }
+  const writes = `(it writes there until the move's finish)`;
+  if (updater.update.length > 0) {
+    lines.push(
+      `- Update the new account's copies of the address updater's records in place to what it keeps in the account ${aName} now ${writes}: ${names(updater.update)}.`,
+    );
+  }
+  if (updater.delete.length > 0) {
+    lines.push(
+      `- Delete the new account's copies of the address updater's records that it no longer keeps in the account ${aName}: ${names(updater.delete)}.`,
+    );
+  }
+  if (read.kept.length > 0) {
+    lines.push(
+      `- Kept until the switch, which deletes them with the zone's name typed: the new account's copies of the address updater's records that it no longer keeps in the account ${aName}: ${names(read.kept)}.`,
     );
   }
   if (a.zone?.status !== "active" && !deletesOnly(marks)) {
@@ -523,26 +619,53 @@ async function requireUsableZone(
   );
 }
 
+/** A's record `id` of the address updater, as `plan` read it. */
+function readValue(plan: Pick<ZonePlan, "values">, id: string): ZoneRecord {
+  const value = plan.values.get(id);
+  if (value === undefined) {
+    throw bug(`The zone plan names the address updater's record ${id}, which it did not read.`);
+  }
+  return value;
+}
+
+/** The address updater's records `plan` creates in B, with A's values as `plan` read them. */
+export function updaterCreates(plan: Pick<ZonePlan, "updater" | "values">): ZoneRecord[] {
+  return plan.updater.create.map(({ from }) => readValue(plan, from));
+}
+
 /**
- * Deletes from B's zone `zoneId` the earlier copies of the address updater's records the zone plan
- * names (`refresh`), once A's current ones are created there, so the name always has a record;
- * audited by their ids and types under the approved plan's hash (`approved`).
+ * B's copies of the address updater's records in `zoneId` brought to `plan`'s (a plan made after
+ * the approval, whose hash the approval names, `approved`): each copy to update takes A's values
+ * in place (`updateRecord`: content, TTL, proxied state and comment), and each copy A no longer
+ * has goes (only in the switch's plan). Audited by ids and types, never their content.
  */
-export async function deleteStaleCopies(
+export async function writeUpdaterCopies(
   session: MoveSession,
   zoneId: string,
-  plan: Pick<ZoneCopy, "refresh">,
+  plan: Pick<ZonePlan, "updater" | "values">,
   approved: string,
 ): Promise<void> {
-  if (plan.refresh.length === 0) return;
-  for (const record of plan.refresh)
-    await session.accounts.b.client.deleteRecord(zoneId, record.id);
+  const { update, delete: gone } = plan.updater;
+  if (update.length + gone.length === 0) return;
+  const { client } = session.accounts.b;
+  for (const copy of update) {
+    const { content, ttl, proxied, comment } = readValue(plan, copy.from);
+    await client.updateRecord(zoneId, copy.id, {
+      ttl,
+      ...(content === undefined ? {} : { content }),
+      ...(proxied === undefined ? {} : { proxied }),
+      ...(comment === undefined ? {} : { comment }),
+    });
+  }
+  for (const copy of gone) await client.deleteRecord(zoneId, copy.id);
+  const list = (copies: readonly { id: string; type: string }[]) =>
+    copies.map((copy) => `${copy.type} ${copy.id}`).join(", ") || "none";
   await moveAudit(session.deps, {
     kind: "provider-call",
     action: "updater record copies refreshed",
     target: approved,
     decision: "approved",
-    detail: `${session.zone}: ${plan.refresh.map((record) => `${record.type} ${record.id}`).join(", ")} deleted, the current ones copied`,
+    detail: `${session.zone}: updated ${list(update)}; deleted ${list(gone)}`,
   });
 }
 
@@ -559,8 +682,9 @@ function planKey(marks: ZoneMarks | undefined): MovePlanKey {
  * records it as waiting and stops with the command that applies it. Otherwise it is approved by
  * its hash (`cloudflare-apply`), made again and refused when the hash differs (nothing changed),
  * then B's zone is added when the plan says so (and checked as above before any record), the
- * records and the mark's created in batches of 200, the address updater's earlier copies deleted
- * ({@link deleteStaleCopies}), and the mark's records to delete deleted.
+ * records and the mark's created in batches of 200 (the address updater's with A's values as the
+ * plan made after the approval read them), B's copies of the updater's records updated in place
+ * ({@link writeUpdaterCopies}), and the mark's records to delete deleted.
  * `session` holds B's zone from then on.
  * @throws PlanRefusedError when the plan is not approved; `PLAN_HASH_MISMATCH` when the zones
  * changed since it was made.
@@ -633,17 +757,19 @@ export async function applyZone(
     proxied: false,
     comment: MARK_COMMENT,
   }));
+  // The address updater's records with A's values as read after the approval (`again`).
+  const copied = [...plan.create, ...updaterCreates(again)];
   // A zone added again soon after it was deleted (an abort, then a new prepare) comes back with
   // the records it held; the copy creates only what isn't there yet, record for record.
   const create = plan.createZone
-    ? recordsMissingFromZone(plan.create, await b.client.listZoneRecords(target.id))
-    : plan.create;
+    ? recordsMissingFromZone(copied, await b.client.listZoneRecords(target.id))
+    : copied;
   const records: ZoneRecord[] = [...create.map(recordInput), ...markRecords];
   if (records.length > 0) {
     await b.client.createZoneRecords(target.id, records);
     await audit("cloudflare records created", `${plural(records.length, "record")} in ${zone}`);
   }
-  await deleteStaleCopies(session, target.id, plan, plan.planHash);
+  await writeUpdaterCopies(session, target.id, again, plan.planHash);
   if (marks !== undefined && marks.delete.length > 0) {
     for (const id of marks.delete) await b.client.deleteRecord(target.id, id);
     await audit(

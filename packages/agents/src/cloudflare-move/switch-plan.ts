@@ -17,7 +17,7 @@ import type { DsGate } from "./switch-ds";
 import { registrarId, registrarWords } from "./switch-registrar";
 import { accountName } from "./texts";
 import type { MoveSession, MoveZone } from "./types";
-import { type ListedRecords, planZone, type ZonePlan } from "./zone";
+import { type ListedRecords, planZone, updaterChanges, type ZonePlan } from "./zone";
 
 /** What the switch plan says; hashed as canonical JSON. */
 export interface SwitchPlanBody {
@@ -67,7 +67,9 @@ export async function planSwitch(
 ): Promise<SwitchPlan> {
   const { a, b } = session.accounts;
   const copy =
-    input.gate.kind === "remove" ? undefined : await planZone(session, { listed: input.listed });
+    input.gate.kind === "remove"
+      ? undefined
+      : await planZone(session, { listed: input.listed, switching: true });
   const sorted = (list: readonly string[]) => [...list].map((one) => one.toLowerCase()).sort();
   const body: SwitchPlanBody = {
     zone: session.zone,
@@ -114,11 +116,12 @@ function describe(
     );
     return lines.join("\n");
   }
-  if (copy !== undefined && copy.create.length + copy.refresh.length > 0) {
+  const copies = copy === undefined ? 0 : copy.create.length + copy.updater.create.length;
+  if (copy !== undefined && copy.create.length + updaterChanges(copy) > 0) {
     const what =
-      copy.create.length > 0
-        ? `Copy ${plural(copy.create.length, "record")} the new account's zone lacks from ${aName}`
-        : `Refresh the address updater's records from ${aName}`;
+      copies > 0
+        ? `Copy ${plural(copies, "record")} the new account's zone lacks from ${aName}`
+        : `Bring the new account's copies of the address updater's records up to date from ${aName}`;
     lines.push(
       `- ${what} first (the zone plan, hash ${copy.planHash}):`,
       ...copy.details.split("\n").map((line) => `  ${line}`),
