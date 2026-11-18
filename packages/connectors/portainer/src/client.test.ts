@@ -515,7 +515,7 @@ describe("container reads", () => {
     ]);
   });
 
-  it("keeps only the restart count, start time and memory limit: never Config.Env", async () => {
+  it("keeps only the restart count, start time, state and memory limit: never Config.Env", async () => {
     const secret = fakeSecret("stripe-live-key", "inspect");
     const inspect = (memory: number) => ({
       Id: "a1b2c3",
@@ -535,11 +535,13 @@ describe("container reads", () => {
       restartCount: 2,
       startedAt: "2026-10-28T08:00:00.123456789Z",
       memoryLimitBytes: 536_870_912,
+      state: "running",
     });
     expect(JSON.stringify(details)).not.toContain(secret);
     expect(await client.containerInspect(3, "unlimited")).toEqual({
       restartCount: 2,
       startedAt: "2026-10-28T08:00:00.123456789Z",
+      state: "running",
     });
   });
 

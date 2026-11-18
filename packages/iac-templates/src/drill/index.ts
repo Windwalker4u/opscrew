@@ -238,4 +238,5 @@ export function renderDrill(
   ].map((file) => ({ path: `${dir}/${file.path}`, content: file.content, kind: "runtime" }));
 }
 
+export * from "./portainer";
 export * from "./record";

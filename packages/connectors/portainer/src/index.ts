@@ -18,6 +18,7 @@ export {
   type ContainerInspection,
   type ContainerSummary,
   type DockerInfo,
+  type NetworkInspection,
   PORTAINER_TOKEN_STEPS,
   PortainerApiError,
   type PortainerClient,
@@ -26,6 +27,19 @@ export {
   portainerClient,
 } from "./client";
 export { type ContainerFigures, type ContainerLogLine, sinceAfter } from "./docker";
+export {
+  createDrillStack,
+  type DesiredDrillStack,
+  DRILL_STACK_SUFFIX,
+  type DrillFound,
+  type DrillRemoval,
+  type DrillStackDeploy,
+  type DrillStackOptions,
+  drillStackName,
+  planDrillStack,
+  removeDrillStack,
+  startDrillApp,
+} from "./drill";
 export type { PortainerFacts, PortainerStackFacts } from "./facts";
 export { normalizeCertFingerprint, sameCertFingerprint } from "./fingerprint";
 export { dockerArchitecture, environmentKind, inspectPortainer } from "./inspect";

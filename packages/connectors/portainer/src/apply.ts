@@ -167,12 +167,7 @@ export async function applyStackPlan(
   checkValuesDigest(valid, secrets, opts.valueKey);
   await checkBesideStacks(client, work);
 
-  const wait = {
-    timeoutMs: opts.wait?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    intervalMs: opts.wait?.intervalMs ?? DEFAULT_INTERVAL_MS,
-    now: opts.wait?.now ?? Date.now,
-    sleep: opts.wait?.sleep ?? realSleep,
-  };
+  const wait = deployWait(opts.wait);
   const record: CreatedRecord = structuredClone(valid.record);
   const applied: StackChangeId[] = [];
   const done: string[] = [];
@@ -294,17 +289,25 @@ function only(
   return Object.fromEntries(keys.map((key) => [key, values?.[key] ?? ""]));
 }
 
+/** A deploy's bounded wait with its defaults (10 minutes, polling every 2 seconds). */
+export function deployWait(wait: ApplyStackOptions["wait"]): DeployWait {
+  return {
+    timeoutMs: wait?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    intervalMs: wait?.intervalMs ?? DEFAULT_INTERVAL_MS,
+    now: wait?.now ?? Date.now,
+    sleep: wait?.sleep ?? realSleep,
+  };
+}
+
+/** {@link ApplyStackOptions.wait} with every value given. */
+export type DeployWait = Required<NonNullable<ApplyStackOptions["wait"]>>;
+
 interface Context {
   client: PortainerClient;
   plan: StackPlan;
   secrets: ApplySecrets;
   record: CreatedRecord;
-  wait: {
-    timeoutMs: number;
-    intervalMs: number;
-    now: () => number;
-    sleep: (ms: number) => Promise<void>;
-  };
+  wait: DeployWait;
   done: (text: string) => void;
 }
 
@@ -351,6 +354,8 @@ function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinn
     plan.record.stacks.find((stack) => stack.id === id && stack.role === role);
   const notOurs = () => notOursOf(change.id);
 
+  // A restore drill's plan runs only through `createDrillStack` and the calls after it.
+  if (plan.purpose === "drill" || change.id === "drill-stack") throw notOurs();
   if (plan.purpose === "teardown" && action !== "remove" && action !== "forget") throw notOurs();
   if (role !== undefined) {
     if (str(change.params, "name") !== stackName(names, role)) throw notOurs();
@@ -732,15 +737,15 @@ function recordVolumes(record: CreatedRecord, params: Readonly<Record<string, St
  * Which deploy to wait for: any (a new stack), a start (the stack leaves Status 2), or one after
  * the stack's deploy history as read before the call (its last entry's Time and its length).
  */
-type Baseline =
+export type Baseline =
   | { kind: "new" }
   | { kind: "start" }
   | { kind: "after"; time: number | undefined; count: number };
-const NEW_DEPLOY: Baseline = { kind: "new" };
+export const NEW_DEPLOY: Baseline = { kind: "new" };
 const START: Baseline = { kind: "start" };
 
 /** The stack's deploy history before changing it: the last entry's Time and the entry count. */
-async function deployBaseline(client: PortainerClient, stackId: number): Promise<Baseline> {
+export async function deployBaseline(client: PortainerClient, stackId: number): Promise<Baseline> {
   const stack = await client.getStack(stackId);
   if (stack === undefined) {
     throw new OpsCrewError("PROVIDER_ERROR", `Portainer no longer has stack ${stackId}.`, {
@@ -773,8 +778,8 @@ function isFresh(baseline: Baseline, current: StackDetails, seenDeploying: boole
  * `Status` 1 (active) succeeds, 4 (error) fails with `DeploymentStatus[-1].Message`; 3
  * (deploying), and 2 (stopped) after a start, keep polling until the timeout.
  */
-async function waitForDeploy(
-  ctx: Context,
+export async function waitForDeploy(
+  ctx: Pick<Context, "client" | "wait">,
   started: StackDetails,
   baseline: Baseline,
   name: string,

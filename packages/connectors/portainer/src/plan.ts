@@ -25,7 +25,8 @@ export const STACK_PLAN_SCHEMA_VERSION = 1;
 
 /**
  * Stack plan changes, in the order a setup applies them (teardown: updater, connector, volumes,
- * app, registry); the last two only in the beside stacks' plan ({@link planNextStacks}).
+ * app, registry); `tunnel-next-stack` and `tunnel-connector-next-stack` only in the beside
+ * stacks' plan ({@link planNextStacks}), `drill-stack` only in a restore drill's (`planDrillStack`).
  */
 export const STACK_CHANGE_IDS = [
   "registry",
@@ -35,6 +36,7 @@ export const STACK_CHANGE_IDS = [
   "volumes",
   "tunnel-next-stack",
   "tunnel-connector-next-stack",
+  "drill-stack",
 ] as const;
 export type StackChangeId = (typeof STACK_CHANGE_IDS)[number];
 
@@ -45,7 +47,7 @@ const EnvKeySchema = z
   .max(128)
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, { message: "must be an environment variable name" });
 
-const ComposeTextSchema = z
+export const ComposeTextSchema = z
   .string()
   .min(1)
   .max(64 * 1024)
@@ -147,7 +149,7 @@ const FindingSchema = z.strictObject({
  */
 export const StackPlanSchema = z.strictObject({
   schemaVersion: z.literal(STACK_PLAN_SCHEMA_VERSION),
-  purpose: z.enum(["setup", "teardown"]),
+  purpose: z.enum(["setup", "teardown", "drill"]),
   app: AppNameSchema,
   environmentId: z.int().positive(),
   changes: z.array(StackChangeSchema).max(8),

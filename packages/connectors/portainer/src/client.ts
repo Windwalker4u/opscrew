@@ -105,6 +105,17 @@ export interface ContainerInspection {
   command?: string[];
   /** `Config.Entrypoint`; absent when Docker gives none. */
   entrypoint?: string[];
+  /** `State.Status`: `created`, `running`, `exited`…; absent when Docker gives none. */
+  state?: string;
+  /** `State.Health.Status` (`starting`, `healthy`, `unhealthy`); absent without a health check. */
+  health?: string;
+}
+
+/** What `networkInspect` keeps of a Docker network. */
+export interface NetworkInspection {
+  name: string;
+  /** `Internal`: the network has no route out of the Docker host. */
+  internal: boolean;
 }
 
 /** A Docker volume, reduced to its name and Compose project. */
@@ -226,6 +237,8 @@ export interface PortainerClient {
   containerStats(environmentId: number, containerId: string): Promise<ContainerFigures>;
   /** `GET …/docker/containers/{id}/json`, reduced to {@link ContainerInspection}. */
   containerInspect(environmentId: number, containerId: string): Promise<ContainerInspection>;
+  /** `GET /api/endpoints/{id}/docker/networks/{name}`; `undefined` when there is none. */
+  networkInspect(environmentId: number, name: string): Promise<NetworkInspection | undefined>;
   /**
    * Runs `command` in a running container through Docker's exec (`POST …/containers/{id}/exec`,
    * `POST …/exec/{id}/start`, `GET …/exec/{id}/json`) with no stdin and no TTY, `env` only in its
@@ -616,7 +629,26 @@ export function portainerClient(
         ...(memory > 0 && { memoryLimitBytes: memory }),
         ...(details.Config?.Cmd ? { command: details.Config.Cmd } : {}),
         ...(details.Config?.Entrypoint ? { entrypoint: details.Config.Entrypoint } : {}),
+        ...(details.State.Status === undefined ? {} : { state: details.State.Status }),
+        ...(details.State.Health?.Status === undefined
+          ? {}
+          : { health: details.State.Health.Status }),
       };
+    },
+    async networkInspect(environmentId, name) {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(name)) {
+        throw new OpsCrewError("INTERNAL", "A network name is letters, digits, '_', '.' and '-'.");
+      }
+      const details = await call({
+        method: "GET",
+        path: `/api/endpoints/${id(environmentId)}/docker/networks/${name}`,
+        schema: networkSchema,
+        action: `inspect the network ${name}`,
+        access: "use the environment",
+        notFound: "absent",
+      });
+      if (details === "absent" || details === undefined) return undefined;
+      return { name: details.Name, internal: details.Internal };
     },
     async containerExec(environmentId, containerId, input) {
       if (input.command.length === 0) {
@@ -1120,7 +1152,11 @@ const containerSchema = z.object({
 /** The fields of `…/containers/{id}/json` OpsCrew reads; the rest (`Config.Env`) is stripped here. */
 const inspectSchema = z.object({
   RestartCount: z.int().nonnegative(),
-  State: z.object({ StartedAt: z.string() }),
+  State: z.object({
+    StartedAt: z.string(),
+    Status: z.string().optional(),
+    Health: z.object({ Status: z.string() }).nullish(),
+  }),
   HostConfig: z.object({ Memory: z.int().nonnegative().optional() }).optional(),
   Config: z
     .object({
@@ -1129,6 +1165,7 @@ const inspectSchema = z.object({
     })
     .optional(),
 });
+const networkSchema = z.object({ Name: z.string(), Internal: z.boolean() });
 const execCreatedSchema = z.object({ Id: z.string().regex(/^[0-9a-f]{64}$/) });
 const execStateSchema = z.object({ Running: z.boolean(), ExitCode: z.int().nullable() });
 const volumesSchema = z.object({

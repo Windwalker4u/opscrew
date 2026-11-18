@@ -1,19 +1,678 @@
 /**
- * `opscrew restore --drill` in the user's Portainer (029 plan.md 19., research R24): a second stack
- * `opscrew-<app>-drill`, approved as a stack plan by its hash. Not built yet.
+ * `opscrew restore --drill [<id>] [--only <service>] [--allow-other-version]` in the user's
+ * Portainer (029 plan.md 19., research R24, R27): the snapshot restored into a second stack,
+ * `opscrew-<app>-drill`, from the drill's render (`renderPortainerDrill`), approved as a stack plan
+ * by its hash (`stack-apply`, `allowDestroy`, `<app>-drill` typed). Read-only first (the snapshot's
+ * record in the snapshots volume, the environment's stacks and volumes); then the stack is created
+ * with the restored services only, its network read back as internal with no published port (else
+ * removed at once), each part restored into its volumes by one-off containers with the snapshots
+ * volume read-only, the app deployed on it, its `State.Health.Status` read through the Docker
+ * proxy, each database's tables counted, and the stack removed with its volumes, a list proving
+ * they are gone. The copy's values are its own: new passwords and `.env.preview`'s values, never
+ * production's. Nothing named `opscrew-<app>` is changed.
  */
-import { OpsCrewError } from "@opscrew/core";
+import { join } from "node:path";
+import type { DockerContainer, MountSpec } from "@opscrew/connector-docker";
+import { dockerClient } from "@opscrew/connector-docker";
+import {
+  COMPOSE_PROJECT_LABEL,
+  createDrillStack,
+  type DrillRemoval,
+  drillStackName,
+  type PortainerClient,
+  planDrillStack,
+  removeDrillStack,
+  type StackPlan,
+  stackPlanHash,
+  startDrillApp,
+} from "@opscrew/connector-portainer";
+import { errorMessage, listText, OpsCrewError, readTextIfExists, realSleep } from "@opscrew/core";
+import {
+  type DrillRecord,
+  databaseCount,
+  drillPlan,
+  FILES_VOLUME,
+  PORTAINER_STACK_VARIABLES,
+  partRestore,
+  portainerSecretVariables,
+  portainerServiceEnvironment,
+  portainerSnapshotsVolume,
+  portainerStackEnvKeys,
+  portainerStackName,
+  portainerTarget,
+  renderPortainerDrill,
+  type SnapshotPart,
+  SQLITE_VOLUME,
+  snapshotParts,
+} from "@opscrew/iac-templates";
+import { type DeployPlan, ghcrImageFor } from "@opscrew/plan-schema";
+import { formatUtc } from "@opscrew/secops";
+import { parse } from "yaml";
+import { NOTHING_CHANGED } from "../promote/shared";
+import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
+import { requireNoStackBlockers } from "../provision/stack-plan";
+import { shortDigest } from "../rollback/versions";
+import { gitClient, githubCoordinates, pollUntil, portainerClientFor } from "../shared";
+import { assembleAppEnv, parseDotenv } from "../shared/app-env";
+import { PREVIEW_VALUES_FILE } from "./drill";
+import { drillReport, drillSteps } from "./drill-report";
+import {
+  box,
+  DIR,
+  ofService,
+  type PortainerPlace,
+  portainerListing,
+  portainerProbe,
+  secretsFile,
+  serviceOneOff,
+  stopCleanly,
+  volumesOf,
+} from "./portainer";
+import { partWords } from "./restore-checks";
+import { readRecord } from "./restore-portainer";
 import type { SnapshotRun } from "./run";
+import { type About, KIND_WORDS } from "./store";
 import type { DrillReport, DrillRequest, SnapshotServices } from "./types";
 
+/** Where, in words. */
+const WHERE = "in your Portainer";
+
+/** How long the app's health check may take to pass (R17). */
+const HEALTH_MS = 5 * 60_000;
+/** How long an app with no health check must keep running (R17). */
+const RUNNING_MS = 60_000;
+/** The pause between two reads of the app's health. */
+const HEALTH_POLL_MS = 5_000;
+
+/** The app's volumes in a stack, by the part that restores into them. */
+const APP_VOLUMES: Partial<Record<SnapshotPart["kind"], string>> = {
+  sqlite: SQLITE_VOLUME,
+  files: FILES_VOLUME,
+};
+
+/** The user's Portainer: its client, and the snapshots volume through its Docker proxy. */
+async function connect(
+  run: SnapshotRun,
+): Promise<{ client: PortainerClient; place: PortainerPlace }> {
+  const { deps, plan, services } = run;
+  const connection = await requirePortainerConnection(deps, plan);
+  const client = portainerClientFor(deps, {
+    connection,
+    token: requirePortainerToken(deps),
+    client: services.portainer?.client,
+  });
+  const environment = portainerTarget(plan.target).environmentId;
+  return {
+    client,
+    place: {
+      docker: dockerClient(client.dockerProxyTransport(environment)),
+      plan,
+      stack: portainerStackName(plan),
+      volume: portainerSnapshotsVolume(plan),
+      recorded: connection.created.volumes,
+    },
+  };
+}
+
+/** The snapshot `id`, or the newest complete one, in the snapshots volume, with its bytes. */
+async function chooseSnapshot(
+  run: SnapshotRun,
+  place: PortainerPlace,
+  id: string | undefined,
+): Promise<{ about: About; text: string }> {
+  const { abouts } = await portainerListing(place);
+  const newest = [...abouts].sort((a, b) => b.taken.localeCompare(a.taken))[0];
+  const chosen = id === undefined ? newest : abouts.find((about) => about.id === id);
+  const record = chosen === undefined ? undefined : await readRecord(place, chosen.id);
+  if (record !== undefined) return record;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    id === undefined
+      ? `There is no snapshot ${WHERE} yet, so there is nothing to drill. ${NOTHING_CHANGED}`
+      : `There is no snapshot ${id} ${WHERE}. ${NOTHING_CHANGED}`,
+    {
+      hint:
+        id === undefined
+          ? `Take one with \`opscrew snapshot${run.flags}\`, then run the drill.`
+          : `\`opscrew snapshot list${run.flags}\` shows the snapshots.`,
+    },
+  );
+}
+
+/** The parts the copy restores: those the snapshot holds a copy of, only `only` with `--only`. */
+function chooseParts(run: SnapshotRun, about: About, only: string | undefined): SnapshotPart[] {
+  const planParts = snapshotParts(run.plan);
+  if (only !== undefined && !planParts.some((part) => part.name === only)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${only} is no service with data in ${run.environment}. ${NOTHING_CHANGED}`,
+      {
+        hint: `Name one of ${listText(planParts.map((part) => part.name))} with --only, or leave it out.`,
+      },
+    );
+  }
+  const copied = new Set(about.services.filter((entry) => "file" in entry).map((e) => e.name));
+  const parts = planParts.filter(
+    (part) => copied.has(part.name) && (only === undefined || part.name === only),
+  );
+  if (parts.length > 0) return parts;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The snapshot ${about.id} holds no copy of ${only ?? `any part ${run.environment} has now`}, so there is nothing to drill. ${NOTHING_CHANGED}`,
+    { hint: `\`opscrew snapshot list${run.flags}\` shows what each snapshot holds.` },
+  );
+}
+
+/** The image the copy runs: the snapshot's version, or with `--allow-other-version` today's. */
+async function drillImage(
+  run: SnapshotRun,
+  place: PortainerPlace,
+  about: About,
+  request: DrillRequest,
+): Promise<string> {
+  const allow = request.allowOtherVersion === true;
+  const version = allow ? (await portainerProbe(place, about.id)).version : about.version;
+  if (version === "") {
+    const command = `opscrew restore --drill ${about.id}${run.flags}`;
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      allow
+        ? `OpsCrew can't tell which version of the app runs ${WHERE}, so there is no version of today's to run the copy of the snapshot ${about.id} with. ${NOTHING_CHANGED}`
+        : `The snapshot ${about.id} records no version (it was taken before a first deploy, or with an older OpsCrew), so OpsCrew can't tell which version of the app to start on it. ${NOTHING_CHANGED}`,
+      {
+        hint: allow
+          ? `Deploy the app, then try again; or drill the snapshot with its own version: \`${command}\`.`
+          : `Run \`${command} --allow-other-version\` to start today's version on it.`,
+      },
+    );
+  }
+  const { owner, repo } = await githubCoordinates(gitClient(run.deps));
+  return `${ghcrImageFor(`${owner}/${repo}`, run.plan.app.key)}@${version}`;
+}
+
+/** The copy's values: its stack's `Env` and the services' secrets by variable, with names shown. */
+interface DrillValues {
+  env: Record<string, string>;
+  stack: Map<string, string>;
+  /** `.env.preview`'s names (never values). */
+  names: string[];
+}
+
 /**
- * The drill `request` asks in the user's Portainer of `run`.
- * @throws OpsCrewError `INTERNAL`: not built yet.
+ * The copy's own values for its stack, built for `drill` as provision builds the app's with none of
+ * production's: every generated value new (the services' passwords, the app's keys), the app's
+ * plain settings, and `.env.preview`'s values for the app's own variables (the rest empty). The
+ * new values and `.env.preview`'s are registered with the redactor.
+ */
+async function drillValues(run: SnapshotRun, drill: DeployPlan): Promise<DrillValues> {
+  const { deps } = run;
+  const dotenvText = await readTextIfExists(join(deps.paths.root, PREVIEW_VALUES_FILE));
+  const preview = parseDotenv(dotenvText ?? "");
+  const env = await assembleAppEnv({
+    plan: drill,
+    ...(dotenvText === undefined ? {} : { dotenvText }),
+    ask: async (question) => (question.localValueAvailable ? { useLocal: true } : { skip: true }),
+    local: { environment: run.environment, file: PREVIEW_VALUES_FILE },
+  });
+  const made = [
+    env.generated.dbPassword,
+    ...Object.values(env.generated.env ?? {}),
+    ...Object.values(env.generated.services ?? {}).flatMap(Object.values),
+    ...preview.values(),
+  ];
+  for (const value of made) if (value !== undefined) deps.redactor.addLiteral(value, "drill-value");
+  const stack = new Map<string, string>([
+    [PORTAINER_STACK_VARIABLES.dbUser, env.values.db?.user ?? "app"],
+    [PORTAINER_STACK_VARIABLES.dbName, env.values.db?.name ?? "app"],
+  ]);
+  for (const { service, secret, variable } of portainerSecretVariables(drill)) {
+    const value = env.values.services[service]?.[secret];
+    if (value !== undefined) stack.set(variable, value);
+  }
+  const keys = portainerStackEnvKeys(drill);
+  const values: Record<string, string> = {};
+  for (const key of keys.app) values[key] = env.values.app[key] ?? "";
+  for (const key of keys.opscrew) values[key] = stack.get(key) ?? "";
+  return { env: values, stack, names: [...preview.keys()].sort() };
+}
+
+/** Restored services of the stop-only kinds, whose copied files keep production's logins. */
+function ownLogins(parts: readonly SnapshotPart[]): string[] {
+  return parts
+    .filter((part) => !part.online && part.kind !== "sqlite" && part.kind !== "files")
+    .map((part) => part.name);
+}
+
+/** What the drill's approval says and binds. */
+interface Planned {
+  about: About;
+  parts: SnapshotPart[];
+  image: string;
+  name: string;
+  withApp: string;
+  stackPlan: StackPlan;
+  hash: string;
+  valueNames: string[];
+  allowOtherVersion: boolean;
+}
+
+/**
+ * Asks the drill's approval as a stack plan by its hash, like a destroy (`allowDestroy`,
+ * `<app>-drill` typed: `--confirm` with `--approve <hash>` in a script), its words the drill: the
+ * snapshot, the stack, what it creates and removes, the memory, the network, the image, the health
+ * check and its bounds.
+ * @throws OpsCrewError `APPROVAL_REFUSED` when it is not given.
+ */
+async function approveDrill(run: SnapshotRun, planned: Planned): Promise<void> {
+  const { deps, plan, environment, flags } = run;
+  const { about, parts, image, name, stackPlan, hash } = planned;
+  const typed = `${plan.app.name}-drill`;
+  const compose = parse(planned.withApp) as {
+    services?: Record<string, { healthcheck?: unknown }>;
+  };
+  const checked = compose.services?.app?.healthcheck !== undefined;
+  const databases = parts.filter((part) => databaseCount(part) !== undefined);
+  const limits = [
+    { name: "the app", mb: plan.app.memoryMb },
+    ...plan.services
+      .filter((service) => parts.some((part) => part.name === service.name))
+      .map((service) => ({ name: service.name, mb: service.memoryMb })),
+  ];
+  const drill = stackPlan.changes.find((change) => change.params.action === "drill");
+  const leftover = stackPlan.changes.find((change) => change.params.action === "remove");
+  const volumes = Array.isArray(drill?.params.volumes) ? drill.params.volumes : [];
+  const logins = ownLogins(parts);
+  const lines = [
+    `The drill restores the snapshot ${about.id} (${KIND_WORDS[about.kind]}, ${formatUtc(about.taken)}) ${WHERE} into a throwaway stack, starts the app on it and checks it, then removes the stack and its volumes.`,
+    `  Snapshot: ${about.id}${about.version === "" ? "" : `, version ${shortDigest(about.version)}`}: ${listText(parts.map(partWords))}, read in place from the volume ${portainerSnapshotsVolume(plan)}, mounted read-only.`,
+    `  Stack: ${name}, from a stack file OpsCrew gives (not from Git), beside the app's stack ${portainerStackName(plan)}, which it doesn't touch.`,
+    ...(leftover === undefined ? [] : [`  First: ${leftover.title}.`]),
+    `  It creates and removes: ${listText(["the stack's containers and network", ...volumes.map((volume) => `the volume ${volume}`)])}.`,
+    `  Memory: ${listText(limits.map((limit) => `${limit.name} ${limit.mb} MB`))} (${limits.reduce((sum, limit) => sum + limit.mb, 0)} MB in all).`,
+    "  Network: one network with no internet (internal), no published port, no hostname, record or site; OpsCrew reads it back after each deploy, before any data goes in, and removes the stack at once if it isn't so.",
+    `  Image: ${image}, ${planned.allowOtherVersion ? "the version that runs now (--allow-other-version)" : "the snapshot's version"}.`,
+    `  Health check: ${checked ? `the app's own health check (${plan.app.healthPath}) until healthy, at most 5 minutes` : "the app has none, so it must still run after 60 seconds"}${databases.length === 0 ? "" : `; then ${listText(databases.map((part) => part.name))} must answer and hold at least one table`}.`,
+    "The copy runs with no internet and without your production `.env`. The app may need some values to start; add them to `.env.preview` with test values.",
+    planned.valueNames.length === 0
+      ? "There are no values in .env.preview: the app gets only its plain settings and the copy's own new passwords."
+      : `Values from .env.preview (names only): ${listText(planned.valueNames)}.`,
+    ...(logins.length === 0
+      ? []
+      : [
+          `${listText(logins)} ${logins.length === 1 ? "is" : "are"} restored from a copy of ${logins.length === 1 ? "its" : "their"} files, which keeps production's logins, so the copy can't sign in to ${logins.length === 1 ? "it" : "them"}.`,
+        ]),
+    `Typing ${typed} approves it.`,
+    `Stack plan hash: ${hash}`,
+  ];
+  const approval = await deps.approvals.request({
+    kind: "stack-apply",
+    title: `Run a restore drill of the snapshot ${about.id} of ${environment} ${WHERE}`,
+    details: lines.join("\n"),
+    planHash: hash,
+    allowDestroy: true,
+    confirmPhrase: typed,
+  });
+  if (!approval.approved) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      `The drill of the snapshot ${about.id} did not run${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
+      {
+        hint: `Run \`opscrew restore --drill ${about.id}${flags}\` again and type ${typed} (in a script: --confirm ${typed} --approve ${hash}).`,
+      },
+    );
+  }
+  await deps.approvals.assertApprovedStackPlan(hash, { allowDestroy: true });
+}
+
+/** The drill's stack, while it runs: the place, its name, client and environment. */
+interface Copy {
+  run: SnapshotRun;
+  client: PortainerClient;
+  place: PortainerPlace;
+  name: string;
+  environmentId: number;
+  drill: DeployPlan;
+  values: DrillValues;
+}
+
+/** The drill stack's containers. */
+function copyContainers(copy: Copy): Promise<DockerContainer[]> {
+  return copy.place.docker.listContainers([`${COMPOSE_PROJECT_LABEL}=${copy.name}`]);
+}
+
+/** True when the copy's network is internal and none of its containers publishes a port. */
+async function cutOff(copy: Copy): Promise<boolean> {
+  const network = await copy.client.networkInspect(copy.environmentId, `${copy.name}_internal`);
+  if (network?.internal !== true) return false;
+  const containers = await copy.client.listContainers(copy.environmentId);
+  return containers
+    .filter((container) => container.project === copy.name)
+    .every((container) => container.publishedPorts.length === 0);
+}
+
+/**
+ * Puts `part` back from the snapshot `id` into the copy (`partRestore`): a stop-only part's
+ * container stopped, its volumes filled by a busybox one-off, started again; the app's volumes
+ * filled the same way; a database loaded by a one-off of its own image with the copy's secrets on
+ * the copy's network. The snapshots volume is read-only in each.
+ * @throws OpsCrewError `COMMAND_FAILED` when a step fails.
+ */
+async function restorePart(copy: Copy, part: SnapshotPart, id: string): Promise<void> {
+  const { place, name, run, drill } = copy;
+  const restore = partRestore(part);
+  const file = `${DIR}/${id}/${part.file}`;
+  const containers = ofService(await copyContainers(copy), part.name);
+  const appVolume = APP_VOLUMES[part.kind];
+  const mounts: MountSpec[] =
+    appVolume !== undefined
+      ? [{ type: "volume", source: `${name}_${appVolume}`, target: "/data" }]
+      : volumesOf(containers).map((mount) => ({ ...mount, readOnly: false }));
+  const ran = containers.filter((container) => container.state === "running");
+  const fail = (what: string, exitCode: number) =>
+    new OpsCrewError(
+      "COMMAND_FAILED",
+      `OpsCrew could not ${what} in the drill's stack (exit code ${exitCode}).`,
+    );
+  if (restore.stop) await stopCleanly(place, part, ran, "restore its files");
+  if (restore.put !== undefined) {
+    const put = await box(place, restore.put(file), { readOnly: true, mounts });
+    if (put.exitCode !== 0) throw fail(`put back the files of ${part.name}`, put.exitCode);
+  }
+  if (restore.stop) for (const container of ran) await place.docker.startContainer(container.id);
+  if (restore.load !== undefined) {
+    const service = drill.services.find((each) => each.name === part.name);
+    if (service === undefined || part.image === undefined) {
+      throw new OpsCrewError("INTERNAL", `The drill has no service ${part.name} to load.`, {
+        hint: "This is a bug in OpsCrew; please report it.",
+      });
+    }
+    const loaded = await serviceOneOff(place, {
+      name: part.name,
+      image: part.image,
+      script: restore.load(file),
+      secrets: secretsFile(
+        run,
+        portainerServiceEnvironment(drill, service),
+        copy.values.stack,
+        part.name,
+      ),
+      mounts: [{ type: "volume", source: place.volume, target: DIR, readOnly: true }],
+      network: `${name}_internal`,
+    });
+    if (loaded.exitCode !== 0) throw fail(`restore ${part.name}`, loaded.exitCode);
+  }
+  if (restore.after !== undefined) {
+    const after = await box(place, restore.after, { readOnly: true, mounts });
+    if (after.exitCode !== 0) throw fail(`finish the restore of ${part.name}`, after.exitCode);
+  }
+}
+
+/** The app's health on the copy (R17): its health check until healthy, or still running. */
+async function appHealth(copy: Copy): Promise<{ state: string; ms: number }> {
+  const wait = copy.run.services.portainer?.wait;
+  const now = wait?.now ?? Date.now;
+  const sleep = wait?.sleep ?? realSleep;
+  const started = now();
+  const read = async () => {
+    const [app] = ofService(await copyContainers(copy), "app");
+    if (app === undefined) return { state: "stopped" };
+    const inspected = await copy.client.containerInspect(copy.environmentId, app.id);
+    return {
+      state: inspected.state === "running" ? (inspected.health ?? "running") : "stopped",
+      checked: inspected.health !== undefined,
+    };
+  };
+  const first = await read();
+  if (first.checked !== true) {
+    if (first.state !== "running") return { state: "stopped", ms: now() - started };
+    await sleep(RUNNING_MS);
+    const later = await read();
+    return { state: later.state === "running" ? "running" : "stopped", ms: now() - started };
+  }
+  let last = first.state;
+  const healthy = await pollUntil(
+    async () => {
+      const current = await read();
+      last = current.state;
+      return current.state === "healthy" || current.state === "stopped" ? current.state : undefined;
+    },
+    {
+      timeoutMs: HEALTH_MS,
+      intervalMs: HEALTH_POLL_MS,
+      sleep,
+      now,
+    },
+  );
+  return { state: healthy ?? last, ms: now() - started };
+}
+
+/** Each restored database's tables, by a one-off of its image with the copy's secrets. */
+async function countTables(copy: Copy, part: SnapshotPart): Promise<number | undefined> {
+  const count = databaseCount(part);
+  const service = copy.drill.services.find((each) => each.name === part.name);
+  if (count === undefined || service === undefined || part.image === undefined) return undefined;
+  const result = await serviceOneOff(copy.place, {
+    name: part.name,
+    image: part.image,
+    script: count,
+    secrets: secretsFile(
+      copy.run,
+      portainerServiceEnvironment(copy.drill, service),
+      copy.values.stack,
+      part.name,
+    ),
+    mounts: [],
+    network: `${copy.name}_internal`,
+  }).catch(() => undefined);
+  const last = result?.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? "";
+  return result?.exitCode === 0 && /^\d+$/.test(last) ? Number(last) : undefined;
+}
+
+/** A deploy's failure as the record's reason: `gone` when the image could not be pulled. */
+function deployReason(failure: string): string {
+  return /pull access denied|manifest unknown|not found|unauthorized/i.test(failure)
+    ? "gone"
+    : "start";
+}
+
+/**
+ * The drill `request` asks in the user's Portainer of `run` (see the module's comment). Refused,
+ * before any change, with `--keep` or `--remove` (the copy is always removed), for a snapshot or
+ * part the volume doesn't have, a version it can't start, a Git stack of the drill's name, and
+ * when the approval is not given; otherwise its outcome, which `outcome` tells apart.
  */
 export async function drillInPortainer(
-  _run: SnapshotRun,
+  run: SnapshotRun,
   _services: SnapshotServices,
-  _request: DrillRequest,
+  request: DrillRequest,
 ): Promise<DrillReport> {
-  throw new OpsCrewError("INTERNAL", "Restore drills in a Portainer are not built yet.");
+  const { deps, plan, flags } = run;
+  if (request.keep === true || request.remove === true) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `A drill ${WHERE} always removes its copy when it ends, so ${request.keep === true ? "--keep" : "--remove"} doesn't apply there. ${NOTHING_CHANGED}`,
+      {
+        hint: `Run \`opscrew restore --drill${flags}\` without it; a drill that stopped halfway is removed by the next one.`,
+      },
+    );
+  }
+  // 1. What the snapshots volume and the environment hold, read-only; the copy rendered.
+  const { client, place } = await connect(run);
+  const environmentId = portainerTarget(plan.target).environmentId;
+  const { about } = await chooseSnapshot(run, place, request.id);
+  const parts = chooseParts(run, about, request.only);
+  const image = await drillImage(run, place, about, request);
+  const snapshot = { id: about.id, parts: parts.map((part) => part.name) };
+  const drill = drillPlan(plan, snapshot);
+  const stack = renderPortainerDrill(plan, snapshot, { image });
+  const values = await drillValues(run, drill);
+  const stackPlan = planDrillStack(
+    {
+      stacks: await client.listStacks(environmentId),
+      volumes: await client.listVolumes(environmentId),
+    },
+    {
+      app: plan.app.name,
+      environmentId,
+      snapshot: about.id,
+      services: stack.services,
+      withApp: stack.withApp,
+      volumes: stack.volumes,
+      external: stack.external,
+    },
+  );
+  const command = `opscrew restore --drill ${about.id}${flags}`;
+  requireNoStackBlockers(stackPlan, command);
+  const hash = stackPlanHash(stackPlan);
+  await approveDrill(run, {
+    about,
+    parts,
+    image,
+    name: stack.name,
+    withApp: stack.withApp,
+    stackPlan,
+    hash,
+    valueNames: values.names,
+    allowOtherVersion: request.allowOtherVersion === true,
+  });
+
+  // 2. The stack with the services, cut off; the parts restored; the app on them; its health.
+  deps.reporter.step(`Running the restore drill of the snapshot ${about.id} ${WHERE}`);
+  const copy: Copy = {
+    run,
+    client,
+    place,
+    name: drillStackName(plan.app.name),
+    environmentId,
+    drill,
+    values,
+  };
+  const wait = run.services.portainer?.wait;
+  const options = { approvedHash: hash, env: values.env, ...(wait === undefined ? {} : { wait }) };
+  const start = deps.clock.now();
+  const done: Omit<DrillRecord, "end" | "result" | "removal"> = {
+    kind: "manual",
+    id: about.id,
+    ...(about.version === "" ? {} : { version: about.version.slice(7, 19) }),
+    start: start.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    parts: [],
+    tables: [],
+    cleaned: stackPlan.changes.some((change) => change.params.action === "remove"),
+  };
+  const seconds = (from: Date) =>
+    Math.max(0, Math.round((deps.clock.now().getTime() - from.getTime()) / 1000));
+  let stackId: number | undefined;
+  const outcome = async (): Promise<Pick<DrillRecord, "result" | "reason" | "health">> => {
+    const created = await createDrillStack(client, stackPlan, options);
+    stackId = created.stackId;
+    if (created.failure !== undefined) {
+      return { result: "failed", reason: deployReason(created.failure) };
+    }
+    if (!(await cutOff(copy))) return { result: "failed", reason: "network" };
+    for (const part of parts) {
+      const began = deps.clock.now();
+      try {
+        await restorePart(copy, part, about.id);
+      } catch {
+        return { result: "not-restored", reason: part.name };
+      }
+      const size = about.services.find((entry) => entry.name === part.name);
+      done.parts.push({
+        name: part.name,
+        size: size !== undefined && "size" in size ? Number(size.size) : 0,
+        seconds: seconds(began),
+      });
+    }
+    const app = await startDrillApp(client, stackPlan, stackId, options);
+    if (app.failure !== undefined) return { result: "failed", reason: deployReason(app.failure) };
+    if (!(await cutOff(copy))) return { result: "failed", reason: "network" };
+    const health = await appHealth(copy);
+    const read = { state: health.state, seconds: Math.round(health.ms / 1000) };
+    let bad: string | undefined;
+    for (const part of parts.filter((each) => databaseCount(each) !== undefined)) {
+      const count = await countTables(copy, part);
+      done.tables.push({ service: part.name, ...(count === undefined ? {} : { count }) });
+      if (count === undefined || count === 0) bad ??= part.name;
+    }
+    if (bad !== undefined) return { result: "not-restored", reason: bad, health: read };
+    return {
+      result: health.state === "healthy" || health.state === "running" ? "healthy" : "unhealthy",
+      health: read,
+    };
+  };
+  let ended: Pick<DrillRecord, "result" | "reason" | "health">;
+  let thrown: unknown;
+  try {
+    ended = await outcome();
+  } catch (error) {
+    thrown = error;
+    ended = { result: "failed", reason: "start" };
+  }
+  // 3. The copy removed, whatever happened, and a list proving it is gone.
+  let removal: DrillRemoval;
+  try {
+    removal = await removeDrillStack(client, stackPlan, stackId);
+  } catch {
+    removal = { removed: false, left: [copy.name] };
+  }
+  const record: DrillRecord = {
+    ...done,
+    ...ended,
+    end: deps.clock
+      .now()
+      .toISOString()
+      .replace(/\.\d{3}Z$/, "Z"),
+    removal: removal.removed ? "removed" : "failed",
+  };
+  await deps.audit
+    .append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: "run a restore drill",
+      target: "portainer",
+      decision: "approved",
+      detail: `${about.id}: ${parts.map((part) => part.name).join(", ")}: ${record.result}${record.reason === undefined ? "" : ` (${record.reason})`}; stack plan ${hash}`,
+    })
+    .catch((error: unknown) => {
+      deps.reporter.warn(
+        `OpsCrew could not write the drill ${WHERE} in its audit log: ${deps.redactor.redact(errorMessage(error))}`,
+      );
+    });
+  if (thrown !== undefined) {
+    throw new OpsCrewError(
+      thrown instanceof OpsCrewError ? thrown.code : "COMMAND_FAILED",
+      `The drill of the snapshot ${about.id} stopped: ${errorMessage(thrown)} ${removal.removed ? "OpsCrew removed its stack and volumes." : `OpsCrew could not remove every part of it (${listText(removal.left)}).`}`,
+      {
+        hint: removal.removed
+          ? `Fix what it names, then run \`${command}\` again.`
+          : `The next \`${command}\` removes it first, or remove the stack ${copy.name} and its volumes in Portainer.`,
+      },
+    );
+  }
+  // 4. The report: one line per step, then the outcome in plain words.
+  const words = (name: string) => {
+    const part = parts.find((each) => each.name === name);
+    return part === undefined ? name : partWords(part);
+  };
+  for (const step of drillSteps(record, words)) deps.reporter.step(step);
+  const report = drillReport(record, {
+    id: about.id,
+    flags,
+    ownLogins: ownLogins(parts),
+    where: WHERE,
+    target: "portainer",
+    app: plan.app.name,
+  });
+  if (!removal.removed) {
+    deps.reporter.warn(
+      `OpsCrew could not remove every part of the drill's copy ${WHERE} (${listText(removal.left)}): the next \`opscrew restore --drill${flags}\` removes it first, or remove the stack ${copy.name} and its volumes in Portainer.`,
+    );
+  }
+  if (record.result === "healthy") {
+    deps.reporter.success(report.summary);
+    deps.reporter.info(`What it proves: ${report.proves}.`);
+  } else {
+    deps.reporter.warn(report.summary);
+  }
+  return report;
 }
