@@ -148,6 +148,7 @@ import {
   dataKeptRecord,
   HubPublicKeySchema,
   type RunAs,
+  type SecondAppRecord,
   stepScripts,
 } from "./steps";
 import {
@@ -1439,8 +1440,15 @@ function appDirsStep({ facts, desired, found, findings }: SetupContext): HostSte
   );
 }
 
-/** The app's record, which also lists it in the host record. */
-function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostStep {
+/**
+ * The app's record, which also lists it in the host record. With `second` (a second app on a
+ * server OpsCrew created), the record names the first app and the project's repository, written
+ * as root through Docker, and there is no host record or "setup finished" flag to write.
+ */
+function appRecordStep(
+  { facts, desired, own, conflict }: SetupContext,
+  second?: SecondAppRecord,
+): HostStep {
   const access = accessMode(desired);
   const record = appRecord({
     app: desired.app,
@@ -1451,6 +1459,7 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
     memoryMb: desired.memoryMb,
     deployKey: desired.deploy.publicKey,
     home: desired.home,
+    second,
   });
   // A Compose project named like the app may only exist when it is this project's (for example
   // data kept by a teardown); the apply checks again.
@@ -1464,15 +1473,13 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
     deployKey: record.deployKey,
     ownProject: own !== null,
     ...(desired.home === undefined ? {} : { homeIpv4: desired.home.ipv4 }),
+    ...(second === undefined ? {} : { shares: second.shares, repository: second.repository }),
   };
   const title = `Record the OpsCrew app "${desired.app}" on this server`;
   if (conflict !== undefined) return step("app-record", title, "blocked", params, conflict);
-  if (
-    own !== null &&
-    canonicalJson(own) === canonicalJson(record) &&
-    (facts.record?.apps ?? []).includes(desired.app) &&
-    facts.ready
-  ) {
+  const listed =
+    second !== undefined || ((facts.record?.apps ?? []).includes(desired.app) && facts.ready);
+  if (own !== null && canonicalJson(own) === canonicalJson(record) && listed) {
     return step("app-record", title, "in-place", params, "Already recorded.");
   }
   return step(
@@ -1480,7 +1487,9 @@ function appRecordStep({ facts, desired, own, conflict }: SetupContext): HostSte
     title,
     "change",
     params,
-    `Writes /etc/opscrew/apps/${desired.app}.json with how it is served, its hostnames, folders, Compose project, services and memory limits (the next app's checks read it), lists the app in /etc/opscrew/host.json, and sets /var/lib/opscrew-ready, the flag that says the setup finished.`,
+    second === undefined
+      ? `Writes /etc/opscrew/apps/${desired.app}.json with how it is served, its hostnames, folders, Compose project, services and memory limits (the next app's checks read it), lists the app in /etc/opscrew/host.json, and sets /var/lib/opscrew-ready, the flag that says the setup finished.`
+      : `Writes /etc/opscrew/apps/${desired.app}.json, as root through Docker (the only change of this plan made as root), with how it is served, its hostnames, folders, Compose project, services, memory limits, deploy key and repository, naming "${second.shares}" as the app whose server this is: the commands of "${second.shares}" and the next app's checks read it.`,
   );
 }
 
@@ -1950,6 +1959,18 @@ function allBlocked(desired: DesiredHost): HostStep[] {
   return steps;
 }
 
+/**
+ * A Compose project with the app's name that OpsCrew did not deploy, which the app would take over
+ * (one another project's app of that name runs is refused as a taken name).
+ */
+function foreignProject(facts: HostFacts, app: string): boolean {
+  return (
+    !readableRecords(facts.apps).some((record) => record.app === app) &&
+    (facts.containers.some((container) => container.project === app) ||
+      facts.volumeProjects.includes(app))
+  );
+}
+
 /** How the desired app is served: through a tunnel, behind the web filter, or directly. */
 function accessMode(desired: DesiredHost): AccessMode {
   if (desired.access === "tunnel") return "tunnel";
@@ -2001,12 +2022,16 @@ function conflicts(
  * `options.previousDeployKey`: a rotation's old deploy key of the app (`opscrew rotate
  * deploy-key`), which the deploy-key step keeps beside `desired.deploy.publicKey` until the new
  * key proved itself; the next plan without it removes it.
+ *
+ * With `desired.shares`, the plan of a second app on a server OpsCrew created (see
+ * {@link secondAppPlan}); `options.image` is then the pinned image the deploy user removes data in
+ * (`IMAGES.busybox.ref`).
  */
 export function planHost(
   facts: HostFacts,
   desired: DesiredHost,
   command: string,
-  options: { previousDeployKey?: string | undefined } = {},
+  options: { previousDeployKey?: string | undefined; image?: string | undefined } = {},
 ): HostPlan {
   const f = parseFacts(facts);
   const d = parseInput(
@@ -2021,6 +2046,9 @@ export function planHost(
     "The old deploy key is not a valid public key",
     "Put the old key's public half back in its file on this computer, then run the command again.",
   );
+  if (d.shares !== undefined) {
+    return secondAppPlan(f, d, d.shares.host, command, previous, loginImage(options.image));
+  }
   if (f.privilege === "root" || f.privilege === "sudo") {
     if (d.admin.isRoot !== (f.privilege === "root") || d.admin.user !== f.user) {
       throw new OpsCrewError(
@@ -2069,15 +2097,7 @@ export function planHost(
     found.push(findings.dockerStopped());
   }
   if (!f.flock) found.push(findings.noFlock());
-  // A Compose project with the app's name that OpsCrew did not deploy would be taken over (one
-  // another project's app of that name runs is refused as a taken name).
-  if (
-    !readableRecords(f.apps).some((record) => record.app === d.app) &&
-    (f.containers.some((container) => container.project === d.app) ||
-      f.volumeProjects.includes(d.app))
-  ) {
-    found.push(findings.composeProjectExists(d.app));
-  }
+  if (foreignProject(f, d.app)) found.push(findings.composeProjectExists(d.app));
   if (d.access === "public" && d.web !== false) {
     const users = webPortUsers(f, projects);
     if (users.length > 0) found.push(findings.portsInUse(users));
@@ -2107,6 +2127,238 @@ export function planHost(
   return setup(steps, found);
 }
 
+/** The first app as a second app's plan describes it (`DesiredHost.shares.host`). */
+type FirstApp = NonNullable<DesiredHost["shares"]>["host"];
+
+/**
+ * `image`, the pinned image the deploy user removes data in on a server OpsCrew created (a second
+ * app's drills and data), checked.
+ */
+function loginImage(image: string | undefined): string {
+  if (image === undefined || !PINNED_IMAGE_RE.test(image)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "A second app's host plan needs the image the deploy user removes data in, pinned by its digest (name@sha256:...).",
+      { hint: "This is a problem in OpsCrew; please report it." },
+    );
+  }
+  return image;
+}
+
+/** `item` run as the login (the deploy user) on a server OpsCrew created. */
+function runAsLogin(item: HostStep): HostStep {
+  return { ...item, params: { ...item.params, runAs: "login" } };
+}
+
+/** The key (the base64 word) of an authorized_keys line, as a second app's deploy-key step reads it. */
+function keyBlob(line: string): string {
+  return line.trim().split(/\s+/)[1] ?? "";
+}
+
+/**
+ * The `deploy-key` step of a second app (030, see `appKeyScripts`), as the login: the app's lines
+ * are those that hold a key of `drop` (no comment line is). `keys` (none in a teardown) follow
+ * every other line of the deploy user's authorized_keys, which stays as inspection read it, in its
+ * order, pinned by the SHA-256 of the key lines among them: the first app's (`first`) and other
+ * apps' deploy keys and any line OpsCrew did not write. Undefined for a removal with no line of the
+ * app's there.
+ */
+function secondAppKeyStep(
+  facts: HostFacts,
+  app: string,
+  first: string | undefined,
+  keys: readonly string[],
+  drop: readonly string[],
+): HostStep | undefined {
+  const blobs = new Set(drop.map(keyBlob));
+  const found = facts.deployUser?.keys ?? [];
+  const own = (line: string) => !line.startsWith("#") && blobs.has(keyBlob(line));
+  const mine = found.filter(own);
+  const removal = keys.length === 0;
+  if (removal && mine.length === 0) return undefined;
+  const others = found.filter((line) => !own(line));
+  const params = {
+    user: "deploy",
+    runAs: "login",
+    keys: keys.join("\n"),
+    drop: [...blobs].join(" "),
+    others: sha256Hex(others.map((line) => `${line}\n`).join("")),
+  };
+  const title = removal
+    ? `Remove the deploy key of "${app}" from the deploy user`
+    : `Authorize the deploy key of "${app}" for the deploy user`;
+  if (mine.length === keys.length && keys.every((key) => mine.includes(key))) {
+    return step("deploy-key", title, "in-place", params, "Already authorized.");
+  }
+  const reason = [
+    removal ? "" : `GitHub Actions deploys "${app}" as the deploy user with this key.`,
+    keys.length > 1
+      ? "The app's old deploy key stays beside it until a deploy with the new one passed."
+      : "",
+    `Only the app's own lines change: every other line of the deploy user's authorized_keys stays as it is, in its order, ${first === undefined ? "the deploy key of the app whose server this is" : `the deploy key of "${first}"`} included. If those lines change before this plan is applied, OpsCrew changes nothing.`,
+  ];
+  return step("deploy-key", title, "change", params, reason.filter(Boolean).join(" "));
+}
+
+/**
+ * Why a second app's login cannot change the server (030): the server OpsCrew created for `first`
+ * has only the deploy login, which becomes root only through Docker. A login that is root or uses
+ * sudo means the facts are of another kind of server; one that cannot run Docker cannot write the
+ * app's record.
+ */
+function secondAppPrivilege(
+  facts: HostFacts,
+  findings: HostFindings,
+  first: string | undefined,
+): HostFinding[] {
+  if (facts.privilege === "root" || facts.privilege === "sudo") {
+    return [findings.notCreatedServer(facts.user, first)];
+  }
+  if (facts.privilege !== "docker") return [findings.noDockerRoot(facts.user, first)];
+  return [];
+}
+
+/** A second app's steps when OpsCrew cannot work on the server: all blocked, the findings say why. */
+function secondAppBlocked(desired: DesiredHost): HostStep[] {
+  const reason = "OpsCrew cannot prepare this server yet; see the findings.";
+  return [
+    step("deploy-key", `Authorize the deploy key of "${desired.app}"`, "blocked", {}, reason),
+    step("app-dirs", `Create the folders of "${desired.app}"`, "blocked", {}, reason),
+    step("app-record", `Record the OpsCrew app "${desired.app}"`, "blocked", {}, reason),
+    ...(desired.drills !== undefined
+      ? [step("drills", `Schedule the restore drills of "${desired.app}"`, "blocked", {}, reason)]
+      : []),
+    ...(desired.runner !== undefined
+      ? [step("github-runner", "Install the GitHub Actions runner", "blocked", {}, reason)]
+      : []),
+  ];
+}
+
+/**
+ * A second app's refusals before any change, each naming the other app: the reserved name, the
+ * first app's name, a name OpsCrew reads as a preview (`<other>-pr-<n>`) of the first app or of a
+ * recorded app, then what {@link claimFindings} finds over the records and the first app's
+ * description as if it were one (its hostnames, how it is served, and an app without a domain).
+ * Returns why the app cannot be recorded, or undefined.
+ */
+function secondAppConflicts(
+  facts: HostFacts,
+  desired: DesiredHost,
+  first: FirstApp,
+  findings: HostFindings,
+  found: HostFinding[],
+): string | undefined {
+  const before = found.length;
+  if (desired.app === EDGE_PROJECT) found.push(findings.reservedAppName(desired.app));
+  if (desired.app === first.app) found.push(findings.firstAppName(first.app));
+  const named = [first.app, ...readableRecords(facts.apps).map((record) => record.app)];
+  const previewOf = named.find((other) =>
+    new RegExp(`^${other}-pr-[1-9][0-9]{0,5}$`).test(desired.app),
+  );
+  if (previewOf !== undefined) found.push(findings.previewName(desired.app, previewOf));
+  // The first app has no record: its plan describes it.
+  const firstRecord = appRecord({
+    app: first.app,
+    projectId: "",
+    access: first.access,
+    hostnames: first.hostnames,
+    services: [],
+    memoryMb: first.memoryMb,
+    deployKey: "",
+  });
+  const apps =
+    desired.app === first.app
+      ? facts.apps
+      : [...facts.apps, { name: first.app, record: firstRecord }];
+  const claim = {
+    app: desired.app,
+    projectId: desired.projectId,
+    access: accessMode(desired),
+    hostnames: desired.hostnames,
+  };
+  found.push(...claimFindings(apps, [], claim, findings));
+  return found.length > before ? "See the findings." : undefined;
+}
+
+/**
+ * The host plan of a second app on a server OpsCrew created for another app, `first` (030, ADR
+ * 0035), which holds only the app's own steps:
+ * - `deploy-key` as the login, which changes only the app's own lines ({@link secondAppKeyStep});
+ * - `app-dirs` as the login (both folders are in the deploy user's shared folders);
+ * - `app-record` as root through Docker (the login's `docker` privilege): the record names the
+ *   first app and the project's repository, and no host record or "setup finished" flag is
+ *   written (the server's first boot set that);
+ * - `drills` and `github-runner` as the login, as `planRunner` plans them.
+ *
+ * The server's setup (Docker, the deploy user, SSH, the firewall, fail2ban, automatic updates, the
+ * shared folders, the edge) is the first app's and never planned: a kernel setting the app's
+ * services need, or a shared folder that is missing, blocks the plan with a finding. The app's
+ * claims are checked over the records found and the first app's description
+ * ({@link secondAppConflicts}). The web ports (the shared edge holds them) and Docker's state are
+ * not checked. `otherApps` pins the records found, as on a server the user owns.
+ */
+function secondAppPlan(
+  f: HostFacts,
+  d: DesiredHost,
+  first: FirstApp,
+  command: string,
+  previous: string | undefined,
+  image: string,
+): HostPlan {
+  const findings = hostFindings(command);
+  const others = otherActiveApps(f.apps, d.app);
+  const setup = (steps: HostStep[], found: HostFinding[]): HostPlan => ({
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app: d.app,
+    steps,
+    findings: found,
+    otherApps: assumedApps(others),
+    // Scheduled drills delete their copy's data each run, and their removal a kept copy.
+    ...(steps.some((item) => item.id === "drills" && item.state === "change")
+      ? { deleteData: true }
+      : {}),
+  });
+  const privilege = secondAppPrivilege(f, findings, first.app);
+  const fatal = privilege.length > 0 ? privilege : platformFindings(f, findings);
+  if (fatal.length > 0) return setup(secondAppBlocked(d), fatal);
+  const found: HostFinding[] = [];
+  const conflict = secondAppConflicts(f, d, first, findings, found);
+  if (!f.flock) found.push(findings.noFlock());
+  if (foreignProject(f, d.app)) found.push(findings.composeProjectExists(d.app));
+  const settings = Object.keys(d.sysctl ?? {});
+  if (settings.length > 0) found.push(findings.serverSettingNeeded(settings, first.app));
+  const missing = SHARED_DIRS.filter(
+    (path) => !deployOwned(f.dirs.find((dir) => dir.path === path)),
+  );
+  if (missing.length > 0) found.push(findings.sharedDirsMissing(missing, first.app));
+  const own =
+    readableRecords(f.apps).find(
+      (record) => record.app === d.app && record.projectId === d.projectId,
+    ) ?? null;
+  const ctx: SetupContext = {
+    facts: f,
+    desired: d,
+    found,
+    findings,
+    others,
+    own,
+    projects: opscrewProjects(f),
+    conflict,
+  };
+  const keys = [d.deploy.publicKey, ...(previous === undefined ? [] : [previous])];
+  const recorded = own?.state === "active" && own.deployKey !== "" ? [own.deployKey] : [];
+  const runner = runnerStep(f, d.app, d.runner, "login");
+  const steps = [
+    secondAppKeyStep(f, d.app, first.app, keys, [...keys, ...recorded]),
+    runAsLogin(appDirsStep(ctx)),
+    appRecordStep(ctx, { shares: first.app, repository: d.repositoryUrl }),
+    drillsFor(f.drills, d.app, d.drills, { image }),
+    runner === undefined ? undefined : ownedRunner(ctx, runner, d.repositoryUrl),
+  ].filter((item): item is HostStep => item !== undefined);
+  return setup(steps, found);
+}
+
 /**
  * The host plan that removes the app `opts.app` from the server, and only its own parts: its
  * GitHub Actions runner (first, so no deploy job runs meanwhile), its containers (by their Compose
@@ -2125,10 +2377,24 @@ export function planHost(
  * project's) blocks the plan rather than going. Without `opts.repositoryUrl` (the project has no
  * GitHub remote) the app's runner stays, named in a step that changes nothing. Findings say to
  * run `command` (for example `opscrew destroy`) again once fixed.
+ *
+ * With `opts.shares`, the teardown of a second app on a server OpsCrew created (030): the app is
+ * never the last one, so the edge, the check keys and Portainer stay with no other record; the
+ * deploy-key step removes only the app's own lines (the key its record names), every other line
+ * staying as it is; every step runs as the login, the deploy user, except the record's, which runs
+ * as root through Docker, and a record kept with the data still names the first app.
+ * `opts.image` is then the pinned image the deploy user removes data in (`IMAGES.busybox.ref`).
  */
 export function planTeardown(
   facts: HostFacts,
-  opts: { deleteData: boolean; app: string; projectId: string; repositoryUrl?: string },
+  opts: {
+    deleteData: boolean;
+    app: string;
+    projectId: string;
+    repositoryUrl?: string;
+    shares?: true;
+    image?: string;
+  },
   command: string,
 ): HostPlan {
   const f = parseFacts(facts);
@@ -2143,14 +2409,18 @@ export function planTeardown(
   }
   const repository = projectRepository(opts);
   const { app, deleteData, projectId } = opts;
+  const image = opts.shares === true ? loginImage(opts.image) : undefined;
+  const login: HostStep["params"] = image === undefined ? {} : { runAs: "login", image };
   const findings = hostFindings(command);
   const listed = f.record?.apps ?? [];
+  const own = readableRecords(f.apps).find((record) => record.app === app) ?? null;
   // Without every record OpsCrew cannot tell whether this is the last app.
   const found = [
-    ...privilegeFindings(f, findings),
+    ...(image === undefined
+      ? privilegeFindings(f, findings)
+      : secondAppPrivilege(f, findings, own?.shares?.app)),
     ...damagedRecords(f.apps, listed, app, findings),
   ];
-  const own = readableRecords(f.apps).find((record) => record.app === app) ?? null;
   const others = otherActiveApps(f.apps, app);
   const plan = (steps: HostStep[]): HostPlan => ({
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
@@ -2165,7 +2435,8 @@ export function planTeardown(
     found.push(findings.appNameTaken(app, own.projectId, own.state === "data-kept"));
     return plan([]);
   }
-  const last = others.length === 0;
+  // A second app is never the last: the first app's server keeps what the apps share.
+  const last = image === undefined && others.length === 0;
   const dirs = appDirs(app);
   const dir = (path: string) => f.dirs.find((item) => item.path === path);
   const containers = f.containers.filter((container) => container.project === app);
@@ -2184,7 +2455,9 @@ export function planTeardown(
               "github-runner",
               TITLES.removeRunner(app),
               "change",
-              { app, remove: true, removeParent: runnersDirMade(f) },
+              image === undefined
+                ? { app, remove: true, removeParent: runnersDirMade(f) }
+                : { app, remove: true, runAs: "login" },
               runnerRemoval(app),
             ),
             repository,
@@ -2200,7 +2473,7 @@ export function planTeardown(
     f.containers.some((container) => container.project === drill) ||
     f.volumeProjects.includes(drill)
   ) {
-    steps.push(drillsRemoval(app));
+    steps.push(drillsRemoval(app, image === undefined ? undefined : { image }));
   }
 
   // Data goes only together with the app (its containers or its folder, or files in its data
@@ -2245,7 +2518,7 @@ export function planTeardown(
         ? `Remove the app "${app}": ${parts.join(", ")}, and ${data}`
         : `Remove the app "${app}": ${listText(parts)} (${data} stay)`,
       busy ? "change" : "in-place",
-      { app, deleteData },
+      { app, deleteData, ...login },
       busy
         ? `${upperFirst(present.join("; "))}.`
         : snapshots === undefined
@@ -2259,7 +2532,12 @@ export function planTeardown(
     .map(([iface]) => iface);
   steps.push(...networkRemovals(f, networks, "app"));
   const keys = keyList(others.map((record) => record.deployKey));
-  if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
+  if (image !== undefined) {
+    // A second app's own lines only: those holding the key its record names.
+    const recorded = own?.state === "active" && own.deployKey !== "" ? [own.deployKey] : [];
+    const removal = secondAppKeyStep(f, app, own?.shares?.app, [], recorded);
+    if (removal !== undefined) steps.push(removal);
+  } else if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
     steps.push(
       step(
         "deploy-key",
@@ -2346,13 +2624,18 @@ export function planTeardown(
   const isListed = listed.includes(app);
   const keepData = !deleteData && own !== null && (dataFiles || volumes || snapshots !== undefined);
   if (keepData) {
-    const kept = dataKeptRecord(app, projectId);
+    // A second app's kept record still names the first app, whose commands then still see it.
+    const second =
+      image !== undefined && own?.shares !== undefined && own.repository !== undefined
+        ? { shares: own.shares.app, repository: own.repository }
+        : undefined;
+    const kept = dataKeptRecord(app, projectId, second);
     steps.push(
       step(
         "app-record",
         `Record that only the data of "${app}" stays on this server`,
         canonicalJson(own) === canonicalJson(kept) && !isListed ? "in-place" : "change",
-        { app, keepData: true, projectId },
+        { app, keepData: true, projectId, ...second },
         "Its hostnames are free for other apps; its name stays with its project, which can take the data again.",
       ),
     );

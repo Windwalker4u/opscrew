@@ -40,6 +40,13 @@ export const AppRecordSchema = z.object({
   deployKey: z.string(),
   /** How it is served from home; absent for an app that is not at home. */
   home: HomeModeSchema.optional(),
+  /**
+   * A second app on a server OpsCrew created (030): the first app, whose server it is. Absent on a
+   * server the user owns.
+   */
+  shares: z.object({ app: z.string() }).optional(),
+  /** A second app's project repository (`https://github.com/<owner>/<repo>`), with `shares`. */
+  repository: z.string().optional(),
 });
 export type AppRecord = z.infer<typeof AppRecordSchema>;
 

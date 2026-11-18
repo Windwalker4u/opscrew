@@ -14,6 +14,10 @@ import type { AccessMode, HomeMode, HostFinding } from "./types";
 /** Over which address families a home app is served, for findings. */
 const homeServed = (home: HomeMode) => (home.ipv4 ? "over IPv4" : "over IPv6 only");
 
+/** The app whose server a second app shares, for findings: by name when known. */
+const firstApp = (first: string | undefined) =>
+  first === undefined ? "another app" : `"${first}"`;
+
 /** How an app of each access mode is served, for findings. */
 const SERVED: Readonly<Record<AccessMode, string>> = {
   public: "directly on ports 80 and 443 (DNS only)",
@@ -25,7 +29,8 @@ const SERVED: Readonly<Record<AccessMode, string>> = {
  * Why the login cannot change the server: it needs a password for sudo, or cannot become root.
  * A login that becomes root only through Docker is refused too: the server's state is inspected
  * as root, so the facts these plans rely on are missing. Only `planNetwork`, `planPublicSsh` and
- * `planGrant` take it.
+ * `planGrant` take it, and a second app's plans on a server OpsCrew created (`shares`), which
+ * refuse the other privileges instead.
  */
 export function privilegeFindings(
   facts: Pick<HostFacts, "privilege" | "user">,
@@ -419,6 +424,38 @@ export function hostFindings(command: string) {
       code: "ssh-firewall-locks-out",
       message: `OpsCrew connects to this machine from ${client}, which is not among the sources the SSH firewall would let in (${listText(sources)}), so it would lock OpsCrew out.`,
       hint: `Add ${client} or a network that holds it to the SSH sources, ${rerun}.`,
+    }),
+    /** `first`: the app whose server it is, when known. */
+    notCreatedServer: (user: string, first: string | undefined): HostFinding => ({
+      code: "not-a-created-server",
+      message: `OpsCrew logged in to this server as ${user || "a login"}, which can become root without Docker, and the server OpsCrew created for ${firstApp(first)} has only the deploy login, which becomes root only through Docker. So this is not the server of ${firstApp(first)}.`,
+      hint: `Check that this app names the right app to share a server with, and that the server's address and host key are those of ${firstApp(first)} on this computer, ${rerun}.`,
+    }),
+    /** `first`: the app whose server it is, when known. */
+    noDockerRoot: (user: string, first: string | undefined): HostFinding => ({
+      code: "no-docker-access",
+      message: `The login ${user || "OpsCrew used"} cannot run Docker on this server, and on the server OpsCrew created for ${firstApp(first)} this app's record is written as root through Docker.`,
+      hint: `Check that Docker runs on the server of ${firstApp(first)} (its deploys need it too) and that OpsCrew logs in as deploy, ${rerun}.`,
+    }),
+    firstAppName: (first: string): HostFinding => ({
+      code: "first-app-name",
+      message: `This app is named "${first}", like the app whose server this is, and an app name belongs to one app.`,
+      hint: `Give this app another name (opscrew interview), ${rerun}.`,
+    }),
+    previewName: (app: string, other: string): HostFinding => ({
+      code: "app-name-preview",
+      message: `The name "${app}" is how OpsCrew names a preview of "${other}" (${other}-pr-<number>), so OpsCrew would read this app's folders on the server as one of its previews.`,
+      hint: `Give this app another name (opscrew interview), ${rerun}.`,
+    }),
+    serverSettingNeeded: (keys: readonly string[], first: string): HostFinding => ({
+      code: "server-setting-needed",
+      message: `This app's services need the kernel ${keys.length === 1 ? "setting" : "settings"} ${listText(keys)} raised, which changes the whole server, and this server's setup is that of "${first}", the app OpsCrew created it for.`,
+      hint: `Give this app a server of its own (opscrew interview), or leave out the service that needs ${keys.length === 1 ? "it" : "them"}, ${rerun}.`,
+    }),
+    sharedDirsMissing: (paths: readonly string[], first: string): HostFinding => ({
+      code: "shared-dirs-missing",
+      message: `${listText(paths)} ${paths.length === 1 ? "is" : "are"} missing on this server or not the deploy user's ${paths.length === 1 ? "folder" : "folders"}, so it is not set up the way OpsCrew sets up the servers it creates today, and this app cannot run beside "${first}" there.`,
+      hint: `Give this app a server of its own (opscrew interview), ${rerun}.`,
     }),
     appStillDeployed: (apps: readonly string[]): HostFinding => ({
       code: "app-still-deployed",

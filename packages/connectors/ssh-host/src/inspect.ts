@@ -777,12 +777,15 @@ export function inspectRunnersScript(): string {
 
 /**
  * The read-only script `inspectHost` runs as root (as the apply does: root, sudo or Docker) for
- * the private networks' state and ufw's added rules.
+ * the private networks' state and ufw's added rules, and with `apps` the apps' records too (root's
+ * only, so the login that becomes root only through Docker reads them there).
  */
-export function networkInspectScript(): string {
+export function networkInspectScript(options: { apps?: boolean } = {}): string {
   return sectionsScript("network.inspect", [
     ["network", NETWORK_SNIPPET],
-    ...INSPECT_SECTIONS.filter(([name]) => name === "ufw-added"),
+    ...INSPECT_SECTIONS.filter(
+      ([name]) => name === "ufw-added" || (options.apps === true && name === "apps"),
+    ),
   ]);
 }
 
@@ -1182,7 +1185,8 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
  * why; `planHost` then refuses with a plain finding. The private networks' state (`network`) is
  * read as root the way the apply becomes root: as root, through `sudo -n`, or through Docker
  * when `options.rootImage` (the `docker` privilege's image, as `ApplyOptions.rootImage`) is
- * given, which then reads ufw's rules (`firewall.ufwRules`) too.
+ * given, which then reads ufw's rules (`firewall.ufwRules`) and the apps' records (`apps`, the
+ * second apps' on a server OpsCrew created: none without `/etc/opscrew/apps`) too.
  */
 export async function inspectHost(
   remote: RemoteExec,
@@ -1207,7 +1211,13 @@ export async function inspectHost(
     return facts;
   }
   // The private networks, read as root the way the apply becomes root.
-  const call = rootCall(privilege, networkInspectScript(), undefined, options.rootImage);
+  const docker = privilege === "docker";
+  const call = rootCall(
+    privilege,
+    networkInspectScript({ apps: docker }),
+    undefined,
+    options.rootImage,
+  );
   const read = await run(remote, call, 180_000);
   if (!read.stdout.includes(SECTION_MARK)) {
     throw new OpsCrewError(
@@ -1220,10 +1230,12 @@ export async function inspectHost(
   }
   const sections = splitSections(read.stdout);
   const network = parseNetworkState(section(sections, "network").text);
-  // Through Docker, ufw's rules are read only here: the other facts are read as the login.
-  if (privilege !== "docker") return { ...facts, network };
+  // Through Docker, ufw's rules and the apps' records are read only here: the other facts are read
+  // as the login.
+  if (!docker) return { ...facts, network };
   const ufwRules = parseUfwAdded(section(sections, "ufw-added").text);
-  return { ...facts, network, firewall: { ...facts.firewall, ufwRules } };
+  const apps = parseAppRecords(section(sections, "apps").text);
+  return { ...facts, network, firewall: { ...facts.firewall, ufwRules }, apps };
 }
 
 /**

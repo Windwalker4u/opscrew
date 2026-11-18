@@ -513,6 +513,27 @@ export const DesiredHostSchema = z
      * leaves the server's password setting alone. Ignored when every password user has a key.
      */
     disablePasswords: z.boolean().optional(),
+    /**
+     * A second app on a server OpsCrew created for `host.app`, the first app (030): the plan holds
+     * only the app's own steps, run as the deploy login, its record through Docker. `webFilter`
+     * then only says that the app is served behind Cloudflare's proxy: the first app's cloud
+     * firewall lets only Cloudflare reach the web ports, so no web filter is planned.
+     */
+    shares: z
+      .strictObject({
+        /** The first app as its plan describes it: never written to the server. */
+        host: z.strictObject({
+          app: AppNameSchema,
+          hostnames: z.array(HostnameSchema).max(50),
+          /**
+           * How the first app is served: behind Cloudflare's proxy (the cloud firewall lets only
+           * Cloudflare in) or DNS only.
+           */
+          access: z.enum(["web-filter", "public"]),
+          memoryMb: z.number().int().positive().max(1_048_576),
+        }),
+      })
+      .optional(),
   })
   .refine((desired) => desired.access !== "tunnel" || desired.tunnel !== undefined, {
     message: "the tunnel connector's Compose file is required in tunnel mode",
@@ -531,6 +552,18 @@ export const DesiredHostSchema = z
       desired.runner === undefined ||
       sameRepository(desired.runner.repositoryUrl, desired.repositoryUrl),
     { message: "must be the project's repository", path: ["runner"] },
+  )
+  .refine(
+    (desired) =>
+      desired.shares === undefined ||
+      (desired.access === "public" &&
+        desired.home === undefined &&
+        desired.portainer === undefined),
+    {
+      message:
+        "a second app on a server OpsCrew created is reached at its public address, with no Portainer of its own",
+      path: ["shares"],
+    },
   );
 export type DesiredHost = z.infer<typeof DesiredHostSchema>;
 

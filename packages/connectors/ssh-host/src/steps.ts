@@ -169,6 +169,7 @@ import {
   ProjectIdSchema,
   RecipePathSchema,
   RepositoryNameSchema,
+  RepositoryUrlSchema,
   type SecretName,
   ServerNameSchema,
   ServiceNameSchema,
@@ -540,6 +541,104 @@ kept=$(grep -E "$KEEP_RE" "$keys" 2>/dev/null) || kept=''
     failed: "The deploy user does not have the planned deploy keys after the change.",
     doing: "writing the deploy user's keys",
     timeoutMs: 2 * MINUTE,
+  });
+}
+
+const AppKeysParams = z.object({
+  user: z.literal("deploy"),
+  runAs: z.literal("login"),
+  /** The app's key lines, one per line, at most its key and a rotation's old one; "" removes them. */
+  keys: z
+    .string()
+    .refine(
+      (keys) =>
+        keys === "" ||
+        (keys.split("\n").length <= 2 &&
+          keys.split("\n").every((key) => PublicKeySchema.safeParse(key).success)),
+      { message: "must be at most two public key lines" },
+    ),
+  /** The keys (the base64 word of a line) whose lines are the app's, space-separated. */
+  drop: z.string().regex(/^[A-Za-z0-9+/]+={0,3}( [A-Za-z0-9+/]+={0,3})*$/),
+  /** The SHA-256 of the key lines inspection read besides the app's (see `appKeyScripts`). */
+  others: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+/**
+ * Shell helpers of a second app's deploy-key step. `own_lines mine|others <file>` prints the
+ * file's lines that are the app's, or every other line as it is: a line is the app's when it is no
+ * comment and its key, the second word, is one of `$DROP`. `others_sum <file>` is the SHA-256 of
+ * the other key lines as inspection reads them: trimmed, neither blank nor a comment, nor a
+ * scheduled check's or a preview's key in OpsCrew's form (`$KEEP_RE`).
+ */
+const APP_KEY_HELPERS = `keys_file() { printf '%s/.ssh/authorized_keys' "$(getent passwd "$USER_NAME" | cut -d: -f6)"; }
+own_lines() {
+  awk -v drop=" $DROP " -v want="$1" '{
+    l = $0; sub(/^[ \\t\\r]+/, "", l); sub(/[ \\t\\r]+$/, "", l)
+    n = split(l, w, /[ \\t]+/)
+    own = (l !~ /^#/ && n >= 2 && index(drop, " " w[2] " ") > 0)
+    if ((want == "mine") == own) print
+  }' "$2"
+}
+others_sum() {
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$1" | grep -v -e '^$' -e '^#' | grep -vE "$KEEP_RE" | own_lines others - | sha256sum | cut -d ' ' -f 1
+}`;
+
+/**
+ * `deploy-key` of a second app on a server OpsCrew created (030), run as the login, the deploy
+ * user: only the app's own lines change, the lines holding a key of `drop` (its key, a rotation's
+ * old one and the one its record names). `keys` (none in a teardown) follow every other line,
+ * which stays as it is, in its order: the first app's deploy key, other apps' keys, the scheduled
+ * checks' and the previews' keys, and any line OpsCrew did not write. `others` pins the SHA-256 of
+ * the key lines inspection read besides the app's: under a lock the apps' deploy-key steps take
+ * turns with, the apply writes nothing when they changed since, and the verify checks them again.
+ */
+function appKeyScripts(step: HostStep): StepScripts {
+  const p = params(step, AppKeysParams);
+  const keys = p.keys === "" ? [] : p.keys.split("\n");
+  return scripts({
+    name: "deploy-key.app",
+    params: {
+      USER_NAME: p.user,
+      KEY_1: keys[0] ?? "",
+      KEY_2: keys[1] ?? "",
+      COUNT: keys.length,
+      DROP: p.drop,
+      OTHERS_SHA256: p.others,
+      KEEP_RE: `${CHECK_KEY_LINE_RE}|${OLD_CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`,
+    },
+    helpers: APP_KEY_HELPERS,
+    verify: `  k=$(keys_file)
+  [ -f "$k" ] && [ ! -L "$k" ] || return 1
+  [ "$(own_lines mine "$k" | wc -l | tr -d ' ')" = "$COUNT" ] || return 1
+  for line in "$KEY_1" "$KEY_2"; do
+    if [ -n "$line" ]; then grep -qxF -- "$line" "$k" || return 1; fi
+  done
+  [ "$(others_sum "$k")" = "$OTHERS_SHA256" ]`,
+    apply: `h=$(getent passwd "$USER_NAME" | cut -d: -f6)
+if [ -z "$h" ] || [ "$h" = / ]; then fail "The $USER_NAME user has no home directory."; fi
+if [ -L "$h/.ssh" ]; then fail "$h/.ssh is a symbolic link; OpsCrew does not follow it."; fi
+k="$h/.ssh/authorized_keys"
+if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
+[ -f "$k" ] || fail "$k is missing, so OpsCrew changed nothing: on a server OpsCrew created it holds the deploy key of the app whose server it is."
+# The deploy-key steps of the apps on this server take turns: each reads and writes the file
+# under this lock.
+exec 9>"$h/.ssh/.opscrew-keys.lock"
+flock -w 120 9 || fail "Another change to the deploy user's keys did not finish within two minutes, so OpsCrew changed nothing."
+# Every line that is not the app's stays as it is, in its order, and only while those lines are
+# the ones this plan was made with.
+if [ "$(others_sum "$k")" != "$OTHERS_SHA256" ]; then
+  fail "The deploy user's authorized_keys changed since this plan was made, so OpsCrew changed nothing. Make a fresh plan."
+fi
+{
+  own_lines others "$k"
+  for line in "$KEY_1" "$KEY_2"; do
+    if [ -n "$line" ]; then printf '%s\\n' "$line"; fi
+  done
+} | write_file "$k" 0600`,
+    failed:
+      "The deploy user's authorized_keys does not hold the app's planned key lines, or its other lines changed.",
+    doing: keys.length === 0 ? "removing the app's deploy key" : "writing the app's deploy key",
+    timeoutMs: 3 * MINUTE,
   });
 }
 
@@ -2112,8 +2211,49 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
     return dirsScripts("app-dirs", [dirs.app, dirs.data]);
   }
   if (plan.purpose !== "teardown") throw invalid(step, "purpose");
-  const p = params(step, z.object({ app: AppNameSchema, deleteData: z.boolean() }));
+  const p = params(
+    step,
+    z.object({
+      app: AppNameSchema,
+      deleteData: z.boolean(),
+      runAs: RunAsSchema.optional(),
+      image: z.string().regex(PINNED_IMAGE_RE).optional(),
+    }),
+  );
   const dirs = appDirs(p.app);
+  // As the login (a second app on a server OpsCrew created): the login's own crontab, and the
+  // data folder, whose files belong to the app's containers' users, removed as a drill removes its
+  // copy: in a container of the pinned image that Docker runs as root with no network, which the
+  // deploy user can already do through the docker group. The folder is built only from the app's
+  // name.
+  const login = p.runAs === "login";
+  if (login !== (p.image !== undefined)) throw invalid(step, "image");
+  const loginForm: { params: ScriptParams; schedule: string; drop: string; data: string } = {
+    params: login
+      ? {
+          DATA_ROOT: dirs.data.slice(0, dirs.data.lastIndexOf("/")),
+          DATA_NAME: p.app,
+          IMAGE: p.image ?? "",
+        }
+      : {},
+    schedule: login
+      ? `# The deploy user's crontab: the login's own.
+read_schedule() {
+  tab=''
+  read_tab
+}`
+      : `# The deploy user's crontab, read as root; a server without the deploy user has none.
+read_schedule() {
+  tab=''
+  if getent passwd deploy >/dev/null; then read_tab -u deploy; fi
+}`,
+    drop: login ? "drop_cron" : "drop_cron -u deploy",
+    data: login
+      ? `if [ "$DELETE_DATA" = true ] && [ -d "$DATA_DIR" ]; then
+  docker run --rm --network none --user 0:0 --entrypoint rm -v "$DATA_ROOT:/d" "$IMAGE" -rf "/d/$DATA_NAME" >/dev/null 2>&1 || fail "OpsCrew could not remove $DATA_DIR completely."
+fi`
+      : `if [ "$DELETE_DATA" = true ]; then remove_dir "$DATA_DIR"; fi`,
+  };
   return scripts({
     name: "app-dirs.teardown",
     params: {
@@ -2136,14 +2276,11 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
       // `#` mean themselves in an extended pattern).
       CRON_RE: `${snapshotScheduleTag(p.app)}$`,
       SNAPSHOTS_DIR: snapshotsDir(p.app),
+      ...loginForm.params,
     },
     helpers: `${PROJECT_HELPERS}
 ${CRON_HELPERS}
-# The deploy user's crontab, read as root; a server without the deploy user has none.
-read_schedule() {
-  tab=''
-  if getent passwd deploy >/dev/null; then read_tab -u deploy; fi
-}
+${loginForm.schedule}
 remove_dir() {
   if [ -d "$1" ]; then
     find "$1" -xdev -mindepth 1 -delete
@@ -2171,7 +2308,7 @@ echo "prev.dataFiles=$(ls -A "$DATA_DIR" 2>/dev/null | wc -l)"`,
 done
 # The scheduled snapshots go first, so none starts while the app goes; other apps' lines stay.
 read_schedule || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the app's scheduled snapshots."
-if [ "$(cron_count)" != 0 ]; then drop_cron -u deploy; fi
+if [ "$(cron_count)" != 0 ]; then ${loginForm.drop}; fi
 remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
 # The app's site (Caddy's, nginx's or OpenLiteSpeed's), its additions, its origin certificate and
 # its kamal-proxy service leave the shared edge, which stays for other apps (remove_project started
@@ -2208,7 +2345,7 @@ if keeps_snapshots; then
 else
   remove_dir "$APP_DIR"
 fi
-if [ "$DELETE_DATA" = true ]; then remove_dir "$DATA_DIR"; fi
+${loginForm.data}
 if [ "$DELETE_DATA" = true ] && ! project_gone "$APP" true; then
   fail 'Some Docker volumes of the app could not be removed.'
 fi`,
@@ -2256,6 +2393,22 @@ done`,
 // ---------------------------------------------------------------------------------------------
 // app-record: the app's record in /etc/opscrew/apps (the apply lists it in the host record)
 
+/**
+ * What a second app's record says besides an own-server app's (030): the first app, whose server
+ * it is (`shares`), and the project's repository.
+ */
+export interface SecondAppRecord {
+  shares: string;
+  repository: string;
+}
+
+/** `second`'s fields as a record holds them; none for an app on a server the user owns. */
+function secondAppFields(second: SecondAppRecord | undefined): Partial<AppRecord> {
+  return second === undefined
+    ? {}
+    : { shares: { app: second.shares }, repository: second.repository };
+}
+
 /** The record of an app set up on the server, as the `app-record` step writes it. */
 export function appRecord(input: {
   app: string;
@@ -2266,6 +2419,7 @@ export function appRecord(input: {
   memoryMb: number;
   deployKey: string;
   home?: HomeMode | undefined;
+  second?: SecondAppRecord | undefined;
 }): AppRecord {
   return {
     schemaVersion: 1,
@@ -2280,11 +2434,19 @@ export function appRecord(input: {
     memoryMb: input.memoryMb,
     deployKey: input.deployKey,
     ...(input.home === undefined ? {} : { home: { ipv4: input.home.ipv4 } }),
+    ...secondAppFields(input.second),
   };
 }
 
-/** The record of an app removed with its data kept: its name stays its project's. */
-export function dataKeptRecord(app: string, projectId: string): AppRecord {
+/**
+ * The record of an app removed with its data kept: its name stays its project's (a second app's
+ * still names the first app and its repository, so the first app's commands still see it).
+ */
+export function dataKeptRecord(
+  app: string,
+  projectId: string,
+  second?: SecondAppRecord,
+): AppRecord {
   return {
     schemaVersion: 1,
     app,
@@ -2297,23 +2459,40 @@ export function dataKeptRecord(app: string, projectId: string): AppRecord {
     services: [],
     memoryMb: 0,
     deployKey: "",
+    ...secondAppFields(second),
   };
 }
 
-const AppRecordParams = z.object({
-  app: AppNameSchema.refine((app) => app !== EDGE_PROJECT, {
-    message: "is OpsCrew's own",
-  }),
-  projectId: ProjectIdSchema,
-  access: AccessModeSchema,
-  hostnames: words(HostnameSchema),
-  services: words(ServiceNameSchema),
-  memoryMb: z.number().int().positive(),
-  deployKey: PublicKeySchema,
-  ownProject: z.boolean(),
-  /** A home app's `home.ipv4`; absent for an app that is not at home. */
-  homeIpv4: z.boolean().optional(),
-});
+/** A second app's `shares` and `repository` step parameters, both or neither. */
+const SecondAppParams = z
+  .object({ shares: AppNameSchema.optional(), repository: RepositoryUrlSchema.optional() })
+  .refine((p) => (p.shares === undefined) === (p.repository === undefined), {
+    message: "must name both the first app and the repository",
+  });
+
+/** `p`'s second-app fields, or undefined for an app on a server the user owns. */
+function secondOf(p: z.infer<typeof SecondAppParams>): SecondAppRecord | undefined {
+  return p.shares === undefined || p.repository === undefined
+    ? undefined
+    : { shares: p.shares, repository: p.repository };
+}
+
+const AppRecordParams = z
+  .object({
+    app: AppNameSchema.refine((app) => app !== EDGE_PROJECT, {
+      message: "is OpsCrew's own",
+    }),
+    projectId: ProjectIdSchema,
+    access: AccessModeSchema,
+    hostnames: words(HostnameSchema),
+    services: words(ServiceNameSchema),
+    memoryMb: z.number().int().positive(),
+    deployKey: PublicKeySchema,
+    ownProject: z.boolean(),
+    /** A home app's `home.ipv4`; absent for an app that is not at home. */
+    homeIpv4: z.boolean().optional(),
+  })
+  .and(SecondAppParams);
 
 /** Refuses to touch `$RECORD_FILE` when it names another project than `$PROJECT_ID`. */
 const PROJECT_CHECK_LINES = `if [ -f "$RECORD_FILE" ] && ! grep -qF "\\"projectId\\":\\"$PROJECT_ID\\"" "$RECORD_FILE"; then
@@ -2345,7 +2524,9 @@ rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
   if (plan.purpose === "teardown") {
     const p = params(
       step,
-      z.object({ app: AppNameSchema, keepData: z.boolean(), projectId: ProjectIdSchema }),
+      z
+        .object({ app: AppNameSchema, keepData: z.boolean(), projectId: ProjectIdSchema })
+        .and(SecondAppParams),
     );
     const own = {
       APP: p.app,
@@ -2353,9 +2534,10 @@ rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
       RECORD_FILE: `${APP_RECORDS_DIR}/${p.app}.json`,
     };
     if (p.keepData) {
+      const kept = dataKeptRecord(p.app, p.projectId, secondOf(p));
       return scripts({
         name: "app-record.keep",
-        params: { ...own, RECORD: JSON.stringify(dataKeptRecord(p.app, p.projectId)) },
+        params: { ...own, RECORD: JSON.stringify(kept) },
         verify: `  [ -f "$RECORD_FILE" ] && [ "$(cat "$RECORD_FILE")" = "$RECORD" ]`,
         apply: `${PROJECT_CHECK_LINES}\n${writeRecordLines()}`,
         failed: "The record of the kept data was not written.",
@@ -2374,21 +2556,34 @@ rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
     });
   }
   const p = params(step, AppRecordParams);
+  const second = secondOf(p);
   const record = appRecord({
     ...p,
     home: p.homeIpv4 === undefined ? undefined : { ipv4: p.homeIpv4 },
+    second,
   });
+  // A second app's server is one OpsCrew created: its first boot set the "setup finished" flag.
+  const ready =
+    second === undefined
+      ? {
+          verify: ' && [ -f "$READY_FLAG" ]',
+          apply: `
+# The same "setup finished" flag cloud-init sets on servers OpsCrew creates.
+install -d -m 0755 "$(dirname "$READY_FLAG")"
+touch "$READY_FLAG"`,
+        }
+      : { verify: "", apply: "" };
   return scripts({
     name: "app-record",
     params: {
       RECORD_FILE: `${APP_RECORDS_DIR}/${p.app}.json`,
       RECORD: JSON.stringify(record),
       PROJECT_ID: p.projectId,
-      READY_FLAG,
+      ...(second === undefined ? { READY_FLAG } : {}),
       APP: p.app,
       OWN_PROJECT: p.ownProject,
     },
-    verify: `  [ -f "$RECORD_FILE" ] && [ "$(cat "$RECORD_FILE")" = "$RECORD" ] && [ -f "$READY_FLAG" ]`,
+    verify: `  [ -f "$RECORD_FILE" ] && [ "$(cat "$RECORD_FILE")" = "$RECORD" ]${ready.verify}`,
     snapshot: `if [ -e "$RECORD_FILE" ]; then echo prev.record=present; else echo prev.record=absent; fi`,
     apply: `${PROJECT_CHECK_LINES}
 # Before the app is recorded: no Compose project of that name that OpsCrew did not deploy (the
@@ -2405,10 +2600,7 @@ if [ ! -f "$RECORD_FILE" ] && [ "$OWN_PROJECT" != true ] && command -v docker >/
     fail "Docker already has containers or volumes of a Compose project named $APP that OpsCrew did not deploy, so OpsCrew does not record the app."
   fi
 fi
-${writeRecordLines()}
-# The same "setup finished" flag cloud-init sets on servers OpsCrew creates.
-install -d -m 0755 "$(dirname "$READY_FLAG")"
-touch "$READY_FLAG"`,
+${writeRecordLines()}${ready.apply}`,
     failed: "The app's record was not written.",
     doing: "recording the app on the server",
     timeoutMs: MINUTE,
@@ -4498,7 +4690,10 @@ quiet systemctl --user enable --now "$UNIT" || fail "The runner's service did no
   });
 }
 
-/** Steps that run as the login (the deploy user) on Hetzner and DigitalOcean (`runAs: "login"`). */
+/**
+ * Steps that run as the login (the deploy user) on the servers OpsCrew creates (`runAs: "login"`):
+ * a second app's deploy key and folders too.
+ */
 const LOGIN_STEPS: ReadonlySet<HostStepId> = new Set([
   "portainer",
   "tunnel-connector",
@@ -4508,11 +4703,14 @@ const LOGIN_STEPS: ReadonlySet<HostStepId> = new Set([
   "drills",
   "beszel",
   "alloy",
+  "deploy-key",
+  "app-dirs",
 ]);
 
 /**
- * How a step's scripts run: the Portainer, tunnel connector, runner, check key, previews, drills and add-on steps
- * for Hetzner and DigitalOcean run as the login (the deploy user); everything else as root.
+ * How a step's scripts run: the Portainer, tunnel connector, runner, check key, previews, drills
+ * and add-on steps, and a second app's deploy key and folders, on the servers OpsCrew creates run
+ * as the login (the deploy user); everything else as root.
  */
 export function runAsOf(step: HostStep): RunAs {
   return LOGIN_STEPS.has(step.id) && step.params.runAs === "login" ? "login" : "root";
@@ -4533,7 +4731,7 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
     case "deploy-user":
       return deployUserScripts(plan.purpose, step);
     case "deploy-key":
-      return deployKeyScripts(step);
+      return step.params.runAs === "login" ? appKeyScripts(step) : deployKeyScripts(step);
     case "sshd":
       // A runner machine's setup plan turns SSH hardening off with the undo's scripts.
       return sshdScripts(step.params.remove === true ? "undo" : plan.purpose, step);

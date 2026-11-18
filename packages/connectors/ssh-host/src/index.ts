@@ -36,6 +36,11 @@
  * app's A/AAAA records at the server's own address, with the token supplied at apply
  * (`ApplySecrets.dnsUpdaterToken`); a teardown removes the app's instance, and the shared files
  * with the last one.
+ * A second app on a server OpsCrew created for another app (feature 030): `DesiredHost.shares`
+ * describes the first app, and `planHost` then plans only the app's own steps as the deploy login
+ * (its deploy key's lines, every other line of authorized_keys kept as it is, its folders, drills
+ * and runner), its record, which names the first app, as root through Docker; `planTeardown` with
+ * `shares` never counts it as the last app. `inspectHost` with `rootImage` reads the records there.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,

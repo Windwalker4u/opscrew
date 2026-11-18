@@ -600,7 +600,56 @@ export class FakeHost implements RemoteExec {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.checkKeyScript(name, params);
     }
+    // A second app's deploy key, as the login (the deploy user) on a server OpsCrew created.
+    if (/^deploy-key\.app\.(check|apply|verify)$/.test(name)) {
+      if (!deploy || root) throw new Error(`fake host: ${name} must run as the deploy login`);
+      return this.appKeyScript(name, params);
+    }
+    // A second app's folders, as that login: the shared folders are deploy's there.
+    if (/^app-dirs\./.test(name) && deploy && !root) {
+      if (name.startsWith("app-dirs.teardown.") && params.IMAGE === undefined) {
+        throw new Error(`fake host: ${name} as the login needs its image`);
+      }
+      return this.handle(name, params, true, input ?? "");
+    }
     return this.handle(name, params, root && asUser === undefined, input ?? "");
+  }
+
+  /**
+   * A second app's deploy-key step (`deploy-key.app`): its lines hold a key of `DROP` (no comment
+   * line does); every other line stays, in its order, while the key lines among them (trimmed,
+   * not a check's or a preview's in OpsCrew's form) have the SHA-256 `OTHERS_SHA256`.
+   */
+  private appKeyScript(name: string, p: Record<string, string>): CommandResult {
+    const deploy = this.users.get("deploy");
+    if (deploy === undefined) return fail("The deploy user has no home directory.");
+    const drop = FakeHost.words(p.DROP);
+    const own = (line: string) =>
+      !line.trim().startsWith("#") && drop.includes(line.trim().split(/\s+/)[1] ?? "");
+    const keep = new RegExp(p.KEEP_RE ?? "");
+    const others = deploy.keys.filter((line) => !own(line));
+    const sum = sha256(
+      others
+        .map((line) => line.trim())
+        .filter((line) => line !== "" && !line.startsWith("#") && !keep.test(line))
+        .map((line) => `${line}\n`)
+        .join(""),
+    );
+    const keys = [p.KEY_1 ?? "", p.KEY_2 ?? ""].filter(Boolean);
+    const mine = deploy.keys.filter(own);
+    const ok =
+      sum === p.OTHERS_SHA256 &&
+      mine.length === Number(p.COUNT) &&
+      keys.every((key) => mine.includes(key));
+    if (name.endsWith(".check")) return this.check(ok);
+    if (name.endsWith(".verify")) return this.verify(ok, p);
+    if (sum !== p.OTHERS_SHA256) {
+      return fail(
+        "The deploy user's authorized_keys changed since this plan was made, so OpsCrew changed nothing. Make a fresh plan.",
+      );
+    }
+    deploy.keys = [...others, ...keys];
+    return result();
   }
 
   // -------------------------------------------------------------------------------------------
@@ -1021,7 +1070,8 @@ export class FakeHost implements RemoteExec {
         ...[...this.sysctlFile()].map(([key, value]) => `file ${key} ${value}`),
       ].join("\n"),
     );
-    add("apps", this.appRecordLines());
+    // The records are root's only (/etc/opscrew is 0700): a login without root reads none.
+    add("apps", root ? this.appRecordLines() : "");
     const record = this.files.get(RECORD_PATH);
     add("record", record ?? "", record === undefined ? 1 : 0);
     add(
@@ -1717,6 +1767,7 @@ export class FakeHost implements RemoteExec {
           sectionsOutput([
             ["network", this.networkStateText(), 0],
             ["ufw-added", this.installed("ufw") ? this.ufwAdded() : "", this.installed("ufw") ? 0 : 127],
+            ["apps", this.appRecordLines(), 0],
           ]),
         );
       case "network.check":
@@ -2087,18 +2138,23 @@ export class FakeHost implements RemoteExec {
         return result();
 
       // the app's record
+      // A second app's record (no READY_FLAG parameter) leaves the first boot's flag alone.
       case "app-record.check":
-        return this.check(this.files.get(p.RECORD_FILE ?? "") === p.RECORD && this.files.has(READY_FLAG), {
-          record: this.files.has(p.RECORD_FILE ?? "") ? "present" : "absent",
-        });
+        return this.check(
+          this.files.get(p.RECORD_FILE ?? "") === p.RECORD && (p.READY_FLAG === undefined || this.files.has(READY_FLAG)),
+          { record: this.files.has(p.RECORD_FILE ?? "") ? "present" : "absent" },
+        );
       case "app-record.apply": {
         if (this.otherProject(p)) return fail(`Another project's OpsCrew app named ${p.APP} is already on this server.`);
         this.files.set(p.RECORD_FILE ?? "", p.RECORD ?? "");
-        this.files.set(READY_FLAG, "");
+        if (p.READY_FLAG !== undefined) this.files.set(READY_FLAG, "");
         return result();
       }
       case "app-record.verify":
-        return this.verify(this.files.get(p.RECORD_FILE ?? "") === p.RECORD && this.files.has(READY_FLAG), p);
+        return this.verify(
+          this.files.get(p.RECORD_FILE ?? "") === p.RECORD && (p.READY_FLAG === undefined || this.files.has(READY_FLAG)),
+          p,
+        );
       case "app-record.keep.check":
       case "app-record.keep.verify": {
         const ok = this.files.get(p.RECORD_FILE ?? "") === p.RECORD;

@@ -760,7 +760,9 @@ function isRemoval(plan: HostPlan, step: HostStep): boolean {
  * is called only when a `github-runner` step runs. Every change is recorded in `/etc/opscrew/host.json` before it is made.
  * Root steps run as the login when it is root, through `sudo -n`, or, for a login that becomes
  * root only through Docker (the servers OpsCrew creates), in a one-shot privileged container of
- * `opts.rootImage` that reads the script and its secrets on its standard input.
+ * `opts.rootImage` that reads the script and its secrets on its standard input. A second app's
+ * plan there (030: its `app-dirs` step runs as the login) writes no host record: its record, and a
+ * teardown's removal of it, are its only root steps.
  */
 export async function applyHostPlan(
   remote: RemoteExec,
@@ -855,6 +857,9 @@ export async function applyHostPlan(
     findings: hostFindings(opts.command),
   };
   const needsRoot = changes.some(({ step }) => runAsOf(step) === "root");
+  // A second app on a server OpsCrew created (its folders' step runs as the login) changes only its
+  // own parts there: its record is its only root step, and it writes no host record.
+  const secondApp = valid.steps.some((step) => step.id === "app-dirs" && runAsOf(step) === "login");
   if (needsRoot) {
     const privilege = await probePrivilege(remote);
     if (privilege === "sudo-password" || privilege === "none") {
@@ -865,6 +870,10 @@ export async function applyHostPlan(
       throw refuse(finding.message, finding.hint);
     }
     ctx.privilege = privilege;
+  }
+  if (needsRoot && secondApp) {
+    await appsCheck(ctx, []);
+  } else if (needsRoot) {
     ctx.recorder = await Recorder.load(ctx);
     await appsCheck(ctx, ctx.recorder.apps);
     // One of each add-on per server: another app's stays as it is, unless that app is gone and
