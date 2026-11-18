@@ -1,6 +1,9 @@
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
   appDirs,
+  DNS_UPDATER_VERSION,
+  dnsUpdaterConfig,
+  dnsUpdaterFileHashes,
   type HASHED_RUNTIME_FILES,
   type HostFacts,
   type HostPlan,
@@ -15,12 +18,15 @@ import {
   tunnelOf,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
+  webFilterFileHashes,
+  webFilterTable6Hash,
 } from "@opscrew/connector-ssh-host";
 import {
   errorText,
   isUserFacingError,
   listText,
   lowerFirst,
+  OpsCrewError,
   sha256Hex,
   upperFirst,
 } from "@opscrew/core";
@@ -29,6 +35,8 @@ import {
   EDGE_DIR,
   EDGE_PROXIES,
   edgeProxy,
+  homeIpv6Proxied,
+  homeMode,
   keepNewerPins,
   type RuntimeContext,
   renderCompose,
@@ -38,12 +46,20 @@ import {
 } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
+import { classifyHomeNetwork, registerHomeAddresses } from "../home/network";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
-import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
+import {
+  type OwnHomeRun,
+  type OwnWebSources,
+  ownWebFromCloudflare,
+  ownWebSources,
+} from "../provision/own";
 import { readRequirements, recordedEdge, siteContext } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
 import { type CloudRunnerServices, cloudRunnerPlan, serverRunner } from "../runners";
 import {
+  boundHostAdapter,
   committedText,
   gitClient,
   githubCoordinates,
@@ -51,7 +67,7 @@ import {
   passwordLoginChoice,
   readDeployPublicKey,
 } from "../shared";
-import { connectAndInspectOwnServer } from "../shared/own-server";
+import { connectAndInspectOwnServer, type OwnServerSession } from "../shared/own-server";
 import {
   type AppContainer,
   componentStatus,
@@ -239,19 +255,29 @@ function ufwDetails(facts: HostFacts, step: HostStep): string[] {
   return out;
 }
 
-/** The (IPv4) ranges a web-filter step lets in. */
-function filterRanges(step: Pick<HostStep, "params"> | undefined): string[] | undefined {
-  if (step === undefined || typeof step.params.ipv4 !== "string") return undefined;
-  return String(step.params.ipv4).split(" ").filter(Boolean);
+/** The ranges of one family (IPv4 by default) a web-filter step lets in. */
+function filterRanges(
+  step: Pick<HostStep, "params"> | undefined,
+  family: "ipv4" | "ipv6" = "ipv4",
+): string[] | undefined {
+  if (step === undefined || typeof step.params[family] !== "string") return undefined;
+  return String(step.params[family]).split(" ").filter(Boolean);
 }
+
+const sameNetworks = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((net) => b.includes(net));
+
+const IPV6_FILTER = "OpsCrew's IPv6 filter (the nftables table inet opscrew-web)";
 
 const NEXT_STEP =
   "Run `opscrew provision`: it shows the change and applies it only after you approve it.";
 
 /**
  * The web filter differs from what the plan wants now: removed or edited on the server, its unit
- * off, Cloudflare's ranges changed since the last applied host plan (`applied`), or a filter left
- * although the site is no longer served directly behind Cloudflare's proxy.
+ * off or no longer following nftables.service, Cloudflare's ranges changed since the last applied
+ * host plan (`applied`), a filter left although the site is no longer served directly behind
+ * Cloudflare's proxy, and with IPv6 OpsCrew's table missing, flushed or edited, or left although
+ * the site is no longer published on IPv6.
  */
 function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): string[] {
   if (step.params.remove === true) {
@@ -260,17 +286,22 @@ function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan):
     ];
   }
   const wf = facts.webFilter;
-  const wanted = filterRanges(step) ?? [];
-  const before = filterRanges(applied?.steps.find((item) => item.id === "web-filter"));
-  const sameAs = (list: readonly string[]) =>
-    list.length === wanted.length && list.every((net) => wanted.includes(net));
+  const ipv6 = filterRanges(step, "ipv6");
+  const last = applied?.steps.find((item) => item.id === "web-filter");
+  const last6 = filterRanges(last, "ipv6");
+  // IPv6 ranges are compared only when both plans have them (a switch of family is no change of
+  // Cloudflare's list).
+  const both6 = ipv6 !== undefined && last6 !== undefined;
+  const wanted = [...(filterRanges(step) ?? []), ...(both6 ? ipv6 : [])];
+  const last4 = filterRanges(last);
+  const before = last4 === undefined ? undefined : [...last4, ...(both6 ? last6 : [])];
   const out: string[] = [];
   if (wf.files.script === null && wf.rules4.chain === null) {
     return [
       `The web filter is missing, so visitors can reach your server around Cloudflare. ${NEXT_STEP}`,
     ];
   }
-  if (before !== undefined && !sameAs(before)) {
+  if (before !== undefined && !sameNetworks(before, wanted)) {
     const added = wanted.filter((net) => !before.includes(net)).length;
     const dropped = before.filter((net) => !wanted.includes(net)).length;
     const parts = [
@@ -296,6 +327,131 @@ function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan):
       out.push(
         `OpsCrew's jumps are no longer the first rules of DOCKER-USER, so another rule may let visitors in around Cloudflare. ${NEXT_STEP}`,
       );
+    }
+    const ranges = { ipv4: filterRanges(step) ?? [], ...(ipv6 !== undefined ? { ipv6 } : {}) };
+    if (wf.files.nftDropIn !== webFilterFileHashes(ranges).nftDropIn) {
+      out.push(
+        `The web filter no longer follows nftables.service (its drop-in /etc/systemd/system/opscrew-web-filter.service.d/nftables.conf is missing or edited), so restarting or reloading nftables would leave the web ports unfiltered. ${NEXT_STEP}`,
+      );
+    }
+    if (ipv6 !== undefined && wf.table6 === undefined) {
+      out.push(
+        `${IPV6_FILTER} is missing, so visitors can reach the site over IPv6 around Cloudflare. ${NEXT_STEP}`,
+      );
+    } else if (ipv6 !== undefined && wf.table6 !== webFilterTable6Hash(ipv6)) {
+      out.push(
+        `${IPV6_FILTER} was flushed or edited, so it may let visitors reach the site over IPv6 around Cloudflare. ${NEXT_STEP}`,
+      );
+    }
+    if (step.params.removeIpv6 === true) {
+      out.push(
+        `The site is no longer published on IPv6, but ${IPV6_FILTER} is still on the server. ${NEXT_STEP}`,
+      );
+    }
+  }
+  return out;
+}
+
+/** The address updater's folder, with each app's config and token. */
+const UPDATER_DIR = "/etc/opscrew/dns-updater";
+const UPDATER_SCRIPT = "/usr/local/sbin/opscrew-dns-updater";
+const UPDATER_UNITS = {
+  service: "/etc/systemd/system/opscrew-dns-updater@.service",
+  timer: "/etc/systemd/system/opscrew-dns-updater@.timer",
+};
+
+/** `path` is not root's with the permission bits `mode`: what it is, and what OpsCrew set. */
+function rootFileDetail(
+  path: string,
+  file: { mode: string; owner: string } | null | undefined,
+  mode: string,
+  why = "",
+): string[] {
+  if (file === null || file === undefined || (file.owner === "root" && file.mode === mode)) {
+    return [];
+  }
+  return [
+    `${path} is owned by ${file.owner} with mode ${file.mode}; OpsCrew set root and ${mode}${why}.`,
+  ];
+}
+
+/**
+ * The app's address updater differs from what the plan wants now: its config edited (by field,
+ * never a value), the config or token file's owner or mode (never the token or its hash), its
+ * timer off, and the shared folder, script and units (missing, older, edited, or their owner or
+ * mode); or an updater left although the app no longer keeps its records from the server.
+ */
+function dnsUpdaterDetails(facts: HostFacts, step: HostStep, app: string): string[] {
+  if (step.params.remove === true) {
+    return [
+      `The address updater of "${app}" is still on the server, although the app's DNS records are no longer kept from there.`,
+    ];
+  }
+  const own = facts.dnsUpdaters?.find((item) => item.app === app);
+  // Without an instance (and so without a token) the step is blocked; its finding says so.
+  if (own === undefined) return [];
+  const configPath = `${UPDATER_DIR}/${app}.json`;
+  const out: string[] = [];
+  if (own.config === null) {
+    out.push(`${configPath} is no longer the address updater's config (it was edited or damaged).`);
+  } else {
+    const p = step.params;
+    const wanted = dnsUpdaterConfig(app, {
+      zoneId: String(p.zoneId),
+      name: String(p.name),
+      proxied: p.proxied === true,
+      ipv4: p.ipv4 === true,
+      ipv6: p.ipv6 === true,
+    });
+    const config = own.config;
+    const fields = (Object.keys(wanted) as (keyof typeof wanted)[]).filter(
+      (key) => config[key] !== wanted[key],
+    );
+    if (fields.length > 0) {
+      out.push(
+        `${configPath} was edited: its ${listText(fields)} no longer ${fields.length === 1 ? "matches" : "match"} opscrew/plan.yaml.`,
+      );
+    }
+  }
+  out.push(...rootFileDetail(configPath, own.configFile, "600"));
+  if (own.token.present) {
+    out.push(
+      ...rootFileDetail(
+        `${UPDATER_DIR}/${app}.token`,
+        own.token,
+        "600",
+        ", so only root can read the updater's token",
+      ),
+    );
+  }
+  if (!own.timer.enabled || !own.timer.active) {
+    out.push(
+      `The updater's timer opscrew-dns-updater@${app}.timer is not enabled and running, so the site's DNS records no longer follow your home's address.`,
+    );
+  }
+  const files = facts.dnsUpdaterFiles;
+  out.push(...rootFileDetail(UPDATER_DIR, files?.dir, "700"));
+  if (
+    files === undefined ||
+    files.version === null ||
+    files.version < DNS_UPDATER_VERSION ||
+    files.script === null ||
+    files.service === null ||
+    files.timer === null
+  ) {
+    out.push(
+      `The updater's script (${UPDATER_SCRIPT}) or its systemd units are missing or older than this OpsCrew's.`,
+    );
+  } else if (files.version === DNS_UPDATER_VERSION) {
+    const hashes = dnsUpdaterFileHashes();
+    const shared = [
+      { path: UPDATER_SCRIPT, file: files.script, sha256: hashes.script, mode: "755" },
+      { path: UPDATER_UNITS.service, file: files.service, sha256: hashes.service, mode: "644" },
+      { path: UPDATER_UNITS.timer, file: files.timer, sha256: hashes.timer, mode: "644" },
+    ];
+    for (const { path, file, sha256, mode } of shared) {
+      if (file.sha256 !== sha256) out.push(`${path} was edited.`);
+      out.push(...rootFileDetail(path, file, mode));
     }
   }
   return out;
@@ -653,9 +809,8 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     }
     case "app-record":
       return appRecordDetails(facts, app);
-    // T2914c adds the address updater's drift.
     case "dns-updater":
-      return [];
+      return dnsUpdaterDetails(facts, step, app);
     // T1511 adds the runner's drift.
     case "github-runner":
       return [];
@@ -827,8 +982,9 @@ export function hostDifferences(
  * Host drift of a server the user owns: connects with the pinned host key (`connectOwnServer`;
  * `--host-key` on the first connection from this computer), inspects the server read-only and
  * compares it with OpsCrew's host record and with the setup the plan describes (the same desired
- * state provision plans from, and the password-login choice of the last applied host plan).
- * Never changes the server; the inspection is audited without the address.
+ * state provision plans from, and the password-login choice of the last applied host plan). A
+ * server at home is read as provision reads it ({@link driftHome}), its updater's token left as the
+ * server has it. Never changes the server; the inspection is audited without the address.
  */
 export async function ownHostDrift(
   deps: PhaseDeps,
@@ -864,6 +1020,9 @@ export async function ownHostDrift(
           await githubCoordinates(gitClient(deps)),
         )
       : undefined;
+  const home = homeMode(plan)
+    ? await driftHome(deps, plan, { session, facts, host: options.own?.host })
+    : undefined;
   const desired = await desiredHost(
     deps,
     {
@@ -872,6 +1031,7 @@ export async function ownHostDrift(
       target,
       ...(webSources !== undefined ? { webSources } : {}),
       ...(runner !== undefined ? { runner } : {}),
+      ...(home !== undefined ? { home } : {}),
     },
     {
       plan,
@@ -910,6 +1070,68 @@ export async function ownHostDrift(
       },
       setup,
     ),
+  };
+}
+
+/**
+ * Stands in for the zone of an address updater whose config the server no longer has: the step
+ * then differs whatever the zone, so this id is never compared with one.
+ */
+const UNKNOWN_ZONE_ID = "0".repeat(32);
+
+/**
+ * What drift reads of a server at home, as provision's `prepareHome` does without a zone and
+ * read-only: the home's network (a proxied app's addresses registered with the redactor first),
+ * SSH's sources from `.opscrew/server.json` and, with the DNS on Cloudflare, the address updater
+ * as the server has it: its zone from its config, and its token left as it is
+ * (`OPSCREW_DNS_UPDATER_TOKEN` is never read).
+ * @throws OpsCrewError when this computer doesn't know SSH's sources at home.
+ */
+async function driftHome(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: { session: OwnServerSession; facts: HostFacts; host: OwnServerServices["host"] },
+): Promise<OwnHomeRun> {
+  const { session, facts } = input;
+  const detected = await boundHostAdapter(input.host).detectHomeNetwork(session.remote);
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "detect home network (read-only)",
+    target: "own server",
+    decision: "allow",
+    detail: "drift check",
+  });
+  registerHomeAddresses(
+    deps.redactor,
+    detected,
+    plan.dns.provider === "cloudflare" && plan.dns.proxied,
+  );
+  const sshFrom = session.connection.home?.sshFrom;
+  if (sshFrom === undefined) {
+    const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew doesn't know on this computer which networks may reach your server's SSH at home, so it can't compare your server with its setup.",
+      {
+        hint: `Run \`opscrew design${flags}\` again: it finds your home network. Then run \`opscrew drift${flags}\` again.`,
+      },
+    );
+  }
+  const name = plan.dns.domain;
+  const updater =
+    plan.dns.provider === "cloudflare" && name !== undefined
+      ? {
+          zoneId:
+            facts.dnsUpdaters?.find((item) => item.app === plan.app.name)?.config?.zoneId ??
+            UNKNOWN_ZONE_ID,
+          name,
+        }
+      : undefined;
+  return {
+    network: classifyHomeNetwork(detected),
+    sshFrom: [...sshFrom],
+    ...(updater !== undefined ? { updater } : {}),
   };
 }
 
@@ -1013,12 +1235,14 @@ async function driftWebSources(
   try {
     return await ownWebSources(deps, plan, cloudflare);
   } catch (error) {
-    const applied = filterRanges(setup?.steps.find((step) => step.id === "web-filter"));
-    const known = applied ?? facts.webFilter.rules4.chain?.sources ?? [];
-    if (known.length === 0) throw error;
+    const last = setup?.steps.find((step) => step.id === "web-filter");
+    const known = filterRanges(last) ?? facts.webFilter.rules4.chain?.sources ?? [];
+    // Over IPv6 the server holds only a hash of its table: the last provision's ranges, or none.
+    const ipv6 = homeIpv6Proxied(plan) ? (filterRanges(last, "ipv6") ?? []) : undefined;
+    if (known.length === 0 || ipv6?.length === 0) throw error;
     deps.reporter.warn(
       "OpsCrew could not read Cloudflare's current IP ranges, so it compared the web filter with the ranges of the last provision. Run `opscrew drift` again when Cloudflare's API is reachable to see whether Cloudflare's list changed.",
     );
-    return { ipv4: known };
+    return { ipv4: known, ...(ipv6 !== undefined ? { ipv6 } : {}) };
   }
 }

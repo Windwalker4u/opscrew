@@ -80,6 +80,7 @@ export {
   DNS_UPDATER_RECORD_COMMENT,
   DNS_UPDATER_VERSION,
   dnsUpdaterConfig,
+  dnsUpdaterFileHashes,
   renderDnsUpdaterScript,
 } from "./dns-updater";
 export {
@@ -152,5 +153,5 @@ export {
   type HostStepId,
   MAX_SSH_SOURCES,
 } from "./types";
-export { webFilterFileHashes } from "./web-filter";
+export { webFilterFileHashes, webFilterTable6Hash } from "./web-filter";
 export { readWireGuard, type WireGuardPeer } from "./wireguard";
