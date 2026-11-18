@@ -8,9 +8,11 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 Done: 000–028. [027 shared hosting](027-shared-hosting/) shipped as 0.2.8 on 2026-11-14, build
 arguments from the plan as 0.2.9 on 2026-11-15, and [028 moving an app to another Cloudflare
 account](028-cloudflare-account-move/) as 0.2.10. Next: 029 hosting at
-home (the founder's choice on 2026-11-15, before AWS), then 030 scaling across servers (the
-founder's choice on 2026-11-15, also before AWS), then 031 AWS, then more providers in phases
-(032–036), each once the founder gives the go-ahead.
+home (the founder's choice on 2026-11-15, before AWS), then [030 several apps on a server OpsCrew
+created](030-shared-created-server/) (the founder's choice on 2026-11-19, built beside 029's
+release), then 031 scaling across servers (the
+founder's choice on 2026-11-15, also before AWS), then 032 AWS, then more providers in phases
+(033–037), each once the founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -108,7 +110,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (031), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (032), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -128,7 +130,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (031) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (032) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -299,7 +301,7 @@ AWS on 2026-11-06; its scope set from the research on 2026-11-11,
   like them.
 - Own server and Portainer stay as they are: they are kinds of target with flows of their own,
   not providers.
-- Installing provider packages comes with AWS (031), designed around its first real user.
+- Installing provider packages comes with AWS (032), designed around its first real user.
 - **Other areas get their own contract when a second implementation arrives** (founder,
   2026-11-11), not before, since a contract with one user tends to take the wrong shape:
   - DNS and the edge when Fastly is placed, with Cloudflare moved behind it;
@@ -404,7 +406,7 @@ servers.
     without dropping connections, turning its admin console off, its own certificates (ACME),
     whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
     cache headers, and the image's versions and licence.
-- **Built in**, like the other targets: installing provider packages comes with AWS (031).
+- **Built in**, like the other targets: installing provider packages comes with AWS (032).
 
 ## 028 Moving an app to another Cloudflare account
 
@@ -471,13 +473,27 @@ build starts, before its tasks:
   near the limit and disk headroom, each query under a strict timeout so the check never weighs on
   a struggling database. An index it suggests is a proposal, never applied.
 
-## 030 Scaling across servers
+## 030 Several apps on a server OpsCrew created
+
+An app from another repository (or another app of the same one) runs on a server OpsCrew created
+for a first app, beside it, with no second server to pay for. The founder asked for it on
+2026-11-19, to put a second app of his on the server his first one runs on, and chose to build it
+rather than create a server. It is built beside 029's release.
+
+**What exists today:** a server the user owns already holds apps from several repositories (013),
+and previews already share another environment's created server (022). A server OpsCrew creates
+has only the `deploy` login, without root or sudo, so the own-server path can't reach it, and the
+first app's commands don't know about other apps on it.
+
+**Spec, plan and research:** [030-shared-created-server](030-shared-created-server/), ADR 0035.
+
+## 031 Scaling across servers
 
 Copies of an app's web service and workers on several servers behind a load balancer: more copies
 when the load rises, fewer when it falls, within limits the user approved once. The founder placed
 it after 029 and before AWS on 2026-11-15, after a suggestion to let OpsCrew scale an app onto a
 few cheap servers. Apps on Hetzner, Contabo or the user's own servers can't scale out today; on AWS
-(031) the managed services scale by themselves.
+(032) the managed services scale by themselves.
 
 **What exists today:** split placement (018) runs an app's services on several servers joined by a
 WireGuard private network; deploys switch without downtime, and a release gets traffic only after
@@ -526,7 +542,7 @@ It covers, in order:
   depth) and how to keep them from flapping, draining a copy before it's removed, and the cost of
   each step shown in the plan.
 
-## 031 AWS
+## 032 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -640,22 +656,22 @@ rarely run. If it never runs, those stay "not tested live" on the coverage page.
 ## After AWS: more providers, in phases (founder, 2026-11-16)
 
 The founder listed the providers to add and left the phases to the lead. Hetzner and DigitalOcean
-are built in already; AWS is 031. A phase that brings a provider brings its live test only with an
+are built in already; AWS is 032. A phase that brings a provider brings its live test only with an
 account the founder opens, so each phase's live tests are decided when it starts.
 
-**Amazon CloudFront comes with 031** (S3's files behind it, in its per-component list); in front of
-a whole AWS app it joins 033's contract. **Azure Front Door comes with Azure** (035).
+**Amazon CloudFront comes with 032** (S3's files behind it, in its per-component list); in front of
+a whole AWS app it joins 034's contract. **Azure Front Door comes with Azure** (036).
 
-### 032 More server providers, first wave: Vultr, Akamai Cloud (Linode), UpCloud, Scaleway
+### 033 More server providers, first wave: Vultr, Akamai Cloud (Linode), UpCloud, Scaleway
 
-Each is a provider package on 026's contract (ADR 0029), installed as 031 makes provider packages
+Each is a provider package on 026's contract (ADR 0029), installed as 032 makes provider packages
 installable, so none of them grows the core. They were picked first because their servers are the
 shape OpsCrew already handles at Hetzner (a server, a firewall, an SSH key, backups or snapshots,
-billed by use), which also makes them places for 030's extra copies. **Research first, per
+billed by use), which also makes them places for 031's extra copies. **Research first, per
 provider:** its API and Terraform provider, how it bills a server (and a switched-off one), its
 firewall and private networking, its backups and snapshots, its regions, and its prices read live.
 
-### 033 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
+### 034 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
 
 It opens with the contract for the DNS and edge provider, with Cloudflare moved behind it (026's
 rule: a contract when the second implementation arrives); designing it with three at once keeps it
@@ -676,18 +692,18 @@ cache kept off what must not be cached.
   validated, which of them can block those paths on their free or cheapest plan, their Terraform
   providers, and their prices.
 
-### 034 More server providers, second wave: OVHcloud, IONOS Cloud, Kamatera
+### 035 More server providers, second wave: OVHcloud, IONOS Cloud, Kamatera
 
 After the first wave, because their accounts and APIs are shaped further from Hetzner's: OVHcloud's
 Public Cloud runs on OpenStack with its own projects and keys, IONOS Cloud builds servers inside a
 virtual data centre, and Kamatera has an API and account model of its own. **Research first:** the
-same list as 032's, plus how each account's projects or data centres map to an app.
+same list as 033's, plus how each account's projects or data centres map to an app.
 
-### 035 Azure and 036 Google Cloud
+### 036 Azure and 037 Google Cloud
 
-After the providers above, as provider packages, reusing 031's managed-services design, Azure
+After the providers above, as provider packages, reusing 032's managed-services design, Azure
 Verified Modules, terraform-google-modules and Infracost. Azure brings Azure Front Door and Azure
-DNS as its edge and DNS; Google Cloud brings Cloud CDN, Cloud Armor and Cloud DNS. Both join 033's
+DNS as its edge and DNS; Google Cloud brings Cloud CDN, Cloud Armor and Cloud DNS. Both join 034's
 contract.
 
 ### Later, if users ask
@@ -712,14 +728,14 @@ contract.
   `node` or `npm` outside the selector) can't test it live.
 - **Database replicas** (founder, 2026-11-15): a second database server that copies the main one
   continuously, for reads (Rails and Laravel send reads there by configuration; Django through a
-  database router) and as a standby, at the same provider or a second one, so that 030's copies at
+  database router) and as a standby, at the same provider or a second one, so that 031's copies at
   two providers survive one of them failing. The standby takes over through an approved switch the
   user starts first; taking over by itself only after research (Patroni and the like).
 - **Left out** (founder, 2026-11-15, from an outside proposal of 20 features, a third of which
   OpsCrew already has): a local dashboard (the hosted control plane is the dashboard), a templates
   marketplace, an operations knowledge base, chaos testing, and compliance evidence reports until
   a customer asks. Sharding a database too: the app must be written for it, it pays off only far
-  beyond one large server, and AWS's managed databases (031) serve apps that big.
+  beyond one large server, and AWS's managed databases (032) serve apps that big.
 - **Down migrations for Alembic projects with several heads, if users ask** (founder, 2026-11-06,
   from 019's database rollback): Alembic's several bases or `branch_labels`, which modular
   codebases use on purpose; no widely used package is known to ship its own branch. Since T1943
