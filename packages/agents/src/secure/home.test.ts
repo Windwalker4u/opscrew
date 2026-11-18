@@ -25,7 +25,7 @@ import {
   ownPlan,
   ownRunner,
 } from "../testing";
-import { fromInside, homeServerChecks, insideLabel } from "./home";
+import { AWAY_FROM_HOME, fromInside, homeServerChecks, insideLabel } from "./home";
 import { runSecure } from "./run";
 
 const NOW = "2026-11-20T12:00:00.000Z";
@@ -276,7 +276,7 @@ async function homeSecureSetup(o: { reachable?: boolean } = {}) {
     host: LAN_IPV4,
     run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
   };
-  return { deps, host, remote };
+  return { deps, host, remote, runner };
 }
 
 const noScanners: Scanner[] = [];
@@ -313,19 +313,40 @@ describe("runSecure on a server at home", () => {
     for (const source of SSH_FROM) expect(report).not.toContain(source);
   });
 
-  it("away from home: the server-side checks are skipped with the reason", async () => {
-    const { deps, host, remote } = await homeSecureSetup({ reachable: false });
+  it("away from home: SSH is tried once, every check over SSH is a skip with the reason, nothing fails", async () => {
+    const { deps, host, remote, runner } = await homeSecureSetup({ reachable: false });
+    const used: string[] = [];
+    const deploy: RemoteExec = {
+      host: remote.host,
+      run: async (command) => {
+        used.push(command);
+        return remote.run(command);
+      },
+    };
     const result = await runSecure(deps, {
       scanners: noScanners,
       tcpConnect: async () => false,
-      remote,
+      remote: deploy,
       own: { host },
     });
+    // The admin login tried once; the deploy user's shell and ssh itself never.
     expect(host.inspections).toBe(0);
-    const skipped = find(result.hostChecks, "home-server-checks");
-    expect(skipped).toMatchObject({ status: "skip" });
-    expect(skipped.message).toContain("answers SSH only on your home network");
-    // SSH not answering from here is no failure either.
+    expect(runner.calls.filter((call) => call.command === "ssh-keyscan")).toHaveLength(1);
+    expect(runner.calls.filter((call) => call.command === "ssh")).toHaveLength(0);
+    expect(used).toEqual([]);
+    // Each check over SSH, the admin login's and the deploy user's, is a skip with the same reason.
+    const overSsh = [...result.hostChecks, find(result.probes, "ssh-password-login-disabled")];
+    expect(overSsh.length).toBeGreaterThan(2);
+    for (const check of overSsh) {
+      expect(check).toMatchObject({ status: "skip", message: AWAY_FROM_HOME });
+      expect(check.remediation).toBe("Run `opscrew secure` from your home network.");
+    }
+    expect(find(result.hostChecks, "home-server-checks").message).toContain(
+      "answers SSH only on your home network",
+    );
+    // Nothing fails because SSH didn't answer: SSH's port probe is a warning from inside.
     expect(find(result.probes, "ssh-port-open").status).toBe("warn");
+    expect([...result.hostChecks, ...result.probes].some((c) => c.status === "fail")).toBe(false);
+    expect(result.passed).toBe(true);
   });
 });

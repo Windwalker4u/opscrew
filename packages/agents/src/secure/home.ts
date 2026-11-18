@@ -15,7 +15,6 @@ import { errorText, isUserFacingError } from "@opscrew/core";
 import { homeIpv6Proxied, webFilterMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { commandFlags } from "../environments/choice";
 import type { OwnServerServices } from "../provision/types";
 import { checkResult } from "../shared";
 import { connectOwnServer, inspectOwnHost } from "../shared/own-server";
@@ -252,43 +251,71 @@ export function homeServerChecks(
   ];
 }
 
+/** Why nothing on a server at home was checked over SSH from this computer. */
+export const AWAY_FROM_HOME =
+  "Your server answers SSH only on your home network, so it wasn't checked over SSH from here.";
+
+/** How `secure` read a server at home through its admin login. */
+export type HomeSecureRead =
+  | { facts: HostFacts }
+  /** SSH didn't answer: this computer is away from the home network. Nothing tries it again. */
+  | { away: true }
+  | { failed: string };
+
 /**
- * {@link homeServerChecks} through the admin login (pinned host key) and the host adapter's
- * inspection of `services` (default `inspectHost`), read-only. Away from home, where SSH doesn't
- * answer, one `skip` saying so; any other plain-words failure is one failed check with its reason.
+ * Reads a server at home once through the admin login (pinned host key) and the host adapter's
+ * inspection of `services` (default `inspectHost`), read-only. A login that can't reach SSH is
+ * `away`; any other plain-words failure is `failed`, with its words.
  */
-export async function homeSecurityChecks(
+export async function readHomeForSecure(
   deps: PhaseDeps,
-  plan: DeployPlan,
-  home: OwnHome,
   services?: Pick<OwnServerServices, "remote" | "homeDir" | "host">,
-): Promise<CheckResult[]> {
-  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  const title = "OpsCrew can check your server at home";
-  let facts: HostFacts;
+): Promise<HomeSecureRead> {
   try {
     deps.reporter.step("Checking your server's home setup as its admin login (read-only)");
     const session = await connectOwnServer(deps, { services });
-    facts = await inspectOwnHost(deps, session, {
+    const facts = await inspectOwnHost(deps, session, {
       services,
       phase: "secure",
       detail: "the SSH table, the web filter and the address updater",
     });
+    return { facts };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
-    if (error.code === "COMMAND_FAILED") {
-      return [
-        checkResult(
-          "home-server-checks",
-          title,
-          "info",
-          "skip",
-          "Your server answers SSH only on your home network, so its SSH table, web filter, address updater and power weren't checked.",
-          { remediation: `Run \`opscrew secure${flags}\` from your home network.` },
-        ),
-      ];
-    }
-    return [checkResult("home-server-checks", title, "medium", "fail", errorText(error))];
+    return error.code === "COMMAND_FAILED" ? { away: true } : { failed: errorText(error) };
   }
-  return homeServerChecks(plan, facts, home, flags);
+}
+
+/**
+ * `check` skipped away from home ({@link AWAY_FROM_HOME}), with what to do: run secure at home.
+ */
+export function awayFromHome(
+  check: Pick<CheckResult, "id" | "title" | "severity">,
+  flags: string,
+): CheckResult {
+  return checkResult(check.id, check.title, check.severity, "skip", AWAY_FROM_HOME, {
+    remediation: `Run \`opscrew secure${flags}\` from your home network.`,
+  });
+}
+
+/**
+ * The server-side checks of a server at home from `read`: {@link homeServerChecks}, or away from
+ * home one `skip` saying so, or one failed check with the reason it couldn't be read.
+ */
+export function homeSecurityChecks(
+  plan: DeployPlan,
+  home: OwnHome,
+  read: HomeSecureRead,
+  flags: string,
+): CheckResult[] {
+  const check = {
+    id: "home-server-checks",
+    title: "OpsCrew can check your server at home",
+    severity: "medium" as const,
+  };
+  if ("away" in read) return [awayFromHome(check, flags)];
+  if ("failed" in read) {
+    return [checkResult(check.id, check.title, check.severity, "fail", read.failed)];
+  }
+  return homeServerChecks(plan, read.facts, home, flags);
 }

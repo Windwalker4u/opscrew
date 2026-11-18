@@ -67,7 +67,15 @@ import {
 import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { siteHost } from "../verify/serverless";
-import { fromInside, homeSecurityChecks, insideLabel } from "./home";
+import {
+  AWAY_FROM_HOME,
+  awayFromHome,
+  fromInside,
+  type HomeSecureRead,
+  homeSecurityChecks,
+  insideLabel,
+  readHomeForSecure,
+} from "./home";
 import { monitoringSecurityChecks } from "./monitoring";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
@@ -217,6 +225,8 @@ async function checkServer(
   host: string,
   own: OwnSecureTarget | undefined,
   options: RunSecureOptions,
+  /** A server at home whose SSH didn't answer: the command's flags for the skips' next step. */
+  away?: string,
 ): Promise<{
   hostChecks: CheckResult[];
   probes: CheckResult[];
@@ -225,13 +235,20 @@ async function checkServer(
 }> {
   const { paths, reporter } = deps;
   const remote =
-    options.remote ??
-    ((await exists(paths.files.deployKey))
-      ? await appServerShell(deps, plan, { host, port: own?.sshPort ?? 22 })
-      : undefined);
+    away !== undefined
+      ? undefined
+      : (options.remote ??
+        ((await exists(paths.files.deployKey))
+          ? await appServerShell(deps, plan, { host, port: own?.sshPort ?? 22 })
+          : undefined));
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;
-  if (remote === undefined) {
+  if (away !== undefined) {
+    // Away from home nothing logs in: each check is a skip with the reason, never a failure.
+    hostChecks = hostChecksFor(plan, APP_SERVER, own?.hardening).map((check) =>
+      awayFromHome(check, away),
+    );
+  } else if (remote === undefined) {
     skipped = `the deploy key is not on this machine (it is created by \`opscrew provision\`). Run the checks from the machine that ${own !== undefined ? "prepared your server" : "provisioned the server"}.`;
   } else {
     reporter.step(
@@ -286,13 +303,15 @@ async function checkServer(
           ...(inside !== undefined ? { inside } : {}),
         })),
     ...(inside === undefined ? services : services.map((check) => fromInside(check, inside))),
-    await probeSshPasswordAuth(host, {
-      runner: deps.runner,
-      knownHostsFile: paths.files.knownHosts,
-      ...(own !== undefined
-        ? { port: own.sshPort, passwordsKept: own.hardening.passwordsKept }
-        : {}),
-    }),
+    away !== undefined
+      ? awayFromHome(PASSWORD_PROBE, away)
+      : await probeSshPasswordAuth(host, {
+          runner: deps.runner,
+          knownHostsFile: paths.files.knownHosts,
+          ...(own !== undefined
+            ? { port: own.sshPort, passwordsKept: own.hardening.passwordsKept }
+            : {}),
+        }),
   ];
   return {
     hostChecks,
@@ -301,6 +320,13 @@ async function checkServer(
     ...(remote !== undefined ? { remote } : {}),
   };
 }
+
+/** The password probe's check, as `probeSshPasswordAuth` names it. */
+const PASSWORD_PROBE = {
+  id: "ssh-password-login-disabled",
+  title: "SSH refuses password logins",
+  severity: "high",
+} as const;
 
 /** The pins the deeper checks run from: Lynis's container is the pinned Alpine curl image. */
 const DEEP_PINS: DeepPins = {
@@ -508,6 +534,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let hostChecksSkipped: string | undefined;
   let remote: RemoteExec | undefined;
   let account: HostingSecurity | undefined;
+  let homeRead: HomeSecureRead | undefined;
   const own = plan.target.provider === "own" ? await ownSecureTarget(deps, plan) : undefined;
   const sshHost = own?.sshHost ?? host;
   if (portainer) {
@@ -527,20 +554,22 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
         ? "OpsCrew does not know how to reach your server on this computer. Run `opscrew secure` on the computer that ran `opscrew provision` (its `.opscrew/` folder holds the login and the confirmed host key)."
         : UNKNOWN_SERVER_ADDRESS;
   } else {
-    const checked = await checkServer(deps, plan, sshHost, own, options);
+    // A server at home is read once through its admin login first: away from home (SSH answers
+    // only on the home network) nothing else tries it, and every check over SSH is a skip.
+    homeRead = own?.home === undefined ? undefined : await readHomeForSecure(deps, options.own);
+    const flags = await commandFlags(paths.root, paths.environment, paths.app);
+    const away = homeRead !== undefined && "away" in homeRead ? flags : undefined;
+    const checked = await checkServer(deps, plan, sshHost, own, options, away);
     hostChecks = checked.hostChecks;
     probes = checked.probes;
     hostChecksSkipped = checked.skipped;
     remote = checked.remote;
-    // A server at home: what only its admin login reads (the SSH table, the web filter, the
-    // address updater, the power supply).
-    if (own?.home !== undefined) {
-      hostChecks = [
-        ...hostChecks,
-        ...(await homeSecurityChecks(deps, plan, own.home, options.own)),
-      ];
+    // What only its admin login reads: the SSH table, the web filter, the updater, the power.
+    if (own?.home !== undefined && homeRead !== undefined) {
+      hostChecks = [...hostChecks, ...homeSecurityChecks(plan, own.home, homeRead, flags)];
     }
   }
+  const away = homeRead !== undefined && "away" in homeRead;
   // An app with a private network (feature 018): every extra server as the app's, each service on
   // a private address held to it, named by server; their addresses never reach the report. When
   // the app's server's checks were skipped (no deploy key here), only the outside probes run.
@@ -573,7 +602,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   }
   // Self-hosted monitoring (feature 020): Grafana and the front only on private addresses, and
   // the network's filter for their ports, on the stack's server.
-  if (sshHost !== undefined && hostChecksSkipped === undefined) {
+  if (sshHost !== undefined && hostChecksSkipped === undefined && !away) {
     hostChecks = [
       ...hostChecks,
       ...(await monitoringSecurityChecks(deps, plan, {
@@ -608,12 +637,14 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
               ? siteDeep(site)
               : hosting
                 ? HOSTING_DEEP
-                : {
-                    ...(remote !== undefined ? { remote } : {}),
-                    ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
-                    ...(sshHost !== undefined ? { sshHost } : {}),
-                    sshPort: own?.sshPort ?? 22,
-                  },
+                : away
+                  ? { skipped: AWAY_FROM_HOME, sshPort: own?.sshPort ?? 22 }
+                  : {
+                      ...(remote !== undefined ? { remote } : {}),
+                      ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
+                      ...(sshHost !== undefined ? { sshHost } : {}),
+                      sshPort: own?.sshPort ?? 22,
+                    },
           options.docker ?? localDocker(deps.runner),
         );
 
