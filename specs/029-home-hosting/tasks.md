@@ -229,7 +229,8 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2905 [P] [US1] SSH only from the home network, and the app record's `home`
   - Owns: `packages/connectors/ssh-host/src/plan.ts`, `packages/connectors/ssh-host/src/types.ts`,
-    `packages/connectors/ssh-host/src/ssh-firewall*.ts`, colocated tests
+    `packages/connectors/ssh-host/src/ssh-firewall*.ts`, and (lead, 2026-11-18) `facts.ts` (`AppRecordSchema.home`),
+    `steps.ts` (`appRecord`'s `home`, `SshFirewallParams.install`), `findings.ts` (`homeModeConflict`), colocated tests
   - Reads: plan 5. (the app record, M4), 7.; research R8; data-model 6; `sshFirewallStep` and
     `planRunnerHost`
   - Depends: T2904
