@@ -526,7 +526,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     `plugin/skills/opscrew-deploy/**`, colocated tests and snapshots
   - Reads: contracts/cli.md (all); quickstart "A user hosts an app at home"
   - Depends: waves 1–7
-  - Decided by the lead (T2911's notes): the terminal interview asks `server.home` with the address-based default for the host typed in the same run (a second round after `server.host` if needed); the MCP server's `SERVER_ANSWER_HELP` gains `server.home` and `server.sshFrom`, and its `server.reachable` help no longer says "false for a home server".
+  - Decided by the lead (T2911's notes): the terminal interview asks `server.home` with the address-based default for the host typed in the same run (a second round after `server.host` if needed); the MCP server's `SERVER_ANSWER_HELP` gains `server.home` and `server.sshFrom`; the move's services get `askUpdaterToken` (a hidden prompt for B's updater token, T2916b); and its `server.reachable` help no longer says "false for a home server".
   - Accept: the new answers, variables (`OPSCREW_DNS_UPDATER_TOKEN`, `OPSCREW_NEW_DNS_UPDATER_TOKEN`)
     registered with the redactor, `rotate dns-updater`, `--confirm <app>` for the records' deletion,
     and the output lines; the MCP server's status and verify pass the same data through the
@@ -541,6 +541,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     guide's other pages for tone
   - Depends: waves 1–7 (the real strings)
   - Also (lead, T2943's findings): a restart or reload of nftables on an iptables-nft host (Ubuntu 24.04's default) wipes every iptables table, ufw's included; OpsCrew's filter and Docker come back by themselves, ufw doesn't: the own-server page says to run `sudo ufw reload` after one.
+  - Also (T2916b): `cloudflare-move.md` names `OPSCREW_NEW_DNS_UPDATER_TOKEN` and its recipe in the new account, and that an abort deletes the updater's copied records when the new zone stays.
   - Accept (FR-2916): when to host at home versus the tunnel; what to forward and the DHCP
     reservation; the IPv6 router rule; the updater (a script and two units, what it writes, how
     often, the 60 s TTL) and its token's recipe and reach (R14 plainly); the outside check and
