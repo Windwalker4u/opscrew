@@ -47,12 +47,12 @@ import { opscrewUntilApproved } from "./environment-checks";
 import { type CliRun, LiveRun, leakSourcesOf, serverSettings } from "./harness";
 import { jobLog } from "./portainer-cloud";
 import { MOVE_SERVICES } from "./retarget-anywhere-support";
+import { approvedDrill, type DrillReport } from "./snapshots-checks";
 import {
   addressLinesOutsidePurpose,
   approveHashes,
   ed25519FromKeyscan,
   leakedLabels,
-  printedHash,
 } from "./support";
 
 // ---------------------------------------------------------------------------------------------
@@ -328,36 +328,6 @@ export function printedConfirms(output: string): string[] {
     }
   }
   return [...names];
-}
-
-/**
- * What a drill (or its removal) without `--approve` showed: its hash (`<label>: <hex>`) and the
- * name typing approves it ("Typing <name> approves it.").
- */
-export function shownApproval(
-  output: string,
-  label: "Drill hash" | "Removal hash",
-): { hash: string; confirm: string } | undefined {
-  const hash = printedHash(output, label);
-  const confirm = [...output.matchAll(/Typing (\S+) approves it\./g)].at(-1)?.[1];
-  return hash === undefined || confirm === undefined ? undefined : { hash, confirm };
-}
-
-const DrillReportSchema = z.object({
-  outcome: z.string(),
-  summary: z.string(),
-  parts: z.array(z.object({ name: z.string() })),
-  health: z.object({ state: z.string(), seconds: z.number() }).optional(),
-  tables: z.array(z.object({ service: z.string(), count: z.number().optional() })),
-  removal: z.string().optional(),
-});
-export type DrillReport = z.infer<typeof DrillReportSchema>;
-
-/** The report `opscrew restore --drill --json` printed: the JSON from its first line with `{`. */
-export function drillReportOf(stdout: string): DrillReport {
-  const start = stdout.search(/^\{/m);
-  if (start < 0) throw new Error("opscrew restore --drill --json printed no report.");
-  return DrillReportSchema.parse(JSON.parse(stdout.slice(start)));
 }
 
 const AdviceSchema = z.object({
@@ -795,55 +765,20 @@ export class HomePass {
     );
   }
 
-  /**
-   * `opscrew restore --drill <args> --json` as a script runs it: first without `--approve`, which
-   * must stop at the approval (exit 1) with its hash and `<app>-drill` to type; then with them.
-   * Returns the report.
-   */
+  /** `opscrew restore --drill <args> --json` as a script runs it ({@link approvedDrill}). */
   async drill(args: readonly string[]): Promise<DrillReport> {
-    const { run } = this;
-    const shown = await run.opscrew("restore", "--drill", ...args);
-    const approval = shownApproval(shown.output, "Drill hash");
-    if (shown.exitCode !== 1 || approval === undefined) {
-      throw new Error(
-        `opscrew restore --drill without --approve must stop at its approval with a drill hash (exit 1), but exited with ${shown.exitCode}:\n${run.tail(shown.output)}`,
-      );
-    }
-    if (approval.confirm !== `${run.app()}-drill`) {
-      throw new Error(`The drill asks to type ${approval.confirm}, not ${run.app()}-drill.`);
-    }
-    const applied = await run.opscrewOk(
-      "restore",
-      "--drill",
-      ...args,
-      "--confirm",
-      approval.confirm,
-      "--approve",
-      approval.hash,
-      "--json",
-    );
-    return drillReportOf(applied.stdout);
+    return (await approvedDrill(this.run, args, "Drill hash")).report;
   }
 
   /** `opscrew restore --drill --remove` as a script runs it: the removal approved by its hash. */
   async removeDrill(): Promise<void> {
-    const { run } = this;
-    const shown = await run.opscrew("restore", "--drill", "--remove");
-    const approval = shownApproval(shown.output, "Removal hash");
-    if (shown.exitCode !== 1 || approval === undefined) {
+    const { applied } = await approvedDrill(this.run, ["--remove"], "Removal hash");
+    if (applied.exitCode !== 0) {
       throw new Error(
-        `opscrew restore --drill --remove without --approve must stop at its approval (exit 1), but exited with ${shown.exitCode}:\n${run.tail(shown.output)}`,
+        `opscrew restore --drill --remove exited with ${applied.exitCode}:
+${this.run.tail(applied.output)}`,
       );
     }
-    await run.opscrewOk(
-      "restore",
-      "--drill",
-      "--remove",
-      "--confirm",
-      approval.confirm,
-      "--approve",
-      approval.hash,
-    );
   }
 
   // -------------------------------------------------------------------------------------------

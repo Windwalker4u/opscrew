@@ -38,6 +38,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { expect } from "vitest";
+import { z } from "zod";
 import {
   api,
   HETZNER_API,
@@ -51,7 +52,6 @@ import {
 import type { BucketPass, ServerExec } from "./component-checks";
 import type { AppEnvironments } from "./environment-checks";
 import type { CliRun, LiveRun } from "./harness";
-import { type DrillReport, drillReportOf } from "./home-support";
 import { jobLog } from "./portainer-cloud";
 import { BUSYBOX_IMAGE } from "./portainer-support";
 import { readData as readMovedData, seedData as seedMovedData } from "./retarget-anywhere-checks";
@@ -235,6 +235,23 @@ export async function approvedRestore(
 // ---------------------------------------------------------------------------------------------
 // Restore drills, as a script runs them.
 
+const DrillReportSchema = z.object({
+  outcome: z.string(),
+  summary: z.string(),
+  parts: z.array(z.object({ name: z.string() })),
+  health: z.object({ state: z.string(), seconds: z.number() }).optional(),
+  tables: z.array(z.object({ service: z.string(), count: z.number().optional() })),
+  removal: z.string().optional(),
+});
+export type DrillReport = z.infer<typeof DrillReportSchema>;
+
+/** The report `opscrew restore --drill --json` printed: the JSON from its first line with `{`. */
+export function drillReportOf(stdout: string): DrillReport {
+  const start = stdout.search(/^\{/m);
+  if (start < 0) throw new Error("opscrew restore --drill --json printed no report.");
+  return DrillReportSchema.parse(JSON.parse(stdout.slice(start)));
+}
+
 /** A drill a script approved: what its first run showed, its approving run and its report. */
 export interface ApprovedDrill {
   shown: string;
@@ -245,14 +262,15 @@ export interface ApprovedDrill {
 /**
  * `opscrew restore --drill <args> --json` as a script runs it: first without `--approve`, which
  * must stop at the approval (exit 1) with its hash after `label` (`Drill hash` on a server or a
- * hosting account, `Stack plan hash` in a Portainer) and `<app>-drill` to type; then with
+ * hosting account, `Stack plan hash` in a Portainer, `Removal hash` for `--remove` on a server)
+ * and `<app>-drill` to type; then with
  * `--confirm <app>-drill --approve <hash>`. A drill that ran and failed exits non-zero with its
  * report, which is returned all the same; a run with no report throws.
  */
 export async function approvedDrill(
   run: LiveRun,
   args: readonly string[],
-  label: "Drill hash" | "Stack plan hash",
+  label: "Drill hash" | "Removal hash" | "Stack plan hash",
   app = run.app(),
 ): Promise<ApprovedDrill> {
   const shown = await run.opscrew("restore", "--drill", ...args);

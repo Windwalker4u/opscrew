@@ -1178,12 +1178,15 @@ let openedLeg: MoveLeg | undefined;
 
 /**
  * One leg in one process: opens the pass before its first step (after checking the legs before it
- * passed), saves it after its last, records its outcome. A step that returns {@link StepWait} ends
+ * passed), saves it after its last, records its outcome; a leg refused before it opens records
+ * nothing. A step that returns {@link StepWait} ends
  * the leg as `waiting` with that advice; the steps after a failure or a wait are skipped (unless
  * `always`).
  */
 export class Leg {
   private ended: "failed" | "waiting" | undefined;
+  /** The leg passed its checks and opened the pass: only then is anything recorded or saved. */
+  private started = false;
 
   constructor(
     private readonly pass: MovePass,
@@ -1202,6 +1205,7 @@ export class Leg {
         this.ended = "failed";
         throw new Error(`${leg} can't start yet: ${problem} (docs/e2e.md).`);
       }
+      this.started = true;
       if (pass.state !== undefined) {
         pass.state.legs[leg] = { startedAt: new Date().toISOString(), outcome: "running" };
         await pass.save();
@@ -1209,6 +1213,7 @@ export class Leg {
     }, minutes(10));
     const startedAt = new Date().toISOString();
     afterAll(async () => {
+      if (!this.started) return;
       // L0 makes the state in its first step, so its record may start only here.
       const { state } = pass;
       if (state !== undefined) {
