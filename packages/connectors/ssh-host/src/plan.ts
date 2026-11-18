@@ -24,6 +24,15 @@ import {
   appDirs,
   checkKeyComment,
   DATA_DIR,
+  DRILL_DIR,
+  DRILL_LIMIT_SECONDS,
+  DRILL_MINUTE,
+  DRILL_RECIPE,
+  DRILL_SLOT_AFTER_HOURS,
+  DRILL_VALUES,
+  DRILLS_LOG,
+  drillCronLine,
+  drillProject,
   type EcdsaHostKeyType,
   EDGE_DIR,
   EDGE_PROJECT,
@@ -136,12 +145,7 @@ import {
 import {
   ADDON_FILE_PARAM,
   appRecord,
-  DRILL_MINUTE,
-  DRILL_RECIPE,
-  DRILL_VALUES,
   dataKeptRecord,
-  drillCronLine,
-  drillProject,
   HubPublicKeySchema,
   type RunAs,
   stepScripts,
@@ -1547,7 +1551,7 @@ function drillsFor(
     title,
     "change",
     params,
-    `The deploy user's crontab runs "sh ${dir}/snapshot.sh drill scheduled" at minute ${DRILL_MINUTE} of every hour, ${login === undefined ? "with cron installed first when it is missing" : "all of it as the deploy user, which makes the app's folder when the first deploy has not yet"}; the script drills only in its slot, 3 hours after the scheduled snapshot's, once a ${period}. The copy's files go to ${dir}/${DRILL_RECIPE}, and the values of .env.preview to its ${DRILL_VALUES}, which only the deploy user can read; the values are supplied at apply time, and this plan holds only their SHA-256. The script on this server keeps every drill within these bounds: only its own things (the Compose project ${project.name}, ${dir}/.drill and ${project.data}), never a container, volume or file of the app's; only the latest scheduled snapshot, never an older one or the copy off the server; no internet and no published port, and the app's .env never read; it removes what it made, and at its next start what a crashed run left; once a ${period}, never more often than once a day; never beside a deploy, a snapshot or a restore of the app (it takes their lock, and is skipped while it is held); skipped when the disk has less free space than the snapshot's size and 1 GiB and 10% of the disk, or the memory is short of the copy's limits; at most 30 minutes, then its containers are stopped and removed. Each drill writes one line to ${dir}/.snapshots/drills.log, which opscrew status shows. Each drill deletes its copy's data, so this plan is approved with the typed name ${project.name}. snapshot.sh comes with each deploy of the app, so a change to the repository's deploy can change what a drill does, and anything with root on this server, the docker group included (the deploy user, and the server's own deploy runner, which runs the repository's code), can go beyond these bounds. Changing a bound is a new plan and a new approval.`,
+    `The deploy user's crontab runs "sh ${dir}/snapshot.sh drill scheduled" at minute ${DRILL_MINUTE} of every hour, ${login === undefined ? "with cron installed first when it is missing" : "all of it as the deploy user, which makes the app's folder when the first deploy has not yet"}; the script drills only in its slot, ${DRILL_SLOT_AFTER_HOURS} hours after the scheduled snapshot's, once a ${period}. The copy's files go to ${dir}/${DRILL_RECIPE}, and the values of .env.preview to its ${DRILL_VALUES}, which only the deploy user can read; the values are supplied at apply time, and this plan holds only their SHA-256. The script on this server keeps every drill within these bounds: only its own things (the Compose project ${project.name}, ${dir}/${DRILL_DIR} and ${project.data}), never a container, volume or file of the app's; only the latest scheduled snapshot, never an older one or the copy off the server; no internet and no published port, and the app's .env never read; it removes what it made, and at its next start what a crashed run left; once a ${period}, never more often than once a day; never beside a deploy, a snapshot or a restore of the app (it takes their lock, and is skipped while it is held); skipped when the disk has less free space than the snapshot's size and 1 GiB and 10% of the disk, or the memory is short of the copy's limits; at most ${DRILL_LIMIT_SECONDS / 60} minutes, then its containers are stopped and removed. Each drill writes one line to ${dir}/${DRILLS_LOG}, which opscrew status shows. Each drill deletes its copy's data, so this plan is approved with the typed name ${project.name}. snapshot.sh comes with each deploy of the app, so a change to the repository's deploy can change what a drill does, and anything with root on this server, the docker group included (the deploy user, and the server's own deploy runner, which runs the repository's code), can go beyond these bounds. Changing a bound is a new plan and a new approval.`,
   );
 }
 
@@ -1563,7 +1567,7 @@ function drillsRemoval(app: string, login?: { image: string }): HostStep {
     `Remove the scheduled restore drills of "${app}": their hourly line, their recipe and values, and any copy a drill left`,
     "change",
     login === undefined ? { app, remove: true } : { app, remove: true, runAs: "login", ...login },
-    `Their line in the deploy user's crontab goes first, so no drill starts, and a drill that is running finishes first; then ${dir}/${DRILL_RECIPE} with its values, ${dir}/.drill, the containers, networks and volumes of the Compose project ${project.name}, and ${project.data}, a copy kept with --keep included${login === undefined ? "" : `, as the deploy user (${project.data}, whose files belong to the copy's containers, in a container of ${login.image} that Docker runs with no network, as a drill removes it)`}. The app's own containers, data and snapshots stay.`,
+    `Their line in the deploy user's crontab goes first, so no drill starts, and a drill that is running finishes first; then ${dir}/${DRILL_RECIPE} with its values, ${dir}/${DRILL_DIR}, the containers, networks and volumes of the Compose project ${project.name}, and ${project.data}, a copy kept with --keep included${login === undefined ? "" : `, as the deploy user (${project.data}, whose files belong to the copy's containers, in a container of ${login.image} that Docker runs with no network, as a drill removes it)`}. The app's own containers, data and snapshots stay.`,
   );
 }
 

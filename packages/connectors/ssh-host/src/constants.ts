@@ -276,13 +276,72 @@ export function checkKeyComment(repository: string): string {
   return `${CHECK_KEY_COMMENT}${repository}`;
 }
 
+// The scheduled restore drills (feature 029). Each is a copy of `@opscrew/iac-templates`' `drill/`
+// constant named beside it; an agents test asserts they are equal.
+
+/**
+ * The scheduled drills' copy in the app's folder, which `snapshot.sh drill scheduled` reads
+ * (`DRILL_RECIPE_DIR`).
+ */
+export const DRILL_RECIPE = ".drill-recipe";
+
+/**
+ * The file of {@link DRILL_RECIPE} with the copy's values (`.env.preview`'s), never planned
+ * (`DRILL_VALUES_FILE`).
+ */
+export const DRILL_VALUES = "values.env";
+
+/** {@link DRILL_RECIPE}'s file with the schedule, `weekly` or `daily` (`DRILL_RECIPE_SCHEDULE`). */
+export const DRILL_SCHEDULE_FILE = "schedule";
+
+/** The drills' own folder in the app's folder, a drill's copy in it (`DRILL_DIR`). */
+export const DRILL_DIR = ".drill";
+
+/** The drills' log in the app's folder, one line per run (`DRILLS_LOG`). */
+export const DRILLS_LOG = ".snapshots/drills.log";
+
+/** A scheduled drill's slot, in hours after the scheduled snapshot's (`DRILL_SLOT_AFTER_HOURS`). */
+export const DRILL_SLOT_AFTER_HOURS = 3;
+
+/** The longest a drill runs, in seconds, before its copy is removed (`DRILL_LIMIT_SECONDS`). */
+export const DRILL_LIMIT_SECONDS = 30 * 60;
+
+/** The minute of each hour at which the deploy user's crontab starts the scheduled drill. */
+export const DRILL_MINUTE = 30;
+
+/** `find`'s tests, from the recipe's folder, for its files but the values and dot-files. */
+export const DRILL_FIND = `find . -type f ! -name '.*' ! -path ./${DRILL_VALUES}`;
+
+/**
+ * The end of the app's line for scheduled restore drills in the deploy user's crontab, matched
+ * only at the end of the line, so `shop`'s never matches `shop-admin`'s.
+ */
+export function drillScheduleTag(app: string): string {
+  return ` # opscrew-drill ${app}`;
+}
+
+/**
+ * The deploy user's line that runs the app's scheduled drill each hour at {@link DRILL_MINUTE}:
+ * the script drills only in its slot, {@link DRILL_SLOT_AFTER_HOURS} hours after the scheduled
+ * snapshot's.
+ */
+export function drillCronLine(app: string): string {
+  return `${DRILL_MINUTE} * * * * sh ${appDirs(app).app}/snapshot.sh drill scheduled > /dev/null 2>&1${drillScheduleTag(app)}`;
+}
+
+/** The drill's Compose project, `<app>-drill` (`drillProject`'s name), and its /srv/data folder. */
+export function drillProject(app: string): { name: string; data: string } {
+  const name = `${app}-drill`;
+  return { name, data: appDirs(name).data };
+}
+
 /**
  * The part of {@link CHECK_KEY_COMMAND} that reads an app's last scheduled restore drill, and
  * since when its schedule has had a scheduled snapshot to restore.
  */
 const DRILL_READ = [
-  "echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);",
-  "s=$(stat -c %Y $d.drill-recipe/schedule 2>/dev/null) && o=$(ls $d.snapshots 2>/dev/null | grep -xE '[0-9]{8}T[0-9]{6}Z' | head -n 1) && test x$o != x && t=$(stat -c %Y $d.snapshots/$o) && echo scheduled $a since $((s>t?s:t)) || true;",
+  `echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d${DRILLS_LOG} 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3);`,
+  `s=$(stat -c %Y $d${DRILL_RECIPE}/${DRILL_SCHEDULE_FILE} 2>/dev/null) && o=$(ls $d.snapshots 2>/dev/null | grep -xE '[0-9]{8}T[0-9]{6}Z' | head -n 1) && test x$o != x && t=$(stat -c %Y $d.snapshots/$o) && echo scheduled $a since $((s>t?s:t)) || true;`,
 ].join(" ");
 
 /**

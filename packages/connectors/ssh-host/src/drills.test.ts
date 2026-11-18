@@ -17,12 +17,13 @@ import {
   SH_AVAILABLE,
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
+import { drillCronLine } from "./constants";
 import { hostPlanHash } from "./hash";
 import { DRILLS_SNIPPET, inspectHost, inspectRunners } from "./inspect";
 import { parseDrills } from "./parse";
 import { planHost, planRunner, planTeardown } from "./plan";
 import { buildScript } from "./shell";
-import { drillCronLine, stepScripts } from "./steps";
+import { stepScripts } from "./steps";
 import type { DesiredHost, HostPlan, HostStep } from "./types";
 
 const APP = "shop";

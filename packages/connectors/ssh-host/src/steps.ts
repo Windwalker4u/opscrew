@@ -30,6 +30,15 @@ import {
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   DOCKER_PACKAGES,
+  DRILL_DIR,
+  DRILL_FIND,
+  DRILL_LIMIT_SECONDS,
+  DRILL_RECIPE,
+  DRILL_SCHEDULE_FILE,
+  DRILL_VALUES,
+  drillCronLine,
+  drillProject,
+  drillScheduleTag,
   ECDSA_HOST_KEY_TYPES,
   EDGE_DIR,
   EDGE_PROJECT,
@@ -4000,40 +4009,6 @@ fi`,
 // drills: the app's scheduled restore drills (029 plan.md 19., research R28 and R29, ADR 0034)
 
 /**
- * The scheduled drills' copy in the app's folder, which `snapshot.sh drill scheduled` reads: a
- * copy of `DRILL_RECIPE_DIR` in `@opscrew/iac-templates`' `drill/script.ts`.
- */
-export const DRILL_RECIPE = ".drill-recipe";
-
-/** The file of {@link DRILL_RECIPE} with the copy's values (`.env.preview`'s), never planned. */
-export const DRILL_VALUES = "values.env";
-
-/** The minute of each hour at which the deploy user's crontab starts the scheduled drill. */
-export const DRILL_MINUTE = 30;
-
-/**
- * The end of the app's line for scheduled restore drills in the deploy user's crontab, matched
- * only at the end of the line, so `shop`'s never matches `shop-admin`'s.
- */
-export function drillScheduleTag(app: string): string {
-  return ` # opscrew-drill ${app}`;
-}
-
-/**
- * The deploy user's line that runs the app's scheduled drill each hour at {@link DRILL_MINUTE}:
- * the script drills only in its slot, three hours after the scheduled snapshot's.
- */
-export function drillCronLine(app: string): string {
-  return `${DRILL_MINUTE} * * * * sh ${appDirs(app).app}/snapshot.sh drill scheduled > /dev/null 2>&1${drillScheduleTag(app)}`;
-}
-
-/** The drill's Compose project, `<app>-drill`, and its data folder in /srv/data. */
-export function drillProject(app: string): { name: string; data: string } {
-  const name = `${app}-drill`;
-  return { name, data: appDirs(name).data };
-}
-
-/**
  * The recipe's files: by path in {@link DRILL_RECIPE}, each non-empty text without NUL bytes
  * within 64 KiB, the copy's `compose.yaml` among them; never {@link DRILL_VALUES}.
  */
@@ -4043,9 +4018,6 @@ const DRILL_FILE_RULES: FileRules = {
   reserved: new Set([DRILL_VALUES]),
   required: "compose.yaml",
 };
-
-/** `find`'s tests, from the recipe's folder, for its files but the values and dot-files. */
-export const DRILL_FIND = `find . -type f ! -name '.*' ! -path ./${DRILL_VALUES}`;
 
 /** Shell helpers of the drills step, which runs as the deploy user: its crontab and its files. */
 const DRILL_HELPERS = `${CRON_HELPERS}
@@ -4127,7 +4099,7 @@ fi`,
       name: "drills.remove",
       params: {
         ...shared,
-        DRILLS: `${dir}/.drill`,
+        DRILLS: `${dir}/${DRILL_DIR}`,
         LOCK: `${dir}/.start.lock`,
         PROJECT: project.name,
         DATA: project.data,
@@ -4154,7 +4126,7 @@ gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }`,
 # The line goes first, so no drill starts; other apps' lines stay.
 read_schedule || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the scheduled restore drills."
 if [ "$(cron_count)" != 0 ]; then drop_schedule; fi
-# A drill that runs holds the app's lock (30 minutes at most) and removes its copy itself.
+# A drill that runs holds the app's lock (${DRILL_LIMIT_SECONDS / 60} minutes at most) and removes its copy itself.
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ] && command -v flock >/dev/null 2>&1; then
   flock -w 2400 "$LOCK" true || fail "A deploy, a snapshot or a drill of the app held its lock for 40 minutes, so OpsCrew removed only the drills' line in the crontab. Run the command again."
 fi
@@ -4173,7 +4145,7 @@ gone "$DATA" || fail "OpsCrew could not remove $DATA completely."`,
   if (plan.deleteData !== true) throw invalid(step, "deleteData");
   const q = params(step, z.object({ valuesSha256: z.string().regex(/^[0-9a-f]{64}$/) }));
   const files = addonFiles(step, DRILL_FILE_RULES);
-  if (!files.some(([path]) => path === "schedule")) throw invalid(step, "schedule");
+  if (!files.some(([path]) => path === DRILL_SCHEDULE_FILE)) throw invalid(step, "schedule");
   const paths = files.map(([path]) => path);
   return scripts({
     name: "drills",

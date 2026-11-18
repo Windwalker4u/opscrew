@@ -15,6 +15,11 @@ import {
   DATA_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
+  DRILL_DIR,
+  DRILL_FIND,
+  DRILL_RECIPE,
+  DRILL_VALUES,
+  drillScheduleTag,
   EDGE_DIR,
   FAIL2BAN_JAIL_PATH,
   GRAFANA_ADMIN_CREDENTIAL,
@@ -118,7 +123,7 @@ import {
   SSH_FIREWALL_SERVICE,
   SSH_FIREWALL_UNIT,
 } from "./ssh-firewall";
-import { DRILL_FIND, DRILL_RECIPE, DRILL_VALUES, drillScheduleTag, stepScripts } from "./steps";
+import { stepScripts } from "./steps";
 import { AppNameSchema, HOST_PLAN_SCHEMA_VERSION, type HostPlan, type HostStep } from "./types";
 import {
   WEB_FILTER_DROP_IN,
@@ -452,7 +457,7 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
       v="$r/${DRILL_VALUES}"
       if [ -f "$v" ] && [ ! -L "$v" ]; then echo "values $app $(stat -c %a "$v") $(sha256sum "$v" | cut -d ' ' -f 1)"; fi
     fi
-    if [ -e "$d/.drill" ] || [ -L "$d/.drill" ] || [ -e "${DATA_DIR}/$app-drill" ] || [ -L "${DATA_DIR}/$app-drill" ]; then echo "left $app"; fi
+    if [ -e "$d/${DRILL_DIR}" ] || [ -L "$d/${DRILL_DIR}" ] || [ -e "${DATA_DIR}/$app-drill" ] || [ -L "${DATA_DIR}/$app-drill" ]; then echo "left $app"; fi
   done
 fi`;
 
