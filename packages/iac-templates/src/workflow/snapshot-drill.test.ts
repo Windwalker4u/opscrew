@@ -38,19 +38,26 @@ const ID = "20261118T120000Z";
 const OLDER = "20261111T120000Z";
 const windows = process.platform === "win32";
 
-/** `shop` on Node with PostgreSQL `db`, the stop-only RabbitMQ `mq` and the app's SQLite volume. */
-const PLAN = DeployPlanSchema.parse(
-  withSqlite(
-    withBuild(
-      withServices([
-        { kind: "postgres", name: "db" },
-        { kind: "rabbitmq", name: "mq" },
-      ]),
-      "railpack",
-      { language: "node", version: "22" },
-    ),
+/**
+ * `shop` on Node with PostgreSQL `db`, the stop-only RabbitMQ `mq` and the app's SQLite volume.
+ * Each with a 32 MB limit: the drill reads this computer's real free memory, which a busy test run
+ * can bring below the default limits, so only the memory test's own plan makes it skip.
+ */
+const BASE = withSqlite(
+  withBuild(
+    withServices([
+      { kind: "postgres", name: "db" },
+      { kind: "rabbitmq", name: "mq" },
+    ]),
+    "railpack",
+    { language: "node", version: "22" },
   ),
 );
+const PLAN = DeployPlanSchema.parse({
+  ...BASE,
+  app: { ...BASE.app, memoryMb: 32 },
+  services: BASE.services.map((service) => ({ ...service, memoryMb: 32 })),
+});
 const DRILL = `${PLAN.app.name}-drill`;
 
 /** The real `date` and `sleep`, which the fakes run for what they don't play. */
