@@ -121,8 +121,10 @@ import { stepScripts } from "./steps";
 import { AppNameSchema, HOST_PLAN_SCHEMA_VERSION, type HostPlan, type HostStep } from "./types";
 import {
   WEB_FILTER_DROP_IN,
+  WEB_FILTER_NFT_DROP_IN,
   WEB_FILTER_SCRIPT,
   WEB_FILTER_SERVICE,
+  WEB_FILTER_TABLE6_HASH,
   WEB_FILTER_UNIT,
 } from "./web-filter";
 
@@ -424,12 +426,14 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
   done
 fi`;
 
-/** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
-const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
+/** OpsCrew's web filter: its files' SHA-256, its unit's state and its IPv6 table's SHA-256. */
+const WEB_FILTER_SNIPPET = `${WEB_FILTER_TABLE6_HASH}
+for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN} nftdropin:${WEB_FILTER_NFT_DROP_IN}; do
   if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
 done
 echo "enabled $(systemctl is-enabled ${WEB_FILTER_SERVICE} 2>/dev/null)"
-echo "active $(systemctl is-active ${WEB_FILTER_SERVICE} 2>/dev/null)"`;
+echo "active $(systemctl is-active ${WEB_FILTER_SERVICE} 2>/dev/null)"
+echo "table6 $(table6_hash)"`;
 
 /** OpsCrew's SSH firewall: nft, its files, its unit and its table (see `parseSshFirewall`). */
 const SSH_FIREWALL_SNIPPET = `${SSH_FIREWALL_FUNCTIONS}
@@ -853,21 +857,33 @@ function parseSshFirewall(text: string): HostFacts["sshFirewall"] {
 }
 
 /** OpsCrew's web filter files and unit state, from its section. */
-function webFilterFiles(text: string): Pick<WebFilterFacts, "files" | "enabled" | "active"> {
+function webFilterFiles(
+  text: string,
+): Pick<WebFilterFacts, "files" | "enabled" | "active" | "table6"> {
   const values = new Map<string, string>();
   for (const line of linesOf(text)) {
     const [kind, name, value] = line.split(/\s+/);
     if (kind === "file" && name && value) values.set(name, value);
-    else if ((kind === "enabled" || kind === "active") && name) values.set(kind, name);
+    else if ((kind === "enabled" || kind === "active" || kind === "table6") && name) {
+      values.set(kind, name);
+    }
   }
   const hash = (name: string) => {
     const value = values.get(name);
     return value !== undefined && /^[0-9a-f]{64}$/.test(value) ? value : null;
   };
+  const nftDropIn = hash("nftdropin");
+  const table6 = hash("table6");
   return {
-    files: { script: hash("script"), unit: hash("unit"), dropIn: hash("dropin") },
+    files: {
+      script: hash("script"),
+      unit: hash("unit"),
+      dropIn: hash("dropin"),
+      ...(nftDropIn === null ? {} : { nftDropIn }),
+    },
     enabled: values.get("enabled") === "enabled",
     active: values.get("active") === "active",
+    ...(table6 === null ? {} : { table6 }),
   };
 }
 

@@ -38,6 +38,8 @@ export const WEB_FILTER_DROP_IN = "/etc/systemd/system/docker.service.d/opscrew-
 export const WEB_FILTER_CHAIN = "OPSCREW-WEB";
 /** OpsCrew's own nftables table for IPv6 (family and name). */
 export const WEB_FILTER_TABLE = "inet opscrew-web";
+/** With IPv6 only: the unit's drop-in that makes it follow nftables.service. */
+export const WEB_FILTER_NFT_DROP_IN = `/etc/systemd/system/${WEB_FILTER_SERVICE}.d/nftables.conf`;
 
 /** The `web-filter` step's ranges: Cloudflare's, canonical, sorted, without duplicates. */
 export interface WebFilterRanges {
@@ -136,6 +138,20 @@ export const WEB_FILTER_IPV6_FUNCTIONS = `table6_ok() {
 }`;
 
 /**
+ * `table6_hash`, for the inspection: the SHA-256 of {@link WEB_FILTER_TABLE} as nft lists it, one
+ * statement per line without its indentation, the lines joined with `|` (older nft prints a
+ * priority of 0, newer `filter`); `-` when there is no such table (or no nft). The plan compares it
+ * with {@link webFilterTable6Hash}, so no address is printed.
+ */
+export const WEB_FILTER_TABLE6_HASH = `table6_hash() {
+  if listing=$(nft list table ${WEB_FILTER_TABLE} 2>/dev/null); then
+    printf '%s\\n' "$listing" | sed -e 's/^[[:space:]]*//' -e 's/ priority 0;/ priority filter;/' -e '/^$/d' | tr '\\n' '|' | sha256sum | cut -d ' ' -f 1
+  else
+    echo -
+  fi
+}`;
+
+/**
  * The IPv6 table's rules, loaded in one transaction (the table is created first, so the delete
  * never fails, and loading it again never adds a second copy). One rule per range, so ranges that
  * overlap never make nft refuse a set.
@@ -167,6 +183,20 @@ ${rules.join("\n")}
 ${forward.join("\n")}
 \t}
 }`;
+}
+
+/**
+ * What {@link WEB_FILTER_TABLE6_HASH} prints once the script has loaded the table for these
+ * (sorted) ranges: nft lists the rules as the script writes them.
+ */
+export function webFilterTable6Hash(ipv6: readonly string[]): string {
+  const rules = ipv6TableRules(ipv6);
+  const listing = rules
+    .slice(rules.indexOf(`table ${WEB_FILTER_TABLE} {`))
+    .split("\n")
+    .map((line) => line.trimStart().replace(" priority 0;", " priority filter;"))
+    .filter((line) => line !== "");
+  return sha256Hex(`${listing.join("|")}|`);
 }
 
 /** The script's lines that load {@link WEB_FILTER_TABLE} for `ipv6` (after the IPv4 filter). */
@@ -259,15 +289,36 @@ Requires=${WEB_FILTER_SERVICE}
 After=${WEB_FILTER_SERVICE}
 `;
 
-/** SHA-256 of the three files the step writes for these ranges. */
+/**
+ * With IPv6 only, the unit's drop-in: nftables.service flushes every table when it stops, restarts
+ * or reloads (`nft flush ruleset`, and /etc/nftables.conf starts with one), so the filter follows
+ * it, as OpsCrew's SSH firewall does. A reload of nftables runs the script again; a restart
+ * restarts the filter, and Docker, which requires it, with it; a stop stops both (fail closed).
+ * The unit itself stays the same in both modes.
+ */
+export const WEB_FILTER_NFT_DROP_IN_TEXT = `# Managed by OpsCrew: nftables.service flushes every table when it stops, restarts or reloads,
+# so OpsCrew's web filter follows it and loads its table ${WEB_FILTER_TABLE} again. Docker
+# requires the filter, so it restarts or stops with it.
+# \`opscrew destroy --undo-host\` removes this file.
+[Unit]
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+ExecReload=${WEB_FILTER_SCRIPT}
+`;
+
+/** SHA-256 of the files the step writes for these ranges (the nftables drop-in only with IPv6). */
 export function webFilterFileHashes(ranges: WebFilterRanges): {
   script: string;
   unit: string;
   dropIn: string;
+  nftDropIn?: string;
 } {
   return {
     script: sha256Hex(webFilterScript(ranges)),
     unit: sha256Hex(WEB_FILTER_UNIT_TEXT),
     dropIn: sha256Hex(WEB_FILTER_DROP_IN_TEXT),
+    ...(ranges.ipv6 === undefined ? {} : { nftDropIn: sha256Hex(WEB_FILTER_NFT_DROP_IN_TEXT) }),
   };
 }

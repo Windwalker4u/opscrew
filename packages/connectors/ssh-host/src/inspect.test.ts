@@ -545,5 +545,23 @@ describe("dockerFirewall", () => {
       active: false,
       rules4: { chain: null },
     });
+    expect(facts.webFilter).not.toHaveProperty("table6");
+    expect(facts.webFilter.files).not.toHaveProperty("nftDropIn");
+  });
+
+  it("reads the IPv6 table's hash and the unit's nftables drop-in, never an address", async () => {
+    const fake = new FakeHost();
+    const table = "a".repeat(64);
+    fake.web6 = table;
+    fake.files.set("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf", "[Unit]\n");
+    const facts = await inspectHost(fake);
+    expect(facts.webFilter.table6).toBe(table);
+    expect(facts.webFilter.files.nftDropIn).toMatch(/^[0-9a-f]{64}$/);
+    // The section prints a hash; anything else is no table.
+    const script = inspectScript();
+    expect(script).toContain('echo "table6 $(table6_hash)"');
+    expect(script).toContain(
+      "nftdropin:/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf",
+    );
   });
 });

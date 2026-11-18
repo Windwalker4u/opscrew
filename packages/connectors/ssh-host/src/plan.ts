@@ -169,6 +169,7 @@ import {
   WEB_FILTER_SERVICE,
   WEB_FILTER_TABLE,
   webFilterFileHashes,
+  webFilterTable6Hash,
 } from "./web-filter";
 
 function parseFacts(facts: HostFacts): HostFacts {
@@ -1154,7 +1155,13 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
   );
 }
 
-/** OpsCrew's web filter is (partly) on the server: a file, its chain or a jump to it. */
+/** OpsCrew's IPv6 web filter is (partly) on the server: its table or the unit's nftables drop-in. */
+function webFilter6Present(facts: HostFacts): boolean {
+  const { files, table6 } = facts.webFilter;
+  return table6 !== undefined || files.nftDropIn !== undefined;
+}
+
+/** OpsCrew's web filter is (partly) on the server: a file, its chain, a jump to it or its table. */
 function webFilterPresent(facts: HostFacts): boolean {
   const { files, rules4 } = facts.webFilter;
   return (
@@ -1162,7 +1169,8 @@ function webFilterPresent(facts: HostFacts): boolean {
     files.unit !== null ||
     files.dropIn !== null ||
     rules4.chain !== null ||
-    rules4.dockerUser.jumps > 0
+    rules4.dockerUser.jumps > 0 ||
+    webFilter6Present(facts)
   );
 }
 
@@ -1209,7 +1217,16 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
   const ipv6 =
     desired.webFilter.ipv6 === undefined ? undefined : sortedIpv6Networks(desired.webFilter.ipv6);
   const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4), ...(ipv6 ? { ipv6 } : {}) };
-  const params = { ipv4: ranges.ipv4.join(" "), ...(ipv6 ? { ipv6: ipv6.join(" ") } : {}) };
+  // Back to IPv4 alone: OpsCrew's IPv6 table and drop-in go (the IPv4 render is otherwise the same).
+  const removeIpv6 = ipv6 === undefined && webFilter6Present(facts);
+  // The IPv6 table needs nft; a home server without it gets nftables first (as its SSH firewall).
+  const install = ipv6 !== undefined && !facts.sshFirewall.nft;
+  const params = {
+    ipv4: ranges.ipv4.join(" "),
+    ...(ipv6 ? { ipv6: ipv6.join(" ") } : {}),
+    ...(install ? { install: "nftables" } : {}),
+    ...(removeIpv6 ? { removeIpv6: true } : {}),
+  };
   const title = ipv6 ? TITLE_WEB_FILTER_IPV6 : TITLE_WEB_FILTER;
   const blocker =
     wf.backend === "nftables"
@@ -1222,10 +1239,13 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
     return step("web-filter", title, "blocked", params, blocker.message);
   }
   const hashes = webFilterFileHashes(ranges);
+  const table6 = ipv6 === undefined ? undefined : webFilterTable6Hash(ipv6);
   const inPlace =
     wf.files.script === hashes.script &&
     wf.files.unit === hashes.unit &&
     wf.files.dropIn === hashes.dropIn &&
+    wf.files.nftDropIn === hashes.nftDropIn &&
+    wf.table6 === table6 &&
     wf.enabled &&
     wf.active &&
     webRulesMatch(wf.rules4, ranges.ipv4);
@@ -1236,6 +1256,22 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
       : `The site is served directly behind Cloudflare's proxy, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw. The site is published on IPv4 only (visitors still reach it over IPv6 through Cloudflare).`,
     `${WEB_FILTER_SERVICE} installs it at boot before Docker, and Docker requires it: if the filter cannot be installed, Docker does not start (fail closed). Docker is not restarted now; your own DOCKER-USER rules stay.`,
   ];
+  if (ipv6) {
+    if (install) lines.unshift("OpsCrew installs nftables (the nft command) first.");
+    lines.push(
+      `nftables.service flushes every table when it stops, restarts or reloads, so ${WEB_FILTER_SERVICE} follows it (a drop-in) and loads the table again; restarting or stopping nftables.service restarts or stops Docker with it.`,
+    );
+    if (wf.files.script === hashes.script && wf.table6 !== table6) {
+      lines.push(
+        `OpsCrew's nftables table ${WEB_FILTER_TABLE} is not as OpsCrew set it up (missing, flushed or changed); it is loaded again.`,
+      );
+    }
+  }
+  if (removeIpv6) {
+    lines.push(
+      `The site is no longer published on IPv6, so OpsCrew's nftables table ${WEB_FILTER_TABLE} and the drop-in that ties ${WEB_FILTER_SERVICE} to nftables.service are removed.`,
+    );
+  }
   const current = wf.rules4.chain;
   if (current !== null) {
     const known = new Set(current.sources);

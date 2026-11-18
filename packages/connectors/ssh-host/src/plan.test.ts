@@ -1225,6 +1225,127 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
       "its nftables table inet opscrew-web when there is one",
     );
   });
+
+  const BOTH = { ipv4: CF.ipv4, ipv6: ["2400:cb00::/32", "2606:4700::/32"] };
+
+  it("with IPv6: a flushed or edited table is a change (the inspection's hash), and the drop-in is checked", async () => {
+    const fake = new FakeHost();
+    await applyApproved(fake, await planFor(fake, filtered(fake, BOTH)));
+    expect(
+      fake.files.get("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf"),
+    ).toContain("PartOf=nftables.service");
+    const inPlace = await planFor(fake, filtered(fake, BOTH));
+    expect(stateOf(inPlace, "web-filter")).toBe("in-place");
+    const table = fake.web6;
+    // Someone flushed (or edited) OpsCrew's table: the other files and rules are as they were.
+    fake.web6 = "0".repeat(64);
+    const flushed = await planFor(fake, filtered(fake, BOTH));
+    const step = flushed.steps.find((s) => s.id === "web-filter");
+    expect(step?.state).toBe("change");
+    expect(step?.reason).toContain(
+      "OpsCrew's nftables table inet opscrew-web is not as OpsCrew set it up (missing, flushed or changed); it is loaded again.",
+    );
+    expect(flushed.steps.filter((s) => s.state === "change").map((s) => s.id)).toEqual([
+      "web-filter",
+    ]);
+    // The table deleted: a change too; the apply loads it again.
+    fake.web6 = null;
+    const deleted = await planFor(fake, filtered(fake, BOTH));
+    expect(stateOf(deleted, "web-filter")).toBe("change");
+    await applyApproved(fake, deleted);
+    expect(fake.web6).toBe(table);
+    // The drop-in gone or changed: a change.
+    fake.files.delete("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf");
+    expect(stateOf(await planFor(fake, filtered(fake, BOTH)), "web-filter")).toBe("change");
+  });
+
+  it("with IPv6: the reason says the filter follows nftables.service, and Docker with it", async () => {
+    const fake = new FakeHost();
+    const reason = (await planFor(fake, filtered(fake, BOTH))).steps.find(
+      (s) => s.id === "web-filter",
+    )?.reason;
+    expect(reason).toContain(
+      "nftables.service flushes every table when it stops, restarts or reloads, so opscrew-web-filter.service follows it (a drop-in) and loads the table again; restarting or stopping nftables.service restarts or stops Docker with it.",
+    );
+    expect(reason).not.toContain("installs nftables");
+    // IPv4 alone: no such sentence.
+    expect(
+      (await planFor(fake, filtered(fake))).steps.find((s) => s.id === "web-filter")?.reason,
+    ).not.toContain("nftables.service");
+  });
+
+  it("proxied IPv6 back to IPv4: the plan removes the table and the drop-in, then is in place", async () => {
+    const fake = new FakeHost();
+    await applyApproved(fake, await planFor(fake, filtered(fake, BOTH)));
+    const back = await planFor(fake, filtered(fake));
+    const step = back.steps.find((s) => s.id === "web-filter");
+    expect(step).toMatchObject({ state: "change", params: { ipv4: V4, removeIpv6: true } });
+    expect(step?.reason).toContain(
+      "The site is no longer published on IPv6, so OpsCrew's nftables table inet opscrew-web and the drop-in that ties opscrew-web-filter.service to nftables.service are removed.",
+    );
+    await applyApproved(fake, back);
+    expect(fake.web6).toBeNull();
+    expect(fake.files.has("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf")).toBe(
+      false,
+    );
+    const again = await planFor(fake, filtered(fake));
+    expect(again.steps.find((s) => s.id === "web-filter")).toMatchObject({
+      state: "in-place",
+      params: { ipv4: V4 },
+    });
+    expect(again.steps.find((s) => s.id === "web-filter")?.params).not.toHaveProperty("removeIpv6");
+    // A table left alone (no drop-in) goes the same way.
+    fake.web6 = "0".repeat(64);
+    expect(
+      (await planFor(fake, filtered(fake))).steps.find((s) => s.id === "web-filter")?.params,
+    ).toEqual({ ipv4: V4, removeIpv6: true });
+  });
+
+  it("with IPv6 and no nft: nftables is installed first (before any change), never a failure mid-apply", async () => {
+    const fake = new FakeHost();
+    fake.nftInstalled = false;
+    const plan = await planFor(fake, filtered(fake, BOTH));
+    const step = plan.steps.find((s) => s.id === "web-filter");
+    expect(step).toMatchObject({ state: "change", params: { install: "nftables" } });
+    expect(step?.reason).toMatch(/^OpsCrew installs nftables \(the nft command\) first\. /);
+    expect(codes(plan)).toEqual([]);
+    await applyApproved(fake, plan);
+    expect(fake.nftInstalled).toBe(true);
+    expect(stateOf(await planFor(fake, filtered(fake, BOTH)), "web-filter")).toBe("in-place");
+    // IPv4 alone never needs nft.
+    const v4 = new FakeHost();
+    v4.nftInstalled = false;
+    expect(
+      (await planFor(v4, filtered(v4))).steps.find((s) => s.id === "web-filter")?.params,
+    ).toEqual({ ipv4: V4 });
+  });
+
+  it("with IPv6: the removal and the undo delete the table and the drop-in", async () => {
+    const fake = new FakeHost();
+    await applyApproved(fake, await planFor(fake, filtered(fake, BOTH)));
+    await applyApproved(fake, await planFor(fake, desiredFor(fake)));
+    expect(fake.web6).toBeNull();
+    expect(fake.files.has("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf")).toBe(
+      false,
+    );
+    expect((await planFor(fake, desiredFor(fake))).steps.some((s) => s.id === "web-filter")).toBe(
+      false,
+    );
+    const undone = new FakeHost();
+    await provision(undone, filtered(undone, BOTH));
+    await removeApp(undone);
+    const undo = planUndo(
+      await inspectHost(undone),
+      { repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy --undo-host",
+    );
+    expect(undo.steps.map((s) => s.id)).toContain("web-filter");
+    await applyApproved(undone, undo);
+    expect(undone.web6).toBeNull();
+    expect(undone.files.has("/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf")).toBe(
+      false,
+    );
+  });
 });
 
 describe("planHost: the kernel settings the app's services need", () => {

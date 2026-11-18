@@ -54,7 +54,13 @@ import { NETWORK_FILTER_SCRIPT_PREFIX, NETWORK_FILTER_UNIT, networkFilterDropInP
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { runnerUnitText } from "../runner-unit";
 import { SSH_FIREWALL_RULES, SSH_FIREWALL_UNIT } from "../ssh-firewall";
-import { WEB_FILTER_DROP_IN, WEB_FILTER_SCRIPT, WEB_FILTER_UNIT } from "../web-filter";
+import {
+  WEB_FILTER_DROP_IN,
+  WEB_FILTER_NFT_DROP_IN,
+  WEB_FILTER_SCRIPT,
+  WEB_FILTER_UNIT,
+  webFilterTable6Hash,
+} from "../web-filter";
 
 /** One address family's filter state: OpsCrew's chain (null when absent) and DOCKER-USER. */
 export interface FakeWebRules {
@@ -334,6 +340,8 @@ export class FakeHost implements RemoteExec {
   /** OpsCrew's web filter unit. */
   webFilterUnit = { enabled: false, active: false };
   web4: FakeWebRules = { chain: null, dockerUser: false, dockerUserRules: [] };
+  /** The SHA-256 `table6_hash` prints for OpsCrew's IPv6 table, null when there is none. */
+  web6: string | null = null;
   webFilterLog: string[] = [];
   ufwRules: UfwRule[] = [];
   ufwLog: string[] = [];
@@ -1048,8 +1056,10 @@ export class FakeHost implements RemoteExec {
         fileLine("script", WEB_FILTER_SCRIPT),
         fileLine("unit", WEB_FILTER_UNIT),
         fileLine("dropin", WEB_FILTER_DROP_IN),
+        fileLine("nftdropin", WEB_FILTER_NFT_DROP_IN),
         `enabled ${this.webFilterUnit.enabled ? "enabled" : "disabled"}`,
         `active ${this.webFilterUnit.active ? "active" : "inactive"}`,
+        `table6 ${this.web6 ?? "-"}`,
       ].join("\n"),
     );
     add(
@@ -1231,7 +1241,12 @@ export class FakeHost implements RemoteExec {
       is(WEB_FILTER_DROP_IN, p.DROPIN_SHA256) &&
       this.webFilterUnit.enabled &&
       this.webFilterUnit.active &&
-      this.webRulesOk(this.web4, p.IPV4 ?? "")
+      this.webRulesOk(this.web4, p.IPV4 ?? "") &&
+      (p.IPV6 !== undefined
+        ? this.web6 === webFilterTable6Hash(p.IPV6.split(" ")) &&
+          is(WEB_FILTER_NFT_DROP_IN, p.NFTDROPIN_SHA256)
+        : p.NFT_DROP_IN === undefined ||
+          (this.web6 === null && !this.files.has(WEB_FILTER_NFT_DROP_IN)))
     );
   }
 
@@ -1548,24 +1563,40 @@ export class FakeHost implements RemoteExec {
         this.files.set(WEB_FILTER_SCRIPT, decode(p.SCRIPT_B64));
         this.files.set(WEB_FILTER_UNIT, decode(p.UNIT_B64));
         this.installWebRules(this.web4, p.IPV4 ?? "");
+        if (p.IPV6 !== undefined) {
+          if (!this.nftInstalled) return fail("opscrew-web-filter: nft is not installed.");
+          this.web6 = webFilterTable6Hash(p.IPV6.split(" "));
+        }
         this.files.set(WEB_FILTER_DROP_IN, decode(p.DROPIN_B64));
+        if (p.IPV6 !== undefined) this.files.set(WEB_FILTER_NFT_DROP_IN, decode(p.NFTDROPIN_B64));
+        else if (p.NFT_DROP_IN !== undefined) {
+          this.web6 = null;
+          this.files.delete(WEB_FILTER_NFT_DROP_IN);
+        }
         this.webFilterUnit = { enabled: true, active: true };
         this.webFilterLog.push(`install ${p.IPV4}`);
         return result();
       }
+      case "web-filter.install.apply":
+        this.nftInstalled = true;
+        return result();
       case "web-filter.remove.check":
       case "web-filter.remove.verify": {
         const ok =
           !this.files.has(WEB_FILTER_SCRIPT) &&
           !this.files.has(WEB_FILTER_UNIT) &&
           !this.files.has(WEB_FILTER_DROP_IN) &&
-          this.web4.chain === null;
+          !this.files.has(WEB_FILTER_NFT_DROP_IN) &&
+          this.web4.chain === null &&
+          this.web6 === null;
         return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
       }
       case "web-filter.remove.apply":
         this.files.delete(WEB_FILTER_DROP_IN);
         this.webFilterUnit = { enabled: false, active: false };
         this.removeWebRules(this.web4);
+        this.web6 = null;
+        this.files.delete(WEB_FILTER_NFT_DROP_IN);
         this.files.delete(WEB_FILTER_UNIT);
         this.files.delete(WEB_FILTER_SCRIPT);
         this.webFilterLog.push("remove");

@@ -177,6 +177,8 @@ import {
   WEB_FILTER_DROP_IN_TEXT,
   WEB_FILTER_FUNCTIONS,
   WEB_FILTER_IPV6_FUNCTIONS,
+  WEB_FILTER_NFT_DROP_IN,
+  WEB_FILTER_NFT_DROP_IN_TEXT,
   WEB_FILTER_SCRIPT,
   WEB_FILTER_SERVICE,
   WEB_FILTER_TABLE,
@@ -1093,12 +1095,49 @@ const Ipv6NetworksSchema = z
 
 const WebFilterParams = z.union([
   z.strictObject({ remove: z.literal(true) }),
-  z.strictObject({ ipv4: Ipv4NetworksSchema, ipv6: Ipv6NetworksSchema.optional() }),
+  z.strictObject({
+    ipv4: Ipv4NetworksSchema,
+    ipv6: Ipv6NetworksSchema,
+    /** No nft on the server: nftables is installed before the table is loaded. */
+    install: z.literal("nftables").optional(),
+  }),
+  z.strictObject({
+    ipv4: Ipv4NetworksSchema,
+    /** The site is no longer published on IPv6: the IPv6 table and its drop-in go. */
+    removeIpv6: z.literal(true).optional(),
+  }),
 ]);
 
 /** Lines that remove OpsCrew's IPv6 table when it is there (`nft` may be missing then). */
 const REMOVE_TABLE6 = `if command -v nft >/dev/null 2>&1 && nft list table ${WEB_FILTER_TABLE} >/dev/null 2>&1; then
   nft delete table ${WEB_FILTER_TABLE}
+fi`;
+
+/** Verify lines: OpsCrew's IPv6 table is not there. */
+const NO_TABLE6 = `  if command -v nft >/dev/null 2>&1 && nft list table ${WEB_FILTER_TABLE} >/dev/null 2>&1; then
+    return 1
+  fi`;
+
+/** Lines that remove the unit's nftables drop-in (IPv6 only), and its folder when empty. */
+const REMOVE_NFT_DROP_IN = `rm -f "$NFT_DROP_IN"
+rmdir "$(dirname "$NFT_DROP_IN")" 2>/dev/null || true`;
+
+/** Apply lines with IPv6: the unit's drop-in, so it follows nftables.service (see web-filter.ts). */
+const NFT_DROP_IN_WRITE = `# nftables.service flushes every table when it stops, restarts or reloads: the unit follows it.
+install -d -m 0755 "$(dirname "$NFT_DROP_IN")"
+printf '%s' "$NFTDROPIN_B64" | base64 -d | write_file "$NFT_DROP_IN" 0644
+`;
+
+/** Apply lines of the IPv4 filter on a server left with the IPv6 one: the table and drop-in go. */
+const IPV6_REMOVAL = `# The site is no longer published on IPv6: OpsCrew's IPv6 table and the unit's drop-in go.
+${REMOVE_TABLE6}
+${REMOVE_NFT_DROP_IN}
+`;
+
+/** Pre-apply with IPv6 on a server without nft: nftables is installed first. */
+const NFT_INSTALL = `if ! command -v nft >/dev/null 2>&1; then
+  apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
+  apt_get install --no-install-recommends nftables || fail 'Installing nftables failed; see ${APT_LOG} on the server.'
 fi`;
 
 const WEB_FILTER_HELPERS = `${WEB_FILTER_FUNCTIONS}
@@ -1131,15 +1170,13 @@ function webFilterScripts(step: HostStep): StepScripts {
   if ("remove" in p) {
     return scripts({
       name: "web-filter.remove",
-      params: files,
+      params: { ...files, NFT_DROP_IN: WEB_FILTER_NFT_DROP_IN },
       helpers: WEB_FILTER_HELPERS,
-      verify: `  [ ! -e "$SCRIPT" ] && [ ! -e "$UNIT_FILE" ] && [ ! -e "$DROP_IN" ] || return 1
+      verify: `  [ ! -e "$SCRIPT" ] && [ ! -e "$UNIT_FILE" ] && [ ! -e "$DROP_IN" ] && [ ! -e "$NFT_DROP_IN" ] || return 1
   if command -v iptables >/dev/null 2>&1 && iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then
     return 1
   fi
-  if command -v nft >/dev/null 2>&1 && nft list table ${WEB_FILTER_TABLE} >/dev/null 2>&1; then
-    return 1
-  fi`,
+${NO_TABLE6}`,
       // Docker first stops requiring the filter (it keeps running), then the rules and files go.
       apply: `rm -f "$DROP_IN"
 systemctl daemon-reload
@@ -1147,6 +1184,7 @@ systemctl disable "$SERVICE" >/dev/null 2>&1 || true
 systemctl stop "$SERVICE" >/dev/null 2>&1 || true
 remove_rules
 ${REMOVE_TABLE6}
+${REMOVE_NFT_DROP_IN}
 rm -f "$UNIT_FILE" "$SCRIPT"
 systemctl daemon-reload`,
       failed: "OpsCrew's web filter is still on the server.",
@@ -1154,8 +1192,11 @@ systemctl daemon-reload`,
       timeoutMs: 2 * MINUTE,
     });
   }
-  // With IPv6 the script also loads OpsCrew's nftables table; IPv4 alone renders as before.
-  const ipv6 = p.ipv6;
+  // With IPv6 the script also loads OpsCrew's nftables table, and the unit follows nftables.service
+  // (its drop-in); IPv4 alone renders as before, unless an IPv6 table and drop-in are left to go.
+  const ipv6 = "ipv6" in p ? p.ipv6 : undefined;
+  const dropIpv6 = "removeIpv6" in p && p.removeIpv6 === true;
+  const install = "install" in p && p.install !== undefined;
   const script = webFilterScript({
     ipv4: p.ipv4.split(" "),
     ...(ipv6 === undefined ? {} : { ipv6: ipv6.split(" ") }),
@@ -1171,7 +1212,15 @@ systemctl daemon-reload`,
       UNIT_SHA256: sha256Hex(WEB_FILTER_UNIT_TEXT),
       DROPIN_SHA256: sha256Hex(WEB_FILTER_DROP_IN_TEXT),
       IPV4: p.ipv4,
-      ...(ipv6 === undefined ? {} : { IPV6: ipv6 }),
+      ...(ipv6 === undefined
+        ? {}
+        : {
+            IPV6: ipv6,
+            NFT_DROP_IN: WEB_FILTER_NFT_DROP_IN,
+            NFTDROPIN_B64: base64(WEB_FILTER_NFT_DROP_IN_TEXT),
+            NFTDROPIN_SHA256: sha256Hex(WEB_FILTER_NFT_DROP_IN_TEXT),
+          }),
+      ...(dropIpv6 ? { NFT_DROP_IN: WEB_FILTER_NFT_DROP_IN } : {}),
     },
     helpers:
       ipv6 === undefined
@@ -1183,7 +1232,13 @@ systemctl daemon-reload`,
   [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
   systemctl is-active --quiet "$SERVICE" || return 1
   chain_ok "$IPV4" || return 1
-  leading_ok || return 1${ipv6 === undefined ? "" : '\n  table6_ok "$IPV6" || return 1'}`,
+  leading_ok || return 1${
+    ipv6 !== undefined
+      ? '\n  table6_ok "$IPV6" || return 1\n  file_is "$NFT_DROP_IN" "$NFTDROPIN_SHA256" || return 1'
+      : dropIpv6
+        ? `\n  [ ! -e "$NFT_DROP_IN" ] || return 1\n${NO_TABLE6}`
+        : ""
+  }`,
     snapshot: `if [ -e "$SCRIPT" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
     // The script installs the rules right away (an atomic change of OpsCrew's chain; Docker keeps
     // running). Only once it worked does Docker start to require the unit, so a failure here never
@@ -1198,11 +1253,12 @@ printf '%s' "$UNIT_B64" | base64 -d | write_file "$UNIT_FILE" 0644
 "$SCRIPT" || fail "OpsCrew could not install its web filter (see the message above); Docker was not changed."
 install -d -m 0755 "$(dirname "$DROP_IN")"
 printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
-systemctl daemon-reload
+${ipv6 !== undefined ? NFT_DROP_IN_WRITE : dropIpv6 ? IPV6_REMOVAL : ""}systemctl daemon-reload
 systemctl enable "$SERVICE" >/dev/null
 # Starting the unit runs the script once more (no change); Docker is not restarted.
 systemctl start "$SERVICE"`,
     failed: "OpsCrew's web filter is not in effect.",
+    ...(install ? { preApply: applyScript("web-filter.install", {}, "", NFT_INSTALL) } : {}),
     doing: "setting up the web filter for Cloudflare's addresses",
     timeoutMs: 2 * MINUTE,
   });

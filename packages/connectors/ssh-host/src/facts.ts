@@ -196,17 +196,26 @@ export const WebFilterFactsSchema = z.object({
    * false`).
    */
   backend: z.enum(["iptables", "nftables", "off"]),
-  /** SHA-256 of OpsCrew's script, unit and Docker drop-in; null when the file is absent. */
+  /**
+   * SHA-256 of OpsCrew's script, unit and Docker drop-in; null when the file is absent. With IPv6
+   * the unit's nftables drop-in too, absent when there is none.
+   */
   files: z.object({
     script: z.string().nullable(),
     unit: z.string().nullable(),
     dropIn: z.string().nullable(),
+    nftDropIn: z.string().optional(),
   }),
   /** `systemctl is-enabled` / `is-active` of `opscrew-web-filter.service`. */
   enabled: z.boolean(),
   active: z.boolean(),
-  /** OpsCrew's IPv4 rules (the filter is IPv4 only: the site is not published on IPv6). */
+  /** OpsCrew's IPv4 rules. */
   rules4: WebFilterRulesSchema,
+  /**
+   * SHA-256 of OpsCrew's IPv6 table `inet opscrew-web` as nft lists it (`table6_hash`, never an
+   * address); absent when there is no such table.
+   */
+  table6: z.string().optional(),
 });
 export type WebFilterFacts = z.infer<typeof WebFilterFactsSchema>;
 

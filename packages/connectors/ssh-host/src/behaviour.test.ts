@@ -11,6 +11,13 @@ import { inspectScript, privilegeProbeScript } from "./inspect";
 import { planPortainer } from "./plan";
 import { armScript, cancelScript, type StepScripts, stepScripts, triggerScript } from "./steps";
 import type { HostPlan, HostStep } from "./types";
+import {
+  WEB_FILTER_NFT_DROP_IN_TEXT,
+  WEB_FILTER_TABLE6_HASH,
+  WEB_FILTER_UNIT_TEXT,
+  webFilterScript,
+  webFilterTable6Hash,
+} from "./web-filter";
 
 const KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK opscrew-deploy";
@@ -718,6 +725,81 @@ esac`;
         expect(h.run(scriptsFor("setup", "web-filter", PARAMS).apply).status).toBe(0);
         const removed = h.run(remove.apply);
         expect(removed.status, removed.stderr).toBe(0);
+        expect(h.run(remove.verify).status).toBe(0);
+      });
+
+      const NFT_DROP_IN = "/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf";
+
+      it("writes the unit's nftables drop-in before the reload, and its checks read it", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        const { check, apply, verify } = scriptsFor("setup", "web-filter", IPV6);
+        h.clearCalls();
+        const run = h.run(apply);
+        expect(run.status, run.stderr).toBe(0);
+        expect(h.read(NFT_DROP_IN)).toBe(WEB_FILTER_NFT_DROP_IN_TEXT);
+        expect(h.read("/etc/systemd/system/opscrew-web-filter.service")).toBe(WEB_FILTER_UNIT_TEXT);
+        expect(h.run(verify).status).toBe(0);
+        h.write(NFT_DROP_IN, "[Unit]\n");
+        expect(h.run(check).stdout).toContain("state=change");
+        expect(h.run(verify).status).not.toBe(0);
+      });
+
+      it("the inspection's table6_hash: what the plan expects once the table is loaded, - without it", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        const hash = `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\n${WEB_FILTER_TABLE6_HASH}\ntable6_hash`;
+        expect(h.run(hash).stdout.trim()).toBe("-");
+        expect(h.run(scriptsFor("setup", "web-filter", IPV6).apply).status).toBe(0);
+        expect(h.run(hash).stdout.trim()).toBe(
+          webFilterTable6Hash(["2400:cb00::/32", "2606:4700::/32"]),
+        );
+        // nft prints the priority as filter (1.0 and later): the same hash.
+        const table = h.read("/state/nft-table") ?? "";
+        h.write("/state/nft-table", table.replaceAll(" priority 0;", " priority filter;"));
+        expect(h.run(hash).stdout.trim()).toBe(
+          webFilterTable6Hash(["2400:cb00::/32", "2606:4700::/32"]),
+        );
+        h.write("/state/nft-table", table.replace(/.*nfproto ipv6 udp dport 443 drop\n/, ""));
+        expect(h.run(hash).stdout.trim()).not.toBe(
+          webFilterTable6Hash(["2400:cb00::/32", "2606:4700::/32"]),
+        );
+      });
+
+      it("back to IPv4 alone: the IPv4 script, then the table and the drop-in go", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        expect(h.run(scriptsFor("setup", "web-filter", IPV6).apply).status).toBe(0);
+        const back = scriptsFor("setup", "web-filter", { ...PARAMS, removeIpv6: true });
+        expect(h.run(back.check).stdout).toContain("state=change");
+        h.clearCalls();
+        const run = h.run(back.apply);
+        expect(run.status, run.stderr).toBe(0);
+        expect(nftCalls(h)).toEqual([
+          "nft list table inet opscrew-web",
+          "nft delete table inet opscrew-web",
+        ]);
+        expect(h.exists("/state/nft-table")).toBe(false);
+        expect(h.exists(NFT_DROP_IN)).toBe(false);
+        expect(h.exists("/etc/systemd/system/opscrew-web-filter.service.d")).toBe(false);
+        expect(h.read("/usr/local/sbin/opscrew-web-filter")).toBe(
+          webFilterScript({ ipv4: PARAMS.ipv4.split(" ") }),
+        );
+        expect(lines(h, "/state/iptables/OPSCREW-WEB")).toHaveLength(3);
+        expect(h.run(back.verify).status).toBe(0);
+        expect(h.run(back.check).stdout).toContain("state=in-place");
+      });
+
+      it("removal deletes the unit's nftables drop-in too", () => {
+        const h = filterHarness();
+        h.stub("nft", NFT);
+        expect(h.run(scriptsFor("setup", "web-filter", IPV6).apply).status).toBe(0);
+        const remove = scriptsFor("undo", "web-filter", { remove: true });
+        h.write(NFT_DROP_IN, WEB_FILTER_NFT_DROP_IN_TEXT);
+        expect(h.run(remove.verify).status).not.toBe(0);
+        const run = h.run(remove.apply);
+        expect(run.status, run.stderr).toBe(0);
+        expect(h.exists(NFT_DROP_IN)).toBe(false);
         expect(h.run(remove.verify).status).toBe(0);
       });
 

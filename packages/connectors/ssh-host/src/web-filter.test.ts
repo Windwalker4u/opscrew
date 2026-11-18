@@ -3,9 +3,17 @@
  * by snapshot so a change to them shows in review (servers already set up keep their hashes).
  * With IPv6 ranges the script also loads OpsCrew's nftables table `inet opscrew-web`.
  */
+import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { SH_AVAILABLE, scriptsFor, shSyntax } from "./__fixtures__/helpers";
-import { sortedIpv6Networks, webFilterFileHashes, webFilterScript } from "./web-filter";
+import {
+  sortedIpv6Networks,
+  WEB_FILTER_NFT_DROP_IN,
+  WEB_FILTER_NFT_DROP_IN_TEXT,
+  webFilterFileHashes,
+  webFilterScript,
+  webFilterTable6Hash,
+} from "./web-filter";
 
 const IPV4 = ["103.21.244.0/22", "173.245.48.0/20"];
 const IPV6 = ["2400:cb00::/32", "2606:4700::/32"];
@@ -36,7 +44,57 @@ describe("the web filter's renders", () => {
     expect(scripts.verify).toContain("IPV6='2400:cb00::/32 2606:4700::/32'");
     expect(scripts.verify).toContain('  table6_ok "$IPV6" || return 1\n');
     expect(scripts.check).toContain('  table6_ok "$IPV6" || return 1\n');
+    expect(scripts.verify).toContain('  file_is "$NFT_DROP_IN" "$NFTDROPIN_SHA256" || return 1\n');
+    expect(scripts.apply).toContain(
+      `printf '%s' "$NFTDROPIN_B64" | base64 -d | write_file "$NFT_DROP_IN" 0644\nsystemctl daemon-reload\n`,
+    );
+    expect(scripts.preApply).toBeUndefined();
     expect(scripts).toMatchSnapshot();
+  });
+
+  it("with IPv6 on a server without nft: nftables is installed before any change", () => {
+    const scripts = scriptsFor({
+      id: "web-filter",
+      params: { ipv4: IPV4.join(" "), ipv6: IPV6.join(" "), install: "nftables" },
+    });
+    expect(scripts.preApply).toContain("if ! command -v nft >/dev/null 2>&1; then\n");
+    expect(scripts.preApply).toContain("apt_get install --no-install-recommends nftables ||");
+    const without = scriptsFor({
+      id: "web-filter",
+      params: { ipv4: IPV4.join(" "), ipv6: IPV6.join(" ") },
+    });
+    expect(scripts.apply).toBe(without.apply);
+  });
+
+  it("back to IPv4 alone with the IPv6 filter left: the table and drop-in go; the snapshot pins it", () => {
+    const scripts = scriptsFor({
+      id: "web-filter",
+      params: { ipv4: IPV4.join(" "), removeIpv6: true },
+    });
+    expect(scripts.apply).toContain(
+      `rm -f "$NFT_DROP_IN"\nrmdir "$(dirname "$NFT_DROP_IN")" 2>/dev/null || true\nsystemctl daemon-reload\n`,
+    );
+    expect(scripts.apply).toContain("nft delete table inet opscrew-web\n");
+    expect(scripts.verify).toContain('  [ ! -e "$NFT_DROP_IN" ] || return 1\n');
+    expect(scripts.verify).not.toContain("table6_ok");
+    // The script on the server is the IPv4 one.
+    const ipv4 = scriptsFor({ id: "web-filter", params: { ipv4: IPV4.join(" ") } });
+    const b64 = (text: string) => /SCRIPT_B64='([^']*)'/.exec(text)?.[1];
+    expect(b64(scripts.apply)).toBe(b64(ipv4.apply));
+    expect(scripts).toMatchSnapshot();
+  });
+
+  it("refuses removeIpv6 with IPv6 ranges, and an install without them", () => {
+    for (const extra of [
+      { ipv6: IPV6.join(" "), removeIpv6: true } as Record<string, string | boolean>,
+      { install: "nftables" },
+      { ipv6: IPV6.join(" "), install: "apt" },
+    ]) {
+      expect(
+        () => scriptsFor({ id: "web-filter", params: { ipv4: IPV4.join(" "), ...extra } }),
+        JSON.stringify(extra),
+      ).toThrow(/invalid parameters/);
+    }
   });
 });
 
@@ -87,6 +145,54 @@ NFT`);
   it("changes the script's hash, so a server with the IPv4 filter alone gets it", () => {
     expect(webFilterFileHashes({ ipv4: IPV4, ipv6: IPV6 }).script).not.toBe(
       webFilterFileHashes({ ipv4: IPV4 }).script,
+    );
+  });
+
+  it("webFilterTable6Hash: the SHA-256 of the table as nft 1.0.9 lists it (indentation gone, |-joined)", () => {
+    // What `nft list table inet opscrew-web` printed on ubuntu:24.04 after the script loaded it.
+    const listing = `table inet opscrew-web {
+\tchain input {
+\t\ttype filter hook input priority filter; policy accept;
+\t\tiifname "lo" accept
+\t\tip6 saddr 2400:cb00::/32 tcp dport { 80, 443 } accept
+\t\tip6 saddr 2400:cb00::/32 udp dport 443 accept
+\t\tip6 saddr 2606:4700::/32 tcp dport { 80, 443 } accept
+\t\tip6 saddr 2606:4700::/32 udp dport 443 accept
+\t\tmeta nfproto ipv6 tcp dport { 80, 443 } drop
+\t\tmeta nfproto ipv6 udp dport 443 drop
+\t}
+
+\tchain forward {
+\t\ttype filter hook forward priority filter; policy accept;
+\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } ip6 saddr 2400:cb00::/32 accept
+\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } ip6 saddr 2606:4700::/32 accept
+\t\tct direction original ct status dnat ct original proto-dst { 80, 443 } meta nfproto ipv6 drop
+\t}
+}
+`;
+    const normalized = listing
+      .split("\n")
+      .map((line) => line.trimStart())
+      .filter((line) => line !== "")
+      .map((line) => `${line}|`)
+      .join("");
+    expect(webFilterTable6Hash(IPV6)).toBe(sha256Hex(normalized));
+    expect(webFilterTable6Hash([IPV6[0] as string])).not.toBe(webFilterTable6Hash(IPV6));
+  });
+
+  it("the unit's nftables drop-in: the unit follows nftables.service, which flushes every table", () => {
+    expect(WEB_FILTER_NFT_DROP_IN).toBe(
+      "/etc/systemd/system/opscrew-web-filter.service.d/nftables.conf",
+    );
+    expect(WEB_FILTER_NFT_DROP_IN_TEXT).toContain(
+      "[Unit]\nPartOf=nftables.service\nReloadPropagatedFrom=nftables.service\n\n[Service]\nExecReload=/usr/local/sbin/opscrew-web-filter\n",
+    );
+    expect(webFilterFileHashes({ ipv4: IPV4, ipv6: IPV6 }).nftDropIn).toBe(
+      sha256Hex(WEB_FILTER_NFT_DROP_IN_TEXT),
+    );
+    // The unit is the same in both modes.
+    expect(webFilterFileHashes({ ipv4: IPV4, ipv6: IPV6 }).unit).toBe(
+      webFilterFileHashes({ ipv4: IPV4 }).unit,
     );
   });
 
