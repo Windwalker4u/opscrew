@@ -778,7 +778,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Owns: `packages/agents/src/status/drill.ts`, `docs/guide/{snapshots,alerts,portainer-target,hosting-accounts}.md`,
     colocated tests
   - Reads: plan 19.; research R27, R29; the records T2934, T2935, T2937 and T2938 write
-    (a Portainer's manual drills: `readPortainerDrills(paths)` in `snapshot/drill-portainer.ts`, `.opscrew/…/drills.json`; a hosting account's: `state/drills.log` on the account, `hostingDrillSummary`; a server's and this computer's: `.snapshots/drills.log`); on hosting a successful drill's outcome reads "the dump loaded with N tables", never "healthy"
+    (a Portainer's scheduled dump drills: the `DRILL_RECORD_PREFIX` line on the stdout of each `drill-<service>` container of the stack `opscrew-<app>`, read through Portainer's Docker API; the record is lost when the container is recreated; a Portainer's manual drills: `readPortainerDrills(paths)` in `snapshot/drill-portainer.ts`, `.opscrew/…/drills.json`; a hosting account's: `state/drills.log` on the account, `hostingDrillSummary`; a server's and this computer's: `.snapshots/drills.log`); on hosting a successful drill's outcome reads "the dump loaded with N tables", never "healthy"
   - Depends: T2934, T2935, T2937, T2938
   - Words for the scheduled drill's new reasons (T2936): `kept` (a kept copy is still there), `none` (no scheduled snapshot yet), `version` (the snapshot names no version).
   - And hosting's (T2938): `login` (no drill database login yet), `quota` (the account's quota leaves less room than the dump), `timeout`, `stopped`; hosting's `failed` lines carry `parts=-` and `tables=-`. The guide says the quota check reads the account's file quota, which on many hosts doesn't count the database's space.
@@ -802,7 +802,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
     dump loop) and the cPanel live test (the drill database made, the drill, removed at destroy);
     each step checks production unchanged and, on servers, that a request from the copy to the
     internet fails.
-    On the cPanel account (T2935's notes): whether `my_print_defaults` exists, and that the snapshot, the restore and the drill connect (with a socket found in the account's option files and with the built-in default); that a dump whose views or triggers carry `DEFINER=` loads in the drill; the Portainer step confirms that `internal: true` reaches the deployed network and how a gone image is reported (T2934).
+    On the cPanel account (T2935's notes): whether `my_print_defaults` exists, and that the snapshot, the restore and the drill connect (with a socket found in the account's option files and with the built-in default); that a dump whose views or triggers carry `DEFINER=` loads in the drill; the Portainer step confirms that `internal: true` reaches the deployed network and how a gone image is reported (T2934), and that a MongoDB service with `options.replicaSet: true` becomes primary in a Portainer stack (T2937 couldn't in its test project).
   - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
   - Effort: high
 
