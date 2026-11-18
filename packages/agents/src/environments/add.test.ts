@@ -12,6 +12,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDesign } from "../design/run";
+import type { ServerQuestion } from "../interview/own-server";
 import type { OwnServerFacts } from "../providers";
 import {
   type OwnServerConnectionInput,
@@ -304,6 +305,52 @@ describe("addEnvironment", () => {
     );
     expect(sharedPartsDiffer(prodPlan, plan)).toEqual([]);
     expect(await readFile(prod.paths.files.plan, "utf8")).toBe(prodBytes);
+  });
+
+  it("asks for a server at home in three rounds, its serving question with the home labels", async () => {
+    const { region: _region, ...ownRequirements } = {
+      ...makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }),
+      provider: "own" as const,
+    };
+    const { staging } = await prodApp(
+      ownRequirements,
+      { ownServer: { facts: SERVER } },
+      {
+        host: IPV4,
+        port: 22,
+        user: "root",
+        agent: true,
+        reachable: true,
+        serve: "dns-only",
+        hostKey: HOST_KEY,
+      },
+    );
+    const rounds: ServerQuestion[][] = [];
+    // The questions are what this test is about: it stops once the last round was asked.
+    const stop = new Error("asked every round");
+    const added = addEnvironment(staging, {
+      answers: { provider: "own" },
+      askServer: async (questions) => {
+        rounds.push(questions);
+        if (rounds.length === 1) return { "server.host": "192.168.1.30" };
+        if (rounds.length === 2) return { "server.home": true };
+        throw stop;
+      },
+    });
+    await expect(added).rejects.toBe(stop);
+    expect(rounds.map((round) => round.map((q) => q.id))).toEqual([
+      ["server.host"],
+      ["server.home"],
+      ["server.port", "server.user", "server.key", "server.serve"],
+    ]);
+    // The default for the address typed in the first round: at home.
+    expect(rounds[1]?.[0]?.default).toBe(true);
+    const serve = rounds[2]?.find((q) => q.id === "server.serve");
+    expect(serve?.prompt).toBe("How should your server at home serve the site?");
+    expect(serve?.default).toBe("proxy");
+    expect(serve?.options?.[0]?.label).toBe(
+      "From your home's address, behind Cloudflare's proxy (recommended)",
+    );
   });
 
   it("asks the server's follow-ups for another server, with prod's as the defaults", async () => {

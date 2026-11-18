@@ -30,7 +30,7 @@ import { answersToRequirements } from "../interview/answers";
 import { hasFollowUps, splitFollowUps } from "../interview/follow-ups";
 import {
   answersToOwnServer,
-  buildServerQuestions,
+  askServerQuestions,
   type OwnServerAnswers,
   recordOwnServerAnswers,
   SERVER_FIELDS,
@@ -101,7 +101,7 @@ export interface AddEnvironmentOptions {
    * repository has a branch named like the environment, then the rest.
    */
   ask?: (questions: EnvironmentQuestion[]) => Promise<InterviewAnswers>;
-  /** Asks the follow-ups for a server the user owns, with prod's as the defaults. */
+  /** Asks the follow-ups for a server the user owns, with prod's as the defaults, in three rounds (`askServerQuestions`). */
   askServer?: (questions: ServerQuestion[]) => Promise<InterviewAnswers>;
   /** Asks the follow-ups for a Portainer, with prod's as the defaults. */
   askPortainer?: (questions: PortainerQuestion[]) => Promise<InterviewAnswers>;
@@ -715,7 +715,7 @@ export async function addEnvironment(
     const context = { ...(prodOwn ? { previous: prodOwn } : {}), cloudflareDomain, ...domain };
     if (!hasFollowUps(server) && options.askServer !== undefined) {
       server = splitFollowUps(
-        await options.askServer(buildServerQuestions(context)),
+        await askServerQuestions(options.askServer, context),
         "server",
         SERVER_FIELDS,
       );
