@@ -985,6 +985,16 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
       'Skipped: the firewall is configured to accept web traffic from anywhere (security.httpAllowedFrom is "any").',
     );
   }
+  // A server at home: its address is never kept, and a probe from inside the home proves nothing.
+  if (homeMode(plan)) {
+    return checkResult(
+      id,
+      title,
+      "medium",
+      "skip",
+      "Behind Cloudflare's proxy at home, the server's own web filter limits ports 80 and 443 to Cloudflare; `opscrew secure` checks it on the server.",
+    );
+  }
   if (!ip) {
     return checkResult(
       id,

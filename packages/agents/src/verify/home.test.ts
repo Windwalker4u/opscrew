@@ -339,6 +339,13 @@ describe("runVerify on a server at home", () => {
     });
     // No request from this computer to the server or the home.
     expect(s.probes).toEqual([]);
+    // The way around Cloudflare is the server's web filter's, checked by secure on the server.
+    const origin = byId(result.checks, "origin-not-direct");
+    expect(origin.status).toBe("skip");
+    expect(origin.message).toBe(
+      "Behind Cloudflare's proxy at home, the server's own web filter limits ports 80 and 443 to Cloudflare; `opscrew secure` checks it on the server.",
+    );
+    expect(origin.remediation).toBeUndefined();
 
     // The home's address, which the updater's state holds, is nowhere.
     const seen = [
