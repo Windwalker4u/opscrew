@@ -105,6 +105,7 @@ import {
   liftProtection,
   removeSnapshotRecord,
 } from "./deletion";
+import { deleteHomeRecords, proposeOutsideCheckRemoval, updaterTokenLeft } from "./home";
 import { leaveSharedMonitoring } from "./monitoring";
 import {
   confirmExtraServers,
@@ -953,12 +954,18 @@ export async function destroyOwnServer(
     if (bucket !== undefined) await discardBucketDeletion(bucket);
   }
 
+  // 6a. At home: the records the address updater kept, once the teardown removed it from the
+  // server, through their own plan approved by its hash with the app's name typed.
+  if (removeApp) await deleteHomeRecords(deps, plan, command);
+
   // 6b. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
 
   // 7. Deploy secrets (tunnel ones included) and OpsCrew's record of the deployment
   let secretsRemoved: string[] = [];
   let current = plan;
+  /** At home: the outside check's workflow, while no pull request removes it. */
+  let homeLeft: string[] = [];
   if (removeApp) {
     await pauseCheckForTeardown(deps, github, plan, teardownApproval ?? removal?.approval);
     secretsRemoved = await removeDeploySecrets(deps, github, {
@@ -995,6 +1002,11 @@ export async function destroyOwnServer(
     deps.reporter.success(
       `${name} is removed. Your server stays as it is otherwise; opscrew/plan.yaml records when.`,
     );
+    // With the repository's last app at home, a pull request removes the outside check.
+    homeLeft = [
+      ...updaterTokenLeft(plan),
+      ...(await proposeOutsideCheckRemoval(deps, plan, github)),
+    ];
   }
 
   // 8. --undo-host: reverse OpsCrew's own host changes, as a separate approved plan
@@ -1082,7 +1094,7 @@ export async function destroyOwnServer(
   if (removeApp) {
     for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
   }
-  remaining.push(...bucketStillListed(bucketDeleted));
+  remaining.push(...bucketStillListed(bucketDeleted), ...homeLeft);
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   failIfBucketListed(bucketDeleted);
   return {

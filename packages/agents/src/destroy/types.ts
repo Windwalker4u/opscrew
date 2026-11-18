@@ -11,7 +11,8 @@ import type { PortainerServices } from "../provision/types";
  * GitHub environment that holds them when they live in one, the scheduled check's pause, and for
  * the user's Portainer its deploy branch, for a hosting account its release branch and the
  * agent's deploy key (without `deleteBranch` or `removeDeployKey` they stay and are listed under
- * what remains).
+ * what remains), and with the repository's last app at home the pull request that removes the
+ * outside check's workflow (without the pull request calls it stays, listed the same way).
  */
 export type DestroyGitHubApi = Pick<
   GitHubClient,
@@ -22,7 +23,17 @@ export type DestroyGitHubApi = Pick<
   | "setRepoVariable"
   | "deleteRepoVariable"
 > &
-  Partial<Pick<GitHubClient, "deleteBranch" | "removeDeployKey">>;
+  Partial<
+    Pick<
+      GitHubClient,
+      | "deleteBranch"
+      | "removeDeployKey"
+      | "getRepo"
+      | "findOpenPullRequest"
+      | "createPullRequest"
+      | "updatePullRequest"
+    >
+  >;
 
 /** The Cloudflare call the credential check needs (a `CloudflareClient` or a test fake). */
 export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
