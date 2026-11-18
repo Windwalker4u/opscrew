@@ -4088,35 +4088,41 @@ function drillsScripts(plan: HostPlan, step: HostStep): StepScripts {
     RUN_AS: login ? "login" : "root",
   };
   if (step.params.remove === true) {
-    const r = params(
+    const { image } = params(
       step,
-      login
-        ? z.strictObject({
-            app: AppNameSchema,
-            remove: z.literal(true),
-            runAs: z.literal("login"),
-            image: z.string().regex(PINNED_IMAGE_RE),
-          })
-        : z.strictObject({
-            app: AppNameSchema,
-            remove: z.literal(true),
-            runAs: z.literal("root").optional(),
-          }),
+      z.strictObject({
+        app: AppNameSchema,
+        remove: z.literal(true),
+        runAs: RunAsSchema.optional(),
+        image: z.string().regex(PINNED_IMAGE_RE).optional(),
+      }),
     );
+    // The login's removal needs the pinned image; root's has none.
+    if (login !== (image !== undefined)) throw invalid(step, "image");
     if (plan.purpose === "undo") throw invalid(step, "purpose");
     if (plan.purpose === "setup" && plan.deleteData !== true) throw invalid(step, "deleteData");
     // As the login, the copy's data goes as the drill removes it: through Docker, as root there.
-    const data =
-      "image" in r
-        ? `if [ -L "$DATA" ]; then rm -f "$DATA"
-elif [ -d "$DATA" ]; then
-  docker run --rm --network none --user 0:0 --entrypoint rm -v "$DATA_ROOT:/d" "$IMAGE" -rf "/d/$DATA_NAME" >/dev/null 2>&1 || fail "OpsCrew could not remove $DATA completely."
-fi`
-        : `if [ -L "$DATA" ]; then rm -f "$DATA"
+    const data: { lines: string; params: Record<string, string> } =
+      image === undefined
+        ? {
+            lines: `if [ -L "$DATA" ]; then rm -f "$DATA"
 elif [ -d "$DATA" ]; then
   find "$DATA" -xdev -mindepth 1 -delete
   rmdir "$DATA" || fail "OpsCrew could not remove $DATA completely."
-fi`;
+fi`,
+            params: {},
+          }
+        : {
+            lines: `if [ -L "$DATA" ]; then rm -f "$DATA"
+elif [ -d "$DATA" ]; then
+  docker run --rm --network none --user 0:0 --entrypoint rm -v "$DATA_ROOT:/d" "$IMAGE" -rf "/d/$DATA_NAME" >/dev/null 2>&1 || fail "OpsCrew could not remove $DATA completely."
+fi`,
+            params: {
+              DATA_ROOT: project.data.slice(0, project.data.lastIndexOf("/")),
+              DATA_NAME: project.name,
+              IMAGE: image,
+            },
+          };
     return scripts({
       name: "drills.remove",
       params: {
@@ -4125,13 +4131,7 @@ fi`;
         LOCK: `${dir}/.start.lock`,
         PROJECT: project.name,
         DATA: project.data,
-        ...("image" in r
-          ? {
-              DATA_ROOT: project.data.slice(0, project.data.lastIndexOf("/")),
-              DATA_NAME: project.name,
-              IMAGE: r.image,
-            }
-          : {}),
+        ...data.params,
       },
       helpers: `${PROJECT_HELPERS}
 ${CRON_HELPERS}
@@ -4161,7 +4161,7 @@ fi
 remove_project "$PROJECT" "" "" true
 project_gone "$PROJECT" true || fail "Some containers or volumes of the drill's copy ($PROJECT) could not be removed."
 rm -rf "$RECIPE" "$DRILLS"
-${data}
+${data.lines}
 gone "$DATA" || fail "OpsCrew could not remove $DATA completely."`,
       failed:
         "The scheduled restore drills, their recipe or a drill's copy are still on the server.",
