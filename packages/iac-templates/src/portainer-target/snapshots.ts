@@ -9,6 +9,8 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
+import { DRILL_LIMIT_SECONDS, DRILL_RECORD_PREFIX } from "../drill/record";
+import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours } from "../drill/script";
 import { offsiteExpires } from "../infra/storage";
 import {
   AGE_BINARY,
@@ -30,8 +32,10 @@ import {
 import { composeLiteral, hardened, shellQuote } from "../runtime/services";
 import {
   DRAGONFLY_SAVE,
+  databaseCount,
   filesTar,
   onlineCopy,
+  partRestore,
   REDIS_CLIENTS,
   type SnapshotPart,
   SQLITE_COPY,
@@ -70,14 +74,19 @@ const TOOLS_VOLUME = "snapshot_tools";
 /**
  * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the plan has data (a
  * stateful service, the `sqlite` volume or the `files` volume), which `opscrew snapshot` can copy
- * by hand, or the off-server copy is on, and the off-server copy's `snapshot_tools`; none
- * otherwise. With the `snapshots` volume, the stamp writes the running image there, so every
- * snapshot knows its version.
+ * by hand, or the off-server copy is on, the off-server copy's `snapshot_tools`, and each scheduled
+ * drill's scratch volume (`<service>_drill`, {@link drillParts}); none otherwise. With the
+ * `snapshots` volume, the stamp writes the running image there, so every snapshot knows its
+ * version.
  */
 export function snapshotVolumes(plan: DeployPlan): string[] {
   const offsite = snapshotOffsiteOf(plan) !== undefined;
   if (snapshotParts(plan).length === 0 && !offsite) return [];
-  return [SNAPSHOTS_VOLUME, ...(offsite ? [TOOLS_VOLUME] : [])];
+  return [
+    SNAPSHOTS_VOLUME,
+    ...(offsite ? [TOOLS_VOLUME] : []),
+    ...drillParts(plan).map(drillVolume),
+  ];
 }
 
 /**
@@ -422,6 +431,261 @@ function scheduled(
 }
 
 /**
+ * How a database's own image runs a scratch server of its own for a scheduled drill (029 research
+ * R28): every command sh as root inside the drill's container, the scratch in `"$S"` (the server's
+ * data in `"$S"/data`, its output in `"$S"/log`), the server answering on localhost alone.
+ */
+interface ScratchServer {
+  /** The image's user the server runs as, who owns `"$S"`. */
+  user: string;
+  /** Makes the server's empty data in `"$S"/data`. */
+  init: string;
+  /** Runs the server in the foreground as `user`. */
+  run: string;
+  /** Succeeds once the server answers. */
+  ready: string;
+  /** The signal that stops it cleanly. */
+  stop: "INT" | "TERM";
+  /**
+   * Run in the drill's own shell once the server answers: the login the part's restore and count
+   * read from the service's variables, made on the scratch server. None for the SQL databases,
+   * whose scratch superuser needs no password from inside the container.
+   */
+  login?: string;
+}
+
+/** The image's tool that runs a command as another user: gosu, or su-exec on Alpine. */
+const AS_USER = '"$(command -v gosu || command -v su-exec)"';
+
+/**
+ * The MySQL and MariaDB scratch: root without a password, the socket only, no binary log, and
+ * `options` for the server.
+ */
+function mysqlScratch(install: string, server: string, admin: string, options = ""): ScratchServer {
+  return {
+    user: "mysql",
+    init: `${install} --user=mysql --datadir="$S"/data`,
+    run: `${server} --user=mysql --datadir="$S"/data --skip-networking --skip-log-bin${options}`,
+    ready: `${admin} -h localhost -u root ping`,
+    stop: "TERM",
+  };
+}
+
+/** The kinds a scheduled drill proves on Portainer, and how each one's image runs its scratch. */
+const SCRATCH_SERVERS: Readonly<Partial<Record<PortainerSnapshotPart["kind"], ScratchServer>>> = {
+  postgres: {
+    user: "postgres",
+    init: `${AS_USER} postgres initdb -D "$S"/data -U app --auth=trust`,
+    run: `${AS_USER} postgres postgres -D "$S"/data -c listen_addresses=localhost`,
+    ready: "pg_isready -q -h localhost",
+    stop: "INT",
+  },
+  mysql: mysqlScratch(
+    "mysqld --initialize-insecure",
+    "mysqld",
+    "mysqladmin",
+    " --performance-schema=OFF --mysqlx=OFF",
+  ),
+  mariadb: mysqlScratch(
+    "mariadb-install-db --skip-test-db --auth-root-authentication-method=normal",
+    "mariadbd",
+    "mariadb-admin",
+  ),
+  mongodb: {
+    user: "mongodb",
+    init: 'mkdir "$S"/data && chown mongodb:mongodb "$S"/data',
+    run: `${AS_USER} mongodb mongod --dbpath "$S"/data --bind_ip localhost --port 27017 --nounixsocket --wiredTigerCacheSizeGB 0.25`,
+    ready: `HOME=/tmp mongosh --quiet --nodb --eval 'connect("mongodb://localhost:27017/admin").runCommand({ ping: 1 })'`,
+    stop: "TERM",
+    login: `export MONGO_INITDB_ROOT_PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')" && HOME=/tmp mongosh --quiet --nodb --eval 'connect("mongodb://localhost:27017/admin").createUser({ user: "app", pwd: process.env.MONGO_INITDB_ROOT_PASSWORD, roles: ["root"] })'`,
+  },
+};
+
+/** A database part a scheduled drill proves, with its service and its image's scratch server. */
+type DrillPart = PortainerSnapshotPart & { service: PlanService; scratch: ScratchServer };
+
+/**
+ * The parts a scheduled drill proves in the stack (`snapshots.drills.schedule`, which needs
+ * `snapshots.schedule`): each of the four databases the scheduled snapshots dump.
+ */
+function drillParts(plan: DeployPlan): DrillPart[] {
+  if (plan.snapshots?.drills?.schedule === undefined || snapshotScheduleOf(plan) === undefined) {
+    return [];
+  }
+  return portainerSnapshotParts(plan).flatMap((part) => {
+    const scratch = SCRATCH_SERVERS[part.kind];
+    return part.service === undefined || scratch === undefined
+      ? []
+      : [{ ...part, service: part.service, scratch }];
+  });
+}
+
+/** A drill's scratch volume's key: `<service>_drill`, which no service's data volume is named. */
+function drillVolume(part: PortainerSnapshotPart): string {
+  return `${part.name}_drill`;
+}
+
+/** A snapshot's id as the scheduled snapshots name it (`20261106T190000Z`), as a shell pattern. */
+const SCHEDULED_ID = `${"[0-9]".repeat(8)}T${"[0-9]".repeat(6)}Z`;
+
+/** How long a scratch server may take to answer once started. */
+const SCRATCH_READY_SECONDS = 300;
+
+/**
+ * The shell script of a scheduled drill's loop (sh as root): at each slot it drills once and writes
+ * its line ({@link drills}).
+ */
+function drillScript(part: DrillPart): string[] {
+  const { scratch: server } = part;
+  const [data = "/data"] = dataDirs(serviceSpec(part.service.kind)).map(([, dir]) => dir);
+  const file = `${DIR}/"$drill_id"/${part.file}`;
+  // The restore and the count a restore and a server's drill run, against the scratch server.
+  const local = { ...part, name: "localhost" };
+  const load = partRestore(local).load?.(file);
+  const count = databaseCount(local);
+  if (load === undefined || count === undefined) {
+    throw new Error(`${part.name} is not a database a drill restores.`);
+  }
+  const entry = `"name":"${part.name}","kind":"${part.kind}","file":"${part.file}"`;
+  const fail = (result: string, reason: string) => `{ drill_end ${result} ${reason}; return; }`;
+  return [
+    `S=${data}/drill`,
+    // One line per run, with no value in it.
+    "drill_record() {",
+    `  echo "${DRILL_RECORD_PREFIX}$(date -u +%Y-%m-%dT%H:%M:%SZ) scheduled $1 id=\${drill_id:--} version=\${drill_version:--} start=$drill_start parts=\${drill_parts:--} health=- tables=\${drill_tables:--} removal=\${drill_removal:--} cleaned=$drill_cleaned reason=\${2:--}"`,
+    "}",
+    // The time limit's watch and the scratch server stopped, and the scratch removed.
+    "drill_clear() {",
+    '  if [ -n "$drill_watch" ]; then kill "$drill_watch" 2> /dev/null; wait "$drill_watch" 2> /dev/null; fi',
+    `  if [ -n "$drill_pid" ]; then kill -s ${server.stop} "$drill_pid" 2> /dev/null; wait "$drill_pid" 2> /dev/null; fi`,
+    '  drill_watch=""; drill_pid=""',
+    '  rm -rf "$S" 2> /dev/null',
+    '  [ ! -e "$S" ]',
+    "}",
+    "drill_end() {",
+    '  drill_result="$1"; drill_reason="$2"',
+    '  if [ -e "$S"/.timed-out ]; then drill_result=failed; drill_reason=timeout; fi',
+    "  if drill_clear; then drill_removal=removed; else drill_removal=failed; fi",
+    '  drill_record "$drill_result" "$drill_reason"',
+    "}",
+    "drill() {",
+    '  drill_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; drill_cleaned=no; drill_id=""; drill_version=""',
+    '  drill_parts=""; drill_tables=""; drill_removal=""; drill_pid=""; drill_watch=""',
+    // A crashed run's scratch goes first.
+    '  if [ -e "$S" ]; then',
+    '    rm -rf "$S" 2> /dev/null',
+    '    if [ -e "$S" ]; then drill_record failed leftovers; return; fi',
+    "    drill_cleaned=yes",
+    "  fi",
+    // The latest scheduled snapshot, and its dump of this part.
+    `  for d in ${DIR}/${SCHEDULED_ID}; do`,
+    `    if [ -f "$d"/about.json ] && grep -qF '"kind":"scheduled"' "$d"/about.json; then drill_id="\${d##*/}"; fi`,
+    "  done",
+    `  if [ -z "$drill_id" ] || [ ! -f ${file} ] || ! grep -qF '${entry}' ${DIR}/"$drill_id"/about.json; then`,
+    "    drill_record skipped none",
+    "    return",
+    "  fi",
+    `  drill_version="$(sed -n 's/.*"version":"sha256:\\([0-9a-f]\\{12\\}\\).*/\\1/p' ${DIR}/"$drill_id"/about.json)"`,
+    // Room for the dump's size and the snapshots' rule (1 GiB and 10%), and memory for the server.
+    `  drill_bytes="$(wc -c < ${file} | tr -d ' ')"`,
+    `  set -- $(df -Pk ${data} | tail -n 1)`,
+    '  drill_margin=$(( $2 / 10 )); if [ "$drill_margin" -lt 1048576 ]; then drill_margin=1048576; fi',
+    '  if [ "$4" -lt $(( drill_bytes / 1024 + drill_margin )) ]; then drill_record skipped disk; return; fi',
+    `  drill_free="$(sed -n 's/^MemAvailable: *\\([0-9]*\\) kB$/\\1/p' /proc/meminfo 2> /dev/null)"`,
+    `  if [ -n "$drill_free" ] && [ $(( drill_free / 1024 )) -lt ${part.service.memoryMb} ]; then drill_record skipped memory; return; fi`,
+    // The scratch server.
+    `  { mkdir -p "$S" && chown ${server.user}:${server.user} "$S" && chmod 700 "$S"; } || ${fail("failed", "start")}`,
+    `  (${server.init}) < /dev/null >> "$S"/log 2>&1 || ${fail("failed", "start")}`,
+    `  ${server.run} < /dev/null >> "$S"/log 2>&1 &`,
+    "  drill_pid=$!",
+    // The time limit: the server is killed, so the step that runs ends, and the scratch goes.
+    "  (",
+    '    drill_sleep=""',
+    "    trap 'kill \"$drill_sleep\" 2> /dev/null; exit 0' TERM",
+    `    sleep ${DRILL_LIMIT_SECONDS} &`,
+    "    drill_sleep=$!",
+    '    wait "$drill_sleep" || exit 0',
+    '    : > "$S"/.timed-out',
+    '    kill -s KILL "$drill_pid"',
+    "  ) < /dev/null > /dev/null 2>&1 &",
+    "  drill_watch=$!",
+    "  drill_wait=0",
+    `  until (${server.ready}) < /dev/null > /dev/null 2>&1; do`,
+    "    drill_wait=$((drill_wait + 1))",
+    `    if [ "$drill_wait" -ge ${SCRATCH_READY_SECONDS} ] || [ -e "$S"/.timed-out ]; then ${fail("failed", "start")}; fi`,
+    "    sleep 1",
+    "  done",
+    ...(server.login === undefined
+      ? []
+      : [`  { ${server.login}; } < /dev/null >> "$S"/log 2>&1 || ${fail("failed", "start")}`]),
+    // The dump restored as a restore does, timed, then its tables or collections counted.
+    '  drill_t="$(date +%s)"',
+    `  (${load}) < /dev/null >> "$S"/log 2>&1 || ${fail("not-restored", part.name)}`,
+    `  drill_parts="${part.name}:$drill_bytes:$(( $(date +%s) - drill_t ))"`,
+    `  drill_n="$( (${count}) < /dev/null 2>> "$S"/log | tr -d ' \\r' | tail -n 1)"`,
+    '  case "$drill_n" in "" | *[!0-9]*) drill_n=failed ;; esac',
+    `  drill_tables="${part.name}:$drill_n"`,
+    `  case "$drill_n" in failed | 0) ${fail("not-restored", part.name)} ;; esac`,
+    "  drill_end healthy",
+    "}",
+    "while :; do",
+    "  now=$(date +%s)",
+    "  slot=$(( ((now - $OPSCREW_DRILL_AFTER) / $OPSCREW_DRILL_EVERY + 1) * $OPSCREW_DRILL_EVERY + $OPSCREW_DRILL_AFTER ))",
+    "  sleep $(( slot - now ))",
+    "  drill",
+    "done",
+  ];
+}
+
+/**
+ * The scheduled drills (`snapshots.drills.schedule`, 029 plan.md 19., research R28, R29): one loop
+ * service `drill-<service>` per database part ({@link drillParts}), on the part's own pinned image,
+ * as root with `network_mode: none`, the snapshots volume `read_only: true` and a scratch volume of
+ * its own (`<service>_drill`, at the image's data folders, so Docker adds no anonymous volume),
+ * never the service's own container or volumes. In its slot, {@link DRILL_SLOT_AFTER_HOURS} hours
+ * after the scheduled snapshot's (weekly or daily, counted from the epoch in UTC), it starts a
+ * scratch server of its own in `<data>/drill` answering on localhost only, restores the latest
+ * scheduled snapshot's dump of the part into it as a restore does, counts its tables (collections
+ * for MongoDB), stops the server and removes the scratch. It skips (`none`) without such a dump,
+ * and (`disk`, `memory`) when free disk is below the dump's size and the snapshots' rule or free
+ * memory below the service's limit; a crashed run's scratch goes first (`cleaned=yes`), and after
+ * {@link DRILL_LIMIT_SECONDS} the server is killed (`timeout`). It proves the dump, never the app.
+ * Each run prints one line to the container's log, {@link DRILL_RECORD_PREFIX} and the line
+ * `drillRecord` reads (`healthy` when the dump restored with a table, else `not-restored`), with
+ * no value in it; the tools' output stays in the scratch and goes with it.
+ */
+function drills(plan: DeployPlan): Record<string, object> {
+  const every = plan.snapshots?.drills?.schedule;
+  if (every === undefined) return {};
+  const services: Record<string, object> = {};
+  for (const part of drillParts(plan)) {
+    const scratch = dataDirs(serviceSpec(part.service.kind)).map(([, dir]) => ({
+      type: "volume",
+      source: drillVolume(part),
+      target: dir,
+    }));
+    services[`drill-${part.name}`] = {
+      image: part.image,
+      restart: "unless-stopped",
+      user: "0:0",
+      network_mode: "none",
+      environment: {
+        OPSCREW_DRILL_EVERY: String(drillScheduleHours(every) * 3600),
+        OPSCREW_DRILL_AFTER: String(DRILL_SLOT_AFTER_HOURS * 3600),
+      },
+      entrypoint: ["sh", "-c", composeLiteral(drillScript(part).join("\n"))],
+      volumes: [
+        { type: "volume", source: SNAPSHOTS_VOLUME, target: DIR, read_only: true },
+        ...scratch,
+      ],
+      ...memoryLimit(part.service.memoryMb),
+      ...hardened(),
+    };
+  }
+  return services;
+}
+
+/**
  * The snapshot before each release (019's, on Portainer): a one-off per part copying into
  * `<hex>.partial`, `hex` the outgoing image's digest, then the one-off `snapshot`, which finishes
  * it once every part succeeded and keeps the newest `deploy.keepSnapshots`. A failed part stops
@@ -544,8 +808,9 @@ function offsite(plan: DeployPlan): Record<string, object> {
 }
 
 /**
- * The snapshots of the app's stack (plan.md 4.): the scheduled services, the snapshot before each
- * release and the off-server copy, each only when the plan asks for it, all writing into the
+ * The snapshots of the app's stack (plan.md 4.): the scheduled services, the scheduled drills
+ * ({@link drills}), the snapshot before each release and the off-server copy, each only when the
+ * plan asks for it, all writing into the
  * stack's `snapshots` volume ({@link snapshotVolumes}). Stop-only kinds are never scheduled here (Decision D3).
  */
 export function stackSnapshots(
@@ -558,6 +823,7 @@ export function stackSnapshots(
   const release = all.length > 0 && snapshotsOn(plan);
   const services = {
     ...(all.length > 0 ? scheduled(plan, all, backing) : {}),
+    ...drills(plan),
     ...(release ? beforeRelease(plan, all, backing, deploy) : {}),
     ...offsite(plan),
   };

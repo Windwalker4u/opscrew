@@ -15,6 +15,8 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
+import { withServices } from "../catalog/__fixtures__/plans";
+import { DRILL_RECORD_PREFIX, drillRecord } from "../drill/record";
 import { PORTAINER_OFFSITE_VARIABLES } from "../offsite";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { shellQuote } from "../runtime/services";
@@ -654,6 +656,127 @@ describe("the parts and environments for a snapshot by hand", () => {
   });
 });
 
+/** `scheduledPlan` with MySQL, MariaDB and MongoDB beside its services, and `drills`. */
+function drillsPlan(drills: Record<string, unknown> = { schedule: "weekly" }): DeployPlan {
+  const more = withServices([
+    { kind: "mysql", name: "orders", enabled: true },
+    { kind: "mariadb", name: "ledger", enabled: true },
+    { kind: "mongodb", name: "docs", enabled: true, options: { replicaSet: true } },
+  ]).services;
+  return DeployPlanSchema.parse({
+    ...scheduledPlan,
+    services: [...scheduledPlan.services, ...more],
+    snapshots: { ...scheduledPlan.snapshots, drills },
+  });
+}
+
+const drills = render(drillsPlan());
+
+/** A drill loop's mounts, in Compose's long syntax. */
+type Mount = { type: string; source: string; target: string; read_only?: boolean };
+const mounts = (service: Service | undefined) => (service?.volumes ?? []) as unknown as Mount[];
+
+/** The four loops, by their database service and the image it runs. */
+const LOOPS = [
+  { service: "db", image: IMAGES.postgres.ref, dirs: ["/var/lib/postgresql/data"], memory: 512 },
+  { service: "orders", image: IMAGES.mysql.ref, dirs: ["/var/lib/mysql"], memory: 512 },
+  { service: "ledger", image: IMAGES.mariadb.ref, dirs: ["/var/lib/mysql"], memory: 384 },
+  { service: "docs", image: IMAGES.mongodb.ref, dirs: ["/data/db", "/data/configdb"], memory: 512 },
+];
+
+describe("the scheduled drills in a stack", () => {
+  it("runs one loop per database part, never for Valkey, a stop-only kind or SQLite", () => {
+    const names = Object.keys(drills.stack.services).filter((name) => name.startsWith("drill-"));
+    expect(names).toEqual(["drill-db", "drill-orders", "drill-ledger", "drill-docs"]);
+  });
+
+  it("runs each from the part's own image as root with no network, the snapshots read-only and a scratch volume of its own", () => {
+    for (const loop of LOOPS) {
+      const service = drills.stack.services[`drill-${loop.service}`];
+      expect(service?.image, loop.service).toBe(loop.image);
+      expect(service?.user).toBe("0:0");
+      expect(service?.restart).toBe("unless-stopped");
+      expect(service?.network_mode).toBe("none");
+      expect(service?.networks).toBeUndefined();
+      expect(service?.depends_on).toBeUndefined();
+      expect(service?.mem_limit).toBe(`${loop.memory}m`);
+      expect(mounts(service)).toEqual([
+        { type: "volume", source: "snapshots", target: "/snapshots", read_only: true },
+        ...loop.dirs.map((dir) => ({
+          type: "volume",
+          source: `${loop.service}_drill`,
+          target: dir,
+        })),
+      ]);
+      // None of the service's values or volumes.
+      expect(service?.environment).toEqual({
+        OPSCREW_DRILL_EVERY: "604800",
+        OPSCREW_DRILL_AFTER: "10800",
+      });
+      expect(JSON.stringify(service)).not.toMatch(/\$\{OPSCREW_|_data\b/);
+    }
+  });
+
+  it("slots weekly by default or daily, three hours after the snapshot's slot", () => {
+    const daily = render(drillsPlan({ schedule: "daily" })).stack.services["drill-db"];
+    expect(daily?.environment).toEqual({
+      OPSCREW_DRILL_EVERY: "86400",
+      OPSCREW_DRILL_AFTER: "10800",
+    });
+    expect(script(drills.stack.services["drill-db"])).toContain(
+      "slot=$(( ((now - $OPSCREW_DRILL_AFTER) / $OPSCREW_DRILL_EVERY + 1) * $OPSCREW_DRILL_EVERY + $OPSCREW_DRILL_AFTER ))",
+    );
+  });
+
+  it("restores the latest scheduled dump into a scratch server on localhost as a restore does, and counts its tables", () => {
+    const db = script(drills.stack.services["drill-db"]);
+    expect(db).toContain("S=/var/lib/postgresql/data/drill");
+    expect(db).toContain(
+      `"$(command -v gosu || command -v su-exec)" postgres postgres -D "$S"/data -c listen_addresses=localhost`,
+    );
+    expect(db).toContain(
+      'pg_restore -h localhost -U app -d app --no-owner --single-transaction /snapshots/"$drill_id"/db.dump',
+    );
+    expect(db).toContain("SELECT COUNT(*) FROM information_schema.tables");
+    expect(db).toContain(`grep -qF '"name":"db","kind":"postgres","file":"db.dump"'`);
+    expect(script(drills.stack.services["drill-orders"])).toContain(
+      'mysqld --user=mysql --datadir="$S"/data --skip-networking --skip-log-bin --performance-schema=OFF --mysqlx=OFF',
+    );
+    expect(script(drills.stack.services["drill-ledger"])).toContain(
+      'mariadb -h localhost -u root app < /snapshots/"$drill_id"/ledger.dump',
+    );
+    const docs = script(drills.stack.services["drill-docs"]);
+    expect(docs).toContain("S=/data/db/drill");
+    expect(docs).toContain('--archive=/snapshots/"$drill_id"/docs.dump --gzip');
+    expect(docs).toContain("createUser");
+    for (const loop of LOOPS) {
+      const text = script(drills.stack.services[`drill-${loop.service}`]);
+      expect(text).toContain('kill -s KILL "$drill_pid"');
+      expect(text).toContain("sleep 1800 &");
+      expect(shParses(text), loop.service).toBe(true);
+    }
+  });
+
+  it("declares the scratch volumes with the stack's, which only data deletion removes", () => {
+    const volumes = portainerStackVolumes(drillsPlan());
+    for (const loop of LOOPS) expect(volumes).toContain(`opscrew-shop_${loop.service}_drill`);
+    expect(Object.keys(drills.stack.volumes)).toEqual(
+      volumes.map((volume) => volume.slice("opscrew-shop_".length)),
+    );
+  });
+
+  it("leaves a stack without the schedule byte-identical", () => {
+    expect(
+      render(snapshotPlan({ snapshots: { schedule: { every: "12h", keep: 5 }, drills: {} } }))
+        .content,
+    ).toBe(scheduled.content);
+  });
+
+  it("matches the snapshot", () => {
+    expect(drills.stack.services["drill-db"]).toMatchSnapshot();
+  });
+});
+
 describe("a stack without snapshots", () => {
   it("has the snapshots volume a snapshot by hand writes into, and the version there, with data", () => {
     const plan = snapshotPlan({ deploy: { ...snapshotPlan().deploy, snapshots: false } });
@@ -897,6 +1020,95 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
           { name: "queue", kind: "valkey", failed: true },
           { name: "sqlite", kind: "sqlite", skipped: true },
         ],
+      });
+    });
+  });
+
+  describe("the scheduled drill", () => {
+    const text = script(drills.stack.services["drill-db"]);
+    const functions = text.slice(0, text.indexOf("while :; do"));
+    const hex = "cd".repeat(32);
+    /** A finished snapshot `id` of `kind`, holding `db`'s dump unless `dump` is false. */
+    const snapshot = (id: string, kind: string, dump = true) => {
+      mkdirSync(join(root, id));
+      const service = `{"name":"db","kind":"postgres","file":"db.dump","size":4,"image":"${IMAGES.postgres.ref}"}`;
+      writeFileSync(
+        join(root, id, "about.json"),
+        `{"id":"${id}","kind":"${kind}","taken":"2026-11-01T00:00:00Z","version":"sha256:${hex}","services":[${dump ? service : ""}]}\n`,
+      );
+      if (dump) writeFileSync(join(root, id, "db.dump"), "dump");
+    };
+    /**
+     * `drill` once under sh, the scratch's folder and `/proc/meminfo` the test's, `df` saying
+     * `availableKb` are free of 100 GiB and the machine `memoryKb` free.
+     */
+    const drill = (o: { availableKb?: number; memoryKb?: number } = {}) => {
+      const data = join(root, ".scratch-data").replaceAll("\\", "/");
+      mkdirSync(data, { recursive: true });
+      const meminfo = join(root, ".meminfo").replaceAll("\\", "/");
+      writeFileSync(meminfo, `MemTotal: 8000000 kB\nMemAvailable: ${o.memoryKb ?? 4000000} kB\n`);
+      const df = `df() { echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'; echo 'fake 104857600 0 ${o.availableKb ?? 52428800} 0% /'; }`;
+      const body = functions
+        .replaceAll("/var/lib/postgresql/data", data)
+        .replaceAll("/proc/meminfo", meminfo);
+      const result = run(`${df}\n${body}\ndrill`);
+      const line = result.stdout.split("\n").find((each) => each.startsWith(DRILL_RECORD_PREFIX));
+      return {
+        ...result,
+        scratch: join(data, "drill"),
+        record: drillRecord((line ?? "").slice(DRILL_RECORD_PREFIX.length)),
+      };
+    };
+
+    it("skips with no scheduled snapshot, or when the latest holds no dump of its part", () => {
+      volume();
+      snapshot("20261101T000000Z", "manual");
+      const none = drill();
+      expect(none.status, none.stderr).toBe(0);
+      expect(none.record).toMatchObject({ kind: "scheduled", result: "skipped", reason: "none" });
+      snapshot("20261102T000000Z", "scheduled");
+      snapshot("20261103T000000Z", "scheduled", false);
+      expect(drill().record).toMatchObject({ result: "skipped", reason: "none" });
+    });
+
+    it("drills the latest scheduled snapshot, after removing a crashed run's scratch, and records its end", () => {
+      volume();
+      snapshot("20261101T000000Z", "scheduled");
+      snapshot("20261102T000000Z", "scheduled");
+      snapshot("20261103T000000Z", "manual");
+      snapshot("20261104T000000Z.partial", "scheduled");
+      mkdirSync(join(root, ".scratch-data", "drill"), { recursive: true });
+      writeFileSync(join(root, ".scratch-data", "drill", "left"), "left");
+      // The scratch server can't start here (no postgres user, gosu or su-exec): it fails at start.
+      const result = drill();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.record).toEqual({
+        end: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/),
+        start: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/),
+        kind: "scheduled",
+        result: "failed",
+        id: "20261102T000000Z",
+        version: hex.slice(0, 12),
+        parts: [],
+        tables: [],
+        removal: "removed",
+        cleaned: true,
+        reason: "start",
+      });
+      expect(existsSync(result.scratch)).toBe(false);
+    });
+
+    it("skips when the disk or the memory is short, which is never a failure", () => {
+      volume();
+      snapshot("20261102T000000Z", "scheduled");
+      expect(drill({ availableKb: 1048576 }).record).toMatchObject({
+        result: "skipped",
+        reason: "disk",
+        id: "20261102T000000Z",
+      });
+      expect(drill({ memoryKb: 100000 }).record).toMatchObject({
+        result: "skipped",
+        reason: "memory",
       });
     });
   });

@@ -16,6 +16,14 @@
  *    exactly the snapshot's file. A snapshot before a release (named by its digest) stays here.
  * Neither the services' logs nor `about.json` hold a password.
  *
+ * The scheduled drill (029 plan.md 19., research R28), for each of PostgreSQL, MySQL, MariaDB and
+ * MongoDB as the stack renders it: the service with three tables or collections, a scheduled
+ * snapshot taken by the stack's own part and finalizer, a crashed run's scratch left behind, then
+ * the `drill-<service>` loop with its slot every 15 seconds: its one line says the latest dump
+ * restored with three tables into a scratch server of its own, the scratch was cleared, and the
+ * leftovers were removed; the container had no network, the service kept running untouched with its
+ * data, and no log holds a password.
+ *
  * It pulls the pinned images and fetches age from GitHub, so it runs only with
  * OPSCREW_DOCKER_TESTS=1. It removes its containers and volumes, and the images it pulled.
  */
@@ -30,11 +38,14 @@ import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { docker } from "../__fixtures__/docker";
 import { testContext } from "../__fixtures__/plans";
+import { withServices } from "../catalog/__fixtures__/plans";
+import { drillRecord } from "../drill/record";
 import { IMAGES } from "../pins";
 import { withSqlite } from "../workflow/__fixtures__/plans";
 import { skipReason } from "../workflow/__fixtures__/sh";
+import { databaseCount } from "../workflow/snapshots";
 import { portainerTestPlan } from "./__fixtures__/plans";
-import { fillPortainerStack, renderPortainerStack } from "./index";
+import { fillPortainerStack, portainerSecretVariables, renderPortainerStack } from "./index";
 
 const reason = skipReason();
 if (reason) console.warn(`[iac-templates] skipping Portainer's snapshots on Docker: ${reason}`);
@@ -458,5 +469,224 @@ describe.skipIf(reason !== undefined)(
       );
       expect(output.split("\n")).toEqual(["r=0", "sqlite.skipped"]);
     });
+  },
+);
+
+/** A database the scheduled drill proves, and three tables (collections) made in its `app`. */
+interface DrillKind {
+  kind: "postgres" | "mysql" | "mariadb" | "mongodb";
+  seed: string;
+}
+
+const THREE_TABLES =
+  "CREATE TABLE a (id int); CREATE TABLE b (id int); CREATE TABLE c (id int); INSERT INTO a VALUES (1);";
+
+const DRILL_KINDS: DrillKind[] = [
+  {
+    kind: "postgres",
+    seed: `PGPASSWORD="$POSTGRES_PASSWORD" psql -X -q -h 127.0.0.1 -U app -d app -v ON_ERROR_STOP=1 -c "${THREE_TABLES}"`,
+  },
+  {
+    kind: "mysql",
+    seed: `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -h 127.0.0.1 -u root app -e "${THREE_TABLES}"`,
+  },
+  {
+    kind: "mariadb",
+    seed: `MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb -h 127.0.0.1 -u root app -e "${THREE_TABLES}"`,
+  },
+  {
+    kind: "mongodb",
+    seed: `HOME=/tmp mongosh --quiet --nodb --eval 'const db = connect("mongodb://127.0.0.1:27017/admin"); db.auth("app", process.env.MONGO_INITDB_ROOT_PASSWORD); const app = db.getSiblingDB("app"); app.a.insertOne({ x: 1 }); app.b.insertOne({ x: 1 }); app.c.insertOne({ x: 1 })'`,
+  },
+];
+
+/** `shop` on Portainer with the database `db` of `drill.kind`, scheduled snapshots and drills. */
+function drillPlan(drill: DrillKind): DeployPlan {
+  const { services } = withServices([{ kind: drill.kind, name: "db", enabled: true }]);
+  return DeployPlanSchema.parse({
+    ...portainerTestPlan(),
+    services,
+    snapshots: { schedule: {}, drills: { schedule: "weekly" } },
+  });
+}
+
+/** The shell functions of a service's loop: its script up to the loop, as the container sees it. */
+function functionsOf(service: Service | undefined): string {
+  const text = ((service?.entrypoint as string[] | undefined)?.[2] ?? "").replaceAll("$$", "$");
+  const end = text.indexOf("while :; do");
+  if (end < 0) throw new Error("The service runs no loop.");
+  return text.slice(0, end);
+}
+
+/** The drills' projects, removed at the end with their volumes. */
+const drillProjects: { project: string; folder: string }[] = [];
+
+afterAll(() => {
+  for (const { project, folder } of drillProjects) {
+    spawnSync("docker", ["compose", "-p", project, "down", "-v", "--remove-orphans", "-t", "1"], {
+      cwd: folder,
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+    rmSync(folder, { recursive: true, force: true });
+    // Made by the test before Compose, so Compose leaves it.
+    spawnSync("docker", ["volume", "rm", `${project}_snapshots`]);
+  }
+}, 300_000);
+
+describe.skipIf(reason !== undefined)(
+  "Portainer's scheduled drills on Docker",
+  { timeout: 1_200_000 },
+  () => {
+    it.each(DRILL_KINDS)(
+      "restores $kind's latest scheduled dump into a scratch server of its own, counts its tables and clears it",
+      async (drill) => {
+        const plan = drillPlan(drill);
+        for (const ref of [IMAGES[drill.kind].ref, IMAGES.busybox.ref]) {
+          if (
+            !pulled.includes(ref) &&
+            spawnSync("docker", ["image", "inspect", ref]).status !== 0
+          ) {
+            pulled.push(ref);
+          }
+        }
+        const project = `opscrew-t2937-${drill.kind}-${RUN}`;
+        const folder = mkdtempSync(join(tmpdir(), "opscrew-portainer-drill-"));
+        drillProjects.push({ project, folder });
+        const stack = parse(
+          fillPortainerStack(renderPortainerStack(plan, testContext()).content, IMAGE),
+        ) as {
+          services: Record<string, Service>;
+          volumes: Record<string, unknown>;
+          configs?: Record<string, unknown>;
+        };
+        const names = ["db", "snapshots-db", "snapshots", "drill-db"];
+        const services = Object.fromEntries(names.map((name) => [name, stack.services[name]]));
+        const loop = stack.services["drill-db"] as Service;
+        services["drill-db"] = {
+          ...loop,
+          environment: { OPSCREW_DRILL_EVERY: "15", OPSCREW_DRILL_AFTER: "0" },
+        };
+        writeFileSync(
+          join(folder, "compose.yaml"),
+          stringify({
+            name: project,
+            services,
+            networks: { internal: {} },
+            volumes: stack.volumes,
+            ...(stack.configs === undefined ? {} : { configs: stack.configs }),
+          }),
+        );
+        const secrets = portainerSecretVariables(plan).map((entry) => ({
+          ...entry,
+          value: randomBytes(16).toString("hex"),
+        }));
+        writeFileSync(
+          join(folder, ".env"),
+          [
+            "OPSCREW_DB_USER=app",
+            "OPSCREW_DB_NAME=app",
+            ...secrets.map(({ variable, value }) => `${variable}=${value}`),
+            "",
+          ].join("\n"),
+        );
+        const compose = (args: string[], timeoutMs?: number) =>
+          docker(["compose", "-p", project, ...args], { cwd: folder, timeoutMs });
+
+        compose(["up", "-d", "--wait", "--wait-timeout", "300", "db"], 900_000);
+        compose(["exec", "-T", "db", "sh", "-c", drill.seed]);
+
+        // A scheduled snapshot of the running version, taken by the stack's own part and finished
+        // by its finalizer.
+        const id = "20261101T000000Z";
+        const snapshots = [`${project}_snapshots:/s`];
+        inside(IMAGES.busybox.ref, snapshots, `echo ${IMAGE} > /s/.running`);
+        const run = (service: string, script: string) =>
+          compose(["run", "--rm", "--no-deps", "-T", "--entrypoint", "sh", service, "-c", script]);
+        run(
+          "snapshots-db",
+          `${functionsOf(services["snapshots-db"])}\ntake /snapshots/${id}.partial`,
+        );
+        run(
+          "snapshots",
+          `${functionsOf(services.snapshots)}\nfinish /snapshots/${id}.partial ${id} scheduled`,
+        );
+        expect(inside(IMAGES.busybox.ref, snapshots, `ls /s/${id}`).split("\n")).toEqual([
+          "about.json",
+          "db.dump",
+        ]);
+
+        // A crashed run's scratch, in the drill's own volume.
+        compose(["create", "drill-db"]);
+        const scratch = `${project}_db_drill`;
+        inside(
+          IMAGES.busybox.ref,
+          [`${scratch}:/x`],
+          "mkdir -p /x/drill && echo left > /x/drill/left",
+        );
+        const db = compose(["ps", "-q", "db"]);
+        const before = docker([
+          "inspect",
+          "--format",
+          "{{.State.StartedAt}} {{.RestartCount}}",
+          db,
+        ]);
+
+        compose(["up", "-d", "--no-deps", "drill-db"]);
+        const begun = Date.now();
+        let line: string | undefined;
+        while (line === undefined) {
+          if (Date.now() - begun > 600_000) {
+            throw new Error(`No drill ended in 10 minutes:\n${compose(["logs", "drill-db"])}`);
+          }
+          await sleep(5000);
+          line = compose(["logs", "--no-color", "--no-log-prefix", "drill-db"])
+            .split("\n")
+            .find((each) => each.startsWith("drill-record "));
+        }
+        const container = compose(["ps", "-aq", "drill-db"]);
+        compose(["stop", "-t", "1", "drill-db"]);
+
+        const hex = IMAGE.slice(IMAGE.indexOf("@sha256:") + "@sha256:".length);
+        const record = drillRecord(line.slice("drill-record ".length));
+        expect(record, line).toMatchObject({
+          kind: "scheduled",
+          result: "healthy",
+          id,
+          version: hex.slice(0, 12),
+          parts: [{ name: "db", size: expect.any(Number), seconds: expect.any(Number) }],
+          tables: [{ service: "db", count: 3 }],
+          removal: "removed",
+          cleaned: true,
+        });
+        expect(record?.reason, line).toBeUndefined();
+        expect(record?.parts[0]?.size).toBeGreaterThan(0);
+
+        // The scratch is gone; the container had no network and read the snapshots read-only.
+        expect(inside(IMAGES.busybox.ref, [`${scratch}:/x:ro`], "ls -A /x")).not.toContain("drill");
+        expect(docker(["inspect", "--format", "{{.HostConfig.NetworkMode}}", container])).toBe(
+          "none",
+        );
+        expect(
+          docker([
+            "inspect",
+            "--format",
+            "{{range .Mounts}}{{.Destination}}={{.RW}} {{end}}",
+            container,
+          ]),
+        ).toContain("/snapshots=false");
+
+        // The service ran on, untouched, with its three tables.
+        expect(docker(["inspect", "--format", "{{.State.StartedAt}} {{.RestartCount}}", db])).toBe(
+          before,
+        );
+        const part = { name: "127.0.0.1", kind: drill.kind, file: "db.dump", online: true };
+        const count = databaseCount(part);
+        expect(compose(["exec", "-T", "db", "sh", "-c", count ?? "false"])).toMatch(/(^|\n)3$/);
+
+        const logs = compose(["logs", "--no-color"]);
+        for (const { value } of secrets) expect(logs).not.toContain(value);
+      },
+    );
   },
 );

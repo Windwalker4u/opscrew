@@ -646,6 +646,122 @@ configs:
 "
 `;
 
+exports[`the scheduled drills in a stack > matches the snapshot 1`] = `
+{
+  "entrypoint": [
+    "sh",
+    "-c",
+    "S=/var/lib/postgresql/data/drill
+drill_record() {
+  echo "drill-record $$(date -u +%Y-%m-%dT%H:%M:%SZ) scheduled $$1 id=$\${drill_id:--} version=$\${drill_version:--} start=$$drill_start parts=$\${drill_parts:--} health=- tables=$\${drill_tables:--} removal=$\${drill_removal:--} cleaned=$$drill_cleaned reason=$\${2:--}"
+}
+drill_clear() {
+  if [ -n "$$drill_watch" ]; then kill "$$drill_watch" 2> /dev/null; wait "$$drill_watch" 2> /dev/null; fi
+  if [ -n "$$drill_pid" ]; then kill -s INT "$$drill_pid" 2> /dev/null; wait "$$drill_pid" 2> /dev/null; fi
+  drill_watch=""; drill_pid=""
+  rm -rf "$$S" 2> /dev/null
+  [ ! -e "$$S" ]
+}
+drill_end() {
+  drill_result="$$1"; drill_reason="$$2"
+  if [ -e "$$S"/.timed-out ]; then drill_result=failed; drill_reason=timeout; fi
+  if drill_clear; then drill_removal=removed; else drill_removal=failed; fi
+  drill_record "$$drill_result" "$$drill_reason"
+}
+drill() {
+  drill_start="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; drill_cleaned=no; drill_id=""; drill_version=""
+  drill_parts=""; drill_tables=""; drill_removal=""; drill_pid=""; drill_watch=""
+  if [ -e "$$S" ]; then
+    rm -rf "$$S" 2> /dev/null
+    if [ -e "$$S" ]; then drill_record failed leftovers; return; fi
+    drill_cleaned=yes
+  fi
+  for d in /snapshots/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z; do
+    if [ -f "$$d"/about.json ] && grep -qF '"kind":"scheduled"' "$$d"/about.json; then drill_id="$\${d##*/}"; fi
+  done
+  if [ -z "$$drill_id" ] || [ ! -f /snapshots/"$$drill_id"/db.dump ] || ! grep -qF '"name":"db","kind":"postgres","file":"db.dump"' /snapshots/"$$drill_id"/about.json; then
+    drill_record skipped none
+    return
+  fi
+  drill_version="$$(sed -n 's/.*"version":"sha256:\\([0-9a-f]\\{12\\}\\).*/\\1/p' /snapshots/"$$drill_id"/about.json)"
+  drill_bytes="$$(wc -c < /snapshots/"$$drill_id"/db.dump | tr -d ' ')"
+  set -- $$(df -Pk /var/lib/postgresql/data | tail -n 1)
+  drill_margin=$$(( $$2 / 10 )); if [ "$$drill_margin" -lt 1048576 ]; then drill_margin=1048576; fi
+  if [ "$$4" -lt $$(( drill_bytes / 1024 + drill_margin )) ]; then drill_record skipped disk; return; fi
+  drill_free="$$(sed -n 's/^MemAvailable: *\\([0-9]*\\) kB$$/\\1/p' /proc/meminfo 2> /dev/null)"
+  if [ -n "$$drill_free" ] && [ $$(( drill_free / 1024 )) -lt 512 ]; then drill_record skipped memory; return; fi
+  { mkdir -p "$$S" && chown postgres:postgres "$$S" && chmod 700 "$$S"; } || { drill_end failed start; return; }
+  ("$$(command -v gosu || command -v su-exec)" postgres initdb -D "$$S"/data -U app --auth=trust) < /dev/null >> "$$S"/log 2>&1 || { drill_end failed start; return; }
+  "$$(command -v gosu || command -v su-exec)" postgres postgres -D "$$S"/data -c listen_addresses=localhost < /dev/null >> "$$S"/log 2>&1 &
+  drill_pid=$$!
+  (
+    drill_sleep=""
+    trap 'kill "$$drill_sleep" 2> /dev/null; exit 0' TERM
+    sleep 1800 &
+    drill_sleep=$$!
+    wait "$$drill_sleep" || exit 0
+    : > "$$S"/.timed-out
+    kill -s KILL "$$drill_pid"
+  ) < /dev/null > /dev/null 2>&1 &
+  drill_watch=$$!
+  drill_wait=0
+  until (pg_isready -q -h localhost) < /dev/null > /dev/null 2>&1; do
+    drill_wait=$$((drill_wait + 1))
+    if [ "$$drill_wait" -ge 300 ] || [ -e "$$S"/.timed-out ]; then { drill_end failed start; return; }; fi
+    sleep 1
+  done
+  drill_t="$$(date +%s)"
+  (umask 077 && export PGPASSWORD="$$POSTGRES_PASSWORD" && psql -X -q -h localhost -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h localhost -U app -d app --no-owner --single-transaction /snapshots/"$$drill_id"/db.dump) < /dev/null >> "$$S"/log 2>&1 || { drill_end not-restored db; return; }
+  drill_parts="db:$$drill_bytes:$$(( $$(date +%s) - drill_t ))"
+  drill_n="$$( (export PGPASSWORD="$$POSTGRES_PASSWORD" && pg_isready -q -h localhost -U app -d app && psql -X -q -At -h localhost -U app -d app -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')") < /dev/null 2>> "$$S"/log | tr -d ' \\r' | tail -n 1)"
+  case "$$drill_n" in "" | *[!0-9]*) drill_n=failed ;; esac
+  drill_tables="db:$$drill_n"
+  case "$$drill_n" in failed | 0) { drill_end not-restored db; return; } ;; esac
+  drill_end healthy
+}
+while :; do
+  now=$$(date +%s)
+  slot=$$(( ((now - $$OPSCREW_DRILL_AFTER) / $$OPSCREW_DRILL_EVERY + 1) * $$OPSCREW_DRILL_EVERY + $$OPSCREW_DRILL_AFTER ))
+  sleep $$(( slot - now ))
+  drill
+done",
+  ],
+  "environment": {
+    "OPSCREW_DRILL_AFTER": "10800",
+    "OPSCREW_DRILL_EVERY": "604800",
+  },
+  "image": "<pin:IMAGES.postgres>",
+  "logging": {
+    "driver": "json-file",
+    "options": {
+      "max-file": "3",
+      "max-size": "10m",
+    },
+  },
+  "mem_limit": "512m",
+  "memswap_limit": "512m",
+  "network_mode": "none",
+  "restart": "unless-stopped",
+  "security_opt": [
+    "no-new-privileges:true",
+  ],
+  "user": "0:0",
+  "volumes": [
+    {
+      "read_only": true,
+      "source": "snapshots",
+      "target": "/snapshots",
+      "type": "volume",
+    },
+    {
+      "source": "db_drill",
+      "target": "/var/lib/postgresql/data",
+      "type": "volume",
+    },
+  ],
+}
+`;
+
 exports[`the scheduled snapshots in a stack > matches the snapshot 1`] = `
 "# Generated by OpsCrew from opscrew/plan.yaml; \`opscrew provision\` regenerates it.
 # The app's stack in your Portainer. The deploy workflow fills in the image it built and writes
