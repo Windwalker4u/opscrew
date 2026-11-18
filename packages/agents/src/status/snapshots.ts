@@ -5,8 +5,8 @@
  * the snapshot's id once it was taken, then what the off-server copy said. Read-only.
  */
 import { errorText, isUserFacingError, listText } from "@opscrew/core";
-import { SCHEDULED_LOG, scheduledFailed, scheduledLog } from "@opscrew/iac-templates";
-import { type DeployPlan, snapshotScheduleOf } from "@opscrew/plan-schema";
+import { DRILLS_LOG, SCHEDULED_LOG, scheduledFailed, scheduledLog } from "@opscrew/iac-templates";
+import { APP_SERVER, type DeployPlan, onOneServer, snapshotScheduleOf } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -54,6 +54,7 @@ export interface SnapshotStatus {
 const AT = "scheduled-at";
 const SAID = "scheduled-said";
 const RUNNING = "scheduled-running";
+const DRILL = "drill-last";
 
 /** The app's start lock, which a snapshot being taken holds (`switch.ts`). */
 const START_LOCK = ".start.lock";
@@ -70,6 +71,18 @@ const SCHEDULED_PROBE = [
   `for d in ${SERVER_SNAPSHOTS}/*.partial; do if [ -d "$d" ]; then flock -n ${START_LOCK} true || echo ${RUNNING}; break; fi; done;`,
   "fi",
 ].join(" ");
+
+/**
+ * After the listing on the app's server, the last line of its restore drills' log (029), for
+ * `status`'s drill line, read in the same connection.
+ */
+const DRILL_PROBE = `if [ -f ${DRILLS_LOG} ]; then tail -n 1 ${DRILLS_LOG} | sed 's/^/${DRILL} /'; fi`;
+
+/** The last drill's line the probe printed in `stdout`, `""` without one. */
+function drillLogOf(stdout: string): string {
+  const line = stdout.split(/\r?\n/).find((each) => each.startsWith(`${DRILL} `));
+  return line === undefined ? "" : line.slice(DRILL.length + 1);
+}
 
 /**
  * The failure the probe's lines in `stdout` show on `host`, if its last scheduled run failed: by
@@ -104,33 +117,41 @@ function failureOn(
  * The newest snapshot of `run`'s environment and, with the schedule on, the servers whose last
  * scheduled run failed ({@link SnapshotStatus}): on each server with data through its
  * `snapshot.sh`, or in the user's Portainer (whose scheduled parts that failed are in the snapshot
- * itself).
+ * itself). On one server with data on the app's server, also the last line of its drills' log
+ * (`drillLog`, `""` without one), so the drill line opens no second connection.
  */
-async function readSnapshotStatus(run: SnapshotRun): Promise<SnapshotStatus> {
+async function readSnapshotStatus(
+  run: SnapshotRun,
+): Promise<{ status: SnapshotStatus; drillLog?: string }> {
   const places: PlaceListing[] = [];
   const scheduledFailures: ScheduledFailure[] = [];
+  let drillLog: string | undefined;
   if (snapshotTarget(run) === "portainer") {
     places.push(await portainerPlaceListing(await portainerPlace(run)));
   } else {
     const scheduled = snapshotScheduleOf(run.plan) !== undefined;
     for (const server of dataServers(run.plan)) {
       const host = await serverHost(run, server);
+      const drills = server === APP_SERVER && onOneServer(run.plan.target.provider);
+      const probes = [...(scheduled ? [SCHEDULED_PROBE] : []), ...(drills ? [DRILL_PROBE] : [])];
       const place = await hostListing(run, host, {
-        ...(scheduled ? { probe: SCHEDULED_PROBE } : {}),
+        ...(probes.length === 0 ? {} : { probe: probes.join("; ") }),
         what: "read the snapshots",
       });
       places.push(place);
       const failure = scheduled ? failureOn(run, host, place.stdout) : undefined;
       if (failure !== undefined) scheduledFailures.push(failure);
+      if (drills) drillLog = drillLogOf(place.stdout);
     }
   }
   const [last] = mergeListings(places).sort(newestFirst);
   const offsite = offsiteText(run.plan);
-  return {
+  const status = {
     ...(last === undefined ? {} : { last }),
     scheduledFailures,
     ...(offsite === "off" ? {} : { offsite }),
   };
+  return { status, ...(drillLog === undefined ? {} : { drillLog }) };
 }
 
 /** A snapshot's result: every part copied, or which failed or were left out. */
@@ -173,22 +194,24 @@ export function snapshotStatusLines(status: SnapshotStatus, flags: string): stri
 /**
  * {@link readSnapshotStatus}'s lines with data to snapshot on a server or in Portainer, and a note
  * instead when they cannot be read; none otherwise (this computer among them, which takes no
- * scheduled snapshot: `opscrew snapshot list` lists its snapshots there).
+ * scheduled snapshot: `opscrew snapshot list` lists its snapshots there). `drillLog` is the last
+ * line of the app's server's drills' log when it was read.
  */
 export async function snapshotStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: SnapshotServices,
-): Promise<{ lines: string[]; snapshot?: SnapshotStatus }> {
+): Promise<{ lines: string[]; snapshot?: SnapshotStatus; drillLog?: string }> {
   if (plan.target.provider === "localhost" || dataServers(plan).length === 0) return { lines: [] };
   const environment = deps.paths.environment;
   const flags = await commandFlags(deps.paths.root, environment, deps.paths.app);
   const run: SnapshotRun = { deps, plan, environment, flags, services };
   try {
-    const snapshot = await readSnapshotStatus(run);
+    const { status: snapshot, drillLog } = await readSnapshotStatus(run);
     return {
       lines: snapshotStatusLines(snapshot, flags).map((line) => deps.redactor.redact(line)),
       snapshot,
+      ...(drillLog === undefined ? {} : { drillLog }),
     };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;

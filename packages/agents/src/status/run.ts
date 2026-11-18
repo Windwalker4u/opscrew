@@ -324,7 +324,7 @@ export async function componentStatusReport(
     ...(options.services?.remote !== undefined ? { remote: options.services.remote } : {}),
     ...(options.services?.portainer !== undefined ? { portainer: options.services.portainer } : {}),
   };
-  const snapshots =
+  const snapshots: Awaited<ReturnType<typeof snapshotStatusReport>> =
     serverless || report.status === undefined
       ? { lines: [] }
       : await snapshotStatusReport(deps, plan, snapshotServices);
@@ -333,7 +333,7 @@ export async function componentStatusReport(
     report.status === undefined ||
     (plan.target.provider !== "localhost" && snapshots.snapshot === undefined)
       ? { lines: [] }
-      : await drillStatusReport(deps, plan, snapshotServices);
+      : await drillStatusReport(deps, plan, snapshots.drillLog);
   const state = await checkStateReport(deps, plan, options.services?.github);
   return {
     ...report,

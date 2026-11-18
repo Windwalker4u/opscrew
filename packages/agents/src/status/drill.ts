@@ -3,15 +3,15 @@
  * app's server or this computer, from the last line of `.snapshots/drills.log` there, read-only.
  * A Portainer's and a hosting account's drills are read where they run.
  */
-import { errorText, isUserFacingError, plural } from "@opscrew/core";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { errorText, isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
 import { DRILLS_LOG, type DrillRecord, drillRecord, snapshotParts } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, onOneServer } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { dataHosts, hostFailure, READ_TIMEOUT_MS, type ScriptHost } from "../snapshot/hosts";
-import type { SnapshotRun } from "../snapshot/run";
-import type { SnapshotServices } from "../snapshot/types";
+import { appFolder } from "../localhost/services";
 
 /** Why a drill was skipped or failed, by the script's reason, in a few words. */
 const REASONS: Record<string, string> = {
@@ -64,36 +64,42 @@ export function drillStatusLine(record: DrillRecord, flags: string): string {
   ].join(", ");
 }
 
-/** The last line of the drills' log on `host`, as a record; `undefined` without one. */
-async function lastDrill(run: SnapshotRun, host: ScriptHost): Promise<DrillRecord | undefined> {
-  const result = await host.run(
-    `if [ -f ${DRILLS_LOG} ]; then tail -n 1 ${DRILLS_LOG}; fi`,
-    READ_TIMEOUT_MS,
-  );
-  if (result.exitCode !== 0) throw hostFailure(run, host, result, "read the restore drills");
-  const line = result.stdout.split(/\r?\n/).find((each) => each.trim() !== "");
-  return line === undefined ? undefined : drillRecord(line);
+/** The last line of the drills' log in the app's folder on this computer, `""` without one. */
+async function computerDrillLog(deps: PhaseDeps, plan: DeployPlan): Promise<string> {
+  try {
+    const text = await readFile(join(appFolder(deps.paths, plan), DRILLS_LOG), "utf8");
+    return text.split(/\r?\n/).findLast((line) => line.trim() !== "") ?? "";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `OpsCrew could not read ${DRILLS_LOG} in the app's folder on this computer (${(error as NodeJS.ErrnoException).code ?? "unknown error"}).`,
+      { hint: "Check that the folder can be read, then try again." },
+    );
+  }
 }
 
 /**
  * The line on restore drills of the app's server or this computer when it holds data: the last
  * drill, or with `snapshots.drills` on and none yet a line that says so; a note when it cannot be
- * read. None elsewhere, or with neither a drill nor the setting.
+ * read. None elsewhere, or with neither a drill nor the setting. On a server the drills' log's
+ * last line is `serverLog`, read with the snapshots (`snapshotStatusReport`), and none without it;
+ * on this computer it is read from the app's folder, with no shell.
  */
 export async function drillStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
-  services: SnapshotServices,
+  serverLog?: string,
 ): Promise<{ lines: string[]; drill?: DrillRecord }> {
   const { provider } = plan.target;
-  if (!onOneServer(provider) && provider !== "localhost") return { lines: [] };
+  const local = provider === "localhost";
+  if (!onOneServer(provider) && !local) return { lines: [] };
   if (snapshotParts(plan, APP_SERVER).length === 0) return { lines: [] };
-  const environment = deps.paths.environment;
-  const flags = await commandFlags(deps.paths.root, environment, deps.paths.app);
-  const run: SnapshotRun = { deps, plan, environment, flags, services };
+  if (!local && serverLog === undefined) return { lines: [] };
+  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   try {
-    const host = (await dataHosts(run, [APP_SERVER])).get(APP_SERVER) as ScriptHost;
-    const drill = await lastDrill(run, host);
+    const log = local ? await computerDrillLog(deps, plan) : (serverLog ?? "");
+    const drill = log === "" ? undefined : drillRecord(log);
     if (drill !== undefined) {
       return { lines: [deps.redactor.redact(drillStatusLine(drill, flags))], drill };
     }
