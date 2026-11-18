@@ -751,7 +751,8 @@ function mysqlClient(folder: string, database: string): string[] {
  * The script that tells, as `key=value` lines and never a value of a login, what the agent's
  * MySQL clients meet on the account: whether `my_print_defaults` is there (`tool.my_print_defaults`),
  * whether the account's option files name a socket (`option_socket`), the clients' built-in
- * socket (`default_socket`, a path), whether `~/.my.cnf` is there (`my_cnf`), and the app's
+ * socket (`default_socket`, a path; when the client names none, the server's own `@@socket`, asked
+ * with the app's login), whether `~/.my.cnf` is there (`my_cnf`), and the app's
  * database `database` as it is: its number of tables (`tables`) and a hash of its tables'
  * checksums (`checksum`).
  */
@@ -761,6 +762,8 @@ export function mysqlProbeScript(folder: string, database: string): string {
     "if command -v my_print_defaults > /dev/null; then echo tool.my_print_defaults=yes; else echo tool.my_print_defaults=no; fi",
     'if [ -n "$S" ]; then echo option_socket=yes; else echo option_socket=no; fi',
     "D=$(mysql --no-defaults --verbose --help 2> /dev/null | sed -n 's/^socket[[:space:]][[:space:]]*\\(\\/[^[:space:]]*\\)$/\\1/p' | tail -n 1)",
+    // A client that names no built-in socket still reached the server through one: the server's own.
+    '[ -n "$D" ] || D=$(m -e "SELECT @@socket" 2> /dev/null | grep -E "^/[^[:space:]]+$" | tail -n 1)',
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's variable.
     'echo "default_socket=${D:--}"',
     "if [ -f .my.cnf ]; then echo my_cnf=yes; else echo my_cnf=no; fi",
@@ -834,7 +837,7 @@ export function otherSocketWay(found: Readonly<Record<string, string>>): string 
     return "the account has a ~/.my.cnf naming no socket, which the test leaves, so a socket from the option files wasn't tried";
   }
   if ((found.default_socket ?? "-") === "-") {
-    return "the account's mysql names no built-in socket, so a socket from the option files wasn't tried";
+    return "neither the account's mysql nor its server (@@socket) names a socket, so a socket from the option files wasn't tried";
   }
   return undefined;
 }

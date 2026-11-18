@@ -3645,7 +3645,8 @@ Then, for each leg (its steps numbered `<leg>.<step>`: 1 for `php`, 2 `site`, 3 
      be above 0). Its drill must load it with its tables. The three are dropped again.
    - **7d.** The other way to the socket. Only when the account has `my_print_defaults`, no socket
      in its option files and no `~/.my.cnf`: the test writes a `~/.my.cnf` (0600) naming the
-     clients' built-in socket (`mysql --no-defaults --verbose --help`), the probe must then find a
+     clients' built-in socket (`mysql --no-defaults --verbose --help`, or the server's own
+     `@@socket` when the client names none), the probe must then find a
      socket in the option files, and a snapshot, its restore (the note back) and its drill must
      pass; the file is removed again, also by the cleanup when a failure stopped the step. On
      another account, the reason it wasn't tried is a finding.
