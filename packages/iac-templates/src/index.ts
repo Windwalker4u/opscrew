@@ -29,6 +29,7 @@ export type {
 export * from "./check";
 export * from "./dependabot";
 export * from "./docker";
+export * from "./drill";
 export * from "./edge";
 export {
   translateVercelRouting,
@@ -91,7 +92,9 @@ export {
   type PartRestore,
   partRestore,
   queueServices,
+  type RestoreProject,
   ROLLBACK_APPROVAL_FILE,
+  restoreFunctions,
   rollbackApprovalLine,
   SNAPSHOT_GENERATIONS,
   snapshotTakenPath,

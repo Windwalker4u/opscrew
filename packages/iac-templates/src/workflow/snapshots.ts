@@ -553,26 +553,53 @@ export function partRestore(part: SnapshotPart): PartRestore {
 }
 
 /**
+ * The Compose project a server's part restores put the data in, other than the app's own: a
+ * restore drill's `<app>-drill`. Its names hold only letters, digits, `.`, `-`, `_` and `/`.
+ */
+export interface RestoreProject {
+  /** The project's name, which its volumes' names start with (`<name>_sqlite`). */
+  name: string;
+  /** Its Compose file, from the app's folder. */
+  file: string;
+  /** The file, from the app's folder, the restores' output is appended to. */
+  log: string;
+}
+
+/** `docker compose` for `project`, or for the app's own project in its folder. */
+function composeOf(project: RestoreProject | undefined): string {
+  return project === undefined
+    ? "docker compose"
+    : `docker compose -p ${project.name} -f ${project.file}`;
+}
+
+/** Where the copies' and restores' output goes: `project`'s log, or {@link SNAPSHOT_LOG}. */
+function logOf(project: RestoreProject | undefined): string {
+  return project?.log ?? SNAPSHOT_LOG;
+}
+
+/**
  * A server's lines of `part`'s exact restore ({@link partRestore}) from `file`, `$2` its folder: a
  * stop-only kind through `snapshot_untar`, the others stopped and started as their restore says,
- * with `put` and `after` in busybox one-offs and `load` in a one-off of the service.
+ * with `put` and `after` in busybox one-offs and `load` in a one-off of the service; in `project`
+ * when given ({@link RestoreProject}), else in the app's own.
  */
-function serverRestore(part: SnapshotPart, file: string): string[] {
+function serverRestore(part: SnapshotPart, file: string, project?: RestoreProject): string[] {
   const restore = partRestore(part);
+  const log = logOf(project);
   const { name: service } = part;
   const put = restore.put?.("-");
   if (part.kind === "sqlite" || part.kind === "files") {
     return [
       // `snapshot_sqlite_volume` or `snapshot_files_volume` (appVolumeFunction).
       `snapshot_${part.kind}_volume || return 1`,
-      `docker run --rm -i --network none -v "$_volume":/data ${IMAGES.busybox.ref} sh -c ${shellQuote(put ?? "")} < ${file} >> ${SNAPSHOT_LOG} 2>&1`,
+      `docker run --rm -i --network none -v "$_volume":/data ${IMAGES.busybox.ref} sh -c ${shellQuote(put ?? "")} < ${file} >> ${log} 2>&1`,
     ];
   }
   if (!part.online) return [`snapshot_untar ${service} "$2" ${shellQuote(put ?? "")}`];
   const more = (later: boolean) => (later ? " || return 1" : "");
   return [
     ...(restore.stop
-      ? [`docker compose stop -t 120 ${service} >> ${SNAPSHOT_LOG} 2>&1 || return 1`]
+      ? [`${composeOf(project)} stop -t 120 ${service} >> ${log} 2>&1 || return 1`]
       : []),
     ...(put === undefined ? [] : [`${box("rw", service, put)} < ${file} || return 1`]),
     ...(restore.stop
@@ -604,9 +631,9 @@ export function filesTar(dir: string): string {
  * folder snapshots before the app first starts with it) has nothing to copy: exit 3, skipped. Each
  * is restored as {@link partRestore} says ({@link serverRestore}), which fails without its volume.
  */
-function partCommands(part: SnapshotPart): PartCommands {
+function partCommands(part: SnapshotPart, project?: RestoreProject): PartCommands {
   const file = `.snapshots/"$2"/${part.file}`;
-  const restore = serverRestore(part, file);
+  const restore = serverRestore(part, file, project);
   if (part.kind === "sqlite") {
     const volume = `--network none -v "$_volume":/data`;
     return {
@@ -655,12 +682,19 @@ function shellFunction(name: string, body: readonly string[]): string[] {
 
 /**
  * The shell function `name` that sets `$_volume` to the app's volume `volume` (the SQLite
- * volume's, the kept folder's) of its Compose project, and fails when it does not exist. It never
- * makes one: Docker would give a new volume root as its owner, not the app's user.
+ * volume's, the kept folder's) of its Compose project (`project` when given), and fails when it
+ * does not exist. It never makes one: Docker would give a new volume root as its owner, not the
+ * app's user.
  */
-function appVolumeFunction(name: string, volume: string): string[] {
+function appVolumeFunction(
+  name: string,
+  volume: string,
+  project: RestoreProject | undefined,
+): string[] {
+  const owner =
+    project === undefined ? '${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}' : project.name;
   return shellFunction(name, [
-    `  _volume="\${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}_${volume}"`,
+    `  _volume="${owner}_${volume}"`,
     '  docker volume inspect "$_volume" > /dev/null 2>&1',
   ]);
 }
@@ -725,45 +759,97 @@ function partCase(
  * Every folder is 0700 and every file 0600.
  */
 export function snapshotFunctions(plan: DeployPlan, server: string, folder: string): string[] {
+  return Object.values(functionPieces(plan, server, folder, undefined)).flat();
+}
+
+/** The pieces of {@link restoreFunctions}, in {@link snapshotFunctions}' order. */
+const RESTORE_PIECES = [
+  "parts",
+  "part_file",
+  "snapshot_run",
+  "snapshot_box",
+  "snapshot_start",
+  "snapshot_untar",
+  "snapshot_sqlite_volume",
+  "snapshot_files_volume",
+  "part_restore",
+  "snapshot_complete",
+  "snapshot_parts",
+  "snapshot_restore",
+] as const;
+
+/**
+ * The part restores of {@link SNAPSHOT_SCRIPT} on `server` aimed at `project`'s containers and
+ * volumes instead of the app's ({@link RestoreProject}: a restore drill's copy), for a script in
+ * the app's folder (`folder`, as {@link snapshotFunctions}): `SNAPSHOT_PARTS`, `part_file`,
+ * `snapshot_complete`, `snapshot_parts`, `snapshot_restore` and the functions they call, each
+ * `docker compose` with the project's name and file, the SQLite volume and the kept folder's
+ * `<project>_sqlite` and `<project>_files`, their output appended to the project's log. They read
+ * the snapshot only: on stdin, or mounted read-only. None of the functions that take, list or
+ * remove snapshots. None without a part on `server`.
+ */
+export function restoreFunctions(
+  plan: DeployPlan,
+  server: string,
+  folder: string,
+  project: RestoreProject,
+): string[] {
+  const pieces = functionPieces(plan, server, folder, project);
+  return RESTORE_PIECES.flatMap((name) => pieces[name] ?? []);
+}
+
+/**
+ * The functions of {@link snapshotFunctions} by name, their restores in `project` when given
+ * ({@link restoreFunctions}); none without a part on `server`.
+ */
+function functionPieces(
+  plan: DeployPlan,
+  server: string,
+  folder: string,
+  project: RestoreProject | undefined,
+): Record<string, string[]> {
   const parts = snapshotParts(plan, server);
-  if (parts.length === 0) return [];
-  const commands = new Map(parts.map((part) => [part.name, partCommands(part)]));
+  if (parts.length === 0) return {};
+  const commands = new Map(parts.map((part) => [part.name, partCommands(part, project)]));
   const names = (list: readonly SnapshotPart[]) => list.map((part) => part.name).join(" ");
-  const log = SNAPSHOT_LOG;
+  const log = logOf(project);
+  const compose = composeOf(project);
   const box = `docker run --rm -i --network none --volumes-from "$_box:$1" ${IMAGES.busybox.ref} sh -c "$3" 2>> ${log}`;
-  return [
-    `SNAPSHOT_PARTS=${shellQuote(names(parts))}`,
-    `SNAPSHOT_ONLINE=${shellQuote(names(parts.filter((part) => part.online)))}`,
-    ...shellFunction(
+  return {
+    parts: [
+      `SNAPSHOT_PARTS=${shellQuote(names(parts))}`,
+      `SNAPSHOT_ONLINE=${shellQuote(names(parts.filter((part) => part.online)))}`,
+    ],
+    part_file: shellFunction(
       "part_file",
       partCase(parts, (part) => [`echo ${part.file}`]),
     ),
-    ...shellFunction(
+    part_kind: shellFunction(
       "part_kind",
       partCase(parts, (part) => [`echo ${part.kind}`]),
     ),
-    ...shellFunction(
+    part_image: shellFunction(
       "part_image",
       partCase(parts, (part) => [
         part.image === undefined ? ":" : `echo ${shellQuote(part.image)}`,
       ]),
     ),
-    ...shellFunction("snapshot_room", [
+    snapshot_room: shellFunction("snapshot_room", [
       "  if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi",
       `  rm -rf ${TEMPORARY}`,
       "  return 1",
     ]),
-    ...shellFunction("snapshot_run", [
-      `  (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v ${folder}/${SNAPSHOTS_DIR}/"$1":${MOUNT}:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> ${log} 2>&1)`,
+    snapshot_run: shellFunction("snapshot_run", [
+      `  (umask 077; ${compose} run --rm --no-deps -T --user "$(id -u):$(id -g)" -v ${folder}/${SNAPSHOTS_DIR}/"$1":${MOUNT}:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> ${log} 2>&1)`,
     ]),
-    ...shellFunction("snapshot_box", [
-      '  _box="$(docker compose ps -aq "$2")"',
+    snapshot_box: shellFunction("snapshot_box", [
+      `  _box="$(${compose} ps -aq "$2")"`,
       '  [ -n "$_box" ] || return 1',
       `  ${box}`,
     ]),
-    ...shellFunction("snapshot_stop", [
-      `  docker compose stop -t 120 "$1" >> ${log} 2>&1 || return 1`,
-      '  for _stopped in $(docker compose ps -aq "$1"); do',
+    snapshot_stop: shellFunction("snapshot_stop", [
+      `  ${compose} stop -t 120 "$1" >> ${log} 2>&1 || return 1`,
+      `  for _stopped in $(${compose} ps -aq "$1"); do`,
       `    case "$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "$_stopped")" in`,
       '      "exited 137") return 1 ;;',
       '      "exited "* | "created "*) ;;',
@@ -771,15 +857,15 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       "    esac",
       "  done",
     ]),
-    ...shellFunction("snapshot_start", [
+    snapshot_start: shellFunction("snapshot_start", [
       // One SNAPSHOT_NO_WAIT names starts without waiting for its health check (T2514).
       '  case " ${SNAPSHOT_NO_WAIT:-} " in',
-      `    *" $1 "*) docker compose up -d --no-deps --no-recreate "$1" >> ${log} 2>&1 ;;`,
-      `    *) docker compose up -d --no-deps --no-recreate --wait "$1" >> ${log} 2>&1 ;;`,
+      `    *" $1 "*) ${compose} up -d --no-deps --no-recreate "$1" >> ${log} 2>&1 ;;`,
+      `    *) ${compose} up -d --no-deps --no-recreate --wait "$1" >> ${log} 2>&1 ;;`,
       "  esac",
     ]),
-    ...shellFunction("snapshot_tar", [
-      '  _ran="$(docker compose ps -q "$1")"',
+    snapshot_tar: shellFunction("snapshot_tar", [
+      `  _ran="$(${compose} ps -q "$1")"`,
       "  _copied=1",
       // A cancelled run (its SSH session's HUP) or a kill between the stop and the start still
       // starts the service again; part_take runs in a subshell, so these traps end with it.
@@ -801,28 +887,28 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       "  trap - EXIT HUP INT TERM",
       '  return "$_copied"',
     ]),
-    ...shellFunction("snapshot_untar", [
-      `  docker compose stop -t 120 "$1" >> ${log} 2>&1 || return 1`,
+    snapshot_untar: shellFunction("snapshot_untar", [
+      `  ${compose} stop -t 120 "$1" >> ${log} 2>&1 || return 1`,
       `  snapshot_box rw "$1" "$3" < ${SNAPSHOTS_DIR}/"$2"/"$1".tar || return 1`,
       '  snapshot_start "$1"',
     ]),
-    ...(parts.some((part) => part.kind === "sqlite")
-      ? appVolumeFunction("snapshot_sqlite_volume", SQLITE_VOLUME)
-      : []),
-    ...(parts.some((part) => part.kind === "files")
-      ? appVolumeFunction("snapshot_files_volume", FILES_VOLUME)
-      : []),
-    ...shellFunction(
+    snapshot_sqlite_volume: parts.some((part) => part.kind === "sqlite")
+      ? appVolumeFunction("snapshot_sqlite_volume", SQLITE_VOLUME, project)
+      : [],
+    snapshot_files_volume: parts.some((part) => part.kind === "files")
+      ? appVolumeFunction("snapshot_files_volume", FILES_VOLUME, project)
+      : [],
+    part_take: shellFunction(
       "part_take",
       partCase(parts, (part) => commands.get(part.name)?.take ?? []),
     ),
-    ...shellFunction(
+    part_restore: shellFunction(
       "part_restore",
       partCase(parts, (part) => commands.get(part.name)?.restore ?? []),
     ),
-    ...snapshotRunning(),
-    ...snapshotVersionFunction(),
-    ...shellFunction("snapshot_about", [
+    snapshot_running: snapshotRunning(),
+    snapshot_version: snapshotVersionFunction(),
+    snapshot_about: shellFunction("snapshot_about", [
       '  _about_version=""',
       '  if [ -n "$4" ]; then _about_version="sha256:$4"; fi',
       `  printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$1" "$2" "$3" "$_about_version"`,
@@ -847,7 +933,7 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       "  done",
       `  printf ']}\\n'`,
     ]),
-    ...shellFunction("snapshot_take", [
+    snapshot_take: shellFunction("snapshot_take", [
       '  _take_id="$1"; _take_kind="$2"; _take_version="$3"; shift 3',
       // T2405's store: Portainer's finisher claims the scheduled `*.partial` folders.
       '  _take_folder="$_take_id.partial"',
@@ -876,25 +962,25 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       '  (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_version" "$_take_in" $_take_done > "$_take_in"/about.json) || return 1',
       `  rm -rf ${SNAPSHOTS_DIR}/"$_take_id" && mv "$_take_in" ${SNAPSHOTS_DIR}/"$_take_id"`,
     ]),
-    ...shellFunction("snapshot_complete", [
+    snapshot_complete: shellFunction("snapshot_complete", [
       `  [ -f ${SNAPSHOTS_DIR}/"$1"/about.json ] || return 1`,
       `  for _complete_file in $(grep -o '"file":"[^"]*"' ${SNAPSHOTS_DIR}/"$1"/about.json | cut -d '"' -f 4); do`,
       `    [ -f ${SNAPSHOTS_DIR}/"$1"/"$_complete_file" ] || return 1`,
       "  done",
     ]),
-    ...shellFunction("snapshot_parts", [
+    snapshot_parts: shellFunction("snapshot_parts", [
       "  for _listed in $SNAPSHOT_PARTS; do",
       `    if [ -f ${SNAPSHOTS_DIR}/"$1"/"$(part_file "$_listed")" ]; then echo "$_listed"; fi`,
       "  done",
     ]),
-    ...shellFunction("snapshot_restore", [
+    snapshot_restore: shellFunction("snapshot_restore", [
       '  _restore_id="$1"; shift',
       '  if [ "$#" -eq 0 ]; then set -- $(snapshot_parts "$_restore_id"); fi',
       '  for _restore_part in "$@"; do',
       '    part_restore "$_restore_part" "$_restore_id" || return 1',
       "  done",
     ]),
-  ];
+  };
 }
 
 /** The warning when the disk is too full for a snapshot; `%s` is the app's folder. */

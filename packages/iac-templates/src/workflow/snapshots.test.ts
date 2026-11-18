@@ -49,6 +49,7 @@ import {
   partRestore,
   ROLLBACK_APPROVAL_FILE,
   RUNNING_FILE,
+  restoreFunctions,
   rollbackApprovalLine,
   SNAPSHOT_FUNCTIONS,
   snapshotFunctions,
@@ -2195,5 +2196,143 @@ describe("the kept folder's part of a snapshot", () => {
   it("leaves a plan without it as it was", () => {
     expect(snapshotParts(sqlite).map((part) => part.name)).toEqual(["db", "sqlite"]);
     expect(functions(sqlite)).not.toMatch(/_files|files\.tar/);
+  });
+});
+
+describe("the part restores in another project (a restore drill's copy)", () => {
+  const ID = "20261118T120000Z";
+  const project = {
+    name: "shop-staging-drill",
+    file: `.drill/${ID}/compose.yaml`,
+    log: `.drill/${ID}/restore.log`,
+  };
+  const compose = `docker compose -p ${project.name} -f ${project.file}`;
+  /** Every kind of part: the four databases, a cache, a queue, Dragonfly, a stop-only kind, SQLite and the kept folder. */
+  const every = withFiles(
+    withSqlite(
+      inEnvironment(
+        withServices([
+          { kind: "postgres", name: "db" },
+          { kind: "mysql", name: "orders" },
+          { kind: "mariadb", name: "shopdb" },
+          { kind: "mongodb", name: "docs" },
+          { kind: "redis", name: "cache" },
+          { kind: "valkey", name: "jobs", options: { mode: "queue" } },
+          { kind: "dragonfly", name: "fly" },
+          { kind: "rabbitmq", name: "mq" },
+        ]),
+        { name: "staging" },
+      ),
+      { dir: "db" },
+    ),
+    { dir: "uploads" },
+  );
+  const lines = restoreFunctions(every, "app", '"$APPS_DIR"/shop-staging', project);
+  const text = lines.join("\n");
+
+  it("aim every docker compose at the project, and the app's volumes at its own", () => {
+    const uses = lines.filter((line) => line.includes("docker compose"));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const line of uses) expect(line).toContain(compose);
+    expect(text).not.toMatch(/docker compose (?!-p shop-staging-drill -f \.drill\/)/);
+    expect(text).toContain('_volume="shop-staging-drill_sqlite"');
+    expect(text).toContain('_volume="shop-staging-drill_files"');
+    expect(text).not.toContain("COMPOSE_PROJECT_NAME");
+    expect(text).not.toContain("basename");
+  });
+
+  it("read the snapshot only, and write their output to the project's log", () => {
+    expect(text).not.toMatch(/snapshot_run "\$2" rw/);
+    expect(text).toMatch(/snapshot_run "\$2" ro db /);
+    expect(text).not.toMatch(/>\s*\.snapshots\//);
+    expect(text).not.toContain(".snapshots/snapshot.log");
+    expect(text).toContain(`>> ${project.log} 2>&1`);
+    expect(text).not.toMatch(/rm -rf \.snapshots|mv .*\.snapshots/);
+  });
+
+  it("are only the restores and what they call: nothing that takes, lists or removes snapshots", () => {
+    const defined = lines.flatMap((line) => /^([a-z_]+)\(\) \{$/.exec(line)?.[1] ?? []);
+    expect(defined).toEqual([
+      "part_file",
+      "snapshot_run",
+      "snapshot_box",
+      "snapshot_start",
+      "snapshot_untar",
+      "snapshot_sqlite_volume",
+      "snapshot_files_volume",
+      "part_restore",
+      "snapshot_complete",
+      "snapshot_parts",
+      "snapshot_restore",
+    ]);
+    expect(lines[0]).toBe("SNAPSHOT_PARTS='db orders shopdb docs cache jobs fly mq sqlite files'");
+  });
+
+  it("restore as the app's own do, but for the project", () => {
+    const own = snapshotFunctions(every, "app", '"$APPS_DIR"/shop-staging')
+      .join("\n")
+      .replaceAll("docker compose", compose)
+      .replaceAll(".snapshots/snapshot.log", project.log)
+      .replaceAll('${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}', project.name);
+    const ownRestore = own.slice(
+      own.indexOf("part_restore() {"),
+      own.indexOf("snapshot_running() {"),
+    );
+    expect(text).toContain(ownRestore);
+  });
+
+  it("are none without a part on the server", () => {
+    expect(
+      restoreFunctions(testPlan({ postgres: false }), "app", '"$APPS_DIR"/shop', project),
+    ).toEqual([]);
+  });
+});
+
+describe.skipIf(!shWorks())("a drill's restore on the server", { timeout: 120_000 }, () => {
+  beforeEach(() => {
+    work = mkdtempSync(join(tmpdir(), "opscrew-drill-")).replaceAll("\\", "/");
+    fakeBin(work, { docker: FAKE_DOCKER, df: FAKE_DF, flock: FAKE_FLOCK, sleep: "#!/bin/sh" });
+  });
+  afterEach(() => rmSync(work, { recursive: true, force: true }));
+
+  it("loads the snapshot into the project's database, never the app's, and changes no snapshot", () => {
+    upload(staging);
+    snapshot(A, "2026-11-18T12:00:00Z", { db: "rows-at-A" });
+    setDb("rows-now");
+    const drill = {
+      name: `${APP}-drill`,
+      file: `.drill/${A}/compose.yaml`,
+      log: `.drill/${A}/restore.log`,
+    };
+    write(at(drill.file), "");
+    const before = readdirSync(at(`.snapshots/${A}`)).map((f) =>
+      readFileSync(at(`.snapshots/${A}/${f}`), "utf8"),
+    );
+    const result = run(
+      [
+        'cd "$OPSCREW_APPS_DIR"/shop-staging',
+        'APPS_DIR="$OPSCREW_APPS_DIR"',
+        ...restoreFunctions(staging, "app", '"$APPS_DIR"/shop-staging', drill),
+        `snapshot_complete ${A} || exit 9`,
+        `snapshot_restore ${A}`,
+      ],
+      B,
+    );
+    expect(result.status, result.output).toBe(0);
+    // The fake plays every project's database `db` as one file: the restore loaded the snapshot.
+    expect(db()).toBe("rows-at-A");
+    const composeCalls = calls().filter((call) => call.startsWith("docker compose"));
+    expect(composeCalls.length).toBeGreaterThan(0);
+    for (const call of composeCalls)
+      expect(call).toContain(`compose -p ${APP}-drill -f ${drill.file} `);
+    expect(oneOffs()).toEqual([`db ${A} ro`]);
+    expect(read(drill.log)).toBeDefined();
+    expect(snapshots()).toEqual([A]);
+    expect(existsSync(at(".snapshots/snapshot.log"))).toBe(false);
+    expect(
+      readdirSync(at(`.snapshots/${A}`)).map((f) =>
+        readFileSync(at(`.snapshots/${A}/${f}`), "utf8"),
+      ),
+    ).toEqual(before);
   });
 });
