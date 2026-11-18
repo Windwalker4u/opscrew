@@ -40,6 +40,8 @@ export interface DrillWords {
   flags: string;
   /** Restored services of the stop-only kinds, which keep production's logins in the copy. */
   ownLogins: readonly string[];
+  /** Where it ran: `--keep` is named only where a copy can be kept (a server, this computer). */
+  target?: DrillTarget;
 }
 
 /** The app's health in words, from the record's `health`. */
@@ -97,7 +99,7 @@ export function drillSummary(record: DrillRecord, o: DrillWords): string {
         case "stopped":
           return "The drill was stopped before it ended, and its copy removed.";
         default:
-          return `The copy could not be made or started (${reason}), so the drill proves nothing either way. Run \`${command} --keep\` to look at the copy's restore.log in its folder.`;
+          return `The copy could not be made or started (${reason}), so the drill proves nothing either way. ${o.target === "portainer" || o.target === "hosting" ? `Fix the cause, then run \`${command}\` again.` : `Run \`${command} --keep\` to look at the copy's restore.log in its folder.`}`;
       }
   }
 }

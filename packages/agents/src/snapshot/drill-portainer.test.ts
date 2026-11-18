@@ -7,6 +7,7 @@ import {
   portainerClient,
 } from "@opscrew/connector-portainer";
 import { OpsCrewError } from "@opscrew/core";
+import type { DrillRecord } from "@opscrew/iac-templates";
 import { IMAGES } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -22,6 +23,8 @@ import {
 import { SH_AVAILABLE } from "./__fixtures__/server";
 import { everythingShown, RUNNING, stagingPlan } from "./__fixtures__/world";
 import { drillSnapshot } from "./drill";
+import { readPortainerDrills } from "./drill-portainer";
+import { drillSummary } from "./drill-report";
 
 const ID = "20261106T190000Z";
 const STACK = "opscrew-shop-staging";
@@ -87,6 +90,8 @@ interface DrillWorld extends PortainerWorld {
   health: "healthy" | "unhealthy";
   /** What the table count prints. */
   tables: string;
+  /** Minutes the database's load takes on the drill's clock. */
+  loadMinutes: number;
   /** Every archive put into a container. */
   puts: TarEntry[][];
 }
@@ -129,6 +134,7 @@ async function drillWorld(
     network: { internal: true },
     health: "healthy",
     tables: "3",
+    loadMinutes: 0,
     puts: [],
   };
   const { docker } = world;
@@ -259,6 +265,7 @@ async function drillWorld(
   const played = docker.onStart;
   docker.onStart = (container) => {
     const script = container.cmd[2] ?? "";
+    if (script.includes("pg_restore")) clock += world.loadMinutes * 60_000;
     if (script.includes("information_schema")) {
       world.ran.push({ ...container });
       return { exitCode: 0, stdout: `${world.tables}\n` };
@@ -385,6 +392,19 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --drill in the user's Portainer"
     expect(world.deps.audit.entries).toContainEqual(
       expect.objectContaining({ action: "run a restore drill", target: "portainer" }),
     );
+    // The record kept on this computer, the fields of a server's drills.log line, no value.
+    const [kept] = await readPortainerDrills(world.deps.paths);
+    expect(kept).toMatchObject({
+      kind: "manual",
+      result: "healthy",
+      id: ID,
+      version: RUNNING.slice(0, 12),
+      removal: "removed",
+      tables: [{ service: "db", count: 3 }],
+    });
+    expect(JSON.stringify(kept)).not.toContain(password);
+    expect(approval?.details).toContain("not checked in a Portainer");
+    expect(world.deps.reporter.text()).toContain("not checked in a Portainer");
     const shown = everythingShown(world);
     for (const secret of [DB_SECRET, CACHE_SECRET, PORTAINER_TOKEN, password]) {
       expect(shown).not.toContain(secret);
@@ -475,5 +495,36 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --drill in the user's Portainer"
     expect(blocked.message).toContain("not one a restore drill made");
     expect(taken.handler.requests).toEqual([]);
     expect(changes(taken)).toEqual([]);
+  });
+
+  it("stops at its 30-minute limit, removes its copy and records it", async () => {
+    const world = await drillWorld();
+    world.loadMinutes = 31;
+    const report = await drillSnapshot(world.deps, ID, { services: world.services });
+    expect(report).toMatchObject({ outcome: "failed", reason: "timeout", removal: "removed" });
+    expect(report.summary).toContain("ran past its 30-minute limit");
+    expect(world.portainer.stacks.map((stack) => stack.Name)).toEqual([STACK]);
+    expect(world.portainer.mutations().some((call) => call.startsWith("PUT "))).toBe(false);
+    expect((await readPortainerDrills(world.deps.paths)).at(-1)).toMatchObject({
+      result: "failed",
+      reason: "timeout",
+    });
+  });
+
+  it("names --keep only where a copy can be kept", () => {
+    const record: DrillRecord = {
+      end: "2026-11-18T12:00:00Z",
+      kind: "manual",
+      result: "failed",
+      parts: [],
+      tables: [],
+      cleaned: false,
+      reason: "start",
+    };
+    const words = { id: ID, flags: "", ownLogins: [] };
+    expect(drillSummary(record, { ...words, target: "server" })).toContain("--keep");
+    expect(drillSummary(record, words)).toContain("--keep");
+    expect(drillSummary(record, { ...words, target: "portainer" })).not.toContain("--keep");
+    expect(drillSummary(record, { ...words, target: "hosting" })).not.toContain("--keep");
   });
 });

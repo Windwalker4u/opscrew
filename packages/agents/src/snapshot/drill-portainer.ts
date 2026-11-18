@@ -11,6 +11,7 @@
  * they are gone. The copy's values are its own: new passwords and `.env.preview`'s values, never
  * production's. Nothing named `opscrew-<app>` is changed.
  */
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { DockerContainer, MountSpec } from "@opscrew/connector-docker";
 import { dockerClient } from "@opscrew/connector-docker";
@@ -26,8 +27,17 @@ import {
   stackPlanHash,
   startDrillApp,
 } from "@opscrew/connector-portainer";
-import { errorMessage, listText, OpsCrewError, readTextIfExists, realSleep } from "@opscrew/core";
 import {
+  errorMessage,
+  listText,
+  OpsCrewError,
+  type ProjectPaths,
+  readTextIfExists,
+  realSleep,
+  writeFileAtomic,
+} from "@opscrew/core";
+import {
+  DRILL_LIMIT_SECONDS,
   type DrillRecord,
   databaseCount,
   drillPlan,
@@ -48,11 +58,18 @@ import {
 import { type DeployPlan, ghcrImageFor } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import { parse } from "yaml";
+import { z } from "zod";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import { requireNoStackBlockers } from "../provision/stack-plan";
 import { shortDigest } from "../rollback/versions";
-import { gitClient, githubCoordinates, pollUntil, portainerClientFor } from "../shared";
+import {
+  gitClient,
+  githubCoordinates,
+  pollUntil,
+  portainerClientFor,
+  readValidJson,
+} from "../shared";
 import { assembleAppEnv, parseDotenv } from "../shared/app-env";
 import { PREVIEW_VALUES_FILE } from "./drill";
 import { drillReport, drillSteps } from "./drill-report";
@@ -83,6 +100,87 @@ const HEALTH_MS = 5 * 60_000;
 const RUNNING_MS = 60_000;
 /** The pause between two reads of the app's health. */
 const HEALTH_POLL_MS = 5_000;
+
+/** What a Portainer can't tell OpsCrew reliably, so its drill doesn't check it. */
+const NOT_CHECKED =
+  "Free disk and memory, and a deploy or snapshot running at the same time, are not checked in a Portainer: its API doesn't report them reliably.";
+
+/** How many of the manual Portainer drills' records this computer keeps, the newest last. */
+const KEPT_DRILLS = 20;
+
+/** A word of the record: letters, digits and hyphens, never a value. */
+const WORD = /^[a-z0-9-]+$/;
+
+/** One drill's record, the fields of a server's `drills.log` line (`drillRecord`'s shape). */
+const DrillRecordSchema = z.strictObject({
+  end: z.iso.datetime(),
+  kind: z.enum(["manual", "scheduled"]),
+  result: z.enum(["healthy", "unhealthy", "not-restored", "skipped", "failed"]),
+  id: z
+    .string()
+    .regex(/^[0-9A-Za-z]+$/)
+    .optional(),
+  version: z
+    .string()
+    .regex(/^[0-9a-f]{12}$/)
+    .optional(),
+  start: z.iso.datetime().optional(),
+  parts: z.array(
+    z.strictObject({
+      name: z.string().regex(WORD),
+      size: z.int().nonnegative(),
+      seconds: z.int().nonnegative(),
+    }),
+  ),
+  health: z
+    .strictObject({ state: z.string().regex(/^[a-z]+$/), seconds: z.int().nonnegative() })
+    .optional(),
+  tables: z.array(
+    z.strictObject({ service: z.string().regex(WORD), count: z.int().nonnegative().optional() }),
+  ),
+  removal: z.enum(["removed", "kept", "failed"]).optional(),
+  cleaned: z.boolean(),
+  reason: z.string().regex(WORD).optional(),
+});
+
+const DrillsFileSchema = z.strictObject({ drills: z.array(DrillRecordSchema).max(KEPT_DRILLS) });
+
+/**
+ * Where this computer keeps the environment's manual Portainer drills: `drills.json` in its
+ * state folder (`.opscrew/`, or `.opscrew/environments/<env>/`), which a Portainer drill
+ * writes after each run, since no log of OpsCrew's sits in the user's Portainer.
+ */
+export function portainerDrillsFile(paths: Pick<ProjectPaths, "stateDir">): string {
+  return join(paths.stateDir, "drills.json");
+}
+
+/**
+ * The environment's manual Portainer drills this computer recorded, oldest first (the last is
+ * the newest); none when there is no record, or it isn't one (zod-checked).
+ */
+export async function readPortainerDrills(
+  paths: Pick<ProjectPaths, "stateDir">,
+): Promise<DrillRecord[]> {
+  return (await readValidJson(portainerDrillsFile(paths), DrillsFileSchema))?.drills ?? [];
+}
+
+/** Adds `record` to this computer's record of the environment's Portainer drills. */
+async function keepRecord(run: SnapshotRun, record: DrillRecord): Promise<void> {
+  const { deps } = run;
+  try {
+    const kept = DrillRecordSchema.parse(record);
+    const drills = [...(await readPortainerDrills(deps.paths)), kept].slice(-KEPT_DRILLS);
+    await mkdir(deps.paths.stateDir, { recursive: true });
+    await writeFileAtomic(
+      portainerDrillsFile(deps.paths),
+      `${JSON.stringify({ drills }, null, 2)}\n`,
+    );
+  } catch (error) {
+    deps.reporter.warn(
+      `OpsCrew could not keep the drill's record on this computer: ${deps.redactor.redact(errorMessage(error))}`,
+    );
+  }
+}
 
 /** The app's volumes in a stack, by the part that restores into them. */
 const APP_VOLUMES: Partial<Record<SnapshotPart["kind"], string>> = {
@@ -292,6 +390,7 @@ async function approveDrill(run: SnapshotRun, planned: Planned): Promise<void> {
     "  Network: one network with no internet (internal), no published port, no hostname, record or site; OpsCrew reads it back after each deploy, before any data goes in, and removes the stack at once if it isn't so.",
     `  Image: ${image}, ${planned.allowOtherVersion ? "the version that runs now (--allow-other-version)" : "the snapshot's version"}.`,
     `  Health check: ${checked ? `the app's own health check (${plan.app.healthPath}) until healthy, at most 5 minutes` : "the app has none, so it must still run after 60 seconds"}${databases.length === 0 ? "" : `; then ${listText(databases.map((part) => part.name))} must answer and hold at least one table`}.`,
+    `  Bounds: at most ${DRILL_LIMIT_SECONDS / 60} minutes, then OpsCrew stops it and removes the stack. ${NOT_CHECKED}`,
     "The copy runs with no internet and without your production `.env`. The app may need some values to start; add them to `.env.preview` with test values.",
     planned.valueNames.length === 0
       ? "There are no values in .env.preview: the app gets only its plain settings and the copy's own new passwords."
@@ -408,7 +507,7 @@ async function restorePart(copy: Copy, part: SnapshotPart, id: string): Promise<
 }
 
 /** The app's health on the copy (R17): its health check until healthy, or still running. */
-async function appHealth(copy: Copy): Promise<{ state: string; ms: number }> {
+async function appHealth(copy: Copy, leftMs: number): Promise<{ state: string; ms: number }> {
   const wait = copy.run.services.portainer?.wait;
   const now = wait?.now ?? Date.now;
   const sleep = wait?.sleep ?? realSleep;
@@ -425,7 +524,7 @@ async function appHealth(copy: Copy): Promise<{ state: string; ms: number }> {
   const first = await read();
   if (first.checked !== true) {
     if (first.state !== "running") return { state: "stopped", ms: now() - started };
-    await sleep(RUNNING_MS);
+    await sleep(Math.max(0, Math.min(RUNNING_MS, leftMs)));
     const later = await read();
     return { state: later.state === "running" ? "running" : "stopped", ms: now() - started };
   }
@@ -437,7 +536,7 @@ async function appHealth(copy: Copy): Promise<{ state: string; ms: number }> {
       return current.state === "healthy" || current.state === "stopped" ? current.state : undefined;
     },
     {
-      timeoutMs: HEALTH_MS,
+      timeoutMs: Math.max(1, Math.min(HEALTH_MS, leftMs)),
       intervalMs: HEALTH_POLL_MS,
       sleep,
       now,
@@ -548,7 +647,18 @@ export async function drillInPortainer(
     values,
   };
   const wait = run.services.portainer?.wait;
-  const options = { approvedHash: hash, env: values.env, ...(wait === undefined ? {} : { wait }) };
+  // The whole drill's limit (R29 8.): each wait gets at most the time left, and past it the drill
+  // stops and its copy is removed.
+  const now = wait?.now ?? Date.now;
+  const deadline = now() + DRILL_LIMIT_SECONDS * 1000;
+  const left = () => deadline - now();
+  const late = () => left() <= 0;
+  const options = () => ({
+    approvedHash: hash,
+    env: values.env,
+    wait: { ...wait, timeoutMs: Math.max(1, Math.min(wait?.timeoutMs ?? 10 * 60_000, left())) },
+  });
+  const timedOut = { result: "failed", reason: "timeout" } as const;
   const start = deps.clock.now();
   const done: Omit<DrillRecord, "end" | "result" | "removal"> = {
     kind: "manual",
@@ -563,8 +673,9 @@ export async function drillInPortainer(
     Math.max(0, Math.round((deps.clock.now().getTime() - from.getTime()) / 1000));
   let stackId: number | undefined;
   const outcome = async (): Promise<Pick<DrillRecord, "result" | "reason" | "health">> => {
-    const created = await createDrillStack(client, stackPlan, options);
+    const created = await createDrillStack(client, stackPlan, options());
     stackId = created.stackId;
+    if (late()) return timedOut;
     if (created.failure !== undefined) {
       return { result: "failed", reason: deployReason(created.failure) };
     }
@@ -576,6 +687,7 @@ export async function drillInPortainer(
       } catch {
         return { result: "not-restored", reason: part.name };
       }
+      if (late()) return timedOut;
       const size = about.services.find((entry) => entry.name === part.name);
       done.parts.push({
         name: part.name,
@@ -583,10 +695,11 @@ export async function drillInPortainer(
         seconds: seconds(began),
       });
     }
-    const app = await startDrillApp(client, stackPlan, stackId, options);
+    const app = await startDrillApp(client, stackPlan, stackId, options());
+    if (late()) return timedOut;
     if (app.failure !== undefined) return { result: "failed", reason: deployReason(app.failure) };
     if (!(await cutOff(copy))) return { result: "failed", reason: "network" };
-    const health = await appHealth(copy);
+    const health = await appHealth(copy, left());
     const read = { state: health.state, seconds: Math.round(health.ms / 1000) };
     let bad: string | undefined;
     for (const part of parts.filter((each) => databaseCount(each) !== undefined)) {
@@ -595,6 +708,7 @@ export async function drillInPortainer(
       if (count === undefined || count === 0) bad ??= part.name;
     }
     if (bad !== undefined) return { result: "not-restored", reason: bad, health: read };
+    if (late() && health.state !== "healthy") return { ...timedOut, health: read };
     return {
       result: health.state === "healthy" || health.state === "running" ? "healthy" : "unhealthy",
       health: read,
@@ -624,6 +738,7 @@ export async function drillInPortainer(
       .replace(/\.\d{3}Z$/, "Z"),
     removal: removal.removed ? "removed" : "failed",
   };
+  await keepRecord(run, record);
   await deps.audit
     .append({
       kind: "provider-call",
@@ -674,5 +789,6 @@ export async function drillInPortainer(
   } else {
     deps.reporter.warn(report.summary);
   }
+  deps.reporter.info(NOT_CHECKED);
   return report;
 }
