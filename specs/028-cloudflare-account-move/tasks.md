@@ -648,6 +648,8 @@ Asked for through the control plane's session: a non-secret build setting whatev
     - L3's coverage step tells a DNSSEC wait from coverage that names hostnames: a refusal for the wait says so, with its time, and doesn't name coverage.
     - A leg filter matches only that leg: L0's step "the registrar, and so the switch's leg (L4a or L4b)" no longer contains a leg's name, so `-t "L4b"` doesn't also select L0 (it did, and the pass refused two legs in one run).
     - `delegatedToB` reads the registry's RDAP nameservers first (T2848's lookup, or the RDAP record directly), then the public DNS.
+    - L6 empties P's bucket before `opscrew destroy` (the destroy refuses a bucket that holds files, as OpsCrew never deletes them), so the destroy goes through and updates the zone's shared rules; L6 stopped there and left the test hostnames in OpsCrew's shared rules, which the lead removed by hand.
+    - The leak search leaves out the kept versions of a plan made outside the pass's own runs (the lead kept one to diagnose L5), or the step names how to remove one.
     - The pass's support tests cover each.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cloudflare-move-support.test.ts && pnpm lint`
   - Effort: medium
@@ -655,6 +657,10 @@ Asked for through the control plane's session: a non-secret build setting whatev
 - [x] T2851 The finish's check after importing what the switch made accepts in-place updates, approved by hash (found by L5, 2026-11-18; done by the lead)
   - Why: Q's finish stopped: once the switch's Access application was imported into the main shadow state, the check plan would update it in place, setting `auto_redirect_to_identity`, `enable_binding_cookie` and `options_preflight_bypass` from `false` (Cloudflare's defaults, which the import brings along) to unset, as the module leaves them. The check had to be empty.
   - Done: `checkAdoption` takes in-place updates of Cloudflare resources, shown and approved by hash, as `checkAfterSwap` does; anything else still stops before an approval; `adoptSite` returns the approval's stop. Tests: a create still stops; an in-place update waits for its hash as a script and, approved, is applied before the credentials are promoted.
+
+- [x] T2852 A saved plan's JSON masks an Access service token's client ID (found by L6's leak search, 2026-11-18; done by the lead)
+  - Why: L6's leak search found Q's deploy service token's client ID in `.opscrew/plans/*.tfplan.json`: the provider marks only the client secret sensitive, so the masking (`plan-json.ts`) left the client ID, the credential's other half, in the resource's values.
+  - Done: `cloudflare_zero_trust_access_service_token`'s `client_id` joins the attributes masked whatever the plan marks; a test.
 
 ## Phase 5: Wave 4 (parallel)
 
