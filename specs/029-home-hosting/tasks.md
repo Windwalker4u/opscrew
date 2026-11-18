@@ -373,6 +373,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     line; the pull request's files and body in `provision/publish.ts`), colocated tests
   - Reads: plan 10. (steps 2, 6), 14. (H4); research R12; `removeOldAccessMode`
   - Depends: T2913a, T2910c, T2908
+  - Decided by the lead (T2904's finding): the dedicated host plan of a switch out of home is `planHost` with the app's `dnsUpdater` (and, with the server's last home app, `sshFrom`) left out of the desired host, which already removes the instance; no new plan function.
   - Accept:
     - `removeOldAccessMode` reads home as its own mode from `address_updater`.
     - public → home: no removal; the infrastructure plan deletes `a[0]`/`aaaa[0]`, then the updater
