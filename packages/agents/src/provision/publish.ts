@@ -12,6 +12,8 @@ import {
 } from "@opscrew/core";
 import {
   CHECK_WORKFLOW_FILE,
+  homeMode,
+  OUTSIDE_CHECK_WORKFLOW_FILE,
   pagesVerificationRootDir,
   portainerDeployBranch,
   portainerStackTemplatePath,
@@ -29,6 +31,7 @@ import type { PhaseDeps } from "../context";
 import { OWN_SERVER_BACKUPS_NOTE } from "../design/own";
 import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
 import { workflowBranch } from "../environments/branches";
+import { homeForwards } from "../home/forwards";
 import { hostingPullRequestBody } from "../hosting/provision-pr";
 import { planProvider, providerProfile } from "../providers";
 import { planFile, planWhere } from "../runners/words";
@@ -51,6 +54,47 @@ export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
 
 /** The review checklist item of every deploy-setup pull request about the workflow's actions. */
 const PINNED_ACTIONS_CHECK = "- [ ] The workflow only uses pinned, first-party actions.";
+
+/** The outside check's workflow: one per repository, which every app of it at home shares. */
+const OUTSIDE_CHECK_WORKFLOW_PATH = `.github/workflows/${OUTSIDE_CHECK_WORKFLOW_FILE}`;
+
+/** The pull request's line about the outside check's workflow (`flag`: ` --env <name>`, or ""). */
+function outsideCheckLine(flag: string): string {
+  return `- \`${OUTSIDE_CHECK_WORKFLOW_PATH}\`: the outside check, which \`opscrew verify${flag}\` starts. From GitHub's network, outside your home, it requests the site on ports 80 and 443 and logs only each try's status code. It has no permissions, secrets or actions, changes nothing and never gets your home's address. Every app of this repository at home uses this one file.`;
+}
+
+/**
+ * What a server at home needs on the router before its pull request is merged, from the plan
+ * alone: the server's address on the home network, which `opscrew provision` named, and SSH's
+ * sources are never written into a pull request. With DNS only, the first deploy fetches the
+ * site's certificate through the forwards; behind the proxy, Cloudflare reaches the server
+ * through them.
+ */
+function homeRouterLines(plan: DeployPlan, flag: string): string[] {
+  const ipv4 = plan.target.provider === "own" && plan.target.home?.ipv4 === true;
+  const updater = plan.dns.provider === "cloudflare";
+  const proxied = updater && plan.dns.proxied;
+  const ipv6Rule = "allow inbound TCP 80 and 443 to this server in your router's IPv6 firewall.";
+  const lines = [
+    // An AAAA record without IPv4; with DNS only, also beside the A while there is IPv6.
+    ...homeForwards({ ipv4, noNat: false, aaaa: !ipv4 }),
+    ...(ipv4 && !proxied
+      ? [
+          updater
+            ? `While your connection has IPv6, the site also has an AAAA record: ${ipv6Rule}`
+            : `If you add an AAAA record for the site, ${ipv6Rule}`,
+        ]
+      : []),
+    ...(ipv4 ? ["When the server has its public IPv4 address itself, it needs no forwards."] : []),
+  ];
+  const when = proxied
+    ? "so Cloudflare reaches your server"
+    : "the first deploy fetches the site's certificate through them";
+  return [
+    `**Before merging, set your router** (${when}). \`opscrew provision${flag}\` named the server's address on your home network, which is never written here:`,
+    ...lines.map((line) => `- ${line}`),
+  ];
+}
 
 /** The pull request's line about the recovery copy at `path`, when it is in the pull request. */
 const recoveryCopyLine = (path: string) =>
@@ -144,16 +188,23 @@ export function deploySetupPullRequestBody(
   const profile = providerProfile(planProvider(plan));
   const own = plan.target.provider === "own";
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
+  const home = homeMode(plan);
   const host = plan.dns.domain ?? (own ? "your server" : `the ${profile.serverNoun}`);
   const ready = own ? "Your server is prepared" : "The server is already running";
   const file = planFile(plan);
   const flag = options.flag ?? "";
   const runtime = runtimeDir(plan);
   const arrives = imageArrives(plan);
+  const records =
+    plan.dns.provider !== "cloudflare"
+      ? "the outputs that describe your server"
+      : home
+        ? `the site's CAA records${plan.dns.www ? " and its www record" : ""} at Cloudflare; the address updater on your server keeps its A/AAAA records at your home's address`
+        : "the Cloudflare DNS records that point the domain at your server";
   const infra = own
     ? tunnel
       ? "the Cloudflare Tunnel that serves the app, its DNS records and the Cloudflare Access application GitHub Actions deploys through (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself."
-      : `${plan.dns.provider === "cloudflare" ? "the Cloudflare DNS records that point the domain at your server" : "the outputs that describe your server"} (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself.`
+      : `${records} (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself.`
     : `infrastructure code for the ${profile.displayName} ${profile.serverNoun}${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`;
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**:`,
@@ -165,10 +216,12 @@ export function deploySetupPullRequestBody(
     arrives.promoted
       ? `- \`${plan.cicd.workflowPath}\`: deploys ${arrives.text}, rolling back when the health check fails.`
       : `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on ${arrives.text}, rolling back when the health check fails.`,
+    ...(home ? [outsideCheckLine(flag)] : []),
     `- \`${file}\`: the deployment plan. The server's IP address is not in the repository; \`opscrew status${flag}\` shows it on the computer that ran \`opscrew provision${flag}\`.`,
     ...(options.recoveryCopy === undefined ? [] : [recoveryCopyLine(options.recoveryCopy)]),
     ...dependabotPullRequestLines(options.dependabot),
     "",
+    ...(home ? [...homeRouterLines(plan, flag), ""] : []),
     ...nextStepLines(options.secretsStored, ready, host, flag),
     ...(own ? ["", OWN_SERVER_BACKUPS_NOTE] : []),
     "",
@@ -829,8 +882,11 @@ const ownWorkflows = (plan: DeployPlan): string[] => [
   CHECK_WORKFLOW_PATH,
 ];
 
-/** The groups of `plan`'s deployment files, in the order a pull request lists them. */
-function changeGroups(plan: DeployPlan, copy: string): ChangeGroup[] {
+/**
+ * The groups of `plan`'s deployment files, in the order a pull request lists them (`flag`: the
+ * environment's ` --env <name>` in the commands they name).
+ */
+function changeGroups(plan: DeployPlan, copy: string, flag: string): ChangeGroup[] {
   const file = planFile(plan);
   // At most LISTED_FILES files a group, so the body stays far below GitHub's size limit.
   const listed = (label: string) => (paths: readonly string[]) => {
@@ -850,6 +906,11 @@ function changeGroups(plan: DeployPlan, copy: string): ChangeGroup[] {
       has: (path) => path === CHECK_WORKFLOW_PATH,
       phrase: named("the scheduled check"),
       lines: listed("The scheduled check"),
+    },
+    {
+      has: (path) => path === OUTSIDE_CHECK_WORKFLOW_PATH,
+      phrase: named("the outside check"),
+      lines: () => [outsideCheckLine(flag)],
     },
     {
       // The scheduled check matched above.
@@ -905,7 +966,7 @@ function deploymentUpdate(
 ): Proposal {
   const app = plan.app.name;
   const file = planFile(plan);
-  const all = changeGroups(plan, options.copy);
+  const all = changeGroups(plan, options.copy, options.flag);
   const byGroup = new Map<ChangeGroup, string[]>();
   for (const { path } of changes) {
     const group = all.find((candidate) => candidate.has(path)) as ChangeGroup;
@@ -917,11 +978,17 @@ function deploymentUpdate(
     groups.length === 1 && only !== undefined ? only.phrase(byGroup.get(only) ?? []) : undefined;
   const subject = phrase !== undefined ? `${phrase} for ${app}` : `update the deployment of ${app}`;
   const workflowChanged = changes.some(({ path }) => ownWorkflows(plan).includes(path));
+  // A server at home whose outside check arrives now: the router's settings come before the merge.
+  const router =
+    homeMode(plan) && changes.some(({ path }) => path === OUTSIDE_CHECK_WORKFLOW_PATH)
+      ? [...homeRouterLines(plan, options.flag), ""]
+      : [];
   const body = [
     `This pull request updates the deployment of **${app}** that OpsCrew generated from \`${file}\`:`,
     "",
     ...groups.flatMap((group) => group.lines(byGroup.get(group) ?? [])),
     "",
+    ...router,
     options.secretsStored
       ? "Nothing else is needed before merging: the deploy secrets are stored in GitHub Actions."
       : `OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail. **Before merging, run \`opscrew provision${options.flag}\` in a terminal in the project directory.**`,

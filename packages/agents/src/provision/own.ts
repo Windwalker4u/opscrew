@@ -58,7 +58,6 @@ import {
   githubCoordinates,
   type HostAdapterApi,
   type HostPlanOutcome,
-  infrastructureOutputs,
   knownHostsName,
   randomPassword,
   readSecretFile,
@@ -842,24 +841,51 @@ export async function ownEngineEnv(
   setAddressVariables(env, address);
 }
 
-const MODE_TEXT = {
+/** How the app on a server the user owns is served: directly, through the tunnel, or from home. */
+export type OwnAccessMode = "public" | "tunnel" | "home";
+
+/** Each {@link OwnAccessMode} in words. */
+export const MODE_TEXT: Record<OwnAccessMode, string> = {
   public: "serving the app directly on its public address",
   tunnel: "serving the app through a Cloudflare Tunnel",
-} as const;
+  home: "serving the app from your home",
+};
+
+/** The plan's {@link OwnAccessMode}: a server at home (`homeMode`) is a mode of its own. */
+export function ownAccessMode(plan: DeployPlan): OwnAccessMode {
+  return homeMode(plan) ? "home" : ownTarget(plan).access;
+}
 
 /**
- * Switching an own server between public and tunnel mode runs as two applies, so Cloudflare never
- * holds an A/AAAA record and a CNAME for the same name: this one removes everything the last
- * setup created (DNS records, or the tunnel, its records and Access), from the files and state of
- * that setup; the normal plan adds the new ones afterwards. Each apply has its own approval (this
- * one deletes, so it needs the typed app name). `undefined` when the mode did not change.
+ * The {@link OwnAccessMode} the infrastructure state was applied in, from its outputs: the
+ * tunnel's SSH hostname, the home root's `address_updater` (a home root with the DNS elsewhere
+ * holds no records, so it reads as none), or the public address; `undefined` when none.
+ */
+export function appliedAccessMode(outputs: Record<string, unknown>): OwnAccessMode | undefined {
+  if (stringOutput(outputs, "ssh_hostname") !== undefined) return "tunnel";
+  if (outputs.address_updater === true) return "home";
+  return stringOutput(outputs, "server_ipv4") !== undefined ? "public" : undefined;
+}
+
+/**
+ * Switching an own server between its access modes runs as two applies where Cloudflare could
+ * hold an A/AAAA record and a CNAME for the same name: this one removes everything the last setup
+ * created (DNS records, or the tunnel, its records and Access), from the files and state of that
+ * setup; the normal plan adds the new ones afterwards. Each apply has its own approval (this one
+ * deletes, so it needs the typed app name). `undefined` when the mode did not change, and between
+ * public mode and home (`outputs`, the state's, read by the caller, say which mode was applied):
+ * from public mode the home root's plan deletes the A and AAAA records itself before the address
+ * updater writes its own, and leaving home the updater's records go first (`switchAccessMode`), so
+ * only a tunnel then needs the home root's records (`www`, CAA) removed here.
  *
  * When this removal deletes the Cloudflare Tunnel (the old setup had one), Cloudflare refuses while
  * the tunnel's connector still runs on the server. Then, after the removal's approval, the host
  * plan of the new setup without a connector (`input.host`) is shown, approved by its hash and
  * applied first; OpsCrew waits until Cloudflare reports no active connections for the tunnel
  * (read-only, up to 3 minutes) and only then applies the removal. The host plan is returned as
- * `host` (with `planOnly`, shown and saved only, so a script can approve both hashes).
+ * `host` (with `planOnly`, shown and saved only, so a script can approve both hashes). Going home,
+ * that host plan leaves out the address updater: its first run would find the tunnel's CNAME at
+ * the name, so the host plan after the new setup's apply installs it.
  */
 export async function removeOldAccessMode(
   deps: PhaseDeps,
@@ -868,11 +894,13 @@ export async function removeOldAccessMode(
     dir: string;
     env: Record<string, string | undefined>;
     plan: DeployPlan;
+    /** The infrastructure state's outputs (none without a state: nothing to remove). */
+    outputs: Record<string, unknown>;
     approvePlanHash?: string;
     planOnly?: boolean;
     phase: Extract<PhaseName, "provision" | "dns">;
     /** The server, for the host change that goes before a removal that deletes the tunnel. */
-    host?: {
+    host: {
       run: OwnServerRun;
       deployPublicKey: string;
       passwordLogins?: ProvisionOptions["passwordLogins"];
@@ -881,38 +909,29 @@ export async function removeOldAccessMode(
   },
 ): Promise<(PlanAndApplyResult & { host?: HostChangeResult }) | undefined> {
   const { plan } = input;
-  const target = ownTarget(plan);
-  const outputs = await infrastructureOutputs(deps, plan, {
-    engine: async () => input.engine,
-    engineEnv: input.env,
-  });
-  if (outputs === undefined) return undefined;
-  const last =
-    stringOutput(outputs, "ssh_hostname") !== undefined
-      ? "tunnel"
-      : stringOutput(outputs, "server_ipv4") !== undefined
-        ? "public"
-        : undefined;
-  if (last === undefined || last === target.access) return undefined;
+  const last = appliedAccessMode(input.outputs);
+  const next = ownAccessMode(plan);
+  if (last === undefined || last === next) return undefined;
+  // Between public mode and home there is nothing to remove first (see above).
+  if (last !== "tunnel" && next !== "tunnel") return undefined;
   deps.reporter.warn(
-    `Your server switches from ${MODE_TEXT[last]} to ${MODE_TEXT[target.access]}. Cloudflare cannot hold the old records and the new ones for the same name at once, so OpsCrew first removes what the current setup created (this plan), then adds the new setup in a second plan. The app is unreachable between the two applies.`,
+    `Your server switches from ${MODE_TEXT[last]} to ${MODE_TEXT[next]}. Cloudflare cannot hold the old records and the new ones for the same name at once, so OpsCrew first removes what the current setup created (this plan), then adds the new setup in a second plan. The app is unreachable between the two applies.`,
   );
   const removed =
     last === "tunnel"
       ? "the Cloudflare Tunnel, its DNS records and Access"
-      : "the DNS records pointing at your server";
+      : last === "home"
+        ? "the DNS records of your server at home"
+        : "the DNS records pointing at your server";
   const command = `opscrew ${input.phase}`;
-  const server = input.host;
   // The host change that goes first when the removal deletes the tunnel (see above).
-  const first =
-    server === undefined
-      ? undefined
-      : ownConnectorFirst(deps, {
-          ...server,
-          plan,
-          phase: input.phase,
-          done: `Your server is switched to ${MODE_TEXT[target.access]} already (its Cloudflare Tunnel connector is removed); the current setup's Cloudflare resources are still there, so the app is unreachable until the switch finishes.`,
-        });
+  const first = ownConnectorFirst(deps, {
+    ...input.host,
+    plan,
+    phase: input.phase,
+    done: `Your server is switched to ${MODE_TEXT[next]} already (its Cloudflare Tunnel connector is removed); the current setup's Cloudflare resources are still there, so the app is unreachable until the switch finishes.`,
+    ...(next === "home" ? { adjust: withoutUpdater } : {}),
+  });
   let result: PlanAndApplyResult;
   try {
     result = await planAndApply(deps, {
@@ -925,33 +944,55 @@ export async function removeOldAccessMode(
       phase: input.phase,
       destroy: true,
       costDelta: null,
-      approvalTitle: `Remove ${removed} before switching your server to ${MODE_TEXT[target.access]} (first of two applies)`,
-      ...first?.hooks,
+      approvalTitle: `Remove ${removed} before switching your server to ${MODE_TEXT[next]} (first of two applies)`,
+      ...first.hooks,
       ...(input.approvePlanHash !== undefined ? { approvePlanHash: input.approvePlanHash } : {}),
       ...(input.planOnly ? { planOnly: true } : {}),
     });
   } catch (error) {
-    throw first === undefined ? error : first.stopped(error);
+    throw first.stopped(error);
   }
   // `--plan-only`: a removal that deletes the tunnel needs the host plan too; show it now.
   const pending = (result.plan?.changes.length ?? 0) > 0 && !result.applied;
-  if (
-    first !== undefined &&
-    input.planOnly &&
-    pending &&
-    tunnelChange(result.plan?.changes ?? [], "delete")
-  ) {
+  if (input.planOnly && pending && tunnelChange(result.plan?.changes ?? [], "delete")) {
     return { ...result, host: await first.show() };
   }
-  return first?.host === undefined ? result : { ...result, host: first.host };
+  return first.host === undefined ? result : { ...result, host: first.host };
+}
+
+/**
+ * Inspects the user's own server again (read-only, audited as `phase` with `detail`) after a host
+ * change that goes before the new setup, so the next host plan starts from what the server is now.
+ */
+export async function inspectAgain(
+  deps: PhaseDeps,
+  run: OwnServerRun,
+  phase: OwnHostPhase,
+  detail: string,
+): Promise<void> {
+  run.facts = await run.host.inspect(run.session.remote);
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "inspect host (read-only)",
+    phase,
+    target: "own server",
+    decision: "allow",
+    detail,
+  });
+}
+
+/** The desired host without the address updater of a server at home. */
+function withoutUpdater({ dnsUpdater: _updater, ...desired }: DesiredHost): DesiredHost {
+  return desired;
 }
 
 /**
  * {@link connectorFirst} on a server the user owns: the host change that goes before a plan that
  * deletes the tunnel is the host plan of `plan` without a tunnel connector (its own `host-apply`
- * approval by its hash). After it applied, the server is inspected again, so the next host plan
- * (of the new setup) starts from what the server is now. `show()` only shows and saves it
- * (`--plan-only`).
+ * approval by its hash), its desired host changed by `adjust` when given. After it applied, the
+ * server is inspected again, so the next host plan (of the new setup) starts from what the server
+ * is now. `show()` only shows and saves it (`--plan-only`).
  */
 export function ownConnectorFirst(
   deps: PhaseDeps,
@@ -964,6 +1005,7 @@ export function ownConnectorFirst(
     sleep?: (ms: number) => Promise<void>;
     done: string;
     notes?: readonly string[];
+    adjust?: (desired: DesiredHost) => DesiredHost;
   },
 ): ConnectorFirst & { show(): Promise<HostPlanOutcome> } {
   const { run } = input;
@@ -978,6 +1020,7 @@ export function ownConnectorFirst(
       phase: input.phase,
       command: `opscrew ${input.phase}`,
       withoutTunnel: true,
+      ...(input.adjust !== undefined ? { adjust: input.adjust } : {}),
       shown: (hash) => {
         shownHash = hash;
       },
@@ -989,16 +1032,7 @@ export function ownConnectorFirst(
     hostChange: async () => {
       const host = await apply(false);
       if (host.applied) {
-        run.facts = await run.host.inspect(run.session.remote);
-        await deps.audit.append({
-          kind: "remote-exec",
-          actor: "opscrew",
-          action: "inspect host (read-only)",
-          phase: input.phase,
-          target: "own server",
-          decision: "allow",
-          detail: "after removing the tunnel connector",
-        });
+        await inspectAgain(deps, run, input.phase, "after removing the tunnel connector");
       }
       return host;
     },
@@ -1057,6 +1091,8 @@ export async function applyOwnHostPlan(
     upToDate?: string;
     /** No tunnel connector (see {@link desiredHost}); `outputs` are then not needed. */
     withoutTunnel?: boolean;
+    /** How the host change that goes first in a mode switch differs from the plan's. */
+    adjust?: (desired: DesiredHost) => DesiredHost;
     /** Told the host plan's hash as soon as it is shown. */
     shown?: (hash: string) => void;
   },
@@ -1066,15 +1102,16 @@ export async function applyOwnHostPlan(
     usesTunnel(input.plan) && input.withoutTunnel !== true
       ? tunnelOutputs(deps, input.outputs)
       : undefined;
+  const desired = await desiredHost(deps, run, {
+    plan: input.plan,
+    deployPublicKey: input.deployPublicKey,
+    ...(tunnel !== undefined ? { tunnelId: tunnel.id } : {}),
+    ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
+    ...(input.withoutTunnel === true ? { withoutTunnel: true } : {}),
+  });
   const plan = planHost(
     run.facts,
-    await desiredHost(deps, run, {
-      plan: input.plan,
-      deployPublicKey: input.deployPublicKey,
-      ...(tunnel !== undefined ? { tunnelId: tunnel.id } : {}),
-      ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
-      ...(input.withoutTunnel === true ? { withoutTunnel: true } : {}),
-    }),
+    input.adjust === undefined ? desired : input.adjust(desired),
     input.command,
     { previousDeployKey: input.previousDeployKey },
   );

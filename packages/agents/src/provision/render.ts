@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { exists, listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import {
   additionsPath,
+  homeMode,
   type PreviewEnvTemplates,
   type RenderedFile,
   type RenderedFileKind,
@@ -9,6 +10,7 @@ import {
   renderBackups,
   renderDeployment,
   renderInfra,
+  renderOutsideCheckWorkflow,
   renderPreviewRecipe,
   renderPreviewWorkflow,
   renderServerCompose,
@@ -200,8 +202,10 @@ async function ownServerSshPorts(
  * provider (`renderStorage`), the `backups` root of the off-server copies' bucket
  * (`renderBackups`), whenever the plan has a Cloudflare Tunnel (an own server in tunnel
  * mode, or a Portainer subdomain), the tunnel connector's Compose file
- * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server) and, with origin TLS on a
- * server, `pull.pem`, the client certificate (`values`) the site trusts.
+ * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server), with origin TLS on a
+ * server `pull.pem`, the client certificate (`values`) the site trusts, and on a server at home
+ * the outside check's workflow (`renderOutsideCheckWorkflow`), one file every app of the
+ * repository at home shares.
  *
  * A preview environment (ADR 0026), rendered with its env templates `previews.templates` (without
  * values), has no app of its own and no deploy workflow: its root (the server and the wildcard
@@ -248,6 +252,7 @@ export function deploymentFiles(
   if (ctx.originTls !== undefined && plan.target.provider !== "portainer") {
     files.push(pullPemFile(plan, values));
   }
+  if (homeMode(plan)) files.push(renderOutsideCheckWorkflow());
   return files;
 }
 
