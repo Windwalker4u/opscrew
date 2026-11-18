@@ -52,7 +52,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2902 [P] [US1] `target.home` in the plan
+- [x] T2902 [P] [US1] `target.home` in the plan
   - Owns: `packages/plan-schema/src/home.ts` (new), `packages/plan-schema/src/plan.ts`
     (`OwnTargetSchema.home`), `packages/plan-schema/src/index.ts`, `packages/plan-schema/schemas/**`,
     colocated tests
@@ -70,7 +70,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema && npx vitest run --root packages/plan-schema && pnpm lint`
   - Effort: medium
 
-- [ ] T2903 [P] [US1] [US3] [US5] Reading the home's network, and the board, storage and power facts
+- [x] T2903 [P] [US1] [US3] [US5] Reading the home's network, and the board, storage and power facts
   - Owns: `packages/connectors/ssh-host/src/home-network.ts` (new),
     `packages/connectors/ssh-host/src/{inspect,facts,parse}.ts`,
     `packages/connectors/ssh-host/src/index.ts`, colocated tests and `__fixtures__`
@@ -94,7 +94,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
   - Effort: high
 
-- [ ] T2909 [P] [US2] `verifyToken` returns the token's id
+- [x] T2909 [P] [US2] `verifyToken` returns the token's id
   - Owns: `packages/connectors/cloudflare/src/client.ts` (`verifyToken`), `packages/connectors/cloudflare/src/testing/**`, colocated tests
   - Reads: plan 6.; Cloudflare's `GET /user/tokens/verify` reference (official page only)
   - Depends: T2901
@@ -103,7 +103,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
   - Effort: medium
 
-- [ ] T2911 [P] [US1] The interview's home answers and the local record
+- [x] T2911 [P] [US1] The interview's home answers and the local record
   - Owns: `packages/agents/src/interview/own-server.ts`, `packages/agents/src/shared/server-record.ts`,
     colocated tests and snapshots
   - Reads: contracts/cli.md "Interview answers"; data-model 2; plan 1.; research R1; `suggestReachable`
@@ -124,7 +124,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2904 [P] [US2] The address updater: script, units and the `dns-updater` host step
+- [x] T2904 [P] [US2] The address updater: script, units and the `dns-updater` host step
   - Owns: `packages/connectors/ssh-host/src/dns-updater.ts` (new), `packages/connectors/ssh-host/src/{steps,types}.ts`,
     `packages/connectors/ssh-host/src/plan.ts` (only the step's registration and its params),
     `packages/connectors/ssh-host/src/index.ts`, `packages/connectors/ssh-host/src/apply.ts` (only the
@@ -159,7 +159,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/agents src/drift && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2907 [P] [US1] [US2] [US4] The records, the home root and the templates' home branches
+- [x] T2907 [P] [US1] [US2] [US4] The records, the home root and the templates' home branches
   - Owns: `packages/iac-templates/modules/cloudflare-dns/**`, `packages/iac-templates/src/infra/{own,index}.ts`,
     `packages/iac-templates/src/tunnel/index.ts`, `packages/iac-templates/src/edge/index.ts`,
     `packages/iac-templates/src/workflow/index.ts` (`healthScript`), `packages/iac-templates/src/check/index.ts`
@@ -186,7 +186,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && PATH="$PWD/.tools/bin:$PATH" npx vitest run --root packages/iac-templates && npx vitest run --root packages/agents src/provision src/destroy src/hosting src/retarget src/shared && npx vitest run --root packages/cli src/commands/hosting.test.ts && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2910a [P] [US1] [US3] [US4] The classification, the forwards and the home texts
+- [x] T2910a [P] [US1] [US3] [US4] The classification, the forwards and the home texts
   - Owns: `packages/agents/src/home/{network,forwards,texts}.ts` (new), `packages/agents/src/shared/host-plan.ts`
     (`HostAdapterApi.detectHomeNetwork`, `boundHostAdapter`), colocated tests
   - Reads: research R3; plan 2., 3. (the summary lines), 8.; data-model 2, 3; contracts/cli.md
@@ -207,7 +207,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/home src/shared && pnpm lint`
   - Effort: high
 
-- [ ] T2910b [P] [US2] The updater token's checks
+- [x] T2910b [P] [US2] The updater token's checks
   - Owns: `packages/agents/src/home/token.ts` (new), colocated tests
   - Reads: research R6; plan 6.; data-model 8; `zonePermissions`, `accountPermissions` in
     `connectors/cloudflare/src/client.ts`
@@ -227,7 +227,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T2905 [P] [US1] SSH only from the home network, and the app record's `home`
+- [x] T2905 [P] [US1] SSH only from the home network, and the app record's `home`
   - Owns: `packages/connectors/ssh-host/src/plan.ts`, `packages/connectors/ssh-host/src/types.ts`,
     `packages/connectors/ssh-host/src/ssh-firewall*.ts`, and (lead, 2026-11-18) `facts.ts` (`AppRecordSchema.home`),
     `steps.ts` (`appRecord`'s `home`, `SshFirewallParams.install`), `findings.ts` (`homeModeConflict`), colocated tests
@@ -245,7 +245,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
   - Effort: high
 
-- [ ] T2908 [P] [US1] [US3] The outside-check workflow
+- [x] T2908 [P] [US1] [US3] The outside-check workflow
   - Owns: `packages/iac-templates/src/workflow/outside-check.ts` (new), its export line in
     `packages/iac-templates/src/index.ts`, colocated tests and snapshots
   - Reads: contracts/outside-check-workflow.md "The file", "The rules", "Tests"; research R7
@@ -259,7 +259,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/workflow && pnpm lint`
   - Effort: medium
 
-- [ ] T2910c [P] [US2] Deleting the updater's records through a hashed plan
+- [x] T2910c [P] [US2] Deleting the updater's records through a hashed plan
   - Owns: `packages/agents/src/home/records.ts` (new), colocated tests
   - Reads: data-model 7, 11; research R12; plan 14. (H5); 028's `zoneDeletion` pattern in
     `agents/src/cloudflare-move/`
@@ -273,7 +273,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/home && pnpm lint`
   - Effort: high
 
-- [ ] T2912 [P] [US1] [US3] [US4] [US5] Design for a home server
+- [x] T2912 [P] [US1] [US3] [US4] [US5] Design for a home server
   - Owns: `packages/agents/src/design/{own,own-servers,run}.ts` (`run.ts`: `ownServerAccess` reads a home record, which has no `reachable`), a new `packages/agents/src/design/home.ts`,
     colocated tests and `__fixtures__`
   - Reads: plan 3., 12.; research R1, R3, R5, R10; contracts/plan-schema.md "Kept by a later
@@ -302,7 +302,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T2906 [P] [US4] The IPv6 web filter behind the proxy
+- [x] T2906 [P] [US4] The IPv6 web filter behind the proxy
   - Owns: `packages/connectors/ssh-host/src/web-filter.ts`, `packages/connectors/ssh-host/src/types.ts`
     (`webFilter.ipv6` only), `packages/connectors/ssh-host/src/{plan,findings}.ts` (the two items below), colocated tests, `packages/connectors/ssh-host/src/web-filter-docker.test.ts`
   - Reads: plan 8. (M11); research R5
@@ -317,7 +317,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2910d [P] [US1] [US3] Running the outside check
+- [x] T2910d [P] [US1] [US3] Running the outside check
   - Owns: `packages/agents/src/home/outside-check.ts` (new), colocated tests
   - Reads: contracts/outside-check-workflow.md "How agents run it", "What it proves"; research R7;
     the GitHub connector's `dispatchWorkflow`, `waitForWorkflowRun`, `runAttemptJobs`
@@ -333,7 +333,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/home && pnpm lint`
   - Effort: high
 
-- [ ] T2914d [P] [US1] The runbook's home section
+- [x] T2914d [P] [US1] The runbook's home section
   - Owns: `packages/iac-templates/src/runbook/own.ts`, colocated tests and snapshots
   - Reads: plan 13. (M10); research R8, R11
   - Depends: T2908
@@ -345,7 +345,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 6: Wave 5
 
-- [ ] T2942 [P] [US4] The IPv6 web filter seen by the plan, kept through an nftables restart (lead, T2906's findings)
+- [x] T2942 [P] [US4] The IPv6 web filter seen by the plan, kept through an nftables restart (lead, T2906's findings)
   - Owns: `packages/connectors/ssh-host/src/{inspect,parse,facts,plan,steps,web-filter}.ts`, colocated tests and snapshots
   - Reads: plan 8. (M11); T2906's `WEB_FILTER_TABLE`, `webFilterStep`, `webFilterScript`
   - Depends: T2906
@@ -358,7 +358,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
   - Effort: high
 
-- [ ] T2913a [US1] [US2] [US4] Provision for a home server: the checks and the host plan
+- [x] T2913a [US1] [US2] [US4] Provision for a home server: the checks and the host plan
   - Owns: `packages/agents/src/provision/{own,run}.ts`, `packages/agents/src/check/provision.ts`,
     colocated tests
   - Reads: plan 9., 10. (steps 1, 3–5, 7); data-model 2, 6; research R5, R6, R9
@@ -382,7 +382,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision src/check && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2941 [P] [US1] Bounded plans accept the one-time `a` → `a[0]` rename (lead, T2907's finding 4)
+- [x] T2941 [P] [US1] Bounded plans accept the one-time `a` → `a[0]` rename (lead, T2907's finding 4)
   - Owns: `packages/agents/src/retarget/**`, `packages/agents/src/cloudflare-move/shadow-plans.ts`, colocated tests
   - Reads: plan 4. (M2); `dnsSwitchChange` in `retarget/switch.ts`; `checkAdoption` in `cloudflare-move/shadow-plans.ts`; every other check that refuses a plan with state renames (`isMovesOnly`, `moves` in plan JSON: grep agents/src)
   - Depends: T2907
@@ -390,7 +390,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/retarget src/cloudflare-move && pnpm lint`
   - Effort: medium
 
-- [ ] T2943 [P] [US4] The web filter on every supported OS, and after an nftables restart in both modes (lead, T2942's findings 3–5)
+- [x] T2943 [P] [US4] The web filter on every supported OS, and after an nftables restart in both modes (lead, T2942's findings 3–5)
   - Owns: `packages/connectors/ssh-host/src/{web-filter,plan,steps,inspect,parse,facts}.ts`, colocated tests, snapshots and fixtures
   - Reads: T2906's and T2942's web-filter code and Docker-gated tests; plan 8. (M11); the target platforms (Ubuntu 22.04/24.04/26.04, Debian 12/13)
   - Depends: T2942
@@ -403,7 +403,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 7: Wave 6 (parallel)
 
-- [ ] T2913b [P] [US1] Provision: mode switches, the check workflow and the pull request
+- [x] T2913b [P] [US1] Provision: mode switches, the check workflow and the pull request
   - Owns: `packages/agents/src/provision/**` except `own.ts` and `run.ts`'s home checks from T2913a
     (the mode switch code goes in a new `provision/home-switch.ts`, called from `run.ts` at one
     line; the pull request's files and body in `provision/publish.ts`), colocated tests
@@ -422,7 +422,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2914a [P] [US1] [US2] [US3] [US5] verify for a home app
+- [x] T2914a [P] [US1] [US2] [US3] [US5] verify for a home app
   - Owns: `packages/agents/src/verify/**`, colocated tests and snapshots
   - Reads: plan 13. (verify), 12.; research R7, R10, R11
   - Depends: T2910d, T2913a
@@ -436,7 +436,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/verify && pnpm lint`
   - Effort: high
 
-- [ ] T2914b [P] [US2] [US5] status and secure for a home app
+- [x] T2914b [P] [US2] [US5] status and secure for a home app
   - Owns: `packages/agents/src/status/**`, `packages/agents/src/secure/**`, colocated tests and snapshots
   - Reads: plan 13. (status, secure); research R11; contracts/cli.md "Output lines"
   - Depends: T2913a
@@ -453,7 +453,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/status src/secure && pnpm lint`
   - Effort: high
 
-- [ ] T2915a [P] [US2] rotate `dns-updater` and init's recipe
+- [x] T2915a [P] [US2] rotate `dns-updater` and init's recipe
   - Also (lead, T2913a's finding): `rotate/infra.ts` builds its engine environments through `projectEngine` (`shared/engine.ts`, which drops the updater's tokens), not from `deps.env` directly; a test that neither updater token reaches the engine.
   - Also (lead, T2941's finding): `rotate/infra.ts`'s refusal of a plan with renames lets the one-time `a` → `a[0]` rename through, with `isDnsRecordCountMove` (`retarget/plans.ts`, moved to `shared/` if rotate shouldn't import from retarget), and a test.
   - Owns: `packages/agents/src/rotate/**`, `packages/agents/src/init/**`, colocated tests and snapshots
@@ -469,7 +469,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 8: Wave 7 (parallel)
 
-- [ ] T2914c [P] [US2] drift for the updater and the IPv6 filter
+- [x] T2914c [P] [US2] drift for the updater and the IPv6 filter
   - Also (lead, T2913a's finding 2): `drift/host.ts` builds `run.home` (as provision's `prepareHome` does, read-only, the token left as the server has it) before calling `desiredHost` on a home plan, which otherwise stops at its internal guard.
   - Owns: `packages/agents/src/drift/**`, colocated tests
   - Reads: plan 13. (drift, M10)
@@ -479,7 +479,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/drift && pnpm lint`
   - Effort: medium
 
-- [ ] T2915b [P] [US2] destroy for a home app
+- [x] T2915b [P] [US2] destroy for a home app
   - Also (lead, T2913b's finding 2): when an app switches out of home (`provision/home-switch.ts`) and it was the repository's last home app, the same pull-request removal takes `.github/workflows/opscrew-outside-check.yml` out; a test for the switch and for destroy.
   - Owns: `packages/agents/src/destroy/**`, colocated tests
   - Reads: plan 14. (destroy); research R12
@@ -491,7 +491,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/destroy && pnpm lint`
   - Effort: high
 
-- [ ] T2916a [P] retarget refuses a home server
+- [x] T2916a [P] retarget refuses a home server
   - Owns: `packages/agents/src/retarget/**`, colocated tests
   - Reads: plan 14. (retarget)
   - Depends: T2902
@@ -501,7 +501,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/retarget && pnpm lint`
   - Effort: medium
 
-- [ ] T2916b [P] [US2] A home app in a move to another Cloudflare account
+- [x] T2916b [P] [US2] A home app in a move to another Cloudflare account
   - Owns: `packages/agents/src/cloudflare-move/**`, colocated tests and fakes;
     `packages/agents/src/home/records.ts` (only an option for a deletion approved earlier, below)
   - Reads: plan 15. (M8); research R12; ADR 0032; `docs/guide/cloudflare-move.md`
@@ -521,7 +521,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 9: Wave 8 (parallel)
 
-- [ ] T2917 [P] The CLI, the MCP server and the plugin
+- [x] T2917 [P] The CLI, the MCP server and the plugin
   - Owns: `packages/cli/src/**`, `packages/cli/test/e2e/home.test.ts` (new), `packages/mcp-server/src/**`,
     `plugin/skills/opscrew-deploy/**`, colocated tests and snapshots
   - Reads: contracts/cli.md (all); quickstart "A user hosts an app at home"
@@ -535,7 +535,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=opscrew --filter=@opscrew/mcp-server && npx vitest run --root packages/cli test/e2e/home.test.ts && npx vitest run --root packages/mcp-server && pnpm lint`
   - Effort: high
 
-- [ ] T2918 [P] The guide
+- [x] T2918 [P] The guide
   - Owns: `docs/guide/home-hosting.md` (new), `docs/guide/{own-server,runners,credential-rotation,cloudflare-move,origin-protection,index}.md`
   - Reads: spec.md; plan 3., 6., 7., 11., 13., 14.; quickstart "A user hosts an app at home"; the
     guide's other pages for tone
@@ -554,7 +554,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 10: Wave 9
 
-- [ ] T2919 The live test files
+- [x] T2919 The live test files
   - Owns: `packages/cli/test/live/home.test.ts`, `packages/cli/test/live/home-support.ts` (new), `docs/e2e.md` (its home section)
   - Reads: plan 18.; quickstart "The lead's live pass"; `packages/cli/test/live/cloudflare-move*.ts`
     for the patterns (one leg per `-t`, the pass state file, cleanup, the leak scan)
@@ -576,7 +576,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
 - [x] T2930 (lead) Research R15–R23, US7 and US8, FR-2917–FR-2922, plan 19. and 20., these tasks
   - Effort: lead
 
-- [ ] T2931 [P] [US7] The drill's copy and its part restores
+- [x] T2931 [P] [US7] The drill's copy and its part restores
   - Owns: `packages/iac-templates/src/drill/**` (new), `packages/iac-templates/src/workflow/snapshots.ts`
     (the part restores taking a project and volumes), its export line in
     `packages/iac-templates/src/index.ts`, colocated tests and snapshots
@@ -598,7 +598,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/drill src/workflow src/previews && pnpm lint`
   - Effort: high
 
-- [ ] T2932 [P] [US8] The database check in `advise`
+- [x] T2932 [P] [US8] The database check in `advise`
   - Owns: `packages/agents/src/advise/**`, `docs/guide/advise.md`, colocated tests and `__fixtures__`,
     a new Docker-gated `packages/agents/src/advise/database-docker.test.ts`
   - Reads: plan 20.; research R20–R23; `docs/guide/advise.md`; `serverShell` and
@@ -624,7 +624,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/advise && pnpm lint`
   - Effort: high
 
-- [ ] T2933 [US7] `opscrew restore --drill` on servers and this computer, and the drill setting
+- [x] T2933 [US7] `opscrew restore --drill` on servers and this computer, and the drill setting
   - Owns: `packages/iac-templates/src/workflow/{snapshot-script,snapshots}.ts` (the script's `drill`
     subcommand), `packages/plan-schema/src/**` and `packages/plan-schema/schemas/**` (the drill
     setting), `packages/agents/src/snapshot/**` except `schedule.ts` (with two stubs,
@@ -685,7 +685,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow && npx vitest run --root packages/agents src/snapshot src/status && npx vitest run --root packages/cli src/commands/restore && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2934 [P] [US7] Drills in a Portainer
+- [x] T2934 [P] [US7] Drills in a Portainer
   - Owns: `packages/connectors/portainer/src/**` (a stack from a string), `packages/agents/src/snapshot/drill-portainer.ts`,
     `packages/iac-templates/src/drill/**` (only if the render needs a Portainer option: the
     snapshots volume external), colocated tests
@@ -704,7 +704,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-portainer --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/connectors/portainer && npx vitest run --root packages/agents src/snapshot && pnpm lint`
   - Effort: high
 
-- [ ] T2935 [P] [US7] Drills on a hosting account
+- [x] T2935 [P] [US7] Drills on a hosting account
   - Owns: `packages/iac-templates/src/hosting/**` (the agent's `drill` request and routine),
     `packages/agents/src/hosting/**`, `packages/agents/src/snapshot/drill-hosting.ts`, colocated tests
   - Reads: plan 19.; research R25, R27, R29; ADR 0030; `docs/guide/hosting-accounts.md`; the panel
@@ -724,7 +724,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting src/snapshot && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2936 [P] [US7] The scheduled drill on the target, the check's drill line and the command
+- [x] T2936 [P] [US7] The scheduled drill on the target, the check's drill line and the command
   - Re-scoped by the lead (2026-11-18, T2936's report): the crontab line and the copy's files are installed by a host plan approved by its hash (T2944), as constitution I's clause asks, never by the deploy's start script.
   - Owns: `packages/iac-templates/src/drill/script.ts` (the scheduled mode), `packages/iac-templates/src/workflow/{snapshot-script,snapshots}.ts` (only what the scheduled mode needs; no crontab line there), `packages/iac-templates/src/check/index.ts` (`check.json` carries the drill schedule), the scheduled check's script (its source and `src/generated/check.ts`, regenerated), `packages/connectors/ssh-host/src/constants.ts` (`CHECK_KEY_COMMAND` and its line pattern only), `packages/agents/src/snapshot/{schedule,index}.ts`, `packages/cli/src/commands/snapshot.ts`, colocated tests and snapshots (`agents/src/check/host.test.ts` included)
   - Reads: plan 19.; research R28, R29; T2933's `snapshot_cmd_drill`, `drill_left`, `drill_remove_all`; `docs/guide/alerts.md`
@@ -736,7 +736,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/iac-templates src/drill src/workflow src/check && npx vitest run --root packages/agents src/snapshot src/check && npx vitest run --root packages/cli src/commands/snapshot && pnpm lint`
   - Effort: high
 
-- [ ] T2944 [US7] The drills host step: the schedule installed by a plan approved by its hash
+- [x] T2944 [US7] The drills host step: the schedule installed by a plan approved by its hash
   - Owns: `packages/connectors/ssh-host/src/{types,plan,steps,inspect,parse,facts}.ts` (a `drills` step, modelled on the previews step: `AddonEnableSchemas.previews`), `packages/connectors/ssh-host/src/__fixtures__/fake-host.ts`, `packages/agents/src/provision/own.ts` (`desiredHost`'s drills), colocated tests and snapshots
   - Reads: plan 19.; research R28, R29; constitution I's clause for a program a plan installs; the previews step and its `values.env` supplied at apply time
   - Depends: T2936, T2943, T2913a
@@ -745,7 +745,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/agents src/provision && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2945 [US7] Scheduled drills on servers OpsCrew creates, the check's "never drilled" case, the approval hint (lead, T2944's findings)
+- [x] T2945 [US7] Scheduled drills on servers OpsCrew creates, the check's "never drilled" case, the approval hint (lead, T2944's findings)
   - Owns: the provision path that applies host plans as the deploy login on servers OpsCrew creates (find it: the `github-runner` step's path), `packages/connectors/ssh-host/src/constants.ts` (`CHECK_KEY_COMMAND`), the scheduled check's script (source and `src/generated/check.ts`), `packages/agents/src/shared/host-plan.ts` (the refusal hint), colocated tests
   - Reads: T2944's `drills` step (ssh-host `steps.ts`, `plan.ts`), `provision/own.ts`'s `desiredHost` drills; plan 19.
   - Depends: T2944
@@ -753,7 +753,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/iac-templates src/check && npx vitest run --root packages/agents src/provision src/shared src/check && pnpm lint`
   - Effort: high
 
-- [ ] T2937 [P] [US7] Scheduled dump drills in a Portainer
+- [x] T2937 [P] [US7] Scheduled dump drills in a Portainer
   - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
     snapshots and `snapshots.docker.test.ts`
   - Reads: plan 19.; research R28, R29; `docs/guide/portainer-target.md`
@@ -768,7 +768,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/portainer-target && pnpm lint`
   - Effort: high
 
-- [ ] T2938 [P] [US7] Scheduled drills on a hosting account
+- [x] T2938 [P] [US7] Scheduled drills on a hosting account
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts` (the settings renderer), `packages/agents/src/hosting/{provision-plans,plan}.ts`
     (the agent's settings), colocated tests
   - Also (lead, T2936's finding): `opscrew snapshot drill schedule on|off` works on a panel account (cPanel, Plesk, DirectAdmin): `packages/agents/src/snapshot/schedule.ts` is in Owns for that path only (today `snapshotTarget` refuses it); SFTP-only hosts still refuse.
@@ -782,7 +782,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: high
 
-- [ ] T2939 [US7] Drills in status for every target, and the guide
+- [x] T2939 [US7] Drills in status for every target, and the guide
   - Owns: `packages/agents/src/status/drill.ts`, `docs/guide/{snapshots,alerts,portainer-target,hosting-accounts}.md`,
     colocated tests
   - Reads: plan 19.; research R27, R29; the records T2934, T2935, T2937 and T2938 write
@@ -800,7 +800,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/status && pnpm lint`
   - Effort: high
 
-- [ ] T2940 [US7] The drill steps in the live tests
+- [x] T2940 [US7] The drill steps in the live tests
   - Owns: `packages/cli/test/live/{snapshots-checks,snapshots-support,portainer-support,portainer-target.test,cpanel-support,cpanel.test}.ts`,
     `docs/e2e.md` (their sections)
   - Reads: plan 18. (H8), 19.; the live files' patterns
