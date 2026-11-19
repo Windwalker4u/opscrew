@@ -228,6 +228,14 @@ const OwnServerSchema = z
         });
       }
     }
+    // Joined logins check the host key pinned when the app's own key was installed.
+    if (own.joined === true && (own.shares === undefined || own.hostKey === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["joined"],
+        message: "needs shares and the pinned hostKey",
+      });
+    }
     if (own.home === undefined) return;
     // The home's public address is never kept, and the router's forwards make it reachable.
     for (const key of ["reachable", "publicIpv4", "publicIpv6"] as const) {

@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
-import type { HostFacts } from "@opscrew/connector-ssh-host";
+import { type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -60,7 +61,7 @@ describe("otherAppsOnServer", () => {
     const records = [secondAppRecord(), secondAppRecord({ app: "archive", state: "data-kept" })];
     const t = await firstAppOnServer({ facts: createdServerFacts(records) });
     const found = await otherAppsOnServer(t.deps, t.plan, { services: t.services });
-    expect(found).toEqual({ reached: true, apps: records });
+    expect(found).toEqual({ reached: true, apps: records, unreadable: [] });
     expect(t.hosts).toEqual([SERVER_IPV4]);
     expect(t.inspections).toEqual([{ rootImage: IMAGES.caddy.ref }]);
     expect(t.deps.audit.entries.at(-1)).toMatchObject({
@@ -78,6 +79,7 @@ describe("otherAppsOnServer", () => {
     expect(await otherAppsOnServer(t.deps, plan, { services: t.services })).toEqual({
       reached: true,
       apps: [],
+      unreadable: [],
     });
     expect(t.hosts).toEqual([]);
   });
@@ -108,6 +110,60 @@ describe("otherAppsOnServer", () => {
     });
     expect(away.hosts).toEqual([]);
   });
+
+  it("gives the inspection's own words when it failed on a server it reached", async () => {
+    const t = await firstAppOnServer({
+      fails: new OpsCrewError(
+        "COMMAND_FAILED",
+        `OpsCrew could not read the private network's state on the server at ${SERVER_IPV4}.`,
+      ),
+    });
+    expect(await otherAppsOnServer(t.deps, t.plan, { services: t.services })).toEqual({
+      reached: false,
+      reason: "OpsCrew could not read the private network's state on the server at the server",
+    });
+  });
+
+  it("lists the records it can't read apart, by name", async () => {
+    const t = await firstAppOnServer({ facts: unreadableFacts() });
+    expect(await otherAppsOnServer(t.deps, t.plan, { services: t.services })).toEqual({
+      reached: true,
+      apps: [secondAppRecord({ app: "archive", state: "data-kept" })],
+      unreadable: ["inventory"],
+    });
+  });
+});
+
+/** A created server with a record OpsCrew can't read (`inventory`) and one with its data kept. */
+function unreadableFacts(): HostFacts {
+  return HostFactsSchema.parse({
+    ...createdServerFacts([secondAppRecord({ app: "archive", state: "data-kept" })]),
+    apps: [
+      { name: "archive", record: secondAppRecord({ app: "archive", state: "data-kept" }) },
+      { name: "inventory", record: null },
+    ],
+  });
+}
+
+describe("requireNoOtherApps and a record it can't read", () => {
+  for (const skip of [false, true]) {
+    it(`refuses it as an app that runs there${skip ? ", also with --skip-other-apps-check" : ""}`, async () => {
+      const t = await firstAppOnServer({ facts: unreadableFacts() });
+      const error = await refusal(
+        requireNoOtherApps(t.deps, t.plan, "destroying the server", "opscrew destroy", {
+          skip,
+          services: t.services,
+        }),
+      );
+      expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+      expect(error?.message).toContain(
+        'The server also runs "inventory", whose record on the server OpsCrew can\'t read',
+      );
+      expect(error?.message).toMatch(/Nothing was changed\.$/);
+      expect(error?.hint).toContain("Provision it again with a current OpsCrew in its repository");
+      expect(error?.hint).toContain("`opscrew destroy` there first");
+    });
+  }
 });
 
 describe("requireNoOtherApps", () => {

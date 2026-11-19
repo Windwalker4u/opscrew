@@ -178,5 +178,21 @@ describe("hostDescription", () => {
       "portainer.example.com",
       "shop.example.com",
     ]);
+    const base = ownPlan({ portainer: "subdomain" });
+    const beszel = DeployPlanSchema.parse({
+      ...base,
+      portainer: undefined,
+      observability: {
+        beszel: {
+          enabled: true,
+          version: "0.12.10",
+          mode: "hub",
+          access: "subdomain",
+          hostname: "beszel.example.com",
+          allowedEmails: ["owner@example.com"],
+        },
+      },
+    });
+    expect(hostDescription(beszel).hostnames).toEqual(["beszel.example.com", "shop.example.com"]);
   });
 });

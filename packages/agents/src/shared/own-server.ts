@@ -151,6 +151,11 @@ export interface LoginWords {
   fix: string;
   /** What to do when the login's key file is missing: a sentence. */
   missingKey: string;
+  /**
+   * How a host key that is not the pinned one is said, when it differs from the user's own
+   * server's words (a second app's login checks the first app's pin): the message and the hint.
+   */
+  changedKey?: { message: string; hint: string };
 }
 
 /** The words for the user's own server, whose login the interview records. */
@@ -357,9 +362,10 @@ export async function connectPinnedLogin(
       }
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The SSH host key of ${noun} at ${where} changed since you confirmed it (confirmed: ${pinned}; now: ${presented}). OpsCrew stopped and changed nothing.`,
+        words.changedKey?.message ??
+          `The SSH host key of ${noun} at ${where} changed since you confirmed it (confirmed: ${pinned}; now: ${presented}). OpsCrew stopped and changed nothing.`,
         {
-          hint: CHANGED_KEY_HINT,
+          hint: words.changedKey?.hint ?? CHANGED_KEY_HINT,
         },
       );
     }
@@ -576,9 +582,10 @@ async function testLogin(
   if (HOST_KEY_FAILED.test(result.stderr)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The SSH host key of ${noun} at ${where} is not the one you confirmed (${connection.hostKey}), so ssh refused to log in. OpsCrew stopped and changed nothing.`,
+      words.changedKey?.message ??
+        `The SSH host key of ${noun} at ${where} is not the one you confirmed (${connection.hostKey}), so ssh refused to log in. OpsCrew stopped and changed nothing.`,
       {
-        hint: `${CHANGED_KEY_HINT}${detail}`,
+        hint: `${words.changedKey?.hint ?? CHANGED_KEY_HINT}${detail}`,
       },
     );
   }

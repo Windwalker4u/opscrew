@@ -11,17 +11,17 @@ import {
   readableRecords,
 } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
-import { listText, upperFirst } from "@opscrew/core";
+import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, isCloudTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { ServerApp } from "../design/sizing";
 import { refusedBeforeChange } from "../previews/host";
 import { deployLogin } from "../provision/origin-tls";
-import { appServerShell, hasDeployment } from "../shared/server-address";
+import { appServerShell, hasDeployment, withoutServerAddress } from "../shared/server-address";
 
 /** What {@link otherAppsOnServer} needs from the phase. */
-export type OtherAppsDeps = Pick<PhaseDeps, "paths" | "runner" | "audit" | "reporter">;
+export type OtherAppsDeps = Pick<PhaseDeps, "paths" | "runner" | "audit" | "reporter" | "redactor">;
 
 /** Stand-ins for the server in tests: the deploy login's shell, and inspection. */
 export interface OtherAppsServices {
@@ -37,6 +37,11 @@ export type OtherApps =
       reached: true;
       /** The other apps' readable records, active or with their data kept. */
       apps: AppRecord[];
+      /**
+       * The apps whose record OpsCrew can't read (a newer OpsCrew's, or damaged), by name: each
+       * counts as an app that runs there.
+       */
+      unreadable: string[];
     }
   | {
       reached: false;
@@ -57,7 +62,9 @@ export async function otherAppsOnServer(
   plan: DeployPlan,
   options: { services?: OtherAppsServices } = {},
 ): Promise<OtherApps> {
-  if (!isCloudTarget(plan.target) || !hasDeployment(plan)) return { reached: true, apps: [] };
+  if (!isCloudTarget(plan.target) || !hasDeployment(plan)) {
+    return { reached: true, apps: [], unreadable: [] };
+  }
   const login = await deployLogin(deps, plan);
   if (login === undefined) {
     return { reached: false, reason: "this computer has no deploy login to it" };
@@ -65,11 +72,16 @@ export async function otherAppsOnServer(
   const { remote, inspect = inspectHost } = options.services ?? {};
   deps.reporter.step("Looking for other apps on the server (read-only)");
   let facts: HostFacts | undefined;
+  let reason = "it could not be reached over SSH";
   try {
     const shell = await appServerShell(deps, plan, login, remote !== undefined ? { remote } : {});
     facts = await inspect(shell, { rootImage: IMAGES.caddy.ref });
-  } catch {
-    facts = undefined;
+  } catch (error) {
+    // An inspection that failed on the server it reached says why in its own words.
+    if (error instanceof OpsCrewError) {
+      const words = deps.redactor.redact(error.message);
+      reason = withoutServerAddress(words, [{ ipv4: login.host }]).replace(/\.$/, "");
+    }
   }
   await deps.audit.append({
     kind: "remote-exec",
@@ -79,18 +91,23 @@ export async function otherAppsOnServer(
     decision: "allow",
     detail: `other apps: ${facts === undefined ? "not read" : "read"}`,
   });
-  if (facts === undefined) return { reached: false, reason: "it could not be reached over SSH" };
+  if (facts === undefined) return { reached: false, reason };
   // Only root through Docker reads the records on a server OpsCrew created.
   if (facts.privilege !== "docker") {
     return { reached: false, reason: "its deploy login could not read the apps' records there" };
   }
-  return { reached: true, apps: readableRecords(facts.apps) };
+  return {
+    reached: true,
+    apps: readableRecords(facts.apps),
+    unreadable: facts.apps.filter((app) => app.record === null).map((app) => app.name),
+  };
 }
 
 /**
  * Refuses `what` (a phrase such as "destroying the server") in the first app's command while
  * other apps share its server ({@link otherAppsOnServer}), naming each with its repository and
- * the command that removes or moves it, then `again`. When the server can't be looked at, it
+ * the command that removes or moves it, then `again`; a record it can't read counts as an app
+ * that runs there. When the server can't be looked at, it
  * refuses too. With `skip` (`--skip-other-apps-check`) it still looks: an app that runs there is
  * refused all the same, while only data kept there, or a server it couldn't look at, gets a
  * warning and the command goes on. It never approves anything.
@@ -103,7 +120,6 @@ export async function requireNoOtherApps(
   again: string,
   options: { skip?: boolean; services?: OtherAppsServices } = {},
 ): Promise<void> {
-  if (!isCloudTarget(plan.target) || !hasDeployment(plan)) return;
   const skip = options.skip === true;
   const found = await otherAppsOnServer(deps, plan, options);
   if (!found.reached) {
@@ -117,6 +133,17 @@ export async function requireNoOtherApps(
       "PHASE_PRECONDITION",
       `OpsCrew couldn't look at the server for other apps (${found.reason}), and ${what} would break any that run there.`,
       `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
+    );
+  }
+  const flag = skip ? " --skip-other-apps-check doesn't cover an app that runs there." : "";
+  const { unreadable } = found;
+  if (unreadable.length > 0) {
+    const one = unreadable.length === 1;
+    const them = one ? "it" : "each one";
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `The server also runs ${listText(unreadable.map((app) => `"${app}"`))}, whose record on the server OpsCrew can't read (written by a newer OpsCrew, or damaged), and ${what} would break ${one ? "it" : "them"}.${flag}`,
+      `Provision ${them} again with a current OpsCrew in its repository, or remove ${them} with \`opscrew destroy\` there first; then run \`${again}\` again.`,
     );
   }
   if (found.apps.length === 0) return;
@@ -151,14 +178,16 @@ export async function requireNoOtherApps(
       : "";
   throw refusedBeforeChange(
     "PHASE_PRECONDITION",
-    `The server also ${holds.join(" and ")}, and ${what} would break ${found.apps.length === 1 ? "it" : "them"}.${skip ? " --skip-other-apps-check doesn't cover an app that runs there." : ""}`,
+    `The server also ${holds.join(" and ")}, and ${what} would break ${found.apps.length === 1 ? "it" : "them"}.${flag}`,
     `${upperFirst(steps.join("; "))}; then run \`${again}\` again.${lose}`,
   );
 }
 
 /**
  * The memory limits of the other apps whose records `facts` holds, active ones only (an app with
- * its data kept runs nothing), for the memory check beside the first app's limits.
+ * its data kept runs nothing), for the memory check beside the first app's limits. Records
+ * OpsCrew can't read are left out, since their memory is unknown: callers must refuse while
+ * {@link otherAppsOnServer} lists any as `unreadable`.
  */
 export function otherAppsMemory(facts: Pick<HostFacts, "apps">): ServerApp[] {
   return readableRecords(facts.apps)
