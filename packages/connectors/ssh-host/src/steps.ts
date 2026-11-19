@@ -586,7 +586,7 @@ others_sum() {
 /**
  * `deploy-key` of a second app on a server OpsCrew created (030), run as the login, the deploy
  * user: only the app's own lines change, the lines holding a key of `drop` (its key, a rotation's
- * old one and the one its record names). `keys` (none in a teardown) follow every other line,
+ * old one and those its record names). `keys` (none in a teardown) follow every other line,
  * which stays as it is, in its order: the first app's deploy key, other apps' keys, the scheduled
  * checks' and the previews' keys, and any line OpsCrew did not write. `others` pins the SHA-256 of
  * the key lines inspection read besides the app's: under a lock the apps' deploy-key steps take
@@ -2395,18 +2395,26 @@ done`,
 
 /**
  * What a second app's record says besides an own-server app's (030): the first app, whose server
- * it is (`shares`), and the project's repository.
+ * it is (`shares`), the project's repository and, during a rotation, its old deploy key.
  */
 export interface SecondAppRecord {
   shares: string;
   repository: string;
+  /** During a rotation, the old deploy key still authorized beside the new one. */
+  previousDeployKey?: string | undefined;
 }
 
 /** `second`'s fields as a record holds them; none for an app on a server the user owns. */
 function secondAppFields(second: SecondAppRecord | undefined): Partial<AppRecord> {
   return second === undefined
     ? {}
-    : { shares: { app: second.shares }, repository: second.repository };
+    : {
+        shares: { app: second.shares },
+        repository: second.repository,
+        ...(second.previousDeployKey === undefined
+          ? {}
+          : { previousDeployKey: second.previousDeployKey }),
+      };
 }
 
 /** The record of an app set up on the server, as the `app-record` step writes it. */
@@ -2465,16 +2473,23 @@ export function dataKeptRecord(
 
 /** A second app's `shares` and `repository` step parameters, both or neither. */
 const SecondAppParams = z
-  .object({ shares: AppNameSchema.optional(), repository: RepositoryUrlSchema.optional() })
+  .object({
+    shares: AppNameSchema.optional(),
+    repository: RepositoryUrlSchema.optional(),
+    previousDeployKey: PublicKeySchema.optional(),
+  })
   .refine((p) => (p.shares === undefined) === (p.repository === undefined), {
     message: "must name both the first app and the repository",
+  })
+  .refine((p) => p.previousDeployKey === undefined || p.shares !== undefined, {
+    message: "is a second app's only",
   });
 
 /** `p`'s second-app fields, or undefined for an app on a server the user owns. */
 function secondOf(p: z.infer<typeof SecondAppParams>): SecondAppRecord | undefined {
   return p.shares === undefined || p.repository === undefined
     ? undefined
-    : { shares: p.shares, repository: p.repository };
+    : { shares: p.shares, repository: p.repository, previousDeployKey: p.previousDeployKey };
 }
 
 const AppRecordParams = z

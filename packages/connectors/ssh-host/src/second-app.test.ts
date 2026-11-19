@@ -406,6 +406,78 @@ describe.skipIf(!SH_AVAILABLE)("the second app's deploy-key step in a real shell
     }
   });
 
+  /**
+   * The fake server and the shell's file with "shop" set up there, then the first step of a
+   * rotation applied to both: the new key, the old one beside it in the file and in the record.
+   */
+  async function midRotation(h: ShellHarness) {
+    const fake = createdServer();
+    await applyApproved(fake, plan(await facts(fake), second(fake)), { rootImage: IMAGE });
+    h.write(KEYS, text(h, [...FIXTURE, APP_KEY]));
+    const add = plan(
+      await facts(fake),
+      second(fake, { deploy: { user: "deploy", publicKey: NEW_KEY } }),
+      {
+        previousDeployKey: APP_KEY,
+      },
+    );
+    expect(stepOf(add, "app-record").params).toMatchObject({ previousDeployKey: APP_KEY });
+    const added = h.run(scriptsOf(add).apply);
+    expect(added.status, added.stderr).toBe(0);
+    await applyApproved(fake, add, { rootImage: IMAGE });
+    expect(recordOf(fake, "shop")).toMatchObject({
+      deployKey: NEW_KEY,
+      previousDeployKey: APP_KEY,
+    });
+    expect(h.read(KEYS)).toBe(text(h, [...FIXTURE, NEW_KEY, APP_KEY]));
+    return fake;
+  }
+
+  it("removes a rotation's old key once the new one proved itself, and the record forgets it", async () => {
+    const h = harness();
+    try {
+      const fake = await midRotation(h);
+      // The second step names only the new key: the record's old key is the app's line too.
+      const done = plan(
+        await facts(fake),
+        second(fake, { deploy: { user: "deploy", publicKey: NEW_KEY } }),
+      );
+      const finish = scriptsOf(done);
+      expect(h.run(finish.check).stdout).toContain("state=change");
+      const finished = h.run(finish.apply);
+      expect(finished.status, finished.stderr).toBe(0);
+      expect(h.read(KEYS)).toBe(text(h, [...FIXTURE, NEW_KEY]));
+      expect(h.run(finish.verify).status).toBe(0);
+      await applyApproved(fake, done, { rootImage: IMAGE });
+      const record = recordOf(fake, "shop");
+      expect(record?.deployKey).toBe(NEW_KEY);
+      expect(record).not.toHaveProperty("previousDeployKey");
+      expect(fake.users.get("deploy")?.keys).toEqual([...FIXTURE, NEW_KEY]);
+      // Planned again, nothing changes.
+      const again = plan(
+        await facts(fake),
+        second(fake, { deploy: { user: "deploy", publicKey: NEW_KEY } }),
+      );
+      expect(again.steps.filter((item) => item.state === "change")).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("removes both of the app's keys in a teardown during a rotation", async () => {
+    const h = harness();
+    try {
+      const fake = await midRotation(h);
+      const removal = scriptsOf(teardown(await facts(fake)));
+      const removed = h.run(removal.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(h.read(KEYS)).toBe(text(h, FIXTURE));
+      expect(h.run(removal.verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("refuses to write when the file changed since the inspection the plan was made from", async () => {
     const fake = createdServer();
     const add = scriptsOf(plan(await facts(fake), second(fake)));

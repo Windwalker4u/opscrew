@@ -38,6 +38,11 @@ export const AppRecordSchema = z.object({
   memoryMb: z.number().int().nonnegative(),
   /** Its deploy key (a public key) in the deploy user's authorized_keys, "" when data-kept. */
   deployKey: z.string(),
+  /**
+   * A second app's old deploy key during a rotation (030): still in authorized_keys beside
+   * `deployKey` until the new one proved itself; the next plan without it removes its line.
+   */
+  previousDeployKey: z.string().optional(),
   /** How it is served from home; absent for an app that is not at home. */
   home: HomeModeSchema.optional(),
   /**

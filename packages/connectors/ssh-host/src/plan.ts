@@ -1474,6 +1474,9 @@ function appRecordStep(
     ownProject: own !== null,
     ...(desired.home === undefined ? {} : { homeIpv4: desired.home.ipv4 }),
     ...(second === undefined ? {} : { shares: second.shares, repository: second.repository }),
+    ...(second?.previousDeployKey === undefined
+      ? {}
+      : { previousDeployKey: second.previousDeployKey }),
   };
   const title = `Record the OpsCrew app "${desired.app}" on this server`;
   if (conflict !== undefined) return step("app-record", title, "blocked", params, conflict);
@@ -2150,6 +2153,15 @@ function runAsLogin(item: HostStep): HostStep {
   return { ...item, params: { ...item.params, runAs: "login" } };
 }
 
+/**
+ * The deploy keys a second app's record names (its key, and during a rotation the old one): lines
+ * holding them are the app's.
+ */
+function recordedKeys(own: AppRecord | null): string[] {
+  if (own?.state !== "active") return [];
+  return [own.deployKey, own.previousDeployKey ?? ""].filter((key) => key !== "");
+}
+
 /** The key (the base64 word) of an authorized_keys line, as a second app's deploy-key step reads it. */
 function keyBlob(line: string): string {
   return line.trim().split(/\s+/)[1] ?? "";
@@ -2347,12 +2359,16 @@ function secondAppPlan(
     conflict,
   };
   const keys = [d.deploy.publicKey, ...(previous === undefined ? [] : [previous])];
-  const recorded = own?.state === "active" && own.deployKey !== "" ? [own.deployKey] : [];
+  const recorded = recordedKeys(own);
   const runner = runnerStep(f, d.app, d.runner, "login");
   const steps = [
     secondAppKeyStep(f, d.app, first.app, keys, [...keys, ...recorded]),
     runAsLogin(appDirsStep(ctx)),
-    appRecordStep(ctx, { shares: first.app, repository: d.repositoryUrl }),
+    appRecordStep(ctx, {
+      shares: first.app,
+      repository: d.repositoryUrl,
+      previousDeployKey: previous,
+    }),
     drillsFor(f.drills, d.app, d.drills, { image }),
     runner === undefined ? undefined : ownedRunner(ctx, runner, d.repositoryUrl),
   ].filter((item): item is HostStep => item !== undefined);
@@ -2380,7 +2396,7 @@ function secondAppPlan(
  *
  * With `opts.shares`, the teardown of a second app on a server OpsCrew created (030): the app is
  * never the last one, so the edge, the check keys and Portainer stay with no other record; the
- * deploy-key step removes only the app's own lines (the key its record names), every other line
+ * deploy-key step removes only the app's own lines (the keys its record names), every other line
  * staying as it is; every step runs as the login, the deploy user, except the record's, which runs
  * as root through Docker, and a record kept with the data still names the first app.
  * `opts.image` is then the pinned image the deploy user removes data in (`IMAGES.busybox.ref`).
@@ -2533,9 +2549,8 @@ export function planTeardown(
   steps.push(...networkRemovals(f, networks, "app"));
   const keys = keyList(others.map((record) => record.deployKey));
   if (image !== undefined) {
-    // A second app's own lines only: those holding the key its record names.
-    const recorded = own?.state === "active" && own.deployKey !== "" ? [own.deployKey] : [];
-    const removal = secondAppKeyStep(f, app, own?.shares?.app, [], recorded);
+    // A second app's own lines only: those holding the keys its record names.
+    const removal = secondAppKeyStep(f, app, own?.shares?.app, [], recordedKeys(own));
     if (removal !== undefined) steps.push(removal);
   } else if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
     steps.push(
