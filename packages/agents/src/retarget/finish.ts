@@ -61,7 +61,9 @@ async function takenSnapshot(session: MoveSession): Promise<string | undefined> 
 /**
  * `--finish`'s removal of the old side, through the side's `remove` after the typed app name: a
  * cloud server (a snapshot first when wanted), only the app on the user's own server (a teardown
- * host plan), only the app's stacks and volumes in their Portainer. Never the user's server,
+ * host plan; a second app's, on the server OpsCrew created for another app, removes only its own
+ * parts and keeps the edge for that app), only the app's stacks and volumes in their Portainer.
+ * Never the user's server,
  * Portainer or its environment (SC-2304). Without a `confirm` hook nothing is confirmed, so nothing
  * is deleted. Returns a script's stop, else the snapshot a cloud side kept and, where the provider
  * cancelled the old server at the end of its term, when its contract ends (`cancelled`).

@@ -1,5 +1,6 @@
 import { appDirs, hostPlanHash, otherActiveApps, planTeardown } from "@opscrew/connector-ssh-host";
 import { listText, plural } from "@opscrew/core";
+import { IMAGES } from "@opscrew/iac-templates";
 import { serverData } from "../../destroy/checks";
 import { confirmDeletion } from "../../destroy/deletion";
 import {
@@ -12,10 +13,21 @@ import { project } from "../../destroy/servers";
 import type { DestroyPreview } from "../../destroy/types";
 import { requireNoForeignPreviews } from "../../previews/host";
 import { edgeSwitch, readEdgeOver } from "../../provision/origin-tls";
-import { applyOwnHostPlan, prepareOwnServer } from "../../provision/own";
+import {
+  applyOwnHostPlan,
+  prepareOwnServer,
+  secondAppAdapter,
+  sharesOf,
+} from "../../provision/own";
 import type { ProvisionOptions, ProvisionServices } from "../../provision/types";
 import { lazyRepository } from "../../runners";
-import { adapterBlocked, approveAndApplyHostPlan, boundHostAdapter } from "../../shared";
+import {
+  adapterBlocked,
+  approveAndApplyHostPlan,
+  boundHostAdapter,
+  readOldOwnServer,
+  recordOldOwnServer,
+} from "../../shared";
 import {
   connectAndInspectOwnServer,
   ownServerLoginCheck,
@@ -24,6 +36,7 @@ import {
 import type { MoveServer } from "../removal";
 import { type MoveSession, recordNewServer } from "../session";
 import { appliesNow, pendingStop } from "../steps";
+import { sideTarget } from ".";
 import { sshSide } from "./ssh";
 import type { MoveSide, SideStop } from "./types";
 
@@ -37,6 +50,22 @@ export type OwnSideOptions = Pick<ProvisionOptions, "hostKey" | "passwordLogins"
 const SERVER_STAYS =
   "Your server itself stays: OpsCrew never deletes, rebuilds or reinstalls it, and leaves its own host settings (Docker, the deploy user, SSH and the firewall) as they are.";
 
+/** {@link SERVER_STAYS} for a second app: the server is the first app's (`first`). */
+function sharedServerStays(first: string): string {
+  return `The server is the one OpsCrew created for "${first}", and it stays until that app's \`opscrew destroy\`.`;
+}
+
+/**
+ * Forgets that a second app's own deploy key is on the old side's server (`retarget.fromOwn`'s
+ * `joined`) once its teardown finished: nothing of the app, its key line included, is left there.
+ */
+async function forgetOldJoined(paths: MoveSession["deps"]["paths"]): Promise<void> {
+  const old = await readOldOwnServer(paths);
+  if (old?.joined !== true) return;
+  const { joined: _joined, ...rest } = old;
+  await recordOldOwnServer(paths, rest);
+}
+
 /**
  * A side that is a server the user owns (`which`: the old one or the new one), reached over SSH:
  * as `deploy` with the deploy key for the app, as the user's admin login for its host plans. The
@@ -47,6 +76,11 @@ const SERVER_STAYS =
  * - `deploy` waits for the app's health route and stops the edge, unless other apps share it;
  * - `remove` takes only the app off the server with a teardown host plan that deletes its data,
  *   after the typed app name, approved with `allowDestroy`. Never the undo host plan.
+ *
+ * The old side may be a second app on a server OpsCrew created for another app (`shares`, 030):
+ * never the last app there, so the edge keeps running for the first app, and its removal is the
+ * second-app teardown (its own parts and key lines only), logged in with its own deploy key. The
+ * new side never is one: moving onto a server as a second app is not offered.
  */
 export function ownSide(
   which: MoveServer,
@@ -148,7 +182,9 @@ async function prepare(
  * `--finish` (the old side) and `--abort` (the new side) on a server the user owns: the teardown
  * host plan of the app with its data, after the typed app name, approved by its hash with
  * `allowDestroy`. Only the app's own parts go (with the last OpsCrew app on the server, the shared
- * edge too); the server and OpsCrew's host settings stay. A script stops with the hash.
+ * edge too); the server and OpsCrew's host settings stay. A script stops with the hash. A second
+ * app's old side goes with the second-app teardown, as its destroy does; once that finished, its
+ * login is no longer joined, and a later `--finish` finds nothing left without logging in.
  */
 async function remove(
   session: MoveSession,
@@ -159,8 +195,15 @@ async function remove(
   const { deps, plan, command } = session;
   const app = plan.app.name;
   const words = `your ${which} server`;
+  // Only a move's old side can be a second app (the new side's target never names one).
+  const shares = sharesOf({ target: sideTarget(session, which) });
+  if (shares !== undefined && (await readOldOwnServer(deps.paths))?.joined !== true) {
+    deps.reporter.info(`Nothing of ${app} is left on ${words}.`);
+    return undefined;
+  }
   const own = services.own ?? {};
-  const adapter = boundHostAdapter(own.host);
+  // A second app's deploy login reads the records and writes its own as root through Docker.
+  const adapter = shares === undefined ? boundHostAdapter(own.host) : secondAppAdapter(own.host);
   const { session: ssh, facts } = await connectAndInspectOwnServer(deps, {
     services: { ...own, host: adapter },
     phase: "retarget",
@@ -168,7 +211,21 @@ async function remove(
   });
   const teardown = planTeardown(
     facts,
-    { deleteData: true, app, projectId: deps.paths.projectId, ...(await project(deps)) },
+    {
+      deleteData: true,
+      app,
+      projectId: deps.paths.projectId,
+      ...(await project(deps)),
+      // A second app is never the last one, and removes only its own key lines.
+      ...(shares === undefined
+        ? {}
+        : {
+            shares: true as const,
+            image: IMAGES.busybox.ref,
+            deployKey: session.deployKey.publicKeyOpenSsh,
+            firstApp: shares.app,
+          }),
+    },
     command,
   );
   const blocked = teardown.steps.filter((step) => step.state === "blocked");
@@ -195,7 +252,7 @@ async function remove(
   ];
   const dataWarning =
     which === "old"
-      ? `Removing the app from ${words} deletes its data there: ${listText(data)}.${offsiteCopiesStay(plan)} The move copied it to the new side, where the app runs now; OpsCrew takes no snapshot of your own server.`
+      ? `Removing the app from ${words} deletes its data there: ${listText(data)}.${offsiteCopiesStay(plan)} The move copied it to the new side, where the app runs now${shares === undefined ? "; OpsCrew takes no snapshot of your own server" : ""}.`
       : `Removing the app from ${words} deletes its data there: ${listText(data)}.${offsiteCopiesStay(plan)} That is the move's copy; the app and its data stay on the old side.`;
   const hostSteps = changes.map((step) => step.title);
   deps.reporter.info(
@@ -238,7 +295,7 @@ async function remove(
   const intro = [
     `This removes ${app} from ${words}, including its data.`,
     dataWarning,
-    SERVER_STAYS,
+    shares === undefined ? SERVER_STAYS : sharedServerStays(shares.app),
   ];
   if (
     teardown.steps.some((step) => step.state === "change") &&
@@ -271,6 +328,7 @@ async function remove(
     refused: `The removal of ${app} from ${words} was not approved, so nothing on it was changed.`,
     command,
   });
+  if (shares !== undefined) await forgetOldJoined(deps.paths);
   deps.reporter.success(
     `Removed ${app} from ${words} (${plural(outcome.steps.length, "change")}).`,
   );
