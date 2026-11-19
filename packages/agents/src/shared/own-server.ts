@@ -36,6 +36,12 @@ import {
   writeKnownHost,
 } from "./wait";
 
+/**
+ * The image a second app's deploy login becomes root in through Docker on a server OpsCrew
+ * created (its inspection, and its record's step): the edge's pinned image, already there.
+ */
+export const SECOND_APP_ROOT_IMAGE = IMAGES.caddy.ref;
+
 /** What {@link connectOwnServer} needs from the phase. */
 export type OwnServerDeps = Pick<
   PhaseDeps,
@@ -545,7 +551,7 @@ export async function connectAndInspectOwnServer(
     session,
     facts: await inspectOwnHost(deps, session, {
       ...options,
-      ...(second ? { rootImage: IMAGES.caddy.ref } : {}),
+      ...(second ? { rootImage: SECOND_APP_ROOT_IMAGE } : {}),
     }),
   };
 }

@@ -5,6 +5,7 @@
  * and Cloudflare rules as for a server the user owns. `--undo-host` is refused.
  */
 import { rm } from "node:fs/promises";
+import { HostApplyError } from "@opscrew/connector-ssh-host";
 import { IMAGES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import {
@@ -16,7 +17,7 @@ import {
 } from "../provision/__fixtures__/second-app";
 import { runProvision } from "../provision/run";
 import { readOwnServer } from "../shared";
-import { SERVER_IPV4 } from "../testing";
+import { ED25519_FINGERPRINT, SERVER_IPV4 } from "../testing";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
 
@@ -96,11 +97,76 @@ describe("a second app's destroy", () => {
       'The server\'s setup (Docker, the deploy user, SSH and the firewall), the other OpsCrew app on it ("shop") and what the apps share, the edge: they belong to "shop", which OpsCrew created the server for.',
     );
     expect(result.remaining.join("\n")).not.toContain("--undo-host");
+    // The server is the first app's: it stays until that app's destroy.
+    const stays =
+      'The server is the one OpsCrew created for "shop", and it stays until that app\'s `opscrew destroy`.';
+    const host = s.handler.requests.find((request) => request.kind === "host-apply");
+    expect(host?.details).toContain(stays);
+    expect(result.remaining[0]).toBe(stays);
+    const words = `${JSON.stringify(s.handler.requests)}\n${result.remaining.join("\n")}`;
+    expect(words).not.toContain("never deletes, rebuilds or reinstalls");
 
     const seen = await everythingSeen(s);
     expect(seen).not.toContain(s.shared.firstKey);
     const printed = `${s.deps.reporter.text()}\n${JSON.stringify(s.deps.audit.entries)}`;
     expect(printed).not.toContain(SERVER_IPV4);
+  });
+
+  it("forgets joined once its key is off the server: provision again logs in with the first app's key", async () => {
+    const s = await provisioned();
+    await runDestroy(s.deps, { services: services(s), confirm: async () => true });
+    const own = await readOwnServer(s.deps.paths);
+    expect(own?.joined).toBeUndefined();
+    expect(own).toMatchObject({
+      keyPath: s.key.privateKeyFile,
+      hostKey: ED25519_FINGERPRINT,
+      shares: s.shared.ref,
+    });
+
+    s.handler.requests.length = 0;
+    const calls = s.runner.calls.length;
+    await runProvision(s.deps, { services: s.services });
+    expect(keyFiles(s, calls)).toContain(s.shared.first.files.deployKey);
+    expect((await readOwnServer(s.deps.paths))?.joined).toBe(true);
+    expect(s.host.facts.deployUser?.keys).toEqual([...BEFORE, s.key.publicKeyOpenSsh]);
+  });
+
+  it("a destroy that stops after the teardown runs again with the first app's deploy login", async () => {
+    const s = await provisioned();
+    const remove = s.github.deleteActionsSecret.bind(s.github);
+    let down = true;
+    s.github.deleteActionsSecret = async (owner, repo, name) => {
+      if (down) {
+        down = false;
+        throw new Error("GitHub is unreachable");
+      }
+      return remove(owner, repo, name);
+    };
+    await expect(
+      runDestroy(s.deps, { services: services(s), confirm: async () => true }),
+    ).rejects.toThrow();
+    expect(s.host.facts.deployUser?.keys).toEqual(BEFORE);
+    expect((await readOwnServer(s.deps.paths))?.joined).toBeUndefined();
+
+    const calls = s.runner.calls.length;
+    await runDestroy(s.deps, { services: services(s), confirm: async () => true });
+    const used = keyFiles(s, calls);
+    expect(used).toContain(s.shared.first.files.deployKey);
+    expect(used).not.toContain(s.key.privateKeyFile);
+    expect(s.host.facts.deployUser?.keys).toEqual(BEFORE);
+    expect(await everythingSeen(s)).not.toContain(s.shared.firstKey);
+  });
+
+  it("forgets joined when the teardown stopped after removing its key line", async () => {
+    const s = await provisioned();
+    s.host.fail = new HostApplyError("COMMAND_FAILED", "the record step failed", [
+      "app-dirs",
+      "deploy-key",
+    ]);
+    await expect(
+      runDestroy(s.deps, { services: services(s), confirm: async () => true }),
+    ).rejects.toThrow("the record step failed");
+    expect((await readOwnServer(s.deps.paths))?.joined).toBeUndefined();
   });
 
   it("refuses --undo-host before any change: the server's setup is the first app's", async () => {

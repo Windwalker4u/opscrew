@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import {
   appDirs,
-  applyHostPlan,
   HostApplyError,
   type HostFacts,
   type HostPlan,
@@ -55,8 +54,11 @@ import {
   hasState,
   hostPlanFile,
   type ProjectEngine,
+  readOwnServer,
   readValidJson,
+  recordOwnServer,
 } from "../shared";
+import { boundHostAdapter } from "../shared/host-plan";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
 import { extraCloudProviders, extraCloudServers } from "../shared/servers";
 import { readDeployPublicKey } from "../shared/ssh-keys";
@@ -149,6 +151,22 @@ import type { DestroyOptions, DestroyResult } from "./types";
 /** Said wherever the teardown of a server the user owns is described (FR-912, FR-913). */
 const SERVER_STAYS =
   "Your server itself stays: OpsCrew never deletes, rebuilds or reinstalls it, and takes no snapshot of it. Backups are your responsibility.";
+
+/** {@link SERVER_STAYS} for a second app: the server is the first app's (`first`). */
+function sharedServerStays(first: string): string {
+  return `The server is the one OpsCrew created for "${first}", and it stays until that app's \`opscrew destroy\`.`;
+}
+
+/**
+ * Forgets that a second app's own deploy key is on the server (`own.joined`), from a fresh read,
+ * once a teardown removed it: its next login is the first app's deploy login again.
+ */
+async function forgetJoined(paths: PhaseDeps["paths"]): Promise<void> {
+  const own = await readOwnServer(paths);
+  if (own?.joined !== true) return;
+  const { joined: _joined, ...rest } = own;
+  await recordOwnServer(paths, rest);
+}
 
 /** What the teardown on the user's server needs once connected. */
 export interface OwnHost {
@@ -493,7 +511,9 @@ function remainingOnOwnServer(input: {
 }): string[] {
   const { plan, github, others, files, firstApp } = input;
   const items = [
-    "Your server itself: OpsCrew never deletes, rebuilds or reinstalls it, and took no snapshot. Backups of anything on it are your responsibility.",
+    firstApp !== undefined
+      ? sharedServerStays(firstApp)
+      : "Your server itself: OpsCrew never deletes, rebuilds or reinstalls it, and took no snapshot. Backups of anything on it are your responsibility.",
   ];
   if (firstApp !== undefined) {
     const apps = [firstApp, ...others].map((app) => `"${app}"`);
@@ -581,6 +601,8 @@ export async function destroyOwnServer(
   const cloudflareWhat = usesTunnel(given)
     ? "Cloudflare Tunnel, its DNS records and Access"
     : "DNS records on Cloudflare";
+  // What stays of the server: a second app's is the first app's.
+  const stays = shares === undefined ? SERVER_STAYS : sharedServerStays(shares.app);
   const words: CloudflareRemovalWords = {
     what:
       extras.length === 0
@@ -588,7 +610,7 @@ export async function destroyOwnServer(
         : `${cloudflareWhat} and the ${extras.length === 1 ? "server" : "servers"} ${listText(extras.map((server) => server.resource))}`,
     place: "your server",
     tunnelAfter: TUNNEL_AFTER_SERVER,
-    stays: SERVER_STAYS,
+    stays,
   };
 
   // 1. Preconditions: the state of the cloud resources (Cloudflare's and the extra servers OpsCrew
@@ -657,11 +679,7 @@ export async function destroyOwnServer(
   const host: OwnHost = {
     session,
     apply: (remote, hostPlan, applyOptions) =>
-      adapter !== undefined
-        ? adapter.apply(remote, hostPlan, applyOptions)
-        : own.host
-          ? own.host.apply(remote, hostPlan, applyOptions)
-          : applyHostPlan(remote, hostPlan, applyOptions),
+      (adapter ?? boundHostAdapter(own.host)).apply(remote, hostPlan, applyOptions),
     verifyLogin:
       own.verifyLogin ??
       ownServerLoginCheck(deps, session, {
@@ -954,6 +972,9 @@ export async function destroyOwnServer(
       destroyed = await applyRemoval(iac, removal);
     }
     if (teardown !== undefined && hostSteps.length > 0) {
+      /** True for a second app when its teardown removed its deploy key's line (`applied`). */
+      const removedKey = (applied: readonly string[]) =>
+        shares !== undefined && applied.includes("deploy-key");
       const serverFirst = removal?.tunnel === true;
       const already = serverFirst
         ? " and nothing in Cloudflare was deleted"
@@ -981,11 +1002,19 @@ export async function destroyOwnServer(
               ]
             : []),
           ...checkPauseNote(plan),
-          SERVER_STAYS,
+          stays,
         ],
         refused: `The removal of ${name} from your server was not approved, so nothing on your server was changed${already}.`,
         ...(afterFailure !== undefined ? { afterFailure } : {}),
+      }).catch(async (error: unknown) => {
+        // Stopped after the app's key line went: the next login is the first app's again.
+        if (removedKey(error instanceof HostApplyError ? error.applied : [])) {
+          await forgetJoined(deps.paths);
+        }
+        throw error;
       });
+      // A second app's key line is off the server: its next login is the first app's again.
+      if (removedKey(result.steps)) await forgetJoined(deps.paths);
       hostPlans.teardown = result.hash;
       teardownApproval = result.approval;
       deps.reporter.success(

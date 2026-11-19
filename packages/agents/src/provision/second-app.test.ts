@@ -142,6 +142,23 @@ describe("a second app's provision", () => {
     await expectNoLeak(s);
   });
 
+  it("never joins in a --plan-only run, even with its key in place already; a run that applies does", async () => {
+    const s = await secondAppProject();
+    // The app's own key is on the server already: its deploy-key step is in place.
+    const facts = structuredClone(s.host.facts);
+    if (facts.deployUser !== null) facts.deployUser.keys = [...BEFORE, s.key.publicKeyOpenSsh];
+    s.host.facts = facts;
+    const result = await runProvision(s.deps, { services: s.services, planOnly: true });
+    expect(result.applied).toBe(false);
+    expect(s.host.applies).toEqual([]);
+    expect((await readOwnServer(s.deps.paths))?.joined).toBeUndefined();
+
+    await runProvision(s.deps, { services: s.services });
+    const key = s.host.applies[0]?.plan.steps.find((step) => step.id === "deploy-key");
+    expect(key?.state).toBe("in-place");
+    expect((await readOwnServer(s.deps.paths))?.joined).toBe(true);
+  });
+
   it("joins only after the host plan applied: a failed apply logs in with the first app's key again", async () => {
     const s = await secondAppProject();
     s.host.fail = new Error("the server went away");

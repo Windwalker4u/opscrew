@@ -93,6 +93,7 @@ import {
   ownServerNotSetUp,
   ownServerPublicAddress,
   readOwnServerRecord,
+  SECOND_APP_ROOT_IMAGE,
 } from "../shared/own-server";
 import { networkSshPort } from "../shared/server-address";
 import type { SharesReference } from "../shared/server-record";
@@ -221,7 +222,7 @@ export function sharedAccessWarning(app: string, first: string): string {
  */
 export function secondAppAdapter(host?: HostAdapterApi): Required<HostAdapterApi> {
   const bound = boundHostAdapter(host);
-  const rootImage = IMAGES.caddy.ref;
+  const rootImage = SECOND_APP_ROOT_IMAGE;
   return {
     ...bound,
     inspect: host === undefined ? (remote) => inspectHost(remote, { rootImage }) : bound.inspect,
