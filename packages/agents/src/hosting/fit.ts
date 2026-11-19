@@ -24,6 +24,12 @@ export interface HostingMisfit {
 /** Laravel's scheduler, which a hosting account runs as a cron line every minute instead. */
 export const SCHEDULER = /\bschedule:(?:work|run)\b/;
 
+/**
+ * Laravel's queue worker on the database connection, which a hosting account runs as a cron line
+ * every minute that stops when the queue is empty (FR-2924).
+ */
+export const QUEUE_WORKER = /\bqueue:work\b/;
+
 /** The services a hosting account has no counterpart of, each refused in its own words below. */
 const QUEUES = new Set(["amqp", "kafka", "nats"]);
 const DATABASES = new Set(["mysql", "mariadb", "postgres"]);
@@ -52,11 +58,12 @@ export interface HostingFitInput {
 /**
  * Why the app doesn't fit the account, or `undefined` when it does: a kind of app the account
  * doesn't run (or a site whose files OpsCrew can't find); cron jobs that call the app's routes; a
- * worker that keeps running (Laravel's scheduler aside, which becomes a cron line);
- * a queue; Redis; WebSockets served from PHP; a service that runs only in a container (or a
- * bucket OpsCrew would create); a database engine the account lacks (PostgreSQL included, which
- * OpsCrew doesn't make on an account yet); a Node.js or Python app where the panel has no selector
- * for it or no app slot left (an SFTP host runs none); an app larger than the disk left.
+ * worker that keeps running (Laravel's scheduler and queue worker aside, which become cron lines);
+ * a queue service OpsCrew would run; Redis; WebSockets served from PHP; a service that runs only in
+ * a container (or a bucket OpsCrew would create); a database engine the account lacks (PostgreSQL
+ * included, which OpsCrew doesn't make on an account yet); a Node.js or Python app where the panel
+ * has no selector for it or no app slot left (an SFTP host runs none); an app larger than the disk
+ * left.
  */
 export function hostingMisfit(input: HostingFitInput): HostingMisfit | undefined {
   const { facts, keep, app, account } = input;
@@ -74,7 +81,9 @@ export function hostingMisfit(input: HostingFitInput): HostingMisfit | undefined
     };
   }
   const worker = (facts.workers ?? []).find(
-    (found) => found.command === undefined || !SCHEDULER.test(found.command),
+    (found) =>
+      found.command === undefined ||
+      (!SCHEDULER.test(found.command) && !QUEUE_WORKER.test(found.command)),
   );
   if (worker !== undefined) {
     return {

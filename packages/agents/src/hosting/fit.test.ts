@@ -16,6 +16,14 @@ const ACCOUNT: HostingFacts = {
   documentRoots: "anywhere",
 };
 
+const QUEUE_WORKER = {
+  name: "queue-worker",
+  command: "php artisan queue:work",
+  source: "library" as const,
+  single: false,
+  evidence: ["file:app/Jobs"],
+};
+
 const php = (overrides: Partial<ProjectFacts> = {}) =>
   makeFacts({ name: "notes", languages: ["php"], appKind: "fullstack", ...overrides });
 
@@ -46,6 +54,22 @@ describe("what fits a hosting account", () => {
     expect(fit({ facts: kept, keep: { redis: true } })).toBeUndefined();
   });
 
+  it("takes Laravel's queue worker, which becomes a cron line every minute", () => {
+    const facts = php({ workers: [QUEUE_WORKER] });
+    expect(fit({ facts })).toBeUndefined();
+    // A queue service OpsCrew would run still refuses, the worker beside it or not.
+    const redis = php({
+      workers: [QUEUE_WORKER],
+      services: [
+        { kind: "queue", evidence: ["dependency:laravel/horizon"] },
+        { kind: "redis", evidence: ["dependency:predis/predis"] },
+      ],
+    });
+    expect(reason({ facts: redis })).toBe(
+      "the app uses a queue, whose worker keeps running, and a hosting account runs nothing between requests",
+    );
+  });
+
   it("takes a Node.js app where the panel runs it, and one that already has its slot", () => {
     const node = makeFacts({ name: "api" });
     expect(fit({ facts: node, app: "node" })).toBeUndefined();
@@ -59,16 +83,16 @@ describe("design's refusals", () => {
     const facts = php({
       workers: [
         {
-          name: "queue-worker",
-          command: "php artisan queue:work",
+          name: "reverb",
+          command: "php artisan reverb:start",
           source: "library",
-          single: false,
-          evidence: ["file:app/Jobs"],
+          single: true,
+          evidence: ["dependency:laravel/reverb"],
         },
       ],
     });
     expect(reason({ facts })).toBe(
-      "the app runs queue-worker (php artisan queue:work), a worker that keeps running, and a hosting account runs nothing between requests",
+      "the app runs reverb (php artisan reverb:start), a worker that keeps running, and a hosting account runs nothing between requests",
     );
   });
 

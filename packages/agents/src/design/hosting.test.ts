@@ -48,6 +48,7 @@ async function project(o: ProjectOptions): Promise<TestPhaseDeps> {
   });
   await materializeFixture(join(EXAMPLES, o.example), root);
   for (const [path, content] of Object.entries(o.files ?? {})) {
+    await mkdir(dirname(join(root, ...path.split("/"))), { recursive: true });
     await writeFile(join(root, ...path.split("/")), content);
   }
   await writeArtifact("architecture", deps.paths.files.architecture, {
@@ -166,6 +167,56 @@ describe("design on a cPanel account", () => {
       fake.calls.some((call) => /^(add|create|delete|set|save|upload|fileop)/.test(call.func)),
     ).toBe(false);
     expect(deps.reporter.text()).not.toContain(TOKEN);
+  });
+
+  it("runs Laravel's queue worker and its scheduler from cron every minute", async () => {
+    const { deps } = await onCpanel(
+      "laravel-app",
+      {},
+      {
+        files: {
+          "app/Jobs/SendReminder.php": "<?php\n\nnamespace App\\Jobs;\n\nclass SendReminder {}\n",
+          "routes/console.php":
+            "<?php\n\nuse Illuminate\\Support\\Facades\\Schedule;\n\nSchedule::command('inspire')->hourly();\n",
+        },
+      },
+    );
+    const { plan } = await runDesign(deps);
+    expect((plan.target as HostingDeployTarget).cron).toEqual([
+      {
+        schedule: "* * * * *",
+        command: "php artisan queue:work --stop-when-empty --max-time=50",
+      },
+      { schedule: "* * * * *", command: "php artisan schedule:run" },
+    ]);
+    expect(lines(deps)).toContain(
+      "Cron jobs: php artisan queue:work --stop-when-empty --max-time=50 (* * * * *) and php artisan schedule:run (* * * * *), each with the app's PHP version. A queued job starts within about a minute: the queue's worker runs every minute until the queue is empty.",
+    );
+  });
+
+  it("keeps the queue worker's own time limit", async () => {
+    const { deps } = await onCpanel(
+      "php-plain-mysql",
+      {},
+      {
+        facts: {
+          cronJobs: undefined,
+          workers: [
+            {
+              name: "queue-worker",
+              command: "php artisan queue:work --max-time=30",
+              source: "library",
+              single: false,
+              evidence: ["file:app/Jobs"],
+            },
+          ],
+        },
+      },
+    );
+    const { plan } = await runDesign(deps);
+    expect((plan.target as HostingDeployTarget).cron).toEqual([
+      { schedule: "* * * * *", command: "php artisan queue:work --max-time=30 --stop-when-empty" },
+    ]);
   });
 
   it("serves through a link in public_html where the panel restricts document roots", async () => {
@@ -309,17 +360,17 @@ describe("design's refusals, through each panel", () => {
   });
 
   const worker = {
-    name: "queue-worker",
-    command: "php artisan queue:work",
+    name: "reverb",
+    command: "php artisan reverb:start",
     source: "library" as const,
-    single: false,
-    evidence: ["file:app/Jobs"],
+    single: true,
+    evidence: ["dependency:laravel/reverb"],
   };
   it.each([
     [
       "a worker",
       { facts: { workers: [worker] } },
-      "the app runs queue-worker (php artisan queue:work), a worker that keeps running",
+      "the app runs reverb (php artisan reverb:start), a worker that keeps running",
     ],
     [
       "a queue",

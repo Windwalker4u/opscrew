@@ -25,12 +25,14 @@ A hosting account runs code only while it answers a request. It fits:
 
 - static sites, including those your build makes;
 - PHP apps: plain PHP and [Laravel](https://laravel.com/), with a MySQL or MariaDB database;
+- a Laravel queue on the database connection: its worker runs from cron every minute until the
+  queue is empty, so a queued job starts within about a minute;
 - Node.js and Python apps, on a panel account whose panel runs them (CloudLinux's selector), while
   it has an app slot left.
 
 `npx opscrew design` refuses an app that needs more, says why and names a server target instead:
 
-- a worker that keeps running, or a queue (its worker keeps running too);
+- a worker that keeps running, or a queue OpsCrew would run for the app (Redis, RabbitMQ);
 - Redis, or any service that runs only in a container (keep a hosted one with
   `keepExternalServices` in `opscrew interview`);
 - WebSockets from PHP;

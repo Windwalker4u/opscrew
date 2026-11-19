@@ -44,7 +44,13 @@ import {
   quotaLeftMb,
   readHostingAccount,
 } from "../hosting/facts";
-import { hostingMisfit, hostingRefusal, INTERPRETERS, SCHEDULER } from "../hosting/fit";
+import {
+  hostingMisfit,
+  hostingRefusal,
+  INTERPRETERS,
+  QUEUE_WORKER,
+  SCHEDULER,
+} from "../hosting/fit";
 import { connectPanel, PANEL_NAMES } from "../hosting/panels";
 import { currentRoot, hostingHostnameTaken } from "../hosting/provision-plans";
 import { readHostingRecord, type SftpRecord } from "../hosting/record";
@@ -259,19 +265,28 @@ function webRootFor(app: HostingDeployTarget["app"], facts: ProjectFacts): strin
 }
 
 /**
- * The app's scheduled commands as cron lines: a plain PHP app's `cron.php`, and Laravel's
- * scheduler (`schedule:work`, a worker on a server) as `schedule:run` every minute.
+ * The app's scheduled commands as cron lines: a plain PHP app's `cron.php`, Laravel's scheduler
+ * (`schedule:work`, a worker on a server) as `schedule:run` every minute, and its queue worker
+ * (`queue:work`) every minute, stopping when the queue is empty and before the next minute's run.
  */
 function scheduledCommands(facts: ProjectFacts): HostingDeployTarget["cron"] {
   const jobs: HostingDeployTarget["cron"] = (facts.cronJobs ?? []).flatMap((job) =>
     job.source === "cron.php" ? [{ schedule: job.schedule, command: job.command }] : [],
   );
-  for (const worker of facts.workers ?? []) {
-    if (worker.command === undefined || !SCHEDULER.test(worker.command)) continue;
-    jobs.push({
-      schedule: "* * * * *",
-      command: worker.command.replace(/\bschedule:work\b/, "schedule:run"),
-    });
+  for (const { command } of facts.workers ?? []) {
+    if (command === undefined) continue;
+    if (SCHEDULER.test(command)) {
+      jobs.push({
+        schedule: "* * * * *",
+        command: command.replace(/\bschedule:work\b/, "schedule:run"),
+      });
+    } else if (QUEUE_WORKER.test(command)) {
+      const added = [
+        ...(/--stop-when-empty\b/.test(command) ? [] : ["--stop-when-empty"]),
+        ...(/--max-time\b/.test(command) ? [] : ["--max-time=50"]),
+      ];
+      jobs.push({ schedule: "* * * * *", command: [command, ...added].join(" ") });
+    }
   }
   return jobs;
 }
@@ -421,10 +436,13 @@ function databaseLines(
 function cronLines(cron: HostingDeployTarget["cron"], sftp: boolean): string[] {
   if (cron.length === 0) return [];
   const jobs = listText(cron.map((job) => `${job.command} (${job.schedule})`));
+  const queue = cron.some((job) => QUEUE_WORKER.test(job.command))
+    ? " A queued job starts within about a minute: the queue's worker runs every minute until the queue is empty."
+    : "";
   return [
     sftp
-      ? `Cron jobs: an SFTP host has no panel OpsCrew sets them up through, so add them in your host's panel: ${jobs}.`
-      : `Cron jobs: ${jobs}, each with the app's PHP version.`,
+      ? `Cron jobs: an SFTP host has no panel OpsCrew sets them up through, so add them in your host's panel: ${jobs}.${queue}`
+      : `Cron jobs: ${jobs}, each with the app's PHP version.${queue}`,
   ];
 }
 
