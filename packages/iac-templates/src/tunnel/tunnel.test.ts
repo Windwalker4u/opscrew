@@ -146,6 +146,19 @@ describe("runtime files in tunnel mode", () => {
     ]);
     expect(renderCaddyfile(filtered, context)).toEqual(renderCaddyfile(hetzner, context));
   });
+
+  it("publishes a second app's shared edge as its first app's on a server OpsCrew created", () => {
+    // The first app's cloud firewall lets only Cloudflare in, so the second app needs no web filter;
+    // an edge on IPv4 only would cut the first app off over IPv6 (live pass L1, run 3).
+    const filtered = testPlan({ provider: "own", domain: "blog.example.com" });
+    const second = DeployPlanSchema.parse({
+      ...filtered,
+      target: { ...filtered.target, shares: { app: "shop", provider: "hetzner" } },
+    });
+    const hetzner = testPlan({ domain: "shop.example.com" });
+    expect(webFilterMode(second)).toBe(false);
+    expect(renderEdgeCompose(second)).toEqual(renderEdgeCompose(hetzner));
+  });
 });
 
 describe("renderTunnelConnectorCompose", () => {

@@ -43,11 +43,17 @@ export function tunnelMode(plan: DeployPlan): boolean {
  * True when a server the user owns serves the site directly behind Cloudflare's proxy with
  * OpsCrew's web filter (public mode, a proxied Cloudflare domain, `security.httpAllowedFrom:
  * cloudflare`). The site is then published on IPv4 only: Docker serves an IPv6 host port of a
- * container without IPv6 through docker-proxy, around the filter in `DOCKER-USER`.
+ * container without IPv6 through docker-proxy, around the filter in `DOCKER-USER`. Never for a
+ * second app on a server OpsCrew created (`target.shares`): that server's cloud firewall lets only
+ * Cloudflare in, as for its first app, so the shared edge is published as the first app's is, on
+ * IPv6 too.
  */
 export function webFilterMode(plan: DeployPlan): boolean {
   return (
-    plan.target.provider === "own" && plan.target.access === "public" && webOnlyFromCloudflare(plan)
+    plan.target.provider === "own" &&
+    plan.target.access === "public" &&
+    plan.target.shares === undefined &&
+    webOnlyFromCloudflare(plan)
   );
 }
 
