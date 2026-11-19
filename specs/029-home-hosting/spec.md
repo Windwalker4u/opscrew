@@ -237,8 +237,7 @@ Laravel's scheduler already does there. Today design refuses the app, since a wo
 running has no place on a hosting account.
 
 **Why this priority**: queued jobs (mail, exports) are common in Laravel apps, and every hosting
-account with a panel has cron and PHP; the founder put it in 029's release (2026-11-19). PostgreSQL
-on such accounts waits: the host must install it, and many don't.
+account with a panel has cron and PHP; the founder put it in 029's release (2026-11-19).
 
 **Independent Test**: `laravel-app` with a `queue:work` worker on the database connection: design
 plans a cron line for it, the hosting plan adds it, and destroy removes it; with a Redis or
@@ -254,6 +253,32 @@ RabbitMQ queue design still refuses.
    line to add in the host's panel, as for the scheduler.
 3. **Given** a Laravel app whose queue is Redis or RabbitMQ that OpsCrew would run, **When** design
    plans it for a hosting account, **Then** it refuses as today, naming the queue.
+
+---
+
+### User Story 10 - PostgreSQL on a cPanel account (Priority: P3; in 029's release, not tested live)
+
+An app that uses PostgreSQL deploys to a cPanel account whose host installed PostgreSQL: OpsCrew
+makes its database and user there, gives the app its values, and snapshots, restores, drills and
+destroys it as it does a MySQL database. Today design refuses it.
+
+**Why this priority**: some large cPanel hosts offer PostgreSQL on shared plans (research R31); the
+founder put it in 029's release (2026-11-19), tested with fakes only, since his own host has none.
+
+**Independent Test**: with the fake cPanel's PostgreSQL: design plans the database, the hosting
+plan makes it and its user, the app gets `postgresql://` values, a snapshot dumps it with `pg_dump`,
+a restore and a drill load it with `psql`, and destroy removes it.
+
+**Acceptance Scenarios**:
+
+1. **Given** a cPanel account with PostgreSQL and an app that uses it, **When** design plans the
+   app, **Then** it plans a PostgreSQL database within the account's PostgreSQL name limits.
+2. **Given** an account without PostgreSQL, or a Plesk or DirectAdmin account, **When** design plans
+   the app, **Then** it refuses, saying why.
+3. **Given** the account's shell has no `pg_dump` or `psql`, **When** provision reads the agent's
+   report, **Then** it stops before the database is made, naming the missing tool.
+4. **Given** a provisioned PostgreSQL app, **When** a snapshot, a restore, a drill and destroy run,
+   **Then** each works on PostgreSQL as it does on MySQL, the drill counting the restored tables.
 
 ---
 
@@ -366,6 +391,14 @@ RabbitMQ queue design still refuses.
   OpsCrew would run) MUST become a cron line every minute running that command with
   `--stop-when-empty` and `--max-time=50` added where it lacks them, planned, applied, rolled back
   and removed like the scheduler's line; design MUST say that a job starts within about a minute.
+- **FR-2925**: On a cPanel account whose host installed PostgreSQL, OpsCrew MUST make an app's
+  PostgreSQL database and user through the hosting plan approved by its hash, within the account's
+  PostgreSQL name limits, and give the app `postgresql://` values on `localhost:5432`; on any other
+  account, or a Plesk or DirectAdmin one, design MUST refuse it, saying why.
+- **FR-2926**: The account agent MUST snapshot, restore and drill a PostgreSQL database with
+  `pg_dump` and `psql`, logging in through a `pgpass` file (0600) that holds the only copy of the
+  login on the account, and provision MUST stop before making the database when the account's
+  shell lacks either tool.
 
 ### Key Entities
 

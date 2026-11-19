@@ -753,7 +753,7 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/iac-templates src/check && npx vitest run --root packages/agents src/provision src/shared src/check && pnpm lint`
   - Effort: high
 
-- [ ] T2946 [US9] A Laravel queue worker from cron on a hosting account (founder, 2026-11-19)
+- [x] T2946 [US9] A Laravel queue worker from cron on a hosting account (founder, 2026-11-19)
   - Owns: `packages/agents/src/hosting/fit.ts`, `packages/agents/src/design/hosting.ts`, colocated
     tests, `docs/guide/hosting-accounts.md`
   - Reads: spec US9 and FR-2924; `fit.ts`'s `SCHEDULER` and `hostingMisfit`; `design/hosting.ts`'s
@@ -772,6 +772,90 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
     a worker with `--max-time=30` keeps its own value; a Redis queue service still refuses.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting src/design && pnpm lint`
   - Effort: medium
+
+PostgreSQL on a cPanel account (US10, FR-2925, FR-2926; research R31). The shared names, so the
+waves run in parallel: the panel's methods take `server?: HostingDatabaseServer` (`"mysql"`, the
+default, or `"postgres"`); the agent's setting `DB_ENGINE` is `mysql` or `postgres`
+(`AgentSettings.databaseEngine`, absent: mysql); the login files are `shared/pgpass` (the app's)
+and `keys/drill.pgpass` (the drill database's), each one `pgpass` line
+`localhost:5432:<database>:<user>:<password>` (`:` and `\` escaped as `pgpass` requires), 0600,
+beside MySQL's `shared/mysql.cnf` and `keys/drill.cnf`; the user's name is the database's, as for
+MySQL.
+
+- [x] T2947 (lead) The contract and the plan: `HostingDatabaseServer`, the panel's database methods'
+  `server`, `HostingFacts.databases.postgres` (PostgreSQL's own name limits), and
+  `target.database.engine: "postgres"`, refused on any panel but cPanel
+- [ ] T2948 [P] [US10] cPanel's PostgreSQL in the connector and its fake
+  - Owns: `packages/connectors/cpanel/src/**` (not other connectors)
+  - Reads: `packages/contracts/src/hosting.ts`; `panel.ts`'s `inspect`, `databaseEngines`,
+    `addDatabase`, `removeDatabase`, `listDatabases`, `#mysql`; `fake.ts`'s `Mysql::*` handlers;
+    research R31 (cPanel's UAPI `Postgresql` module, at api.docs.cpanel.net)
+  - Depends: T2947
+  - Accept: `inspect` adds `"postgres"` to `databases.engines` when `Postgresql::list_databases`
+    answers (an error such as "This server does not support this functionality" means none), and
+    `databases.postgres` from `Postgresql::get_restrictions`; with `server: "postgres"`,
+    `addDatabase` runs `Postgresql::create_database`, `create_user` and `grant_all_privileges`,
+    `removeDatabase` `delete_user` then `delete_database` and checks the database is gone, and
+    `listDatabases` lists PostgreSQL's (confirm each UAPI name and its parameters in cPanel's
+    UAPI documentation before using it; name in the report any you couldn't confirm); MySQL's
+    calls are unchanged; the fake models `Postgresql::*` with an option for an account without it
+    (the error above) and the account's limits. Tests for each, on the fake.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cpanel && npx vitest run --root packages/connectors/cpanel && pnpm lint`
+  - Effort: medium
+- [ ] T2949 [P] [US10] The account agent with PostgreSQL
+  - Owns: `packages/iac-templates/src/hosting/**` (the agent's settings, its script, their
+    fixtures, shims and tests)
+  - Reads: `agent.ts` (`AgentSettings`, `renderAgentSettings`), `agent/script.ts` (the tool
+    check, `mysql_socket`, `dump`, `app_mysql`, `replace_tables`, `load`, `drill_mysql`,
+    `without_definers`, `drill_snapshot`); the shims under `__fixtures__/shims/`
+  - Depends: T2947
+  - Accept: `AgentSettings.databaseEngine` renders `DB_ENGINE`; with `postgres` the tool check asks
+    for `pg_dump` and `psql` instead of `mysqldump`; the agent logs in with `PGPASSFILE` set to
+    `shared/pgpass` (the drill's to `keys/drill.pgpass`), host, port, database and user read from
+    that line; a snapshot's dump is `pg_dump --no-owner --no-privileges` of the database, gzipped
+    as MySQL's; a restore empties the database's own tables, views and sequences in `public`
+    before loading the dump with `psql -v ON_ERROR_STOP=1`; a drill loads the latest snapshot into
+    the drill database the same way and counts its base tables in `public` against the dump's
+    `CREATE TABLE` lines; MySQL's paths are unchanged byte for byte (their tests pass as they are);
+    shims for `pg_dump` and `psql` in the fixtures, and tests for the snapshot, the restore, the
+    drill and a missing tool.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
+  - Effort: high
+- [ ] T2950 [P] [US10] Design and provision's checks for PostgreSQL on a cPanel account
+  - Owns: `packages/agents/src/hosting/{fit,facts,provision,provision-report}.ts`,
+    `packages/agents/src/design/hosting.ts`, `packages/agents/src/advise/readings.ts`,
+    `packages/agents/src/shared/app-env.ts`, their colocated tests (not `hosting/__fixtures__/`),
+    `docs/guide/hosting-accounts.md`, `docs/guide/cpanel.md`
+  - Reads: T2948's and T2949's results (the fake's `Postgresql::*`, `AgentSettings.databaseEngine`);
+    the mapping in this block's heading
+  - Depends: T2948, T2949
+  - Accept: `databaseMisfit` lets a PostgreSQL service through on a cPanel account whose facts list
+    `postgres`, and refuses it otherwise in plain words (no PostgreSQL on the account; or OpsCrew
+    makes PostgreSQL databases only on cPanel accounts); design's `sql` takes a PostgreSQL service,
+    plans `engine: "postgres"` and trims the name to `databases.postgres`'s limits; the agent's
+    settings get `databaseEngine`; the agent's report requires `pg_dump` and `psql` with a
+    PostgreSQL database, and provision stops before plan B when either is missing, naming it;
+    Laravel's `DB_CONNECTION` is `pgsql` for it and the app's URL variable is filled; advise names
+    PostgreSQL as PostgreSQL; the guide pages say PostgreSQL works on cPanel accounts whose host
+    installed it, not tested on a real account yet. Tests for each.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting src/design src/advise src/shared && pnpm lint`
+  - Effort: high
+- [ ] T2951 [P] [US10] The hosting plans, values, drift and destroy with PostgreSQL
+  - Owns: `packages/agents/src/hosting/{apply,plan,provision-plans,destroy,drift,secure,record}.ts`,
+    `packages/agents/src/hosting/__fixtures__/**`, their colocated tests
+  - Reads: T2948's results; the mapping in this block's heading; `apply.ts`'s `databaseValues`,
+    `mysqlCnf`, `drillCnf`, `recordedPassword` and the `database`, `drill-database` and
+    `remove-drill-database` steps
+  - Depends: T2948, T2949
+  - Accept: with `engine: "postgres"`, plan B's `database` step writes `shared/pgpass` (0600) before
+    the panel makes the database, and calls `addDatabase` with `server: "postgres"`; the values are
+    `postgresql://<user>:<password>@localhost:5432/<name>`, `DB_PORT=5432` and the same
+    `DB_HOST`/`DB_DATABASE`/`DB_USERNAME`/`DB_PASSWORD`; the drill database the same way with
+    `keys/drill.pgpass`; the recorded password is read back from `pgpass`; drift lists PostgreSQL's
+    databases; destroy removes them with `server: "postgres"`; the steps' words name `pgpass` where
+    they name `mysql.cnf`; MySQL's paths are unchanged. Tests for each, on the fake.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: high
 
 - [x] T2937 [P] [US7] Scheduled dump drills in a Portainer
   - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
@@ -855,4 +939,4 @@ US1 static home address (T2902, T2903, T2907, T2908, T2910a, T2910d, T2911, T291
 T2914a, T2914d); US2 changing address (T2904, T2909, T2910b, T2910c, T2913a, T2914a–c, T2915a, T2915b,
 T2916b); US3 no public IPv4 or blocked ports (T2903, T2910a, T2910d, T2912, T2914a); US4 IPv6
 (T2906, T2907, T2910a, T2912, T2913a); US5 a Raspberry Pi (T2903, T2912, T2914a, T2914b). US6 cut.
-MVP: US1 and US2 together (a home server is unusable without the updater on a dynamic line). US7 restore drills (T2931, T2933–T2940); US8 the database check (T2932); US9 a Laravel queue on a hosting account (T2946).
+MVP: US1 and US2 together (a home server is unusable without the updater on a dynamic line). US7 restore drills (T2931, T2933–T2940); US8 the database check (T2932); US9 a Laravel queue on a hosting account (T2946); US10 PostgreSQL on a cPanel account (T2947–T2951; waves: T2948 and T2949, then T2950 and T2951).

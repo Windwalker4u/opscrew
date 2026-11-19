@@ -1326,3 +1326,34 @@ tables" on an account are not read as the same claim.
   1.12.0 clause as covering it (it names a server and the address updater); a PATCH (a new program kind
   and two new targets are a material expansion).
 
+
+### R31 PostgreSQL on hosting accounts and a Laravel queue from cron (2026-11-19)
+
+Asked after the cPanel pass: should OpsCrew make PostgreSQL databases on hosting accounts, and run a
+Laravel queue there? The founder's rule (2026-11-19): in 029's release if it is common enough on
+cPanel hosts.
+
+- **PostgreSQL**: cPanel supports it, but the host installs it: "We only support versions of
+  PostgreSQL that you install with the /usr/local/cpanel/scripts/installpostgres script"
+  (docs.cpanel.net/knowledge-base/sql/install-or-update-postgresql-on-your-cpanel-server/); it
+  works with the PostgreSQL the server's OS ships. A user's UAPI has a `Postgresql` module
+  (`list_databases` and `list_users` confirmed at api.docs.cpanel.net; the create, password,
+  privileges and delete calls exist, names to confirm). Hosts that list it on shared plans:
+  InMotion and Namecheap (their own pages); A2 Hosting's knowledge base covers it. HostGator,
+  Bluehost, HostPapa and GreenGeeks don't say. Not found in official sources: whether `pg_dump` and
+  `psql` are in a user's shell, and whether cPanel's own backup includes PostgreSQL. The founder's
+  account has the `postgres` feature, but its server answers "This server does not support this
+  functionality": PostgreSQL isn't installed there, so nothing can be tried live.
+- **A Laravel queue**: it needs only cron and PHP. Laravel's queue docs (12.x) give
+  `--stop-when-empty`, `--max-time` and `--max-jobs`, framed for containers and Supervisor; its
+  scheduling docs run `schedule:run` every minute from cron. Hosting guides run
+  `php artisan queue:work --stop-when-empty --max-time=50` from cron every minute. Laravel 12 needs
+  PHP 8.2 or newer; the founder's account runs PHP 7.0, so the Laravel leg stays off live.
+- **Decision (founder, 2026-11-19)**: both in 029's release. The queue: US9, FR-2924, T2946. PostgreSQL
+  on cPanel accounts: shipped tested with fakes only and marked "not tested live" on the coverage
+  page (the founder's choice over buying a test account at a host that has it), with what OpsCrew
+  can't know before a real account (whether `pg_dump` is in the shell) checked on the account
+  before any change.
+- **Alternatives considered**: PostgreSQL later, "if users ask" (the lead's first recommendation,
+  since no live test is possible); a month at a host that offers it, for a live leg (a few
+  dollars, the founder's call).
