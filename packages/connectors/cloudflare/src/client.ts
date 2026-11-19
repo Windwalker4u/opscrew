@@ -913,7 +913,14 @@ const ZONE_DELETE_HINTS: FailHints = {
  */
 const ACCOUNT_PROBES: Record<
   AccountPermissionNeed,
-  { path: string; what: string; permission: string; hints?: FailHints }
+  {
+    path: string;
+    what: string;
+    permission: string;
+    hints?: FailHints;
+    /** HTTP 401 "Authentication error" (code 10000) means the permission is missing too. */
+    unauthorizedLacks?: true;
+  }
 > = {
   tunnel: {
     path: "/cfd_tunnel?per_page=1",
@@ -939,6 +946,8 @@ const ACCOUNT_PROBES: Record<
     path: "/r2/buckets?per_page=1",
     what: "list the account's R2 buckets",
     permission: "Account → Workers R2 Storage → Edit",
+    // R2's API answers a valid token without its permission so (live, 2026-11-19).
+    unauthorizedLacks: true,
   },
   workers: {
     path: "/workers/scripts",
@@ -2169,15 +2178,28 @@ export class CloudflareClient {
   }
 
   /**
-   * Whether a read-only probe is refused for a missing permission (HTTP 403). An account without
+   * Whether a read-only probe is refused for a missing permission: HTTP 403, or with
+   * `unauthorizedLacks` HTTP 401 with code 10000 ("Authentication error"). An account without
    * Cloudflare Access throws PHASE_PRECONDITION (no token fixes that); any other failure throws.
    */
-  async #lacks(path: string, what: string, hints?: FailHints): Promise<boolean> {
+  async #lacks(
+    path: string,
+    what: string,
+    hints?: FailHints,
+    unauthorizedLacks = false,
+  ): Promise<boolean> {
     const answer = await this.#request(path);
     if (answer.body.errors.some((e) => ACCESS_NOT_ENABLED.test(e.message))) {
       throw accessNotEnabled();
     }
     if (answer.status === 403) return true;
+    if (
+      unauthorizedLacks &&
+      answer.status === 401 &&
+      answer.body.errors.some((e) => e.code === 10000)
+    ) {
+      return true;
+    }
     this.#result(answer, z.unknown(), what, hints);
     return false;
   }
@@ -2196,7 +2218,9 @@ export class CloudflareClient {
     for (const need of new Set(needs)) {
       const probe = ACCOUNT_PROBES[need];
       const path = `/accounts/${encodeURIComponent(accountId)}${probe.path}`;
-      if (await this.#lacks(path, probe.what, probe.hints)) missing.push(probe.permission);
+      if (await this.#lacks(path, probe.what, probe.hints, probe.unauthorizedLacks)) {
+        missing.push(probe.permission);
+      }
     }
     return { missing };
   }

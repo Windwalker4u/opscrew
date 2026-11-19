@@ -532,6 +532,22 @@ describe("CloudflareClient permission probes", () => {
     expect(calls).toHaveLength(6);
   });
 
+  it("takes R2's HTTP 401 Authentication error for a missing permission, as the live API answers a token without it", async () => {
+    const { cf } = client({
+      [`GET ${ACCOUNT}/r2/buckets`]: fail(401, 10000, "Authentication error"),
+    });
+    expect(await cf.accountPermissions(ACCOUNT_B, ["r2"])).toEqual({
+      missing: ["Account → Workers R2 Storage → Edit"],
+    });
+    // Another 401 is still a token Cloudflare doesn't take.
+    const { cf: other } = client({
+      [`GET ${ACCOUNT}/r2/buckets`]: fail(401, 9109, "Invalid access token"),
+    });
+    await expect(other.accountPermissions(ACCOUNT_B, ["r2"])).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+    });
+  });
+
   it("probes only what is asked", async () => {
     const { cf, calls } = client({ [`GET ${ACCOUNT}/access/identity_providers`]: denied });
     expect(await cf.accountPermissions(ACCOUNT_B, [])).toEqual({ missing: [] });
