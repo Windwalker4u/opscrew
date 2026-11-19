@@ -415,7 +415,12 @@ refuse, and `index.md`.
 
 **L2, the founder's second app beside his first**: the same steps 2, 3 and 4 (the
 guards only with `--plan-only` or a refusal, nothing applied to the first app), then the founder
-reads the site. No destroy: the app stays.
+reads the site. No destroy: the app stays. Two checks the second app's own lead asked for:
+
+- the app sees https;
+- a request through Cloudflare with a forged `X-Forwarded-For` header reaches the app as the
+  visitor's real address. The edge's `trusted_proxies` and `client_ip_headers CF-Connecting-IP`
+  and the site's `header_up X-Forwarded-For {client_ip}` should give that.
 
 ## Requirements coverage
 

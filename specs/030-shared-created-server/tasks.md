@@ -92,6 +92,22 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
   - Effort: xhigh
 
+**From T3002 (lead, 2026-11-19), for every caller of the second-app mode:**
+- `planHost(…, { image })` and `planTeardown({ shares: true, image, … })` need the pinned image
+  the deploy login removes data in: `IMAGES.busybox.ref` from `@opscrew/iac-templates`.
+- A proxied second app passes `webFilter` (Cloudflare's ranges, as own servers do). It marks the
+  app's way of serving for the claim against `shares.host.access`; no web-filter step is planned.
+- The record keeps a rotation's old key (`previousDeployKey`) until the next plan removes it, so
+  `rotate deploy-key` works unchanged.
+- `planTeardown({ shares: true, … })` also takes the app's current deploy public key
+  (`deployKey`) and the first app's name (`firstApp`). It removes the app's key line even when
+  no record exists (a failed first provision), and it refuses to tear down the first app or a
+  Compose project of that name with no record of this project's.
+- Open, for later: the check-key, preview and rotation writers of `authorized_keys` don't take
+  `~deploy/.ssh/.opscrew-keys.lock` yet. A line one of them adds between a second app's read and
+  its rename would be lost. The window is short, since the rewrite verifies the other lines' hash
+  first.
+
 ## Phase 3: Wave 2
 
 - [ ] T3003 [US1] [US2] [US3] The reference, the first app and the logins

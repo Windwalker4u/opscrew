@@ -478,7 +478,9 @@ build starts, before its tasks:
 An app from another repository (or another app of the same one) runs on a server OpsCrew created
 for a first app, beside it, with no second server to pay for. The founder asked for it on
 2026-11-19, to put a second app of his on the server his first one runs on, and chose to build it
-rather than create a server. It is built beside 029's release.
+rather than create a server. It is built beside 029's release. **Release** (the founder,
+2026-11-19): it ships in 0.2.11 with 029 if its live pass has passed by the time 029's home pass
+is done; 029 doesn't wait for it longer than that.
 
 **What exists today:** a server the user owns already holds apps from several repositories (013),
 and previews already share another environment's created server (022). A server OpsCrew creates
@@ -486,6 +488,14 @@ has only the `deploy` login, without root or sudo, so the own-server path can't 
 first app's commands don't know about other apps on it.
 
 **Spec, plan and research:** [030-shared-created-server](030-shared-created-server/), ADR 0035.
+
+**Found while building, fixed after 030** (lead, 2026-11-19): `adapt` never makes an app trust
+the edge's forwarded headers. Examples: Laravel's `trustProxies`, Django's
+`SECURE_PROXY_SSL_HEADER`, uvicorn's `--proxy-headers` and Express's `trust proxy`. Behind the
+edge such an app can build `http://` links and see the proxy's address as the visitor's. The fix
+needs a code-change kind in the plan and per-framework steps that trust only private ranges.
+`'*'` would let a client choose its own address through `X-Forwarded-For`. Research per framework
+comes first.
 
 ## 031 Scaling across servers
 
