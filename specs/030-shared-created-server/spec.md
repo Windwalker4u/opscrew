@@ -195,6 +195,82 @@ first app's destroy is no longer refused.
 
 ---
 
+### User Story 6 - Move an app onto another app's server (Priority: P2)
+
+*(Added 2026-11-19, founder: in 0.2.11, both directions.)* An app already runs somewhere: on a
+server of its own (one OpsCrew created for it, one of the user's, or their Portainer), or as a
+second app on another server. The user wants it beside another of their OpsCrew apps instead, on
+that app's server, to stop paying for a server or to group small apps. `opscrew retarget --to own`
+in its repository, with answers naming that app's repository folder (`server.shares`), moves it
+there as retarget moves every app:
+1. the new side is set up beside the first app, with design's sharing checks, while DNS still
+   points at the old side;
+2. the app is deployed and checked there;
+3. its data is copied in a maintenance window;
+4. DNS switches;
+5. `--finish` removes the old side.
+
+**Why this priority**: an app set up before sharing existed, or one that outgrew a shared server,
+should reach another app's server without a destroy and a fresh setup.
+
+**Independent Test**: An app on a throwaway server of its own moves onto another app's throwaway
+server. A request every second against the first app's site sees no failed request through the
+move. After `--finish`, the old server is gone, the moved app serves from the first app's server,
+and the first app's destroy refuses, naming it.
+
+**Acceptance Scenarios**:
+
+1. **Given** an app on a server of its own, **When** `opscrew retarget --to own` names another
+   app's server through `server.shares`, **Then** before any change it refuses what design refuses
+   for a second app, and otherwise its summary shows no new server cost, the memory left after both
+   apps and the shared-access warning.
+2. **Given** the move's new side, **When** its host plan is shown, **Then** it holds only the
+   moving app's own parts, as a second app's provision does. The first app's containers are not
+   restarted through the deploy, the copy and the switch.
+3. **Given** a second app on one shared server, **When** it moves onto another app's server,
+   **Then** the new side is set up as a second app there, and `--finish` removes the old side as a
+   second app's, keeping the edge and the first app there.
+4. **Given** a move onto another app's server before its switch, **When** `--abort` runs, **Then**
+   only the moving app's parts on that server are removed, and the first app keeps serving.
+5. **Given** the switch is done, **When** the first app runs a command that US2 refuses, **Then**
+   it refuses, naming the moved app.
+
+---
+
+### User Story 7 - Share a server of the user's own (Priority: P2)
+
+*(Added 2026-11-19, founder: in 0.2.11.)* The named app runs on a server the user owns, reached at
+its public address (behind Cloudflare's proxy or DNS only). The interview's "a server another of
+your OpsCrew apps runs on" accepts it. The second app takes that app's address, SSH login and
+way of serving, and the server's pinned host key, from this computer, so nothing about the server
+is asked again. From then on it is one more app on the user's server, as several apps on one
+server already are: its own deploy key, its own record, and host plans approved by hash. Its
+first app's commands go on as before: OpsCrew never deletes a server the user owns.
+
+**Why this priority**: the user shouldn't have to look up and retype a login OpsCrew already
+holds, and the sharing checks and warning should be the same on every kind of server.
+
+**Independent Test**: With fakes: a first app on an own server in public mode, a second app's
+interview naming its folder, then design and provision. The second app's local state holds the
+server's login, nothing of it is committed, and design shows the shared-access warning.
+
+**Acceptance Scenarios**:
+
+1. **Given** an app on a server the user owns, in public mode, **When** another app's interview
+   names its folder, **Then** the second app's local state holds the server's address, port,
+   login, key path and way of serving, and its pinned host key. Nothing of it is committed, and no
+   server question is asked again.
+2. **Given** such a second app, **When** design runs, **Then** it runs the own server's checks
+   (name, hostnames, way of serving, proxy, memory beside every app there) and shows the
+   shared-access warning.
+3. **Given** a named app served through a Cloudflare Tunnel or at home, **When** the interview
+   resolves it, **Then** it refuses before any change and says to answer the server questions
+   with the server's own login instead.
+4. **Given** such a server, **When** an app moves onto it with `opscrew retarget --to own` and
+   `server.shares`, **Then** the move runs as a move to the user's server beside the apps there.
+
+---
+
 ### Edge Cases
 
 - The first app's repository folder is missing or not provisioned on this computer: the second
@@ -318,6 +394,36 @@ first app's destroy is no longer refused.
 - **FR-3020**: The guide MUST explain sharing a created server (how to set it up, what each app
   can do, what is refused and why, and the shared-access warning). The pages of the first app's
   refused commands MUST link to it. The matching MCP tools MUST take the same inputs as the CLI.
+- **FR-3021**: `opscrew retarget --to own` MUST accept the `server.shares` answers (in
+  `--answers <file>` and in the terminal's questions) and move the app onto that app's server. The
+  old side may be any that retarget moves from: a server OpsCrew created for the app, a server of
+  the user's, a Portainer, or another shared server. Each step runs as in every move: the new side
+  beside the first app with DNS on the old side; the deploy and its check; the copy in a
+  maintenance window; the switch; `--finish` removing the old side through its usual path (a
+  second app's old side as FR-3018).
+- **FR-3022**: Before any change, such a move MUST run the checks design runs for a second app
+  (FR-3002, FR-3003) with the moving app's plan, and show no server cost, the memory left and the
+  shared-access warning (FR-3004).
+- **FR-3023**: A move onto a server OpsCrew created for another app MUST set the new side up as
+  that server's second app. Its infrastructure plan holds only the DNS records, changed at the
+  switch, and its host plan is the second app's, through the first app's deploy login. Each is
+  approved by its hash. `--abort` removes only the moving app's parts there, as a second app's
+  destroy does, and leaves its DNS on the old side.
+- **FR-3024**: Provision MUST run design's shared-server memory check, with its warning below 15%
+  free, before it plans anything: for a second app, for an app on a server of the user's that
+  holds other apps, and for a first app's resize (FR-3013). A second app's hand-edited plan can't
+  overcommit a shared server: provision refuses in design's words, before any change. A first
+  app on a server OpsCrew created that raises its own limits without a resize is not checked:
+  provision looks at that server only when it changes it, and a look on every provision is left
+  for later (tasks: the follow-up after T3020).
+- **FR-3025**: The interview MUST accept, for FR-3001's option, a named app on a server the user
+  owns in public mode. It copies that app's address, port, login, key path and way of serving from
+  this computer's local state, and the server's pinned host key, into the second app's local
+  state. It MUST refuse a named app served through a Cloudflare Tunnel or at home, saying to answer
+  the server questions with the server's own login instead. Design MUST show the shared-access
+  warning whenever a server the user owns already holds another OpsCrew app.
+- **FR-3026**: With `server.shares`, the interview MUST neither ask for nor require a monthly
+  budget. One given in an answers file is kept, validated as usual.
 
 ### Key Entities
 

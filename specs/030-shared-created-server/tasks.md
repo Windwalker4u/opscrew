@@ -328,3 +328,144 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 - [x] T3012 (lead) The simplify pass over the feature's diff
 - [x] T3013 (lead) `CLAUDE.md` and the roadmap (030 done); the changelog entry to the release's
   lead
+
+## Phase 7: Joining a shared server, and sharing a server of the user's own (2026-11-20, in 0.2.11)
+
+The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16.–19.). Worktrees
+`D:/opscrew/.claude/worktrees/t30NN`, branched from `main`.
+
+- [ ] T3015 [P] [US2] Provision's shared-server fit check
+  - Owns: `packages/agents/src/provision/**`, `packages/agents/src/design/sizing.ts` (a wording
+    option for `ownServerMemory` only), colocated tests
+  - Reads: plan 18.; `design/sizing.ts` (`ownServerMemory`), `design/own.ts`, `design/run.ts`
+    (where design calls it for a second app and for an own server), `shares/guard.ts` (the other
+    apps' records), `provision/own.ts`
+  - Accept: before provision plans anything (Cloudflare, infrastructure or host plan), for a
+    second app and for an app on a server holding other OpsCrew apps (a created first app's
+    resize included), it runs `ownServerMemory` with the plan's limits and the other apps' records
+    from the same inspection provision already makes. A refusal comes before any change, in
+    design's words, ending "Nothing was changed." and saying to lower the limits in
+    `opscrew/plan.yaml` or run `opscrew design`. Below 15% free it warns and goes on. Tests:
+    - a hand-raised `app.memoryMb` refused for a second app (the PHP app's case: a 1536 MB app,
+      the cron following it, 512 MB of MySQL, beside 1664 MB on a 3789 MB server);
+    - a fitting plan let through with no warning;
+    - the warning;
+    - the first app's resize that no longer holds a second app, if FR-3013's check doesn't
+      already cover it (say which);
+    - a leak check.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision src/design && pnpm lint`
+  - Effort: high
+
+- [ ] T3016 [P] [US7] Sharing a server of the user's own, and no budget with `server.shares`
+  - Owns: `packages/agents/src/interview/**`, `packages/agents/src/shares/own-first-app.ts` (new),
+    `packages/agents/src/design/own.ts` and `design/run.ts` (the shared-access warning only),
+    colocated tests; `packages/plan-schema/src/requirements*.ts` only if the budget is required
+    there
+  - Reads: plan 17.; spec US7, FR-3025, FR-3026; `shares/first-app.ts`, `shares/reference.ts`,
+    `shared/own-server.ts`, `shared/server-record.ts`, `interview/own-server.ts`
+    (`answersToSharedServer`, `answersToOwnServer`), `interview/answers.ts`
+  - Accept:
+    - `ownFirstApp(deps, ref)` in `shares/own-first-app.ts` reads the named app (its plan,
+      own-server record and pinned host key) and returns its own-server answers and host key. It
+      refuses, before any change and ending "Nothing was changed.":
+      - a tunnel (`target.access: "tunnel"`), saying to answer the server questions with the
+        server's own login, since several apps on one server work there;
+      - a home server (`target.home`), likewise;
+      - a preview environment;
+      - an app that is itself a second app;
+      - one not provisioned on this computer, or missing its record or pinned host key.
+    - The interview (terminal and `--answers`): a `server.shares` naming an own-server app
+      becomes that server's own-server answers in this app's `.opscrew/server.json`, with no
+      `own.shares` kept, and the host key pinned in this app's `known_hosts`. A first app on a
+      created server keeps today's path. `firstApp`'s own-target refusal stays for callers that
+      need a created server.
+    - Design: `sharedAccessWarning(<name>)` in the summary for an own server whose inspection
+      finds another OpsCrew app's record (with several apps, each named).
+    - FR-3026: with `server.shares*` answered, `budgetMonthly` is neither asked in the terminal
+      nor required in `--answers`. One given is validated as today. Tests for both.
+    - Tests with fakes:
+      - a public own first app, proxied and DNS only;
+      - each refusal;
+      - the copied answers never in a committed file;
+      - a leak check: no address, key file content or token in any output.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/plan-schema && npx vitest run --root packages/agents src/interview src/shares src/design && pnpm lint`
+  - Effort: high
+
+- [ ] T3017 [P] [US6] `retarget` onto a server OpsCrew created for another app
+  - Owns: `packages/agents/src/retarget/**`, `packages/cli/src/commands/retarget*.ts`,
+    `packages/mcp-server/src/**` (only if its retarget input needs it), colocated tests;
+    `export` keywords only in `packages/agents/src/design/own.ts` and `shares/*.ts`, if a check
+    must be reused
+  - Reads: plan 16., 12., 3.–8.; spec US6, FR-3021–FR-3023; `retarget/sides/own.ts` (its `shares`
+    old side, `secondAppAdapter`), `retarget/start.ts`, `retarget/finish.ts`, `retarget/abort.ts`,
+    `shares/first-app.ts`, `shares/login.ts`, `provision/own.ts` (the second app's host plan and
+    DNS-only infrastructure plan), `design/own.ts` (the second-app checks),
+    `interview/own-server.ts` (`answersToSharedServer`), `docs/guide/retarget.md`,
+    `docs/guide/shared-server.md`
+  - Accept:
+    - `opscrew retarget --to own --answers <file>` with `server.shares*` (and the terminal's
+      questions offering it) resolves the first app with `firstApp`. For a first app on a server
+      OpsCrew created, the new side is an own target with `shares: { app, provider }`.
+    - Before any change, design's second-app checks run with the moving app's plan, and refuse as
+      design does: name, hostnames, `<app>-pr-<n>`, serving mode, proxy, server-wide settings,
+      memory (with the warning below 15%). The summary shows no server cost, the memory left and
+      `sharedAccessWarning`.
+    - The new side's host plan is the second app's, approved by its hash: `secondAppAdapter`, the
+      first app's deploy login for its first apply, the app's own deploy key added. Its
+      infrastructure plan holds the DNS records only, changed at the switch. Deploy, check, copy
+      and switch run as for any own new side.
+    - `--finish` removes the old side through its usual path: a created server through destroy's
+      paths, an own server or Portainer as today, a shared old side through `planTeardown` with
+      `shares: true` (12.). Afterwards `own.shares` is the app's reference, as after a second
+      app's provision.
+    - `--abort` before the switch removes only the moving app's parts on the shared server
+      (`planTeardown`, `shares: true`), and DNS stays on the old side.
+    - A first app on a server the user owns is still refused here, with today's text. T3018
+      wires it after T3016.
+    - Tests with fakes: start, the refusals, abort and finish, for each old side:
+      - a created server: Hetzner, and DigitalOcean or Contabo, through the providers'
+        definitions;
+      - an own server;
+      - a Portainer;
+      - another shared server.
+
+      The first app's parts are never in a plan. A leak check over everything the fakes saw.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/retarget && npx vitest run --root packages/cli src/commands && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T3018 [US6] [US7] `retarget` onto a server of the user's own that another app runs on
+  - Owns: `packages/agents/src/retarget/**`, `packages/cli/src/commands/retarget*.ts`, colocated
+    tests
+  - Depends: T3016, T3017
+  - Accept: `retarget --to own` with `server.shares` naming an app on a server the user owns
+    takes `ownFirstApp`'s answers and runs as a move to that server beside the apps there (spec
+    US7 scenario 4). A tunnel or a home server is refused in `ownFirstApp`'s words. Tests with
+    fakes.
+  - Verify: as T3017
+  - Effort: medium
+
+- [ ] T3019 [US6] [US7] The guide
+  - Owns: `docs/guide/retarget.md`, `docs/guide/shared-server.md`, `docs/guide/own-server.md`
+  - Depends: T3016, T3017
+  - Accept:
+    - retarget.md: moving onto another app's server (`--to own` with `server.shares` in the
+      answers, both directions, the abort and the finish) in "How a move works", "In scripts" and
+      "Before you move"; "A move goes off a shared server only" removed.
+    - shared-server.md: an own first app in public mode (tunnel and home refused, and why), no
+      budget with `server.shares`, moving onto the server with retarget.
+    - own-server.md's "Several apps on one server": the shared-access warning, and naming another
+      app's folder.
+    - Written for users.
+  - Verify: `pnpm lint`
+  - Effort: medium
+
+- [ ] T3020 (lead) The PHP app's live move onto the first app's server (plan 19.), run by the PHP app's
+  session; results and "not tested live" rows in `docs/e2e-coverage.md`
+
+**Follow-up, after 0.2.11:**
+- A first app on a server OpsCrew created that raises its own memory limits without a resize is
+  not checked against its second apps (T3015's finding). Covering it costs one read-only look at
+  the server on every provision of a deployed cloud app. One possible trigger: only when the
+  plan's limits rose since the last applied provision.
+- `shared/wait.ts`'s `confirmChangedHostKey` puts the server's address in the approval title,
+  which the audit log keeps (T3017's finding). Fixed at T3017's merge.

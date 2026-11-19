@@ -377,8 +377,8 @@ so it becomes another second app (name `<app>-<env>`, own hostname, own record).
 
 `retarget` from a second app treats its old side as an own server that is never the last: the
 own side's `sharedEdge` is set, so the edge keeps running. The finish removes the old side
-through `planTeardown` with `shares: true`. Moving onto a server as a second app is not offered
-(retarget's sides are unchanged); a second app moves off only.
+through `planTeardown` with `shares: true`. Moving onto a server as a second app came after, in
+16.
 
 ### 13. The guide (T3009)
 
@@ -427,6 +427,66 @@ reads the site. No destroy: the app stays. Two checks the second app's own lead 
   visitor's real address. The edge's `trusted_proxies` and `client_ip_headers CF-Connecting-IP`
   and the site's `header_up X-Forwarded-For {client_ip}` should give that.
 
+### 16. Moving onto another app's server (US6, T3017, T3018; 2026-11-20)
+
+- **The CLI shape:** no new `--to`. `retarget --to own` takes the `server.shares*` answers, as
+  the interview does (`--answers <file>`, or the terminal's own-server questions, which gain the
+  interview's "a server another of your OpsCrew apps runs on"). `retarget-answers.ts` calls
+  `answersToSharedServer` before `answersToOwnServer`.
+- **The new side** is an own target with `shares` (`{ app, provider }`): the target a second
+  app's design writes. It is set from `firstApp(ref)` and checked with design's second-app checks
+  (`design/own.ts`: name, hostnames, the `<app>-pr-<n>` form, serving mode, proxy, server-wide
+  settings, memory), refusing before any change. `sides/own.ts` already runs a `shares` old side
+  through `secondAppAdapter`. Its new side does the same:
+  - its host plan through `secondAppLogin`, as provision's second-app path does;
+  - its infrastructure plan with the DNS records only, applied at the switch;
+  - `--abort` through `planTeardown` with `shares: true`.
+- **The reference:** during the move, `own.shares` belongs to the new side, beside the old
+  side's record (`readOldOwnServer`, `joined`). After `--finish` it is the app's reference, as
+  after a second app's provision. After `--abort` it is gone.
+- **Both directions:** the old side is whatever retarget moves from today. A second app's old side
+  stays as in 12.
+- **The first app's guards** (9.) see the moved app through its record on the server, from the
+  host plan's apply on. Nothing changes there.
+- **An own first app** (US7) resolves to plain own-server answers (17.), and the move is an
+  ordinary move to the user's server beside other apps (T3018 wires it).
+
+### 17. Sharing a server the user owns (US7, T3016)
+
+- `firstApp` keeps refusing an own target for the created-server path. Beside it,
+  `ownFirstApp(deps, ref)` (`shares/own-first-app.ts`) reads the named app's own-server record
+  (`.opscrew/server.json`: host, port, user, key path, serving mode) and its pinned host key. It
+  refuses a tunnel, a home server, a preview environment, a first app that is itself a second app,
+  and one not provisioned on this computer, each before any change.
+- The interview's `server.shares` answers resolve first through `firstApp`'s plan. For an own
+  target, they become that server's own-server answers in the second app's `server.json`, with no
+  `own.shares` reference kept, and its pinned host key copied into the second app's
+  `known_hosts`. From then on the app is one more app on the user's server (013's path:
+  `claimFindings`, the memory check, the shared edge).
+- Design shows `sharedAccessWarning(<other app>)` for an own server whose inspection finds another
+  OpsCrew app's record, whatever way its login came.
+- The budget (FR-3026): with `server.shares`, `budgetMonthly` is neither asked nor required.
+
+### 18. Provision's shared-server fit check (FR-3024, T3015)
+
+Provision runs design's memory check before it plans anything, whenever the server holds other
+apps' records or the app is a second app:
+- the server's memory, from inspection, minus the other apps' limits from their records, the
+  edge and the system reserve, must hold the plan's components;
+- below 15% free, it warns.
+
+It refuses in design's words, ending "Nothing was changed." The PHP app's hand-raised `memoryMb`
+(found live, 2026-11-19) is the test: a hand-raised limit refused, a fitting one let through.
+
+### 19. The live run (US6)
+
+The PHP app moves from the first app's server onto the first app's server,
+both created by OpsCrew on Hetzner. It is a second app moving from one shared server to another:
+the first live run of US6. Each plan only adds on the first app's server, and only the PHP app's own parts
+go from the first app's. The PHP app's session tells another session before each
+step that deploys. DigitalOcean, Contabo and an own first app are covered by fakes only, marked
+"not tested live" on the coverage page.
+
 ## Requirements coverage
 
 | Requirement | Design | Task |
@@ -446,6 +506,9 @@ reads the site. No destroy: the app stays. Two checks the second app's own lead 
 | FR-3018 | 12. | T3008 |
 | FR-3019 | 5., 8., Constitution IV | every agents task |
 | FR-3020 | 11., 13. | T3007, T3009 |
+| FR-3021–FR-3023 | 16. | T3017, T3018, T3019 |
+| FR-3024 | 18. | T3015 |
+| FR-3025, FR-3026 | 17. | T3016, T3018 |
 
 ## Order
 
