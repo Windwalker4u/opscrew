@@ -217,7 +217,8 @@ async function knownServers(deps: PhaseDeps, plan: DeployPlan): Promise<string[]
  * Records at the app's hostnames that OpsCrew did not create (no OpsCrew comment): A, AAAA and
  * CNAME records not pointing at a server OpsCrew already deployed (`clashing`), and CAA records
  * (`caa`). A server at home's address updater keeps the A and AAAA records at `updaterName`
- * (the app's domain) with its own comment, so those are not foreign either. Doubles as the
+ * (the app's domain) with its own comment, so those are not foreign either, also while the server
+ * leaves home. Doubles as the
  * DNS-read permission check.
  */
 async function foreignDnsRecords(
@@ -409,8 +410,17 @@ export async function setupCloudflare(
           ].filter((host): host is string => host !== undefined);
     // The user's Portainer has no server whose records OpsCrew could have made.
     const servers = portainer === undefined ? await knownServers(deps, plan) : [];
-    // A server at home: the address updater's own records at the domain.
-    const found = await foreignDnsRecords(api, zone.id, servers, hosts, addressUpdaterName(plan));
+    // The address updater's own records at the domain: at home, and while the server leaves home
+    // (`own.home` still recorded), where the plan names no updater yet the server's still keeps
+    // them until the switch removes it and then its records.
+    const leavingHome = (await readServerAddresses(deps.paths)).own?.home !== undefined;
+    const found = await foreignDnsRecords(
+      api,
+      zone.id,
+      servers,
+      hosts,
+      addressUpdaterName(plan) ?? (leavingHome ? domain : undefined),
+    );
     const foreign = found.clashing;
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {

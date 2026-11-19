@@ -9,6 +9,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { UPDATER_RECORD_COMMENT } from "../home/records";
+import { recordOwnServer } from "../shared";
 import {
   createTestPhaseDeps,
   fakeCloudflare,
@@ -94,6 +95,31 @@ describe("setupCloudflare: the address updater's records", () => {
       cloudflare: fakeCloudflare({ records }),
     });
     expect(setup).toMatchObject({ zoneName: "example.com" });
+    expect(setup).not.toHaveProperty("foreignRecords");
+  });
+
+  it("lets the switch away from home pass: the updater's records are its own once the plan names no updater", async () => {
+    // The plan of a server leaving home for the tunnel: no `home`, so no updater named in it, while
+    // the server's updater still keeps its records (the switch removes it, then its records).
+    const base = homePlan();
+    const { home: _left, ...target } = base.target as typeof base.target & { home?: unknown };
+    const tunnel = DeployPlanSchema.parse({ ...base, target: { ...target, access: "tunnel" } });
+    const updaters = [record("AAAA", "shop.example.com", HOME_IPV6, UPDATER_RECORD_COMMENT)];
+    const deps = await createTestPhaseDeps();
+    // Never at home (no `own.home` here): the comment alone makes no record OpsCrew's.
+    expect((await refusal(tunnel, updaters)).message).toContain("  AAAA shop.example.com\n");
+    await recordOwnServer(deps.paths, {
+      host: "192.168.1.20",
+      port: 22,
+      user: "root",
+      agent: true,
+      serve: "proxy",
+      hostKey: "SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s",
+      home: { sshFrom: ["192.168.1.0/24"] },
+    });
+    const setup = await setupCloudflare(deps, tunnel, {
+      cloudflare: fakeCloudflare({ records: updaters }),
+    });
     expect(setup).not.toHaveProperty("foreignRecords");
   });
 
