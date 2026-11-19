@@ -4204,6 +4204,85 @@ go on. **If H7 can't run**, delete by hand only what the pass made: at Hetzner, 
 `e2e-home-<run id>`; the app's runner in the repository; reset the repository; then the pass's
 folder. Never a record, tunnel or server that isn't the pass's.
 
+## A second app on a server OpsCrew created
+
+`packages/cli/test/live/shared-server.test.ts`, with `OPSCREW_E2E_SHARED_SERVER=1`, runs feature
+030's pass L1, the throwaway pair ([the guide](guide/shared-server.md)), in
+`OPSCREW_E2E_GITHUB_REPO_C`. The first app is the seeded `examples/koa-knex` of
+[Previews](#previews), in the folder `koa-knex`, on a Hetzner CX23 OpsCrew creates, behind
+Cloudflare's proxy. The second app is `examples/express-api` in the folder `express-api`, added
+with `opscrew app add`, which joins the first app's server. Every name is the run's own and never
+starts with `e2e-`, which other passes use: the apps are `j030-<tag>-a` and `j030-<tag>-b`, at
+`j030-<tag>-first.<zone>` and `j030-<tag>-second.<zone>`, where `<tag>` is the random part of the
+run's id. Every command runs as a script runs it, each printed hash approved.
+
+The steps:
+
+1. **The first app:** `analyze --dir koa-knex` (the project named after the run), the interview
+   for Hetzner on its hostname, design, the server type set to `cx23` in `plan.yaml`, adapt,
+   provision and the first deploy. Its `/e2e` page answers through Cloudflare, `verify --app .`
+   passes, and Hetzner lists one `cx23` server for it.
+2. **The second app joins:** `app add j030-<tag>-b --dir express-api`, `analyze`, the interview
+   with `provider: own`, `server.shares` (the repository's own folder) and `server.shares-app: .`,
+   and design. The plan must name the first app and Hetzner in `target.shares`, behind Cloudflare's
+   proxy. Then adapt, provision and the first deploy, while a request every second goes to the first
+   app's health route through Cloudflare. No request may fail (SC-3002), except Cloudflare's brief
+   52x answers while an origin pull setting rolls out, as in [the environments](#environments-and-promotion).
+   The load's count and statuses are logged. The second app answers, `verify --app j030-<tag>-b`
+   passes, Hetzner lists no server of the second app, and the first app's server is the same one.
+   `deploy`'s `authorized_keys` is read first, through the first app's deploy login, as the SHA-256
+   of each line (never a line itself).
+3. **No changes:** the second app's `provision --plan-only` has nothing to approve or apply, and
+   `drift` of both apps finds nothing (SC-3005).
+4. **The first app's guards** (SC-3004), each a step of its own: `destroy --confirm`, `secure
+   --close-public-ssh`, `provision --plan-only` after `dns.proxied: false` was written in its
+   `plan.yaml` (put back afterwards), and `retarget --to contabo`. Each must exit with an error
+   that names `"j030-<tag>-b"` and says "Nothing was changed.", without a server address. Both
+   plans, the checkout, `deploy`'s `authorized_keys`, the server's containers and app folders, the
+   first app's server and firewall at Hetzner, and both apps' DNS records must be as before, each
+   compared by its digest.
+5. **The second app's data:** a table in its PostgreSQL, `snapshot --app j030-<tag>-b`, a row
+   added, then `restore <id>` (its name typed) puts the snapshot back. The second app answers, and
+   so does the first.
+6. **The second app's destroy**, under the same load. Then `deploy`'s `authorized_keys` holds
+   exactly its lines from before step 2, in order (SC-3003). The second app's secrets and DNS
+   records are gone, and the first app's server is the same one. The first app deploys from `main`
+   and answers, and its scheduled check runs by dispatch with no open issue for the first app.
+7. **The first app's destroy:** refused first, since the second app's data is kept on the server;
+   then with `--skip-other-apps-check`. Nothing of either app is left at Hetzner (by the first
+   app's labels) or in Cloudflare.
+8. **Nothing leaked** (SC-3006): no token, key or generated value in any output, commit, pull
+   request, audit entry, plan or state file, and no server address in an output of the second
+   app's commands. The loads' figures are logged for [e2e-coverage.md](e2e-coverage.md).
+
+**Cleanup** runs after every run: `opscrew destroy` of what is left, the second app first; then
+Hetzner's API deletes what is labelled `managed-by=opscrew,app=<the run's app name>`, and only
+that, since the Hetzner project may hold other servers. Then the GitHub environments and secrets
+the run made, the Cloudflare records and rules on the run's two hostnames, and the repository's
+reset. **If a run was interrupted**, delete by hand only the run's own: the server, firewall and
+SSH key labelled `app=j030-<tag>-a`, the DNS records on `j030-<tag>-first.<zone>` and
+`j030-<tag>-second.<zone>` and their `www.`, then reset the repository.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_SHARED_SERVER` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [environments](#environments-and-promotion). Without any of them the test is skipped with a message naming it. |
+| `OPSCREW_E2E_GITHUB_REPO_C` | The **public** throwaway repository (the same as [the environment rules](#the-environment-rules-on-a-public-repository)). |
+| `OPSCREW_E2E_REGION` | Optional, as above. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_SHARED_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO_C=you/opscrew-e2e-c \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  OPSCREW_TEST_TMP=D:/opscrew-test-tmp PATH="$PWD/../../.tools/bin:$PATH" \
+  npx vitest run test/live/shared-server.test.ts
+```
+
+Not measured yet: about 35 to 45 minutes (previews on dev's server, with two servers and four
+deploys, took 23), with one CX23 for that time (a few cents), three to five deploy runs and one
+run of the check.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
