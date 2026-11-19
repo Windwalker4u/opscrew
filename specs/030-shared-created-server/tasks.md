@@ -48,7 +48,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T3001 [P] [US1] `target.shares` in the plan
+- [x] T3001 [P] [US1] `target.shares` in the plan
   - Owns: `packages/plan-schema/src/plan.ts` (`OwnTargetSchema.shares` and its refinement only),
     `packages/plan-schema/src/index.ts`, `packages/plan-schema/schemas/**` (regenerated),
     colocated tests
@@ -60,7 +60,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm lint`
   - Effort: medium
 
-- [ ] T3002 [P] [US1] [US3] The host adapter's second-app mode
+- [x] T3002 [P] [US1] [US3] The host adapter's second-app mode
   - Owns: `packages/connectors/ssh-host/src/**` (types.ts `DesiredHost.shares`; facts.ts
     `AppRecordSchema.shares`/`.repository`; plan.ts, steps.ts, findings.ts, apply.ts, inspect.ts
     for plan 3. and 4.), colocated tests and `__fixtures__`
@@ -110,7 +110,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 3: Wave 2
 
-- [ ] T3003 [US1] [US2] [US3] The reference, the first app and the logins
+- [x] T3003 [US1] [US2] [US3] The reference, the first app and the logins
   - Owns: `packages/agents/src/shares/{reference,first-app,login,guard}.ts` (new), colocated
     tests, `packages/agents/src/shared/server-record.ts` (`own.shares`, `own.joined` only),
     `packages/agents/src/testing/own.ts` (a created server with records and `docker` privilege
@@ -151,7 +151,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T3004 [P] [US1] [US4] Interview, design and a second app's environments
+- [x] T3004 [P] [US1] [US4] Interview, design and a second app's environments
   - Owns: `packages/agents/src/interview/{own-server,run}.ts`, `packages/agents/src/design/{own,own-servers,run}.ts`,
     `packages/agents/src/shared/own-server-design.ts`, `packages/agents/src/environments/add.ts`,
     colocated tests and `__fixtures__`
@@ -169,7 +169,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/interview src/design src/environments && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3005 [P] [US1] [US3] A second app's provision and its own commands
+- [x] T3005 [P] [US1] [US3] A second app's provision and its own commands
   - Owns: `packages/agents/src/provision/own.ts`, `packages/agents/src/provision/secrets.ts` (the
     second app's `HOST`/`KNOWN_HOSTS` only), `packages/agents/src/destroy/own.ts`,
     `packages/agents/src/secure/own.ts`, `packages/agents/src/previews/host.ts` (`hostProblem`:
@@ -189,7 +189,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision src/destroy src/secure src/previews && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3006 [P] [US2] The first app's guards
+- [x] T3006 [P] [US2] The first app's guards
   - Owns: the call sites of plan 9.'s table in `packages/agents/src/{destroy/run.ts,retarget/run.ts,retarget/finish.ts,provision/run.ts,snapshot/server.ts,secure/public-ssh.ts,addons/run.ts,portainer/run.ts,vpn/devices.ts,vpn/grants.ts}`
     (the guard calls only), and in the same files the second app's refusals of plan 8.
     (whole-server snapshot and restore, Beszel, Portainer, closing public SSH, each naming the
@@ -231,6 +231,10 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   `shares.host` that design sets again over `desiredHost`'s; the budget question.
 - Open: a second app's commands once the first app's server is gone (spec edge case). Its
   destroy should then remove its DNS and Cloudflare parts and record the deployment gone.
+- Open (from T3006b): after a `--plan-only`, the `--approve` run reads only replace, delete
+  and resize from the saved plan; a serving switch or a new network is seen only by the plan-only
+  run, which refuses while a second app is there. Only a second app that joins between the two
+  runs gets past.
 - Open (from T3008): when a second app's move-off teardown fails right after its `deploy-key`
   step, `retarget.fromOwn.joined` stays, and the next `--finish` can't log in. It stops plainly,
   changing nothing. The fix is a `secondAppLogin` that pins into `retarget.fromOwn`. For the
@@ -254,7 +258,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T3007 [P] [US1] [US2] CLI and MCP
+- [x] T3007 [P] [US1] [US2] CLI and MCP
   - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`, colocated tests
   - Reads: plan 11.; T3004's and T3006's reports (the options)
   - Depends: T3004, T3005, T3006
@@ -264,7 +268,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: high
 
-- [ ] T3008 [P] [US5] A second app moves off
+- [x] T3008 [P] [US5] A second app moves off
   - Owns: `packages/agents/src/retarget/sides/own.ts`, `packages/agents/src/retarget/finish.ts`
     (the second app's old side only), colocated tests
   - Reads: plan 12.; `retarget/sides/ssh.ts` (`sharedEdge`, `edgeShared`)
@@ -275,7 +279,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/retarget && pnpm lint`
   - Effort: high
 
-- [ ] T3009 [P] [US1] [US2] [US3] The guide
+- [x] T3009 [P] [US1] [US2] [US3] The guide
   - Owns: `docs/guide/shared-server.md` (new), and the links in `docs/guide/{index,hetzner,digitalocean,contabo,own-server,several-apps,public-ssh,snapshots,retarget}.md`
   - Reads: plan 13.; spec; T3007's flags
   - Depends: T3007
@@ -284,7 +288,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T3014 [P] [US1] [US2] [US3] The live test for L1
+- [x] T3014 [P] [US1] [US2] [US3] The live test for L1
   - Owns: `packages/cli/test/live/shared-server.test.ts`, `packages/cli/test/live/shared-server-support.ts`
     (+ its `.test.ts` for the pure helpers), the section "A second app on a server OpsCrew
     created" in `docs/e2e.md`
