@@ -40,7 +40,7 @@ export type SwitchInput = Omit<Parameters<typeof removeOldAccessMode>[1], "outpu
 export async function switchAccessMode(
   deps: PhaseDeps,
   input: SwitchInput,
-): Promise<(PlanAndApplyResult & { host?: HostChangeResult }) | undefined> {
+): Promise<(PlanAndApplyResult & { host?: HostChangeResult; leaving?: LeavingHome }) | undefined> {
   const { cloudflare, ...removalInput } = input;
   const outputs = await infrastructureOutputs(deps, input.plan, {
     engine: async () => input.engine,
@@ -61,8 +61,17 @@ export async function switchAccessMode(
     outputs === undefined
       ? undefined
       : await removeOldAccessMode(deps, { ...removalInput, outputs });
-  if (left === undefined || input.planOnly === true) return removal;
-  return { ...(removal ?? { applied: false, outputs: {} }), host: left };
+  if (left === undefined) return removal;
+  // With `--plan-only` the plans of leaving home are named for the run's approval command.
+  if (input.planOnly === true) {
+    const leaving: LeavingHome = {
+      ...(left.hostPending ? { hostPlanHash: left.host.hash } : {}),
+      ...(left.recordsPlanHash !== undefined ? { recordsPlanHash: left.recordsPlanHash } : {}),
+    };
+    if (Object.keys(leaving).length === 0) return removal;
+    return { ...(removal ?? { applied: false, outputs: {} }), leaving };
+  }
+  return { ...(removal ?? { applied: false, outputs: {} }), host: left.host };
 }
 
 /**
@@ -73,7 +82,23 @@ export async function switchAccessMode(
  * app's name are deleted at Cloudflare (`deleteUpdaterRecords`). With `planOnly` both are only
  * shown, each with its hash.
  */
-async function leaveHome(deps: PhaseDeps, input: SwitchInput): Promise<HostPlanOutcome> {
+/** With `--plan-only`, the plans of leaving home a script approves: by their hashes. */
+export interface LeavingHome {
+  /** The host plan that removes the address updater, while it still has to run. */
+  hostPlanHash?: string;
+  /** The deletion of the updater's records, approved with the app's name typed. */
+  recordsPlanHash?: string;
+}
+
+/** What leaving home did or plans: its host plan, and with `--plan-only` the records' deletion. */
+interface LeftHome {
+  host: HostPlanOutcome;
+  /** The host plan has changes still to apply. */
+  hostPending: boolean;
+  recordsPlanHash?: string;
+}
+
+async function leaveHome(deps: PhaseDeps, input: SwitchInput): Promise<LeftHome> {
   const { plan, phase } = input;
   const { run } = input.host;
   const app = plan.app.name;
@@ -97,22 +122,26 @@ async function leaveHome(deps: PhaseDeps, input: SwitchInput): Promise<HostPlanO
     upToDate: "Your server's address updater is removed already; nothing on it changes.",
   });
   if (host.applied) await inspectAgain(deps, run, phase, "after removing the address updater");
+  const hostPending = host.plan.steps.some((step) => step.state === "change");
   const name = plan.dns.domain;
-  if (input.cloudflare === undefined || name === undefined) return host;
+  if (input.cloudflare === undefined || name === undefined) return { host, hostPending };
   const client = cloudflareConnector(deps).client;
   if (client === undefined) throw cloudflareTokenMissing(deps);
   const records = { app, zoneId: input.cloudflare.zoneId, name };
   if (input.planOnly !== true) {
     await deleteUpdaterRecords(deps, client, { ...records, command, phase });
-    return host;
+    return { host, hostPending };
   }
   const deletion = await planRecordDeletion(client, records);
   if (deletion !== undefined) {
-    const pending = host.plan.steps.some((step) => step.state === "change");
-    const hashes = [...(pending ? [host.hash] : []), deletion.planHash];
+    const hashes = [...(hostPending ? [host.hash] : []), deletion.planHash];
     deps.reporter.info(
       `Then OpsCrew deletes the address updater's records of ${app} at Cloudflare (${deletion.records.map((record) => `${record.type} ${record.name}`).join(", ")}; plan hash ${deletion.planHash}). In a script, approve them with the plans below: ${hashes.map((hash) => `--approve ${hash}`).join(" ")} --confirm ${app}.`,
     );
   }
-  return host;
+  return {
+    host,
+    hostPending,
+    ...(deletion !== undefined ? { recordsPlanHash: deletion.planHash } : {}),
+  };
 }

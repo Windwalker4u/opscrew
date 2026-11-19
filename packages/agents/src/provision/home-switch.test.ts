@@ -529,6 +529,12 @@ describe.skipIf(!findExecutable("git"))("leaving home on one server", () => {
     );
     // The new setup's host plan is the same plan: the switch's host change is all it changes.
     expect(planned.hostPlanHash).toBe(hostHash);
+    // Both are in the result, so the run's approval command names them, with the app's name for
+    // the records' deletion (found by the live home pass, H7).
+    expect(planned).toMatchObject({
+      leaveHomeHostPlanHash: hostHash,
+      homeRecordsPlanHash: recordsHash,
+    });
 
     await provision(s, {
       approveHashes: [

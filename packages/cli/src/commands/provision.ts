@@ -469,6 +469,21 @@ export async function runInfraCommand(
           // Deleting OpsCrew's rule needs the app's name, like an infrastructure plan that deletes.
           if (result.cloudflarePlanDeletes === true && named !== undefined) confirmNames.add(named);
         }
+        // Leaving home: the host plan that removes the address updater, then its records'
+        // deletion, which needs the app's name typed.
+        if (result.leaveHomeHostPlanHash !== undefined) {
+          planned.push({
+            label: "host plan that removes the address updater",
+            hash: result.leaveHomeHostPlanHash,
+          });
+        }
+        if (result.homeRecordsPlanHash !== undefined) {
+          planned.push({
+            label: "deletion of the address updater's records",
+            hash: result.homeRecordsPlanHash,
+          });
+          if (named !== undefined) confirmNames.add(named);
+        }
         // The app's bucket at a provider has a plan of its own.
         if (result.storagePlanHash !== undefined) {
           planned.push({ label: "bucket (object storage)", hash: result.storagePlanHash });

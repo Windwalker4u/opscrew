@@ -370,6 +370,12 @@ export interface ProvisionResult {
   hostPlanHash?: string;
   /** A server the user owns: true when this run applied host changes. */
   hostApplied?: boolean;
+  /**
+   * With `--plan-only`, leaving home: the host plan that removes the address updater while it still
+   * has to run, and the deletion of the updater's records, which needs the app's name typed.
+   */
+  leaveHomeHostPlanHash?: string;
+  homeRecordsPlanHash?: string;
   /** With `--plan-only`: the scheduled check key's host plan hash (`check-key`), to approve too. */
   checkKeyPlanHash?: string;
   /**

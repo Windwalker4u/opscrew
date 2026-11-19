@@ -148,7 +148,7 @@ import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { renderedServers, requireNoSmallerDisk } from "./disk-guard";
 import { requireNoMoveInProgress } from "./guard";
-import { switchAccessMode } from "./home-switch";
+import { type LeavingHome, switchAccessMode } from "./home-switch";
 import { monitoringHostPlans } from "./monitoring";
 import { checkOffsiteWriteOnServers } from "./offsite-check";
 import {
@@ -854,6 +854,8 @@ async function provisionFlow(
   let ownRender: OwnRenderInput | undefined;
   /** The host plan applied before a mode switch's removal deleted the tunnel. */
   let earlyHost: HostChangeResult | undefined;
+  // With `--plan-only`, leaving home: its host plan and its records' deletion, for the command.
+  let leavingHome: LeavingHome | undefined;
   /** A server OpsCrew creates with the server's runner: the repository, checked before any change. */
   let runnerRepository: RunnerRepository | undefined;
   // The extra servers the user owns, before anything is applied: connected (their host keys pinned
@@ -928,6 +930,7 @@ async function provisionFlow(
       ...(cloudflare !== undefined ? { cloudflare } : {}),
     });
     earlyHost = removal?.host;
+    leavingHome = removal?.leaving;
     if (removal === undefined && saved.removal !== undefined) {
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
@@ -951,6 +954,7 @@ async function provisionFlow(
         return {
           ...(removal.planHash ? { planHash: removal.planHash } : {}),
           ...(first !== undefined ? { hostPlanHash: first.hash } : {}),
+          ...leavingHashes(leavingHome),
           applied: false,
           outputs: {},
         };
@@ -991,7 +995,9 @@ async function provisionFlow(
           ...originTlsApply(deps, tls, services),
         });
   const cloudflareHash = sharedResult?.fields ?? {};
-  if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
+  if (sharedResult?.infrastructureWaits) {
+    return { ...cloudflareHash, ...leavingHashes(leavingHome), applied: false, outputs: {} };
+  }
   for (const approval of sharedResult?.approvals ?? []) approvals.push(approvalEntry(approval));
   if (sharedResult?.oneTimePinId !== undefined) {
     ownRender = { ...ownRender, oneTimePinIdentityProviderId: sharedResult.oneTimePinId };
@@ -1383,6 +1389,7 @@ async function provisionFlow(
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
       ...storageHash,
       ...cloudflareHash,
+      ...leavingHashes(leavingHome),
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
       ...(checkKeyPlanHash !== undefined ? { checkKeyPlanHash } : {}),
       ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
@@ -2085,4 +2092,16 @@ export async function runProvision(
     flow,
     liftConfirmedBy === undefined ? {} : { liftConfirmedBy },
   );
+}
+
+/** The plans of leaving home a `--plan-only` run names for its approval command. */
+function leavingHashes(
+  leaving: LeavingHome | undefined,
+): Pick<ProvisionResult, "leaveHomeHostPlanHash" | "homeRecordsPlanHash"> {
+  return {
+    ...(leaving?.hostPlanHash !== undefined ? { leaveHomeHostPlanHash: leaving.hostPlanHash } : {}),
+    ...(leaving?.recordsPlanHash !== undefined
+      ? { homeRecordsPlanHash: leaving.recordsPlanHash }
+      : {}),
+  };
 }
