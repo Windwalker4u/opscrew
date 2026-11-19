@@ -8,6 +8,7 @@ import {
   appSnapshots,
   type OwnHost,
   offsiteCopiesStay,
+  sharedServerStays,
 } from "../../destroy/own";
 import { project } from "../../destroy/servers";
 import type { DestroyPreview } from "../../destroy/types";
@@ -49,11 +50,6 @@ export type OwnSideOptions = Pick<ProvisionOptions, "hostKey" | "passwordLogins"
 /** Said wherever the app comes off a server the user owns. */
 const SERVER_STAYS =
   "Your server itself stays: OpsCrew never deletes, rebuilds or reinstalls it, and leaves its own host settings (Docker, the deploy user, SSH and the firewall) as they are.";
-
-/** {@link SERVER_STAYS} for a second app: the server is the first app's (`first`). */
-function sharedServerStays(first: string): string {
-  return `The server is the one OpsCrew created for "${first}", and it stays until that app's \`opscrew destroy\`.`;
-}
 
 /**
  * Forgets that a second app's own deploy key is on the old side's server (`retarget.fromOwn`'s

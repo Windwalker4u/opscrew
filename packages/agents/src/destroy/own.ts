@@ -153,7 +153,7 @@ const SERVER_STAYS =
   "Your server itself stays: OpsCrew never deletes, rebuilds or reinstalls it, and takes no snapshot of it. Backups are your responsibility.";
 
 /** {@link SERVER_STAYS} for a second app: the server is the first app's (`first`). */
-function sharedServerStays(first: string): string {
+export function sharedServerStays(first: string): string {
   return `The server is the one OpsCrew created for "${first}", and it stays until that app's \`opscrew destroy\`.`;
 }
 
