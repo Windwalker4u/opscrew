@@ -325,6 +325,11 @@ describe.skipIf(H1.skip)(H1.title, () => {
         (await run.readPlan()).services.map((service) => service.name),
         "design keeps PostgreSQL",
       ).toContain(MOVE_SERVICES.postgres);
+      // Design proposes the off-server copy of the snapshots; in a script, provision would stop
+      // for its age key (the copy is the snapshots pass's, not this one's).
+      if ((await run.readPlan()).snapshots?.offsite !== undefined) {
+        await run.opscrewOk("snapshot", "offsite", "off");
+      }
     },
   );
 

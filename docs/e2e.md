@@ -4078,8 +4078,9 @@ app's name typed.
 2. **H1, proxied over IPv4:** the server and its firewall; `init --fix`, `analyze`, the interview
    (`server.home yes`, `server.serve proxy`, `server.sshFrom`), design (the public IPv4 address is
    on the server's interface: "your router needs no forwards"; the server's runner; proxied), then
-   PostgreSQL added in `plan.yaml` and design again. Adapt, provision (the SSH table, the updater,
-   the web filter), the merges and the first deploy, whose jobs ran on the server's runner. On the
+   PostgreSQL added in `plan.yaml` and design again (the off-server copy design proposes turned
+   off, as a script has no age key). Adapt, provision (the SSH table, the updater, the web
+   filter), the merges and the first deploy, whose jobs ran on the server's runner. On the
    server: OpsCrew's SSH table names this computer, the updater's timer is active, its token file is
    `600 root`; the proxied A record holds the server's address and there is no AAAA. Then the site
    through Cloudflare, `verify` with the outside check passing on both ports, and the minutes from the
