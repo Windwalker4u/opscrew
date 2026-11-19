@@ -452,9 +452,10 @@ describe("the services' settings", () => {
     const plan = withServices([{ kind: "mongodb", name: "docs", options: { replicaSet: true } }]);
     const [step, ...rest] = serviceSpec("mongodb").init?.(ctx(plan, "docs")) ?? [];
     expect(rest).toEqual([]);
-    // With the root user's current password, which the container keeps in its own file.
+    // With the root user's current password, which the container keeps in its own file; where the
+    // file isn't (a Portainer's init container), the environment's.
     const login =
-      'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /tmp/opscrew-password)" --authenticationDatabase admin';
+      'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /tmp/opscrew-password 2> /dev/null || printf %s "$MONGO_INITDB_ROOT_PASSWORD")" --authenticationDatabase admin';
     expect(step).toEqual({
       service: "docs",
       check: ["bash", "-c", `${login} --eval 'rs.status().ok'`],

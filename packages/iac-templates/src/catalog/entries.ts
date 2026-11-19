@@ -803,14 +803,17 @@ function mongoCommand(ctx: ServiceContext): string[] {
 }
 
 /**
- * mongosh in the service's container, logged in as the root user with the container's current
- * password (its bash reads it, so the password is in no repository file and no log).
+ * mongosh logged in as the root user with the current password: {@link PASSWORD_FILE}, which the
+ * service's own start writes and a rotation rewrites (a server runs the steps in that container),
+ * or, where the file isn't (a Portainer stack's `<service>-init` container, which shares only the
+ * service's network), the stack's variable. Its bash reads either, so the password is in no
+ * repository file and no log.
  */
 function mongosh(script: string): string[] {
   return [
     "bash",
     "-c",
-    `mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p ${current()} --authenticationDatabase admin --eval '${script}'`,
+    `mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat ${PASSWORD_FILE} 2> /dev/null || printf %s "$MONGO_INITDB_ROOT_PASSWORD")" --authenticationDatabase admin --eval '${script}'`,
   ];
 }
 

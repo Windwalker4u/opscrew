@@ -332,7 +332,7 @@ describe("the databases' recipes", () => {
     const [step] = mongodb.init?.(set) ?? [];
     for (const command of [step?.check, step?.run]) {
       expect(command?.[2]).toMatch(
-        /^mongosh --quiet -u "\$MONGO_INITDB_ROOT_USERNAME" -p "\$\(cat \/tmp\/opscrew-password\)" --authenticationDatabase admin --eval /,
+        /^mongosh --quiet -u "\$MONGO_INITDB_ROOT_USERNAME" -p "\$\(cat \/tmp\/opscrew-password 2> \/dev\/null \|\| printf %s "\$MONGO_INITDB_ROOT_PASSWORD"\)" --authenticationDatabase admin --eval /,
       );
     }
   });

@@ -903,6 +903,11 @@ describe("one-time setup and host settings in a stack", () => {
     expect(script).toContain(
       'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongodb:27017" }] })',
     );
+    // The password file is in the service's own container, which shares only its network with
+    // this one: here the login falls back to the stack's variable.
+    expect(script).toContain(
+      '-p "$$(cat /tmp/opscrew-password 2> /dev/null || printf %s "$$MONGO_INITDB_ROOT_PASSWORD")"',
+    );
     for (const name of ["app", "release", "worker", "cron"]) {
       expect(doc.services[name]?.depends_on, name).toMatchObject({
         mongodb: { condition: "service_healthy" },
