@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type {
   HostingCertificate,
   HostingCronJob,
+  HostingDatabaseServer,
   HostingDomain,
   HostingFacts,
   HostingOperation,
@@ -88,6 +89,8 @@ const AppsSchema = z.record(z.string(), anything).nullish();
 const PhpVersionsSchema = z.object({ versions: z.array(z.string()) });
 const DatabasesSchema = z.array(z.object({ database: z.string() }));
 const UsersSchema = z.array(z.object({ user: z.string() }));
+/** `Postgresql::list_users` answers the names only. */
+const PostgresUsersSchema = z.array(z.string());
 const FilesSchema = z.array(z.object({ file: z.string(), type: z.string() }));
 /** cPanel answers `content: null` for a file of 0 bytes (research R13). */
 const ContentSchema = z.object({ content: z.string().nullable() });
@@ -181,12 +184,13 @@ export class CpanelPanel implements HostingPanel {
   async inspect(): Promise<HostingFacts> {
     const read = <S extends z.ZodType>(module: string, func: string, schema: S, what: string) =>
       this.#client.uapi({ module, func, schema, what });
-    const [server, account, quota, restrictions, features] = await Promise.all([
+    const [server, account, quota, restrictions, features, postgres] = await Promise.all([
       read("Variables", "get_server_information", ServerSchema, "read the server's settings"),
       this.#account(),
       read("Quota", "get_quota_info", QuotaSchema, "read the account's disk quota"),
       read("Mysql", "get_restrictions", RestrictionsSchema, "read the database name rules"),
       read("Features", "list_features", FeaturesSchema, "list the account's features"),
+      this.#postgresRestrictions(),
     ]);
     const on = (feature: string) => features[feature] === 1;
 
@@ -202,7 +206,8 @@ export class CpanelPanel implements HostingPanel {
       }
     }
     const phpPerHostname = on("multiphp") ? [...(await this.#phpVersions()).keys()] : [];
-    const engines = databaseEngines(server.mysql_version);
+    const engines: HostingFacts["databases"]["engines"] = databaseEngines(server.mysql_version);
+    if (postgres) engines.push("postgres");
 
     return {
       panel: "cpanel",
@@ -220,6 +225,16 @@ export class CpanelPanel implements HostingPanel {
         }),
         ...(restrictions.max_username_length != null && {
           maxUserName: restrictions.max_username_length,
+        }),
+        ...(postgres && {
+          postgres: {
+            ...(postgres.max_database_name_length != null && {
+              maxDatabaseName: postgres.max_database_name_length,
+            }),
+            ...(postgres.max_username_length != null && {
+              maxUserName: postgres.max_username_length,
+            }),
+          },
         }),
       },
       apps: {
@@ -324,18 +339,25 @@ export class CpanelPanel implements HostingPanel {
     }
   }
 
-  async listDatabases(): Promise<string[]> {
+  async listDatabases(server: HostingDatabaseServer = "mysql"): Promise<string[]> {
+    const postgres = server === "postgres";
     const list = await this.#client.uapi({
-      module: "Mysql",
+      module: postgres ? "Postgresql" : "Mysql",
       func: "list_databases",
-      what: "list the account's databases",
+      what: postgres ? "list the account's PostgreSQL databases" : "list the account's databases",
       schema: DatabasesSchema,
     });
     return list.map((entry) => entry.database);
   }
 
-  async addDatabase(input: { name: string; user: string; password: string }): Promise<void> {
+  async addDatabase(input: {
+    name: string;
+    user: string;
+    password: string;
+    server?: HostingDatabaseServer;
+  }): Promise<void> {
     this.#client.registerSecret(input.password, "database password");
+    if (input.server === "postgres") return this.#addPostgres(input);
     const write = (func: string, params: Record<string, string>, what: string) =>
       this.#client.uapi({ module: "Mysql", func, params, write: true, what, schema: anything });
     await write("create_database", { name: input.name }, `create the database ${input.name}`);
@@ -356,7 +378,12 @@ export class CpanelPanel implements HostingPanel {
    * reappearing database, which answers "does not control" when deleted) is made and removed once
    * more, and a database listed after that is an error.
    */
-  async removeDatabase(input: { name: string; user: string }): Promise<void> {
+  async removeDatabase(input: {
+    name: string;
+    user: string;
+    server?: HostingDatabaseServer;
+  }): Promise<void> {
+    if (input.server === "postgres") return this.#removePostgres(input);
     const { name, user } = input;
     const users = await this.#client.uapi({
       module: "Mysql",
@@ -785,6 +812,81 @@ export class CpanelPanel implements HostingPanel {
       what,
       schema: anything,
     });
+  }
+
+  /** PostgreSQL's name limits, or undefined where the account can't use PostgreSQL (R31). */
+  async #postgresRestrictions() {
+    try {
+      await this.#client.uapi({
+        module: "Postgresql",
+        func: "list_databases",
+        what: "list the account's PostgreSQL databases",
+        schema: anything,
+      });
+    } catch (error) {
+      // "This server does not support this functionality" (no PostgreSQL on the host) or the
+      // account without the postgres feature: either way the account has no PostgreSQL.
+      if (error instanceof CpanelRefusal) return undefined;
+      throw error;
+    }
+    return this.#client.uapi({
+      module: "Postgresql",
+      func: "get_restrictions",
+      what: "read the PostgreSQL name rules",
+      schema: RestrictionsSchema,
+    });
+  }
+
+  async #postgres(func: string, params: Record<string, string>, what: string): Promise<void> {
+    await this.#client.uapi({
+      module: "Postgresql",
+      func,
+      params,
+      write: true,
+      what,
+      schema: anything,
+    });
+  }
+
+  async #addPostgres(input: { name: string; user: string; password: string }): Promise<void> {
+    const { name, user } = input;
+    await this.#postgres("create_database", { name }, `create the PostgreSQL database ${name}`);
+    await this.#postgres(
+      "create_user",
+      { name: user, password: input.password },
+      `create the PostgreSQL user ${user}`,
+    );
+    await this.#postgres(
+      "grant_all_privileges",
+      { user, database: name },
+      `give ${user} every privilege on ${name}`,
+    );
+  }
+
+  /** Removes the user, then the database, then checks PostgreSQL no longer lists it. */
+  async #removePostgres(input: { name: string; user: string }): Promise<void> {
+    const { name, user } = input;
+    const users = await this.#client.uapi({
+      module: "Postgresql",
+      func: "list_users",
+      what: "list the account's PostgreSQL users",
+      schema: PostgresUsersSchema,
+    });
+    if (users.includes(user)) {
+      await this.#postgres("delete_user", { name: user }, `remove the PostgreSQL user ${user}`);
+    }
+    if ((await this.listDatabases("postgres")).includes(name)) {
+      await this.#postgres("delete_database", { name }, `remove the PostgreSQL database ${name}`);
+    }
+    if ((await this.listDatabases("postgres")).includes(name)) {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `cPanel still lists the PostgreSQL database ${name} after removing it.`,
+        {
+          hint: "Remove it in cPanel under Databases → PostgreSQL Databases, then run the command again.",
+        },
+      );
+    }
   }
 
   async #recreateAndRemove(name: string): Promise<void> {

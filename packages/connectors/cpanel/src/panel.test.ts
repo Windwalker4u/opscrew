@@ -106,6 +106,7 @@ describe("inspect", () => {
       "Features::list_features",
       "Mysql::get_restrictions",
       "PassengerApps::list_applications",
+      "Postgresql::list_databases",
       "Quota::get_quota_info",
       "Variables::get_server_information",
       "Variables::get_user_information",
@@ -145,6 +146,36 @@ describe("inspect", () => {
       (call) => `${call.module}::${call.func}` === "DomainInfo::domains_data",
     );
     expect(reads.map((call) => call.params)).toEqual([{}, {}]);
+  });
+
+  it("adds PostgreSQL and its own name limits where the host installed it", async () => {
+    const { fake, panel } = setup({
+      postgres: { maxDatabaseNameLength: 63, maxUsernameLength: 63 },
+    });
+    expect((await panel.inspect()).databases).toEqual({
+      engines: ["mariadb", "postgres"],
+      prefix: "acct_",
+      maxDatabaseName: 64,
+      maxUserName: 47,
+      postgres: { maxDatabaseName: 63, maxUserName: 63 },
+    });
+    expect(called(fake)).toContain("Postgresql::get_restrictions");
+  });
+
+  it.each([
+    ["the host has no PostgreSQL", {}],
+    ["the account lacks the postgres feature", { features: { postgres: 0 as const } }],
+  ])("leaves PostgreSQL out when %s", async (_name, options) => {
+    const { fake, panel } = setup({
+      ...options,
+      ...("features" in options && {
+        postgres: { maxDatabaseNameLength: 63, maxUsernameLength: 63 },
+      }),
+    });
+    const facts = await panel.inspect();
+    expect(facts.databases.engines).toEqual(["mariadb"]);
+    expect(facts.databases.postgres).toBeUndefined();
+    expect(called(fake)).not.toContain("Postgresql::get_restrictions");
   });
 
   it("leaves the app slots out without the passengerapps feature", async () => {
@@ -336,6 +367,109 @@ describe("databases", () => {
     expect(error.message).toBe(
       "cPanel still lists the database acct_shop after removing it twice.",
     );
+  });
+});
+
+describe("PostgreSQL databases", () => {
+  const db = { name: "acct_shop", user: "acct_shop", server: "postgres" as const };
+  const withPostgres = () =>
+    setup({ postgres: { maxDatabaseNameLength: 63, maxUsernameLength: 63 } });
+
+  it("makes the database and its user, and grants every privilege", async () => {
+    const { fake, panel } = withPostgres();
+    const password = fakeSecret("generic-password", "db");
+    await panel.addDatabase({ ...db, password });
+    expect(called(fake)).toEqual([
+      "Postgresql::create_database",
+      "Postgresql::create_user",
+      "Postgresql::grant_all_privileges",
+    ]);
+    expect(lastCall(fake, "Postgresql::create_database")?.params).toEqual({ name: "acct_shop" });
+    expect(lastCall(fake, "Postgresql::create_user")?.params).toEqual({
+      name: "acct_shop",
+      password,
+    });
+    expect(lastCall(fake, "Postgresql::grant_all_privileges")?.params).toEqual({
+      user: "acct_shop",
+      database: "acct_shop",
+    });
+    await expect(panel.listDatabases("postgres")).resolves.toEqual(["acct_shop"]);
+    await expect(panel.listDatabases()).resolves.toEqual([]);
+  });
+
+  it("never shows the database password in an error", async () => {
+    const { fake, panel } = withPostgres();
+    const password = fakeSecret("generic-password", "db");
+    fake.failNext("Postgresql", "create_user", `Password “${password}” is too weak.`);
+    const error = await failure(panel.addDatabase({ ...db, password }));
+    expect(error.message).toBe(
+      "cPanel refused to create the PostgreSQL user acct_shop: Password “[REDACTED:database password]” is too weak.",
+    );
+  });
+
+  it("removes the user, then the database, then checks the list", async () => {
+    const { fake, panel } = withPostgres();
+    await panel.addDatabase({ ...db, password: fakeSecret("generic-password", "db") });
+    const before = fake.calls.length;
+    await panel.removeDatabase(db);
+    expect(called(fake, before)).toEqual([
+      "Postgresql::list_users",
+      "Postgresql::delete_user",
+      "Postgresql::list_databases",
+      "Postgresql::delete_database",
+      "Postgresql::list_databases",
+    ]);
+    expect(fake.state.postgresDatabases.size).toBe(0);
+    expect(fake.state.postgresUsers.size).toBe(0);
+  });
+
+  it("removes nothing already gone", async () => {
+    const { fake, panel } = withPostgres();
+    await panel.removeDatabase(db);
+    expect(called(fake)).toEqual([
+      "Postgresql::list_users",
+      "Postgresql::list_databases",
+      "Postgresql::list_databases",
+    ]);
+  });
+
+  it("fails when the database is still listed after its removal", async () => {
+    const { fake, panel } = setup(
+      { postgres: { maxDatabaseNameLength: 63, maxUsernameLength: 63 } },
+      (fetch) => async (input, init) => {
+        const response = await fetch(input, init);
+        if (fake.calls.at(-1)?.func === "delete_database") {
+          fake.state.postgresDatabases.set("acct_shop", new Set());
+        }
+        return response;
+      },
+    );
+    fake.state.postgresDatabases.set("acct_shop", new Set());
+    const error = await failure(panel.removeDatabase(db));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      "cPanel still lists the PostgreSQL database acct_shop after removing it.",
+    );
+    expect(error.hint).toContain("PostgreSQL Databases");
+  });
+
+  it("answers the host's refusal plainly on an account without PostgreSQL", async () => {
+    const { panel } = setup();
+    const error = await failure(panel.listDatabases("postgres"));
+    expect(error.message).toBe(
+      "cPanel refused to list the account's PostgreSQL databases: This server does not support this functionality.",
+    );
+  });
+
+  it("keeps MySQL's calls for server mysql", async () => {
+    const { fake, panel } = withPostgres();
+    await panel.addDatabase({
+      ...db,
+      server: "mysql",
+      password: fakeSecret("generic-password", "db"),
+    });
+    await panel.removeDatabase({ ...db, server: "mysql" });
+    expect(called(fake).every((key) => key.startsWith("Mysql::"))).toBe(true);
   });
 });
 

@@ -9,7 +9,9 @@ import { readTar, type TarEntry } from "@opscrew/core";
  * `{count}` entry, `rename` refusing an existing name, AutoSSL issuing a certificate when a
  * hostname is made and keeping it after the hostname is removed, LangPHP refused without the
  * `multiphp` feature, and, with `reappearingDatabases`, R10's deleted database that comes back
- * once and answers "does not control" until it is made and removed again.
+ * once and answers "does not control" until it is made and removed again. `Postgresql::*` answers
+ * only with `postgres` (the host installed PostgreSQL); without it every call answers the founder's
+ * account's text, "This server does not support this functionality." (research R31).
  *
  * A missing file answers the live text, "The file “…” does not exist for the account." Not
  * recorded by the spikes, so assumed here: an HTTP 401 for a wrong token.
@@ -30,6 +32,8 @@ export interface FakeCpanelOptions {
   docrootsInPublicHtmlOnly?: boolean;
   /** R10: a deleted database comes back once, listed, until it is made and removed again. */
   reappearingDatabases?: boolean;
+  /** The host installed PostgreSQL, with these limits (`Postgresql::get_restrictions`). */
+  postgres?: { maxDatabaseNameLength: number; maxUsernameLength: number };
   /** AutoSSL records this problem for a new hostname instead of issuing its certificate. */
   autoSslProblem?: string;
   /**
@@ -65,6 +69,9 @@ export interface FakeCpanelState {
   folders: Set<string>;
   databases: Map<string, { users: Set<string>; ghost: boolean }>;
   databaseUsers: Set<string>;
+  /** PostgreSQL's database → its users with every privilege. */
+  postgresDatabases: Map<string, Set<string>>;
+  postgresUsers: Set<string>;
   cron: {
     linekey: string;
     minute: string;
@@ -118,13 +125,18 @@ const DEFAULT_FEATURES: Record<string, 0 | 1> = {
   passengerapps: 1,
   multiphp: 0,
   ssh: 1,
+  postgres: 1,
 };
 
 /** Module → the feature it needs (R1: "You do not have the feature multiphp"). */
 const MODULE_FEATURES: Record<string, string> = {
   LangPHP: "multiphp",
   PassengerApps: "passengerapps",
+  Postgresql: "postgres",
 };
+
+/** What a server without PostgreSQL answers to every `Postgresql::*` call (R31, seen live). */
+const NO_POSTGRES = "This server does not support this functionality.";
 
 class Refusal extends Error {}
 
@@ -145,6 +157,8 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
     folders: new Set(["public_html"]),
     databases: new Map(),
     databaseUsers: new Set(),
+    postgresDatabases: new Map(),
+    postgresUsers: new Set(),
     cron: [],
     certificates: [],
     keys: [],
@@ -163,6 +177,11 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
   const reappeared = new Set<string>();
   let serial = 0;
   const next = () => (++serial).toString(16).padStart(8, "0");
+  /** PostgreSQL's limits, or the refusal of a server without it. */
+  const postgres = () => {
+    if (!options.postgres) throw new Refusal(NO_POSTGRES);
+    return options.postgres;
+  };
 
   // --- the home folder ---------------------------------------------------------------------------
 
@@ -393,6 +412,67 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
       if (!state.databaseUsers.delete(name))
         throw new Refusal(`The user “${name}” does not exist.`);
       for (const entry of state.databases.values()) entry.users.delete(name);
+      return null;
+    },
+    "Postgresql::get_restrictions": () => {
+      const limits = postgres();
+      return {
+        prefix: `${options.user}_`,
+        max_database_name_length: limits.maxDatabaseNameLength,
+        max_username_length: limits.maxUsernameLength,
+      };
+    },
+    "Postgresql::list_databases": () => {
+      postgres();
+      return [...state.postgresDatabases].map(([database, users]) => ({
+        database,
+        disk_usage: 0,
+        users: [...users],
+      }));
+    },
+    "Postgresql::list_users": () => {
+      postgres();
+      return [...state.postgresUsers];
+    },
+    "Postgresql::create_database": (params) => {
+      postgres();
+      const name = need(params, "name");
+      if (state.postgresDatabases.has(name))
+        throw new Refusal(`The database “${name}” already exists.`);
+      state.postgresDatabases.set(name, new Set());
+      return null;
+    },
+    "Postgresql::create_user": (params) => {
+      postgres();
+      const name = need(params, "name");
+      need(params, "password");
+      if (state.postgresUsers.has(name)) throw new Refusal(`The user “${name}” already exists.`);
+      state.postgresUsers.add(name);
+      return null;
+    },
+    "Postgresql::grant_all_privileges": (params) => {
+      postgres();
+      const user = need(params, "user");
+      const database = state.postgresDatabases.get(need(params, "database"));
+      if (!database || !state.postgresUsers.has(user)) {
+        throw new Refusal("The database or the user does not exist.");
+      }
+      database.add(user);
+      return null;
+    },
+    "Postgresql::delete_user": (params) => {
+      postgres();
+      const name = need(params, "name");
+      if (!state.postgresUsers.delete(name))
+        throw new Refusal(`The user “${name}” does not exist.`);
+      for (const users of state.postgresDatabases.values()) users.delete(name);
+      return null;
+    },
+    "Postgresql::delete_database": (params) => {
+      postgres();
+      const name = need(params, "name");
+      if (!state.postgresDatabases.delete(name))
+        throw new Refusal(`The database “${name}” does not exist.`);
       return null;
     },
     "Mysql::delete_database": (params) => {
