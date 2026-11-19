@@ -934,3 +934,44 @@ export function steadyLoad(
     },
   };
 }
+
+/** A GitHub workflow `paths` pattern as a regular expression: `**` any path, `*` and `?` within one name. */
+function pathPattern(glob: string): RegExp {
+  let source = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i] as string;
+    if (glob.startsWith("**/", i)) {
+      source += "(?:.*/)?";
+      i += 2;
+    } else if (glob.startsWith("**", i)) {
+      source += ".*";
+      i += 1;
+    } else if (c === "*") source += "[^/]*";
+    else if (c === "?") source += "[^/]";
+    else source += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * Whether a push that changes `changed` starts a workflow whose `on.push.paths` are `paths`, by
+ * GitHub's rules: a file counts when the last pattern it matches is not a `!` one, and the push
+ * starts the workflow when one file counts. Without `paths`, every push does.
+ */
+export function pushStartsWorkflow(
+  paths: readonly string[] | undefined,
+  changed: readonly string[],
+): boolean {
+  if (paths === undefined) return true;
+  const patterns = paths.map((path) => ({
+    exclude: path.startsWith("!"),
+    test: pathPattern(path.replace(/^!/, "")),
+  }));
+  return changed.some((file) => {
+    let counts = false;
+    for (const pattern of patterns) {
+      if (pattern.test.test(file)) counts = !pattern.exclude;
+    }
+    return counts;
+  });
+}

@@ -47,6 +47,7 @@ import {
   missingBuildSteps,
   newRunId,
   provenanceProblems,
+  pushStartsWorkflow,
   removalApproval,
   requestFailure,
   restartedServices,
@@ -1089,5 +1090,44 @@ describe("destroyConfirmArgs", () => {
         ]),
       ),
     ).toEqual(["--confirm", "shop", "--confirm", "shop-data", "--confirm", "shop-cache"]);
+  });
+});
+
+describe("pushStartsWorkflow", () => {
+  // A server's deploy workflow, as iac-templates renders its push paths.
+  const PATHS = [
+    "**",
+    "!opscrew/**",
+    "!.github/workflows/opscrew-deploy*.yml",
+    "!.github/workflows/opscrew-preview*.yml",
+    "Dockerfile",
+    "opscrew/environments/staging/runtime/compose.yaml",
+    "opscrew/environments/staging/runtime/services/**",
+    ".github/workflows/opscrew-deploy-staging.yml",
+  ];
+
+  it("starts for the app's code, its runtime files and its own workflow, by the last pattern a file matches", () => {
+    expect(pushStartsWorkflow(PATHS, ["src/app.py"])).toBe(true);
+    expect(pushStartsWorkflow(PATHS, ["Dockerfile"])).toBe(true);
+    expect(pushStartsWorkflow(PATHS, ["opscrew/environments/staging/runtime/compose.yaml"])).toBe(
+      true,
+    );
+    expect(
+      pushStartsWorkflow(PATHS, ["opscrew/environments/staging/runtime/services/db/init.sql"]),
+    ).toBe(true);
+    expect(pushStartsWorkflow(PATHS, [".github/workflows/opscrew-deploy-staging.yml"])).toBe(true);
+  });
+
+  it("starts nothing for the plan alone, another environment's workflow, or no file", () => {
+    expect(pushStartsWorkflow(PATHS, ["opscrew/environments/staging/plan.yaml"])).toBe(false);
+    expect(pushStartsWorkflow(PATHS, ["opscrew/plan.yaml", "opscrew/secrets.sops.json"])).toBe(
+      false,
+    );
+    expect(pushStartsWorkflow(PATHS, [".github/workflows/opscrew-deploy.yml"])).toBe(false);
+    expect(pushStartsWorkflow(PATHS, [])).toBe(false);
+  });
+
+  it("starts for every push without a paths filter", () => {
+    expect(pushStartsWorkflow(undefined, ["opscrew/plan.yaml"])).toBe(true);
   });
 });

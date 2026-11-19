@@ -20,6 +20,7 @@ import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, stateKeyName, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { type DeployPlan, type Region, readArtifact } from "@opscrew/plan-schema";
 import { afterAll, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
   Cloudflare,
   type CloudflareAppResources,
@@ -53,6 +54,7 @@ import {
   generatesValues,
   ipv6PrefixForms,
   newRunId,
+  pushStartsWorkflow,
   removalApproval,
   runHostname,
   Scrubber,
@@ -1264,12 +1266,23 @@ export class LiveRun {
     return sha;
   }
 
+  /**
+   * Whether the push of the merge commit `sha` starts `workflow`: its `on.push.paths` at that
+   * commit match a file the merge changed ({@link pushStartsWorkflow}). A pull request that changes
+   * only what the run doesn't read (the plan, the recovery copy) starts none.
+   */
+  async startsRun(sha: string, workflow: string): Promise<boolean> {
+    const changed = (await this.git("diff", "--name-only", `${sha}^1`, sha))
+      .split("\n")
+      .filter((path) => path !== "");
+    const text = await this.git("show", `${sha}:.github/workflows/${workflow}`);
+    const paths = (parseYaml(text) as { on?: { push?: { paths?: string[] } } } | null)?.on?.push
+      ?.paths;
+    return pushStartsWorkflow(paths, changed);
+  }
+
   /** Waits for the run of each of `workflows` of commit `sha` to succeed; the first one's id. */
-  private async expectRuns(
-    sha: string,
-    workflows: readonly string[],
-    what: string,
-  ): Promise<number> {
+  async expectRuns(sha: string, workflows: readonly string[], what: string): Promise<number> {
     const ids: number[] = [];
     this.log(`waiting for the run of ${workflows.join(", ")} (up to 30 minutes each)`);
     for (const workflow of workflows) {

@@ -2865,9 +2865,10 @@ with the scheduled drill; its steps run between 5 and 6):
   minutes the first must be gone (`--keep 1`), while the snapshot by hand stays. `status --env staging` must say
   `Last snapshot: <the second's id>, scheduled`.
 - **SD1** (feature 029's scheduled restore drill): `snapshot drill schedule on --env staging
-  --every daily`, then provision and deploy. The drills' host plan is approved by its hash with
+  --every daily`, then provision. The drills' host plan is approved by its hash with
   `<app>-drill` typed (the names a run prints are typed only when they are the app's or
-  `<app>-drill`). The deploy user's crontab must have the app's drill line (`# opscrew-drill
+  `<app>-drill`); its pull request changes only the plan, which starts no deploy run (the test
+  waits for one only when the merge changes a path the workflow reads). The deploy user's crontab must have the app's drill line (`# opscrew-drill
   <app>`), and `.drill-recipe/schedule` in the app's folder must say `daily`.
 - **SD2.** The test runs the crontab's command, `sh <app dir>/snapshot.sh drill scheduled`, as the
   deploy user, the crontab's own, with a clock moved for the script alone: a `date` on its `PATH`

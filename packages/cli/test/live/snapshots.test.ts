@@ -266,10 +266,16 @@ describe.skipIf(MISSING.data.length > 0)(
         : [];
       if (typing) await envs.remember(STAGING);
       else await envs.provision(STAGING, what);
-      const id = await run.deploy(what, [workflow]);
-      if (id === undefined)
+      const sha = await run.mergeDeploySetup(what);
+      if (sha === undefined)
         throw new Error(`${what}: provision opened no deploy-setup pull request.`);
-      deployRuns.push({ what, id });
+      // A pull request that changes only the plan (the drills': provision applied their host
+      // plan itself) starts no deploy run.
+      if (await run.startsRun(sha, workflow)) {
+        deployRuns.push({ what, id: await run.expectRuns(sha, [workflow], what) });
+      } else {
+        run.log(`${what}: the pull request changes nothing the deploy run reads, so none starts`);
+      }
       await run.waitForHealth(minutes(10), true, health);
       return typed;
     }
