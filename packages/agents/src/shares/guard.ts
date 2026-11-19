@@ -107,6 +107,18 @@ export async function otherAppsOnServer(
 const NO_LOGIN = "this computer has no deploy login to it";
 
 /**
+ * What to do when the server couldn't be looked at for `reason` ({@link otherAppsOnServer}), before
+ * running `again` again: run it where the deploy login is, or from a machine that reaches the server
+ * over SSH; or go on with `--skip-other-apps-check`.
+ */
+export function unreachableHint(reason: string, again: string): string {
+  const skip = `or run \`${again} --skip-other-apps-check\` to go on anyway.`;
+  return reason === NO_LOGIN
+    ? `Run \`${again}\` on the computer that provisioned the app, which holds its deploy key and the server's address; ${skip}`
+    : `Check that the server is on and that the machine running this command reaches it over SSH. With public SSH closed or limited to your own addresses, GitHub's machines can't, so run it from a computer that can. Then run \`${again}\` again; ${skip}`;
+}
+
+/**
  * Refuses `what` (a phrase such as "destroying the server") in the first app's command while
  * other apps share its server ({@link otherAppsOnServer}), naming each with its repository and
  * the command that removes or moves it, then `again`; a record it can't read counts as an app
@@ -135,9 +147,7 @@ export async function requireNoOtherApps(
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `OpsCrew couldn't look at the server for other apps (${found.reason}), and ${what} would break any that run there.`,
-      found.reason === NO_LOGIN
-        ? `Run \`${again}\` on the computer that provisioned the app, which holds its deploy key and the server's address; or run \`${again} --skip-other-apps-check\` to go on anyway.`
-        : `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
+      unreachableHint(found.reason, again),
     );
   }
   const flag = skip ? " --skip-other-apps-check doesn't cover an app that runs there." : "";
