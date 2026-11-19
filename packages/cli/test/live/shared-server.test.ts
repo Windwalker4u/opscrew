@@ -429,6 +429,13 @@ describe.skipIf(MISSING.length > 0)(
           /Nothing to apply/.test(planned.output),
           `nothing to apply:\n${run.tail(planned.output)}`,
         ).toBe(true);
+        // `app add` left the first app's deploy workflow as rendered for a repository with one app:
+        // its next provision leaves the second app's folder out of the paths it deploys on (an app
+        // from another repository has no such change). It also shows the first app's provision and
+        // deploy beside the second app, with no look at the server for a change that harms none.
+        await first.provision("prod", "the first app again, beside the second app");
+        await run.deployAny("the first app's deploy with its updated workflow");
+        await expectFirstAnswering("its deploy beside the second app");
         await run.opscrewOk("drift", "--app", ".");
         await run.opscrewOk("drift", "--app", NAMES.secondApp);
         log("observed: no changes for the second app, no drift in either");
