@@ -55,10 +55,12 @@ import { commandFlags } from "../environments/choice";
 import { readHomeNetwork, sshSourcesUnknown } from "../home/network";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import {
+  hostPlanOptions,
   type OwnHomeRun,
   type OwnWebSources,
   ownWebFromCloudflare,
   ownWebSources,
+  sharesOf,
 } from "../provision/own";
 import { readRequirements, recordedEdge, siteContext } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
@@ -985,7 +987,9 @@ export function hostDifferences(
  * compares it with OpsCrew's host record and with the setup the plan describes (the same desired
  * state provision plans from, and the password-login choice of the last applied host plan). A
  * server at home is read as provision reads it ({@link driftHome}), its updater's token left as the
- * server has it. Never changes the server; the inspection is audited without the address.
+ * server has it. Never changes the server; the inspection is audited without the address. A second
+ * app on a server OpsCrew created (`target.shares`) is compared with its own steps only, against
+ * the first app's plan read from its folder, and has no host record.
  */
 export async function ownHostDrift(
   deps: PhaseDeps,
@@ -1058,19 +1062,25 @@ export async function ownHostDrift(
   // Without Cloudflare's current ranges the site cannot be rendered as provision would.
   const { site: _site, ...withoutSite } = rendered.rendered;
   const runtimeFiles = ranges === "unreadable" ? { ...rendered, rendered: withoutSite } : rendered;
+  const differences = hostDifferences(
+    facts,
+    // Its findings say what stops `opscrew provision`, which puts the setup back.
+    planHost(facts, desired, "opscrew provision", hostPlanOptions(plan)),
+    {
+      name: plan.app.name,
+      deployed: plan.deployment.firstDeployAt !== undefined,
+      runtimeFiles,
+      plan,
+    },
+    setup,
+  );
+  // A second app's server is one OpsCrew created: cloud-init set it up, and it keeps no host
+  // record (/etc/opscrew/host.json) to compare.
   return {
-    differences: hostDifferences(
-      facts,
-      // Its findings say what stops `opscrew provision`, which puts the setup back.
-      planHost(facts, desired, "opscrew provision"),
-      {
-        name: plan.app.name,
-        deployed: plan.deployment.firstDeployAt !== undefined,
-        runtimeFiles,
-        plan,
-      },
-      setup,
-    ),
+    differences:
+      sharesOf(plan) === undefined
+        ? differences
+        : differences.filter((difference) => difference.area !== "record"),
   };
 }
 

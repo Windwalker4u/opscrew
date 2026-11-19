@@ -300,7 +300,8 @@ function createsServer(
 
 /**
  * Where the scheduled check's key goes and how: on the user's own server as root (it has the key
- * when inspection lists the repository's), on a server OpsCrew created as deploy (it has the key
+ * when inspection lists the repository's; a second app on a server OpsCrew created adds it as its
+ * deploy login), on a server OpsCrew created as deploy (it has the key
  * when this run created it, from its first boot, or when its authorized_keys holds it).
  * `undefined` when this computer cannot reach the server OpsCrew created (none exists yet).
  */
@@ -321,7 +322,7 @@ async function checkKeyServer(
     const adapter = services.own?.host;
     return {
       remote: ownRun.session.remote,
-      runAs: "root",
+      runAs: ownRun.target.shares === undefined ? "root" : "login",
       apply:
         adapter === undefined
           ? applyHostPlan

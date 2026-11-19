@@ -53,6 +53,7 @@ import { LOCAL_PROBES_SKIPPED, LOCAL_SECURE_NOTES, localSecurityChecks } from ".
 import type { LocalhostServices } from "../localhost/services";
 import { planProvider, providerProfile } from "../providers";
 import { originTlsHostnames } from "../provision/origin-tls";
+import { sharesOf } from "../provision/own";
 import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { OwnServerServices, PortainerServices } from "../provision/types";
@@ -76,7 +77,12 @@ import {
   NOT_CHECKED_AWAY,
 } from "./home";
 import { monitoringSecurityChecks } from "./monitoring";
-import { type OwnSecureTarget, ownSecureTarget } from "./own";
+import {
+  firstAppHardening,
+  firstAppHardeningCheck,
+  type OwnSecureTarget,
+  ownSecureTarget,
+} from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
   portainerSecureNotes,
@@ -99,7 +105,7 @@ import {
   networkListing,
   privateAddressChecks,
 } from "./servers";
-import { servicePorts } from "./services";
+import { serverServiceChecks, servicePorts } from "./services";
 import { behindCloudflare, settingsChecks } from "./settings";
 import { siteProbesSkipped, siteSecureNotes, siteSecurityChecks } from "./site";
 
@@ -217,6 +223,9 @@ async function siteTlsChecks(
  * server OpsCrew created they run on `host` with the provider firewall's expectations. Once public
  * SSH is closed the host checks connect to the server's private address (`appServerShell`), and a
  * connection that fails there says this computer's tunnel looks down, in each check it stopped.
+ * A second app on a server OpsCrew created (`own.firstApp`) runs only its own checks (its
+ * services, its site) and probes only its services' ports: the server's hardening is the first
+ * app's, said in one skipped check.
  */
 async function checkServer(
   deps: PhaseDeps,
@@ -261,9 +270,14 @@ async function checkServer(
       plan.environment?.previews === undefined
         ? undefined
         : await previewServiceChecks(deps, plan, remote);
+    // A second app: the server's hardening is the first app's, said in one skipped check.
+    const firstApp = own?.firstApp;
     hostChecks = [
+      ...(firstApp === undefined ? [] : [firstAppHardeningCheck(firstApp)]),
       ...(await runHostChecks(remote, [
-        ...hostChecksFor(plan, APP_SERVER, own?.hardening),
+        ...(firstApp === undefined
+          ? hostChecksFor(plan, APP_SERVER, own?.hardening)
+          : serverServiceChecks(plan)),
         ...(previews?.checks ?? []),
         ...(await siteTlsChecks(deps, plan, remote)),
       ])),
@@ -284,38 +298,48 @@ async function checkServer(
   const connect = options.tcpConnect ?? defaultTcpConnect;
   const timeoutMs = options.probeTimeoutMs ?? 3000;
   const probeHost = own?.probeHost ?? host;
-  // The three probe groups run together; their results keep this order.
+  // The three probe groups run together; their results keep this order. A second app probes only
+  // its services' ports: the server's firewall and SSH are the first app's.
+  const second = own?.firstApp !== undefined;
   const [expected, services, password] = await Promise.all([
-    own === undefined
-      ? probeExpectedPorts(host, plan, { connect, timeoutMs })
-      : probeOwnServerPorts(probeHost, plan, {
-          connect,
-          timeoutMs,
-          sshPort: own.sshPort,
-          ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
-          ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
-          ...(inside !== undefined ? { inside } : {}),
-        }),
+    second
+      ? []
+      : own === undefined
+        ? probeExpectedPorts(host, plan, { connect, timeoutMs })
+        : probeOwnServerPorts(probeHost, plan, {
+            connect,
+            timeoutMs,
+            sshPort: own.sshPort,
+            ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
+            ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
+            ...(inside !== undefined ? { inside } : {}),
+          }),
     probePorts(probeHost, {
       services: servicePorts(plan),
       connect,
       timeoutMs,
-      providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,
+      // A second app's server is behind the first app's cloud firewall.
+      providerName:
+        own === undefined || second
+          ? providerProfile(sharesOf(plan)?.provider ?? planProvider(plan)).displayName
+          : "ufw",
     }),
-    away !== undefined
-      ? awayFromHome(PASSWORD_PROBE, away)
-      : probeSshPasswordAuth(host, {
-          runner: deps.runner,
-          knownHostsFile: paths.files.knownHosts,
-          ...(own !== undefined
-            ? { port: own.sshPort, passwordsKept: own.hardening.passwordsKept }
-            : {}),
-        }),
+    second
+      ? undefined
+      : away !== undefined
+        ? awayFromHome(PASSWORD_PROBE, away)
+        : probeSshPasswordAuth(host, {
+            runner: deps.runner,
+            knownHostsFile: paths.files.knownHosts,
+            ...(own !== undefined
+              ? { port: own.sshPort, passwordsKept: own.hardening.passwordsKept }
+              : {}),
+          }),
   ]);
   const probes = [
     ...expected,
     ...(inside === undefined ? services : services.map((check) => fromInside(check, inside))),
-    password,
+    ...(password === undefined ? [] : [password]),
   ];
   return {
     hostChecks,
@@ -649,14 +673,16 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
               ? siteDeep(site)
               : hosting
                 ? HOSTING_DEEP
-                : away
-                  ? { skipped: NOT_CHECKED_AWAY, sshPort: own?.sshPort ?? 22 }
-                  : {
-                      ...(remote !== undefined ? { remote } : {}),
-                      ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
-                      ...(sshHost !== undefined ? { sshHost } : {}),
-                      sshPort: own?.sshPort ?? 22,
-                    },
+                : own?.firstApp !== undefined
+                  ? firstAppHardening(own.firstApp)
+                  : away
+                    ? { skipped: NOT_CHECKED_AWAY, sshPort: own?.sshPort ?? 22 }
+                    : {
+                        ...(remote !== undefined ? { remote } : {}),
+                        ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
+                        ...(sshHost !== undefined ? { sshHost } : {}),
+                        sshPort: own?.sshPort ?? 22,
+                      },
           options.docker ?? localDocker(deps.runner),
         );
 

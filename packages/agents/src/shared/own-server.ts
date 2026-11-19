@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { type HostFacts, inspectHost, isPublicAddress } from "@opscrew/connector-ssh-host";
 import type { CommandResult, PhaseName, RemoteExec } from "@opscrew/contracts";
 import { errorMessage, OpsCrewError, upperFirst } from "@opscrew/core";
+import { IMAGES } from "@opscrew/iac-templates";
 import { APP_SERVER } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -444,7 +445,9 @@ export async function connectPinnedLogin(
 /**
  * Inspects the user's own server (or `machine`, another machine of theirs) read-only through the
  * host adapter of `services` (default `inspectHost`: fixed commands that change nothing) and audits
- * it without the address: `detail` says for what, `phase` when the command has one.
+ * it without the address: `detail` says for what, `phase` when the command has one. With
+ * `rootImage`, the default inspection also reads as root through Docker in that image (the apps'
+ * records on a server OpsCrew created).
  */
 export async function inspectOwnHost(
   deps: Pick<PhaseDeps, "reporter" | "audit">,
@@ -455,11 +458,16 @@ export async function inspectOwnHost(
     detail?: string;
     /** Another machine than the user's own server: its words, and its audit target (no address). */
     machine?: { noun: string; target: string };
+    /** The `docker` privilege's image the default inspection reads as root in. */
+    rootImage?: string;
   },
 ): Promise<HostFacts> {
   deps.reporter.step(`Inspecting ${options.machine?.noun ?? "your server"} (read-only)`);
   const host = options.services?.host;
-  const facts = host ? await host.inspect(session.remote) : await inspectHost(session.remote);
+  const { rootImage } = options;
+  const facts = host
+    ? await host.inspect(session.remote)
+    : await inspectHost(session.remote, rootImage === undefined ? {} : { rootImage });
   await deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",
@@ -519,7 +527,8 @@ export async function connectExtraServer(
 
 /**
  * "Connecting to your server": {@link connectOwnServer} (the pinned host key, the login checked;
- * with `login` `fromOwn`, a move's old side), then {@link inspectOwnHost}.
+ * with `login` `fromOwn`, a move's old side), then {@link inspectOwnHost}. A second app's login
+ * (`own.shares`) reads the apps' records as root through Docker, in the edge's pinned image.
  */
 export async function connectAndInspectOwnServer(
   deps: OwnServerDeps & Pick<PhaseDeps, "audit">,
@@ -531,7 +540,14 @@ export async function connectAndInspectOwnServer(
 ): Promise<{ session: OwnServerSession; facts: HostFacts }> {
   deps.reporter.step("Connecting to your server");
   const session = await connectOwnServer(deps, options);
-  return { session, facts: await inspectOwnHost(deps, session, options) };
+  const second = session.connection.shares !== undefined;
+  return {
+    session,
+    facts: await inspectOwnHost(deps, session, {
+      ...options,
+      ...(second ? { rootImage: IMAGES.caddy.ref } : {}),
+    }),
+  };
 }
 
 /** ssh's own words about a failed login: its last lines, redacted, for a hint. */

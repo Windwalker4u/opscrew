@@ -1,10 +1,17 @@
 import type { HostPlan } from "@opscrew/connector-ssh-host";
+import type { CheckResult } from "@opscrew/contracts";
 import { homeMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { OwnServerHardening } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
-import { lastHostSetup, passwordLoginChoice, portList, readServerAddresses } from "../shared";
+import {
+  checkResult,
+  lastHostSetup,
+  passwordLoginChoice,
+  portList,
+  readServerAddresses,
+} from "../shared";
 import type { OwnHome } from "../shared/server-record";
 
 /** How `opscrew secure` checks a server the user owns. Local state only; never committed. */
@@ -26,6 +33,31 @@ export interface OwnSecureTarget {
    * check). Its probes then go to the login's address on the home network.
    */
   home?: OwnHome;
+  /**
+   * A second app (`target.shares`): the first app, whose server OpsCrew created. The server's
+   * hardening is that app's, checked by `opscrew secure` in its repository; only this app's own
+   * checks run here.
+   */
+  firstApp?: string;
+}
+
+/**
+ * Why a second app's `opscrew secure` leaves out the server's hardening (SSH, the firewall, Lynis
+ * and ssh-audit): it belongs to `first`, whose server it is.
+ */
+export function firstAppHardening(first: string): { message: string; hint: string } {
+  return {
+    message: `The server's hardening (SSH, the firewall, Lynis and ssh-audit) belongs to "${first}", which OpsCrew created the server for; only this app's own checks run here.`,
+    hint: `Run \`opscrew secure\` in the repository of "${first}" to check it.`,
+  };
+}
+
+/** {@link firstAppHardening} as a second app's one host check that says so (`skip`). */
+export function firstAppHardeningCheck(first: string): CheckResult {
+  const { message, hint } = firstAppHardening(first);
+  return checkResult("server-hardening", "Server hardening", "info", "skip", message, {
+    remediation: hint,
+  });
 }
 
 /**
@@ -83,5 +115,6 @@ export async function ownSecureTarget(
     hardening,
     hidden: [...new Set(hidden)],
     ...(homeMode(plan) ? { home: connection.home ?? {} } : {}),
+    ...(plan.target.shares !== undefined ? { firstApp: plan.target.shares.app } : {}),
   };
 }

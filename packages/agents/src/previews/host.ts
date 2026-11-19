@@ -370,6 +370,9 @@ function hostProblem(plan: DeployPlan, host: string): string | undefined {
   if (isServerlessProvider(provider)) {
     return `${host} is a site without a server of its own.`;
   }
+  if (provider === "own" && plan.target.shares !== undefined) {
+    return `${host} runs on the server OpsCrew created for "${plan.target.shares.app}", whose server it shares, and previews never run beside another app.`;
+  }
   if (provider === "own" && plan.target.access === "tunnel") {
     return `${host}'s server is served through a Cloudflare Tunnel and takes no public SSH, and GitHub's machines reach previews over SSH.`;
   }

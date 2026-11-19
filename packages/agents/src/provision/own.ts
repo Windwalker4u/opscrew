@@ -5,6 +5,7 @@ import {
   type DesiredRunner,
   type HostFacts,
   type HostPlan,
+  inspectHost,
   otherActiveApps,
   planAddon,
   planHost,
@@ -20,6 +21,7 @@ import {
   homeIpv6Proxied,
   homeMode,
   hostSysctl,
+  IMAGES,
   keepNewerPins,
   type OwnAccessMode,
   ownAccessMode,
@@ -70,8 +72,10 @@ import {
   type HostPlanOutcome,
   knownHostsName,
   randomPassword,
+  readOwnServer,
   readSecretFile,
   readServerAddresses,
+  recordOwnServer,
   requireNoBlockers,
   type SecretFile,
   type ServerAddress,
@@ -83,23 +87,35 @@ import { boundHostAdapter, keepServerSetup } from "../shared/host-plan";
 import {
   connectAndInspectOwnServer,
   connectExtraServer,
+  inspectOwnHost,
   type OwnServerSession,
   ownServerLoginCheck,
+  ownServerNotSetUp,
   ownServerPublicAddress,
+  readOwnServerRecord,
 } from "../shared/own-server";
 import { networkSshPort } from "../shared/server-address";
+import type { SharesReference } from "../shared/server-record";
 import {
   type ConnectorFirst,
   connectorFirst,
   type HostChangeResult,
   tunnelChange,
 } from "../shared/tunnel-connections";
+import { type FirstApp, firstApp, hostDescription } from "../shares/first-app";
+import { secondAppLogin } from "../shares/login";
+import { readShares } from "../shares/reference";
 import { hasAppInterface } from "../vpn/dashboards";
 import { type CloudflareSetup, cloudflareTokenMissing } from "./credentials";
 import { desiredDrills, drillEnv } from "./drills";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { ServerReach } from "./secrets";
-import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types";
+import type {
+  CloudflareApi,
+  OwnServerServices,
+  ProvisionOptions,
+  ProvisionServices,
+} from "./types";
 
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
 export type OwnWebSources = NonNullable<DesiredHost["webFilter"]>;
@@ -153,6 +169,11 @@ export interface OwnServerRun {
   runner?: DesiredRunner;
   /** The project's GitHub repository, for the runner's tokens and registrations (read when needed). */
   repository: () => Promise<RunnerRepository>;
+  /**
+   * A second app (`target.shares`): the first app whose server OpsCrew created, as this computer
+   * knows it. Its address is the one DNS points to and GitHub's machines reach.
+   */
+  first?: FirstApp;
 }
 
 /** An extra server the user owns (`plan.servers[]`), once provision connected and inspected it. */
@@ -175,6 +196,48 @@ export function ownTarget(plan: Pick<DeployPlan, "target">): OwnDeployTarget {
     throw wrongTarget("This step only applies to a server you already own.");
   }
   return plan.target;
+}
+
+/**
+ * The first app whose server this app shares (`target.shares`: its name and provider), or
+ * `undefined` when the app is not a second app on a server OpsCrew created.
+ */
+export function sharesOf(plan: Pick<DeployPlan, "target">): OwnDeployTarget["shares"] {
+  return plan.target.provider === "own" ? plan.target.shares : undefined;
+}
+
+/**
+ * The shared-access warning (spec FR-3004), said in the second app `app`'s host plan approval:
+ * both apps run as the deploy user of the server OpsCrew created for `first`.
+ */
+export function sharedAccessWarning(app: string, first: string): string {
+  return `Anyone who can change the deploy workflow or the deploy key of "${app}" can reach the data and secrets of "${first}" too: both apps run as the same deploy user on this server, and that user can become root through Docker.`;
+}
+
+/**
+ * The host adapter of a second app on a server OpsCrew created: the deploy login reads the apps'
+ * records and runs the app's only root step (its record) as root through Docker, in the edge's
+ * pinned image. `host` (a fake in tests) replaces ssh-host's `inspectHost` and `applyHostPlan`.
+ */
+export function secondAppAdapter(host?: HostAdapterApi): Required<HostAdapterApi> {
+  const bound = boundHostAdapter(host);
+  const rootImage = IMAGES.caddy.ref;
+  return {
+    ...bound,
+    inspect: host === undefined ? (remote) => inspectHost(remote, { rootImage }) : bound.inspect,
+    apply: (remote, plan, options) => bound.apply(remote, plan, { ...options, rootImage }),
+  };
+}
+
+/** `planHost`'s options for `plan`: a second app's plan names the image its data is removed in. */
+export function hostPlanOptions(plan: DeployPlan): { image?: string } {
+  return sharesOf(plan) === undefined ? {} : { image: IMAGES.busybox.ref };
+}
+
+/** The server in a host plan's words: `your server`, or the server of the first app. */
+function serverWords(plan: DeployPlan): string {
+  const shares = sharesOf(plan);
+  return shares === undefined ? "your server" : `the server of "${shares.app}"`;
 }
 
 /** `~/.opscrew/projects/<id>/portainer_password` (0600): Portainer's admin password, local only. */
@@ -289,14 +352,17 @@ export async function ownWebSources(
  * newer pins of its committed copy, so the server runs what Dependabot updated. A server at home
  * ({@link homeHost}) also gets SSH only from the home network, `home` in the app's record and,
  * with its DNS on Cloudflare, the address updater. With `snapshots.drills.schedule`, the scheduled
- * restore drills ({@link desiredDrills}).
+ * restore drills ({@link desiredDrills}). A second app (`target.shares`) also describes the first
+ * app (`shares.host`, from `run.first`, else read through this app's reference), so the host plan
+ * holds only the app's own steps; the web filter then only says it is served behind the proxy.
  * @throws Error when the plan needs the web filter but `run.webSources` is missing, or is served
  * at home but `run.home` is missing: a host plan must never drop the filter, the SSH firewall or
  * the address updater because the server was not read.
+ * @throws OpsCrewError from `firstApp` when a second app's first app is not on this computer.
  */
 export async function desiredHost(
-  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
-  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner"> & {
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor" | "clock">,
+  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner" | "first"> & {
     home?: Pick<OwnHomeRun, "sshFrom" | "updater">;
   },
   input: {
@@ -351,6 +417,8 @@ export async function desiredHost(
   // Kernel settings the services need (vm.max_map_count for the search engines).
   const sysctl = hostSysctl(plan);
   const drills = await desiredDrills(deps, plan);
+  const first =
+    run.target.shares === undefined ? undefined : (run.first ?? (await readFirst(deps)));
   return {
     ...(await hostLogin(deps, run, input)),
     hostnames: siteHosts(plan),
@@ -364,7 +432,32 @@ export async function desiredHost(
     ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
     ...(homeMode(plan) && run.home !== undefined ? homeHost(plan, run.home) : {}),
     ...(drills !== undefined ? { drills } : {}),
+    ...(first !== undefined ? { shares: { host: hostDescription(first.plan) } } : {}),
   };
+}
+
+/**
+ * The first app of the second app `deps.paths` belongs to, read through its reference
+ * (`own.shares`) as {@link firstApp} reads it.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no reference, or from `firstApp`.
+ */
+async function readFirst(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor" | "clock">,
+): Promise<FirstApp> {
+  const ref = await readShares(deps.paths);
+  if (ref === undefined) throw sharesUnknown();
+  return firstApp(deps, ref);
+}
+
+/** The stop when the plan shares another app's server but this computer has no reference to it. */
+function sharesUnknown(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "opscrew/plan.yaml runs the app beside another app on its server, but this computer doesn't know where that app's repository folder is (.opscrew/server.json has no reference to it). Nothing was changed.",
+    {
+      hint: "Run `opscrew interview` and name that app's repository folder, or run the command on the computer that set this app up.",
+    },
+  );
 }
 
 /**
@@ -533,6 +626,11 @@ type OwnHostPhase = Extract<
  * that is not there yet. Also checks that the plan's architecture is the server's, and in public
  * mode finds the public address DNS points to. A server at home ({@link prepareHome}) has no such
  * address: it reads the home's network instead, and checks the address updater's token.
+ *
+ * A second app on a server OpsCrew created (`target.shares`) is connected as `secondAppLogin`
+ * logs in (the first app's deploy login until its own key is installed) and inspected as root
+ * through Docker ({@link secondAppAdapter}); its host plan is checked against the first app as
+ * its plan describes it ({@link firstApp}), whose address DNS points to.
  */
 export async function prepareOwnServer(
   deps: PhaseDeps,
@@ -558,12 +656,21 @@ export async function prepareOwnServer(
   const target = ownTarget(plan);
   const own = input.services.own ?? {};
   // Bound, so `run.host.apply` can be passed on as a function.
-  const host = boundHostAdapter(own.host);
+  const host =
+    target.shares === undefined ? boundHostAdapter(own.host) : secondAppAdapter(own.host);
   if (target.access === "tunnel") sshHostname(plan); // a tunnel needs a Cloudflare domain
   // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
   // a failure stops before anything is changed.
   const webSources = await ownWebSources(deps, plan, input.services.cloudflare);
+  const second =
+    target.shares === undefined
+      ? undefined
+      : await connectSecondApp(deps, plan, { services: { ...own, host }, phase: input.phase });
+  // Provision compares a second app with the first app's plan, read from its folder.
+  const first =
+    second === undefined ? undefined : (second.first ?? (await firstApp(deps, second.ref)));
   const { session, facts } =
+    second ??
     input.inspected ??
     (await connectAndInspectOwnServer(deps, {
       hostKey: input.options.hostKey,
@@ -621,6 +728,7 @@ export async function prepareOwnServer(
       }),
     ...(runner.step !== undefined ? { runner: runner.step } : {}),
     repository: repo,
+    ...(first !== undefined ? { first } : {}),
   };
   // The check before anything changes: the tunnel's id is not known yet, so a placeholder stands in.
   requireNoBlockers(
@@ -634,15 +742,19 @@ export async function prepareOwnServer(
           : {}),
       }),
       input.command,
+      hostPlanOptions(plan),
     ),
     {
-      server: "your server",
+      server: serverWords(plan),
       command: input.command,
       // A move offers the choice about password logins itself.
       ...(input.phase === "retarget" ? { passwordLogins: input.command } : {}),
     },
   );
-  if (target.access === "public" && home === undefined) {
+  if (first !== undefined) {
+    // DNS points to the first app's server, at the address this computer keeps for it.
+    run.address = first.address;
+  } else if (target.access === "public" && home === undefined) {
     const address = ownServerPublicAddress(session.connection, facts);
     if (address === undefined) {
       throw new OpsCrewError(
@@ -670,6 +782,45 @@ export async function prepareOwnServer(
     );
   }
   return run;
+}
+
+/**
+ * Connects to the server the second app `plan` shares with `secondAppLogin` (with this app's own
+ * key once `own.joined`, else the first app's deploy login, through the reference `own.shares`)
+ * and inspects it read-only as root through Docker (`services.host`, a {@link secondAppAdapter}),
+ * audited as `phase`. The session's connection is this app's own recorded login. Once joined, the
+ * first app's folder is not read; before, `first` is the first app the login read.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no login or no reference to the
+ * first app, and the login's own stops.
+ */
+export async function connectSecondApp(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: {
+    services: Pick<OwnServerServices, "remote" | "homeDir"> & { host: Required<HostAdapterApi> };
+    phase?: PhaseName;
+    detail?: string;
+  },
+): Promise<{
+  session: OwnServerSession;
+  facts: HostFacts;
+  ref: SharesReference;
+  first?: FirstApp;
+}> {
+  const own = await readOwnServerRecord(deps.paths);
+  if (own === undefined) throw ownServerNotSetUp();
+  const ref = own.shares;
+  if (ref === undefined) throw sharesUnknown();
+  const where = serverWords(plan);
+  deps.reporter.step(`Connecting to ${where}`);
+  const { session, first } = await secondAppLogin(deps, ref, own, { services: input.services });
+  const facts = await inspectOwnHost(deps, session, {
+    services: input.services,
+    ...(input.phase !== undefined ? { phase: input.phase } : {}),
+    ...(input.detail !== undefined ? { detail: input.detail } : {}),
+    machine: { noun: where, target: "own server" },
+  });
+  return { session, facts, ref, ...(first !== undefined ? { first } : {}) };
 }
 
 /** A stop before any change on a server at home. */
@@ -1113,9 +1264,12 @@ export async function applyOwnHostPlan(
     run.facts,
     input.adjust === undefined ? desired : input.adjust(desired),
     input.command,
-    { previousDeployKey: input.previousDeployKey },
+    { previousDeployKey: input.previousDeployKey, ...hostPlanOptions(input.plan) },
   );
   const changes = plural(plan.steps.filter((step) => step.state === "change").length, "change");
+  const app = input.plan.app.name;
+  const shares = sharesOf(input.plan);
+  const where = serverWords(input.plan);
   // The scheduled drills delete their copy's data each run (and their removal a kept copy): the
   // plan is approved as a destroy, with the copy's name typed.
   const drills = plan.steps.some((step) => step.id === "drills" && step.state === "change");
@@ -1124,9 +1278,16 @@ export async function applyOwnHostPlan(
     remote: run.session.remote,
     apply: run.host.apply,
     verifyLogin: run.verifyLogin,
-    title: `Apply the host plan to your server (${changes})`,
-    server: "your server",
-    upToDate: input.upToDate ?? "Your server is already prepared; nothing on it changes.",
+    title: `Apply the host plan to ${where} (${changes})`,
+    server: where,
+    planOf: where,
+    upToDate:
+      input.upToDate ??
+      (shares === undefined
+        ? "Your server is already prepared; nothing on it changes."
+        : `"${app}" is already set up on ${where}; nothing on it changes.`),
+    // Said in the approval of a second app: it shares the deploy user with the first app.
+    ...(shares === undefined ? {} : { intro: [sharedAccessWarning(app, shares.app)] }),
     command: input.command,
     phase: input.phase,
     ...(drills ? { allowDestroy: true, confirmPhrase: drillName(input.plan.app.name) } : {}),
@@ -1152,9 +1313,13 @@ export async function applyOwnHostPlan(
       };
     },
     runnerToken: runnerTokens(deps, run.repository),
-    applying: `Preparing your server (${changes}; installing Docker can take a few minutes)`,
+    applying:
+      shares === undefined
+        ? `Preparing your server (${changes}; installing Docker can take a few minutes)`
+        : `Setting up "${app}" on ${where} (${changes})`,
     ...(input.shown !== undefined ? { shown: input.shown } : {}),
   });
+  if (shares !== undefined && input.planOnly !== true) await recordJoined(deps, plan, outcome);
   if (!outcome.approval) return outcome;
   if (outcome.stillRegistered !== undefined) {
     await removeKeptRegistrations(deps, run.repository, input.plan, {
@@ -1164,12 +1329,31 @@ export async function applyOwnHostPlan(
     });
   }
   deps.reporter.success(
-    `Prepared your server (${plural(outcome.steps.length, "change")} applied).`,
+    shares === undefined
+      ? `Prepared your server (${plural(outcome.steps.length, "change")} applied).`
+      : `Set up "${app}" on ${where} (${plural(outcome.steps.length, "change")} applied).`,
   );
   if (switchesToWebFilter(run.facts, plan, input.plan.app.name, outcome.steps)) {
     deps.reporter.warn(SWITCH_TO_FILTER_NOTE);
   }
   return outcome;
+}
+
+/**
+ * Records `own.joined` for a second app once its own deploy key is on the server: the host plan's
+ * `deploy-key` step was applied (`outcome`) or found it in place. From then on its commands log in
+ * with that key. The record starts from the login as the connection just recorded it.
+ */
+async function recordJoined(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: HostPlan,
+  outcome: Pick<HostPlanOutcome, "steps">,
+): Promise<void> {
+  const key = plan.steps.find((step) => step.id === "deploy-key");
+  if (key?.state !== "in-place" && !outcome.steps.includes("deploy-key")) return;
+  const own = await readOwnServer(deps.paths);
+  if (own === undefined || own.joined === true) return;
+  await recordOwnServer(deps.paths, { ...own, joined: true });
 }
 
 /** Said after a running app switched to the web filter mode (published on IPv4 only). */

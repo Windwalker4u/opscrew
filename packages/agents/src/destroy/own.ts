@@ -17,7 +17,7 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, lowerFirst, OpsCrewError, plural, replaceNames } from "@opscrew/core";
-import { offsiteExpires, offsitePlace, usesTunnel } from "@opscrew/iac-templates";
+import { IMAGES, offsiteExpires, offsitePlace, usesTunnel } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   backupsBucketOf,
@@ -35,6 +35,7 @@ import {
   ownTarget,
   providerBucket,
 } from "../provision";
+import { connectSecondApp, secondAppAdapter, sharesOf } from "../provision/own";
 import {
   lazyRepository,
   planWhere,
@@ -58,6 +59,7 @@ import {
 } from "../shared";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
 import { extraCloudProviders, extraCloudServers } from "../shared/servers";
+import { readDeployPublicKey } from "../shared/ssh-keys";
 import {
   cancelDates,
   cancelFailedHint,
@@ -170,6 +172,20 @@ function requireOwnApp(plan: DeployPlan, projectId: string, facts: HostFacts): v
     `Your server runs an OpsCrew app named "${owner.app}" from another project, so OpsCrew removes nothing from it. Nothing was changed.`,
     {
       hint: "Run `opscrew destroy` in the project of that app, or check with `opscrew interview` that this project points at the right server.",
+    },
+  );
+}
+
+/**
+ * `--undo-host` for the second app `app`, refused before any change: the server's setup is the
+ * first app's (`first`), which OpsCrew created the server for.
+ */
+function undoRefused(app: string, first: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `"${app}" runs on the server OpsCrew created for "${first}", whose setup (Docker, the deploy user, SSH and the firewall) belongs to that app, so \`--undo-host\` would undo it for "${first}" too. Nothing was changed.`,
+    {
+      hint: `Run \`opscrew destroy\` without --undo-host to remove "${app}" only; the server goes with "${first}" (\`opscrew destroy\` in its repository).`,
     },
   );
 }
@@ -381,8 +397,12 @@ function dataLoss(plan: DeployPlan, facts: HostFacts): string {
   );
   const snapshots = appSnapshots(facts, plan.app.name);
   if (snapshots !== undefined) lost.push(`its snapshots in ${snapshots}`);
-  // Portainer is shared: it goes only with the last app.
-  if (facts.portainer.dataVolume && otherApps(plan, facts).length === 0) {
+  // Portainer is shared: it goes only with the last app (never a second app's, which isn't).
+  if (
+    facts.portainer.dataVolume &&
+    otherApps(plan, facts).length === 0 &&
+    sharesOf(plan) === undefined
+  ) {
     lost.push("Portainer's data");
   }
   const undone =
@@ -468,21 +488,30 @@ function remainingOnOwnServer(input: {
   /** Portainer runs on the server (shared by the apps). */
   portainer: boolean;
   files: DeploymentFiles;
+  /** A second app's first app, whose server OpsCrew created: its setup and the edge stay. */
+  firstApp?: string;
 }): string[] {
-  const { plan, github, others, files } = input;
+  const { plan, github, others, files, firstApp } = input;
   const items = [
     "Your server itself: OpsCrew never deletes, rebuilds or reinstalls it, and took no snapshot. Backups of anything on it are your responsibility.",
   ];
-  if (others.length > 0) {
+  if (firstApp !== undefined) {
+    const apps = [firstApp, ...others].map((app) => `"${app}"`);
+    items.push(
+      `The server's setup (Docker, the deploy user, SSH and the firewall), the other OpsCrew ${apps.length === 1 ? "app" : "apps"} on it (${listText(apps)}) and what the apps share, the edge: they belong to "${firstApp}", which OpsCrew created the server for.`,
+    );
+  } else if (others.length > 0) {
     items.push(
       `The other OpsCrew ${others.length === 1 ? "app" : "apps"} on your server (${listText(others.map((app) => `"${app}"`))}) and what the apps share: the edge (Caddy and kamal-proxy)${input.portainer ? " and Portainer, which go" : ", which goes"} with the last app.`,
     );
   }
-  items.push(
-    input.undone
-      ? "Docker stays installed on your server, because other software may use it; remove it yourself with apt if you no longer need it."
-      : "OpsCrew's host setup on your server (Docker, the deploy user, SSH hardening, the firewall rules, fail2ban and automatic updates). `opscrew destroy --undo-host` reverses OpsCrew's changes and leaves Docker installed.",
-  );
+  if (firstApp === undefined) {
+    items.push(
+      input.undone
+        ? "Docker stays installed on your server, because other software may use it; remove it yourself with apt if you no longer need it."
+        : "OpsCrew's host setup on your server (Docker, the deploy user, SSH hardening, the firewall rules, fail2ban and automatic updates). `opscrew destroy --undo-host` reverses OpsCrew's changes and leaves Docker installed.",
+    );
+  }
   if (input.keptData !== undefined) items.push(input.keptData);
   if (input.keptBucket !== undefined) items.push(input.keptBucket);
   if (!input.removedApp) return items;
@@ -525,6 +554,9 @@ export async function destroyOwnServer(
   const own = services.own ?? {};
   const name = plan.app.name;
   const deleteData = options.deleteData === true;
+  // A second app on a server OpsCrew created for another app: only its own parts go.
+  const shares = sharesOf(plan);
+  if (shares !== undefined && options.undoHost === true) throw undoRefused(name, shares.app);
   // What the user runs again after a stop, in the findings and the hints of the host adapter.
   const command = options.undoHost === true ? `${COMMAND} --undo-host` : COMMAND;
   const stateHere = await hasState(deps.paths);
@@ -604,20 +636,32 @@ export async function destroyOwnServer(
   // them the SSH rule on the network's interface.
   plan = await reopenPublicSsh(deps, plan, [APP_SERVER, ...extraOwnServers(plan)], services);
 
-  // 3. Connect (pinned host key) and inspect (read-only); never another app's server
-  const inspected = await connectAndInspectOwnServer(deps, {
-    hostKey: options.hostKey,
-    services: own,
-    phase: "provision",
-    detail: "destroy",
-  });
+  // 3. Connect (pinned host key) and inspect (read-only); never another app's server. A second
+  // app logs in with its own deploy key and reads the records as root through Docker: the first
+  // app's folder isn't needed.
+  const adapter = shares === undefined ? undefined : secondAppAdapter(own.host);
+  const inspected =
+    adapter === undefined
+      ? await connectAndInspectOwnServer(deps, {
+          hostKey: options.hostKey,
+          services: own,
+          phase: "provision",
+          detail: "destroy",
+        })
+      : await connectSecondApp(deps, plan, {
+          services: { ...own, host: adapter },
+          phase: "provision",
+          detail: "destroy",
+        });
   const { session } = inspected;
   const host: OwnHost = {
     session,
     apply: (remote, hostPlan, applyOptions) =>
-      own.host
-        ? own.host.apply(remote, hostPlan, applyOptions)
-        : applyHostPlan(remote, hostPlan, applyOptions),
+      adapter !== undefined
+        ? adapter.apply(remote, hostPlan, applyOptions)
+        : own.host
+          ? own.host.apply(remote, hostPlan, applyOptions)
+          : applyHostPlan(remote, hostPlan, applyOptions),
     verifyLogin:
       own.verifyLogin ??
       ownServerLoginCheck(deps, session, {
@@ -669,7 +713,21 @@ export async function destroyOwnServer(
   const teardown = removeApp
     ? planTeardown(
         facts,
-        { deleteData, app: name, projectId: deps.paths.projectId, ...repository },
+        {
+          deleteData,
+          app: name,
+          projectId: deps.paths.projectId,
+          ...repository,
+          // A second app is never the last one, and removes only its own key lines.
+          ...(shares === undefined
+            ? {}
+            : {
+                shares: true as const,
+                image: IMAGES.busybox.ref,
+                deployKey: await readDeployPublicKey(deps, `cannot remove ${name} from the server`),
+                firstApp: shares.app,
+              }),
+        },
         command,
       )
     : undefined;
@@ -698,7 +756,7 @@ export async function destroyOwnServer(
     deleteData &&
     (teardown?.steps ?? []).some((step) => step.id === "app-dirs" && step.state === "change");
   const others = otherApps(plan, facts);
-  const kept = keptData(facts, name, others.length === 0);
+  const kept = keptData(facts, name, others.length === 0 && shares === undefined);
   if (deleteData && kept !== undefined) {
     // Never a `--delete-data` that silently keeps the data (Constitution IX).
     if (!removeApp) throw dataNotDeletable(name, kept, true);
@@ -1086,6 +1144,7 @@ export async function destroyOwnServer(
     others,
     portainer: facts.portainer.installed,
     files: await deploymentFiles(deps, plan),
+    ...(shares !== undefined ? { firstApp: shares.app } : {}),
   });
   // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
   remaining.push(...extraServersRemaining(given, snapshotIds));

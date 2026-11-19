@@ -219,6 +219,18 @@ describe("shareableHost", () => {
       "dev's server is served through a Cloudflare Tunnel and takes no public SSH",
     ],
     [
+      "a second app, on the server OpsCrew created for another app",
+      DeployPlanSchema.parse({
+        ...hostTestPlan({ own: true }),
+        target: {
+          ...hostTestPlan({ own: true }).target,
+          shares: { app: "inventory", provider: "hetzner" },
+        },
+      }),
+      HOST_ENV,
+      'dev runs on the server OpsCrew created for "inventory", whose server it shares, and previews never run beside another app.',
+    ],
+    [
       "nginx",
       DeployPlanSchema.parse({
         ...hostTestPlan(),
