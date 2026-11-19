@@ -942,6 +942,17 @@ describe("runAdvise: the database check", () => {
     expect(account.notRead).toContain(
       "the statistics of the hosting account's MariaDB database: advise reads a database only on a server it reaches over SSH, and only PostgreSQL",
     );
+    const postgres = {
+      ...hosting,
+      target: {
+        ...hosting.target,
+        database: { engine: "postgres", name: "notes" },
+      } as DeployPlan["target"],
+    };
+    const onPostgres = await runAdvise(await project({ plan: postgres }), postgres, options);
+    expect(onPostgres.notRead).toContain(
+      "the statistics of the hosting account's PostgreSQL database: advise reads a database only on a server it reaches over SSH",
+    );
   });
 
   it("keeps a statement's secret, the users' texts and the address out of everything", async () => {

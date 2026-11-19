@@ -54,6 +54,7 @@ import {
 import { connectPanel, PANEL_NAMES } from "../hosting/panels";
 import { currentRoot, hostingHostnameTaken } from "../hosting/provision-plans";
 import { readHostingRecord, type SftpRecord } from "../hosting/record";
+import { choosingSettingValue } from "../shared/app-env";
 import { appDirOf } from "./code-changes";
 import { appNameFor, selfHostedServices } from "./components";
 import { resolveRuntime } from "./runtime-version";
@@ -79,6 +80,10 @@ const NODE_STARTUP = "app.js";
 /** The variables a split database's settings fill (FR-1337), which provision writes here. */
 const DATABASE_SETTINGS = /^DB_(?:HOST|PORT|DATABASE|NAME|USERNAME|USER|PASSWORD|PASS)$/;
 const DATABASE_SECRETS = /^DB_PASS(?:WORD)?$/;
+
+/** The services a hosting account's database stands in for (PostgreSQL on cPanel only). */
+type SqlKind = "mysql" | "mariadb" | "postgres";
+const SQL_KINDS: ReadonlySet<ServiceKind> = new Set<SqlKind>(["mysql", "mariadb", "postgres"]);
 
 /** What {@link designHosting} needs besides the phase's deps. */
 export interface HostingDesignInput {
@@ -152,9 +157,19 @@ export async function designHosting(
     throw new Error("hostingMisfit refuses an app the account runs as nothing.");
 
   const sql = selfHostedServices(facts, requirements.keepExternalServices).find(
-    (service): service is { kind: "mysql" | "mariadb"; title: string } =>
-      service.kind === "mysql" || service.kind === "mariadb",
+    (service): service is { kind: SqlKind; title: string } => SQL_KINDS.has(service.kind),
   );
+  // The app's own engine where the account has it; MariaDB serves MySQL's clients too. PostgreSQL
+  // is the account's when it fits (`hostingMisfit`).
+  const engines = account?.facts.databases.engines ?? [];
+  const engine =
+    sql === undefined
+      ? undefined
+      : sql.kind === "postgres" || engines.includes(sql.kind)
+        ? sql.kind
+        : engines.includes("mariadb")
+          ? "mariadb"
+          : "mysql";
   const cron = scheduledCommands(facts);
   const runtime =
     app === "node" || app === "python"
@@ -178,20 +193,16 @@ export async function designHosting(
       : {}),
     // The version the second plan chose at provision, while the app is still a PHP app.
     ...(app === "php" && before?.php !== undefined ? { php: before.php } : {}),
-    ...(account !== undefined && sql !== undefined
+    ...(account !== undefined && engine !== undefined
       ? {
           database: {
-            // The app's own engine where the account has it; MariaDB serves MySQL's clients too.
-            engine: account.facts.databases.engines.includes(sql.kind)
-              ? sql.kind
-              : account.facts.databases.engines.includes("mariadb")
-                ? "mariadb"
-                : "mysql",
+            engine,
             name:
               before?.database?.name ??
               databaseName(
                 `${deps.paths.app ?? appNameFor(facts)}${deps.paths.environment === "prod" ? "" : `_${deps.paths.environment}`}`,
                 account.facts.databases,
+                engine,
               ),
           },
         }
@@ -350,11 +361,16 @@ async function nodeStartup(root: string, facts: ProjectFacts): Promise<string> {
 /**
  * The database's name without the account's prefix, from `base` (the app's name): lower-case
  * letters, digits and underscores, short enough for the panel's limits on the database's and its
- * user's names with the prefix. An underscore counts twice, as cPanel counts it (research R1).
+ * user's names with the prefix (PostgreSQL's own where the panel gives them). An underscore counts
+ * twice, as cPanel counts it (research R1).
  */
-function databaseName(base: string, databases: HostingFacts["databases"]): string {
+function databaseName(base: string, databases: HostingFacts["databases"], engine: SqlKind): string {
   const prefix = databases.prefix ?? "";
-  const room = Math.min(databases.maxDatabaseName ?? 64, databases.maxUserName ?? 64);
+  const own = engine === "postgres" ? databases.postgres : undefined;
+  const room = Math.min(
+    own?.maxDatabaseName ?? databases.maxDatabaseName ?? 64,
+    own?.maxUserName ?? databases.maxUserName ?? 64,
+  );
   const cost = (name: string) =>
     `${prefix}${name}`.length + `${prefix}${name}`.split("_").length - 1;
   let name =
@@ -454,7 +470,12 @@ function phpLine(needs: PhpNeeds, sftp: boolean): string {
     : `PHP: ${wants}. OpsCrew checks the account's PHP versions and their extensions when it sets the account up (\`opscrew provision\`), and shows the version the app gets.`;
 }
 
-/** The variables the account's database fills when the plan makes one: its URL and its settings. */
+/**
+ * The variables the account's database fills when the plan makes one, each with whether it is a
+ * secret: its URL and its settings, and Laravel's `DB_CONNECTION` where the app's example chose
+ * the database with the connection it gets (`pgsql` for PostgreSQL), whose value
+ * `choosingSettingValue` gives from the target.
+ */
 export function hostingDatabaseVariables(
   facts: ProjectFacts,
   target: HostingDeployTarget,
@@ -462,10 +483,7 @@ export function hostingDatabaseVariables(
   const filled = new Map<string, boolean>();
   if (target.database === undefined) return filled;
   for (const service of facts.services) {
-    if (
-      (service.kind === "mysql" || service.kind === "mariadb") &&
-      service.variable !== undefined
-    ) {
+    if (SQL_KINDS.has(service.kind) && service.variable !== undefined) {
       filled.set(service.variable, true);
     }
   }
@@ -473,6 +491,11 @@ export function hostingDatabaseVariables(
     if (DATABASE_SETTINGS.test(variable.name)) {
       filled.set(variable.name, DATABASE_SECRETS.test(variable.name));
     }
+  }
+  const connection = choosingSettingValue("DB_CONNECTION", { services: [], target });
+  const chosen = `env:DB_CONNECTION=${connection}`;
+  if (facts.services.some((service) => service.evidence.includes(chosen))) {
+    filled.set("DB_CONNECTION", false);
   }
   return filled;
 }

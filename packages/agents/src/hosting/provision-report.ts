@@ -5,12 +5,28 @@
  */
 import type { HostingFiles } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
+import type { HostingDeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type PhpBinary, phpVersionOf } from "./php";
 import { keyValues, type WaitOptions } from "./requests";
 
-/** The tools the agent reports on. */
-const TOOLS = ["git", "openssl", "flock", "mysqldump", "tar", "curl", "ssh", "ssh-keygen"] as const;
+/** The tools the agent reports on in any case. */
+const TOOLS = ["git", "openssl", "flock", "tar", "curl", "ssh", "ssh-keygen"] as const;
+
+/**
+ * The tools the agent dumps and loads a database with, which it reports on for its own engine only
+ * (`DB_ENGINE`): MySQL's for MySQL and MariaDB, PostgreSQL's client tools (029 US10).
+ */
+const DATABASE_TOOLS = ["mysqldump", "pg_dump", "psql"] as const;
+
+type DatabaseEngine = NonNullable<HostingDeployTarget["database"]>["engine"];
+type Tool = (typeof TOOLS)[number] | (typeof DATABASE_TOOLS)[number];
+
+const ENGINE_TOOLS: Record<DatabaseEngine, readonly Tool[]> = {
+  mysql: ["mysqldump"],
+  mariadb: ["mysqldump"],
+  postgres: ["pg_dump", "psql"],
+};
 
 const YesNo = z.enum(["yes", "no"]).transform((value) => value === "yes");
 
@@ -22,7 +38,8 @@ interface AgentReport {
   /** The agent's read-only GitHub key's public half; empty without `ssh-keygen`. */
   publicKey: string;
   php: PhpBinary[];
-  tools: Record<(typeof TOOLS)[number], boolean>;
+  /** A database tool the report doesn't name counts as missing. */
+  tools: Record<Tool, boolean>;
   /** GitHub answers over SSH on port 22, and on `ssh.github.com:443`. */
   github: { port22: boolean; port443: boolean };
 }
@@ -52,10 +69,13 @@ const ReportSchema = z.record(z.string(), z.string()).transform((values, ctx): A
     if (!parsed.success) ctx.addIssue({ code: "custom", message: `${name} isn't yes or no` });
     return parsed.success && parsed.data;
   };
-  const tools = Object.fromEntries(TOOLS.map((tool) => [tool, flag(`tool.${tool}`)])) as Record<
-    (typeof TOOLS)[number],
-    boolean
-  >;
+  const tools = Object.fromEntries([
+    ...TOOLS.map((tool) => [tool, flag(`tool.${tool}`)]),
+    ...DATABASE_TOOLS.map((tool) => [
+      tool,
+      values[`tool.${tool}`] !== undefined && flag(`tool.${tool}`),
+    ]),
+  ]) as Record<Tool, boolean>;
   return {
     publicKey: key,
     php,
@@ -87,18 +107,26 @@ interface ReportMisfit {
 }
 
 /**
- * What the report shows the account lacks for the agent (plan 2): a tool it uses (`mysqldump` only
- * for an app with a database), its own key, or GitHub over SSH.
+ * What the report shows the account lacks for the agent (plan 2): a tool it uses (for an app with
+ * a database its engine's own: `mysqldump`, or PostgreSQL's `pg_dump` and `psql`), its own key, or
+ * GitHub over SSH.
  */
 export function reportMisfit(
   report: AgentReport,
-  input: { database: boolean },
+  input: { database: DatabaseEngine | undefined },
 ): ReportMisfit | undefined {
-  const needed = TOOLS.filter((tool) => tool !== "mysqldump" || input.database);
+  const needed = [...TOOLS, ...(input.database === undefined ? [] : ENGINE_TOOLS[input.database])];
   const missing = needed.filter((tool) => !report.tools[tool]);
   if (missing.length > 0) {
+    const reason = `the account has no ${listText(missing)}, which OpsCrew's agent needs to deploy`;
+    if (missing.every((tool) => tool === "pg_dump" || tool === "psql")) {
+      return {
+        reason,
+        fix: "Ask your host to add PostgreSQL's client tools (pg_dump and psql) to the account's shell and cron jobs, then run `opscrew provision` again; or use MySQL in the app, then run `opscrew analyze`, `opscrew design` and `opscrew provision` again.",
+      };
+    }
     return {
-      reason: `the account has no ${listText(missing)}, which OpsCrew's agent needs to deploy`,
+      reason,
       fix: `Ask your host for ${listText(missing)} in the account's shell and cron jobs, then run \`opscrew provision\` again.`,
     };
   }

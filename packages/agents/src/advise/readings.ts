@@ -23,6 +23,7 @@ import { couldNotRun, runHostChecks } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { extraCatalogs } from "../design/run";
 import { readEnvironmentRequirements } from "../environments/requirements";
+import { ENGINE_NAMES } from "../hosting/facts";
 import { sharedPreviewsLimit } from "../previews/host";
 import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { renderedServers } from "../provision/disk-guard";
@@ -232,7 +233,7 @@ async function readDatabases(
         engine === undefined
           ? []
           : [
-              `the statistics of the hosting account's ${engine === "mysql" ? "MySQL" : "MariaDB"} database: ${ONLY_OVER_SSH}, and only PostgreSQL`,
+              `the statistics of the hosting account's ${ENGINE_NAMES[engine]} database: ${ONLY_OVER_SSH}${engine === "postgres" ? "" : ", and only PostgreSQL"}`,
             ],
     };
   }

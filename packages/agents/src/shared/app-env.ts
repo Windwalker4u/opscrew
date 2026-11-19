@@ -19,6 +19,7 @@ import {
   type DeployPlan,
   type HostListKind,
   hostListKind,
+  isHostingTarget,
   type PlanService,
   REDIS_PROTOCOL_KINDS,
   type SelfHostedServiceKind,
@@ -299,19 +300,27 @@ const LARAVEL_CONNECTIONS: Readonly<Partial<Record<SelfHostedServiceKind, string
   mariadb: "mariadb",
 };
 
+/** What a setting that chooses a service is read from: a plan, or design's components. */
+interface ChoosingOwner {
+  readonly services: readonly PlanService[];
+  /** A plan's target: a hosting account's database runs as no service. */
+  readonly target?: DeployPlan["target"];
+}
+
 /** The settings that choose a service (Laravel's), and their value while that service runs. */
-const CHOOSING_SETTINGS: Readonly<
-  Record<string, (owner: { readonly services: readonly PlanService[] }) => string | undefined>
-> = {
+const CHOOSING_SETTINGS: Readonly<Record<string, (owner: ChoosingOwner) => string | undefined>> = {
   DB_CONNECTION: (owner) => {
     const database = splitDatabase(owner);
-    return database === undefined ? undefined : LARAVEL_CONNECTIONS[database.kind];
+    if (database !== undefined) return LARAVEL_CONNECTIONS[database.kind];
+    const { target } = owner;
+    const engine =
+      target !== undefined && isHostingTarget(target) ? target.database?.engine : undefined;
+    return engine === undefined ? undefined : LARAVEL_CONNECTIONS[engine];
   },
   ...Object.fromEntries(
     ["QUEUE_CONNECTION", "CACHE_STORE", "CACHE_DRIVER", "SESSION_DRIVER"].map((name) => [
       name,
-      (owner: { readonly services: readonly PlanService[] }) =>
-        urlService(owner, "redis") === undefined ? undefined : "redis",
+      (owner: ChoosingOwner) => (urlService(owner, "redis") === undefined ? undefined : "redis"),
     ]),
   ),
 };
@@ -319,14 +328,11 @@ const CHOOSING_SETTINGS: Readonly<
 /**
  * The value of a setting that chooses a service, while that service runs in `owner` (a plan or
  * design's components): `DB_CONNECTION` the connection of the {@link splitDatabase} (`pgsql`,
- * `mysql`, `mariadb`), and `QUEUE_CONNECTION`, `CACHE_STORE`, `CACHE_DRIVER` and `SESSION_DRIVER`
+ * `mysql`, `mariadb`) or of a hosting account's database, and `QUEUE_CONNECTION`, `CACHE_STORE`, `CACHE_DRIVER` and `SESSION_DRIVER`
  * `redis` while Valkey, Redis 8 or Dragonfly runs. `design` plans it as `derived` where the
  * app's example gives it that value; undefined for any other name or without the service.
  */
-export function choosingSettingValue(
-  name: string,
-  owner: { readonly services: readonly PlanService[] },
-): string | undefined {
+export function choosingSettingValue(name: string, owner: ChoosingOwner): string | undefined {
   return CHOOSING_SETTINGS[name]?.(owner);
 }
 

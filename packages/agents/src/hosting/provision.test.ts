@@ -66,7 +66,14 @@ const ALL = `${BASE},mbstring,fileinfo,intl,gd,zip`;
 
 /** The agent's first report on the founder's kind of account: PHP 7.0, alt-php 8.0 to 8.5. */
 function report(
-  o: { account?: string; github?: boolean; git?: boolean; extra?: string[] } = {},
+  o: {
+    account?: string;
+    github?: boolean;
+    git?: boolean;
+    extra?: string[];
+    /** The database tools found (default `mysqldump`). */
+    database?: Record<string, boolean>;
+  } = {},
 ): string {
   const php = [
     ["/usr/local/bin/php", o.account ?? "7.0.33", ALL],
@@ -84,8 +91,11 @@ function report(
       `php.${i + 1}.modules=${modules}`,
     ]),
     ...(o.extra ?? []),
-    ...["git", "openssl", "flock", "mysqldump", "tar", "curl", "ssh", "ssh-keygen"].map(
+    ...["git", "openssl", "flock", "tar", "curl", "ssh", "ssh-keygen"].map(
       (tool) => `tool.${tool}=${tool === "git" && o.git === false ? "no" : "yes"}`,
+    ),
+    ...Object.entries(o.database ?? { mysqldump: true }).map(
+      ([tool, found]) => `tool.${tool}=${found ? "yes" : "no"}`,
     ),
     `github.22=${o.github === false ? "no" : "yes"}`,
     `github.443=${o.github === false ? "no" : "yes"}`,
@@ -781,6 +791,24 @@ describe("provision on a cPanel account", () => {
     // No PHP is chosen before the report fits: the agent's first settings name none.
     expect(s.fake.readText(`${FOLDER}/settings.sh`)).toContain("\nPHP_CLI=''\n");
     expect(s.fake.state.databases.size).toBe(0);
+  });
+
+  it("stops before plan B for a PostgreSQL database when the account's shell lacks pg_dump", async () => {
+    const s = await setup({
+      example: "express-api",
+      cpanel: { postgres: { maxDatabaseNameLength: 63, maxUsernameLength: 63 } },
+      report: () => report({ database: { pg_dump: false, psql: true } }),
+    });
+    const { error } = await s.run();
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toBe(
+      "The hosting account can't run OpsCrew's deploys: the account has no pg_dump, which OpsCrew's agent needs to deploy. The agent and its cron line are installed and recorded; nothing else was made.",
+    );
+    expect((error as OpsCrewError).hint).toContain(
+      "Ask your host to add PostgreSQL's client tools (pg_dump and psql) to the account's shell",
+    );
+    expect(s.fake.state.postgresDatabases.size).toBe(0);
+    expect(s.fake.state.domains.some((d) => d.name === HOSTNAME)).toBe(false);
   });
 
   it("stops before the hostname and the database when no PHP runs the app (plan 5 step 4)", async () => {

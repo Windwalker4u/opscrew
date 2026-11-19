@@ -219,7 +219,7 @@ export async function provisionHosting(
   // 3. The agent's first report.
   deps.reporter.step("Waiting for the agent's first report on the account (up to 3 minutes)");
   const report = await waitForReport(files, folder, { sleep });
-  const misfit = reportMisfit(report, { database: target.database !== undefined });
+  const misfit = reportMisfit(report, { database: target.database?.engine });
   if (misfit !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -468,7 +468,8 @@ function phpText(php: PhpChoice, account: HostingAccount): string {
 /**
  * The app's values for its settings file: the user's, generated and derived ones as
  * `buildAppEnvironment` makes them (a non-interactive run reads `OPSCREW_APP_ENV_FILE`), without
- * those the account's database fills, which the apply adds. `undefined` for a static site.
+ * those the account's database fills, which the apply adds (Laravel's `DB_CONNECTION` aside, which
+ * names the database's engine and is derived here). `undefined` for a static site.
  */
 async function plannedValues(
   deps: PhaseDeps,
@@ -479,6 +480,7 @@ async function plannedValues(
   if (target.app === "static") return undefined;
   const { facts } = await readArtifact("architecture", deps.paths.files.architecture);
   const filled = hostingDatabaseVariables(facts, target);
+  filled.delete("DB_CONNECTION");
   const own = {
     ...plan,
     app: { ...plan.app, env: plan.app.env.filter((v) => !filled.has(v.name)) },

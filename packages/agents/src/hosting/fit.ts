@@ -61,9 +61,8 @@ export interface HostingFitInput {
  * worker that keeps running (Laravel's scheduler and queue worker aside, which become cron lines);
  * a queue service OpsCrew would run; Redis; WebSockets served from PHP; a service that runs only in
  * a container (or a bucket OpsCrew would create); a database engine the account lacks (PostgreSQL
- * included, which OpsCrew doesn't make on an account yet); a Node.js or Python app where the panel
- * has no selector for it or no app slot left (an SFTP host runs none); an app larger than the disk
- * left.
+ * on any panel but cPanel); a Node.js or Python app where the panel has no selector for it or no
+ * app slot left (an SFTP host runs none); an app larger than the disk left.
  */
 export function hostingMisfit(input: HostingFitInput): HostingMisfit | undefined {
   const { facts, keep, app, account } = input;
@@ -152,19 +151,30 @@ export function hostingMisfit(input: HostingFitInput): HostingMisfit | undefined
   return undefined;
 }
 
-/** The app's database engine where the account has none of it; PostgreSQL in any case. */
+/**
+ * The app's database engine where the account has none of it; PostgreSQL on any panel but cPanel,
+ * the one panel OpsCrew makes PostgreSQL databases through (029 US10).
+ */
 function databaseMisfit(
   services: ReturnType<typeof selfHostedServices>,
   account: HostingFacts,
 ): HostingMisfit | undefined {
   const { engines } = account.databases;
   if (services.some((service) => service.kind === "postgres")) {
-    return engines.includes("postgres")
-      ? {
-          reason:
-            "the app uses PostgreSQL, and OpsCrew makes only MySQL and MariaDB databases on a hosting account so far",
-        }
-      : { reason: "the app uses PostgreSQL, and the account has no PostgreSQL databases" };
+    if (account.panel !== "cpanel") {
+      return {
+        reason:
+          "the app uses PostgreSQL, and OpsCrew makes PostgreSQL databases only on cPanel accounts so far",
+        fix: "Use MySQL or MariaDB in the app, then run `opscrew analyze` and `opscrew design` again.",
+      };
+    }
+    if (!engines.includes("postgres")) {
+      return {
+        reason:
+          "the app uses PostgreSQL, and the account has no PostgreSQL databases: its host didn't install PostgreSQL",
+        fix: "Ask your host to add PostgreSQL to the account, then run `opscrew design` again.",
+      };
+    }
   }
   const sql = services.find((service) => service.kind === "mysql" || service.kind === "mariadb");
   if (sql !== undefined && !engines.includes("mysql") && !engines.includes("mariadb")) {

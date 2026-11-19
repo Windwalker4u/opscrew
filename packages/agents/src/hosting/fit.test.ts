@@ -144,18 +144,25 @@ describe("design's refusals", () => {
     expect(fit({ facts: bucket })).toBeUndefined();
   });
 
-  it("refuses PostgreSQL where the account has none, and where it has it for now", () => {
+  it("takes PostgreSQL on a cPanel account that has it, and refuses it elsewhere", () => {
     const facts = php({ services: [{ kind: "postgres", evidence: ["dependency:ext-pdo_pgsql"] }] });
-    expect(reason({ facts })).toBe(
-      "the app uses PostgreSQL, and the account has no PostgreSQL databases",
-    );
     const withPostgres = {
       ...ACCOUNT,
       databases: { ...ACCOUNT.databases, engines: ["mariadb" as const, "postgres" as const] },
     };
-    expect(reason({ facts, account: withPostgres })).toBe(
-      "the app uses PostgreSQL, and OpsCrew makes only MySQL and MariaDB databases on a hosting account so far",
-    );
+    expect(fit({ facts, account: withPostgres })).toBeUndefined();
+    expect(fit({ facts })).toEqual({
+      reason:
+        "the app uses PostgreSQL, and the account has no PostgreSQL databases: its host didn't install PostgreSQL",
+      fix: "Ask your host to add PostgreSQL to the account, then run `opscrew design` again.",
+    });
+    for (const panel of ["plesk", "directadmin"] as const) {
+      expect(fit({ facts, account: { ...withPostgres, panel } })).toEqual({
+        reason:
+          "the app uses PostgreSQL, and OpsCrew makes PostgreSQL databases only on cPanel accounts so far",
+        fix: "Use MySQL or MariaDB in the app, then run `opscrew analyze` and `opscrew design` again.",
+      });
+    }
     const mysql = php({ services: [{ kind: "mysql", evidence: ["dependency:ext-pdo_mysql"] }] });
     const none = { ...ACCOUNT, databases: { engines: [] } };
     expect(reason({ facts: mysql, account: none })).toBe(

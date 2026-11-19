@@ -853,6 +853,32 @@ describe("assembleAppEnv: a PHP app's settings (US8)", () => {
     ]);
   });
 
+  it("gives Laravel the connection of a hosting account's database, which runs as no service", async () => {
+    const hosting = (engine: "mysql" | "mariadb" | "postgres") =>
+      DeployPlanSchema.parse({
+        ...plan([derived("DB_CONNECTION")], { provider: "none", domain: "notes.example.com" }),
+        services: [],
+        target: {
+          provider: "hosting",
+          panel: "cpanel",
+          app: "php",
+          webRoot: "public",
+          database: { engine, name: "notes" },
+          cron: [],
+          docroot: "direct",
+        },
+      });
+    for (const [engine, connection] of [
+      ["postgres", "pgsql"],
+      ["mysql", "mysql"],
+      ["mariadb", "mariadb"],
+    ] as const) {
+      const result = await assembleAppEnv({ plan: hosting(engine), dotenvText: "" });
+      expect(result.values.app.DB_CONNECTION, engine).toBe(connection);
+    }
+    expect(serviceFilledNames(hosting("postgres")).has("DB_CONNECTION")).toBe(true);
+  });
+
   it("gives Laravel's split Redis settings from the Redis it reaches, its password among them", async () => {
     const env: Env = [
       derived("REDIS_HOST"),

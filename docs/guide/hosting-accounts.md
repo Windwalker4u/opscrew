@@ -25,6 +25,8 @@ A hosting account runs code only while it answers a request. It fits:
 
 - static sites, including those your build makes;
 - PHP apps: plain PHP and [Laravel](https://laravel.com/), with a MySQL or MariaDB database;
+- a PostgreSQL database on a cPanel account whose host installed PostgreSQL (see
+  [PostgreSQL on cPanel](cpanel.md#postgresql); not tested on a real account yet);
 - a Laravel queue on the database connection: its worker runs from cron every minute until the
   queue is empty, so a queued job starts within about a minute;
 - Node.js and Python apps, on a panel account whose panel runs them (CloudLinux's selector), while
@@ -36,7 +38,7 @@ A hosting account runs code only while it answers a request. It fits:
 - Redis, or any service that runs only in a container (keep a hosted one with
   `keepExternalServices` in `opscrew interview`);
 - WebSockets from PHP;
-- PostgreSQL: OpsCrew makes only MySQL and MariaDB databases on an account so far;
+- PostgreSQL on Plesk and DirectAdmin, and on a cPanel account whose host didn't install it;
 - an app larger than the disk the account has left.
 
 The PHP version and its extensions are read on the account at provision; see
@@ -266,10 +268,10 @@ Drills load the dump into a database of their own, never the app's. Turn them on
 drill database, named after the app's with `_drill` at the end, and its own user, which has no
 right on the app's database. Each drill empties that database, so you approve the plan by its hash
 with `<app>-drill` typed. Its password is generated then and kept only in
-`~/opscrew/<app>-<env>/keys/drill.cnf` (0600, outside every web root). **It is one more database
-on the account, so it counts against your hosting plan's limit on databases:** check there is room
-for it before you turn drills on. Removing `snapshots.drills` and running provision removes it, and
-so does `npx opscrew destroy`.
+`~/opscrew/<app>-<env>/keys/drill.cnf` (`keys/drill.pgpass` for PostgreSQL; 0600, outside every
+web root). **It is one more database on the account, so it counts against your hosting plan's
+limit on databases:** check there is room for it before you turn drills on. Removing
+`snapshots.drills` and running provision removes it, and so does `npx opscrew destroy`.
 
 ### A drill
 

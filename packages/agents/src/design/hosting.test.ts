@@ -1,4 +1,5 @@
 // Feature 027 (T2710): design for a hosting account, read through each panel's fakes.
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -334,6 +335,58 @@ describe("design on a cPanel account", () => {
   });
 });
 
+describe("design with PostgreSQL on a cPanel account (029 US10)", () => {
+  it("plans a PostgreSQL database within the account's PostgreSQL name limits", async () => {
+    const { deps } = await onCpanel("express-api", {
+      postgres: { maxDatabaseNameLength: 10, maxUsernameLength: 63 },
+    });
+    const { plan } = await runDesign(deps);
+    // acct_notes is 10 characters, and its underscore counts twice.
+    expect(plan.target).toMatchObject({
+      app: "node",
+      database: { engine: "postgres", name: "note" },
+    });
+    expect(plan.app.env.find((v) => v.name === "DATABASE_URL")).toEqual({
+      name: "DATABASE_URL",
+      secret: true,
+      source: "derived",
+    });
+    expect(lines(deps)).toContain(
+      "Database: PostgreSQL, acct_note with a user of its own. Its password is generated at provision and kept only in the app's settings on the account, outside the web root.",
+    );
+  });
+
+  it("gives Laravel's DB_CONNECTION pgsql from the account's PostgreSQL", async () => {
+    const example = readFileSync(join(EXAMPLES, "laravel-app", ".env.example"), "utf8")
+      .replace("DB_CONNECTION=sqlite", "DB_CONNECTION=pgsql")
+      .replace(/^# (DB_\w+)=.*$/gm, "$1=");
+    const { deps } = await onCpanel(
+      "laravel-app",
+      { postgres: { maxDatabaseNameLength: 63, maxUsernameLength: 63 } },
+      { files: { ".env.example": example } },
+    );
+    const { plan } = await runDesign(deps);
+    expect(plan.target).toMatchObject({ database: { engine: "postgres", name: "notes" } });
+    expect(plan.app.env.filter((v) => v.name.startsWith("DB_"))).toEqual([
+      { name: "DB_CONNECTION", secret: false, source: "derived" },
+      { name: "DB_DATABASE", secret: false, source: "derived" },
+      { name: "DB_HOST", secret: false, source: "derived" },
+      { name: "DB_PASSWORD", secret: true, source: "derived" },
+      { name: "DB_PORT", secret: false, source: "derived" },
+      { name: "DB_USERNAME", secret: false, source: "derived" },
+    ]);
+  });
+
+  it("refuses PostgreSQL on a cPanel account whose host didn't install it", async () => {
+    const { deps } = await onCpanel("express-api");
+    const error = await runDesign(deps).catch((e) => e);
+    expect(error.message).toBe(
+      "A hosting account doesn't fit this app: the app uses PostgreSQL, and the account has no PostgreSQL databases: its host didn't install PostgreSQL. Nothing was written.",
+    );
+    expect(error.hint).toContain("Ask your host to add PostgreSQL to the account");
+  });
+});
+
 describe("design's refusals, through each panel", () => {
   it("refuses Redis on cPanel, writing nothing, and names a server target", async () => {
     const { deps } = await onCpanel(
@@ -485,7 +538,7 @@ describe("design's refusals, through each panel", () => {
       fetch: account(fake.fetch),
     });
     await expect(runDesign(postgres)).rejects.toThrow(
-      "the app uses PostgreSQL, and the account has no PostgreSQL databases",
+      "the app uses PostgreSQL, and OpsCrew makes PostgreSQL databases only on cPanel accounts so far",
     );
   });
 

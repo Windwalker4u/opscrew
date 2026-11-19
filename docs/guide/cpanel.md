@@ -21,12 +21,31 @@ the panel is cPanel by itself. The token reaches the whole account; see
 cPanel's API covers everything the app needs, so a cPanel account takes no step by hand:
 
 - the hostname, as a subdomain of one of the account's domains or as an addon domain;
-- the database and its user, MySQL or MariaDB;
+- the database and its user, MySQL or MariaDB, or [PostgreSQL](#postgresql) where your host
+  installed it;
 - the agent's and the app's cron jobs;
 - the agent's files;
 - the certificate: an AutoSSL check for the hostname, and its removal at destroy when nothing else
   uses it;
 - the hostname's PHP version through MultiPHP, where the account has MultiPHP.
+
+## PostgreSQL
+
+An app that uses PostgreSQL gets a PostgreSQL database and user where your host installed
+PostgreSQL on the account: cPanel leaves installing it to the host. Design reads whether the
+account has it, and refuses the app, saying so, when it doesn't. The database's name stays within
+the account's PostgreSQL name limits, and the app gets `postgresql://` values on `localhost:5432`
+(Laravel's `DB_CONNECTION` is `pgsql`).
+
+The agent dumps the database with `pg_dump` and loads a restore or a
+[drill](hosting-accounts.md#the-drill-database) with `psql`, signed in through `shared/pgpass`
+(the drill database through `keys/drill.pgpass`), each 0600 and the only copy of the login on the
+account. When the account's shell lacks either tool, provision stops after plan A, before the
+database is made, and names it: ask your host for PostgreSQL's client tools in the account's
+shell, or use MySQL.
+
+**Not tested on a real account yet:** OpsCrew's tests run PostgreSQL on a fake cPanel account
+only.
 
 ## Its limits
 
