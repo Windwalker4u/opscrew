@@ -65,6 +65,25 @@ export function committedStackPins(root: string, plan: DeployPlan): Promise<stri
   return committedText(root, [portainerStackTemplatePath(plan)]);
 }
 
+/**
+ * The stack template as the checkout's HEAD commit has it, for a run's stack plan: what a run that
+ * applied committed, never the file a `--plan-only` run or a refused run wrote since, so the drill
+ * loops a run brings are seen as new (and approved with `<app>-drill` typed) until they are
+ * committed. Empty when HEAD has none.
+ */
+export async function headStackTemplate(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  plan: DeployPlan,
+): Promise<string> {
+  const shown = await deps.runner.run("git", [
+    "-C",
+    deps.paths.root,
+    "show",
+    `HEAD:${portainerStackTemplatePath(plan)}`,
+  ]);
+  return shown.exitCode === 0 ? shown.stdout : "";
+}
+
 /** The host ports the app's stack publishes in the plan's web mode (none through the tunnel). */
 export function publishedPorts(target: PortainerDeployTarget): number[] {
   if (target.web.mode === "proxy") return [target.web.port];

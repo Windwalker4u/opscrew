@@ -1500,6 +1500,31 @@ describe.skipIf(!findExecutable("git"))(
       expect(await recorded(s)).toContain(SCRATCH);
     });
 
+    it("records it too when a script approves that stack plan by its hash", async () => {
+      const s = await setup({ plan: drilled() });
+      await s.run();
+      s.github.openPull = OPEN_PULL;
+      await writeArtifact("plan", s.deps.paths.files.plan, drilled("daily"));
+      const planned = await s.run({ planOnly: true });
+      const listed = planned.stackPlanHash as string;
+      const approving = new ScriptedApprovalHandler(
+        (request) => request.kind !== "stack-apply" || request.planHash === listed,
+      );
+      const deps = await createTestPhaseDeps({
+        root: s.root,
+        env: s.deps.env,
+        runner: projectRunner(),
+        approvalHandler: approving,
+      });
+      await runProvision(deps, { services: s.services, approveHashes: [listed] });
+      // The --plan-only run wrote the new stack template; the drills are still new, as HEAD has
+      // none: the approving run asks for <app>-drill too.
+      expect(approving.requests.filter((r) => r.kind === "stack-apply")).toEqual([
+        expect.objectContaining({ planHash: listed, confirmPhrase: "shop-drill" }),
+      ]);
+      expect(await recorded(s)).toContain(SCRATCH);
+    });
+
     it("removes the scratch volume once the schedule is off and no container uses it, approved with <app>-drill typed", async () => {
       const { s } = await turnedOff(false);
       // Recorded names other than the plan's services' scratch volumes are never removed.

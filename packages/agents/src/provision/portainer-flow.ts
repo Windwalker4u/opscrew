@@ -53,9 +53,9 @@ import {
   applyStackPlanAudited,
   approvalEntry,
   approveAndWriteRenderedFiles,
-  committedStackPins,
   deployBranchOf,
   desiredStacks,
+  headStackTemplate,
   heldPreviousValues,
   infrastructureOutputs,
   inspectAudited,
@@ -260,7 +260,7 @@ export interface PortainerStacksInput {
   repositoryPrivate: boolean;
   /** The app's image is public on GitHub Container Registry (no registry entry). */
   publicImage: boolean;
-  /** The committed stack template (`committedStackPins`). */
+  /** The stack template HEAD commits (`headStackTemplate`). */
   committed: string;
   replaceTokens?: ProvisionOptions["replaceTokens"];
   services: PortainerServices;
@@ -843,7 +843,7 @@ export async function recordedPortainerStacks(
     github,
     repositoryPrivate: repository.private,
     publicImage: input.publicImage,
-    committed: await committedStackPins(deps.paths.root, plan),
+    committed: await headStackTemplate(deps, plan),
     services: input.portainer,
     appEnvironment,
     ...(snapshotOffsiteOf(plan) !== undefined ? { offsite: offsiteStack } : {}),
@@ -1180,7 +1180,7 @@ export async function provisionPortainer(
     repositoryPrivate: repository.private,
     // The user's word on the image's visibility, as given now or recorded by an earlier run.
     publicImage: options.publicImage ?? connection.publicImage ?? false,
-    committed: await committedStackPins(root, plan),
+    committed: await headStackTemplate(deps, plan),
     ...(options.replaceTokens !== undefined ? { replaceTokens: options.replaceTokens } : {}),
     services: portainerServices,
     appEnvironment,
