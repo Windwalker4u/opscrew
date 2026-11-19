@@ -157,6 +157,8 @@ interface SwitchSetup {
   fromTunnel?: boolean;
   /** Which approvals the user gives (default all). */
   answer?: (request: ApprovalRequest) => boolean;
+  /** No state on this computer: the last setup's root never needed an apply. */
+  noState?: boolean;
 }
 
 async function setup(o: SwitchSetup) {
@@ -244,8 +246,10 @@ async function setup(o: SwitchSetup) {
   });
   await recordOwnServer(deps.paths, o.own);
   // The last run applied the old setup: its state is on this computer.
-  await mkdir(deps.paths.files.tfstateDir, { recursive: true });
-  await writeFile(join(deps.paths.files.tfstateDir, "prod.tfstate"), "{}");
+  if (o.noState !== true) {
+    await mkdir(deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(join(deps.paths.files.tfstateDir, "prod.tfstate"), "{}");
+  }
   const github = new FakeGitHub();
   const services: ProvisionServices = {
     engine: async () => engine,
@@ -435,6 +439,37 @@ describe.skipIf(!findExecutable("git"))("leaving home on one server", () => {
     expect(stepIn(s, 1, "tunnel-connector")?.params.tunnelId).toBe(TUNNEL_ID);
     const text = await seen(s);
     for (const value of [HOME_IPV4, HOME_IPV6, UPDATER]) expect(text).not.toContain(value);
+  });
+
+  it("to the tunnel from a home setup whose root never needed an apply: own.home says the server is at home", async () => {
+    // At home with its DNS on Cloudflare and no `www`, the home root holds nothing to apply, so
+    // no state was ever written (found by the live home pass, H7).
+    const s = await setup({
+      plan: ownPlan({ access: "tunnel" }),
+      last: {},
+      changes: TUNNEL_CHANGES,
+      next: tunnelOutputs({
+        token: TUNNEL_TOKEN,
+        clientId: "client-id",
+        clientSecret: SERVICE_SECRET,
+      }),
+      facts: withUpdater,
+      own: HOME_LOGIN,
+      noState: true,
+    });
+    await provision(s);
+
+    expect(s.events.slice(0, 5)).toEqual([
+      "approve:host-apply",
+      "host",
+      "approve:cloudflare-apply",
+      "records-delete",
+      "records-delete",
+    ]);
+    // Nothing of the home root to remove: the new setup's apply alone, after the records went.
+    expect(s.engine.applies.map((apply) => apply.destroy)).toEqual([false]);
+    expect(stepIn(s, 0, "dns-updater")?.params.remove).toBe(true);
+    expect(s.updaterRecords()).toEqual([]);
   });
 
   it("a refused deletion of the records stops before the new setup, and a rerun deletes them", async () => {

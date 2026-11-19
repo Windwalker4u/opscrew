@@ -11,7 +11,7 @@ import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import { ownAccessMode } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
 import { deleteUpdaterRecords, planRecordDeletion } from "../home/records";
-import { type HostPlanOutcome, infrastructureOutputs } from "../shared";
+import { type HostPlanOutcome, infrastructureOutputs, readServerAddresses } from "../shared";
 import type { HostChangeResult } from "../shared/tunnel-connections";
 import { type CloudflareSetup, cloudflareTokenMissing } from "./credentials";
 import {
@@ -46,10 +46,21 @@ export async function switchAccessMode(
     engine: async () => input.engine,
     engineEnv: input.env,
   });
-  if (outputs === undefined) return undefined;
-  const leaving = appliedAccessMode(outputs) === "home" && ownAccessMode(input.plan) !== "home";
+  // At home with the DNS on Cloudflare and nothing else in the home root, no apply was ever
+  // needed, so there is no state: `.opscrew/server.json` → `own.home`, which design records for
+  // a server at home, says it is there.
+  const home =
+    outputs === undefined
+      ? (await readServerAddresses(deps.paths)).own?.home !== undefined
+      : appliedAccessMode(outputs) === "home";
+  if (outputs === undefined && !home) return undefined;
+  const leaving = home && ownAccessMode(input.plan) !== "home";
   const left = leaving ? await leaveHome(deps, input) : undefined;
-  const removal = await removeOldAccessMode(deps, { ...removalInput, outputs });
+  // Without a state, the home root left nothing to remove.
+  const removal =
+    outputs === undefined
+      ? undefined
+      : await removeOldAccessMode(deps, { ...removalInput, outputs });
   if (left === undefined || input.planOnly === true) return removal;
   return { ...(removal ?? { applied: false, outputs: {} }), host: left };
 }
