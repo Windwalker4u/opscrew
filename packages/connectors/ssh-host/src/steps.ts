@@ -621,16 +621,18 @@ k="$h/.ssh/authorized_keys"
 if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
 [ -f "$k" ] || fail "$k is missing, so OpsCrew changed nothing: on a server OpsCrew created it holds the deploy key of the app whose server it is."
 # The deploy-key steps of the apps on this server take turns: each reads and writes the file
-# under this lock.
+# under this lock. The check key's, the previews' and a rotation's own writers don't take it yet.
 exec 9>"$h/.ssh/.opscrew-keys.lock"
 flock -w 120 9 || fail "Another change to the deploy user's keys did not finish within two minutes, so OpsCrew changed nothing."
-# Every line that is not the app's stays as it is, in its order, and only while those lines are
-# the ones this plan was made with.
-if [ "$(others_sum "$k")" != "$OTHERS_SHA256" ]; then
+# Every line that is not the app's stays as it is, in its order: read in this shell, so a failed
+# read stops the step before any write, and written only while their key lines are the ones this
+# plan was made with.
+kept=$(own_lines others "$k") || fail "OpsCrew could not read $k, so it changed nothing."
+if [ "$(printf '%s\\n' "$kept" | others_sum -)" != "$OTHERS_SHA256" ]; then
   fail "The deploy user's authorized_keys changed since this plan was made, so OpsCrew changed nothing. Make a fresh plan."
 fi
 {
-  own_lines others "$k"
+  if [ -n "$kept" ]; then printf '%s\\n' "$kept"; fi
   for line in "$KEY_1" "$KEY_2"; do
     if [ -n "$line" ]; then printf '%s\\n' "$line"; fi
   done

@@ -2214,16 +2214,16 @@ function secondAppKeyStep(
 
 /**
  * Why a second app's login cannot change the server (030): the server OpsCrew created for `first`
- * has only the deploy login, which becomes root only through Docker. A login that is root or uses
- * sudo means the facts are of another kind of server; one that cannot run Docker cannot write the
- * app's record.
+ * has only the deploy login, which becomes root only through Docker. A login that is root, uses
+ * sudo or is another user means the facts are of another kind of server; one that cannot run
+ * Docker cannot write the app's record.
  */
 function secondAppPrivilege(
   facts: HostFacts,
   findings: HostFindings,
   first: string | undefined,
 ): HostFinding[] {
-  if (facts.privilege === "root" || facts.privilege === "sudo") {
+  if (facts.privilege === "root" || facts.privilege === "sudo" || facts.user !== "deploy") {
     return [findings.notCreatedServer(facts.user, first)];
   }
   if (facts.privilege !== "docker") return [findings.noDockerRoot(facts.user, first)];
@@ -2399,7 +2399,11 @@ function secondAppPlan(
  * deploy-key step removes only the app's own lines (the keys its record names), every other line
  * staying as it is; every step runs as the login, the deploy user, except the record's, which runs
  * as root through Docker, and a record kept with the data still names the first app.
- * `opts.image` is then the pinned image the deploy user removes data in (`IMAGES.busybox.ref`).
+ * `opts.image` is then the pinned image the deploy user removes data in (`IMAGES.busybox.ref`),
+ * `opts.deployKey` the app's current deploy key, whose line goes too (a provision that stopped
+ * before the record leaves it), and `opts.firstApp` the first app's name: a teardown of that
+ * name, or of containers or volumes of the app's name with no record of this project's, has
+ * every step blocked, with a finding that names it.
  */
 export function planTeardown(
   facts: HostFacts,
@@ -2410,6 +2414,8 @@ export function planTeardown(
     repositoryUrl?: string;
     shares?: true;
     image?: string;
+    deployKey?: string;
+    firstApp?: string;
   },
   command: string,
 ): HostPlan {
@@ -2426,6 +2432,15 @@ export function planTeardown(
   const repository = projectRepository(opts);
   const { app, deleteData, projectId } = opts;
   const image = opts.shares === true ? loginImage(opts.image) : undefined;
+  const second =
+    image === undefined
+      ? undefined
+      : parseInput(
+          z.object({ deployKey: PublicKeyLineSchema, firstApp: AppNameSchema }),
+          opts,
+          "A second app's teardown needs its current deploy key and the first app's name",
+          "This is a problem in OpsCrew; please report it.",
+        );
   const login: HostStep["params"] = image === undefined ? {} : { runAs: "login", image };
   const findings = hostFindings(command);
   const listed = f.record?.apps ?? [];
@@ -2434,9 +2449,15 @@ export function planTeardown(
   const found = [
     ...(image === undefined
       ? privilegeFindings(f, findings)
-      : secondAppPrivilege(f, findings, own?.shares?.app)),
+      : secondAppPrivilege(f, findings, second?.firstApp)),
     ...damagedRecords(f.apps, listed, app, findings),
   ];
+  // A second app's teardown never removes another app: the first app, or containers or volumes
+  // of the app's name with no record of this project's. Every step is then blocked.
+  const isFirst = second !== undefined && app === second.firstApp;
+  const foreign = second !== undefined && foreignProject(f, app);
+  if (isFirst) found.push(findings.firstAppName(app));
+  if (foreign) found.push(findings.composeProjectExists(app));
   const others = otherActiveApps(f.apps, app);
   const plan = (steps: HostStep[]): HostPlan => ({
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
@@ -2548,9 +2569,11 @@ export function planTeardown(
     .map(([iface]) => iface);
   steps.push(...networkRemovals(f, networks, "app"));
   const keys = keyList(others.map((record) => record.deployKey));
-  if (image !== undefined) {
-    // A second app's own lines only: those holding the keys its record names.
-    const removal = secondAppKeyStep(f, app, own?.shares?.app, [], recordedKeys(own));
+  if (second !== undefined) {
+    // A second app's own lines only: those holding its current key (a provision that stopped
+    // before its record leaves that line) or a key its record names.
+    const drop = [second.deployKey, ...recordedKeys(own)];
+    const removal = secondAppKeyStep(f, app, second.firstApp, [], drop);
     if (removal !== undefined) steps.push(removal);
   } else if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
     steps.push(
@@ -2662,6 +2685,9 @@ export function planTeardown(
         projectId,
       }),
     );
+  }
+  if (isFirst || foreign) {
+    return plan(steps.map((item) => ({ ...item, state: "blocked", reason: "See the findings." })));
   }
   return plan(steps);
 }

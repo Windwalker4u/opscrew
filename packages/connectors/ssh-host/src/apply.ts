@@ -858,7 +858,8 @@ export async function applyHostPlan(
   };
   const needsRoot = changes.some(({ step }) => runAsOf(step) === "root");
   // A second app on a server OpsCrew created (its folders' step runs as the login) changes only its
-  // own parts there: its record is its only root step, and it writes no host record.
+  // own parts there: its record is its only root step, and it writes no host record. Only
+  // `secondAppPlan` and `planTeardown` with `shares` make a plan whose `app-dirs` runs as the login.
   const secondApp = valid.steps.some((step) => step.id === "app-dirs" && runAsOf(step) === "login");
   if (needsRoot) {
     const privilege = await probePrivilege(remote);

@@ -114,16 +114,23 @@ function plan(
   return planHost(found, desired, COMMAND, { ...options, image: BUSYBOX });
 }
 
-function teardown(found: HostFacts, deleteData = false): HostPlan {
+/** The teardown of `app` ("shop" by default), whose current deploy key is `deployKey`. */
+function teardown(
+  found: HostFacts,
+  deleteData = false,
+  options: { deployKey?: string; app?: string } = {},
+): HostPlan {
   return planTeardown(
     found,
     {
       deleteData,
-      app: "shop",
+      app: options.app ?? "shop",
       projectId: SHOP_PROJECT,
       repositoryUrl: SHOP_REPOSITORY,
       shares: true,
       image: BUSYBOX,
+      deployKey: options.deployKey ?? APP_KEY,
+      firstApp: FIRST,
     },
     "opscrew destroy",
   );
@@ -248,11 +255,15 @@ describe("planHost for a second app", () => {
     const sudoPassword = new FakeHost({ login: "alice", sudo: "password" });
     const none = createdServer();
     none.dockerAccess = false;
+    // A login in the docker group other than deploy: not the server OpsCrew created.
+    const other = new FakeHost({ login: "alice", sudo: "none" });
+    other.dockerAccess = true;
     for (const [fake, privilege] of [
       [root, "root"],
       [sudo, "sudo"],
       [sudoPassword, "sudo-password"],
       [none, "none"],
+      [other, "docker"],
     ] as const) {
       const found = await facts(fake);
       expect(found.privilege).toBe(privilege);
@@ -468,7 +479,7 @@ describe.skipIf(!SH_AVAILABLE)("the second app's deploy-key step in a real shell
     const h = harness();
     try {
       const fake = await midRotation(h);
-      const removal = scriptsOf(teardown(await facts(fake)));
+      const removal = scriptsOf(teardown(await facts(fake), false, { deployKey: NEW_KEY }));
       const removed = h.run(removal.apply);
       expect(removed.status, removed.stderr).toBe(0);
       expect(h.read(KEYS)).toBe(text(h, FIXTURE));
@@ -501,6 +512,93 @@ describe.skipIf(!SH_AVAILABLE)("the second app's deploy-key step in a real shell
         expect(refused.stderr).toContain("changed since this plan was made");
         expect(h.read(KEYS)).toBe(before);
       }
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("writes nothing when the lines it keeps cannot be read, in a setup and in a teardown", async () => {
+    const fake = createdServer();
+    const add = scriptsOf(plan(await facts(fake), second(fake)));
+    await applyApproved(fake, plan(await facts(fake), second(fake)), { rootImage: IMAGE });
+    const removal = scriptsOf(teardown(await facts(fake)));
+    const h = harness();
+    try {
+      // The filter that keeps the other lines fails part-way (it prints a line, then exits 1).
+      h.stub("awk", "echo half-a-line; exit 1", { log: false });
+      for (const [scripts, lines] of [
+        [add, FIXTURE],
+        [removal, [...FIXTURE, APP_KEY]],
+      ] as const) {
+        const before = text(h, lines);
+        h.write(KEYS, before);
+        const refused = h.run(scripts.apply);
+        expect(refused.status).not.toBe(0);
+        expect(refused.stderr).toMatch(/could not read .*authorized_keys, so it changed nothing/);
+        expect(h.read(KEYS)).toBe(before);
+      }
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("reads lines that end in CRLF and a last line without a newline", async () => {
+    const fake = createdServer();
+    const add = scriptsOf(plan(await facts(fake), second(fake)));
+    const h = harness();
+    try {
+      const rooted = FIXTURE.map((line) => h.rooted(line));
+      h.write(KEYS, rooted.join("\r\n"));
+      const applied = h.run(add.apply);
+      expect(applied.status, applied.stderr).toBe(0);
+      // Every line stays, in its order, the last one ended so the app's key is a line of its own.
+      // (dash keeps a line's CR, Git Bash's sh drops it: sshd reads the key either way.)
+      expect(h.read(KEYS)?.replaceAll("\r", "")).toBe(`${[...rooted, APP_KEY].join("\n")}\n`);
+      const verified = h.run(add.verify);
+      expect(verified.status, verified.stderr).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("adds the app's key to an empty file, and writes nothing when the file is missing", async () => {
+    const fake = createdServer([]);
+    const add = scriptsOf(plan(await facts(fake), second(fake)));
+    const empty = harness();
+    try {
+      empty.write(KEYS, "");
+      const applied = empty.run(add.apply);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(empty.read(KEYS)).toBe(`${APP_KEY}\n`);
+      expect(empty.run(add.verify).status).toBe(0);
+    } finally {
+      empty.dispose();
+    }
+    const missing = harness();
+    try {
+      missing.write("/home/deploy/.ssh/known_hosts", "");
+      const refused = missing.run(add.apply);
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain("changed nothing");
+      expect(missing.exists(KEYS)).toBe(false);
+    } finally {
+      missing.dispose();
+    }
+  });
+
+  it("removes the app's key in a teardown after a provision that stopped before its record", async () => {
+    // The deploy-key step ran, the record's did not: the line holds the app's current key.
+    const fake = createdServer([...FIXTURE, APP_KEY]);
+    const hostPlan = teardown(await facts(fake));
+    expect(hostPlan.findings).toEqual([]);
+    expect(ids(hostPlan)).not.toContain("app-record");
+    const removal = scriptsOf(hostPlan);
+    const h = harness();
+    try {
+      h.write(KEYS, text(h, [...FIXTURE, APP_KEY]));
+      const removed = h.run(removal.apply);
+      expect(removed.status, removed.stderr).toBe(0);
+      expect(h.read(KEYS)).toBe(text(h, FIXTURE));
     } finally {
       h.dispose();
     }
@@ -543,6 +641,24 @@ describe("planTeardown of a second app", () => {
     expect(fake.containers.some((container) => container.project === FIRST)).toBe(true);
     expect(fake.files.has(`${PORTAINER_DIR}/compose.yaml`)).toBe(true);
     expect(fake.files.has(RECORD_PATH)).toBe(false);
+  });
+
+  it("blocks every step for the first app's name, naming it", async () => {
+    const hostPlan = teardown(await facts(createdServer()), true, { app: FIRST });
+    expect(codes(hostPlan)).toContain("first-app-name");
+    expect(hostPlan.findings.map((finding) => finding.message).join(" ")).toContain(`"${FIRST}"`);
+    expect(hostPlan.steps.length).toBeGreaterThan(0);
+    expect(hostPlan.steps.every((step) => step.state === "blocked")).toBe(true);
+  });
+
+  it("blocks every step over containers of the app's name with no record of this project's", async () => {
+    const fake = createdServer();
+    fake.containers.push({ name: "shop-web-1", project: "shop", ports: "" });
+    const hostPlan = teardown(await facts(fake), true);
+    expect(codes(hostPlan)).toEqual(["compose-project-exists"]);
+    expect(hostPlan.findings[0]?.message).toContain('"shop"');
+    expect(hostPlan.steps.length).toBeGreaterThan(0);
+    expect(hostPlan.steps.every((step) => step.state === "blocked")).toBe(true);
   });
 
   it("removes the record with the data", async () => {

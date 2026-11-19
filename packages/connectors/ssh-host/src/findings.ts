@@ -428,7 +428,7 @@ export function hostFindings(command: string) {
     /** `first`: the app whose server it is, when known. */
     notCreatedServer: (user: string, first: string | undefined): HostFinding => ({
       code: "not-a-created-server",
-      message: `OpsCrew logged in to this server as ${user || "a login"}, which can become root without Docker, and the server OpsCrew created for ${firstApp(first)} has only the deploy login, which becomes root only through Docker. So this is not the server of ${firstApp(first)}.`,
+      message: `OpsCrew logged in to this server as ${user || "an unknown login"}, but the server OpsCrew created for ${firstApp(first)} has only the deploy login, which becomes root only through Docker. So this is not the server of ${firstApp(first)}.`,
       hint: `Check that this app names the right app to share a server with, and that the server's address and host key are those of ${firstApp(first)} on this computer, ${rerun}.`,
     }),
     /** `first`: the app whose server it is, when known. */
