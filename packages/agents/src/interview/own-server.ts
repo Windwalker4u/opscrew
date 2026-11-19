@@ -19,6 +19,7 @@ import {
   recordOwnServer,
   type SharesReference,
 } from "../shared";
+import { ownServerKeyFile } from "../shared/own-server";
 import {
   booleanAnswer,
   FIX_ANSWERS_HINT,
@@ -229,6 +230,8 @@ export interface OwnServerContext {
   home?: boolean;
   /** The repository's root, which a relative `server.shares` folder is read from. */
   root?: string;
+  /** The environment whose home folder (`HOME`, `USERPROFILE`) `~/` in `server.shares` starts at. */
+  env?: Record<string, string | undefined>;
 }
 
 /**
@@ -502,10 +505,29 @@ export function buildSharesQuestions(context: SharesQuestionsContext = {}): Serv
   ];
 }
 
-/** A `server.shares` answer as a folder on this computer: absolute, or below `root`. */
-function sharesFolder(answer: unknown, root: string | undefined): string {
-  const typed = String(answer).trim();
-  return root === undefined ? resolve(typed) : resolve(root, typed);
+/**
+ * A `server.shares` answer as a folder on this computer: absolute, `~/` below the home folder (as
+ * `server.key`'s is), or below `root`.
+ */
+function sharesFolder(answer: unknown, context: Pick<OwnServerContext, "root" | "env">): string {
+  const typed = ownServerKeyFile(
+    { agent: false, keyPath: String(answer).trim() },
+    context.env ?? {},
+  );
+  return context.root === undefined ? resolve(typed ?? "") : resolve(context.root, typed ?? "");
+}
+
+/** True when `a` and `b` are the same folder (in any letter case on Windows). */
+function sameFolder(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  const folder = (path: string) =>
+    process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+  return folder(a) === folder(b);
+}
+
+/** The questions of `built` with the id `id`: one round of a terminal's questions. */
+function only(built: ServerQuestion[], id: ServerQuestionId): ServerQuestion[] {
+  return built.filter((q) => q.id === id);
 }
 
 /**
@@ -517,11 +539,10 @@ async function askSharesQuestions(
   ask: (questions: ServerQuestion[]) => Promise<InterviewAnswers>,
   context: OwnServerContext,
 ): Promise<InterviewAnswers> {
-  const only = (built: ServerQuestion[], id: ServerQuestionId) => built.filter((q) => q.id === id);
   const previous = context.previous === undefined ? {} : { previous: context.previous };
   const folder = await ask(only(buildSharesQuestions(previous), "server.shares"));
   if (isBlank(folder["server.shares"])) return folder;
-  const root = sharesFolder(folder["server.shares"], context.root);
+  const root = sharesFolder(folder["server.shares"], context);
   const apps = (await mayHaveFurtherApps(root)) ? await appsOf(root) : [];
   const none: InterviewAnswers = {};
   const which =
@@ -557,7 +578,6 @@ export async function askServerQuestions(
   if (String(kind[SERVER_KIND_ID] ?? "").trim() === SERVER_KINDS.shares) {
     return askSharesQuestions(ask, context);
   }
-  const only = (built: ServerQuestion[], id: ServerQuestionId) => built.filter((q) => q.id === id);
   const first = await ask(only(buildServerQuestions(context), "server.host"));
   const host = isBlank(first["server.host"]) ? undefined : String(first["server.host"]).trim();
   const typed = { ...context, ...(host === undefined ? {} : { host }) };
@@ -825,7 +845,7 @@ async function isFolder(path: string): Promise<boolean> {
  */
 export async function answersToSharedServer(
   split: Pick<FollowUps<ServerField>, "values" | "unknown">,
-  context: Pick<OwnServerContext, "previous" | "root">,
+  context: Pick<OwnServerContext, "previous" | "root" | "env">,
 ): Promise<SharesReference | undefined> {
   const given = (field: ServerField) => !isBlank(split.values[field]);
   const text = (field: ServerField) => String(split.values[field]).trim();
@@ -848,7 +868,7 @@ export async function answersToSharedServer(
   }
   let root = previous?.root;
   if (given("shares")) {
-    root = sharesFolder(text("shares"), context.root);
+    root = sharesFolder(text("shares"), context);
     if (!(await isFolder(root))) {
       problems.push(
         `server.shares: there is no folder ${root} on this computer; give the repository folder of the app whose server this app shares`,
@@ -859,7 +879,7 @@ export async function answersToSharedServer(
       "server.shares (the repository folder of the app whose server this app shares) is missing",
     );
   }
-  const same = root === previous?.root;
+  const same = sameFolder(root, previous?.root);
   let app = same ? previous?.app : undefined;
   if (given("shares-app")) {
     const key = text("shares-app");
@@ -890,35 +910,36 @@ export async function answersToSharedServer(
 
 /**
  * Records a second app's login to the server it shares (`.opscrew/server.json` → `own`, local
- * only): the reference `shares`, the first app's address and port (`login`), the `deploy` user
+ * only): the reference `shares`, the first app's address and port (`server`), the `deploy` user
  * and this app's own deploy key's path, which provision fills. For the same address and port the
- * pinned host key and the public addresses of `pinned` (by default `previous`, this app's record
- * so far; prod's for a new environment) are kept, and `previous`'s `joined` with its key: this
- * app's own deploy key is on the server already.
+ * public addresses of `pinned` (by default `previous`, this app's record so far; prod's for a new
+ * environment) are kept; its pinned host key only while it is the first app's pin now
+ * (`server.hostKey`), and `previous`'s `joined` with it: this app's own deploy key is on that
+ * server already. A server recreated at the same address, with a new key, keeps neither.
  */
 export async function recordSharedServerAnswers(
   paths: ProjectPaths,
   shares: SharesReference,
-  login: { host: string; port: number },
+  server: { host: string; port: number; hostKey: string },
   previous?: OwnServerConnection,
   pinned: OwnServerConnection | undefined = previous,
 ): Promise<void> {
   const same = (record: OwnServerConnection | undefined): record is OwnServerConnection =>
-    record !== undefined && sameHost(record.host, login.host) && record.port === login.port;
+    record !== undefined && sameHost(record.host, server.host) && record.port === server.port;
   const kept = same(pinned)
     ? {
-        ...(pinned.hostKey === undefined ? {} : { hostKey: pinned.hostKey }),
+        ...(pinned.hostKey === server.hostKey ? { hostKey: server.hostKey } : {}),
         ...(pinned.publicIpv4 === undefined ? {} : { publicIpv4: pinned.publicIpv4 }),
         ...(pinned.publicIpv6 === undefined ? {} : { publicIpv6: pinned.publicIpv6 }),
       }
     : {};
   const joined =
-    same(previous) && previous.joined === true && previous.hostKey !== undefined
-      ? { hostKey: previous.hostKey, joined: true as const }
+    same(previous) && previous.joined === true && previous.hostKey === server.hostKey
+      ? { hostKey: server.hostKey, joined: true as const }
       : {};
   await recordOwnServer(paths, {
-    host: login.host,
-    port: login.port,
+    host: server.host,
+    port: server.port,
     user: "deploy",
     agent: false,
     keyPath: paths.files.deployKey,

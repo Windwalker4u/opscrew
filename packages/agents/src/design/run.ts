@@ -139,6 +139,7 @@ import {
   type OwnServerServing,
   ownServerServing,
   proxyNeedsIpv4Message,
+  quotedApps,
   requireSharedEdge,
   requireSharedServing,
   servingAccess,
@@ -1458,10 +1459,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
                   // The other apps on the server this app shares: the memory left after them all.
                   ...(shares === undefined
                     ? []
-                    : sharedServerOption(
-                        shares.first,
+                    : quotedApps(
                         (ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
-                      ).others),
+                      )),
                   ...(sharedPreviews === undefined ? [] : [sharedPreviews]),
                 ],
               )

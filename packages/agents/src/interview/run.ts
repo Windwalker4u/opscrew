@@ -458,6 +458,7 @@ export async function runInterview(
         // Served through the tunnel or the proxy it must fit Cloudflare's free certificate.
         ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
         root: paths.root,
+        env: deps.env,
       };
       if (!hasFollowUps(split) && options.askServer !== undefined) {
         split = splitFollowUps(
@@ -537,9 +538,14 @@ export async function runInterview(
     }
     if (shares !== undefined && first !== undefined) {
       // The other app's folder and its server's address stay on this computer.
-      await recordSharedServerAnswers(paths, shares, first.login, previousServer);
+      await recordSharedServerAnswers(
+        paths,
+        shares,
+        { ...first.login, hostKey: first.hostKey.fingerprint },
+        previousServer,
+      );
       reporter.info(
-        `Saved that this app runs on the server of "${first.plan.app.name}" in .opscrew/server.json, on this computer only. That app's deploy key stays in its own folder: OpsCrew reads it there and never copies it.`,
+        `Saved that this app runs on the server of "${first.plan.app.name}" in .opscrew/server.json, on this computer only. That app's deploy key stays where that app keeps it on this computer: OpsCrew reads it there and never copies it.`,
       );
     }
     if (portainer !== undefined) {

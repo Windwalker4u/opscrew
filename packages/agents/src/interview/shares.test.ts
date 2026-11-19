@@ -1,17 +1,27 @@
-import { mkdir, readFile, rm } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { materializeFixture } from "@opscrew/core/testing";
-import { writeArtifact } from "@opscrew/plan-schema";
+import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
+import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { readOwnServer, recordOwnServer, serverAddressesFile } from "../shared";
+import {
+  knownHostsName,
+  readOwnServer,
+  recordOwnServer,
+  serverAddressesFile,
+  updateServerAddresses,
+} from "../shared";
 import { firstAppPaths } from "../shares/reference";
 import {
+  ED25519,
   ED25519_FINGERPRINT,
+  hostKeyBlob,
   hostTestPlan,
   SERVER_IPV4,
   type SharedServerProject,
   sharedServerProject,
+  testPlan,
 } from "../testing";
 import { splitFollowUps } from "./follow-ups";
 import {
@@ -78,7 +88,29 @@ describe("answersToSharedServer", () => {
     expect(
       await answersToSharedServer(split({ shares: folder, "shares-app": "docs" }), { root }),
     ).toEqual({ root: folder, app: "docs", environment: "prod" });
+    // `~/` starts at the home folder, as server.key's does.
+    expect(
+      await answersToSharedServer(split({ shares: `~/${basename(folder)}` }), {
+        root,
+        env: { HOME: dirname(folder) },
+      }),
+    ).toEqual({ root: folder, environment: "prod" });
   });
+
+  it.runIf(process.platform === "win32")(
+    "reads a folder named in other letter cases on Windows as the same one",
+    async () => {
+      const project = await sharedServerProject();
+      const ref = { root: project.ref.root, app: "docs", environment: "staging" };
+      const previous = { ...project.own, shares: ref };
+      expect(
+        await answersToSharedServer(split({ shares: ref.root.toUpperCase() }), {
+          root: project.deps.paths.root,
+          previous,
+        }),
+      ).toMatchObject({ app: "docs", environment: "staging" });
+    },
+  );
 
   it("keeps the earlier reference without answers, and leaves a server of the user's alone", async () => {
     const project = await sharedServerProject();
@@ -202,15 +234,64 @@ describe("runInterview on the server of another app", () => {
     }
   });
 
-  it("keeps the pinned host key and the joined login when the same server is named again", async () => {
-    const project = await sharedServerProject();
-    await materializeFixture(join(examples, "static-vite"), project.deps.paths.root);
-    const { deps } = project;
-    await recordOwnServer(deps.paths, {
+  /** The record of a second app joined to the server of `shop`, with its pinned host key. */
+  async function joined(project: SharedServerProject): Promise<void> {
+    await recordOwnServer(project.deps.paths, {
       ...project.own,
       hostKey: ED25519_FINGERPRINT,
       joined: true,
     });
+  }
+
+  it("drops the pinned key and the joined login for another first app at another address", async () => {
+    const project = await sharedServerProject();
+    await materializeFixture(join(examples, "static-vite"), project.deps.paths.root);
+    await joined(project);
+    // Another first app, "blog", provisioned on this computer on a server at another address.
+    const ref = { root: await mkdtemp(join(tmpdir(), "opscrew-first-app-")), environment: "prod" };
+    const blog = firstAppPaths(project.deps.paths, ref);
+    const base = testPlan({ deployed: true, domain: "blog.example.com" });
+    await writeArtifact(
+      "plan",
+      blog.files.plan,
+      DeployPlanSchema.parse({ ...base, app: { ...base.app, name: "blog" } }),
+    );
+    const address = "203.0.113.30";
+    await updateServerAddresses(blog, (current) => ({ ...current, deployment: { ipv4: address } }));
+    await mkdir(dirname(blog.files.deployKey), { recursive: true });
+    await writeFile(blog.files.deployKey, fakeSecret("private-key-pem", "blog-deploy-key"));
+    await writeFile(blog.files.knownHosts, `${knownHostsName(address)} ssh-ed25519 ${ED25519}\n`);
+    await runInterview(project.deps, {
+      answers: { ...BASE, provider: "own", "server.shares": ref.root },
+    });
+    const own = await readOwnServer(project.deps.paths);
+    expect(own).toMatchObject({ host: address, shares: ref });
+    expect(own?.hostKey).toBeUndefined();
+    expect(own?.joined).toBeUndefined();
+  });
+
+  it("drops the pinned key and the joined login when the server has a new host key", async () => {
+    const project = await sharedServerProject();
+    await materializeFixture(join(examples, "static-vite"), project.deps.paths.root);
+    await joined(project);
+    // The first app's server was recreated at the same address, with a new host key.
+    const rebuilt = hostKeyBlob("ssh-ed25519", "rebuilt");
+    await writeFile(
+      project.first.files.knownHosts,
+      `${knownHostsName(SERVER_IPV4)} ssh-ed25519 ${rebuilt}\n`,
+    );
+    await runInterview(project.deps, { answers: { ...BASE, provider: "own" } });
+    const own = await readOwnServer(project.deps.paths);
+    expect(own).toMatchObject({ host: SERVER_IPV4, shares: project.ref });
+    expect(own?.hostKey).toBeUndefined();
+    expect(own?.joined).toBeUndefined();
+  });
+
+  it("keeps the pinned host key and the joined login when the same server is named again", async () => {
+    const project = await sharedServerProject();
+    await materializeFixture(join(examples, "static-vite"), project.deps.paths.root);
+    const { deps } = project;
+    await joined(project);
     await runInterview(deps, { answers: { ...BASE, provider: "own" } });
     expect(await readOwnServer(deps.paths)).toMatchObject({
       shares: project.ref,

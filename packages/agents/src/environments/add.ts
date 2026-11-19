@@ -734,6 +734,7 @@ export async function addEnvironment(
       cloudflareDomain,
       ...domain,
       root: paths.root,
+      env: deps.env,
     };
     if (!hasFollowUps(server) && options.askServer !== undefined) {
       server = splitFollowUps(
@@ -760,7 +761,14 @@ export async function addEnvironment(
   if (ownServer !== undefined) await recordOwnServerAnswers(paths, ownServer, prodOwn);
   // Its own login there, with its own deploy key: prod's pinned host key is the server's.
   if (shared !== undefined) {
-    await recordSharedServerAnswers(paths, shared.ref, shared.first.login, undefined, prodOwn);
+    const { login, hostKey } = shared.first;
+    await recordSharedServerAnswers(
+      paths,
+      shared.ref,
+      { ...login, hostKey: hostKey.fingerprint },
+      undefined,
+      prodOwn,
+    );
   }
   if (portainer !== undefined) await recordPortainerAnswers(paths, portainer);
   await writeEnvironmentRequirements(paths, requirements);

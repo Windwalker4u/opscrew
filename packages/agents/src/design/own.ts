@@ -16,6 +16,7 @@ import {
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { refusedBeforeChange } from "../previews/host";
+import { deepDomainProblem } from "../shared/deep-domain";
 import type { MemoryLimit } from "../shared/memory";
 import { type Components, memoryText } from "./components";
 import { type PreviewHost, previewMemoryText } from "./previews";
@@ -152,8 +153,13 @@ export function sharedServerOption(
     app: first.app.name,
     provider: cloudProvider(first.target.provider).displayName,
     proxied: first.dns.proxied,
-    others: others.map((app) => ({ name: `"${app.name}"`, memoryMb: app.memoryMb })),
+    others: quotedApps(others),
   };
+}
+
+/** The other apps' memory limits as a memory line names them: `"shop" 1024 MB`. */
+export function quotedApps(apps: readonly MemoryLimit[]): MemoryLimit[] {
+  return apps.map((app) => ({ name: `"${app.name}"`, memoryMb: app.memoryMb }));
 }
 
 /** Why a second app's option has no price: the server is the first app's (`app`). */
@@ -176,18 +182,30 @@ export function sharedAccessWarning(app: string): string {
 }
 
 /**
- * Stops design for a second app whose domain is not on Cloudflare beside a first app (`first`)
- * served behind Cloudflare's proxy (plan 7., step 3): the server's firewall lets only Cloudflare
- * reach the web ports, so this app must be proxied too. Says the alternatives.
- * @throws OpsCrewError `PHASE_PRECONDITION`, before anything is written.
+ * Stops design for a second app beside a first app (`first`) served behind Cloudflare's proxy
+ * (plan 7., step 3), whose firewall lets only Cloudflare reach the web ports, so this app is
+ * proxied too: when its domain is not on Cloudflare, and when it is more than one level below its
+ * zone, which Cloudflare's free certificate doesn't cover. Says the alternatives.
+ * @throws OpsCrewError `PHASE_PRECONDITION`, or `INVALID_INPUT` for the domain's depth, before
+ * anything is written.
  */
 export function requireSharedServing(
   first: DeployPlan,
   requirements: Pick<Requirements, "dnsProvider" | "domain">,
   flags: string,
 ): void {
-  if (!first.dns.proxied || hasCloudflareDomain(requirements)) return;
+  if (!first.dns.proxied) return;
   const app = first.app.name;
+  const { domain } = requirements;
+  if (hasCloudflareDomain(requirements) && domain !== undefined) {
+    const deep = deepDomainProblem(domain, "give this app a server of its own");
+    if (deep === undefined) return;
+    throw refusedBeforeChange(
+      "INVALID_INPUT",
+      `"${app}" is served behind Cloudflare's proxy, so this app is too, and ${deep.reason}.`,
+      `In \`opscrew interview${flags}\`, ${deep.next}; then run \`opscrew design${flags}\` again.`,
+    );
+  }
   throw refusedBeforeChange(
     "PHASE_PRECONDITION",
     `"${app}" is served behind Cloudflare's proxy, so its server's firewall lets web traffic in only from Cloudflare, and this app's domain ${requirements.domain === undefined ? "isn't set" : "isn't on Cloudflare"}: it would be served behind Cloudflare's proxy too, which needs its domain on your Cloudflare account.`,
@@ -406,7 +424,6 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   const tradeoffs = [...warnings];
   if (shares !== undefined) {
     tradeoffs.push(
-      sharedAccessWarning(shares.app),
       shares.proxied
         ? `Served behind Cloudflare's proxy, as "${shares.app}" is: the server's cloud firewall lets only Cloudflare reach ports 80 and 443, for every app on it.`
         : `DNS only, as "${shares.app}" is: the server answers everyone on ports 80 and 443, and Cloudflare only answers DNS, so it neither hides nor protects the server.`,

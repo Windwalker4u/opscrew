@@ -137,13 +137,13 @@ async function failure(promise: Promise<unknown>): Promise<Error & { code: strin
   );
 }
 
-/** The refusal `promise` ends with, before anything was written. */
-async function refusal(app: SecondApp, promise: Promise<unknown>) {
+/** The refusal (`code`) `promise` ends with, before anything was written. */
+async function refusal(app: SecondApp, promise: Promise<unknown>, code = "PHASE_PRECONDITION") {
   const error = await promise.then(
     () => undefined,
     (thrown: unknown) => thrown as Error & { code?: string; hint?: string },
   );
-  expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+  expect(error).toMatchObject({ code });
   await expect(readFile(app.deps.paths.files.plan, "utf8")).rejects.toThrow();
   expect(app.server.applies).toEqual([]);
   return error as Error & { code: string; hint: string };
@@ -191,6 +191,8 @@ describe("design for a second app on the server of another app", () => {
     expect(result.plan.cost.monthly.amount).toBe(0);
     const warning = sharedAccessWarning("shop");
     expect(result.chosen.summary).toContain(warning);
+    // Said once in the summary and once as a warning, not again among the trade-offs.
+    expect(result.chosen.tradeoffs).not.toContain(warning);
     expect(result.chosen.summary).toContain("The Hetzner Cloud server OpsCrew created for");
     expect(result.chosen.summary).toMatch(/"shop" \d+ MB, "inventory" 512 MB/);
     expect(result.warnings).toContain(warning);
@@ -229,6 +231,18 @@ describe("design for a second app on the server of another app", () => {
     expect(error.message).toMatch(/Nothing was changed\.$/);
     expect(error.hint).toMatch(/answer dnsProvider cloudflare/);
     expect(error.hint).toMatch(/a server of its own/);
+  });
+
+  it("stops a name too deep for Cloudflare's proxy beside a proxied first app, with advice for it", async () => {
+    const app = await secondApp({ requirements: { domain: "api.landing.example.com" } });
+    const error = await refusal(app, design(app), "INVALID_INPUT");
+    expect(error.message).toBe(
+      `"shop" is served behind Cloudflare's proxy, so this app is too, and Cloudflare's free certificate covers only example.com and *.example.com, so api.landing.example.com would fail HTTPS at Cloudflare's edge. Nothing was changed.`,
+    );
+    expect(error.hint).toBe(
+      "In `opscrew interview`, use a name one level below example.com, such as api-landing.example.com, or give this app a server of its own; then run `opscrew design` again.",
+    );
+    expect(error.hint).not.toContain("server.serve");
   });
 
   it("takes the first app's proxy for a new plan, and stops when its own plan's differs", async () => {
