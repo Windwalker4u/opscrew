@@ -21,6 +21,7 @@ an app yet.
 - [dev, staging and prod: environments](environments.md)
 - [Previews: a link for every pull request](previews.md)
 - [Several apps in one repository](several-apps.md)
+- [A second app on a server OpsCrew created](shared-server.md)
 - [A server of its own for a service: split placement](split-placement.md)
 - [Your devices on the private network](private-network.md)
 - [Portainer: a web UI for your containers](portainer.md)

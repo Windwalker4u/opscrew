@@ -233,6 +233,9 @@ app's components. It warns when less than 15% stays free.
 
 When you remove an app, the others keep running. The edge goes with the last app.
 
+A server OpsCrew created for another app can take more apps too: see
+[A second app on a server OpsCrew created](shared-server.md).
+
 ## Several environments on your server
 
 An app's [environments](environments.md) can share your server: `npx opscrew env add staging`

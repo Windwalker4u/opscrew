@@ -151,6 +151,10 @@ the old server with the data on it. To move the app to another provider, use
 
 ## Removing the app
 
+While another app runs on the server (see
+[A second app on a server OpsCrew created](shared-server.md)), `npx opscrew destroy` refuses and
+names it: remove or move that app first.
+
 `npx opscrew destroy` deletes the server at once, with its firewall, its SSH key and the DNS
 records OpsCrew made. Its plan lists them before you type the app's name to approve it. Then:
 

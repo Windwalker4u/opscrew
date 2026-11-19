@@ -322,7 +322,9 @@ npx opscrew restore --server <id>                  # rebuild the server from it
   delete or restore whole-server snapshots. Without them, OpsCrew says so.
 
 Your own server, your Portainer and your computer refuse `--server`, and name the data snapshot
-instead.
+instead. While another app runs on the server, restoring the whole server is refused, and an app
+on another app's server can't take or restore whole-server snapshots at all (see
+[A second app on a server OpsCrew created](shared-server.md)).
 
 ## The schedule
 

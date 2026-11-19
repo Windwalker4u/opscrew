@@ -32,6 +32,9 @@ OpsCrew closes public SSH only when both hold, so that neither the deploys nor y
    the tunnel had a handshake with every server in the last 3 minutes.
 
 When one is missing, OpsCrew refuses, says which one and how to meet it, and changes nothing.
+OpsCrew also refuses while another app runs on the server, since its deploys come over public
+SSH, and on an app that runs on another app's server (see
+[A second app on a server OpsCrew created](shared-server.md)).
 
 ## Close it
 

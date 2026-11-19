@@ -54,6 +54,9 @@ Cloudflare setup to another Cloudflare account instead, see
   price before anything changes; your own server and your Portainer have none. A Contabo server is
   bought for at least a month, and one that `--finish` removes is billed to the end of its term
   (see [Removing the app](contabo.md#removing-the-app)).
+- **No other app on the server:** a move ends by deleting the old server, so OpsCrew refuses it
+  while another app runs there. An app that runs on another app's server can move off it. See
+  [A second app on a server OpsCrew created](shared-server.md).
 
 ## How a move works
 

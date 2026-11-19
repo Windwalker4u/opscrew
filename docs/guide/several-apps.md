@@ -132,3 +132,9 @@ secrets), its infrastructure code and its deploy workflows. Your app's own folde
 stays. Because secrets go with it, you type the key to confirm; a script passes
 `--confirm docs`. OpsCrew refuses while any of the app's environments is deployed, and never removes
 the first app this way: `npx opscrew destroy --app .` removes its deployment.
+
+## Apps on one server
+
+Each app gets its own server by default. A further app, or an app from another repository, can
+instead run on a server OpsCrew created for another app: see
+[A second app on a server OpsCrew created](shared-server.md).
