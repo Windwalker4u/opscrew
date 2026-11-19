@@ -45,6 +45,7 @@ import {
   TUNNEL_ID,
   testPlan,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { pendingPortainerFile } from "./pending";
 import { type PortainerServices, portainerDisable, portainerEnable } from "./run";
 import { CLOUD_PORTAINER_DIR, CLOUD_TUNNEL_DIR, PORTAINER_VERSION } from "./settings";
@@ -104,6 +105,8 @@ async function cloudOnSubdomain(o: { closeAfter?: number; never?: boolean } = {}
   let connector = false;
   const calls: { plan: HostPlan; options: ApplyOptions }[] = [];
   const services: PortainerServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     deployRemote: (host: string): RemoteExec => ({
       host,
       run: async (command: string) =>

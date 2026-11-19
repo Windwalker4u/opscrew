@@ -31,7 +31,7 @@ import { FakeCloudRunnerHost } from "../runners/__fixtures__/cloud-host";
 import { openPublicSsh } from "../secure/public-ssh";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import { lastServerSetup } from "../shared/host-plan";
-import { reopenedPlan } from "../shared/server-address";
+import { hasDeployment, reopenedPlan } from "../shared/server-address";
 import {
   readServerAddresses,
   recordOwnServer,
@@ -68,6 +68,7 @@ import {
   testPlan,
   writeFakeState,
 } from "../testing";
+import { firstAppLook, noOtherApps } from "../testing/other-apps";
 import { runProvision } from "./run";
 import { isRemovalLiftRequest } from "./servers";
 import type { ProvisionOptions, ProvisionServices } from "./types";
@@ -199,6 +200,8 @@ async function setup(o: SplitSetup) {
     sleep: async () => undefined,
     sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
     serverHost: hosts.adapter,
+    // The look for apps from other repositories on the app's server finds none.
+    otherApps: hasDeployment(o.plan) ? await firstAppLook(deps.paths) : { inspect: noOtherApps },
     ...o.services,
   };
   return { ...project, deps, engine, github, handler, services, hosts };

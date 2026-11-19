@@ -17,6 +17,7 @@ export * from "./firewalls";
 export * from "./logs";
 export * from "./move";
 export * from "./network";
+export * from "./other-apps";
 export * from "./own";
 export * from "./pages";
 export * from "./portainer";

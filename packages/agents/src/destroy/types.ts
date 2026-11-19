@@ -53,6 +53,7 @@ export interface DestroyServices
     | "runnerMachine"
     | "remote"
     | "serverHost"
+    | "otherApps"
     | "firewalls"
     | "objectStorage"
   > {
@@ -118,6 +119,12 @@ export interface DestroyOptions {
    * and through its own destroy plan. Without it the record stays, so the domain stays verified.
    */
   deleteVerification?: boolean;
+  /**
+   * `--skip-other-apps-check`: go on when OpsCrew can't look at the server OpsCrew created for
+   * other apps that share it, or when only their kept data is there. It never covers an app that
+   * runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
 }
 
 /**

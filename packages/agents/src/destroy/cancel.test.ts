@@ -32,6 +32,7 @@ import {
   testKeyMaker,
   testPlan,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { dataSnapshotOffer } from "./cancel";
 import { runDestroy } from "./run";
 import type { ServerSnapshot } from "./servers";
@@ -164,6 +165,8 @@ async function setup(
   await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
   await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers,
@@ -716,6 +719,8 @@ async function ownWithCancelledData(refusal?: string) {
     return refusal === undefined ? result : { ok: false, outputs: {}, log: refusal };
   };
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: s.services.otherApps,
     engine: s.services.engine,
     github: s.github,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },

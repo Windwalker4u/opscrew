@@ -40,6 +40,7 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
+import { noOtherApps } from "../testing/other-apps";
 import { originTlsApply, planOriginTls, readOriginTlsValues } from "./origin-tls";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
@@ -112,6 +113,8 @@ async function hetzner(
     remote: readyRemote,
     sleep: async () => undefined,
     sharedCloudflare: o.client ?? fakeSharedCloudflare(zone),
+    // The look for apps from other repositories on the server finds none.
+    otherApps: { inspect: noOtherApps },
   };
   return { ...project, deps, engine, handler, github, services, zone };
 }

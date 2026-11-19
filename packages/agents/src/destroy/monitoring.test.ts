@@ -45,6 +45,7 @@ import {
   SERVER_IPV4,
   serverAttributes,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 
@@ -241,6 +242,8 @@ async function setup(o: Setup) {
     events,
   );
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers: new FakeServers(),
@@ -560,6 +563,8 @@ describe.skipIf(skipNoGit)("destroy of a sender on the user's own server", () =>
       [],
     );
     const services: DestroyServices = {
+      // The look for apps from other repositories on the server finds none.
+      otherApps: s.services.otherApps,
       engine: s.services.engine,
       github: s.github,
       cloudflare: { verifyToken: async () => ({ ok: true, message: "ok" }) },

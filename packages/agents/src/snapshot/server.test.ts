@@ -1,3 +1,4 @@
+import type { AppRecord } from "@opscrew/connector-ssh-host";
 import type {
   AppServer,
   ComputeCatalog,
@@ -8,12 +9,20 @@ import type {
 } from "@opscrew/contracts";
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type CloudProvider, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type CloudProvider, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { networked, splitPlan } from "../network/__fixtures__/plans";
 import { inEnvironment } from "../promote/__fixtures__/world";
-import { ownPlan, portainerPlan, SERVER_IPV4, testPlan } from "../testing";
+import {
+  firstAppLook,
+  noOtherApps,
+  ownPlan,
+  portainerPlan,
+  SERVER_IPV4,
+  secondAppRecord,
+  testPlan,
+} from "../testing";
 import type { FakeSnapshotServer } from "./__fixtures__/server";
 import {
   DATA_IPV4,
@@ -127,6 +136,16 @@ function fakeCatalog(provider: CloudProvider): ComputeCatalog {
   };
 }
 
+/**
+ * The snapshot world of `plan`, with a deploy key on this computer for the look at the server for
+ * apps from other repositories (none there, see {@link services}).
+ */
+async function keyedWorld(plan: DeployPlan, o?: Parameters<typeof snapshotWorld>[1]) {
+  const made = await snapshotWorld(plan, o);
+  await firstAppLook(made.deps.paths);
+  return made;
+}
+
 /** The world's services with `api` as every provider's server API and the fake catalogue. */
 function services(
   world: SnapshotWorld,
@@ -140,6 +159,7 @@ function services(
     serverSnapshots: () => api,
     catalog: fakeCatalog,
     sleep: async () => {},
+    otherApps: { inspect: noOtherApps },
     ...extra,
   };
 }
@@ -159,7 +179,7 @@ function health(statuses: number[]): { fetch: FetchLike; urls: string[] } {
 
 describe("opscrew snapshot --server", () => {
   it("takes the app's server's snapshot while it runs, with the warning, price and volumes", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi();
     const taken = await takeServerSnapshot(world.deps, {
       services: services(world, provider.api),
@@ -199,7 +219,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("takes the live snapshot with a warning when the server's data can't be written to disk first", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const app = world.servers.app as FakeSnapshotServer;
     app.answer = () => ({ exitCode: 255, stdout: "", stderr: "ssh: connect to host: timed out" });
     const provider = fakeServerApi();
@@ -218,7 +238,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("with --stop, approves the downtime first, then shuts down, snapshots and starts again", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi();
     world.handler.requests.length = 0;
     await takeServerSnapshot(world.deps, { stop: true, services: services(world, provider.api) });
@@ -232,7 +252,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("with --stop not approved, stops and takes nothing", async () => {
-    const world = await snapshotWorld(stagingPlan([]), { answer: () => false });
+    const world = await keyedWorld(stagingPlan([]), { answer: () => false });
     const provider = fakeServerApi();
     const error = await failure(
       takeServerSnapshot(world.deps, { stop: true, services: services(world, provider.api) }),
@@ -243,7 +263,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("with --stop, starts the server again when the snapshot fails, and says so", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi({ fail: { snapshot: new Error("image quota reached") } });
     const error = await failure(
       takeServerSnapshot(world.deps, { stop: true, services: services(world, provider.api) }),
@@ -254,7 +274,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("with --stop, tries to start the server when its shutdown did not finish", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi({
       fail: {
         powerOff: new Error("Hetzner server 42 was not off within 5 minutes: it is running."),
@@ -273,7 +293,7 @@ describe("opscrew snapshot --server", () => {
     ["the snapshot", { snapshot: new Error("image quota reached") }],
     ["the shutdown", { powerOff: new Error("server is locked") }],
   ])("says the server may be off when %s and the start both fail", async (_what, fail) => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi({ fail: { ...fail, powerOn: new Error("API unavailable") } });
     const error = await failure(
       takeServerSnapshot(world.deps, { stop: true, services: services(world, provider.api) }),
@@ -286,7 +306,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("says the server is off when it cannot be started again", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi({ fail: { powerOn: new Error("server is locked") } });
     const error = await failure(
       takeServerSnapshot(world.deps, { stop: true, services: services(world, provider.api) }),
@@ -297,7 +317,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("takes an extra server's snapshot with --server-name, and refuses an unknown one", async () => {
-    const world = await snapshotWorld(splitStagingPlan());
+    const world = await keyedWorld(splitStagingPlan());
     const provider = fakeServerApi();
     const taken = await takeServerSnapshot(world.deps, {
       serverName: "data",
@@ -317,7 +337,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("shows DigitalOcean's published rate in dollars", async () => {
-    const world = await snapshotWorld(
+    const world = await keyedWorld(
       stagingPlan([], { base: testPlan({ deployed: true, provider: "digitalocean" }) }),
     );
     const provider = fakeServerApi();
@@ -330,7 +350,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("says under €0.01 for a price two decimals would show as nothing", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const taken = await takeServerSnapshot(world.deps, {
       services: services(world, fakeServerApi({ takenGb: 0.2 }).api),
     });
@@ -339,7 +359,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("needs the provider's token", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const error = await failure(
       takeServerSnapshot(world.deps, { services: services(world, undefined) }),
     );
@@ -348,7 +368,7 @@ describe("opscrew snapshot --server", () => {
   });
 
   it("refuses while a deploy runs, before anything is taken", async () => {
-    const world = await snapshotWorld(stagingPlan([]), {
+    const world = await keyedWorld(stagingPlan([]), {
       runs: [{ status: "in_progress", htmlUrl: "https://github.com/acme/shop/actions/runs/7" }],
     });
     const provider = fakeServerApi();
@@ -369,7 +389,7 @@ describe("--server refused where OpsCrew created no server", () => {
   };
 
   it.each(Object.entries(plans))("on %s, naming the data snapshot", async (_where, plan) => {
-    const world = await snapshotWorld(plan());
+    const world = await keyedWorld(plan());
     const provider = fakeServerApi();
     for (const run of [
       () => takeServerSnapshot(world.deps, { services: services(world, provider.api) }),
@@ -388,7 +408,7 @@ describe("--server refused where OpsCrew created no server", () => {
     const { plan } = networked(splitPlan({ data: "own" }), {
       data: { udpPortsInUse: [], wireguardInterfaces: [] },
     });
-    const world = await snapshotWorld(inEnvironment(DeployPlanSchema.parse(plan), "staging"));
+    const world = await keyedWorld(inEnvironment(DeployPlanSchema.parse(plan), "staging"));
     const error = await failure(
       takeServerSnapshot(world.deps, {
         serverName: "data",
@@ -402,7 +422,7 @@ describe("--server refused where OpsCrew created no server", () => {
     ["in your Portainer", plans["your Portainer"]],
     ["on this computer", plans["this computer"]],
   ])("with --server-name, says the environment runs %s", async (where, plan) => {
-    const world = await snapshotWorld(plan());
+    const world = await keyedWorld(plan());
     const error = await failure(
       takeServerSnapshot(world.deps, {
         serverName: "data",
@@ -415,7 +435,7 @@ describe("--server refused where OpsCrew created no server", () => {
 
 describe("opscrew restore --server", () => {
   it("rebuilds the server after the destroy-grade approval, then checks the app answers", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi();
     const app = health([503, 503, 200]);
     world.deps.fetch = app.fetch;
@@ -458,7 +478,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("binds its hash to the snapshot and the server", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const second = { ...EARLIER, id: "770012", createdAt: "2026-11-06T08:00:00Z" };
     const provider = fakeServerApi({ snapshots: [EARLIER, second] });
     world.deps.fetch = health([200]).fetch;
@@ -469,7 +489,7 @@ describe("opscrew restore --server", () => {
     await restoreServerSnapshot(world.deps, "770011", {
       services: services(world, fakeServerApi({ appId: "44" }).api),
     });
-    const droplet = await snapshotWorld(
+    const droplet = await keyedWorld(
       stagingPlan([], { base: testPlan({ deployed: true, provider: "digitalocean" }) }),
     );
     droplet.deps.fetch = health([200]).fetch;
@@ -485,7 +505,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("needs the provider's token, as taking one does", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const error = await failure(
       restoreServerSnapshot(world.deps, "770011", { services: services(world, undefined) }),
     );
@@ -495,7 +515,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("rebuilds nothing unless the server's name is typed", async () => {
-    const world = await snapshotWorld(stagingPlan([]), {
+    const world = await keyedWorld(stagingPlan([]), {
       answer: () => ({ approved: true, confirmation: "shop" }),
     });
     const provider = fakeServerApi();
@@ -512,7 +532,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("refuses an unknown id and one that is no provider's", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi();
     const unknown = await failure(
       restoreServerSnapshot(world.deps, "999", { services: services(world, provider.api) }),
@@ -529,7 +549,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("passes on a failed rebuild, audited", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     const provider = fakeServerApi({
       fail: { rebuild: new OpsCrewError("PROVIDER_ERROR", "Hetzner action 77 failed") },
     });
@@ -541,7 +561,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("fails plainly when the app does not answer within 5 minutes", async () => {
-    const world = await snapshotWorld(stagingPlan([]));
+    const world = await keyedWorld(stagingPlan([]));
     world.deps.fetch = health([502]).fetch;
     let now = 0;
     const error = await failure(
@@ -562,7 +582,7 @@ describe("opscrew restore --server", () => {
   });
 
   it("names no protection on DigitalOcean, which has none", async () => {
-    const world = await snapshotWorld(
+    const world = await keyedWorld(
       stagingPlan([], { base: testPlan({ deployed: true, provider: "digitalocean" }) }),
     );
     world.deps.fetch = health([200]).fetch;
@@ -571,5 +591,89 @@ describe("opscrew restore --server", () => {
     });
     expect(world.handler.requests[0]?.details).not.toContain("protection");
     expect(world.handler.requests[0]?.title).toContain("Droplet shop-staging");
+  });
+});
+
+describe("opscrew restore --server beside apps from other repositories (FR-3012)", () => {
+  /** The world with the app's server holding `records` (or failing to be inspected). */
+  async function sharedWorld(look: { records?: AppRecord[]; fails?: Error } = {}) {
+    const world = await keyedWorld(stagingPlan([]));
+    const { records = [], ...how } = look;
+    const server = await firstAppLook(world.deps.paths, records, how);
+    const provider = fakeServerApi();
+    world.deps.fetch = health([200]).fetch;
+    const restore = (o: { skipOtherAppsCheck?: boolean } = {}) =>
+      restoreServerSnapshot(world.deps, "770011", {
+        ...o,
+        services: services(world, provider.api, { otherApps: server }),
+      });
+    return { world, server, provider, restore };
+  }
+
+  it("refuses while another app runs on the server, before any change", async () => {
+    const t = await sharedWorld({ records: [secondAppRecord()] });
+    const error = await failure(t.restore());
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      'The server also runs "inventory" (from github.com/example/inventory), and restoring the whole server would break it. Nothing was changed.',
+    );
+    expect(error.hint).toContain("then run `opscrew restore --server 770011` again.");
+    expect(t.provider.events).toEqual([]);
+    expect(t.world.handler.requests).toEqual([]);
+    expect(everythingShown(t.world)).not.toContain(SERVER_IPV4);
+  });
+
+  it("rebuilds as before without one", async () => {
+    const t = await sharedWorld();
+    await t.restore();
+    expect(t.server.inspections).toHaveLength(1);
+    expect(t.provider.events).toEqual(["rebuild 42 770011"]);
+  });
+
+  it("stops when the server can't be reached, unless --skip-other-apps-check", async () => {
+    const down = await sharedWorld({ fails: new Error(`ssh: connect to host ${SERVER_IPV4}`) });
+    const error = await failure(down.restore());
+    expect(error.message).toContain("OpsCrew couldn't look at the server for other apps");
+    expect(down.provider.events).toEqual([]);
+    expect(everythingShown(down.world)).not.toContain(SERVER_IPV4);
+
+    const skipped = await sharedWorld({ fails: new Error("unreachable") });
+    await skipped.restore({ skipOtherAppsCheck: true });
+    expect(skipped.provider.events).toEqual(["rebuild 42 770011"]);
+    expect(skipped.world.deps.reporter.text()).toContain("going on as you asked");
+  });
+});
+
+describe("--server refused for a second app (FR-3011)", () => {
+  it("names the first app, whose server it is, and the data snapshot instead", async () => {
+    const own = ownPlan({ deployed: true });
+    const plan = stagingPlan([], {
+      base: {
+        ...own,
+        services: [],
+        target: { ...own.target, shares: { app: "shop", provider: "hetzner" } },
+      } as DeployPlan,
+    });
+    const world = await keyedWorld(plan);
+    const provider = fakeServerApi();
+    for (const [run, command] of [
+      [
+        () => takeServerSnapshot(world.deps, { services: services(world, provider.api) }),
+        "opscrew snapshot --server",
+      ],
+      [
+        () =>
+          restoreServerSnapshot(world.deps, "770011", { services: services(world, provider.api) }),
+        "opscrew restore --server",
+      ],
+    ] as const) {
+      const error = await failure(run());
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        `This app shares the server OpsCrew created for "shop", and \`${command}\` works on that whole server, which is "shop"'s. Nothing was changed.`,
+      );
+      expect(error.hint).toContain("`opscrew snapshot` takes a snapshot of this app's data");
+    }
+    expect(provider.events).toEqual([]);
   });
 });

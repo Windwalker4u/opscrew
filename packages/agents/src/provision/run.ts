@@ -6,6 +6,8 @@ import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opsc
 import {
   additionsPath,
   checkEnvironmentKey,
+  edgeMemoryMb,
+  edgeProxy,
   homeMode,
   previewRecipeDir,
   renderBackups,
@@ -19,6 +21,7 @@ import {
   backupsBucketOf,
   type DeployPlan,
   ghcrImageFor,
+  isCloudTarget,
   isHostingTarget,
   isServerlessProvider,
   readArtifact,
@@ -38,6 +41,7 @@ import {
 import { requireCheckSettingsPlace } from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { resolveCatalog } from "../design/run";
+import { appServerChange } from "../design/server-changes";
 import { builderBranch, workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
@@ -50,6 +54,7 @@ import { finishMove, recordSwitchedMove, runMove } from "../move";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { appZoneDomain, requireAppZonePreviews, waitForPreviewsPack } from "../previews/app-zone";
 import {
+  refusedBeforeChange,
   requireNoForeignPreviews,
   requireNoNetworkBesidePreviews,
   requireNoSharedPreviews,
@@ -112,11 +117,14 @@ import {
   rotationPauseRefusal,
 } from "../shared/deploy-pause";
 import { boundHostAdapter, hostPlanFile } from "../shared/host-plan";
+import { appMemoryMb, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
+import { otherAppsOnServer, requireNoOtherApps } from "../shares/guard";
 import { deployShell } from "../status/certificates";
+import { appWords } from "../status/other-apps";
 import { checkAdditions } from "./additions";
 import {
   cancelApprovalNotes,
@@ -128,7 +136,7 @@ import {
 } from "./cancel";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
-import { requireNoSmallerDisk } from "./disk-guard";
+import { renderedServers, requireNoSmallerDisk } from "./disk-guard";
 import { requireNoMoveInProgress } from "./guard";
 import { switchAccessMode } from "./home-switch";
 import { monitoringHostPlans } from "./monitoring";
@@ -601,6 +609,18 @@ async function provisionFlow(
     command,
   });
   for (const warning of diskWarnings) deps.reporter.warn(warning);
+  // Nor, while apps from other repositories share the server OpsCrew created, a replace, a switch
+  // between Cloudflare's proxy and DNS only or a private network; a resize keeps room for them
+  // (FR-3012, FR-3013). Before anything is written, so a refused `--plan-only` leaves no files.
+  const restarts =
+    sharedHost === undefined
+      ? await requireRoomForOtherApps(deps, plan, {
+          again: rerun,
+          skip: options.skipOtherAppsCheck,
+          services,
+        })
+      : [];
+  for (const line of restarts) deps.reporter.warn(line);
   const cloudflare = await setupCloudflare(deps, plan, services);
   // Previews below the app's zone (FR-2231): the zone checked again, read-only, before any plan.
   const belowZone = appZoneDomain(plan);
@@ -1126,7 +1146,7 @@ async function provisionFlow(
   // The server's proxy switch, said now and in the infrastructure approval; CAA records of the
   // user's next to OpsCrew's, and a client certificate near its end.
   for (const note of edgeNotes) deps.reporter.warn(note);
-  const approvalNotes = [...(extras.approvalNotes ?? []), ...edgeNotes];
+  const approvalNotes = [...(extras.approvalNotes ?? []), ...edgeNotes, ...restarts];
   const warnings = previews ? [] : tlsWarnings(plan, cloudflare, shared?.main?.plan, deps.clock);
   for (const warning of warnings) deps.reporter.warn(warning);
 
@@ -1780,6 +1800,93 @@ async function requireNoProxySwitch(deps: PhaseDeps, again: string): Promise<voi
     `switching ${deps.paths.environment}'s server to another proxy`,
     again,
   );
+}
+
+/**
+ * The first app's look at its server OpsCrew created before this run changes what holds the apps
+ * from other repositories that share it (FR-3012, FR-3013), against the files of the last run
+ * (`renderedServers`, as the disk check reads them): a replace (another location), a switch
+ * between Cloudflare's proxy and DNS only, or a private network refuses while one is there
+ * (`requireNoOtherApps`); a resize (another type) must still hold their memory limits beside this
+ * app's, the edge and the system's reserve. Returns what the infrastructure approval says once a
+ * resize fits: that they restart with the server.
+ * @throws OpsCrewError `PHASE_PRECONDITION`, before any change.
+ */
+async function requireRoomForOtherApps(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: { again: string; skip: boolean | undefined; services: ProvisionServices },
+): Promise<string[]> {
+  const { target } = plan;
+  if (!isCloudTarget(target) || !hasDeployment(plan)) return [];
+  const { again, skip } = input;
+  const last = (await renderedServers(deps.paths.root, plan)).get(APP_SERVER);
+  const change =
+    last === undefined
+      ? undefined
+      : appServerChange({ ...plan, target: { ...target, ...last } }, plan);
+  const proxied = (await committedTfvars(deps.paths.root, plan))?.proxied;
+  const what =
+    change?.kind === "replace"
+      ? "replacing the server"
+      : typeof proxied === "boolean" && proxied !== plan.dns.proxied
+        ? "changing which addresses reach the web ports"
+        : plan.network !== undefined
+          ? "putting the server on a private network"
+          : undefined;
+  const services = input.services.otherApps ?? {};
+  if (what !== undefined) await requireNoOtherApps(deps, plan, what, again, { skip, services });
+  if (change?.kind !== "resize") return [];
+  const found = await otherAppsOnServer(deps, plan, { services });
+  if (!found.reached) {
+    const why = `OpsCrew couldn't look at the server for other apps (${found.reason})`;
+    const harm = `resizing it to ${change.after.serverType} restarts any that run there and may leave them too little memory`;
+    if (skip === true) {
+      deps.reporter.warn(
+        `${why}, and is going on as you asked (--skip-other-apps-check): ${harm}.`,
+      );
+      return [];
+    }
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `${why}, and ${harm}.`,
+      `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
+    );
+  }
+  if (found.unreadable.length > 0) {
+    const one = found.unreadable.length === 1;
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `The server also runs ${listText(found.unreadable.map((app) => `"${app}"`))}, whose record on the server OpsCrew can't read (written by a newer OpsCrew, or damaged), so it can't tell whether ${change.after.serverType} holds ${one ? "it" : "them"} beside this app.${skip === true ? " --skip-other-apps-check doesn't cover an app that runs there." : ""}`,
+      `Provision ${one ? "it" : "each one"} again with a current OpsCrew in its repository, or remove ${one ? "it" : "each one"} with \`opscrew destroy\` there first; then run \`${again}\` again.`,
+    );
+  }
+  const active = found.apps.filter((record) => record.state === "active");
+  if (active.length === 0) return [];
+  const them = listText(active.map(appWords));
+  const restart = `${them} ${active.length === 1 ? "runs" : "run"} on the server too and ${active.length === 1 ? "restarts" : "restart"} with it.`;
+  const offers = await (
+    await resolveCatalog(deps, target.provider, target.location)
+  ).catalog.listOffers();
+  const memoryGb = offers.find((offer) => offer.id === change.after.serverType)?.memoryGb;
+  if (memoryGb === undefined) {
+    return [
+      `${restart} The provider's catalogue doesn't list ${change.after.serverType}, so OpsCrew couldn't check that it holds them beside this app: check its memory before you approve.`,
+    ];
+  }
+  const serverMb = Math.round(memoryGb * 1024);
+  const appMb = appMemoryMb(plan);
+  const othersMb = active.reduce((sum, record) => sum + record.memoryMb, 0);
+  const edgeMb = edgeMemoryMb(edgeProxy(plan));
+  if (!memoryHeadroom(serverMb, appMb + othersMb, edgeMb).fits) {
+    const each = listText(active.map((record) => `"${record.app}" ${record.memoryMb} MB`));
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `${change.after.serverType} has ${serverMb} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, it doesn't hold this app's ${appMb} MB of memory limits beside the ${othersMb} MB of the other ${active.length === 1 ? "app" : "apps"} on the server (${each}).`,
+      `Pick a server type with at least ${appMb + othersMb + edgeMb + SYSTEM_RESERVE_MB} MB of memory with \`opscrew design\`, lower the memory limits in opscrew/plan.yaml, or remove an app from the server; then run \`${again}\` again.`,
+    );
+  }
+  return [restart];
 }
 
 /** Runs the shared flow and records the phase outcome (`ok`, or `failed` with the reason). */

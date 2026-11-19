@@ -19,6 +19,7 @@ import type { NetworkServer } from "../provision/network";
 import { type HostAdapterApi, hasDeployment, serverLogin, serverRemote } from "../shared";
 import { networkSshPort } from "../shared/server-address";
 import { appServers } from "../shared/servers";
+import type { OtherAppsServices } from "../shares/guard";
 
 /** The phase `opscrew vpn` audits its host plans under. */
 export const VPN_PHASE: PhaseName = "secure";
@@ -36,6 +37,11 @@ export interface VpnServices {
   keys?: KeyMaker;
   /** Reads WireGuard on the servers for `vpn list` (default the host adapter's `readWireGuard`). */
   readWireGuard?: ReadNetworkServices["readWireGuard"];
+  /**
+   * The look at the server OpsCrew created for apps from other repositories that share it (default:
+   * SSH with the deploy key and ssh-host's `inspectHost`).
+   */
+  otherApps?: OtherAppsServices;
 }
 
 /**

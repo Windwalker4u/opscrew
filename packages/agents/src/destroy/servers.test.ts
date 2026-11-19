@@ -28,6 +28,7 @@ import {
   serverAttributes,
   testKeyMaker,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 
@@ -139,6 +140,8 @@ async function setup(plan: DeployPlan, answer: (request: ApprovalRequest) => boo
       : {}),
   }));
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers: new FakeServers(),

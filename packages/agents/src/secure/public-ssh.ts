@@ -12,7 +12,7 @@ import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema"
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { publicSshHostPlan, readNetwork } from "../network";
-import { requireNoSharedPreviews } from "../previews/host";
+import { refusedBeforeChange, requireNoSharedPreviews } from "../previews/host";
 import { runProvision } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 import {
@@ -29,6 +29,7 @@ import {
 } from "../shared";
 import { approveAndApplyHostPlan } from "../shared/host-plan";
 import { extraCloudServers } from "../shared/servers";
+import { requireNoOtherApps } from "../shares/guard";
 import { handshakeText, notReadText } from "../status/network";
 import { deviceServers, networkServer, requireServers, type VpnServices } from "../vpn/servers";
 
@@ -36,7 +37,8 @@ import { deviceServers, networkServer, requireServers, type VpnServices } from "
 const PHASE = "secure";
 
 /** The services of closing and opening public SSH; each defaults to the real one, fakes in tests. */
-export interface PublicSshServices extends Pick<VpnServices, "remote" | "host" | "readWireGuard"> {
+export interface PublicSshServices
+  extends Pick<VpnServices, "remote" | "host" | "readWireGuard" | "otherApps"> {
   /**
    * The infrastructure plan, the workflow and the check rendered again, and the deploy-setup pull
    * request (default `runProvision`).
@@ -48,6 +50,12 @@ export interface PublicSshServices extends Pick<VpnServices, "remote" | "host" |
 export interface PublicSshOptions {
   /** Every hash given with `--approve`: the infrastructure plan's and each host plan's. */
   approveHashes?: readonly string[];
+  /**
+   * `--skip-other-apps-check`: go on when OpsCrew can't look at the server OpsCrew created for
+   * other apps that share it, or when only their kept data is there. It never covers an app that
+   * runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
   services?: PublicSshServices;
 }
 
@@ -177,6 +185,7 @@ async function provisionStep(
     return await provision(deps, {
       ...(options.approveHashes !== undefined ? { approveHashes: options.approveHashes } : {}),
       ...(privateSshUntilApply ? { privateSshUntilApply } : {}),
+      ...(options.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
     });
   } catch (error) {
     if (!(error instanceof OpsCrewError)) throw error;
@@ -337,6 +346,15 @@ export async function closePublicSsh(
   const plan = await readArtifact("plan", deps.paths.files.plan);
   requireServers(plan);
   const command = await commandOf(deps, "--close-public-ssh");
+  // A second app's server is its first app's, and its deploys reach it over public SSH (FR-3011).
+  const first = plan.target.provider === "own" ? plan.target.shares?.app : undefined;
+  if (first !== undefined) {
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `This app shares the server OpsCrew created for "${first}", whose SSH settings are "${first}"'s, and this app's deploys reach that server over public SSH.`,
+      "Leave public SSH open while apps share the server, or move this app to a server of its own with `opscrew retarget` first.",
+    );
+  }
   // Not while a preview environment names this server: GitHub's machines reach previews over
   // public SSH (FR-2228).
   await requireNoSharedPreviews(
@@ -345,6 +363,11 @@ export async function closePublicSsh(
     command,
     true,
   );
+  // Nor while apps from other repositories share the server OpsCrew created (FR-3012).
+  await requireNoOtherApps(deps, plan, "closing public SSH", command, {
+    skip: options.skipOtherAppsCheck,
+    services: services.otherApps,
+  });
   const missing = await missingConditions(deps, plan, services);
   if (missing.length > 0) {
     throw new OpsCrewError(

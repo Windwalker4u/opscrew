@@ -1,4 +1,4 @@
-import { listText, OpsCrewError } from "@opscrew/core";
+import { exists, listText, OpsCrewError } from "@opscrew/core";
 import {
   type DeployPlan,
   isServerlessProvider,
@@ -10,6 +10,7 @@ import { commandFlags } from "../environments/choice";
 import { requireNoSharedPreviews } from "../previews/host";
 import { requireNoCloudflareMove } from "../provision/guard";
 import { runPhase } from "../shared/phase-status";
+import { requireNoOtherApps } from "../shares/guard";
 import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
 import { cloudProviders, placeWords } from "./sides";
 import { runSiteMove } from "./site";
@@ -148,10 +149,11 @@ export async function runRetarget(
     );
   }
   // Not while another environment's previews run on this one's server (FR-2230).
+  const again = `opscrew retarget${await commandFlags(deps.paths.root, name, deps.paths.app)}`;
   await requireNoSharedPreviews(
     deps.paths,
     `moving ${name} away from ${placeWords(plan.target)}`,
-    `opscrew retarget${await commandFlags(deps.paths.root, name, deps.paths.app)}`,
+    again,
   );
   return runPhase(deps, "retarget", async () => {
     // A site moves between site hosts, in steps of its own (plan.md "6."); an app with a server
@@ -159,6 +161,15 @@ export async function runRetarget(
     if (isServerlessTarget(plan.target)) return runSiteMove(deps, plan, options);
     if (options.to !== undefined && isServerlessProvider(options.to)) {
       throw siteServerNoMove(plan);
+    }
+    // Nor while apps from other repositories share the server a move starts from (FR-3012).
+    // Without the deploy key here the move stops on that first, as it can't start without it.
+    if (plan.retarget === undefined && (await exists(deps.paths.files.deployKey))) {
+      const services = options.services ?? {};
+      await requireNoOtherApps(deps, plan, "moving the app off it", again, {
+        skip: options.skipOtherAppsCheck,
+        services: services.otherApps,
+      });
     }
     const session =
       plan.retarget === undefined

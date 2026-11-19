@@ -9,6 +9,7 @@ import {
 import {
   APP_SERVER,
   type DeployPlan,
+  isCloudTarget,
   isServerlessProvider,
   type Network,
 } from "@opscrew/plan-schema";
@@ -49,6 +50,7 @@ import { drillStatusReport } from "./drill";
 import { type HomeRead, hideHomeAddresses, homeStatusLines, readHomeServer } from "./home";
 import { monitoringStatusReport } from "./monitoring";
 import { networkStatusLines, type UnpublishedPort } from "./network";
+import { otherAppsLines } from "./other-apps";
 import {
   type ResourceReading,
   readResources,
@@ -71,7 +73,14 @@ export interface ComponentStatusOptions {
    */
   services?: Pick<
     ProvisionServices,
-    "remote" | "own" | "portainer" | "runnerGitHub" | "cloudflare" | "sharedCloudflare" | "github"
+    | "remote"
+    | "own"
+    | "portainer"
+    | "runnerGitHub"
+    | "cloudflare"
+    | "sharedCloudflare"
+    | "github"
+    | "otherApps"
   > & {
     /**
      * GitHub's API and registry the deploys' section reads (default: the client of the user's
@@ -298,13 +307,24 @@ export async function componentStatusReport(
   } else {
     const home = await homeReport(deps, plan, options);
     const components = await componentsReport(deps, plan, home.options);
+    // The apps from other repositories on a server OpsCrew created, once it could be read (FR-3015).
+    const others =
+      isCloudTarget(plan.target) && components.status !== undefined
+        ? await otherAppsLines(deps, plan, options.services?.otherApps ?? {})
+        : [];
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
     const remote = options.services?.remote;
     // Self-hosted monitoring's line (feature 020): this environment's servers still sending.
     const monitoring = await monitoringStatusReport(deps, plan, remote ? { remote } : {});
     report = {
       ...components,
-      lines: joinBlocks(components.lines, home.lines, runner, monitoring.lines),
+      lines: joinBlocks(
+        components.lines,
+        others.map((line) => deps.redactor.redact(line)),
+        home.lines,
+        runner,
+        monitoring.lines,
+      ),
       ...(monitoring.monitoring !== undefined ? { monitoring: monitoring.monitoring } : {}),
     };
     // Nothing runs on a server, in Portainer or on this computer before provision ran.

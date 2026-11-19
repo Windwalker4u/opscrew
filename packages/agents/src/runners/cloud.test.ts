@@ -28,6 +28,7 @@ import {
   FakeRunnerGitHub,
   FakeServers,
   fakeSharedCloudflare,
+  firstAppLook,
   listedRunner,
   projectRunner,
   readyRemote,
@@ -409,8 +410,12 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
       github,
       sleep: async () => undefined,
       runnerGitHub,
+      // No app from another repository on the server.
+      otherApps: await firstAppLook(s.deps.paths),
     };
-    return { ...s, events, runnerGitHub, other, destroy: () => runDestroy(s.deps, { services }) };
+    const destroy = (o: { skipOtherAppsCheck?: boolean } = {}) =>
+      runDestroy(s.deps, { ...o, services });
+    return { ...s, events, runnerGitHub, other, destroy };
   }
 
   it("destroy deletes this server's registration through GitHub's API before the server", async () => {
@@ -470,7 +475,8 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
   it("deletes none by its label alone when this computer does not know the server's address, and says which to remove", async () => {
     const s = await destroyable();
     await rm(serverAddressesFile(s.deps.paths));
-    await s.destroy();
+    // Without the address OpsCrew can't look for other apps on the server either.
+    await s.destroy({ skipOtherAppsCheck: true });
     expect(s.events.filter((event) => event.startsWith("runner:"))).toEqual([]);
     expect(s.runnerGitHub.runners.map((r) => r.id)).toEqual([7, 9]);
     expect(s.deps.reporter.text()).toContain(

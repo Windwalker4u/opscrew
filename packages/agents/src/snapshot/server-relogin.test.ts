@@ -12,7 +12,7 @@ import { rotationContext } from "../rotate/plan";
 import { credentialsRecordFile } from "../rotate/record";
 import { assembleAppEnv } from "../shared/app-env";
 import { generatedValuesFile } from "../shared/app-secrets";
-import { SERVER_IPV4 } from "../testing";
+import { firstAppLook, SERVER_IPV4 } from "../testing";
 import {
   DATA_IPV4,
   everythingShown,
@@ -233,6 +233,7 @@ async function world(
   },
 ): Promise<World> {
   const base = await snapshotWorld(plan);
+  const look = await firstAppLook(base.deps.paths);
   const log: string[] = [];
   base.deps.fetch = async () =>
     o.healthyAfter === undefined || log.includes(o.healthyAfter)
@@ -300,6 +301,8 @@ async function world(
             clock += ms;
           },
           now: () => clock,
+          // The look for apps from other repositories on the server finds none.
+          otherApps: look,
         },
       }),
   };

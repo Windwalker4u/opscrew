@@ -19,6 +19,7 @@ import {
   ScriptedDestroyEngine,
   testPlan,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import {
   bucketChanges,
   bucketEngine,
@@ -95,6 +96,8 @@ async function setup(o: {
     await writeFile(join(project.root, file.path), file.content);
   }
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers: new FakeServers([], "hetzner"),

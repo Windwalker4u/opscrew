@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   type ApplyOptions,
   type ApplyResult,
+  type AppRecord,
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
@@ -32,9 +33,11 @@ import {
 import {
   createTestPhaseDeps,
   DEPLOYED_AT,
+  firstAppLook,
   freshFacts,
   ownPlan,
   ScriptedApprovalHandler,
+  secondAppRecord,
   testKeyMaker,
   testKeyPair,
   testPlan,
@@ -96,6 +99,10 @@ async function world(o: {
   privateKeys?: Record<string, string>;
   record?: Partial<ServerAddresses>;
   answer?: () => boolean;
+  /** The records of apps from other repositories on the app's server. */
+  records?: AppRecord[];
+  /** The look for them fails, as when the server can't be reached. */
+  lookFails?: Error;
 }) {
   const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
   const deps = await createTestPhaseDeps({ approvalHandler: handler, clock: { now: () => NOW } });
@@ -110,7 +117,14 @@ async function world(o: {
   const applies: Apply[] = [];
   const inspected: { server: string; rootImage?: string }[] = [];
   const keys = testKeyMaker("device");
+  // The look for apps from other repositories on the server finds none, unless a test says so.
+  const look = await firstAppLook(
+    deps.paths,
+    o.records ?? [],
+    o.lookFails !== undefined ? { fails: o.lookFails } : {},
+  );
   const services: VpnServices = {
+    otherApps: look,
     remote: async (server) => ({
       host: server,
       run: async () => {
@@ -134,7 +148,7 @@ async function world(o: {
     keys,
   };
   const plan = () => readArtifact("plan", deps.paths.files.plan);
-  return { deps, handler, applies, inspected, keys, services, plan };
+  return { deps, handler, applies, inspected, keys, services, plan, look };
 }
 
 type World = Awaited<ReturnType<typeof world>>;
@@ -398,6 +412,56 @@ describe("opscrew vpn add", () => {
     expect(error.hint).toContain("opscrew secure --open-public-ssh");
     expect(w.keys.made).toEqual([]);
     expect(w.inspected).toEqual([]);
+  });
+});
+
+describe("opscrew vpn add beside apps from other repositories (FR-3012)", () => {
+  it("refuses to give the server a network while another app runs there, before any change", async () => {
+    const w = await world({ plan: testPlan({ deployed: true }), records: [secondAppRecord()] });
+    const before = await readFile(w.deps.paths.files.plan, "utf8");
+    const error = await failure(vpnAdd(w.deps, "laptop", { services: w.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      'The server also runs "inventory" (from github.com/example/inventory), and putting the server on a private network would break it. Nothing was changed.',
+    );
+    expect(await readFile(w.deps.paths.files.plan, "utf8")).toBe(before);
+    expect(w.inspected).toEqual([]);
+    expect(w.applies).toEqual([]);
+    expect(w.keys.made).toEqual([]);
+    expect(existsSync(deviceConfigFile(w.deps.paths, "laptop"))).toBe(false);
+    const said = `${w.deps.reporter.text()}
+${JSON.stringify(w.deps.audit.entries)}
+${error.message}`;
+    expect(said).not.toContain(APP_IPV4);
+  });
+
+  it("makes the network as before without one", async () => {
+    const w = await world({ plan: testPlan({ deployed: true }) });
+    await vpnAdd(w.deps, "laptop", { services: w.services });
+    expect(w.look.inspections).toHaveLength(1);
+    expect(w.applies.map((a) => a.server)).toEqual(["app"]);
+  });
+
+  it("stops when the server can't be reached, unless --skip-other-apps-check", async () => {
+    const down = await world({ plan: testPlan({ deployed: true }), lookFails: new Error("down") });
+    const error = await failure(vpnAdd(down.deps, "laptop", { services: down.services }));
+    expect(error.message).toContain("OpsCrew couldn't look at the server for other apps");
+    expect(down.applies).toEqual([]);
+
+    const skipped = await world({
+      plan: testPlan({ deployed: true }),
+      lookFails: new Error("down"),
+    });
+    await vpnAdd(skipped.deps, "laptop", { skipOtherAppsCheck: true, services: skipped.services });
+    expect(skipped.applies.map((a) => a.server)).toEqual(["app"]);
+    expect(skipped.deps.reporter.text()).toContain("going on as you asked");
+  });
+
+  it("doesn't look again once the server is on a network, which takes no such app", async () => {
+    const { plan, privateKeys } = networked();
+    const w = await world({ plan, privateKeys, records: [secondAppRecord()] });
+    await vpnAdd(w.deps, "laptop", { services: w.services });
+    expect(w.look.inspections).toEqual([]);
   });
 });
 

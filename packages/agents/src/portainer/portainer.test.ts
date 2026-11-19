@@ -7,6 +7,7 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   type ApplyOptions,
   type ApplyResult,
+  type AppRecord,
   type HostPlan,
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
@@ -28,6 +29,7 @@ import {
   FakeGitHub,
   FakeHostServer,
   fakeSharedCloudflare,
+  firstAppLook,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -39,6 +41,7 @@ import {
   publicOutputs,
   ScriptedApprovalHandler,
   SERVER_IPV4,
+  secondAppRecord,
   TUNNEL_ID,
   testKeyMaker,
   testKeyPair,
@@ -109,6 +112,10 @@ async function cloudSetup(
     docker?: string | null;
     /** Portainer's data volume is already on the server. */
     volume?: boolean;
+    /** The records of apps from other repositories on the server. */
+    records?: AppRecord[];
+    /** The look for them fails, as when the server can't be reached. */
+    lookFails?: Error;
   } = {},
 ) {
   const commands: string[] = [];
@@ -136,14 +143,21 @@ async function cloudSetup(
     auth_domain: "someone-else.cloudflareaccess.com",
   };
   zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
+  // The look for apps from other repositories on the server finds none, unless a test says so.
+  const look = await firstAppLook(
+    deps.paths,
+    o.records ?? [],
+    o.lookFails !== undefined ? { fails: o.lookFails } : {},
+  );
   const services: PortainerServices = {
     deployRemote: deployShell(o.docker === undefined ? "28.5.1" : o.docker, server, commands),
     applyHost: host.apply,
     cloudflare: ownCloudflare(),
     ...(o.engine !== undefined ? { engine: async () => o.engine as FakeEngine } : {}),
     sharedCloudflare: fakeSharedCloudflare(zone),
+    otherApps: look,
   };
-  return { ...project, deps, handler, host, services, zone, commands, server };
+  return { ...project, deps, handler, host, services, zone, commands, server, look };
 }
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
@@ -740,6 +754,59 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
       `This computer is device laptop: with its WireGuard tunnel on, open https://${app}:9443`,
     );
     expect(said).not.toContain("ssh ");
+  });
+});
+
+describe.skipIf(!hasGit)("Portainer beside apps from other repositories (FR-3011, FR-3012)", () => {
+  it("refuses on the first app's server while another app runs there, before any change", async () => {
+    const s = await cloudSetup({ records: [secondAppRecord()] });
+    const error = await portainerEnable(s.deps, { services: s.services }).then(
+      () => undefined,
+      (e: unknown) => e as OpsCrewError,
+    );
+    expect(error?.code).toBe("PHASE_PRECONDITION");
+    expect(error?.message).toBe(
+      'The server also runs "inventory" (from github.com/example/inventory), and running Portainer on the server would break it. Nothing was changed.',
+    );
+    expect(s.handler.requests).toEqual([]);
+    expect(s.host.calls).toEqual([]);
+    expect(existsSync(portainerPasswordFile(s.deps.paths))).toBe(false);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+    expect(printed(s.deps)).not.toContain(SERVER_IPV4);
+  });
+
+  it("turns it on as before without one", async () => {
+    const s = await cloudSetup();
+    await portainerEnable(s.deps, { services: s.services });
+    expect(s.look.inspections).toHaveLength(1);
+    expect(kinds(s.handler)).toEqual(["host-apply"]);
+  });
+
+  it("stops when the server can't be reached, unless --skip-other-apps-check", async () => {
+    const down = await cloudSetup({ lookFails: new Error("unreachable") });
+    await expect(portainerEnable(down.deps, { services: down.services })).rejects.toThrow(
+      "OpsCrew couldn't look at the server for other apps",
+    );
+    expect(down.host.calls).toEqual([]);
+
+    const skipped = await cloudSetup({ lookFails: new Error("unreachable") });
+    await portainerEnable(skipped.deps, { skipOtherAppsCheck: true, services: skipped.services });
+    expect(skipped.host.calls).toHaveLength(1);
+    expect(skipped.deps.reporter.text()).toContain("going on as you asked");
+  });
+
+  it("refuses for a second app, naming the first app whose server it is", async () => {
+    const own = ownPlan({ deployed: true });
+    const plan = DeployPlanSchema.parse({
+      ...own,
+      target: { ...own.target, shares: { app: "shop", provider: "hetzner" } },
+    });
+    const s = await cloudSetup({ plan });
+    await expect(portainerEnable(s.deps, { services: s.services })).rejects.toThrow(
+      `This app shares the server OpsCrew created for "shop", and Portainer manages every container on that server, which is "shop"'s. Nothing was changed.`,
+    );
+    expect(s.look.inspections).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
   });
 });
 

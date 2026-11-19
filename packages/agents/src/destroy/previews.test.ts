@@ -35,6 +35,7 @@ import {
   ScriptedDestroyEngine,
   SERVER_IPV4,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 
@@ -66,6 +67,8 @@ describe.skipIf(!findExecutable("git"))(
       await mkdir(join(deps.paths.root, plan.infra.dir), { recursive: true });
       await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
       const services: DestroyServices = {
+        // The look for apps from other repositories on the server finds none.
+        otherApps: await firstAppLook(deps.paths),
         engine: async () => new ScriptedDestroyEngine(),
         provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
         servers: new FakeServers(),
@@ -102,6 +105,8 @@ describe.skipIf(!findExecutable("git"))(
       await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
       const result = await runDestroy(deps, {
         services: {
+          // The look for apps from other repositories on the server finds none.
+          otherApps: await firstAppLook(deps.paths),
           engine: async () => new ScriptedDestroyEngine(),
           provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
           servers: new FakeServers(),
@@ -171,6 +176,8 @@ async function ownPreview(answer?: (request: ApprovalRequest) => boolean) {
   const server = new FakeHostServer(previewServerFacts(deps.paths.projectId));
   const engine = new OwnEngine(PUBLIC_CHANGES, publicOutputs(), publicOutputs());
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     github: new FakeDestroyGitHub(),
     cloudflare: { verifyToken: async () => ({ ok: true, message: "ok" }) },

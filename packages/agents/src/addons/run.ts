@@ -37,7 +37,7 @@ import {
   type TunnelledChangeServices,
 } from "../portainer/change";
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
-import { requireNoNetworkBesidePreviews } from "../previews/host";
+import { refusedBeforeChange, requireNoNetworkBesidePreviews } from "../previews/host";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { monitoringAlloy } from "../provision/monitoring";
@@ -51,6 +51,7 @@ import { monitoringPassword, monitoringValues } from "../provision/secrets";
 import { approveAndApplyHostPlan, hasDeployment } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import type { HostChangeResult } from "../shared/tunnel-connections";
+import { requireNoOtherApps } from "../shares/guard";
 import { hasAppInterface } from "../vpn/dashboards";
 import { estimateText, grafanaEstimate, readServer, type ServerReading } from "./estimate";
 import {
@@ -116,6 +117,12 @@ export interface AddonEnableOptions extends AddonRunOptions, BeszelRequest {
   metricsDays?: number;
   /** Monitoring: days logs are kept (1–30). */
   logsDays?: number;
+  /**
+   * Beszel, `--skip-other-apps-check`: go on when OpsCrew can't look at the server OpsCrew created
+   * for other apps that share it, or when only their kept data is there. It never covers an app
+   * that runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
 }
 
 /** `opscrew addon disable`. */
@@ -886,6 +893,17 @@ export async function addonEnable(
     return monitoringResult(deps, change, `${command}${enableFlags(options)}`);
   }
   requireDeployedServer(plan, kind, command, true);
+  if (kind === "beszel") {
+    // Beszel watches the whole server: a second app's server is its first app's (FR-3011).
+    const first = plan.target.provider === "own" ? plan.target.shares?.app : undefined;
+    if (first !== undefined) {
+      throw refusedBeforeChange(
+        "PHASE_PRECONDITION",
+        `This app shares the server OpsCrew created for "${first}", and Beszel watches that whole server, which is "${first}"'s.`,
+        `\`opscrew status${flag}\` and \`opscrew logs${flag}\` show this app's own containers; or move it to a server of its own with \`opscrew retarget${flag}\` and turn Beszel on there.`,
+      );
+    }
+  }
   if (kind === "grafana-cloud") {
     const beszelOnly = ["mode", "access", "hostname", "allowEmails", "hubUrl", "hubKey"] as const;
     if (beszelOnly.some((key) => options[key] !== undefined)) {
@@ -902,6 +920,14 @@ export async function addonEnable(
       : await grafanaInput(deps, plan, options);
   // Never a dashboard on the private address beside previews another environment runs here.
   await requireNoNetworkBesidePreviews(deps.paths, input.after, command);
+  // Nor Beszel while apps from other repositories share the server OpsCrew created (FR-3012).
+  if (kind === "beszel") {
+    const services = options.services ?? {};
+    await requireNoOtherApps(deps, plan, "running Beszel on the server", command, {
+      skip: options.skipOtherAppsCheck,
+      services: services.otherApps,
+    });
+  }
   return runAddonChange(
     deps,
     {

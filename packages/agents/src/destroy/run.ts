@@ -31,6 +31,7 @@ import {
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "../shared/tunnel-connections";
+import { requireNoOtherApps } from "../shares/guard";
 import {
   cancelDates,
   cancelFailedHint,
@@ -702,6 +703,17 @@ async function destroyDeployment(
     engine: async () => engine,
     engineEnv: env,
   });
+  // Nor, while apps from other repositories share the app's server, a teardown that deletes it
+  // (FR-3012); a rerun once it is gone only finishes the cleanup.
+  const appServerGoes = preview.changes.some(
+    (change) => change.address.startsWith("module.server.") && deletesServer([change], provider),
+  );
+  if (appServerGoes) {
+    await requireNoOtherApps(deps, plan, "destroying the server", here, {
+      skip: options.skipOtherAppsCheck,
+      services: services.otherApps,
+    });
+  }
   if (runnerRepo !== undefined && address === undefined) {
     // Without the address OpsCrew cannot tell this server's runner from another's: never by the
     // label alone, so none is deleted.

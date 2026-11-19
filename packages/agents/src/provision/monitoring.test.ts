@@ -32,6 +32,7 @@ import {
   withNetwork,
 } from "../network/__fixtures__/plans";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
+import { hasDeployment } from "../shared/server-address";
 import { updateServerAddresses } from "../shared/server-record";
 import {
   createProject,
@@ -50,6 +51,7 @@ import {
   SERVER_IPV6,
   testKeyMaker,
 } from "../testing";
+import { firstAppLook, noOtherApps } from "../testing/other-apps";
 import { monitoringHostPlans, stackAddresses } from "./monitoring";
 import { runProvision } from "./run";
 import { keepMonitoringValues, monitoringValues } from "./secrets";
@@ -267,6 +269,8 @@ async function setup(o: Setup) {
     sleep: async () => undefined,
     sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
     serverHost: hosts.adapter,
+    // The look for apps from other repositories on the app's server finds none.
+    otherApps: hasDeployment(o.plan) ? await firstAppLook(deps.paths) : { inspect: noOtherApps },
   };
   return { ...project, deps, engine, github, handler, services, hosts };
 }

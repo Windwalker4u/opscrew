@@ -36,6 +36,7 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
+import { noOtherApps } from "../testing/other-apps";
 import { type OriginTlsValues, readOriginTlsValues } from "./origin-tls";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { previewDeploymentFiles } from "./render";
@@ -119,6 +120,8 @@ async function project(
     remote,
     sleep: async () => undefined,
     sharedCloudflare: fakeSharedCloudflare(zone),
+    // The look for apps from other repositories on the server finds none.
+    otherApps: { inspect: noOtherApps },
   };
   const s = { ...created, deps, engine, github, handler, requests, services, zone, server, reads };
   return s;

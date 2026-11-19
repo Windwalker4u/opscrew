@@ -34,6 +34,7 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
 
@@ -162,6 +163,8 @@ async function setup(tunnel = false) {
   await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
   const servers = new CancellingServers(events, "contabo");
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers,

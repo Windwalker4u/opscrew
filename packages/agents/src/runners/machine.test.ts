@@ -28,6 +28,7 @@ import {
   FakeServers,
   fakeCloudflare,
   fakeSharedCloudflare,
+  firstAppLook,
   HOST_KEY,
   listedRunner,
   MACHINE_IPV4,
@@ -632,6 +633,8 @@ async function bothOnMachine(destroy: "prod" | "staging") {
     sleep: async () => undefined,
     runnerGitHub: s.runnerGitHub,
     runnerMachine: s.runnerMachine,
+    // No app from another repository on the server.
+    otherApps: await firstAppLook(deps.paths),
   };
   return { ...s, deps, services };
 }

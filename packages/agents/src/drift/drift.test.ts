@@ -846,6 +846,31 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
       expect(unread.hosts).toEqual([]);
     });
 
+    it("on a server apps from other repositories share, none of their parts is drift (FR-3015)", async () => {
+      // The server runs inventory's containers too, and its key line, folders and record; drift
+      // reads only the app's own Compose project.
+      const commands: string[] = [];
+      const remote = (host: string): RemoteExec => ({
+        host,
+        run: async (command) => {
+          commands.push(command);
+          const lines = command.includes("com.docker.compose.project=shop ")
+            ? ["shop-app-1|running", "shop-worker-1|running", "shop-db-1|running"]
+            : ["inventory-app-1|running", "inventory-db-1|running"];
+          return { exitCode: 0, stdout: [...lines, "shop-mysql-1|running"].join("\n"), stderr: "" };
+        },
+      });
+      const { deps, services } = await setup({ plan: deployedPlan(), services: { remote } });
+      const report = await runDrift(deps, { services });
+      expect(report.host).toEqual({ differences: [] });
+      expect(report.clean).toBe(true);
+      expect(commands.length).toBeGreaterThan(0);
+      for (const command of commands) {
+        expect(command).toContain("com.docker.compose.project=shop ");
+        expect(command).not.toMatch(/inventory|authorized_keys|\/etc\/opscrew\/apps/);
+      }
+    });
+
     it("a server it cannot read is a note, and the rest of the report stands", async () => {
       const ssh = server([], 255);
       const engine = new DriftEngine({ drift: [drifted(SERVER, "delete")] });

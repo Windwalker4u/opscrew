@@ -11,7 +11,7 @@ import { portainerHostname, renderPortainerCompose, usesTunnel } from "@opscrew/
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { requireNoNetworkBesidePreviews } from "../previews/host";
+import { refusedBeforeChange, requireNoNetworkBesidePreviews } from "../previews/host";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
@@ -30,6 +30,7 @@ import {
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import type { HostChangeResult } from "../shared/tunnel-connections";
+import { requireNoOtherApps } from "../shares/guard";
 import {
   cloudTunnelConnector,
   deployRemote,
@@ -61,7 +62,14 @@ export type PortainerServices = TunnelledChangeServices;
 /** Options shared by `opscrew portainer enable` and `disable`. */
 export type PortainerRunOptions = TunnelledChangeOptions;
 
-export interface PortainerEnableOptions extends PortainerEnableRequest, PortainerRunOptions {}
+export interface PortainerEnableOptions extends PortainerEnableRequest, PortainerRunOptions {
+  /**
+   * `--skip-other-apps-check`: go on when OpsCrew can't look at the server OpsCrew created for
+   * other apps that share it, or when only their kept data is there. It never covers an app that
+   * runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
+}
 
 export interface PortainerDisableOptions extends PortainerRunOptions {
   /**
@@ -552,6 +560,17 @@ async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise
   }
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("enable");
+  const command = `opscrew portainer enable${await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app)}`;
+  // Portainer manages every container on the server: a second app's server is its first app's
+  // (FR-3011).
+  const first = before.target.provider === "own" ? before.target.shares?.app : undefined;
+  if (first !== undefined) {
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `This app shares the server OpsCrew created for "${first}", and Portainer manages every container on that server, which is "${first}"'s.`,
+      "`opscrew status` and `opscrew logs` show this app's own containers; or move it to a server of its own with `opscrew retarget` and turn Portainer on there.",
+    );
+  }
   const approving = (options.approvePlanHashes ?? []).length > 0;
   const pending = approving ? await readPendingPortainer(deps.paths) : undefined;
   if (pending !== undefined && pending.command !== "enable") throw optionsDiffer();
@@ -570,11 +589,13 @@ async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise
     throw optionsDiffer();
   }
   // Never its web UI on the private address beside previews another environment runs here.
-  await requireNoNetworkBesidePreviews(
-    deps.paths,
-    after,
-    `opscrew portainer enable${await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app)}`,
-  );
+  await requireNoNetworkBesidePreviews(deps.paths, after, command);
+  // Nor beside apps from other repositories on the server OpsCrew created (FR-3012).
+  const services = options.services ?? {};
+  await requireNoOtherApps(deps, before, "running Portainer on the server", command, {
+    skip: options.skipOtherAppsCheck,
+    services: services.otherApps,
+  });
   return runChange(deps, { command: "enable", before, after, deleteData: false }, options);
 }
 

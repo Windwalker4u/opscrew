@@ -38,6 +38,7 @@ import type {
 } from "../shared";
 import type { FirewallApis } from "../shared/firewalls";
 import type { ProviderBackupsApis } from "../shared/provider-backups";
+import type { OtherAppsServices } from "../shares/guard";
 import type { StorageKeyQuestion } from "./storage";
 
 /**
@@ -216,6 +217,12 @@ export interface ProvisionServices {
     apply: HostAdapterApi["apply"];
   };
   /**
+   * The look at the server OpsCrew created for apps from other repositories that share it, before a
+   * change that would break them (default: SSH with the deploy key and ssh-host's `inspectHost`;
+   * a fake in tests).
+   */
+  otherApps?: OtherAppsServices;
+  /**
    * The runner machine of `runner: host`: its admin login's shell and the host adapter (default:
    * SSH with its recorded login, `inspectHost` and `applyHostPlan`; fakes in tests).
    */
@@ -321,6 +328,13 @@ export interface ProvisionOptions {
    * (`closedPlan`). After the apply, the plan's public reach applies.
    */
   privateSshUntilApply?: boolean;
+  /**
+   * `--skip-other-apps-check`: go on when OpsCrew can't look at the server OpsCrew created for
+   * other apps that share it, or when only their kept data is there, before a change that would
+   * break them (a replace, a resize, a switch between Cloudflare's proxy and DNS only, a private
+   * network). It never covers an app that runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
   services?: ProvisionServices;
 }
 

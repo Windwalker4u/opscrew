@@ -8,6 +8,7 @@ import type { ComputeCatalog, ServerSnapshot, ServerSnapshotApi } from "@opscrew
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it, vi } from "vitest";
 import { testPlan } from "../testing";
+import { firstAppLook, noOtherApps } from "../testing/other-apps";
 import { type SnapshotWorld, snapshotWorld, stagingPlan } from "./__fixtures__/world";
 import { deleteSnapshot } from "./delete";
 import { restoreSnapshot } from "./restore";
@@ -90,9 +91,12 @@ const catalog = (): ComputeCatalog => ({
 });
 
 async function dropletWorld(): Promise<SnapshotWorld> {
-  return snapshotWorld(
+  const world = await snapshotWorld(
     stagingPlan([], { base: testPlan({ deployed: true, provider: "digitalocean" }) }),
   );
+  // A deploy key for the look at the server for apps from other repositories (none there).
+  await firstAppLook(world.deps.paths);
+  return world;
 }
 
 function services(world: SnapshotWorld, api: ServerSnapshotApi): ServerSnapshotServices {
@@ -102,6 +106,7 @@ function services(world: SnapshotWorld, api: ServerSnapshotApi): ServerSnapshotS
     serverSnapshots: () => api,
     catalog,
     sleep: async () => {},
+    otherApps: { inspect: noOtherApps },
   };
 }
 

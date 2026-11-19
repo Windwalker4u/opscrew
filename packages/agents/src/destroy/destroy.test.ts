@@ -9,6 +9,7 @@ import {
   type SharedRecord,
 } from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { AppRecord } from "@opscrew/connector-ssh-host";
 import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -32,12 +33,14 @@ import {
   FakeServers,
   fakeCloudflare,
   fakeSharedCloudflare,
+  firstAppLook,
   HOST_KEY,
   projectRunner,
   ScriptedApprovalHandler,
   ScriptedDestroyEngine,
   SERVER_ADDRESS,
   SERVER_IPV4,
+  secondAppRecord,
   testPlan,
   unprotectPlan,
 } from "../testing";
@@ -134,6 +137,10 @@ interface SetupOptions {
   state?: boolean;
   /** Write the OpenTofu state passphrase as provision does (default true). */
   passphrase?: boolean;
+  /** The records of apps from other repositories on the server (default none). */
+  records?: AppRecord[];
+  /** The look for them fails, as when the server can't be reached. */
+  lookFails?: Error;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -191,7 +198,14 @@ async function setup(options: SetupOptions = {}) {
     `${JSON.stringify({ host: SERVER_IPV4, repo: "acme/shop", names: SECRET_NAMES })}\n`,
   );
 
+  // The look for apps from other repositories on the server finds none, unless a test says so.
+  const look = await firstAppLook(
+    deps.paths,
+    options.records ?? [],
+    options.lookFails !== undefined ? { fails: options.lookFails } : {},
+  );
   const services: DestroyServices = {
+    otherApps: look,
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers,
@@ -212,6 +226,7 @@ async function setup(options: SetupOptions = {}) {
     events,
     statePath,
     secretsRecord,
+    look,
   };
 }
 
@@ -1422,6 +1437,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     });
     s.deps.fetch = fetch;
     const services: DestroyServices = {
+      otherApps: s.services.otherApps,
       engine: s.services.engine as NonNullable<DestroyServices["engine"]>,
     };
     const result = await runDestroy(s.deps, { services });
@@ -2115,6 +2131,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
     });
     s.deps.fetch = fetch;
     const services: DestroyServices = {
+      otherApps: s.services.otherApps,
       engine: s.services.engine as NonNullable<DestroyServices["engine"]>,
       sleep: async () => undefined,
     };
@@ -2147,3 +2164,79 @@ describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
     expect(printed).not.toMatch(/[A-Z][A-Z0-9_]*_TOKEN\s*:/);
   });
 });
+
+describe.skipIf(!findExecutable("git"))(
+  "runDestroy beside apps from other repositories (FR-3012)",
+  () => {
+    it("refuses while another app runs on the server, before any change", async () => {
+      const s = await setup({ records: [secondAppRecord()] });
+      const error = await expectError(runDestroy(s.deps, { services: s.services }));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        'The server also runs "inventory" (from github.com/example/inventory), and destroying the server would break it. Nothing was changed.',
+      );
+      expect(error.hint).toBe(
+        "Run `opscrew destroy` in its repository first, or `opscrew retarget` there to move it to a server of its own; then run `opscrew destroy` again.",
+      );
+      // Only the preview plan, which is never applied: no snapshot, approval or apply.
+      expect(s.events).toEqual(["plan:destroy"]);
+      expect(s.handler.requests).toEqual([]);
+      const printed = `${s.deps.reporter.text()}\n${JSON.stringify(s.deps.audit.entries)}`;
+      expect(printed).not.toContain(SERVER_IPV4);
+      expect(printed).not.toContain(HCLOUD);
+    });
+
+    it("deletes as before without one", async () => {
+      const s = await setup();
+      await runDestroy(s.deps, { services: s.services });
+      expect(s.look.inspections).toHaveLength(1);
+      expect(s.events).toContain("apply:destroy");
+    });
+
+    it("stops when the server can't be reached; --skip-other-apps-check goes on, and the typed name stays", async () => {
+      const down = await setup({ lookFails: new Error("unreachable") });
+      const error = await expectError(runDestroy(down.deps, { services: down.services }));
+      expect(error.message).toContain("OpsCrew couldn't look at the server for other apps");
+      expect(error.hint).toContain("`opscrew destroy --skip-other-apps-check`");
+      expect(down.events).toEqual(["plan:destroy"]);
+
+      const skipped = await setup({ lookFails: new Error("unreachable") });
+      await runDestroy(skipped.deps, { skipOtherAppsCheck: true, services: skipped.services });
+      expect(skipped.deps.reporter.text()).toContain("going on as you asked");
+      const destroy = skipped.handler.requests.find(
+        (request) => request.kind === "iac-apply" && request.title.startsWith("Delete shop"),
+      );
+      expect(destroy).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+    });
+
+    it("with --skip-other-apps-check, still refuses an app that runs there", async () => {
+      const s = await setup({ records: [secondAppRecord()] });
+      const error = await expectError(
+        runDestroy(s.deps, { skipOtherAppsCheck: true, services: s.services }),
+      );
+      expect(error.message).toContain(
+        "--skip-other-apps-check doesn't cover an app that runs there",
+      );
+      expect(s.events).toEqual(["plan:destroy"]);
+    });
+
+    it("doesn't look when the app's server is gone already: a rerun finishes the cleanup", async () => {
+      const s = await setup({
+        records: [secondAppRecord()],
+        script: { resources: deployedResources({ server: false }) },
+      });
+      await runDestroy(s.deps, { services: s.services });
+      expect(s.look.inspections).toEqual([]);
+    });
+  },
+);
+
+/** The error `promise` rejects with. */
+async function expectError(promise: Promise<unknown>): Promise<OpsCrewError> {
+  const error = await promise.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(OpsCrewError);
+  return error as OpsCrewError;
+}

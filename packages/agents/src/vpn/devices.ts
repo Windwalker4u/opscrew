@@ -29,6 +29,7 @@ import {
 } from "../shared";
 import { recordGeneratedEntries } from "../shared/app-secrets";
 import { appServers } from "../shared/servers";
+import { requireNoOtherApps } from "../shares/guard";
 import { memberAddress } from "./grants";
 import { sharedMonitoringServer } from "./monitoring";
 import {
@@ -52,6 +53,12 @@ export interface VpnAddOptions {
    * (default `opscrew vpn add <name>`, with `--this-computer`).
    */
   command?: string;
+  /**
+   * `--skip-other-apps-check`: go on when OpsCrew can't look at the server OpsCrew created for
+   * other apps that share it, or when only their kept data is there. It never covers an app that
+   * runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
   services?: VpnServices;
 }
 
@@ -233,6 +240,14 @@ export async function vpnAdd(
     `opscrew vpn add ${device}${flag}${options.thisComputer === true ? " --this-computer" : ""}`;
   // Never beside previews another environment runs on this server: they would reach the device.
   await requireNoNetworkBesidePreviews(deps.paths, plan, command, [`device ${device}`]);
+  // Nor beside apps from other repositories on the server OpsCrew created (FR-3012), when this
+  // device makes the network: a server on one takes no such app (`firstApp`).
+  if (plan.network === undefined) {
+    await requireNoOtherApps(deps, plan, "putting the server on a private network", command, {
+      skip: options.skipOtherAppsCheck,
+      services: services.otherApps,
+    });
+  }
   const servers = await reachableServers(deps, plan, services);
   const endpoints = await publicEndpoints(deps, plan);
   const monitoring = await sharedMonitoringServer(deps, plan, services);

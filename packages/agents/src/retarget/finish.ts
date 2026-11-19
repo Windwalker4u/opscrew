@@ -131,7 +131,10 @@ async function finish(
   const left = await leaveMoveNetwork(session);
   if (left !== undefined) return left;
 
-  // 1. The old side's removal, after the typed name.
+  // 1. The old side's removal, after the typed name. No look for other apps on an old server
+  // OpsCrew created (FR-3012): the move's start refused while one shared it, and no app joins a
+  // server whose first app is moving (`firstApp`); after the switch the recorded address is the
+  // new server's anyway.
   const removed = await removeOldSide(session, options);
   if ("stop" in removed) return removed.stop;
   const { snapshotId, cancelled = [] } = removed;

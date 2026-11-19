@@ -21,6 +21,7 @@ import {
 import { HOST_CHECKS } from "@opscrew/secops";
 import { updateServerAddresses } from "../../shared/server-record";
 import {
+  createdServerFacts,
   createTestPhaseDeps,
   makeRequirements,
   ScriptedRunner,
@@ -262,7 +263,8 @@ export async function scenario(o: ScenarioInit): Promise<Scenario> {
   const servers = fakeServers({ [IPS.app]: o.host });
   const github = o.github === undefined ? new FakeAdviseGitHub() : o.github;
   const options: ReadingsOptions = {
-    services: { remote: servers.remote },
+    // The look for apps from other repositories on the app's server finds none.
+    services: { remote: servers.remote, otherApps: { inspect: async () => createdServerFacts() } },
     github,
     cloudflare: o.cloudflare ?? null,
   };

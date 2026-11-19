@@ -34,10 +34,12 @@ import {
   gitClient,
   githubClientFromToken,
   githubCoordinates,
+  hasDeployment,
   lastHostSetup,
   lastServerSetup,
 } from "../shared";
 import { appServers } from "../shared/servers";
+import { otherAppsOnServer } from "../shares/guard";
 import { type ResourceReading, readResources, readServerResources } from "../status/resources";
 import { serverShell } from "../status/servers";
 import { databaseWords, readDatabase } from "./database";
@@ -60,7 +62,7 @@ export type AdviseGitHub = Pick<
 /** What advise reads through besides `deps`: fakes in tests. */
 export interface ReadingsOptions {
   /** The servers' shells by address, the user's own server and Portainer, as `status` reads them. */
-  services?: Pick<ProvisionServices, "remote" | "own" | "portainer">;
+  services?: Pick<ProvisionServices, "remote" | "own" | "portainer" | "otherApps">;
   /** GitHub's reads (default: the client of the user's token; `null`: no token). */
   github?: AdviseGitHub | null;
   /** The Cloudflare token's check (default: `CLOUDFLARE_API_TOKEN`'s client; `null`: none set). */
@@ -495,6 +497,45 @@ async function readServerHistory(
 }
 
 /**
+ * The memory limits of the apps from other repositories that run on the app's server OpsCrew
+ * created (FR-3016), read through its deploy login as the first app's guards read them: the size
+ * rules count them beside the app's. When OpsCrew couldn't look, or can't read an app's record,
+ * a line in `notRead` says so, and its memory isn't counted. What was counted is checked.
+ */
+async function readOtherApps(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: ReadingsOptions["services"],
+): Promise<Lines & { memoryMb: number }> {
+  if (!isCloudTarget(plan.target) || !hasDeployment(plan)) {
+    return { memoryMb: 0, checked: [], notRead: [] };
+  }
+  const what = "the other apps on the server";
+  const found = await otherAppsOnServer(deps, plan, { services: services?.otherApps });
+  if (!found.reached) {
+    return {
+      memoryMb: 0,
+      checked: [],
+      notRead: [`${what}: OpsCrew couldn't look (${found.reason})`],
+    };
+  }
+  const active = found.apps.filter((record) => record.state === "active");
+  return {
+    memoryMb: active.reduce((sum, record) => sum + record.memoryMb, 0),
+    checked:
+      active.length === 0
+        ? []
+        : [
+            `the memory limits of ${listText(active.map((record) => `"${record.app}"`))} on the server`,
+          ],
+    notRead: found.unreadable.map(
+      (app) =>
+        `the memory of "${app}" on the server: OpsCrew can't read its record, so the size advice doesn't count it`,
+    ),
+  };
+}
+
+/**
  * Everything advise's rules read about `plan`'s environment, read-only: per server its figures now
  * (as `status` reads them) and its 14 days from the self-hosted stack, `secure`'s host checks, the
  * plan (each server OpsCrew created as provision last rendered it), the interview's answers, the
@@ -514,11 +555,15 @@ export async function readAdvice(
   const since = new Date(at.getTime() - THRESHOLDS.historyDays * DAY_MS).toISOString();
   const { services } = options;
   const names = isServerlessProvider(plan.target.provider) ? [] : appServers(plan);
-  const [requirements, deployedPlan, sharedPreviews] = await Promise.all([
+  const [requirements, deployedPlan, sharedPreviews, others] = await Promise.all([
     attempt(deps, "the interview's answers", () => readEnvironmentRequirements(deps.paths)),
     asDeployed(deps, plan),
     sharedPreviewsLimit(deps.paths),
+    readOtherApps(deps, plan, services),
   ]);
+  // Beside the app on its server: the previews another environment runs there, or the apps from
+  // other repositories (a server with those takes no previews).
+  const besideMb = (sharedPreviews?.memoryMb ?? 0) + others.memoryMb;
   const [prices, servers, history, github, cloudflare, credentials, databases] = await Promise.all([
     priceLists(deps, deployedPlan, requirements.value),
     Promise.all(names.map((name) => readServer(deps, plan, name, services, flags))),
@@ -532,6 +577,7 @@ export async function readAdvice(
   ]);
   const read: Lines[] = [
     requirements,
+    others,
     ...servers,
     history,
     prices,
@@ -552,7 +598,9 @@ export async function readAdvice(
       }),
     ),
     plan: deployedPlan,
-    ...(sharedPreviews === undefined ? {} : { sharedPreviewsMb: sharedPreviews.memoryMb }),
+    ...(sharedPreviews === undefined && others.memoryMb === 0
+      ? {}
+      : { sharedPreviewsMb: besideMb }),
     ...(requirements.value === undefined ? {} : { requirements: requirements.value }),
     prices: prices.lists,
     upkeep: {

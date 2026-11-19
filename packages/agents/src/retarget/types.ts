@@ -60,6 +60,8 @@ export interface RetargetServices
     | "askPagesVerification"
     // The private network's and the monitoring's host plans on servers OpsCrew created.
     | "serverHost"
+    // The look for apps from other repositories on the server a move starts from.
+    | "otherApps"
     // The firewalls a provider's connector applies (ADR 0029, D8).
     | "firewalls"
   > {
@@ -198,6 +200,12 @@ export interface RetargetOptions {
   choose?: (options: DesignOption[]) => Promise<string>;
   /** Shown once before the first change; returning false stops with nothing changed. */
   confirmStart?: (summary: RetargetSummary) => Promise<boolean>;
+  /**
+   * `--skip-other-apps-check`: start the move when OpsCrew can't look at the server OpsCrew
+   * created for other apps that share it, or when only their kept data is there. It never covers
+   * an app that runs there, and approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
 }
 
 export interface FinishRetargetOptions {

@@ -34,6 +34,7 @@ import { defaultTcpConnect, formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { destroyTexts } from "../destroy/texts";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
+import { refusedBeforeChange } from "../previews/host";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { providerProfile, VPS_PROVIDERS, vpsConnector } from "../providers";
 import { missing } from "../provision/credentials";
@@ -49,6 +50,7 @@ import {
 import { codeOf } from "../shared/errors";
 import { cloudServerName } from "../shared/servers";
 import { pollUntil } from "../shared/wait";
+import { type OtherAppsServices, requireNoOtherApps } from "../shares/guard";
 import { serverShell } from "../status/servers";
 import { checkHealth, siteUrl, type VerifyCheckContext } from "../verify/checks";
 import { defaultDnsResolver, defaultTlsConnect } from "../verify/net";
@@ -95,6 +97,11 @@ export interface ServerSnapshotServices extends SnapshotServices {
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for the health checks' wait (default `Date.now`). */
   now?: () => number;
+  /**
+   * The look at the app's server for apps from other repositories before a restore (default: SSH
+   * with the deploy key and ssh-host's `inspectHost`).
+   */
+  otherApps?: OtherAppsServices;
 }
 
 export interface TakeServerSnapshotOptions {
@@ -106,6 +113,12 @@ export interface TakeServerSnapshotOptions {
 }
 
 export interface RestoreServerOptions {
+  /**
+   * `--skip-other-apps-check`: go on when OpsCrew can't look at the server for other apps that
+   * share it, or when only their kept data is there. It never covers an app that runs there, and
+   * approves nothing.
+   */
+  skipOtherAppsCheck?: boolean;
   services?: ServerSnapshotServices;
 }
 
@@ -130,6 +143,25 @@ export interface TakenServerSnapshot extends ServerSnapshotResult {
 export interface RestoredServer extends ServerSnapshotResult {
   /** False when this computer does not know the server's address, so the app was not checked. */
   checked: boolean;
+}
+
+/**
+ * `--server` refused for a second app (FR-3011): the server is the one OpsCrew created for `first`,
+ * whose whole-server snapshots and restores are that app's; this app's data has its own.
+ */
+function sharedServer(run: SnapshotRun, first: string, command: string): OpsCrewError {
+  const { flags } = run;
+  return refusedBeforeChange(
+    "PHASE_PRECONDITION",
+    `This app shares the server OpsCrew created for "${first}", and \`${command}\` works on that whole server, which is "${first}"'s.`,
+    `\`opscrew snapshot${flags}\` takes a snapshot of this app's data, \`opscrew snapshot list${flags}\` shows them and \`opscrew restore <id>${flags}\` restores one.`,
+  );
+}
+
+/** The first app whose server `run`'s app shares, when it is a second app. */
+function firstAppOf(run: SnapshotRun): string | undefined {
+  const { target } = run.plan;
+  return target.provider === "own" ? target.shares?.app : undefined;
 }
 
 /** `--server` refused where OpsCrew created no server, naming the data snapshot instead. */
@@ -448,6 +480,8 @@ export async function takeServerSnapshot(
   const { environment, flags } = run;
   const which = options.serverName ?? APP_SERVER;
   const stop = options.stop === true;
+  const first = firstAppOf(run);
+  if (first !== undefined) throw sharedServer(run, first, "opscrew snapshot --server");
   if (snapshotTarget(run) !== "servers") {
     throw noProviderServer(run, which, "opscrew snapshot --server");
   }
@@ -627,6 +661,8 @@ export async function restoreServerSnapshot(
   }
   const run = await snapshotRun(deps, options.services);
   const { environment, flags } = run;
+  const first = firstAppOf(run);
+  if (first !== undefined) throw sharedServer(run, first, "opscrew restore --server");
   const providers = snapshotTarget(run) === "servers" ? cloudProviders(run) : [];
   if (providers.length === 0) throw noProviderServer(run, APP_SERVER, "opscrew restore --server");
   const tokenless = providers.find((provider) => serverApi(run, provider) === undefined);
@@ -647,6 +683,14 @@ export async function restoreServerSnapshot(
   const profile = providerProfile(server.provider);
   const noun = profile.serverNoun;
   const services = options.services ?? {};
+  const again = `opscrew restore --server ${id}${flags}`;
+  // The app's server: not while apps from other repositories share it (FR-3012).
+  if (server.name === run.plan.app.name) {
+    await requireNoOtherApps(deps, run.plan, "restoring the whole server", again, {
+      skip: options.skipOtherAppsCheck,
+      services: services.otherApps,
+    });
+  }
   const keys = await restoredKeys(run, found.entry);
   const relogin = await plannedRelogin(run, found.entry, async () => {
     const api = services.github === undefined ? await githubClientFromToken(deps) : services.github;
@@ -667,7 +711,6 @@ export async function restoreServerSnapshot(
       ...(relogin === undefined ? {} : { relogin: reloginBinding(relogin) }),
     }),
   );
-  const again = `opscrew restore --server ${id}${flags}`;
   if (relogin !== undefined) {
     await requireNoOtherPause(deps, relogin.github, run.plan, { own: hash, again, flags });
   }

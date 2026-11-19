@@ -73,6 +73,7 @@ import {
 } from "./deploy";
 import { MemoryReporter, ScriptedRunner } from "./deps";
 import { FakeFirewalls, fakeWantedFirewall } from "./firewalls";
+import { firstAppLook } from "./other-apps";
 import { type FakePortainer, fakeCertificate, fakePortainer } from "./portainer";
 import { noProviderSchemas, plainStateResources } from "./state";
 
@@ -1179,6 +1180,8 @@ export async function moveFakes(
     paths.files.deploySecrets,
     `${JSON.stringify({ host: SERVER_IPV4, repo: "acme/shop", names: [] })}\n`,
   );
+  // The look for apps from other repositories on the server a move starts from: none.
+  const look = await firstAppLook(paths);
   await writeFile(join(root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
 
   const events: MoveEvent[] = [];
@@ -1249,6 +1252,7 @@ export async function moveFakes(
   let monotonic = 0;
   const ok = { configured: true, verify: async () => ({ ok: true, message: "ok" }) };
   const services: RetargetServices = {
+    otherApps: look,
     engine: async () => engine,
     providers: { hetzner: ok, digitalocean: ok, contabo: ok },
     cloudflare: fakeCloudflare(
@@ -1296,6 +1300,7 @@ export async function moveFakes(
     manual,
     firewalls,
     poweredOff,
+    look,
   };
 }
 

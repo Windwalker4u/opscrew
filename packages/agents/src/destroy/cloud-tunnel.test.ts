@@ -27,6 +27,7 @@ import {
   ScriptedDestroyEngine,
   testPlan,
 } from "../testing";
+import { firstAppLook } from "../testing/other-apps";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
 
@@ -159,6 +160,8 @@ async function deployed(
     'variable "app_name" {\n  type = string\n}\n',
   );
   const services: DestroyServices = {
+    // The look for apps from other repositories on the server finds none.
+    otherApps: await firstAppLook(deps.paths),
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     servers: new FakeServers(events, "digitalocean"),

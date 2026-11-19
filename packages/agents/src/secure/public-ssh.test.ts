@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import {
   type ApplyOptions,
   type ApplyResult,
+  type AppRecord,
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
@@ -21,9 +22,12 @@ import { writeKnownHost } from "../shared/wait";
 import {
   createTestPhaseDeps,
   DEPLOYED_AT,
+  firstAppLook,
   freshFacts,
+  ownPlan,
   ScriptedApprovalHandler,
   ScriptedRunner,
+  secondAppRecord,
   testKeyMaker,
   testKeyPair,
 } from "../testing";
@@ -139,7 +143,10 @@ async function world(o: {
     ...Object.fromEntries((o.plan.network?.members ?? []).map((m) => [m.address, m.name])),
   };
   const provisioned: { options: ProvisionOptions; plan: DeployPlan }[] = [];
+  // The look for apps from other repositories on the server finds none.
+  const look = await firstAppLook(deps.paths);
   const services = {
+    otherApps: look,
     remote: async (server: string) =>
       shellAt((await serverRemote(deps, await plan(), server)).host),
     readWireGuard: async (remote: RemoteExec): Promise<WireGuardPeer[]> => {
@@ -649,5 +656,69 @@ describe("the outside SSH probe with public SSH closed", () => {
     const check = answers.find((c) => c.id === "port-22-open");
     expect(check).toMatchObject({ status: "fail", severity: "high" });
     expect(check?.remediation).toContain("opscrew secure --close-public-ssh");
+  });
+});
+
+describe("opscrew secure --close-public-ssh beside apps from other repositories (FR-3012)", () => {
+  /** The networked world with the app's server holding `records` (or failing to be inspected). */
+  async function sharedWorld(look: { records?: AppRecord[]; fails?: Error } = {}) {
+    const { plan } = networked();
+    const w = await world({ plan });
+    const { records = [], ...how } = look;
+    const server = await firstAppLook(w.deps.paths, records, how);
+    const close = (o: { skipOtherAppsCheck?: boolean } = {}) =>
+      closePublicSsh(w.deps, { ...o, services: { ...w.services, otherApps: server } });
+    return { ...w, server, close };
+  }
+
+  it("refuses while another app runs on the server, before any change", async () => {
+    const t = await sharedWorld({ records: [secondAppRecord()] });
+    const error = await failure(t.close());
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      'The server also runs "inventory" (from github.com/example/inventory), and closing public SSH would break it. Nothing was changed.',
+    );
+    expect(t.events).toEqual([]);
+    expect(t.handler.requests).toEqual([]);
+    expect((await t.plan()).network?.publicSsh).toBe(true);
+    expect(`${t.deps.reporter.text()} ${error.message} ${error.hint}`).not.toContain(APP_IPV4);
+  });
+
+  it("closes as before without one", async () => {
+    const t = await sharedWorld();
+    await t.close();
+    expect(t.server.inspections).toHaveLength(1);
+    expect(t.events[0]).toBe("provision");
+    expect((await t.plan()).network?.publicSsh).toBe(false);
+  });
+
+  it("stops when the server can't be reached, unless --skip-other-apps-check, which provision gets too", async () => {
+    const down = await sharedWorld({ fails: new Error("unreachable") });
+    const error = await failure(down.close());
+    expect(error.message).toContain("OpsCrew couldn't look at the server for other apps");
+    expect(down.events).toEqual([]);
+
+    const skipped = await sharedWorld({ fails: new Error("unreachable") });
+    await skipped.close({ skipOtherAppsCheck: true });
+    expect(skipped.provisioned[0]?.options).toEqual({ skipOtherAppsCheck: true });
+    expect(skipped.deps.reporter.text()).toContain("going on as you asked");
+  });
+});
+
+describe("opscrew secure --close-public-ssh for a second app (FR-3011)", () => {
+  it("refuses before any change, naming the first app", async () => {
+    const own = ownPlan({ deployed: true });
+    const plan = {
+      ...own,
+      target: { ...own.target, shares: { app: "shop", provider: "hetzner" } },
+    } as DeployPlan;
+    const w = await world({ plan });
+    const error = await failure(closePublicSsh(w.deps, { services: w.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `This app shares the server OpsCrew created for "shop", whose SSH settings are "shop"'s, and this app's deploys reach that server over public SSH. Nothing was changed.`,
+    );
+    expect(error.hint).toContain("opscrew retarget");
+    expect(w.events).toEqual([]);
   });
 });

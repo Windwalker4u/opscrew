@@ -22,6 +22,7 @@ import {
   FakeServers,
   fakeCloudflare,
   fakeSharedCloudflare,
+  firstAppLook,
   forbiddenFetch,
   HOST_KEY,
   MemoryReporter,
@@ -321,6 +322,8 @@ describe.skipIf(!findExecutable("git"))("two apps in one repository, provisioned
       cloudflare: fakeCloudflare(),
       github: s.github,
       sleep: async () => undefined,
+      // No app from another repository on the server.
+      otherApps: await firstAppLook(docs.paths),
     };
     const result = await runDestroy(docs, { services, snapshot: false });
 

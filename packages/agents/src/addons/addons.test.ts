@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   type ApplyOptions,
+  type AppRecord,
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
@@ -42,6 +43,7 @@ import {
   FakeGitHub,
   FakeHostServer,
   fakeSharedCloudflare,
+  firstAppLook,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -54,6 +56,7 @@ import {
   publicOutputs,
   ScriptedApprovalHandler,
   SERVER_IPV4,
+  secondAppRecord,
   TUNNEL_ID,
   testKeyMaker,
   testKeyPair,
@@ -102,6 +105,10 @@ async function cloudSetup(
     interactive?: boolean;
     /** The Cloudflare account has no Zero Trust organization and no one-time PIN login yet. */
     freshAccount?: boolean;
+    /** The records of apps from other repositories on the server. */
+    records?: AppRecord[];
+    /** The look for them fails, as when the server can't be reached. */
+    lookFails?: Error;
   } = {},
 ) {
   const project = await createProject(
@@ -138,15 +145,22 @@ async function cloudSetup(
     };
     zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
   }
+  // The look for apps from other repositories on the server finds none, unless a test says so.
+  const look = await firstAppLook(
+    deps.paths,
+    o.records ?? [],
+    o.lookFails ? { fails: o.lookFails } : {},
+  );
   const services: AddonServices = {
     deployRemote: server.shell,
     applyHost: server.apply,
     cloudflare: ownCloudflare(),
     engine: async () => engine,
     sharedCloudflare: fakeSharedCloudflare(zone),
+    otherApps: look,
   };
   const plan = () => readArtifact("plan", deps.paths.files.plan);
-  return { ...project, deps, handler, server, services, engine, tunnelToken, plan, zone };
+  return { ...project, deps, handler, server, services, engine, tunnelToken, plan, zone, look };
 }
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
@@ -562,6 +576,7 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     });
     await writeArtifact("plan", deps.paths.files.plan, staging);
     await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
+    await firstAppLook(deps.paths);
     const error = await failure(addonEnable(deps, staging, "beszel", { services: s.services }));
     expect(error.hint).toContain(
       `opscrew addon enable beszel --env staging --approve ${s.handler.requests[0]?.planHash}`,
@@ -632,6 +647,66 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
       `OPSCREW_BESZEL_TOKEN=<token> opscrew addon enable beszel --mode agent --hub-url https://beszel.example.net --hub-key '${USER_HUB_KEY}' --approve ${beszel.handler.requests[0]?.planHash}`,
     );
     expect(JSON.stringify(refused)).not.toContain(agentToken);
+  });
+});
+
+describe.skipIf(!hasGit)("Beszel beside apps from other repositories (FR-3011, FR-3012)", () => {
+  it("refuses on the first app's server while another app runs there, before any change", async () => {
+    const s = await cloudSetup({ records: [secondAppRecord()] });
+    const error = await failure(
+      addonEnable(s.deps, await s.plan(), "beszel", { services: s.services }),
+    );
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      'The server also runs "inventory" (from github.com/example/inventory), and running Beszel on the server would break it. Nothing was changed.',
+    );
+    expect(s.handler.requests).toEqual([]);
+    expect(s.server.applies).toEqual([]);
+    expect((await s.plan()).observability?.beszel).toBeUndefined();
+    expect(`${s.deps.reporter.text()} ${JSON.stringify(s.deps.audit.entries)}`).not.toContain(
+      SERVER_IPV4,
+    );
+  });
+
+  it("turns it on as before without one", async () => {
+    const s = await cloudSetup();
+    await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });
+    expect(s.look.inspections).toHaveLength(1);
+    expect(kinds(s.handler)).toEqual(["host-apply"]);
+  });
+
+  it("stops when the server can't be reached, unless --skip-other-apps-check", async () => {
+    const down = await cloudSetup({ lookFails: new Error("unreachable") });
+    const error = await failure(
+      addonEnable(down.deps, await down.plan(), "beszel", { services: down.services }),
+    );
+    expect(error.message).toContain("OpsCrew couldn't look at the server for other apps");
+    expect(down.handler.requests).toEqual([]);
+
+    const skipped = await cloudSetup({ lookFails: new Error("unreachable") });
+    await addonEnable(skipped.deps, await skipped.plan(), "beszel", {
+      skipOtherAppsCheck: true,
+      services: skipped.services,
+    });
+    expect(kinds(skipped.handler)).toEqual(["host-apply"]);
+    expect(skipped.deps.reporter.text()).toContain("going on as you asked");
+  });
+
+  it("refuses for a second app, naming the first app whose server it is", async () => {
+    const own = ownPlan({ deployed: true });
+    const plan = DeployPlanSchema.parse({
+      ...own,
+      target: { ...own.target, shares: { app: "shop", provider: "hetzner" } },
+    });
+    const s = await cloudSetup({ plan });
+    const error = await failure(addonEnable(s.deps, plan, "beszel", { services: s.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `This app shares the server OpsCrew created for "shop", and Beszel watches that whole server, which is "shop"'s. Nothing was changed.`,
+    );
+    expect(error.hint).toContain("opscrew retarget");
+    expect(s.look.inspections).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
   });
 });
 
