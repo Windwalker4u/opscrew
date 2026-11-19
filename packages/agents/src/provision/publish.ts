@@ -43,6 +43,14 @@ import {
   SOPS_CONFIG_PATH,
 } from "../secrets";
 import { appBranchNames, numberedBranches } from "../shared/app-branches";
+import {
+  checkWorkflowFiles,
+  deployReviewLines,
+  type ReviewChecks,
+  reviewListLines,
+  scanSecrets,
+  workflowItems,
+} from "./checklist";
 import { type GitHubSetup, portainerCloudflare } from "./credentials";
 import { type DependabotStep, dependabotPullRequestLines } from "./dependabot";
 
@@ -51,9 +59,6 @@ import { type DependabotStep, dependabotPullRequestLines } from "./dependabot";
  * …; a further app's is `opscrew/deploy-setup-<key>`, then `_2`, … (`appBranchNames`).
  */
 export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
-
-/** The review checklist item of every deploy-setup pull request about the workflow's actions. */
-const PINNED_ACTIONS_CHECK = "- [ ] The workflow only uses pinned, first-party actions.";
 
 /** The outside check's workflow: one per repository, which every app of it at home shares. */
 const OUTSIDE_CHECK_WORKFLOW_PATH = `.github/workflows/${OUTSIDE_CHECK_WORKFLOW_FILE}`;
@@ -148,6 +153,8 @@ interface DeploySetupBodyOptions {
   dependabot?: DependabotStep;
   /** The recovery copy's path (`copyPath`) when it is in the pull request. */
   recoveryCopy?: string;
+  /** What the run checked for the review lists (absent: left to the reviewer). */
+  checks?: ReviewChecks;
 }
 
 /**
@@ -224,12 +231,12 @@ export function deploySetupPullRequestBody(
     ...(home ? [...homeRouterLines(plan, flag), ""] : []),
     ...nextStepLines(options.secretsStored, ready, host, flag),
     ...(own ? ["", OWN_SERVER_BACKUPS_NOTE] : []),
-    "",
-    "Review checklist:",
-    PINNED_ACTIONS_CHECK,
-    own
-      ? "- [ ] The host changes OpsCrew showed before applying them (Docker, the deploy user, SSH settings, the ufw firewall) match what you expect."
-      : "- [ ] The firewall rules in the infrastructure code match what you expect.",
+    ...deployReviewLines(
+      options.checks,
+      own
+        ? "The host changes OpsCrew showed before applying them (Docker, the deploy user, SSH settings, the ufw firewall) match what you expect."
+        : "The firewall rules in the infrastructure code match what you expect.",
+    ),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -272,10 +279,10 @@ function previewsPullRequestBody(
     options.secretsStored === false
       ? `The preview server is set up, but OpsCrew has no record of storing its secrets in GitHub Actions, so previews would fail. **Before merging, run \`opscrew provision${flag}\` in a terminal in the project directory.**`
       : `The preview server is set up and its secrets are stored in GitHub Actions. **Once this pull request is merged, ${previewsNext(plan)}.**`,
-    "",
-    "Review checklist:",
-    PINNED_ACTIONS_CHECK,
-    "- [ ] The bounds in `settings.env` and the files in `template/` are the ones you approved.",
+    ...deployReviewLines(
+      options.checks,
+      "The bounds in `settings.env` and the files in `template/` are the ones you approved.",
+    ),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -310,10 +317,10 @@ function localPullRequestBody(
       : [
           `The app runs on your computer and the deploy secrets are stored in GitHub Actions. **After merging, ${arrives.promoted ? `each \`opscrew promote --to ${plan.environment?.name ?? "prod"}\`` : `each push to \`${plan.cicd.branch}\``} deploys it there while \`${start}\` runs.**`,
         ]),
-    "",
-    "Review checklist:",
-    PINNED_ACTIONS_CHECK,
-    `- [ ] The deploy job runs only on your computer's runner (\`runs-on: [self-hosted, ${runnerLabel(plan)}]\`).`,
+    ...deployReviewLines(
+      options.checks,
+      `The deploy job runs only on your computer's runner (\`runs-on: [self-hosted, ${runnerLabel(plan)}]\`).`,
+    ),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -377,12 +384,12 @@ function sitePullRequestBody(
           `One step is yours, because GitHub has no API for it: once the verification record resolves, click Verify next to ${plan.dns.domain ?? "the domain"} in your GitHub account's (or organization's) Settings → Pages; \`opscrew provision${flag}\` named the exact page. A verified domain can be used only by your account's GitHub Pages sites.`,
           `GitHub issues the site's certificate once it has checked the DNS records, which can take up to 24 hours. Until then the site answers over HTTP; run \`opscrew provision${flag}\` again then to enforce HTTPS (\`opscrew verify${flag}\` shows when the certificate is there).`,
         ]),
-    "",
-    "Review checklist:",
-    PINNED_ACTIONS_CHECK,
-    workers !== undefined
-      ? `- [ ] The Worker's settings in \`${renderWranglerConfig(plan).path}\` match what you expect.`
-      : "- [ ] The DNS records in the infrastructure code match what you expect.",
+    ...deployReviewLines(
+      options.checks,
+      workers !== undefined
+        ? `The Worker's settings in \`${renderWranglerConfig(plan).path}\` match what you expect.`
+        : "The DNS records in the infrastructure code match what you expect.",
+    ),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -474,10 +481,10 @@ function portainerPullRequestBody(
     "",
     PORTAINER_HOST_NOTE,
     portainerBackupsNote(portainerHasData(plan)),
-    "",
-    "Review checklist:",
-    PINNED_ACTIONS_CHECK,
-    "- [ ] The stacks and the registry entry OpsCrew showed before creating them in Portainer match what you expect.",
+    ...deployReviewLines(
+      options.checks,
+      "The stacks and the registry entry OpsCrew showed before creating them in Portainer match what you expect.",
+    ),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -999,7 +1006,7 @@ function deploymentUpdate(
   plan: DeployPlan,
   version: string,
   changes: readonly PathChange[],
-  options: { copy: string; flag: string; secretsStored: boolean },
+  options: { copy: string; flag: string; secretsStored: boolean; checks?: ReviewChecks },
 ): Proposal {
   const app = plan.app.name;
   const file = planFile(plan);
@@ -1029,7 +1036,7 @@ function deploymentUpdate(
     options.secretsStored
       ? "Nothing else is needed before merging: the deploy secrets are stored in GitHub Actions."
       : `OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail. **Before merging, run \`opscrew provision${options.flag}\` in a terminal in the project directory.**`,
-    ...(workflowChanged ? ["", "Review checklist:", PINNED_ACTIONS_CHECK] : []),
+    ...(workflowChanged ? reviewListLines(workflowItems(options.checks?.workflow), "label") : []),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -1129,11 +1136,22 @@ export async function publishDeploySetup(
   // plan file may be on the base branch already, as `opscrew adapt` commits it.
   const workflow =
     plan.environment?.previews !== undefined ? previewWorkflowPath(plan) : plan.cicd.workflowPath;
+  // The review lists' checks, over the files as this run wrote them (the recovery copy is encrypted).
+  const written = paths.filter((path) => !recovery.some((file) => file.path === path));
+  const workflowCheck = await checkWorkflowFiles(
+    deps.paths.root,
+    ownWorkflows(plan).filter((path) => written.includes(path)),
+  );
+  const checks: ReviewChecks = {
+    secrets: await scanSecrets(deps, deps.paths.root, written),
+    ...(workflowCheck === undefined ? {} : { workflow: workflowCheck }),
+  };
   const firstSetup = (changes: readonly PathChange[]): Proposal => ({
     title: `OpsCrew: deployment infrastructure for ${plan.app.name}`,
     body: deploySetupPullRequestBody(plan, deps.version, {
       flag,
       secretsStored,
+      checks,
       ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
       ...(changes.some((change) => change.path === copy) ? { recoveryCopy: copy } : {}),
     }),
@@ -1150,7 +1168,7 @@ export async function publishDeploySetup(
     describe: (changes) =>
       changes.some((change) => change.added && change.path === workflow)
         ? firstSetup(changes)
-        : deploymentUpdate(plan, deps.version, changes, { copy, flag, secretsStored }),
+        : deploymentUpdate(plan, deps.version, changes, { copy, flag, secretsStored, checks }),
     push: input.push,
     phase,
   });

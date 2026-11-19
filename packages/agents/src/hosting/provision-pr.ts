@@ -4,6 +4,7 @@
  */
 import { releaseBranch } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { deployReviewLines, type ReviewChecks } from "../provision/checklist";
 import { planFile } from "../runners/words";
 import { committedHostingFolder, environmentOf, hostingTarget } from "./provision-plans";
 
@@ -11,7 +12,7 @@ import { committedHostingFolder, environmentOf, hostingTarget } from "./provisio
 function sftpPullRequestBody(
   plan: DeployPlan,
   version: string,
-  options: { flag: string; recovery: string[] },
+  options: { flag: string; recovery: string[]; checks?: ReviewChecks },
 ): string {
   const file = planFile(plan);
   const { flag } = options;
@@ -24,9 +25,7 @@ function sftpPullRequestBody(
     ...options.recovery,
     "",
     `The host is set up and the SFTP key is stored in GitHub Actions. Before you merge, point ${where} at the app's folder in your host's panel (\`opscrew status${flag}\` names it). **Merging this pull request deploys the app to ${where}.** After the first deploy, run \`opscrew verify${flag}\`.`,
-    "",
-    "Review checklist:",
-    "- [ ] The workflow only uses pinned, first-party actions.",
+    ...deployReviewLines(options.checks),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
@@ -40,7 +39,7 @@ function sftpPullRequestBody(
 export function hostingPullRequestBody(
   plan: DeployPlan,
   version: string,
-  options: { flag?: string; recoveryCopy?: string } = {},
+  options: { flag?: string; recoveryCopy?: string; checks?: ReviewChecks } = {},
 ): string {
   const file = planFile(plan);
   const flag = options.flag ?? "";
@@ -53,7 +52,7 @@ export function hostingPullRequestBody(
           `- \`${options.recoveryCopy}\`: the encrypted recovery copy of what OpsCrew keeps on your computer for this app (its records, the infrastructure state). Only your age key opens it.`,
         ];
   if (hostingTarget(plan).panel === "sftp") {
-    return sftpPullRequestBody(plan, version, { flag, recovery });
+    return sftpPullRequestBody(plan, version, { flag, recovery, checks: options.checks });
   }
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`${file}\` for **${plan.app.name}**, which your hosting account serves:`,
@@ -70,10 +69,10 @@ export function hostingPullRequestBody(
     ...recovery,
     "",
     `The account is set up and the release signing key is stored in GitHub Actions. **Merging this pull request deploys the app to ${where}** within about a minute of its build. After the first deploy, run \`opscrew verify${flag}\`.`,
-    "",
-    "Review checklist:",
-    "- [ ] The workflow only uses pinned, first-party actions.",
-    `- [ ] \`${folder}/agent.sh\` is the script you expect to run on your account.`,
+    ...deployReviewLines(
+      options.checks,
+      `\`${folder}/agent.sh\` is the script you expect to run on your account.`,
+    ),
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");

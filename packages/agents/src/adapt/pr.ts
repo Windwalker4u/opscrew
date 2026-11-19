@@ -3,6 +3,7 @@ import { upperFirst } from "@opscrew/core";
 import type { CodeChangeKind, ImageBuilder } from "@opscrew/plan-schema";
 import { BUILDER_NAMES } from "../design/builder";
 import type { CodeChange } from "../design/code-changes";
+import { reviewListLines, type SecretFinding, secretItems } from "../provision/checklist";
 import { BASELINE_MET, NO_DOCKERFILE_NEEDED } from "./build-files";
 
 /** Title of the pull request opened by `opscrew adapt`. */
@@ -55,6 +56,11 @@ export interface PullRequestBodyInput {
   build?: PullRequestBuild;
   /** A server-less target's site, which the checklist builds instead of an image. */
   site?: PullRequestSite;
+  /**
+   * OpsCrew's secret rules' findings in the files the pull request changes; absent when the run
+   * did not check them, which leaves the item to the reviewer.
+   */
+  secrets?: readonly SecretFinding[];
 }
 
 /** The site a server-less target builds and publishes, from the plan's target. */
@@ -115,7 +121,7 @@ function buildSection(build: PullRequestBuild): string[] {
   return lines;
 }
 
-/** The checklist's lines that check the image: the build, and the container answering. */
+/** The reviewer's items that check the image: the build, and the container answering. */
 function buildChecks(input: PullRequestBodyInput): string[] {
   const { name, port, healthPath } = input.app;
   const { build, site } = input;
@@ -123,13 +129,13 @@ function buildChecks(input: PullRequestBodyInput): string[] {
     if (site.command === undefined) return [];
     const where = site.buildContext === "." ? "" : ` in \`${site.buildContext}\``;
     return [
-      `- [ ] The site builds: \`${site.command}\`${where} writes \`${site.outputDir}\`, which ${site.target} publishes.`,
+      `The site builds: \`${site.command}\`${where} writes \`${site.outputDir}\`, which ${site.target} publishes.`,
     ];
   }
   const named = codeBuilder(build?.builder);
   if (named !== undefined) {
     return [
-      `- [ ] The image is built with ${named} in the deploy workflow: after the merge, its build job succeeds and the deploy's health check of \`${healthPath}\` passes.`,
+      `The image is built with ${named} in the deploy workflow: after the merge, its build job succeeds and the deploy's health check of \`${healthPath}\` passes.`,
     ];
   }
   const custom =
@@ -138,8 +144,8 @@ function buildChecks(input: PullRequestBodyInput): string[] {
     ? `docker build -f ${build.dockerfile} -t ${name} ${build.context}`
     : `docker build -t ${name} .`;
   return [
-    `- [ ] The image builds: \`${command}\``,
-    `- [ ] The container starts and \`http://localhost:${port}${healthPath}\` answers 200: \`docker run --rm -p ${port}:${port} --env-file .env ${name}\``,
+    `The image builds: \`${command}\``,
+    `The container starts and \`http://localhost:${port}${healthPath}\` answers 200: \`docker run --rm -p ${port}:${port} --env-file .env ${name}\``,
   ];
 }
 
@@ -239,26 +245,22 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
     );
   }
 
-  lines.push(
-    "",
-    "## Review checklist",
-    "",
+  const secret = secretItems(input.secrets, "No secret values appear anywhere in this diff.");
+  const forYou = [
     ...buildChecks(input),
-    "- [ ] Every edit keeps the app's behaviour the same.",
-    "- [ ] No secret values appear anywhere in this diff.",
-  );
+    "Every edit keeps the app's behaviour the same.",
+    ...secret.forYou,
+  ];
   if (input.changes.some((c) => c.kind === "secret-removal")) {
-    lines.push(
-      "- [ ] Rotate every secret that was hard-coded: the old values stay in the git history.",
-    );
+    forYou.push("Rotate every secret that was hard-coded: the old values stay in the git history.");
   }
   if (input.addedDependencies.length > 0) {
-    lines.push("- [ ] The new dependencies are needed and trustworthy.");
+    forYou.push("The new dependencies are needed and trustworthy.");
   }
   if (input.changes.some((c) => c.status === "pending")) {
-    lines.push('- [ ] Finish the changes marked "to do" above (or push them to this branch).');
+    forYou.push('Finish the changes marked "to do" above (or push them to this branch).');
   }
-
+  lines.push(...reviewListLines({ checked: secret.checked, forYou }, "section"));
   lines.push("", "---", "", PULL_REQUEST_FOOTER);
   return `${lines.join("\n")}\n`;
 }

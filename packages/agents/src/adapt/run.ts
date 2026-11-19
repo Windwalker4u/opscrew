@@ -36,6 +36,7 @@ import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
+import { scanSecrets } from "../provision/checklist";
 import {
   githubClientFromToken,
   requireGitRepo,
@@ -763,6 +764,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     byOpsCrew: [...byOpsCrew],
     paths: madeIn,
     build,
+    committed: toCommit.map((entry) => entry.path),
     result,
   });
 }
@@ -800,6 +802,8 @@ interface PushContext {
   paths: Readonly<Record<string, string>>;
   /** What this run did for the image's build (absent when pushing an earlier run's commit). */
   build?: PullRequestBuild;
+  /** The files this run committed, for the secret check (absent when pushing an earlier run's commit). */
+  committed?: readonly string[];
   /** The result so far: its branch, base, changes, notes and dependencies go into the PR. */
   result: AdaptResult;
 }
@@ -894,6 +898,9 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
         byOpsCrew: ctx.byOpsCrew,
         paths: ctx.paths,
         ...(ctx.build === undefined ? {} : { build: ctx.build }),
+        ...(ctx.committed === undefined
+          ? {}
+          : { secrets: await scanSecrets(deps, paths.root, ctx.committed) }),
         ...(isServerlessTarget(plan.target)
           ? {
               site: {

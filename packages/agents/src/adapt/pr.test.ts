@@ -44,7 +44,9 @@ describe("renderPullRequestBody", () => {
     );
     expect(body).toContain("| Critical | High | Medium | Low | Info |");
     expect(body).toContain("| 0 | 2 | 0 | 1 | 0 |");
-    expect(body).toContain("## Review checklist");
+    expect(body).toContain("## For you to check");
+    expect(body).toContain("- [ ] No secret values appear anywhere in this diff.");
+    expect(body).not.toContain("## Checked by OpsCrew");
     expect(body).toContain("docker build -t shop .");
     expect(body).toContain("http://localhost:3000/api/health");
     expect(body).toContain("Rotate every secret");
@@ -187,6 +189,29 @@ describe("renderPullRequestBody", () => {
       );
       expect(clean).toContain("`docker build -t shop .`");
     });
+  });
+
+  it("ticks the secret check when the rules found nothing, and names a finding for the reviewer", () => {
+    const passed = render({ changes: [], secrets: [] });
+    expect(passed).toContain(
+      [
+        "## Checked by OpsCrew",
+        "",
+        "- [x] OpsCrew's secret rules found no secret value in the files this pull request changes.",
+        "",
+        "## For you to check",
+        "",
+        "- [ ] The image builds: `docker build -t shop .`",
+      ].join("\n"),
+    );
+    expect(passed).not.toContain("No secret values appear");
+    const found = render({
+      secrets: [{ ruleId: "secrets/generic-high-entropy", file: "src/db.ts" }],
+    });
+    expect(found).not.toContain("## Checked by OpsCrew");
+    expect(found).toContain(
+      "- [ ] OpsCrew's secret rules flagged `secrets/generic-high-entropy` in `src/db.ts`: check each and move any secret value out of the repository.",
+    );
   });
 
   it("is deterministic", () => {

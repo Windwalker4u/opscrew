@@ -315,9 +315,11 @@ describe.skipIf(!findExecutable("git"))("publishDeploySetup's pull request text"
     expect(pull?.body).toContain(
       "Nothing else is needed before merging: the deploy secrets are stored in GitHub Actions.",
     );
+    // The test workflow uses no action: nothing to pin, no owner to trust.
     expect(pull?.body).toContain(
-      "Review checklist:\n- [ ] The workflow only uses pinned, first-party actions.",
+      "Checked by OpsCrew:\n- [x] Every action the workflow uses is pinned to a commit SHA.",
     );
+    expect(pull?.body).not.toContain("For you to check");
     expect(pull?.body).not.toContain("firewall");
     expect(await p.git(p.root, "log", "-1", "--format=%s")).toBe(
       "chore(opscrew): update the deployment of shop",
