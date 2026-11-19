@@ -363,7 +363,8 @@ export async function ownWebSources(
  */
 export async function desiredHost(
   deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor" | "clock">,
-  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner" | "first"> & {
+  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources" | "runner"> & {
+    first?: Pick<FirstApp, "plan">;
     home?: Pick<OwnHomeRun, "sshFrom" | "updater">;
   },
   input: {

@@ -224,17 +224,15 @@ export async function requireSecondAppFits(
       session,
       facts,
       target: ownTarget(plan),
+      first: { plan: first },
       ...(webSources === undefined ? {} : { webSources }),
     },
     { plan, deployPublicKey: key.publicKeyOpenSsh },
   );
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  const host = planHost(
-    facts,
-    { ...desired, shares: { host: hostDescription(first) } },
-    `opscrew design${flags}`,
-    { image: IMAGES.busybox.ref },
-  );
+  const host = planHost(facts, desired, `opscrew design${flags}`, {
+    image: IMAGES.busybox.ref,
+  });
   const blocked = host.steps.filter((step) => step.state === "blocked");
   if (host.findings.length === 0 && blocked.length === 0) return;
   const reasons =
