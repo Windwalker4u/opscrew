@@ -193,7 +193,13 @@ async function removeWildcards(
   for (const [phase, entrypoint] of Object.entries(await run.cloudflare.sharedEntrypoints(zone))) {
     if (entrypoint === undefined) continue;
     const decision = rulesCleanup(entrypoint.rules, { hostnames: names, createdByRun: false });
-    problems.push(...decision.problems);
+    const edited = await run.cloudflare.editRules(zone, entrypoint.id, decision.edits);
+    problems.push(...edited.problems.map((problem) => `${problem} (${phase})`));
+    if (destroyed) {
+      problems.push(
+        ...edited.removed.map((what) => `destroy left ${what} (${phase}); the cleanup removed it`),
+      );
+    }
     for (const rule of decision.deletes) {
       const removed = await retryDelete(() =>
         run.cloudflare.call(

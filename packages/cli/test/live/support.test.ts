@@ -389,20 +389,29 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     };
     const left = rulesCleanup([mine, seeded, block(["e2e-abc.example.com"])], run);
     expect(left.deletes.map((item) => item.id)).toEqual(["user-2", "rule-block"]);
-    expect(left.problems).toEqual([]);
+    expect(left.edits).toEqual([]);
     expect(left.deleteEntrypoint).toBe(false);
-    // Next to another app's hostname the run's is reported, and the rule stays.
-    const mixed = rulesCleanup([block(["E2E-abc-b.example.com", "shop.example.com"])], run);
+    // Next to other apps' hostnames the rule stays and loses only the run's, the rest as it is.
+    const mixed = rulesCleanup(
+      [block(["api.example.com", "E2E-abc-b.example.com", "shop.example.com"])],
+      run,
+    );
     expect(mixed.deletes).toEqual([]);
-    expect(mixed.problems).toHaveLength(1);
-    expect(mixed.problems[0]).toContain("e2e-abc-b.example.com");
-    expect(mixed.problems[0]).not.toContain("shop.example.com");
+    const { id: _id, ...rest } = block(["api.example.com", "shop.example.com"]);
+    expect(mixed.edits).toEqual([
+      {
+        id: "rule-block",
+        what: expect.stringContaining("e2e-abc-b.example.com"),
+        body: rest,
+      },
+    ]);
+    expect(mixed.edits[0]?.what).not.toContain("shop.example.com");
     // Another app's rule, a rule of another run, the user's own rules: never touched.
     const others = rulesCleanup(
       [mine, tls(["shop.example.com"]), { ...seeded, description: seededDescription("other") }],
       run,
     );
-    expect(others).toEqual({ deletes: [], problems: [], deleteEntrypoint: false });
+    expect(others).toEqual({ deletes: [], edits: [], deleteEntrypoint: false });
     // An entrypoint the run created goes once nothing else is left in it.
     expect(
       rulesCleanup([seeded, tls(["e2e-abc.example.com"])], { ...run, createdByRun: true })

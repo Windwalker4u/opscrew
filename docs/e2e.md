@@ -564,8 +564,9 @@ cleanup always runs:
   finished `destroy` anything of it left is a problem that fails the run.
 - It cleans up the zone's WAF custom rules and configuration rules: it deletes the rules it
   seeded, and OpsCrew's rules (found by `ref`, never by name) that list only this run's hostnames,
-  each logged. An OpsCrew rule that lists this run's hostnames next to other hostnames is reported
-  and left as it is (the cleanup never edits a rule). A rule list the run created (the zone had
+  each logged. From an OpsCrew rule that lists this run's hostnames next to other hostnames it
+  removes only the run's, the rest of the rule as it was, logged; a change Cloudflare refuses is
+  reported. A rule list the run created (the zone had
   none of that kind before the run) is deleted when a fresh read finds nothing left in it; a rule
   that appeared there meanwhile is reported and the list kept.
 - It resets the throwaway repositories: closes every open pull request and deletes every branch

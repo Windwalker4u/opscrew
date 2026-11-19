@@ -26,6 +26,7 @@ import {
   type DeployJob,
   type HetznerServerType,
   hetznerIpv6Address,
+  type RuleEdit,
   rulesCleanup,
   type SharedPhase,
   serverCandidates,
@@ -796,10 +797,10 @@ export class Cloudflare {
   /**
    * The cleanup of the zone's two entrypoint rulesets (`rulesCleanup`): deletes the rules this run
    * seeded (described `seeded`, when it seeded any) and OpsCrew's rules (by `ref`) that list only
-   * the run's `hostnames`, each logged, then a ruleset that was not there before the run (`before`)
-   * when a fresh read finds it empty. Returns problems: an OpsCrew rule listing the run's hostnames
-   * next to others, a ruleset of the run that holds a rule again, and what Cloudflare did not
-   * delete.
+   * the run's `hostnames`, takes the run's hostnames out of one that lists others too, each logged,
+   * then a ruleset that was not there before the run (`before`) when a fresh read finds it empty.
+   * Returns problems: a ruleset of the run that holds a rule again, and what Cloudflare did not
+   * delete or change.
    */
   async removeRulesOfRun(
     zone: CloudflareZone,
@@ -816,7 +817,6 @@ export class Cloudflare {
         ...(run.seeded === undefined ? {} : { seeded: run.seeded }),
         createdByRun: before[phase] === undefined,
       });
-      problems.push(...decision.problems);
       const ruleset = `/zones/${zone.id}/rulesets/${entrypoint.id}`;
       for (const rule of decision.deletes) {
         if (await retryDelete(() => this.call("DELETE", `${ruleset}/rules/${rule.id}`))) {
@@ -825,6 +825,9 @@ export class Cloudflare {
           problems.push(`${rule.what} (${phase}): Cloudflare did not delete it`);
         }
       }
+      const edited = await this.editRules(zone, entrypoint.id, decision.edits);
+      for (const what of edited.removed) run.log(`removed ${what} (${phase})`);
+      problems.push(...edited.problems.map((problem) => `${problem} (${phase})`));
       if (!decision.deleteEntrypoint) continue;
       // Read again: a rule added since the first read keeps the ruleset.
       const left = (await this.sharedEntrypoints(zone))[phase];
@@ -840,6 +843,33 @@ export class Cloudflare {
       }
     }
     return problems;
+  }
+
+  /**
+   * Sends the cleanup's `edits` (from `rulesCleanup`) to the rules of the zone's ruleset
+   * `rulesetId`: `removed` names what was taken out, `problems` what Cloudflare refused.
+   */
+  async editRules(
+    zone: CloudflareZone,
+    rulesetId: string,
+    edits: readonly RuleEdit[],
+  ): Promise<{ removed: string[]; problems: string[] }> {
+    const removed: string[] = [];
+    const problems: string[] = [];
+    for (const edit of edits) {
+      const written = await this.call(
+        "PATCH",
+        `/zones/${zone.id}/rulesets/${rulesetId}/rules/${edit.id}`,
+        edit.body,
+      );
+      if (written.status < 300) removed.push(edit.what);
+      else {
+        problems.push(
+          `Cloudflare did not take the removal of ${edit.what} (HTTP ${written.status}); remove them from its list in the Cloudflare dashboard`,
+        );
+      }
+    }
+    return { removed, problems };
   }
 
   /** Every DNS record of the zone (feature 014's checks compare the ones off the run's hostnames). */

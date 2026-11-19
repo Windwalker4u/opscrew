@@ -120,6 +120,16 @@ function expressionHosts(expression: string): string[] {
   );
 }
 
+/** `expression` with the hostnames in `drop` (lower case) taken out of its `http.host in {…}` sets. */
+function withoutHosts(expression: string, drop: ReadonlySet<string>): string {
+  return expression.replace(/http\.host\s+in\s+\{([^}]*)\}/g, (_set, inner: string) => {
+    const kept = [...inner.matchAll(/"([^"]*)"/g)]
+      .map((host) => host[1] ?? "")
+      .filter((host) => !drop.has(host.toLowerCase()));
+    return `http.host in {${kept.map((host) => `"${host}"`).join(" ")}}`;
+  });
+}
+
 const sortedUnique = (hosts: readonly string[]) =>
   [...new Set(hosts.map((host) => host.toLowerCase()))].sort();
 
@@ -205,20 +215,30 @@ export function seededDescription(runId: string): string {
   return `OpsCrew E2E: a rule of the user's own, seeded by run ${runId}`;
 }
 
+/** A change the cleanup makes to one of OpsCrew's rules: the rule as it is, without the run's names. */
+export interface RuleEdit {
+  id: string;
+  what: string;
+  body: Pick<
+    ZoneRule,
+    "ref" | "description" | "expression" | "action" | "action_parameters" | "enabled"
+  >;
+}
+
 /**
  * The leftover decision of the cleanup for one of the zone's entrypoint rulesets: the rules this
  * run seeded (described `seeded`, when it seeded any) go, and so does an OpsCrew rule (by `ref`)
- * that lists only the run's `hostnames`; one that lists them next to other hostnames is reported
- * and kept (the cleanup never edits a rule). The ruleset itself goes only when the run created it
- * and nothing is left in it.
+ * that lists only the run's `hostnames`; one that lists them next to other hostnames keeps them
+ * and loses only the run's (`edits`, the rest of the rule as it is). The ruleset itself goes only
+ * when the run created it and nothing is left in it.
  */
 export function rulesCleanup(
   rules: readonly ZoneRule[],
   run: { hostnames: readonly string[]; seeded?: string; createdByRun: boolean },
-): { deletes: { id: string; what: string }[]; problems: string[]; deleteEntrypoint: boolean } {
+): { deletes: { id: string; what: string }[]; edits: RuleEdit[]; deleteEntrypoint: boolean } {
   const ours = new Set(run.hostnames.map((host) => host.toLowerCase()));
   const deletes: { id: string; what: string }[] = [];
-  const problems: string[] = [];
+  const edits: RuleEdit[] = [];
   for (const rule of rules) {
     if (run.seeded !== undefined && rule.description === run.seeded) {
       deletes.push({ id: rule.id, what: "the rule of the user's own this run seeded" });
@@ -234,14 +254,25 @@ export function rulesCleanup(
         what: `OpsCrew's rule ${rule.ref}, which still listed only this run's ${left.join(", ")}`,
       });
     } else {
-      problems.push(
-        `OpsCrew's rule ${rule.ref} still lists this run's ${left.join(", ")} next to other hostnames (not changed; remove them from its list in the Cloudflare dashboard)`,
-      );
+      const { ref, description, action, action_parameters, enabled } = rule;
+      edits.push({
+        id: rule.id,
+        what: `this run's ${left.join(", ")} from OpsCrew's rule ${ref}, which lists other hostnames too`,
+        // OpsCrew's own update sends these fields (the connector's ruleBody).
+        body: {
+          ref,
+          description,
+          expression: withoutHosts(rule.expression ?? "", ours),
+          action,
+          action_parameters,
+          enabled,
+        },
+      });
     }
   }
   return {
     deletes,
-    problems,
+    edits,
     deleteEntrypoint: run.createdByRun && deletes.length === rules.length,
   };
 }
