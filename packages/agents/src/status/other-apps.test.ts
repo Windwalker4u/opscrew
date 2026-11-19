@@ -11,7 +11,7 @@ import {
   sharedServerProject,
   testPlan,
 } from "../testing";
-import { appWords, otherAppsLines } from "./other-apps";
+import { otherAppsLines } from "./other-apps";
 import { componentStatusReport } from "./run";
 
 /** The first app's deps and plan, with a server whose inspection reports `facts` (or throws). */
@@ -59,13 +59,6 @@ describe("otherAppsLines", () => {
 
     const partial = await firstApp(freshFacts({ user: "deploy", privilege: "none" }));
     expect(await otherAppsLines(partial.deps, partial.plan, partial.services)).toEqual([]);
-  });
-});
-
-describe("appWords", () => {
-  it("names an app with its repository, when the record has one", () => {
-    expect(appWords(secondAppRecord())).toBe('"inventory" (from github.com/example/inventory)');
-    expect(appWords({ app: "archive" })).toBe('"archive"');
   });
 });
 

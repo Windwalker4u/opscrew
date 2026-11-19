@@ -2,21 +2,14 @@
  * The apps from other repositories on the first app's server OpsCrew created, as its `status`
  * names them (spec US2 #5, FR-3015): their records, read through the first app's deploy login.
  */
-import type { AppRecord } from "@opscrew/connector-ssh-host";
 import { listText } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { type OtherAppsDeps, type OtherAppsServices, otherAppsOnServer } from "../shares/guard";
-
-/** `"inventory" (from github.com/example/inventory)`: an app on the server by its record. */
-export function appWords(record: Pick<AppRecord, "app" | "repository">): string {
-  const from = repositoryOf(record);
-  return from === undefined ? `"${record.app}"` : `"${record.app}" (from ${from})`;
-}
-
-/** The record's repository without `https://`, as status and refusals name it. */
-function repositoryOf(record: Pick<AppRecord, "repository">): string | undefined {
-  return record.repository?.replace(/^https:\/\//, "");
-}
+import {
+  type OtherAppsDeps,
+  type OtherAppsServices,
+  otherAppsOnServer,
+  repositoryOf,
+} from "../shares/guard";
 
 /**
  * `Also on this server: inventory (github.com/example/inventory).`: each app from another

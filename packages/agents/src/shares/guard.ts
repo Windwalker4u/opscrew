@@ -210,8 +210,13 @@ export function otherAppsMemory(facts: Pick<HostFacts, "apps">): ServerApp[] {
     .map((record) => ({ name: record.app, memoryMb: record.memoryMb, tunnel: false }));
 }
 
-/** `"inventory" (from github.com/example/inventory)`: an app by its name and repository. */
-function appWords(record: AppRecord): string {
-  const from = record.repository?.replace(/^https:\/\//, "");
+/** `"inventory" (from github.com/example/inventory)`: an app on the server by its record. */
+export function appWords(record: Pick<AppRecord, "app" | "repository">): string {
+  const from = repositoryOf(record);
   return from === undefined ? `"${record.app}"` : `"${record.app}" (from ${from})`;
+}
+
+/** The record's repository without `https://`, as status and refusals name it. */
+export function repositoryOf(record: Pick<AppRecord, "repository">): string | undefined {
+  return record.repository?.replace(/^https:\/\//, "");
 }

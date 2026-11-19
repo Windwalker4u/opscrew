@@ -13,7 +13,7 @@ import {
   sharedServerProject,
   testPlan,
 } from "../testing";
-import { otherAppsMemory, otherAppsOnServer, requireNoOtherApps } from "./guard";
+import { appWords, otherAppsMemory, otherAppsOnServer, requireNoOtherApps } from "./guard";
 
 /**
  * The first app's deps and plan (its repository, provisioned on a server OpsCrew created), with a
@@ -310,5 +310,12 @@ describe("otherAppsMemory", () => {
       secondAppRecord({ app: "archive", state: "data-kept" }),
     ]);
     expect(otherAppsMemory(facts)).toEqual([{ name: "inventory", memoryMb: 768, tunnel: false }]);
+  });
+});
+
+describe("appWords", () => {
+  it("names an app with its repository, when the record has one", () => {
+    expect(appWords(secondAppRecord())).toBe('"inventory" (from github.com/example/inventory)');
+    expect(appWords({ app: "archive" })).toBe('"archive"');
   });
 });

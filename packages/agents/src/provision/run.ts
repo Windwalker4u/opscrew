@@ -133,9 +133,8 @@ import { connectAndInspectOwnServer } from "../shared/own-server";
 import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
-import { otherAppsOnServer, requireNoOtherApps, unreachableHint } from "../shares/guard";
+import { appWords, otherAppsOnServer, requireNoOtherApps, unreachableHint } from "../shares/guard";
 import { deployShell } from "../status/certificates";
-import { appWords } from "../status/other-apps";
 import { checkAdditions } from "./additions";
 import {
   cancelApprovalNotes,
