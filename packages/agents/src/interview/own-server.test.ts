@@ -417,8 +417,10 @@ describe("runInterview with a server the user already has", () => {
       },
       suggestedReachable: false,
     });
-    // The address, then whether it is at home, then the rest for that address and that answer.
+    // Which kind of server, the address, then whether it is at home, then the rest for that
+    // address and that answer.
     expect(rounds).toEqual([
+      ["server.kind"],
       ["server.host"],
       ["server.home"],
       ["server.port", "server.user", "server.key", "server.reachable", "server.serve"],
@@ -840,6 +842,7 @@ describe("a server at home", () => {
   it("asks the address, then server.home with the default for that address, then the rest", async () => {
     const { rounds, question, result } = await terminal({ host: LAN });
     expect(rounds.map((round) => round.map((q) => q.id))).toEqual([
+      ["server.kind"],
       ["server.host"],
       ["server.home"],
       // At home, server.reachable isn't asked: the router's forwards reach the server.
@@ -870,7 +873,7 @@ describe("a server at home", () => {
   it("answered no on a private address: the other labels, and server.reachable asked", async () => {
     const { rounds, question, result } = await terminal({ host: LAN, home: false });
     expect(question("server.home")).toMatchObject({ default: true });
-    expect(rounds[2]?.map((q) => q.id)).toEqual([
+    expect(rounds[3]?.map((q) => q.id)).toEqual([
       "server.port",
       "server.user",
       "server.key",

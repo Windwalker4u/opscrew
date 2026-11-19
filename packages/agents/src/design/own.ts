@@ -1,16 +1,22 @@
 import type { ComputeCatalog, ComputeOffer, Currency } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { EDGE_PROXIES, type EdgeProxy } from "@opscrew/iac-templates";
+import { EDGE_PROXIES, type EdgeProxy, edgeProxy } from "@opscrew/iac-templates";
 import {
   type CostEstimate,
   CostEstimateSchema,
+  type DeployPlan,
+  DeployPlanSchema,
   type DesignOption,
   DesignOptionSchema,
+  isCloudTarget,
   type OwnDeployTarget,
   type ProjectFacts,
   type Requirements,
   serviceOf,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
+import { refusedBeforeChange } from "../previews/host";
+import type { MemoryLimit } from "../shared/memory";
 import { type Components, memoryText } from "./components";
 import { type PreviewHost, previewMemoryText } from "./previews";
 import {
@@ -120,6 +126,109 @@ export function hostServerNote(env: string): string {
   return `The server is ${env}'s: it is priced and backed up with ${env}.`;
 }
 
+/**
+ * A second app beside the first app on the server OpsCrew created for it (030): what design says
+ * of that server instead of the own server's.
+ */
+export interface SharedServerOption {
+  /** The first app's name. */
+  app: string;
+  /** Where OpsCrew created the server, as its provider is named ("Hetzner Cloud"). */
+  provider: string;
+  /**
+   * The first app is served behind Cloudflare's proxy: its cloud firewall lets only Cloudflare in.
+   */
+  proxied: boolean;
+  /** The memory limits of the other apps there: the first app's, then the other second apps'. */
+  others: readonly MemoryLimit[];
+}
+
+/** {@link SharedServerOption} for the first app `first` and the other apps' memory limits. */
+export function sharedServerOption(
+  first: DeployPlan,
+  others: readonly MemoryLimit[],
+): SharedServerOption {
+  return {
+    app: first.app.name,
+    provider: cloudProvider(first.target.provider).displayName,
+    proxied: first.dns.proxied,
+    others: others.map((app) => ({ name: `"${app.name}"`, memoryMb: app.memoryMb })),
+  };
+}
+
+/** Why a second app's option has no price: the server is the first app's (`app`). */
+export function sharedPriceNote(app: string): string {
+  return `No server price: the server is "${app}"'s, which pays for it.`;
+}
+
+/** What a second app backs up, and what the first app (`app`) does. */
+export function sharedBackupsNote(app: string): string {
+  return `OpsCrew snapshots this app's data on the server with \`opscrew snapshot\`; the server itself is backed up with "${app}".`;
+}
+
+/**
+ * The warning a second app's design and host plan say plainly (FR-3004): both apps run as the same
+ * `deploy` user, which can become root through Docker, so this app's deploys reach the first
+ * app's (`app`) data and secrets.
+ */
+export function sharedAccessWarning(app: string): string {
+  return `Anyone who can change this app's deploy workflow or its deploy key can reach the data and secrets of "${app}" too: both apps run on the server as the same deploy user, which can become root through Docker. Share the server only between apps the same people may change.`;
+}
+
+/**
+ * Stops design for a second app whose domain is not on Cloudflare beside a first app (`first`)
+ * served behind Cloudflare's proxy (plan 7., step 3): the server's firewall lets only Cloudflare
+ * reach the web ports, so this app must be proxied too. Says the alternatives.
+ * @throws OpsCrewError `PHASE_PRECONDITION`, before anything is written.
+ */
+export function requireSharedServing(
+  first: DeployPlan,
+  requirements: Pick<Requirements, "dnsProvider" | "domain">,
+  flags: string,
+): void {
+  if (!first.dns.proxied || hasCloudflareDomain(requirements)) return;
+  const app = first.app.name;
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
+    `"${app}" is served behind Cloudflare's proxy, so its server's firewall lets web traffic in only from Cloudflare, and this app's domain ${requirements.domain === undefined ? "isn't set" : "isn't on Cloudflare"}: it would be served behind Cloudflare's proxy too, which needs its domain on your Cloudflare account.`,
+    `Put the domain's DNS on Cloudflare (or use a name in a zone you have there) and answer dnsProvider cloudflare with \`opscrew interview${flags}\`; or give this app a server of its own there; then run \`opscrew design${flags}\` again.`,
+  );
+}
+
+/**
+ * Stops design for a second app whose proxy (`target.edge` in plan.yaml) differs from the one the
+ * first app's (`first`) server runs for every app on it (plan 7., step 2), naming both.
+ * @throws OpsCrewError `PHASE_PRECONDITION`, before anything is written.
+ */
+export function requireSharedEdge(
+  plan: DeployPlan,
+  first: DeployPlan,
+  where: { planFile: string; flags: string },
+): void {
+  const mine = edgeProxy(plan);
+  const theirs = edgeProxy(first);
+  if (mine === theirs) return;
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
+    `This app's proxy is ${EDGE_PROXIES[mine].label} (target.edge in ${where.planFile}), and the server of "${first.app.name}" runs ${EDGE_PROXIES[theirs].label} for every app on it.`,
+    `Set target.edge: ${theirs} in ${where.planFile}, then run \`opscrew design${where.flags}\` again.`,
+  );
+}
+
+/**
+ * The second app's plan on the server of the first app (`first`): `target.shares` names it and
+ * where OpsCrew created its server, and a plan with no proxy of its own yet (`keepEdge` false)
+ * takes the one that server runs.
+ */
+export function sharedPlan(plan: DeployPlan, first: DeployPlan, keepEdge: boolean): DeployPlan {
+  if (plan.target.provider !== "own" || !isCloudTarget(first.target)) {
+    throw new Error("A second app is an own target on a server OpsCrew created.");
+  }
+  const shares = { app: first.app.name, provider: first.target.provider };
+  const edge = keepEdge ? plan.target.edge : edgeProxy(first);
+  return DeployPlanSchema.parse({ ...plan, target: { ...plan.target, shares, edge } });
+}
+
 export interface OwnServerOptionInput {
   facts: ProjectFacts;
   requirements: Requirements;
@@ -136,6 +245,8 @@ export interface OwnServerOptionInput {
   previewCap?: number;
   /** A preview server that is another environment's (`previews.server`): that environment. */
   previewHost?: PreviewHost;
+  /** A second app beside the first app on the server OpsCrew created for it. */
+  shares?: SharedServerOption;
 }
 
 export interface OwnServerDesign {
@@ -230,30 +341,50 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   }
 
   const host = input.previewHost;
+  const { shares } = input;
   const hostLine = host === undefined ? undefined : hostServerNote(host.environment);
   const cost = noServerCost(
-    host === undefined
-      ? "Your own server (you already pay for it)"
-      : `${host.environment}'s server (priced with ${host.environment})`,
+    shares !== undefined
+      ? `"${shares.app}"'s server (priced with "${shares.app}")`
+      : host === undefined
+        ? "Your own server (you already pay for it)"
+        : `${host.environment}'s server (priced with ${host.environment})`,
     requirements.budgetMonthly.currency,
     server.asOf,
   );
 
   const os = server.description === undefined ? "" : `, ${server.description}`;
   const served =
-    host !== undefined
-      ? host.cloudflareOnly
-        ? ` The previews are served behind Cloudflare's proxy, and ${host.environment}'s server lets only Cloudflare's addresses reach ports 80 and 443.`
-        : ` The previews are served behind Cloudflare's proxy, and ${host.environment}'s server lets everyone reach ports 80 and 443, as ${host.environment}'s plan sets it.`
-      : access === "tunnel"
-        ? " The app is served through a Cloudflare Tunnel, so no ports are opened on the server."
-        : serving === "proxy"
-          ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
-          : "";
+    shares !== undefined
+      ? shares.proxied
+        ? ` The app is served behind Cloudflare's proxy: the server's firewall lets only Cloudflare's addresses reach ports 80 and 443, as the plan of "${shares.app}" sets it.`
+        : ` The app is served with DNS only: the server lets everyone reach ports 80 and 443, as the plan of "${shares.app}" sets it.`
+      : host !== undefined
+        ? host.cloudflareOnly
+          ? ` The previews are served behind Cloudflare's proxy, and ${host.environment}'s server lets only Cloudflare's addresses reach ports 80 and 443.`
+          : ` The previews are served behind Cloudflare's proxy, and ${host.environment}'s server lets everyone reach ports 80 and 443, as ${host.environment}'s plan sets it.`
+        : access === "tunnel"
+          ? " The app is served through a Cloudflare Tunnel, so no ports are opened on the server."
+          : serving === "proxy"
+            ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
+            : "";
+  const where =
+    shares !== undefined
+      ? `The ${shares.provider} server OpsCrew created for "${shares.app}"`
+      : host === undefined
+        ? "Your own server"
+        : `${host.environment}'s server`;
   const summary = [
-    `${host === undefined ? "Your own server" : `${host.environment}'s server`} (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.${served}`,
+    `${where} (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.${served}`,
     input.previewCap === undefined
-      ? memoryText(sizing.components, server.memoryGb * 1024, sizing.edgeMb)
+      ? memoryText(
+          sizing.components,
+          server.memoryGb * 1024,
+          sizing.edgeMb,
+          undefined,
+          undefined,
+          shares?.others ?? [],
+        )
       : previewMemoryText(
           sizing.components,
           input.previewCap,
@@ -261,11 +392,26 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
           sizing.edgeMb,
           input.previewHost,
         ),
-    ...(hostLine === undefined ? [OWN_SERVER_PRICE_NOTE, OWN_SERVER_BACKUPS_NOTE] : [hostLine]),
+    ...(shares !== undefined
+      ? [
+          sharedPriceNote(shares.app),
+          sharedBackupsNote(shares.app),
+          sharedAccessWarning(shares.app),
+        ]
+      : hostLine === undefined
+        ? [OWN_SERVER_PRICE_NOTE, OWN_SERVER_BACKUPS_NOTE]
+        : [hostLine]),
   ].join(" ");
 
   const tradeoffs = [...warnings];
-  if (access === "tunnel") {
+  if (shares !== undefined) {
+    tradeoffs.push(
+      sharedAccessWarning(shares.app),
+      shares.proxied
+        ? `Served behind Cloudflare's proxy, as "${shares.app}" is: the server's cloud firewall lets only Cloudflare reach ports 80 and 443, for every app on it.`
+        : `DNS only, as "${shares.app}" is: the server answers everyone on ports 80 and 443, and Cloudflare only answers DNS, so it neither hides nor protects the server.`,
+    );
+  } else if (access === "tunnel") {
     tradeoffs.push(
       "OpsCrew serves the app through a Cloudflare Tunnel on your Cloudflare domain: no inbound ports are opened, and deploys from GitHub go through the tunnel too.",
     );
@@ -287,11 +433,18 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
       "Postgres runs in a container on the same server, so its data is only as safe as that server: keep the snapshots' encrypted copy off it.",
     );
   }
-  tradeoffs.push(hostLine ?? OWN_SERVER_BACKUPS_NOTE);
+  tradeoffs.push(
+    shares !== undefined ? sharedBackupsNote(shares.app) : (hostLine ?? OWN_SERVER_BACKUPS_NOTE),
+  );
 
   const option = DesignOptionSchema.parse({
     id: OWN_SERVER_OPTION_ID,
-    title: host === undefined ? "Your server" : `${host.environment}'s server`,
+    title:
+      shares !== undefined
+        ? `Beside "${shares.app}" on its ${shares.provider} server`
+        : host === undefined
+          ? "Your server"
+          : `${host.environment}'s server`,
     summary,
     target: {
       provider: "own",

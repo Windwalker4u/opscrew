@@ -103,6 +103,8 @@ import {
 } from "../shared";
 import { recordGeneratedEntries } from "../shared/app-secrets";
 import { reasonOf } from "../shared/errors";
+import type { OwnServerSession } from "../shared/own-server";
+import { requireSecondAppFits } from "../shared/own-server-design";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { vercelAdditions } from "./additions";
 import { backgroundJobsWarning } from "./background-jobs";
@@ -137,7 +139,14 @@ import {
   type OwnServerServing,
   ownServerServing,
   proxyNeedsIpv4Message,
+  requireSharedEdge,
+  requireSharedServing,
   servingAccess,
+  sharedAccessWarning,
+  sharedBackupsNote,
+  sharedPlan,
+  sharedPriceNote,
+  sharedServerOption,
   tunnelDomainMessage,
   tunnelNeedsCloudflareDomain,
 } from "./own";
@@ -267,6 +276,22 @@ export interface OwnServerDesignInput {
    * run, never persisted; a proxied app's addresses are hidden from every line).
    */
   homeNetwork?: HomeNetwork;
+  /**
+   * A second app on the server OpsCrew created for another app (`own.shares`, 030): what design
+   * checks this app against. `apps` then lists that app's memory limits first, and `serving`
+   * follows how it is served.
+   */
+  shares?: SharedServerDesignInput;
+}
+
+/** A second app's server as design reads it ({@link OwnServerDesignInput.shares}). */
+export interface SharedServerDesignInput {
+  /** The first app's plan, from its repository folder on this computer. */
+  first: DeployPlan;
+  /** The server as the deploy login inspected it, root through Docker: the other apps' records. */
+  facts: HostFacts;
+  /** That login: the host plan design looks ahead at describes its port and host key. */
+  session: OwnServerSession;
 }
 
 export interface DesignResult {
@@ -515,6 +540,7 @@ async function priceOwnServer(
   const warn = warner(deps, warnings);
   const serving = await ownServerAccess(deps, input, requirements);
   const access = servingAccess(serving);
+  const first = input?.shares?.first;
   const own = await buildOwnServerOption({
     facts,
     requirements,
@@ -525,14 +551,24 @@ async function priceOwnServer(
     edge,
     ...(previews === undefined ? {} : { previewCap: previews.cap }),
     ...(previews?.host === undefined ? {} : { previewHost: previews.host }),
+    ...(first === undefined ? {} : { shares: sharedServerOption(first, input?.apps ?? []) }),
   });
   for (const warning of own.warnings) warn(warning);
   const { option } = own;
   const host = previews?.host?.environment;
-  // Another environment's server is priced and backed up with that environment.
-  const priced = host === undefined ? OWN_SERVER_PRICE_NOTE : hostServerNote(host);
+  // Another environment's server is priced and backed up with that environment, and the server
+  // a second app shares with the app it was created for.
+  const priced =
+    first !== undefined
+      ? sharedPriceNote(first.app.name)
+      : host === undefined
+        ? OWN_SERVER_PRICE_NOTE
+        : hostServerNote(host);
   deps.reporter.info(say(`${option.title} (${option.id}): ${lowerFirst(priced)} — recommended`));
-  if (host === undefined) deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
+  if (first !== undefined) {
+    deps.reporter.info(say(sharedBackupsNote(first.app.name)));
+    warn(sharedAccessWarning(first.app.name));
+  } else if (host === undefined) deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
   appWarnings(facts, designed.components, warn);
   return {
     options: [option],
@@ -851,11 +887,14 @@ async function priceOptions(
   }
   // The server's proxy carries over from the earlier plan (`keepPlanSettings`); a server-less
   // plan or a hosting account had none.
+  // A second app's first plan takes the proxy its server runs for every app on it.
   const edge =
     previous === undefined ||
     isServerlessProvider(previous.target.provider) ||
     isHostingTarget(previous.target)
-      ? "caddy"
+      ? ownServer?.shares === undefined
+        ? "caddy"
+        : edgeProxy(ownServer.shares.first)
       : edgeProxy(previous);
   // The app's server holds what plan.yaml does not place on another server.
   const components = {
@@ -1024,7 +1063,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
 
   let ownServer = options.ownServer;
   let home: HomeDesign | undefined;
+  const flags = await commandFlags(paths.root, name, paths.app);
   if (inputs.requirements.provider === "own") {
+    // A second app is served as the app whose server it shares is (plan 7., step 3).
+    if (ownServer?.shares !== undefined) {
+      requireSharedServing(ownServer.shares.first, inputs.requirements, flags);
+    }
     // A tunnel without a Cloudflare domain cannot be provisioned: stop before writing anything.
     const serving = await ownServerAccess(deps, ownServer, inputs.requirements);
     const access = servingAccess(serving);
@@ -1237,9 +1281,21 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     previous !== undefined && Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const whole = read?.whole;
   // A server at home: `target.home` and the server's runner, on the plan as the user keeps it.
-  const designed = home === undefined ? placement.plan : homePlan(placement.plan, home);
+  const atHome = home === undefined ? placement.plan : homePlan(placement.plan, home);
+  // A second app: `target.shares`, and the proxy its server runs unless its plan has its own.
+  const shares = ownServer?.shares;
+  const designed =
+    shares === undefined
+      ? atHome
+      : sharedPlan(atHome, shares.first, previous !== undefined && "edge" in previous.target);
   const plan =
     whole !== undefined && !answeredLater && samePlan(designed, whole) ? whole : designed;
+  if (shares !== undefined) {
+    requireSharedEdge(plan, shares.first, {
+      planFile: toPosixRelative(paths.root, paths.files.plan),
+      flags,
+    });
+  }
   const servers = plan.servers ?? [];
   // What runs on the app's server: the services placed elsewhere run on theirs.
   const onApp = onAppServer(plan);
@@ -1313,6 +1369,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     `Give the apps names of their own: a further app takes another key (\`opscrew app remove <key>\`, then \`opscrew app add <new key> --dir <folder>\`), and a name set by hand in a plan.yaml another value; then run \`opscrew design${await appFlag(paths.root, paths.app)}\` again.`,
   );
   if (plan.target.provider === "github-pages") await requireOnePagesSite(paths, self);
+  // A name or hostname another app on the shared server holds stops here, not first in provision.
+  if (shares !== undefined) await requireSecondAppFits(deps, shares, plan);
   if (plan !== whole) {
     // The new network members' private keys stay on this computer, with the generated values.
     if (networkKeys.length > 0) {
@@ -1344,9 +1402,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
         ? "no server cost (it runs in this computer's Docker)"
         : inPortainer
           ? "no server cost (you already run this Portainer)"
-          : unpriced
-            ? `no server cost (you already pay for ${servers.length > 0 ? "these servers" : "this server"})`
-            : `${cost}/month${servers.length > 0 ? ` for its ${servers.length + 1} servers` : ""}${inBudget}`;
+          : shares !== undefined
+            ? `no server cost (the server is "${shares.first.app.name}"'s)`
+            : unpriced
+              ? `no server cost (you already pay for ${servers.length > 0 ? "these servers" : "this server"})`
+              : `${cost}/month${servers.length > 0 ? ` for its ${servers.length + 1} servers` : ""}${inBudget}`;
   reporter.success(
     say(
       `${plan === whole ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
@@ -1394,7 +1454,16 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
                 edgeMb,
                 ownsServer ? undefined : chosen.cost.monthly,
                 undefined,
-                sharedPreviews === undefined ? [] : [sharedPreviews],
+                [
+                  // The other apps on the server this app shares: the memory left after them all.
+                  ...(shares === undefined
+                    ? []
+                    : sharedServerOption(
+                        shares.first,
+                        (ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
+                      ).others),
+                  ...(sharedPreviews === undefined ? [] : [sharedPreviews]),
+                ],
               )
             : previewMemoryText(plan, cap, serverMb, edgeMb, previewHost),
         ]),

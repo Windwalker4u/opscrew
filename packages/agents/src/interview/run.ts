@@ -31,10 +31,12 @@ import {
   type OwnServerConnection,
   readOwnServer,
   readPortainerConnection,
+  type SharesReference,
   serverlessName,
   setAsideServerAddresses,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import { type FirstApp, firstApp } from "../shares/first-app";
 import { answersToRequirements } from "./answers";
 import {
   applyComponentAnswers,
@@ -54,9 +56,11 @@ import {
 } from "./hosting";
 import {
   answersToOwnServer,
+  answersToSharedServer,
   askServerQuestions,
   type OwnServerAnswers,
   recordOwnServerAnswers,
+  recordSharedServerAnswers,
   SERVER_FIELDS,
   type ServerQuestion,
 } from "./own-server";
@@ -86,8 +90,9 @@ export interface InterviewOptions {
   /**
    * Asks the follow-up questions for a server the user already has (`provider: own`) and returns
    * the answers keyed by question id (`server.host`, …). Called after `ask`, only for `own` and
-   * only when `answers` holds no server answers, in three rounds (`askServerQuestions`): the
-   * address, whether it is at home, then the rest.
+   * only when `answers` holds no server answers, in rounds (`askServerQuestions`): which kind of
+   * server; for one of the user's the address, whether it is at home, then the rest; for another
+   * OpsCrew app's, that app's folder, app and environment.
    */
   askServer?: (questions: ServerQuestion[]) => Promise<InterviewAnswers>;
   /**
@@ -151,6 +156,11 @@ export interface InterviewResult {
    * (never in `opscrew/requirements.yaml`).
    */
   ownServer?: OwnServerAnswers;
+  /**
+   * For the server of another of the user's OpsCrew apps, one OpsCrew created (`server.shares`):
+   * that app's repository folder, app key and environment, saved in `.opscrew/server.json`.
+   */
+  shares?: SharesReference;
   /**
    * For an existing Portainer: its address, pinned certificate, environment and the redeploy and
    * web modes, saved in `.opscrew/server.json` (never in `opscrew/requirements.yaml`; never the
@@ -348,9 +358,12 @@ async function environmentSetupNote(
  * which one to deploy (`appDir`) and re-runs the deterministic analysis for the chosen app. For a
  * server the user already has (`provider: own`) it takes the follow-ups (`server.*`) from the
  * answers or `options.askServer` and saves them in `.opscrew/server.json`, never in
- * `opscrew/requirements.yaml`. For an existing Portainer (`provider: portainer`) it takes the
- * follow-ups (`portainer.*`) from the answers or `options.askPortainer`, confirms Portainer's
- * certificate and lists its environments through `options.portainer`, and saves them in
+ * `opscrew/requirements.yaml`; for the server of another of the user's OpsCrew apps
+ * (`server.shares*`) that app is checked first (`firstApp`, which refuses before anything is
+ * written) and its server's address is saved with the reference. For an existing Portainer
+ * (`provider: portainer`) it takes the follow-ups (`portainer.*`) from the answers or
+ * `options.askPortainer`, confirms Portainer's certificate and lists its environments through
+ * `options.portainer`, and saves them in
  * `.opscrew/server.json` (never the token). For a hosting account (`provider: hosting`, offered
  * when the `OPSCREW_HOSTING_*` or `OPSCREW_SFTP_*` variables are set) it finds the panel, takes the
  * follow-ups (`hosting.*`) from the answers or `options.askHosting` (the hostname becomes the
@@ -421,9 +434,13 @@ export async function runInterview(
     }
     requirements = applyComponentAnswers(requirements, componentSplit);
     let ownServer: OwnServerAnswers | undefined;
+    let shares: SharesReference | undefined;
+    let first: FirstApp | undefined;
+    let previousServer: OwnServerConnection | undefined;
     let damagedRecord = false;
     if (requirements.provider === "own") {
       const { damaged, ...loaded } = await loadPreviousServer(deps);
+      previousServer = loaded.previous;
       damagedRecord = damaged === true;
       if (damagedRecord) {
         reporter.warn(
@@ -440,6 +457,7 @@ export async function runInterview(
           requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined,
         // Served through the tunnel or the proxy it must fit Cloudflare's free certificate.
         ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
+        root: paths.root,
       };
       if (!hasFollowUps(split) && options.askServer !== undefined) {
         split = splitFollowUps(
@@ -448,7 +466,11 @@ export async function runInterview(
           SERVER_FIELDS,
         );
       }
-      ownServer = answersToOwnServer(split, serverContext);
+      shares = await answersToSharedServer(split, serverContext);
+      // The app named must allow a second app beside it (FR-3002): refused before anything is
+      // written, and how to reach its server is read from its folder.
+      if (shares !== undefined) first = await firstApp(deps, shares);
+      else ownServer = answersToOwnServer(split, serverContext);
     } else if (hasFollowUps(split)) {
       reporter.warn(
         "The answers about a server you already have (server.*) were ignored, because the app does not run on your own server.",
@@ -498,19 +520,26 @@ export async function runInterview(
         `${toPosixRelative(paths.root, paths.files.architecture)} now describes ${requirements.appDir}. The Analyst's AI review was not re-run; run \`opscrew analyze${await appFlag(paths.root, paths.app)}\` to add it.`,
       );
     }
-    if (ownServer !== undefined) {
-      if (damagedRecord) {
-        const copy = await setAsideServerAddresses(paths);
-        if (copy !== undefined) {
-          reporter.warn(
-            `Kept the damaged record as ${toPosixRelative(paths.root, copy)} and started a new one. OpsCrew asks you to confirm your server's host key again when it next connects.`,
-          );
-        }
+    if ((ownServer !== undefined || first !== undefined) && damagedRecord) {
+      const copy = await setAsideServerAddresses(paths);
+      if (copy !== undefined) {
+        reporter.warn(
+          `Kept the damaged record as ${toPosixRelative(paths.root, copy)} and started a new one. OpsCrew asks you to confirm your server's host key again when it next connects.`,
+        );
       }
+    }
+    if (ownServer !== undefined) {
       // Connection details stay on this computer: never in requirements.yaml.
       await recordOwnServerAnswers(paths, ownServer);
       reporter.info(
         "Saved how to reach your server in .opscrew/server.json, on this computer only.",
+      );
+    }
+    if (shares !== undefined && first !== undefined) {
+      // The other app's folder and its server's address stay on this computer.
+      await recordSharedServerAnswers(paths, shares, first.login, previousServer);
+      reporter.info(
+        `Saved that this app runs on the server of "${first.plan.app.name}" in .opscrew/server.json, on this computer only. That app's deploy key stays in its own folder: OpsCrew reads it there and never copies it.`,
       );
     }
     if (portainer !== undefined) {
@@ -536,17 +565,19 @@ export async function runInterview(
     if (setup !== undefined) reporter.info(setup);
     const budget = requirements.budgetMonthly;
     const where =
-      requirements.provider === "own"
-        ? ", your own server"
-        : requirements.provider === "portainer"
-          ? ", your Portainer"
-          : requirements.provider === "hosting"
-            ? ", your hosting account"
-            : isServerlessProvider(requirements.provider)
-              ? `, ${serverlessName(requirements.provider)}`
-              : requirements.region === undefined
-                ? ""
-                : `, ${requirements.region}`;
+      first !== undefined
+        ? `, the server of "${first.plan.app.name}"`
+        : requirements.provider === "own"
+          ? ", your own server"
+          : requirements.provider === "portainer"
+            ? ", your Portainer"
+            : requirements.provider === "hosting"
+              ? ", your hosting account"
+              : isServerlessProvider(requirements.provider)
+                ? `, ${serverlessName(requirements.provider)}`
+                : requirements.region === undefined
+                  ? ""
+                  : `, ${requirements.region}`;
     await deps.state.markPhase(
       "interview",
       "ok",
@@ -557,6 +588,7 @@ export async function runInterview(
       questions,
       reanalyzed,
       ...(ownServer ? { ownServer } : {}),
+      ...(shares ? { shares } : {}),
       ...(portainer ? { portainer } : {}),
       ...(hosting ? { hosting } : {}),
     };

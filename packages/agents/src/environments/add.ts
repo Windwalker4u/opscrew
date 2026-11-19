@@ -30,9 +30,11 @@ import { answersToRequirements } from "../interview/answers";
 import { hasFollowUps, splitFollowUps } from "../interview/follow-ups";
 import {
   answersToOwnServer,
+  answersToSharedServer,
   askServerQuestions,
   type OwnServerAnswers,
   recordOwnServerAnswers,
+  recordSharedServerAnswers,
   SERVER_FIELDS,
   type ServerQuestion,
 } from "../interview/own-server";
@@ -48,8 +50,15 @@ import { portainerAnswers } from "../interview/run";
 import { originTlsHostnames } from "../provision/origin-tls";
 import type { OwnServerServices } from "../provision/types";
 import { listRunnerHosts } from "../runners/machine";
-import { gitClient, readOwnServer, readPortainerConnection, serverlessName } from "../shared";
+import {
+  gitClient,
+  readOwnServer,
+  readPortainerConnection,
+  type SharesReference,
+  serverlessName,
+} from "../shared";
 import { inspectOwnServerForDesign } from "../shared/own-server-design";
+import { type FirstApp, firstApp } from "../shares/first-app";
 import {
   type BranchMatches,
   branchRoleOf,
@@ -101,7 +110,10 @@ export interface AddEnvironmentOptions {
    * repository has a branch named like the environment, then the rest.
    */
   ask?: (questions: EnvironmentQuestion[]) => Promise<InterviewAnswers>;
-  /** Asks the follow-ups for a server the user owns, with prod's as the defaults, in three rounds (`askServerQuestions`). */
+  /**
+   * Asks the follow-ups for a server the user owns, with prod's as the defaults, in rounds
+   * (`askServerQuestions`).
+   */
   askServer?: (questions: ServerQuestion[]) => Promise<InterviewAnswers>;
   /** Asks the follow-ups for a Portainer, with prod's as the defaults. */
   askPortainer?: (questions: PortainerQuestion[]) => Promise<InterviewAnswers>;
@@ -589,11 +601,14 @@ async function addContext(deps: PhaseDeps): Promise<AddContext> {
  * `opscrew env add <name>` for the environment `deps.paths` belong to: asks only its own questions
  * ({@link environmentQuestions}, defaults filling what `answers` leaves out), with prod's
  * connection as the default for a server the user owns or a Portainer and the interview's
- * follow-ups for another one; checks its runner (`runnerChoice`: a runner machine of the project
- * with the server's CPU when it builds there, never the environment's own server) and the branch
- * it follows (`requireBranch`). An environment named like a branch of the repository (FR-1537:
- * `develop` for dev) gets the setup question first in an interactive run, promotion first
- * preselected, and in a script a note naming the branches, the answers deciding. Writes its own
+ * follow-ups for another one. When prod is a second app on the server OpsCrew created for another
+ * app (`own.shares`), the default is that server again, with prod's reference: the environment
+ * becomes one more app there, with its own login, deploy key, hostname and record. Checks its
+ * runner (`runnerChoice`: a runner machine of the project with the server's CPU when it builds
+ * there, never the environment's own server) and the branch it follows (`requireBranch`). An
+ * environment named like a branch of the repository (FR-1537: `develop` for dev) gets the setup
+ * question first in an interactive run, promotion first preselected, and in a script a note
+ * naming the branches, the answers deciding. Writes its own
  * answers (only those that differ from prod's) and how OpsCrew reaches its server; inspects a
  * server the user owns over SSH, as `opscrew design` does; then designs it (`runDesign`, which
  * shows its monthly cost). Nothing is written when an answer is invalid, apart from a runner
@@ -711,8 +726,15 @@ export async function addEnvironment(
 
   const prodOwn = requirements.provider === "own" ? await readOwnServer(prodPaths) : undefined;
   let ownServer: OwnServerAnswers | undefined;
+  // On the server of another app (prod's by default when prod shares one): one more app there.
+  let shared: { ref: SharesReference; first: FirstApp } | undefined;
   if (requirements.provider === "own") {
-    const context = { ...(prodOwn ? { previous: prodOwn } : {}), cloudflareDomain, ...domain };
+    const context = {
+      ...(prodOwn ? { previous: prodOwn } : {}),
+      cloudflareDomain,
+      ...domain,
+      root: paths.root,
+    };
     if (!hasFollowUps(server) && options.askServer !== undefined) {
       server = splitFollowUps(
         await askServerQuestions(options.askServer, context),
@@ -720,7 +742,9 @@ export async function addEnvironment(
         SERVER_FIELDS,
       );
     }
-    ownServer = answersToOwnServer(server, context);
+    const ref = await answersToSharedServer(server, context);
+    if (ref !== undefined) shared = { ref, first: await firstApp(deps, ref) };
+    else ownServer = answersToOwnServer(server, context);
   }
   let portainer: PortainerAnswers | undefined;
   if (requirements.provider === "portainer") {
@@ -734,6 +758,10 @@ export async function addEnvironment(
 
   await ensureStateDir(paths);
   if (ownServer !== undefined) await recordOwnServerAnswers(paths, ownServer, prodOwn);
+  // Its own login there, with its own deploy key: prod's pinned host key is the server's.
+  if (shared !== undefined) {
+    await recordSharedServerAnswers(paths, shared.ref, shared.first.login, undefined, prodOwn);
+  }
   if (portainer !== undefined) await recordPortainerAnswers(paths, portainer);
   await writeEnvironmentRequirements(paths, requirements);
   deps.reporter.success(

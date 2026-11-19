@@ -332,20 +332,24 @@ describe("addEnvironment", () => {
       answers: { provider: "own" },
       askServer: async (questions) => {
         rounds.push(questions);
-        if (rounds.length === 1) return { "server.host": "192.168.1.30" };
-        if (rounds.length === 2) return { "server.home": true };
+        // A server of the user's own, as the kind's default offers when prod's is one.
+        if (rounds.length === 1) return { "server.kind": questions[0]?.default };
+        if (rounds.length === 2) return { "server.host": "192.168.1.30" };
+        if (rounds.length === 3) return { "server.home": true };
         throw stop;
       },
     });
     await expect(added).rejects.toBe(stop);
     expect(rounds.map((round) => round.map((q) => q.id))).toEqual([
+      ["server.kind"],
       ["server.host"],
       ["server.home"],
       ["server.port", "server.user", "server.key", "server.serve"],
     ]);
+    expect(rounds[0]?.[0]?.default).toBe("own");
     // The default for the address typed in the first round: at home.
-    expect(rounds[1]?.[0]?.default).toBe(true);
-    const serve = rounds[2]?.find((q) => q.id === "server.serve");
+    expect(rounds[2]?.[0]?.default).toBe(true);
+    const serve = rounds[3]?.find((q) => q.id === "server.serve");
     expect(serve?.prompt).toBe("How should your server at home serve the site?");
     expect(serve?.default).toBe("proxy");
     expect(serve?.options?.[0]?.label).toBe(

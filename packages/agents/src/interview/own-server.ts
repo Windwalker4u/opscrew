@@ -1,25 +1,37 @@
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { canonicalSshSource, MAX_SSH_SOURCES } from "@opscrew/connector-ssh-host";
 import { listText, normalizeHostName, OpsCrewError, type ProjectPaths } from "@opscrew/core";
-import type { Question } from "@opscrew/plan-schema";
+import {
+  AppKeySchema,
+  appsOf,
+  EnvironmentNameSchema,
+  environmentsOf,
+  type Question,
+  type RepositoryApp,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
+import { FIRST_APP, mayHaveFurtherApps } from "../apps/choice";
 import {
   deepDomainProblem,
   type OwnServerConnection,
   readOwnServer,
   recordOwnServer,
+  type SharesReference,
 } from "../shared";
 import {
   booleanAnswer,
   FIX_ANSWERS_HINT,
   type FollowUps,
+  hasFollowUps,
   isBlank,
   portAnswer,
   withDefault,
 } from "./follow-ups";
 import type { InterviewAnswers } from "./questions";
 
-/** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
-export const SERVER_FIELDS = [
+/** The follow-ups for a server of the user's, reached with their own SSH login. */
+const OWN_FIELDS = [
   "host",
   "home",
   "port",
@@ -29,10 +41,24 @@ export const SERVER_FIELDS = [
   "serve",
   "sshFrom",
 ] as const;
+/**
+ * The follow-ups for a server another of the user's OpsCrew apps runs on, one OpsCrew created for
+ * that app (the first app): its repository folder on this computer, its app key (`.` for the
+ * repository's first app) and its environment.
+ */
+export const SHARES_FIELDS = ["shares", "shares-app", "shares-env"] as const;
+/** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
+export const SERVER_FIELDS = [...OWN_FIELDS, ...SHARES_FIELDS] as const;
 /** One follow-up answer for a server the user already has. */
 export type ServerField = (typeof SERVER_FIELDS)[number];
+/**
+ * The terminal's first question for a server the user already has: one of theirs, or the server
+ * of another of their OpsCrew apps ({@link askServerQuestions}). Never an answer of its own: the
+ * `server.shares` answers say the second.
+ */
+export const SERVER_KIND_ID = "server.kind";
 /** Id of a follow-up question, for example `server.host`. */
-export type ServerQuestionId = `server.${ServerField}`;
+export type ServerQuestionId = `server.${ServerField}` | typeof SERVER_KIND_ID;
 
 /** A follow-up question for a server the user already has (same shape as a {@link Question}). */
 export interface ServerQuestion extends Omit<Question, "id"> {
@@ -134,6 +160,16 @@ const SECRET_KEYS = /pass(word|phrase)?$|^secret$|^private_?key$/i;
 const NEVER_A_PASSWORD =
   "OpsCrew never asks for or stores a password or passphrase: give the path to your SSH key, or `agent` to use the SSH agent (which also handles a key with a passphrase).";
 
+/** Refuses answers whose keys would hold a password, passphrase or key (never echoing them). */
+function refuseSecretAnswers(unknown: readonly string[]): void {
+  const secret = unknown.filter((key) => SECRET_KEYS.test(key.replace(/^server\.?/, "")));
+  if (secret.length > 0) {
+    throw new OpsCrewError("INVALID_INPUT", `${secret.join(", ")}: ${NEVER_A_PASSWORD}`, {
+      hint: "Remove it from the answers and give server.key instead.",
+    });
+  }
+}
+
 const PRIVATE_V4 = [
   /^10\./,
   /^127\./,
@@ -191,6 +227,18 @@ export interface OwnServerContext {
    * default follow it.
    */
   home?: boolean;
+  /** The repository's root, which a relative `server.shares` folder is read from. */
+  root?: string;
+}
+
+/**
+ * `context` for a server of the user's own: a record of another app's server (`own.shares`)
+ * pre-fills nothing, since its login is that app's `deploy`.
+ */
+function ownContext(context: OwnServerContext): OwnServerContext {
+  if (context.previous?.shares === undefined) return context;
+  const { previous: _shared, ...rest } = context;
+  return rest;
 }
 
 /**
@@ -279,7 +327,8 @@ const sameHost = (a: string, b: string) => normalizeHostName(a) === normalizeHos
  * and how it serves the site (labelled for home when it is at home by default). Never a password
  * or a passphrase, and never `server.sshFrom` (answers files only).
  */
-export function buildServerQuestions(context: OwnServerContext = {}): ServerQuestion[] {
+export function buildServerQuestions(given: OwnServerContext = {}): ServerQuestion[] {
+  const context = ownContext(given);
   const { previous } = context;
   const home = context.home ?? homeDefault(context, context.host);
   return [
@@ -363,16 +412,151 @@ export function buildServerQuestions(context: OwnServerContext = {}): ServerQues
   ];
 }
 
+/** The values of {@link SERVER_KIND_ID}. */
+const SERVER_KINDS = { own: "own", shares: "shares" } as const;
+
 /**
- * Asks the follow-up questions in a terminal's three rounds: the address; then whether the server
- * is at home, its default the one for that address; then the rest, built for that address and that
- * answer, so the serving question's labels and default follow it, and without `server.reachable`
- * at home. Answers every round's answers keyed by question id.
+ * The terminal's first question for a server the user already has: one of theirs, reached with
+ * their own SSH login, or the server of another of their OpsCrew apps, one OpsCrew created
+ * (the default when the earlier answers named one).
+ */
+export function serverKindQuestion(
+  context: Pick<OwnServerContext, "previous"> = {},
+): ServerQuestion {
+  return {
+    id: SERVER_KIND_ID,
+    prompt: "Which server should the app run on?",
+    kind: "single-select",
+    options: [
+      {
+        value: SERVER_KINDS.own,
+        label: "A server of yours that OpsCrew reaches over SSH",
+        hint: "rented anywhere, or a computer at home; OpsCrew logs in with your own SSH key",
+      },
+      {
+        value: SERVER_KINDS.shares,
+        label: "A server another of your OpsCrew apps runs on (one OpsCrew created)",
+        hint: "beside that app, with no server to pay for; that app's repository must be on this computer, where it was provisioned",
+      },
+    ],
+    default: context.previous?.shares === undefined ? SERVER_KINDS.own : SERVER_KINDS.shares,
+    required: true,
+  };
+}
+
+/** What {@link buildSharesQuestions} offers: the apps of the repository, and their environments. */
+export interface SharesQuestionsContext {
+  /** The connection recorded earlier: its `shares` pre-fills the answers. */
+  previous?: OwnServerConnection;
+  /** The apps of the named repository: `server.shares-app` is asked only when there are several. */
+  apps?: readonly RepositoryApp[];
+  /** The chosen app's environments: `server.shares-env` is asked only when there are several. */
+  environments?: readonly string[];
+}
+
+/**
+ * The questions naming the app whose server this app shares: its repository folder on this
+ * computer, its app (only when the repository has several) and its environment (only when it has
+ * several; prod by default).
+ */
+export function buildSharesQuestions(context: SharesQuestionsContext = {}): ServerQuestion[] {
+  const previous = context.previous?.shares;
+  const apps = context.apps ?? [];
+  const environments = context.environments ?? [];
+  return [
+    {
+      id: "server.shares",
+      prompt: "Where is the repository of the app whose server this app should share?",
+      help: "That app's repository folder on this computer, for example /home/you/code/inventory. That app must have been provisioned from this computer, on a server OpsCrew created: OpsCrew reads its plan, its server's address and its deploy key there, and copies only the server's public host key. Kept on this computer only.",
+      kind: "text",
+      ...withDefault(previous?.root),
+      required: true,
+    },
+    ...(apps.length > 1
+      ? [
+          {
+            id: "server.shares-app",
+            prompt: "Which of that repository's apps runs on the server?",
+            kind: "single-select",
+            options: apps.map(({ key, dir }) => ({
+              value: key ?? FIRST_APP,
+              label: key === undefined ? `The first app (in ${dir})` : `"${key}" (in ${dir})`,
+            })),
+            default: previous?.app ?? FIRST_APP,
+            required: true,
+          } satisfies ServerQuestion,
+        ]
+      : []),
+    ...(environments.length > 1
+      ? [
+          {
+            id: "server.shares-env",
+            prompt: "Which of its environments runs on the server?",
+            kind: "single-select",
+            options: environments.map((name) => ({ value: name, label: name })),
+            default: previous?.environment ?? "prod",
+            required: true,
+          } satisfies ServerQuestion,
+        ]
+      : []),
+  ];
+}
+
+/** A `server.shares` answer as a folder on this computer: absolute, or below `root`. */
+function sharesFolder(answer: unknown, root: string | undefined): string {
+  const typed = String(answer).trim();
+  return root === undefined ? resolve(typed) : resolve(root, typed);
+}
+
+/**
+ * Asks the questions naming the app whose server this app shares, one round each: its
+ * repository's folder; its app, when that repository has several; its environment, when the app
+ * has several.
+ */
+async function askSharesQuestions(
+  ask: (questions: ServerQuestion[]) => Promise<InterviewAnswers>,
+  context: OwnServerContext,
+): Promise<InterviewAnswers> {
+  const only = (built: ServerQuestion[], id: ServerQuestionId) => built.filter((q) => q.id === id);
+  const previous = context.previous === undefined ? {} : { previous: context.previous };
+  const folder = await ask(only(buildSharesQuestions(previous), "server.shares"));
+  if (isBlank(folder["server.shares"])) return folder;
+  const root = sharesFolder(folder["server.shares"], context.root);
+  const apps = (await mayHaveFurtherApps(root)) ? await appsOf(root) : [];
+  const none: InterviewAnswers = {};
+  const which =
+    apps.length > 1
+      ? await ask(only(buildSharesQuestions({ ...previous, apps }), "server.shares-app"))
+      : none;
+  const chosen = isBlank(which["server.shares-app"])
+    ? undefined
+    : String(which["server.shares-app"]).trim();
+  const app = chosen === undefined || chosen === FIRST_APP ? undefined : chosen;
+  const environments = await environmentsOf(root, app).catch((): string[] => []);
+  const environment =
+    environments.length > 1
+      ? await ask(only(buildSharesQuestions({ ...previous, environments }), "server.shares-env"))
+      : none;
+  return { ...folder, ...which, ...environment };
+}
+
+/**
+ * Asks the follow-up questions in a terminal: first which kind of server
+ * ({@link serverKindQuestion}). For the server of another of the user's OpsCrew apps, the questions
+ * naming that app ({@link buildSharesQuestions}). For a server of the user's, three rounds: the
+ * address; then whether the server is at home, its default the one for that address; then the
+ * rest, built for that address and that answer, so the serving question's labels and default
+ * follow it, and without `server.reachable` at home. Answers every round's answers keyed by
+ * question id, without the kind's.
  */
 export async function askServerQuestions(
   ask: (questions: ServerQuestion[]) => Promise<InterviewAnswers>,
   context: OwnServerContext = {},
 ): Promise<InterviewAnswers> {
+  const kind = await ask([serverKindQuestion(context)]);
+  if (String(kind[SERVER_KIND_ID] ?? "").trim() === SERVER_KINDS.shares) {
+    return askSharesQuestions(ask, context);
+  }
   const only = (built: ServerQuestion[], id: ServerQuestionId) => built.filter((q) => q.id === id);
   const first = await ask(only(buildServerQuestions(context), "server.host"));
   const host = isBlank(first["server.host"]) ? undefined : String(first["server.host"]).trim();
@@ -393,27 +577,30 @@ export async function askServerQuestions(
  * fall back to the previous ones (port 22, the SSH agent and the reachability suggestion when
  * there are none; at home when the address is private or local). A server at home takes
  * `server.sshFrom` and refuses `server.reachable`. Throws `OpsCrewError("INVALID_INPUT")` naming each missing or invalid answer;
- * a password or passphrase is always refused, and never echoed.
+ * a password or passphrase is always refused, and never echoed. The answers naming another app's
+ * server (`server.shares*`) are refused: only {@link answersToSharedServer} takes them.
  */
 export function answersToOwnServer(
   split: Pick<FollowUps<ServerField>, "values" | "unknown">,
-  context: OwnServerContext = {},
+  options: OwnServerContext = {},
 ): OwnServerAnswers {
+  const context = ownContext(options);
   const problems: string[] = [];
-  const secret = split.unknown.filter((key) => SECRET_KEYS.test(key.replace(/^server\.?/, "")));
-  if (secret.length > 0) {
-    throw new OpsCrewError("INVALID_INPUT", `${secret.join(", ")}: ${NEVER_A_PASSWORD}`, {
-      hint: "Remove it from the answers and give server.key instead.",
-    });
-  }
+  refuseSecretAnswers(split.unknown);
   if (split.unknown.length > 0) {
     problems.push(
-      `${split.unknown.join(", ")}: not a known answer (use ${SERVER_FIELDS.map((f) => `server.${f}`).join(", ")})`,
+      `${split.unknown.join(", ")}: not a known answer (use ${OWN_FIELDS.map((f) => `server.${f}`).join(", ")})`,
     );
   }
   const { previous } = context;
   const given = (field: ServerField) => !isBlank(split.values[field]);
   const text = (field: ServerField) => String(split.values[field]).trim();
+  const shares = SHARES_FIELDS.filter(given);
+  if (shares.length > 0) {
+    problems.push(
+      `${shares.map((field) => `server.${field}`).join(", ")}: only \`opscrew interview\` and \`opscrew env add\` put an app on the server of another app`,
+    );
+  }
 
   let host = previous?.host;
   if (given("host")) {
@@ -614,4 +801,129 @@ export async function recordOwnServerAnswers(
         }
       : {};
   await recordOwnServer(paths, { ...server, ...kept });
+}
+
+/** True when `path` is a folder on this computer. */
+async function isFolder(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The app whose server this app shares, from the `server.shares*` answers: its repository folder
+ * on this computer (`server.shares`, which must exist; a relative one is read from
+ * `context.root`), its app key (`server.shares-app`, `.` or absent for the repository's first app)
+ * and its environment (`server.shares-env`, prod by default). Answers left out keep the ones of
+ * `context.previous` for the same folder. With no server answer at all, an earlier record's
+ * reference is kept: the same server again (as `opscrew env add` offers prod's). `undefined` when
+ * the answers are about a server of the user's own ({@link answersToOwnServer}).
+ * @throws OpsCrewError `INVALID_INPUT` naming each missing or invalid answer, and the address or
+ * login answers given beside it (they come from the other app's server).
+ */
+export async function answersToSharedServer(
+  split: Pick<FollowUps<ServerField>, "values" | "unknown">,
+  context: Pick<OwnServerContext, "previous" | "root">,
+): Promise<SharesReference | undefined> {
+  const given = (field: ServerField) => !isBlank(split.values[field]);
+  const text = (field: ServerField) => String(split.values[field]).trim();
+  const previous = context.previous?.shares;
+  if (!SHARES_FIELDS.some(given)) {
+    return hasFollowUps(split) ? undefined : previous;
+  }
+  refuseSecretAnswers(split.unknown);
+  const problems: string[] = [];
+  if (split.unknown.length > 0) {
+    problems.push(
+      `${split.unknown.join(", ")}: not a known answer (use ${SHARES_FIELDS.map((f) => `server.${f}`).join(", ")})`,
+    );
+  }
+  const own = OWN_FIELDS.filter(given);
+  if (own.length > 0) {
+    problems.push(
+      `${own.map((field) => `server.${field}`).join(", ")}: the address and the login come from the other app's server; remove ${own.length === 1 ? "it" : "them"}, or remove server.shares to name a server of yours`,
+    );
+  }
+  let root = previous?.root;
+  if (given("shares")) {
+    root = sharesFolder(text("shares"), context.root);
+    if (!(await isFolder(root))) {
+      problems.push(
+        `server.shares: there is no folder ${root} on this computer; give the repository folder of the app whose server this app shares`,
+      );
+    }
+  } else if (root === undefined) {
+    problems.push(
+      "server.shares (the repository folder of the app whose server this app shares) is missing",
+    );
+  }
+  const same = root === previous?.root;
+  let app = same ? previous?.app : undefined;
+  if (given("shares-app")) {
+    const key = text("shares-app");
+    if (key === FIRST_APP) app = undefined;
+    else if (AppKeySchema.safeParse(key).success) app = key;
+    else {
+      problems.push(
+        `server.shares-app: write the app's key as \`opscrew app list\` shows it in that repository, or ${FIRST_APP} for its first app`,
+      );
+    }
+  }
+  let environment =
+    previous !== undefined && same && app === previous.app ? previous.environment : "prod";
+  if (given("shares-env")) {
+    const name = text("shares-env");
+    if (EnvironmentNameSchema.safeParse(name).success) environment = name;
+    else problems.push("server.shares-env: write the environment's name, such as prod or staging");
+  }
+  if (problems.length > 0 || root === undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Some answers about the server this app shares are missing or not valid: ${problems.join("; ")}.`,
+      { hint: FIX_ANSWERS_HINT },
+    );
+  }
+  return { root, ...(app === undefined ? {} : { app }), environment };
+}
+
+/**
+ * Records a second app's login to the server it shares (`.opscrew/server.json` → `own`, local
+ * only): the reference `shares`, the first app's address and port (`login`), the `deploy` user
+ * and this app's own deploy key's path, which provision fills. For the same address and port the
+ * pinned host key and the public addresses of `pinned` (by default `previous`, this app's record
+ * so far; prod's for a new environment) are kept, and `previous`'s `joined` with its key: this
+ * app's own deploy key is on the server already.
+ */
+export async function recordSharedServerAnswers(
+  paths: ProjectPaths,
+  shares: SharesReference,
+  login: { host: string; port: number },
+  previous?: OwnServerConnection,
+  pinned: OwnServerConnection | undefined = previous,
+): Promise<void> {
+  const same = (record: OwnServerConnection | undefined): record is OwnServerConnection =>
+    record !== undefined && sameHost(record.host, login.host) && record.port === login.port;
+  const kept = same(pinned)
+    ? {
+        ...(pinned.hostKey === undefined ? {} : { hostKey: pinned.hostKey }),
+        ...(pinned.publicIpv4 === undefined ? {} : { publicIpv4: pinned.publicIpv4 }),
+        ...(pinned.publicIpv6 === undefined ? {} : { publicIpv6: pinned.publicIpv6 }),
+      }
+    : {};
+  const joined =
+    same(previous) && previous.joined === true && previous.hostKey !== undefined
+      ? { hostKey: previous.hostKey, joined: true as const }
+      : {};
+  await recordOwnServer(paths, {
+    host: login.host,
+    port: login.port,
+    user: "deploy",
+    agent: false,
+    keyPath: paths.files.deployKey,
+    shares,
+    ...kept,
+    ...joined,
+  });
 }
