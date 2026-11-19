@@ -65,6 +65,7 @@ import {
 } from "./plan";
 import { environmentOf, hostingTarget } from "./provision-plans";
 import {
+  databaseServer,
   forgetObjects,
   type HostingObject,
   type HostingRecord,
@@ -112,7 +113,13 @@ const DestroyStepSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("link"), path: PathSchema }),
   // The hostname's certificate, unless it is installed for another site.
   z.strictObject({ kind: z.literal("certificate"), id: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("database"), name: NameSchema, user: NameSchema }),
+  // A database and its user; `server` on PostgreSQL (the record's value), else MySQL's.
+  z.strictObject({
+    kind: z.literal("database"),
+    name: NameSchema,
+    user: NameSchema,
+    server: z.literal("postgres").optional(),
+  }),
   // The app's folder (with the final dump: all but it), then `~/opscrew` when it is empty.
   z.strictObject({ kind: z.literal("folder"), path: PathSchema, keepDump: z.boolean() }),
   // The hostname's DNS record on Cloudflare, through its own IaC approval.
@@ -199,7 +206,7 @@ function stepItem(plan: HostingDestroyPlan, step: DestroyStep): AdapterPlanItem 
       };
     case "database":
       return {
-        title: `Remove the database ${step.name} and its user ${step.user}`,
+        title: `Remove the ${step.server === "postgres" ? "PostgreSQL " : ""}database ${step.name} and its user ${step.user}`,
         state: "change",
         reason:
           "Checked again once everything else is removed: a panel can list a removed database again for a while, and then it is removed once more.",
@@ -369,10 +376,11 @@ function buildHostingDestroyPlan(input: DestroyPlanInput): HostingDestroyPlan {
   }
   // Its user is named as the database (`databaseNames`), the drill database's too.
   for (const kind of ["database", "drill-database"] as const) {
-    for (const { key } of of(kind)) {
+    for (const object of of(kind)) {
+      const { key } = object;
       steps.push(
         panel.operations.has("removeDatabase")
-          ? { kind: "database", name: key, user: key }
+          ? { kind: "database", name: key, user: key, ...databaseServer(object) }
           : inPanel({ kind, key }, "removeDatabase", { name: key, user: key }),
       );
     }
@@ -416,6 +424,13 @@ interface HostingDestroyContext {
   dns: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
+}
+
+/** A database a destroy removed, looked for again at its end. */
+interface RemovedDatabase {
+  name: string;
+  user: string;
+  server?: "postgres";
 }
 
 /** What an apply did besides its steps. */
@@ -470,7 +485,7 @@ export async function applyHostingDestroy(
     "OpsCrew removes nothing from the account",
   );
   const outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [], left: [] };
-  const databases: { name: string; user: string }[] = [];
+  const databases: RemovedDatabase[] = [];
   let failure: { error: unknown } | undefined;
   try {
     for (const step of plan.steps) {
@@ -483,9 +498,12 @@ export async function applyHostingDestroy(
     // A database removed comes back for a while on some panels (R10): looked for again, even when
     // a later step failed.
     try {
-      const listed = databases.length === 0 ? [] : await ctx.panel.listDatabases();
-      for (const database of databases) {
-        if (listed.includes(database.name)) await ctx.panel.removeDatabase(database);
+      // Each server's databases listed once.
+      for (const server of new Set(databases.map((database) => database.server))) {
+        const listed = await ctx.panel.listDatabases(server);
+        for (const database of databases.filter((d) => d.server === server)) {
+          if (listed.includes(database.name)) await ctx.panel.removeDatabase(database);
+        }
       }
     } catch (error) {
       failure ??= { error };
@@ -503,7 +521,7 @@ async function destroyStep(
   plan: HostingDestroyPlan,
   step: DestroyStep,
   ctx: HostingDestroyContext & { approvedHash: string },
-  state: { outcome: HostingDestroyOutcome; databases: { name: string; user: string }[] },
+  state: { outcome: HostingDestroyOutcome; databases: RemovedDatabase[] },
 ): Promise<void> {
   const { panel } = ctx;
   const { folder } = plan;
@@ -579,12 +597,18 @@ async function destroyStep(
         state.outcome.kept.push(error.message);
       }
       return ctx.forget((o) => o.kind === "certificate" && o.key === step.id);
-    case "database":
-      await panel.removeDatabase({ name: step.name, user: step.user });
-      state.databases.push({ name: step.name, user: step.user });
+    case "database": {
+      const database: RemovedDatabase = {
+        name: step.name,
+        user: step.user,
+        ...(step.server === undefined ? {} : { server: step.server }),
+      };
+      await panel.removeDatabase(database);
+      state.databases.push(database);
       return ctx.forget(
         (o) => (o.kind === "database" || o.kind === "drill-database") && o.key === step.name,
       );
+    }
     case "folder": {
       const files = filesOf(ctx);
       const kept = step.keepDump

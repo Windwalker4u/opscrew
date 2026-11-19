@@ -10,9 +10,15 @@ import { posix } from "node:path";
 import { tarStream } from "@opscrew/connector-docker";
 import type { HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, type Redactor, sha256Hex } from "@opscrew/core";
-import { DRILL_LOGIN_FILE } from "@opscrew/iac-templates";
 import { selectorApp } from "./apps";
-import { type AppStep, type HostingPlan, type HostingStep, hostingPlanHash } from "./plan";
+import {
+  type AppStep,
+  databaseLogin,
+  drillLogin,
+  type HostingPlan,
+  type HostingStep,
+  hostingPlanHash,
+} from "./plan";
 import type { HostingObject } from "./record";
 import { sendRequest } from "./requests";
 
@@ -66,8 +72,11 @@ export interface HostingApplyContext {
   contents: ReadonlyMap<string, string>;
   /** The app's values outside the database's, by name (checked against the values step). */
   values?: Readonly<Record<string, string>>;
-  /** The database's full name and its user's, for the values the database fills. */
-  database?: { name: string; user: string };
+  /**
+   * The database's full name and its user's, for the values the database fills, and its server on
+   * PostgreSQL.
+   */
+  database?: { name: string; user: string; server?: "postgres" };
   /** The document roots of the account's other hostnames (`inspect()`), for a panel's own root. */
   otherRoots: readonly string[];
   redactor: Redactor;
@@ -115,7 +124,10 @@ export class HostingApplyError extends OpsCrewError {
   }
 }
 
-/** A database password: 32 letters and digits, safe in a URL, a settings file and `mysql.cnf`. */
+/**
+ * A database password: 32 letters and digits, safe in a URL, a settings file, `mysql.cnf` and
+ * `pgpass`.
+ */
 function newPassword(bytes: Uint8Array): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
@@ -142,23 +154,26 @@ export function valuesDigest(values: Readonly<Record<string, string>>): string {
 
 /**
  * The values the database fills, by the names `keys` gives (the plan's split settings, and its URL
- * variable): `localhost` and 3306, the full names, the password, or a `mysql://` URL.
+ * variable): `localhost` and 3306, the full names, the password, or a `mysql://` URL; on
+ * PostgreSQL (`server`) 5432 and a `postgresql://` URL.
  */
 export function databaseValues(
   keys: readonly string[],
-  database: { name: string; user: string; password: string },
+  database: { name: string; user: string; password: string; server?: "postgres" },
 ): Record<string, string> {
   const { name, user, password } = database;
+  const [scheme, port] =
+    database.server === "postgres" ? ["postgresql", "5432"] : ["mysql", "3306"];
   const values: Record<string, string> = {};
   for (const key of keys) {
     if (key === "DB_HOST") values[key] = "localhost";
-    else if (key === "DB_PORT") values[key] = "3306";
+    else if (key === "DB_PORT") values[key] = port;
     else if (key === "DB_DATABASE" || key === "DB_NAME") values[key] = name;
     else if (key === "DB_USERNAME" || key === "DB_USER") values[key] = user;
     else if (key === "DB_PASSWORD" || key === "DB_PASS") values[key] = password;
     else {
       values[key] =
-        `mysql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@localhost:3306/${name}`;
+        `${scheme}://${encodeURIComponent(user)}:${encodeURIComponent(password)}@localhost:${port}/${name}`;
     }
   }
   return values;
@@ -169,9 +184,37 @@ function mysqlCnf(database: { user: string; password: string }): string {
   return `[client]\nuser=${database.user}\npassword=${database.password}\nhost=localhost\n`;
 }
 
-/** The drill database's login (`DRILL_LOGIN_FILE`): its user's `[client]`, and the database. */
+/** The drill database's MySQL login (`DRILL_LOGIN_FILE`): its user's `[client]`, and the database. */
 function drillCnf(database: { name: string; user: string; password: string }): string {
   return `${mysqlCnf(database)}[mysql]\ndatabase=${database.name}\n`;
+}
+
+/** A `pgpass` field: `:` and `\` escaped with `\`, as libpq reads them. */
+const pgpassField = (value: string) => value.replace(/[\\:]/g, (char) => `\\${char}`);
+
+/**
+ * The login of a PostgreSQL database (`shared/pgpass`, `DRILL_PGPASS_FILE`): its one `pgpass` line,
+ * `localhost:5432:<database>:<user>:<password>`, each field escaped.
+ */
+export function pgpassLine(database: { name: string; user: string; password: string }): string {
+  const { name, user, password } = database;
+  return `localhost:5432:${[name, user, password].map(pgpassField).join(":")}\n`;
+}
+
+/** The password of a `pgpass` file's first line, unescaped, when the line has its five fields. */
+function pgpassPassword(text: string): string | undefined {
+  const line = text.split("\n")[0] ?? "";
+  const field = /^(?:(?:[^:\\]|\\.)*:){4}((?:[^:\\]|\\.)*)$/.exec(line)?.[1];
+  return field?.replace(/\\(.)/g, (_, char: string) => char);
+}
+
+/** A database's login file content on its server: its `pgpass` line, or MySQL's (the drill's). */
+function loginText(
+  database: { name: string; user: string; password: string; server?: "postgres" },
+  drill: boolean,
+): string {
+  if (database.server === "postgres") return pgpassLine(database);
+  return drill ? drillCnf(database) : mysqlCnf(database);
 }
 
 /** Plesk's XML API code for "Limit reached", which its connector's messages end with. */
@@ -325,14 +368,27 @@ export function requireApprovedHash(
   );
 }
 
-/** The database's password from `shared/mysql.cnf`, written before the database was made. */
-async function recordedPassword(files: HostingFiles, folder: string): Promise<string> {
-  const text = await files.readFile(`${folder}/shared/mysql.cnf`);
-  const password = text === undefined ? undefined : /^password=(.+)$/m.exec(text)?.[1]?.trim();
+/**
+ * The database's password from its login (`shared/mysql.cnf`, or `shared/pgpass` on PostgreSQL),
+ * written before the database was made.
+ */
+async function recordedPassword(
+  files: HostingFiles,
+  folder: string,
+  server: "postgres" | undefined,
+): Promise<string> {
+  const login = `${folder}/${databaseLogin(server)}`;
+  const text = await files.readFile(login);
+  const password =
+    text === undefined
+      ? undefined
+      : server === "postgres"
+        ? pgpassPassword(text)
+        : /^password=(.+)$/m.exec(text)?.[1]?.trim();
   if (password === undefined || password === "") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `OpsCrew can't read the database's password from ~/${folder}/shared/mysql.cnf, so it can't write the app's settings.`,
+      `OpsCrew can't read the database's password from ~/${login}, so it can't write the app's settings.`,
       {
         hint: "Restore the file from the account's backup, or remove the database with `opscrew destroy` and run `opscrew provision` again.",
       },
@@ -370,6 +426,14 @@ export async function applyHostingPlan(
   }
   return { applied };
 }
+
+/** A database step's server, as the panel's calls take it: PostgreSQL's when the step names it. */
+const serverOf = (step: { server?: "postgres" }): { server?: "postgres" } =>
+  step.server === "postgres" ? { server: "postgres" } : {};
+
+/** What the record keeps of a database step's server: `postgres` as the object's value. */
+const recordedServer = (step: { server?: "postgres" }): { value?: string } =>
+  step.server === "postgres" ? { value: "postgres" } : {};
 
 async function applyStep(
   plan: HostingPlan,
@@ -438,15 +502,16 @@ async function applyStep(
     case "database": {
       const password = newPassword((ctx.randomBytes ?? randomBytes)(32));
       ctx.redactor.addLiteral(password, "the database's password");
+      const database = { name: step.name, user: step.user, password, ...serverOf(step) };
       // Written first, so a stop after the database is made never loses its password.
       await files.writeFile(
-        `${folder}/shared/mysql.cnf`,
-        new TextEncoder().encode(mysqlCnf({ user: step.user, password })),
+        `${folder}/${databaseLogin(step.server)}`,
+        new TextEncoder().encode(loginText(database, false)),
         0o600,
       );
-      await panel.addDatabase({ name: step.name, user: step.user, password });
+      await panel.addDatabase(database);
       state.password = password;
-      return ctx.made({ kind: "database", key: step.name });
+      return ctx.made({ kind: "database", key: step.name, ...recordedServer(step) });
     }
     case "values":
       return applyValues(plan, step, ctx, state);
@@ -502,23 +567,25 @@ async function applyStep(
     case "drill-database": {
       const password = newPassword((ctx.randomBytes ?? randomBytes)(32));
       ctx.redactor.addLiteral(password, "the drill database's password");
-      const login = `${folder}/${DRILL_LOGIN_FILE}`;
-      const database = { name: step.name, user: step.user, password };
+      const login = `${folder}/${drillLogin(step.server)}`;
+      const database = { name: step.name, user: step.user, password, ...serverOf(step) };
       // Written first, so a stop after the database is made never loses its password.
-      await files.writeFile(login, new TextEncoder().encode(drillCnf(database)), 0o600);
+      await files.writeFile(login, new TextEncoder().encode(loginText(database, true)), 0o600);
       try {
         await panel.addDatabase(database);
       } catch (error) {
         // A failure whose list can't be read stays as it is: the database may have been made.
-        const listed = await panel.listDatabases().catch(() => undefined);
+        const listed = await panel.listDatabases(step.server).catch(() => undefined);
         if (listed === undefined) throw error;
         if (listed.includes(step.name)) {
           // Made before a later part failed (cPanel's user or privileges): removed again, so
           // the next provision doesn't stop at a database OpsCrew's record doesn't list.
-          const removal = await panel.removeDatabase({ name: step.name, user: step.user }).then(
-            () => undefined,
-            (removeError: unknown) => removeError,
-          );
+          const removal = await panel
+            .removeDatabase({ name: step.name, user: step.user, ...serverOf(step) })
+            .then(
+              () => undefined,
+              (removeError: unknown) => removeError,
+            );
           await files.remove(login);
           if (removal !== undefined) throw drillDatabaseLeft(error, removal, step, ctx.redactor);
         } else {
@@ -526,11 +593,11 @@ async function applyStep(
         }
         throw drillDatabaseRefusal(error, ctx.redactor);
       }
-      return ctx.made({ kind: "drill-database", key: step.name });
+      return ctx.made({ kind: "drill-database", key: step.name, ...recordedServer(step) });
     }
     case "remove-drill-database":
-      await panel.removeDatabase({ name: step.name, user: step.user });
-      await files.remove(`${folder}/${DRILL_LOGIN_FILE}`);
+      await panel.removeDatabase({ name: step.name, user: step.user, ...serverOf(step) });
+      await files.remove(`${folder}/${drillLogin(step.server)}`);
       return ctx.forget("drill-database", step.name);
     default:
       return step satisfies never;
@@ -539,7 +606,7 @@ async function applyStep(
 
 /**
  * The app's settings file: the values (checked against the step's digest) and the database's
- * (its password generated by this apply, else read from `shared/mysql.cnf`), 0600. On a later run
+ * (its password generated by this apply, else read from its login, `databaseLogin`), 0600. On a later run
  * it is `shared/.env.next`, which the agent puts in place on an `env` request bound to this plan.
  */
 async function applyValues(
@@ -558,7 +625,8 @@ async function applyValues(
         hint: "This is a bug in OpsCrew; please report it.",
       });
     }
-    const password = state.password ?? (await recordedPassword(ctx.files, folder));
+    const password =
+      state.password ?? (await recordedPassword(ctx.files, folder, ctx.database.server));
     ctx.redactor.addLiteral(password, "the database's password");
     database = databaseValues(step.database, { ...ctx.database, password });
   }

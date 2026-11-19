@@ -28,7 +28,7 @@ import {
   type PhpChoice,
 } from "./php";
 import type { AgentPlan, AgentStep, AppPlan, AppStep } from "./plan";
-import { type HostingRecord, recordedObject } from "./record";
+import { databaseServer, type HostingRecord, recordedObject } from "./record";
 
 /** The plan's environment, `prod` for the plan without one. */
 export const environmentOf = (plan: DeployPlan) => plan.environment?.name ?? "prod";
@@ -75,33 +75,51 @@ export function hostnameOf(plan: DeployPlan): string {
   return domain.toLowerCase();
 }
 
-/** The database's full names, the account's prefix included; the user is named the same. */
+/** A database's full names, its user's, and its server when it is PostgreSQL (029 US10). */
+export interface DatabaseNames {
+  name: string;
+  user: string;
+  server?: "postgres";
+}
+
+/** The server of the target's database, as the panel's database calls take it. */
+const serverOf = (target: HostingDeployTarget): { server?: "postgres" } =>
+  target.database?.engine === "postgres" ? { server: "postgres" } : {};
+
+/**
+ * The database's full names, the account's prefix included; the user is named the same; with its
+ * server on PostgreSQL.
+ */
 export function databaseNames(
   target: HostingDeployTarget,
   facts: Pick<HostingFacts, "databases">,
-): { name: string; user: string } | undefined {
+): DatabaseNames | undefined {
   if (target.database === undefined) return undefined;
   const name = `${facts.databases.prefix ?? ""}${target.database.name}`;
-  return { name, user: name };
+  return { name, user: name, ...serverOf(target) };
 }
 
 /**
  * The drill database's full names (029 research R25): the app's database's name and `_drill`, the
- * name shortened first where the panel's limits on a database's and its user's names, with the
- * prefix, need it (an underscore counts twice, as cPanel counts it); the user is named the same.
+ * name shortened first where the panel's limits on a database's and its user's names (PostgreSQL's
+ * own on PostgreSQL), with the prefix, need it (an underscore counts twice, as cPanel counts it);
+ * the user is named the same; with its server on PostgreSQL.
  */
 export function drillDatabaseNames(
   target: HostingDeployTarget,
   facts: Pick<HostingFacts, "databases">,
-): { name: string; user: string } | undefined {
+): DatabaseNames | undefined {
   if (target.database === undefined) return undefined;
-  const { prefix = "", maxDatabaseName = 64, maxUserName = 64 } = facts.databases;
+  const { prefix = "" } = facts.databases;
+  const limits =
+    target.database.engine === "postgres" ? (facts.databases.postgres ?? {}) : facts.databases;
+  const { maxDatabaseName = 64, maxUserName = 64 } = limits;
   const room = Math.min(maxDatabaseName, maxUserName);
   const named = (base: string) => `${prefix}${base}_drill`;
   const cost = (name: string) => name.length + name.split("_").length - 1;
   let base = target.database.name;
   while (base.length > 1 && cost(named(base)) > room) base = base.slice(0, -1).replace(/_+$/, "");
-  return { name: named(base), user: named(base) };
+  return { name: named(base), user: named(base), ...serverOf(target) };
 }
 
 /**
@@ -143,6 +161,9 @@ export function agentSettingsText(
     // every environment but previews.
     snapshots: (plan.deploy.snapshots ?? snapshotsByDefault(plan)) && input.database !== undefined,
     ...(input.database !== undefined ? { database: input.database } : {}),
+    // PostgreSQL's tools and login files (`DB_ENGINE`); absent for MySQL, whose settings stay as
+    // they were.
+    ...(target.database?.engine === "postgres" ? { databaseEngine: "postgres" as const } : {}),
     ...(target.runtime !== undefined
       ? { runtimeVersion: target.runtime.version, startupFile: target.runtime.startup }
       : {}),
@@ -153,10 +174,14 @@ export function agentSettingsText(
   });
 }
 
-/** The drill schedule the agent's settings `text` carry, for the step that writes them. */
-function drillsOf(text: string): { drills?: "weekly" | "daily" } {
+/**
+ * The drill schedule the agent's settings `text` carry, for the step that writes them, with the
+ * server their database is on when it is PostgreSQL's (`DB_ENGINE`).
+ */
+function drillsOf(text: string): { drills?: "weekly" | "daily"; server?: "postgres" } {
   const every = /^DRILL_SCHEDULE='(weekly|daily)'$/m.exec(text)?.[1];
-  return every === "weekly" || every === "daily" ? { drills: every } : {};
+  if (every !== "weekly" && every !== "daily") return {};
+  return { drills: every, ...(/^DB_ENGINE='postgres'$/m.test(text) ? { server: "postgres" } : {}) };
 }
 
 /** What the plans' file steps write, by their path in the app's folder. */
@@ -315,10 +340,11 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
   const { folder, hostname } = header;
   const target = hostingTarget(plan);
   const steps: AppStep[] = [];
-  // The panel's databases, listed once for the app's database and the drill's.
+  const names = databaseNames(target, facts);
+  // The panel's databases on the app's database's server, listed once for it and the drill's.
   let listed: Promise<string[]> | undefined;
   const databases = () => {
-    listed ??= panel.listDatabases();
+    listed ??= panel.listDatabases(names?.server);
     return listed;
   };
   const publicKey = await files.readFile(`${folder}/keys/release.pub`);
@@ -330,7 +356,6 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
   if (!stored) {
     steps.push({ kind: "signing-key" });
   }
-  const names = databaseNames(target, facts);
   if (names !== undefined && recordedObject(record, "database", names.name) === undefined) {
     if ((await databases()).includes(names.name)) {
       throw notOurs(
@@ -437,7 +462,14 @@ async function drillDatabaseSteps(input: {
   if (names === undefined) {
     return made === undefined
       ? []
-      : [{ kind: "remove-drill-database", name: made.key, user: made.key }];
+      : [
+          {
+            kind: "remove-drill-database",
+            name: made.key,
+            user: made.key,
+            ...databaseServer(made),
+          },
+        ];
   }
   if (made !== undefined) return [];
   if ((await databases()).includes(names.name)) {

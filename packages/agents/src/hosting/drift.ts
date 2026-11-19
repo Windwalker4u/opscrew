@@ -22,7 +22,7 @@ import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
 import { PANEL_NAMES } from "./panels";
 import { agentCronLine } from "./php";
 import { cleanPath, committedHostingFolder, environmentOf } from "./provision-plans";
-import type { HostingRecord } from "./record";
+import { databaseServer, type HostingObject, type HostingRecord } from "./record";
 import type { HostingAccountServices } from "./status";
 import { type CheckedAccount, reachCheckedAccount } from "./verify";
 
@@ -63,21 +63,24 @@ async function hostnameDifferences(
   return differences;
 }
 
-/** Each recorded database, by name. */
+/** Each recorded database, by name, among its server's (PostgreSQL's or MySQL's). */
 async function databaseDifferences(
   panel: HostingPanel,
   record: HostingRecord,
   flag: string,
 ): Promise<HostingDifference[]> {
   const recorded = record.objects.filter((o) => o.kind === "database");
-  if (recorded.length === 0) return [];
-  const listed = await panel.listDatabases();
-  return recorded
-    .filter(({ key }) => !listed.includes(key))
-    .map(({ key }) => ({
-      title: `The database ${key} is gone from the account`,
-      detail: `The app can't reach its data. OpsCrew's record still lists it, so \`opscrew provision${flag}\` doesn't make it again: restore it from ${PANEL_NAMES[panel.kind]}'s backups under the same name, or run \`opscrew destroy${flag}\` and provision anew.`,
-    }));
+  const gone: HostingObject[] = [];
+  for (const server of new Set(recorded.map((o) => databaseServer(o).server))) {
+    const listed = await panel.listDatabases(server);
+    gone.push(
+      ...recorded.filter((o) => databaseServer(o).server === server && !listed.includes(o.key)),
+    );
+  }
+  return gone.map(({ key }) => ({
+    title: `The database ${key} is gone from the account`,
+    detail: `The app can't reach its data. OpsCrew's record still lists it, so \`opscrew provision${flag}\` doesn't make it again: restore it from ${PANEL_NAMES[panel.kind]}'s backups under the same name, or run \`opscrew destroy${flag}\` and provision anew.`,
+  }));
 }
 
 /**

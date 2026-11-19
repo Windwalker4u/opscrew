@@ -136,14 +136,20 @@ async function settingsPlaceCheck(account: CheckedAccount): Promise<CheckResult>
   );
 }
 
-/** Why the files' modes aren't checked. */
-const MODES = checkResult(
-  "hosting-file-modes",
-  "The app's settings files and Laravel's cached config are readable by the account only",
-  "medium",
-  "skip",
-  "OpsCrew reads no file modes on the account (the panel's API and its file calls don't show them), so it can't check them. OpsCrew writes the settings files (shared/.env, env.php, mysql.cnf) 0600, and the agent makes Laravel's cached config 0600 after each release.",
-);
+/** Why the files' modes aren't checked; the database's login is `pgpass` on PostgreSQL. */
+function modesCheck(plan: DeployPlan): CheckResult {
+  const login =
+    plan.target.provider === "hosting" && plan.target.database?.engine === "postgres"
+      ? "pgpass"
+      : "mysql.cnf";
+  return checkResult(
+    "hosting-file-modes",
+    "The app's settings files and Laravel's cached config are readable by the account only",
+    "medium",
+    "skip",
+    `OpsCrew reads no file modes on the account (the panel's API and its file calls don't show them), so it can't check them. OpsCrew writes the settings files (shared/.env, env.php, ${login}) 0600, and the agent makes Laravel's cached config 0600 after each release.`,
+  );
+}
 
 /** OpsCrew's block in `htaccess`, between `# BEGIN OpsCrew` and `# END OpsCrew`. */
 function opscrewBlock(htaccess: string): string[] | undefined {
@@ -252,7 +258,7 @@ export async function hostingSecurityChecks(
           unreachable ?? "Skipped.",
         )
       : await settingsPlaceCheck(account),
-    MODES,
+    modesCheck(plan),
   );
   checks.push(
     ...(await htaccessChecks(

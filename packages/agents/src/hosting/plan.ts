@@ -18,6 +18,7 @@ import {
 import {
   DRILL_LIMIT_SECONDS,
   DRILL_LOGIN_FILE,
+  DRILL_PGPASS_FILE,
   drillSlotText,
   HOSTING_DRILLS_LOG,
 } from "@opscrew/iac-templates";
@@ -87,10 +88,25 @@ const PanelStepStep = z.strictObject({
 const FileShape = { path: PathSchema, mode: ModeSchema, sha256: Sha256Schema };
 
 /**
- * The drill schedule the agent's settings carry, on the step that writes them (029 research R28):
- * the agent then runs restore drills itself, within the bounds the plan names.
+ * A database on PostgreSQL (029 US10): `postgres`; none on MySQL, the panel's default, so MySQL's
+ * plans and their hashes stay as they were.
  */
-const DrillsShape = { drills: z.enum(["weekly", "daily"]).optional() };
+const ServerShape = { server: z.literal("postgres").optional() };
+
+/**
+ * The drill schedule the agent's settings carry, on the step that writes them (029 research R28):
+ * the agent then runs restore drills itself, within the bounds the plan names; `server` when the
+ * database they drill is PostgreSQL's (the settings' `DB_ENGINE`).
+ */
+const DrillsShape = { drills: z.enum(["weekly", "daily"]).optional(), ...ServerShape };
+
+/** The app's database's login in its folder (0600): MySQL's option file, or PostgreSQL's `pgpass`. */
+export const databaseLogin = (server?: "postgres") =>
+  server === "postgres" ? "shared/pgpass" : "shared/mysql.cnf";
+
+/** The drill database's login in the app's folder (0600), as the agent reads it for `server`. */
+export const drillLogin = (server?: "postgres") =>
+  server === "postgres" ? DRILL_PGPASS_FILE : DRILL_LOGIN_FILE;
 
 /** Plan A: the agent's folder, its files, and its cron line. */
 const AgentStepSchema = z.discriminatedUnion("kind", [
@@ -115,11 +131,13 @@ const AppStepSchema = z.discriminatedUnion("kind", [
   // `keys/release.pub`. The private half is never written on this computer or the account.
   z.strictObject({ kind: z.literal("signing-key") }),
   // The database and its user (full names), its password generated at apply and written only into
-  // the settings file and `shared/mysql.cnf`, both 0600.
+  // the settings file and its login (`databaseLogin`: `shared/mysql.cnf`, or `shared/pgpass` on
+  // PostgreSQL), both 0600.
   z.strictObject({
     kind: z.literal("database"),
     name: DatabaseNameSchema,
     user: DatabaseNameSchema,
+    ...ServerShape,
   }),
   // The app's settings file (`shared/.env`, 0600), or on a later run `shared/.env.next` and an
   // `env` request the agent carries out. `digest` is the SHA-256 of the values outside the
@@ -169,17 +187,19 @@ const AppStepSchema = z.discriminatedUnion("kind", [
   // The hostname's free certificate, asked of the panel.
   z.strictObject({ kind: z.literal("certificate"), hostname: HostnameSchema }),
   // The drill database and its user (full names) for restore drills (029 research R25), last: its
-  // password generated at apply and written only into its login, `DRILL_LOGIN_FILE` (0600).
+  // password generated at apply and written only into its login, `drillLogin` (0600).
   z.strictObject({
     kind: z.literal("drill-database"),
     name: DatabaseNameSchema,
     user: DatabaseNameSchema,
+    ...ServerShape,
   }),
   // The drill database OpsCrew made, with its user and its login, once drills are off.
   z.strictObject({
     kind: z.literal("remove-drill-database"),
     name: DatabaseNameSchema,
     user: DatabaseNameSchema,
+    ...ServerShape,
   }),
   PanelStepStep,
 ]);
@@ -238,9 +258,13 @@ const octal = (mode: number) => `0${mode.toString(8).padStart(3, "0")}`;
  * step that writes the settings carrying `every`, and that the account's user can exceed them
  * (constitution I).
  */
-function drillScheduleText(folder: string, every: "weekly" | "daily"): string {
+function drillScheduleText(
+  folder: string,
+  every: "weekly" | "daily",
+  server: "postgres" | undefined,
+): string {
   return [
-    `With these settings OpsCrew's agent runs a restore drill itself, ${drillSlotText(every)}, with no call to the panel: it loads the newest snapshot in ~/${folder}/dumps/ into the drill database through that database's own login (${DRILL_LOGIN_FILE}), counts its tables, empties it again and lists the snapshot's copy of the shared files.`,
+    `With these settings OpsCrew's agent runs a restore drill itself, ${drillSlotText(every)}, with no call to the panel: it loads the newest snapshot in ~/${folder}/dumps/ into the drill database through that database's own login (${drillLogin(server)}), counts its tables, empties it again and lists the snapshot's copy of the shared files.`,
     "Its bounds: only the drill database, never the app's database or its files; only the newest snapshot, once the last drill proved another; no network, and the app isn't started; what a stopped run left in the drill database is dropped first; at most one run a slot, under the agent's lock after its releases, so never during a deploy;",
     `skipped, never failed, when the account's disk quota leaves less room than the snapshot's dump; at most ${DRILL_LIMIT_SECONDS / 60} minutes, then it is stopped and the drill database emptied.`,
     `Each run is a line in ~/${folder}/${HOSTING_DRILLS_LOG}, which \`opscrew status\` shows. The agent runs as the account's user, so anything that user can run can exceed these bounds.`,
@@ -258,7 +282,9 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
         state: "change",
         reason: [
           "agent.sh is OpsCrew's agent, the same as opscrew/hosting/agent.sh in your repository; settings.sh holds the app's settings, no secret; keys/known_hosts holds GitHub's SSH host keys.",
-          ...(step.drills === undefined ? [] : [drillScheduleText(folder, step.drills)]),
+          ...(step.drills === undefined
+            ? []
+            : [drillScheduleText(folder, step.drills, step.server)]),
         ].join(" "),
       };
     case "file":
@@ -266,7 +292,7 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
         title: `Write ~/${folder}/${step.path} (${octal(step.mode)})`,
         state: "change",
         ...("drills" in step && step.drills !== undefined
-          ? { reason: drillScheduleText(folder, step.drills) }
+          ? { reason: drillScheduleText(folder, step.drills, step.server) }
           : {}),
       };
     case "signing-key":
@@ -287,9 +313,9 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
         : { title: `Add the cron line ${step.schedule} ${step.command}`, state: "change" };
     case "database":
       return {
-        title: `Make the database ${step.name} and its user ${step.user}, with every privilege on it`,
+        title: `Make the ${step.server === "postgres" ? "PostgreSQL " : ""}database ${step.name} and its user ${step.user}, with every privilege on it`,
         state: "change",
-        reason: `Its password is generated now and written only into ~/${folder}/shared/.env and shared/mysql.cnf (0600, outside every web root).`,
+        reason: `Its password is generated now and written only into ~/${folder}/shared/.env and ${databaseLogin(step.server)} (0600, outside every web root).`,
       };
     case "values": {
       const own = step.keys.filter((key) => !step.database.includes(key));
@@ -347,13 +373,13 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       return { title: `Ask ${panel} for ${step.hostname}'s free certificate`, state: "change" };
     case "drill-database":
       return {
-        title: `Make the drill database ${step.name} and its user ${step.user}, with every privilege on it, for restore drills`,
+        title: `Make the ${step.server === "postgres" ? "PostgreSQL " : ""}drill database ${step.name} and its user ${step.user}, with every privilege on it, for restore drills`,
         state: "change",
-        reason: `It is one more database on the account, so it counts against your hosting plan's limit on databases. A drill (\`opscrew restore --drill\`) loads a snapshot's dump into it, counts its tables and empties it again; the app never uses it, and its user has no right on the app's database. Its password is generated now and written only into ~/${folder}/${DRILL_LOGIN_FILE} (0600, outside every web root).`,
+        reason: `It is one more database on the account, so it counts against your hosting plan's limit on databases. A drill (\`opscrew restore --drill\`) loads a snapshot's dump into it, counts its tables and empties it again; the app never uses it, and its user has no right on the app's database. Its password is generated now and written only into ~/${folder}/${drillLogin(step.server)} (0600, outside every web root).`,
       };
     case "remove-drill-database":
       return {
-        title: `Remove the drill database ${step.name}, its user ${step.user} and its login ~/${folder}/${DRILL_LOGIN_FILE}`,
+        title: `Remove the ${step.server === "postgres" ? "PostgreSQL " : ""}drill database ${step.name}, its user ${step.user} and its login ~/${folder}/${drillLogin(step.server)}`,
         state: "change",
         reason:
           "Restore drills are off for this environment now: opscrew/plan.yaml has no snapshots.drills.",

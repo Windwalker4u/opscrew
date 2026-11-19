@@ -38,6 +38,17 @@ describe("the agent's shared paths", () => {
     expect(sharedPaths(withStorage({ files: { dir: "data" } }, node))).toBe(".env data");
   });
 
+  it("sets DB_ENGINE for a PostgreSQL database only, so MySQL's settings stay as they were", () => {
+    const settings = (postgres: boolean) =>
+      agentSettingsText(hostingTestPlan({ postgres }), {
+        repository: "acme/shop",
+        laravel: false,
+        database: "acct_notes",
+      });
+    expect(settings(true)).toContain("\nDB_ENGINE='postgres'\n");
+    expect(settings(false)).not.toContain("DB_ENGINE");
+  });
+
   it("names Laravel's storage once, and none of its folders, which it holds", () => {
     expect(sharedPaths(withStorage({ files: { dir: "storage" } }), true)).toBe(".env storage");
     expect(sharedPaths(withStorage({ files: { dir: "storage/app" } }), true)).toBe(".env storage");

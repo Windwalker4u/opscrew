@@ -48,6 +48,8 @@ export interface HostingPlanOptions {
   environment?: string;
   /** The app has a MariaDB database (default true). */
   database?: boolean;
+  /** Its database is PostgreSQL's instead (029 US10; a cPanel account with PostgreSQL). */
+  postgres?: boolean;
   /** The hostname's DNS is on Cloudflare (default: elsewhere). */
   cloudflare?: boolean;
   /** Recorded as provisioned (default true). */
@@ -72,7 +74,9 @@ export function hostingTestPlan(o: HostingPlanOptions = {}): DeployPlan {
       app: "php",
       webRoot: "public",
       php: { version: "8.3", via: "handler" },
-      ...(o.database === false ? {} : { database: { engine: "mariadb", name: "notes" } }),
+      ...(o.database === false
+        ? {}
+        : { database: { engine: o.postgres === true ? "postgres" : "mariadb", name: "notes" } }),
       cron: [{ schedule: "*/15 * * * *", command: "php bin/cleanup.php" }],
     },
     processes: { workers: [], cron: [] },
@@ -187,6 +191,19 @@ export function cpanelAccount(options: Partial<FakeCpanelOptions> = {}): FakeAcc
     hostnames: () => fake.state.domains.filter((d) => d.kind !== "main").map((d) => d.name),
     cpanel: fake,
   };
+}
+
+/** PostgreSQL's limits on the fake cPanel host that has it (`Postgresql::get_restrictions`). */
+export const POSTGRES_LIMITS = { maxDatabaseNameLength: 63, maxUsernameLength: 63 } as const;
+
+/**
+ * A cPanel account whose host installed PostgreSQL (029 US10): its `databases()` are
+ * PostgreSQL's; MySQL's stay in `cpanel.state.databases`.
+ */
+export function postgresAccount(options: Partial<FakeCpanelOptions> = {}): FakeAccount {
+  const account = cpanelAccount({ postgres: POSTGRES_LIMITS, ...options });
+  const fake = account.cpanel as FakeCpanel;
+  return { ...account, databases: () => [...fake.state.postgresDatabases.keys()] };
 }
 
 export function directAdminAccount(): FakeAccount {
@@ -305,7 +322,7 @@ export interface HostedOptions extends HostingPlanOptions {
  * each recorded as provision records it. Releases `812-1` (running), `790-1` and `777-2` are kept.
  */
 export async function hostedApp(o: HostedOptions = {}): Promise<HostedApp> {
-  const account = o.account ?? cpanelAccount();
+  const account = o.account ?? (o.postgres === true ? postgresAccount() : cpanelAccount());
   const environment = o.environment ?? "prod";
   const folder = folderOf(environment);
   const plan = hostingTestPlan({ ...o, panel: account.kind });
@@ -423,8 +440,14 @@ export async function hostedApp(o: HostedOptions = {}): Promise<HostedApp> {
   }
   if (o.database !== false) {
     const name = account.kind === "cpanel" ? "acct_notes" : account.kind === "directadmin" ? "alice_notes" : "notes";
-    await panel.addDatabase({ name, user: name, password: fakeSecret("generic-password", "db") });
-    await made({ kind: "database", key: name });
+    const password = fakeSecret("generic-password", "db");
+    if (o.postgres === true) {
+      await panel.addDatabase({ name, user: name, password, server: "postgres" });
+      await made({ kind: "database", key: name, value: "postgres" });
+    } else {
+      await panel.addDatabase({ name, user: name, password });
+      await made({ kind: "database", key: name });
+    }
   }
   const certificate = await panel.certificate(HOSTNAME);
   const own = ownCertificateId(certificate, HOSTNAME);

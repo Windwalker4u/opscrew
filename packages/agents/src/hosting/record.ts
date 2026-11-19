@@ -71,7 +71,8 @@ const HostingObjectSchema = z.strictObject({
   /**
    * What a later run compares: a cron line's `<schedule> <command>`, a PHP version, the app's
    * version in the selector, the digest of the values in the app's settings file, the deploy key's
-   * public half, a panel step's value.
+   * public half, a panel step's value; a database's server, `postgres`, for one on PostgreSQL (the
+   * drill database's too; none on MySQL).
    */
   value: z.string().min(1).optional(),
   /**
@@ -157,6 +158,14 @@ export function recordedObject(
   return record?.objects.find(
     (object) => object.kind === kind && (key === undefined || object.key === key),
   );
+}
+
+/**
+ * The server a recorded database (the drill database too) is on, as the panel's database calls take
+ * it: `{ server: "postgres" }` for PostgreSQL's, nothing for MySQL's, the calls' default.
+ */
+export function databaseServer(object: Pick<HostingObject, "value">): { server?: "postgres" } {
+  return object.value === "postgres" ? { server: "postgres" } : {};
 }
 
 /**
