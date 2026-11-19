@@ -377,6 +377,13 @@ describe.skipIf(MISSING.length > 0)(
           domain: secondHost,
           proxied: true,
         });
+        // A second app is an own-server app: for data that matters, design proposes an encrypted
+        // copy of its snapshots off the server, whose key the recovery copy holds, and a public
+        // repository's recovery copy isn't committed without asking. The off-server copies have
+        // passes of their own (snapshots.test.ts), so this one keeps the snapshots on the server.
+        if (plan.snapshots?.offsite !== undefined) {
+          await run.opscrewOk("snapshot", "offsite", "off", "--app", key);
+        }
         await run.opscrewOk("adapt", "--app", key, "--no-ai", "--yes");
         const pull = await run.github.openPullRequest(`opscrew/prepare-deploy-${key}`);
         if (pull === undefined) throw new Error("adapt --app opened no pull request.");
