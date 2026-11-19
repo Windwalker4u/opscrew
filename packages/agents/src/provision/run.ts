@@ -1872,8 +1872,9 @@ function savedServerChange(
  * JSON, since the run that made it rewrote the files; otherwise from the files of the last run
  * (`renderedServers`, as the disk check reads them). The web ports' sources: the last run's
  * `http_allowed_cidrs` against whether this plan opens them to all. A private network: only the
- * run that makes it, when the last run's `main.tf` put no server on one. A deployed app whose
- * last run's `terraform.tfvars.json` isn't here is looked for too, as nothing can be compared.
+ * run that makes it, when the last run's `main.tf` put no server on one. Without the last run's
+ * `terraform.tfvars.json` (committed with the repository, so rarely missing) only an approved saved
+ * plan says what this run does to the server.
  */
 async function appServerChanges(
   deps: PhaseDeps,
@@ -1881,18 +1882,20 @@ async function appServerChanges(
   options: ProvisionOptions,
 ): Promise<AppServerChanges> {
   const root = deps.paths.root;
-  const tfvars = await committedTfvars(root, plan);
-  if (tfvars === undefined) {
-    return {
-      what: "provisioning the server without the last run's terraform.tfvars.json (it may replace or resize the server)",
-    };
-  }
+  const resourceType = providerProfile(plan.target.provider).serverResourceType;
   const approved = (await savedInfrastructureHashes(deps, options, plan)).apply;
   const saved =
     approved === undefined ? undefined : await findSavedPlan(deps.paths.files.plansDir, approved);
+  const tfvars = await committedTfvars(root, plan);
+  if (tfvars === undefined) {
+    if (saved?.planJson === undefined) return {};
+    const fromSaved = savedServerChange(saved, resourceType);
+    if (fromSaved.replace) return { what: "replacing the server" };
+    return fromSaved.resizeTo !== undefined ? { resizeTo: fromSaved.resizeTo } : {};
+  }
   let server: { replace: boolean; resizeTo?: string };
   if (saved?.planJson !== undefined) {
-    server = savedServerChange(saved, providerProfile(plan.target.provider).serverResourceType);
+    server = savedServerChange(saved, resourceType);
   } else {
     const last = (await renderedServers(root, plan)).get(APP_SERVER);
     const change =

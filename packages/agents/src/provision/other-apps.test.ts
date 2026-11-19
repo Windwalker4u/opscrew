@@ -529,12 +529,14 @@ describe.skipIf(!findExecutable("git"))(
       });
     });
 
-    it("looks for a deployed app whose last run's files aren't on this computer", async () => {
+    it("doesn't look for a deployed app whose last run's files aren't here, with nothing to compare", async () => {
+      // The committed terraform.tfvars.json is rarely missing; without it and without an approved
+      // saved plan nothing says the run changes the server (a host plan alone, a --plan-only run).
       const t = await provisionWith(deployedPlan("cx23"), undefined, {
         records: [secondAppRecord()],
       });
-      const error = await refusedBeforeAnyChange(t);
-      expect(error.message).toContain("without the last run's terraform.tfvars.json");
+      expect(t.server.inspections).toEqual([]);
+      expect(String((t.error as Error | undefined)?.message)).not.toContain("other apps");
     });
 
     it("doesn't look at the server when the plan changes nothing that holds other apps", async () => {
