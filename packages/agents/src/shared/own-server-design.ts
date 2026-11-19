@@ -19,7 +19,7 @@ import {
   refusedBeforeChange,
 } from "../previews/host";
 import type { OwnServerServices } from "../provision";
-import { desiredHost, ownTarget, ownWebSources } from "../provision/own";
+import { desiredHost, hostPlanOptions, ownTarget, ownWebSources } from "../provision/own";
 import { firstApp, hostDescription } from "../shares/first-app";
 import { otherAppsMemory } from "../shares/guard";
 import { secondAppLogin } from "../shares/login";
@@ -30,6 +30,7 @@ import {
   inspectOwnServer,
   type OwnServerDeps,
   ownServerFacts,
+  SECOND_APP_ROOT_IMAGE,
 } from "./own-server";
 import { appServerShell } from "./server-address";
 import { type OwnServerConnection, readOwnServer, type SharesReference } from "./server-record";
@@ -173,7 +174,7 @@ async function secondAppDesign(
   const { remote } = login.session;
   const facts =
     adapter === undefined
-      ? await inspectHost(remote, { rootImage: IMAGES.caddy.ref })
+      ? await inspectHost(remote, { rootImage: SECOND_APP_ROOT_IMAGE })
       : await adapter.inspect(remote);
   const name = first.plan.app.name;
   const unreadable = facts.apps.filter((app) => app.record === null).map((app) => `"${app.name}"`);
@@ -230,9 +231,7 @@ export async function requireSecondAppFits(
     { plan, deployPublicKey: key.publicKeyOpenSsh },
   );
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  const host = planHost(facts, desired, `opscrew design${flags}`, {
-    image: IMAGES.busybox.ref,
-  });
+  const host = planHost(facts, desired, `opscrew design${flags}`, hostPlanOptions(plan));
   const blocked = host.steps.filter((step) => step.state === "blocked");
   if (host.findings.length === 0 && blocked.length === 0) return;
   const reasons =
