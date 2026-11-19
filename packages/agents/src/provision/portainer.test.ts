@@ -1557,6 +1557,55 @@ describe.skipIf(!findExecutable("git"))(
       expect(stackRequests(s)[0]).toMatchObject({ confirmPhrase: "shop-drill" });
       expect(scratchRemovals(s)).toEqual([`DELETE /api/endpoints/3/docker/volumes/${SCRATCH}`]);
     });
+
+    it("removes it too when the snapshot schedule goes off with the drills (snapshot schedule off)", async () => {
+      const s = await setup({
+        plan: DeployPlanSchema.parse({
+          ...portainerPlan(),
+          snapshots: { schedule: {}, drills: { schedule: "daily" } },
+        }),
+        changes: APP_TUNNEL,
+      });
+      await s.run();
+      expect(await recorded(s)).toContain(SCRATCH);
+      s.fake.volumes.push({
+        Name: SCRATCH,
+        Labels: { "com.docker.compose.project": "opscrew-shop" },
+      });
+      const docker = new FakeDocker();
+      docker.containers.set("loop", {
+        id: "loop",
+        image: "postgres",
+        cmd: [],
+        env: [],
+        labels: {
+          "com.docker.compose.project": "opscrew-shop",
+          "com.docker.compose.service": "drill-db",
+        },
+        binds: [],
+        mounts: [{ type: "volume", source: SCRATCH, target: "/var/lib/postgresql/data" }],
+        state: "running",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
+      s.services.docker = () => docker;
+      s.github.openPull = OPEN_PULL;
+      await writeArtifact(
+        "plan",
+        s.deps.paths.files.plan,
+        DeployPlanSchema.parse({ ...portainerPlan(), snapshots: { drills: {} } }),
+      );
+      s.handler.requests.length = 0;
+      await s.run();
+      expect(scratchRemovals(s)).toEqual([]);
+      expect(await recorded(s)).toContain(SCRATCH);
+      docker.containers.clear();
+      s.handler.requests.length = 0;
+      await s.run();
+      expect(stackRequests(s)[0]).toMatchObject({ confirmPhrase: "shop-drill" });
+      expect(scratchRemovals(s)).toEqual([`DELETE /api/endpoints/3/docker/volumes/${SCRATCH}`]);
+    });
   },
 );
 

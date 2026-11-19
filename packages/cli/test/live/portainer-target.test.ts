@@ -2333,6 +2333,13 @@ describe.skipIf(MISSING.length > 0)(
         await run.opscrewOk("snapshot", "drill", "schedule", "on", "--every", "daily");
         const on = await provisionTyping(run, "the scheduled dump drills turned on", typing);
         expect(on.typed, "the names provision's script typed").toContain(`${run.app()}-drill`);
+        // The record names the loop's scratch volume, so the provision after its schedule's
+        // removal can remove it.
+        const scratchVolume = `${stack}_${db}_drill`;
+        expect(
+          (await createdRecord()).volumes,
+          "OpsCrew's record of the app stack's volumes",
+        ).toContain(scratchVolume);
         await run.deployAny("the scheduled dump drills");
         const container = await waitFor(
           `the ${loop} service running`,
@@ -2414,7 +2421,18 @@ describe.skipIf(MISSING.length > 0)(
           15_000,
         );
         // The loop is gone: the next provision removes its scratch volume, typed <app>-drill.
-        const scratchVolume = `${stack}_${db}_drill`;
+        expect(
+          (
+            await hostExec(
+              `docker ps -a --filter volume=${scratchVolume} --format '{{.Names}} {{.State}}'`,
+            )
+          ).trim(),
+          "the containers that mount the scratch volume once the loop is gone",
+        ).toBe("");
+        expect(
+          (await createdRecord()).volumes,
+          "OpsCrew's record of the app stack's volumes before the provision that removes the scratch volume",
+        ).toContain(scratchVolume);
         const removal = await provisionTyping(run, "the scratch volume's removal", typing);
         expect(removal.typed, "the names provision's script typed").toContain(`${run.app()}-drill`);
         expect(
