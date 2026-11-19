@@ -88,6 +88,10 @@ interface DrillWorld extends PortainerWorld {
   network: { internal: boolean };
   /** The app's health check's answer in the drill's stack. */
   health: "healthy" | "unhealthy";
+  /** When, on the drill's clock (ms), the copy's other health-checked services become healthy. */
+  dataReadyAt: number;
+  /** The drill's clock when the database's load started. */
+  loadedAt?: number;
   /** What the table count prints. */
   tables: string;
   /** Minutes the database's load takes on the drill's clock. */
@@ -133,6 +137,7 @@ async function drillWorld(
     portainer,
     network: { internal: true },
     health: "healthy",
+    dataReadyAt: 0,
     tables: "3",
     loadMinutes: 0,
     puts: [],
@@ -163,7 +168,9 @@ async function drillWorld(
         binds: (spec.volumes ?? []).map((mount) => `${name}_${mount}`),
         mounts: [],
         state: "running",
-        ...(spec.healthcheck === undefined ? {} : { health: world.health }),
+        ...(spec.healthcheck === undefined
+          ? {}
+          : { health: service === "app" ? world.health : "healthy" }),
         exitCode: 0,
         stdout: "",
         stderr: "",
@@ -206,12 +213,15 @@ async function drillWorld(
     if (init.method === "GET" && inspected !== undefined) {
       const c = docker.containers.get(inspected);
       if (c === undefined) return json(404, { message: "No such container" });
+      const starting =
+        c.labels["com.docker.compose.service"] !== "app" && clock < world.dataReadyAt;
+      const health = starting && c.health !== undefined ? "starting" : c.health;
       return json(200, {
         RestartCount: 0,
         State: {
           StartedAt: "2026-11-18T12:00:00Z",
           Status: c.state,
-          ...(c.health === undefined ? {} : { Health: { Status: c.health } }),
+          ...(health === undefined ? {} : { Health: { Status: health } }),
         },
       });
     }
@@ -265,7 +275,10 @@ async function drillWorld(
   const played = docker.onStart;
   docker.onStart = (container) => {
     const script = container.cmd[2] ?? "";
-    if (script.includes("pg_restore")) clock += world.loadMinutes * 60_000;
+    if (script.includes("pg_restore")) {
+      world.loadedAt ??= clock;
+      clock += world.loadMinutes * 60_000;
+    }
     if (script.includes("information_schema")) {
       world.ran.push({ ...container });
       return { exitCode: 0, stdout: `${world.tables}\n` };
@@ -433,6 +446,25 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --drill in the user's Portainer"
     const unhealthy = await drillSnapshot(sick.deps, ID, { services: sick.services });
     expect(unhealthy).toMatchObject({ outcome: "unhealthy", health: { state: "unhealthy" } });
     expect(unhealthy.summary).toContain("The backup itself is fine");
+  });
+
+  it("loads a dump only once the copy's database reports healthy, as compose up --wait does on a server", async () => {
+    const world = await drillWorld();
+    world.dataReadyAt = 90_000;
+    const report = await drillSnapshot(world.deps, ID, { services: world.services });
+    expect(report).toMatchObject({ outcome: "healthy", removal: "removed" });
+    expect(world.loadedAt).toBeGreaterThanOrEqual(90_000);
+  });
+
+  it("calls a copy whose database never gets ready not started, never a bad backup, and removes it", async () => {
+    const world = await drillWorld();
+    world.dataReadyAt = Number.POSITIVE_INFINITY;
+    const report = await drillSnapshot(world.deps, ID, { services: world.services });
+    expect(report).toMatchObject({ outcome: "failed", reason: "start", removal: "removed" });
+    expect(report.summary).toContain("could not be made or started");
+    expect(report.summary).not.toContain("The backup is bad");
+    expect(ranWith(world, "pg_restore")).toEqual([]);
+    expect(world.portainer.stacks.map((stack) => stack.Name)).toEqual([STACK]);
   });
 
   it("removes what an earlier drill left first", async () => {

@@ -367,6 +367,44 @@ async function cutOff(copy: Copy): Promise<boolean> {
 }
 
 /**
+ * Waits until each database of `parts` that loads a dump runs in the copy and, with a health check,
+ * reports healthy, as `compose up --wait` does on a server: a fresh database is still starting when
+ * Portainer reports the stack deployed. False when one stops, or not all are ready in time.
+ */
+async function databasesReady(
+  copy: Copy,
+  parts: readonly SnapshotPart[],
+  leftMs: number,
+): Promise<boolean> {
+  const loads = parts.filter((part) => partRestore(part).load !== undefined);
+  if (loads.length === 0) return true;
+  const wait = copy.run.services.portainer?.wait;
+  const ready = await pollUntil(
+    async () => {
+      const containers = await copyContainers(copy);
+      let all = true;
+      for (const part of loads) {
+        const [container] = ofService(containers, part.name);
+        if (container === undefined) return false;
+        const inspected = await copy.client.containerInspect(copy.environmentId, container.id);
+        if (inspected.state === "exited" || inspected.state === "dead") return false;
+        if (inspected.state !== "running" || (inspected.health ?? "healthy") !== "healthy") {
+          all = false;
+        }
+      }
+      return all ? true : undefined;
+    },
+    {
+      timeoutMs: Math.max(1, Math.min(HEALTH_MS, leftMs)),
+      intervalMs: HEALTH_POLL_MS,
+      sleep: wait?.sleep ?? realSleep,
+      now: wait?.now ?? Date.now,
+    },
+  );
+  return ready === true;
+}
+
+/**
  * Puts `part` back from the snapshot `id` into the copy (`partRestore`): a stop-only part's
  * container stopped, its volumes filled by a busybox one-off, started again; the app's volumes
  * filled the same way; a database loaded by a one-off of its own image with the copy's secrets on
@@ -590,6 +628,9 @@ export async function drillInPortainer(
       return { result: "failed", reason: deployReason(created.failure) };
     }
     if (!(await cutOff(copy))) return { result: "failed", reason: "network" };
+    if (!(await databasesReady(copy, parts, left()))) {
+      return late() ? timedOut : { result: "failed", reason: "start" };
+    }
     for (const part of parts) {
       const began = deps.clock.now();
       try {
