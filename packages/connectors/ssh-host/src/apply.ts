@@ -641,7 +641,10 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   if (scripts.postApply !== undefined) {
     await runOk(ctx, wrap(ctx, step, scripts.postApply), scripts.timeoutMs, scripts.doing);
   }
-  await runOk(ctx, own(scripts.verify), 120_000, `checking the result of ${scripts.doing}`);
+  // A second app's removal of its own key line checked its result itself: its login is gone now.
+  if (scripts.verifiedInApply !== true) {
+    await runOk(ctx, own(scripts.verify), 120_000, `checking the result of ${scripts.doing}`);
+  }
   if (ctx.plan.purpose === "undo") await ctx.recorder?.undone(step.id);
   return true;
 }

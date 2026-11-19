@@ -235,6 +235,11 @@ export interface StepScripts {
    * and post-apply scripts run as the step does.
    */
   asDeploy?: true;
+  /**
+   * The apply checks its own end state and `verify` is not run: a second app's removal of its own
+   * deploy key line, after which the login it runs as no longer works (030).
+   */
+  verifiedInApply?: true;
   /** What the step does, for error messages ("installing Docker"). */
   doing: string;
   timeoutMs: number;
@@ -636,11 +641,19 @@ fi
   for line in "$KEY_1" "$KEY_2"; do
     if [ -n "$line" ]; then printf '%s\\n' "$line"; fi
   done
-} | write_file "$k" 0600`,
+} | write_file "$k" 0600${
+      keys.length === 0
+        ? `
+# The login this step runs as ends with the app's key line, so its result is checked here.
+[ "$(own_lines mine "$k" | wc -l | tr -d ' ')" = 0 ] && [ "$(others_sum "$k")" = "$OTHERS_SHA256" ] ||
+  fail "The deploy user's authorized_keys still holds a key line of the app, or its other lines changed." 5`
+        : ""
+    }`,
     failed:
       "The deploy user's authorized_keys does not hold the app's planned key lines, or its other lines changed.",
     doing: keys.length === 0 ? "removing the app's deploy key" : "writing the app's deploy key",
     timeoutMs: 3 * MINUTE,
+    ...(keys.length === 0 ? { verifiedInApply: true as const } : {}),
   });
 }
 

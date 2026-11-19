@@ -2569,12 +2569,16 @@ export function planTeardown(
     .map(([iface]) => iface);
   steps.push(...networkRemovals(f, networks, "app"));
   const keys = keyList(others.map((record) => record.deployKey));
+  /**
+   * A second app's own key lines: removed last, since every step logs in with that key (the
+   * removal checks its own result before its login ends).
+   */
+  let keyRemoval: HostStep | undefined;
   if (second !== undefined) {
     // A second app's own lines only: those holding its current key (a provision that stopped
     // before its record leaves that line) or a key its record names.
     const drop = [second.deployKey, ...recordedKeys(own)];
-    const removal = secondAppKeyStep(f, app, second.firstApp, [], drop);
-    if (removal !== undefined) steps.push(removal);
+    keyRemoval = secondAppKeyStep(f, app, second.firstApp, [], drop);
   } else if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
     steps.push(
       step(
@@ -2686,6 +2690,7 @@ export function planTeardown(
       }),
     );
   }
+  if (keyRemoval !== undefined) steps.push(keyRemoval);
   if (isFirst || foreign) {
     return plan(steps.map((item) => ({ ...item, state: "blocked", reason: "See the findings." })));
   }

@@ -623,7 +623,8 @@ describe("planTeardown of a second app", () => {
     expect(found.apps.map((app) => app.name)).toEqual(["shop"]);
     const hostPlan = teardown(found);
     expect(hostPlan.findings).toEqual([]);
-    expect(ids(hostPlan)).toEqual(["app-dirs", "deploy-key", "app-record"]);
+    // The key line goes last: every step logs in with it (live pass L1, run 6).
+    expect(ids(hostPlan)).toEqual(["app-dirs", "app-record", "deploy-key"]);
     expect(hostPlan.steps.filter((step) => SHARED_ROOT_STEPS.includes(step.id))).toEqual([]);
     expect(ids(hostPlan)).not.toContain("check-key");
     expect(stepOf(hostPlan, "app-dirs").params).toMatchObject({ runAs: "login", image: BUSYBOX });
@@ -803,6 +804,23 @@ describe("applying a second app's plan", () => {
     expect(how.login.some((name) => name.startsWith("app-dirs.teardown."))).toBe(true);
     expect(how.login.some((name) => name.startsWith("deploy-key."))).toBe(true);
     expect(fake.files.has(RECORD_PATH)).toBe(false);
+  });
+
+  it("removes the app's key line last, checked in its own run, since every later login needs it", async () => {
+    // Live pass L1, run 6: a check after the key line went logged in with that key and was refused.
+    const fake = createdServer();
+    await applyApproved(fake, plan(await facts(fake), second(fake)), { rootImage: IMAGE });
+    deployApp(fake, "shop");
+    const hostPlan = teardown(await facts(fake), true);
+    expect(hostPlan.steps.at(-1)?.id).toBe("deploy-key");
+    fake.calls.length = 0;
+    await applyApproved(fake, hostPlan, { command: "opscrew destroy", rootImage: IMAGE });
+    const names = fake.calls
+      .filter((call) => /\.(check|apply|verify)$/.test(call.name))
+      .map((call) => call.name);
+    expect(names.at(-1)).toBe("deploy-key.app.apply");
+    expect(names).not.toContain("deploy-key.app.verify");
+    expect(fake.users.get("deploy")?.keys).not.toContain(APP_KEY);
   });
 
   it("refuses the plan when another app's record appeared since it was made", async () => {
