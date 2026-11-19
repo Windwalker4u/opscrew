@@ -297,8 +297,9 @@ first app's destroy is no longer refused.
   resize whose memory no longer holds both apps. One that fits MUST say the second app restarts
   with the server.
 - **FR-3014**: The first app's check MUST inspect the server through the first app's deploy
-  login. When the server can't be reached, it MUST say so and stop, unless
-  `--skip-other-apps-check` is given, after a plain warning. Typed confirmations stay as they are.
+  login. When the server can't be reached, or holds only a second app's kept data, it MUST say so
+  and stop, unless `--skip-other-apps-check` is given, after a plain warning. The flag MUST never
+  let a command go on past a second app that runs there. Typed confirmations stay as they are.
 - **FR-3015**: The first app's `drift` MUST not report a second app's parts (its key lines,
   folders, record, site file, certificates) as drift. Its `status` MUST name each second app on the
   server.

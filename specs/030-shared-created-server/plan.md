@@ -321,7 +321,13 @@ before any change:
 - **When the server can't be reached and `skip` isn't given**: "OpsCrew couldn't look at the
   server for other apps (<reason>), and <what> would break any that run there." The hint is to
   run `<again> --skip-other-apps-check` to go on without looking.
-- **With `skip`**: a warning line, and the command goes on.
+- **With `skip`** (lead, 2026-11-19), OpsCrew still looks:
+  - an active record still refuses, since the flag never covers an app that runs there;
+  - only data-kept records give a warning that their data will be lost, and the command goes on;
+  - when the server can't be reached, a warning, and the command goes on.
+
+  The flag's help: "go on when OpsCrew can't look at the server for other apps, or when only
+  their kept data is there".
 
 Call sites, beside each `requireNoSharedPreviews` call where there is one:
 

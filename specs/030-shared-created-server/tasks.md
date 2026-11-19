@@ -136,6 +136,19 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/shares src/shared && pnpm lint`
   - Effort: high
 
+**From T3003 (lead, 2026-11-19), for T3004–T3008:**
+- `firstAppPaths(paths, ref)` takes this computer's paths (the first app's key and known_hosts
+  are in this computer's OpsCrew home). `firstApp(deps, ref)` returns `{ paths, plan, address,
+  login, keyFile, hostKey }`.
+- `secondAppLogin(deps, ref, own, options?)` returns an `OwnServerSession`. Before `joined` it
+  records the first app's host, port and host key fingerprint in `own`.
+- `otherAppsOnServer` reports "not reached" when the login's privilege isn't `docker`, not only
+  when SSH fails. `requireNoOtherApps(deps, plan, what, again, { skip })` follows plan 9.
+- `hostDescription(plan)` lists every hostname the plan serves, the add-ons' subdomains too.
+- Test helpers in `agents/src/testing/own.ts`: `createdServerFacts(records)`,
+  `secondAppRecord(o)`, `sharedServerProject(o)`. The last returns `firstKey` for the leak
+  checks.
+
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T3004 [P] [US1] [US4] Interview, design and a second app's environments
