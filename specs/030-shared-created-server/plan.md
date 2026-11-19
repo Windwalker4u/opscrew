@@ -340,7 +340,7 @@ Call sites, beside each `requireNoSharedPreviews` call where there is one:
 | whole-server restore | `snapshot/server.ts` before the rebuild | "restoring the whole server" |
 | `secure --close-public-ssh` | `secure/public-ssh.ts` | "closing public SSH" |
 | a serving switch, proxied ⇄ DNS only | `provision/run.ts` | "changing which addresses reach the web ports" |
-| private network, `vpn add`, `vpn grant` | `provision/run.ts`, `vpn/*` | "putting the server on a private network" |
+| private network, `vpn add` when it creates the network | `provision/run.ts`, `vpn/*` | "putting the server on a private network" |
 | Beszel, Portainer | `addons/run.ts`, `portainer/run.ts` | "running <add-on> on the server" |
 
 **Resize**: when the infrastructure plan changes the server type and records are found, the new
