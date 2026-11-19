@@ -383,7 +383,7 @@ describe.skipIf(H1.skip)(H1.title, () => {
         "H1 from the interview to a working site, the human steps aside (SC-2901)",
         duration(Date.now() - interviewed),
       );
-      await run.opscrewOk("verify");
+      await pass.verify();
       expect(await pass.outsideCheck(), "the outside check").toEqual({
         mode: "proxied",
         http: "ok",
@@ -480,7 +480,7 @@ describe.skipIf(H3.skip)(H3.title, () => {
     minutes(20),
     async () => {
       await pass.setRouter();
-      await run.opscrewOk("verify");
+      await pass.verify();
       expect(await pass.outsideCheck(), "the outside check").toMatchObject({
         http: "ok",
         https: "ok",
@@ -541,7 +541,7 @@ describe.skipIf(H4.skip)(H4.title, () => {
         workflow.includes("--resolve"),
         "the deploy's health check goes through --resolve",
       ).toBe(true);
-      await run.opscrewOk("verify");
+      await pass.verify();
       expect(await pass.outsideCheck(), "the outside check").toEqual({
         mode: "direct",
         http: "ok",
@@ -688,7 +688,7 @@ describe.skipIf(H6.skip)(H6.title, () => {
     minutes(30),
     async () => {
       await run.waitForHealth(minutes(10), true, await pass.healthUrl());
-      await run.opscrewOk("verify");
+      await pass.verify();
       expect(await pass.outsideCheck(), "the outside check").toMatchObject({
         mode: "proxied",
         https: "ok",

@@ -627,6 +627,16 @@ export class HomePass {
   }
 
   /** The last outside check this computer recorded. */
+  /** `opscrew verify`, once more when its outside check didn't finish, as verify then says to. */
+  async verify(): Promise<void> {
+    await this.run.opscrewOk("verify");
+    const check = await this.outsideCheck();
+    if (check.http === "unfinished" || check.https === "unfinished") {
+      this.log("the outside check didn't finish; verify again, as it says");
+      await this.run.opscrewOk("verify");
+    }
+  }
+
   async outsideCheck(): Promise<z.infer<typeof OutsideCheckSchema>> {
     const check = outsideCheckOf(await readFile(this.serverJson(), "utf8"));
     if (check === undefined) throw new Error("verify recorded no outside check.");
