@@ -185,5 +185,5 @@ function placeWords(ref: SharesReference): string {
 
 /** Where to run the command instead: on the computer that provisioned the first app. */
 function elsewhere(ref: SharesReference): string {
-  return `run the command on the computer that provisioned the app in ${ref.root}, or name the folder where it is on this computer with \`--shares <folder>\`.`;
+  return `run the command on the computer that provisioned the app in ${ref.root}, or run \`opscrew interview\` again and name the folder where it is on this computer.`;
 }

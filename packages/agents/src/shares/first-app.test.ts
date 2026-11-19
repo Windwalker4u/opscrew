@@ -62,7 +62,7 @@ describe("firstApp", () => {
     const project = await sharedServerProject();
     await rm(project.first.files.plan);
     const error = await refuses(project, /^The app in .+ has no OpsCrew plan on this computer\./);
-    expect(error?.hint).toContain("--shares <folder>");
+    expect(error?.hint).toContain("run `opscrew interview` again and name the folder");
   });
 
   it("refuses a first app that is not provisioned", async () => {
