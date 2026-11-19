@@ -92,6 +92,7 @@ of the pass passed; otherwise the status says how many of its steps did.
 | Contabo (`contabo.test.ts`, feature 026): one Cloud VPS 4 through interview, design, provision with its firewall and SSH key, deploy, a whole-server snapshot and its restore, secure, drift and destroy (cancel), and the leak search ([its steps](e2e.md#contabo)) | `OPSCREW_E2E_CONTABO=1` on the command line, the four `OPSCREW_E2E_CONTABO_*` credentials, GitHub and a Cloudflare domain; each run buys a month | **Passed** (9 of 9 steps, run 4; steps 3 and 7 after a fix each on the same server) | 2026-11-12 | — |
 | A cPanel account (`cpanel.test.ts`, feature 027): the founder's shared hosting (LiteSpeed, CloudLinux). A plain PHP app with MySQL, a static site and a Node.js app through CloudLinux's selector each through interview, both hosting plans by hash, the first deploy, a second release and a rollback watched answer by answer, secure, drift and destroy (the PHP app also its cron job, kept storage, a snapshot and its restore); Laravel refused for the account's PHP; the account compared field by field before and after, and the leak search ([its steps](e2e.md#a-cpanel-account)) | `OPSCREW_E2E_CPANEL=1` on the command line, the four `OPSCREW_E2E_CPANEL_*` variables, GitHub | **Passed** (28 of 28 steps, run 33 on the final code) | 2026-11-14 | — |
 | A cPanel account, restore drills (`cpanel.test.ts`, feature 029, the PHP leg's steps 7b–7d): the drill database made by plan B, approved with `<app>-drill` typed; a drill of the newest snapshot; a drill of a dump with `DEFINER=`; the option files' socket through a `~/.my.cnf` of the test's, removed again ([its steps](e2e.md#a-cpanel-account)) | `OPSCREW_E2E_CPANEL=1`, `OPSCREW_E2E_CPANEL_LEGS=php` | **Passed** (14 of 14 steps of the PHP leg, run 37; the static site's and the Node.js app's legs, 17 of 17 steps, on 029's and 030's code in run 38) | 2026-11-19 | — |
+| A cPanel account with PostgreSQL (feature 029, US10): the database and its user by plan B, the app's `postgresql://` values, a snapshot, restore and drill with `pg_dump` and `psql`, destroy | — | **Not tested live**: the founder's host has no PostgreSQL; covered by fakes ([why](#hosting-accounts-in-029s-release-us9-us10)) | — | A cPanel account whose host installed PostgreSQL |
 | An SFTP-only host (`sftp-host.test.ts`, feature 027): a throwaway Hetzner server set up as one (an account chrooted with `internal-sftp`, Apache with PHP-FPM as that account, MariaDB). A static site and a plain PHP app with MySQL, each through interview, the hosting plan by hash, the first deploy over SFTP from GitHub Actions, a second release and a rollback watched answer by answer, and destroy; the leak search ([its steps](e2e.md#an-sftp-only-host)) | `OPSCREW_E2E_SFTP=1` on the command line, the Hetzner token, GitHub and a Cloudflare domain, as for [your own server](e2e.md#your-own-server) | **Passed** (14 of 14 steps, run 5 on the final code) | 2026-11-14 | — |
 | Moving to another Cloudflare account (`cloudflare-move.test.ts`, feature 028): the real move of the zone the pass's domain is in, with every OpsCrew app it serves, to another account of the founder's; the pass's own apps P (a Hetzner server, proxied, origin TLS, files in R2) and Q (your own server in tunnel mode, snapshot copies in R2) beside them, under load, in legs L0 to L6 ([its legs](e2e.md#moving-to-another-cloudflare-account)) | `OPSCREW_E2E_CLOUDFLARE_MOVE=1` on each leg's command line, `OPSCREW_E2E_MOVE_TOKEN_B`, the Cloudflare domain, Hetzner and GitHub | 6 of 7 legs passed (L0 to L5; the real move of opscrew.dev, 2026-11-17 and 18); L6 failed on findings fixed since (T2850, T2852), not run again | 2026-11-18 | L6's leak search and cleanup on the fixed code, at a future move |
 | A second app on a server OpsCrew created (`shared-server.test.ts`, feature 030): a further app joins the first app's throwaway Hetzner server behind Cloudflare under load, the first app's guards refuse before any change, the second app's snapshot and restore, and its destroy leaves the first app's `authorized_keys` as before, line by line | `OPSCREW_E2E_SHARED_SERVER=1` + `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO_C`, Cloudflare | Passed (11 of 11 steps, run 7) | 2026-11-19 | — |
@@ -330,6 +331,19 @@ have tests with fakes only:
 - **Your own S3-compatible bucket at Wasabi, Backblaze B2, MinIO, AWS S3 or Contabo** (T2756): the
   snapshots pass's own-bucket leg used a Hetzner Object Storage bucket as the user's own; the
   other providers' endpoints and regions only with fakes.
+
+### Hosting accounts in 029's release (US9, US10)
+
+- **PostgreSQL on a cPanel account** (T2947–T2951): **not tested live**, by the founder's choice
+  (2026-11-19, research R31): his host has no PostgreSQL ("This server does not support this
+  functionality"). The connector's `Postgresql::*` calls follow cPanel's UAPI documentation
+  (11.138) against a fake; the agent's `pg_dump` and `psql` lines run against shims. Whether a
+  real account's shell has both tools, and how its PostgreSQL takes `localhost:5432` with a
+  `pgpass` login, only a real account can tell; provision checks the tools before it makes the
+  database.
+- **A Laravel queue on a hosting account** (T2946): with fakes only, as the cPanel pass's Laravel
+  leg needs PHP 8.4 or newer on the account (its PHP is 7.0). The queue's cron line is installed
+  the way the scheduler's and the PHP app's cron lines are, which the pass ran live.
 
 ## Confirmed live behaviour
 

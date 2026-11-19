@@ -785,7 +785,7 @@ MySQL.
 - [x] T2947 (lead) The contract and the plan: `HostingDatabaseServer`, the panel's database methods'
   `server`, `HostingFacts.databases.postgres` (PostgreSQL's own name limits), and
   `target.database.engine: "postgres"`, refused on any panel but cPanel
-- [ ] T2948 [P] [US10] cPanel's PostgreSQL in the connector and its fake
+- [x] T2948 [P] [US10] cPanel's PostgreSQL in the connector and its fake
   - Owns: `packages/connectors/cpanel/src/**` (not other connectors)
   - Reads: `packages/contracts/src/hosting.ts`; `panel.ts`'s `inspect`, `databaseEngines`,
     `addDatabase`, `removeDatabase`, `listDatabases`, `#mysql`; `fake.ts`'s `Mysql::*` handlers;
@@ -802,7 +802,7 @@ MySQL.
     (the error above) and the account's limits. Tests for each, on the fake.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cpanel && npx vitest run --root packages/connectors/cpanel && pnpm lint`
   - Effort: medium
-- [ ] T2949 [P] [US10] The account agent with PostgreSQL
+- [x] T2949 [P] [US10] The account agent with PostgreSQL
   - Owns: `packages/iac-templates/src/hosting/**` (the agent's settings, its script, their
     fixtures, shims and tests)
   - Reads: `agent.ts` (`AgentSettings`, `renderAgentSettings`), `agent/script.ts` (the tool
@@ -821,7 +821,7 @@ MySQL.
     drill and a missing tool.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
   - Effort: high
-- [ ] T2950 [P] [US10] Design and provision's checks for PostgreSQL on a cPanel account
+- [x] T2950 [P] [US10] Design and provision's checks for PostgreSQL on a cPanel account
   - Owns: `packages/agents/src/hosting/{fit,facts,provision,provision-report}.ts`,
     `packages/agents/src/design/hosting.ts`, `packages/agents/src/advise/readings.ts`,
     `packages/agents/src/shared/app-env.ts`, their colocated tests (not `hosting/__fixtures__/`),
@@ -840,7 +840,7 @@ MySQL.
     installed it, not tested on a real account yet. Tests for each.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting src/design src/advise src/shared && pnpm lint`
   - Effort: high
-- [ ] T2951 [P] [US10] The hosting plans, values, drift and destroy with PostgreSQL
+- [x] T2951 [P] [US10] The hosting plans, values, drift and destroy with PostgreSQL
   - Owns: `packages/agents/src/hosting/{apply,plan,provision-plans,destroy,drift,secure,record}.ts`,
     `packages/agents/src/hosting/__fixtures__/**`, their colocated tests
   - Reads: T2948's results; the mapping in this block's heading; `apply.ts`'s `databaseValues`,
