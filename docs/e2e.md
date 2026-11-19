@@ -4279,9 +4279,8 @@ OPSCREW_E2E_SHARED_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO
   npx vitest run test/live/shared-server.test.ts
 ```
 
-Not measured yet: about 35 to 45 minutes (previews on dev's server, with two servers and four
-deploys, took 23), with one CX23 for that time (a few cents), three to five deploy runs and one
-run of the check.
+Measured: 27 minutes (run 7, 2026-11-19), with one CX23 for that time (a few cents), five deploy
+runs and one run of the check.
 
 ## Price tables
 
