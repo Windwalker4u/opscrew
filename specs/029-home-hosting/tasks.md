@@ -753,6 +753,26 @@ beside wave 2; none shares a file with 029's other tasks of its wave.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/connectors/ssh-host && npx vitest run --root packages/iac-templates src/check && npx vitest run --root packages/agents src/provision src/shared src/check && pnpm lint`
   - Effort: high
 
+- [ ] T2946 [US9] A Laravel queue worker from cron on a hosting account (founder, 2026-11-19)
+  - Owns: `packages/agents/src/hosting/fit.ts`, `packages/agents/src/design/hosting.ts`, colocated
+    tests, `docs/guide/hosting-accounts.md`
+  - Reads: spec US9 and FR-2924; `fit.ts`'s `SCHEDULER` and `hostingMisfit`; `design/hosting.ts`'s
+    `scheduledCommands` and `cronLines`; `packages/detect/src/processes.ts` (the `queue-worker`
+    worker, `php artisan queue:work`); `examples/laravel-app` (`QUEUE_CONNECTION=database`)
+  - Depends: none
+  - Accept: a worker whose command runs `queue:work` no longer makes `hostingMisfit` refuse the app
+    (a queue service OpsCrew would run, Redis or RabbitMQ, still does, as today; another worker
+    still does); `scheduledCommands` turns it into a cron line every minute, the worker's own
+    command with `--stop-when-empty` and `--max-time=50` added where it lacks them, beside the
+    scheduler's line, so the hosting plan, the agent, rollback and destroy treat it as they treat
+    the scheduler's (no change there); design's reason or notes say that a queued job starts within
+    about a minute; on an SFTP host the line is named for the host's panel, as the scheduler's is;
+    the guide's "What fits" names a Laravel queue on the database connection, its worker run from
+    cron every minute. Tests: `laravel-app`'s facts with the queue worker give the two cron lines;
+    a worker with `--max-time=30` keeps its own value; a Redis queue service still refuses.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting src/design && pnpm lint`
+  - Effort: medium
+
 - [x] T2937 [P] [US7] Scheduled dump drills in a Portainer
   - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
     snapshots and `snapshots.docker.test.ts`
@@ -835,4 +855,4 @@ US1 static home address (T2902, T2903, T2907, T2908, T2910a, T2910d, T2911, T291
 T2914a, T2914d); US2 changing address (T2904, T2909, T2910b, T2910c, T2913a, T2914a–c, T2915a, T2915b,
 T2916b); US3 no public IPv4 or blocked ports (T2903, T2910a, T2910d, T2912, T2914a); US4 IPv6
 (T2906, T2907, T2910a, T2912, T2913a); US5 a Raspberry Pi (T2903, T2912, T2914a, T2914b). US6 cut.
-MVP: US1 and US2 together (a home server is unusable without the updater on a dynamic line). US7 restore drills (T2931, T2933–T2940); US8 the database check (T2932).
+MVP: US1 and US2 together (a home server is unusable without the updater on a dynamic line). US7 restore drills (T2931, T2933–T2940); US8 the database check (T2932); US9 a Laravel queue on a hosting account (T2946).

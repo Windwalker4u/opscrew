@@ -229,6 +229,34 @@ database's settings, roles and data are unchanged; no statement text with values
 
 ---
 
+### User Story 9 - A Laravel queue on a hosting account (Priority: P3; in 029's release)
+
+A Laravel app whose jobs go through Laravel's database queue deploys to a hosting account with a
+panel: its queue worker runs from cron every minute and stops once the queue is empty, as
+Laravel's scheduler already does there. Today design refuses the app, since a worker that keeps
+running has no place on a hosting account.
+
+**Why this priority**: queued jobs (mail, exports) are common in Laravel apps, and every hosting
+account with a panel has cron and PHP; the founder put it in 029's release (2026-11-19). PostgreSQL
+on such accounts waits: the host must install it, and many don't.
+
+**Independent Test**: `laravel-app` with a `queue:work` worker on the database connection: design
+plans a cron line for it, the hosting plan adds it, and destroy removes it; with a Redis or
+RabbitMQ queue design still refuses.
+
+**Acceptance Scenarios**:
+
+1. **Given** a Laravel app whose worker runs `php artisan queue:work` on the database connection,
+   **When** design plans it for a hosting account with a panel, **Then** it plans a cron line every
+   minute that runs the worker until the queue is empty, for at most 50 seconds, and says that a
+   job starts within about a minute.
+2. **Given** the same app on an SFTP-only host, **When** design plans it, **Then** it names the cron
+   line to add in the host's panel, as for the scheduler.
+3. **Given** a Laravel app whose queue is Redis or RabbitMQ that OpsCrew would run, **When** design
+   plans it for a hosting account, **Then** it refuses as today, naming the queue.
+
+---
+
 ### Edge Cases
 
 - **The server's LAN address changes** (the router's DHCP gives it another): the forwards point
@@ -334,6 +362,10 @@ database's settings, roles and data are unchanged; no statement text with values
   and MUST NOT show a running statement's text.
 - **FR-2922**: An index the check points to MUST be a proposal naming the table and the statement
   that reads it; nothing is applied, and no column is guessed.
+- **FR-2924**: On a hosting account, a Laravel worker that runs `queue:work` (not a queue service
+  OpsCrew would run) MUST become a cron line every minute running that command with
+  `--stop-when-empty` and `--max-time=50` added where it lacks them, planned, applied, rolled back
+  and removed like the scheduler's line; design MUST say that a job starts within about a minute.
 
 ### Key Entities
 
