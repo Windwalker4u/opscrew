@@ -232,6 +232,22 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 - Open: a second app's commands once the first app's server is gone (spec edge case). Its
   destroy should then remove its DNS and Cloudflare parts and record the deployment gone.
 
+**From T3006 (lead, 2026-11-19), accepted:**
+- `destroy` looks only when the plan deletes the server (`module.server.*`), after the preview
+  plan; a rerun once the server is gone needs no flag.
+- `retarget` start looks inside its phase, after the site refusals, and only when the deploy key
+  is on this computer.
+- `vpn grant` has no guard, since a server on a private network takes no second app. `vpn add`
+  looks only when it creates the network.
+- Beszel's guard sits after its input checks, so its hub secrets may be written locally first.
+- The phases with `skipOtherAppsCheck`: `runDestroy`, `runRetarget`, `runProvision` (and
+  `opscrew dns`), `restoreServerSnapshot`, `closePublicSsh`, `addonEnable` (Beszel),
+  `portainerEnable`, `vpnAdd`. Tests inject `otherApps` (`OtherAppsServices`); the helpers
+  `firstAppLook` and `noOtherApps` are in `agents/src/testing/other-apps.ts`.
+- T3007: the CLI and MCP tests that now meet the guards need those fixtures: cli commands addon
+  (8), destroy (5), vpn (5), rotate-dispatch (2), secure (1), and mcp-server tools/addons (1).
+- For the simplify pass: `appWords` exists in both `shares/guard.ts` and `status/other-apps.ts`.
+
 ## Phase 5: Wave 4 (parallel)
 
 - [ ] T3007 [P] [US1] [US2] CLI and MCP
