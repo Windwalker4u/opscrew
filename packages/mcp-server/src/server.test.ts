@@ -199,6 +199,28 @@ describe("createOpscrewMcpServer", () => {
     expect(byName.get("opscrew_save_requirements")?.inputSchema.required).toContain("answers");
   });
 
+  it("the tools that could break other apps on the server take skipOtherAppsCheck, and the answers name the shared server's keys", async () => {
+    const h = await connect(await fixture("static-vite"));
+    const { tools } = await h.client.listTools();
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    for (const name of [
+      "opscrew_plan",
+      "opscrew_apply",
+      "opscrew_addon_enable",
+      "opscrew_portainer_enable",
+    ]) {
+      const input = JSON.stringify(byName.get(name)?.inputSchema.properties?.skipOtherAppsCheck);
+      expect(input, name).toContain("--skip-other-apps-check");
+      expect(input, name).toContain("approves nothing");
+    }
+    const answers = byName.get("opscrew_save_requirements")?.inputSchema.properties?.answers as {
+      properties: Record<string, { description?: string }>;
+    };
+    expect(answers.properties["server.shares"]?.description).toContain("repository folder");
+    expect(answers.properties["server.shares-app"]?.description).toContain("With server.shares");
+    expect(answers.properties["server.shares-env"]?.description).toContain("default prod");
+  });
+
   it("opscrew_scan returns counts, masked top findings and the report path", async () => {
     const dir = await fixture("lovable-supabase");
     const h = await connect(dir);

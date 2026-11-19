@@ -30,6 +30,8 @@ import {
   checkApproveFlags,
   engineOption,
   planChanges,
+  skipOtherAppsFlag,
+  skipOtherAppsOption,
   YES_DESCRIPTION,
 } from "./provision";
 
@@ -44,6 +46,8 @@ interface ChangeFlags {
 interface EnableFlags extends ChangeFlags {
   subdomain?: string;
   allowEmail?: string[];
+  /** `--skip-other-apps-check`: go on without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
 }
 
 interface DisableFlags extends ChangeFlags {
@@ -100,7 +104,7 @@ async function refuseOnHosting(ctx: CliContext, what: string): Promise<void> {
 async function runChange(
   ctx: CliContext,
   sub: "enable" | "disable",
-  flags: ChangeFlags & { confirm?: string },
+  flags: ChangeFlags & { confirm?: string; skipOtherAppsCheck?: boolean },
   run: (deps: PhaseDeps, options: PortainerRunOptions) => Promise<PortainerResult>,
 ): Promise<void> {
   const planOnly = flags.planOnly === true;
@@ -171,7 +175,7 @@ async function runChange(
           ...(flags.hostKey === undefined ? {} : { hostKey: flags.hostKey.trim() }),
           ...(flags.yes === true ? { yes: true } : {}),
         },
-      ),
+      ) + skipOtherAppsFlag(flags),
     );
     if (outcome.result.dataPlanHash !== undefined) {
       ctx.stdout(
@@ -219,7 +223,8 @@ export function register(program: Command, ctx: CliContext): void {
         "--allow-email <email>",
         "With --subdomain: an email address Cloudflare Access lets in (repeat for several)",
         collect,
-      ),
+      )
+      .addOption(skipOtherAppsOption()),
   ).action((flags: EnableFlags) =>
     runChange(ctx, "enable", flags, (deps, options) =>
       portainerEnable(deps, {
@@ -227,6 +232,7 @@ export function register(program: Command, ctx: CliContext): void {
         // Without these options, `--approve` applies exactly what the --plan-only run saved.
         ...(flags.subdomain === undefined ? {} : { subdomain: flags.subdomain }),
         ...((flags.allowEmail ?? []).length === 0 ? {} : { allowEmails: flags.allowEmail }),
+        ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
       }),
     ),
   );

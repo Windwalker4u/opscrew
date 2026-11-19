@@ -156,6 +156,20 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     );
   });
 
+  it("--plan-only repeats --skip-other-apps-check in the --approve command", async () => {
+    project = await deployProject();
+    const { ctx } = context(project);
+    expect(
+      await run(ctx, "provision", "--plan-only", "--yes", "--skip-other-apps-check"),
+      ctx.errors,
+    ).toBe(0);
+    const hash = printedHash(ctx.output);
+    expect(ctx.output).toContain(
+      `    opscrew provision --approve ${hash} --yes --skip-other-apps-check
+`,
+    );
+  });
+
   it("--plan-only --yes prints the hash; --approve <hash> --yes applies exactly that plan", async () => {
     project = await deployProject();
     const first = context(project);

@@ -21,7 +21,13 @@ import { collect, runPhaseCommand } from "../ui/deploy";
 import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { confirmNameOf } from "../ui/hosting";
 import { printNextSteps } from "../ui/output";
-import { addHostKeyOption, checkApproveFlags, deployAgainStep, engineOption } from "./provision";
+import {
+  addHostKeyOption,
+  checkApproveFlags,
+  deployAgainStep,
+  engineOption,
+  skipOtherAppsOption,
+} from "./provision";
 
 /** The flags of `opscrew destroy`. */
 export interface DestroyFlags {
@@ -45,6 +51,8 @@ export interface DestroyFlags {
   env?: string;
   /** GitHub Pages: also delete GitHub's domain verification record. */
   deleteVerification?: boolean;
+  /** `--skip-other-apps-check`: go on without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
 }
 
 /** Where the undo host plan's own approval comes from (`--undo-host`). */
@@ -207,7 +215,9 @@ export function register(program: Command, ctx: CliContext): void {
       collect,
     );
   addEnvOption(command);
-  addHostKeyOption(command).action((flags: DestroyFlags) => runDestroyCommand(ctx, flags));
+  addHostKeyOption(command)
+    .addOption(skipOtherAppsOption())
+    .action((flags: DestroyFlags) => runDestroyCommand(ctx, flags));
 }
 
 /**
@@ -370,6 +380,7 @@ export async function runDestroyCommand(
       ...(flags.undoHost === true ? { undoHost: true } : {}),
       ...(flags.deleteData === true ? { deleteData: true } : {}),
       ...(flags.deleteVerification === true ? { deleteVerification: true } : {}),
+      ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
       ...(hostKey === undefined ? {} : { hostKey }),
       confirm: async (preview) => {
         // An extra cloud server, asked after the deployment's name: its own name.

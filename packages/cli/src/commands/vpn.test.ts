@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { deviceConfigFile, type VpnServices } from "@opscrew/agents";
-import { freshFacts, testKeyMaker, testPlan } from "@opscrew/agents/testing";
+import { firstAppLook, freshFacts, testKeyMaker, testPlan } from "@opscrew/agents/testing";
 import {
   type ApplyOptions,
   type ApplyResult,
@@ -51,6 +51,7 @@ class ApproveAll implements ApprovalHandler {
 async function setup(options: { approvals?: ApprovalHandler; interactive?: boolean } = {}) {
   project = await tempProject();
   await writeProjectPlan(project, testPlan({ deployed: true, userSecret: false }));
+  const paths = resolveProjectPaths(project.root, { env: project.env });
   const applies: { server: string; plan: HostPlan; options: ApplyOptions }[] = [];
   const keys = testKeyMaker("device");
   const vpn: VpnServices = {
@@ -79,6 +80,8 @@ async function setup(options: { approvals?: ApprovalHandler; interactive?: boole
         latestHandshake: new Date(NOW.getTime() - 5_000),
         allowedIps: [],
       })),
+    // No app from another repository on the server.
+    otherApps: await firstAppLook(paths),
   };
   const ctx = projectContext(project, {
     interactive: options.interactive ?? false,
@@ -87,7 +90,6 @@ async function setup(options: { approvals?: ApprovalHandler; interactive?: boole
       ...(options.approvals === undefined ? {} : { approvalHandler: options.approvals }),
     },
   });
-  const paths = resolveProjectPaths(project.root, { env: ctx.env });
   return { ctx, paths, applies, keys, project };
 }
 

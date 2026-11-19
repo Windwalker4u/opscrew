@@ -7,6 +7,7 @@ import {
   FakeAddonServer,
   FakeEngine,
   fakeSharedCloudflare,
+  firstAppLook,
   freshFacts,
   ownCloudflare,
   SERVER_IPV4,
@@ -124,6 +125,8 @@ async function setup(options: { cloudflare?: boolean } = {}) {
     };
   }
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
+  // The look for apps from other repositories on the server finds none.
+  const otherApps = await firstAppLook(paths);
   const host = new FakeAddonServer();
   const keys = testKeyMaker("cli-monitoring");
   const p = project;
@@ -150,6 +153,7 @@ async function setup(options: { cloudflare?: boolean } = {}) {
         deployRemote: options.deployRemote ?? host.shell,
         applyHost: host.apply,
         monitoring: monitoringServices(keys),
+        otherApps,
         ...cloudflare,
       },
     });
@@ -250,6 +254,18 @@ describe("opscrew addon", () => {
     expect((await s.plan()).observability?.beszel?.enabled).toBe(true);
     expect(second.output).toContain("opscrew addon open beszel");
     expect(second.output).toContain("`opscrew addon status`");
+  });
+
+  it("enable --plan-only repeats --skip-other-apps-check in the --approve command", async () => {
+    const s = await setup();
+    const ctx = s.context();
+    const args = ["addon", "enable", "beszel", "--plan-only", "--yes", "--skip-other-apps-check"];
+    expect(await run(ctx, ...args), ctx.errors).toBe(0);
+    const hash = printedHash(ctx.output);
+    expect(ctx.output).toContain(
+      `    opscrew addon enable beszel --approve ${hash} --yes --skip-other-apps-check
+`,
+    );
   });
 
   it("never applies a host plan through --yes alone", async () => {

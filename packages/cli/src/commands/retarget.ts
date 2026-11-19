@@ -43,6 +43,7 @@ import {
   addHostKeyOption,
   engineOption,
   pagesVerificationPrompt,
+  skipOtherAppsOption,
   YES_DESCRIPTION,
 } from "./provision";
 import { chooseEmptyInTerminal, newSideAnswers, parsePortainerAddress } from "./retarget-answers";
@@ -80,6 +81,8 @@ export interface RetargetFlags {
   /** Each `--confirm <name>`: the app's name, or the bucket's for its deletion. */
   confirm?: string[];
   yes?: boolean;
+  /** `--skip-other-apps-check`: start the move without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
   /** `--app <key>`: the repository's app. */
   app?: string;
   /** `--env <name>`: the app's environment. */
@@ -416,6 +419,7 @@ async function runCommand(
       ...(flags.empty !== undefined ? { empty: flags.empty } : {}),
       ...(flags.allowDowntime === true ? { allowDowntime: true } : {}),
       ...(flags.dnsSwitched === true ? { dnsSwitched: true } : {}),
+      ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
       ...(ctx.isInteractive
         ? {
             ...(to !== undefined
@@ -615,7 +619,8 @@ export function register(program: Command, ctx: CliContext): void {
       "The name a deletion asks to be typed, for scripts and CI: the app's, or the bucket's for its deletion; repeat for both (--confirm shop --confirm shop-uploads)",
       collect,
     )
-    .option("--yes", YES_DESCRIPTION);
+    .option("--yes", YES_DESCRIPTION)
+    .addOption(skipOtherAppsOption().conflicts(["finish", "abort"]));
   addHostKeyOption(addEnvOption(command))
     .addHelpText(
       "after",

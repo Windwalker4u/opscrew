@@ -95,6 +95,18 @@ function printedHash(output: string): string {
 }
 
 describe.skipIf(!GIT)("opscrew portainer", () => {
+  it("enable --plan-only repeats --skip-other-apps-check in the --approve command", async () => {
+    const s = await setup();
+    const ctx = s.context();
+    const args = ["portainer", "enable", "--plan-only", "--yes", "--skip-other-apps-check"];
+    expect(await run(ctx, ...args), ctx.errors).toBe(0);
+    const hash = printedHash(ctx.output);
+    expect(ctx.output).toContain(
+      `    opscrew portainer enable --approve ${hash} --yes --skip-other-apps-check
+`,
+    );
+  });
+
   it("enable --plan-only prints the host plan's hash; --approve <hash> installs it and prints how to open it", async () => {
     const s = await setup();
     const first = s.context();

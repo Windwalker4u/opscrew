@@ -65,6 +65,8 @@ import {
   IDEMPOTENT_WRITE,
   projectDirInput,
   runTool,
+  skipOtherAppsCheckInput,
+  skipOtherAppsFlag,
   toolEnvironment,
 } from "./shared";
 
@@ -493,6 +495,7 @@ export function registerDeployTools(
         publicImage: PUBLIC_IMAGE_INPUT,
         replaceTokens: REPLACE_TOKENS_INPUT,
         pagesVerification: PAGES_VERIFICATION_INPUT,
+        ...skipOtherAppsCheckInput,
       },
       annotations: {
         readOnlyHint: false,
@@ -511,6 +514,7 @@ export function registerDeployTools(
       publicImage,
       replaceTokens,
       pagesVerification,
+      skipOtherAppsCheck,
     }) =>
       runTool(deps, "opscrew_plan", projectDir, async (call) => {
         const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
@@ -525,6 +529,7 @@ export function registerDeployTools(
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...portainerImageOptions(publicImage, replaceTokens),
           ...(pagesVerification === undefined ? {} : { pagesVerification }),
+          ...(skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
           ...servicesOption(options),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
@@ -634,13 +639,14 @@ export function registerDeployTools(
           ...runnerHashes,
           ...(localHash !== undefined ? [localHash] : []),
         ];
-        // The terminal run repeats this call's engine, password-logins and image choices.
-        const command = applyCommand(`provision${flag}`, hashes, {
+        // The terminal run repeats this call's engine, password-logins and image choices, and the
+        // skipped look for other apps on the server.
+        const command = `${applyCommand(`provision${flag}`, hashes, {
           ...(engine === "tofu" || engine === "terraform" ? { engine } : {}),
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...(publicImage === undefined ? {} : { publicImage }),
           ...(replaceTokens === undefined ? {} : { replaceTokens }),
-        });
+        })}${skipOtherAppsFlag(skipOtherAppsCheck)}`;
         if (hashes.length === 0) {
           const matched = own
             ? "Cloudflare and the user's server already match the plans"
@@ -827,6 +833,7 @@ export function registerDeployTools(
           .describe(
             "The first time OpsCrew makes the encrypted recovery copy of the app's secrets: the full path of a file outside the repository, which the user chose, for their new age key. OpsCrew writes the key there once and never returns it; never read that file. Without it, no copy is made yet and the result says how to make it.",
           ),
+        ...skipOtherAppsCheckInput,
       },
       annotations: {
         readOnlyHint: false,
@@ -855,6 +862,7 @@ export function registerDeployTools(
         replaceTokens,
         pagesVerification,
         keyOut,
+        skipOtherAppsCheck,
       },
       extra: CallExtra,
     ) =>
@@ -916,11 +924,11 @@ export function registerDeployTools(
         // A hosting account is set up in the terminal, before any dialog.
         const target = await readArtifact("plan", paths.files.plan).catch(() => undefined);
         if (target?.target.provider === "hosting") throw hostingInTerminal(flag);
-        const terminal = applyCommand(`provision${flag}`, hashes, {
+        const terminal = `${applyCommand(`provision${flag}`, hashes, {
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...(publicImage === undefined ? {} : { publicImage }),
           ...(replaceTokens === undefined ? {} : { replaceTokens }),
-        });
+        })}${skipOtherAppsFlag(skipOtherAppsCheck)}`;
         requireDialogs(server, terminal);
         const handler = dialogHandler(server, deps, extra);
         const gate = new CloudflarePlanGate(
@@ -1027,6 +1035,7 @@ export function registerDeployTools(
             ...portainerImageOptions(publicImage, replaceTokens),
             ...(pagesVerification === undefined ? {} : { pagesVerification }),
             ...(keyOut !== undefined ? { recovery: { keyOut: async () => keyOut } } : {}),
+            ...(skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
             secrets,
             ...servicesOption(options),
           });

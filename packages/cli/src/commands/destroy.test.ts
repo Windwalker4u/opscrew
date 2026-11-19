@@ -4,6 +4,7 @@ import { readServerAddresses } from "@opscrew/agents";
 import {
   FakeDestroyGitHub,
   FakeServers,
+  firstAppLook,
   ScriptedDestroyEngine,
   testPlan,
 } from "@opscrew/agents/testing";
@@ -69,6 +70,8 @@ async function setup(options: { interactive?: boolean; typed?: unknown } = {}) {
       cloudflare: null,
       github,
       sleep: async () => undefined,
+      // No app from another repository on the server.
+      otherApps: await firstAppLook(paths),
     },
   });
   const fakes = {

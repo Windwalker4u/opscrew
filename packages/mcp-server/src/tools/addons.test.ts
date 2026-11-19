@@ -15,6 +15,7 @@ import { MONITORING_STATUS_COMMAND, recordServerAddress } from "@opscrew/agents"
 import {
   euCatalog,
   FakeAddonServer,
+  firstAppLook,
   forbiddenFetch,
   freshFacts,
   ScriptedRunner,
@@ -100,6 +101,8 @@ async function connect(
     env?: Record<string, string>;
     dialogs?: boolean;
     deployRemote?: (host: string) => RemoteExec;
+    /** The look for apps from other repositories on the server fails with it. */
+    lookFails?: Error;
   } = {},
 ) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-addons-"));
@@ -109,6 +112,12 @@ async function connect(
   const env = { OPSCREW_HOME: path.join(dir, "home"), ...options.env };
   const paths = resolveProjectPaths(dir, { env });
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
+  // The look for apps from other repositories on the server finds none, unless it fails.
+  const otherApps = await firstAppLook(
+    paths,
+    [],
+    options.lookFails === undefined ? {} : { fails: options.lookFails },
+  );
   const host = new FakeAddonServer();
   const deps = resolveMcpDeps({
     version: "0.0.0-test",
@@ -127,6 +136,7 @@ async function connect(
     services: {
       deployRemote: options.deployRemote ?? host.shell,
       applyHost: host.apply,
+      otherApps,
       monitoring: {
         remote: async (name) => ({
           host: name,
@@ -287,6 +297,23 @@ describe("the add-on tools", () => {
     const { password, token } = JSON.parse(secrets) as { password: string; token: string };
     expect(JSON.stringify([h.outputs, h.elicited])).not.toContain(password);
     expect(JSON.stringify([h.outputs, h.elicited])).not.toContain(token);
+  });
+});
+
+describe("the add-on tools and other apps on the server", () => {
+  it("Beszel stops when OpsCrew can't look at the server, and goes on with skipOtherAppsCheck", async () => {
+    const h = await connect({ lookFails: new Error("ssh: connect to host: Connection timed out") });
+    const refused = await h.call("opscrew_addon_enable", { addon: "beszel" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("OpsCrew couldn't look at the server for other apps");
+    expect(h.host.applies).toEqual([]);
+
+    const enabled = await h.call("opscrew_addon_enable", {
+      addon: "beszel",
+      skipOtherAppsCheck: true,
+    });
+    expect(enabled.isError, textOf(enabled)).toBeFalsy();
+    expect(h.host.applies).toHaveLength(1);
   });
 });
 

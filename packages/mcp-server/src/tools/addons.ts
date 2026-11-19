@@ -24,6 +24,7 @@ import {
   projectDirInput,
   requireServerTarget,
   runTool,
+  skipOtherAppsCheckInput,
   type ToolCall,
   toolEnvironment,
 } from "./shared";
@@ -297,6 +298,7 @@ export function registerAddonTools(
           .int()
           .optional()
           .describe("Monitoring (--logs-days): the days logs are kept, 1 to 30 (default 7)."),
+        ...skipOtherAppsCheckInput,
       },
       annotations: IDEMPOTENT_WRITE,
       _meta: REQUIRES_USER,

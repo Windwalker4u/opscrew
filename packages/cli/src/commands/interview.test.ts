@@ -38,6 +38,16 @@ async function requirementsOf(root: string, env: Record<string, string | undefin
 }
 
 describe("opscrew interview", () => {
+  it("names the answers file's keys for a server another app runs on in its help", async () => {
+    project = await tempProject();
+    const ctx = projectContext(project);
+    expect(await run(ctx, "interview", "--help")).toBe(0);
+    for (const key of ["server.shares ", "server.shares-app", "server.shares-env"]) {
+      expect(ctx.output).toContain(key);
+    }
+    expect(ctx.output).toContain("A server another of your OpsCrew apps runs on");
+  });
+
   it("reads the answers from --answers and writes requirements.yaml", async () => {
     project = await tempProject("nextjs-postgres");
     await writeFile(path.join(project.dir, "answers.yaml"), ANSWERS);

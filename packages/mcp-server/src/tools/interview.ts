@@ -153,6 +153,12 @@ const SERVER_ANSWER_HELP: Record<string, string> = {
     "Own server, not at home: true when the internet reaches it directly; false behind a router or firewall that doesn't forward to it (then a Cloudflare Tunnel on the user's Cloudflare domain). Refused with server.home true.",
   "server.sshFrom":
     "Own server at home: the addresses and networks that may reach SSH, space-separated (IPv4 or IPv6, up to 32), for example 192.168.1.0/24 10.8.0.0/24. Default: the home network design finds, plus fe80::/10. It must include the address the user connects from (add a VPN's network); required when the server holds its public IPv4 itself.",
+  "server.shares":
+    "A server another of the user's OpsCrew apps runs on, one OpsCrew created for that app (with provider own): that app's repository folder on this computer, where it was provisioned. Then leave the other server.* answers out except server.shares-app and server.shares-env: the address and the login come from that app. Kept on the user's computer only. Saving it again replaces the folder (it moved, or this is another computer).",
+  "server.shares-app":
+    "With server.shares, when that repository has several apps: the key of the app whose server it is, as `opscrew app list` shows it there, or . for its first app (the default).",
+  "server.shares-env":
+    "With server.shares, when that app has several environments: the environment whose server it is (default prod).",
 };
 
 /** The follow-ups for a hosting account (`provider: hosting`); never a token, password or key. */
@@ -411,6 +417,7 @@ export function registerInterviewTools(
           "",
           ...serverQuestions.map(renderQuestion),
           `When the server is at home (server.home true), don't ask server.reachable. Pass server.sshFrom only when the user names the networks that may reach SSH: ${SERVER_ANSWER_HELP["server.sshFrom"]}`,
+          "When the app should run beside another of the user's OpsCrew apps, on the server OpsCrew created for that app, pass provider \"own\" with server.shares (that app's repository folder on this computer), and server.shares-app and server.shares-env when that repository has several apps or environments, instead of the questions above.",
           "",
           `Only when the user chooses "portainer" (a Portainer they already run), also ask these and pass them as portainer.* answers. The access token comes only from the PORTAINER_API_KEY environment variable of the MCP server: never ask for it or a password. The address stays on the user's computer only; do not write it into any file. When OpsCrew connects, the user confirms Portainer's certificate in a dialog; never confirm it or pass a fingerprint yourself. The choices for web and redeploy follow the domain answered above: a Cloudflare Tunnel and Cloudflare redeploys need a domain on Cloudflare, Caddy needs a domain.`,
           ...(portainer !== undefined

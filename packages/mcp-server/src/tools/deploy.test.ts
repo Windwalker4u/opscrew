@@ -796,6 +796,32 @@ describe.skipIf(!findExecutable("git"))("a runner machine's host plan", () => {
     );
     expect(textOf(applied)).toContain(`The runner machines' host plans: ${RUNNER_HASH}.`);
   });
+
+  it("opscrew_plan and opscrew_apply pass skipOtherAppsCheck to provision, and the terminal command repeats it", async () => {
+    const skips: (boolean | undefined)[] = [];
+    const provision = machineProvision({});
+    const h = await connect({
+      elicit: approveAll,
+      tools: {
+        runProvision: async (phase, options) => {
+          skips.push(options?.skipOtherAppsCheck);
+          return provision(phase, options);
+        },
+      },
+    });
+    const planned = await h.call("opscrew_plan", { skipOtherAppsCheck: true });
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(dataOf(planned).applyCommand).toBe(
+      `opscrew provision --approve ${RUNNER_HASH} --skip-other-apps-check`,
+    );
+    const applied = await h.call("opscrew_apply", {
+      runnerHostPlanHashes: [RUNNER_HASH],
+      skipOtherAppsCheck: true,
+    });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(await h.call("opscrew_plan")).toBeDefined();
+    expect(skips).toEqual([true, true, undefined]);
+  });
 });
 
 /** The host plan of the server's runner on a server OpsCrew created (only its steps are read back). */

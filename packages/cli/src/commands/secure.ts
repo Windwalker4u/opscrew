@@ -13,7 +13,7 @@ import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { assumeYesHint, collect, runPhaseCommand } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
-import { checkApproveFlags, YES_DESCRIPTION } from "./provision";
+import { checkApproveFlags, skipOtherAppsOption, YES_DESCRIPTION } from "./provision";
 
 interface SecureFlags extends AppEnvFlags {
   deep?: boolean;
@@ -22,6 +22,8 @@ interface SecureFlags extends AppEnvFlags {
   /** Every `--approve <hash>`: the infrastructure plan's and each server's host plan's. */
   approve?: string[];
   yes?: boolean;
+  /** `--skip-other-apps-check`: go on without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
 }
 
 /**
@@ -47,6 +49,7 @@ async function publicSsh(ctx: CliContext, flags: SecureFlags): Promise<void> {
       const provision = servicesOf(ctx).provision;
       const options: PublicSshOptions = {
         ...(hashes.length > 0 ? { approveHashes: hashes } : {}),
+        ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
         services: {
           ...servicesOf(ctx).vpn,
           provision: (d, o) =>
@@ -92,7 +95,8 @@ export function register(program: Command, ctx: CliContext): void {
       "With --close-public-ssh or --open-public-ssh in a script: apply exactly the plan with this hash; give it once per plan (the infrastructure plan and each server's host plan)",
       collect,
     )
-    .option("--yes", YES_DESCRIPTION);
+    .option("--yes", YES_DESCRIPTION)
+    .addOption(skipOtherAppsOption("With --close-public-ssh or --open-public-ssh"));
   addEnvOption(command).action(async (flags: SecureFlags) => {
     const change = flags.closePublicSsh === true || flags.openPublicSsh === true;
     if (flags.closePublicSsh === true && flags.openPublicSsh === true) {
@@ -116,6 +120,13 @@ export function register(program: Command, ctx: CliContext): void {
         "INVALID_INPUT",
         "--approve and --yes go with --close-public-ssh or --open-public-ssh: the checks change nothing.",
         { hint: "Run `opscrew secure` without them." },
+      );
+    }
+    if (!change && flags.skipOtherAppsCheck === true) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "--skip-other-apps-check goes with --close-public-ssh or --open-public-ssh: the checks change nothing.",
+        { hint: "Run `opscrew secure` without it." },
       );
     }
     if (change) {

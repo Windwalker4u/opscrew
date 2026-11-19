@@ -18,6 +18,7 @@ import {
   projectDirInput,
   requireServerTarget,
   runTool,
+  skipOtherAppsCheckInput,
 } from "./shared";
 
 /** What to use instead of Portainer on a hosting account. */
@@ -127,11 +128,12 @@ export function registerPortainerTools(
           .describe(
             "With subdomain: the email addresses Cloudflare Access lets in (at least one).",
           ),
+        ...skipOtherAppsCheckInput,
       },
       annotations: IDEMPOTENT_WRITE,
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, subdomain, allowEmails }, extra: CallExtra) =>
+    ({ projectDir, subdomain, allowEmails, skipOtherAppsCheck }, extra: CallExtra) =>
       runTool(deps, "opscrew_portainer_enable", projectDir, async (call) => {
         // The phase deps are built once per call, so they carry the dialog's handler from the start.
         const handler = dialogHandler(server, deps, extra);
@@ -141,6 +143,7 @@ export function registerPortainerTools(
         const result = await portainerEnable(phase, {
           ...(subdomain === undefined ? {} : { subdomain }),
           ...(allowEmails === undefined || allowEmails.length === 0 ? {} : { allowEmails }),
+          ...(skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
           ...services,
         });
         return {

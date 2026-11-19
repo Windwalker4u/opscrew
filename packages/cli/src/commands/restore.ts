@@ -10,6 +10,7 @@ import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { quietReporter } from "../reporter";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
+import { skipOtherAppsOption } from "./provision";
 import { readKeyFile } from "./secrets";
 
 interface RestoreFlags extends AppEnvFlags {
@@ -35,6 +36,8 @@ interface RestoreFlags extends AppEnvFlags {
   remove?: boolean;
   /** `--json`: with --drill, the drill's report as JSON. */
   json?: boolean;
+  /** `--skip-other-apps-check`: with --server, go on without the look for other apps there. */
+  skipOtherAppsCheck?: boolean;
 }
 
 /**
@@ -111,6 +114,13 @@ function checkFlags(
       "INVALID_INPUT",
       `--approve expects the 64-character SHA-256 ${what} hash an earlier run showed.`,
       { hint: `Run \`${command}\` to see the ${what} and its hash.` },
+    );
+  }
+  if (flags.skipOtherAppsCheck === true && flags.server !== true) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "--skip-other-apps-check goes only with --server: of the restores, only rebuilding the whole server can break other apps on it.",
+      { hint: `Run \`${command}\` without it.` },
     );
   }
   if (drill) return approve;
@@ -250,7 +260,8 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--approve <hash>",
       "In a script: restore exactly as the restore with this hash, which an earlier run showed",
-    );
+    )
+    .addOption(skipOtherAppsOption("With --server"));
   addEnvOption(command)
     .addHelpText(
       "after",
@@ -298,7 +309,10 @@ export function register(program: Command, ctx: CliContext): void {
         return;
       }
       if (flags.server === true) {
-        const restored = await restoreServerSnapshot(deps, id, withServices);
+        const restored = await restoreServerSnapshot(deps, id, {
+          ...withServices,
+          ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
+        });
         if (!restored.checked) {
           printNextSteps(ctx, [`run \`opscrew verify${flag}\` to check the app.`]);
         }

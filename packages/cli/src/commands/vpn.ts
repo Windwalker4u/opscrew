@@ -15,7 +15,7 @@ import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { collect } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
-import { checkApproveFlags } from "./provision";
+import { checkApproveFlags, skipOtherAppsOption } from "./provision";
 
 /** Help text of `--approve <hash>` on the `vpn` commands. */
 const APPROVE_DESCRIPTION =
@@ -87,6 +87,8 @@ interface AddFlags extends VpnFlags {
   thisComputer?: boolean;
   qr?: boolean;
   again?: boolean;
+  /** `--skip-other-apps-check`: go on without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
 }
 
 interface GrantFlags extends VpnFlags {
@@ -122,13 +124,15 @@ export function register(program: Command, ctx: CliContext): void {
       .option(
         "--again",
         "A new key and configuration for a device already on the network (for example after a server was added)",
-      ),
+      )
+      .addOption(skipOtherAppsOption()),
   ).action(async (name: string, flags: AddFlags) => {
     const deps = await vpnDeps(ctx, flags, `vpn add ${name}`);
     const result = await vpnAdd(deps, name, {
       ...(flags.thisComputer === true ? { thisComputer: true } : {}),
       ...(flags.qr === true ? { qr: true } : {}),
       ...(flags.again === true ? { again: true } : {}),
+      ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
       services: servicesOf(ctx).vpn ?? {},
     });
     if (result.qr !== undefined) printQr(ctx, result.qr);

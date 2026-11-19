@@ -7,6 +7,7 @@ import {
   addPlanApproveOptions,
   type InfraFlags,
   runInfraCommand,
+  skipOtherAppsOption,
   YES_DESCRIPTION,
 } from "./provision";
 
@@ -31,6 +32,7 @@ export function register(program: Command, ctx: CliContext): void {
   addEnvOption(command);
   addHostKeyOption(command)
     .option("--yes", YES_DESCRIPTION)
+    .addOption(skipOtherAppsOption())
     .action(({ domain, ...flags }: DnsFlags) => {
       const fqdn = domain?.trim();
       return runInfraCommand(ctx, "dns", flags, (deps, options) =>

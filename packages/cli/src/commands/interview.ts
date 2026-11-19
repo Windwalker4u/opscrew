@@ -116,6 +116,17 @@ function nextStep(requirements: Requirements, flag: string): string {
   }
 }
 
+/** The answers file's keys for a server another of the user's OpsCrew apps runs on. */
+const SHARES_HELP = [
+  "",
+  "A server another of your OpsCrew apps runs on (one OpsCrew created for it): with provider own,",
+  "the answers file takes these keys instead of the server's address and login:",
+  "  server.shares       that app's repository folder on this computer, where it was provisioned",
+  "  server.shares-app   its app's key, when that repository has several (. for its first app)",
+  "  server.shares-env   its environment, when it has several (default prod)",
+  "Run the interview again with server.shares when that folder moved or on another computer.",
+].join("\n");
+
 /**
  * `opscrew interview`: asks only the questions that cannot be inferred (previous answers
  * pre-filled) or takes them from `--answers <file>`, and writes `opscrew/requirements.yaml`
@@ -137,7 +148,8 @@ export function register(program: Command, ctx: CliContext): void {
         "--target <provider>",
         "Where the app runs, answering that question up front: a cloud provider, your own server or Portainer, a site with no server (cloudflare-workers, github-pages), or your hosting account (hosting, with OPSCREW_HOSTING_* or OPSCREW_SFTP_* set)",
       ).choices(DeployProviderSchema.options),
-    );
+    )
+    .addHelpText("after", SHARES_HELP);
   addAppOption(command).action(async (flags: InterviewFlags) => {
     const certFingerprint = checkPortainerCert(flags.portainerCert);
     const app = await chooseApp(ctx, flags.app, "interview");

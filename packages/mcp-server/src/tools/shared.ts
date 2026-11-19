@@ -50,6 +50,24 @@ export const appInput = {
 };
 
 /**
+ * The `skipOtherAppsCheck` input (the CLI's `--skip-other-apps-check`) of the tools whose change
+ * would break apps from other repositories on the server OpsCrew created.
+ */
+export const skipOtherAppsCheckInput = {
+  skipOtherAppsCheck: z
+    .boolean()
+    .optional()
+    .describe(
+      "The CLI's --skip-other-apps-check, only on the user's explicit choice after OpsCrew stopped: go on when OpsCrew can't look at the server for other apps, or when only their kept data is there. An app that runs there is still refused, and it approves nothing.",
+    ),
+};
+
+/** ` --skip-other-apps-check` when `skip`, for the terminal command that repeats a tool call. */
+export function skipOtherAppsFlag(skip: boolean | undefined): string {
+  return skip === true ? " --skip-other-apps-check" : "";
+}
+
+/**
  * The further app's key a call acts on (agents' `resolveApp`, which asks no one here):
  * `requested` (`.` is the first app, `undefined`), else the only one; with several and none
  * named, `PHASE_PRECONDITION` with the apps.

@@ -9,6 +9,7 @@ import {
   FakeEngine,
   FakeGitHub,
   FakeSops,
+  firstAppLook,
   freshFacts,
   portainerPlan,
   sitePlan,
@@ -27,7 +28,7 @@ import type {
   ApprovalRequest,
   RemoteExec,
 } from "@opscrew/contracts";
-import { resolveProjectPaths } from "@opscrew/core";
+import { type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -105,9 +106,10 @@ function context(
 
 /**
  * The servers of a deployed app on its own private network, as `opscrew vpn` reaches them: the host
- * adapter's inspection and apply, the key maker and WireGuard's read.
+ * adapter's inspection and apply, the key maker, WireGuard's read, and the look for apps from
+ * other repositories on the server, which finds none.
  */
-function vpnServices() {
+async function vpnServices(paths: ProjectPaths) {
   const keys = testKeyMaker("device");
   const applies: HostPlan[] = [];
   const vpn: VpnServices = {
@@ -128,6 +130,7 @@ function vpnServices() {
     },
     keys,
     readWireGuard: async () => [],
+    otherApps: await firstAppLook(paths),
   };
   return { vpn, keys, applies };
 }
@@ -257,8 +260,8 @@ describe.skipIf(GIT === undefined)("opscrew rotate's dispatch", () => {
   });
 
   it("device:<name> --qr draws the new configuration as a QR code, never its key", async () => {
-    const { p } = await setup(testPlan({ deployed: true, userSecret: false }));
-    const { vpn, keys } = vpnServices();
+    const { p, paths } = await setup(testPlan({ deployed: true, userSecret: false }));
+    const { vpn, keys } = await vpnServices(paths);
     const added = context(p, { services: { vpn } }).ctx;
     expect(await run(added, "vpn", "add", "laptop"), added.errors).toBe(0);
 
@@ -270,8 +273,8 @@ describe.skipIf(GIT === undefined)("opscrew rotate's dispatch", () => {
   });
 
   it("grant:<device>/<service> shows the new password once", async () => {
-    const { p } = await setup(testPlan({ deployed: true, userSecret: false }));
-    const { vpn } = vpnServices();
+    const { p, paths } = await setup(testPlan({ deployed: true, userSecret: false }));
+    const { vpn } = await vpnServices(paths);
     const added = context(p, { services: { vpn } }).ctx;
     expect(await run(added, "vpn", "add", "laptop"), added.errors).toBe(0);
     const granted = context(p, { services: { vpn } }).ctx;

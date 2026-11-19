@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { allocateNetwork } from "@opscrew/agents";
-import { SERVER_IPV4, testKeyMaker, testPlan } from "@opscrew/agents/testing";
+import { firstAppLook, SERVER_IPV4, testKeyMaker, testPlan } from "@opscrew/agents/testing";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
@@ -83,6 +83,9 @@ describe("opscrew secure", () => {
     const plan = deployed();
     const { network } = allocateNetwork(plan, {}, testKeyMaker());
     const { ctx, root } = await setup(DeployPlanSchema.parse({ ...plan, network }));
+    // No app from another repository on the server.
+    const paths = resolveProjectPaths(root, { env: ctx.env });
+    withServices(ctx, { vpn: { otherApps: await firstAppLook(paths) } });
     const planFile = path.join(root, "opscrew", "plan.yaml");
     const before = await readFile(planFile, "utf8");
     expect(await run(ctx, "secure", "--close-public-ssh")).toBe(1);

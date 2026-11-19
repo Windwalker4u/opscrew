@@ -24,7 +24,13 @@ import {
   stringOutput,
 } from "@opscrew/agents";
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
-import { approvalDecision, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import {
+  approvalDecision,
+  isPlanHash,
+  OpsCrewError,
+  toPosixRelative,
+  upperFirst,
+} from "@opscrew/core";
 import {
   type DeployPlan,
   isServerlessProvider,
@@ -88,6 +94,8 @@ export interface InfraFlags {
   allowDowntime?: boolean;
   /** `--finish-move` (`provision` only): delete a moved service's old copy, and nothing else. */
   finishMove?: boolean;
+  /** `--skip-other-apps-check`: go on without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
   /** `--app <key>`: the repository's app. */
   app?: string;
   /** `--env <name>`: the app's environment. */
@@ -196,6 +204,29 @@ export function secureServerStep(flag: string, report: string): string {
 /** The next step for a site on Cloudflare's hosting or GitHub Pages: check its headers. */
 export function secureSiteStep(flag: string, report: string): string {
   return `run \`opscrew secure${flag}\` to check the site's security headers and write ${report}.`;
+}
+
+/** What `--skip-other-apps-check` does; it never approves a plan or a typed name. */
+const SKIP_OTHER_APPS_CHECK_WORDS =
+  "go on when OpsCrew can't look at the server for other apps, or when only their kept data is there";
+
+/**
+ * `--skip-other-apps-check`: a command that would break apps from other repositories on the
+ * server OpsCrew created goes on when OpsCrew can't look there, or finds only their kept data. An
+ * app that runs there is refused all the same. `scope` starts the help (for example "Beszel").
+ */
+export function skipOtherAppsOption(scope?: string): Option {
+  return new Option(
+    "--skip-other-apps-check",
+    scope === undefined
+      ? upperFirst(SKIP_OTHER_APPS_CHECK_WORDS)
+      : `${scope}: ${SKIP_OTHER_APPS_CHECK_WORDS}`,
+  );
+}
+
+/** ` --skip-other-apps-check` when it was given, for a printed command that runs it again. */
+export function skipOtherAppsFlag(flags: { skipOtherAppsCheck?: boolean }): string {
+  return flags.skipOtherAppsCheck === true ? " --skip-other-apps-check" : "";
 }
 
 /** Adds `--host-key <fingerprint>` (a server the user owns) to `command`. */
@@ -406,6 +437,7 @@ export async function runInfraCommand(
         ...(flags.pagesVerification === undefined
           ? {}
           : { pagesVerification: flags.pagesVerification }),
+        ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
         services: {
           ...(ctx.isInteractive
             ? {
@@ -580,7 +612,7 @@ export async function runInfraCommand(
               ...(flags.yes === true ? { yes: true } : {}),
               ...(flags.keyOut === undefined ? {} : { keyOut: userPath(ctx, flags.keyOut) }),
             },
-          )}${confirmFlags}`,
+          )}${skipOtherAppsFlag(flags)}${confirmFlags}`,
         );
         if (result.keyWanted) {
           ctx.stdout(
@@ -851,6 +883,7 @@ export function register(program: Command, ctx: CliContext): void {
       "--pages-verification <value>",
       "GitHub Pages: the value of GitHub's domain verification record, which GitHub shows in your account's Pages settings once you add the domain there (a terminal asks for it; it replaces a recorded one)",
     )
+    .addOption(skipOtherAppsOption())
     .action((flags: InfraFlags) =>
       flags.finishMove === true
         ? finishMoveCommand(ctx, flags)

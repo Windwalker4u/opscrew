@@ -36,6 +36,8 @@ import {
   checkApproveFlags,
   engineOption,
   planChanges,
+  skipOtherAppsFlag,
+  skipOtherAppsOption,
   YES_DESCRIPTION,
 } from "./provision";
 
@@ -68,6 +70,8 @@ interface EnableFlags extends ChangeFlags {
   newServer?: boolean;
   metricsDays?: string;
   logsDays?: string;
+  /** Beszel, `--skip-other-apps-check`: go on without the look for other apps on the server. */
+  skipOtherAppsCheck?: boolean;
 }
 
 interface DisableFlags extends ChangeFlags {
@@ -97,7 +101,7 @@ function parsePort(value: string): number {
  */
 function requirePlanFlagsOnly(
   sub: "enable" | "disable",
-  flags: ChangeFlags & { confirm?: string; keepData?: boolean },
+  flags: ChangeFlags & { confirm?: string; keepData?: boolean; skipOtherAppsCheck?: boolean },
 ): void {
   const given = [
     flags.planOnly === true ? "--plan-only" : undefined,
@@ -106,6 +110,7 @@ function requirePlanFlagsOnly(
     flags.engine !== undefined ? "--engine" : undefined,
     flags.keepData === true ? "--keep-data" : undefined,
     flags.confirm !== undefined ? "--confirm" : undefined,
+    flags.skipOtherAppsCheck === true ? "--skip-other-apps-check" : undefined,
   ].filter((flag) => flag !== undefined);
   if (given.length === 0) return;
   throw new OpsCrewError(
@@ -168,7 +173,7 @@ async function runChange(
   ctx: CliContext,
   sub: "enable" | "disable",
   kind: AddonKind,
-  flags: ChangeFlags & { confirm?: string; keepData?: boolean },
+  flags: ChangeFlags & { confirm?: string; keepData?: boolean; skipOtherAppsCheck?: boolean },
   run: (deps: PhaseDeps, plan: DeployPlan, options: AddonRunOptions) => Promise<AddonResult>,
 ): Promise<void> {
   const planOnly = flags.planOnly === true;
@@ -241,13 +246,13 @@ async function runChange(
       return;
     }
     // Agents' command makes the same plans again: the app's, environment's and add-on's options.
-    const command = [
+    const command = `${[
       outcome.result.approveCommand,
       ...planned.map((plan) => `--approve ${plan.hash}`),
       ...(flags.engine === undefined ? [] : [`--engine ${flags.engine}`]),
       ...(flags.hostKey === undefined ? [] : [`--host-key ${flags.hostKey.trim()}`]),
       ...(flags.yes === true ? ["--yes"] : []),
-    ].join(" ");
+    ].join(" ")}${skipOtherAppsFlag(flags)}`;
     printPlanHashes(ctx, planned, command);
     if (sub === "disable" && kind === "beszel" && flags.keepData !== true && !outcome.agentMode) {
       ctx.stdout(
@@ -339,7 +344,8 @@ export function register(program: Command, ctx: CliContext): void {
         "Monitoring: a monitoring server of this environment's own, even when the repository has one",
       )
       .option("--metrics-days <n>", "Monitoring: the days figures are kept, 1 to 90 (default 15)")
-      .option("--logs-days <n>", "Monitoring: the days logs are kept, 1 to 30 (default 7)"),
+      .option("--logs-days <n>", "Monitoring: the days logs are kept, 1 to 30 (default 7)")
+      .addOption(skipOtherAppsOption("Beszel")),
   ).action((kind: AddonKind, flags: EnableFlags) =>
     runChange(ctx, "enable", kind, flags, (deps, plan, options) =>
       addonEnable(deps, plan, kind, {
@@ -359,6 +365,7 @@ export function register(program: Command, ctx: CliContext): void {
         ...(flags.newServer === true ? { newServer: true } : {}),
         ...(flags.metricsDays === undefined ? {} : { metricsDays: Number(flags.metricsDays) }),
         ...(flags.logsDays === undefined ? {} : { logsDays: Number(flags.logsDays) }),
+        ...(flags.skipOtherAppsCheck === true ? { skipOtherAppsCheck: true } : {}),
       }),
     ),
   );
