@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FAKE_ACCOUNT_ID } from "@opscrew/connector-cloudflare/testing";
 import {
@@ -33,12 +34,22 @@ import type {
   RemoteExec,
   ResourceChange,
 } from "@opscrew/contracts";
-import { NodeCommandRunner } from "@opscrew/core";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { NodeCommandRunner, type ProjectPaths } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { selfHostedServices } from "../design/sizing";
-import type { HostAdapterApi } from "../shared";
-import { fakeCloudflare } from "./deploy";
-import { ScriptedRunner } from "./deps";
+import {
+  type HostAdapterApi,
+  knownHostsName,
+  type OwnServerConnection,
+  readOwnServer,
+  recordOwnServer,
+  type SharesReference,
+  updateServerAddresses,
+} from "../shared";
+import { firstAppPaths } from "../shares/reference";
+import { fakeCloudflare, SERVER_IPV4, testPlan } from "./deploy";
+import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "./deps";
 import { noProviderSchemas, plainStateResources } from "./state";
 
 /** The user's own server: a documentation address (RFC 5737), public. */
@@ -587,6 +598,116 @@ export function preparedServerFacts(projectId: string): HostFacts {
       ],
     },
   });
+}
+
+/**
+ * A server OpsCrew created as its deploy login inspects it with `rootImage`: `deploy` with root
+ * through Docker, Docker running, the shared folders cloud-init made, and the records of the
+ * apps from other repositories that share it (`apps`, see {@link secondAppRecord}).
+ */
+export function createdServerFacts(apps: readonly AppRecord[] = []): HostFacts {
+  const fresh = freshFacts({ user: "deploy", privilege: "docker" });
+  return HostFactsSchema.parse({
+    ...fresh,
+    docker: {
+      ...fresh.docker,
+      kind: "docker-repo",
+      version: "28.5.1",
+      running: true,
+      composePlugin: true,
+      buildxPlugin: true,
+    },
+    deployUser: { groups: ["deploy", "docker"], keys: [] },
+    dirs: preparedDirs("shop"),
+    apps: apps.map((record) => ({ name: record.app, record })),
+  });
+}
+
+/**
+ * The record of a second app (default `inventory`, from `github.com/example/inventory`) on the
+ * server of the first app `shop`: active with 512 MB of limits, or with its data kept.
+ */
+export function secondAppRecord(
+  o: { app?: string; memoryMb?: number; state?: AppRecord["state"] } = {},
+): AppRecord {
+  const app = o.app ?? "inventory";
+  const kept = o.state === "data-kept";
+  return {
+    schemaVersion: 1,
+    app,
+    projectId: `${app}-project`,
+    state: kept ? "data-kept" : "active",
+    access: kept ? null : "web-filter",
+    hostnames: kept ? [] : [`${app}.example.com`],
+    folders: appDirs(app),
+    composeProject: app,
+    services: [],
+    memoryMb: kept ? 0 : (o.memoryMb ?? 512),
+    deployKey: kept ? "" : OTHER_DEPLOY_KEY,
+    shares: { app: "shop" },
+    repository: `https://github.com/example/${app}`,
+  };
+}
+
+/** A second app on the first app's server, and the first app's repository on this computer. */
+export interface SharedServerProject {
+  /** The second app's deps: a fresh project whose `own` names the first app (`own.shares`). */
+  deps: TestPhaseDeps;
+  /** The second app's reference to the first app. */
+  ref: SharesReference;
+  /** The second app's recorded login (not joined yet). */
+  own: OwnServerConnection;
+  /** The first app's paths, in its own repository folder. */
+  first: ProjectPaths;
+  /** The content of the first app's deploy key file (synthetic): it must never leave that file. */
+  firstKey: string;
+}
+
+/**
+ * A first app `shop` provisioned on a Hetzner server at {@link SERVER_IPV4} (`plan`, default
+ * {@link testPlan} deployed, proxied at `shop.example.com`) in a repository folder of its own, with
+ * its address, deploy key (synthetic content) and the server's pinned host key ({@link ED25519})
+ * on this computer; and a second app's project whose `own` names it, with its own deploy key. The
+ * runner's `ssh-keyscan` answers `keys` (default: the pinned key).
+ */
+export async function sharedServerProject(
+  o: { plan?: DeployPlan; keys?: readonly { type: string; key: string }[] } = {},
+): Promise<SharedServerProject> {
+  const deps = await createTestPhaseDeps({ runner: ownRunner(o.keys) });
+  const ref: SharesReference = {
+    root: await mkdtemp(join(tmpdir(), "opscrew-first-app-")),
+    environment: "prod",
+  };
+  const first = firstAppPaths(deps.paths, ref);
+  await writeArtifact(
+    "plan",
+    first.files.plan,
+    o.plan ?? testPlan({ deployed: true, domain: "shop.example.com" }),
+  );
+  await updateServerAddresses(first, (current) => ({
+    ...current,
+    deployment: { ipv4: SERVER_IPV4 },
+  }));
+  const firstKey = fakeSecret("private-key-pem", "first-app-deploy-key");
+  await mkdir(dirname(first.files.deployKey), { recursive: true });
+  await writeFile(first.files.deployKey, firstKey, { mode: 0o600 });
+  await writeFile(
+    first.files.knownHosts,
+    `${knownHostsName(SERVER_IPV4)} ssh-ed25519 ${ED25519}\n`,
+  );
+  await mkdir(dirname(deps.paths.files.deployKey), { recursive: true });
+  await writeFile(deps.paths.files.deployKey, "placeholder for the second app's deploy key\n");
+  await recordOwnServer(deps.paths, {
+    host: SERVER_IPV4,
+    port: 22,
+    user: "deploy",
+    agent: false,
+    keyPath: deps.paths.files.deployKey,
+    shares: ref,
+  });
+  const own = await readOwnServer(deps.paths);
+  if (own === undefined) throw new Error("the second app's login was not recorded");
+  return { deps, ref, own, first, firstKey };
 }
 
 /** The plan changes its `id` step (of `app`, for a step that names one). */

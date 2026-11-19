@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, LAN_IPV4, OWN_IPV4 } from "../testing";
@@ -255,5 +256,46 @@ describe("a server at home in server.json", () => {
       code: "ARTIFACT_INVALID",
       message: expect.stringContaining("own.home.network.ipv4 is not valid"),
     });
+  });
+});
+
+describe("a second app on a server OpsCrew created for another app, in server.json", () => {
+  const root = join(tmpdir(), "first-app");
+  const SHARED_OWN = (p: { files: { deployKey: string } }): OwnServerConnectionInput => ({
+    host: OWN_IPV4,
+    user: "deploy",
+    agent: false,
+    keyPath: p.files.deployKey,
+    shares: { root },
+  });
+
+  it("keeps the first app's folder, its app key and environment (prod by default), and joined", async () => {
+    const p = await paths();
+    await recordOwnServer(p, SHARED_OWN(p));
+    expect((await readServerAddresses(p)).own?.shares).toEqual({ root, environment: "prod" });
+    await recordOwnServer(p, {
+      ...SHARED_OWN(p),
+      shares: { root, app: "admin", environment: "staging" },
+      joined: true,
+    });
+    const own = (await readServerAddresses(p)).own;
+    expect(own?.shares).toEqual({ root, app: "admin", environment: "staging" });
+    expect(own?.joined).toBe(true);
+  });
+
+  it("refuses reachable, serve, home and any login but deploy beside shares", async () => {
+    const p = await paths();
+    for (const extra of [
+      { reachable: true },
+      { serve: "proxy" as const },
+      { home: {} },
+      { user: "root" },
+    ]) {
+      await expect(recordOwnServer(p, { ...SHARED_OWN(p), ...extra })).rejects.toThrow();
+    }
+    await expect(
+      recordOwnServer(p, { ...SHARED_OWN(p), shares: { root: "first-app" } }),
+    ).rejects.toThrow();
+    expect((await readServerAddresses(p)).own).toBeUndefined();
   });
 });

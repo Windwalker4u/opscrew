@@ -1,5 +1,5 @@
 import { rename, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { canonicalSshSource, isPublicAddress, MAX_SSH_SOURCES } from "@opscrew/connector-ssh-host";
 import {
   ensureStateDir,
@@ -11,8 +11,10 @@ import {
   writeFileAtomic,
 } from "@opscrew/core";
 import {
+  AppKeySchema,
   type DeployTarget,
   DeviceNameSchema,
+  EnvironmentNameSchema,
   PortainerWebSchema,
   ServerNameSchema,
 } from "@opscrew/plan-schema";
@@ -154,6 +156,23 @@ const OwnHomeSchema = z.strictObject({
 export type OwnHome = z.output<typeof OwnHomeSchema>;
 
 /**
+ * A second app's reference to the first app, whose server OpsCrew created and this app shares
+ * (`own.shares`): where that app's repository is on this computer. Local only, never committed.
+ */
+const OwnSharesSchema = z.strictObject({
+  /** The first app's repository folder on this computer (absolute). */
+  root: z.string().min(1).refine(isAbsolute, { message: "must be an absolute folder" }),
+  /** Its app key (absent: the repository's first app) and its environment. */
+  app: AppKeySchema.optional(),
+  environment: EnvironmentNameSchema.default("prod"),
+});
+
+/** A second app's reference to the first app (`.opscrew/server.json` → `own.shares`). */
+export type SharesReference = z.output<typeof OwnSharesSchema>;
+/** {@link SharesReference} as written by callers (`environment` defaults to prod). */
+export type SharesReferenceInput = z.input<typeof OwnSharesSchema>;
+
+/**
  * How OpsCrew reaches a server the user owns over SSH. Local only: the address and the login never
  * reach `opscrew/plan.yaml`, pull requests or commit messages. No passwords or passphrases: the key
  * is referenced by path (or the SSH agent holds it).
@@ -179,9 +198,36 @@ const OwnServerSchema = z
     publicIpv6: z.ipv6().optional(),
     /** Present for a server at home (the interview's `server.home yes`). */
     home: OwnHomeSchema.optional(),
+    /**
+     * A second app on a server OpsCrew created for another app (the first app): where that app's
+     * repository is on this computer. `user` is then `deploy` and `keyPath` this app's own
+     * deploy key; the first app's addresses are `publicIpv4`/`publicIpv6`.
+     */
+    shares: OwnSharesSchema.optional(),
+    /** True once a host plan installed this app's own deploy key on the shared server. */
+    joined: z.literal(true).optional(),
   })
   .refine((own) => own.agent || own.keyPath !== undefined, KEY_OR_AGENT)
   .superRefine((own, ctx) => {
+    if (own.shares !== undefined) {
+      // A server OpsCrew created is reached at its public address, as the deploy login.
+      for (const key of ["reachable", "serve", "home"] as const) {
+        if (own[key] !== undefined) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: "is never kept for a server OpsCrew created for another app",
+          });
+        }
+      }
+      if (own.user !== "deploy") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["user"],
+          message: "must be deploy on a server OpsCrew created for another app",
+        });
+      }
+    }
     if (own.home === undefined) return;
     // The home's public address is never kept, and the router's forwards make it reachable.
     for (const key of ["reachable", "publicIpv4", "publicIpv6"] as const) {
