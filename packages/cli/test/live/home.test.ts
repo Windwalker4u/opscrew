@@ -29,7 +29,12 @@ import {
   type ZonePermissionNeed,
 } from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
-import { OUTSIDE_CHECK_WORKFLOW_FILE, runnerLabel, usesTunnel } from "@opscrew/iac-templates";
+import {
+  EDGE_PROJECT,
+  OUTSIDE_CHECK_WORKFLOW_FILE,
+  runnerLabel,
+  usesTunnel,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { httpRequest, minutes, servedCertificate, sleep, waitFor } from "./cloud";
@@ -455,6 +460,14 @@ describe.skipIf(H3.skip)(H3.title, () => {
         );
       const before = { host: await hostPlan(), states: await pass.stateHashes() };
       await pass.setRouter({ https: false });
+      // Hetzner's firewall is stateful: Cloudflare's open connections to 443 would keep serving,
+      // which a home router's change doesn't allow. The edge restarts, closing them, so each new
+      // connection meets the closed port.
+      await run
+        .shell()
+        .ok(
+          `docker restart $(docker ps -q --filter label=com.docker.compose.project=${EDGE_PROJECT}) > /dev/null`,
+        );
       const verified = await run.opscrew("verify");
       expect(
         verified.exitCode,
