@@ -4094,8 +4094,10 @@ app's name typed.
    host plan's hash (`provision --plan-only`) and the state files' SHA-256 are the same before and
    after. Then 443 back, and `verify` passes (run even after a failure, so the router is put back).
 5. **H4, DNS only:** the interview again with `server.serve dns-only`, design, provision (the app's
-   name typed) and the deploy; the updater's A and AAAA records, not proxied, with a 60 s TTL; a Let's
-   Encrypt certificate; the deploy workflow's health check through `--resolve`; the outside check
+   name typed) and the deploy, then provision's second run that leaving the proxy takes (it turns
+   Cloudflare's client certificate off and switches the records); the updater's A and AAAA
+   records, not proxied, with a 60 s TTL; a Let's Encrypt certificate; the deploy workflow's health
+   check through `--resolve`; the outside check
    passing in direct mode. Then the router lets SSH in from anywhere, as a router forwarding it by
    mistake would: the scanner finds 80 and 443 open and 22 filtered or refused over IPv4 and IPv6
    (SC-2904, FR-2909), while root still logs in from this computer; SSH goes back to this computer

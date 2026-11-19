@@ -511,6 +511,10 @@ describe.skipIf(H4.skip)(H4.title, () => {
       expect((await run.readPlan()).dns.proxied, "DNS only").toBe(false);
       await pass.provision("the switch to DNS only");
       await run.deployAny("DNS only at home");
+      // Leaving the proxy takes a second run, once the deploy gave the server its own certificate,
+      // as provision says: it turns Cloudflare's client certificate off and switches the records.
+      await pass.provision("the switch to DNS only, its second run");
+      await run.deploy("DNS only at home, the second run");
       const { ipv4, ipv6 } = pass.app().server ?? {};
       await pass.waitForRecords(
         "the updater's 60-second A and AAAA records with the server's addresses, not proxied",
