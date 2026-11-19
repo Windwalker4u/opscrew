@@ -480,7 +480,9 @@ for a first app, beside it, with no second server to pay for. The founder asked 
 2026-11-19, to put a second app of his on the server his first one runs on, and chose to build it
 rather than create a server. It is built beside 029's release. **Release** (the founder,
 2026-11-19): it ships in 0.2.11 with 029 if its live pass has passed by the time 029's home pass
-is done; 029 doesn't wait for it longer than that.
+is done; 029 doesn't wait for it longer than that. **Built** (2026-11-19): every task merged, and
+its live pass L1 passed (11 of 11 steps, run 7), so it ships in 0.2.11. L2, the founder's own
+second app beside his first, runs once his domain and accounts are ready.
 
 **What exists today:** a server the user owns already holds apps from several repositories (013),
 and previews already share another environment's created server (022). A server OpsCrew creates

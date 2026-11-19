@@ -27,7 +27,9 @@ it is the source of truth and overrides this file.
   switch, finish, abort; ADR 0032). `src/home` serves an app from a computer at the user's home at
   its own address (the network read, the router's forwards, the address updater's token checks, the
   outside check; ADR 0033). The restore drills of every target with snapshots are in `src/snapshot`
-  (ADR 0034).
+  (ADR 0034). `src/shares` puts a second app on a server OpsCrew created for a first app: the
+  reference to the first app's folder, the second app's deploy login, and the look the first app's
+  commands take before they harm another app there (ADR 0035).
 - `packages/iac-engine` — `tofu`/`terraform` abstraction (plan JSON, plan-hash-bound apply).
 - `packages/iac-templates` — vendored HCL modules + runtime templates (compose, Caddyfile,
   cloud-init, GitHub workflow) and the renderer.

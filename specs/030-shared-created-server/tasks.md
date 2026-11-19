@@ -319,9 +319,9 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 6: Live and finish (lead)
 
-- [ ] T3010 (lead) Live L1, the throwaway pair (plan 15.), after the 029 lead's OK; results in
+- [x] T3010 (lead) Live L1, the throwaway pair (plan 15.), after the 029 lead's OK; results in
   `docs/e2e-coverage.md`
 - [ ] T3011 (lead) Live L2, the founder's second app beside his first (plan 15.)
 - [ ] T3012 (lead) The simplify pass over the feature's diff
-- [ ] T3013 (lead) `CLAUDE.md` and the roadmap (030 done); the changelog entry to the release's
+- [x] T3013 (lead) `CLAUDE.md` and the roadmap (030 done); the changelog entry to the release's
   lead
