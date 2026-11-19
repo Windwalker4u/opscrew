@@ -264,6 +264,35 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm lint`
   - Effort: medium
 
+- [ ] T3014 [P] [US1] [US2] [US3] The live test for L1
+  - Owns: `packages/cli/test/live/shared-server.test.ts`, `packages/cli/test/live/shared-server-support.ts`
+    (+ its `.test.ts` for the pure helpers), the section "A second app on a server OpsCrew
+    created" in `docs/e2e.md`
+  - Reads: plan 15. (L1); spec SC-3002–SC-3006; `packages/cli/test/live/previews-shared.test.ts`,
+    `several-apps.test.ts`, `harness.ts`, `support.ts`, `cloud.ts`; docs/e2e.md "Setup"
+  - Depends: none for writing it (it calls the CLI's planned flags: `--skip-other-apps-check`,
+    the answers keys `server.shares`); it runs once T3007 is merged
+  - Accept:
+    - With `OPSCREW_E2E_SHARED_SERVER=1`, in `OPSCREW_E2E_GITHUB_REPO_C`, the first app
+      `examples/koa-knex` (seeded, as previews-shared does) runs on a throwaway Hetzner CX23
+      behind Cloudflare at the run's own hostname. A further app (`app add`) from
+      `examples/express-api` joins its server at a second hostname. Both use names of the run's own
+      that never start with `e2e-`, which 029's passes use.
+    - The steps of plan 15. L1, each its own `it` with a clear title.
+    - SC-3002: a request every second against the first app's site through the second app's
+      provision, first deploy and destroy, with zero failures (status and count kept).
+    - SC-3003: `deploy`'s `authorized_keys`, read through the first app's deploy login, is
+      compared line by line, by SHA-256 of each line and never printed, before the join and after
+      the destroy.
+    - Each first-app guard refuses with exit ≠ 0, its refusal text, and nothing changed (the plan
+      files and the server's facts unchanged).
+    - Cleanup in `afterAll` deletes only the run's own resources, matched by the run's labels or
+      ids; the Hetzner project also holds production servers.
+    - A leak check over every output of the run.
+    - The docs/e2e.md section: what it checks, variables, the command, its cost.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/shared-server-support.test.ts && pnpm lint`
+  - Effort: high
+
 ## Phase 6: Live and finish (lead)
 
 - [ ] T3010 (lead) Live L1, the throwaway pair (plan 15.), after the 029 lead's OK; results in
