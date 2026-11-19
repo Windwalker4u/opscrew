@@ -56,6 +56,13 @@ export interface ServiceSpec {
 The spike (T1302) confirmed each row. `exec` makes the command PID 1, so SIGTERM reaches it: a
 shell left as PID 1 ignores it and the container is killed after the grace period.
 
+**One-off services** (`release`, a preview's `seed`; 2026-11-19) take the worker's form without
+`exec`, since the script may chain commands: `command: ["sh", "-c", "<script>"]` with a Dockerfile;
+`entrypoint: ["/cnb/lifecycle/launcher"]`, `command: ["<script>"]` with Buildpacks;
+`command: ["<script>"]` with Railpack. A `sh -c` before the script in a Railpack or Buildpacks image
+makes the image's own shell run a bare `sh`, which reads stdin and ends at once: the release
+command never ran (found live on a Railpack app).
+
 **Workers:** no `ports`, no healthcheck, `stop_grace_period: <stopGraceSeconds>s`, `mem_limit` and
 `memswap_limit` (the same value; Docker's default swap is twice the limit), `restart:
 unless-stopped`, and `deploy.replicas` as the count (honoured by Compose and Portainer without

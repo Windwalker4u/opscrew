@@ -55,8 +55,6 @@ services:
     volumes:
       - sqlite:/app/data
     command:
-      - sh
-      - -c
       - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npm run migrate
     mem_limit: 512m
     memswap_limit: 512m
@@ -817,8 +815,6 @@ services:
     volumes:
       - sqlite:/app/data
     command:
-      - sh
-      - -c
       - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npm run migrate
     mem_limit: 512m
     memswap_limit: 512m

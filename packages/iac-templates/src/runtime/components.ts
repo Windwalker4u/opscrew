@@ -483,6 +483,28 @@ function workerStart(plan: DeployPlan, worker: DeployPlan["processes"]["workers"
   }
 }
 
+/**
+ * How a one-off container of the app's image (the release command, a preview's seed) runs `script`
+ * per builder, as {@link workerStart} does but without `exec`, since the script may chain
+ * commands: a Railpack image runs `bash -c` itself, and Buildpacks' launcher runs one string with
+ * bash, so `sh -c` before the script would make the image's shell run a bare `sh`, which reads
+ * stdin and ends at once without running it.
+ */
+export function oneOffStart(
+  plan: DeployPlan,
+  script: string,
+): { entrypoint?: string[]; command: string[] } {
+  const command = composeLiteral(script);
+  switch (plan.app.build?.builder) {
+    case "buildpacks":
+      return { entrypoint: ["/cnb/lifecycle/launcher"], command: [command] };
+    case "railpack":
+      return { command: [command] };
+    default:
+      return { command: ["sh", "-c", command] };
+  }
+}
+
 /** How the cron service starts supercronic per builder. */
 function cronStart(plan: DeployPlan): object {
   const supercronic = ["supercronic", CRONTAB];

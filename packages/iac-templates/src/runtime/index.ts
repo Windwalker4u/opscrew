@@ -31,6 +31,7 @@ import {
   crontab,
   extraServer,
   memoryLimit,
+  oneOffStart,
   renderProcesses,
   renderServices,
   SERVER_CRONTAB,
@@ -191,7 +192,7 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
     profiles: [name],
     ...environment(),
     ...appVolumes(plan),
-    command: ["sh", "-c", composeLiteral(command)],
+    ...oneOffStart(plan, command),
     ...memoryLimit(plan.app.memoryMb),
     ...hardened({ noCapabilities: true, internal: true }),
   });

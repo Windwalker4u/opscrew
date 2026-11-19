@@ -22,6 +22,7 @@ import {
   appVolumes,
   crontab,
   memoryLimit,
+  oneOffStart,
   type RenderedServices,
   renderProcesses,
   renderServices,
@@ -630,11 +631,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
       environment: { ...environment(), OPSCREW_RELEASE: PORTAINER_RELEASE_PLACEHOLDER },
       ...appVolumes(plan),
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
-      command: [
-        "sh",
-        "-c",
-        composeLiteral(`if [ "$OPSCREW_RELEASE" = skip ]; then exit 0; fi; ${release}`),
-      ],
+      ...oneOffStart(plan, `if [ "$OPSCREW_RELEASE" = skip ]; then exit 0; fi; ${release}`),
       ...memoryLimit(plan.app.memoryMb),
       ...(Object.keys(ready).length > 0 ? { depends_on: ready } : {}),
       ...hardened({ noCapabilities: true, internal: true }),

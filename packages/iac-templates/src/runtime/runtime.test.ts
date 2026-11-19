@@ -143,6 +143,28 @@ describe("renderCompose", () => {
     expect(file.content).toMatchSnapshot();
   });
 
+  it("starts the release command as the builder's image runs one string, never as sh -c inside its own shell", () => {
+    const command = "php bin/console migrate && echo $HOME";
+    const release = (builder: "railpack" | "buildpacks" | "generated-dockerfile") =>
+      parse(
+        renderCompose(plan({ release: command, build: { builder, language: "php", probe: "php" } }))
+          .content,
+      ).services.release;
+    // Railpack's image runs `bash -c` with the command (found live: `sh -c` there ran a bare `sh`,
+    // which read stdin and ended at once, and no migration ran).
+    expect(release("railpack")).toMatchObject({ command: ["php bin/console migrate && echo $$HOME"] });
+    expect(release("railpack").entrypoint).toBeUndefined();
+    expect(release("buildpacks")).toMatchObject({
+      entrypoint: ["/cnb/lifecycle/launcher"],
+      command: ["php bin/console migrate && echo $$HOME"],
+    });
+    expect(release("generated-dockerfile").command).toEqual([
+      "sh",
+      "-c",
+      "php bin/console migrate && echo $$HOME",
+    ]);
+  });
+
   it("runs a preview's seed command as a one-off service like the release command's, never started by up", () => {
     const p = plan({ redis: true, release: "npm run migrate" });
     const seed = "npm run seed -- --name $USER";

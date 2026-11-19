@@ -830,8 +830,6 @@ services:
     volumes:
       - sqlite:/app/data
     command:
-      - sh
-      - -c
       - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npm run migrate
     mem_limit: 768m
     memswap_limit: 768m
@@ -1502,8 +1500,6 @@ services:
       STRIPE_KEY: \${STRIPE_KEY}
       OPSCREW_RELEASE: __OPSCREW_RELEASE__
     command:
-      - sh
-      - -c
       - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npm run migrate
     mem_limit: 768m
     memswap_limit: 768m
