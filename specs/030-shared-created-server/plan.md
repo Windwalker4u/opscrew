@@ -365,13 +365,12 @@ so it becomes another second app (name `<app>-<env>`, own hostname, own record).
 
 - **interview**: the answers file keys `server.shares`, `server.shares-app` and
   `server.shares-env`. The interactive choice is (6.).
-- **design**: `--shares <folder>` (with `--shares-app` and `--shares-env`) sets or replaces the
-  reference, for a second computer or a moved folder. It is valid only for a second app, or for
-  an `own` app not yet provisioned.
+- **No design flag** (lead, 2026-11-19, after T3004): running the interview again with
+  `server.shares` replaces the reference, for a second computer or a moved folder.
 - **`--skip-other-apps-check`**: on `destroy`, `retarget`, `provision`, `restore`, `secure`,
   `addon`, `portainer` and `vpn`, wherever 9. guards. Its help says it lets the command go on
   without looking for other apps on the server.
-- **MCP**: the matching tools take `shares`/`sharesApp`/`sharesEnv` (interview, design) and
+- **MCP**: the interview's answers take the three keys, and
   `skipOtherAppsCheck` (each guarded tool), as their CLI flags.
 
 ### 12. A second app's retarget (T3008)

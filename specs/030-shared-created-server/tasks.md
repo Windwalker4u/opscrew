@@ -211,14 +211,23 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/destroy src/retarget src/provision src/snapshot src/secure src/addons src/portainer src/vpn src/drift src/status src/advise && pnpm lint`
   - Effort: xhigh
 
+**From T3004 (lead, 2026-11-19):**
+- A second app's first plan takes the proxy (`target.edge`) the first app's server runs. A plan
+  that already names another proxy is refused, naming both.
+- Design's dry claim check calls provision's `desiredHost` and adds `shares`. It creates this
+  app's deploy key on this computer if it's missing (`ensureDeployKey`).
+- The interview still asks the budget for a second app (`questions.ts`/`answers.ts`). Leave it
+  for the simplify pass.
+- The exported `serverKindQuestion` and `buildSharesQuestions`, and `InterviewResult.shares`.
+
 ## Phase 5: Wave 4 (parallel)
 
 - [ ] T3007 [P] [US1] [US2] CLI and MCP
   - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`, colocated tests
   - Reads: plan 11.; T3004's and T3006's reports (the options)
   - Depends: T3004, T3005, T3006
-  - Accept: the answers keys, `design --shares/--shares-app/--shares-env`,
-    `--skip-other-apps-check` on every command T3006 lists, their help text, the MCP inputs;
+  - Accept: the answers keys (already in `SERVER_FIELDS`: check the interview's help and
+    the MCP answers' descriptions name them), `--skip-other-apps-check` on every command T3006 lists, their help text, the MCP inputs;
     a CLI test per flag reaching its phase option.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: high
