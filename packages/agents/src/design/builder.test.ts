@@ -109,6 +109,23 @@ describe("chooseBuilder: the six new languages", () => {
     expect(result).toMatchObject({ builder, chosen: "auto", automatic: builder, probe, runtime });
   });
 
+  it("records the PHP Railpack builds: `^8.3` is PHP 8.3, the line it cuts the `^` to", () => {
+    const facts = makeFacts({
+      ...(NEW_LANGUAGES["laravel-app"] as ProjectFacts),
+      runtimeVersions: { php: "^8.3" },
+    });
+    expect(choice(chooseBuilder(facts, undefined, "amd64"))).toMatchObject({
+      builder: "railpack",
+      runtime: { language: "php", version: "8.3" },
+    });
+    // A form Railpack resolves otherwise is recorded as design resolves it.
+    const other = makeFacts({
+      ...(NEW_LANGUAGES["laravel-app"] as ProjectFacts),
+      runtimeVersions: { php: ">=8.2" },
+    });
+    expect(choice(chooseBuilder(other, undefined, "amd64")).runtime.version).not.toBe("8.2");
+  });
+
   // go.mod's `go` and `toolchain` lines are minimums inside their release line.
   it.each([
     ["1.25.0", "buildpacks", "1.25"],

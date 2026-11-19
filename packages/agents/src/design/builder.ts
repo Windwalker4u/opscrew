@@ -288,7 +288,11 @@ export function chooseBuilder(
           reason: `The repository has its own Dockerfile (${dockerfile}), so OpsCrew builds the image with it.`,
         }
       : auto;
-  const common = { runtime, automatic: auto.builder, warnings };
+  const common = (builder: AppBuild["builder"]) => ({
+    runtime: builtRuntime(builder, facts, runtime),
+    automatic: auto.builder,
+    warnings,
+  });
   if (recorded?.chosen === "user") {
     const check = userChoiceCheck(facts, recorded.builder, language, runtime.version, stack);
     if ("problem" in check) {
@@ -297,7 +301,7 @@ export function chooseBuilder(
       };
     }
     return {
-      ...common,
+      ...common(recorded.builder),
       warnings: [...warnings, ...check.warnings],
       builder: recorded.builder,
       chosen: "user",
@@ -306,10 +310,25 @@ export function chooseBuilder(
     };
   }
   return {
-    ...common,
+    ...common(decision.builder),
     builder: decision.builder,
     chosen: "auto",
     reason: decision.reason,
     probe: probeFor(decision.builder, language, stack),
   };
+}
+
+/**
+ * The runtime as the builder builds it. Railpack (v0.42.0) builds PHP from `require.php` with its
+ * leading `^` cut off, at the newest patch of that line: `^8.3` is PHP 8.3, never 8.4, so the plan
+ * records 8.3 (found live). Every other builder and form is as resolved.
+ */
+function builtRuntime(
+  builder: AppBuild["builder"],
+  facts: ProjectFacts,
+  runtime: AppBuild["runtime"],
+): AppBuild["runtime"] {
+  if (builder !== "railpack" || runtime.language !== "php") return runtime;
+  const line = /^\^\s*(\d+)\.(\d+)/.exec(facts.runtimeVersions.php?.trim() ?? "");
+  return line === null ? runtime : { language: "php", version: `${line[1]}.${line[2]}` };
 }
