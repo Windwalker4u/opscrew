@@ -75,6 +75,11 @@ export async function api(
   for (let attempt = 1; response === undefined; attempt++) {
     try {
       response = await send();
+      // A read the API answered with a server error (GitHub's 502s and 504s) is sent again.
+      if (method === "GET" && response.status >= 500 && attempt < 4) {
+        response = undefined;
+        await sleep(5_000);
+      }
     } catch (error) {
       if (method !== "GET" || attempt >= 4) throw error;
       await sleep(5_000);

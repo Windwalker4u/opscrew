@@ -13,8 +13,8 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { providerProfile } from "@opscrew/agents";
 import { DNS_UPDATER_RECORD_COMMENT } from "@opscrew/connector-ssh-host";
 import {
@@ -1149,8 +1149,15 @@ ${this.run.tail(applied.output)}`,
     return { removed, left };
   }
 
-  /** Removes the pass's folder (H7, once nothing is left). */
+  /**
+   * Removes the pass's folder (H7, once nothing is left), keeping a copy of its CLI outputs beside
+   * it (`opscrew-e2e-home-outputs-<run id>`), so a step that failed can still be read: they hold
+   * no token (the CLI's redactor) and are removed by hand once read.
+   */
   async removeFolder(): Promise<void> {
+    const kept = join(dirname(this.folder), `opscrew-e2e-home-outputs-${this.pass().runId}`);
+    await cp(join(this.folder, "outputs"), kept, { recursive: true }).catch(() => undefined);
+    this.log(`its CLI outputs stay in ${kept}`);
     await rm(this.folder, { recursive: true, force: true });
     this.removed = true;
   }
