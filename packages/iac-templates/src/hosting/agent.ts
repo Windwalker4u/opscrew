@@ -1,7 +1,7 @@
 import { ENVIRONMENT_NAME_PATTERN, OpsCrewError } from "@opscrew/core";
 import { shellQuote } from "../runtime/services";
 
-export { AGENT_SH, DRILL_LOGIN_FILE } from "./agent/script";
+export { AGENT_SH, DRILL_LOGIN_FILE, DRILL_PGPASS_FILE } from "./agent/script";
 
 /**
  * One app's environment on a hosting account, as the agent reads it from `settings.sh` (027 plan
@@ -39,6 +39,11 @@ export interface AgentSettings {
   snapshots: boolean;
   /** The database's full name, the account's prefix included; absent without one. */
   database?: string;
+  /**
+   * The database's server (029 US10): its login `shared/mysql.cnf` for MySQL, `shared/pgpass` for
+   * PostgreSQL. Absent: MySQL, and no `DB_ENGINE` line.
+   */
+  databaseEngine?: "mysql" | "postgres";
   /** A Node.js or Python app's version in CloudLinux's selector (`22`, `3.12`); those apps only. */
   runtimeVersion?: string;
   /**
@@ -62,6 +67,7 @@ const HEALTH_PATH = /^\/[A-Za-z0-9._~/?=&%-]*$/;
 const PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const PHP_HANDLER = /^application\/x-httpd-[a-z0-9_-]+$/;
 const DATABASE = /^[A-Za-z0-9_]{1,64}$/;
+const DATABASE_ENGINES = ["mysql", "postgres"];
 const APP_KINDS = ["static", "php", "node", "python"];
 const RUNTIME_VERSION = /^\d+(?:\.\d+){0,2}$/;
 
@@ -113,6 +119,11 @@ function problemOf(s: AgentSettings): [field: string, rule: string] | undefined 
       "a database's name, or absent",
     ],
     [
+      "databaseEngine",
+      s.databaseEngine === undefined || DATABASE_ENGINES.includes(s.databaseEngine),
+      `${DATABASE_ENGINES.join(" or ")}, or absent`,
+    ],
+    [
       "runtimeVersion",
       selected ? RUNTIME_VERSION.test(s.runtimeVersion ?? "") : s.runtimeVersion === undefined,
       "a version such as 22 or 3.12 for a Node.js or Python app, absent otherwise",
@@ -147,6 +158,8 @@ export function renderAgentSettings(settings: AgentSettings): string {
       `The hosting agent's setting ${problem[0]} must be ${problem[1]}.`,
     );
   }
+  const engine: [name: string, value: string][] =
+    settings.databaseEngine === undefined ? [] : [["DB_ENGINE", settings.databaseEngine]];
   const values: [name: string, value: string][] = [
     ["APP", settings.app],
     ["ENVIRONMENT", settings.environment],
@@ -162,6 +175,7 @@ export function renderAgentSettings(settings: AgentSettings): string {
     ["SHARED_PATHS", settings.sharedPaths.join(" ")],
     ["SNAPSHOTS", settings.snapshots ? "yes" : "no"],
     ["DATABASE", settings.database ?? ""],
+    ...engine,
     ["RUNTIME_VERSION", settings.runtimeVersion ?? ""],
     ["STARTUP_FILE", settings.startupFile ?? ""],
     ["DRILL_SCHEDULE", settings.drillSchedule ?? ""],

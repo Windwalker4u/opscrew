@@ -27,6 +27,12 @@ import {
 export const DRILL_LOGIN_FILE = "keys/drill.cnf";
 
 /**
+ * The drill database's login on PostgreSQL (029 US10), in {@link DRILL_LOGIN_FILE}'s place: one
+ * `pgpass` line, `localhost:5432:<database>:<user>:<password>`, 0600, as the app's `shared/pgpass`.
+ */
+export const DRILL_PGPASS_FILE = "keys/drill.pgpass";
+
+/**
  * The agent (027 plan 3, ADR 0030): a bash script, the same for every app, that cron runs every
  * minute as a hosting account's user from `~/opscrew/<app>-<env>/agent.sh`, its output appended to
  * `state/agent.log` (kept to 1,000 lines). It reads `settings.sh` beside it (`renderAgentSettings`)
@@ -35,7 +41,12 @@ export const DRILL_LOGIN_FILE = "keys/drill.cnf";
  *   `public_key` (empty without `ssh-keygen`); for each PHP CLI found (the account's, alt-php,
  *   MultiPHP, Plesk's and DirectAdmin's), `php.<n>.path`, `php.<n>.version` (`-v`'s first line)
  *   and `php.<n>.modules` (`-m`, comma-separated); then `yes` or `no` for
- *   `tool.<git|openssl|flock|mysqldump|tar|curl|ssh|ssh-keygen>`, `github.22` and `github.443`.
+ *   `tool.<git|openssl|flock|mysqldump|tar|curl|ssh|ssh-keygen>` (`pg_dump` and `psql` in
+ *   `mysqldump`'s place with `DB_ENGINE=postgres`), `github.22` and `github.443`.
+ * - With `DB_ENGINE=postgres` (029 US10), the database is PostgreSQL's: dumped with `pg_dump
+ *   --no-owner --no-privileges` and loaded with `psql -v ON_ERROR_STOP=1`, after its tables, views
+ *   and sequences in `public` are dropped, through the `pgpass` files `shared/pgpass` and
+ *   {@link DRILL_PGPASS_FILE} in place of `shared/mysql.cnf` and {@link DRILL_LOGIN_FILE}.
  * - `state/status`: `running` (a release's id, `<run id>-<attempt>`; empty before the first),
  *   `previous` (the newest kept release older than the running one), `kept` (the others kept,
  *   comma-separated, newest first), and the last attempt: `attempt`, `result` (`deployed`,
@@ -62,7 +73,8 @@ export const DRILL_LOGIN_FILE = "keys/drill.cnf";
  *   most; one `scheduled` line per slot, a skip (`none`, `login`, `quota`) never a failure.
  * - A snapshot `<id>` (`snapshot-<UTC time>`), taken on a `snapshot` request and before a
  *   `restore`: the app's database, when it has one, dumped into `dumps/<id>.sql.gz` and, when
- *   `shared/` holds more than the settings files (`.env`, `.env.next`, `env.php`, `mysql.cnf`),
+ *   `shared/` holds more than the settings files (`.env`, `.env.next`, `env.php`, `mysql.cnf`,
+ *   `pgpass`),
  *   those others in `dumps/<id>.shared.tar.gz`. A restore of `<id>` puts back the parts it holds
  *   (a release's dump `dumps/<release>.sql.gz` is one too), and leaves the settings files as they
  *   are.
@@ -200,7 +212,8 @@ reach() {
 # tools it finds, and whether GitHub answers over SSH on 22 and on ssh.github.com:443. Where a
 # panel runs cron jobs chrooted and a tool is missing, the report still says so.
 first_run() {
-  local bin n=0 tool
+  local bin n=0 tool db_tools=mysqldump
+  if [ "$DB_ENGINE" = postgres ]; then db_tools="pg_dump psql"; fi
   if [ ! -f keys/github ] && command -v ssh-keygen > /dev/null; then
     ssh-keygen -q -t ed25519 -N '' -C "opscrew-$APP-$ENVIRONMENT" -f keys/github
   fi
@@ -214,7 +227,7 @@ first_run() {
       printf 'php.%s.version=%s\\n' "$n" "$(one_line "$("$bin" -v 2>&1 | head -n 1)")"
       printf 'php.%s.modules=%s\\n' "$n" "$("$bin" -m 2>/dev/null | tr -d '\\r' | grep -v -e '^\\[' -e '^$' | paste -s -d , -)"
     done
-    for tool in git openssl flock mysqldump tar curl ssh ssh-keygen; do
+    for tool in git openssl flock $db_tools tar curl ssh ssh-keygen; do
       if command -v "$tool" > /dev/null; then printf 'tool.%s=yes\\n' "$tool"; else printf 'tool.%s=no\\n' "$tool"; fi
     done
     printf 'github.22=%s\\n' "$(reach git@github.com 22)"
@@ -632,8 +645,10 @@ mysql_socket() {
 }
 
 # Dumps the app's database into file $1 (gzip), 0600; fails without leaving a partial file. Like
-# app_mysql, it reads shared/mysql.cnf alone, with the account's socket (mysql_socket).
+# app_mysql, it reads shared/mysql.cnf alone, with the account's socket (mysql_socket). PostgreSQL's
+# is pg_dump_to's.
 dump() {
+  if [ "$DB_ENGINE" = postgres ]; then pg_dump_to "$1"; return; fi
   mysql_socket
   if mysqldump --defaults-file=shared/mysql.cnf \${MYSQL_SOCKET:+"--socket=$MYSQL_SOCKET"} --single-transaction --no-tablespaces "$DATABASE" | gzip > "$1.partial"; then
     chmod 0600 "$1.partial"
@@ -663,8 +678,50 @@ replace_tables() {
 
 # Replaces the app's database with the dump $1.
 load() {
+  if [ "$DB_ENGINE" = postgres ]; then pg_replace_tables "$1" app_psql; return; fi
   mysql_socket
   replace_tables "$1" app_mysql
+}
+
+# PostgreSQL's client $2 (pg_dump or psql) on the database the pgpass file $1 names (shared/pgpass,
+# the app's, or ${DRILL_PGPASS_FILE}, the drill's; 0600), the options $@ after its login. Host,
+# port, database and user come from the file's one line, localhost:5432:<database>:<user>:<password>,
+# cut before the password, which only libpq reads, from the file PGPASSFILE names; -w: never a
+# password prompt.
+pg_client() {
+  local file=$1 program=$2 fields host port database user
+  shift 2
+  fields=$(head -n 1 "$file" | cut -d : -f 1-4) || return 1
+  IFS=: read -r host port database user <<< "$fields"
+  PGPASSFILE=$file "$program" -w -h "$host" -p "$port" -U "$user" -d "$database" "$@"
+}
+
+# Dumps the app's PostgreSQL database into file $1 as dump does MySQL's (gzip, 0600, no partial file
+# left): pg_dump --no-owner --no-privileges, so the dump loads as any user, the drill's too.
+pg_dump_to() {
+  if pg_client shared/pgpass pg_dump --no-owner --no-privileges | gzip > "$1.partial"; then
+    chmod 0600 "$1.partial"
+    mv -f "$1.partial" "$1"
+    return 0
+  fi
+  rm -f "$1.partial"
+  return 1
+}
+
+# psql on the app's PostgreSQL database, signed in with shared/pgpass (pg_client), the options $@
+# after its login: -X, the account's ~/.psqlrc is never read; -q, no command tags in the log.
+app_psql() {
+  pg_client shared/pgpass psql -X -q "$@"
+}
+
+# PostgreSQL's replace_tables: the tables, views and sequences in schema public of the database the
+# psql client $2 (app_psql or drill_psql) reaches are dropped, so the ones made since the dump go
+# too (the schema itself stays, as another user may own it), then the dump $1 is loaded, or nothing
+# for -, stopping at its first error.
+pg_replace_tables() {
+  local drops
+  drops=$("$2" -A -t -c "SELECT format('DROP %s IF EXISTS public.%I CASCADE;', CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S')") || return 1
+  { printf 'SET client_min_messages = warning;\\n%s\\n' "$drops" && if [ "$1" != - ]; then gunzip -c "$1"; fi; } | "$2" -v ON_ERROR_STOP=1
 }
 
 # In release folder $1: Laravel's caches first, as they change nothing outside the release, then
@@ -1052,13 +1109,13 @@ snapshot_name() {
 }
 
 # The entries of shared/ a snapshot copies, into ENTRIES (each ./<name>): all but the settings
-# files (.env, .env.next, env.php and mysql.cnf), so a restore never puts back old values.
+# files (.env, .env.next, env.php, mysql.cnf and pgpass), so a restore never puts back old values.
 shared_entries() {
   local entry
   ENTRIES=()
   for entry in shared/* shared/.[!.]* shared/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
-    case \${entry#shared/} in .env | .env.next | env.php | mysql.cnf) continue ;; esac
+    case \${entry#shared/} in .env | .env.next | env.php | mysql.cnf | pgpass) continue ;; esac
     ENTRIES+=("./\${entry#shared/}")
   done
 }
@@ -1086,7 +1143,7 @@ put_shared() {
   shared_entries
   if [ "\${#ENTRIES[@]}" -gt 0 ]; then (cd shared && rm -rf "\${ENTRIES[@]}") || return 1; fi
   [ ! -f "$1" ] || tar --anchored --exclude=./.env --exclude=./.env.next --exclude=./env.php \\
-    --exclude=./mysql.cnf -xzf "$1" -C shared
+    --exclude=./mysql.cnf --exclude=./pgpass -xzf "$1" -C shared
 }
 
 # A snapshot (take_snapshot) under a new name, answered with its parts (dump= and shared=);
@@ -1166,6 +1223,37 @@ without_definers() {
   sed '/^INSERT /!s/DEFINER=\`[^\`]*\`@\`[^\`]*\`//g'
 }
 
+# The drill database's login: ${DRILL_LOGIN_FILE}, or ${DRILL_PGPASS_FILE} on PostgreSQL.
+drill_login() {
+  if [ "$DB_ENGINE" = postgres ]; then printf '%s' ${DRILL_PGPASS_FILE}; else printf '%s' ${DRILL_LOGIN_FILE}; fi
+}
+
+# psql on the drill database, signed in with ${DRILL_PGPASS_FILE} (pg_client), whose user has no
+# right on the app's database, the options $@ after its login, as app_psql's.
+drill_psql() {
+  pg_client ${DRILL_PGPASS_FILE} psql -X -q "$@"
+}
+
+# drill_snapshot's database part on PostgreSQL, for the dump $1 of $2 bytes, begun at $3 (SECONDS):
+# loaded into the drill database only (pg_replace_tables through drill_psql), its base tables in
+# public counted against DRILL_EXPECTED, and the drill database emptied again. It sets
+# drill_snapshot's parts, tables, result, reason and removal as MySQL's part does.
+pg_drill_database() {
+  local count
+  if pg_replace_tables "$1" drill_psql; then
+    parts=database:$2:$((SECONDS - $3))
+    if count=$(drill_psql -A -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'") && [[ $count =~ ^[0-9]+$ ]]; then
+      tables=database:$count
+      if [ "$count" != "$DRILL_EXPECTED" ] || [ "$count" -eq 0 ]; then result=not-restored reason=tables; fi
+    else
+      tables=database:failed result=not-restored reason=tables
+    fi
+  else
+    result=not-restored reason=database
+  fi
+  if pg_replace_tables - drill_psql; then removal=removed; else removal=failed; fi
+}
+
 # A restore drill of snapshot $1, $2 manual or scheduled, which reads neither the app's database
 # nor its files. Its dump, when it has one: its size and gunzip, then loaded into the drill
 # database only (every table and view in it dropped first, the dump's DEFINER= clauses left out:
@@ -1188,6 +1276,8 @@ drill_snapshot() {
     # The count's pass is the dump's check too: under pipefail, a dump gunzip can't read fails it.
     if [ "$size" -eq 0 ] || ! DRILL_EXPECTED=$(gunzip -c "$dump" 2> /dev/null | { grep -c '^CREATE TABLE ' || true; }); then
       DRILL_EXPECTED="" result=not-restored reason=dump
+    elif [ "$DB_ENGINE" = postgres ]; then
+      pg_drill_database "$dump" "$size" "$began"
     else
       if replace_tables "$dump" drill_mysql without_definers; then
         parts=database:$size:$((SECONDS - began))
@@ -1226,8 +1316,8 @@ do_drill() {
     answer "$name" refused "the snapshot $id isn't in dumps/"
     return 0
   fi
-  if [ -f "dumps/$id.sql.gz" ] && [ ! -f ${DRILL_LOGIN_FILE} ]; then
-    answer "$name" refused "restore drills are off here: ${DRILL_LOGIN_FILE}, the drill database's login, isn't there"
+  if [ -f "dumps/$id.sql.gz" ] && [ ! -f "$(drill_login)" ]; then
+    answer "$name" refused "restore drills are off here: $(drill_login), the drill database's login, isn't there"
     return 0
   fi
   limited_drill "$id" manual
@@ -1243,8 +1333,8 @@ limited_drill() {
   start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   rm -f state/drill.out
   mysql_socket
-  export MYSQL_SOCKET
-  export -f say drill_snapshot replace_tables drill_mysql without_definers
+  export MYSQL_SOCKET DB_ENGINE
+  export -f say drill_snapshot replace_tables drill_mysql without_definers pg_drill_database pg_replace_tables drill_psql pg_client
   timeout ${DRILL_LIMIT_SECONDS} bash -c 'set -eu -o pipefail; drill_snapshot "$1" "$2"; printf "record=%s\\nexpected=%s\\n" "$DRILL_RECORD" "$DRILL_EXPECTED" > state/drill.out' _ "$1" "$2" || code=$?
   if [ "$code" -eq 0 ] && [ -f state/drill.out ]; then
     DRILL_RECORD=$(value_of state/drill.out record)
@@ -1254,7 +1344,9 @@ limited_drill() {
   fi
   rm -f state/drill.out
   DRILL_EXPECTED=""
-  if [ -f "dumps/$1.sql.gz" ]; then
+  if [ -f "dumps/$1.sql.gz" ] && [ "$DB_ENGINE" = postgres ]; then
+    if pg_replace_tables - drill_psql; then removal=removed; else removal=failed; fi
+  elif [ -f "dumps/$1.sql.gz" ]; then
     if replace_tables - drill_mysql; then removal=removed; else removal=failed; fi
   fi
   if [ "$code" -eq 124 ]; then reason=timeout; fi
@@ -1317,7 +1409,7 @@ scheduled_drill() {
     return 0
   fi
   dump=dumps/$id.sql.gz
-  if [ -f "$dump" ] && [ ! -f ${DRILL_LOGIN_FILE} ]; then
+  if [ -f "$dump" ] && [ ! -f "$(drill_login)" ]; then
     drill_line scheduled skipped "$id" "$start" - login
     return 0
   fi
@@ -1598,6 +1690,8 @@ main() {
   cd "$(dirname "$0")"
   DIR=$PWD
   . ./settings.sh
+  # Without DB_ENGINE in the settings, the database is MySQL's.
+  DB_ENGINE=\${DB_ENGINE:-mysql}
   # CloudLinux's selector is in /usr/sbin, which cron's PATH lacks.
   PATH=$PATH:/usr/sbin
   mkdir -p keys state requests dumps releases shared

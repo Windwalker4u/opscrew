@@ -23,7 +23,7 @@ import { releaseKeyPair, releaseMessage, releaseTrailer, signRelease } from "./r
  * `url.<bare>.insteadOf` in the environment), and the shims of `shims/` first on the PATH: curl
  * (the hostname serving the running release), php (the app's PHP CLI, and the report's PHP
  * binaries under php-root/, where the account's copy of the agent looks for them), ssh, mysqldump,
- * mysql, my_print_defaults, sleep, and flock where the machine has none. The shims keep their state and logs in $STUB.
+ * mysql, my_print_defaults, pg_dump, psql, sleep, and flock where the machine has none. The shims keep their state and logs in $STUB.
  */
 
 /** Runs a program; its standard output, or an error with its output when it fails. */
@@ -146,7 +146,7 @@ export class Account {
       GIT_COMMITTER_EMAIL: "opscrew@example.com",
     };
 
-    const shims = ["curl", "php", "ssh", "mysqldump", "mysql", "my_print_defaults", "sleep", "cloudlinux-selector", ...(HAS_FLOCK ? [] : ["flock"])];
+    const shims = ["curl", "php", "ssh", "mysqldump", "mysql", "my_print_defaults", "pg_dump", "psql", "sleep", "cloudlinux-selector", ...(HAS_FLOCK ? [] : ["flock"])];
     for (const name of shims) this.executable(`${this.bin}/${name}`, shim(name));
     for (const path of ["usr/local/bin/php", "opt/alt/php85/usr/bin/php"]) {
       this.executable(`${this.phpRoot}/${path}`, shim("php"));
