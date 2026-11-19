@@ -967,7 +967,103 @@ describe("applyStackPlan: recovery", () => {
   });
 });
 
-describe("applyStackPlan: volumes only in a teardown that deletes data", () => {
+describe("applyStackPlan: the scheduled drills' scratch volumes", () => {
+  const SCRATCH = "opscrew-shop_db_drill";
+  /** `w` set up, its record and host holding a scratch volume no container uses any more. */
+  async function scratched(w: World) {
+    const applied = await setupApplied(w);
+    w.fake.state.volumes.push({
+      EndpointId: 3,
+      Name: SCRATCH,
+      project: "opscrew-shop",
+      free: true,
+    });
+    const recorded = { ...applied.result.record, volumes: ["opscrew-shop_db-data", SCRATCH] };
+    return { ...applied, recorded };
+  }
+
+  it("a setup plan removes the recorded one its app stack no longer has, and forgets it", async () => {
+    const w = world();
+    const { s, recorded } = await scratched(w);
+    const plan = planStacks(
+      await w.inspect(),
+      bound(s, { record: recorded, scratchVolumes: [SCRATCH] }),
+    );
+    const start = w.fake.calls.length;
+    const done = await apply(w.client(), plan, { approvedHash: stackPlanHash(plan), secrets: s });
+    expect(mutating(w, start).map((call) => `${call.method} ${call.path}`)).toEqual([
+      `DELETE /api/endpoints/3/docker/volumes/${SCRATCH}`,
+    ]);
+    expect(done.applied).toEqual(["volumes"]);
+    expect(done.record.volumes).toEqual(["opscrew-shop_db-data"]);
+    expect(w.fake.state.volumes.map((volume) => volume.Name).sort()).toEqual([
+      "jellyfin_config",
+      "opscrew-shop_db-data",
+    ]);
+  });
+
+  it("a teardown that keeps the data stops the app, removes the scratch volume, then the app", async () => {
+    const w = world();
+    const { recorded } = await scratched(w);
+    const plan = planStackTeardown(await w.inspect(), recorded, {
+      deleteData: false,
+      app: "shop",
+      scratchVolumes: [SCRATCH],
+    });
+    const start = w.fake.calls.length;
+    const done = await apply(w.client(), plan, {
+      approvedHash: stackPlanHash(plan),
+      secrets: { env: {} },
+    });
+    expect(mutating(w, start).map((call) => `${call.method} ${call.path}`)).toEqual([
+      "DELETE /api/stacks/102",
+      "POST /api/stacks/101/stop",
+      `DELETE /api/endpoints/3/docker/volumes/${SCRATCH}`,
+      "DELETE /api/stacks/101",
+      "DELETE /api/registries/100",
+    ]);
+    expect(done.record).toEqual({ stacks: [], volumes: ["opscrew-shop_db-data"] });
+    expect(w.fake.state.volumes.map((volume) => volume.Name).sort()).toEqual([
+      "jellyfin_config",
+      "opscrew-shop_db-data",
+    ]);
+  });
+
+  it("refuses, without data deletion, a data volume, one the app stack still has, or a stop in a setup", async () => {
+    const w = world();
+    const { s, recorded } = await scratched(w);
+    const facts = await w.inspect();
+    const setup = planStacks(facts, bound(s, { record: recorded, scratchVolumes: [SCRATCH] }));
+    const removal = setup.changes.find((change) => change.id === "volumes");
+    if (removal === undefined) throw new Error("no scratch removal");
+    const kept = planStacks(
+      facts,
+      bound(s, { record: recorded, volumes: ["opscrew-shop_db-data", SCRATCH] }),
+    );
+    const keep = planStackTeardown(facts, recorded, { deleteData: false, app: "shop" });
+    const of = (names: string[], extra = {}) => ({
+      ...removal,
+      params: { ...removal.params, names, ...extra },
+    });
+    const smuggled: StackPlan[] = [
+      { ...setup, changes: [...setup.changes.slice(0, -1), of(["opscrew-shop_db-data"])] },
+      { ...kept, changes: [...kept.changes, removal] },
+      { ...setup, changes: [...setup.changes.slice(0, -1), of([SCRATCH], { stopStackId: 101 })] },
+      { ...keep, changes: [of(["opscrew-shop_db-data"], { stopStackId: 101 }), ...keep.changes] },
+    ];
+    const start = w.fake.calls.length;
+    for (const plan of smuggled) {
+      const error = await failure(
+        apply(w.client(), plan, { approvedHash: stackPlanHash(plan), secrets: s }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toMatch(/record does not list \(volumes\)/);
+    }
+    expect(w.fake.calls.length).toBe(start);
+  });
+});
+
+describe("applyStackPlan: data volumes only in a teardown that deletes data", () => {
   it("refuses a volumes change in a setup plan or a teardown that keeps data", async () => {
     const w = world();
     const { result } = await setupApplied(w);

@@ -914,8 +914,9 @@ other value skips the whole test and names the variable.
    tables and say the scratch was removed; the app's containers and volumes stay as they were;
    `status` must name `Last scheduled dump drill of <db>` (when the test could not write the line
    to the container's log, that is a finding instead). Then `snapshot schedule off` (which takes
-   the drill schedule too), provision and the deploy: the loop must be gone. A scratch volume
-   `<stack>_<db>_drill` left behind is a finding, and the test removes it.
+   the drill schedule too), provision and the deploy: the loop must be gone. Then provision again,
+   its stack plan approved by its hash with `<app>-drill` typed: the scratch volume
+   `<stack>_<db>_drill` must be gone, and one still there fails the step.
 
    7e. **MongoDB as a replica set** (feature 029): `options.replicaSet: true`
    on the second app's MongoDB in its `plan.yaml`, which `design` must keep; provision and the

@@ -151,6 +151,11 @@ export interface FakeVolume {
   EndpointId: number;
   Name: string;
   project?: string;
+  /**
+   * No container mounts it, even while its project's stack has containers (a scheduled drill's
+   * scratch volume once its loop is gone). By default every container of the stack uses it.
+   */
+  free?: true;
 }
 
 /** A branch of a Git repository Portainer can clone. */
@@ -653,10 +658,14 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     if (volume === undefined) return reply(404, { message: `get ${name}: no such volume` });
     // R9: once the stack's resource control is gone, a limited user cannot see its volumes.
     if (!ownsProject(user, env.Id, volume.project)) return denied();
-    const inUse = state.stacks.some(
-      (stack) =>
-        stack.EndpointId === env.Id && stack.Name === volume.project && stack.containers !== "none",
-    );
+    const inUse =
+      volume.free !== true &&
+      state.stacks.some(
+        (stack) =>
+          stack.EndpointId === env.Id &&
+          stack.Name === volume.project &&
+          stack.containers !== "none",
+      );
     if (inUse) return reply(409, { message: `remove ${name}: volume is in use` });
     state.volumes = state.volumes.filter((item) => item !== volume);
     return reply(204);

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { SharedPlan } from "@opscrew/connector-cloudflare";
-import { dockerClient } from "@opscrew/connector-docker";
+import { type DockerClient, dockerClient } from "@opscrew/connector-docker";
 import type { GitClient } from "@opscrew/connector-github";
 import {
   type ApplySecrets,
@@ -85,6 +85,7 @@ import {
 } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { deployBranchState, startDeployBranch } from "./deploy-branch";
+import { DRILL_VOLUME, leftScratchVolumes } from "./drill-scratch";
 import { checkOffsiteWrite, ownOffsiteOf } from "./offsite-check";
 import {
   keepCertificateRequest,
@@ -272,10 +273,13 @@ export interface PortainerStacksInput {
   offsite?: () => Promise<Record<string, string>>;
   /** The stack Caddy's origin TLS and its bundle as rendered: none until known. */
   origin: () => { tls?: RuntimeContext["originTls"]; bundle?: string };
+  /**
+   * Provision's: the Portainer host's Docker, which tells whether a container still uses a
+   * scheduled drill's scratch volume the plan no longer has. The stack plan removes those none
+   * uses; without it, none.
+   */
+  docker?: () => Pick<DockerClient, "listContainers">;
 }
-
-/** The suffix of a scheduled dump drill's scratch volume (`<service>_drill`, iac-templates'). */
-const DRILL_VOLUME = "_drill";
 
 /** A scheduled dump drill's service in a stack file, and its period in seconds. */
 const drillLoop = (service: string, every: string) => `drill-${service} ${every}`;
@@ -320,8 +324,13 @@ function drillLoopsText(plan: DeployPlan, services: readonly string[]): string {
   return [
     `With this provision the app's stack runs scheduled restore drills (snapshots.drills.schedule): ${listText(services.map((service) => `drill-${service}`))}, ${when}. They reach your Portainer with the deploy branch once this provision's pull request is merged.`,
     `Each one restores the latest scheduled snapshot's dump of its database into a scratch server of its own, with no network, counts its tables, then clears its scratch volume (${listText(services.map((service) => `${service}${DRILL_VOLUME}`))}); it reads the snapshots volume read-only, never touches the database's own container or volumes, holds no Portainer credential and stops after ${DRILL_LIMIT_SECONDS / 60} minutes. Anything with access to the host's Docker can go past these bounds.`,
-    `Typing ${drillName(plan.app.name)} approves them.`,
   ].join(" ");
+}
+
+/** The scheduled drills' scratch volumes a setup stack plan removes (its `volumes` change). */
+function scratchRemoval(stackPlan: StackPlan): string[] {
+  const change = stackPlan.changes.find((item) => item.id === "volumes" && item.state === "change");
+  return Array.isArray(change?.params.names) ? change.params.names : [];
 }
 
 /** A stack plan bound to the values it sends (which stay with {@link PortainerStacks}). */
@@ -380,19 +389,23 @@ export function preparePortainerStacks(
   const desired = (
     fingerprints?: DesiredValueFingerprints,
     env?: StackValues["env"],
+    scratch: readonly string[] = [],
   ): DesiredStacks => {
     const tls = input.origin().tls;
-    return desiredStacks(plan, {
-      ...(env === undefined ? {} : { previousValues: heldPreviousValues(plan, env) }),
-      connection,
-      github: input.github,
-      committed: input.committed,
-      repositoryPrivate: input.repositoryPrivate,
-      imagePrivate,
-      ...(fingerprints !== undefined ? { fingerprints } : {}),
-      ...(input.replaceTokens !== undefined ? { replaceTokens: input.replaceTokens } : {}),
-      ...(tls !== undefined ? { originTls: tls } : {}),
-    });
+    return {
+      ...desiredStacks(plan, {
+        ...(env === undefined ? {} : { previousValues: heldPreviousValues(plan, env) }),
+        connection,
+        github: input.github,
+        committed: input.committed,
+        repositoryPrivate: input.repositoryPrivate,
+        imagePrivate,
+        ...(fingerprints !== undefined ? { fingerprints } : {}),
+        ...(input.replaceTokens !== undefined ? { replaceTokens: input.replaceTokens } : {}),
+        ...(tls !== undefined ? { originTls: tls } : {}),
+      }),
+      ...(scratch.length > 0 ? { scratchVolumes: [...scratch] } : {}),
+    };
   };
   const preliminary = planStacks(facts, desired());
   requireNoStackBlockers(preliminary);
@@ -488,6 +501,24 @@ export function preparePortainerStacks(
   let shownHash: string | undefined;
   /** The values each planned stack plan sends, by the plan (never in the plan itself). */
   const sent = new WeakMap<StackPlan, StackValues>();
+  let saidInUse = false;
+  /** The drills' scratch volumes the stack plan removes: none a container still uses (said once). */
+  const freeScratch = async (): Promise<string[]> => {
+    if (input.docker === undefined) return [];
+    const { free, inUse } = await leftScratchVolumes(
+      plan,
+      connection.created.volumes,
+      input.docker,
+    );
+    if (inUse.length > 0 && !saidInUse) {
+      saidInUse = true;
+      const one = inUse.length === 1;
+      deps.reporter.info(
+        `The scheduled drills' scratch volume${one ? "" : "s"} ${listText(inUse)} ${one ? "stays" : "stay"} for now: a container still uses ${one ? "it" : "them"}, as ${one ? "its loop runs" : "their loops run"} until the deploy of the pull request that turns their schedule off. The next \`${input.command}\` after that deploy removes ${one ? "it" : "them"}.`,
+      );
+    }
+    return free;
+  };
 
   const planStep = async (outputs: Record<string, unknown>): Promise<PlannedStacks> => {
     if (stale) {
@@ -495,7 +526,10 @@ export function preparePortainerStacks(
       stale = false;
     }
     const stack = await values(outputs);
-    const stackPlan = planStacks(facts, desired(fingerprints(stack), stack.env));
+    const stackPlan = planStacks(
+      facts,
+      desired(fingerprints(stack), stack.env, await freeScratch()),
+    );
     const hash = stackPlanHash(stackPlan);
     shownHash = hash;
     await writeFileAtomic(
@@ -530,9 +564,21 @@ export function preparePortainerStacks(
     }
     if (planned.changes === 0) {
       deps.reporter.success(ALREADY_SET_UP);
+      // Approved without a change in Portainer (scheduled drills, which the deploy brings): the app
+      // stack's volumes it lists are recorded as an apply records them, their scratch among them.
+      const app = stackPlan.changes.find((change) => change.id === "app-stack");
+      const volumes = Array.isArray(app?.params.volumes) ? app.params.volumes : [];
+      const recorded = connection.created;
+      const created =
+        approval?.approved === true &&
+        hasAppStack(recorded) &&
+        volumes.some((volume) => !recorded.volumes.includes(volume))
+          ? { ...recorded, volumes: [...new Set([...recorded.volumes, ...volumes])].sort() }
+          : undefined;
       connection = await recordConnection(deps, connection, {
         publicImage: input.publicImage,
-        ...(hasAppStack(connection.created) ? { appliedWeb: target.web } : {}),
+        ...(created !== undefined ? { created } : {}),
+        ...(hasAppStack(recorded) ? { appliedWeb: target.web } : {}),
       });
       return { plan: stackPlan, hash, applied: false };
     }
@@ -598,30 +644,42 @@ export function preparePortainerStacks(
     async step(outputs, { planOnly, note }) {
       const planned = await planStep(outputs);
       const { hash } = planned;
-      // Scheduled dump drills the run adds or changes: the plan is approved like a removal then,
-      // even when nothing else in Portainer changes (they reach it with the deploy branch).
+      // Scheduled dump drills the run adds or changes, or their scratch volumes it removes: the
+      // plan is approved like a removal then, even when nothing else in Portainer changes (the
+      // drills reach it with the deploy branch).
       const loops = drillLoopChanges(plan, input.committed);
-      const typed = loops.length === 0 ? undefined : drillName(plan.app.name);
+      const scratch = scratchRemoval(planned.plan);
+      const typed =
+        loops.length === 0 && scratch.length === 0 ? undefined : drillName(plan.app.name);
       const confirm = typed === undefined ? "" : ` --confirm ${typed}`;
+      const scratchWords = `the scheduled drills' scratch volume${scratch.length === 1 ? "" : "s"}`;
       if (planned.changes === 0 && typed === undefined) {
         if (!planOnly) return applyStep(planned);
         deps.reporter.success(ALREADY_SET_UP);
         return { plan: planned.plan, hash, applied: false };
       }
       if (planOnly) {
+        const what =
+          loops.length > 0 ? "brings scheduled restore drills" : `removes ${scratchWords}`;
         deps.reporter.info(
-          `Saved the stack plan (hash ${hash}); nothing in Portainer was changed.${typed === undefined ? "" : ` It brings scheduled restore drills, so a script approves it with --approve ${hash}${confirm}.`}`,
+          `Saved the stack plan (hash ${hash}); nothing in Portainer was changed.${typed === undefined ? "" : ` It ${what}, so a script approves it with --approve ${hash}${confirm}.`}`,
         );
         return { plan: planned.plan, hash, applied: false };
       }
       if (note !== undefined) deps.reporter.info(note);
+      const typedText = [
+        ...(loops.length > 0 ? [drillLoopsText(plan, loops)] : []),
+        ...(scratch.length > 0
+          ? [
+              `Removing ${scratchWords} ${listText(scratch)} deletes no data: each drill run clears it, and the loop that used it is gone.`,
+            ]
+          : []),
+        `Typing ${typed} approves ${loops.length > 0 ? "them" : "it"}.`,
+      ].join(" ");
       const approval = await deps.approvals.request({
         kind: "stack-apply",
-        title: `Apply the stack plan to your Portainer (${plural(planned.changes, "change")})${typed === undefined ? "" : ", with scheduled restore drills"}`,
-        details:
-          typed === undefined
-            ? planned.details
-            : `${planned.details}\n${drillLoopsText(plan, loops)}`,
+        title: `Apply the stack plan to your Portainer (${plural(planned.changes, "change")})${loops.length > 0 ? ", with scheduled restore drills" : ""}${scratch.length > 0 ? `, removing ${scratchWords}` : ""}`,
+        details: typed === undefined ? planned.details : `${planned.details}\n${typedText}`,
         planHash: hash,
         ...(typed === undefined ? {} : { allowDestroy: true, confirmPhrase: typed }),
       });
@@ -1075,6 +1133,11 @@ export async function provisionPortainer(
     }
     return environment;
   };
+  /** The Portainer host's Docker, through Portainer's Docker proxy. */
+  const hostDocker = () =>
+    dockerClient(
+      services.docker?.(APP_SERVER) ?? client.dockerProxyTransport(target.environmentId),
+    );
   // The off-server copy's stack variables, made once and only when needed: with the recovery
   // copy's age key, which this makes first when there is none yet (D11), for the pull request.
   let recoveryCopy: RecoveryCopy | undefined;
@@ -1093,10 +1156,7 @@ export async function provisionPortainer(
       // deletes a test file there first, as the stack's copies will.
       const own = ownOffsiteOf(plan);
       if (own !== undefined) {
-        const docker = dockerClient(
-          services.docker?.(APP_SERVER) ?? client.dockerProxyTransport(target.environmentId),
-        );
-        await checkOffsiteWrite(deps, plan, own, docker, setup.values, {
+        await checkOffsiteWrite(deps, plan, own, hostDocker(), setup.values, {
           who: "Your Portainer",
           already: "Nothing in your Portainer was changed.",
           command,
@@ -1129,6 +1189,7 @@ export async function provisionPortainer(
       ...(siteOrigin !== undefined ? { tls: siteOrigin } : {}),
       ...(originBundle !== undefined ? { bundle: originBundle } : {}),
     }),
+    docker: hostDocker,
   });
   const createsAppStack = stacks.preliminary.changes.some(
     (change) =>

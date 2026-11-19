@@ -592,6 +592,115 @@ describe("planStackTeardown", () => {
   });
 });
 
+describe("the scheduled drills' scratch volumes", () => {
+  const SCRATCH = "opscrew-shop_db_drill";
+  const drilled = { ...record, volumes: [...record.volumes, SCRATCH] };
+  const scratchFacts = async () => {
+    const facts = setUp(await world().inspect());
+    facts.volumes = [
+      { name: "opscrew-shop_db-data", project: "opscrew-shop" },
+      { name: SCRATCH, project: "opscrew-shop" },
+    ];
+    return facts;
+  };
+  const volumesOf = (plan: StackPlan) => plan.changes.filter((change) => change.id === "volumes");
+
+  it("a setup plan removes a recorded one the app stack no longer has, last, and nothing else", async () => {
+    const facts = await scratchFacts();
+    const plan = planStacks(
+      facts,
+      desired({ record: drilled, scratchVolumes: [SCRATCH, "opscrew-shop_cache_drill"] }),
+    );
+    expect(ids(plan)).toEqual([
+      "registry:in-place",
+      "app-stack:in-place",
+      "updater-stack:in-place",
+      "volumes:change",
+    ]);
+    expect(plan.changes.at(-1)).toEqual({
+      id: "volumes",
+      title: `Remove the scheduled drills' scratch volume ${SCRATCH} (empty, left after their schedule was turned off)`,
+      state: "change",
+      params: { action: "remove", names: [SCRATCH] },
+    });
+    // Without the names given, or with none the record lists, there is nothing to remove.
+    expect(volumesOf(planStacks(facts, desired({ record: drilled })))).toEqual([]);
+    expect(volumesOf(planStacks(facts, desired({ record, scratchVolumes: [SCRATCH] })))).toEqual(
+      [],
+    );
+  });
+
+  it("leaves out one Portainer shows as another project's", async () => {
+    const facts = await scratchFacts();
+    facts.volumes = [{ name: SCRATCH, project: "jellyfin" }];
+    const plan = planStacks(facts, desired({ record: drilled, scratchVolumes: [SCRATCH] }));
+    expect(volumesOf(plan)).toEqual([]);
+  });
+
+  it("refuses a name that is no scratch volume, or one the app stack still has", async () => {
+    const facts = await scratchFacts();
+    for (const name of ["opscrew-shop_db-data", "opscrew-shop_drill", "opscrew-blog_db_drill"]) {
+      expect(() => planStacks(facts, desired({ record: drilled, scratchVolumes: [name] }))).toThrow(
+        /scratchVolumes/,
+      );
+    }
+    expect(() =>
+      planStacks(
+        facts,
+        desired({
+          record: drilled,
+          volumes: ["opscrew-shop_db-data", SCRATCH],
+          scratchVolumes: [SCRATCH],
+        }),
+      ),
+    ).toThrow(/scratchVolumes/);
+  });
+
+  it("a teardown that keeps the data removes them after stopping the app, before removing it", async () => {
+    const facts = await scratchFacts();
+    const opts = { app: "shop", scratchVolumes: [SCRATCH, "opscrew-shop_cache_drill"] };
+    const plan = planStackTeardown(facts, drilled, { ...opts, deleteData: false });
+    expect(ids(plan)).toEqual([
+      "updater-stack:change",
+      "volumes:change",
+      "app-stack:change",
+      "registry:change",
+    ]);
+    expect(plan.changes[1]).toEqual({
+      id: "volumes",
+      title: `Remove the scheduled drills' scratch volume ${SCRATCH} (empty between their runs: no data)`,
+      state: "change",
+      params: { action: "remove", names: [SCRATCH], stopStackId: 101 },
+    });
+    expect(plan.changes[2]?.reason).toBe(
+      "Its named volumes (the app's data) are kept: opscrew-shop_db-data.",
+    );
+
+    // With the data: among the volumes deleted, but not called data.
+    const all = planStackTeardown(facts, drilled, { ...opts, deleteData: true });
+    expect(volumesOf(all)).toEqual([
+      {
+        id: "volumes",
+        title:
+          "Delete the app's data volumes opscrew-shop_db-data (this cannot be undone; OpsCrew does not back them up)",
+        state: "change",
+        reason: `Remove the scheduled drills' scratch volume ${SCRATCH} (empty between their runs: no data), too.`,
+        params: { action: "remove", names: ["opscrew-shop_db-data", SCRATCH], stopStackId: 101 },
+      },
+    ]);
+  });
+
+  it("a teardown keeps them when the app stack is not OpsCrew's to remove, or they are another project's", async () => {
+    const gone = await scratchFacts();
+    gone.stacks = gone.stacks.filter((stack) => stack.id !== 101);
+    const opts = { app: "shop", deleteData: false, scratchVolumes: [SCRATCH] };
+    expect(volumesOf(planStackTeardown(gone, drilled, opts))).toEqual([]);
+    const foreign = await scratchFacts();
+    foreign.volumes = [{ name: SCRATCH, project: "jellyfin" }];
+    expect(volumesOf(planStackTeardown(foreign, drilled, opts))).toEqual([]);
+  });
+});
+
 describe("app names", () => {
   it("follow plan-schema's rule: up to 41 characters, a trailing dash allowed", async () => {
     const long = "a".repeat(41);

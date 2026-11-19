@@ -6,6 +6,7 @@ import {
   AppNameSchema,
   DEPLOY_COMPOSE_FILE,
   isDeployBranch,
+  isDrillScratchVolume,
   NEXT_STACK_CHANGE_IDS,
   NEXT_STACKS,
   type NextStackChangeId,
@@ -242,6 +243,12 @@ const DesiredStacksSchema = z
     ports: z.array(PortSchema).max(16).optional(),
     /** Docker names of the app stack's named volumes (`opscrew-<app>_<volume>`), recorded at apply. */
     volumes: z.array(VolumeNameSchema).max(64).optional(),
+    /**
+     * The scheduled drills' scratch volumes (`opscrew-<app>_<service>_drill`, empty between runs)
+     * the app stack no longer has and no container uses (their schedule was turned off): the plan
+     * removes those the record lists, unless Portainer shows one as another project's.
+     */
+    scratchVolumes: z.array(VolumeNameSchema).max(64).optional(),
     /** What OpsCrew created before (`server.json` → `portainer.created`); absent on the first run. */
     record: CreatedRecordSchema.optional(),
     /**
@@ -267,6 +274,19 @@ const DesiredStacksSchema = z
     {
       message: "each volume must be one of the app stack's (opscrew-<app>_<name>)",
       path: ["volumes"],
+    },
+  )
+  .refine(
+    (desired) =>
+      (desired.scratchVolumes ?? []).every(
+        (name) =>
+          isDrillScratchVolume(`opscrew-${desired.app}`, name) &&
+          !(desired.volumes ?? []).includes(name),
+      ),
+    {
+      message:
+        "each must be a scheduled drill's scratch volume (opscrew-<app>_<service>_drill) the app stack no longer has",
+      path: ["scratchVolumes"],
     },
   )
   .refine((desired) => desired.redeploy !== "updater" || desired.updater !== undefined, {
@@ -606,6 +626,15 @@ export function planStacks(facts: PortainerFacts, desired: DesiredStacks): Stack
     const removal = removeOtherMode(facts, record, "tunnel-connector", names.tunnelConnector);
     if (removal !== undefined) changes.push(removal);
   }
+  const scratch = scratchOf(facts, record, names, d.scratchVolumes);
+  if (scratch.length > 0) {
+    changes.push({
+      id: "volumes",
+      title: `${scratchLine(scratch)} (empty, left after their schedule was turned off)`,
+      state: "change",
+      params: { action: "remove", names: scratch },
+    });
+  }
 
   // Any of the app's names on a stack OpsCrew's record does not list blocks, whatever the mode.
   for (const name of ROLE_NAMES.map((role) => stackName(names, role))) {
@@ -668,6 +697,40 @@ function recordFor(record: CreatedRecord | undefined, names: OpsCrewNames): Crea
     ...(valid.registryId !== undefined && { registryId: valid.registryId }),
     volumes: [...new Set(valid.volumes)].sort(),
   };
+}
+
+/**
+ * True when Portainer shows the volume `name` with another Compose project than the app stack's
+ * (or none): it belongs to someone else now. One Portainer does not show tells nothing.
+ */
+function foreignVolume(facts: PortainerFacts, names: OpsCrewNames, name: string): boolean {
+  const seen = facts.volumes?.find((volume) => volume.name === name);
+  return seen !== undefined && seen.project?.toLowerCase() !== names.app;
+}
+
+/**
+ * The scheduled drills' scratch volumes of `wanted` that `record` lists and Portainer does not show
+ * as another project's, sorted.
+ */
+function scratchOf(
+  facts: PortainerFacts,
+  record: CreatedRecord,
+  names: OpsCrewNames,
+  wanted: readonly string[] | undefined,
+): string[] {
+  return [...new Set(wanted ?? [])]
+    .filter(
+      (name) =>
+        record.volumes.includes(name) &&
+        isDrillScratchVolume(names.app, name) &&
+        !foreignVolume(facts, names, name),
+    )
+    .sort();
+}
+
+/** "Remove the scheduled drills' scratch volume(s) …". */
+function scratchLine(scratch: readonly string[]): string {
+  return `Remove the scheduled drills' scratch volume${scratch.length === 1 ? "" : "s"} ${scratch.join(", ")}`;
 }
 
 /** Recorded stacks in record order (app, updater, connector). */
@@ -1161,9 +1224,9 @@ const TEARDOWN_BLOCKERS = new Set(["token-rejected", "access-denied", "environme
 
 /**
  * The plan that removes exactly what `record` lists for `opts.app`, in order: the updater and
- * connector stacks, (with `deleteData`) the recorded volumes after stopping the app stack, the
- * app stack, then the registry entry. Stacks, volumes and entries OpsCrew did not create are never
- * part of it, nor is Portainer itself.
+ * connector stacks, (with `deleteData`) the recorded volumes after stopping the app stack, or
+ * (without it) only the drills' scratch volumes, the app stack, then the registry entry. Stacks,
+ * volumes and entries OpsCrew did not create are never part of it, nor is Portainer itself.
  */
 export function planStackTeardown(
   facts: PortainerFacts,
@@ -1176,6 +1239,11 @@ export function planStackTeardown(
      * volumes, but never named or kept as the app's data.
      */
     versionVolume?: string;
+    /**
+     * The scheduled drills' scratch volumes (`opscrew-<app>_<service>_drill`, empty between runs):
+     * those the record lists go with the app stack whatever `deleteData` says, never called data.
+     */
+    scratchVolumes?: readonly string[];
   },
 ): StackPlan {
   const env = facts.environment;
@@ -1211,6 +1279,8 @@ export function planStackTeardown(
     .filter((volume) => volume.project?.toLowerCase() === names.app)
     .map((volume) => volume.name);
   const unrecorded = projectVolumes.filter((name) => !valid.volumes.includes(name)).sort();
+  const scratch = scratchOf(facts, valid, names, opts.scratchVolumes);
+  const scratchText = `${scratchLine(scratch)} (empty between their runs: no data)`;
   if (opts.deleteData) {
     const kept =
       unrecorded.length > 0
@@ -1218,15 +1288,20 @@ export function planStackTeardown(
         : "";
     // A recorded volume whose Compose project label (when Portainer shows it) is not the app's
     // stack belongs to someone else now: OpsCrew deletes none of them.
-    const foreign = valid.volumes.filter((name) => {
-      const seen = facts.volumes?.find((volume) => volume.name === name);
-      return seen !== undefined && seen.project?.toLowerCase() !== names.app;
-    });
-    // The version volume holds no data: it is deleted with the data volumes, but not called data.
-    const data = valid.volumes.filter((name) => name !== opts.versionVolume);
-    const versionLine = `Delete the volume ${opts.versionVolume} (the version the site serves)`;
-    const title =
-      data.length > 0 ? `Delete the app's data volumes ${data.join(", ")}` : versionLine;
+    const foreign = valid.volumes.filter((name) => foreignVolume(facts, names, name));
+    // The version volume and the drills' scratch volumes hold no data: they are deleted with the
+    // data volumes, but not called data.
+    const data = valid.volumes.filter(
+      (name) => name !== opts.versionVolume && !scratch.includes(name),
+    );
+    const lines = [
+      ...(data.length > 0 ? [`Delete the app's data volumes ${data.join(", ")}`] : []),
+      ...(opts.versionVolume !== undefined && valid.volumes.includes(opts.versionVolume)
+        ? [`Delete the volume ${opts.versionVolume} (the version the site serves)`]
+        : []),
+      ...(scratch.length > 0 ? [scratchText] : []),
+    ];
+    const title = lines[0] ?? "Delete the app's data volumes";
     if (valid.volumes.length === 0) {
       changes.push({
         id: "volumes",
@@ -1251,8 +1326,9 @@ export function planStackTeardown(
         params: { action: "remove", names: valid.volumes },
       });
     } else {
-      const withVersion = data.length < valid.volumes.length && data.length > 0;
-      const reason = `${withVersion ? `${versionLine}, too.` : ""}${kept}`.trim();
+      const reason = [...lines.slice(1).map((line) => `${line}, too.`), kept.trim()]
+        .filter((text) => text !== "")
+        .join(" ");
       changes.push({
         id: "volumes",
         title:
@@ -1273,8 +1349,23 @@ export function planStackTeardown(
   if (appRecorded !== undefined) {
     const change = removeStackChange(facts, appRecorded, "app");
     if (!opts.deleteData && change.state === "change") {
+      // The drills' scratch volumes hold no data: they go with the app stack anyway, after
+      // stopping it (its loops use them) and while its access lets a limited token see them (R9).
+      if (scratch.length > 0) {
+        changes.push({
+          id: "volumes",
+          title: scratchText,
+          state: "change",
+          params: {
+            action: "remove",
+            names: scratch,
+            ...(appVisible !== undefined &&
+              appVisible.status !== 2 && { stopStackId: appVisible.id }),
+          },
+        });
+      }
       const volumes = [...new Set([...valid.volumes, ...projectVolumes])]
-        .filter((name) => name !== opts.versionVolume)
+        .filter((name) => name !== opts.versionVolume && !scratch.includes(name))
         .sort();
       if (volumes.length > 0) {
         change.reason = `Its named volumes (the app's data) are kept: ${volumes.join(", ")}.`;

@@ -1445,6 +1445,118 @@ describe.skipIf(!findExecutable("git"))(
       expect(error.hint).toMatch(/--approve [0-9a-f]{64} --confirm shop-drill$/);
       expect(refused.fake.mutations()).toEqual([]);
     });
+
+    const SCRATCH = "opscrew-shop_db_drill";
+    const recorded = async (s: Setup) =>
+      (await readPortainerConnection(s.deps.paths))?.created.volumes ?? [];
+    const scratchRemovals = (s: Setup) =>
+      s.fake.calls.filter((call) => call.startsWith("DELETE /api/endpoints/3/docker/volumes/"));
+    /**
+     * `shop` set up with weekly drills, its scratch volume on the host, then the schedule turned off
+     * in the plan; the host's Docker runs the loop `drill-db` on the scratch volume while `loop`.
+     */
+    const turnedOff = async (loop: boolean) => {
+      const s = await setup({ plan: drilled("weekly") });
+      await s.run();
+      s.fake.volumes.push({
+        Name: SCRATCH,
+        Labels: { "com.docker.compose.project": "opscrew-shop" },
+      });
+      const docker = new FakeDocker();
+      if (loop) {
+        docker.containers.set("loop", {
+          id: "loop",
+          image: "postgres",
+          cmd: [],
+          env: [],
+          labels: {
+            "com.docker.compose.project": "opscrew-shop",
+            "com.docker.compose.service": "drill-db",
+          },
+          binds: [],
+          mounts: [{ type: "volume", source: SCRATCH, target: "/var/lib/postgresql/data" }],
+          state: "running",
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        });
+      }
+      s.services.docker = () => docker;
+      await writeArtifact("plan", s.deps.paths.files.plan, drilled());
+      s.github.openPull = OPEN_PULL;
+      s.handler.requests.length = 0;
+      s.deps.reporter.lines.length = 0;
+      return { s, docker };
+    };
+
+    it("records the scratch volume of drills whose stack plan changes nothing else", async () => {
+      const s = await setup({ plan: drilled() });
+      await s.run();
+      expect(await recorded(s)).not.toContain(SCRATCH);
+      s.github.openPull = OPEN_PULL;
+      await writeArtifact("plan", s.deps.paths.files.plan, drilled("weekly"));
+      await s.run();
+      expect(stackRequests(s).at(-1)?.title).toMatch(/\(0 changes\), with scheduled restore/);
+      expect(await recorded(s)).toContain(SCRATCH);
+    });
+
+    it("removes the scratch volume once the schedule is off and no container uses it, approved with <app>-drill typed", async () => {
+      const { s } = await turnedOff(false);
+      // Recorded names other than the plan's services' scratch volumes are never removed.
+      const connection = await readPortainerConnection(s.deps.paths);
+      if (connection === undefined) throw new Error("no connection");
+      const others = ["opscrew-shop_cache_drill", "opscrew-shop_db_data"];
+      await recordPortainerConnection(s.deps.paths, {
+        ...connection,
+        created: {
+          ...connection.created,
+          volumes: [...new Set([...connection.created.volumes, ...others])].sort(),
+        },
+      });
+      const { stackPlanHash } = await s.run({ planOnly: true });
+      expect(s.deps.reporter.text()).toContain(
+        `It removes the scheduled drills' scratch volume, so a script approves it with --approve ${stackPlanHash} --confirm shop-drill.`,
+      );
+      expect(scratchRemovals(s)).toEqual([]);
+
+      await s.run();
+      const [request] = stackRequests(s);
+      expect(request).toMatchObject({ allowDestroy: true, confirmPhrase: "shop-drill" });
+      expect(request?.title).toBe(
+        "Apply the stack plan to your Portainer (1 change), removing the scheduled drills' scratch volume",
+      );
+      expect(request?.details).toContain(
+        `Remove the scheduled drills' scratch volume ${SCRATCH} (empty, left after their schedule was turned off)`,
+      );
+      expect(request?.details).toContain("Typing shop-drill approves it.");
+      expect(scratchRemovals(s)).toEqual([`DELETE /api/endpoints/3/docker/volumes/${SCRATCH}`]);
+      expect(s.fake.volumes.map((volume) => volume.Name)).not.toContain(SCRATCH);
+      expect(await recorded(s)).not.toContain(SCRATCH);
+      expect(await recorded(s)).toEqual(expect.arrayContaining(others));
+
+      // Gone: the next provision has nothing to remove.
+      s.handler.requests.length = 0;
+      await s.run();
+      expect(stackRequests(s)).toEqual([]);
+    });
+
+    it("keeps one a container still uses, says so in one line, and removes it at the next provision", async () => {
+      const { s, docker } = await turnedOff(true);
+      await s.run();
+      expect(stackRequests(s)).toEqual([]);
+      expect(scratchRemovals(s)).toEqual([]);
+      expect(await recorded(s)).toContain(SCRATCH);
+      const said = s.deps.reporter.lines.filter((line) => line.message.includes(SCRATCH));
+      expect(said.map((line) => line.message)).toEqual([
+        `The scheduled drills' scratch volume ${SCRATCH} stays for now: a container still uses it, as its loop runs until the deploy of the pull request that turns their schedule off. The next \`opscrew provision\` after that deploy removes it.`,
+      ]);
+
+      // The deploy removed the loop.
+      docker.containers.clear();
+      await s.run();
+      expect(stackRequests(s)[0]).toMatchObject({ confirmPhrase: "shop-drill" });
+      expect(scratchRemovals(s)).toEqual([`DELETE /api/endpoints/3/docker/volumes/${SCRATCH}`]);
+    });
   },
 );
 

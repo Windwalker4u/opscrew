@@ -27,6 +27,7 @@ import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
 import { providerBucket } from "../provision";
 import { portainerCloudflare } from "../provision/credentials";
+import { recordedScratchVolumes } from "../provision/drill-scratch";
 import {
   portainerValueKeyFile,
   portainerWebhookFile,
@@ -504,12 +505,15 @@ export async function destroyPortainer(
   });
 
   // 4. What the teardown removes: checked before anything changes, shown, confirmed once
-  // The stamp's version volume goes with the data volumes, but holds no data to warn about.
+  // The stamp's version volume goes with the data volumes, but holds no data to warn about; the
+  // scheduled drills' scratch volumes hold none either and go with the app stack in any case.
   const version = portainerVersionVolume(plan);
+  const scratch = recordedScratchVolumes(plan, record.volumes);
   const teardown = planStackTeardown(facts, record, {
     deleteData,
     app: name,
     versionVolume: version,
+    scratchVolumes: scratch,
   });
   requireNoStackBlockers(teardown, name);
   const words = removalWords(plan);
@@ -540,7 +544,8 @@ export async function destroyPortainer(
       )
     : undefined;
   const volumes = teardown.changes.find((change) => change.id === "volumes");
-  const dataOf = (names: readonly string[]) => names.filter((name) => name !== version);
+  const dataOf = (names: readonly string[]) =>
+    names.filter((name) => name !== version && !scratch.includes(name));
   const dataNames =
     volumes?.state === "change" && Array.isArray(volumes.params.names)
       ? dataOf(volumes.params.names)

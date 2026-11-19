@@ -3,6 +3,7 @@ import type { EnvPair, PortainerClient, StackDetails } from "./client";
 import {
   DEPLOY_COMPOSE_FILE,
   isDeployReference,
+  isDrillScratchVolume,
   nextStackName,
   opscrewNames,
   ROLE_NAMES,
@@ -388,10 +389,23 @@ function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinn
     }
   }
   if (change.id === "volumes") {
-    // Volumes are deleted only by a teardown that deletes data, and only the app stack's.
-    if (plan.purpose !== "teardown" || plan.deleteData !== true) throw notOurs();
-    for (const name of list(change.params, "names")) {
+    // Only the app stack's recorded volumes. Data goes only in a teardown that deletes data; any
+    // other plan removes only the drills' scratch volumes (empty between runs), a setup only those
+    // its app stack no longer has, and without stopping the app.
+    const removed = list(change.params, "names");
+    for (const name of removed) {
       if (!plan.record.volumes.includes(name) || !name.startsWith(`${names.app}_`)) {
+        throw notOurs();
+      }
+    }
+    if (plan.purpose !== "teardown" || plan.deleteData !== true) {
+      const app = plan.changes.find((item) => item.id === "app-stack");
+      const kept = plan.purpose === "setup" && app !== undefined ? list(app.params, "volumes") : [];
+      const setupStop = plan.purpose === "setup" && change.params.stopStackId !== undefined;
+      if (
+        setupStop ||
+        removed.some((name) => !isDrillScratchVolume(names.app, name) || kept.includes(name))
+      ) {
         throw notOurs();
       }
     }

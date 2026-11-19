@@ -458,6 +458,49 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     );
   });
 
+  it("removes the scheduled drills' scratch volume without --delete-data, after stopping the app, never calling it data", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+      snapshots: { schedule: {}, drills: { schedule: "weekly" } },
+    });
+    const s = await deployed({ plan });
+    const scratch = "opscrew-shop_db_drill";
+    s.fake.volumes.push({
+      Name: scratch,
+      Labels: { "com.docker.compose.project": "opscrew-shop" },
+    });
+    expect((await readPortainerConnection(s.deps.paths))?.created.volumes).toContain(scratch);
+    const previews: DestroyPreview[] = [];
+    const result = await destroy(s, {
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    const removal = `portainer:DELETE /api/endpoints/3/docker/volumes/${scratch}`;
+    expect(s.events.filter((event) => event.includes("docker/volumes"))).toEqual([removal]);
+    // The app stops first (its loop uses the volume), and goes after it.
+    const stop = s.events.findIndex((event) => /\/stop$/.test(event));
+    const appRemoval = s.events.findLastIndex((event) =>
+      /^portainer:DELETE \/api\/stacks\//.test(event),
+    );
+    expect(stop).toBeGreaterThan(-1);
+    expect(s.events.indexOf(removal)).toBeGreaterThan(stop);
+    expect(s.events.indexOf(removal)).toBeLessThan(appRemoval);
+    expect(previews[0]?.stackChanges).toContain(
+      `Remove the scheduled drills' scratch volume ${scratch} (empty between their runs: no data)`,
+    );
+    expect(previews[0]?.dataWarning).toBeUndefined();
+    const text = s.deps.reporter.text();
+    expect(text).toContain(
+      "The app's data in your Portainer (the volumes opscrew-shop_db_data and opscrew-shop_snapshots) is kept.",
+    );
+    expect(result.remaining.join("\n")).not.toContain(scratch);
+    expect(s.fake.volumes.map((volume) => volume.Name)).not.toContain(scratch);
+    expect(s.fake.volumes.map((volume) => volume.Name)).toContain("opscrew-shop_db_data");
+    expect((await readPortainerConnection(s.deps.paths))?.created.volumes).not.toContain(scratch);
+  });
+
   it("keeps the app's R2 bucket without --delete-data, and with it deletes the bucket first", async () => {
     const key = {
       [STORAGE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "destroy"),

@@ -2315,7 +2315,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     step(
-      "7d. scheduled dump drills: snapshot schedule on --every 1h and snapshot drill schedule on --every daily, provision (the stack plan approved by its hash with <app>-drill typed) and the deploy: a drill-<db> service with no network and the snapshots volume read-only; once a scheduled snapshot is taken, the loop's drill run once by the test in its own container, as its slot would: the dump restored with its tables, its line in the service's log and in status, the app's containers and volumes unchanged; then both schedules off, provisioned and deployed: the loop and its scratch volume gone",
+      "7d. scheduled dump drills: snapshot schedule on --every 1h and snapshot drill schedule on --every daily, provision (the stack plan approved by its hash with <app>-drill typed) and the deploy: a drill-<db> service with no network and the snapshots volume read-only; once a scheduled snapshot is taken, the loop's drill run once by the test in its own container, as its slot would: the dump restored with its tables, its line in the service's log and in status, the app's containers and volumes unchanged; then both schedules off, provisioned and deployed: the loop gone; provision again (its stack plan approved by its hash with <app>-drill typed): the scratch volume gone",
       minutes(150),
       async () => {
         const stack = names().app;
@@ -2413,13 +2413,14 @@ describe.skipIf(MISSING.length > 0)(
           async () => ((await loopContainer()) === "" ? true : undefined),
           15_000,
         );
-        const scratch = (await appVolumes()).filter((name) => name.endsWith(`_${db}_drill`));
-        if (scratch.length > 0) {
-          run.findings.push(
-            `the scheduled dump drills' scratch volume stayed in your Portainer after their schedule's removal (${scratch.join(", ")}); the test removed it`,
-          );
-          await hostExec(`docker volume rm ${scratch.join(" ")}`);
-        }
+        // The loop is gone: the next provision removes its scratch volume, typed <app>-drill.
+        const scratchVolume = `${stack}_${db}_drill`;
+        const removal = await provisionTyping(run, "the scratch volume's removal", typing);
+        expect(removal.typed, "the names provision's script typed").toContain(`${run.app()}-drill`);
+        expect(
+          (await appVolumes()).filter((name) => name === scratchVolume),
+          "the scheduled dump drills' scratch volume after the provision that removes it",
+        ).toEqual([]);
       },
     );
 

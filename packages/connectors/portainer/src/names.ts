@@ -56,6 +56,23 @@ export const VolumeNameSchema = z
   .max(255)
   .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, { message: "must be a Docker volume name" });
 
+/** What a scheduled drill's scratch volume's name ends with (iac-templates': `<service>_drill`). */
+const DRILL_SCRATCH_SUFFIX = "_drill";
+
+/**
+ * True for a scheduled drill's scratch volume of the app stack `stack`: `<stack>_<service>_drill`
+ * (a service's name, as plan-schema has it), empty between the drill's runs. No service's data
+ * volume is named so.
+ */
+export function isDrillScratchVolume(stack: string, name: string): boolean {
+  const service = name.slice(stack.length + 1, -DRILL_SCRATCH_SUFFIX.length);
+  return (
+    name.startsWith(`${stack}_`) &&
+    name.endsWith(DRILL_SCRATCH_SUFFIX) &&
+    /^[a-z][a-z0-9-]*$/.test(service)
+  );
+}
+
 /**
  * The stacks OpsCrew creates for one app, by role, in the order its record lists them: the stack
  * plan change that manages each, and what its name adds to `opscrew-<app>` (research R6).

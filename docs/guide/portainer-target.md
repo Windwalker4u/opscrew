@@ -377,6 +377,12 @@ last one through Portainer's Docker proxy. **A recreated container starts a new 
 record goes with the old one. The service holds no Portainer credential: what it can reach is its
 own stack's services and volumes. Anything with access to the host's Docker can go past its bounds.
 
+With the schedule turned off (`npx opscrew snapshot drill schedule off`, or `snapshot schedule
+off`, which takes it too), `npx opscrew provision` takes the loops out of the stack file, and they
+leave with the deploy of its pull request. Their empty scratch volumes stay until the next
+`npx opscrew provision` after that deploy removes them, its stack plan approved by its hash with
+`<app>-drill` typed; `destroy` removes them too, without `--delete-data`, as they hold no data.
+
 ## Removing the app
 
 ```bash
