@@ -706,7 +706,7 @@
               "properties": {
                 "engine": {
                   "type": "string",
-                  "enum": ["mariadb", "mysql"]
+                  "enum": ["mariadb", "mysql", "postgres"]
                 },
                 "name": {
                   "type": "string",

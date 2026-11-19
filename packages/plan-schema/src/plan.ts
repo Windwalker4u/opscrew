@@ -414,10 +414,13 @@ export const HostingTargetSchema = z
         via: z.enum(["account", "multiphp", "handler"]),
       })
       .optional(),
-    /** The app's database, its name without the account's prefix (the panel adds it). */
+    /**
+     * The app's database, its name without the account's prefix (the panel adds it). PostgreSQL
+     * only on a cPanel account whose host installed it.
+     */
     database: z
       .strictObject({
-        engine: z.enum(["mariadb", "mysql"]),
+        engine: z.enum(["mariadb", "mysql", "postgres"]),
         name: z.string().regex(/^[a-z0-9_]+$/, {
           message:
             "must be lower-case letters, digits and underscores, without the account's prefix (the panel adds it)",
@@ -492,6 +495,12 @@ export const HostingTargetSchema = z
           `must be "account" with panel "sftp": ${why}, so the hostname runs the account's own PHP version; set target.php.via to "account"`,
         );
       }
+    }
+    if (target.database?.engine === "postgres" && !sftp && target.panel !== "cpanel") {
+      issue(
+        ["database", "engine"],
+        `can be "postgres" only with panel "cpanel": OpsCrew makes PostgreSQL databases only on cPanel accounts so far; use a MySQL or MariaDB database, or a server target`,
+      );
     }
     if (target.app === "static") {
       const refused = [

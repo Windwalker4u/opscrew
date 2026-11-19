@@ -69,7 +69,7 @@ describe("the hosting target", () => {
       webRoot: string;
       site?: Site | undefined;
       php?: { version: string; via: "account" | "multiphp" | "handler" } | undefined;
-      database?: { engine: "mariadb" | "mysql"; name: string } | undefined;
+      database?: { engine: "mariadb" | "mysql" | "postgres"; name: string } | undefined;
       cron: { schedule: string; command: string }[];
       runtime?: { interpreter: "nodejs" | "python"; version: string; startup: string } | undefined;
       docroot: "direct" | "link";
@@ -139,7 +139,7 @@ describe("the hosting target", () => {
       ["php", { version: "8", via: "account" }, "target.php.version"],
       ["php", { version: "8.3.1", via: "account" }, "target.php.version"],
       ["php", { version: "8.3", via: "cagefs" }, "target.php.via"],
-      ["database", { engine: "postgres", name: "app" }, "target.database.engine"],
+      ["database", { engine: "mongodb", name: "app" }, "target.database.engine"],
       ["database", { engine: "mysql", name: "App" }, "target.database.name"],
       ["database", { engine: "mysql", name: "app-db" }, "target.database.name"],
       ["database", { engine: "mysql", name: "" }, "target.database.name"],
@@ -241,6 +241,20 @@ describe("the hosting target's rules", () => {
         path: "target.runtime",
         message:
           'is refused with app "static": a static site runs no Node.js or Python app; remove target.runtime',
+      },
+    ]);
+  });
+
+  it("takes a PostgreSQL database only on a cPanel account", async () => {
+    const postgres = { engine: "postgres", name: "shop_prod" };
+    expect(
+      DeployPlanSchema.parse(await hostingPlan(hosting({ database: postgres }))).target,
+    ).toMatchObject({ database: postgres });
+    expect(await targetIssues(hosting({ panel: "plesk", database: postgres }))).toEqual([
+      {
+        path: "target.database.engine",
+        message:
+          'can be "postgres" only with panel "cpanel": OpsCrew makes PostgreSQL databases only on cPanel accounts so far; use a MySQL or MariaDB database, or a server target',
       },
     ]);
   });

@@ -30,6 +30,12 @@ export interface HostingDomain {
   documentRoot?: string;
 }
 
+/**
+ * The database server a hosting database lives on: `mysql` (MySQL or MariaDB, whichever the account
+ * runs) or `postgres` (PostgreSQL, on cPanel accounts whose host installed it).
+ */
+export type HostingDatabaseServer = "mysql" | "postgres";
+
 /** What design shows and checks before anything changes on the account (read-only calls only). */
 export interface HostingFacts {
   panel: HostingPanelKind;
@@ -45,6 +51,8 @@ export interface HostingFacts {
     prefix?: string;
     maxDatabaseName?: number;
     maxUserName?: number;
+    /** PostgreSQL's own limits, when `engines` has it (cPanel's `Postgresql::get_restrictions`). */
+    postgres?: { maxDatabaseName?: number; maxUserName?: number };
   };
   /** The panel's app support (cPanel's Application Manager and CloudLinux's selectors). */
   apps: { selectors: ("nodejs" | "python")[]; slotsLeft?: number };
@@ -171,12 +179,21 @@ export interface HostingPanel extends HostingFiles {
   addHostname(hostname: string, documentRoot?: string): Promise<string>;
   removeHostname(hostname: string): Promise<void>;
 
-  /** Full names, prefix included. */
-  listDatabases(): Promise<string[]>;
+  /** Full names, prefix included, of the `server`'s databases (MySQL's when absent). */
+  listDatabases(server?: HostingDatabaseServer): Promise<string[]>;
   /** Makes the database and its user and grants the user every privilege on it. */
-  addDatabase(input: { name: string; user: string; password: string }): Promise<void>;
+  addDatabase(input: {
+    name: string;
+    user: string;
+    password: string;
+    server?: HostingDatabaseServer;
+  }): Promise<void>;
   /** Removes the user and the database, and checks the database is gone. */
-  removeDatabase(input: { name: string; user: string }): Promise<void>;
+  removeDatabase(input: {
+    name: string;
+    user: string;
+    server?: HostingDatabaseServer;
+  }): Promise<void>;
 
   /** Undefined when the panel's API can't list them. */
   listCron(): Promise<HostingCronJob[] | undefined>;
