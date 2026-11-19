@@ -67,7 +67,7 @@ export async function otherAppsOnServer(
   }
   const login = await deployLogin(deps, plan);
   if (login === undefined) {
-    return { reached: false, reason: "this computer has no deploy login to it" };
+    return { reached: false, reason: NO_LOGIN };
   }
   const { remote, inspect = inspectHost } = options.services ?? {};
   deps.reporter.step("Looking for other apps on the server (read-only)");
@@ -103,6 +103,9 @@ export async function otherAppsOnServer(
   };
 }
 
+/** Why the server couldn't be looked at when this computer has no deploy login to it. */
+const NO_LOGIN = "this computer has no deploy login to it";
+
 /**
  * Refuses `what` (a phrase such as "destroying the server") in the first app's command while
  * other apps share its server ({@link otherAppsOnServer}), naming each with its repository and
@@ -132,7 +135,9 @@ export async function requireNoOtherApps(
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `OpsCrew couldn't look at the server for other apps (${found.reason}), and ${what} would break any that run there.`,
-      `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
+      found.reason === NO_LOGIN
+        ? `Run \`${again}\` on the computer that provisioned the app, which holds its deploy key and the server's address; or run \`${again} --skip-other-apps-check\` to go on anyway.`
+        : `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
     );
   }
   const flag = skip ? " --skip-other-apps-check doesn't cover an app that runs there." : "";

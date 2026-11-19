@@ -109,6 +109,20 @@ describe("otherAppsOnServer", () => {
       reason: "this computer has no deploy login to it",
     });
     expect(away.hosts).toEqual([]);
+    const refused = await requireNoOtherApps(
+      away.deps,
+      away.plan,
+      "destroying the server",
+      "opscrew destroy",
+      { services: away.services },
+    ).then(
+      () => undefined,
+      (error: unknown) => error as { hint?: string },
+    );
+    expect(refused?.hint).toMatch(
+      /^Run `opscrew destroy` on the computer that provisioned the app/,
+    );
+    expect(refused?.hint).not.toMatch(/reaches it over SSH/);
   });
 
   it("gives the inspection's own words when it failed on a server it reached", async () => {
