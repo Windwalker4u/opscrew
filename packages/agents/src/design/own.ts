@@ -173,9 +173,9 @@ export function sharedBackupsNote(app: string): string {
 }
 
 /**
- * The warning a second app's design and host plan say plainly (FR-3004): both apps run as the same
- * `deploy` user, which can become root through Docker, so this app's deploys reach the first
- * app's (`app`) data and secrets.
+ * The warning a second app's design summary and host plan approval say plainly (FR-3004): both
+ * apps run as the same `deploy` user, which can become root through Docker, so this app's deploys
+ * reach the first app's (`app`) data and secrets.
  */
 export function sharedAccessWarning(app: string): string {
   return `Anyone who can change this app's deploy workflow or its deploy key can reach the data and secrets of "${app}" too: both apps run on the server as the same deploy user, which can become root through Docker. Share the server only between apps the same people may change.`;

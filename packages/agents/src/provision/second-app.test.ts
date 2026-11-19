@@ -9,6 +9,7 @@ import { rm } from "node:fs/promises";
 import { DEPLOY_SECRETS, IMAGES } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { sharedAccessWarning } from "../design/own";
 import { ownHostDrift } from "../drift/host";
 import { ownHostPlans } from "../rotate/keys";
 import { knownHostsName, readOwnServer } from "../shared";
@@ -22,7 +23,6 @@ import {
   type SecondAppProject,
   secondAppProject,
 } from "./__fixtures__/second-app";
-import { sharedAccessWarning } from "./own";
 import { runProvision } from "./run";
 
 /** Provisions the second app (every plan approved) and forgets what was asked. */
@@ -95,10 +95,10 @@ describe("a second app's provision", () => {
     // The approval names the server as the first app's and warns of the shared deploy user.
     const host = s.handler.requests.find((request) => request.kind === "host-apply");
     expect(host?.title).toBe('Apply the host plan to the server of "shop" (3 changes)');
-    expect(host?.details).toContain(sharedAccessWarning("inventory", "shop"));
+    expect(host?.details).toContain(sharedAccessWarning("shop"));
     expect(host?.details).toContain('Host plan for the server of "shop"');
-    expect(sharedAccessWarning("inventory", "shop")).toBe(
-      'Anyone who can change the deploy workflow or the deploy key of "inventory" can reach the data and secrets of "shop" too: both apps run as the same deploy user on this server, and that user can become root through Docker.',
+    expect(sharedAccessWarning("shop")).toBe(
+      `Anyone who can change this app's deploy workflow or its deploy key can reach the data and secrets of "shop" too: both apps run on the server as the same deploy user, which can become root through Docker. Share the server only between apps the same people may change.`,
     );
 
     // Logged in as deploy with the first app's key (by path) until its own key was installed.

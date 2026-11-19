@@ -40,6 +40,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
+import { sharedAccessWarning } from "../design/own";
 import { commandFlags } from "../environments/choice";
 import { homeForwards, homeForwardsInput } from "../home/forwards";
 import {
@@ -205,14 +206,6 @@ export function ownTarget(plan: Pick<DeployPlan, "target">): OwnDeployTarget {
  */
 export function sharesOf(plan: Pick<DeployPlan, "target">): OwnDeployTarget["shares"] {
   return plan.target.provider === "own" ? plan.target.shares : undefined;
-}
-
-/**
- * The shared-access warning (spec FR-3004), said in the second app `app`'s host plan approval:
- * both apps run as the deploy user of the server OpsCrew created for `first`.
- */
-export function sharedAccessWarning(app: string, first: string): string {
-  return `Anyone who can change the deploy workflow or the deploy key of "${app}" can reach the data and secrets of "${first}" too: both apps run as the same deploy user on this server, and that user can become root through Docker.`;
 }
 
 /**
@@ -1289,7 +1282,7 @@ export async function applyOwnHostPlan(
         ? "Your server is already prepared; nothing on it changes."
         : `"${app}" is already set up on ${where}; nothing on it changes.`),
     // Said in the approval of a second app: it shares the deploy user with the first app.
-    ...(shares === undefined ? {} : { intro: [sharedAccessWarning(app, shares.app)] }),
+    ...(shares === undefined ? {} : { intro: [sharedAccessWarning(shares.app)] }),
     command: input.command,
     phase: input.phase,
     ...(drills ? { allowDestroy: true, confirmPhrase: drillName(input.plan.app.name) } : {}),
