@@ -231,6 +231,10 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   `shares.host` that design sets again over `desiredHost`'s; the budget question.
 - Open: a second app's commands once the first app's server is gone (spec edge case). Its
   destroy should then remove its DNS and Cloudflare parts and record the deployment gone.
+- Open (from T3008): when a second app's move-off teardown fails right after its `deploy-key`
+  step, `retarget.fromOwn.joined` stays, and the next `--finish` can't log in. It stops plainly,
+  changing nothing. The fix is a `secondAppLogin` that pins into `retarget.fromOwn`. For the
+  simplify pass: `sharedServerStays` in both `destroy/own.ts` and `retarget/sides/own.ts`.
 
 **From T3006 (lead, 2026-11-19), accepted:**
 - `destroy` looks only when the plan deletes the server (`module.server.*`), after the preview
