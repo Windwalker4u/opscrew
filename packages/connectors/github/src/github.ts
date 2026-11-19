@@ -690,6 +690,11 @@ const RUN_MISSING_GRACE_MS = 60_000;
 const RUN_UNAVAILABLE_GRACE_MS = 300_000;
 /** The answers of a GitHub that can't serve the request for now. */
 const SERVER_ERRORS: readonly number[] = [500, 502, 503, 504];
+/**
+ * The waits before a read GitHub answered with a server error is sent again, twice at most: a
+ * single 500 listing workflow runs stopped `opscrew snapshot` (the Portainer pass, 2026-11-19).
+ */
+const READ_RETRY_MS: readonly number[] = [1_000, 3_000];
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -737,31 +742,45 @@ export class GitHubClient {
     options: RequestOptions = {},
   ): Promise<{ status: number; json: unknown; headers: Headers }> {
     const { body, ok = [], permission } = options;
-    const signal = AbortSignal.timeout(this.#timeoutMs);
     let response: Response;
     let text: string;
-    try {
-      response = await this.#fetch(`${this.#baseUrl}${path}`, {
-        method,
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${this.#token}`,
-          "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": this.#userAgent,
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal,
-      });
-      text = await response.text();
-    } catch (error) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        signal.aborted
-          ? `GitHub did not answer within ${durationText(this.#timeoutMs)} when trying to ${what}.`
-          : `Could not reach GitHub to ${what}.`,
-        { hint: CONNECTION_HINT, cause: error },
-      );
+    for (let attempt = 0; ; attempt++) {
+      const signal = AbortSignal.timeout(this.#timeoutMs);
+      try {
+        response = await this.#fetch(`${this.#baseUrl}${path}`, {
+          method,
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${this.#token}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": this.#userAgent,
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal,
+        });
+        text = await response.text();
+      } catch (error) {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          signal.aborted
+            ? `GitHub did not answer within ${durationText(this.#timeoutMs)} when trying to ${what}.`
+            : `Could not reach GitHub to ${what}.`,
+          { hint: CONNECTION_HINT, cause: error },
+        );
+      }
+      // A read GitHub couldn't serve for now is sent again; a write never is, and a caller that
+      // takes server errors itself (`ok`) gets them at once.
+      const wait = READ_RETRY_MS[attempt];
+      if (
+        method !== "GET" ||
+        wait === undefined ||
+        !SERVER_ERRORS.includes(response.status) ||
+        ok.includes(response.status)
+      ) {
+        break;
+      }
+      await this.#sleep(wait);
     }
     let json: unknown;
     try {

@@ -397,7 +397,8 @@ describe("waitForWorkflowRun", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as Error).message).toContain("read workflow run 42");
-    expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(300_000);
+    // The grace, then the last read's own two retries (1 s, 3 s).
+    expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(300_000 + 1_000 + 3_000);
   });
 
   it("refuses a run GitHub still answers 404 for after a minute, with GitHub's refusal", async () => {

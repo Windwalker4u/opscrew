@@ -41,6 +41,43 @@ describe("parseGitHubRepo", () => {
 });
 
 describe("GitHubClient", () => {
+  it("reads again after a server error, twice at most, and never sends a write again", async () => {
+    const sleeps: number[] = [];
+    const sleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    const repo = { body: { default_branch: "main", private: true, permissions: { push: true } } };
+    const flaky = fakeFetch({
+      "GET /repos/acme/shop": [{ status: 500, body: { message: "boom" } }, { status: 502 }, repo],
+    });
+    await expect(
+      new GitHubClient({ token: TOKEN, fetch: flaky.fetch, sleep }).getRepo("acme", "shop"),
+    ).resolves.toMatchObject({ defaultBranch: "main" });
+    expect(flaky.calls).toHaveLength(3);
+    expect(sleeps).toEqual([1000, 3000]);
+
+    const down = fakeFetch({ "GET /repos/acme/shop": { status: 503, body: { message: "down" } } });
+    await expect(
+      new GitHubClient({ token: TOKEN, fetch: down.fetch, sleep }).getRepo("acme", "shop"),
+    ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
+    expect(down.calls).toHaveLength(3);
+
+    const write = fakeFetch({
+      "DELETE /repos/acme/shop/actions/secrets/OPSCREW_SSH_KEY": {
+        status: 500,
+        body: { message: "boom" },
+      },
+    });
+    await expect(
+      new GitHubClient({ token: TOKEN, fetch: write.fetch, sleep }).deleteActionsSecret(
+        "acme",
+        "shop",
+        "OPSCREW_SSH_KEY",
+      ),
+    ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
+    expect(write.calls).toHaveLength(1);
+  });
+
   it("reads repository info with the right headers", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /repos/acme/shop": {
