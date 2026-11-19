@@ -857,6 +857,28 @@ MySQL.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: high
 
+- [x] T2952 The pull requests' checklists: what OpsCrew checked, ticked; the rest for the reviewer (founder, 2026-11-19)
+  - Owns: `packages/agents/src/adapt/pr.ts`, `packages/agents/src/provision/publish.ts` (the pull
+    request body's checklist only), `packages/agents/src/hosting/provision-pr.ts`, the colocated
+    tests and snapshots, the guide pages that show these lists (find them by their item texts)
+  - Reads: `@opscrew/secops`'s scan rules (the secret rules, the workflow rule for unpinned or
+    third-party actions) and how the agents package already imports secops
+  - Depends: none
+  - Accept: each pull request OpsCrew writes (adapt's, provision's deploy setup, a hosting
+    account's) has two lists, "Checked by OpsCrew" and "For you to check". An item is under
+    "Checked by OpsCrew", ticked, only when the run that writes the body has checked it. It names
+    what was checked, for example "OpsCrew's secret rules found no secret value in the files this
+    pull request changes", or "the workflow uses only pinned, first-party actions (OpsCrew's
+    workflow rule)". Run those two checks on the files the run writes, with secops' existing rules;
+    a finding moves the item under "For you to check" with the finding named, never its value.
+    Items only the merge can show (the deploy's build and health check) are under "For you to
+    check", worded as what to look at after the merge. The judgment items ("every edit keeps the
+    app's behaviour the same", the new dependencies, `agent.sh` as the script you expect, the
+    host changes and records matching what you expect) stay there, unticked. A list with no item
+    is left out. Tests for each body.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/adapt src/provision src/hosting && pnpm lint`
+  - Effort: medium
+
 - [x] T2937 [P] [US7] Scheduled dump drills in a Portainer
   - Owns: `packages/iac-templates/src/portainer-target/{snapshots,stack}.ts`, colocated tests,
     snapshots and `snapshots.docker.test.ts`
