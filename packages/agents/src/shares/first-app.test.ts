@@ -104,6 +104,21 @@ describe("firstApp", () => {
     );
   });
 
+  it("refuses a first app in the middle of a move to another server", async () => {
+    const base = testPlan({ deployed: true, domain: "shop.example.com" });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      retarget: {
+        from: { target: base.target },
+        step: "created",
+        startedAt: "2026-11-05T12:00:00.000Z",
+      },
+    });
+    const project = await withPlan(plan);
+    const error = await refuses(project, /^"shop" is in the middle of a move to another server/);
+    expect(error?.hint).toMatch(/opscrew retarget --finish/);
+  });
+
   it("refuses a server whose public SSH is closed", async () => {
     const plan = closedPlan(withLaptop(testPlan({ deployed: true, domain: "shop.example.com" })));
     const project = await withPlan(plan);

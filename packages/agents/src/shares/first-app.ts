@@ -46,6 +46,7 @@ export interface FirstApp {
  * - not on a server OpsCrew created;
  * - a preview environment, or previews of its repository running on its server;
  * - public SSH closed, or its server on a private network (other servers or a VPN's devices).
+ * - in the middle of a move to another server (`plan.retarget`).
  * @throws OpsCrewError `PHASE_PRECONDITION`.
  */
 export async function firstApp(deps: FirstAppDeps, ref: SharesReference): Promise<FirstApp> {
@@ -70,6 +71,16 @@ export async function firstApp(deps: FirstAppDeps, ref: SharesReference): Promis
       "PHASE_PRECONDITION",
       `${name} itself runs on the server of ${named}, which OpsCrew created for that app.`,
       `Name the repository folder of ${named}${itsRef === undefined ? "" : ` (${itsRef.root})`} instead, with \`opscrew interview\`.`,
+    );
+  }
+  // During a move the plan's target is the new side, and the recorded address still the old
+  // server: a second app could join the server the move is about to delete. The first app's
+  // retarget refuses to start while a second app runs there, so its finish needs no look.
+  if (plan.retarget !== undefined) {
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `${name} is in the middle of a move to another server (\`opscrew retarget\`), so its server can't take another app now.`,
+      `Finish or abort the move in ${ref.root} first (\`opscrew retarget --finish\` or \`opscrew retarget --abort\`), then run this command again.`,
     );
   }
   if (!isCloudTarget(plan.target)) {
