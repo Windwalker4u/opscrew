@@ -26,7 +26,12 @@ import {
   minutes,
   waitFor,
 } from "./cloud";
-import { AppEnvironments, acceptOriginPullBlips, secretsRecord } from "./environment-checks";
+import {
+  AppEnvironments,
+  acceptOriginPullBlips,
+  opscrewUntilApproved,
+  secretsRecord,
+} from "./environment-checks";
 import { destroyConfirmArgs, EXAMPLES, LiveRun, serverSettings } from "./harness";
 import { dispatchCheck } from "./observability-checks";
 import { issueKey } from "./observability-support";
@@ -543,7 +548,35 @@ describe.skipIf(MISSING.length > 0)(
       minutes(60),
       async () => {
         const record = await secretsRecord(second.paths());
-        await underLoad("the second app's destroy", () => second.destroy("prod"));
+        const secondPlan = await second.readPlan();
+        let round = 0;
+        await underLoad("the second app's destroy", async () => {
+          // Each round's output and the key lines before it, for the coverage page (run 5 lost
+          // the second app's key between the plan and the approved run).
+          await opscrewUntilApproved(
+            run,
+            [
+              "destroy",
+              "--app",
+              NAMES.secondApp,
+              "--env",
+              "prod",
+              ...destroyConfirmArgs(secondPlan),
+              "--no-snapshot",
+            ],
+            async (...args) => {
+              round++;
+              log(
+                `the second app's destroy, round ${round}: deploy's authorized_keys has ${(await keyDigests()).length} line(s) before it`,
+              );
+              const result = await run.opscrew(...args);
+              log(
+                `the second app's destroy, round ${round} (exit ${result.exitCode}):\n${run.tail(result.output)}`,
+              );
+              return result;
+            },
+          );
+        });
         if (keysBefore === undefined) throw new Error("Step 2 read no authorized_keys.");
         expect(
           await keyDigests(),
