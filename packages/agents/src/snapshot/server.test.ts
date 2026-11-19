@@ -63,6 +63,10 @@ function fakeServerApi(
     fail?: Partial<Record<string, Error>>;
     /** The app's server's id (default 42). */
     appId?: string;
+    /** The app's server's name at the provider (default shop-staging). */
+    appName?: string;
+    /** The server whose snapshots are listed (default the app's). */
+    listedId?: string;
     /** The billed size of the snapshot it takes (default 2.5 GB). */
     takenGb?: number;
   } = {},
@@ -72,7 +76,7 @@ function fakeServerApi(
   const snapshots = [...(o.snapshots ?? [EARLIER])];
   const appId = o.appId ?? "42";
   const servers: AppServer[] = [
-    { id: appId, name: "shop-staging", status: "running" },
+    { id: appId, name: o.appName ?? "shop-staging", status: "running" },
     { id: "43", name: "shop-staging-data", status: "running" },
   ];
   const step = async (name: string) => {
@@ -92,7 +96,7 @@ function fakeServerApi(
       });
       return { snapshotId: "880022" };
     },
-    listSnapshots: async (serverId) => (serverId === appId ? snapshots : []),
+    listSnapshots: async (serverId) => (serverId === (o.listedId ?? appId) ? snapshots : []),
     deleteSnapshot: async () => {
       throw new Error("not in these tests");
     },
@@ -595,12 +599,18 @@ describe("opscrew restore --server", () => {
 });
 
 describe("opscrew restore --server beside apps from other repositories (FR-3012)", () => {
-  /** The world with the app's server holding `records` (or failing to be inspected). */
-  async function sharedWorld(look: { records?: AppRecord[]; fails?: Error } = {}) {
-    const world = await keyedWorld(stagingPlan([]));
+  /**
+   * The world of `plan` with the app's server holding `records` (or failing to be inspected), at
+   * a provider as `api` sets it up.
+   */
+  async function sharedWorld(
+    look: { records?: AppRecord[]; fails?: Error } = {},
+    o: { plan?: DeployPlan; api?: Parameters<typeof fakeServerApi>[0] } = {},
+  ) {
+    const world = await keyedWorld(o.plan ?? stagingPlan([]));
     const { records = [], ...how } = look;
     const server = await firstAppLook(world.deps.paths, records, how);
-    const provider = fakeServerApi();
+    const provider = fakeServerApi(o.api);
     world.deps.fetch = health([200]).fetch;
     const restore = (o: { skipOtherAppsCheck?: boolean } = {}) =>
       restoreServerSnapshot(world.deps, "770011", {
@@ -621,6 +631,26 @@ describe("opscrew restore --server beside apps from other repositories (FR-3012)
     expect(t.provider.events).toEqual([]);
     expect(t.world.handler.requests).toEqual([]);
     expect(everythingShown(t.world)).not.toContain(SERVER_IPV4);
+  });
+
+  it("looks at the app's server by whatever name it has at the provider now", async () => {
+    const t = await sharedWorld(
+      { records: [secondAppRecord()] },
+      { api: { appName: "shop-staging-renamed" } },
+    );
+    const error = await failure(t.restore());
+    expect(error.message).toContain("and restoring the whole server would break it");
+    expect(t.provider.events).toEqual([]);
+  });
+
+  it("doesn't look before restoring an extra server, which holds no other app", async () => {
+    const t = await sharedWorld(
+      { records: [secondAppRecord()] },
+      { plan: splitStagingPlan(), api: { listedId: "43" } },
+    );
+    await t.restore().catch(() => undefined);
+    expect(t.server.inspections).toEqual([]);
+    expect(t.provider.events).toEqual(["rebuild 43 770011"]);
   });
 
   it("rebuilds as before without one", async () => {

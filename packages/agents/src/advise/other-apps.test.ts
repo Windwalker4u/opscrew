@@ -25,7 +25,7 @@ describe("advise beside apps from other repositories (FR-3016)", () => {
         secondAppRecord({ app: "archive", state: "data-kept" }),
       ]),
     );
-    expect(readings.sharedPreviewsMb).toBe(768);
+    expect(readings.besideAppMb).toBe(768);
     expect(checked).toContain('the memory limits of "inventory" on the server');
     expect(said).not.toContain(IPS.app);
   });
@@ -34,7 +34,7 @@ describe("advise beside apps from other repositories (FR-3016)", () => {
     const facts = createdServerFacts([secondAppRecord({ memoryMb: 512 })]);
     facts.apps.push({ name: "ledger", record: null });
     const { readings } = await firstApp(facts);
-    expect(readings.sharedPreviewsMb).toBe(512);
+    expect(readings.besideAppMb).toBe(512);
     expect(readings.notRead).toContain(
       `the memory of "ledger" on the server: OpsCrew can't read its record, so the size advice doesn't count it`,
     );
@@ -42,7 +42,7 @@ describe("advise beside apps from other repositories (FR-3016)", () => {
 
   it("says when it couldn't look, and counts nothing", async () => {
     const { readings, said } = await firstApp(new Error(`ssh: connect to host ${IPS.app}`));
-    expect(readings.sharedPreviewsMb).toBeUndefined();
+    expect(readings.besideAppMb).toBeUndefined();
     expect(readings.notRead).toContain(
       "the other apps on the server: OpsCrew couldn't look (it could not be reached over SSH)",
     );
@@ -51,7 +51,7 @@ describe("advise beside apps from other repositories (FR-3016)", () => {
 
   it("adds nothing when the server holds no other app", async () => {
     const { readings, checked } = await firstApp(createdServerFacts());
-    expect(readings.sharedPreviewsMb).toBeUndefined();
+    expect(readings.besideAppMb).toBeUndefined();
     expect(checked.join("\n")).not.toContain("on the server");
   });
 });

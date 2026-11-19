@@ -684,8 +684,12 @@ export async function restoreServerSnapshot(
   const noun = profile.serverNoun;
   const services = options.services ?? {};
   const again = `opscrew restore --server ${id}${flags}`;
-  // The app's server: not while apps from other repositories share it (FR-3012).
-  if (server.name === run.plan.app.name) {
+  // The app's server, by whatever name it has now (only an extra server's name leaves the look
+  // out): not while apps from other repositories share it (FR-3012).
+  const extra = (run.plan.servers ?? []).some(
+    (candidate) => cloudServerName(run.plan, candidate.name) === server.name,
+  );
+  if (!extra) {
     await requireNoOtherApps(deps, run.plan, "restoring the whole server", again, {
       skip: options.skipOtherAppsCheck,
       services: services.otherApps,

@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppRecord } from "@opscrew/connector-ssh-host";
-import type { FetchLike } from "@opscrew/contracts";
+import type { FetchLike, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -10,8 +10,10 @@ import {
   createProject,
   createTestPhaseDeps,
   FakeEngine,
+  type FakeEngineScenario,
   FakeGitHub,
   firstAppLook,
+  planJsonFor,
   projectRunner,
   readyRemote,
   ScriptedApprovalHandler,
@@ -25,6 +27,10 @@ import type { ProvisionOptions } from "./types";
 
 const HCLOUD = fakeSecret("hcloud-token");
 const APPLIED = { lastApplyAt: "2026-10-11T12:30:00.000Z", lastPlanHash: "a".repeat(64) };
+const OPEN = ["0.0.0.0/0", "::/0"];
+/** Two of Cloudflare's ranges, as the last run rendered them for a proxied app. */
+const CLOUDFLARE = ["173.245.48.0/20", "2400:cb00::/32"];
+const SERVER = "module.server.hcloud_server.this";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -80,23 +86,80 @@ function deployedPlan(serverType: string, changes: Partial<DeployPlan> = {}): De
   } as DeployPlan;
 }
 
+/** The same, served behind Cloudflare's proxy at `shop.example.com`. */
+function proxiedPlan(httpAllowedFrom?: "any" | "cloudflare"): DeployPlan {
+  const plan = testPlan({
+    domain: "shop.example.com",
+    ...(httpAllowedFrom !== undefined ? { httpAllowedFrom } : {}),
+  });
+  return { ...plan, deployment: APPLIED } as DeployPlan;
+}
+
+/** What the last run rendered into `terraform.tfvars.json` (nbg1, cx23, web ports open to all). */
+function rendered(o: { location?: string; serverType?: string; web?: string[] } = {}) {
+  return {
+    location: o.location ?? "nbg1",
+    server_type: o.serverType ?? "cx23",
+    http_allowed_cidrs: o.web ?? OPEN,
+  };
+}
+
+/** The app's server changes the engine plans: `action` on the server. */
+function serverChange(action: ResourceChange["action"]): ResourceChange {
+  return {
+    address: SERVER,
+    type: "hcloud_server",
+    name: "this",
+    provider: "registry.opentofu.org/hetznercloud/hcloud",
+    action,
+  };
+}
+
+/** The engine's plan of a resize from `from` to `to` in place. */
+function resizeScenario(from: string, to: string): FakeEngineScenario {
+  return {
+    changes: [serverChange("update")],
+    planJson: {
+      ...(planJsonFor() as Record<string, unknown>),
+      variables: { server_type: { value: to }, location: { value: "nbg1" } },
+      resource_changes: [
+        {
+          address: SERVER,
+          type: "hcloud_server",
+          change: {
+            actions: ["update"],
+            before: { name: "shop", server_type: from, location: "nbg1" },
+            after: { name: "shop", server_type: to, location: "nbg1" },
+            after_unknown: { firewall_ids: true, ssh_keys: [true] },
+          },
+        },
+      ],
+    },
+  };
+}
+
 /**
- * Provision of the first app `plan`, whose last run rendered `tfvars`, with a server that holds
- * `records` (or fails to be inspected with `fails`).
+ * The first app `plan`'s project, whose last run rendered `tfvars` (none: `undefined`) and
+ * `mainTf`, with a server that holds `records` (a list a test may add to between runs) or fails
+ * to be inspected with `fails`; `provision(options)` runs provision there (`--plan-only` unless
+ * the options say otherwise).
  */
-async function provisionWith(
+async function firstAppProject(
   plan: DeployPlan,
-  tfvars: Record<string, unknown>,
-  look: { records?: AppRecord[]; fails?: Error; unreadable?: string[] } = {},
-  options: Omit<ProvisionOptions, "services"> = {},
+  tfvars: Record<string, unknown> | undefined,
+  look: { records?: AppRecord[]; fails?: Error; unreadable?: string[]; mainTf?: string } = {},
+  scenario: FakeEngineScenario = {},
 ) {
   const project = await createProject(plan);
   roots.push(project.root, project.bare);
   const tfvarsFile = join(project.root, plan.infra.dir, "terraform.tfvars.json");
-  const tfvarsText = `${JSON.stringify(tfvars)}\n`;
+  const tfvarsText = tfvars === undefined ? undefined : `${JSON.stringify(tfvars)}\n`;
   await mkdir(join(project.root, plan.infra.dir), { recursive: true });
-  await writeFile(tfvarsFile, tfvarsText);
-  const engine = new FakeEngine();
+  if (tfvarsText !== undefined) await writeFile(tfvarsFile, tfvarsText);
+  if (look.mainTf !== undefined) {
+    await writeFile(join(project.root, plan.infra.dir, "main.tf"), look.mainTf);
+  }
+  const engine = new FakeEngine(scenario);
   const handler = new ScriptedApprovalHandler(() => true);
   const deps = await createTestPhaseDeps({
     root: project.root,
@@ -110,67 +173,97 @@ async function provisionWith(
     fetch: hetznerApi,
   });
   deps.redactor.addLiteral(HCLOUD, "HCLOUD_TOKEN");
-  const { records = [], ...how } = look;
-  const server = await firstAppLook(deps.paths, records, how);
-  let engineAsked = false;
-  const run = runProvision(deps, {
-    planOnly: true,
-    ...options,
-    services: {
-      engine: async () => {
-        engineAsked = true;
-        return engine;
-      },
-      provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
-      github: new FakeGitHub(),
-      remote: readyRemote,
-      tcpConnect: async () => true,
-      sleep: async () => undefined,
-      otherApps: server,
-    },
+  const records = look.records ?? [];
+  const server = await firstAppLook(deps.paths, records, {
+    ...(look.fails !== undefined ? { fails: look.fails } : {}),
+    ...(look.unreadable !== undefined ? { unreadable: look.unreadable } : {}),
   });
-  const outcome = await run.then(
-    (result) => ({ result, error: undefined }),
-    (error: unknown) => ({ result: undefined, error }),
-  );
-  const printed = () =>
-    [
-      deps.reporter.text(),
-      JSON.stringify(deps.audit.entries),
-      outcome.error instanceof OpsCrewError
-        ? `${outcome.error.message}\n${outcome.error.hint}`
-        : "",
-    ].join("\n");
+  let engineAsked = false;
+  const provision = async (options: Omit<ProvisionOptions, "services"> = {}) => {
+    const outcome = await runProvision(deps, {
+      planOnly: true,
+      ...options,
+      services: {
+        engine: async () => {
+          engineAsked = true;
+          return engine;
+        },
+        provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+        github: new FakeGitHub(),
+        remote: readyRemote,
+        tcpConnect: async () => true,
+        sleep: async () => undefined,
+        otherApps: server,
+      },
+    }).then(
+      (result) => ({ result, error: undefined }),
+      (error: unknown) => ({ result: undefined, error }),
+    );
+    const printed = () =>
+      [
+        deps.reporter.text(),
+        JSON.stringify(deps.audit.entries),
+        outcome.error instanceof OpsCrewError
+          ? `${outcome.error.message}\n${outcome.error.hint}`
+          : "",
+      ].join("\n");
+    return { ...outcome, printed };
+  };
   return {
-    ...outcome,
     deps,
     engine,
     handler,
     server,
+    records,
+    provision,
     engineAsked: () => engineAsked,
     tfvarsFile,
     tfvarsText,
-    printed,
   };
 }
 
-/** The refusal `t` ended with, checked to have changed nothing and leaked nothing. */
-async function refusedBeforeAnyChange(t: Awaited<ReturnType<typeof provisionWith>>) {
+type Project = Awaited<ReturnType<typeof firstAppProject>>;
+type Outcome = Awaited<ReturnType<Project["provision"]>>;
+
+/** One `--plan-only` provision of a fresh project ({@link firstAppProject}). */
+async function provisionWith(
+  plan: DeployPlan,
+  tfvars: Record<string, unknown> | undefined,
+  look: Parameters<typeof firstAppProject>[2] = {},
+  options: Omit<ProvisionOptions, "services"> = {},
+) {
+  const project = await firstAppProject(plan, tfvars, look);
+  return { ...project, ...(await project.provision(options)) };
+}
+
+/** The refusal of the first run of `t`, checked to have changed nothing and leaked nothing. */
+async function refusedBeforeAnyChange(t: Project & Outcome) {
+  const error = refusedOnly(t);
+  expect(t.engineAsked()).toBe(false);
+  expect(t.engine.calls).toEqual([]);
+  if (t.tfvarsText !== undefined) {
+    await expect(readFile(t.tfvarsFile, "utf8")).resolves.toBe(t.tfvarsText);
+  }
+  return error;
+}
+
+/**
+ * The refusal `t` ended with: before any approval (after the `asked` an earlier run made),
+ * ending "Nothing was changed.", no leak.
+ */
+function refusedOnly(t: Pick<Project, "handler"> & Outcome, asked = 0) {
   expect(t.error).toBeInstanceOf(OpsCrewError);
   const error = t.error as OpsCrewError;
   expect(error.code).toBe("PHASE_PRECONDITION");
   expect(error.message.endsWith("Nothing was changed.")).toBe(true);
-  expect(t.engineAsked()).toBe(false);
-  expect(t.engine.calls).toEqual([]);
-  expect(t.handler.requests).toEqual([]);
-  await expect(readFile(t.tfvarsFile, "utf8")).resolves.toBe(t.tfvarsText);
+  expect(t.handler.requests.slice(asked)).toEqual([]);
   expect(t.printed()).not.toContain(HCLOUD);
   expect(t.printed()).not.toContain(SERVER_IPV4);
   return error;
 }
 
 /** `t` went past the look at the server: its plan was made and saved. */
-function wentOn(t: Awaited<ReturnType<typeof provisionWith>>) {
+function wentOn(t: Project & Outcome) {
   expect(t.error).toBeUndefined();
   expect(t.result?.planHash).toMatch(/^[0-9a-f]{64}$/);
   expect(t.server.inspections).toHaveLength(1);
@@ -189,14 +282,20 @@ const NETWORK: NonNullable<DeployPlan["network"]> = {
   publicSsh: true,
 };
 
+/** The root's main.tf as a run with the app's server on the network rendered it. */
+const NETWORKED_MAIN =
+  'module "server" {\n  source         = "./modules/server"\n  wireguard_port = 51820\n}\n';
+
 const unreachable = () => new Error(`ssh: connect to host ${SERVER_IPV4} port 22: timed out`);
+const RESTART =
+  '"inventory" (from github.com/example/inventory) runs on the server too and restarts with it.';
 
 describe.skipIf(!findExecutable("git"))(
   "the first app's provision beside apps from other repositories",
   () => {
     describe("a replace (another location)", () => {
       const plan = () => deployedPlan("cx23");
-      const before = { location: "fsn1", server_type: "cx23" };
+      const before = rendered({ location: "fsn1" });
 
       it("refuses while another app runs on the server, before any change", async () => {
         const t = await provisionWith(plan(), before, { records: [secondAppRecord()] });
@@ -227,29 +326,71 @@ describe.skipIf(!findExecutable("git"))(
         wentOn(skipped);
         expect(skipped.deps.reporter.text()).toContain("going on as you asked");
       });
+
+      it("refuses the --approve run of a plan made while the server was empty, by its plan", async () => {
+        const t = await firstAppProject(plan(), before, {}, { changes: [serverChange("replace")] });
+        const planned = await t.provision();
+        expect(planned.error).toBeUndefined();
+        // The --plan-only run rewrote the files: only the saved plan says it replaces the server.
+        expect(JSON.parse(await readFile(t.tfvarsFile, "utf8"))).toMatchObject({
+          location: "nbg1",
+        });
+        t.records.push(secondAppRecord());
+        const asked = t.handler.requests.length;
+        const approve = await t.provision({
+          planOnly: false,
+          approveHashes: [planned.result?.planHash as string],
+        });
+        const error = refusedOnly({ ...approve, handler: t.handler }, asked);
+        expect(error.message).toContain("and replacing the server would break it");
+        expect(t.engine.applied).toEqual([]);
+      });
     });
 
-    describe("a switch between Cloudflare's proxy and DNS only", () => {
-      const plan = () => deployedPlan("cx23");
-      const before = { location: "nbg1", server_type: "cx23", proxied: true };
-
-      it("refuses while another app runs on the server, before any change", async () => {
-        const t = await provisionWith(plan(), before, { records: [secondAppRecord()] });
+    describe("a change of which addresses reach the web ports", () => {
+      it("refuses a switch from Cloudflare's proxy to DNS only while another app runs there", async () => {
+        const t = await provisionWith(deployedPlan("cx23"), rendered({ web: CLOUDFLARE }), {
+          records: [secondAppRecord()],
+        });
         const error = await refusedBeforeAnyChange(t);
         expect(error.message).toContain(
           "changing which addresses reach the web ports would break it",
         );
       });
 
-      it("goes on without one", async () => {
-        wentOn(await provisionWith(plan(), before));
+      it("refuses an app that comes behind Cloudflare's proxy from a DNS of its own", async () => {
+        const t = await provisionWith(proxiedPlan(), rendered({ web: OPEN }), {
+          records: [secondAppRecord()],
+        });
+        const error = await refusedBeforeAnyChange(t);
+        expect(error.message).toContain(
+          "changing which addresses reach the web ports would break it",
+        );
       });
 
-      it("stops when the server can't be reached, unless --skip-other-apps-check", async () => {
-        await refusedBeforeAnyChange(await provisionWith(plan(), before, { fails: unreachable() }));
+      it("refuses opening the web ports to all while the proxy stays", async () => {
+        const t = await provisionWith(proxiedPlan("any"), rendered({ web: CLOUDFLARE }), {
+          records: [secondAppRecord()],
+        });
+        await refusedBeforeAnyChange(t);
+      });
+
+      it("doesn't look while the web ports' sources stay the same", async () => {
+        const t = await provisionWith(proxiedPlan(), rendered({ web: CLOUDFLARE }), {
+          records: [secondAppRecord()],
+        });
+        expect(t.server.inspections).toEqual([]);
+      });
+
+      it("goes on without one, and stops when the server can't be reached unless --skip-other-apps-check", async () => {
+        const before = rendered({ web: CLOUDFLARE });
+        wentOn(await provisionWith(deployedPlan("cx23"), before));
+        await refusedBeforeAnyChange(
+          await provisionWith(deployedPlan("cx23"), before, { fails: unreachable() }),
+        );
         wentOn(
           await provisionWith(
-            plan(),
+            deployedPlan("cx23"),
             before,
             { fails: unreachable() },
             { skipOtherAppsCheck: true },
@@ -260,7 +401,7 @@ describe.skipIf(!findExecutable("git"))(
 
     describe("a resize (another type)", () => {
       const plan = () => deployedPlan("cx33");
-      const before = { location: "nbg1", server_type: "cx23" };
+      const before = rendered();
 
       it("refuses when the new type doesn't hold the other apps' memory limits beside the app's", async () => {
         const t = await provisionWith(plan(), before, {
@@ -276,22 +417,15 @@ describe.skipIf(!findExecutable("git"))(
       it("says that the other apps restart with the server when it fits", async () => {
         const t = await provisionWith(plan(), before, { records: [secondAppRecord()] });
         wentOn(t);
-        expect(t.deps.reporter.text()).toContain(
-          '"inventory" (from github.com/example/inventory) runs on the server too and restarts with it.',
-        );
+        expect(t.deps.reporter.text()).toContain(RESTART);
       });
 
-      it("puts the restart line in the infrastructure plan's approval", async () => {
-        const t = await provisionWith(
-          plan(),
-          before,
-          { records: [secondAppRecord()] },
-          { planOnly: false, push: false, secrets: false },
-        );
-        const approval = t.handler.requests.find((request) => request.kind === "iac-apply");
-        expect(approval?.details).toContain(
-          '"inventory" (from github.com/example/inventory) runs on the server too and restarts with it.',
-        );
+      it("refuses a type the provider's catalogue doesn't list, whose memory is unknown", async () => {
+        const t = await provisionWith(deployedPlan("cx43"), before, {
+          records: [secondAppRecord()],
+        });
+        const error = await refusedBeforeAnyChange(t);
+        expect(error.message).toContain("The provider's catalogue doesn't list cx43");
       });
 
       it("refuses while an app's record can't be read: its memory is unknown", async () => {
@@ -300,7 +434,7 @@ describe.skipIf(!findExecutable("git"))(
         expect(error.message).toContain(
           'The server also runs "ledger", whose record on the server OpsCrew can\'t read',
         );
-        expect(error.message).toContain("can't tell whether cx33 holds it beside this app");
+        expect(error.message).toContain("and resizing the server to cx33 would break it");
       });
 
       it("goes on without one, and says nothing of other apps", async () => {
@@ -314,7 +448,7 @@ describe.skipIf(!findExecutable("git"))(
           await provisionWith(plan(), before, { fails: unreachable() }),
         );
         expect(error.message).toContain(
-          "resizing it to cx33 restarts any that run there and may leave them too little memory",
+          "resizing the server to cx33 restarts any that run there and may leave them too little memory",
         );
         const skipped = await provisionWith(
           plan(),
@@ -325,21 +459,48 @@ describe.skipIf(!findExecutable("git"))(
         wentOn(skipped);
         expect(skipped.deps.reporter.text()).toContain("going on as you asked");
       });
+
+      it("checks the --approve run of a plan made while the server was empty, by its plan", async () => {
+        const t = await firstAppProject(plan(), before, {}, resizeScenario("cx23", "cx33"));
+        const planned = await t.provision();
+        expect(planned.error).toBeUndefined();
+        expect(planned.printed()).not.toContain("restarts with it");
+        // Too big for cx33 beside the app: refused by the saved plan's new type.
+        t.records.push(secondAppRecord({ memoryMb: 7000 }));
+        const asked = t.handler.requests.length;
+        const refused = await t.provision({
+          planOnly: false,
+          approveHashes: [planned.result?.planHash as string],
+        });
+        expect(refusedOnly({ ...refused, handler: t.handler }, asked).message).toContain(
+          "cx33 has 8192 MB of memory",
+        );
+        // One that fits: the approve run's approval says it restarts with the server.
+        t.records.splice(0, 1, secondAppRecord());
+        await t.provision({
+          planOnly: false,
+          approveHashes: [planned.result?.planHash as string],
+          push: false,
+          secrets: false,
+        });
+        const approval = t.handler.requests.find((request) => request.kind === "iac-apply");
+        expect(approval?.details).toContain(RESTART);
+      });
     });
 
     describe("a private network", () => {
       const plan = () => deployedPlan("cx23", { network: NETWORK });
-      const before = { location: "nbg1", server_type: "cx23" };
+      const before = rendered();
 
-      it("refuses while another app runs on the server, before any change", async () => {
+      it("refuses the run that makes it while another app runs on the server, before any change", async () => {
         const t = await provisionWith(plan(), before, { records: [secondAppRecord()] });
         const error = await refusedBeforeAnyChange(t);
         expect(error.message).toContain("putting the server on a private network would break it");
       });
 
-      it("goes on without one", async () => {
+      it("makes it without one", async () => {
         const t = await provisionWith(plan(), before);
-        expect(t.server.inspections.length).toBeGreaterThan(0);
+        expect(t.server.inspections).toHaveLength(1);
         expect(t.engineAsked()).toBe(true);
       });
 
@@ -354,13 +515,30 @@ describe.skipIf(!findExecutable("git"))(
         expect(skipped.engineAsked()).toBe(true);
         expect(skipped.deps.reporter.text()).toContain("going on as you asked");
       });
+
+      it("doesn't look once the last run put the server on it, also over the network until the apply", async () => {
+        const t = await provisionWith(
+          plan(),
+          before,
+          { records: [secondAppRecord()], mainTf: NETWORKED_MAIN },
+          { privateSshUntilApply: true },
+        );
+        expect(t.server.inspections).toEqual([]);
+        // It goes on, to the private network's own steps (which this test doesn't set up).
+        expect(String((t.error as Error | undefined)?.message)).not.toContain("other apps");
+      });
+    });
+
+    it("looks for a deployed app whose last run's files aren't on this computer", async () => {
+      const t = await provisionWith(deployedPlan("cx23"), undefined, {
+        records: [secondAppRecord()],
+      });
+      const error = await refusedBeforeAnyChange(t);
+      expect(error.message).toContain("without the last run's terraform.tfvars.json");
     });
 
     it("doesn't look at the server when the plan changes nothing that holds other apps", async () => {
-      const t = await provisionWith(deployedPlan("cx23"), {
-        location: "nbg1",
-        server_type: "cx23",
-      });
+      const t = await provisionWith(deployedPlan("cx23"), rendered());
       expect(t.error).toBeUndefined();
       expect(t.server.inspections).toEqual([]);
     });

@@ -10,6 +10,7 @@ import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-sch
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
 import { parseDotenv, readServerAddresses } from "../shared";
+import { hasDeployment } from "../shared/server-address";
 import {
   createProject,
   createTestPhaseDeps,
@@ -33,6 +34,7 @@ import {
   writeArchitecture,
   writeFakeState,
 } from "../testing";
+import { firstAppLook, noOtherApps } from "../testing/other-apps";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { deploymentRenderContext, previewDeploymentFiles } from "./render";
@@ -79,6 +81,11 @@ async function setup(options: SetupOptions = {}) {
   });
   deps.redactor.addLiteral(HCLOUD, "HCLOUD_TOKEN");
   const services: ProvisionServices = {
+    // The look for apps from other repositories on the server finds none; a deployed plan's
+    // server has the deploy key and address provision left here.
+    otherApps: hasDeployment(await readArtifact("plan", deps.paths.files.plan))
+      ? await firstAppLook(deps.paths)
+      : { inspect: noOtherApps },
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     github,

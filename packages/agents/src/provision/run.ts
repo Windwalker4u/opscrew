@@ -2,9 +2,17 @@ import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
-import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
+import {
+  exists,
+  isUserFacingError,
+  listText,
+  OpsCrewError,
+  plural,
+  readTextIfExists,
+} from "@opscrew/core";
 import {
   additionsPath,
+  appServerVariables,
   checkEnvironmentKey,
   edgeMemoryMb,
   edgeProxy,
@@ -14,11 +22,13 @@ import {
   renderStorage,
   rootMainFile,
   usesTunnel,
+  webOnlyFromCloudflare,
   withServerImports,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   backupsBucketOf,
+  type CloudDeployTarget,
   type DeployPlan,
   ghcrImageFor,
   isCloudTarget,
@@ -27,6 +37,7 @@ import {
   readArtifact,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { z } from "zod";
 import { hasCheckKey } from "../check/host";
 import type { CheckKey } from "../check/key";
 import {
@@ -122,7 +133,7 @@ import { connectAndInspectOwnServer } from "../shared/own-server";
 import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
-import { otherAppsOnServer, requireNoOtherApps } from "../shares/guard";
+import { otherAppsOnServer, requireNoOtherApps, unreachableHint } from "../shares/guard";
 import { deployShell } from "../status/certificates";
 import { appWords } from "../status/other-apps";
 import { checkAdditions } from "./additions";
@@ -609,14 +620,15 @@ async function provisionFlow(
     command,
   });
   for (const warning of diskWarnings) deps.reporter.warn(warning);
-  // Nor, while apps from other repositories share the server OpsCrew created, a replace, a switch
-  // between Cloudflare's proxy and DNS only or a private network; a resize keeps room for them
+  // Nor, while apps from other repositories share the server OpsCrew created, a replace, another
+  // set of addresses on the web ports or a new private network; a resize keeps room for them
   // (FR-3012, FR-3013). Before anything is written, so a refused `--plan-only` leaves no files.
   const restarts =
     sharedHost === undefined
       ? await requireRoomForOtherApps(deps, plan, {
+          reach: beforeApply(plan),
           again: rerun,
-          skip: options.skipOtherAppsCheck,
+          options,
           services,
         })
       : [];
@@ -1802,45 +1814,150 @@ async function requireNoProxySwitch(deps: PhaseDeps, again: string): Promise<voi
   );
 }
 
+/** What a provision does to the app's server OpsCrew created that breaks other apps on it. */
+interface AppServerChanges {
+  /** A change any app that runs there refuses, as `requireNoOtherApps` words it. */
+  what?: string;
+  /** A resize: the server's new type. */
+  resizeTo?: string;
+}
+
+/** The parts of a plan's JSON that say how it changes the app's server. */
+const ServerPlanJsonSchema = z.object({
+  variables: z.record(z.string(), z.object({ value: z.unknown() })).optional(),
+  resource_changes: z
+    .array(
+      z.object({
+        address: z.string(),
+        change: z.object({
+          before: z.record(z.string(), z.unknown()).nullable().optional(),
+          after: z.record(z.string(), z.unknown()).nullable().optional(),
+        }),
+      }),
+    )
+    .optional(),
+});
+
+/**
+ * What the saved plan `saved` does to the app's server (`module.server`'s resource of `type`):
+ * a replace or a delete; or a resize, an update whose server attribute holding the root's
+ * `server_type` value (the provider's own name for it) differs from before.
+ */
+function savedServerChange(
+  saved: Pick<SavedPlan, "changes" | "planJson">,
+  type: string,
+): { replace: boolean; resizeTo?: string } {
+  const server = saved.changes.filter(
+    (change) => change.type === type && change.address.startsWith("module.server."),
+  );
+  if (server.some((change) => change.action === "delete" || change.action === "replace")) {
+    return { replace: true };
+  }
+  const json = ServerPlanJsonSchema.safeParse(saved.planJson);
+  const to = json.data?.variables?.[appServerVariables().serverType]?.value;
+  const updated = json.data?.resource_changes?.find((resource) =>
+    server.some((change) => change.action === "update" && change.address === resource.address),
+  );
+  if (typeof to !== "string" || updated === undefined) return { replace: false };
+  const { before, after } = updated.change;
+  const resized = Object.entries(after ?? {}).some(
+    ([key, value]) => value === to && typeof before?.[key] === "string" && before[key] !== to,
+  );
+  return resized ? { replace: false, resizeTo: to } : { replace: false };
+}
+
+/**
+ * What this provision of `plan` (deployed, on a server OpsCrew created) does to the app's server
+ * that would break apps from other repositories there, before anything is written. A run that
+ * applies an approved saved plan reads the server's replace, delete or resize from that plan's
+ * JSON, since the run that made it rewrote the files; otherwise from the files of the last run
+ * (`renderedServers`, as the disk check reads them). The web ports' sources: the last run's
+ * `http_allowed_cidrs` against whether this plan opens them to all. A private network: only the
+ * run that makes it, when the last run's `main.tf` put no server on one. A deployed app whose
+ * last run's `terraform.tfvars.json` isn't here is looked for too, as nothing can be compared.
+ */
+async function appServerChanges(
+  deps: PhaseDeps,
+  plan: DeployPlan & { target: CloudDeployTarget },
+  options: ProvisionOptions,
+): Promise<AppServerChanges> {
+  const root = deps.paths.root;
+  const tfvars = await committedTfvars(root, plan);
+  if (tfvars === undefined) {
+    return {
+      what: "provisioning the server without the last run's terraform.tfvars.json (it may replace or resize the server)",
+    };
+  }
+  const approved = (await savedInfrastructureHashes(deps, options, plan)).apply;
+  const saved =
+    approved === undefined ? undefined : await findSavedPlan(deps.paths.files.plansDir, approved);
+  let server: { replace: boolean; resizeTo?: string };
+  if (saved?.planJson !== undefined) {
+    server = savedServerChange(saved, providerProfile(plan.target.provider).serverResourceType);
+  } else {
+    const last = (await renderedServers(root, plan)).get(APP_SERVER);
+    const change =
+      last === undefined
+        ? undefined
+        : appServerChange({ ...plan, target: { ...plan.target, ...last } }, plan);
+    server =
+      change?.kind === "resize"
+        ? { replace: false, resizeTo: change.after.serverType }
+        : { replace: change?.kind === "replace" };
+  }
+  if (server.replace) return { what: "replacing the server" };
+  const web = tfvars.http_allowed_cidrs;
+  const wasOpen = Array.isArray(web) ? web.includes("0.0.0.0/0") : undefined;
+  const resize = server.resizeTo !== undefined ? { resizeTo: server.resizeTo } : {};
+  if (wasOpen !== !webOnlyFromCloudflare(plan)) {
+    return { what: "changing which addresses reach the web ports", ...resize };
+  }
+  if (plan.network !== undefined) {
+    const main = await readTextIfExists(join(root, rootMainFile(plan)));
+    if (main?.includes("wireguard_port") !== true) {
+      return { what: "putting the server on a private network", ...resize };
+    }
+  }
+  return resize;
+}
+
 /**
  * The first app's look at its server OpsCrew created before this run changes what holds the apps
- * from other repositories that share it (FR-3012, FR-3013), against the files of the last run
- * (`renderedServers`, as the disk check reads them): a replace (another location), a switch
- * between Cloudflare's proxy and DNS only, or a private network refuses while one is there
- * (`requireNoOtherApps`); a resize (another type) must still hold their memory limits beside this
- * app's, the edge and the system's reserve. Returns what the infrastructure approval says once a
- * resize fits: that they restart with the server.
+ * from other repositories that share it (FR-3012, FR-3013), through `reach` (the plan the server
+ * is reached by before the infrastructure apply): a change of {@link appServerChanges} refuses
+ * while one is there (`requireNoOtherApps`), which a resize in the same run needs no other look
+ * for; a resize alone must still hold their memory limits beside this app's, the edge and the
+ * system's reserve, on a type the provider's catalogue lists. Returns what the infrastructure
+ * approval says once a resize fits: that they restart with the server.
  * @throws OpsCrewError `PHASE_PRECONDITION`, before any change.
  */
 async function requireRoomForOtherApps(
   deps: PhaseDeps,
   plan: DeployPlan,
-  input: { again: string; skip: boolean | undefined; services: ProvisionServices },
+  input: {
+    reach: DeployPlan;
+    again: string;
+    options: ProvisionOptions;
+    services: ProvisionServices;
+  },
 ): Promise<string[]> {
   const { target } = plan;
   if (!isCloudTarget(target) || !hasDeployment(plan)) return [];
-  const { again, skip } = input;
-  const last = (await renderedServers(deps.paths.root, plan)).get(APP_SERVER);
-  const change =
-    last === undefined
-      ? undefined
-      : appServerChange({ ...plan, target: { ...target, ...last } }, plan);
-  const proxied = (await committedTfvars(deps.paths.root, plan))?.proxied;
-  const what =
-    change?.kind === "replace"
-      ? "replacing the server"
-      : typeof proxied === "boolean" && proxied !== plan.dns.proxied
-        ? "changing which addresses reach the web ports"
-        : plan.network !== undefined
-          ? "putting the server on a private network"
-          : undefined;
+  const { reach, again, options } = input;
+  const skip = options.skipOtherAppsCheck;
+  const { what, resizeTo } = await appServerChanges(deps, { ...plan, target }, options);
   const services = input.services.otherApps ?? {};
-  if (what !== undefined) await requireNoOtherApps(deps, plan, what, again, { skip, services });
-  if (change?.kind !== "resize") return [];
-  const found = await otherAppsOnServer(deps, plan, { services });
+  if (what !== undefined) {
+    // Past it, no app runs there that a resize could leave too little memory.
+    await requireNoOtherApps(deps, reach, what, again, { skip, services });
+    return [];
+  }
+  if (resizeTo === undefined) return [];
+  const resizing = `resizing the server to ${resizeTo}`;
+  const found = await otherAppsOnServer(deps, reach, { services });
   if (!found.reached) {
     const why = `OpsCrew couldn't look at the server for other apps (${found.reason})`;
-    const harm = `resizing it to ${change.after.serverType} restarts any that run there and may leave them too little memory`;
+    const harm = `${resizing} restarts any that run there and may leave them too little memory`;
     if (skip === true) {
       deps.reporter.warn(
         `${why}, and is going on as you asked (--skip-other-apps-check): ${harm}.`,
@@ -1850,40 +1967,41 @@ async function requireRoomForOtherApps(
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `${why}, and ${harm}.`,
-      `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
+      unreachableHint(found.reason, again),
     );
   }
+  // An app whose record OpsCrew can't read: its memory is unknown, as the guard refuses it.
   if (found.unreadable.length > 0) {
-    const one = found.unreadable.length === 1;
-    throw refusedBeforeChange(
-      "PHASE_PRECONDITION",
-      `The server also runs ${listText(found.unreadable.map((app) => `"${app}"`))}, whose record on the server OpsCrew can't read (written by a newer OpsCrew, or damaged), so it can't tell whether ${change.after.serverType} holds ${one ? "it" : "them"} beside this app.${skip === true ? " --skip-other-apps-check doesn't cover an app that runs there." : ""}`,
-      `Provision ${one ? "it" : "each one"} again with a current OpsCrew in its repository, or remove ${one ? "it" : "each one"} with \`opscrew destroy\` there first; then run \`${again}\` again.`,
-    );
+    await requireNoOtherApps(deps, reach, resizing, again, { skip, services });
   }
   const active = found.apps.filter((record) => record.state === "active");
   if (active.length === 0) return [];
   const them = listText(active.map(appWords));
-  const restart = `${them} ${active.length === 1 ? "runs" : "run"} on the server too and ${active.length === 1 ? "restarts" : "restart"} with it.`;
+  const one = active.length === 1;
+  const restart = `${them} ${one ? "runs" : "run"} on the server too and ${one ? "restarts" : "restart"} with it.`;
   const offers = await (
     await resolveCatalog(deps, target.provider, target.location)
   ).catalog.listOffers();
-  const memoryGb = offers.find((offer) => offer.id === change.after.serverType)?.memoryGb;
-  if (memoryGb === undefined) {
-    return [
-      `${restart} The provider's catalogue doesn't list ${change.after.serverType}, so OpsCrew couldn't check that it holds them beside this app: check its memory before you approve.`,
-    ];
-  }
-  const serverMb = Math.round(memoryGb * 1024);
+  const memoryGb = offers.find((offer) => offer.id === resizeTo)?.memoryGb;
   const appMb = appMemoryMb(plan);
   const othersMb = active.reduce((sum, record) => sum + record.memoryMb, 0);
   const edgeMb = edgeMemoryMb(edgeProxy(plan));
+  const needMb = appMb + othersMb + edgeMb + SYSTEM_RESERVE_MB;
+  const instead = `Pick a server type with at least ${needMb} MB of memory with \`opscrew design\`, lower the memory limits in opscrew/plan.yaml, or remove an app from the server; then run \`${again}\` again.`;
+  if (memoryGb === undefined) {
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `The provider's catalogue doesn't list ${resizeTo}, so OpsCrew can't tell whether it holds ${them} beside this app (${needMb} MB with the system and the edge).`,
+      instead,
+    );
+  }
+  const serverMb = Math.round(memoryGb * 1024);
   if (!memoryHeadroom(serverMb, appMb + othersMb, edgeMb).fits) {
     const each = listText(active.map((record) => `"${record.app}" ${record.memoryMb} MB`));
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
-      `${change.after.serverType} has ${serverMb} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, it doesn't hold this app's ${appMb} MB of memory limits beside the ${othersMb} MB of the other ${active.length === 1 ? "app" : "apps"} on the server (${each}).`,
-      `Pick a server type with at least ${appMb + othersMb + edgeMb + SYSTEM_RESERVE_MB} MB of memory with \`opscrew design\`, lower the memory limits in opscrew/plan.yaml, or remove an app from the server; then run \`${again}\` again.`,
+      `${resizeTo} has ${serverMb} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, it doesn't hold this app's ${appMb} MB of memory limits beside the ${othersMb} MB of the other ${one ? "app" : "apps"} on the server (${each}).`,
+      instead,
     );
   }
   return [restart];

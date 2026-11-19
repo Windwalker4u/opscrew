@@ -9,6 +9,7 @@ import { previewProject } from "../previews/__fixtures__/plan";
 import { DEPLOY_SETUP_BRANCH } from "../provision/publish";
 import { ADDRESS_MAY_BE_PUBLIC_NOTE, runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
+import { hasDeployment } from "../shared/server-address";
 import {
   createProject,
   createTestPhaseDeps,
@@ -23,6 +24,7 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
+import { firstAppLook, noOtherApps } from "../testing/other-apps";
 import { runDns } from "./run";
 
 const WAF = "http_request_firewall_custom";
@@ -79,6 +81,11 @@ async function setup(options: { deployed?: boolean } = {}) {
   const engine = new FakeEngine({ planJson: planJsonFor({ proxied: true }) });
   const zone = new FakeZone();
   const services: ProvisionServices = {
+    // The look for apps from other repositories on the server finds none; a deployed plan's
+    // server has the deploy key and address provision left here.
+    otherApps: hasDeployment(await readArtifact("plan", deps.paths.files.plan))
+      ? await firstAppLook(deps.paths)
+      : { inspect: noOtherApps },
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     cloudflare: fakeCloudflare(),

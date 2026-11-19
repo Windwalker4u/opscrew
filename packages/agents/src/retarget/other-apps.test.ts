@@ -1,15 +1,17 @@
 import { findExecutable } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { recordServerAddress } from "../shared/server-record";
 import { firstAppLook, moveHarness, SERVER_IPV4, secondAppRecord } from "../testing";
 import { caught, everythingPrinted, run } from "./__fixtures__/assert";
 
 /** A live Hetzner deployment whose server holds `records` (or fails to be inspected). */
-async function harness(look: { records?: ReturnType<typeof secondAppRecord>[]; fails?: Error }) {
+async function harness(o: { records?: ReturnType<typeof secondAppRecord>[]; fails?: Error }) {
   const h = await moveHarness();
-  const { records = [], ...how } = look;
-  h.services.otherApps = await firstAppLook(h.paths, records, how);
-  return h;
+  const { records = [], ...how } = o;
+  const look = await firstAppLook(h.paths, records, how);
+  h.services.otherApps = look;
+  return { ...h, look };
 }
 
 describe.skipIf(!findExecutable("git"))(
@@ -27,6 +29,15 @@ describe.skipIf(!findExecutable("git"))(
       expect(h.events.slice(mark)).toEqual([]);
       expect(h.handler.requests).toEqual([]);
       expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
+      expect(everythingPrinted(h)).not.toContain(SERVER_IPV4);
+    });
+
+    it("looks once the old server's address is read from the state, when this computer's record lacks it", async () => {
+      const h = await harness({ records: [secondAppRecord()] });
+      await recordServerAddress(h.paths, undefined);
+      const error = await caught(run(h));
+      expect(error.message).toContain("and moving the app off it would break it");
+      expect(h.look.inspections).toHaveLength(1);
       expect(everythingPrinted(h)).not.toContain(SERVER_IPV4);
     });
 

@@ -555,12 +555,18 @@ export async function readAdvice(
   const since = new Date(at.getTime() - THRESHOLDS.historyDays * DAY_MS).toISOString();
   const { services } = options;
   const names = isServerlessProvider(plan.target.provider) ? [] : appServers(plan);
-  const [requirements, deployedPlan, sharedPreviews, others] = await Promise.all([
+  const [requirements, deployedPlan, sharedPreviews, look] = await Promise.all([
     attempt(deps, "the interview's answers", () => readEnvironmentRequirements(deps.paths)),
     asDeployed(deps, plan),
     sharedPreviewsLimit(deps.paths),
-    readOtherApps(deps, plan, services),
+    // A look that fails as OpsCrew tells users is not read, and the rest goes on.
+    attempt(deps, "the other apps on the server", () => readOtherApps(deps, plan, services)),
   ]);
+  const others: Lines & { memoryMb: number } = {
+    memoryMb: look.value?.memoryMb ?? 0,
+    checked: look.value?.checked ?? [],
+    notRead: [...look.notRead, ...(look.value?.notRead ?? [])],
+  };
   // Beside the app on its server: the previews another environment runs there, or the apps from
   // other repositories (a server with those takes no previews).
   const besideMb = (sharedPreviews?.memoryMb ?? 0) + others.memoryMb;
@@ -598,9 +604,7 @@ export async function readAdvice(
       }),
     ),
     plan: deployedPlan,
-    ...(sharedPreviews === undefined && others.memoryMb === 0
-      ? {}
-      : { sharedPreviewsMb: besideMb }),
+    ...(sharedPreviews === undefined && others.memoryMb === 0 ? {} : { besideAppMb: besideMb }),
     ...(requirements.value === undefined ? {} : { requirements: requirements.value }),
     prices: prices.lists,
     upkeep: {

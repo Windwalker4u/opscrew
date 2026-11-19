@@ -288,10 +288,10 @@ export interface Readings {
   servers: Record<string, ServerReadings>;
   plan: DeployPlan;
   /**
-   * The memory limits of the previews another environment runs on this environment's server
-   * (spec.md US9), in MB: the app's server holds them too.
+   * The memory limits of what runs beside the app on its server, in MB: the previews another
+   * environment runs there (spec.md US9), or the apps from other repositories that share it (030).
    */
-  sharedPreviewsMb?: number;
+  besideAppMb?: number;
   requirements?: Requirements;
   prices: PriceList[];
   upkeep: {

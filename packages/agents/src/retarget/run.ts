@@ -1,6 +1,7 @@
 import { exists, listText, OpsCrewError } from "@opscrew/core";
 import {
   type DeployPlan,
+  isCloudTarget,
   isServerlessProvider,
   isServerlessTarget,
   readArtifact,
@@ -10,6 +11,7 @@ import { commandFlags } from "../environments/choice";
 import { requireNoSharedPreviews } from "../previews/host";
 import { requireNoCloudflareMove } from "../provision/guard";
 import { runPhase } from "../shared/phase-status";
+import { serverAddress } from "../shared/server-address";
 import { requireNoOtherApps } from "../shares/guard";
 import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
 import { cloudProviders, placeWords } from "./sides";
@@ -162,10 +164,14 @@ export async function runRetarget(
     if (options.to !== undefined && isServerlessProvider(options.to)) {
       throw siteServerNoMove(plan);
     }
-    // Nor while apps from other repositories share the server a move starts from (FR-3012).
-    // Without the deploy key here the move stops on that first, as it can't start without it.
+    // Nor while apps from other repositories share the server a move starts from (FR-3012), looked
+    // at once its address is known (from the state when this computer's record lacks it). Without
+    // the deploy key here the move stops on that first, as it can't start without it.
     if (plan.retarget === undefined && (await exists(deps.paths.files.deployKey))) {
       const services = options.services ?? {};
+      if (isCloudTarget(plan.target)) {
+        await serverAddress(deps, plan, { engine: services.engine, preference: options.engine });
+      }
       await requireNoOtherApps(deps, plan, "moving the app off it", again, {
         skip: options.skipOtherAppsCheck,
         services: services.otherApps,

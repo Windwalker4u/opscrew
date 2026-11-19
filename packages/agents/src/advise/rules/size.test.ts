@@ -404,13 +404,13 @@ describe("sizeRules: a smaller server", () => {
 
   it("counts the previews another environment runs on the app's server (US9)", () => {
     const quiet = history({ cpuP95: 0.1, memoryP95: 0.1 });
-    const withPreviews = (sharedPreviewsMb: number) =>
+    const withPreviews = (besideAppMb: number) =>
       sized({
         ...readingsOf(
           { ...big, app: { ...big.app, memoryMb: 4096 } },
           { servers: { app: server(reading({ cpus: 8 }), quiet) }, prices: [line] },
         ),
-        sharedPreviewsMb,
+        besideAppMb,
       });
     // The app and Postgres (4608 MB), Caddy's and the system's 512 MB: 3072 MB of previews fill
     // mid's 8192 MB; 1 MB more doesn't fit.
