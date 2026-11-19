@@ -235,6 +235,9 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   and resize from the saved plan; a serving switch or a new network is seen only by the plan-only
   run, which refuses while a second app is there. Only a second app that joins between the two
   runs gets past.
+- Open (from T3012): the interview still asks a second app's budget, which has no server cost.
+  Leaving it out needs `budgetMonthly` optional in the requirements schema (a contract change),
+  every reader of it handling a missing one, and the budget asked after the server questions.
 - Open (from T3008): when a second app's move-off teardown fails right after its `deploy-key`
   step, `retarget.fromOwn.joined` stays, and the next `--finish` can't log in. It stops plainly,
   changing nothing. The fix is a `secondAppLogin` that pins into `retarget.fromOwn`. For the
