@@ -220,6 +220,18 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   for the simplify pass.
 - The exported `serverKindQuestion` and `buildSharesQuestions`, and `InterviewResult.shares`.
 
+**From T3004's and T3005's reviews and reports (lead, 2026-11-19):**
+- The first app's folder may appear in error messages saved to the gitignored
+  `.opscrew/state.json`. It helps the user and is never committed.
+- A second app's design needs the repository's GitHub `origin` and reads Cloudflare's IP ranges,
+  because its dry claim check uses provision's `desiredHost`. The guide (T3009) says so.
+- `drift` and `rotate deploy-key` of a second app read the first app's plan from its folder, as
+  provision does (FR-3009).
+- For the simplify pass: `sharedAccessWarning` (provision/own.ts) and design's copy; the
+  `shares.host` that design sets again over `desiredHost`'s; the budget question.
+- Open: a second app's commands once the first app's server is gone (spec edge case). Its
+  destroy should then remove its DNS and Cloudflare parts and record the deployment gone.
+
 ## Phase 5: Wave 4 (parallel)
 
 - [ ] T3007 [P] [US1] [US2] CLI and MCP

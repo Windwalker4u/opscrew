@@ -199,7 +199,7 @@ first app's destroy is no longer refused.
 
 - The first app's repository folder is missing or not provisioned on this computer: the second
   app's design and provision say to run them where the first app was provisioned, or to name its
-  folder (`--shares <folder>`).
+  folder again in its interview.
 - The named app is itself a second app on someone's server: OpsCrew names the first app instead.
 - The first app is a preview environment, runs previews on the server, or has its public SSH
   closed, a private network, or a VPN: the server can't take a second app. OpsCrew says why and
@@ -272,7 +272,9 @@ first app's destroy is no longer refused.
   key and serve through the shared edge with its own site file and certificates. They MUST never
   recreate the first app's containers.
 - **FR-3009**: After its first provision, a second app's commands MUST log in with its own deploy
-  key. They need the first app's repository folder only in design and provision.
+  key. They need the first app's repository folder only in design, provision, `drift` and
+  `rotate deploy-key`, which compare against the first app's plan; destroy and the rest never
+  need it.
 - **FR-3010**: A second app's destroy MUST remove only its own parts on the server and in its
   zone (FR-3006's, plus containers, site file, certificates, DNS records and Cloudflare rules). It
   keeps its data unless `--delete-data` is given, and never removes the edge, the check key line
