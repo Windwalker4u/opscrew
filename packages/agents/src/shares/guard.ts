@@ -91,8 +91,9 @@ export async function otherAppsOnServer(
  * Refuses `what` (a phrase such as "destroying the server") in the first app's command while
  * other apps share its server ({@link otherAppsOnServer}), naming each with its repository and
  * the command that removes or moves it, then `again`. When the server can't be looked at, it
- * refuses too, unless `skip` (`--skip-other-apps-check`): then it warns and does not look. It
- * never approves anything.
+ * refuses too. With `skip` (`--skip-other-apps-check`) it still looks: an app that runs there is
+ * refused all the same, while only data kept there, or a server it couldn't look at, gets a
+ * warning and the command goes on. It never approves anything.
  * @throws OpsCrewError `PHASE_PRECONDITION`, before any change.
  */
 export async function requireNoOtherApps(
@@ -103,23 +104,30 @@ export async function requireNoOtherApps(
   options: { skip?: boolean; services?: OtherAppsServices } = {},
 ): Promise<void> {
   if (!isCloudTarget(plan.target) || !hasDeployment(plan)) return;
-  if (options.skip === true) {
-    deps.reporter.warn(
-      `Not looking for other apps on the server (--skip-other-apps-check): ${what} goes on, and breaks any app from another repository that runs there.`,
-    );
-    return;
-  }
+  const skip = options.skip === true;
   const found = await otherAppsOnServer(deps, plan, options);
   if (!found.reached) {
+    if (skip) {
+      deps.reporter.warn(
+        `OpsCrew couldn't look at the server for other apps (${found.reason}), and is going on as you asked (--skip-other-apps-check): ${what} breaks any that run there.`,
+      );
+      return;
+    }
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `OpsCrew couldn't look at the server for other apps (${found.reason}), and ${what} would break any that run there.`,
-      `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on without looking.`,
+      `Check that the server is on and that this computer reaches it over SSH, then run \`${again}\` again; or run \`${again} --skip-other-apps-check\` to go on anyway.`,
     );
   }
   if (found.apps.length === 0) return;
   const active = found.apps.filter((record) => record.state === "active");
   const kept = found.apps.filter((record) => record.state !== "active");
+  if (skip && active.length === 0) {
+    deps.reporter.warn(
+      `The data ${listText(kept.map(appWords))} kept on the server will be lost: ${what} goes on as you asked (--skip-other-apps-check).`,
+    );
+    return;
+  }
   const holds = [
     ...(active.length > 0 ? [`runs ${listText(active.map(appWords))}`] : []),
     ...(kept.length > 0 ? [`keeps the data of ${listText(kept.map(appWords))}`] : []),
@@ -143,7 +151,7 @@ export async function requireNoOtherApps(
       : "";
   throw refusedBeforeChange(
     "PHASE_PRECONDITION",
-    `The server also ${holds.join(" and ")}, and ${what} would break ${found.apps.length === 1 ? "it" : "them"}.`,
+    `The server also ${holds.join(" and ")}, and ${what} would break ${found.apps.length === 1 ? "it" : "them"}.${skip ? " --skip-other-apps-check doesn't cover an app that runs there." : ""}`,
     `${upperFirst(steps.join("; "))}; then run \`${again}\` again.${lose}`,
   );
 }

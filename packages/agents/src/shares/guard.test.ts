@@ -153,7 +153,7 @@ describe("requireNoOtherApps", () => {
     expect(t.inspections).toHaveLength(1);
   });
 
-  it("refuses when the server can't be looked at, unless the check is skipped", async () => {
+  it("refuses when the server can't be looked at", async () => {
     const t = await firstAppOnServer({ fails: new Error("unreachable") });
     const error = await refusal(
       requireNoOtherApps(t.deps, t.plan, "destroying the server", again, { services: t.services }),
@@ -164,14 +164,72 @@ describe("requireNoOtherApps", () => {
         "OpsCrew couldn't look at the server for other apps (it could not be reached over SSH), and destroying the server would break any that run there. Nothing was changed.",
     });
     expect(error?.hint).toContain("`opscrew destroy --skip-other-apps-check`");
+  });
+});
 
-    const skipped = await firstAppOnServer({ fails: new Error("unreachable") });
-    await requireNoOtherApps(skipped.deps, skipped.plan, "destroying the server", again, {
+describe("requireNoOtherApps with --skip-other-apps-check", () => {
+  const again = "opscrew destroy";
+  const skip = (t: Awaited<ReturnType<typeof firstAppOnServer>>) =>
+    requireNoOtherApps(t.deps, t.plan, "destroying the server", again, {
       skip: true,
-      services: skipped.services,
+      services: t.services,
     });
-    expect(skipped.inspections).toEqual([]);
-    expect(skipped.deps.reporter.text()).toContain("--skip-other-apps-check");
+
+  it("still refuses an app that runs there, saying the flag doesn't cover it", async () => {
+    const t = await firstAppOnServer({
+      facts: createdServerFacts([
+        secondAppRecord(),
+        secondAppRecord({ app: "archive", state: "data-kept" }),
+      ]),
+    });
+    const error = await refusal(skip(t));
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect(error?.message).toContain(
+      'The server also runs "inventory" (from github.com/example/inventory)',
+    );
+    expect(error?.message).toContain(
+      "--skip-other-apps-check doesn't cover an app that runs there",
+    );
+    expect(error?.message).toMatch(/Nothing was changed\.$/);
+    expect(error?.hint).toContain(
+      "`opscrew destroy` in its repository first, or `opscrew retarget`",
+    );
+    expect(error?.hint).not.toContain("To lose that data instead");
+    expect(t.inspections).toHaveLength(1);
+  });
+
+  it("warns that the data kept there will be lost, then goes on", async () => {
+    const t = await firstAppOnServer({
+      facts: createdServerFacts([secondAppRecord({ state: "data-kept" })]),
+    });
+    await skip(t);
+    expect(t.deps.reporter.text()).toContain(
+      'The data "inventory" (from github.com/example/inventory) kept on the server will be lost',
+    );
+  });
+
+  it("warns that OpsCrew couldn't look, then goes on, when the server can't be reached", async () => {
+    const t = await firstAppOnServer({ fails: new Error("unreachable") });
+    await skip(t);
+    expect(t.inspections).toHaveLength(1);
+    expect(t.deps.reporter.text()).toContain(
+      "OpsCrew couldn't look at the server for other apps (it could not be reached over SSH)",
+    );
+
+    const partial = await firstAppOnServer({
+      facts: freshFacts({ user: "deploy", privilege: "none" }),
+    });
+    await skip(partial);
+    expect(partial.deps.reporter.text()).toContain("going on as you asked");
+  });
+
+  it("goes on silently when the server holds no other app", async () => {
+    const t = await firstAppOnServer();
+    const before = t.deps.reporter.text();
+    await skip(t);
+    expect(t.inspections).toHaveLength(1);
+    expect(t.deps.reporter.text().replace(before, "")).not.toContain("skip-other-apps-check");
+    expect(t.said()).not.toContain(SERVER_IPV4);
   });
 });
 
