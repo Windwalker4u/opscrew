@@ -268,7 +268,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/design && pnpm lint`
   - Effort: medium
 
-- [ ] T3115 A Laravel image built by Railpack reads the deployment's settings, not the build's
+- [x] T3115 A Laravel image built by Railpack reads the deployment's settings, not the build's
   - Why: Railpack's Laravel build runs `php artisan optimize` without the app's settings, so the
     image carries `bootstrap/cache/config.php` (and the routes and events caches) with the
     defaults: SQLite, `APP_ENV=production`. Only a container started by the image's start script
@@ -420,6 +420,9 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 - **An extension another locked package provides:** a polyfill's `provide` of an `ext-*` still puts
   it on the list, and `install-php-extensions` may not be able to install it. Skip any `ext-*` a
   locked package lists in `provide`, in detect and in the workflow's script.
+- **A Laravel image of the user's own Dockerfile can bake the same caches:** a `RUN php artisan
+  config:cache` or `optimize` line saves the build's settings into the image. `opscrew adapt`'s
+  Dockerfile findings could flag it.
 
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
