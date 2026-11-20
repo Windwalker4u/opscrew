@@ -21,9 +21,9 @@ export async function writePlan(
 }
 
 /**
- * Writes `plan` to `opscrew/plan.yaml` with `updatedAt` now (through {@link writePlan}), unless it
- * equals the plan there apart from `updatedAt`: then the file stays as it is, so a run with nothing
- * to change commits nothing. Every phase that records something in the plan writes it here.
+ * Writes `plan` to `opscrew/plan.yaml` with `updatedAt` now, pruned as {@link writePlan} prunes,
+ * unless it equals the plan there apart from `updatedAt`: then the file stays as it is, so a run
+ * with nothing to change commits nothing. Every phase that records something in the plan writes it here.
  */
 export async function writePlanIfChanged(
   deps: Pick<PhaseDeps, "paths" | "clock">,
@@ -39,5 +39,5 @@ export async function writePlanIfChanged(
   ) {
     return;
   }
-  await writePlan(deps, file, { ...pruned, updatedAt: deps.clock.now().toISOString() });
+  await writeArtifact("plan", file, { ...pruned, updatedAt: deps.clock.now().toISOString() });
 }

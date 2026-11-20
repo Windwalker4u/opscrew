@@ -1,7 +1,7 @@
 import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
-import type { IacEngine, ResourceChange } from "@opscrew/contracts";
+import type { IacEngine } from "@opscrew/contracts";
 import {
   exists,
   isUserFacingError,
@@ -86,7 +86,7 @@ import {
   requireServerForPreviews,
   staleSharedEdge,
 } from "../previews/setup";
-import { type ProviderProfile, planProvider, providerProfile, vpsConnector } from "../providers";
+import { planProvider, providerProfile, vpsConnector } from "../providers";
 import {
   applyCloudRunner,
   checkCloudRunner,
@@ -104,6 +104,7 @@ import {
   closedPlan,
   committableUrl,
   continuesHint,
+  createsServer,
   ensureDeployKey,
   type HostPlanOutcome,
   hasDeployment,
@@ -308,19 +309,6 @@ async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPl
       },
     );
   }
-}
-
-/** True when `changes` create (or replace) the server of `module "server"`. */
-function createsServer(
-  changes: readonly ResourceChange[],
-  profile: Pick<ProviderProfile, "serverResourceType">,
-): boolean {
-  return changes.some(
-    (change) =>
-      change.type === profile.serverResourceType &&
-      change.address.startsWith("module.server.") &&
-      (change.action === "create" || change.action === "replace"),
-  );
 }
 
 /**
@@ -1446,10 +1434,20 @@ async function provisionFlow(
   await recordExtraServers(deps, plan, applied.outputs);
   // Without a domain the output is `http://<server IP>`, which is not committed.
   const outputUrl = stringOutput(applied.outputs, "url");
-  // A server this apply created (or replaced), and the one-time fee its provider charged for it.
+  // An apply whose run stopped before recording it (setting a firewall after it failed, say) is
+  // recorded now: the state holds the deployment, though nothing new was applied (026 R8).
+  const applyUnrecorded =
+    !applied.applied &&
+    plan.deployment.lastApplyAt === undefined &&
+    Object.keys(applied.outputs).length > 0;
+  // The one-time fee the provider charged for the server: when this apply created (or replaced)
+  // it, or, after a first apply that made it and stopped before it was recorded, when this run
+  // records the deployment's first apply (031 US4).
   const created = createsServer(applied.plan?.changes ?? [], profile);
+  const firstRecord =
+    plan.deployment.lastApplyAt === undefined && (applied.applied || applyUnrecorded);
   const setupFee =
-    applied.applied && created && isCloudTarget(plan.target)
+    isCloudTarget(plan.target) && ((applied.applied && created) || firstRecord)
       ? await setupFeeOf(
           deps,
           plan.target,
@@ -1464,12 +1462,6 @@ async function provisionFlow(
     approvals,
     setupFee,
   });
-  // An apply whose run stopped before recording it (setting a firewall after it failed, say) is
-  // recorded now: the state holds the deployment, though nothing new was applied (026 R8).
-  const applyUnrecorded =
-    !applied.applied &&
-    plan.deployment.lastApplyAt === undefined &&
-    Object.keys(applied.outputs).length > 0;
   plan = record(applyUnrecorded);
   await writePlanIfChanged(deps, persisted(plan));
 

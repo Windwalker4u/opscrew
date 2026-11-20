@@ -46,6 +46,7 @@ import { originTlsSecret } from "../provision/origin-tls";
 import { PORTAINER_SECRETS_RECORD, portainerDeploySecrets } from "../provision/secrets";
 import {
   continuesHint,
+  createsServer,
   knownHostsName,
   type NewServerRepair,
   readServerAddresses,
@@ -267,20 +268,28 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   }
   // The address goes to OpsCrew's local state, never into opscrew/plan.yaml.
   await recordNewServer(session, next.address);
-  if (outcome.kind === "applied") {
-    const at = deps.clock.now().toISOString();
-    // The new side is billed from now, with the setup fee its provider charged (031 US4).
-    const { plan } = session;
-    const fee = isCloudTarget(plan.target)
+  // The new side is billed from its creation, with the setup fee its provider charged when the
+  // plan created the server. Nothing to apply means an earlier run's apply created it and stopped
+  // before this step ended: the times are recorded now if they weren't, the fee once (031 US4).
+  const at = deps.clock.now().toISOString();
+  const { plan } = session;
+  const created =
+    outcome.kind === "unchanged" ||
+    createsServer(outcome.changes, providerProfile(moveProvider(plan.target)));
+  const fee =
+    isCloudTarget(plan.target) && created
       ? await setupFeeOf(deps, plan.target, at, plan.cost.monthly.currency)
       : undefined;
-    const running = startBilling(plan.cost, at);
-    await savePlan(session, {
-      ...plan,
-      ...withApply(plan, outcome, at),
-      cost: fee === undefined ? running : withOneTime(running, fee),
-    });
+  const charged = (plan.cost.oneTime ?? []).some(
+    (paid) => paid.item === fee?.item && Date.parse(paid.at) >= Date.parse(move.startedAt),
+  );
+  const running = startBilling(plan.cost, at);
+  const cost = fee === undefined || charged ? running : withOneTime(running, fee);
+  if (outcome.kind === "applied") {
+    await savePlan(session, { ...plan, ...withApply(plan, outcome, at), cost });
     await recordAdopted(session);
+  } else if (cost !== plan.cost) {
+    await savePlan(session, { ...plan, cost });
   }
   await waitForNewServer(session, next.address.ipv4, next.id);
   // The new bucket, when the move takes the bucket along.

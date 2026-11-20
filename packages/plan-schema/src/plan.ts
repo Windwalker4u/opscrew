@@ -11,7 +11,7 @@ import {
   StorageSchema,
   serviceOf,
 } from "./components";
-import { CostEstimateSchema } from "./design";
+import { CostEstimateSchema, CostItemSchema } from "./design";
 import {
   type CloudProvider,
   CloudProviderSchema,
@@ -2127,6 +2127,12 @@ export const RetargetSchema = z.strictObject({
     objectStorage: StorageSchema.shape.objectStorage.unwrap().optional(),
     /** The old app server's member of the private network, which leaves it at `--finish`. */
     member: NetworkSchema.shape.members.element.optional(),
+    /**
+     * The old app server's running cost items when the move started (their `since`; the extra
+     * servers' lines stay out, as those servers do not move): `--finish` ends them, `--abort`
+     * gives them their start back (031 US4).
+     */
+    running: z.array(CostItemSchema).optional(),
   }),
   /** Last completed step. */
   step: z.enum(["started", "renamed", "created", "deployed", "migrated", "switched"]),

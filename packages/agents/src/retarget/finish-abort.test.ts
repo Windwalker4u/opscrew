@@ -1,6 +1,6 @@
 import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { findExecutable, NodeCommandRunner } from "@opscrew/core";
+import { findExecutable, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
 import { type CostItem, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { convertMoney, convertRate, costFor } from "../design/cost";
@@ -1001,6 +1001,8 @@ describe.skipIf(!findExecutable("git"))("a move's cost items (031 US4)", () => {
       expect(line.since).toBe(line.billing === undefined ? undefined : created);
     }
     expect(moving.cost.ended).toBeUndefined();
+    // The plan carries the old server's running items until the finish.
+    expect(moving.retarget?.from.running).toEqual(cost.breakdown.filter((l) => l.since));
 
     await finish(h);
     const plan = await readArtifact("plan", h.paths.files.plan);
@@ -1010,7 +1012,7 @@ describe.skipIf(!findExecutable("git"))("a move's cost items (031 US4)", () => {
     expect(plan.cost.ended).toEqual(endedAt(cost.breakdown, until, "USD"));
     expect(plan.cost.ended?.map((line) => line.provider)).toEqual(["hetzner", "hetzner"]);
     expect(plan.cost.breakdown).toEqual(moving.cost.breakdown);
-    expect(await exists(join(h.paths.stateDir, "retarget-cost.json"))).toBe(false);
+    expect(plan.retarget).toBeUndefined();
   });
 
   it("--abort ends the new server's items and gives the old server's their start back", async () => {
@@ -1025,6 +1027,43 @@ describe.skipIf(!findExecutable("git"))("a move's cost items (031 US4)", () => {
     const until = plan.cost.ended?.[0]?.until as string;
     expect(plan.cost.ended).toEqual(endedAt(moving.cost.breakdown, until, "EUR"));
     expect(plan.cost.ended?.map((line) => line.provider)).toEqual(["digitalocean", "digitalocean"]);
-    expect(await exists(join(h.paths.stateDir, "retarget-cost.json"))).toBe(false);
+  });
+
+  it("--abort with the old type no longer listed ends the new server's items", async () => {
+    const { h } = await billedHarness();
+    crashAfter(h, "deployed");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    const moving = await readArtifact("plan", h.paths.files.plan);
+    h.services.catalogs = {
+      ...h.services.catalogs,
+      hetzner: new MemoryCatalog([], euCatalog().extrasValue),
+    };
+
+    await abort(h);
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    const until = plan.cost.ended?.[0]?.until as string;
+    expect(plan.cost.ended).toEqual(endedAt(moving.cost.breakdown, until, "USD"));
+    expect(plan.cost.breakdown.every((line) => line.since === undefined)).toBe(true);
+  });
+
+  it("a move to Contabo records its setup fee once, also when the create step runs again", async () => {
+    const h = await moveHarness({ to: "contabo" });
+    h.firewalls.syncError = new OpsCrewError("PROVIDER_ERROR", "Contabo answered 503.");
+    await caught(run(h));
+    expect((await readArtifact("plan", h.paths.files.plan)).cost.oneTime).toBeUndefined();
+
+    h.firewalls.syncError = undefined;
+    await run(h);
+    const moving = await readArtifact("plan", h.paths.files.plan);
+    const [fee] = moving.cost.oneTime ?? [];
+    expect(moving.cost.oneTime).toEqual([
+      {
+        item: "Setup fee (V153)",
+        provider: "contabo",
+        price: { amount: 2, currency: "EUR" },
+        at: fee?.at,
+      },
+    ]);
+    expect(moving.cost.breakdown[0]).toMatchObject({ billing: "monthly", since: fee?.at });
   });
 });

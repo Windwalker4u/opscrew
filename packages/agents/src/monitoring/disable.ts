@@ -12,6 +12,7 @@ import type { PhaseDeps } from "../context";
 import { withoutServerCost } from "../design/servers";
 import { commandFlags } from "../environments/choice";
 import { planFile } from "../runners/words";
+import { keepCostTimes } from "../shared/cost-times";
 import { writePlanIfChanged } from "../shared/plan-file";
 import type { MonitoringChange } from "./enable";
 import { requireNoSenders } from "./repository";
@@ -73,7 +74,15 @@ export async function monitoringDisable(
   const after = withMonitoring(plan, undefined, {
     servers: servers.length === 0 ? undefined : servers,
     network,
-    cost: server === undefined ? plan.cost : withoutServerCost(plan.cost, server),
+    // A removed server's running line ends now (031 US4).
+    cost:
+      server === undefined
+        ? plan.cost
+        : keepCostTimes(
+            withoutServerCost(plan.cost, server),
+            plan.cost,
+            deps.clock.now().toISOString(),
+          ),
   });
   await writePlanIfChanged(deps, after);
   return {

@@ -169,6 +169,7 @@ async function shadowPlanStep(
       kind: "applied",
       planHash,
       outputs: result.outputs,
+      changes: result.plan?.changes ?? [],
       ...(result.approval === undefined ? {} : { approval: result.approval }),
     };
   } catch (error) {

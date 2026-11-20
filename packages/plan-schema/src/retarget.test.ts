@@ -339,3 +339,29 @@ describe("existing plans", () => {
     expect(serializeArtifact("plan", parseArtifact("plan", text, "fixture"))).toBe(text);
   });
 });
+
+describe("the old side's running cost items (031 US4)", () => {
+  it("keeps them on the move's record, as the cost's breakdown items, until it ends", async () => {
+    const running = [
+      {
+        item: "Server cx23 (nbg1)",
+        provider: "hetzner",
+        monthly: { amount: 5.49, currency: "EUR" },
+        billing: "hourly",
+        hourly: { amount: 0.0088, currency: "EUR" },
+        since: "2026-10-01T09:00:00Z",
+      },
+    ];
+    const plan = await moving(undefined);
+    const parsed = DeployPlanSchema.parse({
+      ...plan,
+      retarget: { ...plan.retarget, from: { ...plan.retarget.from, running } },
+    });
+    expect(parsed.retarget?.from.running).toEqual(running);
+    const unpriced = { ...plan.retarget.from, running: [{ item: "Server cx23 (nbg1)" }] };
+    expect(
+      DeployPlanSchema.safeParse({ ...plan, retarget: { ...plan.retarget, from: unpriced } })
+        .success,
+    ).toBe(false);
+  });
+});

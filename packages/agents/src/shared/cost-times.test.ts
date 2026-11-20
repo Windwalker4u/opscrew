@@ -95,6 +95,26 @@ describe("the cost's times (031 US4)", () => {
     expect(startBilling(next, NOW).breakdown[2]).toEqual({ ...backups, since: NOW });
   });
 
+  it("keeps an item whose price source alone changed, and ends nothing", () => {
+    const note = "Hetzner's published rate as of 2026-10-12";
+    const previous = costOf([
+      { ...server, since: CREATED },
+      { ...ipv4, item: `Primary IPv4 address (${note})`, since: CREATED },
+      {
+        ...backups,
+        item: "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+        since: CREATED,
+      },
+    ]);
+    const next = keepCostTimes(costOf([server, ipv4, backups]), previous, NOW);
+    expect(next.breakdown).toEqual([
+      { ...server, since: CREATED },
+      { ...ipv4, since: CREATED },
+      { ...backups, since: CREATED },
+    ]);
+    expect(next.ended).toBeUndefined();
+  });
+
   it("keeps the one-time fees and ended items across designs", () => {
     const fee = { item: "Setup fee (V153)", provider: "contabo", price: eur(2), at: CREATED };
     const previous = withOneTime(costOf([{ ...server, since: CREATED }]), fee);

@@ -24,7 +24,7 @@ import {
   serverlessTargetFor,
 } from "../design/serverless";
 import { readRequirements } from "../provision";
-import { hasDeployment } from "../shared";
+import { carryRecords, hasDeployment } from "../shared";
 import { auditStep, moveOf, saveMove, warnUnusedApproval } from "./session";
 import {
   hostWords,
@@ -248,7 +248,12 @@ async function startSiteMove(
     startedAt: deps.clock.now().toISOString(),
   };
   // The move's plan, recorded only once the summary is confirmed.
-  const moving: DeployPlan = { ...onSiteHost(plan, next.target), cost: next.cost, retarget };
+  // The new host's cost, with the plan's one-time fees and ended items.
+  const moving: DeployPlan = {
+    ...onSiteHost(plan, next.target),
+    cost: carryRecords(next.cost, plan.cost),
+    retarget,
+  };
   const session = await openSiteSession(deps, moving, {
     command: RUN_COMMAND,
     services: options.services ?? {},

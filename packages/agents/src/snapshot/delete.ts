@@ -11,7 +11,7 @@ import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { endedSnapshot } from "../design/cost";
 import { NOTHING_CHANGED } from "../promote/shared";
-import { withEnded, writePlanIfChanged } from "../shared";
+import { writePlanIfChanged } from "../shared";
 import { hostFailure, READ_TIMEOUT_MS, type ScriptHost, scriptCommand } from "./hosts";
 import { dataListings, mergeListings } from "./list";
 import { portainerDelete } from "./portainer";
@@ -69,7 +69,8 @@ async function endSnapshotCost(run: SnapshotRun, entry: SnapshotEntry): Promise<
     plan.cost.monthly.currency,
   );
   if (ended === undefined) return;
-  await writePlanIfChanged(deps, { ...plan, cost: withEnded(plan.cost, [ended]) });
+  const cost = { ...plan.cost, ended: [...(plan.cost.ended ?? []), ended] };
+  await writePlanIfChanged(deps, { ...plan, cost });
 }
 
 /** `opscrew snapshot delete`'s options. */

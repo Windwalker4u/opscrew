@@ -29,24 +29,17 @@ function endedIn(entry: EndedCost, currency: Currency): EndedCost {
   };
 }
 
-/**
- * `cost` with `oneTime` and `ended` as given, in its currency (the schema wants one), each left out
- * when empty.
- */
+/** `cost` with `oneTime` and `ended` as given, each left out when empty. */
 function withRecords(
   cost: CostEstimate,
   records: { oneTime: readonly OneTimeCost[] | undefined; ended: readonly EndedCost[] | undefined },
 ): CostEstimate {
   const { oneTime: _oneTime, ended: _ended, ...rest } = cost;
-  const { currency } = cost.monthly;
-  const oneTime = records.oneTime?.map((fee) =>
-    fee.price.currency === currency ? fee : { ...fee, price: convertMoney(fee.price, currency) },
-  );
-  const ended = records.ended?.map((entry) => endedIn(entry, currency));
+  const { oneTime, ended } = records;
   return {
     ...rest,
-    ...(oneTime !== undefined && oneTime.length > 0 ? { oneTime } : {}),
-    ...(ended !== undefined && ended.length > 0 ? { ended } : {}),
+    ...(oneTime !== undefined && oneTime.length > 0 ? { oneTime: [...oneTime] } : {}),
+    ...(ended !== undefined && ended.length > 0 ? { ended: [...ended] } : {}),
   };
 }
 
@@ -80,38 +73,30 @@ export function startBilling(cost: CostEstimate, at: string): CostEstimate {
   };
 }
 
-/** The ended entries of the running `lines` (with `since` and a billing), removed at `until`. */
-function endedOf(lines: readonly CostItem[], until: string): EndedCost[] {
-  return lines.flatMap((line) => {
-    const { item, provider, monthly, billing, hourly, since } = line;
-    if (since === undefined || billing === undefined) return [];
-    return [
-      {
-        item,
-        ...(provider !== undefined ? { provider } : {}),
-        monthly,
-        billing,
-        ...(hourly !== undefined ? { hourly } : {}),
-        since,
-        until,
-      },
-    ];
-  });
-}
-
-/** `cost` with `entries` added to its ended items. */
-export function withEnded(cost: CostEstimate, entries: readonly EndedCost[]): CostEstimate {
-  if (entries.length === 0) return cost;
-  return withRecords(cost, { oneTime: cost.oneTime, ended: [...(cost.ended ?? []), ...entries] });
-}
-
-/** `cost` with the running `lines` (its own or another cost's) ended at `until`. */
+/**
+ * `cost` with the running `lines` (those with `since` and a billing; its own or, at a move,
+ * another cost's, so in its currency) ended at `until`.
+ */
 export function endBilling(
   cost: CostEstimate,
   lines: readonly CostItem[],
   until: string,
 ): CostEstimate {
-  return withEnded(cost, endedOf(lines, until));
+  const ended = lines.flatMap((line): EndedCost[] => {
+    const { item, provider, monthly, billing, hourly, since } = line;
+    if (since === undefined || billing === undefined) return [];
+    const entry = {
+      item,
+      ...(provider !== undefined ? { provider } : {}),
+      monthly,
+      billing,
+      ...(hourly !== undefined ? { hourly } : {}),
+      since,
+      until,
+    };
+    return [endedIn(entry, cost.monthly.currency)];
+  });
+  return ended.length === 0 ? cost : { ...cost, ended: [...(cost.ended ?? []), ...ended] };
 }
 
 /**
@@ -126,22 +111,41 @@ export function stopBilling(cost: CostEstimate, until: string): CostEstimate {
 
 /** `cost` with the one-time `fee`. */
 export function withOneTime(cost: CostEstimate, fee: OneTimeCost): CostEstimate {
-  return withRecords(cost, { oneTime: [...(cost.oneTime ?? []), fee], ended: cost.ended });
-}
-
-/** `next` with the one-time fees and ended items `previous` recorded (a cost priced anew). */
-export function carryRecords(next: CostEstimate, previous: CostEstimate): CostEstimate {
-  return withRecords(next, { oneTime: previous.oneTime, ended: previous.ended });
-}
-
-/** An item's identity across designs: the provider that bills it and its words. */
-function itemKey(line: CostItem): string {
-  return `${line.provider ?? ""}\n${line.item}`;
+  return { ...cost, oneTime: [...(cost.oneTime ?? []), fee] };
 }
 
 /**
- * `lines` with `since` from the running item of `before` with the same words and provider each,
- * and the running items of `before` none matched.
+ * `next` (a cost priced anew, perhaps at another provider in another currency) with the one-time
+ * fees and ended items `previous` recorded, in `next`'s currency.
+ */
+export function carryRecords(next: CostEstimate, previous: CostEstimate): CostEstimate {
+  const { currency } = next.monthly;
+  return withRecords(next, {
+    oneTime: previous.oneTime?.map((fee) =>
+      fee.price.currency === currency ? fee : { ...fee, price: convertMoney(fee.price, currency) },
+    ),
+    ended: previous.ended?.map((entry) => endedIn(entry, currency)),
+  });
+}
+
+/**
+ * An item's identity across designs: the provider that bills it and its words without what only
+ * says where its price came from (the published rate or OpsCrew's default rate design names, and an
+ * extra server's price converted from another currency), which can change while it runs on.
+ */
+function itemKey(line: CostItem): string {
+  const { item } = line;
+  const base = item.startsWith("Primary IPv4 address")
+    ? "Primary IPv4 address"
+    : item.startsWith("Automated backups (")
+      ? "Automated backups"
+      : item.replace(/, \S+ converted at 1 EUR = .*$/, "");
+  return `${line.provider ?? ""}\n${base}`;
+}
+
+/**
+ * `lines` with `since` from the running item of `before` with the same identity each, and the
+ * running items of `before` none matched.
  */
 function matchRunning(
   lines: readonly CostItem[],
@@ -154,16 +158,16 @@ function matchRunning(
     const match = running.get(itemKey(line));
     if (match === undefined) return line;
     running.delete(itemKey(line));
-    return billed(line) && line.since === undefined ? { ...line, since: match.since } : line;
+    return line.since === undefined ? { ...line, since: match.since } : line;
   });
   return { breakdown, unmatched: [...running.values()] };
 }
 
 /**
- * Design's new cost `next` with the times the plan's `previous` cost recorded: an item still
- * planned (the same words from the same provider) keeps its `since`; a running item design no
- * longer plans (backups turned off, another server type) ends at `now`, the design that removes
- * it, which `opscrew provision` applies; the ended items and one-time fees stay.
+ * A cost priced anew, `next` (by design, or after a change of the plan's servers), with the times
+ * the plan's `previous` cost recorded: an item still planned keeps its `since`; a running item no
+ * longer planned (backups turned off, another server type, a server removed) ends at `now`, the
+ * change that removes it, which `opscrew provision` applies; the ended items and one-time fees stay.
  */
 export function keepCostTimes(
   next: CostEstimate,
@@ -177,8 +181,9 @@ export function keepCostTimes(
 
 /**
  * The cost after an aborted move: the old side's cost `restored` (priced anew) with the `since` of
- * its running items when the move started (`old`), and the records of the move's cost `moving`,
- * whose running items (the new side's) end at `until`, when the new side was removed.
+ * its running items when the move started (`old`, the move's `from.running`), and the records of
+ * the move's cost `moving`, whose running items (the new side's) end at `until`, when the new side
+ * was removed.
  */
 export function abortedCost(
   restored: CostEstimate,

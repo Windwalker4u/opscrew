@@ -42,6 +42,7 @@ import { providerProfile } from "../providers";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { planFile } from "../runners/words";
 import { recordGeneratedEntries } from "../shared/app-secrets";
+import { keepCostTimes } from "../shared/cost-times";
 import {
   appMemoryMb,
   type MemoryLimit,
@@ -867,7 +868,12 @@ export async function monitoringEnable(
     cost:
       designed === undefined
         ? plan.cost
-        : totalCost(withoutServerCost(plan.cost, designed.server.name), [designed]),
+        : // The server's line keeps its start; a resized one ends now and starts anew (031 US4).
+          keepCostTimes(
+            totalCost(withoutServerCost(plan.cost, designed.server.name), [designed]),
+            plan.cost,
+            deps.clock.now().toISOString(),
+          ),
   });
   const keys = allocated?.privateKeys ?? {};
   if (Object.keys(keys).length > 0) {

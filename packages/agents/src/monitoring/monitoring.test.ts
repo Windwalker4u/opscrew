@@ -615,6 +615,49 @@ describe("monitoringDisable", () => {
   });
 });
 
+describe("the monitoring server's cost times (031 US4)", () => {
+  it("keeps its line's since when it runs again, and ends the line at a resize or a disable", async () => {
+    const plan = deployed(testPlan());
+    const deps = await world(plan);
+    const servers = new FakeServers();
+    const first = await monitoringEnable(deps, plan, { services: servers.services() });
+    // Provision applied it: its line billed since then.
+    const since = "2026-10-01T09:00:00.000Z";
+    const monitoring = (line: { item: string }) => line.item.startsWith("Server monitoring");
+    const billed = DeployPlanSchema.parse({
+      ...first.plan,
+      cost: {
+        ...first.plan.cost,
+        breakdown: first.plan.cost.breakdown.map((line) =>
+          monitoring(line) ? { ...line, billing: "monthly", since } : line,
+        ),
+      },
+    });
+    const line = billed.cost.breakdown.find(monitoring);
+    const until = NOW.toISOString();
+    const ended = { ...line, until };
+
+    const again = await monitoringEnable(deps, billed, { services: servers.services() });
+    expect(again.plan.cost.breakdown.find(monitoring)?.since).toBe(since);
+    expect(again.plan.cost.ended).toBeUndefined();
+
+    const resized = DeployPlanSchema.parse({
+      ...billed,
+      servers: (billed.servers ?? []).map((s) => ({
+        ...s,
+        target: { ...s.target, serverType: "cx33" },
+      })),
+    });
+    const bigger = await monitoringEnable(deps, resized, { services: servers.services() });
+    expect(bigger.plan.cost.breakdown.find(monitoring)?.since).toBeUndefined();
+    expect(bigger.plan.cost.ended).toEqual([ended]);
+
+    const { plan: off } = await monitoringDisable(deps, billed);
+    expect(off.cost.breakdown.some(monitoring)).toBe(false);
+    expect(off.cost.ended).toEqual([ended]);
+  });
+});
+
 describe("the add-on commands", () => {
   it("dispatch monitoring: the summary said, nothing applied, then off again", async () => {
     const plan = deployed(testPlan());

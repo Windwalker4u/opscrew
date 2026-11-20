@@ -48,6 +48,8 @@ export type PlanStep =
       kind: "applied";
       outputs: Record<string, unknown>;
       planHash: string;
+      /** What the applied plan changed. */
+      changes: readonly ResourceChange[];
       approval?: ApprovalRecord;
     }
   | { kind: "unchanged"; outputs: Record<string, unknown> }
@@ -264,14 +266,22 @@ export async function applyInfraPlan(
   session: PlanSession,
   input: InfraPlanInput,
   planHash: string,
-): Promise<{ outputs: Record<string, unknown>; approval?: ApprovalRecord }> {
+): Promise<{
+  outputs: Record<string, unknown>;
+  changes: readonly ResourceChange[];
+  approval?: ApprovalRecord;
+}> {
   try {
     const result = await planAndApply(session.deps, {
       ...planAndApplyOptions(session, input),
       approvePlanHash: planHash,
     });
     await clearPending(session.deps);
-    return { outputs: result.outputs, ...(result.approval ? { approval: result.approval } : {}) };
+    return {
+      outputs: result.outputs,
+      changes: result.plan?.changes ?? [],
+      ...(result.approval ? { approval: result.approval } : {}),
+    };
   } catch (error) {
     if (!(isUserFacingError(error) && error.code === "APPROVAL_REFUSED")) {
       await clearPending(session.deps);
@@ -378,5 +388,11 @@ export async function deletionStep(
     await discardSaved(summary.planFile);
     await clearPending(deps);
   }
-  return { kind: "applied", outputs: {}, planHash: summary.planHash, approval };
+  return {
+    kind: "applied",
+    outputs: {},
+    planHash: summary.planHash,
+    changes: summary.changes,
+    approval,
+  };
 }

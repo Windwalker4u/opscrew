@@ -256,22 +256,70 @@ describe("cancelledBackupsLines", () => {
   });
 });
 
+/** A Contabo plan whose cost is the server's line, billed monthly, as design writes it. */
+async function withContaboCost(s: Awaited<ReturnType<typeof setup>>) {
+  const before = await readArtifact("plan", s.deps.paths.files.plan);
+  const server = {
+    item: "Server V153 (EU)",
+    provider: "contabo",
+    monthly: { amount: 5.5, currency: "EUR" as const },
+    billing: "monthly" as const,
+  };
+  const cost = { ...before.cost, monthly: server.monthly, breakdown: [server] };
+  await writeArtifact("plan", s.deps.paths.files.plan, { ...before, cost });
+  return server;
+}
+
+/** Contabo's setup fee for V153, charged at `at`. */
+const setupFee = (at: string) => ({
+  item: "Setup fee (V153)",
+  provider: "contabo",
+  price: { amount: 2, currency: "EUR" as const },
+  at,
+});
+
 describe.skipIf(!findExecutable("git"))("runProvision's cost times on Contabo (031 US4)", () => {
+  it("records the setup fee once when the run that created the server stopped before recording it", async () => {
+    const s = await setup(true, {
+      changes: CREATE,
+      planJson: PLAN_JSON(true),
+      outputs: outputs(true),
+    });
+    const server = await withContaboCost(s);
+    const firewalls = s.services.firewalls?.contabo as FakeFirewalls;
+    firewalls.syncError = new OpsCrewError("PROVIDER_ERROR", "Contabo answered 503.");
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+    });
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).cost.oneTime).toBeUndefined();
+
+    // The rerun applies only a firewall change, and records the deployment's first apply.
+    firewalls.syncError = undefined;
+    s.engine.scenario.changes = [change("module.server.terraform_data.firewall", "update")];
+    s.engine.scenario.planJson = {};
+    await runProvision(s.deps, { services: s.services });
+    const now = s.deps.clock.now().toISOString();
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.cost.oneTime).toEqual([setupFee(now)]);
+    expect(plan.cost.breakdown).toEqual([{ ...server, since: now }]);
+
+    // A later run with nothing to apply charges nothing again.
+    s.engine.scenario.changes = [];
+    await s.git(s.root, "checkout", "-q", "main");
+    await s.git(s.root, "merge", "-q", "opscrew/deploy-setup");
+    await runProvision(s.deps, { services: s.services });
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).cost.oneTime).toEqual([
+      setupFee(now),
+    ]);
+  });
+
   it("bills the server it creates from the apply, with Contabo's setup fee then", async () => {
     const s = await setup(true, {
       changes: CREATE,
       planJson: PLAN_JSON(true),
       outputs: outputs(true),
     });
-    const before = await readArtifact("plan", s.deps.paths.files.plan);
-    const server = {
-      item: "Server V153 (EU)",
-      provider: "contabo",
-      monthly: { amount: 5.5, currency: "EUR" as const },
-      billing: "monthly" as const,
-    };
-    const cost = { ...before.cost, monthly: server.monthly, breakdown: [server] };
-    await writeArtifact("plan", s.deps.paths.files.plan, { ...before, cost });
+    const server = await withContaboCost(s);
 
     await runProvision(s.deps, { services: s.services });
     const plan = await readArtifact("plan", s.deps.paths.files.plan);

@@ -31,6 +31,7 @@ import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { appBuildOf, chooseBuilder } from "../design/builder";
 import { buildOwnServerOption, sharedAccessWarning } from "../design/own";
+import { withoutServerCost } from "../design/servers";
 import { ownServerFreeDiskGb } from "../design/sizing";
 import { deployStrategyFor, ROLLING_NOTE, snapshotSettings } from "../design/strategy";
 import { recordOwnServerAnswers } from "../interview/own-server";
@@ -67,7 +68,6 @@ import {
   syncMinutes,
 } from "./bucket";
 import { recordMoveKey, startNetwork } from "./network";
-import { keepOldCost } from "./old-cost";
 import { endMoveServers, startMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, saveMove, userRecords } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
@@ -309,6 +309,19 @@ async function builderFor(
   for (const warning of choice.warnings) deps.reporter.warn(deps.redactor.redact(warning));
   // As design records it: a plain PHP app's web root and the own image's working directory stay.
   return appBuildOf(choice, facts);
+}
+
+/**
+ * `retarget.from.running`: the old app server's running cost items (those with `since`; the extra
+ * servers' lines stay out, as those servers do not move), which `--finish` ends (031 US4).
+ */
+function runningOf(plan: DeployPlan): Pick<Retarget["from"], "running"> {
+  const app = (plan.servers ?? []).reduce(
+    (cost, server) => withoutServerCost(cost, server.name),
+    plan.cost,
+  );
+  const running = app.breakdown.filter((line) => line.since !== undefined);
+  return running.length === 0 ? {} : { running };
 }
 
 /** The builder and strategy lines of the summary that differ from the plan's, with reasons. */
@@ -995,6 +1008,7 @@ export async function startMove(
         ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
         ...(moves !== undefined ? { objectStorage: moves.old } : {}),
         ...(network !== undefined ? { member: network.member } : {}),
+        ...runningOf(plan),
       },
       step: "started",
       empty: [],
@@ -1077,8 +1091,6 @@ export async function startMove(
     // The sides' addresses go to the local state, never into opscrew/plan.yaml.
     await startMoveServers(deps, session.servers);
     await saveMove(session, { ...retarget, empty });
-    // The old side's running cost items, which `--finish` ends (031 US4).
-    await keepOldCost(deps, plan);
     // The new member's key stays on this computer, with the generated values.
     if (network !== undefined) await recordMoveKey(deps, network.privateKey);
     started = { session, next, empty };

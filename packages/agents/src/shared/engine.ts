@@ -168,6 +168,19 @@ export async function stateContents(
   }
 }
 
+/** True when `changes` create (or replace) the server of `module "server"`. */
+export function createsServer(
+  changes: readonly ResourceChange[],
+  profile: { serverResourceType: string },
+): boolean {
+  return changes.some(
+    (change) =>
+      change.type === profile.serverResourceType &&
+      change.address.startsWith("module.server.") &&
+      (change.action === "create" || change.action === "replace"),
+  );
+}
+
 /** A string root-module output, when it is set and not empty. */
 export function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
   const value = outputs[name];
