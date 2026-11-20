@@ -19,12 +19,13 @@ import { cancelTerm } from "../destroy/texts";
 import { commandFlags } from "../environments/choice";
 import { publishDeploySetup } from "../provision";
 import { previousBucketKeyFile } from "../provision/storage";
-import { deployBranchOf, readOldOwnServer, trackedFiles } from "../shared";
+import { deployBranchOf, endBilling, readOldOwnServer, trackedFiles } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { deleteOldBucket, movingBucketKeys, writeStorageFiles } from "./bucket";
 import { previousCloud, previousTarget } from "./layouts";
 import { endMoveKey, leaveMoveNetwork } from "./network";
+import { forgetOldCost, readOldCost } from "./old-cost";
 import { clearPending } from "./pending";
 import { endMoveServers } from "./servers";
 import {
@@ -140,6 +141,8 @@ async function finish(
   const removed = await removeOldSide(session, options);
   if ("stop" in removed) return removed.stop;
   const { snapshotId, cancelled = [] } = removed;
+  // The old side's running cost items end with its removal (031 US4).
+  const removedAt = deps.clock.now().toISOString();
   const gone = cloud
     ? `${old} is ${cancelTerm(from.provider) === undefined ? "deleted" : "cancelled"}`
     : `the app is removed from ${from.provider === "own" ? old : "your Portainer"}`;
@@ -176,13 +179,15 @@ async function finish(
   ) {
     deps.reporter.info(`Removed the SSH host key of ${old} from OpsCrew's known_hosts.`);
   }
-  const { retarget: _finished, ...finalPlan } = session.plan;
+  const { retarget: _finished, ...moved } = session.plan;
+  const finalPlan = { ...moved, cost: endBilling(moved.cost, await readOldCost(deps), removedAt) };
   const written = await writeFinalFiles(session, finalPlan, layoutOf(session, "switched"), "all");
   const storage = keys === undefined ? [] : await writeStorageFiles(session, finalPlan);
   await endMoveKey(deps, move, "finished");
   await savePlan(session, finalPlan);
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);
+  await forgetOldCost(deps);
   // A run killed while the engine ran may have left the key of the bucket being left there.
   await rm(previousBucketKeyFile(deps.paths), { force: true });
   await endMoveServers(deps, session.servers.next);

@@ -62,9 +62,14 @@ describe("buildDesignOptions on DigitalOcean", () => {
     expect(lean?.summary).not.toContain("VAT");
     // IPv4 is included in the Droplet price, so it has no line of its own.
     expect(lean?.cost.breakdown).toEqual([
-      { item: "Server s-1vcpu-2gb (fra1)", monthly: { amount: 12, currency: "USD" } },
+      {
+        item: "Server s-1vcpu-2gb (fra1)",
+        provider: "digitalocean",
+        monthly: { amount: 12, currency: "USD" },
+      },
       {
         item: "Automated backups (30% of the server price)",
+        provider: "digitalocean",
         monthly: { amount: 3.6, currency: "USD" },
       },
     ]);
@@ -147,6 +152,7 @@ describe("buildDesignOptions on DigitalOcean", () => {
     });
     expect(options[0]?.cost.breakdown.at(-1)).toEqual({
       item: "Automated backups (30% of the server price)",
+      provider: "digitalocean",
       monthly: { amount: 3.6, currency: "USD" },
     });
   });

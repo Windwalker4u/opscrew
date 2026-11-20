@@ -28,7 +28,6 @@ import {
   isServerlessTarget,
   type ProjectFacts,
   readArtifact,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { scanDockerfile } from "@opscrew/secops";
 import { appFlag } from "../apps/choice";
@@ -41,6 +40,7 @@ import {
   githubClientFromToken,
   requireGitRepo,
   serverlessName,
+  writePlan,
   writeRenderedFiles,
 } from "../shared";
 import { appBranchNames, numberedBranches } from "../shared/app-branches";
@@ -670,7 +670,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     return status === undefined ? change : { ...change, status };
   });
   if (statuses.size > 0 || planChanged) {
-    await writeArtifact("plan", paths.files.plan, {
+    await writePlan(deps, paths.files.plan, {
       ...plan,
       codeChanges: changes,
       updatedAt: deps.clock.now().toISOString(),

@@ -9,7 +9,9 @@
 import { listText, OpsCrewError } from "@opscrew/core";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { endedSnapshot } from "../design/cost";
 import { NOTHING_CHANGED } from "../promote/shared";
+import { withEnded, writePlanIfChanged } from "../shared";
 import { hostFailure, READ_TIMEOUT_MS, type ScriptHost, scriptCommand } from "./hosts";
 import { dataListings, mergeListings } from "./list";
 import { portainerDelete } from "./portainer";
@@ -51,6 +53,23 @@ function bucketOnlyLines(id: string, bucket: string): string[] {
     `It is deleted for good: \`opscrew restore --from offsite\` can no longer put it back.`,
     `Typing ${id} approves it.`,
   ];
+}
+
+/**
+ * The deleted whole-server snapshot `entry` in the plan's ended costs (031 US4), from when it was
+ * taken until now, priced by its size; left out where the provider reported no size, or includes
+ * snapshots in the server's price.
+ */
+async function endSnapshotCost(run: SnapshotRun, entry: SnapshotEntry): Promise<void> {
+  const { deps, plan } = run;
+  if (entry.server === undefined || entry.size === undefined) return;
+  const ended = endedSnapshot(
+    { id: entry.id, provider: entry.server.provider, sizeBytes: entry.size },
+    { since: new Date(entry.taken).toISOString(), until: deps.clock.now().toISOString() },
+    plan.cost.monthly.currency,
+  );
+  if (ended === undefined) return;
+  await writePlanIfChanged(deps, { ...plan, cost: withEnded(plan.cost, [ended]) });
 }
 
 /** `opscrew snapshot delete`'s options. */
@@ -168,6 +187,7 @@ export async function deleteSnapshot(
       decision: "approved",
       detail: `${id}: ${outcomes.at(-1)}`,
     });
+    if (outcomes.at(-1) === "deleted") await endSnapshotCost(run, provider.entry);
   }
   for (const place of holders) {
     deps.reporter.step(`Deleting the snapshot ${id} ${place.where}`);

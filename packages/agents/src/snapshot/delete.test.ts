@@ -1,5 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { endedSnapshot } from "../design/cost";
 import { SERVER_IPV4 } from "../testing";
 import { fakeProvider, WHOLE_SERVER } from "./__fixtures__/provider";
 import { SH_AVAILABLE } from "./__fixtures__/server";
@@ -117,8 +119,11 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot delete", () => {
     );
   });
 
-  it("deletes a whole-server snapshot at the provider", async () => {
-    const world = await snapshotWorld(stagingPlan([{ kind: "postgres", name: "db" }]));
+  it("deletes a whole-server snapshot at the provider, and records what it cost (031 US4)", async () => {
+    const now = "2026-11-20T13:17:00.000Z";
+    const world = await snapshotWorld(stagingPlan([{ kind: "postgres", name: "db" }]), {
+      clock: { now: () => new Date(now) },
+    });
     const provider = fakeProvider([WHOLE_SERVER]);
     const deleted = await deleteSnapshot(world.deps, WHOLE_SERVER.id, {
       services: { ...world.services, serverSnapshots: () => provider.api },
@@ -139,6 +144,19 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot delete", () => {
         detail: `${WHOLE_SERVER.id}: deleted`,
       }),
     );
+    // Its 2 GB from when it was taken until now, at Hetzner's published rates.
+    const plan = await readArtifact("plan", world.deps.paths.files.plan);
+    expect(plan.cost.ended).toEqual([
+      endedSnapshot(
+        { id: WHOLE_SERVER.id, provider: "hetzner", sizeBytes: 2 * 1024 ** 3 },
+        { since: "2026-11-05T08:00:00.000Z", until: now },
+        "EUR",
+      ),
+    ]);
+    expect(plan.cost.ended?.[0]).toMatchObject({
+      item: "Snapshot 770011 (2 GB)",
+      billing: "hourly",
+    });
   });
 
   it("reports a provider's 404 as already gone", async () => {

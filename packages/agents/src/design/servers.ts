@@ -5,6 +5,7 @@ import {
   type CloudProvider,
   type CostEstimate,
   CostEstimateSchema,
+  type CostItem,
   type DeployTarget,
   type ExtraServer,
   isCloudTarget,
@@ -16,6 +17,7 @@ import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/m
 import { backupsOnOrderPage, orderPageBackupsText, orderPageProviders } from "./backups";
 import {
   convertMoney,
+  convertRate,
   EXCHANGE_RATE_NOTE,
   offerTerms,
   pricedOffer,
@@ -358,6 +360,26 @@ export function serverLine(server: DesignedServer): string {
 }
 
 /**
+ * The billing of one line for a server's `lines` together (its server, IPv4 address and backups):
+ * theirs when they share one, an hourly line's price their hourly prices added up in `currency`;
+ * none when they differ or one has none.
+ */
+function combinedBilling(
+  lines: readonly CostItem[],
+  currency: Currency,
+): Pick<CostItem, "billing" | "hourly"> {
+  const billing = lines[0]?.billing;
+  if (billing === undefined || lines.some((line) => line.billing !== billing)) return {};
+  if (billing !== "hourly") return { billing };
+  const amount = lines.reduce(
+    (sum, line) =>
+      sum + (line.hourly === undefined ? 0 : convertRate(line.hourly, currency).amount),
+    0,
+  );
+  return { billing, hourly: convertRate({ amount, currency }, currency) };
+}
+
+/**
  * The plan's cost with the extra servers OpsCrew creates: the app server's lines (`app`), then one
  * line per extra server (its server, IPv4 address and backups together), converted to the app
  * server's currency at the fixed rate when its provider prices in another, and their total. Live
@@ -386,7 +408,9 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
     return {
       // withoutServerCost finds it by these words.
       item: `Server ${server.name}${where}${extras}${converted}`,
+      provider: target.provider,
       monthly: convertMoney(cost.monthly, currency),
+      ...combinedBilling(cost.breakdown, currency),
     };
   });
   const breakdown = [...app.breakdown, ...lines];
@@ -395,6 +419,9 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
   return CostEstimateSchema.parse({
     monthly: { amount: roundCents(amount), currency },
     breakdown,
+    // The app's one-time fees and ended items stay.
+    ...(app.oneTime === undefined ? {} : { oneTime: app.oneTime }),
+    ...(app.ended === undefined ? {} : { ended: app.ended }),
     pricesIncludeVat: app.pricesIncludeVat,
     source: notLive === undefined ? "live" : "static",
     asOf: notLive?.asOf ?? app.asOf,

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { IacApproval, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { providerBackupsFile, readProviderBackups } from "../shared/provider-backups";
 import {
@@ -252,5 +253,37 @@ describe("cancelledBackupsLines", () => {
       "Contabo cancels the server's Auto Backup add-on apart from the server: check in the Contabo Customer Control Panel that it is cancelled too (server shop-data).",
     ]);
     expect(cancelledBackupsLines(plan, removal(false))).toEqual([]);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision's cost times on Contabo (031 US4)", () => {
+  it("bills the server it creates from the apply, with Contabo's setup fee then", async () => {
+    const s = await setup(true, {
+      changes: CREATE,
+      planJson: PLAN_JSON(true),
+      outputs: outputs(true),
+    });
+    const before = await readArtifact("plan", s.deps.paths.files.plan);
+    const server = {
+      item: "Server V153 (EU)",
+      provider: "contabo",
+      monthly: { amount: 5.5, currency: "EUR" as const },
+      billing: "monthly" as const,
+    };
+    const cost = { ...before.cost, monthly: server.monthly, breakdown: [server] };
+    await writeArtifact("plan", s.deps.paths.files.plan, { ...before, cost });
+
+    await runProvision(s.deps, { services: s.services });
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    const now = s.deps.clock.now().toISOString();
+    expect(plan.cost.breakdown).toEqual([{ ...server, since: now }]);
+    expect(plan.cost.oneTime).toEqual([
+      {
+        item: "Setup fee (V153)",
+        provider: "contabo",
+        price: { amount: 2, currency: "EUR" },
+        at: now,
+      },
+    ]);
   });
 });

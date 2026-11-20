@@ -1,14 +1,18 @@
 import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type CostItem, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { convertMoney, convertRate, costFor } from "../design/cost";
 import { previewDeploymentFiles } from "../provision";
-import { readServerAddresses, serverAddressesFile } from "../shared";
+import { readServerAddresses, serverAddressesFile, startBilling } from "../shared";
 import {
   APP,
   cliAnswer,
   DOMAIN,
+  doEuCatalog,
+  euCatalog,
+  MemoryCatalog,
   type MoveHarness,
   moveHarness,
   OLD_IDS,
@@ -933,5 +937,94 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       expect(request.details).toContain("Cost: unchanged");
       expect(request.details).not.toContain("Estimated cost");
     }
+  });
+});
+
+/** `catalog` with an hourly price on each offer, as the providers' catalogues give them. */
+function withHourlyPrices(catalog: MemoryCatalog): MemoryCatalog {
+  const offers = catalog.offers.map((offer) => ({
+    ...offer,
+    billing: "hourly" as const,
+    hourly: {
+      amount: Math.round((offer.monthly.amount / 624) * 1e6) / 1e6,
+      currency: offer.monthly.currency,
+    },
+  }));
+  return new MemoryCatalog(offers, catalog.extrasValue, catalog.provider);
+}
+
+/** When the old server's items started to be billed. */
+const BILLED_SINCE = "2026-10-01T09:00:00.000Z";
+
+/** The harness with hourly prices, the old server's items billed since {@link BILLED_SINCE}. */
+async function billedHarness() {
+  const h = await moveHarness();
+  const catalogs = {
+    hetzner: withHourlyPrices(euCatalog()),
+    digitalocean: withHourlyPrices(doEuCatalog()),
+  };
+  h.services.catalogs = catalogs;
+  const offer = (await catalogs.hetzner.listOffers("nbg1")).find((o) => o.id === "cx23");
+  if (offer === undefined) throw new Error("the catalogue sells cx23 in nbg1");
+  const extras = await catalogs.hetzner.extras("nbg1");
+  const cost = startBilling(costFor(offer, extras, { backups: true }), BILLED_SINCE);
+  const plan = await readArtifact("plan", h.paths.files.plan);
+  await writeArtifact("plan", h.paths.files.plan, { ...plan, cost });
+  return { h, cost };
+}
+
+/** `lines` that were billed, ended at `until` in `currency`. */
+function endedAt(lines: CostItem[], until: string, currency: "EUR" | "USD") {
+  return lines.flatMap(({ since, hourly, monthly, ...line }) =>
+    since === undefined
+      ? []
+      : [
+          {
+            ...line,
+            monthly: convertMoney(monthly, currency),
+            ...(hourly === undefined ? {} : { hourly: convertRate(hourly, currency) }),
+            since,
+            until,
+          },
+        ],
+  );
+}
+
+describe.skipIf(!findExecutable("git"))("a move's cost items (031 US4)", () => {
+  it("--finish ends the old server's items at its removal; the new server's start at its creation", async () => {
+    const { h, cost } = await billedHarness();
+    await run(h);
+    const moving = await readArtifact("plan", h.paths.files.plan);
+    const created = moving.cost.breakdown[0]?.since as string;
+    expect(created).toBeDefined();
+    for (const line of moving.cost.breakdown) {
+      expect(line.since).toBe(line.billing === undefined ? undefined : created);
+    }
+    expect(moving.cost.ended).toBeUndefined();
+
+    await finish(h);
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    const until = plan.cost.ended?.[0]?.until as string;
+    expect(Date.parse(until)).toBeGreaterThan(Date.parse(created));
+    // The old Hetzner server and its backups, in the new side's dollars; its IPv4 had no hourly price.
+    expect(plan.cost.ended).toEqual(endedAt(cost.breakdown, until, "USD"));
+    expect(plan.cost.ended?.map((line) => line.provider)).toEqual(["hetzner", "hetzner"]);
+    expect(plan.cost.breakdown).toEqual(moving.cost.breakdown);
+    expect(await exists(join(h.paths.stateDir, "retarget-cost.json"))).toBe(false);
+  });
+
+  it("--abort ends the new server's items and gives the old server's their start back", async () => {
+    const { h, cost } = await billedHarness();
+    crashAfter(h, "deployed");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    const moving = await readArtifact("plan", h.paths.files.plan);
+
+    await abort(h);
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    expect(plan.cost.breakdown).toEqual(cost.breakdown);
+    const until = plan.cost.ended?.[0]?.until as string;
+    expect(plan.cost.ended).toEqual(endedAt(moving.cost.breakdown, until, "EUR"));
+    expect(plan.cost.ended?.map((line) => line.provider)).toEqual(["digitalocean", "digitalocean"]);
+    expect(await exists(join(h.paths.stateDir, "retarget-cost.json"))).toBe(false);
   });
 });

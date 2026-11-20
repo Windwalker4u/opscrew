@@ -33,10 +33,19 @@ describe("costFor", () => {
       },
     );
     expect(cost.breakdown).toEqual([
-      { item: "Server cx23 (nbg1)", monthly: { amount: 5.49, currency: "EUR" } },
-      { item: "Primary IPv4 address", monthly: { amount: 0.5, currency: "EUR" } },
+      {
+        item: "Server cx23 (nbg1)",
+        provider: "hetzner",
+        monthly: { amount: 5.49, currency: "EUR" },
+      },
+      {
+        item: "Primary IPv4 address",
+        provider: "hetzner",
+        monthly: { amount: 0.5, currency: "EUR" },
+      },
       {
         item: "Automated backups (20% of the server price)",
+        provider: "hetzner",
         monthly: { amount: 1.1, currency: "EUR" },
       },
     ]);
@@ -601,9 +610,14 @@ describe("live prices with published rates (DigitalOcean)", () => {
   it("names the published rate and its date on the backup line and never labels it live", () => {
     const cost = costFor(liveDroplet("s-1vcpu-2gb", 1, 2, 50, 12), published, { backups: true });
     expect(cost.breakdown).toEqual([
-      { item: "Server s-1vcpu-2gb (fra1)", monthly: { amount: 12, currency: "USD" } },
+      {
+        item: "Server s-1vcpu-2gb (fra1)",
+        provider: "digitalocean",
+        monthly: { amount: 12, currency: "USD" },
+      },
       {
         item: "Automated backups (30% of the server price, DigitalOcean's published rate as of 2026-10-12)",
+        provider: "digitalocean",
         monthly: { amount: 3.6, currency: "USD" },
       },
     ]);
@@ -685,6 +699,7 @@ describe("live prices without a backup rate from the API", () => {
     });
     expect(cost.breakdown.at(-1)).toEqual({
       item: "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+      provider: "hetzner",
       monthly: { amount: 1.1, currency: "EUR" },
     });
     expect(cost).toMatchObject({ source: "static", asOf: LIVE_AS_OF });

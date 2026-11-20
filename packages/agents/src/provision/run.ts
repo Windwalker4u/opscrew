@@ -53,6 +53,7 @@ import {
 } from "../check/provision";
 import { requireCheckSettingsPlace } from "../check/settings";
 import type { PhaseDeps } from "../context";
+import { setupFeeOf } from "../design/cost";
 import { resolveCatalog } from "../design/run";
 import { appServerChange } from "../design/server-changes";
 import { ownServerMemory } from "../design/sizing";
@@ -1445,11 +1446,23 @@ async function provisionFlow(
   await recordExtraServers(deps, plan, applied.outputs);
   // Without a domain the output is `http://<server IP>`, which is not committed.
   const outputUrl = stringOutput(applied.outputs, "url");
+  // A server this apply created (or replaced), and the one-time fee its provider charged for it.
+  const created = createsServer(applied.plan?.changes ?? [], profile);
+  const setupFee =
+    applied.applied && created && isCloudTarget(plan.target)
+      ? await setupFeeOf(
+          deps,
+          plan.target,
+          deps.clock.now().toISOString(),
+          plan.cost.monthly.currency,
+        )
+      : undefined;
   const record = deploymentRecord(deps, {
     plan,
     url: outputUrl === undefined ? plan.deployment.url : committableUrl(outputUrl),
     iac: applied,
     approvals,
+    setupFee,
   });
   // An apply whose run stopped before recording it (setting a firewall after it failed, say) is
   // recorded now: the state holds the deployment, though nothing new was applied (026 R8).
@@ -1703,8 +1716,7 @@ async function provisionFlow(
 
   // 9b. The scheduled check: its key on the server (a host plan of its own, approved by its hash)
   // where it reads the disk over SSH, then its secrets.
-  // A server this apply created got the key at its first boot.
-  const created = createsServer(applied.plan?.changes ?? [], profile);
+  // A server this apply created got the key at its first boot (`created`).
   const keyServer =
     checkKey === undefined
       ? undefined

@@ -11,11 +11,11 @@ import {
   environmentsOf,
   readArtifact,
   readOptionalArtifact,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { environmentPaths } from "../environments/paths";
+import { writePlan } from "../shared";
 import { bug } from "./texts";
 
 /** What the move starts with: the zone, A's account and zone, B's account (its zone once made). */
@@ -153,6 +153,6 @@ export async function writeMoveRecord(
     ...(move === undefined ? {} : { cloudflareMove: move }),
     updatedAt: deps.clock.now().toISOString(),
   };
-  await writeArtifact("plan", paths.files.plan, plan);
+  await writePlan(deps, paths.files.plan, plan);
   return plan;
 }

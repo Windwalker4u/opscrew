@@ -1,6 +1,7 @@
 import { canonicalJson } from "@opscrew/core";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { writePlan } from "../shared";
 import { gitClient } from "../shared/github";
 import { requireBranch } from "./branches";
 import { type RunnerAnswer, withRunner } from "./runner";
@@ -26,7 +27,7 @@ export interface EnvironmentSettings {
  * setting saves nothing. Its next provision shows and applies the change. Returns the plan.
  */
 export async function setEnvironment(
-  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor" | "clock">,
   settings: EnvironmentSettings,
 ): Promise<DeployPlan> {
   const { paths } = deps;
@@ -41,6 +42,6 @@ export async function setEnvironment(
   }
   if (settings.runner !== undefined) plan = await withRunner(paths, plan, settings.runner);
   if (canonicalJson(plan) === canonicalJson(before)) return before;
-  await writeArtifact("plan", paths.files.plan, plan);
+  await writePlan(deps, paths.files.plan, plan);
   return plan;
 }

@@ -14,12 +14,7 @@ import {
 } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { CHECK_PAUSED_VARIABLE, checkEnvironmentKey } from "@opscrew/iac-templates";
-import {
-  type DeployPlan,
-  ghcrImageFor,
-  isServerlessTarget,
-  writeArtifact,
-} from "@opscrew/plan-schema";
+import { type DeployPlan, ghcrImageFor, isServerlessTarget } from "@opscrew/plan-schema";
 import { appPaths } from "../apps/list";
 import { changeCheckPause } from "../check/pause";
 import { teardownCheckSecretNames } from "../check/provision";
@@ -47,6 +42,8 @@ import {
   refusalReason,
   stateCopyPaths,
   stateNotHere,
+  stopBilling,
+  writePlan,
 } from "../shared";
 import { hintOf, reasonOf } from "../shared/errors";
 import {
@@ -741,10 +738,11 @@ function gitHubFailed(
 
 /**
  * 8. OpsCrew's record of a finished teardown: `opscrew/plan.yaml` without the app's URL, with
- * `destroyedAt` and the plans this run's `approvals` approved; the record of the stored deploy
- * secrets goes (with `forgetAddress`, the server's address in `.opscrew/server.json` too), and so
- * does the marker of a provision that stopped mid-apply (its servers are gone), and the
- * `provision` phase is recorded as skipped with `summary`. Returns the plan as written.
+ * `destroyedAt`, the plans this run's `approvals` approved and its billed cost items ended then;
+ * the record of the stored deploy secrets goes (with `forgetAddress`, the server's address in
+ * `.opscrew/server.json` too), and so does the marker of a provision that stopped mid-apply (its
+ * servers are gone), and the `provision` phase is recorded as skipped with `summary`. Returns the
+ * plan as written.
  */
 export async function recordTeardown(
   deps: Pick<PhaseDeps, "paths" | "clock" | "state">,
@@ -761,9 +759,11 @@ export async function recordTeardown(
     ...plan,
     updatedAt: at,
     approvals: [...plan.approvals, ...recorded],
+    // What was billed ends now; the breakdown stays the plan's estimate (031 US4).
+    cost: stopBilling(plan.cost, at),
     deployment: { ...kept, destroyedAt: at },
   };
-  await writeArtifact("plan", deps.paths.files.plan, destroyed);
+  await writePlan(deps, deps.paths.files.plan, destroyed);
   if (opts.forgetAddress) await recordServerAddress(deps.paths, undefined);
   await rm(deps.paths.files.deploySecrets, { force: true });
   await rm(applyMarkerFile(deps.paths), { force: true });

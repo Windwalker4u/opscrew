@@ -29,7 +29,12 @@ describe("buildDesignOptions on Contabo", () => {
     expect(lean?.backups).toBe(true);
     // The server alone: no backups line, and never one at €0.
     expect(lean?.cost.breakdown).toEqual([
-      { item: "Server V153 (EU)", monthly: { amount: 5.5, currency: "EUR" } },
+      {
+        item: "Server V153 (EU)",
+        provider: "contabo",
+        monthly: { amount: 5.5, currency: "EUR" },
+        billing: "monthly",
+      },
     ]);
     expect(lean?.cost.monthly).toEqual({ amount: 5.5, currency: "EUR" });
     expect(lean?.summary).toContain(

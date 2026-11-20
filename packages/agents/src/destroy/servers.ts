@@ -21,13 +21,12 @@ import {
   isCloudProvider,
   isCloudTarget,
   servicesOn,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { publicSshHostPlan } from "../network";
 import { providerProfile } from "../providers";
 import { repositoryUrl } from "../runners";
-import { gitClient, type HostAdapterApi, withApprovals } from "../shared";
+import { gitClient, type HostAdapterApi, withApprovals, writePlan } from "../shared";
 import {
   approveAndApplyHostPlan,
   boundHostAdapter,
@@ -347,7 +346,7 @@ export async function reopenPublicSsh(
     outcomes.push(outcome);
   }
   const opened = withApprovals(open, outcomes);
-  await writeArtifact("plan", deps.paths.files.plan, opened);
+  await writePlan(deps, deps.paths.files.plan, opened);
   deps.reporter.info(
     "Public SSH is open again on the servers whose private network the teardown removes; opscrew/plan.yaml says so.",
   );

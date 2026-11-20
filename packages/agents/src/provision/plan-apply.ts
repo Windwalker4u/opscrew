@@ -38,7 +38,6 @@ import {
   isHostingTarget,
   isServerlessProvider,
   readArtifact,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
@@ -46,7 +45,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { orderPageBackupsText, orderPageProviders } from "../design/backups";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
-import { describeChanges, PlanRefusedError } from "../shared";
+import { describeChanges, PlanRefusedError, writePlan } from "../shared";
 import { applyWithConnectorRemoval } from "../shared/connector-removal";
 import { type FirewallApis, removeFirewalls, syncFirewalls } from "../shared/firewalls";
 import {
@@ -770,7 +769,7 @@ async function clearDestroyedAt(deps: PhaseDeps): Promise<void> {
   const onDisk = await readArtifact("plan", deps.paths.files.plan);
   if (onDisk.deployment.destroyedAt === undefined) return;
   const { destroyedAt: _destroyedAt, ...deployment } = onDisk.deployment;
-  await writeArtifact("plan", deps.paths.files.plan, { ...onDisk, deployment });
+  await writePlan(deps, deps.paths.files.plan, { ...onDisk, deployment });
 }
 
 /** Commands with `--confirm <app>`, which approves a plan that needs the typed app name. */

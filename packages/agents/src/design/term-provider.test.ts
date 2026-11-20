@@ -82,7 +82,11 @@ describe("design's options on a provider with terms", () => {
     expect(lean?.target.serverType).toBe("vps-4");
     expect(lean?.cost.monthly).toEqual({ amount: 6, currency: "USD" });
     expect(lean?.cost.breakdown).toEqual([
-      { item: "Server vps-4 (fra1)", monthly: { amount: 6, currency: "USD" } },
+      {
+        item: "Server vps-4 (fra1)",
+        provider: "digitalocean",
+        monthly: { amount: 6, currency: "USD" },
+      },
     ]);
     expect(lean?.summary).toContain(
       "$6.00/month (estimate as of 2026-09-01, including tax). Plus a one-time setup fee of $5.00 (incl. tax) when the server is created, not part of the monthly price. The contract runs at least 1 month; a removal ends it at the end of the term. Whole-server snapshots are included in the price, up to 1.",

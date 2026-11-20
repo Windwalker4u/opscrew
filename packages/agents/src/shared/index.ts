@@ -2,6 +2,7 @@ export * from "./adapter-plan";
 export * from "./app-env";
 export * from "./approvals";
 export * from "./check-results";
+export * from "./cost-times";
 export * from "./deep-domain";
 export * from "./design-option";
 export * from "./engine";

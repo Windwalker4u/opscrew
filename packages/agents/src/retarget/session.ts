@@ -23,7 +23,6 @@ import {
   isCloudProvider,
   type Requirements,
   type Retarget,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { renderedCheckKeyLine } from "../check/provision";
 import type { PhaseDeps } from "../context";
@@ -65,6 +64,7 @@ import {
   setAddressVariables,
   stateCopyPaths,
   stateNotHere,
+  writePlan,
   writeRenderedFiles,
 } from "../shared";
 import { oldSideTarget } from "./layouts";
@@ -588,7 +588,7 @@ export async function savePlan(
   plan: DeployPlan,
 ): Promise<DeployPlan> {
   const next = { ...plan, updatedAt: session.deps.clock.now().toISOString() };
-  await writeArtifact("plan", session.deps.paths.files.plan, next);
+  await writePlan(session.deps, session.deps.paths.files.plan, next);
   session.plan = next;
   return next;
 }

@@ -536,7 +536,7 @@ function hostingOption(
     backups: false,
     cost: CostEstimateSchema.parse({
       monthly,
-      breakdown: [{ item: `Your ${name}, which you already pay for`, monthly }],
+      breakdown: [{ item: `Your ${name}, which you already pay for`, monthly, billing: "free" }],
       pricesIncludeVat: false,
       source: "static",
       asOf: now.toISOString(),

@@ -2,7 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, testPlan } from "../testing";
-import { pausedMergeNote, reportPausedMerge } from "./steps";
+import { deploymentRecord, pausedMergeNote, reportPausedMerge } from "./steps";
 
 const PINNED = {
   reason: "rollback",
@@ -82,5 +82,48 @@ describe("reportPausedMerge", () => {
       }),
     );
     expect(deps.reporter.lines).toEqual([]);
+  });
+});
+
+describe("deploymentRecord's cost times (031 US4)", () => {
+  const eur = (amount: number) => ({ amount, currency: "EUR" as const });
+  const server = {
+    item: "Server cx23 (nbg1)",
+    provider: "hetzner",
+    monthly: eur(5.49),
+    billing: "hourly" as const,
+    hourly: eur(0.0088),
+  };
+  const backups = {
+    item: "Automated backups (20% of the server price)",
+    provider: "hetzner",
+    monthly: eur(1.1),
+    billing: "hourly" as const,
+    hourly: eur(0.00176),
+  };
+  const iac = { planHash: "a".repeat(64), applied: false };
+
+  it("keeps a running item's since on a later run and starts a new one's (backups turned on)", async () => {
+    const deps = await createTestPhaseDeps();
+    const base = testPlan({ deployed: true });
+    const since = "2026-10-01T09:00:00.000Z";
+    const plan = {
+      ...base,
+      cost: { ...base.cost, monthly: eur(6.59), breakdown: [{ ...server, since }, backups] },
+    };
+    const recorded = deploymentRecord(deps, { plan, url: undefined, iac, approvals: [] })(false);
+    expect(recorded.cost.breakdown).toEqual([
+      { ...server, since },
+      { ...backups, since: deps.clock.now().toISOString() },
+    ]);
+    expect(recorded.cost.oneTime).toBeUndefined();
+  });
+
+  it("starts nothing before the deployment's first apply", async () => {
+    const deps = await createTestPhaseDeps();
+    const base = testPlan();
+    const plan = { ...base, cost: { ...base.cost, monthly: eur(5.49), breakdown: [server] } };
+    const recorded = deploymentRecord(deps, { plan, url: undefined, iac, approvals: [] })(false);
+    expect(recorded.cost.breakdown).toEqual([server]);
   });
 });

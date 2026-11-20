@@ -22,7 +22,6 @@ import {
   backupsBucketOf,
   type DeployPlan,
   snapshotOffsiteOf,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
@@ -57,6 +56,7 @@ import {
   readOwnServer,
   readValidJson,
   recordOwnServer,
+  writePlan,
 } from "../shared";
 import { boundHostAdapter } from "../shared/host-plan";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
@@ -1152,7 +1152,7 @@ export async function destroyOwnServer(
       if (result.approval) {
         current = { ...current, approvals: [...current.approvals, approvalEntry(result.approval)] };
       }
-      await writeArtifact("plan", deps.paths.files.plan, current);
+      await writePlan(deps, deps.paths.files.plan, current);
       undone = true;
       deps.reporter.success(
         `Undid OpsCrew's changes to your server (${plural(result.steps.length, "change")}).`,

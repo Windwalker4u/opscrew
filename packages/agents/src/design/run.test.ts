@@ -19,7 +19,7 @@ import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/provider-h
 import { describe, expect, it } from "vitest";
 import { runInterview } from "../interview";
 import { promoteWorld } from "../promote/__fixtures__/world";
-import { assembleAppEnv, recordServerAddress } from "../shared";
+import { assembleAppEnv, recordServerAddress, startBilling } from "../shared";
 import {
   createTestPhaseDeps,
   doEuCatalog,
@@ -573,6 +573,59 @@ describe("runDesign", () => {
 
     const dev = await runDesign(await inEnv("dev"), { catalog: euCatalog() });
     expect(dev.plan.target).toMatchObject({ backups: false });
+  });
+
+  it("keeps the running items' since, and the backups switch ends or adds their item (031 US4)", async () => {
+    const deps = await setup(
+      nextPostgresFacts(),
+      makeRequirements({
+        dataCriticality: "important",
+        budgetMonthly: { amount: 50, currency: "EUR" },
+      }),
+    );
+    // Hetzner's catalogue with its hourly prices.
+    const eu = euCatalog();
+    const catalog = new MemoryCatalog(
+      eu.offers.map((offer) => ({
+        ...offer,
+        billing: "hourly" as const,
+        hourly: {
+          amount: Math.round((offer.monthly.amount / 624) * 1e6) / 1e6,
+          currency: "EUR" as const,
+        },
+      })),
+      { ...eu.extrasValue, ipv4Hourly: { amount: 0.0008, currency: "EUR" } },
+    );
+    const designed = (await runDesign(deps, { catalog })).plan;
+    expect(designed.cost.breakdown.map((line) => line.billing)).toEqual([
+      "hourly",
+      "hourly",
+      "hourly",
+    ]);
+    // Provision applied it: each item billed since then.
+    const since = "2026-10-01T09:00:00.000Z";
+    const applied = { ...designed, cost: startBilling(designed.cost, since) };
+    const [server, ipv4, backups] = applied.cost.breakdown;
+
+    // Backups turned off: the item ends with this design; the others run on.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...applied,
+      target: { ...applied.target, backups: false } as DeployPlan["target"],
+    });
+    const off = (await runDesign(deps, { catalog })).plan;
+    const now = deps.clock.now().toISOString();
+    expect(off.cost.breakdown).toEqual([server, ipv4]);
+    const { since: started, ...line } = backups as NonNullable<typeof backups>;
+    expect(off.cost.ended).toEqual([{ ...line, since: started, until: now }]);
+
+    // Turned on again: a new item, which the next apply starts.
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...off,
+      target: { ...off.target, backups: true } as DeployPlan["target"],
+    });
+    const on = (await runDesign(deps, { catalog })).plan;
+    expect(on.cost.breakdown).toEqual([server, ipv4, line]);
+    expect(on.cost.ended).toEqual(off.cost.ended);
   });
 
   it("keeps createdAt of an earlier plan, and the whole plan when nothing changed (SC-1307)", async () => {

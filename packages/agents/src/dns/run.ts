@@ -1,10 +1,5 @@
 import { OpsCrewError, toPosixRelative } from "@opscrew/core";
-import {
-  type DeployPlan,
-  readArtifact,
-  readOptionalArtifact,
-  writeArtifact,
-} from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, readOptionalArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { parseHostName } from "../domain/common";
 import { insideDomain, recordRequirements } from "../domain/project";
@@ -12,7 +7,7 @@ import { commandFlags } from "../environments/choice";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
-import { hasDeployment, hidesServerAddress } from "../shared";
+import { hasDeployment, hidesServerAddress, writePlan } from "../shared";
 
 export interface DnsOptions extends ProvisionOptions {
   /** New or changed domain, for example `app.example.com`. Defaults to the plan's domain. */
@@ -73,7 +68,7 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
   /** Saves the plan change once the flow's checks passed (a stop leaves the files as they were). */
   const ready = async (): Promise<void> => {
     if (changed) {
-      await writeArtifact("plan", deps.paths.files.plan, updated);
+      await writePlan(deps, deps.paths.files.plan, updated);
       deps.reporter.info(`The plan now serves the app at https://${domain} through Cloudflare.`);
       const requirements = await readOptionalArtifact(
         "requirements",

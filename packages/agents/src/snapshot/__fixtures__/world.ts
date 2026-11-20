@@ -1,4 +1,5 @@
 /** Plans and environments for the snapshot commands' tests, with fake machines and GitHub. */
+import type { Clock } from "@opscrew/contracts";
 import { serviceSpec, snapshotParts } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -144,6 +145,8 @@ export async function snapshotWorld(
   o: {
     answer?: ConstructorParameters<typeof ScriptedApprovalHandler>[0];
     runs?: { status: string; htmlUrl: string }[];
+    /** The run's clock (default: the test deps' fixed one). */
+    clock?: Clock;
   } = {},
 ): Promise<SnapshotWorld> {
   const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
@@ -151,6 +154,7 @@ export async function snapshotWorld(
     environment: "staging",
     approvalHandler: handler,
     runner: gitRemote(),
+    ...(o.clock === undefined ? {} : { clock: o.clock }),
   });
   await writeArtifact("plan", deps.paths.files.plan, plan);
   await updateServerAddresses(deps.paths, (current) => ({

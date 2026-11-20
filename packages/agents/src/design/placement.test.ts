@@ -154,10 +154,19 @@ describe("design with a service on a server of its own", () => {
 
     // One cost line per server, and the total.
     expect(plan.cost.breakdown).toEqual([
-      { item: "Server cx13 (fsn1)", monthly: { amount: 4.19, currency: "EUR" } },
-      { item: "Primary IPv4 address", monthly: { amount: 0.5, currency: "EUR" } },
+      {
+        item: "Server cx13 (fsn1)",
+        provider: "hetzner",
+        monthly: { amount: 4.19, currency: "EUR" },
+      },
+      {
+        item: "Primary IPv4 address",
+        provider: "hetzner",
+        monthly: { amount: 0.5, currency: "EUR" },
+      },
       {
         item: "Server db (cx13 in fsn1), with its IPv4 address",
+        provider: "hetzner",
         monthly: { amount: 4.69, currency: "EUR" },
       },
     ]);

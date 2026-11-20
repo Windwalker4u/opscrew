@@ -217,6 +217,7 @@ describe("the plan's cost with extra servers", () => {
     // 4.19 + 0.50 for the IPv4 address + 0.84 (20% backups).
     expect(total.breakdown.at(-1)).toEqual({
       item: "Server db (cx13 in fsn1), with its IPv4 address and backups",
+      provider: "hetzner",
       monthly: { amount: 5.53, currency: "EUR" },
     });
     expect(total.monthly).toEqual({ amount: 10.22, currency: "EUR" });

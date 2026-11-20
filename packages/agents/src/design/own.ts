@@ -108,11 +108,11 @@ export const OWN_SERVER_OPTION_ID = "own-server";
 export const OWN_SERVER_TYPE = "your server";
 export const OWN_SERVER_LOCATION = "its current location";
 
-/** The cost of an option on a server or Portainer the user already pays for: nothing. */
+/** The cost of an option on a server or Portainer the user already pays for: nothing, billed `free`. */
 export function noServerCost(item: string, currency: Currency, asOf: string): CostEstimate {
   return CostEstimateSchema.parse({
     monthly: { amount: 0, currency },
-    breakdown: [{ item, monthly: { amount: 0, currency } }],
+    breakdown: [{ item, monthly: { amount: 0, currency }, billing: "free" }],
     pricesIncludeVat: false,
     source: "live",
     asOf,

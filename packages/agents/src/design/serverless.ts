@@ -393,6 +393,13 @@ export function buildServerlessOption(input: ServerlessOptionInput): DesignOptio
     price = { monthly: free, item: "GitHub Pages (free)" };
   }
   const { monthly, item } = price;
+  // Workers Paid is Cloudflare's monthly subscription; the free plans cost nothing.
+  const line = {
+    item,
+    ...(cloudflare ? { provider: "cloudflare" } : {}),
+    monthly,
+    billing: monthly.amount > 0 ? ("monthly" as const) : ("free" as const),
+  };
   const budget = requirements.budgetMonthly;
   return DesignOptionSchema.parse({
     id: provider,
@@ -413,7 +420,7 @@ export function buildServerlessOption(input: ServerlessOptionInput): DesignOptio
     backups: false,
     cost: CostEstimateSchema.parse({
       monthly,
-      breakdown: [{ item, monthly }],
+      breakdown: [line],
       pricesIncludeVat: false,
       source: "static",
       asOf: cloudflare ? plans.asOf : providerProfile("github-pages").limits.asOf,

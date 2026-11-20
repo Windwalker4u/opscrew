@@ -4,7 +4,7 @@ import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { checkEnvironmentKey } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, type OneTimeCost } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
@@ -12,6 +12,8 @@ import {
   type PlanApproval,
   type ProjectEngine,
   projectEngine,
+  startBilling,
+  withOneTime,
   writePlanIfChanged,
 } from "../shared";
 import {
@@ -162,7 +164,9 @@ export function publicOutputs(outputs: Record<string, unknown>): Record<string, 
  * `opscrew/plan.yaml` after this run, for `record(otherApplied)`: the approvals (`approvals` is
  * read when called, so later ones count), the domain URL, the infrastructure apply (`iac`) and,
  * with `otherApplied`, a change on the server or in Portainer. A new deployment after
- * `opscrew destroy` is no longer destroyed. `updatedAt` is left to `writePlanIfChanged`.
+ * `opscrew destroy` is no longer destroyed. Once the deployment has an apply, each billed cost item
+ * without `since` is billed from now (031 US4), and the `setupFee` creating its server charged is
+ * recorded. `updatedAt` is left to `writePlanIfChanged`.
  */
 export function deploymentRecord(
   deps: Pick<PhaseDeps, "clock">,
@@ -171,21 +175,28 @@ export function deploymentRecord(
     url: string | undefined;
     iac: Pick<PlanAndApplyResult, "planHash" | "applied">;
     approvals: readonly PlanApproval[];
+    /** The one-time fee of the server this apply created, when its provider charged one. */
+    setupFee?: OneTimeCost | undefined;
   },
 ): (otherApplied: boolean) => DeployPlan {
   const now = deps.clock.now().toISOString();
-  const { plan, url, iac, approvals } = input;
+  const { plan, url, iac, approvals, setupFee } = input;
   const { destroyedAt: _destroyedAt, url: _url, ...previous } = plan.deployment;
-  return (otherApplied) => ({
-    ...plan,
-    approvals: [...plan.approvals, ...approvals],
-    deployment: {
+  return (otherApplied) => {
+    const deployment = {
       ...previous,
       ...(url ? { url } : {}),
       ...(iac.planHash && iac.applied ? { lastPlanHash: iac.planHash } : {}),
       ...(iac.applied || otherApplied ? { lastApplyAt: now } : {}),
-    },
-  });
+    };
+    const running = deployment.lastApplyAt === undefined ? plan.cost : startBilling(plan.cost, now);
+    return {
+      ...plan,
+      approvals: [...plan.approvals, ...approvals],
+      cost: setupFee === undefined ? running : withOneTime(running, setupFee),
+      deployment,
+    };
+  };
 }
 
 /**

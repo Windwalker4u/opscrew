@@ -206,6 +206,7 @@ describe("monitoringEnable on a server of its own", () => {
     // The monitoring server's price joins the plan's cost.
     expect(after.cost.breakdown).toContainEqual({
       item: "Server monitoring (cx21 in nbg1), with its IPv4 address",
+      provider: "hetzner",
       monthly: { amount: 3.79, currency: "EUR" },
     });
     expect(after.cost.monthly.amount).toBeCloseTo(plan.cost.monthly.amount + 3.79, 2);
@@ -321,6 +322,7 @@ describe("monitoringEnable on a server of its own", () => {
       [
         {
           item: "Server monitoring (cx33 in nbg1), with its IPv4 address",
+          provider: "hetzner",
           monthly: { amount: 8.99, currency: "EUR" },
         },
       ],

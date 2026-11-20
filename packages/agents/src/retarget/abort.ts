@@ -17,12 +17,13 @@ import { forgetHostKeys } from "../destroy/deletion";
 import type { DestroyPreview } from "../destroy/types";
 import { providerProfile, vpsConnector } from "../providers";
 import { previousBucketKeyFile } from "../provision/storage";
-import { pollUntil, restoreOldConnection, type ServerAddress } from "../shared";
+import { abortedCost, pollUntil, restoreOldConnection, type ServerAddress } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { movingBucketKeys, removeNewBucket, renameBucketBack, writeStorageFiles } from "./bucket";
 import { oldSideTarget, previousTarget } from "./layouts";
 import { endMoveKey, networkBeforeMove, undoMoveNetwork } from "./network";
+import { forgetOldCost, readOldCost } from "./old-cost";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
 import { isAppHealthy } from "./server-ops";
@@ -387,7 +388,17 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     app: move.from.build === undefined ? unbuilt : { ...unbuilt, build: move.from.build },
     target: oldSideTarget(move),
     deploy: move.from.deploy,
-    ...(cost !== undefined ? { cost } : {}),
+    // The old side's items run on from their start; the new side's, removed, end now (031 US4).
+    ...(cost !== undefined
+      ? {
+          cost: abortedCost(
+            cost,
+            await readOldCost(deps),
+            session.plan.cost,
+            deps.clock.now().toISOString(),
+          ),
+        }
+      : {}),
     ...(move.from.objectStorage !== undefined
       ? { storage: { ...rest.storage, objectStorage: move.from.objectStorage } }
       : {}),
@@ -400,6 +411,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   await endMoveKey(deps, move, "aborted");
   await savePlan(session, restored);
   await clearPending(deps);
+  await forgetOldCost(deps);
   // A run killed while the engine ran may have left the key of the bucket being left there.
   await rm(previousBucketKeyFile(deps.paths), { force: true });
   await endMoveServers(deps, oldAddress);

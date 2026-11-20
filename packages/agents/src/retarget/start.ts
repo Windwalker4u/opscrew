@@ -41,6 +41,7 @@ import { readRequirements, requireStorageKey } from "../provision";
 import { requireNoCloudflareMove } from "../provision/guard";
 import {
   boundHostAdapter,
+  carryRecords,
   designOptionLine,
   hasState,
   hostingNotAvailable,
@@ -66,6 +67,7 @@ import {
   syncMinutes,
 } from "./bucket";
 import { recordMoveKey, startNetwork } from "./network";
+import { keepOldCost } from "./old-cost";
 import { endMoveServers, startMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, saveMove, userRecords } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
@@ -1002,7 +1004,8 @@ export async function startMove(
     const moving: DeployPlan = {
       ...plan,
       target: next.target,
-      cost: next.cost,
+      // The new side's cost, with the plan's one-time fees and ended items.
+      cost: carryRecords(next.cost, plan.cost),
       app: { ...plan.app, build: next.build },
       deploy: next.deploy,
       ...(moves !== undefined ? { storage: { ...plan.storage, objectStorage: moves.next } } : {}),
@@ -1074,6 +1077,8 @@ export async function startMove(
     // The sides' addresses go to the local state, never into opscrew/plan.yaml.
     await startMoveServers(deps, session.servers);
     await saveMove(session, { ...retarget, empty });
+    // The old side's running cost items, which `--finish` ends (031 US4).
+    await keepOldCost(deps, plan);
     // The new member's key stays on this computer, with the generated values.
     if (network !== undefined) await recordMoveKey(deps, network.privateKey);
     started = { session, next, empty };

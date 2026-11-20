@@ -955,6 +955,27 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(plan.deployment.destroyedAt).toBe(NOW);
   });
 
+  it("ends the deployment's billed cost items at the teardown, keeping the estimate (031 US4)", async () => {
+    const base = deployedPlan();
+    const since = "2026-10-10T09:00:00.000Z";
+    const eur = (amount: number) => ({ amount, currency: "EUR" as const });
+    const server = {
+      item: "Server cx23 (nbg1)",
+      provider: "hetzner",
+      monthly: eur(5.49),
+      billing: "hourly" as const,
+      hourly: eur(0.0088),
+    };
+    const ipv4 = { item: "Primary IPv4 address", provider: "hetzner", monthly: eur(0.5) };
+    const cost = { ...base.cost, monthly: eur(5.99), breakdown: [{ ...server, since }, ipv4] };
+    const s = await setup({ plan: { ...base, cost } });
+    await runDestroy(s.deps, { services: s.services });
+
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.cost.breakdown).toEqual([server, ipv4]);
+    expect(plan.cost.ended).toEqual([{ ...server, since, until: NOW }]);
+  });
+
   it("deletes the Cloudflare records too, and stops before planning without a Cloudflare token", async () => {
     const plan = deployedPlan({ domain: "shop.example.com" });
     const withToken = await setup({

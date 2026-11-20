@@ -1,7 +1,17 @@
 import type { ComputeOffer, Currency, Money, ProviderExtras } from "@opscrew/contracts";
 import { formatMoney, plural, taxLabel } from "@opscrew/core";
-import { type CostEstimate, CostEstimateSchema, isCloudProvider } from "@opscrew/plan-schema";
+import {
+  type CloudProvider,
+  type CostEstimate,
+  CostEstimateSchema,
+  type CostItem,
+  type EndedCost,
+  isCloudProvider,
+  type OneTimeCost,
+} from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
+import type { PhaseDeps } from "../context";
+import { vpsConnector } from "../providers";
 import { backupsOnOrderPage } from "./backups";
 import { designWording } from "./wording";
 
@@ -28,6 +38,101 @@ export function convertMoney(money: Money, to: Currency): Money {
   if (money.currency === to) return { amount: roundCents(money.amount), currency: to };
   const amount = to === "USD" ? money.amount * USD_PER_EUR : money.amount / USD_PER_EUR;
   return { amount: roundCents(amount), currency: to };
+}
+
+/** An hourly price converted as {@link convertMoney} does, rounded to a millionth, not to cents. */
+export function convertRate(money: Money, to: Currency): Money {
+  const amount =
+    money.currency === to
+      ? money.amount
+      : to === "USD"
+        ? money.amount * USD_PER_EUR
+        : money.amount / USD_PER_EUR;
+  return { amount: Math.round(amount * 1e6) / 1e6, currency: to };
+}
+
+/**
+ * How `offer`'s lines are billed (research R4): the offer's billing, else its provider's (the
+ * definition's `offering.billing.model`). The returned function gives a line's `billing` and, for
+ * an hourly one, its `hourly` price in `currency`; a line of an hourly offer without its hourly
+ * price gets neither (the plan's schema wants both).
+ */
+function billingOf(
+  offer: Pick<ComputeOffer, "provider" | "billing">,
+  currency: Currency,
+): (hourly: Money | undefined) => Pick<CostItem, "billing" | "hourly"> {
+  const billing =
+    offer.billing ??
+    (isCloudProvider(offer.provider)
+      ? cloudProvider(offer.provider).offering.billing.model
+      : undefined);
+  return (hourly) => {
+    if (billing === "monthly") return { billing };
+    if (billing === "hourly" && hourly !== undefined) {
+      return { billing, hourly: convertRate(hourly, currency) };
+    }
+    return {};
+  };
+}
+
+/**
+ * The one-time setup fee that creating a server of `target` charged at `at`, in `currency`: where
+ * its provider's billing says creating one can charge a fee (`offering.billing.setupFee`, Contabo)
+ * and the server's offer in the provider's published price list names it. Undefined otherwise.
+ */
+export async function setupFeeOf(
+  deps: Pick<PhaseDeps, "fetch" | "redactor" | "version">,
+  target: { provider: string; serverType: string; location: string },
+  at: string,
+  currency: Currency,
+): Promise<OneTimeCost | undefined> {
+  const { provider, serverType, location } = target;
+  if (!isCloudProvider(provider) || !cloudProvider(provider).offering.billing.setupFee) {
+    return undefined;
+  }
+  // The published price list: a connector without credentials reads only that.
+  const catalog = vpsConnector(provider, {
+    env: {},
+    fetch: deps.fetch,
+    redactor: deps.redactor,
+    version: deps.version,
+  }).catalog();
+  const offer = (await catalog.listOffers(location)).find((o) => o.id === serverType);
+  if (offer?.setupFee === undefined) return undefined;
+  return {
+    item: `Setup fee (${serverType})`,
+    provider,
+    price: convertMoney(offer.setupFee, currency),
+    at,
+  };
+}
+
+/**
+ * A deleted whole-server snapshot of `sizeBytes` at `provider` as an ended cost item in
+ * `currency`, kept from `since` to `until`: priced at the provider's published per-GB rates
+ * (`offering.snapshots`) and billed as its servers are. Undefined where its snapshots are included
+ * in the server's price.
+ */
+export function endedSnapshot(
+  snapshot: { id: string; provider: CloudProvider; sizeBytes: number },
+  times: { since: string; until: string },
+  currency: Currency,
+): EndedCost | undefined {
+  const { offering } = cloudProvider(snapshot.provider);
+  const rates = offering.snapshots;
+  if (rates.kind !== "per-gb") return undefined;
+  const gb = snapshot.sizeBytes / 1024 ** 3;
+  const price = (rate: number) => ({ amount: gb * rate, currency: offering.currency });
+  const hourly = offering.billing.model === "hourly";
+  return {
+    item: `Snapshot ${snapshot.id} (${Math.round(gb * 100) / 100} GB)`,
+    provider: snapshot.provider,
+    monthly: convertMoney(price(rates.perGbMonth), currency),
+    billing: offering.billing.model,
+    ...(hourly ? { hourly: convertRate(price(rates.perGbHour), currency) } : {}),
+    since: times.since,
+    until: times.until,
+  };
 }
 
 /** `estimate as of 2026-06-15` for static prices, `live price` for prices read from the API. */
@@ -154,25 +259,33 @@ export function pricedOffer(
   const options = { ...priced, backups: priced.backups && offered };
   const currency = offer.monthly.currency;
   const server = roundCents(offer.monthly.amount);
+  const billed = billingOf(offer, currency);
+  const percent = extras.backupPercent ?? options.backupPercent ?? DEFAULT_BACKUP_PERCENT;
   const breakdown: CostEstimate["breakdown"] = [
     {
       item: `Server ${offer.id} (${offer.location})`,
+      provider: offer.provider,
       monthly: { amount: server, currency },
+      ...billed(offer.hourly),
     },
   ];
   const rates = nonLiveRates(offer, extras, options);
   if (extras.ipv4Monthly !== undefined) {
     breakdown.push({
       item: rates.ipv4 ? `Primary IPv4 address (${rates.ipv4.item})` : "Primary IPv4 address",
+      provider: offer.provider,
       monthly: convertMoney(extras.ipv4Monthly, currency),
+      ...billed(extras.ipv4Hourly),
     });
   }
   if (options.backups) {
-    const percent = extras.backupPercent ?? options.backupPercent ?? DEFAULT_BACKUP_PERCENT;
     const note = rates.backups ? `, ${rates.backups.item}` : "";
     breakdown.push({
       item: `Automated backups (${percent}% of the server price${note})`,
+      provider: offer.provider,
       monthly: { amount: roundCents((server * percent) / 100), currency },
+      // Billed as the server is: the percentage of its hourly price too.
+      ...billed(offer.hourly && { ...offer.hourly, amount: (offer.hourly.amount * percent) / 100 }),
     });
   }
   const total = roundCents(breakdown.reduce((sum, line) => sum + line.monthly.amount, 0));

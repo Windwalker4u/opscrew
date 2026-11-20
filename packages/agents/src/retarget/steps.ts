@@ -29,6 +29,7 @@ import {
 import { z } from "zod";
 import { checkReachesOverSsh, renderedCheckKeyLine } from "../check/provision";
 import { orderPageBackupsText, orderPageProviders } from "../design/backups";
+import { setupFeeOf } from "../design/cost";
 import { workflowBranch } from "../environments/branches";
 import { providerProfile, vpsConnector } from "../providers";
 import {
@@ -51,6 +52,8 @@ import {
   readValidJson,
   readyNewServer,
   serverOfProvider,
+  startBilling,
+  withOneTime,
   writeRenderedFiles,
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
@@ -266,7 +269,17 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   await recordNewServer(session, next.address);
   if (outcome.kind === "applied") {
     const at = deps.clock.now().toISOString();
-    await savePlan(session, { ...session.plan, ...withApply(session.plan, outcome, at) });
+    // The new side is billed from now, with the setup fee its provider charged (031 US4).
+    const { plan } = session;
+    const fee = isCloudTarget(plan.target)
+      ? await setupFeeOf(deps, plan.target, at, plan.cost.monthly.currency)
+      : undefined;
+    const running = startBilling(plan.cost, at);
+    await savePlan(session, {
+      ...plan,
+      ...withApply(plan, outcome, at),
+      cost: fee === undefined ? running : withOneTime(running, fee),
+    });
     await recordAdopted(session);
   }
   await waitForNewServer(session, next.address.ipv4, next.id);

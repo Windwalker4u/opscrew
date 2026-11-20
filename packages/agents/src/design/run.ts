@@ -43,7 +43,6 @@ import {
   readOptionalArtifact,
   type ServerlessProvider,
   workflowPathFor,
-  writeArtifact,
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { appCandidatesText } from "../analyze/summary";
@@ -93,6 +92,7 @@ import {
   designOptionLine,
   hasDeployment,
   hasState,
+  keepCostTimes,
   type MemoryLimit,
   memoryHeadroom,
   readOwnServer,
@@ -100,6 +100,7 @@ import {
   serverAddress,
   serverlessName,
   serviceFilledNames,
+  writePlan,
 } from "../shared";
 import { recordGeneratedEntries } from "../shared/app-secrets";
 import { reasonOf } from "../shared/errors";
@@ -1285,10 +1286,15 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const atHome = home === undefined ? placement.plan : homePlan(placement.plan, home);
   // A second app: `target.shares`, and the proxy its server runs unless its plan has its own.
   const shares = ownServer?.shares;
-  const designed =
+  const shaped =
     shares === undefined
       ? atHome
       : sharedPlan(atHome, shares.first, previous !== undefined && "edge" in previous.target);
+  // The cost's times (031 US4): what is still planned keeps its start, what no longer is ends now.
+  const designed: DeployPlan = {
+    ...shaped,
+    cost: keepCostTimes(shaped.cost, previous?.cost, now.toISOString()),
+  };
   const plan =
     whole !== undefined && !answeredLater && samePlan(designed, whole) ? whole : designed;
   if (shares !== undefined) {
@@ -1383,7 +1389,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     if (networkKeys.length > 0) {
       await recordGeneratedEntries(deps, "network", placement.privateKeys);
     }
-    await writeArtifact("plan", paths.files.plan, plan);
+    await writePlan(deps, paths.files.plan, plan);
   }
   // What design read of the home's network this run, and SSH's sources, on this computer only.
   if (home !== undefined) await recordHomeDesign(paths, home.record);

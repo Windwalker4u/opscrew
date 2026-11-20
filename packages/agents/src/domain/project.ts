@@ -7,7 +7,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { hasDeployment, writePlanIfChanged } from "../shared";
+import { hasDeployment, writePlan, writePlanIfChanged } from "../shared";
 import { toIsoDateTime } from "./common";
 
 /** The project's requirements and plan, when present (validated). */
@@ -232,7 +232,7 @@ export async function recordRegistration(
   plan: DeployPlan,
   options: { domain: string; info: RegisteredDomain; dnssec: boolean },
 ): Promise<void> {
-  await writeArtifact("plan", deps.paths.files.plan, {
+  await writePlan(deps, deps.paths.files.plan, {
     ...plan,
     updatedAt: deps.clock.now().toISOString(),
     dns: {
@@ -255,7 +255,7 @@ export async function syncPlanRegistration(
   if (registration.autoRenew === info.autoRenew && registration.expiresAt === expiresAt) {
     return false;
   }
-  await writeArtifact("plan", deps.paths.files.plan, {
+  await writePlan(deps, deps.paths.files.plan, {
     ...plan,
     updatedAt: deps.clock.now().toISOString(),
     dns: {
