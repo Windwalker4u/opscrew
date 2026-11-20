@@ -1,4 +1,4 @@
-import type { Money, Registrar, RegistrarId } from "@opscrew/contracts";
+import type { Registrar, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError, plural } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
@@ -241,10 +241,7 @@ async function continueRecorded(
       `Continuing the purchase of ${domain} that OpsCrew started on ${formatTime(record.requestedAt)}.`,
     );
     if (status !== undefined) await waitForRegistration(ctx, status);
-    return finish(ctx, flowOf(ctx), {
-      autoRenew: record.autoRenew ?? autoRenew ?? true,
-      total: record.total,
-    });
+    return finish(ctx, flowOf(ctx), { autoRenew: record.autoRenew ?? autoRenew ?? true, record });
   }
 
   const when = formatTime(record.requestedAt);
@@ -472,6 +469,7 @@ async function purchase(
     autoRenew,
     // The approved bound: never more than what the user saw.
     total: offer.charge,
+    renewal: offer.renewal,
     registrar: registrarId,
     // Created once with the note and reused on every resumed run (Cloudflare takes none).
     idempotencyKey: registrarId === "cloudflare" ? undefined : ctx.services.randomUUID(),
@@ -480,18 +478,19 @@ async function purchase(
   deps.reporter.step(`Buying ${domain}${at}…`);
   const first = await sendPurchase(ctx, record, offer.quote);
   await waitForRegistration(ctx, first);
-  return finish(ctx, flow, { autoRenew, total: offer.charge });
+  return finish(ctx, flow, { autoRenew, record });
 }
 
 /**
- * After a purchase succeeded (approved with the purchase, here or in an earlier run): the DNS
- * setup, auto-renew, project files, record removal. A failure keeps the purchase record so the
- * next run finishes the setup without buying again.
+ * After a purchase succeeded (approved with the purchase, here or in an earlier run, whose note is
+ * `record`): the DNS setup, auto-renew, project files (the plan's cost with the purchase and its
+ * renewal), record removal. A failure keeps the purchase record so the next run finishes the setup
+ * without buying again.
  */
 async function finish(
   ctx: PurchaseContext,
   flow: RegistrarFlow,
-  options: { autoRenew: boolean; total: Money | undefined },
+  options: { autoRenew: boolean; record: PurchaseRecord },
 ): Promise<BuyDomainResult> {
   const { deps, domain } = ctx;
   let files: ProjectFiles;
@@ -522,6 +521,7 @@ async function finish(
         hostname,
         info: applied.info,
         dnssec: dns.dnssec === true,
+        purchase: options.record,
       });
     }
   } catch (error) {
@@ -536,7 +536,7 @@ async function finish(
     recorded,
     renewNext: applied.next,
     keptDomain,
-    total: options.total,
+    total: options.record.total,
     alreadyRegistered: false,
   });
 }

@@ -32,6 +32,7 @@ import {
   REGISTRAR_NAMES,
   registrarLinks,
 } from "./registrars";
+import { recordRenewal } from "./renewals";
 import { type ResolvedDomainServices, resolveDomainServices } from "./services";
 import { dsRecordText } from "./switch";
 import type { DomainStatusOptions, DomainStatusResult, SetAutoRenewOptions } from "./types";
@@ -212,7 +213,9 @@ function projectRegistrar(files: ProjectFiles, requested: RegistrarId | undefine
  * the plan). Without a domain in the project it says so; it also reports an unfinished purchase.
  * When the plan serves the app at a domain registered on the Cloudflare account (or a name inside
  * it) but records no `dns.registration` (bought before the plan existed), it fills it in after a
- * `repo-write` approval. For other registrars it says where to change what their API cannot.
+ * `repo-write` approval. For other registrars it says where to change what their API cannot. Once
+ * the domain's renewal in the plan's cost is due, a renewal the registrar charged is recorded
+ * there (`recordRenewal`, FR-3113).
  */
 export async function domainStatus(
   deps: PhaseDeps,
@@ -270,7 +273,8 @@ export async function domainStatus(
   const live = await zoneDnssec(target.services, registered);
   // Zone calls that set no DNSSEC up (stand-in zones): the plan's value stands.
   const dnssec = live === "skipped" ? files.plan?.dns.registration?.dnssec : live;
-  const notRecorded = await fillPlanRegistration(deps, files.plan, info, dnssec);
+  const plan = await recordRenewal(deps, files.plan, info);
+  const notRecorded = await fillPlanRegistration(deps, plan, info, dnssec);
   return {
     domain: info,
     dnssec,
@@ -355,6 +359,7 @@ async function statusElsewhere(
     };
   }
   const info: RegisteredDomain = { ...found, registrar: registrarId };
+  await recordRenewal(deps, files.plan, info);
   const caps = registrar.capabilities;
   const dnssec = files.plan?.dns.registration?.dnssec;
   const next = [...finishPending, renewalNoteElsewhere(deps, info, registrarId, caps.autoRenew)];

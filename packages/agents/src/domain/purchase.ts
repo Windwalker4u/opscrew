@@ -61,6 +61,8 @@ export interface Charge {
 
 /** A live price, checked and ready for the `domain-purchase` approval. */
 export interface Offer extends Charge {
+  /** The renewal price per year, when the registrar quoted one. */
+  renewal?: Money;
   /** The approval's lines about the domain, its price, registration, payment and DNS, in order. */
   approvalLines(): Promise<string[]>;
   /** Right before buying: stops when the approved price no longer holds (it rose or expired). */

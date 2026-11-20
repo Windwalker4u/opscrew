@@ -104,6 +104,7 @@ async function cloudflareOffer(
   return {
     charge: quote.charge,
     exact: quote.exact,
+    renewal: quote.renewal,
     approvalLines: async () => purchaseLines(ctx, { years, autoRenew, quote }),
     recheck: async () => {
       const fresh = await quoteDomain(ctx, years);

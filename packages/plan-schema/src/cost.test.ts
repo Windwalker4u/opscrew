@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { CostEstimateSchema, costItemText } from "./design";
 import { parseArtifact } from "./io";
+import { DeployPlanSchema } from "./plan";
 
 const eur = (amount: number) => ({ amount, currency: "EUR" as const });
 
@@ -172,5 +173,54 @@ describe("costItemText", () => {
       "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
     );
     expect(costItemText({ item: "Server cx23 (nbg1)" })).toBe("Server cx23 (nbg1)");
+  });
+});
+
+describe("the plan's cost.renewals (a domain OpsCrew bought)", () => {
+  const fixture = () =>
+    readFile(new URL("./__fixtures__/plan.yaml", import.meta.url), "utf8").then((text) =>
+      parseArtifact("plan", text, "plan.yaml"),
+    );
+  /** The renewal of research R4, priced as the registrar quoted it. */
+  const renewal = {
+    item: "example.com",
+    provider: "cloudflare",
+    price: { amount: 10.44, currency: "USD" as const },
+    next: "2027-11-20T12:00:00Z",
+    autoRenew: true,
+  };
+
+  /** The dotted paths of a failed plan parse's issues. */
+  async function planPaths(cost: unknown): Promise<string[]> {
+    const result = DeployPlanSchema.safeParse({ ...(await fixture()), cost });
+    if (result.success) return [];
+    return result.error.issues.map((issue) => issue.path.join("."));
+  }
+
+  it("accepts R4's renewal, in the registrar's currency, and keeps a plan without renewals valid", async () => {
+    const plan = await fixture();
+    expect(plan.cost.renewals).toBeUndefined();
+    const parsed = DeployPlanSchema.parse({ ...plan, cost: { ...plan.cost, renewals: [renewal] } });
+    expect(parsed.cost.renewals).toEqual([renewal]);
+  });
+
+  it("wants a registrar's id, a price, the next date and auto-renew", async () => {
+    const { cost: base } = await fixture();
+    const { next: _next, autoRenew: _autoRenew, ...bare } = renewal;
+    expect(
+      await planPaths({ ...base, renewals: [{ ...bare, provider: "hetzner", extra: 1 }] }),
+    ).toEqual([
+      "cost.renewals.0.provider",
+      "cost.renewals.0.next",
+      "cost.renewals.0.autoRenew",
+      "cost.renewals.0",
+    ]);
+  });
+
+  it("still checks the estimate's own rules", async () => {
+    const { cost: base } = await fixture();
+    expect(
+      await planPaths({ ...base, monthly: { amount: 1, currency: "EUR" }, renewals: [renewal] }),
+    ).toEqual(["cost.monthly.amount"]);
   });
 });

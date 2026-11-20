@@ -7,6 +7,8 @@ import { DASHBOARD, formatDate } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
 import { REGISTRAR_IDS } from "./registrars";
 
+const MoneySchema = z.object({ amount: z.number(), currency: z.enum(["EUR", "USD"]) });
+
 const PurchaseRecordSchema = z.object({
   domain: z.string().min(1),
   /** The Cloudflare account the domain's zone lives in. */
@@ -14,7 +16,9 @@ const PurchaseRecordSchema = z.object({
   requestedAt: z.string().min(1),
   years: z.number().int().min(1).max(10).optional(),
   autoRenew: z.boolean().optional(),
-  total: z.object({ amount: z.number(), currency: z.enum(["EUR", "USD"]) }).optional(),
+  total: MoneySchema.optional(),
+  /** The renewal price per year the registrar quoted, for the plan's `cost.renewals`. */
+  renewal: MoneySchema.optional(),
   /** Where the domain is bought. */
   registrar: z.enum(REGISTRAR_IDS),
   /**

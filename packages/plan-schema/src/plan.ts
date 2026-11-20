@@ -26,6 +26,7 @@ import {
   isHostingProvider,
   isServerlessProvider,
   MemoryMbSchema,
+  MoneySchema,
   onOneServer,
   PlanHashSchema,
   PortSchema,
@@ -2190,6 +2191,29 @@ export const CloudflareMoveSchema = z.strictObject({
   adoptedAt: IsoDateTimeSchema.optional(),
 });
 
+/**
+ * A charge that recurs on its own (031 US4, research R4): the yearly renewal of a domain OpsCrew
+ * bought, which the registrar charges up to 30 days before `next` while `autoRenew` is on.
+ */
+export const RenewalSchema = z.strictObject({
+  /** The domain, for example `example.com`. */
+  item: z.string().min(1),
+  /** The registrar that charges it. */
+  provider: RegistrarSchema,
+  /** The renewal price per year, as the registrar quoted it at the purchase. */
+  price: MoneySchema,
+  /** The domain's expiry. */
+  next: IsoDateTimeSchema,
+  /** Off: nothing renews the domain, and it expires at `next`. */
+  autoRenew: z.boolean(),
+});
+export type Renewal = z.infer<typeof RenewalSchema>;
+
+/** The plan's cost: the design's estimate, and the renewals of the domains OpsCrew bought. */
+const PlanCostSchema = CostEstimateSchema.safeExtend({
+  renewals: z.array(RenewalSchema).optional(),
+});
+
 const DeployPlanFieldsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   createdAt: IsoDateTimeSchema,
@@ -2306,7 +2330,7 @@ const DeployPlanFieldsSchema = z.strictObject({
   externalServices: z.array(ServiceKindSchema),
   /** Persistent storage; absent when the app keeps no files. */
   storage: StorageSchema.optional(),
-  cost: CostEstimateSchema,
+  cost: PlanCostSchema,
   codeChanges: z.array(
     z.strictObject({
       id: z.string().min(1),

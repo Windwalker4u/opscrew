@@ -9,6 +9,8 @@ import {
 import type { PhaseDeps } from "../context";
 import { hasDeployment, writePlan, writePlanIfChanged } from "../shared";
 import { toIsoDateTime } from "./common";
+import type { PurchaseRecord } from "./record";
+import { purchasedCost, renewalAutoRenew } from "./renewals";
 
 /** The project's requirements and plan, when present (validated). */
 export interface ProjectFiles {
@@ -149,11 +151,14 @@ export interface RecordOptions {
   hostname: string;
   info: RegisteredDomain;
   dnssec: boolean;
+  /** OpsCrew's note of the purchase it made, for the plan's cost; absent for a domain it did not buy. */
+  purchase?: PurchaseRecord;
 }
 
 /**
  * Records the bought domain: requirements (`domain`, `dnsProvider: cloudflare`) and the plan
- * (`dns.provider`, `dns.domain`, `dns.zone`, `dns.registration`). Moving the plan to a new
+ * (`dns.provider`, `dns.domain`, `dns.zone`, `dns.registration`, and for a purchase OpsCrew made
+ * the cost's `oneTime` and `renewals`, `purchasedCost`). Moving the plan to a new
  * hostname also turns on the Cloudflare proxy and limits web ports to Cloudflare, as
  * `opscrew dns --domain` does, so a later `opscrew dns` sets it up the same way; a GitHub Pages
  * site stays DNS-only.
@@ -178,6 +183,10 @@ export async function recordDomain(
         registration: registrationOf(info, options.dnssec),
       },
       security: switching ? { ...plan.security, httpAllowedFrom: "cloudflare" } : plan.security,
+      cost:
+        options.purchase === undefined
+          ? plan.cost
+          : purchasedCost(plan.cost, options.purchase, info),
     });
   }
   if (files.requirements !== undefined)
@@ -243,7 +252,10 @@ export async function recordRegistration(
   });
 }
 
-/** Updates `plan.dns.registration.autoRenew` (and dates) when the plan records a registration. */
+/**
+ * Updates `plan.dns.registration.autoRenew` (and dates), and the auto-renew of the domain's
+ * renewal in the cost, when the plan records a registration.
+ */
 export async function syncPlanRegistration(
   deps: PhaseDeps,
   plan: DeployPlan | undefined,
@@ -252,12 +264,18 @@ export async function syncPlanRegistration(
   const registration = plan?.dns.registration;
   if (plan === undefined || registration === undefined) return false;
   const expiresAt = toIsoDateTime(info.expiresAt) ?? registration.expiresAt;
-  if (registration.autoRenew === info.autoRenew && registration.expiresAt === expiresAt) {
+  const cost = renewalAutoRenew(plan.cost, info.domain, info);
+  if (
+    registration.autoRenew === info.autoRenew &&
+    registration.expiresAt === expiresAt &&
+    cost === plan.cost
+  ) {
     return false;
   }
   await writePlan(deps, deps.paths.files.plan, {
     ...plan,
     updatedAt: deps.clock.now().toISOString(),
+    cost,
     dns: {
       ...plan.dns,
       registration: { ...registration, autoRenew: info.autoRenew, expiresAt },

@@ -195,6 +195,7 @@ async function elsewhereOffer(
   return {
     charge: quote.price,
     exact: true,
+    renewal: quote.renewal,
     quote,
     approvalLines: async () => {
       // GoDaddy's summary names the contact source of that quote. Already masked by the adapter;
