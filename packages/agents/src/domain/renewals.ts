@@ -53,9 +53,10 @@ function renewalOf(cost: PlanCost, domain: string, info: RegisteredDomain): Rene
  * `cost` with the purchase OpsCrew's note `record` describes, once the registrar shows the domain
  * (`info`) at `now`: the charge in `oneTime` at the time the purchase was sent (no older than the
  * plan keeps, `keptAt`), in the cost's currency (at the fixed rate), unless a run that finished the
- * purchase before recorded it there; and the domain's renewal in `renewals`, at the price per year
- * quoted then, with the expiry and auto-renew `info` gives. A note without the charge, or no
- * renewal price or expiry, leaves that part out.
+ * purchase before recorded it (`renewals` holds the domain at this registrar with this expiry, or
+ * `oneTime` the same item from this registrar; a re-buy after a lapse has another expiry); and the
+ * domain's renewal in `renewals`, at the price per year quoted then, with the expiry and auto-renew
+ * `info` gives. A note without the charge, or no renewal price or expiry, leaves that part out.
  */
 export function purchasedCost(
   cost: PlanCost,
@@ -64,23 +65,22 @@ export function purchasedCost(
   now: Date,
 ): PlanCost {
   const { domain, registrar: provider, total, renewal } = record;
-  let result: PlanCost = cost;
-  if (total !== undefined) {
-    const item = `${domain}, ${plural(record.years ?? 1, "year")}`;
-    const at = keptAt(Date.parse(record.requestedAt), now);
-    const recorded = cost.oneTime?.some(
-      (fee) => fee.item === item && fee.provider === provider && fee.at === at,
-    );
-    if (recorded !== true) {
-      result = withOneTime(cost, {
-        item,
-        provider,
-        price: convertMoney(total, cost.monthly.currency),
-        at,
-      });
-    }
-  }
   const next = toIsoDateTime(info.expiresAt);
+  const item = `${domain}, ${plural(record.years ?? 1, "year")}`;
+  const recorded =
+    cost.renewals?.some(
+      (entry) => entry.item === domain && entry.provider === provider && entry.next === next,
+    ) === true ||
+    cost.oneTime?.some((fee) => fee.item === item && fee.provider === provider) === true;
+  let result: PlanCost = cost;
+  if (total !== undefined && !recorded) {
+    result = withOneTime(cost, {
+      item,
+      provider,
+      price: convertMoney(total, cost.monthly.currency),
+      at: keptAt(Date.parse(record.requestedAt), now),
+    });
+  }
   if (renewal === undefined || next === undefined) return result;
   return withRenewal(result, {
     item: domain,

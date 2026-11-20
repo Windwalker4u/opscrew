@@ -160,6 +160,38 @@ describe("opscrew domain buy: the purchase and its renewal in the plan's cost (F
     expect(plan.cost.renewals).toEqual(recorded.cost.renewals);
   });
 
+  it("adds neither twice when the rerun comes in a later month than the finish that recorded it", async () => {
+    const project = await saleProject();
+    // sent on 2026-10-11; the registrar finished the order later
+    project.cf.own(DOMAIN);
+    const note = {
+      domain: DOMAIN,
+      accountId: "acc-1",
+      requestedAt: RUN_NOW,
+      years: 1,
+      autoRenew: true,
+      total: usd(10.44),
+      renewal: usd(12.5),
+      registrar: "cloudflare",
+      outcome: "accepted",
+    };
+    await project.writeRecord(note);
+    const first = await project.run({ now: "2026-11-15T09:00:00.000Z" });
+    await buyDomain(first.deps, { domain: DOMAIN, services: first.services });
+    const recorded = await planOf(project);
+    expect(recorded.cost.oneTime?.map((fee) => fee.at)).toEqual([RUN_NOW]);
+    // that run died before it removed its note
+    await project.writeRecord(note);
+
+    const rerun = await project.run({ now: "2026-12-15T09:00:00.000Z" });
+    await buyDomain(rerun.deps, { domain: DOMAIN, services: rerun.services });
+
+    const plan = await planOf(project);
+    // no second fee; the first, of October, is older than the months a plan keeps in December
+    expect(plan.cost.oneTime).toBeUndefined();
+    expect(plan.cost.renewals).toEqual(recorded.cost.renewals);
+  });
+
   it("keeps a purchase finished more than a month after it started, in the oldest month kept", async () => {
     const project = await saleProject();
     // the registrar finished the order an earlier run sent on 2026-10-11

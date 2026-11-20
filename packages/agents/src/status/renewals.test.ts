@@ -243,17 +243,36 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     expect(plan.cost.renewals).toHaveLength(1);
   });
 
-  it("stops tracking a domain the registrar no longer lists, and says so once", async () => {
+  it.each([
+    ["before its date", "2026-11-20T09:00:00.000Z"],
+    ["10 days after its date", "2026-12-10T12:00:00.000Z"],
+  ])(
+    "keeps the renewal of a domain the registrar does not list %s, and changes nothing",
+    async (_when, now) => {
+      const project = await domainProject({ plan: renewalPlan() });
+      const before = await readArtifact("plan", (await project.run()).deps.paths.files.plan);
+
+      // a pending status, or another account: not listed is not lapsed yet
+      const { lines, plan } = await report(project, now);
+
+      expect(lines).toEqual([
+        "Cloudflare does not list example.com in your account, so OpsCrew could not check its renewal. Check the Cloudflare dashboard (https://dash.cloudflare.com, Domain Registration).",
+      ]);
+      expect(plan).toEqual(before);
+    },
+  );
+
+  it("stops tracking a domain the registrar does not list 46 days after its date, and says so once", async () => {
     const project = await domainProject({ plan: renewalPlan({ autoRenew: false }) });
 
-    const { lines, plan } = await report(project, "2026-12-20T09:00:00.000Z");
+    const { lines, plan } = await report(project, "2027-01-15T13:00:00.000Z");
 
     expect(lines).toEqual([
       "example.com is no longer in your Cloudflare account, so OpsCrew stopped tracking its renewal in opscrew/plan.yaml.",
     ]);
     expect(plan.cost.renewals).toBeUndefined();
     project.cf.events.length = 0;
-    const again = await report(project, "2026-12-21T09:00:00.000Z");
+    const again = await report(project, "2027-01-16T13:00:00.000Z");
     expect(again.lines).toEqual([]);
     expect(project.cf.events).toEqual([]);
   });
