@@ -101,12 +101,14 @@ retarget:                                     # only while a move runs
   - **The renewal** shows in the month of `next`, as a "~" forecast. The registrar charges it on
     its own, so OpsCrew learns of it only when it reads the registrar: `opscrew status` and
     `opscrew domain status` do once `next` is within 30 days or past (`domain.registration`
-    already holds the expiry). When the expiry moved on, the renewal goes into `oneTime` at the
-    day the registrar charged when its answer gives one (Cloudflare charges up to 30 days early,
-    so the old `next` can fall in the wrong month), else at the old `next`, and `next` moves a year
-    on. The portal's lead agreed (2026-11-20): with `autoRenew: false` the portal forecasts no
-    charge and says the domain expires then; unknown `provider` ids show under "Other
-    providers", so a new registrar is announced to it. With auto-renew off, they warn that the domain expires.
+    already holds the expiry). When the expiry moved on, the renewal goes into `oneTime`, and
+    `next` moves a year on. With auto-renew off, they warn that the domain expires.
+  - **The renewal's date:** the earlier of the old `next` and the time OpsCrew saw it. No
+    registrar's API gives the day it charged, and registrars charge before the expiry (Cloudflare
+    up to 30 days early), so the old `next` alone can fall in the month after the charge.
+  - **Agreed with the portal's lead (2026-11-20):**
+    - With `autoRenew: false` the portal forecasts no charge and says the domain expires then.
+    - Unknown `provider` ids show under "Other providers", so a new registrar is announced to it.
   - **A domain the user bought elsewhere** has no entry: OpsCrew doesn't know its price.
 
 ## R3. Left for later

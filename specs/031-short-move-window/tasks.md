@@ -205,8 +205,10 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       finishes a recorded purchase adds neither twice.
     - **A renewal seen later:** `opscrew status` and `opscrew domain status` read the registrar
       only once `next` is within 30 days or past. An expiry that moved on adds the renewal to
-      `oneTime` (with `price`, at the day the registrar charged when its answer gives one, else at
-      the old `next`) and moves `next` and the plan's `domain.registration.expiresAt`.
+      `oneTime` (with `price`, at the earlier of the old `next` and the read's time: no
+      registrar's API gives the day it charged) and moves `next` and the plan's
+      `domain.registration.expiresAt`. `opscrew status` calls it (`packages/cli/src/commands/status.ts`),
+      and a redesign keeps `renewals` (`carryRecords`).
       `provider` is always the registrar's id from `RegistrarSchema`; a new registrar is announced
       to the portal's lead. Auto-renew off with `next` within 30 days: a warning that
       names the date and how to turn it on (`opscrew domain auto-renew on` at Cloudflare and
