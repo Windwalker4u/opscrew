@@ -152,7 +152,9 @@ describe("renderCompose", () => {
       ).services.release;
     // Railpack's image runs `bash -c` with the command (found live: `sh -c` there ran a bare `sh`,
     // which read stdin and ended at once, and no migration ran).
-    expect(release("railpack")).toMatchObject({ command: ["php bin/console migrate && echo $$HOME"] });
+    expect(release("railpack")).toMatchObject({
+      command: ["php bin/console migrate && echo $$HOME"],
+    });
     expect(release("railpack").entrypoint).toBeUndefined();
     expect(release("buildpacks")).toMatchObject({
       entrypoint: ["/cnb/lifecycle/launcher"],
