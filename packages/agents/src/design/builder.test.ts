@@ -3,7 +3,7 @@ import { detectProject } from "@opscrew/detect";
 import type { AppBuild, DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, nextPostgresFacts, staticSpaFacts } from "../testing";
-import { type BuilderChoice, chooseBuilder, runtimeLanguageOf } from "./builder";
+import { appBuildOf, type BuilderChoice, chooseBuilder, runtimeLanguageOf } from "./builder";
 
 const EXAMPLES = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 
@@ -420,5 +420,42 @@ describe("runtimeLanguageOf", () => {
     const result = choice(chooseBuilder(makeFacts({ languages: ["other"] }), undefined, "amd64"));
     expect(result).toMatchObject({ builder: "railpack", runtime: { language: "other" } });
     expect(result.runtime.version).toBeUndefined();
+  });
+});
+
+describe("appBuildOf", () => {
+  const PHP_PLAIN = fileURLToPath(
+    new URL("../../../detect/test/fixtures/php-plain/", import.meta.url),
+  );
+
+  it("keeps a plain PHP app's web root, which design records and a move must keep", async () => {
+    // Found live: a move rewrote app.build without it, and the image served the whole app.
+    const facts = await detectProject(PHP_PLAIN);
+    const chosen = chooseBuilder(facts, undefined, "amd64");
+    if ("refused" in chosen) throw new Error(chosen.refused);
+    expect(appBuildOf(chosen, facts)).toMatchObject({
+      builder: "railpack",
+      runtime: { language: "php" },
+      webRoot: "public",
+    });
+  });
+
+  it("keeps the working directory of the user's own image, and adds neither elsewhere", () => {
+    const base: BuilderChoice = {
+      builder: "own-dockerfile",
+      chosen: "auto",
+      reason: "The repository has its own Dockerfile.",
+      runtime: { language: "node", version: "24" },
+      automatic: "generated-dockerfile",
+      probe: "node",
+      warnings: [],
+    };
+    const facts = makeFacts();
+    const withWorkdir = { ...facts, build: { ...facts.build, workdir: "/srv/app" } };
+    expect(appBuildOf(base, withWorkdir).workdir).toBe("/srv/app");
+    const generated = appBuildOf({ ...base, builder: "generated-dockerfile" }, withWorkdir);
+    expect(generated.workdir).toBeUndefined();
+    expect(generated.webRoot).toBeUndefined();
+    expect(appBuildOf(base, withWorkdir)).not.toHaveProperty("warnings");
   });
 });

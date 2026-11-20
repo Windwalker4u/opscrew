@@ -30,7 +30,7 @@ import {
   storageVariableKind,
   urlService,
 } from "../shared";
-import type { BuilderChoice } from "./builder";
+import { appBuildOf, type BuilderChoice } from "./builder";
 import {
   appDirOf,
   appDockerfile,
@@ -365,28 +365,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       ...(migrations !== undefined ? { migrations } : {}),
       memoryMb: components.app.memoryMb,
       env: [...env.values()],
-      ...(build === undefined
-        ? {}
-        : {
-            build: {
-              builder: build.builder,
-              chosen: build.chosen,
-              reason: build.reason,
-              runtime: build.runtime,
-              probe: build.probe,
-              automatic: build.automatic,
-              // Where the app runs in the user's own image, as detection read it.
-              ...(build.builder === "own-dockerfile" && facts.build.workdir !== undefined
-                ? { workdir: facts.build.workdir }
-                : {}),
-              // The folder a plain PHP app serves, so Railpack serves nothing else of it.
-              ...(build.builder === "railpack" &&
-              build.runtime.language === "php" &&
-              facts.webRoot !== undefined
-                ? { webRoot: facts.webRoot }
-                : {}),
-            },
-          }),
+      ...(build === undefined ? {} : { build: appBuildOf(build, facts) }),
     },
     target: targetFor(option, input, components, name),
     deploy: deployStrategyFor(option, components.storage?.sqlite !== undefined),

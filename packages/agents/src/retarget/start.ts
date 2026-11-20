@@ -29,7 +29,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
-import { chooseBuilder } from "../design/builder";
+import { appBuildOf, chooseBuilder } from "../design/builder";
 import { buildOwnServerOption, sharedAccessWarning } from "../design/own";
 import { ownServerFreeDiskGb } from "../design/sizing";
 import { deployStrategyFor, ROLLING_NOTE, snapshotSettings } from "../design/strategy";
@@ -305,8 +305,8 @@ async function builderFor(
     );
   }
   for (const warning of choice.warnings) deps.reporter.warn(deps.redactor.redact(warning));
-  const { builder, chosen, reason, runtime, probe, automatic } = choice;
-  return { builder, chosen, reason, runtime, probe, automatic };
+  // As design records it: a plain PHP app's web root and the own image's working directory stay.
+  return appBuildOf(choice, facts);
 }
 
 /** The builder and strategy lines of the summary that differ from the plan's, with reasons. */

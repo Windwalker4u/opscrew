@@ -40,6 +40,30 @@ export interface BuilderChoice {
   warnings: string[];
 }
 
+/**
+ * The plan's `app.build` for `choice`, as design records it and a move keeps it: the choice, the
+ * working directory of the user's own image, and the folder a plain PHP app serves, from detection.
+ */
+export function appBuildOf(choice: BuilderChoice, facts: ProjectFacts): AppBuild {
+  const { builder, chosen, reason, runtime, probe, automatic } = choice;
+  return {
+    builder,
+    chosen,
+    reason,
+    runtime,
+    probe,
+    automatic,
+    // Where the app runs in the user's own image, as detection read it.
+    ...(builder === "own-dockerfile" && facts.build.workdir !== undefined
+      ? { workdir: facts.build.workdir }
+      : {}),
+    // The folder a plain PHP app serves, so Railpack serves nothing else of it.
+    ...(builder === "railpack" && runtime.language === "php" && facts.webRoot !== undefined
+      ? { webRoot: facts.webRoot }
+      : {}),
+  };
+}
+
 /** The languages OpsCrew builds with Buildpacks (FR-1201): the ones it has no Dockerfile for. */
 type BuildpacksLanguage = keyof typeof BUILDPACKS_OFFERS;
 
