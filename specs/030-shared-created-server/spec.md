@@ -424,6 +424,16 @@ server's login, nothing of it is committed, and design shows the shared-access w
   warning whenever a server the user owns already holds another OpsCrew app.
 - **FR-3026**: With `server.shares`, the interview MUST neither ask for nor require a monthly
   budget. One given in an answers file is kept, validated as usual.
+- **FR-3027** *(found live, 2026-11-20)*: A move that copies data to a server MUST NOT run the
+  app's release command or start the app there before the copy:
+  - **Before the copy,** while the new side waits for its data, the new side's deploys bring up
+    only the image and the app's services.
+  - **In the maintenance window, after the copy,** the deploy runs once more with the same image.
+    The release command then runs on the copied data, the app starts and passes its health check,
+    and only then does the switch come.
+
+  An app whose release command or health check needs its existing schema (the framework's `migrate`
+  needs its `settings` table) otherwise fails on the new side's empty database.
 
 ### Key Entities
 

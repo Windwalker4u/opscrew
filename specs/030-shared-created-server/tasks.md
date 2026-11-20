@@ -459,6 +459,52 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: `pnpm lint`
   - Effort: medium
 
+- [ ] T3021 [US6] The app starts on a move's new server only after its data is there (FR-3027;
+  found by the PHP app's move, run 1)
+  - Owns: `packages/iac-templates/src/workflow/**`, `packages/agents/src/retarget/**`,
+    `docs/guide/retarget.md` (the steps' wording only), colocated tests and snapshots
+  - Reads: spec FR-3027; `iac-templates/src/workflow/switch.ts` (`switchCommands`, its
+    `heldRefusal` hold, `START_OUTCOME`), `workflow/index.ts` (the start step, `ROLLBACK_INPUTS`:
+    a dispatch with the image's digest deploys it without a build),
+    `retarget/steps.ts` (`deployStep`, `runDeployWorkflow`, `deployFilesStop`),
+    `retarget/window.ts`, `retarget/sides/ssh.ts`, `retarget/server-ops.ts`
+  - Accept:
+    - **The marker:** a move whose new side is a server and that copies data (a window will run)
+      writes a marker on the new side, in the app's folder. The deploy user writes it before the
+      deploy secrets point there, so a push deploy (a merged deploy-files pull request) sees it
+      too.
+    - **While the marker is there,** the start script, in mode `deploy`, pulls the image, brings
+      up the edge's files and the steady services and their one-time setup, then says plainly
+      that a move copies the app's data here first. It ends successfully, recording an outcome
+      the move can read. It runs no release command, starts no app, workers or cron, and changes
+      no kamal-proxy route. Without the marker the script is byte-for-byte as before (snapshots).
+    - **The pre-copy check:** the move's check after that deploy accepts the services-only state
+      (the image is present and the steady services run). It doesn't ask the app to answer.
+    - **In the window, after the copy and the services' start,** the move removes the marker and
+      dispatches the deploy workflow with the deployed image's digest. That is no build and not a
+      rollback, so the release command runs on the copied data, then the switch and the workers.
+      The move waits for the run, then checks the app is healthy as today. Any failure rolls the
+      window back as today, the marker put back.
+    - **Afterwards:** the new side's edge is in the state the switch step expects; stop it again
+      if the move stops it today. `--abort` removes the marker with the new side. A move with no
+      data to copy keeps today's flow. The window's approval text and its expected length
+      mention the deploy run.
+    - **Resuming:** a move stopped at the deploy step because the release command failed on the
+      empty database (the PHP app's state) continues with `opscrew retarget` from where it stopped.
+    - **Tests:**
+      - a release command that fails on an empty database: the pre-copy deploy is services only;
+        the window runs the deploy on the copied data;
+      - the push deploy with the marker;
+      - abort;
+      - the resume from the PHP app's state;
+      - the script without the marker unchanged;
+      - a leak check.
+    - **retarget.md** says when the app starts on the new side.
+    - **Out of scope, report only:** Portainer's new side, whose release container runs before
+      the copy too.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/workflow && npx vitest run --root packages/agents src/retarget && pnpm lint`
+  - Effort: xhigh
+
 - [ ] T3020 (lead) The PHP app's live move onto the first app's server (plan 19.), run by the PHP app's
   session; results and "not tested live" rows in `docs/e2e-coverage.md`
 
