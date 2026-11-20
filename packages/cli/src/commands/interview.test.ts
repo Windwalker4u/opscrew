@@ -105,7 +105,6 @@ describe("opscrew interview", () => {
     project = await tempProject("nextjs-postgres");
     const prompts = new ScriptedPrompts([
       "<1k", // users
-      "15 USD", // budget
       "digitalocean", // cloud provider
       "us-east", // region
       "best-effort", // uptime
@@ -113,13 +112,13 @@ describe("opscrew interview", () => {
       "", // no domain, so the DNS provider question is skipped
       false, // no image signing
       "off", // no deploy tags
+      "15 USD", // budget, asked once the server is known
     ]);
     const ctx = projectContext(project, { interactive: true, services: { prompts } });
     expect(await run(ctx, "interview")).toBe(0);
 
     expect(prompts.calls.map((call) => call.kind)).toEqual([
       "select",
-      "text",
       "select",
       "select",
       "select",
@@ -127,11 +126,12 @@ describe("opscrew interview", () => {
       "text",
       "confirm",
       "select",
+      "text",
     ]);
     expect(prompts.calls[0]?.initial).toBe("<1k");
     expect(prompts.calls[0]?.options?.length).toBeGreaterThan(1);
-    expect(prompts.calls[2]?.message).toContain("Where should OpsCrew run your app?");
-    expect(prompts.calls[2]?.initial).toBe("hetzner");
+    expect(prompts.calls[1]?.message).toContain("Where should OpsCrew run your app?");
+    expect(prompts.calls[1]?.initial).toBe("hetzner");
     const requirements = await requirementsOf(project.root, project.env);
     expect(requirements.provider).toBe("digitalocean");
     expect(requirements.budgetMonthly).toEqual({ amount: 15, currency: "USD" });
@@ -281,7 +281,6 @@ describe("opscrew interview", () => {
     async function signingQuestion(setup: Awaited<ReturnType<typeof onGitHub>>): Promise<string> {
       const prompts = new ScriptedPrompts([
         "<1k",
-        "15 USD",
         "hetzner",
         "eu-central",
         "best-effort",
@@ -289,6 +288,7 @@ describe("opscrew interview", () => {
         "",
         true, // sign the images
         "off",
+        "15 USD",
       ]);
       const ctx = projectContext(
         { ...(project as TempProject), env: setup.env },
@@ -329,7 +329,6 @@ describe("opscrew interview", () => {
 
     const answers = new ScriptedPrompts([
       "<1k",
-      "25 EUR",
       "hetzner",
       "eu-central",
       "standard",
@@ -338,12 +337,13 @@ describe("opscrew interview", () => {
       "cloudflare",
       false,
       "off",
+      "25 EUR",
     ]);
     const rerun = projectContext(project, { interactive: true, services: { prompts: answers } });
     expect(await run(rerun, "interview")).toBe(0);
     expect(answers.calls[0]?.initial).toBe("1k-10k");
-    expect(answers.calls[1]?.initial).toBe("20 EUR");
-    expect(answers.calls[6]?.initial).toBe("shop.example.com");
+    expect(answers.calls[9]?.initial).toBe("20 EUR");
+    expect(answers.calls[5]?.initial).toBe("shop.example.com");
 
     const quiet = projectContext(project);
     expect(await run(quiet, "interview")).toBe(0);

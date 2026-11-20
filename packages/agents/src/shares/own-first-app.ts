@@ -86,6 +86,14 @@ export async function ownFirstApp(
       ownLogin("at home too"),
     );
   }
+  // During a move the plan's target is the new side and the record may still be the old server's.
+  if (plan.retarget !== undefined) {
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `${name} is in the middle of a move to another server (\`opscrew retarget\`), so its server can't take another app now.`,
+      `Finish or abort the move in ${ref.root} first (\`opscrew retarget --finish\` or \`opscrew retarget --abort\`), then run this command again.`,
+    );
+  }
   if (plan.environment?.previews !== undefined) {
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",

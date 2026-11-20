@@ -197,6 +197,22 @@ describe("ownFirstApp", () => {
     expect(error?.hint).toMatch(/server questions with your server's own login instead/);
   });
 
+  it("refuses an app in the middle of a move to another server", async () => {
+    const base = ownPlan({ deployed: true });
+    const project = await ownFirst({
+      plan: DeployPlanSchema.parse({
+        ...base,
+        retarget: {
+          from: { target: base.target },
+          step: "created",
+          startedAt: "2026-11-05T12:00:00.000Z",
+        },
+      }),
+    });
+    const error = await refuses(project, /^"shop" is in the middle of a move to another server/);
+    expect(error?.hint).toMatch(/opscrew retarget --finish/);
+  });
+
   it("refuses a preview environment", async () => {
     const project = await ownFirst({ plan: previewTestPlan({ own: true }) });
     await refuses(project, /^"shop-preview" is a preview environment/);

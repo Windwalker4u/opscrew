@@ -119,7 +119,7 @@ function nextStep(requirements: Requirements, flag: string): string {
 /** The answers file's keys for a server another of the user's OpsCrew apps runs on. */
 const SHARES_HELP = [
   "",
-  "A server another of your OpsCrew apps runs on (one OpsCrew created for it): with provider own,",
+  "A server another of your OpsCrew apps runs on (one OpsCrew created, or one of yours): with provider own,",
   "the answers file takes these keys instead of the server's address and login:",
   "  server.shares       that app's repository folder on this computer, where it was provisioned",
   "  server.shares-app   its app's key, when that repository has several (. for its first app)",

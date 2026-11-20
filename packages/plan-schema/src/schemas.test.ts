@@ -172,7 +172,7 @@ describe("cross-field rules reject violating fixtures with a dotted path", () =>
     ).toEqual(["domain"]);
     expect(
       pathsOf(
-        RequirementsSchema.safeParse({ ...base, budgetMonthly: { amount: 0, currency: "EUR" } }),
+        RequirementsSchema.safeParse({ ...base, budgetMonthly: { amount: -1, currency: "EUR" } }),
       ),
     ).toEqual(["budgetMonthly.amount"]);
     expect(pathsOf(RequirementsSchema.safeParse({ ...base, domain: "App.Example.com" }))).toEqual([
