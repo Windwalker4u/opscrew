@@ -46,11 +46,13 @@ import {
   readServerAddresses,
   restoreOldConnection,
   type ServerAddress,
+  type SharesReference,
   serverAddress,
   setAsideOldConnection,
 } from "../shared";
 import { connectAndInspectOwnServer, ownServerFacts } from "../shared/own-server";
 import { extraServers, hasExtraServers } from "../shared/servers";
+import { besideFirstApp } from "./beside";
 import {
   bucketChoice,
   bucketKeys,
@@ -267,6 +269,8 @@ interface NewSide {
   address?: ServerAddress;
   /** What inspection found of the user's own new server, for its private network port. */
   network?: NetworkHostFacts;
+  /** Said in the summary after its cost (beside another app: the memory left, the warning). */
+  notes?: string[];
 }
 
 /**
@@ -465,6 +469,29 @@ async function ownServerSide(
 }
 
 /**
+ * Beside another app on the server OpsCrew created for it (`ref`, the answers' `server.shares*`,
+ * feature 030): the app becomes a second app there, checked before any change as design checks one
+ * ({@link besideFirstApp}), with no server cost and the image built for that server.
+ */
+async function besideSide(
+  deps: PhaseDeps,
+  input: { plan: DeployPlan; facts: ProjectFacts; from: ServerAddress | undefined },
+  ref: SharesReference,
+  options: RetargetOptions,
+): Promise<NewSide> {
+  const { plan, facts, from } = input;
+  const side = await besideFirstApp(deps, { plan, ref, from }, options.services ?? {});
+  return {
+    target: side.target,
+    cost: side.cost,
+    build: await builderFor(deps, facts, plan, side.target.arch),
+    deploy: plan.deploy,
+    address: side.address,
+    notes: side.notes,
+  };
+}
+
+/**
  * The user's Portainer as the new side: its answers (web mode `caddy` with the updater; with the
  * app's DNS on Cloudflare OpsCrew manages its records there, `records: true`) recorded in the
  * usual slot, and the public address its Caddy serves the app on. Stops before any change on a
@@ -540,6 +567,10 @@ function targetLine(target: DeployTarget, which: "old" | "new"): string {
   if (isCloudTarget(target)) {
     return `${providerProfile(target.provider).displayName} (${target.serverType} in ${target.location})`;
   }
+  if (target.provider === "own" && target.shares !== undefined) {
+    const { app, provider } = target.shares;
+    return `the ${providerProfile(provider).displayName} server of "${app}" (beside it)`;
+  }
   return sideWords(target, which);
 }
 
@@ -572,9 +603,11 @@ export function moveSummary(
   const cloudOld = isCloudProvider(from.provider);
   const prepare = isCloudTarget(to)
     ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
-    : to.provider === "own"
-      ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
-      : "Check your Portainer environment for the app's stacks.";
+    : to.provider === "own" && to.shares !== undefined
+      ? `Set up the app beside "${to.shares.app}" on its server with a host plan you approve by its hash: only the app's own deploy key line, folders and record change there, logged in with the deploy login of "${to.shares.app}".`
+      : to.provider === "own"
+        ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
+        : "Check your Portainer environment for the app's stacks.";
   const deploy =
     to.provider === "portainer"
       ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`
@@ -608,7 +641,12 @@ function dataLine(plan: DeployPlan, mount: MoveData): string {
   return mount.copy ? `${what}, copied` : `${what}, starts empty. ${emptyLoses(plan, mount.owner)}`;
 }
 
-function summaryText(summary: RetargetSummary, plan: DeployPlan, bucketLines: string[]): string {
+function summaryText(
+  summary: RetargetSummary,
+  plan: DeployPlan,
+  bucketLines: string[],
+  notes: readonly string[],
+): string {
   const old = sideWords(summary.from, "old");
   const fresh = sideWords(summary.to, "new");
   const free = summary.extraMonthly.amount === 0;
@@ -622,6 +660,7 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan, bucketLines: st
     free
       ? `Extra cost: none for ${fresh}${billed}.`
       : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${fresh}${billed}.`,
+    ...notes,
     ...(summary.data.length === 0
       ? summary.expectedDowntimeMinutes === undefined
         ? [`Data: none on ${old}, so the app stays online until the switch.`]
@@ -756,8 +795,9 @@ async function newTargetId(
  * user's own proxy with Cloudflare DNS on either side, two Portainers, the same place, public SSH
  * closed, an app that cannot be built for the new side, Portainer for an
  * app with a private network or self-hosted monitoring); the new side
- * (a cloud provider's options and the choice, the user's own server inspected, or the user's
- * Portainer reached); the old side's data mounts and their sizes, copied or started empty
+ * (a cloud provider's options and the choice, the user's own server inspected, the server OpsCrew
+ * created for another app with design's second-app checks, or the user's Portainer reached); the
+ * old side's data mounts and their sizes, copied or started empty
  * (`--empty`, or a question for each); the summary and `confirmStart`; then the move is recorded
  * (`plan.target` and `cost` are the new side's, `retarget.step` is `started`, `retarget.empty`
  * what starts empty; with a private network a new `app` member, the old one in
@@ -826,15 +866,17 @@ export async function startMove(
   let started: { session: MoveSession; next: NewSide; empty: string[] };
   try {
     const next =
-      to === "own"
-        ? await ownServerSide(
-            deps,
-            { plan, facts, ...(fromOwn !== undefined ? { fromOwn } : {}) },
-            options,
-          )
-        : to === "portainer"
-          ? await portainerSide(deps, { plan, facts }, options)
-          : await cloudSide(deps, { plan, facts, to }, options);
+      to === "own" && options.sharedServer !== undefined
+        ? await besideSide(deps, { plan, facts, from: oldAddress }, options.sharedServer, options)
+        : to === "own"
+          ? await ownServerSide(
+              deps,
+              { plan, facts, ...(fromOwn !== undefined ? { fromOwn } : {}) },
+              options,
+            )
+          : to === "portainer"
+            ? await portainerSide(deps, { plan, facts }, options)
+            : await cloudSide(deps, { plan, facts, to }, options);
     // Only the app server moves: it gets a new member of the private network, and the old one
     // stays a member until `--finish`.
     const network =
@@ -918,7 +960,7 @@ export async function startMove(
       old.kind === "portainer" || fresh.kind === "portainer",
       measured && { moves: measured.moves, count: measured.size.count },
     );
-    deps.reporter.info(summaryText(summary, plan, bucketLines));
+    deps.reporter.info(summaryText(summary, plan, bucketLines, next.notes ?? []));
     if (options.confirmStart !== undefined && !(await options.confirmStart(summary))) {
       throw new OpsCrewError("APPROVAL_REFUSED", "The move was not started. Nothing was changed.", {
         hint: `Run \`${RUN_COMMAND}\` again when you are ready.`,

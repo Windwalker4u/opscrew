@@ -53,7 +53,9 @@ async function continueMove(
     );
   }
   const startOnly = [
-    ...(options.ownServer !== undefined || options.portainer !== undefined
+    ...(options.ownServer !== undefined ||
+    options.sharedServer !== undefined ||
+    options.portainer !== undefined
       ? ["the new side's answers"]
       : []),
     ...(options.hostKey !== undefined ? ["--host-key"] : []),

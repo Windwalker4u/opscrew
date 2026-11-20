@@ -18,7 +18,7 @@ import type { DestroyPreview } from "../destroy";
 import type { OwnServerAnswers } from "../interview/own-server";
 import type { PortainerAnswers } from "../interview/portainer";
 import type { GitHubApi, ProvisionServices } from "../provision";
-import type { ServerAddress } from "../shared";
+import type { ServerAddress, SharesReference } from "../shared";
 
 /** The GitHub calls a move needs: the deploy secrets plus running the deploy workflow. */
 export interface RetargetGitHubApi extends GitHubApi, Pick<GitHubClient, "deleteBranch"> {
@@ -151,6 +151,11 @@ export interface RetargetOptions {
    * directly: a Cloudflare Tunnel is refused.
    */
   ownServer?: OwnServerAnswers;
+  /**
+   * `--to own` beside another app (the answers' `server.shares*`): the repository folder on this
+   * computer of the app whose server OpsCrew created, which the app moves onto as a second app.
+   */
+  sharedServer?: SharesReference;
   /** `--host-key SHA256:…`: the new own server's host key, needed when nobody can confirm it. */
   hostKey?: string;
   /** `--password-logins off|keep`: the choice about other users' password logins there. */

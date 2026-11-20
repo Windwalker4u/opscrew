@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import { APP, NEW_SERVERS, testPlan } from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
@@ -450,6 +453,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
   it("asks a terminal the own server's questions as the interview does, and what starts empty", async () => {
     move = await moveProject();
     const prompts = new ScriptedPrompts([
+      "own", // a server of the user's, not another app's
       OWN_NEW_IPV4,
       false, // not at home
       "22",
@@ -470,6 +474,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
       ctx.errors,
     ).toBe(1);
     expect(prompts.calls.map((call) => call.message.split("\n")[0])).toEqual([
+      "Which server should the app run on?",
       "What is your server's address?",
       "Is this server at your home, on your home internet connection?",
       "Which port do you connect to for SSH?",
@@ -486,6 +491,50 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     expect(ctx.errors).toContain("The move was not started. Nothing was changed.");
     expect(approvals.requests).toEqual([]);
     expect((await readArtifact("plan", move.paths.files.plan)).retarget).toBeUndefined();
+  });
+
+  it("takes server.shares from --answers and moves beside that app, refusing what it refuses before any change", async () => {
+    move = await moveProject();
+    const folder = await mkdtemp(path.join(tmpdir(), "opscrew-other-app-"));
+    const answers = path.join(move.project.root, "beside.yaml");
+    await writeFile(answers, `server.shares: ${JSON.stringify(folder)}\n`);
+    const ctx = move.context();
+    expect(await run(ctx, "retarget", "--to", "own", "--answers", answers)).toBe(1);
+    // The folder holds no app OpsCrew provisioned: firstApp's refusal, before any change.
+    expect(ctx.errors).toContain(`The app in ${folder} has no OpsCrew plan on this computer.`);
+    expect(ctx.errors).toContain("Nothing was changed.");
+    expect(move.events).toEqual([]);
+    expect((await readArtifact("plan", move.paths.files.plan)).retarget).toBeUndefined();
+    expect((await readServerAddresses(move.paths)).own).toBeUndefined();
+
+    // The address and the login come from that app's server: naming them too is refused.
+    await writeFile(
+      answers,
+      `server.shares: ${JSON.stringify(folder)}\nserver.host: ${OWN_NEW_IPV4}\n`,
+    );
+    const both = move.context();
+    expect(await run(both, "retarget", "--to", "own", "--answers", answers)).not.toBe(0);
+    expect(both.errors).toContain(
+      "server.host: the address and the login come from the other app's server",
+    );
+    expect(move.events).toEqual([]);
+  });
+
+  it("offers a terminal the server of another of the user's apps, and asks for its folder", async () => {
+    move = await moveProject();
+    const folder = await mkdtemp(path.join(tmpdir(), "opscrew-other-app-"));
+    const prompts = new ScriptedPrompts(["shares", folder]);
+    const ctx = move.context({
+      interactive: true,
+      services: { prompts, approvalHandler: new RecordingApprovals() },
+    });
+    expect(await run(ctx, "retarget", "--to", "own")).toBe(1);
+    expect(prompts.calls.map((call) => call.message.split("\n")[0])).toEqual([
+      "Which server should the app run on?",
+      "Where is the repository of the app whose server this app should share?",
+    ]);
+    expect(ctx.errors).toContain("has no OpsCrew plan on this computer");
+    expect(move.events).toEqual([]);
   });
 
   it("changes nothing when the summary is declined in a terminal", async () => {

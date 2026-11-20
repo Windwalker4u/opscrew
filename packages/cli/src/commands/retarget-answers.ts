@@ -1,17 +1,15 @@
 import { isIPv4, isIPv6 } from "node:net";
 import path from "node:path";
 import {
-  answersToOwnServer,
-  buildServerQuestions,
   type EmptyQuestion,
   type InterviewAnswers,
+  moveServerAnswers,
   type PhaseDeps,
   PORTAINER_FIELDS,
   placeWords,
   portainerAnswers,
   type RetargetOptions,
   readPortainerConnection,
-  SERVER_FIELDS,
   type ServerAddress,
   sizeText,
   splitFollowUps,
@@ -56,15 +54,17 @@ export interface NewSideFlags {
 /**
  * The new side's answers for a move to the user's own server or Portainer, as `opscrew interview`
  * takes them: from `--answers <file>` (`server.*` or `portainer.*`), else asked in a terminal;
- * in a script without them nothing is given, and the move stops saying what it needs. For
- * Portainer its certificate is confirmed and its environments listed, and its host's public
- * address comes from `--portainer-address` or a question. Nothing for a cloud provider.
+ * in a script without them nothing is given, and the move stops saying what it needs. A server's
+ * answers may name another app's repository folder instead (`server.shares*`): the move goes onto
+ * the server OpsCrew created for that app. For Portainer its certificate is confirmed and its
+ * environments listed, and its host's public address comes from `--portainer-address` or a
+ * question. Nothing for a cloud provider.
  */
 export async function newSideAnswers(
   ctx: CliContext,
   deps: PhaseDeps,
   input: { to: DeployProvider | undefined; plan: DeployPlan; flags: NewSideFlags },
-): Promise<Pick<RetargetOptions, "ownServer" | "portainer" | "portainerAddress">> {
+): Promise<Pick<RetargetOptions, "ownServer" | "sharedServer" | "portainer" | "portainerAddress">> {
   const { to, plan, flags } = input;
   if (to !== "own" && to !== "portainer") return {};
   const given: InterviewAnswers | undefined =
@@ -85,10 +85,12 @@ export async function newSideAnswers(
   };
   if (to === "own") {
     if (given === undefined && ask === undefined) return {};
-    const answers = given ?? (await ask?.(buildServerQuestions(context))) ?? {};
-    return {
-      ownServer: answersToOwnServer(splitFollowUps(answers, "server", SERVER_FIELDS), context),
-    };
+    // A relative `server.shares` folder is read from the repository's root.
+    return moveServerAnswers({
+      ...(given === undefined ? {} : { given }),
+      ...(ask === undefined ? {} : { ask }),
+      context: { ...context, root: deps.paths.root, env: deps.env },
+    });
   }
   const address = flags.portainerAddress ?? (await askPortainerAddress(ctx));
   if (given === undefined && ask === undefined) {

@@ -559,7 +559,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--option <id>", "Server option to move to without asking (ids are listed by the run)")
     .option(
       "--answers <file>",
-      "Your own server's (server.*) or your Portainer's (portainer.*) answers from a YAML or JSON file, as `opscrew interview --answers` takes them, instead of asking",
+      "Your own server's (server.*) or your Portainer's (portainer.*) answers from a YAML or JSON file, as `opscrew interview --answers` takes them, instead of asking; server.shares names the folder of another of your OpsCrew apps, to move beside it on the server OpsCrew created for it",
     )
     .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION)
     .option(
@@ -630,7 +630,8 @@ export function register(program: Command, ctx: CliContext): void {
         ...wrapHelp(HOW_A_MOVE_WORKS),
         "",
         "  opscrew retarget --to digitalocean   start the move, or continue it after a stop",
-        "  opscrew retarget --to own            move to your own server (asks how to reach it)",
+        "  opscrew retarget --to own            move to your own server (asks how to reach it),",
+        "                                       or beside another of your OpsCrew apps on its server",
         "  opscrew retarget --to portainer      move into your Portainer (asks for it)",
         "  opscrew retarget --to github-pages   move a site to GitHub Pages",
         "  opscrew retarget --finish            after the switch, remove the old side",
