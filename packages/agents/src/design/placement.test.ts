@@ -227,9 +227,8 @@ describe("design with a service on a server of its own", () => {
     const server = result.plan.servers?.[0];
     expect(server?.target).toMatchObject({ provider: "digitalocean", location: "fra1" });
     const line = result.plan.cost.breakdown.at(-1);
-    expect(line?.item).toMatch(
-      /^Server db \(.+ in fra1\), \$\d+\.\d\d converted at 1 EUR = 1\.10 USD$/,
-    );
+    expect(line?.item).toMatch(/^Server db \(.+ in fra1\)$/);
+    expect(line?.priceSource).toMatch(/^\$\d+\.\d\d converted at 1 EUR = 1\.10 USD$/);
     expect(line?.monthly.currency).toBe("EUR");
     expect(result.warnings).toContainEqual(
       expect.stringContaining("DIGITALOCEAN_TOKEN is not set"),

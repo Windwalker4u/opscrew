@@ -1,6 +1,8 @@
+import type { ComputeOffer } from "@opscrew/contracts";
 import { type CostEstimate, CostEstimateSchema, readArtifact } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
-import { convertedNote } from "../design/cost";
+import { convertedNote, costFor } from "../design/cost";
 import { createTestPhaseDeps, testPlan } from "../testing";
 import {
   abortedCost,
@@ -97,13 +99,12 @@ describe("the cost's times (031 US4)", () => {
   });
 
   it("keeps an item whose price source alone changed, and ends nothing", () => {
-    const note = "Hetzner's published rate as of 2026-10-12";
     const previous = costOf([
       { ...server, since: CREATED },
-      { ...ipv4, item: `Primary IPv4 address (${note})`, since: CREATED },
+      { ...ipv4, priceSource: "Hetzner's published rate as of 2026-10-12", since: CREATED },
       {
         ...backups,
-        item: "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+        priceSource: "OpsCrew's default rate, not from Hetzner's API",
         since: CREATED,
       },
     ]);
@@ -116,18 +117,45 @@ describe("the cost's times (031 US4)", () => {
     expect(next.ended).toBeUndefined();
   });
 
-  it("keeps an extra server whose converted price alone changed, by design's own wording", () => {
+  it("keeps an extra server whose converted price alone changed", () => {
     const usd = (amount: number) => ({ amount, currency: "USD" as const });
-    const extra = { ...server, item: "Server worker (cx23 in nbg1)" };
-    const previous = costOf([
-      { ...extra, item: `${extra.item}${convertedNote(usd(6.04))}`, since: CREATED },
-    ]);
+    const extra = { ...server, item: "Server worker (cx23 in nbg1), with its IPv4 address" };
+    const previous = costOf([{ ...extra, priceSource: convertedNote(usd(6.04)), since: CREATED }]);
     const next = keepCostTimes(
-      costOf([{ ...extra, item: `${extra.item}${convertedNote(usd(6.1))}` }]),
+      costOf([{ ...extra, priceSource: convertedNote(usd(6.1)) }]),
       previous,
       NOW,
     );
-    expect(next.breakdown[0]?.since).toBe(CREATED);
+    expect(next.breakdown).toEqual([
+      { ...extra, priceSource: "$6.10 converted at 1 EUR = 1.10 USD", since: CREATED },
+    ]);
+    expect(next.ended).toBeUndefined();
+  });
+
+  it("keeps each item's name and since when design reads a price list with a new date", async () => {
+    const catalog = cloudProvider("hetzner").connector({ env: {} }).catalog();
+    const offer = (await catalog.listOffers("nbg1")).find((o) => o.id === "cx23") as ComputeOffer;
+    const extras = await catalog.extras("nbg1");
+    // A live server price, with the IPv4 price and backup rate from the published price list.
+    const priced = (asOf: string) =>
+      costFor({ ...offer, source: "live" }, { ...extras, asOf }, { backups: true });
+    const previous = startBilling(priced("2026-10-12T00:00:00.000Z"), CREATED);
+    const next = keepCostTimes(priced("2026-11-15T00:00:00.000Z"), previous, NOW);
+    const published = "Hetzner's published rate as of 2026-11-15";
+    expect(
+      next.breakdown.map(({ item, priceSource, since }) => ({ item, priceSource, since })),
+    ).toEqual([
+      { item: "Server cx23 (nbg1)", since: CREATED },
+      { item: "Primary IPv4 address", priceSource: published, since: CREATED },
+      {
+        item: "Automated backups (20% of the server price)",
+        priceSource: published,
+        since: CREATED,
+      },
+    ]);
+    expect(previous.breakdown.map((line) => line.item)).toEqual(
+      next.breakdown.map((line) => line.item),
+    );
     expect(next.ended).toBeUndefined();
   });
 

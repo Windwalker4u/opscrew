@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { CostEstimateSchema } from "./design";
+import { CostEstimateSchema, costItemText } from "./design";
 import { parseArtifact } from "./io";
 
 const eur = (amount: number) => ({ amount, currency: "EUR" as const });
@@ -19,6 +19,7 @@ const cost = {
     },
     {
       item: "Primary IPv4",
+      priceSource: "Hetzner's published rate as of 2026-10-12",
       monthly: eur(0.5),
       billing: "hourly",
       hourly: eur(0.0008),
@@ -151,5 +152,25 @@ describe("CostEstimate's billing, times, one-time fees and ended items", () => {
       "ended.0.since",
       "ended.0.until",
     ]);
+  });
+});
+
+describe("costItemText", () => {
+  it("prints an item with where its price came from, in the words design wrote before", () => {
+    const ipv4 = {
+      item: "Primary IPv4 address",
+      priceSource: "Hetzner's published rate as of 2026-10-12",
+    };
+    expect(costItemText(ipv4)).toBe(
+      "Primary IPv4 address (Hetzner's published rate as of 2026-10-12)",
+    );
+    const backups = {
+      item: "Automated backups (20% of the server price)",
+      priceSource: "OpsCrew's default rate, not from Hetzner's API",
+    };
+    expect(costItemText(backups)).toBe(
+      "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+    );
+    expect(costItemText({ item: "Server cx23 (nbg1)" })).toBe("Server cx23 (nbg1)");
   });
 });

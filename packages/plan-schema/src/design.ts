@@ -24,7 +24,14 @@ export const CostProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/, {
 
 /** One running item of a cost estimate. */
 export const CostItemSchema = z.strictObject({
+  /** What is billed, the same for as long as it bills (`Primary IPv4 address`). */
   item: z.string().min(1),
+  /**
+   * Where its price came from, when that can change while it bills: `Hetzner's published rate as
+   * of 2026-10-12`, `OpsCrew's default rate, not from Hetzner's API`, `€5.49 converted at 1 EUR =
+   * 1.10 USD`. Printed with the item ({@link costItemText}).
+   */
+  priceSource: z.string().min(1).optional(),
   provider: CostProviderSchema.optional(),
   /** The price for a whole month; for an `hourly` item, its monthly cap. */
   monthly: MoneySchema,
@@ -35,6 +42,18 @@ export const CostItemSchema = z.strictObject({
   since: IsoDateTimeSchema.optional(),
 });
 export type CostItem = z.infer<typeof CostItemSchema>;
+
+/**
+ * A cost item as the user reads it: its `item` with its `priceSource` inside the item's closing
+ * parenthesis, or in one of its own: `Automated backups (20% of the server price, OpsCrew's
+ * default rate, not from Hetzner's API)`, `Primary IPv4 address (Hetzner's published rate as of
+ * 2026-10-12)`.
+ */
+export function costItemText(line: Pick<CostItem, "item" | "priceSource">): string {
+  const { item, priceSource } = line;
+  if (priceSource === undefined) return item;
+  return item.endsWith(")") ? `${item.slice(0, -1)}, ${priceSource})` : `${item} (${priceSource})`;
+}
 
 /** A one-time fee, for example a provider's setup fee. */
 export const OneTimeCostSchema = z.strictObject({

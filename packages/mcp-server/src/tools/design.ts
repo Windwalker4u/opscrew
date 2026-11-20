@@ -22,6 +22,7 @@ import type { ApprovalHandler } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError, orText, taxLabel, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
 import {
+  costItemText,
   type DesignOption,
   isCloudProvider,
   isServerlessProvider,
@@ -199,7 +200,7 @@ function renderOption(option: DesignOption): string {
     ...(unpriced
       ? []
       : [
-          `  Cost: ${option.cost.breakdown.map((b) => `${b.item} ${formatMoney(b.monthly)}`).join("; ")}`,
+          `  Cost: ${option.cost.breakdown.map((b) => `${costItemText(b)} ${formatMoney(b.monthly)}`).join("; ")}`,
         ]),
     ...option.tradeoffs.map((tradeoff) => `  - ${tradeoff}`),
   ].join("\n");

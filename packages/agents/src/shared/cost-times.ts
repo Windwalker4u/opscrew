@@ -11,7 +11,7 @@ import type {
   EndedCost,
   OneTimeCost,
 } from "@opscrew/plan-schema";
-import { BACKUPS_ITEM, CONVERTED_NOTE, convertMoney, convertRate, IPV4_ITEM } from "../design/cost";
+import { convertMoney, convertRate } from "../design/cost";
 
 /** Whether `line` is billed over time (hourly or monthly), not free nor of unknown billing. */
 function billed(line: CostItem): boolean {
@@ -129,18 +129,11 @@ export function carryRecords(next: CostEstimate, previous: CostEstimate): CostEs
 }
 
 /**
- * An item's identity across designs: the provider that bills it and its words without what only
- * says where its price came from (the published rate or OpsCrew's default rate design names, and an
- * extra server's price converted from another currency), which can change while it runs on.
+ * An item's identity across designs: the provider that bills it and its name, which stays the same
+ * while it bills (where its price came from, which can change, is its `priceSource`).
  */
 function itemKey(line: CostItem): string {
-  const { item } = line;
-  const base = item.startsWith(IPV4_ITEM)
-    ? IPV4_ITEM
-    : item.startsWith(`${BACKUPS_ITEM} (`)
-      ? BACKUPS_ITEM
-      : item.replace(CONVERTED_NOTE, "");
-  return `${line.provider ?? ""}\n${base}`;
+  return `${line.provider ?? ""}\n${line.item}`;
 }
 
 /**

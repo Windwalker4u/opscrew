@@ -28,20 +28,10 @@ export const EXCHANGE_RATE_NOTE =
 /** Automated backup surcharge when neither the catalogue nor the caller gives one (Hetzner's). */
 const DEFAULT_BACKUP_PERCENT = 20;
 
-/**
- * The words that start the IPv4 and backups items, before a note on where their price came from.
- * An item keeps its billing start across designs by them (`keepCostTimes`).
- */
-export const IPV4_ITEM = "Primary IPv4 address";
-export const BACKUPS_ITEM = "Automated backups";
-
-/** An extra server's item ends with this when its price was converted from another currency. */
+/** An extra server's `priceSource` when its price was converted from another currency. */
 export function convertedNote(monthly: Money): string {
-  return `, ${formatMoney(monthly)} converted at 1 EUR = ${USD_PER_EUR.toFixed(2)} USD`;
+  return `${formatMoney(monthly)} converted at 1 EUR = ${USD_PER_EUR.toFixed(2)} USD`;
 }
-
-/** {@link convertedNote}'s words, to find them at an item's end. */
-export const CONVERTED_NOTE = /, \S+ converted at 1 EUR = \d+\.\d{2} USD$/;
 
 /** Rounds to cents. */
 export function roundCents(amount: number): number {
@@ -161,8 +151,8 @@ export interface RateSource {
   rate: string;
   /** Why: `the API does not return it` or `Hetzner's API did not return one`. */
   reason: string;
-  /** Appended to the breakdown line, after a comma. */
-  item: string;
+  /** The cost item's `priceSource`. */
+  priceSource: string;
   /** Date the rate is valid for, when it has one (a published price list). */
   asOf?: string;
 }
@@ -192,7 +182,7 @@ function nonLiveRates(
   const published: RateSource = {
     rate: `${name}'s published rate as of ${date}`,
     reason: "the API does not return it",
-    item: `${name}'s published rate as of ${date}`,
+    priceSource: `${name}'s published rate as of ${date}`,
     asOf: extras.asOf,
   };
   const out: NonLiveRates = {};
@@ -202,7 +192,7 @@ function nonLiveRates(
       out.backups = {
         rate: "OpsCrew's default rate",
         reason: `${name}'s API did not return one`,
-        item: `OpsCrew's default rate, not from ${name}'s API`,
+        priceSource: `OpsCrew's default rate, not from ${name}'s API`,
       };
     } else if (extras.source !== "live") {
       out.backups = published;
@@ -251,8 +241,8 @@ export function offerTerms(offer: ComputeOffer, extras: ProviderExtras): string[
  *
  * The estimate is `live` only when every number in it was read from the provider's API in this
  * run. With a live offer, a line whose rate was not (see {@link nonLiveRates}) names where it comes
- * from, and the estimate is `static`, dated by the published price list when one is used, else
- * by the offer. Validated with `CostEstimateSchema`.
+ * from in its `priceSource`, and the estimate is `static`, dated by the published price list when
+ * one is used, else by the offer. Validated with `CostEstimateSchema`.
  */
 export function costFor(
   offer: ComputeOffer,
@@ -287,16 +277,17 @@ export function pricedOffer(
   const rates = nonLiveRates(offer, extras, options);
   if (extras.ipv4Monthly !== undefined) {
     breakdown.push({
-      item: rates.ipv4 ? `${IPV4_ITEM} (${rates.ipv4.item})` : IPV4_ITEM,
+      item: "Primary IPv4 address",
+      ...(rates.ipv4 ? { priceSource: rates.ipv4.priceSource } : {}),
       provider: offer.provider,
       monthly: convertMoney(extras.ipv4Monthly, currency),
       ...billed(extras.ipv4Hourly),
     });
   }
   if (options.backups) {
-    const note = rates.backups ? `, ${rates.backups.item}` : "";
     breakdown.push({
-      item: `${BACKUPS_ITEM} (${percent}% of the server price${note})`,
+      item: `Automated backups (${percent}% of the server price)`,
+      ...(rates.backups ? { priceSource: rates.backups.priceSource } : {}),
       provider: offer.provider,
       monthly: { amount: roundCents((server * percent) / 100), currency },
       // Billed as the server is: the percentage of its hourly price too.

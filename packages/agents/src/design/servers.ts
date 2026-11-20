@@ -393,7 +393,7 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
   const currency: Currency = app.monthly.currency;
   const lines = priced.map(({ server, cost }) => {
     const { target } = server;
-    const ipv4 = cost.breakdown.some((line) => line.item.startsWith("Primary IPv4 address"));
+    const ipv4 = cost.breakdown.some((line) => line.item === "Primary IPv4 address");
     const included = [
       ...(ipv4 ? ["its IPv4 address"] : []),
       // Backups only the provider's order page prices are not in the price (Contabo's).
@@ -401,10 +401,12 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
     ];
     const extras = included.length === 0 ? "" : `, with ${listText(included)}`;
     const where = ` (${target.serverType} in ${target.location})`;
-    const converted = cost.monthly.currency === currency ? "" : convertedNote(cost.monthly);
+    const converted =
+      cost.monthly.currency === currency ? {} : { priceSource: convertedNote(cost.monthly) };
     return {
       // withoutServerCost finds it by these words.
-      item: `Server ${server.name}${where}${extras}${converted}`,
+      item: `Server ${server.name}${where}${extras}`,
+      ...converted,
       provider: target.provider,
       monthly: convertMoney(cost.monthly, currency),
       ...combinedBilling(cost.breakdown, currency),

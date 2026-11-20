@@ -1,5 +1,5 @@
 import { formatMoney, upperFirst } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { costItemText, type DeployPlan } from "@opscrew/plan-schema";
 import { verificationRecordName } from "../infra/serverless";
 import { siteHosts } from "../runtime";
 import { HEADERS_ENTRY } from "../serverless/headers";
@@ -178,7 +178,7 @@ export function renderSiteRunbook(plan: DeployPlan, ctx: SiteRunbookContext): Re
 /** The "Cost" cell: the published plan the design chose, and its monthly price. */
 function costText(plan: DeployPlan, cloudflare: boolean): string {
   const { monthly, breakdown, asOf } = plan.cost;
-  const items = breakdown.map((entry) => entry.item).join(", ");
+  const items = breakdown.map(costItemText).join(", ");
   const price =
     monthly.amount === 0
       ? `No monthly cost${items === "" ? "" : ` (${items})`}`

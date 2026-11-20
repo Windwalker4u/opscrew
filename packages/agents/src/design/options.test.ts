@@ -1,5 +1,10 @@
 import type { ProviderExtras } from "@opscrew/contracts";
-import { CostEstimateSchema, DesignOptionListSchema, serviceOf } from "@opscrew/plan-schema";
+import {
+  CostEstimateSchema,
+  costItemText,
+  DesignOptionListSchema,
+  serviceOf,
+} from "@opscrew/plan-schema";
 import { STATIC_PRICES_AS_OF, StaticHetznerCatalog } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
 import {
@@ -616,11 +621,16 @@ describe("live prices with published rates (DigitalOcean)", () => {
         monthly: { amount: 12, currency: "USD" },
       },
       {
-        item: "Automated backups (30% of the server price, DigitalOcean's published rate as of 2026-10-12)",
+        item: "Automated backups (30% of the server price)",
+        priceSource: "DigitalOcean's published rate as of 2026-10-12",
         provider: "digitalocean",
         monthly: { amount: 3.6, currency: "USD" },
       },
     ]);
+    // Printed as design named it before.
+    expect(cost.breakdown[1] && costItemText(cost.breakdown[1])).toBe(
+      "Automated backups (30% of the server price, DigitalOcean's published rate as of 2026-10-12)",
+    );
     // The total includes a number the API did not return, so it is not live.
     expect(cost).toMatchObject({ source: "static", asOf: TABLE_AS_OF });
     expect(CostEstimateSchema.safeParse(cost).success).toBe(true);
@@ -697,11 +707,16 @@ describe("live prices without a backup rate from the API", () => {
       backups: true,
       backupPercent: 20,
     });
-    expect(cost.breakdown.at(-1)).toEqual({
-      item: "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+    const backups = cost.breakdown.at(-1);
+    expect(backups).toEqual({
+      item: "Automated backups (20% of the server price)",
+      priceSource: "OpsCrew's default rate, not from Hetzner's API",
       provider: "hetzner",
       monthly: { amount: 1.1, currency: "EUR" },
     });
+    expect(backups && costItemText(backups)).toBe(
+      "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+    );
     expect(cost).toMatchObject({ source: "static", asOf: LIVE_AS_OF });
     // The live IPv4 price keeps its plain line.
     expect(cost.breakdown[1]?.item).toBe("Primary IPv4 address");
