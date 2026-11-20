@@ -186,6 +186,17 @@ const PRISMA: Case = {
   devDependencies: { prisma: "^7.10.1" },
 };
 
+/**
+ * laravel-app on PostgreSQL with a queued job (detection adds its queue worker): the release
+ * command migrates PostgreSQL, and the worker, a container Railpack's start script never runs in,
+ * reads the server's settings rather than the caches Railpack's build made without them.
+ */
+const LARAVEL_POSTGRES: Case = {
+  name: "laravel-app-postgres",
+  example: "laravel-app",
+  overlay: "laravel-postgres",
+};
+
 /** The cron job a user adds to celery-worker's plan: a command, which design never finds in code. */
 function withHeartbeat(plan: DeployPlan): DeployPlan {
   const job = { name: "heartbeat", schedule: "* * * * *", command: "python heartbeat.py" };
@@ -212,6 +223,7 @@ const DESIGNED: Readonly<Record<string, Partial<Case>>> = {
 const ALL_CASES: Case[] = [
   ...exampleNames().map((name) => ({ name, example: name, ...DESIGNED[name] })),
   PRISMA,
+  LARAVEL_POSTGRES,
   {
     name: "node-mongo-portainer",
     example: "node-mongo",
@@ -1414,6 +1426,43 @@ describe.skipIf(SKIP !== undefined)(
             expect((await docker(["exec", name, "test", "-f", file])).exitCode, file).toBe(0);
           }
           console.info(`${example}: prisma --version:\n${tail(output, 12)}`);
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(testCase === LARAVEL_POSTGRES)(
+        "a Laravel worker reads the server's settings, not the build's: its job finds PostgreSQL",
+        async () => {
+          if (prepared === undefined) throw new Error("not prepared");
+          const { container: name } = app();
+          const port = prepared.plan.app.port;
+          // Queuing writes to the jobs table, which only the release command made in PostgreSQL.
+          const id = `job-${randomBytes(4).toString("hex")}`;
+          await untilAnswer(
+            name,
+            port,
+            { method: "POST", path: `/jobs/${id}` },
+            30_000,
+            (a) => a.status < 300,
+          );
+          const answer = await untilAnswer(
+            name,
+            port,
+            { path: `/jobs/${id}` },
+            60_000,
+            (a) => a.status === 200,
+          ).catch(async (error: unknown) => {
+            const workers = prepared?.plan.processes.workers.map((worker) => worker.name) ?? [];
+            const logs = await compose(deployed().project, ["logs", "--tail", "30", ...workers]);
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)}
+The workers' logs:
+${tail(logs.stdout, 40)}`,
+            );
+          });
+          expect(answer.text.trim(), "the database connection the worker's job found").toBe(
+            "pgsql",
+          );
         },
         TWO_MINUTES,
       );

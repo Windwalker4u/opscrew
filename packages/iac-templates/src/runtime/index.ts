@@ -22,6 +22,7 @@ import {
   openlitespeedSite,
 } from "../edge/openlitespeed";
 import { notOnServer, wrongTarget } from "../providers";
+import { imageEnvironment } from "../railpack-laravel";
 import { runtimeDir } from "../runtime-dir";
 import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
@@ -166,7 +167,7 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
   const backing = renderServices(plan, { kind: "server" });
   const environment = () => ({
     env_file: ["app.env"],
-    environment: { PORT: String(plan.app.port) },
+    environment: { PORT: String(plan.app.port), ...imageEnvironment(plan) },
   });
   const app: Record<string, unknown> = {
     image,

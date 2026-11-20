@@ -17,6 +17,7 @@ import { offsiteVariables } from "../offsite";
 import { IMAGES } from "../pins";
 import { previousValueVariables } from "../previous-values";
 import { portainerTarget } from "../providers";
+import { imageEnvironment } from "../railpack-laravel";
 import { type RuntimeContext, siteHosts } from "../runtime";
 import {
   appVolumes,
@@ -601,6 +602,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     // Bare: Compose takes the value from the stack's Env, and leaves the variable unset when the
     // Env has none (no rotation kept an old value yet).
     ...Object.fromEntries(previousValueVariables(plan).map((name) => [name, null])),
+    ...imageEnvironment(plan),
   });
   const backing = stackServices(plan);
   const snapshots = stackSnapshots(plan, backing, {

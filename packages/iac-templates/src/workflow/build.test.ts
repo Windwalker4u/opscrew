@@ -841,6 +841,9 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 180_000 },
         'RUN bin="$(command -v frankenphp)" && cp "$bin" "$bin.new" && mv "$bin.new" "$bin"',
         // Laravel's storage link, made while the web root is still writable (it stays root's).
         "RUN if [ -d /app/public ]; then ln -sfn ../storage/app/public /app/public/storage; fi",
+        // The caches Railpack's build made without the app's settings: every container reads the
+        // server's instead, and the web's start makes them again from those.
+        "RUN rm -f /app/bootstrap/cache/config.php /app/bootstrap/cache/routes-*.php /app/bootstrap/cache/events.php",
       ],
     ],
   ] as const)(

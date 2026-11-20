@@ -237,6 +237,14 @@ app:
       source: user
 ```
 
+Railpack's build of a Laravel app caches its settings (`php artisan optimize`) before the server's
+exist, so those caches hold Laravel's defaults. OpsCrew removes them from the image
+(`bootstrap/cache/config.php`, `routes-*.php` and `events.php`), so the release command, the
+workers and cron read the settings above; the web makes the caches again from them when it starts.
+With a release command (`app.releaseCommand`), every container of the image also gets
+`RAILPACK_SKIP_MIGRATIONS=true`: the migrations run once per deploy, in the release step, and not
+again each time the web starts.
+
 ## A variable OpsCrew does not find
 
 `app.env` lists the variables OpsCrew found in your code and your `.env.example`. It can miss one,

@@ -10,6 +10,7 @@ import { appRoot } from "../app-root";
 import { SECRET_FILE_PATTERNS } from "../docker";
 import { supercronicAdd } from "../docker/stacks";
 import { ACTIONS, IMAGES, TOOLS, toolDownloadUrl } from "../pins";
+import { railpackLaravel } from "../railpack-laravel";
 import {
   buildArch,
   buildRunner,
@@ -229,8 +230,21 @@ const LARAVEL_STORAGE_LINK =
   "RUN if [ -d /app/public ]; then ln -sfn ../storage/app/public /app/public/storage; fi";
 
 /**
+ * Railpack's Laravel build runs `php artisan optimize` without the app's settings, so the image
+ * would carry a config cache with Laravel's defaults (SQLite, production), and routes and events
+ * cached from them. Only the web's start script makes them again; the release command, the workers
+ * and cron run without it and would read those defaults instead of `app.env`. The seal removes
+ * them: those containers read the settings, and the web's start makes the caches in its own
+ * container from them (uid 10001 owns `bootstrap/cache`). Composer's `packages.php` and
+ * `services.php` depend on no setting and stay.
+ */
+const LARAVEL_CACHES =
+  "RUN rm -f /app/bootstrap/cache/config.php /app/bootstrap/cache/routes-*.php /app/bootstrap/cache/events.php";
+
+/**
  * More seal lines per language: for PHP {@link FRANKENPHP_SEAL}, then for an app without a web
- * root (Laravel) {@link LARAVEL_STORAGE_LINK}; with one (a plain PHP app), first the app's folder
+ * root (Laravel, {@link railpackLaravel}) {@link LARAVEL_STORAGE_LINK} and
+ * {@link LARAVEL_CACHES}; with one (a plain PHP app), first the app's folder
  * ({@link appRoot}) mode 1777, as `/tmp`: the app's user may create files there (a web installer
  * writes its settings file through a temporary file and a rename), but the sticky bit keeps it
  * from changing, replacing or removing the image's files, root's. Such a file lasts until the next
@@ -238,8 +252,8 @@ const LARAVEL_STORAGE_LINK =
  */
 function railpackSeal(plan: DeployPlan): string[] {
   if (plan.app.build?.runtime.language !== "php") return [];
-  return plan.app.build.webRoot === undefined
-    ? [FRANKENPHP_SEAL, LARAVEL_STORAGE_LINK]
+  return railpackLaravel(plan)
+    ? [FRANKENPHP_SEAL, LARAVEL_STORAGE_LINK, LARAVEL_CACHES]
     : [`RUN chmod 1777 ${appRoot(plan)}`, FRANKENPHP_SEAL];
 }
 
