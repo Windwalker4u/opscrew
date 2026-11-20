@@ -143,7 +143,7 @@ function notCommittedWarning(
 }
 
 const NO_KEY_FILE =
-  "OpsCrew has made no encrypted recovery copy of this app's secrets yet: it needs a file to write your new age key to, outside the repository, or your own age key (age1…). Run `opscrew provision` in a terminal, which asks for them, or name the file with `--key-out <path>`.";
+  "OpsCrew has made no encrypted recovery copy of this app's secrets yet: it needs a file to write your new age key to, outside the repository, or your own age key (age1…). Run `opscrew provision` in a terminal, which asks for them; in a script, give your own age key with `--recipient <age1…>` or name the file with `--key-out <path>`.";
 
 /**
  * FR-1414: older commits of the copy at `path` stay readable with the old key, and when to change

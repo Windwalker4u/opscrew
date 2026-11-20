@@ -1010,7 +1010,7 @@ function noAgeKey(command: string, already: string): OpsCrewError {
     "PHASE_PRECONDITION",
     `The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet. ${already}`,
     {
-      hint: `Run \`${command}\` in a terminal, which asks for a file to write your new age key to or for your own age key (age1…), or name the file with \`--key-out <path>\`.`,
+      hint: `Run \`${command}\` in a terminal, which asks for a file to write your new age key to or for your own age key (age1…); in a script, give your own age key with \`--recipient <age1…>\` or name the file with \`--key-out <path>\`.`,
     },
   );
 }
