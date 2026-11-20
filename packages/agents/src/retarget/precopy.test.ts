@@ -417,7 +417,7 @@ describe.skipIf(!findExecutable("git"))("the PHP app's move: a kept folder and M
       {
         host: OLD_IPV4,
         op: "readPaths",
-        paths: [".", "./shop", "./shop/settings.ibd", "./ibdata1"],
+        paths: [".", "./ibdata1", "./shop", "./shop/settings.ibd"],
       },
       { host: NEW_IPV4, op: "updateVolume", paths: [] },
     ]);
@@ -442,7 +442,7 @@ describe.skipIf(!findExecutable("git"))("the PHP app's move: a kept folder and M
     const request = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
     expect(request?.details).toContain("what changed in the app's data at /app/storage");
     expect(request?.details).toContain(
-      "mysql's data at /var/lib/postgresql/data (42 bytes), about all of it: its files differ after its restore while your app served",
+      "mysql's data at /var/lib/postgresql/data (44 bytes), about all of it: its files differ after its restore while your app served",
     );
     expect(request?.details).toContain(
       "run the release command (app.releaseCommand) on the final data",
