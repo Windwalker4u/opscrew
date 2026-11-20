@@ -65,8 +65,6 @@ export interface FirstAppOptions {
   edge?: "caddy" | "nginx";
   /** Its web process's memory limit in MB (default the plan's). */
   memoryMb?: number;
-  /** Its target: a server of the user's own instead of one OpsCrew created. */
-  own?: boolean;
 }
 
 /**
@@ -85,9 +83,7 @@ export async function firstAppFolder(homeDir: string, o: FirstAppOptions = {}) {
     ...base,
     app: { ...base.app, name: FIRST, ...(o.memoryMb === undefined ? {} : { memoryMb: o.memoryMb }) },
     dns: { ...base.dns, proxied: o.proxied ?? false },
-    target: o.own
-      ? targetOf("own")
-      : { ...base.target, ...(o.edge === undefined ? {} : { edge: o.edge }) },
+    target: { ...base.target, ...(o.edge === undefined ? {} : { edge: o.edge }) },
   });
   await writeArtifact("plan", paths.files.plan, plan);
   await updateServerAddresses(paths, (current) => ({ ...current, deployment: FIRST_ADDRESS }));

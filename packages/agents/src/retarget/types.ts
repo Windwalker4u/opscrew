@@ -153,7 +153,8 @@ export interface RetargetOptions {
   ownServer?: OwnServerAnswers;
   /**
    * `--to own` beside another app (the answers' `server.shares*`): the repository folder on this
-   * computer of the app whose server OpsCrew created, which the app moves onto as a second app.
+   * computer of the app whose server OpsCrew created, which the app moves onto as a second app; on
+   * a server of the user's own, the app moves there with that app's login and pinned host key.
    */
   sharedServer?: SharesReference;
   /** `--host-key SHA256:…`: the new own server's host key, needed when nobody can confirm it. */

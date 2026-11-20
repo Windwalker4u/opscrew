@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import {
   exists,
   formatMoney,
@@ -29,7 +30,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
-import { buildOwnServerOption } from "../design/own";
+import { buildOwnServerOption, sharedAccessWarning } from "../design/own";
 import { ownServerFreeDiskGb } from "../design/sizing";
 import { deployStrategyFor, ROLLING_NOTE, snapshotSettings } from "../design/strategy";
 import { recordOwnServerAnswers } from "../interview/own-server";
@@ -53,6 +54,7 @@ import {
 } from "../shared";
 import { connectAndInspectOwnServer, ownServerFacts } from "../shared/own-server";
 import { extraServers, hasExtraServers } from "../shared/servers";
+import { type OwnFirstApp, ownFirstApp, recordOwnFirstApp } from "../shares/own-first-app";
 import { besideFirstApp } from "./beside";
 import {
   bucketChoice,
@@ -396,14 +398,21 @@ function answersMissing(what: string, questions: string): OpsCrewError {
  * The user's own server as the new side: its answers (public, served directly), recorded in the
  * usual slot, then connected (its host key confirmed, or `--host-key`) and inspected read-only for
  * its architecture. Stops before any change on a tunnel and on the same server as the old side.
+ * Named through another app on it (`ownFirst`, spec US7 scenario 4), the answers are that app's
+ * login, recorded with its pinned host key. The summary warns when other OpsCrew apps run there.
  */
 async function ownServerSide(
   deps: PhaseDeps,
-  input: { plan: DeployPlan; facts: ProjectFacts; fromOwn?: { host: string; port: number } },
+  input: {
+    plan: DeployPlan;
+    facts: ProjectFacts;
+    fromOwn?: { host: string; port: number };
+    ownFirst?: OwnFirstApp;
+  },
   options: RetargetOptions,
 ): Promise<NewSide> {
-  const { plan, facts, fromOwn } = input;
-  const answers = options.ownServer;
+  const { plan, facts, fromOwn, ownFirst } = input;
+  const answers = ownFirst?.answers ?? options.ownServer;
   if (answers === undefined) throw answersMissing("your new server", "own");
   if (!answers.reachable || answers.serve === "tunnel") {
     throw addressOnly(
@@ -423,7 +432,8 @@ async function ownServerSide(
       { hint: `Run \`${RUN_COMMAND} --to own\` with another server's answers.` },
     );
   }
-  await recordOwnServerAnswers(deps.paths, answers);
+  if (ownFirst !== undefined) await recordOwnFirstApp(deps.paths, ownFirst);
+  else await recordOwnServerAnswers(deps.paths, answers);
   const own = options.services?.own ?? {};
   const { facts: host } = await connectAndInspectOwnServer(deps, {
     hostKey: options.hostKey,
@@ -457,6 +467,8 @@ async function ownServerSide(
     );
   }
   const now = deps.clock.now().toISOString();
+  // Their deploys and this app's reach each other's data (FR-3025), as design warns.
+  const [other, ...others] = otherActiveApps(host.apps, plan.app.name).map((app) => app.app);
   return {
     target: {
       provider: "own",
@@ -470,6 +482,7 @@ async function ownServerSide(
     deploy: plan.deploy,
     network: host,
     diskFreeGb: server.diskFreeGb,
+    notes: other === undefined ? [] : [sharedAccessWarning(other, ...others)],
   };
 }
 
@@ -909,13 +922,23 @@ export async function startMove(
   await setAsideOldConnection(deps.paths, from.provider);
   let started: { session: MoveSession; next: NewSide; empty: string[] };
   try {
-    const next =
+    // An app on a server of the user's: this app moves there as to any server of the user's.
+    const ownFirst =
       to === "own" && options.sharedServer !== undefined
+        ? await ownFirstApp(deps, options.sharedServer)
+        : undefined;
+    const next =
+      to === "own" && options.sharedServer !== undefined && ownFirst === undefined
         ? await besideSide(deps, { plan, facts, from: oldAddress }, options.sharedServer, options)
         : to === "own"
           ? await ownServerSide(
               deps,
-              { plan, facts, ...(fromOwn !== undefined ? { fromOwn } : {}) },
+              {
+                plan,
+                facts,
+                ...(fromOwn !== undefined ? { fromOwn } : {}),
+                ...(ownFirst !== undefined ? { ownFirst } : {}),
+              },
               options,
             )
           : to === "portainer"

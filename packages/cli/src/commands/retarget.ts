@@ -559,7 +559,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--option <id>", "Server option to move to without asking (ids are listed by the run)")
     .option(
       "--answers <file>",
-      "Your own server's (server.*) or your Portainer's (portainer.*) answers from a YAML or JSON file, as `opscrew interview --answers` takes them, instead of asking; server.shares names the folder of another of your OpsCrew apps, to move beside it on the server OpsCrew created for it",
+      "Your own server's (server.*) or your Portainer's (portainer.*) answers from a YAML or JSON file, as `opscrew interview --answers` takes them, instead of asking; server.shares names the folder of another of your OpsCrew apps, to move beside it on its server",
     )
     .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION)
     .option(

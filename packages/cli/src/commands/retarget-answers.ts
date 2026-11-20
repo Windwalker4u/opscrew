@@ -56,7 +56,7 @@ export interface NewSideFlags {
  * takes them: from `--answers <file>` (`server.*` or `portainer.*`), else asked in a terminal;
  * in a script without them nothing is given, and the move stops saying what it needs. A server's
  * answers may name another app's repository folder instead (`server.shares*`): the move goes onto
- * the server OpsCrew created for that app. For Portainer its certificate is confirmed and its
+ * that app's server. For Portainer its certificate is confirmed and its
  * environments listed, and its host's public address comes from `--portainer-address` or a
  * question. Nothing for a cloud provider.
  */

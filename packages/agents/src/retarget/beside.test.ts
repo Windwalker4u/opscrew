@@ -175,12 +175,6 @@ async function editPlan(h: BesideStart, edit: (plan: DeployPlan) => object): Pro
 
 const REFUSALS: readonly Refusal[] = [
   {
-    what: "a first app on a server the user owns, with today's words",
-    first: { own: true },
-    says: `"${FIRST}" does not run on a server OpsCrew created, so this app can't share it this way.`,
-    hint: "answer the interview's server question with your own server's login instead",
-  },
-  {
     what: "a first app that is not provisioned on this computer",
     change: async (h) => rm(h.first.paths.files.plan),
     says: "has no OpsCrew plan on this computer",
