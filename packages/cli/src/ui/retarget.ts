@@ -76,6 +76,6 @@ export function startQuestion(summary: RetargetSummary): string {
   const downtime =
     summary.expectedDowntimeMinutes === undefined
       ? "no maintenance window"
-      : `about ${summary.expectedDowntimeMinutes} minutes of downtime while the data is copied`;
+      : `about ${summary.expectedDowntimeMinutes} minutes of downtime while the data is copied and the app starts there`;
   return `Start the move to ${to}? ${cost}, with ${downtime}.`;
 }
