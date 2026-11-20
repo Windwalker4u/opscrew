@@ -122,8 +122,17 @@ describe.skipIf(!findExecutable("git"))("FR-3027: the window on a server the mov
     const alone = await pairHarness("hetzner", "own", { cache: true });
     expect(await maintenanceWindow(alone.session, { allowDowntime: true })).toBe("done");
     expect(windowRequest(alone)?.details).toContain(
-      "check the app's health route on the server, and keep its web server stopped until the switch",
+      "and the app started there on that copy and answered",
     );
+    // The deploy on the data copied while the old app serves started it; it stops again then.
+    const lines = trail(alone.events);
+    expect(lines.indexOf(`${NEW_IPV4} stop caddy`)).toBeGreaterThan(
+      lines.indexOf(`${NEW_IPV4} mark copied`),
+    );
+    expect(lines.indexOf(`${NEW_IPV4} stop caddy`)).toBeLessThan(
+      lines.indexOf("approve remote-exec"),
+    );
+    expect(alone.hosts.host(NEW_IPV4).caddy).toBe(false);
 
     const shared = await pairHarness("hetzner", "own", { cache: true });
     // Another app on the user's server serves through the same edge.
@@ -136,9 +145,7 @@ describe.skipIf(!findExecutable("git"))("FR-3027: the window on a server the mov
       },
     });
     expect(await maintenanceWindow(shared.session, { allowDowntime: true })).toBe("done");
-    const details = windowRequest(shared)?.details ?? "";
-    expect(details).toContain("check the app's health route on the server");
-    expect(details).not.toContain("keep its web server stopped");
     expect(trail(shared.events)).not.toContain(`${NEW_IPV4} stop caddy`);
+    expect(shared.reporter.text()).toContain("keeps running: other apps there use it too.");
   });
 });

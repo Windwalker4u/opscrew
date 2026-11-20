@@ -225,8 +225,6 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     expect(h.hosts.host(NEW.ipv4).marker).toBe("copied");
     await side.markMove?.(session, undefined);
     expect(h.hosts.host(NEW.ipv4).marker).toBeUndefined();
-    // A server OpsCrew created for the app shares its edge with no other app.
-    expect(await side.sharesEdge?.(session)).toBe(false);
   });
 
   it("lists the app's data mounts by owner and path: volumes and its own data folders", async () => {

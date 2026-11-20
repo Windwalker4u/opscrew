@@ -153,7 +153,10 @@ describe.skipIf(!findExecutable("git"))("a move that takes the bucket along (US4
     expect(at("rclone sync")).toBeGreaterThan(
       h.events.findIndex((e) => e.type === "remote" && e.host === OLD_IPV4 && e.op === "stop app"),
     );
-    expect(at("rclone sync")).toBeLessThan(at("restore"));
+    // Before the window's restore (the first one copied the database while the app served).
+    expect(at("rclone sync")).toBeLessThan(
+      h.events.findLastIndex((e) => e.type === "remote" && e.op === "restore"),
+    );
     expect([...b.rclone.next.keys()].sort()).toEqual(["a.png", "b.png", "c.pdf"]);
     const sync = b.rclone.runs.find((r) => r.verb === "sync");
     expect(sync?.command).toContain(
@@ -526,14 +529,21 @@ describe.skipIf(!findExecutable("git"))("a move that takes the bucket along (US4
       `${OLD_IPV4} size`,
       `${n} sync`,
     ]);
-    // FR-3027: the window starts the app on the new server with a deploy too.
+    // FR-3027: the app starts on the new server with a deploy while the old app serves; the
+    // window holds the bucket's last copy and the app's start in place.
     expect(h.reporter.text()).toContain(
-      "Expected maintenance window: about 8 minutes, for the bucket's last copy and the deploy that starts the app.",
+      "Expected maintenance window: about 2 minutes, for the bucket's last copy, after about 7 minutes of starting the app there while your app serves.",
+    );
+    expect(h.reporter.text()).toContain(
+      "OpsCrew starts the app on the new Droplet on DigitalOcean with its deploy while your app serves (about 7 minutes)",
     );
     const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(window?.title).toContain("copy what changed in its data to the new Droplet");
     expect(window?.details).toContain("copy what changed in the bucket shop-uploads");
     expect(window?.details).not.toContain("Docker's archive API");
-    expect(window?.details).toContain("About 8 minutes");
+    expect(window?.details).toContain(
+      "About 2 minutes. While your app served, the app started there and answered.",
+    );
     // The window's sync has a timeout of its own, from the bucket's object count.
     expect(b.rclone.runs.find((r) => r.verb === "sync")?.timeoutMs).toBe(8 * 60_000);
   });

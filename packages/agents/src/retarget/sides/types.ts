@@ -44,8 +44,16 @@ export interface SideVolume {
 }
 
 /**
- * The Docker API on a side's server, with the carrier that reads, empties, writes and hashes its
- * volumes (the pinned `busybox`). `close` ends the connection (an SSH session, say).
+ * A side's carrier: the injected one (the move fakes', which build the delta operations over the
+ * carrier's other operations and record what the move asked of them), else the connector's own.
+ */
+export function sideCarrier(session: MoveBase, carrier: VolumeCarrier): VolumeCarrier {
+  return session.services.deltaCarrier?.(carrier) ?? carrier;
+}
+
+/**
+ * The Docker API on a side's server, with the carrier that reads, empties, writes, hashes and
+ * lists its volumes (the pinned `busybox`). `close` ends the connection (an SSH session, say).
  */
 export interface SideDocker {
   client: DockerClient;
@@ -83,17 +91,16 @@ export interface MoveSide {
   /**
    * A server's new side, for a move that copies data (FR-3027): writes the marker in the app's
    * folder ({@link MoveMarker}): `waiting` keeps the deploys there to the app's image and services
-   * until the data is there; `copied` lets the maintenance window's deploy start the app on it,
-   * with the check left to the move; none (removed) once the app answers. Portainer's side has none.
+   * until the data is there; `copied` lets the deploy before the window start the app on the data
+   * copied while the old side serves, with the check left to the move; none (removed) once the
+   * window started the app on the final data and it answers. Portainer's side has none.
    */
   markMove?(session: MoveBase, marker: MoveMarker): Promise<void>;
-  /** A server's side: whether other apps on the server share its edge, which then keeps running. */
-  sharesEdge?(session: MoveBase): Promise<boolean>;
   /** A server's side: what its last deploy left in the app's folder. */
   deployed?(session: MoveBase): Promise<DeployedState>;
   /** Stops the app, its workers and its cron (not its stateful services, not the edge). */
   stopApp(session: MoveBase): Promise<void>;
-  /** Starts what {@link stopApp} stopped. */
+  /** Starts what {@link stopApp} stopped, in place (the app's container and its route stay). */
   startApp(session: MoveBase): Promise<void>;
   /**
    * Stops the named stateful services cleanly (Compose service names), and the app's own
@@ -114,12 +121,12 @@ export interface MoveSide {
   /** The app's data mounts on this side: its services', its own and its monitoring stack's. */
   volumes(session: MoveBase): Promise<SideVolume[]>;
   /**
-   * Portainer's new side in the window, once the data is there and before the app starts: runs the
+   * The new side in the window, once the data is there and before the app starts again: runs the
    * release command of the version deployed there (`app.releaseCommand`, which migrates the
    * copied data forward) when it has one, with a timeout that grows with the `bytes` copied. Its
-   * output never shows: it may quote rows. A server's runs in the window's deploy instead.
+   * output never shows: it may quote rows.
    */
-  release?(session: MoveBase, bytes: number): Promise<void>;
+  release(session: MoveBase, bytes: number): Promise<void>;
   /**
    * `--finish` (the old side) and `--abort` (the new side): removes what the move made or left
    * there after `confirm` (the typed name): a cloud server through its IaC plan; on the user's

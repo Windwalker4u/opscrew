@@ -22,11 +22,13 @@ import { APP_SERVER, monitoringServerName, servicesOn } from "@opscrew/plan-sche
 import { sshArgs } from "../../shared";
 import type { MoveServer } from "../removal";
 import {
+  hasReleaseService,
   isAppHealthy,
   markMove,
   readDeployed,
   reloadEdge,
   requireServicesUp,
+  runRelease,
   type ServerOpOptions,
   serverOps,
   startService,
@@ -41,6 +43,7 @@ import {
   type SideSource,
   type SideVolume,
   STOP_SECONDS,
+  sideCarrier,
 } from "./types";
 
 /** The Compose labels a side reads on containers. */
@@ -221,7 +224,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
       client: inWordsApi(client, host, words),
       // Only the app's own data folder may be bound into a carrier.
       carrier: inWordsApi(
-        volumeCarrier(client, IMAGES.busybox.ref, [dataRoot(session)]),
+        sideCarrier(session, volumeCarrier(client, IMAGES.busybox.ref, [dataRoot(session)])),
         host,
         words,
       ),
@@ -334,8 +337,6 @@ export function sshSide(input: SshSideInput): SshSideParts {
       await inWords(session, () => markMove(remote, marker, opsOf(session)));
     },
 
-    sharesEdge: edgeShared,
-
     async deployed(session) {
       const remote = await remoteOf(session);
       return inWords(session, () => readDeployed(remote, opsOf(session)));
@@ -374,6 +375,15 @@ export function sshSide(input: SshSideInput): SshSideParts {
         edgeProxy({ ...session.plan, target: sideTarget(session, input.which) }),
         plan.app.name,
       );
+    },
+
+    async release(session, bytes) {
+      const remote = await remoteOf(session);
+      const ops = opsOf(session);
+      await inWords(session, async () => {
+        // The version deployed there decides: its compose file has a `release` service or not.
+        if (await hasReleaseService(remote, ops)) await runRelease(remote, bytes, ops);
+      });
     },
 
     async volumes(session) {

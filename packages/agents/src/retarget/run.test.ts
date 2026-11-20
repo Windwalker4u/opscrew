@@ -47,6 +47,15 @@ import { maintenanceWindow } from "./window";
 const applies = (h: MoveHarness) => h.events.filter((e) => e.type === "apply");
 const ops = (h: MoveHarness, host: string, op: string) =>
   h.events.filter((e) => e.type === "remote" && e.host === host && e.op === op).length;
+/** How often the fakes saw `op` on `host` once the maintenance window was asked for. */
+const windowOps = (h: MoveHarness, host: string, op: string) => {
+  const asked = h.events.findIndex(
+    (e) => e.type === "approval" && e.kind === "remote-exec" && e.title.startsWith("Maintenance"),
+  );
+  return h.events
+    .slice(asked === -1 ? h.events.length : asked)
+    .filter((e) => e.type === "remote" && e.host === host && e.op === op).length;
+};
 
 const fail = (stderr = "boom"): CommandResult => ({ exitCode: 1, stdout: "", stderr });
 
@@ -72,11 +81,19 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       from: { provider: "hetzner" },
       to: { provider: "digitalocean", location: "fra1" },
       data: [{ owner: "db", key: "/var/lib/postgresql/data", bytes: 52_428_800, copy: true }],
-      // The copy, and the deploy that starts the app on the copied data (FR-3027).
-      expectedDowntimeMinutes: 8,
+      // The first copy and the deploy that starts the app on it (FR-3027) while the app serves;
+      // the window: a minute, and the database's dump and restore.
+      preCopyMinutes: 8,
+      expectedDowntimeMinutes: 2,
     });
     expect(summary?.extraMonthly.currency).toBe("USD");
-    expect(summary?.steps).toHaveLength(6);
+    expect(summary?.steps).toHaveLength(7);
+    expect(summary?.steps[3]).toBe(
+      "While your app serves (about 8 minutes): copy its data (50.0 MB) to the new Droplet on DigitalOcean, then start the app there on that copy with the deploy workflow and check it.",
+    );
+    expect(summary?.steps[4]).toBe(
+      "Maintenance window (about 2 minutes): stop the app on the old server on Hetzner Cloud, copy what changed in its data since to the new Droplet on DigitalOcean and start the app there again.",
+    );
 
     const n = h.newServer.ipv4;
     expect(trail(h.events)).toEqual([
@@ -89,32 +106,43 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       "approve github-secrets",
       "dispatch main",
       `${n} stop caddy`,
+      // While the old app serves: the database copied by its dump (the new server's Postgres keeps
+      // running: its database is restored, not copied), then the image deployed there, without a
+      // build, on that copy, the check from outside left to the move: its edge stopped again.
+      `${n} stop app`,
+      `${OLD_IPV4} dump`,
+      `${n} empty db`,
+      `${n} restore`,
+      `${n} mark copied`,
+      `dispatch main sha256:${"e".repeat(12)}`,
+      `${n} stop caddy`,
+      // The window: the database dumped and restored again, the app started again in place, no
+      // workflow run; once it answers, the marker goes.
       "approve remote-exec",
       `${OLD_IPV4} stop app`,
       `${OLD_IPV4} dump`,
       `${OLD_IPV4} stop db`,
-      // The new server's Postgres keeps running: its database is restored, not copied.
       `${n} stop app`,
       `${n} empty db`,
       `${n} restore`,
-      // The image deployed there, without a build, on the copied data, the check from outside
-      // left to the move: its edge stopped again, the app answers there, then the marker goes.
-      `${n} mark copied`,
-      `dispatch main sha256:${"e".repeat(12)}`,
-      `${n} stop caddy`,
+      `${n} start app`,
       `${n} remove marker`,
       "approve iac-apply",
       "apply updates=2",
       `${n} start caddy`,
     ]);
-    // No deploy ran during the window: they were paused, and resumed afterwards.
+    // No push deploy ran during the first copy or the window: they were paused, and resumed
+    // after each; no workflow ran inside the window.
     const actions = h.audit.entries.map((e) => e.action);
-    const paused = actions.findIndex((a) => a.startsWith("pause the deploys of"));
-    expect(paused).toBeGreaterThanOrEqual(0);
-    expect(paused).toBeLessThan(actions.indexOf("dump database"));
-    expect(actions.findIndex((a) => a.startsWith("resume the deploys of"))).toBeGreaterThan(
-      actions.indexOf("deploy workflow"),
-    );
+    const pauses = actions.flatMap((a, i) => (a.startsWith("pause the deploys of") ? [i] : []));
+    const resumes = actions.flatMap((a, i) => (a.startsWith("resume the deploys of") ? [i] : []));
+    expect(pauses).toHaveLength(2);
+    expect(resumes).toHaveLength(2);
+    expect(pauses[0]).toBeLessThan(actions.indexOf("dump database"));
+    expect(resumes[0]).toBeGreaterThan(actions.indexOf("deploy workflow"));
+    const opened = actions.indexOf("maintenance window");
+    expect(opened).toBeGreaterThan(resumes[0] ?? Infinity);
+    expect(actions.slice(opened)).not.toContain("dispatch workflow");
     expect(h.github.variables.has("OPSCREW_DEPLOY_PAUSED")).toBe(false);
     // The dump volume is gone from both servers.
     for (const ip of [OLD_IPV4, n]) {
@@ -244,14 +272,15 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       expect((await move(h))?.step).toBe(step);
       const result = await run(h);
       expect(result).toMatchObject({ step: "switched", done: true });
-      // Nothing done twice: one rename, one create, one DNS switch, one copy, one deploy.
+      // Nothing done twice: one rename, one create, one DNS switch, one copy while the app serves
+      // and one in the window, one deploy.
       expect(trail(h.events).filter((line) => line.startsWith("apply"))).toEqual([
         "apply moves=3",
         "apply creates=4",
         "apply updates=2",
       ]);
-      expect(ops(h, OLD_IPV4, "dump")).toBe(1);
-      // The deploy before the copy, and the one on the copied data.
+      expect(ops(h, OLD_IPV4, "dump")).toBe(2);
+      // The deploy before the copy, and the one on the data copied while the app serves.
       expect(h.github.runs).toHaveLength(2);
       expectGated(h.events);
       const n = h.newServer.ipv4;
@@ -302,8 +331,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     { what: "emptying the new database", on: "new", op: "empty db" },
     { what: "the restore", on: "new", op: "restore" },
     { what: "deleting the old dump volume", on: "old", op: "DELETE volume" },
-    { what: "letting the deploys start the app", on: "new", op: "mark copied" },
+    { what: "starting the new app again", on: "new", op: "start app" },
     { what: "the health check", on: "new", op: "health" },
+    { what: "removing the move's marker", on: "new", op: "remove marker" },
   ] as const;
 
   it.each(WINDOW_FAILURES)(
@@ -377,10 +407,10 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.message).toContain("db did not stop cleanly on the old server on Hetzner Cloud");
     expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
-    // Stopped with 120 seconds to stop cleanly; nothing reached the new side.
+    // Stopped with 120 seconds to stop cleanly; nothing of the window reached the new side.
     expect(ops(h, OLD_IPV4, "stop db")).toBe(1);
-    expect(ops(h, n, "restore")).toBe(0);
-    expect(ops(h, n, "empty db")).toBe(0);
+    expect(windowOps(h, n, "restore")).toBe(0);
+    expect(windowOps(h, n, "empty db")).toBe(0);
     expect((await move(h))?.step).toBe("deployed");
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
 
@@ -388,12 +418,23 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
   });
 
-  it("T831 and FR-3027: with a release command the app starts only after the copy, the command run on the copied data", async () => {
+  it("T831 and FR-3027: with a release command the app starts only on copied data, the command run on it again in the window", async () => {
     const h = await moveHarness({ release: true });
     const n = h.newServer.ipv4;
     const result = await run(h);
     expect(result).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events);
+    // While the old app serves, the deploy of the image there runs the release command on the
+    // database's copy and starts the app (no release run of OpsCrew's own).
+    const first = lines.indexOf(`${n} restore`);
+    expect(lines.slice(first, lines.indexOf("approve remote-exec"))).toEqual([
+      `${n} restore`,
+      `${n} mark copied`,
+      `dispatch main sha256:${"e".repeat(12)}`,
+      `${n} stop caddy`,
+    ]);
+    // The window: the release command on the final data, the app started again in place, no
+    // workflow run.
     const from = lines.indexOf(`${OLD_IPV4} stop app`);
     expect(lines.slice(from, lines.indexOf(`${n} remove marker`) + 1)).toEqual([
       `${OLD_IPV4} stop app`,
@@ -402,28 +443,33 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${n} stop app`,
       `${n} empty db`,
       `${n} restore`,
-      `${n} mark copied`,
-      `dispatch main sha256:${"e".repeat(12)}`,
-      `${n} stop caddy`,
+      `${n} release`,
+      `${n} start app`,
       `${n} remove marker`,
     ]);
-    // The old data, migrated forward by the deploy of the version on the new server.
+    // The old data, migrated forward by the version on the new server, once on the final data.
     expect(h.hosts.host(n)).toMatchObject({ db: "orders before the move (migrated)", app: true });
     const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
     expect(window?.details).toContain("recreate the database empty and restore the dump");
     expect(window?.details).toContain(
-      `run the deploy workflow (opscrew-deploy.yml on main) with the image deployed there (sha256:${"e".repeat(12)}), without a build: it runs the release command (app.releaseCommand) on the copied data, then starts the app, its workers and cron`,
+      "run the release command (app.releaseCommand) on the final data, which migrates it to the version deployed there",
     );
+    expect(window?.details).toContain(
+      "start the app again, its workers and cron, then check its health route",
+    );
+    expect(window?.details).not.toContain("deploy workflow");
     expect(window?.details).not.toContain("--clean");
     const actions = h.audit.entries.map((e) => e.action);
-    expect(actions).toContain("restore database");
-    expect(actions.indexOf("let the deploys start the app on its data")).toBeGreaterThan(
-      actions.indexOf("restore database"),
+    const opened = actions.indexOf("maintenance window");
+    expect(actions.indexOf("restore database")).toBeLessThan(
+      actions.indexOf("let the deploys start the app on its data"),
     );
-    // The marker goes only once the app answers there, before the window ends.
+    expect(actions.indexOf("deploy workflow")).toBeLessThan(opened);
+    // The marker goes only once the app answers there on the final data, before the window ends.
     expect(actions.indexOf("remove the move's marker")).toBeGreaterThan(
-      actions.indexOf("deploy workflow"),
+      actions.lastIndexOf("run release command"),
     );
+    expect(actions.lastIndexOf("run release command")).toBeGreaterThan(opened);
     expect(actions.indexOf("remove the move's marker")).toBeLessThan(
       actions.indexOf("retarget migrated"),
     );
@@ -442,7 +488,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const n = h.newServer.ipv4;
     const result = await run(h);
     expect(result).toMatchObject({ step: "switched", done: true });
-    // The deploy before the copy left only the image and the services; the window's ran it all.
+    // The deploy before the copy left only the image and the services; the one on the database's
+    // copy, made while the old app serves, ran it all, and the window ran the command again.
+    expect(ops(h, n, "release")).toBe(1);
     expect(h.audit.entries).toContainEqual(
       expect.objectContaining({
         action: "retarget deployed",
@@ -465,10 +513,10 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expectGated(h.events);
   });
 
-  it("FR-3027: a failed deploy on the copied data rolls back the window, the new server waiting for the data again", async () => {
+  it("FR-3103: a failed deploy on the data copied while the app serves stops before the window, the new server waiting for its data again", async () => {
     const h = await moveHarness({ release: true });
     const n = h.newServer.ipv4;
-    // The release command fails on the copy, in the window's deploy.
+    // The release command fails on the copy, in the deploy before the window.
     h.hosts.fail = (ip, op) => {
       if (ip === n && op === "mark copied") h.github.conclusion = "failure";
       return undefined;
@@ -476,50 +524,51 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toBe(
-      "The maintenance window failed: The deploy workflow did not succeed (failure): https://github.com/acme/shop/actions/runs/99. It ran on the new Droplet on DigitalOcean only; your users' data on the old server on Hetzner Cloud is untouched. The app on the old server on Hetzner Cloud runs again with its data unchanged, and nothing else changed.",
+      "Copying the app's data to the new Droplet on DigitalOcean while your app serves failed: The deploy workflow did not succeed (failure): https://github.com/acme/shop/actions/runs/99. It ran on the new Droplet on DigitalOcean only; your users' data on the old server on Hetzner Cloud is untouched. The app on the old server on Hetzner Cloud kept serving: nothing there was stopped.",
     );
     expect(error.hint).toContain(
       "the release command's output stays on the new Droplet on DigitalOcean",
     );
+    expect(error.hint).toContain("it copies the data again while your app serves");
     expect(error.hint).toContain("opscrew retarget --abort");
     const lines = trail(h.events);
-    // The new side stops again, holds the app for its data, its edge and its database emptied of
-    // the restore; the old side starts.
+    // The new side stops again and holds the app for its data, its edge stopped.
     expect(lines.slice(lines.lastIndexOf(`dispatch main sha256:${"e".repeat(12)}`))).toEqual([
       `dispatch main sha256:${"e".repeat(12)}`,
       `${n} stop app`,
       `${n} mark waiting`,
       `${n} stop caddy`,
-      `${n} empty db`,
-      `${OLD_IPV4} start db`,
-      `${OLD_IPV4} start app`,
     ]);
+    // No downtime: the window was never asked for, and the old app never stopped.
+    expect(windowStarted(h)).toBe(false);
+    expect(ops(h, OLD_IPV4, "stop app")).toBe(0);
     const state = await move(h);
     expect(state?.step).toBe("deployed");
     expect(state?.oldAppStoppedAt).toBeUndefined();
-    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-    expect(h.hosts.host(n)).toMatchObject({
-      app: false,
-      caddy: false,
-      marker: "waiting",
-      db: "empty",
-    });
+    expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: true, db: "orders before the move" });
+    expect(h.hosts.host(n)).toMatchObject({ app: false, caddy: false, marker: "waiting" });
     for (const ip of [OLD_IPV4, n]) {
       expect(h.hosts.docker(ip).volumes.has("opscrew-move-dump-shop")).toBe(false);
     }
     expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
-    // The window names the sides in words, never their addresses.
-    const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
-    for (const text of [error.message, error.hint, window?.title, window?.details]) {
+    expect(h.audit.entries).toContainEqual(
+      expect.objectContaining({ action: "copy while the app serves", decision: "refused" }),
+    );
+    // The sides in words, never their addresses, from the copy while the app serves on.
+    const printed = h.reporter.text();
+    const copying = printed.slice(printed.indexOf("OpsCrew copies the app's data"));
+    expect(copying).toContain("while your app serves (about 8 minutes)");
+    for (const text of [error.message, error.hint, copying, JSON.stringify(h.audit.entries)]) {
       expect(text).not.toContain(n);
       expect(text).not.toContain(OLD_IPV4);
     }
 
-    // A re-run repeats the window from a fresh, empty database.
+    // A re-run copies the data again while the app serves, then runs the window.
     h.hosts.fail = undefined;
     h.github.conclusion = "success";
     const result = await run(h);
     expect(result).toMatchObject({ step: "switched", done: true });
+    expect(ops(h, OLD_IPV4, "dump")).toBe(3);
     expect(h.hosts.host(n).db).toBe("orders before the move (migrated)");
     expectGated(h.events);
   });
@@ -535,18 +584,21 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const n = h.newServer.ipv4;
     let checks = 0;
     h.hosts.fail = (ip, op) => {
-      // The old side's own check passes; the new side's check of the copy fails, once.
-      if (ip !== n || op !== "verify dump" || checks++ > 0) return undefined;
+      // The old side's own check passes; the new side's check of the window's copy fails, once.
+      if (ip !== n || op !== "verify dump" || !windowStarted(h) || checks++ > 0) return undefined;
       return result;
     };
     const error = await caught(run(h));
     expect(error.message).toContain("The maintenance window failed");
     expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
-    expect(ops(h, n, "empty db")).toBe(0);
-    expect(ops(h, n, "restore")).toBe(0);
-    // The deploy before the copy never ran the release command on the empty database.
-    expect(h.hosts.host(n)).toMatchObject({ db: "empty", marker: "waiting" });
-    expect(h.github.runs).toHaveLength(1);
+    expect(windowOps(h, n, "empty db")).toBe(0);
+    expect(windowOps(h, n, "restore")).toBe(0);
+    // Nothing was dropped: the database holds the copy made while the app served.
+    expect(h.hosts.host(n)).toMatchObject({
+      db: "orders before the move (migrated)",
+      marker: "waiting",
+    });
+    expect(h.github.runs).toHaveLength(2);
     const state = await move(h);
     expect(state?.step).toBe("deployed");
     expect(state?.oldAppStoppedAt).toBeUndefined();
@@ -653,7 +705,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(error.message).not.toContain(n);
     h.engine.failApply = undefined;
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
-    expect(ops(h, OLD_IPV4, "dump")).toBe(2);
+    // Each run: one dump while the app serves, one in the window.
+    expect(ops(h, OLD_IPV4, "dump")).toBe(4);
     expect(h.engine.dnsServer()?.ipv4).toBe(n);
     expect(h.hosts.host(n)).toMatchObject({ caddy: true, db: "orders before the move" });
   });
@@ -675,7 +728,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
 
     h.engine.failApply = undefined;
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
-    expect(ops(h, OLD_IPV4, "dump")).toBe(2);
+    // Each run: one dump while the app serves, one in the window.
+    expect(ops(h, OLD_IPV4, "dump")).toBe(4);
     expectGated(h.events);
   });
 
@@ -901,7 +955,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       "the app stays offline from then until your DNS change has reached your users",
     );
     const printed = h.reporter.text();
-    expect(printed).toContain("for the copy, plus the time your DNS change takes to reach");
+    expect(printed).toContain(
+      "Expected downtime: about 2 minutes for the last copy, after about 8 minutes of copying while your app serves, plus the time your DNS change takes to reach your users.",
+    );
     expect(printed).toContain("Lower the TTL of those records beforehand");
     expect(printed).toContain("pass `--allow-downtime --dns-switched` together only when");
     const approval = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
@@ -934,7 +990,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(summary?.steps.join(" ")).not.toContain("offline from then");
     expect(h.reporter.text()).not.toContain("TTL");
     const approval = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
-    expect(approval?.title).toContain("(about 8 minutes of downtime)");
+    expect(approval?.title).toContain("(about 2 minutes of downtime)");
+    expect(approval?.title).toContain("(50.0 MB, copied while your app served)");
   });
 
   it("a script resumed after the copy says users are offline while the switch plan waits", async () => {
@@ -956,7 +1013,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
 
     h.cli.approve = hash;
     expect(await run(h, { approvePlanHash: hash })).toMatchObject({ step: "switched", done: true });
-    expect(ops(h, OLD_IPV4, "dump")).toBe(1);
+    // One dump while the app served, one in the window.
+    expect(ops(h, OLD_IPV4, "dump")).toBe(2);
     expectGated(h.events);
   });
 
@@ -1126,18 +1184,24 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     );
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
 
-    // The window needs --allow-downtime; the approved switch plan waits.
+    // The data is copied while the app serves; the window needs --allow-downtime, and the
+    // approved switch plan waits.
     h.cli.approve = dnsSwitch;
     const fourth = await run(h, { approvePlanHash: dnsSwitch });
     expect(fourth).toMatchObject({ step: "deployed", done: false, pendingPlanHash: dnsSwitch });
     expect(fourth.next.join(" ")).toContain("--allow-downtime");
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-    expect(ops(h, OLD_IPV4, "dump")).toBe(0);
+    expect(ops(h, OLD_IPV4, "stop app")).toBe(0);
+    expect(ops(h, OLD_IPV4, "dump")).toBe(1);
+    expect(h.github.runs).toHaveLength(2);
 
+    // The run at the window doesn't copy again first: only the window's dump.
     h.cli.allowDowntime = true;
     const last = await run(h, { approvePlanHash: dnsSwitch, allowDowntime: true });
     expect(last).toMatchObject({ step: "switched", done: true });
     expect(applies(h)).toHaveLength(3);
+    expect(ops(h, OLD_IPV4, "dump")).toBe(2);
+    expect(h.github.runs).toHaveLength(2);
     expectGated(h.events);
   });
 

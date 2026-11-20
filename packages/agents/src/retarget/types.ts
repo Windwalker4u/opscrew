@@ -1,3 +1,4 @@
+import type { VolumeCarrier } from "@opscrew/connector-docker";
 import type { GitHubClient } from "@opscrew/connector-github";
 import type {
   ComputeCatalog,
@@ -86,6 +87,11 @@ export interface RetargetServices
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for wait loops. */
   now?: () => number;
+  /**
+   * The delta operations of each side's carrier, built over its other operations (the move
+   * fakes'); default: the connector's own (`sideCarrier`).
+   */
+  deltaCarrier?: (carrier: VolumeCarrier) => VolumeCarrier;
 }
 
 /** The targets a move goes to: a cloud provider, the user's own server, the user's Portainer. */
@@ -99,7 +105,10 @@ export interface MoveData {
   key: string;
   /** Its size on the old side, in bytes. */
   bytes: number;
-  /** Copied in the maintenance window (true), or the new side starts with it empty (false). */
+  /**
+   * Copied (true: first while the app serves, then what changed in the maintenance window), or
+   * the new side starts with it empty (false).
+   */
   copy: boolean;
 }
 
@@ -117,6 +126,11 @@ export interface RetargetSummary {
   data: MoveData[];
   /** Rough length of the maintenance window; undefined when nothing is copied (no window). */
   expectedDowntimeMinutes?: number;
+  /**
+   * Rough minutes before the window, while the app serves: the first copy of the data, and on a
+   * server the deploy that starts the app there on it. Undefined without either.
+   */
+  preCopyMinutes?: number;
   /**
    * What changes with the new side, each with its reason: the image builder and the deploy
    * strategy design picks for it (empty when they stay). They go into opscrew/plan.yaml.

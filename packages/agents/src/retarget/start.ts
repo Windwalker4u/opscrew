@@ -77,15 +77,14 @@ import {
   FINISH_COMMAND,
   managedDns,
   manualSwitchDowntime,
+  moveMinutes,
   noSideCost,
   RUN_COMMAND,
   sizeText,
   untilSwitched,
-  WINDOW_DEPLOY_MINUTES,
-  windowMinutes,
 } from "./texts";
 import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
-import { mountWords } from "./window";
+import { mountWords, movedPostgres } from "./window";
 
 /** What `--to` takes for a move to a server, in hints: the cloud providers, then `own`. */
 const SERVER_TARGETS: readonly string[] = [...VPS_PROVIDERS, "own"];
@@ -615,15 +614,31 @@ export function moveSummary(
   const old = sideWords(from, "old");
   const fresh = sideWords(to, "new");
   // The bucket's last copy needs the old app stopped too.
-  const copies = data.some((mount) => mount.copy) || bucket !== undefined;
-  const bytes = data.filter((mount) => mount.copy).reduce((sum, mount) => sum + mount.bytes, 0);
-  // On a server the app starts with a deploy of its image once the data is there (FR-3027).
+  const copied = data.filter((mount) => mount.copy);
+  const copies = copied.length > 0 || bucket !== undefined;
+  const bytes = copied.reduce((sum, mount) => sum + mount.bytes, 0);
+  const db = movedPostgres(plan);
+  const postgres = copied
+    .filter((mount) => mount.owner === db)
+    .reduce((sum, mount) => sum + mount.bytes, 0);
+  // On a server the app starts with a deploy of its image once data is there (FR-3027).
   const server = to.provider !== "portainer";
-  const minutes = copies
-    ? windowMinutes(bytes, portainer) +
-      syncMinutes(bucket?.count ?? 0) +
-      (server ? WINDOW_DEPLOY_MINUTES : 0)
+  const release = plan.app.releaseCommand !== undefined;
+  const estimate = copies
+    ? moveMinutes({ files: bytes - postgres, postgres }, { portainer, server })
     : undefined;
+  const minutes =
+    estimate === undefined ? undefined : estimate.window + syncMinutes(bucket?.count ?? 0);
+  // The first copy while the app serves, and on a server the app started there on it.
+  const first = [
+    ...(copied.length > 0 ? [`copy its data (${sizeText(bytes)}) to ${fresh}`] : []),
+    ...(server
+      ? [
+          `start the app there${copied.length > 0 ? " on that copy" : ""} with the deploy workflow${release ? " (which runs the release command)" : ""} and check it`,
+        ]
+      : []),
+  ];
+  const preCopy = estimate !== undefined && first.length > 0 ? estimate.preCopy : undefined;
   const services =
     copies && server ? " (only the app's image and services until its data is copied)" : "";
   // Without managed DNS the old app stays stopped until the user's own switch has taken effect.
@@ -654,8 +669,11 @@ export function moveSummary(
       prepare,
       ...(bucket !== undefined ? [bucketStep(bucket.moves)] : []),
       deploy,
+      ...(preCopy !== undefined
+        ? [`While your app serves (about ${preCopy} minutes): ${first.join(", then ")}.`]
+        : []),
       copies
-        ? `Maintenance window (about ${minutes} minutes for ${sizeText(bytes)}): stop the app on ${old}, copy its data to ${fresh} and start the app there${server ? ` with the deploy workflow${plan.app.releaseCommand !== undefined ? ", which runs the release command on the copied data" : ""}` : ""}${offline}.`
+        ? `Maintenance window (about ${minutes} minutes): stop the app on ${old}, copy what changed in its data since to ${fresh}${release ? ", run the release command on the final data" : ""} and start the app there again${offline}.`
         : "No maintenance window: there is no data to copy.",
       switchSentence(plan, fresh),
       `Keep ${old} (with its app stopped) until you run \`${FINISH_COMMAND}\`; until the switch, \`${ABORT_COMMAND}\` undoes the move.`,
@@ -663,6 +681,7 @@ export function moveSummary(
     extraMonthly: next.cost.monthly,
     data,
     ...(minutes !== undefined ? { expectedDowntimeMinutes: minutes } : {}),
+    ...(preCopy !== undefined ? { preCopyMinutes: preCopy } : {}),
     changes,
   };
 }
@@ -686,6 +705,10 @@ function summaryText(
   const billed = isCloudProvider(summary.from.provider)
     ? `; ${old} is billed until the move is finished`
     : "";
+  const before =
+    summary.preCopyMinutes === undefined
+      ? ""
+      : `, after about ${summary.preCopyMinutes} minutes of ${summary.data.some((mount) => mount.copy) ? "copying" : "starting the app there"} while your app serves`;
   return [
     `Moving ${plan.app.name} from ${targetLine(summary.from, "old")} to ${targetLine(summary.to, "new")}:`,
     ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
@@ -697,7 +720,7 @@ function summaryText(
       ? summary.expectedDowntimeMinutes === undefined
         ? [`Data: none on ${old}, so the app stays online until the switch.`]
         : [
-            `Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes, for the bucket's last copy${summary.to.provider === "portainer" ? "" : " and the deploy that starts the app"}.`,
+            `Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes, for the bucket's last copy${before}.`,
           ]
       : [
           `Data on ${old} (OpsCrew read these sizes with a small read-only container there):`,
@@ -705,10 +728,12 @@ function summaryText(
           ...(summary.expectedDowntimeMinutes !== undefined
             ? downtimeUntilDnsChange(plan, true)
               ? [
-                  `Expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the copy, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
+                  `Expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the last copy${before}, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
                   ...manualSwitchDowntime(plan, { old, fresh }, true),
                 ]
-              : [`Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`]
+              : [
+                  `Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes${before}.`,
+                ]
             : []),
         ]),
     ...bucketLines,

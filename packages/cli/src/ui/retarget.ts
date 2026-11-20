@@ -73,9 +73,14 @@ export function startQuestion(summary: RetargetSummary): string {
     summary.extraMonthly.amount > 0
       ? `It costs ${formatMoney(summary.extraMonthly)} per month extra while both run`
       : "It adds no monthly cost";
+  // The data is copied first while the app serves; the window copies only what changed since.
+  const before =
+    summary.preCopyMinutes === undefined
+      ? ""
+      : `, after about ${summary.preCopyMinutes} minutes of ${summary.data.some((mount) => mount.copy) ? "copying" : "starting the app there"} while your app serves`;
   const downtime =
     summary.expectedDowntimeMinutes === undefined
       ? "no maintenance window"
-      : `about ${summary.expectedDowntimeMinutes} minutes of downtime while the data is copied and the app starts there`;
+      : `about ${summary.expectedDowntimeMinutes} minutes of downtime${before}`;
   return `Start the move to ${to}? ${cost}, with ${downtime}.`;
 }

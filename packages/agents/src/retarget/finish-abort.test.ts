@@ -731,7 +731,8 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(state?.step).toBe("deployed");
     expect(state?.abort).toBeUndefined();
 
-    // Continuing instead copies the database again before any DNS change.
+    // Continuing instead copies the database again (while the app serves, then in the window)
+    // before any DNS change.
     h.services.providers = {
       ...h.services.providers,
       digitalocean: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
@@ -740,12 +741,12 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events.slice(mark));
     const windowAt = lines.indexOf("approve remote-exec");
-    const dumpAt = lines.indexOf(`${OLD_IPV4} dump`);
+    const dumpAt = lines.lastIndexOf(`${OLD_IPV4} dump`);
     const dnsAt = lines.indexOf("apply updates=2");
     expect(windowAt).toBeGreaterThanOrEqual(0);
     expect(dumpAt).toBeGreaterThan(windowAt);
     expect(dnsAt).toBeGreaterThan(dumpAt);
-    expect(h.events.filter((e) => e.type === "remote" && e.op === "dump")).toHaveLength(2);
+    expect(h.events.filter((e) => e.type === "remote" && e.op === "dump")).toHaveLength(4);
   });
 
   it("stops the workers and cron with the app for the copy, and an abort starts them again with it", async () => {
@@ -778,10 +779,13 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     // Nothing of the app writes to the old database while it is copied.
     const stopAt = window.indexOf(`${OLD_IPV4} stop app`);
     expect(window[stopAt + 1]).toBe(`${OLD_IPV4} ${processes} stop worker cron`);
-    expect(window.indexOf(`${OLD_IPV4} dump`)).toBeGreaterThan(stopAt + 1);
-    // On the new server the window's deploy starts them with the app, on the copied data (FR-3027).
-    expect(window).not.toContain(`${h.newServer.ipv4} start worker cron`);
+    expect(window.lastIndexOf(`${OLD_IPV4} dump`)).toBeGreaterThan(stopAt + 1);
+    // On the new server the deploy on the data copied while the old app serves starts them with
+    // the app (FR-3027); the window starts them again with it, in place.
     expect(window).toContain(`dispatch main sha256:${"e".repeat(12)}`);
+    const freshStart = window.lastIndexOf(`${h.newServer.ipv4} start app`);
+    expect(freshStart).toBeGreaterThan(stopAt);
+    expect(window[freshStart + 1]).toBe(`${h.newServer.ipv4} start worker cron`);
 
     const mark = h.events.length;
     await abort(h);
@@ -835,11 +839,12 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events.slice(mark));
     const windowAt = lines.indexOf("approve remote-exec");
-    const dumpAt = lines.indexOf(`${OLD_IPV4} dump`);
+    const dumpAt = lines.lastIndexOf(`${OLD_IPV4} dump`);
     expect(windowAt).toBeGreaterThanOrEqual(0);
     expect(dumpAt).toBeGreaterThan(windowAt);
     expect(lines.indexOf("apply updates=2")).toBeGreaterThan(dumpAt);
-    expect(h.events.filter((e) => e.type === "remote" && e.op === "dump")).toHaveLength(2);
+    // Each run: one dump while the app serves, one in the window.
+    expect(h.events.filter((e) => e.type === "remote" && e.op === "dump")).toHaveLength(4);
   });
 
   it("US2-2: refusing the typed name leaves the move as it was (it can continue)", async () => {

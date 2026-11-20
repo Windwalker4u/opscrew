@@ -119,37 +119,46 @@ describe.skipIf(!findExecutable("git"))(
       );
     });
 
-    it("a window whose deploy checked the app from outside would fail: the domain leads to the stopped old app", async () => {
+    it("a deploy before the window that checked the app from outside would check the old app, which still serves", async () => {
       const h = await moveHarness({ release: true });
       const n = h.newServer.ipv4;
-      // As if the window took the marker away instead of saying the data is copied.
+      // As if the move took the marker away instead of saying the data is copied.
       h.hosts.fail = (ip, op) => {
         if (ip !== n || op !== "mark copied") return undefined;
         h.hosts.host(n).marker = undefined;
         return { exitCode: 0, stdout: "", stderr: "" };
       };
-      const error = await caught(run(h));
-      expect(error.message).toContain(
-        "The maintenance window failed: The deploy workflow did not succeed (failure)",
-      );
-      expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+      const reached: (string | undefined)[] = [];
+      const check = h.github.checkFromOutside;
+      h.github.checkFromOutside = (host) => {
+        reached.push(h.engine.dnsServer()?.ipv4);
+        return check(host);
+      };
+      expect(await run(h)).toMatchObject({ step: "switched", done: true });
+      // Its check went through the domain to the old side: it says nothing of the new one, which
+      // the move checks over SSH instead.
+      expect(reached).toEqual([OLD_IPV4]);
     });
 
-    it("a script stops before the window with the new server waiting for the data, and --abort removes it", async () => {
+    it("a script stops at the window once the app answers on the new server on the data copied while the old one serves, and --abort removes it", async () => {
       const h = await moveHarness({ interactive: false, release: true });
       const n = h.newServer.ipv4;
-      // Without --allow-downtime a script stops right before the window.
+      // Without --allow-downtime a script stops right before the window, the data copied while the
+      // old app serves and the app checked on it there.
       const stopped = await drive(h);
       expect(stopped.step).toBe("deployed");
       expect(stopped.next.join(" ")).toContain("--allow-downtime");
-      expect(h.hosts.host(n)).toMatchObject({ app: false, marker: "waiting", db: "empty" });
-      expect(ops(h, n, "release")).toBe(0);
-      expect(ops(h, n, "health")).toBe(0);
-      // The deploy secrets pointed there after the marker: a push deploys only the services too.
-      const marked = h.events.findIndex((e) => e.type === "remote" && e.op === "mark waiting");
-      expect(marked).toBeLessThan(h.events.findIndex((e) => e.type === "secret"));
-      h.hosts.deploy(n);
-      expect(h.hosts.host(n)).toMatchObject({ app: false, outcome: `waiting ${BUILT_IMAGE}` });
+      // The deploy secrets pointed there after the marker: a push deployed only the services.
+      expect(
+        h.events.findIndex((e) => e.type === "remote" && e.op === "mark waiting"),
+      ).toBeLessThan(h.events.findIndex((e) => e.type === "secret"));
+      expect(h.hosts.host(n)).toMatchObject({
+        app: true,
+        marker: "copied",
+        db: "orders before the move (migrated)",
+      });
+      expect(ops(h, n, "health")).toBeGreaterThan(0);
+      expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: true, db: "orders before the move" });
 
       // --abort deletes the new server, and the marker in its app's folder with it.
       h.deps.interactive = true;

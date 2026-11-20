@@ -5,10 +5,16 @@ import { describe, expect, it } from "vitest";
 import { sshArgs } from "../shared";
 import { ScriptedRunner } from "../testing";
 import {
+  PRISMA_P3018,
+  RELEASE_OUTPUT_FRAGMENTS,
+  SQLALCHEMY_ERROR,
+} from "./__fixtures__/release-output";
+import {
   copyDump,
   databaseSize,
   dumpDatabase,
   dumpPath,
+  hasReleaseService,
   isAppHealthy,
   markMove,
   moveTimeoutMs,
@@ -18,6 +24,7 @@ import {
   removeDump,
   requireServicesUp,
   restoreDatabase,
+  runRelease,
   startService,
   stopService,
   verifyDump,
@@ -661,5 +668,82 @@ describe("a service moving between the app's servers (feature 018)", () => {
     const args = runner.calls[0]?.args ?? [];
     expect(args[args.indexOf("-P") + 1]).toBe("2222");
     expect(error.hint).toContain("then run `opscrew provision` again");
+  });
+});
+
+describe("the release command in the maintenance window", () => {
+  it("finds the release service in the server's compose file", async () => {
+    const remote = new FakeRemote("h", () => ok("app\nrelease\ndb\ncaddy\n"));
+    expect(await hasReleaseService(remote, { redact: identity, folder: FOLDER })).toBe(true);
+    expect(remote.calls).toEqual([
+      {
+        command: "cd /srv/apps/shop && docker compose --profile release config --services",
+        timeoutMs: MIN,
+      },
+    ]);
+    const without = new FakeRemote("h", () => ok("app\ndb\ncaddy\n"));
+    expect(await hasReleaseService(without, { redact: identity, folder: FOLDER })).toBe(false);
+    const similar = new FakeRemote("h", () => ok("app\nrelease-notes\n"));
+    expect(await hasReleaseService(similar, { redact: identity, folder: FOLDER })).toBe(false);
+    const error = await caught(
+      hasReleaseService(new FakeRemote("h", () => fail("no configuration file provided")), {
+        redact: identity,
+        folder: FOLDER,
+      }),
+    );
+    expect(error.message).toContain("read the Compose services on h");
+  });
+
+  it("runs the release service in a one-off container with a size-scaled timeout", async () => {
+    const remote = new FakeRemote("h");
+    await runRelease(remote, 250 * MB, { folder: FOLDER });
+    expect(remote.calls).toEqual([
+      {
+        command: "cd /srv/apps/shop && docker compose run --rm --no-deps -T release",
+        timeoutMs: moveTimeoutMs(250 * MB),
+      },
+    ]);
+  });
+
+  it.each([
+    { tool: "Prisma P3018", stderr: PRISMA_P3018 },
+    { tool: "SQLAlchemy", stderr: SQLALCHEMY_ERROR },
+  ])("a failed release ($tool) shows the exit code and none of its output", async ({ stderr }) => {
+    const remote = new FakeRemote("198.51.100.7", () => ({
+      exitCode: 1,
+      stdout: stderr,
+      stderr,
+    }));
+    const error = await caught(runRelease(remote, 0, { folder: FOLDER }));
+    expect(error.code).toBe("COMMAND_FAILED");
+    expect(error.message).toBe(
+      "Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on 198.51.100.7: it exited with code 1 (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).",
+    );
+    expect(error.hint).toContain(
+      "`ssh deploy@198.51.100.7`, then `cd /srv/apps/shop && docker compose run --rm --no-deps -T release`",
+    );
+    expect(error.hint).toContain("app.releaseCommand");
+    for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
+      expect(`${error.message}\n${error.hint}`).not.toContain(fragment);
+    }
+  });
+
+  it("a release that times out or loses the connection says so plainly", async () => {
+    const slow = new FakeRemote("h", () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: SQLALCHEMY_ERROR,
+      timedOut: true,
+    }));
+    const late = await caught(runRelease(slow, 0, { folder: FOLDER }));
+    expect(late.message).toContain("it did not finish within 5 minutes");
+    const broken = new FakeRemote("h", () => {
+      throw new Error(SQLALCHEMY_ERROR);
+    });
+    const lost = await caught(runRelease(broken, 0, { folder: FOLDER }));
+    expect(lost.message).toContain("the SSH connection failed");
+    for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
+      expect(`${late.message}${late.hint}${lost.message}${lost.hint}`).not.toContain(fragment);
+    }
   });
 });

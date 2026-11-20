@@ -123,22 +123,57 @@ export function downtimeMinutes(databaseBytes: number): number {
 const PORTAINER_BYTES_PER_MINUTE = 15 * 1024 * 1024 * 60;
 
 /**
- * Rough length of a move's maintenance window for `bytes` of data copied through this computer:
- * {@link downtimeMinutes} between two servers over SSH, or two minutes plus one per started 900 MB
- * when a side is the user's Portainer (about 15 MB/s through its Docker proxy).
+ * The minutes `bytes` take through this computer: one per started 100 MB between two servers over
+ * SSH, one per started 900 MB when a side is the user's Portainer (about 15 MB/s through its
+ * Docker proxy).
  */
+function copyMinutes(bytes: number, portainer: boolean): number {
+  return Math.ceil(Math.max(0, bytes) / (portainer ? PORTAINER_BYTES_PER_MINUTE : HUNDRED_MB));
+}
+
+/** Rough length of a copy of `bytes` of data through this computer: two minutes plus its copy. */
 export function windowMinutes(bytes: number, portainer: boolean): number {
-  if (!portainer) return downtimeMinutes(bytes);
-  return 2 + Math.ceil(Math.max(0, bytes) / PORTAINER_BYTES_PER_MINUTE);
+  return 2 + copyMinutes(bytes, portainer);
 }
 
 /**
- * The minutes a maintenance window spends on the new side's deploy when that side is a server
- * (FR-3027): the deploy workflow's run with the image's digest builds nothing, so it is the check
- * of the image, the deploy job's steps (the release command, the switch) and its 30-second check of
- * the workers.
+ * The minutes the new side's deploy takes when that side is a server (FR-3027): the deploy
+ * workflow's run with the image's digest builds nothing, so it is the check of the image, the
+ * deploy job's steps (the release command, the switch) and its 30-second check of the workers.
  */
-export const WINDOW_DEPLOY_MINUTES = 5;
+export const DEPLOY_RUN_MINUTES = 5;
+
+/** The share of a move's files that its estimate counts as changed between the copies. */
+const CHANGED_SHARE = 0.05;
+
+/** A move's data by how the maintenance window copies it. */
+export interface MoveSizes {
+  /** The mounts copied as files: only what changed since the first copy goes in the window. */
+  files: number;
+  /** Postgres's data folder, which counts for its dump: dumped and restored whole in the window. */
+  postgres: number;
+}
+
+/**
+ * Rough minutes of a move with data, apart: the first copy of all of it while the app serves
+ * (`preCopy`, {@link windowMinutes}, plus the deploy that starts the app on that copy when the new
+ * side is a `server`), and the maintenance window after it (`window`): a minute, plus Postgres's
+ * dump and restore, plus a twentieth of the files for what changed since.
+ */
+export function moveMinutes(
+  sizes: MoveSizes,
+  sides: { portainer: boolean; server: boolean },
+): { preCopy: number; window: number } {
+  const { files, postgres } = sizes;
+  return {
+    preCopy:
+      windowMinutes(files + postgres, sides.portainer) + (sides.server ? DEPLOY_RUN_MINUTES : 0),
+    window:
+      1 +
+      copyMinutes(postgres, sides.portainer) +
+      copyMinutes(files * CHANGED_SHARE, sides.portainer),
+  };
+}
 
 /** What starting each kind of service empty loses, in a few words. */
 const LOSES: Partial<Record<string, string>> = {

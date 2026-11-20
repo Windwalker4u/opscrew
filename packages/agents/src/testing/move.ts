@@ -3,11 +3,18 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { duplexPair, Readable } from "node:stream";
 import {
+  type ManifestEntry,
+  type TarEntry,
+  tarStream,
+  type VolumeCarrier,
+} from "@opscrew/connector-docker";
+import {
   type FakeContainer,
   FakeDocker,
   type FakeFile,
   type FakeRun,
   fakeDialStdio,
+  parseTar,
 } from "@opscrew/connector-docker/testing";
 import {
   COMPOSE_PROJECT_LABEL,
@@ -41,6 +48,7 @@ import {
   CostLedger,
   MemoryApprovalStore,
   MemoryAuditLog,
+  OpsCrewError,
   ProjectStateStore,
   Redactor,
   resolveProjectPaths,
@@ -659,6 +667,9 @@ function opOf(command: string): string {
   if (command.includes("pg_restore")) return "restore";
   if (command.includes("DROP DATABASE")) return "empty db";
   if (command.startsWith(`rm -f /srv/apps/${APP}/opscrew-move.dump`)) return "rm dump";
+  // The release command in the window, in a one-off run of the deployed compose file's service.
+  if (command.endsWith("config --services")) return "services?";
+  if (command.endsWith("docker compose run --rm --no-deps -T release")) return "release";
   // A move's marker (FR-3027), what the last deploy left, and the services it started.
   if (command.endsWith(`: > /srv/apps/${APP}/.move.waiting`)) return "mark waiting";
   if (command.endsWith(`copied > /srv/apps/${APP}/.move.waiting`)) return "mark copied";
@@ -670,6 +681,114 @@ function opOf(command: string): string {
 
 /** Where the app's services keep their data on a server OpsCrew deploys to over SSH. */
 const DATA_ROOT = `/srv/data/${APP}`;
+
+/** What the move asked of the carriers' delta operations ({@link fakeDeltaCarrier}), in order. */
+export type DeltaCall =
+  | { op: "volumeManifest" }
+  | { op: "readPaths"; paths: string[] }
+  | { op: "updateVolume"; paths: string[]; remove: string[] };
+
+/** A stream's bytes, whole. */
+async function bytesOf(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+/** An archive entry's path as a manifest names it: `data/` is `.`, `data/a/b` is `./a/b`. */
+function manifestPath(name: string): string {
+  const inside = name.replace(/\/$/, "").slice("data".length + 1);
+  return inside === "" ? "." : `./${inside}`;
+}
+
+/** An archive entry's facts as the carrier's manifest gives them (`stat`'s words and octal mode). */
+function manifestEntry(entry: TarEntry): ManifestEntry {
+  const path = manifestPath(entry.name);
+  const facts = { path, mode: entry.mode.toString(8), uid: entry.uid, gid: entry.gid };
+  if (entry.type === "dir") return { ...facts, type: "directory", size: 0 };
+  if (entry.type === "symlink") {
+    const target = entry.target ?? "";
+    return { ...facts, type: "symbolic link", size: target.length, target };
+  }
+  const data = entry.data ?? Buffer.alloc(0);
+  return {
+    ...facts,
+    type: data.length === 0 ? "regular empty file" : "regular file",
+    size: data.length,
+    sha256: createHash("sha256").update(data).digest("hex"),
+  };
+}
+
+/**
+ * `carrier` with its delta operations built over its other four, as the connector's carrier
+ * behaves, so the move fakes record what the move asked (`calls`) and can refuse a delta: the
+ * manifest from a whole read of the source (a name with a line break refused, `INVALID_INPUT`),
+ * the paths' archive (with the root and every folder above them) filtered out of a whole read
+ * (refused, `INVALID_INPUT`, without `room` to gather them), and the update as the source read
+ * whole, `remove` taken out with their content, the archive put over the rest, and the result
+ * written whole.
+ */
+export function fakeDeltaCarrier(
+  carrier: VolumeCarrier,
+  calls: DeltaCall[],
+  /** Whether the source's server has the free disk to gather the changed paths. */
+  room: () => boolean = () => true,
+): VolumeCarrier {
+  const entries = async (source: Parameters<VolumeCarrier["readVolume"]>[0]) =>
+    parseTar(await bytesOf(await carrier.readVolume(source)));
+  return {
+    readVolume: (source) => carrier.readVolume(source),
+    writeVolume: (source, archive) => carrier.writeVolume(source, archive),
+    volumeDigest: (source) => carrier.volumeDigest(source),
+    sourceSize: (source) => carrier.sourceSize(source),
+    async volumeManifest(source) {
+      calls.push({ op: "volumeManifest" });
+      const found = await entries(source);
+      if (found.some((entry) => entry.name.includes("\n"))) {
+        throw new OpsCrewError(
+          "INVALID_INPUT",
+          "A name in the data holds a line break, which OpsCrew's list of changes can't hold.",
+          { hint: "Rename the file, or copy the data whole." },
+        );
+      }
+      return found.map(manifestEntry).sort((a, b) => (a.path < b.path ? -1 : 1));
+    },
+    async readPaths(source, paths) {
+      calls.push({ op: "readPaths", paths: [...paths] });
+      if (!room()) {
+        throw new OpsCrewError(
+          "INVALID_INPUT",
+          "The server has too little free disk to gather the changed files.",
+          { hint: "Free some disk there, or copy the data whole." },
+        );
+      }
+      // The root and each folder above a path come along, with the source's owners and modes.
+      const wanted = new Set(["."]);
+      for (const path of paths) {
+        const parts = path.split("/");
+        for (let end = 2; end <= parts.length; end++) wanted.add(parts.slice(0, end).join("/"));
+      }
+      return tarStream((await entries(source)).filter((e) => wanted.has(manifestPath(e.name))));
+    },
+    async updateVolume(source, archive, remove) {
+      const incoming = parseTar(await bytesOf(archive));
+      calls.push({
+        op: "updateVolume",
+        paths: incoming.map((entry) => manifestPath(entry.name)),
+        remove: [...remove],
+      });
+      const merged = new Map((await entries(source)).map((e) => [manifestPath(e.name), e]));
+      for (const path of remove) {
+        for (const key of [...merged.keys()]) {
+          if (key === path || key.startsWith(`${path}/`)) merged.delete(key);
+        }
+      }
+      for (const entry of incoming) merged.set(manifestPath(entry.name), entry);
+      const sorted = [...merged.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
+      await carrier.writeVolume(source, tarStream(sorted));
+    },
+  };
+}
 
 /**
  * The two servers' shells (Compose services, the database marker) and their Docker APIs, which a
@@ -878,6 +997,18 @@ export class FakeHosts {
   /** The release command fails on an empty database (the framework's `migrate` needs its tables). */
   releaseNeedsData = false;
 
+  /**
+   * Whether the release command finds the data it needs on `ip`: by default, the database marker
+   * holds something.
+   */
+  hasData: (ip: string) => boolean = (ip) => this.host(ip).db !== "empty";
+
+  /** What the move asked of the carriers' delta operations ({@link fakeDeltaCarrier}), in order. */
+  readonly deltas: DeltaCall[] = [];
+
+  /** The old side's server has too little free disk to gather a mount's changed paths. */
+  lowDisk = false;
+
   constructor(readonly events: MoveEvent[]) {}
 
   host(ip: string): FakeHost {
@@ -961,6 +1092,19 @@ export class FakeHosts {
       case "rm dump":
         h.dump = undefined;
         return ok();
+      case "services?":
+        return ok(this.release ? "app\nrelease\ndb\ncaddy\n" : "app\ndb\ncaddy\n");
+      case "release":
+        if (!this.release) return { exitCode: 1, stdout: "", stderr: "no such service: release" };
+        if (this.releaseNeedsData && !this.hasData(ip)) {
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: "SQLSTATE[42S02]: Base table or view not found",
+          };
+        }
+        h.db = `${h.db} (migrated)`;
+        return ok();
       case "mark waiting":
         h.marker = "waiting";
         return ok();
@@ -1027,7 +1171,7 @@ export class FakeHosts {
       return "held";
     }
     if (this.release) {
-      if (h.db === "empty" && this.releaseNeedsData) {
+      if (this.releaseNeedsData && !this.hasData(ip)) {
         h.outcome = "started";
         return "failed";
       }
@@ -1370,6 +1514,7 @@ export async function moveFakes(
       monotonic += ms;
     },
     now: () => monotonic,
+    deltaCarrier: (carrier) => fakeDeltaCarrier(carrier, hosts.deltas, () => !hosts.lowDisk),
   };
   return {
     env,

@@ -552,12 +552,18 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     expect(prompts.calls[1]?.message).toMatch(/^Copy db's data \(50\.0 MB\) to DigitalOcean\? /);
     expect(prompts.calls[1]?.initial).toBe(true);
     expect(prompts.calls[2]?.message).toBe(
-      "Start the move to DigitalOcean? It costs $31.20 per month extra while both run, with about 8 minutes of downtime while the data is copied and the app starts there.",
+      "Start the move to DigitalOcean? It costs $31.20 per month extra while both run, with about 2 minutes of downtime, after about 8 minutes of copying while your app serves.",
     );
-    // The summary lists each data mount with its size, and the window's minutes.
+    // The summary lists each data mount with its size, the copy while the app serves and the
+    // window's minutes, apart.
     expect(ctx.output).toContain("Extra cost while both run");
     expect(ctx.output).toContain("Db's data at /var/lib/postgresql/data: 50.0 MB, copied");
-    expect(ctx.output).toContain("Expected maintenance window: about 8 minutes.");
+    expect(ctx.output).toContain(
+      "While your app serves (about 8 minutes): copy its data (50.0 MB) to the new Droplet on DigitalOcean",
+    );
+    expect(ctx.output).toContain(
+      "Expected maintenance window: about 2 minutes, after about 8 minutes of copying while your app serves.",
+    );
     expect(ctx.errors).toContain("The move was not started. Nothing was changed.");
     expect(move.engine.applied).toEqual([]);
     expect(approvals.requests).toEqual([]);

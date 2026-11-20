@@ -383,7 +383,8 @@ describe.skipIf(!findExecutable("git"))("startMove onto the user's own server or
       to: { provider: "own", arch: "amd64", access: "public", edge: "caddy" },
       extraMonthly: { amount: 0 },
       data: [{ owner: "db", key: "/var/lib/postgresql/data", copy: true }],
-      expectedDowntimeMinutes: 8,
+      preCopyMinutes: 8,
+      expectedDowntimeMinutes: 2,
     });
     expect(summary?.steps[1]).toContain("Set up your new server for the app with a host plan");
     expect(h.reporter.text()).toContain(
@@ -432,8 +433,10 @@ describe.skipIf(!findExecutable("git"))("startMove onto the user's own server or
       environmentId: 3,
       web: { mode: "caddy", records: true },
     });
-    // About 15 MB/s through Portainer's proxy: 50 MB fit in its first minute.
-    expect(summary?.expectedDowntimeMinutes).toBe(3);
+    // About 15 MB/s through Portainer's proxy: 50 MB fit in a first minute, copied while the
+    // app serves, and again in the window.
+    expect(summary?.preCopyMinutes).toBe(3);
+    expect(summary?.expectedDowntimeMinutes).toBe(2);
     expect(summary?.steps[2]).toContain("set up the app's stacks there");
     const recorded = await readServerAddresses(h.paths);
     expect(recorded.portainer).toMatchObject({ environmentId: 3 });

@@ -72,7 +72,7 @@ export function trail(events: readonly MoveEvent[]): string[] {
       }
       case "remote":
         // Read-only checks are left out.
-        return ["ready?", "health", "verify dump", "deployed?", "services up?"].includes(e.op)
+        return ["ready?", "health", "verify dump", "deployed?", "services up?", "services?"].includes(e.op)
           ? []
           : [`${e.host} ${e.op}`];
       case "scp":

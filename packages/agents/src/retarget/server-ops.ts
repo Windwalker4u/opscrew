@@ -460,9 +460,65 @@ export async function restoreDatabase(
   );
 }
 
+/** The Compose service that runs `app.releaseCommand` (only `docker compose run` starts it). */
+const RELEASE_SERVICE = "release";
+const RELEASE_COMMAND = `docker compose run --rm --no-deps -T ${RELEASE_SERVICE}`;
+
+/**
+ * True when the app's `compose.yaml` on the server defines the `release` service: the deployed
+ * version has a release command, and its deploy workflow runs it before each new version starts.
+ */
+export async function hasReleaseService(
+  remote: RemoteExec,
+  options: ServerOpOptions,
+): Promise<boolean> {
+  const result = await runStep(
+    remote,
+    `cd ${options.folder} && docker compose --profile ${RELEASE_SERVICE} config --services`,
+    MINUTE,
+    { what: "read the Compose services", hint: composePsHint(remote.host, options) },
+    options.redact,
+  );
+  return result.stdout.split(/\r?\n/).some((line) => line.trim() === RELEASE_SERVICE);
+}
+
+/**
+ * Runs the `release` service (`app.releaseCommand`, usually the database migrations) once in a
+ * one-off container of the deployed image, without starting other services. Timeout scaled by
+ * {@link moveTimeoutMs}: migrations of the copied data take longer on a larger database.
+ *
+ * A failure names only the exit code: migration output quotes rows and SQL parameters (Prisma
+ * `DbError { detail: … }`, SQLAlchemy `[parameters: …]`), so none of it reaches errors, logs or
+ * the audit log. The hint says how to see it on the server.
+ */
+export async function runRelease(
+  remote: RemoteExec,
+  sizeBytes: number,
+  options: Pick<ServerOpOptions, "folder">,
+): Promise<void> {
+  const timeoutMs = moveTimeoutMs(sizeBytes);
+  const failed = (why: string) =>
+    new OpsCrewError(
+      "COMMAND_FAILED",
+      `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${remote.host}: ${why} (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).`,
+      {
+        hint: `See the release command's full output on the new server: \`ssh deploy@${remote.host}\`, then \`cd ${options.folder} && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
+      },
+    );
+  let result: CommandResult;
+  try {
+    result = await remote.run(`cd ${options.folder} && ${RELEASE_COMMAND}`, { timeoutMs });
+  } catch {
+    throw failed("the SSH connection failed");
+  }
+  if (result.timedOut) throw failed(`it did not finish within ${durationText(timeoutMs)}`);
+  if (result.exitCode !== 0) throw failed(`it exited with code ${result.exitCode}`);
+}
+
 /**
  * A move's marker in the app's folder (`MOVE_WAITING`, FR-3027): `waiting` while the move's data
- * is still on the old side, `copied` once its window copied it, none once the app answers there.
+ * is still on the old side, `copied` once the move copied it there while the old side serves, none
+ * once the maintenance window started the app on the final data and it answers there.
  */
 export type MoveMarker = "waiting" | "copied" | undefined;
 

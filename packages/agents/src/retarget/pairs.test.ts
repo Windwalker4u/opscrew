@@ -43,6 +43,16 @@ function cacheFiles(h: PairHarness, host: string): string[] {
   return [...(files?.keys() ?? [])].sort();
 }
 
+/** How often the fakes saw `op` on `host` once the maintenance window was asked for. */
+function windowOps(h: PairHarness, host: string, op: string): number {
+  const asked = h.events.findIndex(
+    (e) => e.type === "approval" && e.title.startsWith("Maintenance window"),
+  );
+  return h.events
+    .slice(asked === -1 ? h.events.length : asked)
+    .filter((e) => e.type === "remote" && e.host === host && e.op === op).length;
+}
+
 /** Everything a run showed, audited or asked for approval. */
 function shown(h: PairHarness, error?: unknown): string {
   return [
@@ -106,8 +116,13 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
   it("SC-2302: a copy that fails leaves the old side serving with its data unchanged, and empties what it wrote", async () => {
     const h = await pairHarness("own", "portainer", { cache: true });
     const oldCache = cacheFiles(h, h.oldHost);
-    // The new side's Docker refuses the write of the cache's files.
-    h.hosts.docker(PORTAINER).fail("PUT", /\/archive/, 500, "no space left on device");
+    // Once the window is asked for, the new side's Docker refuses the next write.
+    h.handler.answer = (request) => {
+      if (request.title.startsWith("Maintenance window")) {
+        h.hosts.docker(PORTAINER).fail("PUT", /\/archive/, 500, "no space left on device");
+      }
+      return true;
+    };
     const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
       (e: unknown) => e,
     );
@@ -132,7 +147,8 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
       expect.objectContaining({ action: "maintenance window", decision: "refused" }),
     );
 
-    // The next window copies everything again.
+    // The next run copies everything again while the old side serves, then runs the window.
+    h.handler.answer = () => true;
     expect(await maintenanceWindow(h.session, { allowDowntime: true })).toBe("done");
     expect(cacheFiles(h, PORTAINER)).toEqual(oldCache);
   });
@@ -146,7 +162,9 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
       (e: unknown) => e,
     );
     expect((error as OpsCrewError).message).toContain("db did not stop cleanly on your Portainer");
-    expect(h.hosts.host(NEW_IPV4).db).not.toBe("orders before the move");
+    // Nothing of the window reached the new side: its database holds the copy made before.
+    expect(windowOps(h, NEW_IPV4, "restore")).toBe(0);
+    expect(h.hosts.deltas.filter((call) => call.op === "updateVolume")).toEqual([]);
     expect(h.session.plan.retarget?.step).toBe("deployed");
   });
 
@@ -186,7 +204,47 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
     { at: "letting the deploys start the app on its data", op: "mark copied" },
     { at: "the health check", op: "health" },
   ])(
-    "a failure at $at empties the copied mount and the restored database, and leaves the new side stopped",
+    "FR-3103: a failure at $at on the data copied while the old side serves stops before the window",
+    async ({ op }) => {
+      const h = await pairHarness("hetzner", "own", { cache: true, release: true });
+      h.hosts.fail = (ip, o) =>
+        ip === NEW_IPV4 && o === op
+          ? { exitCode: 1, stdout: "", stderr: `${op} failed` }
+          : undefined;
+      const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+        (e: unknown) => e,
+      );
+      expect((error as OpsCrewError).message).toContain(
+        "Copying the app's data to your new server while your app serves failed",
+      );
+      expect((error as OpsCrewError).message).toContain(
+        "The app on the old server on Hetzner Cloud kept serving: nothing there was stopped.",
+      );
+      // No window, no downtime: the old side never stopped; the new side's app is stopped and
+      // held for its data (FR-3027), its web server stopped.
+      expect(
+        h.handler.requests.find((r) => r.title.startsWith("Maintenance window")),
+      ).toBeUndefined();
+      expect(h.session.plan.retarget?.oldAppStoppedAt).toBeUndefined();
+      expect(h.events).not.toContainEqual({ type: "remote", host: OLD_IPV4, op: "stop app" });
+      expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: true, db: "orders before the move" });
+      expect(states(h, OLD_IPV4, "cache")).toEqual(["running"]);
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, caddy: false, marker: "waiting" });
+      expect(shown(h, error)).not.toContain(NEW_IPV4);
+      expect(shown(h, error)).not.toContain(OLD_IPV4);
+
+      // A rerun copies again while the old side serves, then runs the window.
+      h.hosts.fail = undefined;
+      expect(await maintenanceWindow(h.session, { allowDowntime: true })).toBe("done");
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: true, marker: undefined });
+    },
+  );
+
+  it.each([
+    { at: "the release command", op: "release" },
+    { at: "the health check", op: "health" },
+  ])(
+    "a failure at $at in the window empties the copied mount and the restored database, and leaves the new side stopped",
     async ({ op }) => {
       const h = await pairHarness("hetzner", "own", { cache: true, release: true });
       h.hosts.fail = (ip, o) =>
@@ -221,7 +279,7 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
       (e: unknown) => e,
     );
     expect((error as OpsCrewError).message).toContain("db did not stop cleanly");
-    expect(h.hosts.host(NEW_IPV4).db).not.toBe("orders before the move");
+    expect(windowOps(h, NEW_IPV4, "restore")).toBe(0);
   });
 
   it("needs the database's password before it asks for the window or changes anything", async () => {
