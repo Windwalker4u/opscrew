@@ -61,6 +61,7 @@ export const definition: CloudProviderDefinition = {
   consoleUrl: "https://console.hetzner.cloud/",
   accountUrl: "https://console.hetzner.cloud/",
   signupUrl: "https://accounts.hetzner.com/signUp",
+  pricingUrl: HETZNER_PRICING_URL,
   credentials: {
     envVars: HETZNER_CREDENTIALS.envVars,
     mode: "any",

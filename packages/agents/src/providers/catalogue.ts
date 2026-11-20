@@ -5,7 +5,11 @@
  * and what design picks for a small app. It reads no network, no credential and no project, so
  * one OpsCrew version always gives the same catalogue.
  */
-import { cloudflareConnector } from "@opscrew/connector-cloudflare";
+import {
+  CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
+  cloudflareConnector,
+} from "@opscrew/connector-cloudflare";
 import type {
   CloudProviderDefinition,
   ComputeCatalog,
@@ -41,6 +45,7 @@ import {
   REGISTRAR_FIX,
   registrarCredentialsFix,
 } from "../init/checks";
+import { providerProfile } from "./profiles";
 
 /** OpsCrew's guide page `page` (`docs/guide/<page>.md`). */
 function guide(page: string): string {
@@ -57,6 +62,29 @@ const SIGNUP_PAGES: Readonly<Record<RegistrarId, string>> = {
   namecheap: "https://www.namecheap.com/myaccount/signup/",
   godaddy: "https://sso.godaddy.com/account/create",
 };
+
+/** Cloudflare's plans, and the Workers pricing its hosting has. */
+const CLOUDFLARE_PRICING = {
+  plans: "https://www.cloudflare.com/plans/",
+  workers: "https://developers.cloudflare.com/workers/platform/pricing/",
+};
+
+/** Each registrar's domain pricing page (GoDaddy's for its v3 API, which OpsCrew buys through). */
+const PRICING_PAGES: Readonly<Record<RegistrarId, string>> = {
+  cloudflare: "https://www.cloudflare.com/domains/",
+  porkbun: "https://porkbun.com/products/domains",
+  namecheap: "https://www.namecheap.com/domains/",
+  godaddy: "https://developer.godaddy.com/en/docs/api-users/domains/pricing",
+};
+
+/** Cloudflare's hosting (`cloudflare-workers`), with its deploy token. */
+const CLOUDFLARE_HOSTING = providerProfile("cloudflare-workers");
+
+/**
+ * What `opscrew init` says when the deploy token of Cloudflare's hosting is missing, with no domain
+ * to name its account.
+ */
+const DEPLOY_TOKEN_FIX = `Create a second token at ${CLOUDFLARE_TOKEN_PAGE} with only ${CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS.join(", ")} for your domain's account, and set ${CLOUDFLARE_HOSTING.deployTokenVar} to it: \`opscrew provision\` stores it as a GitHub secret for the deploy workflow, which uploads each version with it.`;
 
 /** A small web app that keeps its data in PostgreSQL, as analyze would describe it. */
 const WEB_APP_WITH_POSTGRES: ProjectFacts = {
@@ -112,10 +140,14 @@ function smallApp(provider: DeployProvider, currency: Currency): Requirements {
   };
 }
 
-/** A label for a variable no text names: the provider and the rest of its name (`CNTB_OAUTH2_USER`). */
+/**
+ * A label for a variable no text names: the provider and the rest of its name, after OpsCrew's own
+ * prefix (`CNTB_OAUTH2_USER`, `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`).
+ */
 function derivedLabel(name: string, provider: string): string {
-  return `${provider} ${name
-    .slice(name.indexOf("_") + 1)
+  const own = name.replace(/^OPSCREW_/, "");
+  return `${provider} ${own
+    .slice(own.indexOf("_") + 1)
     .toLowerCase()
     .replaceAll("_", " ")}`;
 }
@@ -194,6 +226,7 @@ async function cloudServer(definition: CloudProviderDefinition, catalog: Compute
     name: definition.displayName,
     consoleUrl: definition.consoleUrl,
     ...(definition.signupUrl === undefined ? {} : { signupUrl: definition.signupUrl }),
+    pricingUrl: definition.pricingUrl,
     currency: offering.currency,
     credentials: {
       mode: credentials.mode,
@@ -249,27 +282,46 @@ function staticSite() {
   };
 }
 
-/** Cloudflare: the token OpsCrew asks for, for the app's DNS, its HTTPS rules and its hosting. */
+/**
+ * Cloudflare: the token OpsCrew asks for, for the app's DNS, its HTTPS rules and its hosting; then
+ * Cloudflare's hosting, which needs the deploy token too.
+ */
 function cloudflare() {
   const connector = cloudflareConnector({
     env: {},
     fetch: () => Promise.reject(new Error("The provider catalogue reads no network.")),
   });
   const { envVars, createUrl } = connector.credentials;
-  return {
+  const name = connector.displayName;
+  const shared = {
     kind: "cloudflare",
-    id: connector.id,
-    name: connector.displayName,
+    name,
     consoleUrl: CLOUDFLARE_DASHBOARD,
     signupUrl: SIGNUP_PAGES.cloudflare,
-    credentials: {
-      mode: "any",
-      variables: envVars.map((name) => variable(name, connector.displayName)),
-      createUrl,
-      steps: [cloudflareFix(), CLOUDFLARE_HOSTING_FIX],
-    },
-    guideUrl: guide("cloudflare"),
   };
+  const variables = envVars.map((variableName) => variable(variableName, name));
+  const steps = [cloudflareFix(), CLOUDFLARE_HOSTING_FIX];
+  return [
+    {
+      ...shared,
+      id: connector.id,
+      pricingUrl: CLOUDFLARE_PRICING.plans,
+      credentials: { mode: "any", variables, createUrl, steps },
+      guideUrl: guide("cloudflare"),
+    },
+    {
+      ...shared,
+      id: CLOUDFLARE_HOSTING.id,
+      pricingUrl: CLOUDFLARE_PRICING.workers,
+      credentials: {
+        mode: "all",
+        variables: [...variables, variable(CLOUDFLARE_HOSTING.deployTokenVar, name)],
+        createUrl,
+        steps: [...steps, DEPLOY_TOKEN_FIX],
+      },
+      guideUrl: guide("cloudflare-hosting"),
+    },
+  ];
 }
 
 /** A registrar OpsCrew buys domains through: Cloudflare Registrar's steps add to the token. */
@@ -282,6 +334,7 @@ function registrar(id: RegistrarId) {
     name,
     consoleUrl: other === undefined ? CLOUDFLARE_DASHBOARD : registrarLinks(other).domains,
     signupUrl: SIGNUP_PAGES[id],
+    pricingUrl: PRICING_PAGES[id],
     credentials: {
       mode: "all",
       variables: REGISTRAR_ENV[id].map((variableName) => variable(variableName, name)),
@@ -313,7 +366,7 @@ export async function providerCatalogue(
     opscrewVersion,
     providers: [
       ...clouds.map(({ entry }) => entry),
-      cloudflare(),
+      ...cloudflare(),
       registrar("cloudflare"),
       ...OTHER_REGISTRAR_IDS.map(registrar),
     ],

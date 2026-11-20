@@ -20,13 +20,13 @@ import {
 const HttpsUrlSchema = z.url({ protocol: /^https$/, error: "must be an https:// URL" });
 
 /**
- * A provider's sign-up page: an `https://` URL with no query string or fragment, so never one with
- * a referral or affiliate id.
+ * A provider's plain public page, its sign-up or its pricing page: an `https://` URL with no query
+ * string or fragment, so never one with a referral or affiliate id.
  */
 export const SignupUrlSchema = HttpsUrlSchema.refine((url) => {
   const { search, hash } = new URL(url);
   return search === "" && hash === "";
-}, "must have no query string or fragment: a plain sign-up page, never one with a referral or affiliate id");
+}, "must have no query string or fragment: a plain page, never one with a referral or affiliate id");
 
 /** Where a price comes from: OpsCrew's dated built-in price list, never one read live. */
 const PriceSourceSchema = z.strictObject({
@@ -66,7 +66,8 @@ const entry = {
   name: z.string().min(1),
   consoleUrl: HttpsUrlSchema,
   signupUrl: SignupUrlSchema.optional(),
-  pricingUrl: HttpsUrlSchema.optional(),
+  /** Its plain public pricing page. */
+  pricingUrl: SignupUrlSchema,
   currency: CurrencySchema.optional(),
   credentials: CatalogueCredentialsSchema,
   /** OpsCrew's guide page about it. */

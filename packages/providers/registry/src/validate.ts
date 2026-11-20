@@ -244,6 +244,7 @@ const definitionSchema: z.ZodType<Definition> = z
     consoleUrl: z.string(),
     accountUrl: z.string(),
     signupUrl: SignupUrlSchema.optional(),
+    pricingUrl: SignupUrlSchema.optional(),
     credentials,
     connector: fn<Definition["connector"]>(),
     regions,

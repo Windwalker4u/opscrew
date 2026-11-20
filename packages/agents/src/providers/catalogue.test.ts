@@ -27,6 +27,7 @@ describe("the provider catalogue", () => {
     const names = [
       ...CLOUD_PROVIDERS.flatMap(({ credentials }) => credentials.envVars),
       "CLOUDFLARE_API_TOKEN",
+      "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN",
       "PORKBUN_API_KEY",
       "PORKBUN_SECRET_API_KEY",
       "NAMECHEAP_API_USER",
@@ -57,6 +58,7 @@ describe("the provider catalogue", () => {
         name: definition.displayName,
         consoleUrl: definition.consoleUrl,
         signupUrl: definition.signupUrl,
+        pricingUrl: definition.pricingUrl,
         currency: definition.offering.currency,
         billing: definition.offering.billing,
         priceSource: { kind: "static" },
@@ -152,12 +154,15 @@ describe("the provider catalogue", () => {
         .map(({ kind, id }) => `${kind} ${id}`),
     ).toEqual([
       "cloudflare cloudflare",
+      "cloudflare cloudflare-workers",
       "registrar cloudflare",
       "registrar porkbun",
       "registrar namecheap",
       "registrar godaddy",
     ]);
-    const cloudflare = providers.find((provider) => provider.kind === "cloudflare");
+    const cloudflare = providers.find(
+      ({ kind, id }) => kind === "cloudflare" && id === "cloudflare",
+    );
     expect(cloudflare?.credentials.variables.map((variable) => variable.name)).toEqual([
       "CLOUDFLARE_API_TOKEN",
     ]);
@@ -172,6 +177,63 @@ describe("the provider catalogue", () => {
       steps: [
         "Create API credentials at https://porkbun.com/account/api and set PORKBUN_API_KEY and PORKBUN_SECRET_API_KEY.",
       ],
+    });
+  });
+
+  it("has Cloudflare's hosting, which needs both tokens, with init's words for each", async () => {
+    const { providers, suggestions } = await providerCatalogue("1.2.3");
+    const hosting = providers.find(
+      ({ kind, id }) => kind === "cloudflare" && id === "cloudflare-workers",
+    );
+    expect(hosting).toMatchObject({
+      name: "Cloudflare",
+      consoleUrl: "https://dash.cloudflare.com/",
+      signupUrl: "https://dash.cloudflare.com/sign-up",
+      pricingUrl: "https://developers.cloudflare.com/workers/platform/pricing/",
+      guideUrl: "https://docs.opscrew.dev/cloudflare-hosting/",
+      credentials: {
+        mode: "all",
+        variables: [
+          { name: "CLOUDFLARE_API_TOKEN", label: "Cloudflare api token", secret: true },
+          {
+            name: "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN",
+            label: "Cloudflare deploy token",
+            secret: true,
+          },
+        ],
+        createUrl: "https://dash.cloudflare.com/profile/api-tokens",
+      },
+    });
+    const [token, hostingPermissions, deployToken] = hosting?.credentials.steps ?? [];
+    expect(token).toContain("Zone → DNS → Edit");
+    expect(hostingPermissions).toContain("Account → Workers Scripts → Edit");
+    expect(deployToken).toBe(
+      "Create a second token at https://dash.cloudflare.com/profile/api-tokens with only Account → Workers Scripts → Edit for your domain's account, and set OPSCREW_CLOUDFLARE_DEPLOY_TOKEN to it: `opscrew provision` stores it as a GitHub secret for the deploy workflow, which uploads each version with it.",
+    );
+    // Design's static site goes there.
+    expect(suggestions.staticSite.target).toBe(hosting?.id);
+  });
+
+  it("links each provider's plain pricing page", async () => {
+    const { providers } = await providerCatalogue("1.2.3");
+    for (const provider of providers) {
+      const url = new URL(provider.pricingUrl);
+      expect(url.protocol, provider.id).toBe("https:");
+      expect(url.search, provider.id).toBe("");
+      expect(url.hash, provider.id).toBe("");
+    }
+    const pricing = Object.fromEntries(providers.map((p) => [`${p.kind} ${p.id}`, p.pricingUrl]));
+    expect(pricing).toEqual({
+      "cloud-server hetzner": "https://www.hetzner.com/cloud",
+      "cloud-server digitalocean": "https://www.digitalocean.com/pricing",
+      "cloud-server contabo": "https://contabo.com/en/vps/",
+      "cloudflare cloudflare": "https://www.cloudflare.com/plans/",
+      "cloudflare cloudflare-workers":
+        "https://developers.cloudflare.com/workers/platform/pricing/",
+      "registrar cloudflare": "https://www.cloudflare.com/domains/",
+      "registrar porkbun": "https://porkbun.com/products/domains",
+      "registrar namecheap": "https://www.namecheap.com/domains/",
+      "registrar godaddy": "https://developer.godaddy.com/en/docs/api-users/domains/pricing",
     });
   });
 

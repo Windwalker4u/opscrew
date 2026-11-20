@@ -14,6 +14,7 @@ const entry = {
   name: "Example",
   consoleUrl: "https://example.com/",
   signupUrl: "https://example.com/signup",
+  pricingUrl: "https://example.com/pricing",
   credentials,
   guideUrl: "https://docs.opscrew.dev/example/",
 };
@@ -75,6 +76,19 @@ describe("ProviderCatalogueSchema", () => {
       "https://example.com/signup#ref=abc",
     ]) {
       expect(SignupUrlSchema.safeParse(url).success, url).toBe(false);
+    }
+  });
+
+  it("wants every provider's plain https pricing page", () => {
+    const { pricingUrl: _pricingUrl, ...without } = entry;
+    for (const page of [
+      without,
+      { ...entry, pricingUrl: "http://example.com/pricing" },
+      { ...entry, pricingUrl: "https://example.com/pricing?ref=abc" },
+      { ...entry, pricingUrl: "https://example.com/pricing#ref=abc" },
+    ]) {
+      const providers = [{ kind: "cloudflare", id: "cloudflare", ...page }];
+      expect(ProviderCatalogueSchema.safeParse({ ...catalogue, providers }).success).toBe(false);
     }
   });
 

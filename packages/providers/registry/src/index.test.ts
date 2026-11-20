@@ -99,8 +99,9 @@ describe.each(CLOUD_PROVIDERS.map((provider) => [provider.id, provider] as const
       }
     });
 
-    it("has a plain sign-up page", () => {
+    it("has a plain sign-up page and pricing page", () => {
       expect(provider.signupUrl).toMatch(/^https:\/\/[^?#]+$/);
+      expect(provider.pricingUrl).toMatch(/^https:\/\/[^?#]+$/);
     });
 
     it("has no servers without credentials", () => {

@@ -418,6 +418,11 @@ export interface CloudProviderDefinition {
    * query string, so never with a referral or affiliate id.
    */
   signupUrl?: string;
+  /**
+   * Where its prices are listed: the provider's plain public pricing page, an https URL with no
+   * query string, so never with a referral or affiliate id.
+   */
+  pricingUrl?: string;
   credentials: ProviderCredentials;
   /** The provider's connector: credentials, price catalogue and server API. */
   connector(deps: ProviderConnectorDeps): VpsConnector;
