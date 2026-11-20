@@ -526,3 +526,9 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
     server's did.
   - **A hand dispatch with a digest alone** now deploys that image during any deploy pause
     (`DEPLOYS_DIGEST`): accepted, since it is a deliberate act with write access.
+- From the PHP app's move (T3020):
+  - **The DNS switch's refusal of a delete** says "the infrastructure no longer matches what
+    OpsCrew applied … `--abort`, then `drift`", even when OpsCrew's own rendered file was at fault.
+    Word it to cover both, and drop the advice to abort.
+  - **A clone on an earlier deploy-setup branch:** the final files' stop says to "open a pull
+    request yourself". Once the user is on the default branch, the run opens it.
