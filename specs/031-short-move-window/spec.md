@@ -6,7 +6,7 @@
 
 **Status**: Building (in 0.2.11, the founder's decision of 2026-11-20)
 
-**Input**: The founder, 2026-11-20, through the PHP app's session: "near-zero-downtime moves", a
+**Input**: The founder, 2026-11-20, through another session: "near-zero-downtime moves", a
 maintenance window of about a minute instead of the length of a whole copy, for `opscrew retarget`
 to a server (a server OpsCrew creates, a server of the user's, another app's server) and to a
 Portainer. The PHP app's move (481 MB: 262 MB of files, 219 MB of MySQL) was estimated at about 12

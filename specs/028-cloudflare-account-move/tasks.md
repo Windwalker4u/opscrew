@@ -75,7 +75,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 1b: Build arguments from the plan (founder, 2026-11-14; independent of the move)
 
-Asked for through the first app's session: a non-secret build setting whatever its name (for example a list of plugins pinned to commits) reaches a Dockerfile build, as the browser-prefixed variables do. It can ship before the move.
+Asked for through another session: a non-secret build setting whatever its name (for example a list of plugins pinned to commits) reaches a Dockerfile build, as the browser-prefixed variables do. It can ship before the move.
 
 - [x] T2831 A plan variable marked as a build argument
   - Owns: `packages/plan-schema/src/plan.ts` (the app's `env` entry) and `packages/plan-schema/schemas/**`; `packages/iac-templates/src/{workflow/build.ts,docker/**,portainer-target/stack.ts}`; `packages/agents/src/{shared/app-env.ts,localhost/apply.ts,design/builder.ts}`; `docs/guide/builders.md`; the colocated tests and snapshots
@@ -88,7 +88,7 @@ Asked for through the first app's session: a non-secret build setting whatever i
   - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow src/docker src/portainer-target && npx vitest run --root packages/agents src/shared src/localhost src/design && pnpm lint`
   - Effort: high
 
-- [x] T2834 A further app's analysis reads its own folder (bug in 0.2.8, reported through the first app's session)
+- [x] T2834 A further app's analysis reads its own folder (bug in 0.2.8, reported through another session)
   - Owns: `packages/detect/src/**`, `packages/agents/src/analyze/**`, `packages/agents/src/apps/**` (only if the app's folder is recorded wrongly), the colocated tests and fixtures
   - Reads: `docs/guide/several-apps.md`; `detectProjectDetails`, `normalizeAppDir`; `packages/detect/src/env.ts`
   - Found: in a pnpm workspace, `opscrew app add pay --dir apps/pay` then `opscrew analyze --app pay --no-ai` wrote `opscrew/apps/pay/architecture.json` with the whole repository's facts: `facts.envVars` held the 37 names of the root `.env.example` and none of the app's three `VITE_` settings (read through Vite's `loadEnv(mode, cwd, "VITE_")` in `vite.config.ts` and a file it imports, never `import.meta.env`); `facts.services` held PostgreSQL from `apps/server` (`dependency:pg`, `env:DATABASE_URL`); `facts.frameworks` held React from `apps/web`. Design for Cloudflare's hosting then refused it for PostgreSQL.
@@ -635,7 +635,7 @@ Asked for through the first app's session: a non-secret build setting whatever i
   - Effort: xhigh
 
 - [x] T2849 The old account's origin certificate once its zone has moved (found at the real move, 2026-11-18; the lead's change, its tests owed)
-  - Why: the first app's finish stopped on revoking the old account's Origin CA certificate. Once a zone has moved, Cloudflare neither reads nor revokes its origin certificates ("Failed to read certificate from Database", "User is not authorized to perform this action", with either account's token, even with SSL and Certificates Edit on all zones). After the switch the old zone has always moved, so the revocation could never run.
+  - Why: an app's finish stopped on revoking the old account's Origin CA certificate. Once a zone has moved, Cloudflare neither reads nor revokes its origin certificates ("Failed to read certificate from Database", "User is not authorized to perform this action", with either account's token, even with SSL and Certificates Edit on all zones). After the switch the old zone has always moved, so the revocation could never run.
   - Done by the lead: `revokeAOrigin` (`cloudflare-move/shared.ts`) reads A's zone; when it isn't active (or can't be read) it says why the certificate stays and returns, so the finish removes A's record and ends. Three tests still expect a revocation after the switch.
   - Owns: `packages/agents/src/cloudflare-move/{shared,finish-removal}*.ts` and the fakes they use
   - Accept: those tests follow the real behaviour (A's zone moved → the note, no revocation, A's record gone, the finish ends; A's zone still active → revoked as before; A's zone unreadable → left, with the note); report one line for the guide's "what stays behind" list (the lead adds it).

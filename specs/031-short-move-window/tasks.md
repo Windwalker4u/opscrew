@@ -114,11 +114,11 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   running until the next run. A `holdNewApp` at the start of a run at `deployed` without the
   pre-copy record closes it.
 - **The one-off MySQL containers have no time limit.**
-- [ ] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one Contabo Cloud VPS 4, owned by the first of them):
-  - **the first app** (the first app's repository folder) moves from its Hetzner CX23 to a new Contabo server of its own, run by the
+- [ ] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one
+  Contabo Cloud VPS 4, owned by the first of them):
+  - **The first app** moves from its Hetzner CX23 to a new Contabo server of its own, run by the
     lead. This is 031's live run, and 0.2.11 waits for it. Its `--finish` deletes the Hetzner
     server.
-  - **The PHP app** (the app's session) then moves onto the first app's Contabo server: 030's US6 between shared
-    servers, at Contabo (030's T3020), recorded on the coverage page.
-  - **A third app** joins as a third app afterwards.
-  - Contabo's API credentials need renewing first: the founder makes new ones.
+  - **A second app** (a PHP app with MySQL and a kept folder) then moves onto that Contabo server:
+    030's US6 between shared servers, at Contabo (030's T3020), recorded on the coverage page.
+  - **A third app** joins it afterwards.

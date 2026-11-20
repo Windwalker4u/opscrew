@@ -480,11 +480,11 @@ It refuses in design's words, ending "Nothing was changed." The PHP app's hand-r
 
 ### 19. The live run (US6)
 
-The PHP app moves from the first app's server onto the first app's server,
-both created by OpsCrew on Hetzner. It is a second app moving from one shared server to another:
-the first live run of US6. Each plan only adds on the first app's server, and only the PHP app's own parts
-go from the first app's. The PHP app's session tells another session before each
-step that deploys. DigitalOcean, Contabo and an own first app are covered by fakes only, marked
+A PHP app with MySQL and a kept folder, a second app on one server OpsCrew created for another app,
+moves onto a third app's server, both on Hetzner: a second app moving from one shared server to
+another, the first live run of US6. Each plan only adds on the target server, and only the moving
+app's own parts go from the old one. The moving app's session tells the other apps' sessions before
+each step that deploys. DigitalOcean, Contabo and an own first app are covered by fakes only, marked
 "not tested live" on the coverage page.
 
 ## Requirements coverage
