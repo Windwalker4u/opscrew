@@ -287,6 +287,56 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       Laravel app on Postgres migrates Postgres in the release, and a worker reads `pgsql`.
   - Effort: high
 
+**Also in 0.2.11** (the hosted portal's ask, the founder's yes of 2026-11-20; not part of the move):
+
+- [ ] T3116 `opscrew providers --json`: the providers' facts as a machine-readable catalogue
+  - Why: a guided start for new users suggests a provider and a size with an approximate price,
+    and walks the user through creating each token. Every fact must come from the core: a
+    provider added to the core then appears there with no code of its own.
+  - Owns:
+    - `packages/plan-schema/src/catalogue.ts`, its export, and a generated
+      `schemas/provider-catalogue.schema.json`;
+    - `packages/agents/src/providers/catalogue.ts`, which assembles the catalogue from the
+      definitions;
+    - `packages/cli/src/commands/providers.ts`, and its registration;
+    - the provider contract's new optional `signupUrl` only: `packages/contracts/src/provider.ts`,
+      each `packages/providers/*/src/definition.ts`, and the registry's check of it;
+    - `docs/guide/` (a short reference section);
+    - colocated tests.
+  - Accept:
+    - **The command:** `npx opscrew providers --json` prints the catalogue. Without `--json` it
+      prints one line per provider. It reads no network, no credential and no project, and the
+      same version always prints the same catalogue.
+    - **The shape** (`ProviderCatalogueSchema`, `catalogueVersion: 1`):
+      - `{catalogueVersion, opscrewVersion, providers[], suggestions}`.
+      - Each provider has `{id, name, kind: "cloud-server" | "cloudflare" | "registrar",
+        consoleUrl, signupUrl, pricingUrl?, currency?, credentials, guideUrl}`. `signupUrl` is
+        the provider's plain sign-up page, never with a referral or affiliate ID. The CLI prints
+        no sign-up links.
+      - `credentials` is `{mode: "any" | "all", variables[], createUrl, steps[]}`. Each variable
+        is `{name, label, secret, pattern?}`, with `pattern` the core's scan pattern as a regex
+        string.
+      - A cloud server provider also has `billing` and `locations[]` (`{id, name, region}`), and
+        `sizes[]` (`{id, vcpu, memoryMb, diskGb, monthly, hourly?, locations[]}`).
+      - The prices carry a `priceSource` `{kind: "static", asOf}`: the built-in price list, never
+        read live.
+    - **The sources:**
+      - The cloud server providers come from their definitions (ADR 0029) and built-in price
+        lists.
+      - Cloudflare's token (DNS, the HTTPS rules, Workers for static sites) comes from the
+        connector's and init's texts. The registrars come from the domain connectors.
+      - `steps` are the same words `opscrew init` and the guide give for creating each token.
+      - A fact the core doesn't hold is left out and reported, never invented.
+    - **`suggestions`:** what design would pick for a small app:
+      - `serverWithDatabase`: per cloud server provider, the default size for a web app with
+        PostgreSQL, from design's own choice;
+      - `staticSite`: where design sends a static site.
+    - **Tests:** the catalogue parses with its schema; each provider of `CLOUD_PROVIDERS` is in
+      it; the output holds no secret; a provider added to the registry appears without other
+      code.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && npx vitest run --root packages/cli src/commands/providers && pnpm lint`
+  - Effort: high
+
 **Also in 0.2.11** (a user's ask, the founder's yes of 2026-11-20; not part of the move):
 
 - [x] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
