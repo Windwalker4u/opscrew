@@ -53,6 +53,7 @@ import { requireCheckSettingsPlace } from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { resolveCatalog } from "../design/run";
 import { appServerChange } from "../design/server-changes";
+import { ownServerMemory } from "../design/sizing";
 import { builderBranch, workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
@@ -640,6 +641,9 @@ async function provisionFlow(
     ownServer && sharedHost === undefined
       ? await connectForProvision(deps, { plan, hostKey: options.hostKey, services, phase })
       : undefined;
+  // A preview environment on the user's own server is refused first when the server holds another
+  // app: previews need a server with nothing else on it.
+  if (previews && early !== undefined) requireServerForPreviews(early.facts, plan.app.name, again);
   if (early !== undefined) requireServerFit(deps, plan, early, rerun);
   const cloudflare = await setupCloudflare(deps, plan, services);
   // Previews below the app's zone (FR-2231): the zone checked again, read-only, before any plan.
@@ -784,9 +788,6 @@ async function provisionFlow(
   const approveHash = saved.apply;
   // `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
-  // A preview environment on the user's own server: refused before any change at GitHub when the
-  // server holds another app.
-  if (previews && early !== undefined) requireServerForPreviews(early.facts, plan.app.name, again);
   // On another environment's server: that server, checked and inspected the same way.
   const sharedRun =
     sharedHost === undefined
@@ -1938,7 +1939,8 @@ async function appServerChanges(
  * while one is there (`requireNoOtherApps`), which a resize in the same run needs no other look
  * for; a resize alone must still hold their memory limits beside this app's, the edge and the
  * system's reserve, on a type the provider's catalogue lists. Returns what the infrastructure
- * approval says once a resize fits: that they restart with the server.
+ * approval says once a resize fits: that they restart with the server, and design's warning when
+ * less than 15% of the new type's memory stays free.
  * @throws OpsCrewError `PHASE_PRECONDITION`, before any change.
  */
 async function requireRoomForOtherApps(
@@ -2014,7 +2016,14 @@ async function requireRoomForOtherApps(
       instead,
     );
   }
-  return [restart];
+  // Design's warning below 15% free on the new type (FR-3024).
+  const others = active.map((record) => ({
+    name: record.app,
+    memoryMb: record.memoryMb,
+    tunnel: false,
+  }));
+  const low = ownServerMemory(serverMb, appMb, others, edgeMb)?.warning;
+  return low === undefined ? [restart] : [restart, low];
 }
 
 /** Runs the shared flow and records the phase outcome (`ok`, or `failed` with the reason). */

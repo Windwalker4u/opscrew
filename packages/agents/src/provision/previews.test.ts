@@ -740,7 +740,9 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
       agent: true,
       reachable: true,
     });
-    const host = new FakeHostServer(withOtherApp());
+    // Its limits leave no room for the preview either: the previews' refusal, the clearer one, comes
+    // before the memory check (FR-3024).
+    const host = new FakeHostServer(withOtherApp({ memoryMb: 4000 }));
     const github = new FakeGitHub();
     const engine = new OwnEngine(PUBLIC_CHANGES, publicOutputs());
     const services: ProvisionServices = {
