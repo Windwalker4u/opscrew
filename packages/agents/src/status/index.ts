@@ -11,7 +11,7 @@ export {
   type ServiceContainer,
   serviceContainers,
 } from "./components";
-export { type RenewalStatusOptions, renewalStatusReport } from "./renewals";
+export { renewalStatusReport } from "./renewals";
 export {
   type ContainerReading,
   type ResourceFlag,

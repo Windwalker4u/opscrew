@@ -1,52 +1,69 @@
 import type { RegisteredDomain, Registrar, RegistrarId } from "@opscrew/contracts";
+import { isUserFacingError } from "@opscrew/core";
 import type { DeployPlan, Renewal } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { errorText, formatDate, resolveAccount } from "../domain/common";
-import { registrarDashboard } from "../domain/links";
+import { errorText, formatDate, providerText, resolveAccount } from "../domain/common";
 import { REGISTRAR_NAMES, registrarLinks } from "../domain/registrars";
-import { renewalDue, renewedLine, renewedPlan } from "../domain/renewals";
+import { renewalDue, renewedLine, renewedPlan, withoutRenewal } from "../domain/renewals";
 import { type ResolvedDomainServices, resolveDomainServices } from "../domain/services";
 import type { DomainServices } from "../domain/types";
 import { writePlanIfChanged } from "../shared";
 
-/** Options of {@link renewalStatusReport}. */
-export interface RenewalStatusOptions {
-  /** The registrars (tests; default: built from the environment, as the domain commands build them). */
-  services?: DomainServices;
-}
-
-/** The adapter that reads a domain at `id`: at Cloudflare, the registrar of the token's account. */
+/**
+ * The adapter that reads a domain at `id`: at Cloudflare, the registrar of the token's one account
+ * (with several, the stop points to `opscrew domain status --account`, which records the renewal).
+ */
 async function registrarOf(services: ResolvedDomainServices, id: RegistrarId): Promise<Registrar> {
   if (id !== "cloudflare") return services.otherRegistrar(id);
-  const account = resolveAccount(await services.accounts(), undefined);
+  const accounts = await services.accounts();
+  const account = resolveAccount(accounts, undefined, "`opscrew domain status --account <id>`");
   return services.registrar(account.id);
 }
 
-/** The registrar's read of a renewal's domain, or the line that says why there is none. */
+/**
+ * The registrar's read of a renewal's domain: its details, or none when the registrar no longer
+ * lists it; or, when it could not be read, the line that says why, with the adapter once it was
+ * built.
+ */
+type RenewalRead =
+  | { registrar: Registrar; info: RegisteredDomain | undefined }
+  | { registrar: Registrar | undefined; failed: string };
+
+/**
+ * Reads a renewal's domain at its registrar. A failure's line ends with the error's own next step
+ * (a missing token, a token with several accounts), or for anything else (the registrar could not
+ * be reached) with running `opscrew status` again.
+ */
 async function readRenewal(
   deps: PhaseDeps,
   services: ResolvedDomainServices,
   renewal: Renewal,
-): Promise<{ registrar: Registrar; info: RegisteredDomain } | { line: string }> {
+): Promise<RenewalRead> {
   const name = REGISTRAR_NAMES[renewal.provider];
+  let registrar: Registrar | undefined;
   try {
-    const registrar = await registrarOf(services, renewal.provider);
+    registrar = await registrarOf(services, renewal.provider);
     const info = await registrar.getDomain(renewal.item);
-    if (info !== undefined) return { registrar, info: { ...info, registrar: renewal.provider } };
     return {
-      line: `${name} does not list ${renewal.item} in your account, so OpsCrew could not check its renewal. Check ${registrarDashboard(renewal.provider, deps.env)}.`,
+      registrar,
+      info: info === undefined ? undefined : { ...info, registrar: renewal.provider },
     };
   } catch (error) {
+    const next =
+      isUserFacingError(error) && error.hint !== undefined
+        ? providerText(deps, error.hint)
+        : `Run \`opscrew status\` again once ${name} can be reached`;
     return {
-      line: `OpsCrew could not check the renewal of ${renewal.item} at ${name}: ${errorText(deps, error)}. Run \`opscrew status\` again once ${name} can be reached.`,
+      registrar,
+      failed: `OpsCrew could not check the renewal of ${renewal.item} at ${name}: ${errorText(deps, error)}. ${next}.`,
     };
   }
 }
 
 /**
  * The warning for a renewal due with auto-renew off: the date the domain expires (or expired), and
- * where to turn auto-renew on: `opscrew domain auto-renew on` when the registrar was read and its
- * API can change it, else the registrar's dashboard.
+ * where to turn auto-renew on: `opscrew domain auto-renew on` when the registrar's API can change
+ * it, else the registrar's dashboard.
  */
 function autoRenewWarning(
   deps: PhaseDeps,
@@ -71,26 +88,35 @@ function autoRenewWarning(
  * `opscrew status`'s lines about the renewals of the domains OpsCrew bought (031 FR-3113). Only once
  * a renewal's `next` is 30 days away or less, or past, is its registrar read: a renewal the
  * registrar charged is recorded in `opscrew/plan.yaml` (`renewedPlan`), and with auto-renew off a
- * warning names the date and how to turn it on. A registrar that cannot be read is said plainly and
- * the other renewals go on. Before then no registrar is called; without renewals, no lines.
+ * warning names the date and how to turn it on. A domain the registrar no longer lists leaves the
+ * renewals, said once. A registrar that cannot be read is said plainly and the other renewals go
+ * on. Before then no registrar is called; without renewals, no lines. `services`: the registrars
+ * (tests; default: built from the environment, as the domain commands build them).
  */
 export async function renewalStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
-  options: RenewalStatusOptions = {},
-): Promise<{ lines: string[] }> {
+  services?: DomainServices,
+): Promise<string[]> {
   const now = deps.clock.now();
   const due = (plan.cost.renewals ?? []).filter((renewal) => renewalDue(renewal, now));
-  if (due.length === 0) return { lines: [] };
-  const services = resolveDomainServices(deps, options.services, { requireCloudflare: false });
+  if (due.length === 0) return [];
+  const resolved = resolveDomainServices(deps, services, { requireCloudflare: false });
   const lines: string[] = [];
   let current = plan;
   for (const renewal of due) {
-    const read = await readRenewal(deps, services, renewal);
-    if ("line" in read) {
-      lines.push(read.line);
-      const warning = autoRenewWarning(deps, renewal, undefined, now);
+    const read = await readRenewal(deps, resolved, renewal);
+    if ("failed" in read) {
+      lines.push(read.failed);
+      const warning = autoRenewWarning(deps, renewal, read.registrar, now);
       if (warning !== undefined) lines.push(warning);
+      continue;
+    }
+    if (read.info === undefined) {
+      current = withoutRenewal(current, renewal);
+      lines.push(
+        `${renewal.item} is no longer in your ${REGISTRAR_NAMES[renewal.provider]} account, so OpsCrew stopped tracking its renewal in opscrew/plan.yaml.`,
+      );
       continue;
     }
     const after = renewedPlan(current, renewal.item, read.info, now);
@@ -101,5 +127,5 @@ export async function renewalStatusReport(
     if (warning !== undefined) lines.push(warning);
   }
   if (current !== plan) await writePlanIfChanged(deps, current);
-  return { lines: lines.map((line) => deps.redactor.redact(line)) };
+  return lines.map((line) => deps.redactor.redact(line));
 }

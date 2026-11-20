@@ -102,7 +102,7 @@ async function tlsLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Pro
  * charged recorded in the plan, a warning when auto-renew is off; nothing before then.
  */
 async function renewalLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
-  const { lines } = await renewalStatusReport(deps, plan, { services: servicesOf(ctx).domain });
+  const lines = await renewalStatusReport(deps, plan, servicesOf(ctx).domain);
   return lines.length === 0 ? [] : ["", ...lines];
 }
 

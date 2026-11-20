@@ -44,8 +44,8 @@ function renewalPlan(renewal: Partial<Renewal> = {}): DeployPlan {
 async function report(project: DomainProject, now: string, token?: string | null) {
   const { deps, services } = await project.run({ now, token });
   const plan = await readArtifact("plan", deps.paths.files.plan);
-  const result = await renewalStatusReport(deps, plan, { services });
-  return { deps, result, plan: await readArtifact("plan", deps.paths.files.plan) };
+  const lines = await renewalStatusReport(deps, plan, services);
+  return { deps, lines, plan: await readArtifact("plan", deps.paths.files.plan) };
 }
 
 describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)", () => {
@@ -55,9 +55,9 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     const before = await readArtifact("plan", (await project.run()).deps.paths.files.plan);
 
     // no Cloudflare token either: nothing is needed yet
-    const { result, plan } = await report(project, "2026-10-30T11:59:59.000Z", null);
+    const { lines, plan } = await report(project, "2026-10-30T11:59:59.000Z", null);
 
-    expect(result.lines).toEqual([]);
+    expect(lines).toEqual([]);
     expect(project.cf.events).toEqual([]);
     expect(pb.count("getDomain")).toBe(0);
     expect(plan).toEqual(before);
@@ -67,10 +67,10 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     const project = await domainProject({ plan: renewalPlan() });
     project.cf.own(DOMAIN, { expiresAt: "2027-11-30T12:00:00Z", autoRenew: true });
 
-    const { deps, result, plan } = await report(project, "2026-11-20T09:00:00.000Z");
+    const { deps, lines, plan } = await report(project, "2026-11-20T09:00:00.000Z");
 
     expect(project.cf.events).toEqual(["accounts", `getDomain ${DOMAIN}`]);
-    expect(result.lines).toEqual([
+    expect(lines).toEqual([
       "example.com was renewed at Cloudflare until 2027-11-30: OpsCrew recorded the renewal ($10.44) in opscrew/plan.yaml.",
     ]);
     expect(plan.cost.oneTime).toEqual([
@@ -98,7 +98,7 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     // the next run reads the registrar again only 30 days before the new date
     project.cf.events.length = 0;
     const again = await report(project, "2026-11-21T09:00:00.000Z");
-    expect(again.result.lines).toEqual([]);
+    expect(again.lines).toEqual([]);
     expect(project.cf.events).toEqual([]);
     expect(again.plan.cost.oneTime).toHaveLength(1);
   });
@@ -115,14 +115,32 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     expect(plan.cost.renewals?.[0]?.next).toBe("2027-11-30T12:00:00.000Z");
   });
 
+  it("keeps a renewal seen more than a month after its date, in the oldest month the plan keeps", async () => {
+    const project = await domainProject({ plan: renewalPlan() });
+    project.cf.own(DOMAIN, { expiresAt: "2027-11-30T12:00:00Z", autoRenew: true });
+
+    // 36 days after the date: the plan keeps December and January
+    const { lines, plan } = await report(project, "2027-01-05T09:00:00.000Z");
+
+    expect(lines).toHaveLength(1);
+    expect(plan.cost.oneTime).toEqual([
+      {
+        item: "example.com, renewal (1 year)",
+        provider: "cloudflare",
+        price: eur(9.49),
+        at: "2026-12-01T00:00:00.000Z",
+      },
+    ]);
+  });
+
   it("says nothing and changes nothing while a renewal due with auto-renew on is not charged yet", async () => {
     const project = await domainProject({ plan: renewalPlan() });
     project.cf.own(DOMAIN, { expiresAt: NEXT, autoRenew: true });
     const before = await readArtifact("plan", (await project.run()).deps.paths.files.plan);
 
-    const { result, plan } = await report(project, "2026-11-20T09:00:00.000Z");
+    const { lines, plan } = await report(project, "2026-11-20T09:00:00.000Z");
 
-    expect(result.lines).toEqual([]);
+    expect(lines).toEqual([]);
     expect(plan).toEqual(before);
   });
 
@@ -136,9 +154,9 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     const registrar = id === "cloudflare" ? project.cf : project.other(id);
     registrar.own(DOMAIN, { expiresAt: NEXT, autoRenew: false });
 
-    const { result } = await report(project, "2026-11-20T09:00:00.000Z");
+    const { lines } = await report(project, "2026-11-20T09:00:00.000Z");
 
-    expect(result.lines).toEqual([
+    expect(lines).toEqual([
       `Warning: auto-renew is off for example.com, so it expires on 2026-11-30 unless you renew it. ${how}`,
     ]);
   });
@@ -147,9 +165,9 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     const project = await domainProject({ plan: renewalPlan() });
     project.cf.own(DOMAIN, { expiresAt: NEXT, autoRenew: false });
 
-    const { result, plan } = await report(project, "2026-12-01T09:00:00.000Z");
+    const { lines, plan } = await report(project, "2026-12-01T09:00:00.000Z");
 
-    expect(result.lines).toEqual([
+    expect(lines).toEqual([
       "Warning: auto-renew is off for example.com, so it expired on 2026-11-30 unless you renewed it since. Turn it on with `opscrew domain auto-renew on`.",
     ]);
     expect(plan.cost.renewals?.[0]?.autoRenew).toBe(false);
@@ -179,11 +197,12 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     pb.failures.getDomain = () => new Error("connect ETIMEDOUT");
     project.cf.own(DOMAIN, { expiresAt: "2027-11-30T12:00:00Z", autoRenew: true });
 
-    const { result, plan: after } = await report(project, "2026-11-20T09:00:00.000Z");
+    const { lines, plan: after } = await report(project, "2026-11-20T09:00:00.000Z");
 
-    expect(result.lines).toEqual([
+    expect(lines).toEqual([
       "OpsCrew could not check the renewal of example.net at Porkbun: connect ETIMEDOUT. Run `opscrew status` again once Porkbun can be reached.",
-      `Warning: auto-renew is off for example.net, so it expires on 2026-11-30 unless you renew it. Turn it on at ${registrarLinks("porkbun").domains}.`,
+      // Porkbun's API can turn auto-renew on, read or not
+      "Warning: auto-renew is off for example.net, so it expires on 2026-11-30 unless you renew it. Turn it on with `opscrew domain auto-renew on`.",
       "example.com was renewed at Cloudflare until 2027-11-30: OpsCrew recorded the renewal ($10.44) in opscrew/plan.yaml.",
     ]);
     expect(after.cost.renewals?.map((renewal) => renewal.next)).toEqual([
@@ -192,37 +211,59 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     ]);
   });
 
-  it("says what to set when the registrar's credentials are missing here", async () => {
+  it("gives a missing token's own next step, not a rerun", async () => {
     const project = await domainProject({ plan: renewalPlan() });
     const { deps } = await project.run({ now: "2026-11-20T09:00:00.000Z", token: null });
     const plan = await readArtifact("plan", deps.paths.files.plan);
 
     // the collaborators built from the environment, which has no Cloudflare token
-    const result = await renewalStatusReport(deps, plan, { services: {} });
+    const lines = await renewalStatusReport(deps, plan, {});
 
-    expect(result.lines).toHaveLength(1);
-    expect(result.lines[0]).toMatch(
-      /^OpsCrew could not check the renewal of example\.com at Cloudflare: .*CLOUDFLARE_API_TOKEN/,
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      /^OpsCrew could not check the renewal of example\.com at Cloudflare: No Cloudflare API token found\. .*CLOUDFLARE_API_TOKEN/,
     );
+    expect(lines[0]).toContain("Then try again; nothing was changed.");
+    expect(lines[0]).not.toContain("Run `opscrew status` again");
     expect(visibleText(deps)).not.toContain(TOKEN);
   });
 
-  it("says when the registrar no longer lists the domain", async () => {
+  it("points a token with several accounts to `opscrew domain status --account`", async () => {
     const project = await domainProject({ plan: renewalPlan() });
+    project.cf.accounts = [
+      { id: "acc-1", name: "Shop" },
+      { id: "acc-2", name: "Other" },
+    ];
 
-    const { result } = await report(project, "2026-11-20T09:00:00.000Z");
+    const { lines, plan } = await report(project, "2026-11-20T09:00:00.000Z");
 
-    expect(result.lines).toEqual([
-      "Cloudflare does not list example.com in your account, so OpsCrew could not check its renewal. Check the Cloudflare dashboard (https://dash.cloudflare.com, Domain Registration).",
+    expect(lines).toEqual([
+      "OpsCrew could not check the renewal of example.com at Cloudflare: This Cloudflare token can use 2 accounts: Shop (acc-1), Other (acc-2). OpsCrew needs to know which one the domain belongs to. Pass the account id with `opscrew domain status --account <id>`, for example acc-1.",
     ]);
+    expect(plan.cost.renewals).toHaveLength(1);
+  });
+
+  it("stops tracking a domain the registrar no longer lists, and says so once", async () => {
+    const project = await domainProject({ plan: renewalPlan({ autoRenew: false }) });
+
+    const { lines, plan } = await report(project, "2026-12-20T09:00:00.000Z");
+
+    expect(lines).toEqual([
+      "example.com is no longer in your Cloudflare account, so OpsCrew stopped tracking its renewal in opscrew/plan.yaml.",
+    ]);
+    expect(plan.cost.renewals).toBeUndefined();
+    project.cf.events.length = 0;
+    const again = await report(project, "2026-12-21T09:00:00.000Z");
+    expect(again.lines).toEqual([]);
+    expect(project.cf.events).toEqual([]);
   });
 });
 
 it("keeps an old plan without renewals as it is", async () => {
   const project = await domainProject({ plan: domainTestPlan({ domain: DOMAIN }) });
 
-  const { result } = await report(project, "2026-11-20T09:00:00.000Z");
+  const { lines } = await report(project, "2026-11-20T09:00:00.000Z");
 
-  expect(result.lines).toEqual([]);
+  expect(lines).toEqual([]);
   expect(project.cf.events).toEqual([]);
 });

@@ -186,7 +186,7 @@ export async function recordDomain(
       cost:
         options.purchase === undefined
           ? plan.cost
-          : purchasedCost(plan.cost, options.purchase, info),
+          : purchasedCost(plan.cost, options.purchase, info, deps.clock.now()),
     });
   }
   if (files.requirements !== undefined)

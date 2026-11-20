@@ -9,7 +9,7 @@ import type { DeployPlan, Renewal } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { convertMoney } from "../design/cost";
 import { writePlanIfChanged } from "../shared";
-import { withOneTime } from "../shared/cost-times";
+import { keptSince, withOneTime } from "../shared/cost-times";
 import { formatDate, formatMoney, toIsoDateTime } from "./common";
 import type { PurchaseRecord } from "./record";
 import { REGISTRAR_NAMES } from "./registrars";
@@ -22,6 +22,14 @@ const RENEWAL_WINDOW_MS = 30 * 86_400_000;
 /** True once `renewal`'s date is 30 days away or less, or past: the registrar may have charged it. */
 export function renewalDue(renewal: Renewal, now: Date): boolean {
   return Date.parse(renewal.next) - now.getTime() <= RENEWAL_WINDOW_MS;
+}
+
+/**
+ * `time` (ISO), or the start of the window a plan write keeps at `now` when it is older
+ * (`keptSince`): a charge OpsCrew learns of late is still recorded, in the oldest month kept.
+ */
+function keptAt(time: number, now: Date): string {
+  return new Date(Math.max(time, keptSince(now).getTime())).toISOString();
 }
 
 /** `cost` with `renewal` in place of the renewal of the same domain, or added. */
@@ -43,21 +51,23 @@ function renewalOf(cost: PlanCost, domain: string, info: RegisteredDomain): Rene
 
 /**
  * `cost` with the purchase OpsCrew's note `record` describes, once the registrar shows the domain
- * (`info`): the charge in `oneTime` at the time the purchase was sent, in the cost's currency (at
- * the fixed rate), unless a run that finished the purchase before recorded it there; and the
- * domain's renewal in `renewals`, at the price per year quoted then, with the expiry and auto-renew
- * `info` gives. A note without the charge, or no renewal price or expiry, leaves that part out.
+ * (`info`) at `now`: the charge in `oneTime` at the time the purchase was sent (no older than the
+ * plan keeps, `keptAt`), in the cost's currency (at the fixed rate), unless a run that finished the
+ * purchase before recorded it there; and the domain's renewal in `renewals`, at the price per year
+ * quoted then, with the expiry and auto-renew `info` gives. A note without the charge, or no
+ * renewal price or expiry, leaves that part out.
  */
 export function purchasedCost(
   cost: PlanCost,
   record: PurchaseRecord,
   info: RegisteredDomain,
+  now: Date,
 ): PlanCost {
   const { domain, registrar: provider, total, renewal } = record;
   let result: PlanCost = cost;
   if (total !== undefined) {
     const item = `${domain}, ${plural(record.years ?? 1, "year")}`;
-    const at = record.requestedAt;
+    const at = keptAt(Date.parse(record.requestedAt), now);
     const recorded = cost.oneTime?.some(
       (fee) => fee.item === item && fee.provider === provider && fee.at === at,
     );
@@ -101,9 +111,9 @@ export interface RenewalRead {
  * `plan` after the registrar's read `info` of `domain`, once the domain's renewal there is due
  * ({@link renewalDue}): the renewal follows the read's auto-renew, and an expiry past `next` means
  * the registrar charged the renewal, so its price goes into `oneTime` at the earlier of the old
- * `next` and `now` (no registrar's answer gives the day it charged, which is before the expiry)
- * and `next` and `dns.registration`'s expiry move to the new one. The same plan before then, or
- * when nothing changed.
+ * `next` and `now` (no registrar's answer gives the day it charged, which is before the expiry),
+ * no older than the plan keeps (`keptAt`), and `next` and `dns.registration`'s expiry move to the
+ * new one. The same plan before then, or when nothing changed.
  */
 export function renewedPlan(
   plan: DeployPlan,
@@ -126,7 +136,7 @@ export function renewedPlan(
       item: `${domain}, renewal (1 year)`,
       provider: renewal.provider,
       price: convertMoney(renewal.price, cost.monthly.currency),
-      at: new Date(Math.min(Date.parse(renewal.next), now.getTime())).toISOString(),
+      at: keptAt(Math.min(Date.parse(renewal.next), now.getTime()), now),
     });
   }
   const registration = plan.dns.registration;
@@ -142,6 +152,15 @@ export function renewedPlan(
         }
       : plan.dns;
   return { plan: { ...plan, cost, dns }, renewal: updated, renewed: next !== undefined };
+}
+
+/** `plan` without `renewal`: the registrar no longer lists its domain, so nothing renews it there. */
+export function withoutRenewal(plan: DeployPlan, renewal: Renewal): DeployPlan {
+  const { renewals = [], ...cost } = plan.cost;
+  const kept = renewals.filter(
+    (entry) => entry.item !== renewal.item || entry.provider !== renewal.provider,
+  );
+  return { ...plan, cost: kept.length > 0 ? { ...cost, renewals: kept } : cost };
 }
 
 /** `example.com was renewed at Cloudflare until 2027-11-20: OpsCrew recorded …`. */

@@ -160,6 +160,36 @@ describe("opscrew domain buy: the purchase and its renewal in the plan's cost (F
     expect(plan.cost.renewals).toEqual(recorded.cost.renewals);
   });
 
+  it("keeps a purchase finished more than a month after it started, in the oldest month kept", async () => {
+    const project = await saleProject();
+    // the registrar finished the order an earlier run sent on 2026-10-11
+    project.cf.own(DOMAIN);
+    await project.writeRecord({
+      domain: DOMAIN,
+      accountId: "acc-1",
+      requestedAt: RUN_NOW,
+      years: 1,
+      autoRenew: true,
+      total: usd(10.44),
+      renewal: usd(12.5),
+      registrar: "cloudflare",
+      outcome: "accepted",
+    });
+
+    const late = await project.run({ now: "2026-12-15T09:00:00.000Z" });
+    await buyDomain(late.deps, { domain: DOMAIN, services: late.services });
+
+    expect(project.cf.registerCalls).toHaveLength(0);
+    expect((await planOf(project)).cost.oneTime).toEqual([
+      {
+        item: "example.com, 1 year",
+        provider: "cloudflare",
+        price: eur(9.49),
+        at: "2026-11-01T00:00:00.000Z",
+      },
+    ]);
+  });
+
   it("records nothing for a domain the account already had (bought elsewhere)", async () => {
     const project = await saleProject();
     project.cf.own(DOMAIN);
@@ -253,6 +283,61 @@ describe("opscrew domain status: a renewal the registrar charged (FR-3113)", () 
     const again = await project.run({ now: "2027-09-21T08:00:00.000Z" });
     await domainStatus(again.deps, { services: again.services });
     expect((await planOf(project)).cost.oneTime).toHaveLength(1);
+  });
+
+  it("records it with `--account` when the token can use several accounts", async () => {
+    const project = await boughtProject();
+    renewAtCloudflare(project);
+    project.cf.accounts = [
+      { id: "acc-1", name: "Shop" },
+      { id: "acc-2", name: "Other" },
+    ];
+    const { deps, services } = await project.run({ now: "2027-09-20T08:00:00.000Z" });
+
+    await domainStatus(deps, { account: "acc-1", services });
+
+    expect((await planOf(project)).cost.renewals?.[0]?.next).toBe("2028-10-11T12:00:05.000Z");
+  });
+
+  it("records a renewal Porkbun charged once", async () => {
+    const base = domainTestPlan({ domain: DOMAIN });
+    const next = "2027-10-11T12:00:05.000Z";
+    const project = await domainProject({
+      plan: {
+        ...base,
+        dns: {
+          ...base.dns,
+          zone: DOMAIN,
+          registration: {
+            registrar: "porkbun",
+            expiresAt: next,
+            autoRenew: true,
+            privacy: true,
+            dnssec: true,
+          },
+        },
+        cost: {
+          ...base.cost,
+          renewals: [
+            { item: DOMAIN, provider: "porkbun", price: usd(12.5), next, autoRenew: true },
+          ],
+        },
+      },
+    });
+    project.other("porkbun").own(DOMAIN, { expiresAt: "2028-10-11T12:00:05Z", autoRenew: true });
+    const now = "2027-10-01T08:00:00.000Z";
+
+    for (const _run of [1, 2]) {
+      const { deps, services } = await project.run({ now });
+      await domainStatus(deps, { registrar: "porkbun", services });
+    }
+
+    const plan = await planOf(project);
+    expect(plan.cost.oneTime).toEqual([
+      { item: "example.com, renewal (1 year)", provider: "porkbun", price: eur(11.36), at: now },
+    ]);
+    expect(plan.cost.renewals?.[0]?.next).toBe("2028-10-11T12:00:05.000Z");
+    expect(plan.dns.registration?.expiresAt).toBe("2028-10-11T12:00:05.000Z");
   });
 
   it("changes nothing in the plan before the 30 days", async () => {

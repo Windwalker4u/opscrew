@@ -2,12 +2,11 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import { MoneySchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { DASHBOARD, formatDate } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
 import { REGISTRAR_IDS } from "./registrars";
-
-const MoneySchema = z.object({ amount: z.number(), currency: z.enum(["EUR", "USD"]) });
 
 const PurchaseRecordSchema = z.object({
   domain: z.string().min(1),

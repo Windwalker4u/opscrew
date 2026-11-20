@@ -43,13 +43,18 @@ function withRecords(
   };
 }
 
+/** The start of the previous calendar month (UTC) of `now`: the oldest time a plan write keeps. */
+export function keptSince(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+}
+
 /**
  * `cost` with only the ended items (by `until`) and one-time fees (by `at`) of the current and the
- * previous calendar month (UTC) of `now`: every plan write keeps no older ones.
+ * previous calendar month (UTC) of `now` ({@link keptSince}): every plan write keeps no older ones.
  */
 export function prunedCost(cost: CostEstimate, now: Date): CostEstimate {
   if (cost.ended === undefined && cost.oneTime === undefined) return cost;
-  const from = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1);
+  const from = keptSince(now).getTime();
   return withRecords(cost, {
     oneTime: cost.oneTime?.filter((fee) => Date.parse(fee.at) >= from),
     ended: cost.ended?.filter((line) => Date.parse(line.until) >= from),
