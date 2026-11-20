@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import type { DockerClient } from "@opscrew/connector-docker";
 import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import { listText, OpsCrewError, replaceNames, upperFirst, writeFileAtomic } from "@opscrew/core";
 import { checkEnvironmentKey, portainerStackName, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
@@ -45,10 +46,17 @@ import {
 } from "./session";
 import { composeProject, moveSide, sideWords } from "./sides";
 import {
+  checkCopiedMysqlDump,
+  dumpMysql,
+  type MoveMysql,
+  mysqlDumpVolume,
+  removeMysqlDumpVolume,
+  restoreMysqlDump,
+} from "./sides/mysql";
+import {
   checkCopiedDump,
   dumpPostgres,
   emptyPostgres,
-  ensureDumpVolume,
   type MovePostgres,
   moveDumpVolume,
   removeDumpVolume,
@@ -113,8 +121,29 @@ export function copiesData(plan: DeployPlan): boolean {
   );
 }
 
+/** The MySQL and MariaDB services on the app's server that don't start empty (in `empty`). */
+function dumpedServices(plan: DeployPlan, empty: ReadonlySet<string>): DumpedService[] {
+  return servicesOn(plan, APP_SERVER).flatMap((service) =>
+    (service.kind === "mysql" || service.kind === "mariadb") && !empty.has(service.name)
+      ? [{ name: service.name, kind: service.kind }]
+      : [],
+  );
+}
+
+/**
+ * The owners of data a move's window copies about whole: Postgres (by its dump), MySQL and MariaDB
+ * (by their folders, which differ after the restore before the window).
+ */
+export function copiedWhole(plan: DeployPlan): string[] {
+  const postgres = movedPostgres(plan);
+  return [
+    ...(postgres === undefined ? [] : [postgres]),
+    ...dumpedServices(plan, new Set()).map((s) => s.name),
+  ];
+}
+
 /** The Postgres service on the app's server: a move copies its database by its dump. */
-export function movedPostgres(plan: DeployPlan): string | undefined {
+function movedPostgres(plan: DeployPlan): string | undefined {
   const db = serviceOf(plan, "postgres");
   return db !== undefined && (db.server ?? APP_SERVER) === APP_SERVER ? db.name : undefined;
 }
@@ -128,11 +157,22 @@ interface MountCopy {
   to: SideSource;
 }
 
+/** A MySQL or MariaDB service of the app's server, which the copy before the window dumps. */
+interface DumpedService {
+  name: string;
+  kind: "mysql" | "mariadb";
+}
+
 /** What the window does: the mounts it copies, Postgres's dump, the services it stops. */
 interface WindowPlan {
   copies: MountCopy[];
   /** The Postgres service whose database is dumped and restored, unless it starts empty. */
   postgres: string | undefined;
+  /**
+   * The MySQL and MariaDB services that don't start empty: dumped and restored before the window,
+   * their data folders copied in it.
+   */
+  dumped: DumpedService[];
   /** The bytes copied, Postgres's data folder counting for its dump. */
   bytes: number;
   services: string[];
@@ -143,10 +183,17 @@ function hasData(window: WindowPlan): boolean {
   return window.copies.length > 0 || window.postgres !== undefined;
 }
 
-/** The window's data by how it is copied: its mounts' files, and Postgres's folder by its dump. */
+/**
+ * The window's data by how it is copied: the mounts of which only what changed goes, and those
+ * copied about whole (Postgres's folder by its dump; MySQL's and MariaDB's, whose files differ
+ * after their restore before the window).
+ */
 function sizesOf(window: WindowPlan): MoveSizes {
-  const files = window.copies.reduce((sum, copy) => sum + copy.bytes, 0);
-  return { files, postgres: window.bytes - files };
+  const dumped = new Set(window.dumped.map((service) => service.name));
+  const files = window.copies
+    .filter((copy) => !dumped.has(copy.owner))
+    .reduce((sum, copy) => sum + copy.bytes, 0);
+  return { files, whole: window.bytes - files };
 }
 
 /** A mount in words: `db's data at /var/lib/postgresql/data`, `the app's files at /data`. */
@@ -190,7 +237,13 @@ async function planWindow(session: MoveBase, old: MoveSide, fresh: MoveSide): Pr
       },
     );
   }
-  return { copies, postgres, bytes, services: statefulServices(plan) };
+  return {
+    copies,
+    postgres,
+    dumped: dumpedServices(plan, empty),
+    bytes,
+    services: statefulServices(plan),
+  };
 }
 
 /**
@@ -220,6 +273,202 @@ async function postgresOn(
 }
 
 /**
+ * A MySQL or MariaDB service's root login on one side, as {@link postgresOn}: its generated root
+ * password (registered with the redactor) and the Compose project there.
+ */
+async function mysqlOn(
+  session: MoveBase,
+  side: MoveSide,
+  service: DumpedService,
+): Promise<MoveMysql> {
+  const { deps, plan } = session;
+  const values = await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema);
+  const password = values?.services?.[service.name]?.["root-password"];
+  if (password === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew does not have ${service.name}'s root password on this computer, so it cannot copy its databases. Nothing was changed.`,
+      {
+        hint: `Run \`${RUN_COMMAND}\` on the computer that provisioned the app (it keeps the password in OpsCrew's folder there).`,
+      },
+    );
+  }
+  deps.redactor.addLiteral(password, "app-env");
+  return {
+    app: plan.app.name,
+    project: composeProject(side, plan),
+    service: service.name,
+    kind: service.kind,
+    password,
+  };
+}
+
+/**
+ * A database a move copies by its dump, the same way on both sides: Postgres before the window
+ * and in it, MySQL and MariaDB before it (the window copies their data folders, stopped).
+ */
+interface DumpedDatabase {
+  /** Its service's Compose name, in messages. */
+  service: string;
+  /** Its move volume, on each side. */
+  volume: string;
+  /** Dumps it on the old side while it runs; the dump's SHA-256. */
+  dump(old: SideDocker): Promise<string>;
+  /** Checks the dump copied to the new side against the old side's `sha256`. */
+  check(fresh: SideDocker, sha256: string): Promise<void>;
+  /** Restores the checked dump into the new side's service, once it answers. */
+  restore(fresh: SideDocker): Promise<void>;
+  /** Removes its move volume on a side. */
+  remove(client: DockerClient): Promise<void>;
+}
+
+/** Postgres as a {@link DumpedDatabase}, with its logins on each side. */
+function postgresDump(
+  session: MoveBase,
+  logins: { old: MovePostgres; fresh: MovePostgres },
+): DumpedDatabase {
+  const app = session.plan.app.name;
+  return {
+    service: logins.old.service,
+    volume: moveDumpVolume(app),
+    dump: (old) => dumpPostgres(old, logins.old),
+    check: (fresh, sha256) => checkCopiedDump(fresh, logins.fresh, sha256),
+    restore: (fresh) => restoreCheckedDump(fresh, logins.fresh, waitsOf(session.services)),
+    remove: (client) => removeDumpVolume(client, app),
+  };
+}
+
+/** A MySQL or MariaDB service as a {@link DumpedDatabase}, with its root logins on each side. */
+function mysqlDump(
+  session: MoveBase,
+  logins: { old: MoveMysql; fresh: MoveMysql },
+): DumpedDatabase {
+  return {
+    service: logins.old.service,
+    volume: mysqlDumpVolume(logins.old),
+    dump: (old) => dumpMysql(old, logins.old),
+    check: (fresh, sha256) => checkCopiedMysqlDump(fresh, logins.fresh, sha256),
+    restore: (fresh) => restoreMysqlDump(fresh, logins.fresh, waitsOf(session.services)),
+    remove: (client) => removeMysqlDumpVolume(client, logins.old),
+  };
+}
+
+/** Runs `run`, then records `action` on `where` in the audit log, with `detail` when given. */
+async function audited(
+  session: MoveBase,
+  action: string,
+  where: string,
+  run: () => Promise<unknown>,
+  detail?: string,
+): Promise<void> {
+  await run();
+  await auditMove(session, {
+    kind: "remote-exec",
+    action,
+    target: where,
+    decision: "approved",
+    ...(detail !== undefined ? { detail } : {}),
+  });
+}
+
+/** The audit entries' detail of the copy before the window. */
+const SERVING = "while the app serves, before the maintenance window";
+
+/** Where a database's copy runs: the session, both sides' Docker APIs, the audit's detail. */
+interface CopyContext {
+  session: MoveSession;
+  docker: { old: SideDocker; fresh: SideDocker };
+  /** {@link SERVING} before the window; none in it. */
+  detail?: string;
+}
+
+/** The words of both sides of a copy, and what its progress says of the old app. */
+function copyWords(ctx: CopyContext) {
+  return {
+    old: sideWords(moveOf(ctx.session).from.target, "old"),
+    fresh: sideWords(ctx.session.plan.target, "new"),
+    serving: ctx.detail === undefined ? "" : " while your app serves",
+  };
+}
+
+/**
+ * Dumps `db` on the old side while its service runs, into its move volume, made on the new side
+ * too so the copy has a place there. Returns the dump's SHA-256.
+ */
+async function dumpDatabase(ctx: CopyContext, db: DumpedDatabase): Promise<string> {
+  const { session, docker } = ctx;
+  const words = copyWords(ctx);
+  session.deps.reporter.step(`Dumping ${db.service}'s data on ${words.old}${words.serving}`);
+  const { client } = docker.fresh;
+  if (!(await client.volumeExists(db.volume))) await client.createVolume(db.volume);
+  let sha256 = "";
+  await audited(
+    session,
+    "dump database",
+    words.old,
+    async () => {
+      sha256 = await db.dump(docker.old);
+    },
+    ctx.detail,
+  );
+  return sha256;
+}
+
+/**
+ * Copies `db`'s dump to the new side through the carrier, checks it against `sha256` before
+ * anything there is dropped, and restores it (`restoring` says first that the restore begins).
+ */
+async function restoreDatabase(
+  ctx: CopyContext,
+  db: DumpedDatabase,
+  sha256: string,
+  restoring?: () => void,
+): Promise<void> {
+  const { session, docker } = ctx;
+  const words = copyWords(ctx);
+  const volume: SideSource = { kind: "volume", name: db.volume };
+  session.deps.reporter.step(`Copying ${db.service}'s dump to ${words.fresh}${words.serving}`);
+  await audited(
+    session,
+    "copy database dump",
+    words.fresh,
+    async () =>
+      docker.fresh.carrier.writeVolume(volume, await docker.old.carrier.readVolume(volume)),
+    ctx.detail,
+  );
+  await db.check(docker.fresh, sha256);
+  restoring?.();
+  session.deps.reporter.step(`Restoring ${db.service}'s data on ${words.fresh}${words.serving}`);
+  await audited(
+    session,
+    "restore database",
+    words.fresh,
+    () => db.restore(docker.fresh),
+    ctx.detail,
+  );
+}
+
+/** Removes `db`'s move volume on both sides. */
+async function removeDumps(ctx: CopyContext, db: DumpedDatabase): Promise<void> {
+  const { session, docker } = ctx;
+  const words = copyWords(ctx);
+  await audited(
+    session,
+    "remove database dump",
+    words.old,
+    () => db.remove(docker.old.client),
+    ctx.detail,
+  );
+  await audited(
+    session,
+    "remove database dump",
+    words.fresh,
+    () => db.remove(docker.fresh.client),
+    ctx.detail,
+  );
+}
+
+/**
  * The approval's list of what the window does, on both sides (never an address), after the data
  * was copied while the old side served (on a `server`, with the app started there on that copy):
  * only what changed since is copied, and the app starts again in place, with no workflow run.
@@ -238,6 +487,7 @@ function windowCommands(
   const services = window.services.length > 0 ? listText(window.services) : undefined;
   const empty = move.empty;
   const data = hasData(window);
+  const dumped = new Set(window.dumped.map((service) => service.name));
   const before = [
     ...(data ? [`its data (${sizeText(window.bytes)}) was copied to ${fresh}`] : []),
     ...(server ? [`the app started there${data ? " on that copy" : ""} and answered`] : []),
@@ -262,9 +512,10 @@ function windowCommands(
     ...(data
       ? [
           "Copy, each through Docker's archive API, with a SHA-256 of it on both sides that must match:",
-          ...window.copies.map(
-            (copy) =>
-              `  what changed in ${mountWords(copy)} since the first copy (${sizeText(copy.bytes)} in all)`,
+          ...window.copies.map((copy) =>
+            dumped.has(copy.owner)
+              ? `  ${mountWords(copy)} (${sizeText(copy.bytes)}), about all of it: its files differ after its restore while your app served`
+              : `  what changed in ${mountWords(copy)} since the first copy (${sizeText(copy.bytes)} in all)`,
           ),
           ...(window.postgres !== undefined ? ["  the database dump"] : []),
         ]
@@ -400,12 +651,14 @@ async function preCopiedInThisMove(session: MoveBase): Promise<boolean> {
  * The maintenance window (plan.md "3."), when the move copies data: the data's sizes → on a
  * server, GitHub's workflow must know the move's marker, or the move stops with its pull request
  * → the data copied while the old side serves ({@link preCopy}, once per move: a run stopped at
- * the window's approval doesn't copy again) → the window's minutes and one `remote-exec` approval
+ * the window's approval doesn't copy again; the databases by their dumps; the app checked there,
+ * then stopped again) → the window's minutes and one `remote-exec` approval
  * listing both sides' steps (scripts need `allowDowntime`) → the scheduled check paused →
  * `oldAppStoppedAt` → the old app stops → Postgres is dumped into the dump volume while it still
  * runs → the old services stop → the new app and services stop → what changed in each mount since
- * the first copy is copied with the carrier ({@link copyMount}: the digests must match), and the
- * dump volume → the new services start → Postgres is recreated and restored → the release command
+ * the first copy is copied with the carrier ({@link copyMount}: the digests must match; a MySQL's
+ * or MariaDB's folder about whole), and the dump volume → the new services start, waiting until
+ * they run → Postgres is recreated and restored → the release command
  * runs on the final data, the dump volumes go, and the app starts again in place and answers; on a
  * server the move's marker goes. No workflow runs in the window → `migrated`. Any failure empties
  * the mounts written on the new side, removes the dump volumes, stops the new side's app and
@@ -479,7 +732,15 @@ export async function maintenanceWindow(
   // The first copy, while the old side serves: once per move.
   const preCopies = hasData(window) || server;
   if (preCopies && !(await preCopiedInThisMove(session))) {
-    await preCopy(session, { old, fresh, window, logins, image, minutes: estimate.preCopy });
+    // Every database by its dump; the MySQL and MariaDB logins are needed for this copy only.
+    const databases = logins === undefined ? [] : [postgresDump(session, logins)];
+    for (const service of window.dumped) {
+      const there = { old: await mysqlOn(session, old, service) };
+      databases.push(
+        mysqlDump(session, { ...there, fresh: await mysqlOn(session, fresh, service) }),
+      );
+    }
+    await preCopy(session, { old, fresh, window, databases, image, minutes: estimate.preCopy });
   }
   const minutes = estimate.window + (sync?.minutes ?? 0);
   const downtime = `about ${minutes} minutes`;
@@ -557,13 +818,18 @@ export async function maintenanceWindow(
 
 /**
  * The first copy of the move's data (plan.md "3."), before the window, while the old side serves
- * and with the deploys paused: the new side's app and the services whose data is copied stop,
- * each mount is copied whole, those services start, and the database is dumped on the old side
- * (consistent while it runs), copied and restored on the new side; on a server ({@link startOnData}
- * with `image`), the deploy then runs the release command on that copy and starts the app, which
- * must answer. Recorded once done ({@link preCopiedFile}). On failure the new side's app stops, a
- * server's marker holds it for its data again and its edge stays stopped, the dump volumes go, and
- * the move stops with the cause: nothing of the old side was stopped, and a rerun copies again.
+ * and with the deploys paused: the new side's app and the services whose data is copied stop; each
+ * mount is copied whole, but a MySQL's or MariaDB's, which isn't a consistent snapshot while it
+ * writes; those services start; then each database (`databases`: Postgres, MySQL, MariaDB) is
+ * dumped on the old side, consistent while it runs, copied, checked and restored on the new side.
+ * Other stateful services (Mongo, Valkey, …) start on their live copy: one that refuses to fails
+ * here, before any downtime. On a server ({@link startOnData} with `image`), the deploy then runs
+ * the release command on that copy and starts the app, which must answer; then the app, its
+ * workers and its cron stop again and the marker holds them, so nothing of the app runs on both
+ * servers until the window. Recorded once done ({@link preCopiedFile}). On failure (inside the
+ * pause) the new side's app stops, a server's marker holds it for its data again and its edge
+ * stays stopped, the dump volumes go, and the move stops with the cause: nothing of the old side
+ * was stopped, and a rerun copies again.
  */
 async function preCopy(
   session: MoveSession,
@@ -571,93 +837,90 @@ async function preCopy(
     old: MoveSide;
     fresh: MoveSide;
     window: WindowPlan;
-    logins: { old: MovePostgres; fresh: MovePostgres } | undefined;
+    databases: DumpedDatabase[];
     image: string | undefined;
     minutes: number;
   },
 ): Promise<void> {
   const { deps, plan } = session;
-  const { old, fresh, window, logins, image } = ctx;
+  const { old, fresh, window, databases, image } = ctx;
   const oldWords = sideWords(moveOf(session).from.target, "old");
   const freshWords = sideWords(plan.target, "new");
-  const app = plan.app.name;
   // The new side's Postgres keeps running: its database is restored, not copied as files.
   const freshServices = window.services.filter((name) => name !== window.postgres);
+  // A MySQL's or MariaDB's folder goes by its dump here, and as files in the window.
+  const dumped = new Set(window.dumped.map((service) => service.name));
   const data = hasData(window);
   deps.reporter.info(
     data
       ? `OpsCrew copies the app's data (${sizeText(window.bytes)}) to ${freshWords} while your app serves (about ${ctx.minutes} minutes); the app on ${oldWords} keeps running.`
       : `OpsCrew starts the app on ${freshWords} with its deploy while your app serves (about ${ctx.minutes} minutes); the app on ${oldWords} keeps running.`,
   );
-  const audited: Audited = async (action, where, run) => {
-    await run();
-    await auditMove(session, {
-      kind: "remote-exec",
-      action,
-      target: where,
-      decision: "approved",
-      detail: "while the app serves, before the maintenance window",
-    });
-  };
   const docker = { old: await old.docker(session), fresh: await fresh.docker(session) };
+  const copying: CopyContext = { session, docker, detail: SERVING };
   const clean = await withoutAddresses(session);
   let started = false;
   try {
     await withDeploysPaused(deps, session.github, plan, session.services, RUN_COMMAND, async () => {
-      await audited("stop app", freshWords, () => fresh.stopApp(session));
-      await audited("stop services", freshWords, () => fresh.stopServices(session, freshServices));
-      for (const copy of window.copies) {
-        deps.reporter.step(
-          `Copying ${mountWords(copy)} (${sizeText(copy.bytes)}) to ${freshWords} while your app serves`,
+      try {
+        await audited(session, "stop app", freshWords, () => fresh.stopApp(session), SERVING);
+        await audited(
+          session,
+          "stop services",
+          freshWords,
+          () => fresh.stopServices(session, freshServices),
+          SERVING,
         );
-        await audited(`copy ${copy.owner} ${copy.key}`, freshWords, async () =>
-          docker.fresh.carrier.writeVolume(copy.to, await docker.old.carrier.readVolume(copy.from)),
-        );
-      }
-      await audited("start services", freshWords, () =>
-        fresh.startServices(session, freshServices),
-      );
-      if (window.postgres !== undefined && logins !== undefined) {
-        deps.reporter.step(
-          `Copying the database (${window.postgres}) to ${freshWords} while your app serves`,
-        );
-        let dump = "";
-        await ensureDumpVolume(docker.fresh.client, app);
-        await audited("dump database", oldWords, async () => {
-          dump = await dumpPostgres(docker.old, logins.old);
-        });
-        const volume: SideSource = { kind: "volume", name: moveDumpVolume(app) };
-        await audited("copy database dump", freshWords, async () => {
-          await docker.fresh.carrier.writeVolume(
-            volume,
-            await docker.old.carrier.readVolume(volume),
+        for (const copy of window.copies.filter((mount) => !dumped.has(mount.owner))) {
+          deps.reporter.step(
+            `Copying ${mountWords(copy)} (${sizeText(copy.bytes)}) to ${freshWords} while your app serves`,
           );
-        });
-        await checkCopiedDump(docker.fresh, logins.fresh, dump);
-        await audited("restore database", freshWords, () =>
-          restoreCheckedDump(docker.fresh, logins.fresh, waitsOf(session.services)),
+          await audited(
+            session,
+            `copy ${copy.owner} ${copy.key}`,
+            freshWords,
+            async () =>
+              docker.fresh.carrier.writeVolume(
+                copy.to,
+                await docker.old.carrier.readVolume(copy.from),
+              ),
+            SERVING,
+          );
+        }
+        await audited(
+          session,
+          "start services",
+          freshWords,
+          () => fresh.startServices(session, freshServices),
+          SERVING,
         );
-        await audited("remove database dump", oldWords, () =>
-          removeDumpVolume(docker.old.client, app),
-        );
-        await audited("remove database dump", freshWords, () =>
-          removeDumpVolume(docker.fresh.client, app),
-        );
-      }
-      if (image !== undefined) {
+        for (const db of databases) {
+          await restoreDatabase(copying, db, await dumpDatabase(copying, db));
+          await removeDumps(copying, db);
+        }
+        if (image === undefined) return;
         started = true;
-        await startOnData(session, { fresh, image, audited });
+        await startOnData(session, { fresh, image, detail: SERVING });
+        // Its workers and cron would write to the copy while the old app's write to the data.
+        await audited(session, "stop app", freshWords, () => fresh.stopApp(session), SERVING);
+        await audited(
+          session,
+          "hold the app for its data",
+          freshWords,
+          async () => fresh.markMove?.(session, "waiting"),
+          SERVING,
+        );
+      } catch (error) {
+        throw await rollBackPreCopy(session, error, { fresh, docker, databases, started, clean });
       }
     });
-  } catch (error) {
-    throw await rollBackPreCopy(session, error, { fresh, docker, window, started, clean });
   } finally {
     await docker.old.close();
     await docker.fresh.close();
   }
   await writeFileAtomic(preCopiedFile(session), `${JSON.stringify(moveOf(session).startedAt)}\n`);
   deps.reporter.success(
-    `${image === undefined ? `The app's data is copied to ${freshWords}` : `The app answers on ${freshWords}${data ? " on its data copied" : ""}`} while your app serves; the maintenance window copies only what changed since.`,
+    `${image === undefined ? `The app's data is copied to ${freshWords}` : `The app answered on ${freshWords}${data ? " on its data copied" : ""}`} while your app serves; the maintenance window copies only what changed since.`,
   );
 }
 
@@ -672,7 +935,7 @@ async function rollBackPreCopy(
   ctx: {
     fresh: MoveSide;
     docker: { old: SideDocker; fresh: SideDocker };
-    window: WindowPlan;
+    databases: readonly DumpedDatabase[];
     started: boolean;
     clean: (text: string) => string;
   },
@@ -698,12 +961,12 @@ async function rollBackPreCopy(
       fresh.stopEdge(session),
     );
   }
-  if (ctx.window.postgres !== undefined) {
-    await quietly(session, clean, `remove the database dump on ${oldWords}`, () =>
-      removeDumpVolume(docker.old.client, plan.app.name),
+  for (const db of ctx.databases) {
+    await quietly(session, clean, `remove ${db.service}'s dump on ${oldWords}`, () =>
+      db.remove(docker.old.client),
     );
-    await quietly(session, clean, `remove the database dump on ${freshWords}`, () =>
-      removeDumpVolume(docker.fresh.client, plan.app.name),
+    await quietly(session, clean, `remove ${db.service}'s dump on ${freshWords}`, () =>
+      db.remove(docker.fresh.client),
     );
   }
   return new OpsCrewError(
@@ -766,30 +1029,23 @@ async function runWindow(
     decision: "approved",
     detail: `maintenance window started: ${window.bytes} bytes of data, about ${ctx.minutes} minutes`,
   });
-  const audited: Audited = async (action, where, run) => {
-    await run();
-    await auditMove(session, { kind: "remote-exec", action, target: where, decision: "approved" });
-  };
   /** What the window changed on the new side so far: a rollback undoes it. */
   const changed: Changed = { written: [], restoring: false };
-  const app = plan.app.name;
+  const copying: CopyContext = { session, docker };
+  const postgres = logins === undefined ? undefined : postgresDump(session, logins);
   try {
-    deps.reporter.step(`Stopping ${app} on ${oldWords}`);
-    await audited("stop app", oldWords, () => old.stopApp(session));
-    let dump: string | undefined;
-    if (window.postgres !== undefined && logins !== undefined) {
-      deps.reporter.step(`Dumping the database (${window.postgres}) on ${oldWords}`);
-      await ensureDumpVolume(docker.fresh.client, app);
-      await audited("dump database", oldWords, async () => {
-        dump = await dumpPostgres(docker.old, logins.old);
-      });
-    }
-    await audited("stop services", oldWords, async () => {
+    deps.reporter.step(`Stopping ${plan.app.name} on ${oldWords}`);
+    await audited(session, "stop app", oldWords, () => old.stopApp(session));
+    // Postgres's dump is consistent while it runs; its files are not copied.
+    const dump = postgres === undefined ? undefined : await dumpDatabase(copying, postgres);
+    await audited(session, "stop services", oldWords, async () => {
       await old.stopServices(session, window.services);
       await requireCleanStop(session, old, docker.old, window.services);
     });
-    await audited("stop app", freshWords, () => fresh.stopApp(session));
-    await audited("stop services", freshWords, () => fresh.stopServices(session, freshServices));
+    await audited(session, "stop app", freshWords, () => fresh.stopApp(session));
+    await audited(session, "stop services", freshWords, () =>
+      fresh.stopServices(session, freshServices),
+    );
     // The bucket's last copy: nothing writes to it while the old app is stopped.
     if (sync !== undefined) {
       await copyBucket(session, "sync", sync.keys, (3 * sync.minutes + 5) * 60_000);
@@ -797,27 +1053,17 @@ async function runWindow(
     for (const copy of window.copies) {
       deps.reporter.step(`Copying what changed in ${mountWords(copy)} to ${freshWords}`);
       changed.written.push(copy);
-      await audited(`copy ${copy.owner} ${copy.key}`, freshWords, () =>
+      await audited(session, `copy ${copy.owner} ${copy.key}`, freshWords, () =>
         copyMount(session, docker, copy),
       );
     }
-    if (dump !== undefined) {
-      const volume: SideSource = { kind: "volume", name: moveDumpVolume(app) };
-      deps.reporter.step(`Copying the database dump to ${freshWords}`);
-      await audited("copy database dump", freshWords, async () => {
-        await docker.fresh.carrier.writeVolume(volume, await docker.old.carrier.readVolume(volume));
+    await audited(session, "start services", freshWords, () =>
+      fresh.startServices(session, freshServices),
+    );
+    if (postgres !== undefined && dump !== undefined) {
+      await restoreDatabase(copying, postgres, dump, () => {
+        changed.restoring = true;
       });
-    }
-    await audited("start services", freshWords, () => fresh.startServices(session, freshServices));
-    if (window.postgres !== undefined && logins !== undefined && dump !== undefined) {
-      const sha = dump;
-      deps.reporter.step(`Restoring the database (${window.postgres}) on ${freshWords}`);
-      // The copy is checked against the old side's dump before the database is dropped.
-      await checkCopiedDump(docker.fresh, logins.fresh, sha);
-      changed.restoring = true;
-      await audited("restore database", freshWords, () =>
-        restoreCheckedDump(docker.fresh, logins.fresh, waitsOf(session.services)),
-      );
     }
     // The release command on the final data: the version deployed there migrates it forward.
     if (plan.app.releaseCommand !== undefined) {
@@ -825,21 +1071,16 @@ async function runWindow(
         `Running the release command (app.releaseCommand) on the final data, migrating it to the version on ${freshWords}`,
       );
     }
-    await audited("run release command", freshWords, () => fresh.release(session, window.bytes));
-    if (window.postgres !== undefined) {
-      await audited("remove database dump", oldWords, () =>
-        removeDumpVolume(docker.old.client, app),
-      );
-      await audited("remove database dump", freshWords, () =>
-        removeDumpVolume(docker.fresh.client, app),
-      );
-    }
+    await audited(session, "run release command", freshWords, () =>
+      fresh.release(session, window.bytes),
+    );
+    if (postgres !== undefined) await removeDumps(copying, postgres);
     // In place: the app's container and its route are the ones the deploy before the window left.
     deps.reporter.step(`Starting the app on ${freshWords} again`);
-    await audited("start app", freshWords, () => fresh.startApp(session));
+    await audited(session, "start app", freshWords, () => fresh.startApp(session));
     await waitHealthy(session, fresh);
     if (fresh.markMove !== undefined) {
-      await audited("remove the move's marker", freshWords, async () =>
+      await audited(session, "remove the move's marker", freshWords, async () =>
         fresh.markMove?.(session, undefined),
       );
     }
@@ -848,25 +1089,26 @@ async function runWindow(
   }
 }
 
-/** Runs `run`, then records `action` on `where` in the audit log. */
-type Audited = (action: string, where: string, run: () => Promise<void>) => Promise<void>;
-
 /**
  * A server's new side, once data is there (FR-3027): the move's marker says `copied`, so the
  * deploy workflow's run with `image`'s digest (no build, and not a rollback) runs the release
  * command on that data, switches to the app and starts its workers and cron, and leaves the check
  * to the move: the app's domain still leads to the old side. Its start of the edge is undone (the
  * edge stays stopped until the switch, as the move's deploy step left it), and the app must answer
- * on the server.
+ * on the server. `detail` goes with the audit entries.
  */
 async function startOnData(
   session: MoveSession,
-  ctx: { fresh: MoveSide; image: string; audited: Audited },
+  ctx: { fresh: MoveSide; image: string; detail?: string },
 ): Promise<void> {
-  const { fresh, image, audited } = ctx;
+  const { fresh, image, detail } = ctx;
   const words = sideWords(session.plan.target, "new");
-  await audited("let the deploys start the app on its data", words, async () =>
-    fresh.markMove?.(session, "copied"),
+  await audited(
+    session,
+    "let the deploys start the app on its data",
+    words,
+    async () => fresh.markMove?.(session, "copied"),
+    detail,
   );
   await runDeployWorkflow(session, {
     inputs: {
@@ -895,12 +1137,8 @@ async function startWithoutCopy(
   session.deps.reporter.info(
     `There is no data to copy after all, so OpsCrew starts the app on ${words} with its deploy; the app on ${sideWords(moveOf(session).from.target, "old")} keeps serving meanwhile.`,
   );
-  const audited: Audited = async (action, where, run) => {
-    await run();
-    await auditMove(session, { kind: "remote-exec", action, target: where, decision: "approved" });
-  };
   try {
-    await startOnData(session, { fresh, image, audited });
+    await startOnData(session, { fresh, image });
   } catch (error) {
     const clean = await withoutAddresses(session);
     await quietly(session, clean, `hold the app on ${words} for its data again`, async () =>
@@ -910,7 +1148,7 @@ async function startWithoutCopy(
     await quietly(session, clean, `stop the web server on ${words}`, () => fresh.stopEdge(session));
     throw error;
   }
-  await audited("remove the move's marker", words, async () =>
+  await audited(session, "remove the move's marker", words, async () =>
     fresh.markMove?.(session, undefined),
   );
 }

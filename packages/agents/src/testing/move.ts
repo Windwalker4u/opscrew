@@ -3,18 +3,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { duplexPair, Readable } from "node:stream";
 import {
-  type ManifestEntry,
-  type TarEntry,
-  tarStream,
-  type VolumeCarrier,
-} from "@opscrew/connector-docker";
-import {
   type FakeContainer,
   FakeDocker,
   type FakeFile,
   type FakeRun,
   fakeDialStdio,
-  parseTar,
 } from "@opscrew/connector-docker/testing";
 import {
   COMPOSE_PROJECT_LABEL,
@@ -48,7 +41,6 @@ import {
   CostLedger,
   MemoryApprovalStore,
   MemoryAuditLog,
-  OpsCrewError,
   ProjectStateStore,
   Redactor,
   resolveProjectPaths,
@@ -655,11 +647,13 @@ function opOf(command: string): string {
   if (edge) return `${edge[1] === "stop" ? "stop" : "start"} ${edge[2]}`;
   if (/docker compose exec -T (caddy|nginx|openlitespeed) /.test(command)) return "reload edge";
   // The app's stateful services, which a move's window stops (with time to stop cleanly) and starts.
-  const services = /docker compose (stop -t \d+|up -d) ([a-z0-9 -]+)$/.exec(command);
-  if (services) return `${services[1] === "up -d" ? "start" : "stop"} ${services[2]}`;
+  // The services start waiting until they run; the workers and cron start with the app.
+  const services = /docker compose (stop -t \d+|up -d(?: --wait)?) ([a-z0-9 -]+)$/.exec(command);
+  if (services) return `${services[1]?.startsWith("up") ? "start" : "stop"} ${services[2]}`;
   // The app's web container by its name: the `app` alias may be another app's on a shared edge.
   if (/--entrypoint wget (caddy|nginx|openlitespeed) /.test(command)) {
-    return command.includes(`'http://${APP}-app-1:`) ? "health" : "health by the app alias";
+    const byName = `--filter label=com.docker.compose.project=${APP} --filter label=com.docker.compose.service=app `;
+    return command.includes(byName) ? "health" : "health by the app alias";
   }
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
@@ -682,112 +676,15 @@ function opOf(command: string): string {
 /** Where the app's services keep their data on a server OpsCrew deploys to over SSH. */
 const DATA_ROOT = `/srv/data/${APP}`;
 
-/** What the move asked of the carriers' delta operations ({@link fakeDeltaCarrier}), in order. */
-export type DeltaCall =
-  | { op: "volumeManifest" }
-  | { op: "readPaths"; paths: string[] }
-  | { op: "updateVolume"; paths: string[]; remove: string[] };
-
-/** A stream's bytes, whole. */
-async function bytesOf(stream: Readable): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
-}
-
-/** An archive entry's path as a manifest names it: `data/` is `.`, `data/a/b` is `./a/b`. */
-function manifestPath(name: string): string {
-  const inside = name.replace(/\/$/, "").slice("data".length + 1);
-  return inside === "" ? "." : `./${inside}`;
-}
-
-/** An archive entry's facts as the carrier's manifest gives them (`stat`'s words and octal mode). */
-function manifestEntry(entry: TarEntry): ManifestEntry {
-  const path = manifestPath(entry.name);
-  const facts = { path, mode: entry.mode.toString(8), uid: entry.uid, gid: entry.gid };
-  if (entry.type === "dir") return { ...facts, type: "directory", size: 0 };
-  if (entry.type === "symlink") {
-    const target = entry.target ?? "";
-    return { ...facts, type: "symbolic link", size: target.length, target };
-  }
-  const data = entry.data ?? Buffer.alloc(0);
-  return {
-    ...facts,
-    type: data.length === 0 ? "regular empty file" : "regular file",
-    size: data.length,
-    sha256: createHash("sha256").update(data).digest("hex"),
-  };
-}
-
 /**
- * `carrier` with its delta operations built over its other four, as the connector's carrier
- * behaves, so the move fakes record what the move asked (`calls`) and can refuse a delta: the
- * manifest from a whole read of the source (a name with a line break refused, `INVALID_INPUT`),
- * the paths' archive (with the root and every folder above them) filtered out of a whole read
- * (refused, `INVALID_INPUT`, without `room` to gather them), and the update as the source read
- * whole, `remove` taken out with their content, the archive put over the rest, and the result
- * written whole.
+ * What the move asked of a carrier's path list (`/opscrew-paths`, put into it before it starts):
+ * the paths a read stages (`readPaths`, with the root and every folder above them) or an update
+ * removes first (`updateVolume`), on the server `host`.
  */
-export function fakeDeltaCarrier(
-  carrier: VolumeCarrier,
-  calls: DeltaCall[],
-  /** Whether the source's server has the free disk to gather the changed paths. */
-  room: () => boolean = () => true,
-): VolumeCarrier {
-  const entries = async (source: Parameters<VolumeCarrier["readVolume"]>[0]) =>
-    parseTar(await bytesOf(await carrier.readVolume(source)));
-  return {
-    readVolume: (source) => carrier.readVolume(source),
-    writeVolume: (source, archive) => carrier.writeVolume(source, archive),
-    volumeDigest: (source) => carrier.volumeDigest(source),
-    sourceSize: (source) => carrier.sourceSize(source),
-    async volumeManifest(source) {
-      calls.push({ op: "volumeManifest" });
-      const found = await entries(source);
-      if (found.some((entry) => entry.name.includes("\n"))) {
-        throw new OpsCrewError(
-          "INVALID_INPUT",
-          "A name in the data holds a line break, which OpsCrew's list of changes can't hold.",
-          { hint: "Rename the file, or copy the data whole." },
-        );
-      }
-      return found.map(manifestEntry).sort((a, b) => (a.path < b.path ? -1 : 1));
-    },
-    async readPaths(source, paths) {
-      calls.push({ op: "readPaths", paths: [...paths] });
-      if (!room()) {
-        throw new OpsCrewError(
-          "INVALID_INPUT",
-          "The server has too little free disk to gather the changed files.",
-          { hint: "Free some disk there, or copy the data whole." },
-        );
-      }
-      // The root and each folder above a path come along, with the source's owners and modes.
-      const wanted = new Set(["."]);
-      for (const path of paths) {
-        const parts = path.split("/");
-        for (let end = 2; end <= parts.length; end++) wanted.add(parts.slice(0, end).join("/"));
-      }
-      return tarStream((await entries(source)).filter((e) => wanted.has(manifestPath(e.name))));
-    },
-    async updateVolume(source, archive, remove) {
-      const incoming = parseTar(await bytesOf(archive));
-      calls.push({
-        op: "updateVolume",
-        paths: incoming.map((entry) => manifestPath(entry.name)),
-        remove: [...remove],
-      });
-      const merged = new Map((await entries(source)).map((e) => [manifestPath(e.name), e]));
-      for (const path of remove) {
-        for (const key of [...merged.keys()]) {
-          if (key === path || key.startsWith(`${path}/`)) merged.delete(key);
-        }
-      }
-      for (const entry of incoming) merged.set(manifestPath(entry.name), entry);
-      const sorted = [...merged.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
-      await carrier.writeVolume(source, tarStream(sorted));
-    },
-  };
+export interface DeltaCall {
+  host: string;
+  op: "readPaths" | "updateVolume";
+  paths: string[];
 }
 
 /**
@@ -933,6 +830,15 @@ export class FakeHosts {
    * answer every other command.
    */
   #oneOff(ip: string, container: FakeContainer): FakeRun | undefined {
+    const listed = container.files?.get("opscrew-paths")?.data?.toString("utf8");
+    if (listed !== undefined) {
+      // A stage mounts its source at /source; an update removes from what it mounts at /data.
+      const stages = container.mounts.some((mount) => mount.target === "/source");
+      const paths = listed.split(/\n/).filter((line) => line !== "");
+      this.deltas.push({ host: ip, op: stages ? "readPaths" : "updateVolume", paths });
+    }
+    const mysql = this.#mysqlOneOff(ip, container);
+    if (mysql !== undefined) return mysql;
     const [program, ...args] = container.cmd;
     const script = program === "sh" ? (args[1] ?? "") : "";
     const op = script.includes("pg_dump")
@@ -988,6 +894,87 @@ export class FakeHosts {
         return { exitCode: 0 };
     }
   }
+
+  /** A MySQL or MariaDB service's data on `ip`: its folder on a server, its volume in Portainer. */
+  #serviceData(ip: string, service: string) {
+    const docker = this.docker(ip);
+    return (
+      docker.folders.get(`${DATA_ROOT}/${service}`) ??
+      docker.volumes.get(`opscrew-${APP}_${service}_data`)
+    );
+  }
+
+  /**
+   * A one-off MySQL or MariaDB client's command (its service the script's `$1`): the dump writes
+   * the service's files into the move volume as text ending in `-- Dump completed`, the check
+   * gives its SHA-256, the ping answers, and the restore puts the dump's files into the service's
+   * data, each rewritten as a restore does (`(restored)` added). Root's login file must be there.
+   */
+  #mysqlOneOff(ip: string, container: FakeContainer): FakeRun | undefined {
+    const [, , script = "", , service = ""] = container.cmd;
+    if (container.image !== IMAGES.mysql.ref && container.image !== IMAGES.mariadb.ref) {
+      return undefined;
+    }
+    const op = /mysqldump|mariadb-dump/.test(script)
+      ? `dump ${service}`
+      : script.includes("Dump completed")
+        ? `verify ${service} dump`
+        : /mysqladmin|mariadb-admin/.test(script)
+          ? `${service} ready?`
+          : `restore ${service}`;
+    this.events.push({ type: "remote", host: ip, op });
+    const failure = this.fail?.(ip, op);
+    if (failure instanceof Error) throw failure;
+    if (failure) return failure;
+    if (container.files?.get("tmp/opscrew.my.cnf") === undefined) {
+      return { exitCode: 1, stderr: "Access denied for user 'root'" };
+    }
+    const mount = container.mounts.find((m) => m.target === "/dump");
+    const volume = this.docker(ip).volumes.get(mount?.source ?? "");
+    const data = this.#serviceData(ip, service);
+    const dump = volume?.files.get("all.sql")?.data;
+    if (op === `dump ${service}`) {
+      const entries = [...(data?.files ?? [])].map(([path, file]) => [
+        path,
+        { ...file, data: file.data?.toString("base64") },
+      ]);
+      const text = `${JSON.stringify(entries)}\n-- Dump completed\n`;
+      volume?.files.set("all.sql", {
+        type: "file",
+        mode: 0o600,
+        uid: 0,
+        gid: 0,
+        data: Buffer.from(text),
+      });
+      return { exitCode: 0 };
+    }
+    if (op === `verify ${service} dump`) {
+      if (dump === undefined || !dump.toString("utf8").trimEnd().endsWith("-- Dump completed")) {
+        return { exitCode: 1 };
+      }
+      return {
+        exitCode: 0,
+        stdout: `${createHash("sha256").update(dump).digest("hex")}  /dump/all.sql\n`,
+      };
+    }
+    if (op === `${service} ready?`) return { exitCode: 0 };
+    if (dump === undefined || data === undefined) return { exitCode: 1 };
+    const entries = JSON.parse(dump.toString("utf8").split("\n")[0] ?? "[]") as [
+      string,
+      FakeFile & { data?: string },
+    ][];
+    data.files.clear();
+    for (const [path, file] of entries) {
+      const bytes = file.data === undefined ? undefined : Buffer.from(file.data, "base64");
+      data.files.set(path, {
+        ...file,
+        ...(bytes === undefined
+          ? {}
+          : { data: Buffer.concat([bytes, Buffer.from(" (restored)")]) }),
+      } as FakeFile);
+    }
+    return { exitCode: 0 };
+  }
   /**
    * The deployed compose file has a `release` service (the plan has `app.releaseCommand`): each
    * full deploy migrates the database, an empty one to the schema of HEAD.
@@ -1003,11 +990,8 @@ export class FakeHosts {
    */
   hasData: (ip: string) => boolean = (ip) => this.host(ip).db !== "empty";
 
-  /** What the move asked of the carriers' delta operations ({@link fakeDeltaCarrier}), in order. */
+  /** What the move asked of the carriers' path lists, in order ({@link DeltaCall}). */
   readonly deltas: DeltaCall[] = [];
-
-  /** The old side's server has too little free disk to gather a mount's changed paths. */
-  lowDisk = false;
 
   constructor(readonly events: MoveEvent[]) {}
 
@@ -1514,7 +1498,6 @@ export async function moveFakes(
       monotonic += ms;
     },
     now: () => monotonic,
-    deltaCarrier: (carrier) => fakeDeltaCarrier(carrier, hosts.deltas, () => !hosts.lowDisk),
   };
   return {
     env,

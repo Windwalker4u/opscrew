@@ -781,11 +781,21 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(window[stopAt + 1]).toBe(`${OLD_IPV4} ${processes} stop worker cron`);
     expect(window.lastIndexOf(`${OLD_IPV4} dump`)).toBeGreaterThan(stopAt + 1);
     // On the new server the deploy on the data copied while the old app serves starts them with
-    // the app (FR-3027); the window starts them again with it, in place.
-    expect(window).toContain(`dispatch main sha256:${"e".repeat(12)}`);
-    const freshStart = window.lastIndexOf(`${h.newServer.ipv4} start app`);
+    // the app (FR-3027); once it answered they stop again with it, so nothing of the app runs on
+    // both servers until the window, which starts them again with it, in place.
+    const n = h.newServer.ipv4;
+    const dispatched = window.indexOf(`dispatch main sha256:${"e".repeat(12)}`);
+    const asked = window.indexOf("approve remote-exec");
+    expect(dispatched).toBeGreaterThanOrEqual(0);
+    const held = window.slice(dispatched, asked);
+    expect(held.slice(-3)).toEqual([
+      `${n} stop app`,
+      `${n} ${processes} stop worker cron`,
+      `${n} mark waiting`,
+    ]);
+    const freshStart = window.lastIndexOf(`${n} start app`);
     expect(freshStart).toBeGreaterThan(stopAt);
-    expect(window[freshStart + 1]).toBe(`${h.newServer.ipv4} start worker cron`);
+    expect(window[freshStart + 1]).toBe(`${n} start worker cron`);
 
     const mark = h.events.length;
     await abort(h);

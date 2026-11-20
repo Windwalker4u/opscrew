@@ -43,7 +43,6 @@ import {
   type SideSource,
   type SideVolume,
   STOP_SECONDS,
-  sideCarrier,
 } from "./types";
 
 /** The Compose labels a side reads on containers. */
@@ -154,8 +153,9 @@ export function sshSide(input: SshSideInput): SshSideParts {
       );
     }
     const { folder } = opsOf(session);
-    // A stateful service gets 120 s to stop cleanly (T2306), so its files are whole.
-    const args = verb === "stop" ? `stop -t ${STOP_SECONDS}` : verb;
+    // A stateful service gets 120 s to stop cleanly (T2306), so its files are whole; a start waits
+    // until each runs (healthy, with a health check), so what follows reaches it.
+    const args = verb === "stop" ? `stop -t ${STOP_SECONDS}` : "up -d --wait";
     await run(
       session,
       `cd ${folder} && docker compose ${args} ${names.join(" ")}`,
@@ -224,7 +224,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
       client: inWordsApi(client, host, words),
       // Only the app's own data folder may be bound into a carrier.
       carrier: inWordsApi(
-        sideCarrier(session, volumeCarrier(client, IMAGES.busybox.ref, [dataRoot(session)])),
+        volumeCarrier(client, IMAGES.busybox.ref, [dataRoot(session)]),
         host,
         words,
       ),
@@ -380,10 +380,15 @@ export function sshSide(input: SshSideInput): SshSideParts {
     async release(session, bytes) {
       const remote = await remoteOf(session);
       const ops = opsOf(session);
-      await inWords(session, async () => {
-        // The version deployed there decides: its compose file has a `release` service or not.
-        if (await hasReleaseService(remote, ops)) await runRelease(remote, bytes, ops);
-      });
+      // Its hint says how to see the command's output there, naming no address: it stays.
+      await inWords(
+        session,
+        async () => {
+          // The version deployed there decides: its compose file has a `release` service or not.
+          if (await hasReleaseService(remote, ops)) await runRelease(remote, bytes, ops);
+        },
+        true,
+      );
     },
 
     async volumes(session) {

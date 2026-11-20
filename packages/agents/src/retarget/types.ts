@@ -1,4 +1,3 @@
-import type { VolumeCarrier } from "@opscrew/connector-docker";
 import type { GitHubClient } from "@opscrew/connector-github";
 import type {
   ComputeCatalog,
@@ -87,11 +86,6 @@ export interface RetargetServices
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for wait loops. */
   now?: () => number;
-  /**
-   * The delta operations of each side's carrier, built over its other operations (the move
-   * fakes'); default: the connector's own (`sideCarrier`).
-   */
-  deltaCarrier?: (carrier: VolumeCarrier) => VolumeCarrier;
 }
 
 /** The targets a move goes to: a cloud provider, the user's own server, the user's Portainer. */

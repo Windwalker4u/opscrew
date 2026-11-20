@@ -108,7 +108,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${n} stop caddy`,
       // While the old app serves: the database copied by its dump (the new server's Postgres keeps
       // running: its database is restored, not copied), then the image deployed there, without a
-      // build, on that copy, the check from outside left to the move: its edge stopped again.
+      // build, on that copy, the check from outside left to the move: its edge stopped again;
+      // once it answered, the app, its workers and cron stop and wait for the window.
       `${n} stop app`,
       `${OLD_IPV4} dump`,
       `${n} empty db`,
@@ -116,6 +117,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${n} mark copied`,
       `dispatch main sha256:${"e".repeat(12)}`,
       `${n} stop caddy`,
+      `${n} stop app`,
+      `${n} mark waiting`,
       // The window: the database dumped and restored again, the app started again in place, no
       // workflow run; once it answers, the marker goes.
       "approve remote-exec",
@@ -425,13 +428,16 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(result).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events);
     // While the old app serves, the deploy of the image there runs the release command on the
-    // database's copy and starts the app (no release run of OpsCrew's own).
+    // database's copy and starts the app (no release run of OpsCrew's own); once it answered, it
+    // stops and waits for the window.
     const first = lines.indexOf(`${n} restore`);
     expect(lines.slice(first, lines.indexOf("approve remote-exec"))).toEqual([
       `${n} restore`,
       `${n} mark copied`,
       `dispatch main sha256:${"e".repeat(12)}`,
       `${n} stop caddy`,
+      `${n} stop app`,
+      `${n} mark waiting`,
     ]);
     // The window: the release command on the final data, the app started again in place, no
     // workflow run.

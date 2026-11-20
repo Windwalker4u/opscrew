@@ -50,8 +50,9 @@ export interface ServerOpOptions {
   /** The command the hints say to run again after a fix (default `opscrew retarget`). */
   command?: string;
   /**
-   * The app's name, which names its web container (`<app>-app-1`): the health check reaches it
-   * by that name, since the `app` alias is ambiguous on an edge network several apps share.
+   * The app's name, its Compose project's: the health check reaches its web container by the name
+   * Compose gave it (`<app>-app-<n>`), since the `app` alias is ambiguous on an edge network several
+   * apps share.
    */
   app?: string;
 }
@@ -277,10 +278,12 @@ export async function reloadEdge(
  * The health check; `port` is the plan's (`app.port`, a validated TCP port), `edge` the server's
  * proxy, whose image has `wget` (busybox's in Caddy's and nginx's on Alpine, GNU's in
  * OpenLiteSpeed's on Ubuntu). With `app` (the plan's
- * validated app name) it reaches the app's web container by name, else by the `app` alias.
+ * validated app name) it reaches the app's web container by the name Compose gave it (a rolling
+ * deploy leaves `<app>-app-2` and on), read from the running containers of the app's own project
+ * and service `app` in the same command, else by the `app` alias.
  */
 function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app?: string): string {
-  // Single-quoted in the remote shell; quotes, whitespace, `$`, backticks and backslashes refused.
+  // Quoted in the remote shell; quotes, whitespace, `$`, backticks and backslashes refused.
   if (!/^\/[^\s'"`$\\]*$/.test(healthPath)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -293,12 +296,15 @@ function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app?: 
   // A one-off container of the edge's proxy (busybox wget) on the edge's network, which the app's
   // web container joins: works whether or not the proxy is running (it is stopped on the new
   // server until DNS points at it).
-  return `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget ${edge} -q -O /dev/null -T 5 'http://${appHost(app)}:${port}${healthPath}'`;
+  const wget = `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget ${edge} -q -O /dev/null -T 5`;
+  if (app === undefined) return `${wget} 'http://app:${port}${healthPath}'`;
+  const running = `docker ps --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.service=app --format '{{.Names}}'`;
+  return `name="$(${running} | head -n 1)" && { [ -n "$name" ] || { echo 'no app container runs' >&2; exit 1; }; } && ${wget} "http://$name:${port}${healthPath}"`;
 }
 
-/** Where the health check reaches the app: its web container (`<app>-app-1`), else the alias. */
+/** Where the health check reaches the app, in a message: its web container, else the alias. */
 function appHost(app: string | undefined): string {
-  return app === undefined ? "app" : `${app}-app-1`;
+  return app === undefined ? "app" : `${app}-app-<n>`;
 }
 
 async function probe(
@@ -502,7 +508,7 @@ export async function runRelease(
       "COMMAND_FAILED",
       `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${remote.host}: ${why} (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).`,
       {
-        hint: `See the release command's full output on the new server: \`ssh deploy@${remote.host}\`, then \`cd ${options.folder} && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
+        hint: `See the release command's full output on the new server: as deploy there, \`cd ${options.folder} && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
       },
     );
   let result: CommandResult;

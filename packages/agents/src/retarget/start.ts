@@ -79,12 +79,13 @@ import {
   manualSwitchDowntime,
   moveMinutes,
   noSideCost,
+  preCopyWords,
   RUN_COMMAND,
   sizeText,
   untilSwitched,
 } from "./texts";
 import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
-import { mountWords, movedPostgres } from "./window";
+import { copiedWhole, mountWords } from "./window";
 
 /** What `--to` takes for a move to a server, in hints: the cloud providers, then `own`. */
 const SERVER_TARGETS: readonly string[] = [...VPS_PROVIDERS, "own"];
@@ -617,15 +618,15 @@ export function moveSummary(
   const copied = data.filter((mount) => mount.copy);
   const copies = copied.length > 0 || bucket !== undefined;
   const bytes = copied.reduce((sum, mount) => sum + mount.bytes, 0);
-  const db = movedPostgres(plan);
-  const postgres = copied
-    .filter((mount) => mount.owner === db)
+  const whole = new Set(copiedWhole(plan));
+  const wholeBytes = copied
+    .filter((mount) => whole.has(mount.owner))
     .reduce((sum, mount) => sum + mount.bytes, 0);
   // On a server the app starts with a deploy of its image once data is there (FR-3027).
   const server = to.provider !== "portainer";
   const release = plan.app.releaseCommand !== undefined;
   const estimate = copies
-    ? moveMinutes({ files: bytes - postgres, postgres }, { portainer, server })
+    ? moveMinutes({ files: bytes - wholeBytes, whole: wholeBytes }, { portainer, server })
     : undefined;
   const minutes =
     estimate === undefined ? undefined : estimate.window + syncMinutes(bucket?.count ?? 0);
@@ -705,10 +706,7 @@ function summaryText(
   const billed = isCloudProvider(summary.from.provider)
     ? `; ${old} is billed until the move is finished`
     : "";
-  const before =
-    summary.preCopyMinutes === undefined
-      ? ""
-      : `, after about ${summary.preCopyMinutes} minutes of ${summary.data.some((mount) => mount.copy) ? "copying" : "starting the app there"} while your app serves`;
+  const before = preCopyWords(summary);
   return [
     `Moving ${plan.app.name} from ${targetLine(summary.from, "old")} to ${targetLine(summary.to, "new")}:`,
     ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),

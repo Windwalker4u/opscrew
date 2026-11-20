@@ -152,9 +152,10 @@ describe.skipIf(!findExecutable("git"))(
       expect(
         h.events.findIndex((e) => e.type === "remote" && e.op === "mark waiting"),
       ).toBeLessThan(h.events.findIndex((e) => e.type === "secret"));
+      // It answered there, then stopped again, held for the window by the marker.
       expect(h.hosts.host(n)).toMatchObject({
-        app: true,
-        marker: "copied",
+        app: false,
+        marker: "waiting",
         db: "orders before the move (migrated)",
       });
       expect(ops(h, n, "health")).toBeGreaterThan(0);

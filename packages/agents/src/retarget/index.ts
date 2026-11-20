@@ -8,6 +8,7 @@ export {
   ABORT_COMMAND,
   FINISH_COMMAND,
   isMaintenanceWindowRequest,
+  preCopyWords,
   RUN_COMMAND,
   sizeText,
 } from "./texts";

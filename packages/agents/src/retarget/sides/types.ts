@@ -44,14 +44,6 @@ export interface SideVolume {
 }
 
 /**
- * A side's carrier: the injected one (the move fakes', which build the delta operations over the
- * carrier's other operations and record what the move asked of them), else the connector's own.
- */
-export function sideCarrier(session: MoveBase, carrier: VolumeCarrier): VolumeCarrier {
-  return session.services.deltaCarrier?.(carrier) ?? carrier;
-}
-
-/**
  * The Docker API on a side's server, with the carrier that reads, empties, writes, hashes and
  * lists its volumes (the pinned `busybox`). `close` ends the connection (an SSH session, say).
  */

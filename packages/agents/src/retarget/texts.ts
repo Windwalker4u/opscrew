@@ -4,6 +4,7 @@ import type { CostEstimate, DeployPlan } from "@opscrew/plan-schema";
 import { noServerCost, sharedServerCostItem } from "../design/own";
 import { providerProfile } from "../providers";
 import { HUNDRED_MB } from "./server-ops";
+import type { RetargetSummary } from "./types";
 
 /** Continues a move. */
 export const RUN_COMMAND = "opscrew retarget";
@@ -148,31 +149,45 @@ const CHANGED_SHARE = 0.05;
 
 /** A move's data by how the maintenance window copies it. */
 export interface MoveSizes {
-  /** The mounts copied as files: only what changed since the first copy goes in the window. */
+  /** The mounts of which only what changed since the first copy goes in the window. */
   files: number;
-  /** Postgres's data folder, which counts for its dump: dumped and restored whole in the window. */
-  postgres: number;
+  /**
+   * What the window copies about whole: Postgres's data folder (it counts for its dump, dumped
+   * and restored again), and MySQL's and MariaDB's (their files differ after the restore before
+   * the window, so their folders are copied about whole).
+   */
+  whole: number;
 }
 
 /**
  * Rough minutes of a move with data, apart: the first copy of all of it while the app serves
- * (`preCopy`, {@link windowMinutes}, plus the deploy that starts the app on that copy when the new
- * side is a `server`), and the maintenance window after it (`window`): a minute, plus Postgres's
- * dump and restore, plus a twentieth of the files for what changed since.
+ * (`preCopy`, {@link windowMinutes}, the databases by their dumps, plus the deploy that starts the
+ * app on that copy when the new side is a `server`), and the maintenance window after it
+ * (`window`): a minute, plus what it copies about whole, plus a twentieth of the other files for
+ * what changed since.
  */
 export function moveMinutes(
   sizes: MoveSizes,
   sides: { portainer: boolean; server: boolean },
 ): { preCopy: number; window: number } {
-  const { files, postgres } = sizes;
+  const { files, whole } = sizes;
   return {
     preCopy:
-      windowMinutes(files + postgres, sides.portainer) + (sides.server ? DEPLOY_RUN_MINUTES : 0),
+      windowMinutes(files + whole, sides.portainer) + (sides.server ? DEPLOY_RUN_MINUTES : 0),
     window:
-      1 +
-      copyMinutes(postgres, sides.portainer) +
-      copyMinutes(files * CHANGED_SHARE, sides.portainer),
+      1 + copyMinutes(whole, sides.portainer) + copyMinutes(files * CHANGED_SHARE, sides.portainer),
   };
+}
+
+/**
+ * `, after about N minutes of copying while your app serves` (of starting the app there, for a
+ * move whose only data is its bucket): the time before the window, said after its downtime; empty
+ * without any.
+ */
+export function preCopyWords(summary: Pick<RetargetSummary, "preCopyMinutes" | "data">): string {
+  if (summary.preCopyMinutes === undefined) return "";
+  const what = summary.data.some((mount) => mount.copy) ? "copying" : "starting the app there";
+  return `, after about ${summary.preCopyMinutes} minutes of ${what} while your app serves`;
 }
 
 /** What starting each kind of service empty loses, in a few words. */

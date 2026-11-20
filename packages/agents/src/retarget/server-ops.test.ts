@@ -193,6 +193,38 @@ describe("app health", () => {
     );
   });
 
+  it("asks the app's web container Compose runs, whatever its number (a rolling deploy's shop-app-2)", async () => {
+    // A server where the rolling deploy left shop-app-2: a probe of shop-app-1 finds nothing.
+    const remote = new FakeRemote("h", (command) =>
+      command.includes("shop-app-1") ||
+      !command.includes(
+        "docker ps --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.service=app --format '{{.Names}}' | head -n 1",
+      )
+        ? fail("wget: bad address 'shop-app-1'")
+        : ok(),
+    );
+    expect(await isAppHealthy(remote, 3000, "/healthz", "caddy", "shop")).toBe(true);
+    expect(remote.calls[0]?.command).toBe(
+      `name="$(docker ps --filter label=com.docker.compose.project=shop --filter label=com.docker.compose.service=app --format '{{.Names}}' | head -n 1)" && { [ -n "$name" ] || { echo 'no app container runs' >&2; exit 1; }; } && cd /srv/edge && docker compose run --rm --no-deps -T --entrypoint wget caddy -q -O /dev/null -T 5 "http://$name:3000/healthz"`,
+    );
+    const late = await caught(
+      waitAppHealthy(new FakeRemote("h", () => fail("no app container runs")), 3000, "/up", {
+        redact: identity,
+        folder: FOLDER,
+        app: "shop",
+        edge: "caddy",
+        timeoutMs: 10_000,
+        now: (() => {
+          let t = 0;
+          return () => (t += 5_000);
+        })(),
+        sleep: async () => {},
+      }),
+    );
+    expect(late.message).toContain("did not answer on http://shop-app-<n>:3000/up");
+    expect(late.message).toContain("no app container runs");
+  });
+
   it("is false on a failed check, a timeout or a connection error", async () => {
     expect(
       await isAppHealthy(new FakeRemote("h", () => fail("wget: bad address")), 80, "/", "caddy"),
@@ -720,9 +752,10 @@ describe("the release command in the maintenance window", () => {
       "Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on 198.51.100.7: it exited with code 1 (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).",
     );
     expect(error.hint).toContain(
-      "`ssh deploy@198.51.100.7`, then `cd /srv/apps/shop && docker compose run --rm --no-deps -T release`",
+      "as deploy there, `cd /srv/apps/shop && docker compose run --rm --no-deps -T release`",
     );
     expect(error.hint).toContain("app.releaseCommand");
+    expect(error.hint).not.toContain("198.51.100.7");
     for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
       expect(`${error.message}\n${error.hint}`).not.toContain(fragment);
     }

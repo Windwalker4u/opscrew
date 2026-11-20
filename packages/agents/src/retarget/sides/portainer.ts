@@ -52,13 +52,7 @@ import { auditMove, type MoveBase, type MoveSession, renderFiles, waitsOf } from
 import { pendingStop } from "../steps";
 import { sideTarget } from ".";
 
-import {
-  type MoveSide,
-  type SideDocker,
-  type SideVolume,
-  STOP_SECONDS,
-  sideCarrier,
-} from "./types";
+import { type MoveSide, type SideDocker, type SideVolume, STOP_SECONDS } from "./types";
 
 /** The Compose label that names a container's service. */
 /** The stack's Caddy, its edge. */
@@ -219,7 +213,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
     );
     return {
       client: docker,
-      carrier: sideCarrier(session, volumeCarrier(docker, IMAGES.busybox.ref)),
+      carrier: volumeCarrier(docker, IMAGES.busybox.ref),
       close: async () => {},
     };
   }
