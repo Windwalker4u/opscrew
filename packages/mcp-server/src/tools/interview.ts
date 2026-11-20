@@ -119,7 +119,7 @@ const ANSWER_HELP: Record<string, string> = {
   provider: `Where the app runs: ${CLOUD_PROVIDERS.map((p) => `"${p.id}" (${p.displayName}), `).join("")}"own" (a server the user already has; then also answer the server.* questions), "portainer" (a Portainer the user already runs; then also answer the portainer.* questions), "localhost" (the user's computer, for an environment beside prod such as dev, through opscrew_env_add), and for a site that needs no server, only where the question offers them: "cloudflare-workers" (Cloudflare's hosting, static or server-rendered) or "github-pages" (GitHub Pages, static only). Both need the domain's DNS on Cloudflare. And "hosting" (a shared hosting account the user already pays for, with cPanel, Plesk or DirectAdmin, or reached over SFTP; offered only when the MCP server's environment has OPSCREW_HOSTING_URL, OPSCREW_HOSTING_USER and OPSCREW_HOSTING_TOKEN, or OPSCREW_SFTP_HOST, OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY; then also answer the hosting.* questions).`,
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
-    'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
+    'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }. Not needed with server.shares (a server another of the user\'s OpsCrew apps runs on, with no server to pay for): leave it out there.',
   region: "Where most users are, for example eu-central.",
   uptime: "Acceptable downtime (a choice value from the question).",
   dataCriticality: "How bad losing data would be (a choice value from the question).",
