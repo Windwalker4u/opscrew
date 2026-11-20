@@ -237,6 +237,27 @@ app:
       source: user
 ```
 
+## A variable OpsCrew does not find
+
+`app.env` lists the variables OpsCrew found in your code and your `.env.example`. It can miss one,
+for example a setting your code reads with a default that `.env.example` mentions only in a
+comment. The deploy then never gives the app its value. Add it to `app.env` in
+`opscrew/plan.yaml` yourself, with `source: user`, and with `secret: true` when its value is a
+secret:
+
+```yaml
+app:
+  env:
+    - name: SEARCH_DRIVER
+      secret: false
+      source: user
+```
+
+Then run `npx opscrew provision` to give its value: it asks you for it in a terminal, or reads it
+from the `OPSCREW_APP_ENV_FILE` file in scripts. A later `npx opscrew design` keeps the variable as
+you wrote it and names it among the changes it kept. When the app no longer reads it, remove it
+from `app.env`.
+
 ## A plain PHP app
 
 A PHP app without a framework, as made for shared hosting, has a `composer.json` and a

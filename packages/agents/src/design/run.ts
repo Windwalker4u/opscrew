@@ -126,6 +126,7 @@ import {
   type Components,
   type DesignedComponents,
   designComponents,
+  keptChangesLine,
   memoryText,
   routeJobsOffText,
   uncallableRouteJobs,
@@ -392,6 +393,8 @@ export interface DesignPreview {
   lines: string[];
   /** The line among `lines` about the planned bucket, which a preview environment replaces. */
   bucketLine?: string;
+  /** The component edits kept that a line among `lines` lists (`keptChangesLine`). */
+  keptChanges?: string[];
 }
 
 interface DesignInputs {
@@ -1223,7 +1226,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const sharedEdits = prodPlan?.cicd.branch === branch ? prodPlan : previous;
   /**
    * `designed` named for the environment, with the user's edits ({@link keptEdits}, and the lines
-   * saying them) and the previous plan's settings kept.
+   * saying them) and the previous plan's settings kept, with the variables the user added by hand.
    */
   const ownPlan = (designed: DeployPlan, edits = sharedEdits) => {
     // A preview environment's plan has its shape before the previous plan's settings are kept
@@ -1235,10 +1238,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       previous,
       edits,
     );
-    const plan = previous ? keepPlanSettings(edited.plan, previous, requirements) : edited.plan;
-    return { plan: shaped(plan), lines: edited.lines };
+    const { plan, added } = previous
+      ? keepPlanSettings(edited.plan, previous, requirements)
+      : { plan: edited.plan, added: [] };
+    return { plan: shaped(plan), lines: edited.lines, added };
   };
-  const { plan: own, lines: ownLines } = ownPlan(fresh);
+  const { plan: own, lines: ownLines, added: ownAdded } = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
   // image comes from) is chosen.
   const source = await unplacedSource(paths, own);
@@ -1258,6 +1263,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       : ownPlan(planFor(sourceComponents(planned, source.plan, keep)), source.plan);
   const shared = fromSource?.plan ?? own;
   const keptLines = fromSource?.lines ?? ownLines;
+  const added = fromSource?.added ?? ownAdded;
   // The scheduled check: on for prod and off elsewhere, unless the plan already says; the
   // snapshots: the previous plan's, else proposed on an own server or Portainer (FR-2410).
   const kept = withDesignedSnapshots(
@@ -1461,12 +1467,16 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const componentLines = [
     // Copied from a source, the components are its plan's, not those designed from the code here.
     ...(source !== undefined
-      ? [copiedComponentsLine(plan, source.name)]
+      ? withAddedVariables([copiedComponentsLine(plan, source.name)], [], added)
       : [
-          ...preview.lines.filter(
-            (line) =>
-              !off.some((name) => line.startsWith(`Cron job ${name} (`)) &&
-              !(bucketLine !== undefined && line === preview.bucketLine),
+          ...withAddedVariables(
+            preview.lines.filter(
+              (line) =>
+                !off.some((name) => line.startsWith(`Cron job ${name} (`)) &&
+                !(bucketLine !== undefined && line === preview.bucketLine),
+            ),
+            preview.keptChanges ?? [],
+            added,
           ),
           ...(bucketLine !== undefined ? [bucketLine] : []),
           ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
@@ -2012,7 +2022,9 @@ function requireMovingZoneKept(fresh: DeployPlan, previous: DeployPlan): void {
  * variable that is still there keeps its `secret` (secret if either plan says so), `source` and
  * `optional`, except the variables what runs fills in either plan (`serviceFilledNames`), which
  * follow it, and one it
- * filled that nothing fills now, which is the user's again; the user's own Dockerfile they chose
+ * filled that nothing fills now, which is the user's again; each `source: user` variable the user
+ * added that the new plan does not have and nothing fills now stays as it was, and `added` names
+ * them (a `generated` or `derived` one goes); the user's own Dockerfile they chose
  * (`app.build.chosen: user`) keeps its path; and `app.sharedPaths` keeps the folders plan.yaml
  * names, followed by any new ones detection found. The components (workers, cron, services,
  * storage, the web process's memory) are already the user's: `fresh` was made from
@@ -2022,7 +2034,7 @@ function keepPlanSettings(
   fresh: DeployPlan,
   previous: DeployPlan,
   requirements: Requirements,
-): DeployPlan {
+): { plan: DeployPlan; added: string[] } {
   const key = (change: DeployPlan["codeChanges"][number]) =>
     `${change.id}\u0000${change.kind}\u0000${change.path}`;
   const statuses = new Map(previous.codeChanges.map((change) => [key(change), change.status]));
@@ -2043,6 +2055,13 @@ function keepPlanSettings(
   const answeredLater = Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const filledBefore = serviceFilledNames(previous);
   const filledNow = serviceFilledNames(fresh);
+  // A variable the user added by hand stays as it was, secret included: detection misses it (a
+  // setting the code reads with a default, named only in a comment of `.env.example`).
+  const detected = new Set(fresh.app.env.map((variable) => variable.name));
+  const added = previous.app.env.filter(
+    (variable) =>
+      variable.source === "user" && !detected.has(variable.name) && !filledNow.has(variable.name),
+  );
   // A server-less site and a hosting account have no image to sign and no server for Portainer
   // CE, and GitHub Pages' DNS-only hostnames no WAF rules, whatever an earlier plan had.
   const serverless = isServerlessTarget(fresh.target) || isHostingTarget(fresh.target);
@@ -2067,18 +2086,21 @@ function keepPlanSettings(
       maxBodyMb: previous.app.maxBodyMb,
       ...(userDockerfile ? { dockerfile: previous.app.dockerfile } : {}),
       ...(sharedPaths.length > 0 ? { sharedPaths } : {}),
-      env: fresh.app.env.map((variable) => {
-        const before = variables.get(variable.name);
-        if (before === undefined) return variable;
-        // A service turned on or off decides the variables OpsCrew fills from it.
-        // What runs decides the variables it fills, and one it filled that nothing fills now (a
-        // service turned off) is the user's again.
-        const filled = filledBefore.has(variable.name) || filledNow.has(variable.name);
-        const unfilled = before.source === "derived" && variable.source !== "derived";
-        if (filled || unfilled) return { ...variable, secret: before.secret || variable.secret };
-        // Fail closed: a name now detected as secret stays secret, never a build argument.
-        return { ...before, secret: before.secret || variable.secret };
-      }),
+      env: [
+        ...fresh.app.env.map((variable) => {
+          const before = variables.get(variable.name);
+          if (before === undefined) return variable;
+          // A service turned on or off decides the variables OpsCrew fills from it.
+          // What runs decides the variables it fills, and one it filled that nothing fills now (a
+          // service turned off) is the user's again.
+          const filled = filledBefore.has(variable.name) || filledNow.has(variable.name);
+          const unfilled = before.source === "derived" && variable.source !== "derived";
+          if (filled || unfilled) return { ...variable, secret: before.secret || variable.secret };
+          // Fail closed: a name now detected as secret stays secret, never a build argument.
+          return { ...before, secret: before.secret || variable.secret };
+        }),
+        ...added,
+      ],
     },
     // `www` is the user's for the same domain; the zone, with a registration `opscrew domain buy`
     // recorded, stays while the domain is inside it.
@@ -2118,7 +2140,7 @@ function keepPlanSettings(
     },
     supplyChain: answeredLater || serverless ? fresh.supplyChain : previous.supplyChain,
   });
-  if (kept.success) return kept.data;
+  if (kept.success) return { plan: kept.data, added: added.map((variable) => variable.name) };
   const portainer = previous.portainer;
   const issue = kept.error.issues[0];
   const field = issue?.path.join(".") || "plan";
@@ -2140,6 +2162,24 @@ function keepPlanSettings(
       hint: "Change your answers with `opscrew interview`, or fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again.",
     },
   );
+}
+
+/**
+ * `lines` with the variables the user added to `app.env` by hand (`added`) named in the line of
+ * the edits kept (`kept`, its items), or in a line of their own when there is none.
+ */
+function withAddedVariables(
+  lines: string[],
+  kept: readonly string[],
+  added: readonly string[],
+): string[] {
+  if (added.length === 0) return lines;
+  const one = added.length === 1;
+  const variables = `the ${one ? "variable" : "variables"} ${listText(added)}, which detection does not find (remove ${one ? "it" : "each"} from app.env when the app no longer reads it)`;
+  const line = keptChangesLine([...kept, variables]);
+  if (kept.length === 0) return [...lines, line];
+  const before = keptChangesLine(kept);
+  return lines.map((text) => (text === before ? line : text));
 }
 
 /** The previous plan's `observability`, without the scheduled check on localhost. */

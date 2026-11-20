@@ -1599,14 +1599,63 @@ describe("runDesign: the image builder and the deploy strategy", () => {
       { name: "NEXTAUTH_SECRET", secret: true, source: "user" },
       // A build value that must reach the build as a secret mount, never as a build argument.
       { name: "NEXT_PUBLIC_SITE_URL", secret: true, source: "user", optional: true },
-      { name: "REMOVED_FROM_THE_CODE", secret: false, source: "user" },
     ] as const;
     await writeArtifact("plan", deps.paths.files.plan, {
       ...first.plan,
       app: { ...first.plan.app, env: [...edited] },
     });
     const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
-    expect(plan.app.env).toEqual(edited.slice(0, 3));
+    expect(plan.app.env).toEqual(edited);
+  });
+
+  it("keeps the variables the user added to app.env by hand and names them, but no generated or derived one nothing fills", async () => {
+    const deps = await setup(nextPostgresFacts());
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    // Detection misses them: settings the code reads with a default, named only in a comment.
+    const added = [
+      { name: "SEARCH_DRIVER", secret: false, source: "user", optional: true },
+      { name: "SEARCH_KEY", secret: true, source: "user" },
+    ] as const;
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: {
+        ...first.plan.app,
+        env: [
+          ...first.plan.app.env,
+          ...added,
+          { name: "OLD_SERVICE_URL", secret: true, source: "derived" },
+          { name: "OLD_SERVICE_TOKEN", secret: true, source: "generated" },
+        ],
+      },
+    });
+    const rerun = await later(deps);
+    const { plan } = await runDesign(rerun, { catalog: euCatalog() });
+    // The detected variables as before, then the hand-added ones as they were, secret included.
+    expect(plan.app.env).toEqual([...first.plan.app.env, ...added]);
+    expect(rerun.reporter.text()).toContain(
+      "Kept your changes in opscrew/plan.yaml: the variables SEARCH_DRIVER and SEARCH_KEY, which detection does not find (remove each from app.env when the app no longer reads it).",
+    );
+  });
+
+  it("names a hand-added variable in the line of the component edits it keeps", async () => {
+    const deps = await setup(nextPostgresFacts());
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: {
+        ...first.plan.app,
+        memoryMb: 1024,
+        env: [...first.plan.app.env, { name: "SEARCH_DRIVER", secret: false, source: "user" }],
+      },
+    });
+    const rerun = await later(deps);
+    const { plan } = await runDesign(rerun, { catalog: euCatalog() });
+    expect(plan.app.env.map((v) => v.name)).toContain("SEARCH_DRIVER");
+    const said = rerun.reporter.text();
+    expect(said).toContain(
+      "Kept your changes in opscrew/plan.yaml: the app's memory (1024 MB) and the variable SEARCH_DRIVER, which detection does not find (remove it from app.env when the app no longer reads it).",
+    );
+    expect(said.match(/Kept your changes/g)).toHaveLength(1);
   });
 
   describe("when the facts change between designs", () => {

@@ -66,6 +66,16 @@ export interface DesignedComponents {
   warnings: string[];
   /** The line among `lines` about the planned bucket, which a preview environment replaces. */
   bucketLine?: string;
+  /**
+   * The edits kept that the line among `lines` lists ({@link keptChangesLine}); design adds the
+   * variables it keeps in plan.yaml to it.
+   */
+  keptChanges: string[];
+}
+
+/** The line that lists the user's edits of opscrew/plan.yaml that design kept. */
+export function keptChangesLine(kept: readonly string[]): string {
+  return `Kept your changes in opscrew/plan.yaml: ${listText(kept)}.`;
 }
 
 /** The web process's memory limit unless the plan sets another. */
@@ -1148,11 +1158,15 @@ export function designComponents(input: {
       );
     }
   }
-  if (notes.kept.length > 0) {
-    lines.push(`Kept your changes in opscrew/plan.yaml: ${listText(notes.kept)}.`);
-  }
+  if (notes.kept.length > 0) lines.push(keptChangesLine(notes.kept));
   lines.push(...notes.changed);
-  return { components, lines, warnings, ...(bucketLine === undefined ? {} : { bucketLine }) };
+  return {
+    components,
+    lines,
+    warnings,
+    ...(bucketLine === undefined ? {} : { bucketLine }),
+    keptChanges: notes.kept,
+  };
 }
 
 /** The components, one plain sentence each, with each licence that is not permissive (FR-1327). */
