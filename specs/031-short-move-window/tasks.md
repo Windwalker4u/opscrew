@@ -35,7 +35,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T3101 [P] [US1] The carrier's delta operations
+- [x] T3101 [P] [US1] The carrier's delta operations
   - Owns: `packages/connectors/docker/src/**` (the carrier and its tests)
   - Reads: plan 1.; `carrier.ts` (`DIGEST_SCRIPT`, `readVolume`, `writeVolume`, `volumeDigest`),
     `one-off.ts`, `client.ts`
@@ -97,6 +97,15 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm lint`
   - Effort: medium
 
+- [x] T3105 (lead, after T3102's merge) Two findings from the PHP app's abort (CLI 82bd7c6a):
+  - **The health check:** `reportAborted` checks the old side once, right after its restart, and
+    warns "does not answer its health check" while the app is healthy. Give it the window's
+    bounded wait.
+  - **The cost item:** `oldCost` writes "Your own server (you already pay for it)" for a second
+    app's old side. Write design's item, `"<first>"'s server (priced with "<first>")`, through one
+    helper shared with `design/own.ts`.
+
+  Tests for both.
 - [ ] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one Contabo Cloud VPS 4, owned by the first of them):
   - **the first app** (the first app's repository folder) moves from its Hetzner CX23 to a new Contabo server of its own, run by the
     lead. This is 031's live run, and 0.2.11 waits for it. Its `--finish` deletes the Hetzner
