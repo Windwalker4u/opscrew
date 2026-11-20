@@ -294,6 +294,14 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   by hand from each pull request.
 - **The `.terraform/` folder:** `opscrew/infra/<env>/.terraform/` shows up untracked after
   provision. The generated `.gitignore` should cover it.
+- **A PECL outage fails a Railpack PHP build:** `install-php-extensions` fetches PECL extensions
+  (redis and the like) from pecl.php.net during the build. Retry the build step once, or name PECL
+  in the failure.
+- **Development packages in a Railpack PHP image:** Railpack's `composer install` keeps
+  `require-dev`, so the image ships the development packages and, since the extensions fix, their
+  extensions (xdebug, if a development package asks for it). Spike `COMPOSER_NO_DEV=1` through
+  Railpack's `--env`.
+- **The drill tests' fakes take 45 s on Windows:** make the fake `sleep` and time limit instant.
 
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
