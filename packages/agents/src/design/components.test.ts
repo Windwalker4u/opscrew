@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeployPlan, ProjectFacts, Requirements } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
+import { appMemoryLimits } from "../shared/memory";
 import { makeFacts, makeRequirements, testPlan } from "../testing";
 import {
   designComponents,
@@ -546,6 +547,47 @@ describe("designComponents: workers and cron", () => {
       },
       expect.objectContaining({ name: "celery-worker", single: false }),
     ]);
+  });
+
+  it("gives a Horizon worker 768 MB, says why, and keeps a plan's own memory", () => {
+    const horizon = {
+      ...library("horizon", "php artisan horizon"),
+      evidence: ["dependency:laravel/horizon"],
+    };
+    const facts = { workers: [horizon, library("celery-worker", "celery -A app worker")] };
+    const { components, lines } = designed(facts);
+    expect(components.processes.workers.map((w) => [w.name, w.memoryMb])).toEqual([
+      ["horizon", 768],
+      ["celery-worker", 256],
+    ]);
+    expect(lines).toContain(
+      "Worker horizon (768 MB): php artisan horizon. Horizon runs several PHP processes (a master, a supervisor per entry of config/horizon.php and their workers), so it gets 768 MB by default.",
+    );
+    expect(lines).toContain("Worker celery-worker (256 MB): celery -A app worker");
+    // The server's size and the fit on another app's server count it.
+    expect(appMemoryLimits({ ...testPlan(), processes: components.processes })).toContainEqual({
+      name: "horizon",
+      memoryMb: 768,
+    });
+    // A plan's own memory stays, and the line still says what Horizon gets by default.
+    const previous = {
+      ...testPlan(),
+      processes: {
+        ...components.processes,
+        workers: components.processes.workers.map((w) =>
+          w.name === "horizon" ? { ...w, memoryMb: 1024 } : w,
+        ),
+      },
+    } as DeployPlan;
+    const kept = designComponents({
+      facts: makeFacts(facts),
+      requirements: makeRequirements(),
+      previous,
+    });
+    expect(kept.components.processes.workers[0]?.memoryMb).toBe(1024);
+    expect(kept.lines).toContain(
+      "Worker horizon (1024 MB): php artisan horizon. Horizon runs several PHP processes (a master, a supervisor per entry of config/horizon.php and their workers), so it gets 768 MB by default.",
+    );
   });
 
   it("takes a worker's command from the interview when no convention gives it, else warns", () => {

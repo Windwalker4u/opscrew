@@ -691,9 +691,25 @@ interface WorkersInput {
   serviceNames: ReadonlySet<string>;
 }
 
+/** A worker's memory limit in MB unless the plan gives its own. */
+const WORKER_MEMORY_MB = 256;
+
+/**
+ * Laravel Horizon's: it is a process manager, a master, a supervisor per entry of
+ * `config/horizon.php` and their workers, each a full PHP process (about 70 MB booted). A live
+ * deploy measured 594 MB at rest with two supervisors and their workers.
+ */
+const HORIZON_MEMORY_MB = 768;
+
+/** True for a worker that runs Laravel Horizon (`php artisan horizon`). */
+function runsHorizon(command: string): boolean {
+  return /(^|\s)php\s+artisan\s+horizon(\s|$)/.test(command);
+}
+
 /**
  * The workers from the Procfile and the job libraries (FR-1305): their command from detection,
- * else from the plan or the interview (the newer of the two), else none, which the warnings say.
+ * else from the plan or the interview (the newer of the two), else none, which the warnings say;
+ * each with {@link WORKER_MEMORY_MB}, Horizon with {@link HORIZON_MEMORY_MB}.
  * A previous worker keeps its count, memory, stop grace and whether it runs; a worker the user
  * added stays; a detected one the app no longer has goes.
  */
@@ -724,7 +740,7 @@ function workersFor(input: WorkersInput, notes: Notes, warnings: string[]): Work
       count: 1,
       single: found.single,
       stopGraceSeconds: 30,
-      memoryMb: 256,
+      memoryMb: runsHorizon(command) ? HORIZON_MEMORY_MB : WORKER_MEMORY_MB,
       enabled: true,
     };
     if (old === undefined) {
@@ -1189,7 +1205,12 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
       : worker.count > 1
         ? `, ${worker.count} copies`
         : "";
-    lines.push(`Worker ${worker.name} (${worker.memoryMb} MB${copies}): ${worker.command}`);
+    const horizon = runsHorizon(worker.command)
+      ? `. Horizon runs several PHP processes (a master, a supervisor per entry of config/horizon.php and their workers), so it gets ${HORIZON_MEMORY_MB} MB by default.`
+      : "";
+    lines.push(
+      `Worker ${worker.name} (${worker.memoryMb} MB${copies}): ${worker.command}${horizon}`,
+    );
   }
   for (const job of components.processes.cron.filter((j) => j.enabled)) {
     lines.push(
