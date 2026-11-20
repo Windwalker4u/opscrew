@@ -1,4 +1,4 @@
-import { imageReleaseCommand, serviceSpec } from "@opscrew/iac-templates";
+import { type ImageBuild, imageReleaseCommand, serviceSpec } from "@opscrew/iac-templates";
 import {
   DATABASE_KINDS,
   type DeployPlan,
@@ -42,7 +42,10 @@ export function releaseCommandNote(
       ? { warning: false, text: runs }
       : { warning: true, text: `${runs} ${detected.text}` };
   }
-  const notRun = facts === undefined ? undefined : imageReleaseCommand(facts, plan.app.key).notRun;
+  const notRun =
+    facts === undefined
+      ? undefined
+      : imageReleaseCommand(facts, plan.app.key, plan.app.build).notRun;
   if (notRun !== undefined) {
     const extra = detected === undefined || detected.atStartup ? "" : ` ${detected.text}`;
     return { warning: true, text: `${notRun}${extra}` };
@@ -67,11 +70,16 @@ export function releaseCommandNote(
 export function migrationsInImage(
   facts: ProjectFacts,
   releaseCommand: string | undefined,
+  build?: ImageBuild,
 ): Migrations | undefined {
   const detected = facts.build.migrations;
   if (releaseCommand === undefined || detected === undefined) return undefined;
   const inImage = (line: string) =>
-    imageReleaseCommand({ ...facts, build: { ...facts.build, releaseCommand: line } }).command;
+    imageReleaseCommand(
+      { ...facts, build: { ...facts.build, releaseCommand: line } },
+      undefined,
+      build,
+    ).command;
   const status = inImage(detected.status);
   const down = inImage(detected.down);
   return status === undefined || down === undefined ? undefined : { ...detected, status, down };

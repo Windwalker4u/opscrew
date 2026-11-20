@@ -1,5 +1,10 @@
 import { escapeRegExp } from "@opscrew/core";
-import { cleanRepoPath, type ProjectFacts } from "@opscrew/plan-schema";
+import {
+  cleanRepoPath,
+  type ImageBuilder,
+  type ProjectFacts,
+  type RuntimeLanguage,
+} from "@opscrew/plan-schema";
 import {
   IMAGES,
   PACKAGE_MANAGERS,
@@ -865,6 +870,11 @@ interface ReleaseTool {
   found: string;
   /** Which kind of image can run it. */
   runtime: "node" | "python" | "other";
+  /**
+   * The language whose image runs it when Railpack or Buildpacks build that language (`php` for
+   * artisan): absent for a separate CLI no builder installs.
+   */
+  language?: RuntimeLanguage;
   /** What the image must contain, for messages (`the Diesel CLI`). */
   needs: string;
   /** npm packages the command runs, which Node.js images keep (`prisma`). */
@@ -876,6 +886,7 @@ interface ReleaseTool {
 const NODE_TOOL = (name: string, packages: readonly string[] = []): ReleaseTool => ({
   found: `${name} migrations`,
   runtime: "node",
+  language: "node",
   needs: `the ${name} command-line tool and the migration files`,
   packages,
 });
@@ -884,10 +895,11 @@ const PYTHON_TOOL = (name: string): ReleaseTool => ({
   runtime: "python",
   needs: "Python and the app's Python packages",
 });
-const OTHER_TOOL = (found: string, needs: string): ReleaseTool => ({
+const OTHER_TOOL = (found: string, needs: string, language?: RuntimeLanguage): ReleaseTool => ({
   found,
   runtime: "other",
   needs,
+  ...(language === undefined ? {} : { language }),
 });
 
 /**
@@ -915,8 +927,11 @@ const RELEASE_TOOLS: readonly [RegExp, ReleaseTool][] = [
   [/^yoyo\b/, PYTHON_TOOL("Yoyo")],
   [/^pw_migrate\b/, PYTHON_TOOL("peewee-migrate")],
   [/^python craft\b/, PYTHON_TOOL("Masonite")],
-  [/^(?:bin\/rails|bundle exec)\b/, OTHER_TOOL("Ruby migrations", "Ruby and the app's gems")],
-  [/^php\b/, OTHER_TOOL("PHP migrations", "PHP and the app's Composer packages")],
+  [
+    /^(?:bin\/rails|bundle exec)\b/,
+    OTHER_TOOL("Ruby migrations", "Ruby and the app's gems", "ruby"),
+  ],
+  [/^php\b/, OTHER_TOOL("PHP migrations", "PHP and the app's Composer packages", "php")],
   [/^migrate -path\b/, OTHER_TOOL("golang-migrate migrations", "the golang-migrate CLI")],
   [/^goose\b/, OTHER_TOOL("goose migrations", "the goose CLI")],
   [/^atlas\b/, OTHER_TOOL("Atlas migrations", "the Atlas CLI")],
@@ -924,7 +939,7 @@ const RELEASE_TOOLS: readonly [RegExp, ReleaseTool][] = [
   [/^sqlx\b/, OTHER_TOOL("sqlx migrations", "the sqlx CLI")],
   [/^sea-orm-cli\b/, OTHER_TOOL("SeaORM migrations", "the SeaORM CLI")],
   [/^(?:mix\b|bin\/\w+ eval\b)/, OTHER_TOOL("Ecto migrations", "the Elixir release of the app")],
-  [/^dotnet\b/, OTHER_TOOL("EF Core migrations", "the .NET SDK and the dotnet-ef tool")],
+  [/^dotnet\b/, OTHER_TOOL("EF Core migrations", "the .NET SDK and the dotnet-ef tool", "dotnet")],
 ];
 
 /** A command without the `cd …` and `VAR=value` prefixes detection writes. */
@@ -972,9 +987,16 @@ function wrongImage(
  * not install in the Next.js standalone image, and a command that changes into a monorepo folder
  * that image may lack. Empty without a release command or for a static site (no app container).
  * The reasons name the plan of the app `key` (a further app's; the first app's by default), whose
- * `app.releaseCommand` the user sets: design calls this before the plan exists.
+ * `app.releaseCommand` the user sets: design calls this before the plan exists. With `build`, the
+ * builder design chose: when Railpack or Buildpacks build the very language the command's tool
+ * runs in, that image runs it, whatever stack OpsCrew's own Dockerfile would have picked (a Laravel
+ * app's `php artisan migrate --force` in Railpack's PHP image).
  */
-export function imageReleaseCommand(facts: ProjectFacts, key?: string): ImageReleaseCommand {
+export function imageReleaseCommand(
+  facts: ProjectFacts,
+  key?: string,
+  build?: ImageBuild,
+): ImageReleaseCommand {
   const command = facts.build.releaseCommand;
   const stack = detectStack(facts);
   if (command === undefined || stack === undefined || stack === "static-spa") return {};
@@ -982,6 +1004,7 @@ export function imageReleaseCommand(facts: ProjectFacts, key?: string): ImageRel
   const python = stack.startsWith("python-");
   const plan = planFilePath({ app: { key } });
   if (tool !== undefined && tool.runtime !== (python ? "python" : "node")) {
+    if (buildsLanguageOf(build, tool)) return { command };
     return { notRun: wrongImage(tool, stack, command, plan) };
   }
   if (python) return { command: inAppFolder(command, appDirectory(facts)) };
@@ -1001,8 +1024,23 @@ export function imageReleaseCommand(facts: ProjectFacts, key?: string): ImageRel
 }
 
 /** `app.releaseCommand` for the plan: {@link imageReleaseCommand}'s command, when there is one. */
-export function releaseCommandInImage(facts: ProjectFacts): string | undefined {
-  return imageReleaseCommand(facts).command;
+export function releaseCommandInImage(facts: ProjectFacts, build?: ImageBuild): string | undefined {
+  return imageReleaseCommand(facts, undefined, build).command;
+}
+
+/** The builder design chose for the app's image, with the language it builds (`app.build`). */
+export interface ImageBuild {
+  builder: ImageBuilder;
+  runtime?: { language: RuntimeLanguage };
+}
+
+/** True when Railpack or Buildpacks build the language `tool` runs in, so their image has it. */
+function buildsLanguageOf(build: ImageBuild | undefined, tool: ReleaseTool): boolean {
+  return (
+    (build?.builder === "railpack" || build?.builder === "buildpacks") &&
+    tool.language !== undefined &&
+    build.runtime?.language === tool.language
+  );
 }
 
 /** Uvicorn target (`module:app`) from the detected start command, or `main:app`. */

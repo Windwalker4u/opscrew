@@ -22,6 +22,7 @@ export {
   CLIENT_ENV_PREFIXES,
   type DockerStack,
   detectStack,
+  type ImageBuild,
   type ImageReleaseCommand,
   imageReleaseCommand,
   isBuildValue,

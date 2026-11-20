@@ -328,8 +328,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   else if (hosting !== undefined) buildContext = hosting.buildContext;
   else if (build !== undefined) buildContext = buildContextFor(facts, build.builder);
   else throw new Error("A design for a target with an image needs its image builder.");
-  const releaseCommand = serverless === undefined ? releaseCommandInImage(facts) : undefined;
-  const migrations = migrationsInImage(facts, releaseCommand);
+  const releaseCommand = serverless === undefined ? releaseCommandInImage(facts, build) : undefined;
+  const migrations = migrationsInImage(facts, releaseCommand, build);
   const tags = requirements.deployTags;
   // The user's own Dockerfile is built where detection found it; OpsCrew's goes into the app's
   // folder. A server-less site is built in its own folder, with no Dockerfile.

@@ -34,6 +34,34 @@ async function planFor(facts: ReturnType<typeof makeFacts>) {
 }
 
 describe("release command in the plan", () => {
+  it("keeps a Laravel app's migrations, which Railpack's PHP image runs", async () => {
+    const facts = makeFacts({
+      name: "shop",
+      languages: ["php", "javascript"],
+      packageManager: "npm",
+      frameworks: [
+        { name: "laravel", path: "." },
+        { name: "vite", path: "." },
+      ],
+      appKind: "fullstack",
+      port: 8000,
+      build: {
+        releaseCommand: "php artisan migrate --force",
+        migrations: {
+          tool: "laravel",
+          status: "php artisan migrate:status",
+          down: "php artisan migrate:rollback --step={count} --force",
+        },
+      },
+      services: [{ kind: "postgres", evidence: ["env:DB_CONNECTION=pgsql"] }],
+    });
+    const plan = await planFor(facts);
+    expect(plan.app.build?.builder).toBe("railpack");
+    expect(plan.app.releaseCommand).toBe("php artisan migrate --force");
+    expect(plan.app.migrations?.status).toBe("php artisan migrate:status");
+    expect(releaseCommandNote(plan, facts)?.warning).toBe(false);
+  });
+
   it("carries the detected command into app.releaseCommand", async () => {
     const plan = await planFor(djangoFacts("python manage.py migrate --noinput"));
     expect(plan.app.releaseCommand).toBe("python manage.py migrate --noinput");
@@ -217,7 +245,7 @@ describe("releaseCommandNote", () => {
     expect(releaseCommandNote(plan, facts)?.warning).toBe(false);
   });
 
-  it("warns when the image cannot run another stack's migrations (Rails in a Node.js image)", async () => {
+  it("keeps a Rails app's migrations when Buildpacks build its Ruby, and warns in a Node.js image", async () => {
     const facts = makeFacts({
       languages: ["javascript", "ruby"],
       frameworks: [
@@ -229,8 +257,17 @@ describe("releaseCommandNote", () => {
       services: [{ kind: "postgres", evidence: ["dependency:pg"] }],
     });
     const plan = await planFor(facts);
-    expect("releaseCommand" in plan.app).toBe(false);
-    const note = releaseCommandNote(plan, facts);
+    // Design builds this app's Ruby with Buildpacks, whose image has Ruby and the app's gems.
+    expect(plan.app.build?.runtime?.language).toBe("ruby");
+    expect(plan.app.releaseCommand).toBe("bin/rails db:migrate");
+    // OpsCrew's own Dockerfile would build it as a Node.js server, which has no Ruby.
+    const { releaseCommand: _detected, build, ...rest } = plan.app;
+    if (build === undefined) throw new Error("design chose no builder");
+    const node = {
+      ...plan,
+      app: { ...rest, build: { ...build, builder: "generated-dockerfile" as const } },
+    };
+    const note = releaseCommandNote(node, facts);
     expect(note?.warning).toBe(true);
     expect(note?.text).toContain("`bin/rails db:migrate`");
     expect(note?.text).toContain("Ruby");
