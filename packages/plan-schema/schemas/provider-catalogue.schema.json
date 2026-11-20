@@ -1,0 +1,497 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpsCrew provider catalogue (opscrew providers --json)",
+  "description": "Catalogue version 1, as `opscrew providers --json` prints it. Generated from @opscrew/plan-schema; do not edit.",
+  "type": "object",
+  "properties": {
+    "catalogueVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "opscrewVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "providers": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "cloud-server"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "consoleUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "signupUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "pricingUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "currency": {
+                "type": "string",
+                "enum": ["EUR", "USD"]
+              },
+              "credentials": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": ["any", "all"]
+                  },
+                  "variables": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "pattern": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": ["name", "label", "secret"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "createUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "steps": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": ["mode", "variables", "createUrl", "steps"],
+                "additionalProperties": false
+              },
+              "guideUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "billing": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "type": "string",
+                        "const": "hourly"
+                      },
+                      "counts": {
+                        "type": "string",
+                        "enum": ["started-hour", "second"]
+                      },
+                      "setupFee": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": ["model", "counts", "setupFee"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "type": "string",
+                        "const": "monthly"
+                      },
+                      "setupFee": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": ["model", "setupFee"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "locations": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "region": {
+                      "type": "string",
+                      "enum": ["eu-central", "eu-north", "us-east", "us-west", "ap-southeast"]
+                    }
+                  },
+                  "required": ["id", "name", "region"],
+                  "additionalProperties": false
+                }
+              },
+              "sizes": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "vcpu": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "memoryMb": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "diskGb": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "monthly": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hourly": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "locations": {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": ["id", "vcpu", "memoryMb", "diskGb", "monthly", "locations"],
+                  "additionalProperties": false
+                }
+              },
+              "priceSource": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "static"
+                  },
+                  "asOf": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": ["kind", "asOf"],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "name",
+              "consoleUrl",
+              "currency",
+              "credentials",
+              "guideUrl",
+              "billing",
+              "locations",
+              "sizes",
+              "priceSource"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "cloudflare"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "consoleUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "signupUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "pricingUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "currency": {
+                "type": "string",
+                "enum": ["EUR", "USD"]
+              },
+              "credentials": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": ["any", "all"]
+                  },
+                  "variables": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "pattern": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": ["name", "label", "secret"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "createUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "steps": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": ["mode", "variables", "createUrl", "steps"],
+                "additionalProperties": false
+              },
+              "guideUrl": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": ["kind", "id", "name", "consoleUrl", "credentials", "guideUrl"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "registrar"
+              },
+              "id": {
+                "type": "string",
+                "enum": ["cloudflare", "namecheap", "porkbun", "godaddy"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "consoleUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "signupUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "pricingUrl": {
+                "type": "string",
+                "format": "uri"
+              },
+              "currency": {
+                "type": "string",
+                "enum": ["EUR", "USD"]
+              },
+              "credentials": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": ["any", "all"]
+                  },
+                  "variables": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "pattern": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": ["name", "label", "secret"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "createUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "steps": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": ["mode", "variables", "createUrl", "steps"],
+                "additionalProperties": false
+              },
+              "guideUrl": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": ["kind", "id", "name", "consoleUrl", "credentials", "guideUrl"],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "suggestions": {
+      "type": "object",
+      "properties": {
+        "serverWithDatabase": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "size": {
+                "type": "string",
+                "minLength": 1
+              },
+              "location": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["provider", "size", "location"],
+            "additionalProperties": false
+          }
+        },
+        "staticSite": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "enum": ["cloudflare-workers", "github-pages"]
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "monthly": {
+              "type": "object",
+              "properties": {
+                "amount": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "currency": {
+                  "type": "string",
+                  "enum": ["EUR", "USD"]
+                }
+              },
+              "required": ["amount", "currency"],
+              "additionalProperties": false
+            },
+            "priceSource": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "static"
+                },
+                "asOf": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                }
+              },
+              "required": ["kind", "asOf"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["target", "provider", "monthly", "priceSource"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["serverWithDatabase", "staticSite"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["catalogueVersion", "opscrewVersion", "providers", "suggestions"],
+  "additionalProperties": false
+}

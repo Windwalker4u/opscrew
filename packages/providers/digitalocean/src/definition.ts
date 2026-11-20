@@ -38,6 +38,7 @@ export const definition: CloudProviderDefinition = {
   sizeNoun: "size",
   consoleUrl: "https://cloud.digitalocean.com/",
   accountUrl: "https://cloud.digitalocean.com/account",
+  signupUrl: "https://cloud.digitalocean.com/registrations/new",
   credentials: {
     envVars: TOKEN_VARS,
     mode: "any",

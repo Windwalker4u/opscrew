@@ -28,6 +28,24 @@ an app yet.
 - [Buying or connecting a domain](domains.md)
 - [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
 
+### The providers, for tools
+
+`npx opscrew providers` lists the cloud server providers, Cloudflare and the domain registrars
+OpsCrew works with, one line each, with the variables each one needs. `npx opscrew providers --json`
+prints them as a catalogue for tools, such as a guided start:
+
+- **For each provider:** its kind, name, console and guide page, and its credentials: the
+  variables, which ones are secrets, where to create them and how, in the words `npx opscrew init`
+  uses.
+- **For a cloud server provider:** its currency, how it bills, its locations, and its sizes with
+  their prices from OpsCrew's dated built-in price list.
+- **Suggestions:** the size design picks on each cloud provider for a small web app with
+  PostgreSQL, and where it sends a static site.
+
+It reads no token, no project and no network, so one OpsCrew version always prints the same
+catalogue. Its schema is
+[`provider-catalogue.schema.json`](../../packages/plan-schema/schemas/provider-catalogue.schema.json).
+
 ## How your app is built and shipped
 
 - [How OpsCrew builds your app's image](builders.md)

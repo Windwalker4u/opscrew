@@ -159,6 +159,7 @@ export const definition: CloudProviderDefinition = {
   sizeNoun: "plan",
   consoleUrl: "https://new.contabo.com/",
   accountUrl: "https://new.contabo.com/",
+  signupUrl: "https://contabo.com/en/register/email/",
   credentials: {
     envVars: ENV_VARS,
     mode: "all",

@@ -413,6 +413,11 @@ export interface CloudProviderDefinition {
   consoleUrl: string;
   /** Where the user fixes account problems: a locked account, an unverified email, limits. */
   accountUrl: string;
+  /**
+   * Where a new user creates an account: the provider's plain sign-up page, an https URL with no
+   * query string, so never with a referral or affiliate id.
+   */
+  signupUrl?: string;
   credentials: ProviderCredentials;
   /** The provider's connector: credentials, price catalogue and server API. */
   connector(deps: ProviderConnectorDeps): VpsConnector;

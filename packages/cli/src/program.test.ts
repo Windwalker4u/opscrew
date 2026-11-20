@@ -65,10 +65,11 @@ describe("opscrew program", () => {
       "rotate",
       "secrets",
       "cloudflare",
+      "providers",
     ]) {
       expect(ctx.output).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
     }
-    expect(ALL_COMMANDS).toHaveLength(33);
+    expect(ALL_COMMANDS).toHaveLength(34);
   });
 
   it("exits 2 for an unknown command", async () => {

@@ -99,6 +99,10 @@ describe.each(CLOUD_PROVIDERS.map((provider) => [provider.id, provider] as const
       }
     });
 
+    it("has a plain sign-up page", () => {
+      expect(provider.signupUrl).toMatch(/^https:\/\/[^?#]+$/);
+    });
+
     it("has no servers without credentials", () => {
       const connector = provider.connector({ env: {} });
       expect(connector.configured).toBe(false);

@@ -838,7 +838,11 @@ async function checkProviderToken(
 /** The permission OpsCrew's Cloudflare token needs to create the app's bucket on R2. */
 const R2_PERMISSION = "Account → Workers R2 Storage → Edit";
 
-function cloudflareFix(domain?: string, tunnel = false): string {
+/**
+ * How to create OpsCrew's Cloudflare token, with the permissions for the zone that holds `domain`
+ * (any zone when absent), and with a Cloudflare Tunnel's when `tunnel` is set.
+ */
+export function cloudflareFix(domain?: string, tunnel = false): string {
   const zone = domain ? ` for the zone that holds ${domain}` : "";
   const permissions = tunnel ? tunnelTokenPermissions() : CLOUDFLARE_TOKEN_PERMISSIONS.join(", ");
   return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions}${zone}, plus ${R2_PERMISSION} only when the app's uploads use Cloudflare R2, then set CLOUDFLARE_API_TOKEN.`;
@@ -1011,6 +1015,9 @@ function checkUpdaterTokenSet(env: Record<string, string | undefined>, zone: str
 const CLOUDFLARE_HOSTING = providerProfile("cloudflare-workers");
 const WORKERS_PERMISSION = CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS[0];
 
+/** What Cloudflare's hosting adds to OpsCrew's Cloudflare token. */
+export const CLOUDFLARE_HOSTING_FIX = `Add ${CLOUDFLARE_HOSTING_PERMISSIONS.join(" and ")} to CLOUDFLARE_API_TOKEN at ${CLOUDFLARE_TOKEN_PAGE}.`;
+
 /**
  * The provider check of a server-less target (FR-1610), in place of a server's token: Cloudflare's
  * hosting ({@link checkCloudflareHosting}) or GitHub Pages ({@link checkGithubPages}).
@@ -1045,13 +1052,12 @@ async function checkCloudflareHosting(
   const account =
     domain === undefined ? "your domain's account" : `the account that holds ${domain}`;
   const deployFix = `Create a second token at ${CLOUDFLARE_TOKEN_PAGE} with only ${WORKERS_PERMISSION} for ${account}, and set ${deployVar} to it: \`opscrew provision\` stores it as a GitHub secret for the deploy workflow, which uploads each version with it.`;
-  const mainFix = `Add ${CLOUDFLARE_HOSTING_PERMISSIONS.join(" and ")} to CLOUDFLARE_API_TOKEN at ${CLOUDFLARE_TOKEN_PAGE}.`;
   if (access.state === "unset") {
     return {
       status: "fail",
       message:
         "CLOUDFLARE_API_TOKEN is not set, and Cloudflare hosting creates the app's Worker and its custom domains with it.",
-      fix: `${cloudflareFix(domain)} ${mainFix}`,
+      fix: `${cloudflareFix(domain)} ${CLOUDFLARE_HOSTING_FIX}`,
     };
   }
   if (deployToken === undefined || deployToken === "") {
@@ -1112,12 +1118,14 @@ async function checkCloudflareHosting(
     return {
       status: "fail",
       message: `CLOUDFLARE_API_TOKEN could not check its Workers permission: ${errorText(error)}`,
-      fix: `${cloudflareFix(domain)} ${mainFix}`,
+      fix: `${cloudflareFix(domain)} ${CLOUDFLARE_HOSTING_FIX}`,
     };
   }
   if (missing.length > 0) {
     const fixes = [
-      ...(missing.some((text) => text.startsWith("CLOUDFLARE_API_TOKEN")) ? [mainFix] : []),
+      ...(missing.some((text) => text.startsWith("CLOUDFLARE_API_TOKEN"))
+        ? [CLOUDFLARE_HOSTING_FIX]
+        : []),
       ...(missing.some((text) => text.startsWith(deployVar)) ? [deployFix] : []),
     ];
     return {
@@ -1250,7 +1258,8 @@ const REGISTRAR_PROBE_DOMAIN = "opscrew-registrar-check.com";
 /** Accounts the Registrar probe tries before giving up. */
 const REGISTRAR_PROBE_ACCOUNTS = 3;
 
-const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")} to the token at ${CLOUDFLARE_TOKEN_PAGE}.`;
+/** What buying domains through Cloudflare Registrar adds to OpsCrew's Cloudflare token. */
+export const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")} to the token at ${CLOUDFLARE_TOKEN_PAGE}.`;
 
 /** The permissions a purchase needs beyond the read the probe makes. */
 const REGISTRAR_EDIT_PERMISSIONS = `${CLOUDFLARE_REGISTRAR_PERMISSIONS[0]} and ${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}, with the zone permissions covering all zones of the account`;
@@ -1340,6 +1349,17 @@ const REGISTRAR_CREDENTIALS: Readonly<Record<OtherRegistrarId, string>> = {
 };
 
 /**
+ * How to create the API credentials of a registrar other than Cloudflare, as a clause without its
+ * full stop: `Create API credentials at <page> and set <variables>`.
+ */
+export function registrarCredentialsFix(
+  id: OtherRegistrarId,
+  env: Record<string, string | undefined> = {},
+): string {
+  return `Create API credentials at ${registrarLinks(id, env).api} and set ${REGISTRAR_ENV[id].join(" and ")}`;
+}
+
+/**
  * Optional check (FR-707) of one registrar other than Cloudflare, listed when any of its variables
  * is set: names missing variables, says only that the credentials are set when offline, else runs
  * the adapter's `accountCheck` (Porkbun key scopes, Namecheap access and the IPv4 to whitelist,
@@ -1359,7 +1379,7 @@ async function checkOtherRegistrar(
     return {
       status: "warn",
       message: `${name} is only partly set up, ${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not set. Buying domains through ${name} is optional.`,
-      fix: `Create API credentials at ${api} and set ${vars.join(" and ")}, or unset the others to not use ${name}.`,
+      fix: `${registrarCredentialsFix(id, deps.env)}, or unset the others to not use ${name}.`,
     };
   }
   if (offline) {

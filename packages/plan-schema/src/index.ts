@@ -7,6 +7,12 @@
 export type { Currency, Money, PhaseName } from "@opscrew/contracts";
 export * from "./apps";
 export * from "./architecture";
+export {
+  type CatalogueProvider,
+  type ProviderCatalogue,
+  ProviderCatalogueSchema,
+  SignupUrlSchema,
+} from "./catalogue";
 export * from "./components";
 export * from "./credentials";
 export * from "./design";

@@ -60,6 +60,7 @@ export const definition: CloudProviderDefinition = {
   sizeNoun: "server type",
   consoleUrl: "https://console.hetzner.cloud/",
   accountUrl: "https://console.hetzner.cloud/",
+  signupUrl: "https://accounts.hetzner.com/signUp",
   credentials: {
     envVars: HETZNER_CREDENTIALS.envVars,
     mode: "any",

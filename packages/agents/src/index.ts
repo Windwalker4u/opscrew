@@ -23,6 +23,8 @@ export * from "./portainer";
 export * from "./previews";
 export * from "./promote";
 export * from "./providers";
+// Not in ./providers: the catalogue reads design and init, which read ./providers.
+export { providerCatalogue } from "./providers/catalogue";
 export * from "./provision";
 export * from "./retarget";
 export * from "./rollback";

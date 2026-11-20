@@ -159,6 +159,23 @@ describe("validateCloudProvider", () => {
     expect(message).toContain("terraform.module.files.cloud-init.yaml.tftpl:");
   });
 
+  it("wants a plain https sign-up page, never one with a referral id, when it has one", () => {
+    const { signupUrl: _signupUrl, ...without } = hetzner;
+    expect(validateCloudProvider(without)).toBe(without);
+    expect(failure({ ...hetzner, signupUrl: "http://example.com/signup" })).toContain(
+      "signupUrl: must be an https:// URL",
+    );
+    for (const signupUrl of [
+      "https://example.com/signup?ref=abc",
+      "https://example.com/signup?aff=1",
+      "https://example.com/signup#ref=abc",
+    ]) {
+      expect(failure({ ...hetzner, signupUrl })).toContain(
+        "signupUrl: must have no query string or fragment",
+      );
+    }
+  });
+
   it("wants at least one credential variable", () => {
     const message = failure({ ...hetzner, credentials: { ...credentials, envVars: [] } });
     expect(message).toContain("credentials.envVars:");
