@@ -289,7 +289,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 
 **Also in 0.2.11** (the hosted portal's ask, the founder's yes of 2026-11-20; not part of the move):
 
-- [ ] T3116 `opscrew providers --json`: the providers' facts as a machine-readable catalogue
+- [x] T3116 `opscrew providers --json`: the providers' facts as a machine-readable catalogue
   - Why: a guided start for new users suggests a provider and a size with an approximate price,
     and walks the user through creating each token. Every fact must come from the core: a
     provider added to the core then appears there with no code of its own.
