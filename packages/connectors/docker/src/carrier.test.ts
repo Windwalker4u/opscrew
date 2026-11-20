@@ -197,7 +197,7 @@ describe("volumeCarrier.writeVolume", () => {
     const error = await carrier.writeVolume(DATA, source).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).message).toBe(
-      "The carrier container could not empty volume example-app_data (exit code 1: find: /data/app: Permission denied).",
+      "The carrier container could not empty volume example-app_data (exit code 1).",
     );
     expect(fake.calls.some((call) => call.startsWith("PUT"))).toBe(false);
     expect(fake.containers.size).toBe(0);
@@ -250,7 +250,7 @@ describe("volumeCarrier.volumeDigest", () => {
     const { fake, carrier } = host();
     fake.onStart = () => ({ exitCode: 2, stderr: "sha256sum: ./x: I/O error\n" });
     await expect(carrier.volumeDigest(DATA)).rejects.toThrow(
-      "The carrier container could not hash volume example-app_data (exit code 2: sha256sum: ./x: I/O error).",
+      "The carrier container could not hash volume example-app_data (exit code 2).",
     );
     fake.onStart = () => ({ exitCode: 0, stdout: "nothing here\n" });
     await expect(carrier.volumeDigest(DATA)).rejects.toThrow(/did not print a hash/);
@@ -298,6 +298,26 @@ describe("volumeCarrier.sourceSize", () => {
     };
     expect(await volumeCarrier(dockerClient(unknownSize), IMAGE).sourceSize(DATA)).toBe(70_003);
     expect(seen.at(-1)).toEqual(["du", "-sb", "/data", "example-app_data:/data:ro"]);
+  });
+});
+
+describe("volumeCarrier: a failing carrier", () => {
+  it("never quotes what it printed, which names the app's data files", async () => {
+    const { fake, carrier } = folderHost();
+    fake.onStart = (container) =>
+      container.cmd[0] === "test" ? undefined : { exitCode: 1, stderr: "du: ./secret: denied\n" };
+    await expect(carrier.sourceSize(PG)).rejects.toThrow(
+      new RegExp(
+        `^The carrier container could not measure folder ${PG_PATH} \\(exit code 1\\)\\.$`,
+      ),
+    );
+    fake.onStart = () => ({ exitCode: 2, stderr: "test: /parent/postgres: secret\n" });
+    await expect(carrier.volumeDigest(PG)).rejects.toThrow(
+      new RegExp(
+        `^The carrier container could not look at folder ${PG_PATH} \\(exit code 2\\)\\.$`,
+      ),
+    );
+    expect(fake.containers.size).toBe(0);
   });
 });
 
@@ -474,7 +494,7 @@ describe("volumeCarrier: bound folders", () => {
         ? { exitCode: 1, stderr: "find: /data/base: Permission denied\n" }
         : undefined;
     await expect(carrier.writeVolume(PG, tarStream([]))).rejects.toThrow(
-      `The carrier container could not empty folder ${PG_PATH} (exit code 1: find: /data/base: Permission denied).`,
+      `The carrier container could not empty folder ${PG_PATH} (exit code 1).`,
     );
     expect(fake.containers.size).toBe(0);
   });

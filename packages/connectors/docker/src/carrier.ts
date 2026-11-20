@@ -390,23 +390,20 @@ export function volumeCarrier(
   }
 
   /**
-   * A carrier's failure, quoting the last line of its `stderr` when given. A carrier that lists,
-   * stages or removes the app's paths is given none: its errors name them.
+   * A carrier's failure, with its exit code only: what a carrier prints on failure names the app's
+   * data files, which never go into a message.
    */
-  function failed(act: string, source: CarrierSource, exitCode: number, stderr?: string) {
-    const said = stderr?.trim().split("\n").at(-1)?.trim();
+  function failed(act: string, source: CarrierSource, exitCode: number) {
     return new OpsCrewError(
       "PROVIDER_ERROR",
-      `The carrier container could not ${act} ${described(source)} (exit code ${exitCode}${said ? `: ${said}` : ""}).`,
+      `The carrier container could not ${act} ${described(source)} (exit code ${exitCode}).`,
       { hint: "Check the volume or folder and the server's disk, then try again." },
     );
   }
 
-  /** A carrier's stdout, failing plainly unless it exited 0 (quoting its stderr when `quoted`). */
-  function succeeded(result: OneOffResult, act: string, source: CarrierSource, quoted = true) {
-    if (result.exitCode !== 0) {
-      throw failed(act, source, result.exitCode, quoted ? result.stderr : undefined);
-    }
+  /** A carrier's stdout, failing plainly unless it exited 0. */
+  function succeeded(result: OneOffResult, act: string, source: CarrierSource): string {
+    if (result.exitCode !== 0) throw failed(act, source, result.exitCode);
     return result.stdout;
   }
 
@@ -444,7 +441,7 @@ export function volumeCarrier(
       readOnly: true,
     };
     const look = ["test", "!", "-L", `${PARENT_MOUNT}/${path.posix.basename(source.path)}`];
-    const { exitCode, stderr } = await run(source, [parent], look);
+    const { exitCode } = await run(source, [parent], look);
     if (exitCode === 1) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -452,7 +449,7 @@ export function volumeCarrier(
         { hint: "Bind the service to the folder the link points to, then try again." },
       );
     }
-    if (exitCode !== 0) throw failed("look at", source, exitCode, stderr);
+    if (exitCode !== 0) throw failed("look at", source, exitCode);
   }
 
   /**
@@ -542,8 +539,8 @@ export function volumeCarrier(
 
   /**
    * Prepares the source in a carrier mounted read-write (`cmd`, as `act`; `list`, which throws to
-   * refuse, gives the paths put in as {@link LIST}; its carrier's errors, which name them, aren't
-   * quoted), then unpacks `archive` into the stopped carrier, owners and modes kept. On failure `archive` is destroyed, and this settles once it
+   * refuse, gives the paths put in as {@link LIST}), then unpacks `archive` into the stopped
+   * carrier, owners and modes kept. On failure `archive` is destroyed, and this settles once it
    * has closed.
    */
   async function unpacked(
@@ -561,7 +558,7 @@ export function volumeCarrier(
       await check(source);
       const ran = await ranKept(source, [mounted(source, false)], cmd, paths);
       await thenRemoved(ran.id, async () => {
-        succeeded(ran, act, source, list === undefined);
+        succeeded(ran, act, source);
         await docker.putArchive(ran.id, "/", archive);
       });
     } catch (error) {
@@ -610,7 +607,7 @@ export function volumeCarrier(
       const ran = await ranKept(source, [mounted(source, true)], ["sh", "-c", MANIFEST_SCRIPT]);
       const files = await thenRemoved(ran.id, async () => {
         if (ran.exitCode === LINE_BREAK_EXIT) throw unlistable(source, "with a line break");
-        succeeded(ran, "list", source, false);
+        succeeded(ran, "list", source);
         return parseTar(await buffer(await docker.getArchive(ran.id, MANIFEST)));
       });
       return parseManifest(files, source);
