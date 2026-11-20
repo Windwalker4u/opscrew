@@ -192,6 +192,14 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 - [ ] T3110 (lead) A real move's past items backfilled by hand into the live app's
   plan once T3109 is in, with the move's exact times
 
+**Follow-up, after 0.2.11** (from a live provision of a second app):
+- **The branch-rule refusal's text:** provision says "did not change anything" when the clone is on
+  the wrong branch, after it has already set the GitHub environment's deployment-branch rule.
+  Refuse before that step, or say what was set.
+- **The PostgreSQL version:** design picks PostgreSQL 17 when the app's Compose file runs 18, and
+  says only "The app uses PostgreSQL". It should say why (the version OpsCrew runs), as it does for
+  Redis.
+
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
   restarts the old app without holding the new one. Pass `!stepBefore(move.step, "deployed")` to

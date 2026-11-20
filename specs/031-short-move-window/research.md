@@ -52,14 +52,15 @@ cost:
   monthly: {amount, currency}                 # the running items' monthly total, as before
   breakdown:                                  # running items
     - item: "Server cx23 (nbg1)"
+      provider: hetzner                       # the core's provider id, on every entry
       monthly: {amount, currency}             # for an hourly item, its monthly cap
       billing: hourly                         # hourly | monthly | free
       hourly: {amount, currency}              # hourly items only
       since: 2026-11-08T07:13:45Z
   oneTime:                                    # current and previous calendar month
-    - {item: "Setup fee (V153)", price: {amount, currency}, at: 2026-11-20T13:17:00Z}
+    - {item: "Setup fee (V153)", provider: contabo, price: {amount, currency}, at: 2026-11-20T13:17:00Z}
   ended:                                      # removed this or last calendar month
-    - {item, monthly, billing, hourly?, since, until}
+    - {item, provider, monthly, billing, hourly?, since, until}
 ```
 
 - **Billing models:**
