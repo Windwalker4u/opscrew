@@ -301,7 +301,9 @@ function drill(
         ...o.env,
       },
       encoding: "utf8",
-      timeout: 120_000,
+      // Just under the tests' 300 s: the 5-minute health wait's fakes took 45 s alone on Windows
+      // and passed 120 s beside other test runs (2026-11-20).
+      timeout: 280_000,
     },
   );
   const record = result.stdout
