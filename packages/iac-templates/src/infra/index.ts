@@ -243,10 +243,11 @@ function plainLayout(plan: DeployPlan): InfraLayout {
 
 /**
  * True for a server the user owns behind OpsCrew's web filter: it publishes the site on IPv4 only,
- * so its records have no AAAA record (as in its own root).
+ * so its records have no AAAA record (as in its own root, `webFilterMode`). A second app on a
+ * server OpsCrew created (`shares`) is served there over IPv6 too, behind the cloud firewall.
  */
-const ipv4Only = (plan: DeployPlan, side: Pick<DeployTarget, "provider">): boolean =>
-  side.provider === "own" && webOnlyFromCloudflare(plan);
+const ipv4Only = (plan: DeployPlan, side: DeployTarget): boolean =>
+  side.provider === "own" && side.shares === undefined && webOnlyFromCloudflare(plan);
 
 /**
  * Whether the app's AAAA record exists while a move's DNS records point at `side` (the live side

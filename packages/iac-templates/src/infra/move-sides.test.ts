@@ -418,6 +418,19 @@ describe("renderInfra with an address side", () => {
     }
   });
 
+  it("keeps the AAAA record of a second app on a server OpsCrew created, behind the web filter too", () => {
+    // Found live (the PHP app's move onto another app's Hetzner server): the switch deleted it.
+    const plan = movePlan("own", {});
+    const shared = {
+      ...sideTarget("own", {}),
+      shares: { app: "shop", provider: "hetzner" as const },
+    };
+    if (shared.provider !== "own") throw new Error("an own side");
+    expect(moveAaaaRecord(plan, shared, true)).toBe(true);
+    expect(moveAaaaRecord(plan, shared, false)).toBe(false);
+    expect(moveAaaaRecord(plan, sideTarget("own", {}), true)).toBe(false);
+  });
+
   it("finishes with the same DNS module as the new side's own root", () => {
     for (const to of ["own", "portainer"] as const) {
       for (const options of [{}, { proxied: false }] as const) {
