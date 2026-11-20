@@ -287,6 +287,39 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       Laravel app on Postgres migrates Postgres in the release, and a worker reads `pgsql`.
   - Effort: high
 
+- [ ] T3119 A Laravel Horizon worker gets the memory it needs
+  - Why: design sizes every worker at 256 MB (`design/components.ts`). Horizon is a process
+    manager: a master, a supervisor per `config/horizon.php` entry and their workers, each a full
+    PHP process. It measured 594 MB at rest on a live deploy, so the deploy's worker check fails at
+    every deploy.
+  - Owns: `packages/agents/src/design/components.ts` (a worker's default memory), detect's worker
+    detection if it must say which worker is Horizon, colocated tests
+  - Accept:
+    - **The default:** a worker that runs `php artisan horizon` gets 768 MB by default, and
+      design's line says why (Horizon runs several PHP processes). A plan's own `memoryMb` stays.
+    - **The fit:** design's memory checks (the server's size, another app's server) count it.
+    - **Tests:** a Horizon worker's default and its line; another worker keeps 256 MB.
+  - Effort: medium
+
+- [ ] T3120 Migration status and down migrations run in Railpack and Buildpacks images
+  - Why: `app.migrations`' status (`packages/iac-templates/src/workflow/migrations.ts`, around
+    line 119) and its down migrations (around 305) run `docker compose run … release sh -c
+    "<script>"`. Under Railpack's and Buildpacks' entrypoint, which wraps the command in its own
+    shell, that becomes `bash -c sh -c '…'`: a bare `sh` that reads an empty stdin and exits 0. So
+    no migration record is ever written, every deploy warns that it couldn't record them, and a
+    rollback's down migrations would say they ran without running anything.
+  - Owns: `packages/iac-templates/src/workflow/migrations.ts`, the one-off start helper it should
+    use (`oneOffStart`), `packages/cli/test/e2e/**` (the Docker pass), colocated tests
+  - Accept:
+    - **The command:** the status and the down migrations go through `oneOffStart`'s per-builder
+      form: one string for Railpack and Buildpacks, `sh -c` otherwise, as the workers and cron
+      already do.
+    - **A down migration that did nothing is never reported as run:** the script checks its own
+      result.
+    - **Tests:** the rendered commands per builder offline, and the Docker pass's Railpack Laravel
+      app records its migration count after a deploy.
+  - Effort: high
+
 **Also in 0.2.11** (the hosted portal's ask, the founder's yes of 2026-11-20; not part of the move):
 
 - [x] T3116 `opscrew providers --json`: the providers' facts as a machine-readable catalogue
