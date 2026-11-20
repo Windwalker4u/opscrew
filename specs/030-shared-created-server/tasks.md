@@ -334,7 +334,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16.–19.). Worktrees
 `D:/opscrew/.claude/worktrees/t30NN`, branched from `main`.
 
-- [ ] T3015 [P] [US2] Provision's shared-server fit check
+- [x] T3015 [P] [US2] Provision's shared-server fit check
   - Owns: `packages/agents/src/provision/**`, `packages/agents/src/design/sizing.ts` (a wording
     option for `ownServerMemory` only), colocated tests
   - Reads: plan 18.; `design/sizing.ts` (`ownServerMemory`), `design/own.ts`, `design/run.ts`
@@ -356,7 +356,7 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision src/design && pnpm lint`
   - Effort: high
 
-- [ ] T3016 [P] [US7] Sharing a server of the user's own, and no budget with `server.shares`
+- [x] T3016 [P] [US7] Sharing a server of the user's own, and no budget with `server.shares`
   - Owns: `packages/agents/src/interview/**`, `packages/agents/src/shares/own-first-app.ts` (new),
     `packages/agents/src/design/own.ts` and `design/run.ts` (the shared-access warning only),
     colocated tests; `packages/plan-schema/src/requirements*.ts` only if the budget is required
@@ -391,7 +391,7 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/plan-schema && npx vitest run --root packages/agents src/interview src/shares src/design && pnpm lint`
   - Effort: high
 
-- [ ] T3017 [P] [US6] `retarget` onto a server OpsCrew created for another app
+- [x] T3017 [P] [US6] `retarget` onto a server OpsCrew created for another app
   - Owns: `packages/agents/src/retarget/**`, `packages/cli/src/commands/retarget*.ts`,
     `packages/mcp-server/src/**` (only if its retarget input needs it), colocated tests;
     `export` keywords only in `packages/agents/src/design/own.ts` and `shares/*.ts`, if a check
@@ -433,7 +433,7 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/retarget && npx vitest run --root packages/cli src/commands && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3018 [US6] [US7] `retarget` onto a server of the user's own that another app runs on
+- [x] T3018 [US6] [US7] `retarget` onto a server of the user's own that another app runs on
   - Owns: `packages/agents/src/retarget/**`, `packages/cli/src/commands/retarget*.ts`, colocated
     tests
   - Depends: T3016, T3017
@@ -444,7 +444,7 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: as T3017
   - Effort: medium
 
-- [ ] T3019 [US6] [US7] The guide
+- [x] T3019 [US6] [US7] The guide
   - Owns: `docs/guide/retarget.md`, `docs/guide/shared-server.md`, `docs/guide/own-server.md`
   - Depends: T3016, T3017
   - Accept:
