@@ -119,9 +119,9 @@ async function moveUntilSwitchPlanned(m: MoveProject): Promise<string> {
   expect(plan.retarget).toMatchObject({ step: "deployed" });
   expect((await localServers(m)).retarget?.next?.ipv4).toBe(NEW.ipv4);
   expect(m.github.secrets.get("OPSCREW_HOST")).toBe(NEW.ipv4);
-  // The old server still serves users; the new one waits with Caddy stopped.
+  // The old server still serves users; the new one waits for its data: no app yet, Caddy stopped.
   expect(m.hosts.host(OLD_IPV4)).toMatchObject({ app: true, caddy: true });
-  expect(m.hosts.host(NEW.ipv4)).toMatchObject({ app: true, caddy: false });
+  expect(m.hosts.host(NEW.ipv4)).toMatchObject({ app: false, caddy: false });
   return created.hash ?? "";
 }
 
