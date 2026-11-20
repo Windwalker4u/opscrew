@@ -497,7 +497,9 @@ describe("Railpack", () => {
 
   it("has no version setting to hand Railpack for PHP, which reads composer.json itself", () => {
     const php = buildJob(withBuild(noServices(), "railpack", { language: "php" }));
-    expect(step(php, "prepare")?.run).toContain("values=(--env RAILPACK_PHP_EXTENSIONS=intl,zip)");
+    expect(step(php, "prepare")?.run).toContain(
+      `values=(--env "RAILPACK_PHP_EXTENSIONS=$php_extensions")`,
+    );
     expect(String(step(php, "railpack")?.with?.secrets)).not.toContain("VERSION");
     const other = buildJob(withBuild(noServices(), "railpack", { language: "other" }));
     expect(step(other, "prepare")?.run).toContain("values=()");
@@ -517,7 +519,7 @@ describe("Railpack", () => {
     it("is handed to Railpack's plan, and the build reads it as a BuildKit secret", () => {
       const job = buildJob(plainPhp(noServices()));
       expect(step(job, "prepare")?.run).toContain(
-        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env RAILPACK_PHP_EXTENSIONS=intl,zip)",
+        'values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env "RAILPACK_PHP_EXTENSIONS=$php_extensions")',
       );
       // Railpack's frontend reads every value of its plan as a secret: without it the build fails.
       expect(String(step(job, "railpack")?.with?.secrets).split("\n")[0]).toBe(
@@ -533,7 +535,7 @@ describe("Railpack", () => {
       });
       const job = buildJob(withBuild(subfolder, "railpack", { language: "php", webRoot: "web/" }));
       expect(step(job, "prepare")?.run).toContain(
-        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/apps/web/web --env RAILPACK_PHP_EXTENSIONS=intl,zip)",
+        'values=(--env RAILPACK_PHP_ROOT_DIR=/app/apps/web/web --env "RAILPACK_PHP_EXTENSIONS=$php_extensions")',
       );
     });
 
@@ -562,7 +564,7 @@ describe("Railpack", () => {
     };
     const php = (plan: DeployPlan) => withBuild(plan, "railpack", { language: "php" });
 
-    it("are handed to Railpack's plan and read as a BuildKit secret, each once and sorted", () => {
+    it("are the step's list, handed to Railpack's plan and read as a BuildKit secret, each once and sorted", () => {
       const every = DeployPlanSchema.parse({
         ...withServices([
           { kind: "postgres", name: "db" },
@@ -575,31 +577,45 @@ describe("Railpack", () => {
         ]),
         externalServices: ["redis", "stripe"],
       });
-      const setting = "RAILPACK_PHP_EXTENSIONS=intl,mongodb,pdo_mysql,pdo_pgsql,redis,zip";
       const { prepare, secrets } = settings(php(every));
-      expect(prepare).toContain(`values=(--env ${setting})`);
-      expect(secrets[0]).toBe(setting);
+      expect(prepare).toContain("php_extensions=intl,mongodb,pdo_mysql,pdo_pgsql,redis,zip\n");
+      expect(prepare).toContain(`values=(--env "RAILPACK_PHP_EXTENSIONS=$php_extensions")`);
+      expect(secrets[0]).toBe(
+        "RAILPACK_PHP_EXTENSIONS=${{ steps.prepare.outputs.php_extensions }}",
+      );
     });
 
     it("come from the services the app keeps where they are hosted too", () => {
       const external = DeployPlanSchema.parse({ ...noServices(), externalServices: ["mysql"] });
-      expect(settings(php(external)).prepare).toContain(
-        "values=(--env RAILPACK_PHP_EXTENSIONS=intl,pdo_mysql,zip)",
-      );
+      expect(settings(php(external)).prepare).toContain("php_extensions=intl,pdo_mysql,zip\n");
     });
 
     it("follow the web root of a plain PHP app, and come for a Laravel app too", () => {
       expect(settings(plainPhp(serverPlan())).prepare).toContain(
-        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env RAILPACK_PHP_EXTENSIONS=intl,pdo_pgsql,zip)",
+        "php_extensions=intl,pdo_pgsql,zip\n",
       );
-      expect(settings(php(serverPlan())).secrets[0]).toBe(
-        "RAILPACK_PHP_EXTENSIONS=intl,pdo_pgsql,zip",
-      );
+      expect(settings(php(serverPlan())).prepare).toContain("php_extensions=intl,pdo_pgsql,zip\n");
+    });
+
+    it("add the extensions the app's Composer packages require, each once and sorted", () => {
+      // Horizon's pcntl and posix, a development package's sockets, and intl named twice.
+      const plan = php(serverPlan());
+      const build = plan.app.build;
+      if (build === undefined) throw new Error("the fixture has a build");
+      const required = DeployPlanSchema.parse({
+        ...plan,
+        app: {
+          ...plan.app,
+          build: { ...build, phpExtensions: ["intl", "pcntl", "posix", "sockets"] },
+        },
+      });
+      const { prepare } = settings(required);
+      expect(prepare).toContain("php_extensions=intl,pcntl,pdo_pgsql,posix,sockets,zip\n");
     });
 
     it("are intl and zip alone without such a service, and left out for every other language", () => {
       const queueOnly = withServices([{ kind: "rabbitmq", name: "mq" }]);
-      const alone = "values=(--env RAILPACK_PHP_EXTENSIONS=intl,zip)";
+      const alone = "php_extensions=intl,zip\n";
       expect(settings(php(queueOnly)).prepare).toContain(alone);
       expect(settings(php(noServices())).prepare).toContain(alone);
       const node = buildJob(
@@ -1069,5 +1085,57 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 180_000 },
     expect(readFileSync(join(work, "tmp", "calls"), "utf8")).toMatch(
       / --env RAILPACK_PHP_ROOT_DIR=\/app\/public --env RAILPACK_PHP_EXTENSIONS=intl,pdo_pgsql,zip --env A=1\n$/,
     );
+  });
+
+  describe("reads the extensions composer.lock requires at build time", () => {
+    const fake = 'railpack() { echo "$@" >> "$RUNNER_TEMP/calls"; }';
+    const laravel = () => {
+      // composer.json's own and require-dev extension, Horizon's pcntl, pest-plugin-browser's
+      // sockets (a development package Railpack installs too), OPcache by Composer's name, and
+      // names the build leaves out: one every PHP 8 build has, and one no shell line can carry.
+      writeFileSync(
+        join(work, "composer.json"),
+        JSON.stringify({
+          require: { php: "^8.5", "ext-BCMath": "*", "laravel/horizon": "^5" },
+          "require-dev": { "ext-xdebug": "*" },
+        }),
+      );
+      writeFileSync(
+        join(work, "composer.lock"),
+        JSON.stringify({
+          packages: [
+            { name: "laravel/horizon", require: { "ext-pcntl": "*", "ext-posix": "*" } },
+            { name: "acme/warmer", require: { "ext-zend-opcache": "*", "ext-json": "*" } },
+            { name: "acme/odd", require: { "ext-a b": "*" } },
+          ],
+          "packages-dev": [
+            { name: "pestphp/pest-plugin-browser", require: { "ext-sockets": "*" } },
+          ],
+        }),
+      );
+    };
+    const script = () => step(buildJob(planFor("railpack", "php")), "prepare")?.run ?? "";
+
+    it("adds them to the plan's list, for railpack prepare and the build's secret", () => {
+      laravel();
+      const result = bash(`${fake}\n${script()}`, { BUILD_ENV: "", BUILD_SECRETS: "" });
+      expect(result.status, result.output).toBe(0);
+      const list = "bcmath,intl,opcache,pcntl,pdo_pgsql,posix,sockets,xdebug,zip";
+      expect(readFileSync(join(work, "tmp", "calls"), "utf8")).toContain(
+        ` --env RAILPACK_PHP_EXTENSIONS=${list}\n`,
+      );
+      expect(output()).toContain(`php_extensions=${list}\n`);
+    });
+
+    it("keeps the plan's list, saying so, when Node can't read them", () => {
+      laravel();
+      const failing = "node() { return 1; }";
+      const result = bash(`${fake}\n${failing}\n${script()}`, { BUILD_ENV: "", BUILD_SECRETS: "" });
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain(
+        "::warning::OpsCrew could not read the extensions composer.lock requires; building with the plan's: intl,pdo_pgsql,zip",
+      );
+      expect(output()).toContain("php_extensions=intl,pdo_pgsql,zip\n");
+    });
   });
 });

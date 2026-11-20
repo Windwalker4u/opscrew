@@ -291,6 +291,13 @@
             },
             "githubToken": {
               "type": "boolean"
+            },
+            "phpExtensions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              }
             }
           },
           "required": ["builder", "chosen", "reason", "runtime", "probe"],
@@ -2937,6 +2944,13 @@
                 },
                 "githubToken": {
                   "type": "boolean"
+                },
+                "phpExtensions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]*$"
+                  }
                 }
               },
               "required": ["builder", "chosen", "reason", "runtime", "probe"],

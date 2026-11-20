@@ -29,8 +29,20 @@ const CLOUDLINUX: PhpBinary[] = [
   ),
 ];
 
-const PLAIN = { php: ">=8.3", extensions: ["pdo_mysql"], websockets: [] };
-const LARAVEL = { php: "^8.4", extensions: ["mbstring", "fileinfo"], websockets: [] };
+const PLAIN = {
+  php: ">=8.3",
+  extensions: ["pdo_mysql"],
+  devExtensions: [],
+  requiredBy: {},
+  websockets: [],
+};
+const LARAVEL = {
+  php: "^8.4",
+  extensions: ["mbstring", "fileinfo"],
+  devExtensions: [],
+  requiredBy: {},
+  websockets: [],
+};
 
 function input(over: Partial<PhpChoiceInput>): PhpChoiceInput {
   return {
@@ -127,9 +139,14 @@ describe("choosePhp, in plan 5's order", () => {
 
   it("never picks a version the deploy workflow can't build with", () => {
     const binaries = [bin("/usr/local/bin/php", "7.0.33")];
-    expect(choosePhp(input({ binaries, needs: { extensions: [], websockets: [] } }))).toBe(
-      undefined,
-    );
+    expect(
+      choosePhp(
+        input({
+          binaries,
+          needs: { extensions: [], devExtensions: [], requiredBy: {}, websockets: [] },
+        }),
+      ),
+    ).toBe(undefined);
   });
 });
 

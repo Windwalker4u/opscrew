@@ -41,6 +41,14 @@ describe("what a PHP app needs from the account's PHP", () => {
     expect(needs).toEqual({
       php: "^8.2",
       extensions: ["fileinfo", "intl", "mbstring", "pdo_mysql"],
+      devExtensions: ["xdebug"],
+      requiredBy: {
+        mbstring: ["composer.json", "laravel/framework"],
+        pdo_mysql: ["composer.json"],
+        fileinfo: ["laravel/framework"],
+        intl: ["symfony/intl"],
+        xdebug: ["composer.json"],
+      },
       websockets: [],
     });
   });
@@ -50,21 +58,45 @@ describe("what a PHP app needs from the account's PHP", () => {
     const needs = await needsOf({
       "composer.json": json({ require: { ...Object.fromEntries(always), "ext-gd": "*" } }),
     });
-    expect(needs).toEqual({ extensions: ["gd"], websockets: [] });
+    expect(needs).toEqual({
+      extensions: ["gd"],
+      devExtensions: [],
+      requiredBy: { gd: ["composer.json"] },
+      websockets: [],
+    });
     for (const name of ["json", "ctype", "filter", "hash", "pcre", "spl", "standard"]) {
       expect(PHP_8_EXTENSIONS.has(name)).toBe(true);
     }
   });
 
-  it("leaves out the development packages, which a release never installs", async () => {
+  it("keeps the development packages' extensions apart, since a release never installs them", async () => {
     const needs = await needsOf({
-      "composer.json": json({ require: { php: ">=8.3" } }),
+      "composer.json": json({
+        require: { php: ">=8.3", "ext-intl": "*" },
+        "require-dev": { "ext-Sockets": "*", "ext-intl": "*", "ext-json": "*" },
+      }),
       "composer.lock": json({
-        packages: [],
-        "packages-dev": [{ name: "phpunit/phpunit", require: { "ext-dom": "*" } }],
+        packages: [{ name: "laravel/horizon", require: { "ext-pcntl": "*" } }],
+        "packages-dev": [
+          { name: "phpunit/phpunit", require: { "ext-dom": "*", "ext-pcntl": "*" } },
+          { name: "pestphp/pest-plugin-browser", require: { "ext-sockets": "*" } },
+        ],
       }),
     });
-    expect(needs).toEqual({ php: ">=8.3", extensions: [], websockets: [] });
+    // Each extension once: the release's in `extensions`, the rest only development needs.
+    expect(needs).toEqual({
+      php: ">=8.3",
+      extensions: ["intl", "pcntl"],
+      devExtensions: ["dom", "sockets"],
+      // An extension the release needs names only the release's packages.
+      requiredBy: {
+        intl: ["composer.json"],
+        pcntl: ["laravel/horizon"],
+        sockets: ["composer.json", "pestphp/pest-plugin-browser"],
+        dom: ["phpunit/phpunit"],
+      },
+      websockets: [],
+    });
   });
 
   it("names the WebSocket servers the app requires", async () => {
@@ -88,18 +120,21 @@ describe("what a PHP app needs from the account's PHP", () => {
       },
       "apps/site",
     );
-    expect(needs).toEqual({ php: "^8.4", extensions: ["zip"], websockets: [] });
+    expect(needs).toEqual({
+      php: "^8.4",
+      extensions: ["zip"],
+      devExtensions: [],
+      requiredBy: { zip: ["composer.json"] },
+      websockets: [],
+    });
   });
 
   it("needs nothing it can tell without a composer.json, and ignores files it cannot read", async () => {
-    expect(await needsOf({ "index.php": "<?php echo 1;\n" })).toEqual({
-      extensions: [],
-      websockets: [],
-    });
-    expect(await needsOf({ "composer.json": "{ not json", "composer.lock": "[]" })).toEqual({
-      extensions: [],
-      websockets: [],
-    });
+    const nothing = { extensions: [], devExtensions: [], requiredBy: {}, websockets: [] };
+    expect(await needsOf({ "index.php": "<?php echo 1;\n" })).toEqual(nothing);
+    expect(await needsOf({ "composer.json": "{ not json", "composer.lock": "[]" })).toEqual(
+      nothing,
+    );
   });
 
   it("gives the example apps' needs", async () => {
@@ -116,6 +151,11 @@ describe("what a PHP app needs from the account's PHP", () => {
       "composer.json": await read("php-plain-mysql/composer.json"),
       "composer.lock": await read("php-plain-mysql/composer.lock"),
     });
-    expect(plain).toEqual({ php: ">=8.3", extensions: ["pdo_mysql"], websockets: [] });
+    expect(plain).toMatchObject({
+      php: ">=8.3",
+      extensions: ["pdo_mysql"],
+      devExtensions: [],
+      websockets: [],
+    });
   });
 });

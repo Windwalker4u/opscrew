@@ -1974,6 +1974,7 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
       workdir?: string;
       webRoot?: string;
       githubToken?: boolean;
+      phpExtensions?: string[];
     }>();
     for (const probe of ["node", "python", "ruby", "php", "wget", "bash", "none"]) {
       expect(DeployPlanSchema.parse(withBuild(plan, { ...build, probe })).app.build?.probe).toBe(

@@ -10,7 +10,7 @@ import {
   plural,
   toPosixRelative,
 } from "@opscrew/core";
-import { detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/detect";
+import { detectPhpNeeds, detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/detect";
 import {
   type EdgeProxy,
   edgeMemoryMb,
@@ -110,7 +110,12 @@ import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-st
 import { vercelAdditions } from "./additions";
 import { backgroundJobsWarning } from "./background-jobs";
 import { backupsOnOrderPage, orderPageBackupsText } from "./backups";
-import { type BuilderChoice, chooseBuilder } from "./builder";
+import {
+  type BuilderChoice,
+  chooseBuilder,
+  phpExtensionsLine,
+  railpackPhpExtensions,
+} from "./builder";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -1163,6 +1168,15 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     }
     for (const warning of choice.warnings) warn(warning);
     build = choice;
+    // Railpack installs only the extensions composer.json names, not its packages' (Horizon's
+    // pcntl), so Composer would refuse to install them.
+    if (choice.builder === "railpack" && choice.runtime.language === "php") {
+      const needs = await detectPhpNeeds(paths.root, facts.appDir);
+      const line = phpExtensionsLine(needs);
+      if (line !== undefined) reporter.info(say(line));
+      const phpExtensions = railpackPhpExtensions(needs);
+      if (phpExtensions.length > 0) build = { ...choice, phpExtensions };
+    }
   }
 
   const [signals, scan] = await Promise.all([

@@ -120,7 +120,12 @@ describe("design's refusals", () => {
   });
 
   it("refuses WebSockets served from PHP", () => {
-    const needs = { extensions: [], websockets: ["laravel/reverb"] };
+    const needs = {
+      extensions: [],
+      devExtensions: [],
+      requiredBy: {},
+      websockets: ["laravel/reverb"],
+    };
     expect(reason({ facts: php(), needs })).toBe(
       "the app serves WebSockets from PHP (laravel/reverb), which needs a PHP process that keeps running, and a hosting account runs PHP only for each request",
     );

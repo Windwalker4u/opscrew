@@ -307,8 +307,10 @@ async function builderFor(
     );
   }
   for (const warning of choice.warnings) deps.reporter.warn(deps.redactor.redact(warning));
-  // As design records it: a plain PHP app's web root and the own image's working directory stay.
-  return appBuildOf(choice, facts);
+  // As design records it: a plain PHP app's web root, the PHP extensions design found and the
+  // own image's working directory stay.
+  const phpExtensions = plan.app.build?.phpExtensions;
+  return appBuildOf(phpExtensions === undefined ? choice : { ...choice, phpExtensions }, facts);
 }
 
 /**

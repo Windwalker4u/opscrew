@@ -93,6 +93,29 @@ describe("DeployPlan of a plain PHP app", () => {
     expect(pathsOf(outside)).toEqual(["app.build.webRoot"]);
   });
 
+  it("keeps the Composer packages' PHP extensions only with Railpack and PHP, by safe names", async () => {
+    const plan = await validPlan();
+    const { webRoot: _, ...laravel } = build;
+    const withExtensions = { ...laravel, phpExtensions: ["pcntl", "pdo_pgsql", "sockets"] };
+    expect(
+      DeployPlanSchema.parse(withBuild(plan, withExtensions)).app.build?.phpExtensions,
+    ).toEqual(["pcntl", "pdo_pgsql", "sockets"]);
+    expect(DeployPlanSchema.parse(withBuild(plan, laravel)).app.build).not.toHaveProperty(
+      "phpExtensions",
+    );
+    for (const builder of ["generated-dockerfile", "own-dockerfile", "buildpacks"]) {
+      const result = DeployPlanSchema.safeParse(withBuild(plan, { ...withExtensions, builder }));
+      expect(pathsOf(result), builder).toEqual(["app.build.phpExtensions"]);
+    }
+    // The names go into a shell line of the deploy workflow.
+    for (const name of ["PCNTL", "zend-opcache", "a b", "x;rm", ""]) {
+      const result = DeployPlanSchema.safeParse(
+        withBuild(plan, { ...laravel, phpExtensions: [name] }),
+      );
+      expect(pathsOf(result), name).toEqual(["app.build.phpExtensions.0"]);
+    }
+  });
+
   it("keeps a folder across deploys with the rolling strategy", async () => {
     const plan = await validPlan();
     const parsed = DeployPlanSchema.parse({ ...plan, storage: { files: { dir: "storage" } } });

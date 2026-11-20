@@ -112,18 +112,90 @@ const PHP_DRIVERS: Partial<Record<SelfHostedServiceKind | ServiceKind, string>> 
 const PHP_ALWAYS = ["intl", "zip"];
 
 /**
- * Railpack's setting for a PHP app's extensions, each once and sorted: {@link PHP_ALWAYS} and the
+ * The PHP extensions the plan gives Railpack, each once and sorted: {@link PHP_ALWAYS}, the
  * drivers its services need ({@link PHP_DRIVERS}), for the services OpsCrew runs, on or off (the
  * app's code needs the driver wherever the service runs), and those the app keeps where they are
- * hosted. Railpack 0.42 installs the extensions `composer.json` asks for, `pdo_pgsql` only with
- * `DB_CONNECTION=pgsql` in its own environment and `redis` never (a spike, 2026-11-08), so an app
- * on them would be built without its driver. Undefined for another language.
+ * hosted, and the extensions its Composer packages require (`app.build.phpExtensions`). Railpack
+ * 0.42 installs the extensions `composer.json` asks for, not those of the packages it locks
+ * (Horizon's `pcntl`), `pdo_pgsql` only with `DB_CONNECTION=pgsql` in its own environment and
+ * `redis` never (a spike, 2026-11-08), so an app on them would be built without them, and Composer
+ * then refuses to install. Undefined for another language.
  */
-function phpExtensionsSetting(plan: DeployPlan): string | undefined {
-  if (plan.app.build?.runtime.language !== "php") return undefined;
+function planPhpExtensions(plan: DeployPlan): string | undefined {
+  const build = plan.app.build;
+  if (build?.runtime.language !== "php") return undefined;
   const kinds = [...plan.services.map((service) => service.kind), ...plan.externalServices];
   const drivers = kinds.flatMap((kind) => PHP_DRIVERS[kind] ?? []);
-  return `RAILPACK_PHP_EXTENSIONS=${[...new Set([...PHP_ALWAYS, ...drivers])].sort().join(",")}`;
+  const extensions = new Set([...PHP_ALWAYS, ...drivers, ...(build.phpExtensions ?? [])]);
+  return [...extensions].sort().join(",");
+}
+
+/**
+ * Node, given the build context and a comma-separated list: prints the list widened with the
+ * extensions the Composer packages there require now, each once and sorted: `ext-*` of
+ * composer.json's `require` and `require-dev` and of every package in composer.lock's `packages`
+ * and `packages-dev` (Railpack installs the development packages too), in the names
+ * `install-php-extensions` knows, without those every PHP 8 build has (detect's
+ * `PHP_8_EXTENSIONS`) and any a shell line can't carry. A file it can't read adds nothing.
+ */
+const PHP_EXTENSIONS_SCRIPT = [
+  'const fs = require("fs");',
+  'const path = require("path");',
+  "const [dir, list] = process.argv.slice(2);",
+  "const read = (file) => {",
+  "  try {",
+  '    return JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) || {};',
+  "  } catch {",
+  "    return {};",
+  "  }",
+  "};",
+  'const always = ["core", "ctype", "date", "filter", "hash", "json", "pcre", "random", "reflection", "spl", "standard"];',
+  'const names = new Set(list.split(","));',
+  "const add = (requirements) => {",
+  '  for (const key of Object.keys(requirements && typeof requirements === "object" ? requirements : {})) {',
+  "    const match = /^ext-(.+)$/i.exec(key);",
+  "    if (match === null) continue;",
+  "    const name = match[1].toLowerCase();",
+  '    const installed = name === "zend-opcache" ? "opcache" : name;',
+  "    if (/^[a-z][a-z0-9_]*$/.test(installed) && !always.includes(installed)) names.add(installed);",
+  "  }",
+  "};",
+  'const composer = read("composer.json");',
+  'const lock = read("composer.lock");',
+  "add(composer.require);",
+  'add(composer["require-dev"]);',
+  'for (const key of ["packages", "packages-dev"]) {',
+  "  for (const locked of Array.isArray(lock[key]) ? lock[key] : []) add(locked && locked.require);",
+  "}",
+  'console.log([...names].sort().join(","));',
+];
+
+/**
+ * The prepare step's lines that set `php_extensions` for a PHP app (none for another language):
+ * the plan's list ({@link planPhpExtensions}) widened, with the runner's Node, by the extensions
+ * the Composer packages in the build context require now ({@link PHP_EXTENSIONS_SCRIPT}), so a
+ * package added after design builds without design running again. Without Node, or when it fails,
+ * the plan's list stays. The list also goes to the step's output, for the build's secret.
+ */
+function phpExtensionsRead(plan: DeployPlan, context: string): string[] {
+  const list = planPhpExtensions(plan);
+  if (list === undefined) return [];
+  return [
+    "# Railpack installs only the extensions composer.json names, not its packages' (Horizon's",
+    "# pcntl), and Composer refuses to install without them: add those the lock requires now.",
+    `php_extensions=${list}`,
+    `cat > "$RUNNER_TEMP/php-extensions.js" <<'JS'`,
+    ...PHP_EXTENSIONS_SCRIPT,
+    "JS",
+    "if command -v node > /dev/null &&",
+    `  read_extensions="$(node "$RUNNER_TEMP/php-extensions.js" ${context} "$php_extensions")" &&`,
+    '  [[ "$read_extensions" =~ ^[a-z0-9_,]+$ ]]; then',
+    '  php_extensions="$read_extensions"',
+    "else",
+    '  echo "::warning::OpsCrew could not read the extensions composer.lock requires; building with the plan\'s: $php_extensions"',
+    "fi",
+    'echo "php_extensions=$php_extensions" >> "$GITHUB_OUTPUT"',
+  ];
 }
 
 /**
@@ -566,7 +638,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
 /**
  * Railpack: installs the pinned CLI (checksum from pins.ts), plans the build with the runtime
  * version, a plain PHP app's web root ({@link webRootSetting}), a PHP app's extensions
- * ({@link phpExtensionsSetting}), the non-secret build values and the names of the secret ones,
+ * ({@link phpExtensionsRead}), the non-secret build values and the names of the secret ones,
  * and builds `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal,
  * which gives uid 10001 the framework's writable folders and the folders a volume keeps
  * ({@link keptFolders}), adds the language's lines ({@link railpackSeal}), and makes the image run
@@ -579,11 +651,16 @@ function railpackSteps(plan: DeployPlan): string[] {
   const framework =
     plan.app.build?.webRoot === undefined ? (RAILPACK_WRITABLE[language] ?? []) : [];
   const writable = [...new Set([...framework.map((dir) => `/app/${dir}`), ...keptFolders(plan)])];
-  const settings = [
-    versionSetting(plan, RAILPACK_VERSION_SETTING),
-    webRootSetting(plan),
-    phpExtensionsSetting(plan),
-  ].filter((setting) => setting !== undefined);
+  const fixed = [versionSetting(plan, RAILPACK_VERSION_SETTING), webRootSetting(plan)].filter(
+    (setting) => setting !== undefined,
+  );
+  const php = plan.app.build?.runtime.language === "php";
+  // The PHP extensions are read in the prepare step ({@link phpExtensionsRead}).
+  const prepared = [...fixed, ...(php ? ['"RAILPACK_PHP_EXTENSIONS=$php_extensions"'] : [])];
+  const secrets = [
+    ...fixed,
+    ...(php ? ["RAILPACK_PHP_EXTENSIONS=${{ steps.prepare.outputs.php_extensions }}"] : []),
+  ];
   return [
     ...installTool(plan, "railpack", "Railpack"),
     "- id: prepare",
@@ -595,7 +672,8 @@ function railpackSteps(plan: DeployPlan): string[] {
       "set -euo pipefail",
       "# The plan lists the names; the build reads the values as BuildKit secrets. Railpack",
       "# never sees a secret value here, only its name.",
-      `values=(${settings.map((setting) => `--env ${setting}`).join(" ")})`,
+      ...phpExtensionsRead(plan, context),
+      `values=(${prepared.map((setting) => `--env ${setting}`).join(" ")})`,
       ...envPairs("values", '"${BUILD_ENV:-}"'),
       ...envPairs("values", '"${BUILD_SECRETS:-}"', '"${line%%=*}="'),
       "for attempt in 1 2 3; do",
@@ -633,7 +711,7 @@ function railpackSteps(plan: DeployPlan): string[] {
     "      secrets-hash=${{ steps.prepare.outputs.hash }}",
     "    # The frontend reads every value the plan lists as a secret, the runtime version too.",
     "    secrets: |",
-    ...settings.map((setting) => `      ${setting}`),
+    ...secrets.map((setting) => `      ${setting}`),
     `      ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
     `      ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
     "    cache-from: type=gha,scope=railpack",

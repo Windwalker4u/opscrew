@@ -16,10 +16,12 @@ import { ROLLING_NOTE } from "../design/strategy";
 import { STORAGE_KEY_VARS } from "../provision/storage";
 import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
+  APP,
   BUILT_IMAGE,
   DOMAIN,
   HOST_KEY,
   type MoveHarness,
+  makeFacts,
   moveHarness,
   NEW_SERVERS,
   OLD_IPV4,
@@ -919,6 +921,40 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     await run(h, { confirmStart: async () => true });
     const plan = await readArtifact("plan", h.paths.files.plan);
     expect(plan.deploy.strategy).toBe("recreate");
+  });
+
+  it("keeps the PHP extensions design found for a Laravel app Railpack builds", async () => {
+    const h = await moveHarness();
+    await writeArtifact("architecture", h.paths.files.architecture, {
+      schemaVersion: 1,
+      generatedAt: "2026-11-20T09:00:00.000Z",
+      generator: { tool: "opscrew", version: "0.0.0-test" },
+      facts: makeFacts({
+        name: APP,
+        languages: ["php"],
+        packageManager: "none",
+        frameworks: [{ name: "laravel", path: "." }],
+      }),
+      summary: "A shop.",
+      risks: [],
+      aiEnriched: false,
+    });
+    const before = await readArtifact("plan", h.paths.files.plan);
+    const build = {
+      builder: "railpack" as const,
+      chosen: "auto" as const,
+      reason: "Railpack builds PHP.",
+      runtime: { language: "php" as const, version: "8.5" },
+      probe: "php" as const,
+      phpExtensions: ["pcntl", "sockets"],
+    };
+    await writeArtifact("plan", h.paths.files.plan, { ...before, app: { ...before.app, build } });
+    await run(h, { confirmStart: async () => true });
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    expect(plan.app.build).toMatchObject({
+      builder: "railpack",
+      phpExtensions: ["pcntl", "sockets"],
+    });
   });
 
   it("shows the builder and the deploy strategy for the new server before the start, and records them with the user's snapshot settings", async () => {

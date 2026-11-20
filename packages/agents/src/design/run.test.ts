@@ -2163,8 +2163,13 @@ describe("runDesign: components", () => {
     const ready = await setup(facts, makeRequirements(), { root: deps.paths.root });
     const result = await runDesign(ready, { catalog: euCatalog() });
     expect(result.plan.app.build).toMatchObject({ builder: "railpack", webRoot: "public" });
+    // Its composer.json's extensions, the require-dev one too: Railpack installs both.
+    expect(result.plan.app.build?.phpExtensions).toEqual(["pdo_mysql", "pdo_pgsql"]);
     expect(result.plan.storage).toEqual({ files: { dir: "storage" } });
     const text = ready.reporter.text();
+    expect(text).toContain(
+      "PHP extensions for the app's Composer packages, which Railpack adds to the image: pdo_mysql (composer.json), pdo_pgsql (composer.json, a development package).",
+    );
     expect(text).toContain(
       "The app keeps the files it writes in storage/ on a persistent volume: every deploy keeps them, and `opscrew snapshot` copies them.",
     );

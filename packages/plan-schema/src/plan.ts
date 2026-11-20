@@ -1776,18 +1776,28 @@ export const AppBuildSchema = z
      * designs keep it. Absent means false.
      */
     githubToken: z.boolean().optional(),
+    /**
+     * For a PHP app built by Railpack only: the extensions its Composer packages require (`ext-*`
+     * in `composer.json` and in every package of `composer.lock`, the development ones included,
+     * since Railpack installs them), lower-case, without the prefix and those every PHP 8 build
+     * has. Railpack installs them beside the ones the build always adds. Set by design. The names
+     * go into a shell line of the deploy workflow, so only letters, digits and `_` are allowed.
+     */
+    phpExtensions: z.array(z.string().regex(/^[a-z][a-z0-9_]*$/)).optional(),
   })
   .superRefine((build, ctx) => {
-    if (
-      build.webRoot !== undefined &&
-      (build.builder !== "railpack" || build.runtime.language !== "php")
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["webRoot"],
-        message:
-          'is only for a PHP app built by Railpack (builder "railpack", runtime.language "php"); remove it',
-      });
+    for (const field of ["webRoot", "phpExtensions"] as const) {
+      if (
+        build[field] !== undefined &&
+        (build.builder !== "railpack" || build.runtime.language !== "php")
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message:
+            'is only for a PHP app built by Railpack (builder "railpack", runtime.language "php"); remove it',
+        });
+      }
     }
     if (build.githubToken === true && build.builder !== "own-dockerfile") {
       ctx.addIssue({

@@ -3,7 +3,14 @@ import { detectProject } from "@opscrew/detect";
 import type { AppBuild, DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, nextPostgresFacts, staticSpaFacts } from "../testing";
-import { appBuildOf, type BuilderChoice, chooseBuilder, runtimeLanguageOf } from "./builder";
+import {
+  appBuildOf,
+  type BuilderChoice,
+  chooseBuilder,
+  phpExtensionsLine,
+  railpackPhpExtensions,
+  runtimeLanguageOf,
+} from "./builder";
 
 const EXAMPLES = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 
@@ -477,5 +484,62 @@ describe("appBuildOf", () => {
     expect(generated.workdir).toBeUndefined();
     expect(generated.webRoot).toBeUndefined();
     expect(appBuildOf(base, withWorkdir)).not.toHaveProperty("warnings");
+  });
+
+  it("keeps the PHP extensions design found for a PHP app built by Railpack only", async () => {
+    const facts = await detectProject(PHP_PLAIN);
+    const chosen = chooseBuilder(facts, undefined, "amd64");
+    if ("refused" in chosen) throw new Error(chosen.refused);
+    const phpExtensions = ["pcntl", "sockets"];
+    expect(appBuildOf({ ...chosen, phpExtensions }, facts).phpExtensions).toEqual(phpExtensions);
+    expect(appBuildOf(chosen, facts)).not.toHaveProperty("phpExtensions");
+    expect(appBuildOf({ ...chosen, phpExtensions: [] }, facts)).not.toHaveProperty("phpExtensions");
+    const own = { ...chosen, builder: "own-dockerfile" as const, phpExtensions };
+    expect(appBuildOf(own, facts)).not.toHaveProperty("phpExtensions");
+  });
+});
+
+describe("railpackPhpExtensions and phpExtensionsLine", () => {
+  // Railpack installs the development packages too (pest-plugin-browser's sockets).
+  const needs = {
+    extensions: ["bcmath", "mbstring", "pcntl", "zend-opcache"],
+    devExtensions: ["sockets"],
+    requiredBy: {
+      bcmath: ["composer.json"],
+      mbstring: ["laravel/framework", "symfony/console", "symfony/string"],
+      pcntl: ["laravel/horizon"],
+      "zend-opcache": ["acme/warmer"],
+      sockets: ["pestphp/pest-plugin-browser"],
+    },
+    websockets: [],
+  };
+
+  it("joins the release's and the development packages' extensions in the names Railpack installs", () => {
+    expect(railpackPhpExtensions(needs)).toEqual([
+      "bcmath",
+      "mbstring",
+      "opcache",
+      "pcntl",
+      "sockets",
+    ]);
+  });
+
+  it("says in one line which extensions it adds, and which package needs each", () => {
+    expect(phpExtensionsLine(needs)).toBe(
+      "PHP extensions for the app's Composer packages, which Railpack adds to the image: bcmath (composer.json), mbstring (laravel/framework and 2 more), opcache (acme/warmer), pcntl (laravel/horizon), sockets (pestphp/pest-plugin-browser, a development package). Each build reads composer.lock again, so a package added later gets its extensions too.",
+    );
+    const none = { extensions: [], devExtensions: [], requiredBy: {}, websockets: [] };
+    expect(phpExtensionsLine(none)).toBeUndefined();
+  });
+
+  it("leaves out a name no shell line can carry", () => {
+    const odd = {
+      extensions: ["gd", "a b", "x;y", "Mbstring"],
+      devExtensions: [],
+      requiredBy: { gd: ["composer.json"] },
+      websockets: [],
+    };
+    expect(railpackPhpExtensions(odd)).toEqual(["gd"]);
+    expect(phpExtensionsLine(odd)).toContain(": gd (composer.json).");
   });
 });

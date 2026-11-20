@@ -1,3 +1,4 @@
+import type { PhpNeeds } from "@opscrew/detect";
 import {
   BUILDPACKS_OFFERS,
   type DockerStack,
@@ -40,15 +41,65 @@ export interface BuilderChoice {
    * cannot check.
    */
   warnings: string[];
+  /**
+   * For a PHP app built by Railpack: the extensions its Composer packages require
+   * ({@link railpackPhpExtensions}), which design reads from the repository and a move keeps.
+   */
+  phpExtensions?: string[];
+}
+
+/** Composer's names that `install-php-extensions`, which Railpack runs, knows by another. */
+const INSTALLER_NAMES: Readonly<Record<string, string>> = { "zend-opcache": "opcache" };
+
+/**
+ * Each extension Railpack installs for a PHP app's Composer packages (`detectPhpNeeds`), by the
+ * name `install-php-extensions` knows, sorted, with Composer's name: the release's and the
+ * development packages', since Railpack's `composer install` installs both. A name a shell line
+ * can't carry is left out (the plan's schema refuses it).
+ */
+function installedExtensions(needs: PhpNeeds): [installed: string, composer: string][] {
+  const found = new Map<string, string>();
+  for (const name of [...needs.extensions, ...needs.devExtensions]) {
+    const installed = INSTALLER_NAMES[name] ?? name;
+    if (/^[a-z][a-z0-9_]*$/.test(installed) && !found.has(installed)) found.set(installed, name);
+  }
+  return [...found].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** The extensions Railpack installs for a PHP app's Composer packages ({@link installedExtensions}). */
+export function railpackPhpExtensions(needs: PhpNeeds): string[] {
+  return installedExtensions(needs).map(([installed]) => installed);
+}
+
+/**
+ * Design's line about the extensions Railpack adds for a PHP app's Composer packages, each with
+ * the first package that requires it (and how many more do); undefined when there are none.
+ */
+export function phpExtensionsLine(needs: PhpNeeds): string | undefined {
+  const development = new Set(needs.devExtensions);
+  const parts = installedExtensions(needs).map(([installed, composer]) => {
+    const [first, ...more] = needs.requiredBy[composer] ?? [];
+    const by = [
+      ...(first === undefined
+        ? []
+        : [more.length > 0 ? `${first} and ${more.length} more` : first]),
+      ...(development.has(composer) ? ["a development package"] : []),
+    ];
+    return by.length === 0 ? installed : `${installed} (${by.join(", ")})`;
+  });
+  if (parts.length === 0) return undefined;
+  return `PHP extensions for the app's Composer packages, which Railpack adds to the image: ${parts.join(", ")}. Each build reads composer.lock again, so a package added later gets its extensions too.`;
 }
 
 /**
  * The plan's `app.build` for `choice`, as design records it and a move keeps it: the choice (with
  * the GitHub token plan.yaml gives the user's own Dockerfile), the working directory of the user's
- * own image, and the folder a plain PHP app serves, from detection.
+ * own image, and for a PHP app built by Railpack the folder a plain one serves, from detection,
+ * and the extensions its Composer packages require.
  */
 export function appBuildOf(choice: BuilderChoice, facts: ProjectFacts): AppBuild {
-  const { builder, chosen, reason, runtime, probe, automatic, githubToken } = choice;
+  const { builder, chosen, reason, runtime, probe, automatic, githubToken, phpExtensions } = choice;
+  const railpackPhp = builder === "railpack" && runtime.language === "php";
   return {
     builder,
     chosen,
@@ -62,8 +113,10 @@ export function appBuildOf(choice: BuilderChoice, facts: ProjectFacts): AppBuild
       ? { workdir: facts.build.workdir }
       : {}),
     // The folder a plain PHP app serves, so Railpack serves nothing else of it.
-    ...(builder === "railpack" && runtime.language === "php" && facts.webRoot !== undefined
-      ? { webRoot: facts.webRoot }
+    ...(railpackPhp && facts.webRoot !== undefined ? { webRoot: facts.webRoot } : {}),
+    // What Railpack installs beside its own extensions, so Composer can install the packages.
+    ...(railpackPhp && phpExtensions !== undefined && phpExtensions.length > 0
+      ? { phpExtensions }
       : {}),
   };
 }
