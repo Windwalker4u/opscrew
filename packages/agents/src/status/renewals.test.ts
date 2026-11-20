@@ -63,7 +63,7 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
     expect(plan).toEqual(before);
   });
 
-  it("records a renewal the registrar charged at the old date, and moves the dates on", async () => {
+  it("records a renewal the registrar charged by now, and moves the dates on", async () => {
     const project = await domainProject({ plan: renewalPlan() });
     project.cf.own(DOMAIN, { expiresAt: "2027-11-30T12:00:00Z", autoRenew: true });
 
@@ -74,7 +74,13 @@ describe("opscrew status: the renewals of the domains OpsCrew bought (FR-3113)",
       "example.com was renewed at Cloudflare until 2027-11-30: OpsCrew recorded the renewal ($10.44) in opscrew/plan.yaml.",
     ]);
     expect(plan.cost.oneTime).toEqual([
-      { item: "example.com, renewal (1 year)", provider: "cloudflare", price: eur(9.49), at: NEXT },
+      // seen before its date: the registrar charged it by the time of the read
+      {
+        item: "example.com, renewal (1 year)",
+        provider: "cloudflare",
+        price: eur(9.49),
+        at: "2026-11-20T09:00:00.000Z",
+      },
     ]);
     expect(plan.cost.renewals).toEqual([
       {

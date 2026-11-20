@@ -1029,6 +1029,41 @@ describe.skipIf(!findExecutable("git"))("a move's cost items (031 US4)", () => {
     expect(plan.cost.ended?.map((line) => line.provider)).toEqual(["digitalocean", "digitalocean"]);
   });
 
+  it("keeps the renewal of a domain OpsCrew bought through the start, the finish and an abort (FR-3113)", async () => {
+    const renewal = {
+      item: "example.com",
+      provider: "cloudflare" as const,
+      price: { amount: 10.44, currency: "USD" as const },
+      next: "2027-10-11T12:00:00.000Z",
+      autoRenew: true,
+    };
+    const withRenewal = async (h: Awaited<ReturnType<typeof billedHarness>>["h"]) => {
+      const plan = await readArtifact("plan", h.paths.files.plan);
+      await writeArtifact("plan", h.paths.files.plan, {
+        ...plan,
+        cost: { ...plan.cost, renewals: [renewal] },
+      });
+    };
+    const renewalsOf = async (h: Awaited<ReturnType<typeof billedHarness>>["h"]) =>
+      (await readArtifact("plan", h.paths.files.plan)).cost.renewals;
+
+    // Started (priced anew at DigitalOcean, in dollars), then finished.
+    const finished = (await billedHarness()).h;
+    await withRenewal(finished);
+    await run(finished);
+    expect(await renewalsOf(finished)).toEqual([renewal]);
+    await finish(finished);
+    expect(await renewalsOf(finished)).toEqual([renewal]);
+
+    // Started, then aborted: the old side priced anew.
+    const aborted = (await billedHarness()).h;
+    await withRenewal(aborted);
+    crashAfter(aborted, "deployed");
+    await expect(run(aborted)).rejects.toThrow("interrupted");
+    await abort(aborted);
+    expect(await renewalsOf(aborted)).toEqual([renewal]);
+  });
+
   it("--abort with the old type no longer listed ends the new server's items", async () => {
     const { h } = await billedHarness();
     crashAfter(h, "deployed");

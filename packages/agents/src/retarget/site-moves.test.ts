@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { CLOUDFLARE_DEPLOY_SECRETS, siteEnvSecret } from "@opscrew/iac-templates";
-import type { ServerlessProvider } from "@opscrew/plan-schema";
+import { type ServerlessProvider, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { pagesVerificationStateFile } from "../shared";
 import {
@@ -320,6 +320,25 @@ describe.skipIf(!findExecutable("git"))(
         code: "PHASE_PRECONDITION",
         message: expect.stringContaining("can no longer be aborted"),
       });
+    });
+
+    it("keeps the renewal of a domain OpsCrew bought when the move starts (031 FR-3113)", async () => {
+      const s = await setup("github-pages");
+      const renewal = {
+        item: "example.com",
+        provider: "cloudflare" as const,
+        price: { amount: 10.44, currency: "USD" as const },
+        next: "2027-10-11T12:00:00.000Z",
+        autoRenew: true,
+      };
+      const plan = await s.readPlan();
+      await writeArtifact("plan", s.paths.files.plan, {
+        ...plan,
+        cost: { ...plan.cost, renewals: [renewal] },
+      });
+
+      await move(s, { to: "cloudflare-workers" });
+      expect((await s.readPlan()).cost.renewals).toEqual([renewal]);
     });
 
     it("aborts before the switch from GitHub Pages: the Worker's shell is deleted and the deploy setup goes back", async () => {

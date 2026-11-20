@@ -39,6 +39,13 @@ registrars.
   - Namecheap and GoDaddy: your account's own auto-renew setting applies. You change it, and
     DNSSEC, in the registrar's dashboard, and OpsCrew tells you where.
 
+A domain OpsCrew buys for you shows in the cost in `opscrew/plan.yaml`: the purchase, and the
+yearly renewal with its price and date. From 30 days before that date, `npx opscrew status` (and
+`npx opscrew domain status`) checks the registrar. Once the registrar has charged the renewal,
+OpsCrew records it and moves the date a year on. If auto-renew is off, `npx opscrew status` warns you
+when the domain expires and tells you how to turn auto-renew on. A domain you bought elsewhere is
+not in the cost: OpsCrew doesn't know its price.
+
 ## Cloudflare token permissions for buying
 
 Buying needs extra permissions on your Cloudflare API token:

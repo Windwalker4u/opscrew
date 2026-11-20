@@ -8,6 +8,7 @@ import {
   serverAddressesFile,
 } from "@opscrew/agents";
 import {
+  FakeCloudflare,
   FakeGitHub,
   ScriptedRunner,
   SERVER_IPV4,
@@ -479,6 +480,42 @@ describe("opscrew status and the server's address", () => {
     expect(silent.output).toContain(
       "\nMonitoring: server app sent nothing to the monitoring stack on server app for more than 5 minutes. Check its agent, Grafana Alloy, and its link on the private network;",
     );
+  });
+
+  it("shows a due renewal of a domain OpsCrew bought, and nothing without one (FR-3113)", async () => {
+    const paths = resolveProjectPaths(dir, { env: {} });
+    const plan = testPlan({ domain: "example.com", userSecret: false });
+    const renewal = {
+      item: "example.com",
+      provider: "cloudflare" as const,
+      price: { amount: 10.44, currency: "USD" as const },
+      next: "2026-11-30T12:00:00.000Z",
+      autoRenew: false,
+    };
+    const cf = new FakeCloudflare();
+    cf.own("example.com", { expiresAt: renewal.next, autoRenew: false });
+    const run = async () => {
+      const ctx = createTestContext({ cwd: dir });
+      withServices(ctx, {
+        clock: { now: () => new Date("2026-11-20T12:00:00.000Z") },
+        domain: cf.services(),
+      });
+      expect(await main(argv("status"), ctx)).toBe(0);
+      return ctx.output;
+    };
+
+    await writeArtifact("plan", paths.files.plan, plan);
+    expect(await run()).not.toContain("renew");
+    expect(cf.events).toEqual([]);
+
+    await writeArtifact("plan", paths.files.plan, {
+      ...plan,
+      cost: { ...plan.cost, renewals: [renewal] },
+    });
+    expect(await run()).toContain(
+      "\nWarning: auto-renew is off for example.com, so it expires on 2026-11-30 unless you renew it. Turn it on with `opscrew domain auto-renew on`.\n",
+    );
+    expect(cf.events).toEqual(["accounts", "getDomain example.com"]);
   });
 
   it("says where the address is when this computer does not know it", async () => {

@@ -237,7 +237,8 @@ describe("opscrew domain status: a renewal the registrar charged (FR-3113)", () 
         item: "example.com, renewal (1 year)",
         provider: "cloudflare",
         price: eur(11.36),
-        at: "2027-10-11T12:00:05.000Z",
+        // seen before its date: charged by now
+        at: "2027-09-20T08:00:00.000Z",
       },
     ]);
     expect(plan.cost.renewals).toEqual([

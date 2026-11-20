@@ -656,6 +656,26 @@ describe("the monitoring server's cost times (031 US4)", () => {
     expect(off.cost.breakdown.some(monitoring)).toBe(false);
     expect(off.cost.ended).toEqual([ended]);
   });
+
+  it("keeps the renewal of a domain OpsCrew bought when it turns on and off (031 FR-3113)", async () => {
+    const renewal = {
+      item: "example.com",
+      provider: "cloudflare" as const,
+      price: { amount: 10.44, currency: "USD" as const },
+      next: "2027-10-11T12:00:00.000Z",
+      autoRenew: true,
+    };
+    const base = deployed(testPlan());
+    const plan = DeployPlanSchema.parse({ ...base, cost: { ...base.cost, renewals: [renewal] } });
+    const deps = await world(plan);
+
+    const { plan: on } = await monitoringEnable(deps, plan, {
+      services: new FakeServers().services(),
+    });
+    expect(on.cost.renewals).toEqual([renewal]);
+    const { plan: off } = await monitoringDisable(deps, on);
+    expect(off.cost.renewals).toEqual([renewal]);
+  });
 });
 
 describe("the add-on commands", () => {

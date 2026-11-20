@@ -116,16 +116,23 @@ export function withOneTime(cost: CostEstimate, fee: OneTimeCost): CostEstimate 
 
 /**
  * `next` (a cost priced anew, perhaps at another provider in another currency) with the one-time
- * fees and ended items `previous` recorded, in `next`'s currency.
+ * fees and ended items `previous` recorded, in `next`'s currency, and the renewals of the domains
+ * OpsCrew bought as they are (each in its registrar's currency).
  */
-export function carryRecords(next: CostEstimate, previous: CostEstimate): CostEstimate {
+export function carryRecords(next: CostEstimate, previous: DeployPlan["cost"]): DeployPlan["cost"] {
   const { currency } = next.monthly;
-  return withRecords(next, {
-    oneTime: previous.oneTime?.map((fee) =>
-      fee.price.currency === currency ? fee : { ...fee, price: convertMoney(fee.price, currency) },
-    ),
-    ended: previous.ended?.map((entry) => endedIn(entry, currency)),
-  });
+  const { renewals } = previous;
+  return {
+    ...withRecords(next, {
+      oneTime: previous.oneTime?.map((fee) =>
+        fee.price.currency === currency
+          ? fee
+          : { ...fee, price: convertMoney(fee.price, currency) },
+      ),
+      ended: previous.ended?.map((entry) => endedIn(entry, currency)),
+    }),
+    ...(renewals !== undefined ? { renewals } : {}),
+  };
 }
 
 /**
@@ -173,9 +180,9 @@ function matchRunning(
  */
 export function keepCostTimes(
   next: CostEstimate,
-  previous: CostEstimate | undefined,
+  previous: DeployPlan["cost"] | undefined,
   now: string,
-): CostEstimate {
+): DeployPlan["cost"] {
   if (previous === undefined) return next;
   const { breakdown, unmatched } = matchRunning(next.breakdown, previous.breakdown);
   return endBilling(carryRecords({ ...next, breakdown }, previous), unmatched, now);
@@ -190,9 +197,9 @@ export function keepCostTimes(
 export function abortedCost(
   restored: CostEstimate,
   old: readonly CostItem[],
-  moving: CostEstimate,
+  moving: DeployPlan["cost"],
   until: string,
-): CostEstimate {
+): DeployPlan["cost"] {
   const { breakdown } = matchRunning(restored.breakdown, old);
   return endBilling(carryRecords({ ...restored, breakdown }, moving), moving.breakdown, until);
 }

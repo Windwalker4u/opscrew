@@ -6,6 +6,7 @@ import { convertedNote, costFor } from "../design/cost";
 import { createTestPhaseDeps, testPlan } from "../testing";
 import {
   abortedCost,
+  carryRecords,
   keepCostTimes,
   prunedCost,
   startBilling,
@@ -220,6 +221,35 @@ describe("the cost's times (031 US4)", () => {
     const january = prunedCost(cost, new Date("2027-01-02T00:00:00.000Z"));
     expect(january.oneTime).toBeUndefined();
     expect(january.ended).toBeUndefined();
+  });
+});
+
+describe("the renewals of the domains OpsCrew bought (FR-3113)", () => {
+  const renewal = {
+    item: "example.com",
+    provider: "cloudflare" as const,
+    price: { amount: 10.44, currency: "USD" as const },
+    next: "2027-11-20T12:00:00.000Z",
+    autoRenew: true,
+  };
+  const previous = { ...costOf([{ ...server, since: CREATED }]), renewals: [renewal] };
+
+  it("keeps them across designs, as quoted, and through the pruning", () => {
+    const next = keepCostTimes(costOf([server]), previous, NOW);
+    expect(next.renewals).toEqual([renewal]);
+    expect(prunedCost(next, new Date("2027-06-01T00:00:00.000Z"))).toMatchObject({
+      renewals: [renewal],
+    });
+  });
+
+  it("keeps them when a move prices the cost anew in another currency", () => {
+    const usd = { ...costOf([]), monthly: { amount: 0, currency: "USD" as const } };
+    expect(carryRecords(usd, previous).renewals).toEqual([renewal]);
+  });
+
+  it("keeps them when a move is aborted", () => {
+    const restored = abortedCost(costOf([server]), [], previous, NOW);
+    expect(restored.renewals).toEqual([renewal]);
   });
 });
 

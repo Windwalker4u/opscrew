@@ -5,6 +5,7 @@ import {
   formatServerAddress,
   type PhaseDeps,
   phaseStatusLines,
+  renewalStatusReport,
   type ServerAddress,
   serverAddress,
   serverAddressesFile,
@@ -97,10 +98,20 @@ async function tlsLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Pro
 }
 
 /**
+ * The renewals of the domains OpsCrew bought, once one is due (FR-3113): a renewal the registrar
+ * charged recorded in the plan, a warning when auto-renew is off; nothing before then.
+ */
+async function renewalLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
+  const { lines } = await renewalStatusReport(deps, plan, { services: servicesOf(ctx).domain });
+  return lines.length === 0 ? [] : ["", ...lines];
+}
+
+/**
  * `opscrew status`: which phases have run in this project, with their result and time, the
  * image builder and the deploy strategy with their reasons, the supply-chain settings (signing,
  * deploy tags, image retention), the app's components and whether each runs, the server's proxy,
- * the certificates OpsCrew manages with their expiry, the recovery copy's state, with self-hosted
+ * the certificates OpsCrew manages with their expiry, the recovery copy's state, a due renewal of a
+ * domain OpsCrew bought (recorded in the plan, with a warning when auto-renew is off), with self-hosted
  * monitoring a line on whether every server sent to its stack within the last 5 minutes, the server's
  * address (from OpsCrew's local state; it is never committed) and a `retarget` line while a move
  * of the app is in progress (from → to, last completed step, the next command), or a `cloudflare`
@@ -179,6 +190,7 @@ export function register(program: Command, ctx: CliContext): void {
             ...(await componentLines(ctx, deps, plan, flags.hostKey?.trim())),
             // A hosting account's status names its certificate itself; no proxy of OpsCrew's runs.
             ...(plan.target.provider === "hosting" ? [] : await tlsLines(ctx, deps, plan)),
+            ...(await renewalLines(ctx, deps, plan)),
           ];
     if (Object.keys(state.phases).length === 0) {
       ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");

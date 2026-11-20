@@ -100,9 +100,10 @@ export interface RenewalRead {
 /**
  * `plan` after the registrar's read `info` of `domain`, once the domain's renewal there is due
  * ({@link renewalDue}): the renewal follows the read's auto-renew, and an expiry past `next` means
- * the registrar charged the renewal, so its price goes into `oneTime` at the old `next` (no
- * registrar's answer gives the day it charged) and `next` and `dns.registration`'s expiry move to
- * the new one. The same plan before then, or when nothing changed.
+ * the registrar charged the renewal, so its price goes into `oneTime` at the earlier of the old
+ * `next` and `now` (no registrar's answer gives the day it charged, which is before the expiry)
+ * and `next` and `dns.registration`'s expiry move to the new one. The same plan before then, or
+ * when nothing changed.
  */
 export function renewedPlan(
   plan: DeployPlan,
@@ -125,7 +126,7 @@ export function renewedPlan(
       item: `${domain}, renewal (1 year)`,
       provider: renewal.provider,
       price: convertMoney(renewal.price, cost.monthly.currency),
-      at: renewal.next,
+      at: new Date(Math.min(Date.parse(renewal.next), now.getTime())).toISOString(),
     });
   }
   const registration = plan.dns.registration;

@@ -652,6 +652,33 @@ describe("runDesign", () => {
     expect(result.plan.updatedAt).toBe("2026-10-12T08:00:00.000Z");
   });
 
+  it("keeps the renewal of a domain OpsCrew bought when it designs again (031 FR-3113)", async () => {
+    const deps = await setup();
+    const designed = (await runDesign(deps, { catalog: euCatalog() })).plan;
+    const renewal = {
+      item: "example.com",
+      provider: "cloudflare" as const,
+      price: { amount: 10.44, currency: "USD" as const },
+      next: "2027-10-11T12:00:00.000Z",
+      autoRenew: true,
+    };
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...designed,
+      cost: { ...designed.cost, renewals: [renewal] },
+    });
+    // A changed answer: the plan is designed and written anew.
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({ answeredAt: "2026-10-12T07:00:00.000Z", signImages: true }),
+    );
+
+    const again = await runDesign(deps, { catalog: euCatalog() });
+
+    expect(again.plan.cost.renewals).toEqual([renewal]);
+    expect((await readArtifact("plan", deps.paths.files.plan)).cost.renewals).toEqual([renewal]);
+  });
+
   it("FR-1446: writes vercel.json's rules as the additions of the plan's proxy, and counts that edge's memory", async () => {
     const platformRouting = {
       source: "vercel.json" as const,
