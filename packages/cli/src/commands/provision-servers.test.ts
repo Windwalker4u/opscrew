@@ -335,3 +335,37 @@ describe("opscrew provision --plan-only with several servers", () => {
     expect(ctx.output).toContain(`opscrew provision --approve ${hashes[0]} --approve ${hashes[1]}`);
   });
 });
+
+describe("opscrew provision --approve <hash> --confirm <app> in a script", () => {
+  const repair: ApprovalRequest = {
+    kind: "remote-exec",
+    title: "Install the new Hetzner Cloud server shop again",
+    details:
+      "The server at 203.0.113.10 did not finish its first-boot setup: the package install failed.",
+    allowDestroy: true,
+    confirmPhrase: "shop",
+  };
+
+  it("approves a new server's repair, which only the app's name approves", async () => {
+    for (const confirm of [["shop"], []]) {
+      const { ctx } = await setup(testPlan({ userSecret: false }));
+      let options: RunProvisionOptions = {};
+      let approved: boolean | undefined;
+      const flags = { approve: ["3".repeat(64)], confirm };
+      await runInfraCommand(ctx, "provision", flags, async (deps, given) => {
+        options = given;
+        approved = (await deps.approvals.request(repair)).approved;
+        return { applied: false, outputs: {} };
+      });
+      expect(options.planOnly).toBeUndefined();
+      expect(approved).toBe(confirm.length > 0);
+      expect(ctx.output).toContain(
+        confirm.length > 0
+          ? `✓ ${repair.title} (confirmed with --confirm shop)`
+          : "the package install failed",
+      );
+      await project?.cleanup();
+      project = undefined;
+    }
+  });
+});

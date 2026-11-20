@@ -14,6 +14,7 @@ export * from "./destroy";
 export * from "./domain";
 export * from "./figures";
 export * from "./firewalls";
+export * from "./first-boot";
 export * from "./logs";
 export * from "./move";
 export * from "./network";

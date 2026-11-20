@@ -58,7 +58,7 @@ import type { PhaseDeps } from "../context";
 import type { PortainerServices } from "../provision/types";
 import { isMaintenanceWindowRequest } from "../retarget/texts";
 import type { RetargetGitHubApi, RetargetServices } from "../retarget/types";
-import { ensureDeployKey, ensureStatePassphrase } from "../shared";
+import { ensureDeployKey, ensureStatePassphrase, isNewServerRepairRequest } from "../shared";
 import { doEuCatalog, euCatalog, makeRequirements, writeArchitecture } from "./catalog";
 import {
   createProject,
@@ -1281,7 +1281,8 @@ export class RecordingHandler implements ApprovalHandler {
 /**
  * What a non-interactive CLI run would approve: an infrastructure plan only when `--approve` names
  * its hash (and, for deletions, `--confirm` the app name); the maintenance window only with
- * `--allow-downtime`; secrets, pushes and pull requests (as `--yes` does).
+ * `--allow-downtime`; a new server's repair only with `--confirm` the app name; secrets, pushes
+ * and pull requests (as `--yes` does).
  */
 export interface CliFlags {
   approve?: string;
@@ -1303,6 +1304,11 @@ export function cliAnswer(flags: () => CliFlags) {
       return true;
     }
     if (isMaintenanceWindowRequest(request)) return cli.allowDowntime === true;
+    if (isNewServerRepairRequest(request)) {
+      return cli.confirm === request.confirmPhrase
+        ? { approved: true, confirmation: cli.confirm }
+        : false;
+    }
     return ["github-secrets", "git-push", "pull-request"].includes(request.kind);
   };
 }

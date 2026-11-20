@@ -27,7 +27,13 @@ import {
 } from "@opscrew/plan-schema";
 import { CLOUD_CREDENTIALS, CLOUD_PROVIDERS } from "@opscrew/providers";
 import { type Command, Option } from "commander";
-import { askTypedName, formatRequest, hashListed, withAllowDowntime } from "../approval";
+import {
+  askTypedName,
+  formatRequest,
+  hashListed,
+  withAllowDowntime,
+  withServerRepair,
+} from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
@@ -377,7 +383,9 @@ async function runCommand(
           print: ctx.stdout,
           clock,
         });
-        return withAllowDowntime(ctx, flags.allowDowntime, handler, clock);
+        // The new server's repair when its first boot failed: the app's name, typed or --confirm.
+        const repair = withServerRepair(ctx, typed, handler, clock);
+        return withAllowDowntime(ctx, flags.allowDowntime, repair, clock);
       },
     });
     const option = flags.option?.trim() || undefined;
@@ -616,7 +624,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--no-snapshot", "With --finish, do not take a snapshot of the old server first")
     .option(
       "--confirm <name>",
-      "The name a deletion asks to be typed, for scripts and CI: the app's, or the bucket's for its deletion; repeat for both (--confirm shop --confirm shop-uploads)",
+      "The name a deletion asks to be typed, for scripts and CI: the app's, or the bucket's for its deletion; repeat for both (--confirm shop --confirm shop-uploads). The app's name also approves restarting or installing again the new server when its first boot failed",
       collect,
     )
     .option("--yes", YES_DESCRIPTION)

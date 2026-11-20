@@ -293,10 +293,19 @@ The apply can also succeed and a later step stop, while OpsCrew waits for the ne
 
 ```text
 The server at … did not open SSH within 5 minutes.
-The server at … did not finish its first-boot setup within 8 minutes.
+The server at … did not finish its first-boot setup: the package install and OpsCrew's setup script failed.
 ```
 
-Check the server in [Hetzner Console](https://console.hetzner.cloud) (the second message gives a command that shows what the
+The second message names the steps that failed, as the server recorded its first boot. A new
+server holds nothing yet, so OpsCrew offers to repair it through your provider, once per run and
+each time after you type the app's name: a server that never opens SSH is restarted and waited for
+again; one whose setup failed is installed again from the same image with the same first-boot
+setup (its disk is wiped, its addresses stay), and OpsCrew trusts its new SSH host key and waits
+for the setup again. In a script, run `npx opscrew provision --plan-only`, then
+`npx opscrew provision --approve <the hash it prints> --confirm <app name>`; for a move's new
+server, `npx opscrew retarget --confirm <app name>`. Once the app was deployed to a server,
+OpsCrew never offers to install it again. Otherwise check the server in
+[Hetzner Console](https://console.hetzner.cloud) (the message gives a command that shows what the
 server is doing), then run `npx opscrew provision` again: it continues where it stopped.
 
 ## When the server itself is in trouble

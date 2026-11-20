@@ -44,6 +44,7 @@ import {
   FlagConfirmation,
   formatRequest,
   withAllowDowntime,
+  withServerRepair,
 } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
@@ -342,6 +343,7 @@ function removalLiftApproval(
  * In a script, `provision --confirm …` with neither `--plan-only` nor `--approve` lifts the delete
  * protection of the removed extra servers the names cover (`liftConfirmedBy`), then runs as
  * `--plan-only`: it plans their deletion and prints the `--approve <hash> … --confirm …` command.
+ * With `--approve`, `--confirm <app>` also approves a new server's repair (`withServerRepair`).
  */
 export async function runInfraCommand(
   ctx: CliContext,
@@ -421,7 +423,8 @@ export async function runInfraCommand(
           const lift = liftRun
             ? removalLiftApproval(typedNames, confirms, ctx.stdout, clock)
             : typedNames;
-          return withAllowDowntime(ctx, flags.allowDowntime, lift, clock);
+          const repair = withServerRepair(ctx, confirms, lift, clock);
+          return withAllowDowntime(ctx, flags.allowDowntime, repair, clock);
         },
       });
       const result = await run(deps, {
@@ -866,7 +869,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--yes", YES_DESCRIPTION)
     .option(
       "--confirm <name>",
-      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash); again for each extra server the plan deletes (<app>-<server>); in a script without --approve, lifts the delete protection of the extra servers it names and only plans their deletion; with --finish-move, the moved service's name",
+      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash); again for each extra server the plan deletes (<app>-<server>); in a script without --approve, lifts the delete protection of the extra servers it names and only plans their deletion; with --approve, also approves restarting or installing again the app's new server when its first boot failed; with --finish-move, the moved service's name",
       collect,
     )
     .option(

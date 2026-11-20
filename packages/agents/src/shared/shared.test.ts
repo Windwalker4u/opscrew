@@ -237,8 +237,25 @@ describe("waiting for the server", () => {
     };
     expect(
       await waitForCloudInit(remote, { timeoutMs: 60_000, intervalMs: 10_000, ...clock() }),
-    ).toBe(true);
+    ).toBe("ready");
     expect(n).toBe(3);
+  });
+
+  it("stops waiting once cloud-init ended without OpsCrew's mark, and says when it still runs", async () => {
+    let n = 0;
+    const answering = (answer: string) => ({
+      host: "h",
+      async run() {
+        n++;
+        return { exitCode: 0, stdout: `${answer}\n`, stderr: "" };
+      },
+    });
+    const options = { timeoutMs: 60_000, intervalMs: 10_000 };
+    expect(await waitForCloudInit(answering("failed"), { ...options, ...clock() })).toBe("failed");
+    expect(n).toBe(1);
+    expect(await waitForCloudInit(answering("waiting"), { ...options, ...clock() })).toBe(
+      "running",
+    );
   });
 
   it("pins a new host key, reuses it, and refuses a changed key without confirmation", async () => {

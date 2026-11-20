@@ -11,21 +11,19 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { PUBLIC_KEY, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { SERVER_MODULE_FILES } from "../generated/modules";
+import { renderCloudInit } from "./cloud-init";
 import { renderInfra } from "./index";
 import { MODULE_FILES } from "./modules";
 
 const MODULES = CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name);
 
 /**
- * The engines that render the template for real, with OPSCREW_IT=1 as the package's other engine
- * tests; each check skips without its binary.
+ * The engines that render the template for real (`.tools/bin` on PATH, or OPSCREW_TOFU_BIN /
+ * OPSCREW_TERRAFORM_BIN): a console call each, so they run whenever found; each check skips
+ * without its binary.
  */
-const runIt = process.env.OPSCREW_IT === "1";
-const engines = runIt ? await detectEngines() : [];
-if (!runIt) {
-  console.warn("[iac-templates] skipping the cloud-init check with the engines: set OPSCREW_IT=1.");
-}
-for (const name of runIt ? ["tofu", "terraform"] : []) {
+const engines = await detectEngines();
+for (const name of ["tofu", "terraform"]) {
   if (!engines.some((d) => d.name === name && d.supported)) {
     console.warn(
       `[iac-templates] skipping the cloud-init check with ${name}: no usable ${name} binary (set OPSCREW_${name.toUpperCase()}_BIN or add it to PATH).`,
@@ -35,26 +33,11 @@ for (const name of runIt ? ["tofu", "terraform"] : []) {
 const template = SERVER_MODULE_FILES["cloud-init.yaml.tftpl"] ?? "";
 
 /**
- * Renders the template the way Terraform's `templatefile` does for this file: keeps or drops the
- * lines of each whole-line `%{ if <bool> ~}` … `%{ endif ~}`, substitutes the string variables
- * and unescapes `$${` / `%%{`. Throws on any other interpolation or directive.
+ * A check key's line with every character JavaScript's `replace` reads in a replacement string
+ * (`$&`, `` $` ``, `$'`, `$1`, `$$`), the HCL template's own (`${`, `%{`), and those `jsonencode`
+ * escapes (`<`, `>`, `&`), as the real line has some of them (`$((s>t?s:t))`, `&&`, `${d%/}`).
  */
-function renderTemplate(source: string, vars: Record<string, string | boolean>): string {
-  const kept = source.replace(
-    /^%\{ if (\w+) ~\}\n([\s\S]*?)^%\{ endif ~\}\n/gm,
-    (_match, name: string, body: string) => {
-      if (typeof vars[name] !== "boolean") throw new Error(`no boolean ${name}`);
-      return vars[name] ? body : "";
-    },
-  );
-  return kept.replace(/(\$\$\{|%%\{|\$\{([^}]*)\}|%\{[^}]*\})/g, (match, _all, name) => {
-    if (match === "$${") return "${";
-    if (match === "%%{") return "%{";
-    const value = typeof name === "string" ? vars[name.trim()] : undefined;
-    if (typeof value === "string") return value;
-    throw new Error(`unexpected template expression ${match}`);
-  });
-}
+const CHECK_LINE = `restrict,command="export LC_ALL=C; df -P -B1 / && echo $((s>t?s:t)) \${d%/} $& $\` $' $1 $$ %{x} <y> 'q'" ${PUBLIC_KEY.split(" ").slice(0, 2).join(" ")} opscrew-check:acme/shop`;
 
 interface WriteFile {
   path: string;
@@ -132,8 +115,7 @@ echo "host keys: $(ssh-keyscan -p 2222 127.0.0.1 2>/dev/null | awk '{ print $2 }
 `;
 }
 
-const VARS = { ssh_public_key: PUBLIC_KEY, check_key_entry: "", web: true };
-const rendered = renderTemplate(template, VARS);
+const rendered = renderCloudInit({ sshPublicKey: PUBLIC_KEY, web: true });
 const config = parse(rendered) as CloudConfig;
 const WEB_RULES = ["ufw allow 80/tcp", "ufw allow 443/tcp", "ufw allow 443/udp"];
 const file = (path: string) => config.write_files.find((f) => f.path === path);
@@ -146,18 +128,31 @@ describe("cloud-init template", () => {
     expect(config.users[0]?.ssh_authorized_keys).toEqual([PUBLIC_KEY]);
   });
 
-  it("adds the scheduled check's line, restricted to df, after the deploy key", () => {
-    const line = `restrict,command="df -P -B1 /" ${PUBLIC_KEY.split(" ").slice(0, 2).join(" ")} opscrew-check:acme/shop`;
-    // As main.tf builds it: a second list item, quoted by jsonencode.
-    const entry = `\n      - ${JSON.stringify(line)}`;
-    const withCheck = renderTemplate(template, { ...VARS, check_key_entry: entry });
+  it("adds the scheduled check's line after the deploy key, as it is, whatever it holds", () => {
+    const withCheck = renderCloudInit({
+      sshPublicKey: PUBLIC_KEY,
+      checkKeyLine: CHECK_LINE,
+      web: true,
+    });
+    // As main.tf builds it: a second list item, quoted by jsonencode (YAML reads its \u escapes).
     expect((parse(withCheck) as CloudConfig).users[0]?.ssh_authorized_keys).toEqual([
       PUBLIC_KEY,
-      line,
+      CHECK_LINE,
     ]);
+    const entry = withCheck.split("\n").find((line) => line.startsWith('      - "restrict,'));
+    expect(entry).toContain("\\u003e");
+    expect(entry).toContain("\\u0026\\u0026");
+    expect(entry).not.toMatch(/[<>&]/);
     // Only that line differs.
-    expect(withCheck.replace(entry, "")).toBe(rendered);
+    expect(withCheck.split("\n").filter((line) => line !== entry)).toEqual(rendered.split("\n"));
+    // No check key, no second line.
+    expect(renderCloudInit({ sshPublicKey: PUBLIC_KEY, checkKeyLine: "", web: true })).toBe(
+      rendered,
+    );
     for (const module of MODULES) {
+      expect(MODULE_FILES[`${module}/main.tf`]).toMatch(
+        /^ {4}ssh_public_key {2}= var\.ssh_public_key$/m,
+      );
       expect(MODULE_FILES[`${module}/main.tf`]).toContain(
         // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL's interpolation, not JavaScript's.
         'check_key_entry = var.check_key_line == "" ? "" : "\\n      - ${jsonencode(var.check_key_line)}"',
@@ -172,7 +167,7 @@ describe("cloud-init template", () => {
     const commands = (text: string) =>
       (parse(text) as CloudConfig).runcmd.map((c) => (Array.isArray(c) ? c.join(" ") : c));
     expect(commands(rendered)).toEqual(expect.arrayContaining(WEB_RULES));
-    const withoutWeb = renderTemplate(template, { ...VARS, web: false });
+    const withoutWeb = renderCloudInit({ sshPublicKey: PUBLIC_KEY, web: false });
     const rest = commands(withoutWeb);
     for (const rule of WEB_RULES) expect(rest).not.toContain(rule);
     // Only those lines differ: SSH stays allowed and ufw is still enabled.
@@ -188,21 +183,40 @@ describe("cloud-init template", () => {
   for (const name of ["tofu", "terraform"] as const) {
     const engine = engines.find((d) => d.name === name && d.supported);
     it.skipIf(!engine)(
-      `renders as ${name}'s templatefile does, with and without the web`,
+      `renders byte for byte as the modules' templatefile does with ${name}`,
       async () => {
+        // A root with the modules' own expression; the values come from terraform.tfvars.json, so
+        // the check key's line reaches the engine exactly.
         const dir = mkdtempSync(join(tmpdir(), `opscrew-cloud-init-${name}-`));
+        const expression =
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL's interpolation, not JavaScript's.
+          'base64encode(templatefile("t.tftpl", { ssh_public_key = var.key, check_key_entry = var.check_key_line == "" ? "" : "\\n      - ${jsonencode(var.check_key_line)}", web = var.web }))';
         try {
           writeFileSync(join(dir, "t.tftpl"), template);
+          writeFileSync(
+            join(dir, "variables.tf"),
+            ["key", "check_key_line"]
+              .map((v) => `variable "${v}" {\n  type = string\n}\n`)
+              .concat('variable "web" {\n  type = bool\n}\n')
+              .join("\n"),
+          );
           for (const web of [true, false]) {
-            const result = await new NodeCommandRunner().run(engine?.binary ?? name, ["console"], {
-              cwd: dir,
-              input: `base64encode(templatefile("t.tftpl", { ssh_public_key = ${JSON.stringify(PUBLIC_KEY)}, check_key_entry = "", web = ${web} }))\n`,
-            });
-            expect(result.exitCode, result.stderr).toBe(0);
-            const base64 = /"([A-Za-z0-9+/=]+)"/.exec(result.stdout)?.[1] ?? "";
-            expect(Buffer.from(base64, "base64").toString("utf8")).toBe(
-              renderTemplate(template, { ...VARS, web }),
-            );
+            for (const line of ["", CHECK_LINE]) {
+              writeFileSync(
+                join(dir, "terraform.tfvars.json"),
+                JSON.stringify({ key: PUBLIC_KEY, check_key_line: line, web }),
+              );
+              const result = await new NodeCommandRunner().run(
+                engine?.binary ?? name,
+                ["console"],
+                { cwd: dir, input: `${expression}\n` },
+              );
+              expect(result.exitCode, result.stderr).toBe(0);
+              const base64 = /"([A-Za-z0-9+/=]+)"/.exec(result.stdout)?.[1] ?? "";
+              expect(Buffer.from(base64, "base64").toString("utf8")).toBe(
+                renderCloudInit({ sshPublicKey: PUBLIC_KEY, checkKeyLine: line, web }),
+              );
+            }
           }
         } finally {
           rmSync(dir, { recursive: true, force: true });

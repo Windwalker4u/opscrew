@@ -16,19 +16,21 @@ import {
   MOVE_WAITING,
   type RenderedFile,
   ROLLBACK_INPUTS,
+  renderCloudInit,
   serverDeploySecrets,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
   isCloudProvider,
+  isCloudTarget,
   monitoringServerName,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { checkReachesOverSsh } from "../check/provision";
+import { checkReachesOverSsh, renderedCheckKeyLine } from "../check/provision";
 import { orderPageBackupsText, orderPageProviders } from "../design/backups";
 import { workflowBranch } from "../environments/branches";
-import { providerProfile } from "../providers";
+import { providerProfile, vpsConnector } from "../providers";
 import {
   buildAppEnvironment,
   deploySecrets,
@@ -44,6 +46,7 @@ import { PORTAINER_SECRETS_RECORD, portainerDeploySecrets } from "../provision/s
 import {
   continuesHint,
   knownHostsName,
+  type NewServerRepair,
   readServerAddresses,
   readValidJson,
   readyNewServer,
@@ -161,16 +164,55 @@ export async function renameStep(session: MoveSession): Promise<RetargetResult |
   return undefined;
 }
 
-/** Waits for SSH on the new server, pins its host key and waits for its first-boot setup. */
-async function waitForNewServer(session: MoveSession, host: string): Promise<void> {
-  const profile = providerProfile(moveProvider(session.plan.target));
-  await readyNewServer(session.deps, {
+/** The provider's id of each server in the root's `servers` output, by provider. */
+const ServerIdsSchema = z.record(z.string(), z.looseObject({ id: z.string().min(1).optional() }));
+
+/**
+ * Waits for SSH on the new server, pins its host key and waits for its first-boot setup. The new
+ * server holds nothing before the move deploys to it, so a failed first boot is repaired through
+ * its provider (FR-3109) when the outputs give its id.
+ */
+async function waitForNewServer(
+  session: MoveSession,
+  host: string,
+  outputs: Record<string, unknown>,
+): Promise<void> {
+  const { deps, plan } = session;
+  const provider = moveProvider(plan.target);
+  const profile = providerProfile(provider);
+  const ids = ServerIdsSchema.safeParse(outputs.servers);
+  const serverId = ids.success ? ids.data[provider]?.id : undefined;
+  const target = plan.target;
+  const repair: NewServerRepair | undefined =
+    serverId === undefined || !isCloudTarget(target)
+      ? undefined
+      : {
+          servers: session.services.servers?.[provider] ?? vpsConnector(provider, deps).servers,
+          serverId,
+          app: plan.app.name,
+          image: target.image,
+          // As the create step's files render it: the new server serves the web.
+          userData: async () =>
+            renderCloudInit({
+              sshPublicKey: session.deployKey.publicKeyOpenSsh.trim(),
+              checkKeyLine: await renderedCheckKeyLine(
+                deps,
+                plan,
+                `${session.github.owner}/${session.github.repo}`,
+              ),
+              web: true,
+            }),
+          command: session.command,
+          script: `run \`${session.command} --confirm ${plan.app.name}\``,
+        };
+  await readyNewServer(deps, {
     host,
     server: `new ${profile.serverNoun}`,
     profile,
     keyFile: session.deployKey.privateKeyFile,
     again: `${continuesHint(RUN_COMMAND)} To remove the new ${profile.serverNoun} instead, run \`${ABORT_COMMAND}\`.`,
     services: session.services,
+    ...(repair !== undefined ? { repair } : {}),
   });
 }
 
@@ -228,7 +270,7 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     await savePlan(session, { ...session.plan, ...withApply(session.plan, outcome, at) });
     await recordAdopted(session);
   }
-  await waitForNewServer(session, next.ipv4);
+  await waitForNewServer(session, next.ipv4, outcome.outputs);
   // The new bucket, when the move takes the bucket along.
   const bucketStop = await createBucket(session);
   return bucketStop;

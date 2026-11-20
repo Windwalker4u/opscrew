@@ -13,12 +13,14 @@ import {
 import {
   additionsPath,
   appServerVariables,
+  type CloudInitInputs,
   checkEnvironmentKey,
   edgeMemoryMb,
   edgeProxy,
   homeMode,
   previewRecipeDir,
   renderBackups,
+  renderCloudInit,
   renderStorage,
   rootMainFile,
   usesTunnel,
@@ -83,7 +85,7 @@ import {
   requireServerForPreviews,
   staleSharedEdge,
 } from "../previews/setup";
-import { type ProviderProfile, planProvider, providerProfile } from "../providers";
+import { type ProviderProfile, planProvider, providerProfile, vpsConnector } from "../providers";
 import {
   applyCloudRunner,
   checkCloudRunner,
@@ -107,6 +109,7 @@ import {
   hidesServerAddress,
   infrastructureOutputs,
   localhostNotSupported,
+  type NewServerRepair,
   networkReach,
   type PlanApproval,
   readServerAddresses,
@@ -1486,6 +1489,13 @@ async function provisionFlow(
     // 7. Wait for the server and pin its SSH host key (over the private network once public SSH
     // is closed, where the deploy reaches it then).
     const network = await networkReach(deps, plan, APP_SERVER, ipv4, services.remote);
+    const repair = appServerRepair(deps, plan, {
+      phase,
+      outputs: applied.outputs,
+      services,
+      firstBoot: { sshPublicKey: ctx.deploySshPublicKey.trim(), checkKeyLine: ctx.checkKeyLine },
+      command: rerun,
+    });
     const pinned = await readyNewServer(deps, {
       host: ipv4,
       server: "server",
@@ -1494,6 +1504,7 @@ async function provisionFlow(
       again: continuesHint(command),
       services,
       ...(network !== undefined ? { network } : {}),
+      ...(repair !== undefined ? { repair } : {}),
     });
     secretsTarget = { host: network?.host ?? ipv4, knownHosts: pinned.knownHostsLines };
     // 7b. The server's runner (or its removal): its own host plan, as deploy.
@@ -2102,6 +2113,49 @@ export async function runProvision(
     flow,
     liftConfirmedBy === undefined ? {} : { liftConfirmedBy },
   );
+}
+
+/**
+ * The repair of the app's server when its first boot fails (FR-3109): only in `opscrew provision`,
+ * before the app's first deploy (the server holds nothing yet), with the server's id from the
+ * infrastructure outputs, the image it was created from and the first-boot file its module
+ * renders from `firstBoot`. None otherwise.
+ */
+function appServerRepair(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: {
+    phase: ProvisionPhase;
+    outputs: Record<string, unknown>;
+    services: Pick<ProvisionServices, "provider">;
+    firstBoot: Omit<CloudInitInputs, "web">;
+    command: string;
+  },
+): NewServerRepair | undefined {
+  const serverId = stringOutput(input.outputs, "server_id");
+  const { target } = plan;
+  if (
+    input.phase !== "provision" ||
+    plan.deployment.firstDeployAt !== undefined ||
+    serverId === undefined ||
+    !isCloudTarget(target)
+  ) {
+    return undefined;
+  }
+  return {
+    servers:
+      input.services.provider !== undefined
+        ? input.services.provider.servers
+        : vpsConnector(target.provider, deps).servers,
+    serverId,
+    app: plan.app.name,
+    image: target.image,
+    // The app's server serves the web, as its module's `web` defaults to.
+    userData: async () => renderCloudInit({ ...input.firstBoot, web: true }),
+    command: input.command,
+    // A script's `--confirm` without `--approve` only plans: the approving run names the plan.
+    script: `run \`${input.command} --plan-only\`, then \`${input.command} --approve <the hash it prints> --confirm ${plan.app.name}\``,
+  };
 }
 
 /** The plans of leaving home a `--plan-only` run names for its approval command. */

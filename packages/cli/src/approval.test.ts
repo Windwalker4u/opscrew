@@ -6,7 +6,9 @@ import {
   InteractiveApprovalHandler,
   MaintenanceWindowApproval,
   NonInteractiveApprovalHandler,
+  withServerRepair,
 } from "./approval";
+import type { CliContext } from "./context";
 
 const HASH = "ab".repeat(32);
 const OTHER = "cd".repeat(32);
@@ -584,5 +586,59 @@ describe("MaintenanceWindowApproval (--allow-downtime)", () => {
 
   it("leaves the window to the terminal's question", async () => {
     expect((await handler(true).request(window)).approver).toBe("base");
+  });
+});
+
+describe("withServerRepair (a new server's restart or install, --confirm <app>)", () => {
+  const install: ApprovalRequest = {
+    kind: "remote-exec",
+    title: "Install the new Contabo server shop again",
+    details:
+      "The server at 203.0.113.10 did not finish its first-boot setup: the package install failed.",
+    allowDestroy: true,
+    confirmPhrase: "shop",
+  };
+  const restart: ApprovalRequest = {
+    kind: "remote-exec",
+    title: "Restart the new Contabo server shop",
+    details: "The server at 203.0.113.10 did not open SSH within 5 minutes.",
+    confirmPhrase: "shop",
+  };
+  const handler = (names: string[], interactive = false) => {
+    const printed: string[] = [];
+    const ctx = { isInteractive: interactive, stdout: (text: string) => printed.push(text) };
+    return {
+      printed,
+      handler: withServerRepair(ctx as unknown as CliContext, names, base, clock),
+    };
+  };
+
+  it("approves both with --confirm <app> in a script, showing what it approves", async () => {
+    const { handler: confirmed, printed } = handler(["shop"]);
+    for (const request of [install, restart]) {
+      expect(await confirmed.request(request)).toMatchObject({
+        approved: true,
+        confirmation: "shop",
+        approver: "--approve and --confirm flags",
+      });
+    }
+    expect(printed.join("")).toContain(install.details);
+    expect(printed.join("")).toContain(
+      "✓ Install the new Contabo server shop again (confirmed with --confirm shop)",
+    );
+  });
+
+  it("refuses them in a script without --confirm, naming the flag", async () => {
+    const decision = await handler([]).handler.request(install);
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe(
+      "repairing the new server needs shop typed to confirm: add --confirm shop, or run the command in a terminal",
+    );
+  });
+
+  it("leaves a terminal's question and every other request to the base handler", async () => {
+    expect((await handler([], true).handler.request(install)).approver).toBe("base");
+    const hostKey = { ...restart, title: "Trust the server's new SSH host key" };
+    expect((await handler(["shop"]).handler.request(hostKey)).approver).toBe("base");
   });
 });

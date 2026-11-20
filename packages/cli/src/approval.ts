@@ -1,6 +1,10 @@
 import { userInfo } from "node:os";
 import { confirm, isCancel, text } from "@clack/prompts";
-import { approvalRequestLines, isMaintenanceWindowRequest } from "@opscrew/agents";
+import {
+  approvalRequestLines,
+  isMaintenanceWindowRequest,
+  isNewServerRepairRequest,
+} from "@opscrew/agents";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -435,4 +439,31 @@ export class FlagConfirmation implements ApprovalHandler {
     }
     return this.base.request(request);
   }
+}
+
+/**
+ * Answers the repair of a new server whose first boot failed (`isNewServerRepairRequest`: its
+ * restart, or its install again), which needs the app's name: one of the `--confirm` values
+ * (`names`) approves it, a script without it is refused with the flag to add, and a terminal asks
+ * for the name. Every other request goes to `base`.
+ */
+export function withServerRepair(
+  ctx: CliContext,
+  names: readonly string[],
+  base: ApprovalHandler,
+  clock: Clock,
+): ApprovalHandler {
+  const typed = new FlagConfirmation(base, {
+    kinds: ["remote-exec"],
+    what: "repairing the new server",
+    names,
+    hashes: [],
+    interactive: ctx.isInteractive,
+    print: ctx.stdout,
+    clock,
+    showInScript: true,
+  });
+  return {
+    request: (request) => (isNewServerRepairRequest(request) ? typed : base).request(request),
+  };
 }

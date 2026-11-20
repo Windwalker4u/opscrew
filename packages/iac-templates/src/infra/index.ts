@@ -55,6 +55,7 @@ import {
 } from "./servers";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
+export { type CloudInitInputs, renderCloudInit } from "./cloud-init";
 export {
   accountVariables,
   CLOUDFLARE_MODULE_NAMES,
