@@ -220,8 +220,10 @@ each piece of data with its size):
 6. The services start on the new side and PostgreSQL is restored.
 7. On a server, the deploy workflow runs there with the image its first deploy left, without a
    build: the release command runs on the copied data, then the app, its workers and cron jobs
-   start. In your Portainer, the release command runs and the app starts. Either way the app must
-   answer its health check, and on a server its web server stays stopped until the switch.
+   start. Your domain still leads to the old side, so the run skips its check through the domain
+   and OpsCrew checks the app's health on the server itself; its web server stays stopped until
+   the switch, unless other apps there use it. In your Portainer, the release command runs, the
+   app starts and must answer its health check.
 
 If anything fails, the window rolls back: the data written on the new side is emptied, a server's
 deploys there go back to bringing up only the image and the services, the old side's services and

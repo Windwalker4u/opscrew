@@ -23,7 +23,7 @@ import { sshArgs } from "../../shared";
 import type { MoveServer } from "../removal";
 import {
   isAppHealthy,
-  markWaiting,
+  markMove,
   readDeployed,
   reloadEdge,
   requireServicesUp,
@@ -329,10 +329,12 @@ export function sshSide(input: SshSideInput): SshSideParts {
       return undefined;
     },
 
-    async waitForData(session, waiting) {
+    async markMove(session, marker) {
       const remote = await remoteOf(session);
-      await inWords(session, () => markWaiting(remote, waiting, opsOf(session)));
+      await inWords(session, () => markMove(remote, marker, opsOf(session)));
     },
+
+    sharesEdge: edgeShared,
 
     async deployed(session) {
       const remote = await remoteOf(session);

@@ -85,7 +85,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(ops(h, n, "services up?")).toBe(1);
       expect(h.hosts.host(n)).toMatchObject({
         app: true,
-        waiting: false,
+        marker: undefined,
         db: "orders before the move (migrated)",
         image: BUILT_IMAGE,
         outcome: "finished",
@@ -99,6 +99,42 @@ describe.skipIf(!findExecutable("git"))(
       await expectNoLeak(h, [stopped.message, stopped.hint ?? ""]);
     });
 
+    it("no deploy run of the move checks the app from outside, which still leads to the old side", async () => {
+      const h = await moveHarness({ release: true });
+      const checked: string[] = [];
+      const check = h.github.checkFromOutside;
+      h.github.checkFromOutside = (host) => {
+        checked.push(host);
+        return check(host);
+      };
+      // The runs wait for a required reviewer: the move says where to approve them.
+      h.github.reviewer = true;
+      expect(await run(h)).toMatchObject({ step: "switched", done: true });
+      // The deploy before the copy left only the services; the window's started the app on its
+      // copied data and left the check to the move, over SSH.
+      expect(checked).toEqual([]);
+      expect(h.github.runs).toHaveLength(2);
+      expect(h.reporter.text()).toContain(
+        "The deploy run waits in GitHub for a required reviewer: approve it at https://github.com/acme/shop/actions/runs/99.",
+      );
+    });
+
+    it("a window whose deploy checked the app from outside would fail: the domain leads to the stopped old app", async () => {
+      const h = await moveHarness({ release: true });
+      const n = h.newServer.ipv4;
+      // As if the window took the marker away instead of saying the data is copied.
+      h.hosts.fail = (ip, op) => {
+        if (ip !== n || op !== "mark copied") return undefined;
+        h.hosts.host(n).marker = undefined;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      };
+      const error = await caught(run(h));
+      expect(error.message).toContain(
+        "The maintenance window failed: The deploy workflow did not succeed (failure)",
+      );
+      expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    });
+
     it("a script stops before the window with the new server waiting for the data, and --abort removes it", async () => {
       const h = await moveHarness({ interactive: false, release: true });
       const n = h.newServer.ipv4;
@@ -106,7 +142,7 @@ describe.skipIf(!findExecutable("git"))(
       const stopped = await drive(h);
       expect(stopped.step).toBe("deployed");
       expect(stopped.next.join(" ")).toContain("--allow-downtime");
-      expect(h.hosts.host(n)).toMatchObject({ app: false, waiting: true, db: "empty" });
+      expect(h.hosts.host(n)).toMatchObject({ app: false, marker: "waiting", db: "empty" });
       expect(ops(h, n, "release")).toBe(0);
       expect(ops(h, n, "health")).toBe(0);
       // The deploy secrets pointed there after the marker: a push deploys only the services too.

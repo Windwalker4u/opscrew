@@ -107,6 +107,7 @@ export {
 } from "./workflow/snapshots";
 export {
   FAILED_DEPLOY_DIR,
+  MOVE_COPIED,
   MOVE_WAITING,
   RESTORE_HELD,
   ROTATION_HOLDER,

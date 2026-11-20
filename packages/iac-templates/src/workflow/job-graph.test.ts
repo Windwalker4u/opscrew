@@ -395,6 +395,23 @@ describe("a server environment that follows its branch (S3)", () => {
     expect(ran(flow, ROLLBACK_PAUSED)).toEqual(["deploy", "label", "verify"]);
   });
 
+  it("FR-3027: skips the check from outside after a deploy a move's marker held or that started the app on its copied data", () => {
+    const health = jobs.deploy?.steps.find((s) => s.id === "health");
+    // The step's outputs as the start step writes them.
+    const runs = (outputs: Record<string, Value>) =>
+      truthy(
+        evaluate(`success() && (${inner(health?.if ?? "")})`, {
+          contexts: { steps: { start: { outputs } } },
+          success: true,
+          failure: false,
+        }),
+      );
+    expect(runs({})).toBe(true);
+    expect(runs({ waiting: "true" })).toBe(false);
+    // The window's deploy: the domain still leads to the stopped old side; the move checks itself.
+    expect(runs({ moved: "true" })).toBe(false);
+  });
+
   it("FR-3027: deploys a move's digest in its window without a build, paused for the move", () => {
     expect(ran(flow, MOVE)).toEqual(["deploy", "label", "verify"]);
     expect(ran(flow, MOVE_PAUSED)).toEqual(["deploy", "label", "verify"]);

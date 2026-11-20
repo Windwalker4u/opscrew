@@ -194,7 +194,7 @@ export async function pairHarness(from: MoveSideKind, to: MoveSideKind, options:
   // deploy secrets point there for the window's deploy. Its edge is stopped.
   if (newHost === PORTAINER) h.hosts.seed(PORTAINER, {}, true);
   else {
-    h.hosts.host(newHost).waiting = stepBefore(step, "migrated");
+    h.hosts.host(newHost).marker = stepBefore(step, "migrated") ? "waiting" : undefined;
     h.hosts.deploy(newHost);
     Object.assign(h.hosts.host(newHost), { caddy: false });
     h.github.secrets.set("OPSCREW_HOST", newHost);

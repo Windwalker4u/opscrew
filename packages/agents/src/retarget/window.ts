@@ -15,6 +15,7 @@ import { changeCheckPause } from "../check/pause";
 import { failureReason } from "../destroy/deletion";
 import { commandFlags } from "../environments/choice";
 import { withDeploysPaused } from "../move/deploys";
+import { shortImage } from "../rollback/versions";
 import { pollUntil, readServerAddresses, readValidJson, type ServerAddress } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { deployPauseOf, rotationPauseRefusal } from "../shared/deploy-pause";
@@ -28,6 +29,7 @@ import {
   movingBucket,
   syncMinutes,
 } from "./bucket";
+import type { DeployedState } from "./server-ops";
 import { assertDistinctServers } from "./servers";
 import {
   auditMove,
@@ -50,7 +52,7 @@ import {
   restoreCheckedDump,
 } from "./sides/postgres";
 import type { MoveSide, SideDocker, SideSource } from "./sides/types";
-import { runDeployWorkflow } from "./steps";
+import { markerWorkflowStop, runDeployWorkflow } from "./steps";
 import {
   ABORT_COMMAND,
   approveCommand,
@@ -202,8 +204,8 @@ async function postgresOn(
 
 /**
  * The approval's list of what the window does, on both sides (never an address). On a server the
- * new side's deploy of `image` (its digest) starts the app; in Portainer its release container and
- * its start.
+ * new side's deploy of `image` (its digest) starts the app, and its edge stays stopped until the
+ * switch unless other apps share it (`edgeStays`); in Portainer its release container and its start.
  */
 function windowCommands(
   session: MoveBase,
@@ -211,6 +213,7 @@ function windowCommands(
   minutes: number,
   bucket: MovingBucket | undefined,
   image: string | undefined,
+  edgeStays: boolean,
 ): string[] {
   const { plan } = session;
   const move = moveOf(session);
@@ -231,8 +234,8 @@ function windowCommands(
         ]
       : [
           ...(window.postgres !== undefined ? ["  remove the dump volume (on both sides)"] : []),
-          `  run the deploy workflow (${posix.basename(plan.cicd.workflowPath)} on ${plan.cicd.branch}) with the image deployed there (${shortDigest(image)}), without a build: ${plan.app.releaseCommand !== undefined ? "it runs the release command (app.releaseCommand) on the copied data, then starts" : "it starts"} the app, its workers and cron`,
-          "  check the app's health route, and keep its web server stopped until the switch",
+          `  run the deploy workflow (${posix.basename(plan.cicd.workflowPath)} on ${plan.cicd.branch}) with the image deployed there (${shortImage(image)}), without a build: ${plan.app.releaseCommand !== undefined ? "it runs the release command (app.releaseCommand) on the copied data, then starts" : "it starts"} the app, its workers and cron`,
+          `  check the app's health route on the server${edgeStays ? "" : ", and keep its web server stopped until the switch"}`,
         ];
   return [
     `About ${minutes} minutes for ${sizeText(window.bytes)} of data, copied through this computer.`,
@@ -271,23 +274,17 @@ function windowCommands(
   ];
 }
 
-/** An image's digest (`sha256:…`), from its reference by digest. */
-function digestOf(image: string): string {
-  return image.slice(image.indexOf("@") + 1);
-}
-
-/** An image's digest, shortened: `sha256:` and its first 12 hex digits. */
-function shortDigest(image: string): string {
-  return digestOf(image).slice(0, "sha256:".length + 12);
-}
-
 /**
- * The image the new side's deploy left (`.env`, a server's), which its deploy in the window puts
- * on the copied data; none for Portainer's side. Stops before any change when `.env` names none.
+ * The image the new side's deploy left (`.env`, a server's: `deployed`), which its deploy in the
+ * window puts on the copied data; none for Portainer's side. Stops before any change when `.env`
+ * names none.
  */
-async function imageForWindow(session: MoveBase, fresh: MoveSide): Promise<string | undefined> {
-  if (fresh.deployed === undefined) return undefined;
-  const { image } = await fresh.deployed(session);
+function imageForWindow(
+  session: MoveBase,
+  deployed: DeployedState | undefined,
+): string | undefined {
+  if (deployed === undefined) return undefined;
+  const { image } = deployed;
   if (image !== undefined) return image;
   const words = sideWords(session.plan.target, "new");
   throw new OpsCrewError(
@@ -339,14 +336,17 @@ async function copyMount(
  * is dumped into the dump volume while it still runs → the old services stop → the new app and
  * services stop → each mount is copied with the carrier (digest, read, write, digest; the digests
  * must match), and the dump volume → the new services start → Postgres is recreated and restored
- * → on a server, the dump volumes go and the move's marker too, then the deploy workflow's run with
- * the image the new side's deploy left (FR-3027) runs the release command on the copied data and
- * starts the app, and the edge stops again until the switch; in Portainer, the release command
- * runs, the dump volumes go and the app starts → the new app answers → `migrated`. Any failure
- * empties the mounts written on the new side, removes the dump volumes, stops the new side's app
- * and services (on a server its marker back and its edge stopped), then starts the old side's
- * services and app, and stops with the cause: the step stays `deployed`. Nothing to copy: no
- * window (`done` at once).
+ * → on a server, the dump volumes go and the move's marker says `copied`, so the deploy
+ * workflow's run with the image the new side's deploy left (FR-3027) runs the release command on
+ * the copied data and starts the app, its check from outside skipped (the domain still leads to
+ * the old side); the edge stops again until the switch, the app answers on the server, then the
+ * marker goes; in Portainer, the release command runs, the dump volumes go, the app starts and
+ * answers → `migrated`. Any failure empties the mounts written on the new side, removes the dump
+ * volumes, stops the new side's app and services (on a server its marker back to waiting and its
+ * edge stopped), then starts the old side's services and app, and stops with the cause: the step
+ * stays `deployed`. On a server, the window first needs GitHub's workflow to know the marker, or
+ * stops with its pull request. Nothing to copy: no window (`done` at once), but a server's deploy
+ * that waits for data starts the app with {@link startWithoutCopy}.
  */
 export async function maintenanceWindow(
   session: MoveSession,
@@ -366,9 +366,18 @@ export async function maintenanceWindow(
   deps.reporter.step(`Measuring the app's data on ${oldWords}`);
   const window = await planWindow(session, old, fresh);
   const bucket = movingBucket(plan);
-  if (window.copies.length === 0 && window.postgres === undefined && bucket === undefined) {
-    return "done";
+  // A server's new side starts the app with a deploy of the image its deploy left there, which
+  // needs a deploy workflow on GitHub that knows the move's marker (FR-3027).
+  const deployed = await fresh.deployed?.(session);
+  if (deployed !== undefined) {
+    const stop = await markerWorkflowStop(session);
+    if (stop !== undefined) return stop;
   }
+  const nothing =
+    window.copies.length === 0 && window.postgres === undefined && bucket === undefined;
+  // A deploy that waits for data starts the app anyway, with a deploy of its own.
+  const waiting = deployed?.waiting === true ? deployed.image : undefined;
+  if (nothing && waiting === undefined) return "done";
   // A credential rotation's pause holds the deploys until it ends; the window's would end it.
   const paused = await deployPauseOf(session.github, plan);
   if (paused?.reason === "rotation") {
@@ -380,6 +389,10 @@ export async function maintenanceWindow(
       why: `and the maintenance window needs the app's deploys. Nothing was changed; the app on ${oldWords} keeps running.`,
       command: RUN_COMMAND,
     });
+  }
+  if (nothing && waiting !== undefined) {
+    await startWithoutCopy(session, fresh, waiting);
+    return "done";
   }
   // The database's logins and the buckets' keys, before anything is asked or changed.
   const db = window.postgres;
@@ -393,8 +406,8 @@ export async function maintenanceWindow(
     bucket === undefined || keys === undefined
       ? undefined
       : { keys, minutes: syncMinutes((await measureBucket(session, bucket, keys.old)).count) };
-  // A server's new side starts the app with its deploy, of the image its deploy left there.
-  const image = await imageForWindow(session, fresh);
+  const image = imageForWindow(session, deployed);
+  const edgeStays = image !== undefined && ((await fresh.sharesEdge?.(session)) ?? false);
   const minutes =
     windowMinutes(window.bytes, old.kind === "portainer" || fresh.kind === "portainer") +
     (sync?.minutes ?? 0) +
@@ -428,7 +441,7 @@ export async function maintenanceWindow(
     kind: "remote-exec",
     title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on ${oldWords} and copy its data (${sizeText(window.bytes)}) to ${freshWords} (${byHand ? `downtime: ${downtime} for the copy, plus ${plan.dns.domain !== undefined ? "your DNS change" : "your users' move to the new address"}` : `${downtime} of downtime`})`,
     details: [
-      ...windowCommands(session, window, minutes, bucket, image),
+      ...windowCommands(session, window, minutes, bucket, image, edgeStays),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),
   });
@@ -527,7 +540,7 @@ async function runWindow(
     await auditMove(session, { kind: "remote-exec", action, target: where, decision: "approved" });
   };
   /** What the window changed on the new side so far: a rollback undoes it. */
-  const changed: Changed = { written: [], restoring: false, released: false };
+  const changed: Changed = { written: [], restoring: false, copied: false };
   const app = plan.app.name;
   try {
     deps.reporter.step(`Stopping ${app} on ${oldWords}`);
@@ -597,52 +610,91 @@ async function runWindow(
       await removeDumps();
       deps.reporter.step(`Starting the app on ${freshWords}`);
       await audited("start app", freshWords, () => fresh.startApp(session));
+      await waitHealthy(session, fresh);
     } else {
       await removeDumps();
-      await deployOnCopiedData(session, { fresh, image, changed, audited });
+      await startOnData(session, { fresh, image, changed, audited });
     }
-    await waitHealthy(session, fresh);
   } catch (error) {
     throw await rollBackWindow(session, error, { ...ctx, freshServices, changed });
   }
 }
 
+/** Runs `run`, then records `action` on `where` in the audit log. */
+type Audited = (action: string, where: string, run: () => Promise<void>) => Promise<void>;
+
 /**
- * A server's new side, once its data is there (FR-3027): the marker that held the app goes, so the
- * deploy workflow's run with `image`'s digest (no build, and not a rollback) runs the release command
- * on the copied data, switches to the app and starts its workers and cron. Its start of the edge is
- * undone: the edge stays stopped until the switch, as the move's deploy step left it.
+ * A server's new side, once its data is there (FR-3027): the move's marker says `copied`, so the
+ * deploy workflow's run with `image`'s digest (no build, and not a rollback) runs the release
+ * command on that data, switches to the app and starts its workers and cron, and leaves the check
+ * to the move: the app's domain still leads to the old side. Its start of the edge is undone (the
+ * edge stays stopped until the switch, as the move's deploy step left it), the app must answer on
+ * the server, and only then does the marker go. `changed.copied` says the marker moved on.
  */
-async function deployOnCopiedData(
+async function startOnData(
   session: MoveSession,
-  ctx: {
-    fresh: MoveSide;
-    image: string;
-    changed: Changed;
-    audited: (action: string, where: string, run: () => Promise<void>) => Promise<void>;
-  },
+  ctx: { fresh: MoveSide; image: string; changed: Pick<Changed, "copied">; audited: Audited },
 ): Promise<void> {
   const { fresh, image, changed, audited } = ctx;
   const words = sideWords(session.plan.target, "new");
-  changed.released = true;
-  await audited("let the deploys start the app", words, async () =>
-    fresh.waitForData?.(session, false),
+  changed.copied = true;
+  await audited("let the deploys start the app on its data", words, async () =>
+    fresh.markMove?.(session, "copied"),
   );
   await runDeployWorkflow(session, {
-    inputs: { [ROLLBACK_INPUTS.digest]: digestOf(image), [ROLLBACK_INPUTS.rollback]: "false" },
-    purpose: `with the image deployed on ${words} (${shortDigest(image)}), on the copied data`,
-    still: `It ran on ${words}, on the copy of the data only.`,
+    inputs: {
+      [ROLLBACK_INPUTS.digest]: image.slice(image.indexOf("@") + 1),
+      [ROLLBACK_INPUTS.rollback]: "false",
+    },
+    purpose: `with the image deployed on ${words} (${shortImage(image)}), on its data`,
+    still: `It ran on ${words} only; your users' data on ${sideWords(moveOf(session).from.target, "old")} is untouched.`,
     hint: `Open the run to see which step failed (the release command's output stays on ${words}, in release.log in the app's folder) and push a fix.`,
   });
   await fresh.stopEdge(session);
+  await waitHealthy(session, fresh);
+  await audited("remove the move's marker", words, async () =>
+    fresh.markMove?.(session, undefined),
+  );
+}
+
+/**
+ * A server's new side whose deploy waits for data the window found nothing of, with `image`: it
+ * starts the app there with {@link startOnData}, with no downtime, as the old side keeps serving.
+ * A failure leaves the deploys there waiting again.
+ */
+async function startWithoutCopy(
+  session: MoveSession,
+  fresh: MoveSide,
+  image: string,
+): Promise<void> {
+  const words = sideWords(session.plan.target, "new");
+  session.deps.reporter.info(
+    `There is no data to copy after all, so OpsCrew starts the app on ${words} with its deploy; the app on ${sideWords(moveOf(session).from.target, "old")} keeps serving meanwhile.`,
+  );
+  const changed = { copied: false };
+  const audited: Audited = async (action, where, run) => {
+    await run();
+    await auditMove(session, { kind: "remote-exec", action, target: where, decision: "approved" });
+  };
+  try {
+    await startOnData(session, { fresh, image, changed, audited });
+  } catch (error) {
+    if (changed.copied) {
+      const clean = await withoutAddresses(session);
+      await quietly(session, clean, `hold the app on ${words} for its data again`, async () =>
+        fresh.markMove?.(session, "waiting"),
+      );
+    }
+    throw error;
+  }
 }
 
 /** What a window changed on the new side so far. */
 interface Changed {
   /** The new side's mounts that may hold part of a copy. */
   written: MountCopy[];
-  /** A server's marker is gone: the app's deploys there may start it. */
-  released: boolean;
+  /** A server's marker no longer holds the app: its deploys there may start it. */
+  copied: boolean;
   /** The restore began: the new side's database may hold part of the copy. */
   restoring: boolean;
 }
@@ -724,12 +776,12 @@ async function quietly(
 
 /**
  * Undoes a failed window and returns the error to throw (with the cause and the next step): the
- * new side's app and services stop (Postgres keeps running), a server's marker goes back once it
- * was removed, with its edge stopped again (the deploy may have started it), the mounts written
- * so far are emptied and the database recreated empty when its restore began, so nothing of a
- * part copy stays there; they stay stopped until the window runs again. Both dump volumes go, then the old
- * side's services and app start (SC-2302: the old side's data was only read). Every text names
- * the sides in words, never their addresses.
+ * new side's app and services stop (Postgres keeps running), a server's marker holds the app again
+ * once it said `copied`, with its edge stopped again (the deploy may have started it), the mounts
+ * written so far are emptied and the database recreated empty when its restore began, so nothing
+ * of a part copy stays there; they stay stopped until the window runs again. Both dump volumes go,
+ * then the old side's services and app start (SC-2302: the old side's data was only read). Every
+ * text names the sides in words, never their addresses.
  */
 async function rollBackWindow(
   session: MoveSession,
@@ -765,9 +817,9 @@ async function rollBackWindow(
     await fresh.stopServices(session, ctx.freshServices);
   });
   // The deploys there wait for the data again, with the web server stopped as before the window.
-  if (ctx.changed.released) {
+  if (ctx.changed.copied) {
     await quietly(session, clean, `hold the app on ${freshWords} for its data again`, async () =>
-      fresh.waitForData?.(session, true),
+      fresh.markMove?.(session, "waiting"),
     );
     await quietly(session, clean, `stop the web server on ${freshWords}`, () =>
       fresh.stopEdge(session),

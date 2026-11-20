@@ -14,6 +14,8 @@ import { NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import {
   type EdgeFiles,
+  MOVE_COPIED,
+  MOVE_COPIED_NOTICE,
   MOVE_WAITING,
   MOVE_WAITING_NOTICE,
   rollbackCommands,
@@ -388,16 +390,41 @@ describe.skipIf(!shWorks())(
       expect(route("shop")).toBeUndefined();
       expect(existsSync(`${appsDir()}/shop/.failed-deploy`)).toBe(false);
 
-      // Once the move removed the marker, the deploy switches to a copy of the app beside the one
-      // created for its volumes, which goes.
-      rmSync(`${appsDir()}/shop/${MOVE_WAITING}`);
+      // A rollback has no version here to go back to: it changes nothing.
+      const rollback = runSh(
+        switchCommands(plan, [], localFiles("shop.localhost")),
+        [OLD, "rollback"],
+        {
+          WORK: work,
+          OPSCREW_APPS_DIR: appsDir(),
+          OPSCREW_EDGE_DIR: edgeDir(),
+        },
+      );
+      expect(rollback.status).toBe(1);
+      expect(rollback.output).toContain(
+        "::error::A move to this server waits for the app's data (opscrew retarget), so the app never ran here",
+      );
+      expect(read(`${appsDir()}/shop/.env`)).toBe(`APP_IMAGE=${IMAGE}\n`);
+      // Only the exit's registry logout ran.
+      expect(read(`${work}/docker.log`)).toBe(`${docker}docker logout ghcr.io\n`);
+
+      // Once the move copied the data, the deploy switches to a copy of the app beside the one
+      // created for its volumes, which goes, and says the move checks it.
+      write(`${appsDir()}/shop/${MOVE_WAITING}`, `${MOVE_COPIED}\n`);
       const plain = localhostPlan();
-      const after = run(switchCommands(plain, [], localFiles("shop.localhost")));
-      expect(after.status, after.output).toBe(0);
-      expect(after.output).not.toContain(MOVE_WAITING_NOTICE);
+      const copied = run(switchCommands(plain, [], localFiles("shop.localhost")));
+      expect(copied.status, copied.output).toBe(0);
+      expect(copied.stdout.split("\n")).toContain(MOVE_COPIED_NOTICE);
+      expect(copied.output).not.toContain(MOVE_WAITING_NOTICE);
       expect(route("shop")).toBe("shop-app-2:3000 shop.localhost");
       expect(read(`${work}/docker.log`)).toContain("docker rm c1\n");
       expect(read(`${appsDir()}/shop/.start.outcome`)).toBe("finished\n");
+
+      // Without the marker (the move removed it), a deploy says nothing of a move.
+      rmSync(`${appsDir()}/shop/${MOVE_WAITING}`);
+      const after = run(switchCommands(plain, [], localFiles("shop.localhost")));
+      expect(after.status, after.output).toBe(0);
+      expect(after.output).not.toMatch(/A move to this server/);
     });
 
     it("rolls back to the previous image with the app's hostname", () => {

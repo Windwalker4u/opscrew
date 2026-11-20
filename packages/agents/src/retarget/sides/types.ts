@@ -5,7 +5,7 @@
  */
 import type { DockerClient, VolumeCarrier } from "@opscrew/connector-docker";
 import type { DestroyPreview } from "../../destroy/types";
-import type { DeployedState } from "../server-ops";
+import type { DeployedState, MoveMarker } from "../server-ops";
 import type { MoveBase, MoveSession } from "../session";
 import type { RetargetResult } from "../types";
 
@@ -77,16 +77,18 @@ export interface MoveSide {
   /**
    * Step `deployed` (the new side): the app deployed with the image the old side runs, healthy,
    * and its edge stopped, so it takes no traffic before the switch. On a server whose deploy
-   * stopped at a move's marker ({@link waitForData}), the image there and its services running.
+   * a move's marker held ({@link markMove}), the image there and its services running.
    */
   deploy(session: MoveSession): Promise<SideStop>;
   /**
-   * A server's new side, for a move that copies data (FR-3027): `true` writes the marker in the
-   * app's folder that keeps the deploys there to the app's image and services until the data is
-   * there; `false` removes it, so the maintenance window's deploy starts the app. Portainer's side
-   * has none.
+   * A server's new side, for a move that copies data (FR-3027): writes the marker in the app's
+   * folder ({@link MoveMarker}): `waiting` keeps the deploys there to the app's image and services
+   * until the data is there; `copied` lets the maintenance window's deploy start the app on it,
+   * with the check left to the move; none (removed) once the app answers. Portainer's side has none.
    */
-  waitForData?(session: MoveBase, waiting: boolean): Promise<void>;
+  markMove?(session: MoveBase, marker: MoveMarker): Promise<void>;
+  /** A server's side: whether other apps on the server share its edge, which then keeps running. */
+  sharesEdge?(session: MoveBase): Promise<boolean>;
   /** A server's side: what its last deploy left in the app's folder. */
   deployed?(session: MoveBase): Promise<DeployedState>;
   /** Stops the app, its workers and its cron (not its stateful services, not the edge). */

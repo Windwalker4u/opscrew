@@ -30,7 +30,7 @@ import {
   runnerLabel,
   TUNNEL_DEPLOY_SECRETS,
 } from "./index";
-import { MOVE_WAITING_NOTICE } from "./switch";
+import { MOVE_COPIED_NOTICE, MOVE_WAITING_NOTICE } from "./switch";
 
 type Step = {
   id?: string;
@@ -1033,28 +1033,36 @@ describe("the deploy job on a self-hosted runner", { timeout: 180_000 }, () => {
       expect(readFileSync(join(work, "login"), "utf8")).toBe("registry-placeholder\n");
       expect(readFileSync(join(work, "script"), "utf8")).toBe(heredoc(start));
 
-      // FR-3027: a script that stopped at a move's marker says so; the step tells the health check.
-      const waiting = runScript(
-        start,
-        [
-          "docker() { cat > /dev/null; }",
-          `sh() { cat > /dev/null; echo ${shellQuote(MOVE_WAITING_NOTICE)}; }`,
-        ].join("\n"),
-        {
-          ...roots,
-          OPSCREW_LOCAL_LOCK: `${work}/local/deploy.lock`,
-          IMAGE,
-          MODE: "deploy",
-          REGISTRY_TOKEN: "registry-placeholder",
-          GITHUB_ACTOR: "octocat",
-        },
-        checkout,
-      );
-      expect(waiting.status, waiting.out).toBe(0);
-      expect(waiting.out).toContain(MOVE_WAITING_NOTICE);
-      expect(waiting.outputs).toMatchObject({ waiting: "true" });
+      // FR-3027: a script that a move's marker held, or that deployed the app on a move's copied
+      // data, says so; the step tells the health check, which neither may run.
+      for (const [notice, output] of [
+        [MOVE_WAITING_NOTICE, { waiting: "true" }],
+        [MOVE_COPIED_NOTICE, { moved: "true" }],
+      ] as const) {
+        const said = runScript(
+          start,
+          [
+            "docker() { cat > /dev/null; }",
+            `sh() { cat > /dev/null; echo ${shellQuote(notice)}; }`,
+          ].join("\n"),
+          {
+            ...roots,
+            OPSCREW_LOCAL_LOCK: `${work}/local/deploy.lock`,
+            IMAGE,
+            MODE: "deploy",
+            REGISTRY_TOKEN: "registry-placeholder",
+            GITHUB_ACTOR: "octocat",
+          },
+          checkout,
+        );
+        expect(said.status, said.out).toBe(0);
+        expect(said.out).toContain(notice);
+        expect(said.outputs).toEqual({ previous: before, ...output });
+      }
       const health = (workflow(local).jobs.deploy as Job).steps.find((s) => s.id === "health");
-      expect(health?.if).toBe("steps.start.outputs.waiting != 'true'");
+      expect(health?.if).toBe(
+        "steps.start.outputs.waiting != 'true' && steps.start.outputs.moved != 'true'",
+      );
     },
   );
 

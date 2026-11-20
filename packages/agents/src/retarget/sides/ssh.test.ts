@@ -204,8 +204,8 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     const h = await moveHarness();
     const { session } = await moving(h);
     const side = cloudSide("new");
-    await side.waitForData?.(session, true);
-    expect(h.hosts.host(NEW.ipv4).waiting).toBe(true);
+    await side.markMove?.(session, "waiting");
+    expect(h.hosts.host(NEW.ipv4).marker).toBe("waiting");
     h.hosts.deploy(NEW.ipv4);
     expect(h.hosts.host(NEW.ipv4)).toMatchObject({ app: false, caddy: true });
     expect(await side.deploy(session)).toBeUndefined();
@@ -221,8 +221,12 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
         "The deploy on the new Droplet left db not running, so the app's data can't be copied there yet.",
     });
     expect(JSON.stringify(error)).not.toContain(NEW.ipv4);
-    await side.waitForData?.(session, false);
-    expect(h.hosts.host(NEW.ipv4).waiting).toBe(false);
+    await side.markMove?.(session, "copied");
+    expect(h.hosts.host(NEW.ipv4).marker).toBe("copied");
+    await side.markMove?.(session, undefined);
+    expect(h.hosts.host(NEW.ipv4).marker).toBeUndefined();
+    // A server OpsCrew created for the app shares its edge with no other app.
+    expect(await side.sharesEdge?.(session)).toBe(false);
   });
 
   it("lists the app's data mounts by owner and path: volumes and its own data folders", async () => {

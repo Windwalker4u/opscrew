@@ -5,6 +5,7 @@ import {
   EDGE_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
+  MOVE_COPIED,
   MOVE_WAITING,
   OPENLITESPEED_COMMAND,
   processServices,
@@ -461,24 +462,39 @@ export async function restoreDatabase(
 }
 
 /**
- * Writes (`waiting`) or removes a move's marker in the app's folder (`MOVE_WAITING`, FR-3027):
- * while it is there, the deploys on the server bring up only the app's image and services, so the
- * release command never runs on the move's empty databases. The folder is made first: a server
- * OpsCrew created has none before the app's first deploy.
+ * A move's marker in the app's folder (`MOVE_WAITING`, FR-3027): `waiting` while the move's data
+ * is still on the old side, `copied` once its window copied it, none once the app answers there.
  */
-export async function markWaiting(
+export type MoveMarker = "waiting" | "copied" | undefined;
+
+/**
+ * Writes a move's marker in the app's folder, or removes it ({@link MoveMarker}): while it says
+ * `waiting`, the deploys on the server bring up only the app's image and services, so the release
+ * command never runs on the move's empty databases; with `copied`, they deploy the app and leave
+ * its check to the move. The folder is made first: a server OpsCrew created has none before the
+ * app's first deploy.
+ */
+export async function markMove(
   remote: RemoteExec,
-  waiting: boolean,
+  marker: MoveMarker,
   options: ServerOpOptions,
 ): Promise<void> {
   const { folder } = options;
-  const marker = `${folder}/${MOVE_WAITING}`;
+  const file = `${folder}/${MOVE_WAITING}`;
+  const commands: Record<NonNullable<MoveMarker>, string> = {
+    waiting: `mkdir -p ${folder} && : > ${file}`,
+    copied: `printf '%s\\n' ${MOVE_COPIED} > ${file}`,
+  };
+  const what = {
+    waiting: "hold the app for its data",
+    copied: "let the deploys start the app on its copied data",
+  };
   await runStep(
     remote,
-    waiting ? `mkdir -p ${folder} && : > ${marker}` : `rm -f ${marker}`,
+    marker === undefined ? `rm -f ${file}` : commands[marker],
     MINUTE,
     {
-      what: waiting ? "hold the app for its data" : "let the deploys start the app",
+      what: marker === undefined ? "remove the move's marker" : what[marker],
       hint: composePsHint(remote.host, options),
     },
     options.redact,

@@ -620,10 +620,34 @@ async function deployFilesStop(
   session: MoveSession,
   waits: boolean,
 ): Promise<RetargetResult | undefined> {
-  const { deps, plan } = session;
-  const move = moveOf(session);
   const changed = await deployFilesChanged(session);
   if (!changed && !(waits && (await workflowIgnoresMarker(session)))) return undefined;
+  return deployFilesProposal(session, changed);
+}
+
+/**
+ * Before the maintenance window on a server (FR-3027): its deploy of the app on the copied data
+ * needs GitHub's workflow to know the move's marker. One that doesn't goes into the same pull
+ * request as {@link deployFilesStop}'s, and the move stops before any change.
+ */
+export async function markerWorkflowStop(
+  session: MoveSession,
+): Promise<RetargetResult | undefined> {
+  if (!(await workflowIgnoresMarker(session))) return undefined;
+  return deployFilesProposal(session, false);
+}
+
+/**
+ * Proposes the new side's deploy files that GitHub's branch does not hold, and stops until they
+ * are merged: they differ from the old side's (`changed`), or GitHub's workflow is an earlier
+ * OpsCrew's, without the move's marker. Nothing to propose: `undefined`.
+ */
+async function deployFilesProposal(
+  session: MoveSession,
+  changed: boolean,
+): Promise<RetargetResult | undefined> {
+  const { deps, plan } = session;
+  const move = moveOf(session);
   const words = sideWords(plan.target, "new");
   deps.reporter.step(`Checking the deploy files for ${words} on GitHub`);
   const proposal = await proposeDeployFiles(session, plan);
@@ -703,6 +727,11 @@ export async function runDeployWorkflow(session: MoveSession, how: DeployRun): P
       ref: branch,
       runId,
       timeoutMs: WORKFLOW_WAIT_MS,
+      // In the maintenance window the app is offline while a reviewer is awaited.
+      onWaiting: (url: string) =>
+        deps.reporter.info(
+          `The deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run until it ends.`,
+        ),
     });
   } catch (error) {
     throw new OpsCrewError(
@@ -773,9 +802,9 @@ export async function deployStep(
   if (joined !== undefined) return joined;
   const words = sideWords(plan.target, "new");
   // A server's deploys bring up only the image and the services until the window copied the data.
-  const waits = side.waitForData !== undefined && copiesData(plan);
+  const waits = side.markMove !== undefined && copiesData(plan);
   if (waits) {
-    await side.waitForData?.(session, true);
+    await side.markMove?.(session, "waiting");
     await auditMove(session, {
       kind: "remote-exec",
       action: "hold the app for its data",

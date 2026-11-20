@@ -134,41 +134,72 @@ const FAILED_LINES = 500;
 /**
  * Where the start script records how far this run got, in the app's folder: `started`, then
  * `finished` when it succeeds, or `kept` once the run kept a failure's lines (`keep_failed`), or
- * `waiting <image>` when it stopped at a move's marker ({@link MOVE_WAITING}). The rollback reads
+ * `waiting <image>` when a move's marker held the app ({@link MOVE_WAITING}). The rollback reads
  * it to tell what failed; a move reads the image its new server holds.
  */
 export const START_OUTCOME = ".start.outcome";
 
 /**
- * The marker a move to this server leaves in the app's folder while the app's data is still on
- * the server it moves from (FR-3027): until the move's maintenance window copied the data and
- * removed it, the start script brings up only the image and the services ({@link moveWaiting}).
+ * The marker a move to this server leaves in the app's folder (FR-3027). While the app's data is
+ * still on the server it moves from, it is empty, and the start script brings up only the image
+ * and the services ({@link moveWaiting}); once the move's maintenance window copied the data, it
+ * says {@link MOVE_COPIED}, and the start script deploys the app on that data, saying so for the
+ * move's own check ({@link MOVE_COPIED_NOTICE}). The move removes it once the app answers there.
  */
 export const MOVE_WAITING = ".move.waiting";
 
-/** What the start script prints when it stopped at {@link MOVE_WAITING}; the start step reads it. */
+/** What {@link MOVE_WAITING} says once the move copied the app's data. */
+export const MOVE_COPIED = "copied";
+
+/** True (an sh test) while a move's marker holds the app: it is there and doesn't say copied. */
+const MOVE_HOLDS = `[ -f ${MOVE_WAITING} ] && [ "$(cat ${MOVE_WAITING})" != ${MOVE_COPIED} ]`;
+
+/** What the start script prints when a move's marker held the app; the start step reads it. */
 export const MOVE_WAITING_NOTICE =
   "::notice::A move to this server copies the app's data here first (opscrew retarget), so this deploy pulled the image and started only the app's services. The release command, the app, its workers and cron start after the copy.";
+
+/**
+ * What the start script prints when it deploys the app on a move's copied data; the start step
+ * reads it, and the check from outside is skipped: the app's domain still leads to the server the
+ * move left.
+ */
+export const MOVE_COPIED_NOTICE =
+  "::notice::A move to this server copied the app's data here (opscrew retarget), so this deploy starts the app on it. opscrew retarget checks the app on this server: its domain still leads to the server the app moves from.";
 
 /** Writes the image `$APP_IMAGE` to `.env` in the app's folder, as the version on the server. */
 const WRITE_ENV = "printf 'APP_IMAGE=%s\\n' \"$APP_IMAGE\" > .env";
 
 /**
- * In mode `deploy` while a move's marker is in the app's folder ({@link MOVE_WAITING}): the app's
- * container is created, never started, so its volumes are there for the move to copy the app's own
- * data into; `.env` names the image (the move's commands in the folder read it, and its window
- * deploys it again); {@link START_OUTCOME} says `waiting <image>`; the notice says why
+ * In mode `deploy` while a move's marker holds the app ({@link MOVE_WAITING}): the app's container
+ * is created, never started, so its volumes are there for the move to copy the app's own data
+ * into; `.env` names the image (the move's commands in the folder read it, and its window deploys
+ * it again); {@link START_OUTCOME} says `waiting <image>`; the notice says why
  * ({@link MOVE_WAITING_NOTICE}); and the script ends successfully before the snapshot, the release
- * command, the switch, the workers and cron: nothing changes kamal-proxy's routes.
+ * command, the switch, the workers and cron: nothing changes kamal-proxy's routes. Once the marker
+ * says {@link MOVE_COPIED}, the deploy goes on, with {@link MOVE_COPIED_NOTICE}.
  */
 function moveWaiting(): string[] {
   return [
-    `if [ "$MODE" = deploy ] && [ -f ${MOVE_WAITING} ]; then`,
+    `if [ "$MODE" = deploy ] && ${MOVE_HOLDS}; then`,
     "  docker compose up --no-start --no-deps app",
     `  ${WRITE_ENV}`,
     `  echo "waiting $APP_IMAGE" > ${START_OUTCOME}`,
     `  echo ${shellQuote(MOVE_WAITING_NOTICE)}`,
     "  exit 0",
+    "fi",
+    `if [ "$MODE" = deploy ] && [ -f ${MOVE_WAITING} ]; then echo ${shellQuote(MOVE_COPIED_NOTICE)}; fi`,
+  ];
+}
+
+/**
+ * A rollback while a move's marker holds the app stops before any change: the app never ran on
+ * this server, so there is no version to go back to.
+ */
+function moveRollbackRefusal(): string[] {
+  return [
+    `if [ "$MODE" = rollback ] && ${MOVE_HOLDS}; then`,
+    `  echo ${shellQuote("::error::A move to this server waits for the app's data (opscrew retarget), so the app never ran here and there is no version to roll back to. Nothing was changed. Roll back on the server the app moves from, or abort the move first.")}`,
+    "  exit 1",
     "fi",
   ];
 }
@@ -1502,6 +1533,7 @@ export function switchCommands(
     'export APP_IMAGE="$1"',
     'RUN_IMAGE="$1"',
     'MODE="${2:-deploy}"',
+    ...(o.preview === true ? [] : moveRollbackRefusal()),
     ...(data ? approvalCheck(plan, others) : []),
     ...keepFailed(plan),
     EDGE_FUNCTION,

@@ -623,8 +623,11 @@ export interface FakeHost {
   /** What the database holds (a marker, never real data). */
   db: string;
   dump?: string;
-  /** A move's marker in the app's folder (FR-3027): its deploys bring up only the services. */
-  waiting?: boolean;
+  /**
+   * A move's marker in the app's folder (FR-3027): `waiting`, the deploys bring up only the
+   * services; `copied`, they deploy the app and skip the check from outside.
+   */
+  marker?: "waiting" | "copied";
   /** The image the last deploy wrote to `.env`. */
   image?: string;
   /** What the last deploy's start script recorded (`.start.outcome`). */
@@ -658,7 +661,8 @@ function opOf(command: string): string {
   if (command.startsWith(`rm -f /srv/apps/${APP}/opscrew-move.dump`)) return "rm dump";
   // A move's marker (FR-3027), what the last deploy left, and the services it started.
   if (command.endsWith(`: > /srv/apps/${APP}/.move.waiting`)) return "mark waiting";
-  if (command === `rm -f /srv/apps/${APP}/.move.waiting`) return "unmark waiting";
+  if (command.endsWith(`copied > /srv/apps/${APP}/.move.waiting`)) return "mark copied";
+  if (command === `rm -f /srv/apps/${APP}/.move.waiting`) return "remove marker";
   if (command.includes("printf 'outcome=%s")) return "deployed?";
   if (command.endsWith("docker compose ps --status running --services")) return "services up?";
   return command;
@@ -958,10 +962,13 @@ export class FakeHosts {
         h.dump = undefined;
         return ok();
       case "mark waiting":
-        h.waiting = true;
+        h.marker = "waiting";
         return ok();
-      case "unmark waiting":
-        h.waiting = false;
+      case "mark copied":
+        h.marker = "copied";
+        return ok();
+      case "remove marker":
+        h.marker = undefined;
         return ok();
       case "deployed?":
         return ok(`outcome=${h.outcome ?? ""}\nimage=${h.image ?? ""}\n`);
@@ -997,13 +1004,13 @@ export class FakeHosts {
   }
 
   /**
-   * What the deploy workflow does on `ip` with `image`: the edge, then at a move's marker only
-   * the services, with the app's container created but never started (FR-3027); otherwise the
-   * release command, when there is one, migrates the database (an empty one to the schema of HEAD,
-   * unless it needs data: then it fails and nothing starts), and the app runs. False when the run
-   * fails.
+   * What the deploy workflow's start step does on `ip` with `image`: the edge, then while a move's
+   * marker holds the app only the services, with the app's container created but never started
+   * (`held`, FR-3027); otherwise the release command, when there is one, migrates the database (an
+   * empty one to the schema of HEAD, unless it needs data: then it fails and nothing starts), and
+   * the app runs: `moved` when the marker says `copied`, which skips the check from outside.
    */
-  deploy(ip: string, image = BUILT_IMAGE): boolean {
+  deploy(ip: string, image = BUILT_IMAGE): FakeDeployOutcome {
     const h = this.host(ip);
     h.caddy = true;
     const app = (state: "created" | "running") => {
@@ -1011,33 +1018,42 @@ export class FakeHosts {
         if (container.labels[COMPOSE_SERVICE_LABEL] === "app") container.state = state;
       }
     };
-    if (h.waiting === true) {
+    if (h.marker === "waiting") {
       this.seed(ip);
       if (!h.app) app("created");
       Object.assign(h, { image, outcome: `waiting ${image}` });
-      return true;
+      return "held";
     }
     if (this.release) {
       if (h.db === "empty" && this.releaseNeedsData) {
         h.outcome = "started";
-        return false;
+        return "failed";
       }
       h.db = h.db === "empty" ? "schema of HEAD" : `${h.db} (migrated)`;
     }
     Object.assign(h, { app: true, image, outcome: "finished" });
     this.seed(ip);
     app("running");
-    return true;
+    return h.marker === "copied" ? "moved" : "deployed";
   }
 }
 
+/** What the start step of {@link FakeHosts.deploy} ended with. */
+export type FakeDeployOutcome = "held" | "moved" | "deployed" | "failed";
+
 /**
  * GitHub fake with the deploy workflow: a successful run deploys to `OPSCREW_HOST`, its build of
- * the branch or the image a dispatch's digest names.
+ * the branch or the image a dispatch's digest names, then checks the app from outside
+ * ({@link checkFromOutside}) unless its start step said a move's marker held it or that it started
+ * the app on a move's copied data. A failed check fails the run.
  */
 export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
   conclusion: string | null = "success";
   readonly runs: { workflowFile: string; ref: string; inputs?: Record<string, string> }[] = [];
+  /** The workflow's health step: whether the app answers at its public URL, from `host`. */
+  checkFromOutside: (host: string) => boolean = () => true;
+  /** The runs wait for a required reviewer first (they tell `onWaiting`). */
+  reviewer = false;
   #digest: string | undefined;
 
   constructor(
@@ -1080,18 +1096,22 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
     return this.holds.delete(branch) ? ("deleted" as const) : ("absent" as const);
   }
 
-  async waitForWorkflowRun(_owner: string, _repo: string, options: { runId: number }) {
+  async waitForWorkflowRun(
+    _owner: string,
+    _repo: string,
+    options: { runId: number; onWaiting?: (htmlUrl: string) => Promise<void> | void },
+  ) {
+    const htmlUrl = "https://github.com/acme/shop/actions/runs/99";
+    if (this.reviewer) await options.onWaiting?.(htmlUrl);
     const host = this.secrets.get("OPSCREW_HOST");
     let conclusion = this.conclusion;
     if (conclusion === "success" && host !== undefined) {
       const image = this.#digest === undefined ? BUILT_IMAGE : `ghcr.io/acme/shop@${this.#digest}`;
-      if (!this.hostsFake.deploy(host, image)) conclusion = "failure";
+      const started = this.hostsFake.deploy(host, image);
+      const checked = started === "deployed" ? this.checkFromOutside(host) : started !== "failed";
+      if (!checked) conclusion = "failure";
     }
-    return {
-      id: options.runId,
-      conclusion,
-      htmlUrl: "https://github.com/acme/shop/actions/runs/99",
-    };
+    return { id: options.runId, conclusion, htmlUrl };
   }
 }
 
@@ -1255,6 +1275,11 @@ export async function moveFakes(
   const github = new FakeMoveGitHub(events, hosts);
   /** Where the domain resolves when DNS is not managed (the user changes it). */
   const manual = { ip: SERVER_IPV4 };
+  github.checkFromOutside = (host) => {
+    const ip = dns === "cloudflare" ? engine.dnsServer()?.ipv4 : dns === "other" ? manual.ip : host;
+    const h = ip === undefined ? undefined : hosts.hosts.get(ip);
+    return h?.app === true && h.caddy;
+  };
   const fetch: FetchLike = async (input) => {
     const url = new URL(String(input));
     events.push({ type: "fetch", url: url.href });

@@ -10,7 +10,7 @@ import {
   dumpDatabase,
   dumpPath,
   isAppHealthy,
-  markWaiting,
+  markMove,
   moveTimeoutMs,
   readDeployed,
   recreateDatabase,
@@ -507,19 +507,21 @@ describe("a move's marker on the new server (FR-3027)", () => {
   const IMAGE = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
   const ops = { redact: identity, folder: FOLDER };
 
-  it("writes the marker in the app's folder, made first, and removes it", async () => {
+  it("writes the marker in the app's folder, made first, then copied, and removes it", async () => {
     const remote = new FakeRemote("h");
-    await markWaiting(remote, true, ops);
-    await markWaiting(remote, false, ops);
+    await markMove(remote, "waiting", ops);
+    await markMove(remote, "copied", ops);
+    await markMove(remote, undefined, ops);
     expect(remote.calls).toEqual([
       {
         command: "mkdir -p /srv/apps/shop && : > /srv/apps/shop/.move.waiting",
         timeoutMs: MIN,
       },
+      { command: "printf '%s\\n' copied > /srv/apps/shop/.move.waiting", timeoutMs: MIN },
       { command: "rm -f /srv/apps/shop/.move.waiting", timeoutMs: MIN },
     ]);
     const error = await caught(
-      markWaiting(new FakeRemote("h", () => fail("Permission denied")), true, ops),
+      markMove(new FakeRemote("h", () => fail("Permission denied")), "waiting", ops),
     );
     expect(error.message).toBe("Could not hold the app for its data on h: Permission denied");
   });

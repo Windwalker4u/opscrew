@@ -97,10 +97,12 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${n} stop app`,
       `${n} empty db`,
       `${n} restore`,
-      // The image deployed there, without a build, on the copied data; its edge stopped again.
-      `${n} unmark waiting`,
+      // The image deployed there, without a build, on the copied data, the check from outside
+      // left to the move: its edge stopped again, the app answers there, then the marker goes.
+      `${n} mark copied`,
       `dispatch main sha256:${"e".repeat(12)}`,
       `${n} stop caddy`,
+      `${n} remove marker`,
       "approve iac-apply",
       "apply updates=2",
       `${n} start caddy`,
@@ -300,7 +302,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     { what: "emptying the new database", on: "new", op: "empty db" },
     { what: "the restore", on: "new", op: "restore" },
     { what: "deleting the old dump volume", on: "old", op: "DELETE volume" },
-    { what: "letting the deploys start the app", on: "new", op: "unmark waiting" },
+    { what: "letting the deploys start the app", on: "new", op: "mark copied" },
     { what: "the health check", on: "new", op: "health" },
   ] as const;
 
@@ -353,7 +355,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       expect(running(OLD_IPV4)).toEqual(["running"]);
       // The new side stays stopped, nothing of a part copy on it, until the window runs again;
       // its deploys wait for the data again (FR-3027).
-      expect(h.hosts.host(n)).toMatchObject({ app: false, waiting: true });
+      expect(h.hosts.host(n)).toMatchObject({ app: false, marker: "waiting" });
       expect(applies(h)).toHaveLength(2);
       expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
       expect(h.audit.entries).toContainEqual(
@@ -393,16 +395,17 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(result).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events);
     const from = lines.indexOf(`${OLD_IPV4} stop app`);
-    expect(lines.slice(from, lines.lastIndexOf(`${n} stop caddy`) + 1)).toEqual([
+    expect(lines.slice(from, lines.indexOf(`${n} remove marker`) + 1)).toEqual([
       `${OLD_IPV4} stop app`,
       `${OLD_IPV4} dump`,
       `${OLD_IPV4} stop db`,
       `${n} stop app`,
       `${n} empty db`,
       `${n} restore`,
-      `${n} unmark waiting`,
+      `${n} mark copied`,
       `dispatch main sha256:${"e".repeat(12)}`,
       `${n} stop caddy`,
+      `${n} remove marker`,
     ]);
     // The old data, migrated forward by the deploy of the version on the new server.
     expect(h.hosts.host(n)).toMatchObject({ db: "orders before the move (migrated)", app: true });
@@ -414,8 +417,15 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(window?.details).not.toContain("--clean");
     const actions = h.audit.entries.map((e) => e.action);
     expect(actions).toContain("restore database");
-    expect(actions.indexOf("let the deploys start the app")).toBeGreaterThan(
+    expect(actions.indexOf("let the deploys start the app on its data")).toBeGreaterThan(
       actions.indexOf("restore database"),
+    );
+    // The marker goes only once the app answers there, before the window ends.
+    expect(actions.indexOf("remove the move's marker")).toBeGreaterThan(
+      actions.indexOf("deploy workflow"),
+    );
+    expect(actions.indexOf("remove the move's marker")).toBeLessThan(
+      actions.indexOf("retarget migrated"),
     );
     expect(h.audit.entries).toContainEqual(
       expect.objectContaining({
@@ -444,7 +454,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     );
     expect(h.hosts.host(n)).toMatchObject({
       app: true,
-      waiting: false,
+      marker: undefined,
       db: "orders before the move (migrated)",
       outcome: "finished",
     });
@@ -460,13 +470,13 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const n = h.newServer.ipv4;
     // The release command fails on the copy, in the window's deploy.
     h.hosts.fail = (ip, op) => {
-      if (ip === n && op === "unmark waiting") h.github.conclusion = "failure";
+      if (ip === n && op === "mark copied") h.github.conclusion = "failure";
       return undefined;
     };
     const error = await caught(run(h));
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toBe(
-      "The maintenance window failed: The deploy workflow did not succeed (failure): https://github.com/acme/shop/actions/runs/99. It ran on the new Droplet on DigitalOcean, on the copy of the data only. The app on the old server on Hetzner Cloud runs again with its data unchanged, and nothing else changed.",
+      "The maintenance window failed: The deploy workflow did not succeed (failure): https://github.com/acme/shop/actions/runs/99. It ran on the new Droplet on DigitalOcean only; your users' data on the old server on Hetzner Cloud is untouched. The app on the old server on Hetzner Cloud runs again with its data unchanged, and nothing else changed.",
     );
     expect(error.hint).toContain(
       "the release command's output stays on the new Droplet on DigitalOcean",
@@ -488,7 +498,12 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(state?.step).toBe("deployed");
     expect(state?.oldAppStoppedAt).toBeUndefined();
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-    expect(h.hosts.host(n)).toMatchObject({ app: false, caddy: false, waiting: true, db: "empty" });
+    expect(h.hosts.host(n)).toMatchObject({
+      app: false,
+      caddy: false,
+      marker: "waiting",
+      db: "empty",
+    });
     for (const ip of [OLD_IPV4, n]) {
       expect(h.hosts.docker(ip).volumes.has("opscrew-move-dump-shop")).toBe(false);
     }
@@ -530,7 +545,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(ops(h, n, "empty db")).toBe(0);
     expect(ops(h, n, "restore")).toBe(0);
     // The deploy before the copy never ran the release command on the empty database.
-    expect(h.hosts.host(n)).toMatchObject({ db: "empty", waiting: true });
+    expect(h.hosts.host(n)).toMatchObject({ db: "empty", marker: "waiting" });
     expect(h.github.runs).toHaveLength(1);
     const state = await move(h);
     expect(state?.step).toBe("deployed");

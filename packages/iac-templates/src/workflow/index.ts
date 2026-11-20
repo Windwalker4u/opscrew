@@ -95,6 +95,7 @@ import {
   HELD_STOP,
   heldProbe,
   heldSaid,
+  MOVE_COPIED_NOTICE,
   MOVE_WAITING_NOTICE,
   OTHERS_HELD,
   RESTORE_HELD,
@@ -686,8 +687,10 @@ interface Reach {
  * `MODE` is the switch script's `$2`: a rollback dispatch's `rollback` runs no release command.
  * With extra servers whose data each release snapshots (`others`), `$3` names those whose
  * snapshot the rollback restored ({@link othersStep}). The script's output goes to the log and to
- * the job's temp folder too: when it stopped at a move's marker ({@link MOVE_WAITING_NOTICE}), the
- * step's output `waiting` is `true`, and the health check, which would find no app, is skipped.
+ * the job's temp folder too: when a move's marker held the app ({@link MOVE_WAITING_NOTICE}), the
+ * step's output `waiting` is `true`; when it deployed the app on a move's copied data
+ * ({@link MOVE_COPIED_NOTICE}), `moved` is. Either skips the health check, which would find no
+ * app, or the server the app moves from: the move checks the app on the server itself.
  */
 function startStep(
   plan: DeployPlan,
@@ -724,6 +727,7 @@ function startStep(
     ...remote(switchCommands(plan, initStepsFor(plan), edgeFiles)),
     '    } | tee "$RUNNER_TEMP/opscrew-start.out"',
     `    if grep -qxF ${shellQuote(MOVE_WAITING_NOTICE)} "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi`,
+    `    if grep -qxF ${shellQuote(MOVE_COPIED_NOTICE)} "$RUNNER_TEMP/opscrew-start.out"; then echo "moved=true" >> "$GITHUB_OUTPUT"; fi`,
   ];
 }
 
@@ -1758,7 +1762,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     "- id: health",
     "  name: Check that the app is healthy",
     // A move to the server started only the app's services: the app starts after the copy.
-    "  if: steps.start.outputs.waiting != 'true'",
+    "  if: steps.start.outputs.waiting != 'true' && steps.start.outputs.moved != 'true'",
     "  env:",
     `    URL: ${healthUrl(plan, local)}`,
     ...(homeDnsOnly(plan) && onRunnerMachine(plan)

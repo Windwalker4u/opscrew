@@ -1174,6 +1174,10 @@ jobs:
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
+          if [ "$MODE" = rollback ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            echo '::error::A move to this server waits for the app'\\''s data (opscrew retarget), so the app never ran here and there is no version to roll back to. Nothing was changed. Roll back on the server the app moves from, or abort the move first.'
+            exit 1
+          fi
           rm -f .database.changed
           database=keep
           target="\${1##*@sha256:}"
@@ -1263,13 +1267,14 @@ jobs:
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
-          if [ "$MODE" = deploy ] && [ -f .move.waiting ]; then
+          if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
             echo "waiting $APP_IMAGE" > .start.outcome
             echo '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.'
             exit 0
           fi
+          if [ "$MODE" = deploy ] && [ -f .move.waiting ]; then echo '::notice::A move to this server copied the app'\\''s data here (opscrew retarget), so this deploy starts the app on it. opscrew retarget checks the app on this server: its domain still leads to the server the app moves from.'; fi
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
             OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
@@ -1378,9 +1383,10 @@ jobs:
           REMOTE
           } | tee "$RUNNER_TEMP/opscrew-start.out"
           if grep -qxF '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.' "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi
+          if grep -qxF '::notice::A move to this server copied the app'\\''s data here (opscrew retarget), so this deploy starts the app on it. opscrew retarget checks the app on this server: its domain still leads to the server the app moves from.' "$RUNNER_TEMP/opscrew-start.out"; then echo "moved=true" >> "$GITHUB_OUTPUT"; fi
       - id: health
         name: Check that the app is healthy
-        if: steps.start.outputs.waiting != 'true'
+        if: steps.start.outputs.waiting != 'true' && steps.start.outputs.moved != 'true'
         env:
           URL: https://shop.example.com/api/health
         run: |

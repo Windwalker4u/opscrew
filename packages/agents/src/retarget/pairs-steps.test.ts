@@ -70,7 +70,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(await deployStep(h.session, {})).toBeUndefined();
       expect(moveOf(h.session).step).toBe("deployed");
       expect(h.github.runs).toHaveLength(1);
-      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, caddy: false, waiting: true });
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, caddy: false, marker: "waiting" });
       expect(ops(h, NEW_IPV4, "health")).toBe(0);
     });
 
@@ -247,7 +247,7 @@ describe.skipIf(!findExecutable("git"))(
         expect(await deployStep(h.session, {})).toBeUndefined();
         expect(moveOf(h.session).step).toBe("deployed");
         expect(h.github.runs).toHaveLength(1);
-        expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, waiting: true });
+        expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, marker: "waiting" });
         // The stop and the pull request name the side in words, never its address.
         expect(`${stop?.next.join(" ")}
 ${JSON.stringify(h.handler.requests)}`).not.toContain(NEW_IPV4);
