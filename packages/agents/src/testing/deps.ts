@@ -118,7 +118,9 @@ export async function createTestPhaseDeps(
   options: TestPhaseDepsOptions = {},
 ): Promise<TestPhaseDeps> {
   const root = options.root ?? (await mkdtemp(join(tmpdir(), "opscrew-test-")));
-  const env = options.env ?? { OPSCREW_HOME: join(root, ".home-opscrew") };
+  // The test's own OpsCrew home, whatever env the test passes, unless it names one itself: an env
+  // without OPSCREW_HOME resolved the real ~/.opscrew, where tests left thousands of folders.
+  const env: PhaseDeps["env"] = { OPSCREW_HOME: join(root, ".home-opscrew"), ...options.env };
   const paths = resolveProjectPaths(root, {
     env,
     app: options.app,
@@ -150,11 +152,12 @@ export async function createTestPhaseDeps(
     costs: new CostLedger(paths.files.costs, clock),
     runner: new ScriptedRunner(),
     fetch: forbiddenFetch,
-    env,
     clock,
     redactor: new Redactor(),
     interactive: false,
     version: "0.0.0-test",
     ...rest,
+    // After `rest`, so the test's env keeps the test's own OpsCrew home.
+    env,
   } as TestPhaseDeps;
 }
