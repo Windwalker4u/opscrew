@@ -37,7 +37,8 @@ Add a section for the new version at the top of [CHANGELOG.md](../CHANGELOG.md),
 - link the guide page where a feature has one;
 - include the Claude Code plugin's changes.
 
-The GitHub release's notes are made from this section (step 5).
+The GitHub release's notes (step 5) and the forum's announcement (step 7) are made from this
+section.
 
 ## 3. Bump the version and tag it
 
@@ -100,10 +101,29 @@ Do this after npm has the version: the plugin's lockfile records its integrity f
    the plugin's README and [the plugin's guide page](guide/claude-code-plugin.md) give still holds.
 5. Commit as `chore(plugin): <version>` and push. Watch the CI runs the push starts.
 
+## 7. Announce it on the forum
+
+Once npm has the version, post it in the Announcements category of
+[OpsCrew's forum](https://discuss.opscrew.dev). The script makes the post from the changelog's
+section: its opening paragraphs, the first sentence of each entry, and a link to the GitHub
+release. Read it first, then post it:
+
+```bash
+node scripts/forum-announce.mjs <version>
+node --env-file=.env.release scripts/forum-announce.mjs <version> --post
+```
+
+`--post` posts as the forum's `admin`, with the forum's API key from `OPSCREW_FORUM_API_KEY` in
+the Git-ignored `.env.release`. It prints the post's address, or the existing post's when the
+version was announced already. The key is a row in the forum database's `api_keys` table, which
+Flarum has no screen for: to replace it, delete that row and add a new one with a 40-character
+random key for user 1.
+
 **Option, not the default:** when the approval will come later, for example overnight, steps 5 and
 6 can be done before step 4, so that approving finishes the release. The Release run keeps the
 staged tarball as its `opscrew-tarball` artifact. Download it with
 `gh run download <run id> -n opscrew-tarball -D <folder>`, then run
 `node scripts/plugin-lock.mjs <folder>/opscrew-<version>.tgz` in place of step 6's lockfile
 command: it pins the plugin to that version with the tarball's integrity. Until the approval,
-installing the plugin fails, because npm doesn't have the version yet.
+installing the plugin fails, because npm doesn't have the version yet. The forum's announcement
+(step 7) still waits for the approval.
