@@ -34,7 +34,7 @@ an app yet.
 OpsCrew works with, one line each, with the variables each one needs. `npx opscrew providers --json`
 prints them as a catalogue for tools, such as a guided start:
 
-- **For each provider:** its kind, name, console and guide page, and its credentials: the
+- **For each provider:** its kind, name, sign-up, console, pricing and guide pages, and its credentials: the
   variables, which ones are secrets, where to create them and how, in the words `npx opscrew init`
   uses.
 - **For a cloud server provider:** its currency, how it bills, its locations, and its sizes with

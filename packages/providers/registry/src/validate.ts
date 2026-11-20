@@ -1,6 +1,6 @@
 import { CLOUD_PROVIDER_CONTRACT_VERSION, type CloudProviderDefinition } from "@opscrew/contracts";
 import { isRecord, OpsCrewError, zodIssues } from "@opscrew/core";
-import { CurrencySchema, RegionSchema, SignupUrlSchema } from "@opscrew/plan-schema";
+import { CurrencySchema, PlainUrlSchema, RegionSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 
 /** The shared first-boot setup OpsCrew adds to every server module (ADR 0029, D5). */
@@ -243,8 +243,8 @@ const definitionSchema: z.ZodType<Definition> = z
     sizeNoun: z.string(),
     consoleUrl: z.string(),
     accountUrl: z.string(),
-    signupUrl: SignupUrlSchema.optional(),
-    pricingUrl: SignupUrlSchema.optional(),
+    signupUrl: PlainUrlSchema.optional(),
+    pricingUrl: PlainUrlSchema.optional(),
     credentials,
     connector: fn<Definition["connector"]>(),
     regions,

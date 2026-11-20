@@ -23,7 +23,7 @@ const HttpsUrlSchema = z.url({ protocol: /^https$/, error: "must be an https:// 
  * A provider's plain public page, its sign-up or its pricing page: an `https://` URL with no query
  * string or fragment, so never one with a referral or affiliate id.
  */
-export const SignupUrlSchema = HttpsUrlSchema.refine((url) => {
+export const PlainUrlSchema = HttpsUrlSchema.refine((url) => {
   const { search, hash } = new URL(url);
   return search === "" && hash === "";
 }, "must have no query string or fragment: a plain page, never one with a referral or affiliate id");
@@ -65,9 +65,9 @@ const entry = {
   id: z.string().min(1),
   name: z.string().min(1),
   consoleUrl: HttpsUrlSchema,
-  signupUrl: SignupUrlSchema.optional(),
+  signupUrl: PlainUrlSchema.optional(),
   /** Its plain public pricing page. */
-  pricingUrl: SignupUrlSchema,
+  pricingUrl: PlainUrlSchema,
   currency: CurrencySchema.optional(),
   credentials: CatalogueCredentialsSchema,
   /** OpsCrew's guide page about it. */

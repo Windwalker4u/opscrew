@@ -9,9 +9,9 @@ export * from "./apps";
 export * from "./architecture";
 export {
   type CatalogueProvider,
+  PlainUrlSchema,
   type ProviderCatalogue,
   ProviderCatalogueSchema,
-  SignupUrlSchema,
 } from "./catalogue";
 export * from "./components";
 export * from "./credentials";

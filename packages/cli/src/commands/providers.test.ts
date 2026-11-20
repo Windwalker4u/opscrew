@@ -53,10 +53,10 @@ describe("opscrew providers", () => {
     const ctx = createTestContext({ env, cwd: NO_PROJECT });
     expect(await main(argv("providers"), ctx)).toBe(0);
     const lines = ctx.output.trimEnd().split("\n");
-    expect(lines).toHaveLength(CLOUD_PROVIDERS.length + 5);
+    expect(lines).toHaveLength(CLOUD_PROVIDERS.length + 6);
     expect(lines[0]).toMatch(/^hetzner\s+cloud-server\s+Hetzner Cloud: HCLOUD_TOKEN$/);
     expect(lines).toContain(
-      "porkbun       registrar     Porkbun: PORKBUN_API_KEY and PORKBUN_SECRET_API_KEY",
+      "porkbun             registrar     Porkbun: PORKBUN_API_KEY and PORKBUN_SECRET_API_KEY",
     );
     expect(ctx.output).not.toMatch(/sign-?up|register|https?:/i);
     for (const secret of Object.values(env)) expect(ctx.output).not.toContain(secret);

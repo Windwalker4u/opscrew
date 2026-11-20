@@ -312,6 +312,8 @@ function cloudflare() {
     {
       ...shared,
       id: CLOUDFLARE_HOSTING.id,
+      // Told apart from the token's entry, which shares Cloudflare's name.
+      name: `${name} hosting`,
       pricingUrl: CLOUDFLARE_PRICING.workers,
       credentials: {
         mode: "all",

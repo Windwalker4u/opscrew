@@ -186,7 +186,7 @@ describe("the provider catalogue", () => {
       ({ kind, id }) => kind === "cloudflare" && id === "cloudflare-workers",
     );
     expect(hosting).toMatchObject({
-      name: "Cloudflare",
+      name: "Cloudflare hosting",
       consoleUrl: "https://dash.cloudflare.com/",
       signupUrl: "https://dash.cloudflare.com/sign-up",
       pricingUrl: "https://developers.cloudflare.com/workers/platform/pricing/",

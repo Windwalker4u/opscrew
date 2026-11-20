@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { ProviderCatalogueSchema, SignupUrlSchema } from "./catalogue";
+import { PlainUrlSchema, ProviderCatalogueSchema } from "./catalogue";
 import { catalogueJsonSchema } from "./json-schema";
 
 /** A catalogue with one provider of each kind. */
@@ -68,14 +68,14 @@ describe("ProviderCatalogueSchema", () => {
   });
 
   it("wants a plain https sign-up page, never one with a referral or affiliate id", () => {
-    expect(SignupUrlSchema.safeParse("https://example.com/signup").success).toBe(true);
+    expect(PlainUrlSchema.safeParse("https://example.com/signup").success).toBe(true);
     for (const url of [
       "http://example.com/signup",
       "https://example.com/signup?ref=abc",
       "https://example.com/signup?aff=1",
       "https://example.com/signup#ref=abc",
     ]) {
-      expect(SignupUrlSchema.safeParse(url).success, url).toBe(false);
+      expect(PlainUrlSchema.safeParse(url).success, url).toBe(false);
     }
   });
 
