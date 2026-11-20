@@ -18,7 +18,7 @@ import {
   previewServer,
   refusedBeforeChange,
 } from "../previews/host";
-import type { OwnServerServices } from "../provision";
+import type { CloudflareApi, OwnServerServices } from "../provision";
 import { desiredHost, hostPlanOptions, ownTarget, ownWebSources } from "../provision/own";
 import { firstApp, hostDescription } from "../shares/first-app";
 import { otherAppsMemory } from "../shares/guard";
@@ -177,16 +177,8 @@ async function secondAppDesign(
       ? await inspectHost(remote, { rootImage: SECOND_APP_ROOT_IMAGE })
       : await adapter.inspect(remote);
   const name = first.plan.app.name;
-  const unreadable = facts.apps.filter((app) => app.record === null).map((app) => `"${app.name}"`);
-  if (unreadable.length > 0) {
-    const one = unreadable.length === 1;
-    const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-    throw refusedBeforeChange(
-      "PHASE_PRECONDITION",
-      `The server of "${name}" also runs ${listText(unreadable)}, whose record there OpsCrew can't read (written by a newer OpsCrew, or damaged), so OpsCrew doesn't know the memory ${one ? "it takes" : "they take"} or the hostnames ${one ? "it serves" : "they serve"}.`,
-      `Run \`opscrew provision\` with a current OpsCrew in the repository of ${one ? "that app" : "each of them"}, which writes ${one ? "its" : "their"} record again, then run \`opscrew design${flags}\` here again.`,
-    );
-  }
+  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  requireReadableRecords(facts, name, `opscrew design${flags}`);
   const described = hostDescription(first.plan);
   return {
     facts: ownServerFacts(facts),
@@ -202,6 +194,27 @@ async function secondAppDesign(
 }
 
 /**
+ * Stops before anything is written when the server of the first app (`first`) holds a record
+ * OpsCrew can't read (written by a newer OpsCrew, or damaged): that app's memory and hostnames are
+ * unknown, so a second app can't be fitted beside it. The hint ends with running `again` again.
+ * @throws OpsCrewError `PHASE_PRECONDITION`.
+ */
+export function requireReadableRecords(
+  facts: Pick<HostFacts, "apps">,
+  first: string,
+  again: string,
+): void {
+  const unreadable = facts.apps.filter((app) => app.record === null).map((app) => `"${app.name}"`);
+  if (unreadable.length === 0) return;
+  const one = unreadable.length === 1;
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
+    `The server of "${first}" also runs ${listText(unreadable)}, whose record there OpsCrew can't read (written by a newer OpsCrew, or damaged), so OpsCrew doesn't know the memory ${one ? "it takes" : "they take"} or the hostnames ${one ? "it serves" : "they serve"}.`,
+    `Run \`opscrew provision\` with a current OpsCrew in the repository of ${one ? "that app" : "each of them"}, which writes ${one ? "its" : "their"} record again, then run \`${again}\` here again.`,
+  );
+}
+
+/**
  * Design's look ahead at a second app's host plan (plan 7., step 7): the plan its provision would
  * make over the server as design read it (`shares`), in the second-app mode, whose blocking
  * findings stop design before plan.yaml is written: a name or hostname another app there holds,
@@ -209,16 +222,26 @@ async function secondAppDesign(
  * a login that can't write the app's record. Nothing is applied or saved. The plan describes this
  * app's deploy key, made now when it has none (provision uses the same one), and behind
  * Cloudflare's proxy Cloudflare's IP ranges, read as provision reads them.
+ *
+ * Another command than design (a move onto the server, `opscrew retarget`) gives the command its
+ * findings' hints name (`command`), the app's deploy key it already has (`deployPublicKey`) and
+ * its Cloudflare client (`cloudflare`).
  * @throws OpsCrewError `PHASE_PRECONDITION` naming each finding, before anything is written.
  */
 export async function requireSecondAppFits(
   deps: PhaseDeps,
   shares: SharedServerDesignInput,
   plan: DeployPlan,
+  options: {
+    command?: string;
+    deployPublicKey?: string;
+    cloudflare?: Pick<CloudflareApi, "getIpRanges"> | null;
+  } = {},
 ): Promise<void> {
   const { session, facts, first } = shares;
-  const key = await ensureDeployKey(deps.paths, deps.redactor);
-  const webSources = await ownWebSources(deps, plan);
+  const deployPublicKey =
+    options.deployPublicKey ?? (await ensureDeployKey(deps.paths, deps.redactor)).publicKeyOpenSsh;
+  const webSources = await ownWebSources(deps, plan, options.cloudflare);
   const desired = await desiredHost(
     deps,
     {
@@ -228,10 +251,12 @@ export async function requireSecondAppFits(
       first: { plan: first },
       ...(webSources === undefined ? {} : { webSources }),
     },
-    { plan, deployPublicKey: key.publicKeyOpenSsh },
+    { plan, deployPublicKey },
   );
-  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  const host = planHost(facts, desired, `opscrew design${flags}`, hostPlanOptions(plan));
+  const command =
+    options.command ??
+    `opscrew design${await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app)}`;
+  const host = planHost(facts, desired, command, hostPlanOptions(plan));
   const blocked = host.steps.filter((step) => step.state === "blocked");
   if (host.findings.length === 0 && blocked.length === 0) return;
   const reasons =
@@ -244,6 +269,6 @@ export async function requireSecondAppFits(
     `This app can't run beside "${first.app.name}" on its server: ${reasons.join(" ")}`,
     hints.length > 0
       ? hints.join(" ")
-      : `Fix what blocks it on the server, then run \`opscrew design${flags}\` again.`,
+      : `Fix what blocks it on the server, then run \`${command}\` again.`,
   );
 }

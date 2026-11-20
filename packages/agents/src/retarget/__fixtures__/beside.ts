@@ -109,7 +109,7 @@ export type FirstAppFolder = Awaited<ReturnType<typeof firstAppFolder>>;
  * {@link BEFORE}, and the records of other second apps there (`apps`).
  */
 export function firstAppServer(
-  o: { memoryGb?: number; apps?: AppRecord[]; first?: string } = {},
+  o: { memoryGb?: number; diskGb?: number; apps?: AppRecord[]; first?: string } = {},
 ): HostFacts {
   const name = o.first ?? FIRST;
   const facts = createdServerFacts(o.apps ?? []);
@@ -118,6 +118,7 @@ export function firstAppServer(
   return HostFactsSchema.parse({
     ...facts,
     memoryBytes: (o.memoryGb ?? 4) * 1024 ** 3,
+    diskFreeBytes: (o.diskGb ?? 40) * 1024 ** 3,
     deployUser: { groups: ["deploy", "docker"], keys: [...BEFORE] },
     dirs: [
       ...facts.dirs.filter((dir) => dir.path !== shop.app && dir.path !== shop.data),

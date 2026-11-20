@@ -219,7 +219,9 @@ describe.skipIf(!findExecutable("git"))("a second app's old side", () => {
     expect(await ownSide("old", s.services).remove(s.session, s.confirm)).toBeUndefined();
     expect(s.host.applies).toHaveLength(1);
     expect(s.runner.calls.slice(again).filter((call) => call.command === "ssh")).toEqual([]);
-    expect(s.deps.reporter.text()).toContain("Nothing of inventory is left on your old server.");
+    expect(s.deps.reporter.text()).toContain(
+      'Nothing of inventory is left on the server of "shop".',
+    );
   });
 
   it("stays joined when the teardown stopped, so --finish runs it again with its own key", async () => {

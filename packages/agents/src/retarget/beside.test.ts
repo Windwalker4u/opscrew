@@ -14,6 +14,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { sharedAccessWarning } from "../design/own";
+import { monitoredPlan, networked, splitPlan } from "../network/__fixtures__/plans";
 import {
   appMemoryMb,
   readServerAddresses,
@@ -21,7 +22,7 @@ import {
   serverAddressesFile,
   updateServerAddresses,
 } from "../shared";
-import { OLD_IPV4, OLD_IPV6, secondAppRecord } from "../testing";
+import { OLD_IPV4, OLD_IPV6, secondAppRecord, testKeyPair } from "../testing";
 import {
   type BesideStart,
   besideStart,
@@ -89,6 +90,14 @@ describe.skipIf(!findExecutable("git"))(
         });
         expect(summary?.extraMonthly.amount).toBe(0);
         expect(summary?.steps[1]).toContain(`Set up the app beside "${FIRST}" on its server`);
+        // The proxy there keeps serving the first app: it is only reloaded at the switch.
+        expect(summary?.steps[2]).toContain(
+          `Point the GitHub deploy secrets at the server of "${FIRST}"`,
+        );
+        expect(summary?.steps[2]).toContain(
+          `the proxy there keeps serving "${FIRST}", and is reloaded for the app once DNS switches.`,
+        );
+        expect(summary?.steps[2]).not.toContain("stays stopped");
         const text = h.reporter.text();
         expect(text).toContain(`to the Hetzner Cloud server of "${FIRST}" (beside it)`);
         expect(text).toContain("Memory limits: the app");
@@ -188,7 +197,7 @@ const REFUSALS: readonly Refusal[] = [
   {
     what: "another proxy than the first app's server runs",
     first: { edge: "nginx" },
-    says: `shop's proxy is Caddy (target.edge in opscrew/plan.yaml), and the server of "${FIRST}" runs nginx for every app on it.`,
+    says: `This app's proxy is Caddy (target.edge in opscrew/plan.yaml), and the server of "${FIRST}" runs nginx for every app on it.`,
     hint: "target.edge: nginx",
   },
   {
@@ -215,6 +224,83 @@ const REFUSALS: readonly Refusal[] = [
       })),
     says: `shop runs Beszel, which changes the whole server, and the server of "${FIRST}" is that app's`,
     hint: "`opscrew addon disable beszel`",
+  },
+  {
+    what: "Portainer, which runs on the whole server",
+    change: async (h) =>
+      editPlan(h, (plan) => ({
+        ...plan,
+        portainer: { enabled: true, version: "2.45.2", access: "local" },
+      })),
+    says: `shop runs Portainer, which changes the whole server, and the server of "${FIRST}" is that app's`,
+    hint: "Turn it off first (`opscrew portainer disable`)",
+  },
+  {
+    what: "self-hosted monitoring on the app's server",
+    change: async (h) =>
+      editPlan(h, (plan) => ({
+        ...plan,
+        observability: {
+          ...plan.observability,
+          monitoring: monitoredPlan({ on: "app" }).observability?.monitoring,
+        },
+      })),
+    says: `shop runs self-hosted monitoring, which changes the whole server, and the server of "${FIRST}" is that app's`,
+    hint: "`opscrew addon disable monitoring`",
+  },
+  {
+    what: "services on other servers, on a private network",
+    change: async (h) => {
+      const { plan } = networked(splitPlan());
+      await editPlan(h, () => plan);
+    },
+    says: `shop runs services on other servers (data), which changes the whole server, and the server of "${FIRST}" is that app's`,
+    hint: "Move shop to a server of its own instead (`opscrew retarget --to <provider>`).",
+  },
+  {
+    what: "a private network for the user's devices",
+    change: async (h) =>
+      editPlan(h, (plan) => ({
+        ...plan,
+        network: {
+          range: "10.200.4.0/24",
+          members: [
+            {
+              name: "app",
+              address: "10.200.4.1",
+              port: 51820,
+              publicKey: testKeyPair("app").publicKey,
+            },
+          ],
+          devices: [
+            {
+              name: "laptop",
+              address: "10.200.4.100",
+              publicKey: testKeyPair("laptop").publicKey,
+              addedAt: "2026-11-01T00:00:00.000Z",
+            },
+          ],
+        },
+      })),
+    says: `shop has a private network for your devices, which changes the whole server, and the server of "${FIRST}" is that app's`,
+    hint: "Move shop to a server of its own instead",
+  },
+  {
+    what: "too little free disk for the app's images and updates",
+    change: async (h) => {
+      h.server.facts = firstAppServer({ diskGb: 20 });
+    },
+    says: `The server of "${FIRST}" has 20 GB of free disk, but OpsCrew plans at least 30 GB of free disk for shop, its images and updates.`,
+    hint: `Free up space on the server of "${FIRST}"`,
+  },
+  {
+    what: "too little free disk for the data the window copies there",
+    change: async (h) => {
+      // Room for the app's images and updates, but not for its database and dump beside them.
+      h.server.facts = firstAppServer({ diskGb: 30 });
+    },
+    says: `The server of "${FIRST}" has 30 GB of free disk, and the move puts 100.0 MB of the app's data there (its database twice while its dump is restored), beside the 30 GB OpsCrew keeps free for the app's images and updates.`,
+    hint: "`--empty <service>`",
   },
   {
     what: "a kernel setting its services need, which the first app's setup owns",

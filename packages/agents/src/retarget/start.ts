@@ -30,6 +30,7 @@ import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
 import { buildOwnServerOption } from "../design/own";
+import { ownServerFreeDiskGb } from "../design/sizing";
 import { deployStrategyFor, ROLLING_NOTE, snapshotSettings } from "../design/strategy";
 import { recordOwnServerAnswers } from "../interview/own-server";
 import { recordPortainerAnswers } from "../interview/portainer";
@@ -271,6 +272,8 @@ interface NewSide {
   network?: NetworkHostFacts;
   /** Said in the summary after its cost (beside another app: the memory left, the warning). */
   notes?: string[];
+  /** The free disk (GB) of a server the move inspected (the user's own, another app's). */
+  diskFreeGb?: number;
 }
 
 /**
@@ -436,10 +439,11 @@ async function ownServerSide(
     );
   }
   // Its memory and free disk, as design checks a server of the user's for the app.
+  const server = ownServerFacts(host);
   const { warnings } = await buildOwnServerOption({
     facts,
     requirements: await requireRequirements(deps),
-    catalog: vpsConnector("own", deps, { ownServer: ownServerFacts(host) }).catalog(),
+    catalog: vpsConnector("own", deps, { ownServer: server }).catalog(),
     access: "public",
     edge: edgeProxy(plan),
   });
@@ -465,6 +469,7 @@ async function ownServerSide(
     build: await builderFor(deps, facts, plan, host.arch),
     deploy: plan.deploy,
     network: host,
+    diskFreeGb: server.diskFreeGb,
   };
 }
 
@@ -487,6 +492,7 @@ async function besideSide(
     build: await builderFor(deps, facts, plan, side.target.arch),
     deploy: plan.deploy,
     address: side.address,
+    diskFreeGb: side.diskFreeGb,
     notes: side.notes,
   };
 }
@@ -611,7 +617,9 @@ export function moveSummary(
   const deploy =
     to.provider === "portainer"
       ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`
-      : `Point the GitHub deploy secrets at ${fresh}, run the deploy workflow on ${plan.cicd.branch} and check the app there; its web server stays stopped until the switch.`;
+      : to.provider === "own" && to.shares !== undefined
+        ? `Point the GitHub deploy secrets at the server of "${to.shares.app}", run the deploy workflow on ${plan.cicd.branch} and check the app there; the proxy there keeps serving "${to.shares.app}", and is reloaded for the app once DNS switches.`
+        : `Point the GitHub deploy secrets at ${fresh}, run the deploy workflow on ${plan.cicd.branch} and check the app there; its web server stays stopped until the switch.`;
   return {
     from,
     to,
@@ -732,6 +740,42 @@ async function emptyChoices(
     }
   }
   return [...empty];
+}
+
+const GIB = 1024 ** 3;
+
+/**
+ * Stops before any change when the new side's free disk (`next.diskFreeGb`, known for a server
+ * the move inspected: the user's own, or another app's) can't hold what the maintenance window
+ * puts there: each copied mount, a Postgres database twice (its dump beside its restored copy, the
+ * dump sized by its data as the summary counts it), and the room the app keeps for its images and
+ * updates (`ownServerFreeDiskGb`).
+ */
+function requireRoomForCopy(plan: DeployPlan, next: NewSide, data: readonly MoveData[]): void {
+  const free = next.diskFreeGb;
+  if (free === undefined) return;
+  const postgres = new Set(
+    servicesOn(plan, APP_SERVER)
+      .filter((service) => service.kind === "postgres")
+      .map((service) => service.name),
+  );
+  const bytes = data
+    .filter((mount) => mount.copy)
+    .reduce((sum, mount) => sum + mount.bytes * (postgres.has(mount.owner) ? 2 : 1), 0);
+  const roomGb = ownServerFreeDiskGb(plan);
+  if (bytes + roomGb * GIB <= free * GIB) return;
+  const { target } = next;
+  const where =
+    target.provider === "own" && target.shares !== undefined
+      ? `The server of "${target.shares.app}"`
+      : upperFirst(sideWords(target, "new"));
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${where} has ${free} GB of free disk, and the move puts ${sizeText(bytes)} of the app's data there (its database twice while its dump is restored), beside the ${roomGb} GB OpsCrew keeps free for the app's images and updates. Nothing was changed.`,
+    {
+      hint: `Free up space there, or start the data the app can do without empty (\`--empty <service>\`), then run \`${RUN_COMMAND}\` again.`,
+    },
+  );
 }
 
 /**
@@ -941,6 +985,7 @@ export async function startMove(
       bytes: volume.bytes,
       copy: !empty.includes(volume.owner),
     }));
+    requireRoomForCopy(plan, next, data);
     // The bucket's size and object count, read on the old server with its key on standard input.
     const measured =
       moved === undefined

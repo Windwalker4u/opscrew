@@ -4,7 +4,6 @@
  * names the first app (`target.shares`), and design's second-app checks run with the moving app's
  * plan before any change.
  */
-import { planHost } from "@opscrew/connector-ssh-host";
 import { listText, toPosixRelative } from "@opscrew/core";
 import { EDGE_PROXIES, edgeMemoryMb, edgeProxy } from "@opscrew/iac-templates";
 import {
@@ -17,17 +16,18 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { memoryText } from "../design/components";
-import { noServerCost, quotedApps, sharedAccessWarning, sharedPriceNote } from "../design/own";
-import { ownServerMemory, type ServerApp } from "../design/sizing";
+import {
+  distinctAmounts,
+  noServerCost,
+  quotedApps,
+  requireSharedEdge,
+  sharedAccessWarning,
+  sharedPriceNote,
+} from "../design/own";
+import { ownServerFreeDiskGb, ownServerMemory, type ServerApp } from "../design/sizing";
 import { recordSharedServerAnswers } from "../interview/own-server";
 import { refusedBeforeChange } from "../previews/host";
-import {
-  connectSecondApp,
-  desiredHost,
-  hostPlanOptions,
-  ownWebSources,
-  secondAppAdapter,
-} from "../provision/own";
+import { connectSecondApp, secondAppAdapter } from "../provision/own";
 import {
   appMemoryMb,
   readDeployPublicKey,
@@ -35,6 +35,7 @@ import {
   type SharesReference,
 } from "../shared";
 import { ownServerFacts } from "../shared/own-server";
+import { requireReadableRecords, requireSecondAppFits } from "../shared/own-server-design";
 import { extraServers, hasExtraServers } from "../shared/servers";
 import { firstApp, hostDescription } from "../shares/first-app";
 import { otherAppsMemory } from "../shares/guard";
@@ -53,6 +54,8 @@ export interface BesideFirstApp {
   cost: CostEstimate;
   /** The first app's server's addresses, which DNS points to after the switch. */
   address: ServerAddress;
+  /** The server's free disk in GB, as inspected: the move's copy must fit there. */
+  diskFreeGb: number;
   /** The summary's lines: the memory left, why there is no server cost, the shared-access warning. */
   notes: string[];
 }
@@ -70,10 +73,12 @@ export interface BesideFirstApp {
  * - another proxy than the one the first app's server runs, another way of serving (behind
  *   Cloudflare's proxy or DNS only);
  * - a record on the server OpsCrew can't read;
+ * - less free disk than the app needs for its images and updates (`ownServerFreeDiskGb`);
  * - too little memory beside the first app's limits and the other apps' records, the edge and the
  *   system (a warning below 15% free);
- * - what the second app's host plan refuses, planned dry over the server as inspected: the name,
- *   the hostnames, a name read as another app's preview, a kernel setting.
+ * - what the second app's host plan refuses, planned dry over the server as inspected
+ *   (`requireSecondAppFits`): the name, the hostnames, a name read as another app's preview, a
+ *   kernel setting.
  *
  * The new side's login (`.opscrew/server.json` → `own`, with the reference) is recorded first, so
  * the server is reached as a second app's commands reach it: the first app's deploy login, its
@@ -123,10 +128,21 @@ export async function besideFirstApp(
       detail: "the new side of a move",
     },
   );
-  requireReadableRecords(facts.apps, name);
+  requireReadableRecords(facts, name, AGAIN);
   const server = ownServerFacts(facts);
   const beside = target(server.arch);
   const moving: DeployPlan = { ...plan, target: beside };
+
+  // The first app's production disk: the app's images and updates need their room there.
+  const diskGb = ownServerFreeDiskGb(plan);
+  if (server.diskFreeGb < diskGb) {
+    const [has, needs] = distinctAmounts(server.diskFreeGb, diskGb);
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
+      `The server of "${name}" has ${has} GB of free disk, but OpsCrew plans at least ${needs} GB of free disk for ${app}, its images and updates.`,
+      `Free up space on the server of "${name}", or name the folder of another app whose server has more free disk; then run \`${AGAIN}\` again.`,
+    );
+  }
 
   // Its memory limits beside the first app's (its plan) and the other apps' (their records).
   const serverMb = server.memoryGb * 1024;
@@ -148,32 +164,14 @@ export async function besideFirstApp(
 
   // The second app's host plan, planned dry over the server as inspected: what it refuses stops
   // here, before any change.
-  const deployPublicKey = await readDeployPublicKey(
-    deps,
-    `cannot check that ${app} fits beside "${name}"`,
-  );
-  const webSources = await ownWebSources(deps, moving, services.cloudflare);
-  const desired = await desiredHost(
-    deps,
-    { session, facts, target: beside, first, ...(webSources === undefined ? {} : { webSources }) },
-    { plan: moving, deployPublicKey },
-  );
-  const host = planHost(facts, desired, AGAIN, hostPlanOptions(moving));
-  const blocked = host.steps.filter((step) => step.state === "blocked");
-  if (host.findings.length > 0 || blocked.length > 0) {
-    const reasons =
-      host.findings.length > 0
-        ? host.findings.map((finding) => finding.message)
-        : blocked.map((step) => `${step.title}: ${step.reason ?? "blocked"}.`);
-    const hints = [...new Set(host.findings.map((finding) => finding.hint))];
-    throw refusedBeforeChange(
-      "PHASE_PRECONDITION",
-      `${app} can't run beside "${name}" on its server: ${reasons.join(" ")}`,
-      hints.length > 0
-        ? hints.join(" ")
-        : `Fix what blocks it on the server, then run \`${AGAIN}\` again.`,
-    );
-  }
+  await requireSecondAppFits(deps, { first: first.plan, facts, session }, moving, {
+    command: AGAIN,
+    deployPublicKey: await readDeployPublicKey(
+      deps,
+      `cannot check that ${app} fits beside "${name}"`,
+    ),
+    cloudflare: services.cloudflare,
+  });
 
   return {
     target: beside,
@@ -183,6 +181,7 @@ export async function besideFirstApp(
       deps.clock.now().toISOString(),
     ),
     address: first.address,
+    diskFreeGb: server.diskFreeGb,
     notes: [
       memoryText(moving, serverMb, edgeMb, undefined, undefined, quotedApps(others)),
       sharedPriceNote(name),
@@ -195,6 +194,29 @@ export async function besideFirstApp(
 function planFile(deps: Pick<PhaseDeps, "paths">): string {
   return toPosixRelative(deps.paths.root, deps.paths.files.plan);
 }
+
+/** The add-ons that work on the whole server, and how each is turned off. */
+const SERVER_WIDE_ADDONS: readonly {
+  label: string;
+  off: string;
+  on: (plan: DeployPlan) => boolean;
+}[] = [
+  {
+    label: "Portainer",
+    off: "`opscrew portainer disable`",
+    on: (plan) => plan.portainer?.enabled === true,
+  },
+  {
+    label: "Beszel",
+    off: "`opscrew addon disable beszel`",
+    on: (plan) => plan.observability?.beszel?.enabled === true,
+  },
+  {
+    label: "self-hosted monitoring",
+    off: "`opscrew addon disable monitoring`",
+    on: (plan) => monitoringOf(plan) !== undefined,
+  },
+];
 
 /**
  * Stops before any change when the app has what changes the whole server, which is the first
@@ -211,44 +233,38 @@ function requireNothingServerWide(plan: DeployPlan, first: string): void {
             ? `runs services on other servers (${listText(extraServers(plan))})`
             : "has a private network for your devices",
         ];
-  const addons = [
-    ...(plan.portainer?.enabled === true ? ["Portainer"] : []),
-    ...(plan.observability?.beszel?.enabled === true ? ["Beszel"] : []),
-    ...(monitoringOf(plan) !== undefined ? ["self-hosted monitoring"] : []),
-  ];
+  const addons = SERVER_WIDE_ADDONS.filter((addon) => addon.on(plan));
   if (network.length === 0 && addons.length === 0) return;
-  const off = [
-    ...(plan.portainer?.enabled === true ? ["`opscrew portainer disable`"] : []),
-    ...(plan.observability?.beszel?.enabled === true ? ["`opscrew addon disable beszel`"] : []),
-    ...(monitoringOf(plan) !== undefined ? ["`opscrew addon disable monitoring`"] : []),
+  const what = [
+    ...network,
+    ...(addons.length === 0 ? [] : [`runs ${listText(addons.map((addon) => addon.label))}`]),
   ];
-  const what = [...network, ...(addons.length === 0 ? [] : [`runs ${listText(addons)}`])];
   const one = network.length + addons.length === 1;
   throw refusedBeforeChange(
     "PHASE_PRECONDITION",
     `${app} ${listText(what)}, which ${one ? "changes" : "change"} the whole server, and the server of "${first}" is that app's: an app beside it changes only its own parts there.`,
     network.length > 0
       ? `Move ${app} to a server of its own instead (\`${RUN_COMMAND} --to <provider>\`).`
-      : `Turn ${addons.length === 1 ? "it" : "them"} off first (${listText(off)}), then run \`${AGAIN}\` again; or move ${app} to a server of its own (\`${RUN_COMMAND} --to <provider>\`).`,
+      : `Turn ${addons.length === 1 ? "it" : "them"} off first (${listText(addons.map((addon) => addon.off))}), then run \`${AGAIN}\` again; or move ${app} to a server of its own (\`${RUN_COMMAND} --to <provider>\`).`,
   );
 }
 
 /**
  * Stops before any change when the app's proxy (`target.edge`) is not the one the first app's
- * (`first`) server runs for every app on it.
+ * (`first`) server runs for every app on it: design's check, with the move's next step.
  */
 function requireSameEdge(
   deps: Pick<PhaseDeps, "paths">,
   plan: DeployPlan,
   first: DeployPlan,
 ): void {
-  const mine = edgeProxy(plan);
+  const mine = EDGE_PROXIES[edgeProxy(plan)].label;
   const theirs = edgeProxy(first);
-  if (mine === theirs) return;
-  throw refusedBeforeChange(
-    "PHASE_PRECONDITION",
-    `${plan.app.name}'s proxy is ${EDGE_PROXIES[mine].label} (target.edge in ${planFile(deps)}), and the server of "${first.app.name}" runs ${EDGE_PROXIES[theirs].label} for every app on it.`,
-    `Switch ${plan.app.name} to ${EDGE_PROXIES[theirs].label} first (target.edge: ${theirs} in ${planFile(deps)}, then \`opscrew provision\`), or name the folder of an app whose server runs ${EDGE_PROXIES[mine].label}; then run \`${AGAIN}\` again.`,
+  requireSharedEdge(
+    plan,
+    first,
+    { planFile: planFile(deps), flags: "" },
+    `Switch ${plan.app.name} to ${EDGE_PROXIES[theirs].label} first (target.edge: ${theirs} in ${planFile(deps)}, then \`opscrew provision\`), or name the folder of an app whose server runs ${mine}; then run \`${AGAIN}\` again.`,
   );
 }
 
@@ -268,25 +284,5 @@ function requireSameServing(plan: DeployPlan, first: DeployPlan): void {
     "PHASE_PRECONDITION",
     `${theirs}, and ${app} is served ${mine}: the apps on one server are served the same way, and a move keeps how the app is served.`,
     `Name the folder of an app served ${mine} in server.shares, or move ${app} to a server of its own (\`${RUN_COMMAND} --to <provider>\`).`,
-  );
-}
-
-/**
- * Stops before any change when the server holds a record OpsCrew can't read (written by a newer
- * OpsCrew, or damaged): that app's memory and hostnames are unknown.
- */
-function requireReadableRecords(
-  apps: readonly { name: string; record: unknown }[],
-  first: string,
-): void {
-  const unreadable = apps
-    .filter((other) => other.record === null)
-    .map((other) => `"${other.name}"`);
-  if (unreadable.length === 0) return;
-  const one = unreadable.length === 1;
-  throw refusedBeforeChange(
-    "PHASE_PRECONDITION",
-    `The server of "${first}" also runs ${listText(unreadable)}, whose record there OpsCrew can't read (written by a newer OpsCrew, or damaged), so OpsCrew doesn't know the memory ${one ? "it takes" : "they take"} or the hostnames ${one ? "it serves" : "they serve"}.`,
-    `Run \`opscrew provision\` with a current OpsCrew in the repository of ${one ? "that app" : "each of them"}, which writes ${one ? "its" : "their"} record again, then run \`${AGAIN}\` here again.`,
   );
 }

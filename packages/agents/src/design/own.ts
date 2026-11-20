@@ -218,13 +218,15 @@ export function requireSharedServing(
 
 /**
  * Stops design for a second app whose proxy (`target.edge` in plan.yaml) differs from the one the
- * first app's (`first`) server runs for every app on it (plan 7., step 2), naming both.
+ * first app's (`first`) server runs for every app on it (plan 7., step 2), naming both. `hint`
+ * replaces design's next step (another command's: a move onto the server).
  * @throws OpsCrewError `PHASE_PRECONDITION`, before anything is written.
  */
 export function requireSharedEdge(
   plan: DeployPlan,
   first: DeployPlan,
   where: { planFile: string; flags: string },
+  hint?: string,
 ): void {
   const mine = edgeProxy(plan);
   const theirs = edgeProxy(first);
@@ -232,7 +234,8 @@ export function requireSharedEdge(
   throw refusedBeforeChange(
     "PHASE_PRECONDITION",
     `This app's proxy is ${EDGE_PROXIES[mine].label} (target.edge in ${where.planFile}), and the server of "${first.app.name}" runs ${EDGE_PROXIES[theirs].label} for every app on it.`,
-    `Set target.edge: ${theirs} in ${where.planFile}, then run \`opscrew design${where.flags}\` again.`,
+    hint ??
+      `Set target.edge: ${theirs} in ${where.planFile}, then run \`opscrew design${where.flags}\` again.`,
   );
 }
 

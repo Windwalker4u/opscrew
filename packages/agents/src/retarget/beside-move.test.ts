@@ -307,7 +307,7 @@ describe.skipIf(!findExecutable("git"))("--abort and --finish of a move beside a
     expect(result).toMatchObject({ step: "aborted", done: true });
     expect(h.server.applies).toEqual([]);
     expect(h.server.facts.deployUser?.keys).toEqual(BEFORE);
-    expect(h.reporter.text()).toContain(`Nothing of ${APP} is left on your new server.`);
+    expect(h.reporter.text()).toContain(`Nothing of ${APP} is left on the server of "${FIRST}".`);
     // Its own key is not on the server yet: the first app's deploy key, read by its path.
     expect(keyFiles(h, calls)).toContain(h.first.paths.files.deployKey);
     expect((await readServerAddresses(h.paths)).own?.host).toBe(OLD_IPV4);

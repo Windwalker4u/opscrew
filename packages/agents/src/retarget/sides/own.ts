@@ -196,8 +196,9 @@ async function remove(
 ): Promise<SideStop> {
   const { deps, plan, command } = session;
   const app = plan.app.name;
-  const words = `your ${which} server`;
   const shares = sharesOf({ target: sideTarget(session, which) });
+  // A second app's server is the first app's.
+  const words = shares === undefined ? `your ${which} server` : `the server of "${shares.app}"`;
   if (
     shares !== undefined &&
     which === "old" &&
