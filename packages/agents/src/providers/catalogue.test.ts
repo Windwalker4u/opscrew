@@ -109,6 +109,20 @@ describe("the provider catalogue", () => {
     });
   });
 
+  it("gives a size's setup fee where creating the server charges one", async () => {
+    const { providers } = await providerCatalogue("1.2.3");
+    const sizes = (id: string) => {
+      const provider = providers.find((entry) => entry.id === id);
+      return provider?.kind === "cloud-server" ? provider.sizes : [];
+    };
+    const v153 = sizes("contabo").find((size) => size.id === "V153");
+    expect(v153?.setupFee).toEqual({ amount: 2, currency: "EUR" });
+    expect(sizes("contabo").find((size) => size.id === "V154")?.setupFee).toBeUndefined();
+    const cx23 = sizes("hetzner").find((size) => size.id === "cx23");
+    expect(cx23).toBeDefined();
+    expect(cx23?.setupFee).toBeUndefined();
+  });
+
   it("gives a token's format where the value alone has one, and marks the secrets", async () => {
     const { providers } = await providerCatalogue("1.2.3");
     const variables = Object.fromEntries(

@@ -108,6 +108,8 @@ const CloudServerEntrySchema = z.strictObject({
         monthly: z.number().nonnegative(),
         /** The price of an hour, for hourly billing. */
         hourly: z.number().nonnegative().optional(),
+        /** A one-time fee creating a server of this size can charge (`billing.setupFee`). */
+        setupFee: MoneySchema.optional(),
         locations: z.array(z.string().min(1)).min(1),
       }),
     )

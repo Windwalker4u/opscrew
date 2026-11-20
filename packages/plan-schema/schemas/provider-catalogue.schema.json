@@ -192,6 +192,21 @@
                       "type": "number",
                       "minimum": 0
                     },
+                    "setupFee": {
+                      "type": "object",
+                      "properties": {
+                        "amount": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "currency": {
+                          "type": "string",
+                          "enum": ["EUR", "USD"]
+                        }
+                      },
+                      "required": ["amount", "currency"],
+                      "additionalProperties": false
+                    },
                     "locations": {
                       "minItems": 1,
                       "type": "array",

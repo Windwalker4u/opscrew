@@ -10,6 +10,7 @@ import type {
   CloudProviderDefinition,
   ComputeCatalog,
   Currency,
+  Money,
   ProviderTokenRule,
   RegistrarId,
 } from "@opscrew/contracts";
@@ -142,6 +143,7 @@ interface Size {
   diskGb: number;
   monthly: number;
   hourly?: number;
+  setupFee?: Money;
   locations: string[];
 }
 
@@ -155,7 +157,12 @@ async function cloudServer(definition: CloudProviderDefinition, catalog: Compute
   // One size per type and price, in the locations that price holds in.
   const sizes = new Map<string, Size>();
   for (const offer of offers) {
-    const key = JSON.stringify([offer.id, offer.monthly.amount, offer.hourly?.amount]);
+    const key = JSON.stringify([
+      offer.id,
+      offer.monthly.amount,
+      offer.hourly?.amount,
+      offer.setupFee?.amount,
+    ]);
     const size = sizes.get(key);
     if (size !== undefined) size.locations.push(offer.location);
     else {
@@ -166,6 +173,7 @@ async function cloudServer(definition: CloudProviderDefinition, catalog: Compute
         diskGb: offer.diskGb,
         monthly: offer.monthly.amount,
         ...(offer.hourly === undefined ? {} : { hourly: offer.hourly.amount }),
+        ...(offer.setupFee === undefined ? {} : { setupFee: offer.setupFee }),
         locations: [offer.location],
       });
     }
