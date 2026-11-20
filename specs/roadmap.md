@@ -10,8 +10,9 @@ arguments from the plan as 0.2.9 on 2026-11-15, [028 moving an app to another Cl
 account](028-cloudflare-account-move/) as 0.2.10. [029 hosting at home](029-home-hosting/), [030
 several apps on a server OpsCrew created](030-shared-created-server/) and [031 a move's maintenance
 window of about a minute](031-short-move-window/) go out together as 0.2.11 (031 building). Next:
-032 scaling across servers (the founder's choice on 2026-11-15, before AWS), then 033 AWS, then
-more providers in phases (034–038), each once the founder gives the go-ahead.
+032 a Codex plugin (the founder's decision on 2026-11-21, for the release after 0.2.11), then 033
+scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then more providers in
+phases (035–039), each once the founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -109,7 +110,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (033), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (034), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -129,7 +130,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (033) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (034) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -300,7 +301,7 @@ AWS on 2026-11-06; its scope set from the research on 2026-11-11,
   like them.
 - Own server and Portainer stay as they are: they are kinds of target with flows of their own,
   not providers.
-- Installing provider packages comes with AWS (033), designed around its first real user.
+- Installing provider packages comes with AWS (034), designed around its first real user.
 - **Other areas get their own contract when a second implementation arrives** (founder,
   2026-11-11), not before, since a contract with one user tends to take the wrong shape:
   - DNS and the edge when Fastly is placed, with Cloudflare moved behind it;
@@ -405,7 +406,7 @@ servers.
     without dropping connections, turning its admin console off, its own certificates (ACME),
     whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
     cache headers, and the image's versions and licence.
-- **Built in**, like the other targets: installing provider packages comes with AWS (033).
+- **Built in**, like the other targets: installing provider packages comes with AWS (034).
 
 ## 028 Moving an app to another Cloudflare account
 
@@ -516,13 +517,43 @@ release command and a restart for the window. Left for later (its research R3):
 - replication for busy databases;
 - a read-only mode kept up during the window.
 
-## 032 Scaling across servers
+## 032 A Codex plugin
+
+The founder's decision of 2026-11-21: in the release after 0.2.11, OpsCrew ships as a plugin for
+OpenAI's Codex, beside the Claude Code plugin. It carries the same skills and the same
+deterministic MCP server, and every change still goes through a plan approved by its hash. That
+approval is enforced in the MCP server and the CLI, whatever approval mode Codex runs in. Research,
+from OpenAI's docs of 2026-11-21: [032-codex-plugin/research.md](032-codex-plugin/research.md).
+
+- **What ships:**
+  - a Codex plugin manifest in `plugin/`, beside Claude Code's;
+  - the skills, which Codex reads in the same `SKILL.md` format;
+  - the MCP server as a stdio server;
+  - a marketplace entry in `.agents/plugins/marketplace.json`.
+
+  The install is `codex plugin marketplace add opscrew-hub/opscrew`, then `/plugins`.
+- **The settings a user needs**, said in the guide and checked where OpsCrew can:
+  - **Network access:** Codex's sandbox has none by default, and OpsCrew runs `tofu`, `ssh` and
+    `git` against the user's clouds.
+  - **Timeouts:** an MCP tool call is cut off after 60 seconds by default, shorter than an apply or
+    a deploy.
+  - **Tokens:** each one reaches the MCP server by `env_vars`, never written in a config file.
+- **Not in Codex's public directory:** it takes no local MCP server, so the plugin ships through
+  the repository's marketplace, as Claude Code's does.
+- **Research first:**
+  - whether a plugin's `mcp.json` takes a stdio server (OpenAI's examples are HTTP), else the
+    `codex mcp add` line;
+  - where a plugin sets the tool timeout;
+  - whether the IDE extension and Codex cloud load it;
+  - a live pass in the Codex CLI with a throwaway app.
+
+## 033 Scaling across servers
 
 Copies of an app's web service and workers on several servers behind a load balancer: more copies
 when the load rises, fewer when it falls, within limits the user approved once. The founder placed
 it after 029 and before AWS on 2026-11-15, after a suggestion to let OpsCrew scale an app onto a
 few cheap servers. Apps on Hetzner, Contabo or the user's own servers can't scale out today; on AWS
-(033) the managed services scale by themselves.
+(034) the managed services scale by themselves.
 
 **What exists today:** split placement (018) runs an app's services on several servers joined by a
 WireGuard private network; deploys switch without downtime, and a release gets traffic only after
@@ -571,7 +602,7 @@ It covers, in order:
   depth) and how to keep them from flapping, draining a copy before it's removed, and the cost of
   each step shown in the plan.
 
-## 033 AWS
+## 034 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -685,19 +716,19 @@ rarely run. If it never runs, those stay "not tested live" on the coverage page.
 ## After AWS: more providers, in phases (founder, 2026-11-16)
 
 The founder listed the providers to add and left the phases to the lead. Hetzner and DigitalOcean
-are built in already; AWS is 033. A phase that brings a provider brings its live test only with an
+are built in already; AWS is 034. A phase that brings a provider brings its live test only with an
 account the founder opens, so each phase's live tests are decided when it starts.
 
-**Amazon CloudFront comes with 033** (S3's files behind it, in its per-component list); in front of
-a whole AWS app it joins 035's contract. **Azure Front Door comes with Azure** (037).
+**Amazon CloudFront comes with 034** (S3's files behind it, in its per-component list); in front of
+a whole AWS app it joins 036's contract. **Azure Front Door comes with Azure** (038).
 
-### 034 More server providers, first wave: OVHcloud, Kamatera, IONOS Cloud, UpCloud
+### 035 More server providers, first wave: OVHcloud, Kamatera, IONOS Cloud, UpCloud
 
-Each is a provider package on 026's contract (ADR 0029), installed as 033 makes provider packages
-installable, so none of them grows the core, and each can host 032's extra copies.
+Each is a provider package on 026's contract (ADR 0029), installed as 034 makes provider packages
+installable, so none of them grows the core, and each can host 033's extra copies.
 
 **Order** (the founder's decision, 2026-11-20): OVHcloud first, then Kamatera, IONOS Cloud and
-UpCloud. Vultr, Akamai Cloud and Scaleway follow in 036.
+UpCloud. Vultr, Akamai Cloud and Scaleway follow in 037.
 
 **Their shapes differ from Hetzner's more than the second wave's do:**
 - OVHcloud's Public Cloud runs on OpenStack with its own projects and keys.
@@ -713,7 +744,7 @@ UpCloud. Vultr, Akamai Cloud and Scaleway follow in 036.
 - its regions, and its prices read live;
 - how its account's projects or data centres map to an app.
 
-### 035 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
+### 036 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
 
 It opens with the contract for the DNS and edge provider, with Cloudflare moved behind it (026's
 rule: a contract when the second implementation arrives); designing it with three at once keeps it
@@ -734,17 +765,17 @@ cache kept off what must not be cached.
   validated, which of them can block those paths on their free or cheapest plan, their Terraform
   providers, and their prices.
 
-### 036 More server providers, second wave: Vultr, Akamai Cloud (Linode), Scaleway
+### 037 More server providers, second wave: Vultr, Akamai Cloud (Linode), Scaleway
 
 After the first wave (the founder's decision, 2026-11-20). Their servers are the shape OpsCrew
 already handles at Hetzner (a server, a firewall, an SSH key, backups or snapshots, billed by use).
-**Research first:** the same list as 034's.
+**Research first:** the same list as 035's.
 
-### 037 Azure and 038 Google Cloud
+### 038 Azure and 039 Google Cloud
 
-After the providers above, as provider packages, reusing 033's managed-services design, Azure
+After the providers above, as provider packages, reusing 034's managed-services design, Azure
 Verified Modules, terraform-google-modules and Infracost. Azure brings Azure Front Door and Azure
-DNS as its edge and DNS; Google Cloud brings Cloud CDN, Cloud Armor and Cloud DNS. Both join 035's
+DNS as its edge and DNS; Google Cloud brings Cloud CDN, Cloud Armor and Cloud DNS. Both join 036's
 contract.
 
 ### Later, if users ask
@@ -769,14 +800,14 @@ contract.
   `node` or `npm` outside the selector) can't test it live.
 - **Database replicas** (founder, 2026-11-15): a second database server that copies the main one
   continuously, for reads (Rails and Laravel send reads there by configuration; Django through a
-  database router) and as a standby, at the same provider or a second one, so that 032's copies at
+  database router) and as a standby, at the same provider or a second one, so that 033's copies at
   two providers survive one of them failing. The standby takes over through an approved switch the
   user starts first; taking over by itself only after research (Patroni and the like).
 - **Left out** (founder, 2026-11-15, from an outside proposal of 20 features, a third of which
   OpsCrew already has): a local dashboard (the hosted control plane is the dashboard), a templates
   marketplace, an operations knowledge base, chaos testing, and compliance evidence reports until
   a customer asks. Sharding a database too: the app must be written for it, it pays off only far
-  beyond one large server, and AWS's managed databases (033) serve apps that big.
+  beyond one large server, and AWS's managed databases (034) serve apps that big.
 - **Down migrations for Alembic projects with several heads, if users ask** (founder, 2026-11-06,
   from 019's database rollback): Alembic's several bases or `branch_labels`, which modular
   codebases use on purpose; no widely used package is known to ship its own branch. Since T1943
