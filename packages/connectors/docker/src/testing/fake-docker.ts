@@ -88,6 +88,8 @@ export class FakeDocker implements DockerTransport {
   readonly streamedBodies: Readable[] = [];
   /** The command's outcome for a container that starts; `undefined` falls back to the built-ins. */
   onStart?: (container: FakeContainer) => FakeRun | undefined;
+  /** The bytes free on the host's disk, which the carrier's staging checks; unlimited when unset. */
+  freeDisk?: number;
   private readonly failures: { method: string; path: RegExp; status: number; message: string }[] =
     [];
   private nextId = 1;
@@ -325,6 +327,13 @@ export class FakeDocker implements DockerTransport {
       .map((line) => (line === "." ? "" : line.slice(2)));
     const source = storageAt("/source");
     if (program === "sh" && args[1] === STAGE_SCRIPT && source !== undefined) {
+      const need = listed.reduce((total, inside) => {
+        const file = source.files.get(inside);
+        return total + (file?.type === "file" ? (file.data?.length ?? 0) : 0);
+      }, 0);
+      if (need + Math.max(need / 10, 64 * 1024 * 1024) > (this.freeDisk ?? Infinity)) {
+        return { exitCode: 4 };
+      }
       for (const inside of listed) {
         const file = source.files.get(inside);
         if (file === undefined) return { exitCode: 1, stderr: "tar: No such file or directory\n" };

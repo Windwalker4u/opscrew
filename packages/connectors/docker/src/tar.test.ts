@@ -2,8 +2,7 @@ import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import { describe, expect, it } from "vitest";
-import { tarStream } from "./tar";
-import { parseTar } from "./testing/tar";
+import { parseTar, tarStream } from "./tar";
 
 /** `data` as a stream of `piece`-byte chunks. */
 function chunked(data: Buffer, piece = 1000): Readable {

@@ -16,9 +16,8 @@ import {
   volumeCarrier,
 } from "./carrier";
 import { dockerClient } from "./client";
-import { tarStream } from "./tar";
+import { parseTar, tarStream } from "./tar";
 import { FakeDocker, type FakeFile } from "./testing/fake-docker";
-import { parseTar } from "./testing/tar";
 
 const IMAGE = "busybox:1.38.0@sha256:0000";
 const ROOTS = ["/srv/data/"];
@@ -594,6 +593,42 @@ describe("volumeCarrier.volumeManifest", () => {
     expect(fake.containers.size).toBe(0);
   });
 
+  it("refuses a link target with a line break, by the count of its lines or by its size", async () => {
+    const { fake, carrier } = host();
+    fake.addVolume("example-app_data", {
+      link: { type: "symlink", mode: 0o777, uid: 0, gid: 0, target: "secret\nname" },
+    });
+    const message =
+      "The volume example-app_data holds a name with a line break, which OpsCrew can't compare path by path.";
+    await expect(carrier.volumeManifest(DATA)).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message,
+    });
+    // As many lines as two links have, but the first link's target isn't as long as its size.
+    fake.onStart = (container) => {
+      const listings = {
+        stat: "directory 755 0 0 4096 .\nsymbolic link 777 0 0 2 ./a\nsymbolic link 777 0 0 1 ./b\n",
+        sum: "",
+        link: "./a\n\n./b\nu\n",
+      };
+      for (const [name, text] of Object.entries(listings)) {
+        container.files?.set(`manifest/${name}`, {
+          type: "file",
+          mode: 0o644,
+          uid: 0,
+          gid: 0,
+          data: Buffer.from(text, "utf8"),
+        });
+      }
+      return { exitCode: 0 };
+    };
+    await expect(carrier.volumeManifest(DATA)).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message,
+    });
+    expect(fake.containers.size).toBe(0);
+  });
+
   it("refuses a name that isn't UTF-8", async () => {
     const { fake, carrier } = host();
     fake.onStart = (container) => {
@@ -619,9 +654,9 @@ describe("volumeCarrier.volumeManifest", () => {
 
   it("fails plainly when the carrier fails or its listing is garbled, and removes it", async () => {
     const { fake, carrier } = host();
-    fake.onStart = () => ({ exitCode: 1, stderr: "sha256sum: ./x: I/O error\n" });
+    fake.onStart = () => ({ exitCode: 1, stderr: "sha256sum: ./secret.txt: I/O error\n" });
     await expect(carrier.volumeManifest(DATA)).rejects.toThrow(
-      "The carrier container could not list volume example-app_data (exit code 1: sha256sum: ./x: I/O error).",
+      /^The carrier container could not list volume example-app_data \(exit code 1\)\.$/,
     );
     for (const stat of ["directory 755 0 0 4096\n", "directory 755 0 0 4096 ."]) {
       fake.onStart = (container) => {
@@ -703,10 +738,30 @@ describe("volumeCarrier.readPaths", () => {
 
   it("fails plainly when a path is gone, and removes the carrier", async () => {
     const { fake, carrier } = host();
+    fake.onStart = () => ({
+      exitCode: 1,
+      stderr: "stat: can't stat './gone': No such file or directory\n",
+    });
     await expect(carrier.readPaths(DATA, ["./gone"])).rejects.toThrow(
-      "The carrier container could not read paths of volume example-app_data (exit code 1: tar: No such file or directory).",
+      /^The carrier container could not read paths of volume example-app_data \(exit code 1\)\.$/,
     );
     expect(fake.containers.size).toBe(0);
+  });
+
+  it("refuses to stage paths the server's free disk can't hold with its margin, and removes the carrier", async () => {
+    const { fake, carrier } = host();
+    fake.freeDisk = 64 * 1024 * 1024 + 69_999;
+    const error = await carrier.readPaths(DATA, ["./app/blob"]).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The server has too little free disk to stage the changes of volume example-app_data.",
+    });
+    expect(fake.containers.size).toBe(0);
+    fake.freeDisk = 64 * 1024 * 1024 + 70_003;
+    const archive = await carrier.readPaths(DATA, ["./app/blob", "./app/config.txt"]);
+    archive.resume();
+    await finished(archive);
   });
 });
 
@@ -772,10 +827,13 @@ describe("volumeCarrier.updateVolume", () => {
   it("unpacks nothing when the removal fails, and removes both carriers", async () => {
     const source = host();
     const target = host();
-    target.fake.onStart = () => ({ exitCode: 1, stderr: "rm: can't remove: Permission denied\n" });
+    target.fake.onStart = () => ({
+      exitCode: 1,
+      stderr: "rm: can't remove './app/blob': Permission denied\n",
+    });
     const archive = await source.carrier.readPaths(DATA, ["./app"]);
     await expect(target.carrier.updateVolume(DATA, archive, ["./app/blob"])).rejects.toThrow(
-      "The carrier container could not remove paths from volume example-app_data (exit code 1: rm: can't remove: Permission denied).",
+      /^The carrier container could not remove paths from volume example-app_data \(exit code 1\)\.$/,
     );
     expect(target.fake.calls.filter((call) => call.startsWith("PUT"))).toHaveLength(1);
     expect(archive.destroyed).toBe(true);
@@ -795,6 +853,19 @@ describe("volumeCarrier.updateVolume", () => {
 });
 
 describe("volumeCarrier: the delta", () => {
+  it("lists and copies a name with a carriage return, as old macOS folder icons have", async () => {
+    const source = host();
+    const target = host();
+    const icon: FakeFile = { type: "file", mode: 0o644, uid: 0, gid: 0, data: Buffer.from("i") };
+    source.fake.volumes.get("example-app_data")?.files.set("app/Icon\r", icon);
+    const old = await source.carrier.volumeManifest(DATA);
+    expect(old.find((entry) => entry.path === "./app/Icon\r")).toMatchObject({ size: 1 });
+    const { copy, remove } = manifestDelta(old, await target.carrier.volumeManifest(DATA));
+    expect({ copy, remove }).toEqual({ copy: ["./app/Icon\r"], remove: [] });
+    await target.carrier.updateVolume(DATA, await source.carrier.readPaths(DATA, copy), remove);
+    expect(await target.carrier.volumeDigest(DATA)).toBe(await source.carrier.volumeDigest(DATA));
+  });
+
   it("brings a copy that was changed, extended and trimmed to the source's digest", async () => {
     const source = host();
     const target = host();

@@ -59,7 +59,8 @@ head -c 300 /dev/urandom > "/data/$(printf 'l%.0s' $(seq 1 120))"`;
 /**
  * The source's changes after the full copy: content of the same size, a mode, a folder's owner, a
  * new tree with spaces, leading dashes and a setuid bit, a link turned folder, a new link with its
- * own owner, a file turned folder, a folder turned file, and a trimmed tree.
+ * own owner, a file turned folder, a folder turned file, a trimmed tree, and a name with a carriage
+ * return.
  */
 const CHANGES = `set -e
 dd if=/dev/urandom of=/data/big.bin bs=1 count=16 seek=1000 conv=notrunc 2>/dev/null
@@ -82,7 +83,8 @@ rm -rf /data/was-dir
 echo d > /data/was-dir
 rm /data/was-file
 mkdir /data/was-file
-echo g > /data/was-file/g`;
+echo g > /data/was-file/g
+echo i > "/data/app/Icon$(printf '\\r')"`;
 
 const STALE = `set -e
 echo old > /data/stale.txt
@@ -188,6 +190,7 @@ describe.skipIf(reason !== undefined)("the carrier against the local Docker", ()
       const { copy, remove } = manifestDelta(old, await writer.volumeManifest(target));
       expect(remove.sort()).toEqual(["./app/cache/blob", "./trim", "./was-dir/inner"]);
       expect(copy).toContain("./-sub dir/ lead.txt");
+      expect(copy).toContain("./app/Icon\r");
       expect(copy).not.toContain("./app/cache/kept");
       const started = Date.now();
       await writer.updateVolume(target, await reader.readPaths(source, copy), remove);

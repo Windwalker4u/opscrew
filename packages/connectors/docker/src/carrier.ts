@@ -21,6 +21,9 @@ const MANIFEST = "/manifest";
 /** The manifest carrier's exit code when a name holds a line break. */
 const LINE_BREAK_EXIT = 3;
 
+/** The staging carrier's exit code when the server's disk can't hold the paths it stages. */
+const DISK_SHORT_EXIT = 4;
+
 /** Where the carrier that checks a folder is no symbolic link mounts the folder's parent. */
 const PARENT_MOUNT = "/parent";
 
@@ -55,13 +58,18 @@ find . -type l -exec sh -c 'for f do printf "%s\\n" "$f"; readlink "$f" || exit 
 
 /**
  * Copies the paths {@link LIST} names (folders without their content) from {@link SOURCE_MOUNT}
- * into {@link MOUNT} in the carrier's own file system, owners and modes kept. Busybox's tar doesn't
- * give a link its owner back, so each link gets its source's.
+ * into {@link MOUNT} in the carrier's own file system, owners and modes kept. It first exits
+ * {@link DISK_SHORT_EXIT} when the server's free disk is short of the listed files' size plus a
+ * margin (a tenth of it, at least 64 MB). Busybox's tar doesn't give a link its owner back, so each
+ * link gets its source's.
  */
 export const STAGE_SCRIPT = `set -e
 set -o pipefail
 mkdir ${MOUNT}
 cd ${SOURCE_MOUNT}
+need=$(tr '\\n' '\\0' < ${LIST} | xargs -0 stat -c '%F %s' | awk '$1 == "regular" { sum += $NF } END { printf "%.0f", sum }')
+free=$(df -Pk / | awk 'NR == 2 { printf "%.0f", $4 * 1024 }')
+if ! awk -v need="$need" -v free="$free" 'BEGIN { margin = need / 10; if (margin < 67108864) margin = 67108864; exit !(need + margin <= free) }'; then exit ${DISK_SHORT_EXIT}; fi
 tar -c -f - --no-recursion -T ${LIST} | tar -x -f - -C ${MOUNT} --numeric-owner
 cd ${MOUNT}
 find . -type l -exec sh -c 'for l do chown -h "$(stat -c %u:%g "${SOURCE_MOUNT}/$l")" "$l" || exit 1; done' sh {} +`;
@@ -141,6 +149,15 @@ function unlistable(source: CarrierSource, why: string): OpsCrewError {
   );
 }
 
+/** The refusal of paths to stage that the server's free disk can't hold. */
+function diskShort(source: CarrierSource): OpsCrewError {
+  return new OpsCrewError(
+    "INVALID_INPUT",
+    `The server has too little free disk to stage the changes of ${described(source)}.`,
+    { hint: "Copy it whole instead, or free some disk on the server, then try again." },
+  );
+}
+
 /**
  * Refuses `paths` that aren't plain manifest paths inside the source (`./` and parts that are
  * neither empty, `.` nor `..`; the root `.` only when `root` allows it), without naming them: they
@@ -200,7 +217,8 @@ function parseManifest(files: readonly TarEntry[], source: CarrierSource): Manif
   };
   const entries = new Map<string, ManifestEntry>();
   for (const line of lines("stat")) {
-    const fields = /^([a-z ]+) ([0-7]+) (\d+) (\d+) (\d+) (\.|\.\/.+)$/.exec(line);
+    // `s`: a name may hold a carriage return or another break `.` wouldn't match, never a newline.
+    const fields = /^([a-z ]+) ([0-7]+) (\d+) (\d+) (\d+) (\.|\.\/.+)$/s.exec(line);
     if (fields === null) throw garbled();
     const [, type = "", mode = "", uid, gid, size, at = ""] = fields;
     entries.set(at, {
@@ -213,17 +231,22 @@ function parseManifest(files: readonly TarEntry[], source: CarrierSource): Manif
     });
   }
   for (const line of lines("sum")) {
-    const fields = /^([0-9a-f]{64}) {2}(\.\/.+)$/.exec(line);
+    const fields = /^([0-9a-f]{64}) {2}(\.\/.+)$/s.exec(line);
     const entry = entries.get(fields?.[2] ?? "");
     if (fields === null || entry === undefined) throw garbled();
     entry.sha256 = fields[1];
   }
+  // Each link's path and target, a line each: a target with a line break adds lines, or (with
+  // the pairs shifted) gives a link a target whose length isn't its size.
   const links = lines("link");
-  if (links.length % 2 !== 0) throw garbled();
+  const count = [...entries.values()].filter((entry) => entry.type === "symbolic link").length;
+  if (links.length !== 2 * count) throw unlistable(source, "with a line break");
   for (let at = 0; at < links.length; at += 2) {
     const entry = entries.get(links[at] ?? "");
-    if (entry === undefined) throw garbled();
-    entry.target = links[at + 1];
+    const target = links[at + 1] ?? "";
+    if (entry?.type !== "symbolic link") throw garbled();
+    if (Buffer.byteLength(target) !== entry.size) throw unlistable(source, "with a line break");
+    entry.target = target;
   }
   return [...entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
@@ -274,7 +297,10 @@ export interface VolumeCarrier {
    * {@link readVolume} streams them, from a read-only carrier. Folders are archived without their
    * content (`--no-recursion`): each changed path is listed itself. The root and the folders
    * above each path come too, with the source's owners and modes. The list reaches the carrier
-   * as a file, never as arguments.
+   * as a file, never as arguments. The carrier stages the paths on the server's disk first: when
+   * its free disk is short of their files' size plus a margin (a tenth of it, at least 64 MB),
+   * the call is refused (`INVALID_INPUT`), and the source is copied whole with
+   * {@link readVolume}, which stages nothing.
    */
   readPaths(source: CarrierSource, paths: readonly string[]): Promise<Readable>;
   /**
@@ -363,8 +389,12 @@ export function volumeCarrier(
     }
   }
 
-  function failed(act: string, source: CarrierSource, exitCode: number, stderr: string) {
-    const said = stderr.trim().split("\n").at(-1)?.trim();
+  /**
+   * A carrier's failure, quoting the last line of its `stderr` when given. A carrier that lists,
+   * stages or removes the app's paths is given none: its errors name them.
+   */
+  function failed(act: string, source: CarrierSource, exitCode: number, stderr?: string) {
+    const said = stderr?.trim().split("\n").at(-1)?.trim();
     return new OpsCrewError(
       "PROVIDER_ERROR",
       `The carrier container could not ${act} ${described(source)} (exit code ${exitCode}${said ? `: ${said}` : ""}).`,
@@ -372,9 +402,11 @@ export function volumeCarrier(
     );
   }
 
-  /** A carrier's stdout, failing plainly unless it exited 0. */
-  function succeeded(result: OneOffResult, act: string, source: CarrierSource): string {
-    if (result.exitCode !== 0) throw failed(act, source, result.exitCode, result.stderr);
+  /** A carrier's stdout, failing plainly unless it exited 0 (quoting its stderr when `quoted`). */
+  function succeeded(result: OneOffResult, act: string, source: CarrierSource, quoted = true) {
+    if (result.exitCode !== 0) {
+      throw failed(act, source, result.exitCode, quoted ? result.stderr : undefined);
+    }
     return result.stdout;
   }
 
@@ -510,8 +542,8 @@ export function volumeCarrier(
 
   /**
    * Prepares the source in a carrier mounted read-write (`cmd`, as `act`; `list`, which throws to
-   * refuse, gives the paths put in as {@link LIST}), then unpacks `archive` into the stopped
-   * carrier, owners and modes kept. On failure `archive` is destroyed, and this settles once it
+   * refuse, gives the paths put in as {@link LIST}; its carrier's errors, which name them, aren't
+   * quoted), then unpacks `archive` into the stopped carrier, owners and modes kept. On failure `archive` is destroyed, and this settles once it
    * has closed.
    */
   async function unpacked(
@@ -529,7 +561,7 @@ export function volumeCarrier(
       await check(source);
       const ran = await ranKept(source, [mounted(source, false)], cmd, paths);
       await thenRemoved(ran.id, async () => {
-        succeeded(ran, act, source);
+        succeeded(ran, act, source, list === undefined);
         await docker.putArchive(ran.id, "/", archive);
       });
     } catch (error) {
@@ -578,7 +610,7 @@ export function volumeCarrier(
       const ran = await ranKept(source, [mounted(source, true)], ["sh", "-c", MANIFEST_SCRIPT]);
       const files = await thenRemoved(ran.id, async () => {
         if (ran.exitCode === LINE_BREAK_EXIT) throw unlistable(source, "with a line break");
-        succeeded(ran, "list", source);
+        succeeded(ran, "list", source, false);
         return parseTar(await buffer(await docker.getArchive(ran.id, MANIFEST)));
       });
       return parseManifest(files, source);
@@ -598,7 +630,8 @@ export function volumeCarrier(
       const ran = await ranKept(source, mounts, ["sh", "-c", STAGE_SCRIPT], [...listed].sort());
       if (ran.exitCode !== 0) {
         await docker.removeContainer(ran.id).catch(() => {});
-        throw failed("read paths of", source, ran.exitCode, ran.stderr);
+        if (ran.exitCode === DISK_SHORT_EXIT) throw diskShort(source);
+        throw failed("read paths of", source, ran.exitCode);
       }
       return streamed(source, ran.id);
     },
@@ -606,7 +639,7 @@ export function volumeCarrier(
     updateVolume: (source, archive, remove) =>
       unpacked(source, archive, "remove paths from", ["sh", "-c", REMOVE_SCRIPT], () => {
         checkPaths(remove, source, false);
-        return [...remove].sort((a, b) => depth(b) - depth(a) || (a < b ? 1 : a > b ? -1 : 0));
+        return [...remove].sort((a, b) => depth(b) - depth(a));
       }),
   };
 }

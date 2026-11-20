@@ -4,6 +4,7 @@
  * and a minimal tar reader.
  */
 
+export { parseTar } from "../tar";
 export { type FakeDialStdio, fakeDialStdio, type OpenedStream } from "./dial-stdio";
 export {
   type FakeContainer,
@@ -13,4 +14,3 @@ export {
   type FakeRun,
   type FakeVolume,
 } from "./fake-docker";
-export { parseTar } from "./tar";

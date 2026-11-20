@@ -3,9 +3,8 @@ import type { DockerRequest, DockerResponse, DockerTransport } from "@opscrew/co
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { DockerApiError, dockerClient } from "./client";
-import { tarStream } from "./tar";
+import { parseTar, tarStream } from "./tar";
 import { FakeDocker } from "./testing/fake-docker";
-import { parseTar } from "./testing/tar";
 
 const IMAGE = "busybox:test";
 
