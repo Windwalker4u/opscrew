@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { monitoredPlan } from "../../network/__fixtures__/plans";
 import { ensureDeployKey } from "../../shared";
 import {
+  BUILT_IMAGE,
   type MoveHarness,
   moveHarness,
   NEW_SERVERS,
@@ -189,7 +190,7 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     const { session } = await moving(h);
     h.hosts.deploy(NEW.ipv4);
     expect(await cloudSide("new").deploy(session)).toBeUndefined();
-    expect(ops(h, NEW.ipv4)).toEqual(["health", "stop caddy"]);
+    expect(ops(h, NEW.ipv4)).toEqual(["deployed?", "health", "stop caddy"]);
     expect(h.hosts.host(NEW.ipv4).caddy).toBe(false);
     expect(h.audit.entries.at(-1)).toMatchObject({
       kind: "remote-exec",
@@ -197,6 +198,31 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
       phase: "retarget",
       detail: "on the new Droplet, until traffic is switched to it",
     });
+  });
+
+  it("FR-3027: a deploy at the move's marker passes with the image and the services, the app never asked", async () => {
+    const h = await moveHarness();
+    const { session } = await moving(h);
+    const side = cloudSide("new");
+    await side.waitForData?.(session, true);
+    expect(h.hosts.host(NEW.ipv4).waiting).toBe(true);
+    h.hosts.deploy(NEW.ipv4);
+    expect(h.hosts.host(NEW.ipv4)).toMatchObject({ app: false, caddy: true });
+    expect(await side.deploy(session)).toBeUndefined();
+    expect(ops(h, NEW.ipv4)).toEqual(["mark waiting", "deployed?", "services up?", "stop caddy"]);
+    expect(await side.deployed?.(session)).toEqual({ image: BUILT_IMAGE, waiting: true });
+    // A service the deploy left stopped fails the check, naming the side, not its address.
+    for (const container of h.hosts.docker(NEW.ipv4).containers.values())
+      container.state = "exited";
+    const error = await side.deploy(session).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "COMMAND_FAILED",
+      message:
+        "The deploy on the new Droplet left db not running, so the app's data can't be copied there yet.",
+    });
+    expect(JSON.stringify(error)).not.toContain(NEW.ipv4);
+    await side.waitForData?.(session, false);
+    expect(h.hosts.host(NEW.ipv4).waiting).toBe(false);
   });
 
   it("lists the app's data mounts by owner and path: volumes and its own data folders", async () => {

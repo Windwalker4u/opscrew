@@ -278,6 +278,12 @@ const BY_HAND: Run = { inputs: { digest: "", tag: "", rollback: false } };
 const ROLLBACK: Run = { inputs: { digest: DIGEST, tag: COMMIT, rollback: true } };
 const ROLLBACK_PAUSED: Run = { ...ROLLBACK, paused: pausedFor("shop/prod") };
 const PROMOTION: Run = { inputs: { digest: DIGEST, tag: COMMIT, rollback: false } };
+/** A move's deploy in its maintenance window (FR-3027): the digest alone, while it pauses the deploys. */
+const MOVE: Run = { inputs: { digest: DIGEST, tag: "", rollback: false } };
+const MOVE_PAUSED: Run = {
+  ...MOVE,
+  paused: JSON.stringify({ "shop/prod": { reason: "move", since: SINCE } }),
+};
 const PROMOTION_PAUSED: Run = { ...PROMOTION, paused: pausedFor("shop/prod") };
 
 const PAUSED = `contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')`;
@@ -297,7 +303,9 @@ describe("a server environment that follows its branch (S3)", () => {
     expect(on.workflow_dispatch).toEqual({
       inputs: {
         digest: {
-          description: expect.stringContaining("`opscrew rollback` fills it in"),
+          description: expect.stringContaining(
+            "`opscrew rollback` or `opscrew retarget` fills it in",
+          ),
           required: false,
           type: "string",
           default: "",
@@ -340,12 +348,12 @@ describe("a server environment that follows its branch (S3)", () => {
     const afterBuild =
       "${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}";
     expect(shape).toEqual({
-      paused: { if: `\${{ !(inputs.rollback) && ${PAUSED} }}` },
-      build: { if: "${{ !inputs.rollback }}" },
-      verify: { if: "${{ inputs.rollback }}" },
+      paused: { if: `\${{ !(inputs.rollback || inputs.digest) && ${PAUSED} }}` },
+      build: { if: "${{ !(inputs.rollback || inputs.digest) }}" },
+      verify: { if: "${{ inputs.rollback || inputs.digest }}" },
       deploy: {
         needs: ["build", "verify"],
-        if: `\${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !${PAUSED}) }}`,
+        if: `\${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !${PAUSED}) }}`,
       },
       sign: { needs: "build" },
       tag: { needs: ["build", "deploy"], if: afterBuild },
@@ -385,6 +393,19 @@ describe("a server environment that follows its branch (S3)", () => {
   it("deploys a rollback's image after verify, paused or not, and labels it", () => {
     expect(ran(flow, ROLLBACK)).toEqual(["deploy", "label", "verify"]);
     expect(ran(flow, ROLLBACK_PAUSED)).toEqual(["deploy", "label", "verify"]);
+  });
+
+  it("FR-3027: deploys a move's digest in its window without a build, paused for the move", () => {
+    expect(ran(flow, MOVE)).toEqual(["deploy", "label", "verify"]);
+    expect(ran(flow, MOVE_PAUSED)).toEqual(["deploy", "label", "verify"]);
+    const { value } = simulate(flow, MOVE_PAUSED);
+    const env = jobs.deploy?.steps.find((s) => s.id === "start")?.env ?? {};
+    // A deploy, not a rollback: the start script runs the release command.
+    expect(value("deploy", env.IMAGE ?? "")).toBe("verify's image");
+    expect(value("deploy", env.MODE ?? "")).toBe("deploy");
+    // Without a tag, the image's commit tag is its build's, in the environment's form.
+    const check = jobs.verify?.steps.find((s) => s.id === "provenance")?.run ?? "";
+    expect(check).toContain('if [[ -z "$TAG" ]]; then TAG="$commit"; fi');
   });
 
   it("gives the deploy and the label the image of the job that ran, and the mode", () => {

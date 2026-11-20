@@ -105,4 +105,10 @@ export {
   SNAPSHOT_GENERATIONS,
   snapshotTakenPath,
 } from "./workflow/snapshots";
-export { FAILED_DEPLOY_DIR, RESTORE_HELD, ROTATION_HOLDER } from "./workflow/switch";
+export {
+  FAILED_DEPLOY_DIR,
+  MOVE_WAITING,
+  RESTORE_HELD,
+  ROTATION_HOLDER,
+  START_OUTCOME,
+} from "./workflow/switch";

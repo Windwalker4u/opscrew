@@ -4,7 +4,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -881,7 +881,8 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
+          {
+            ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -984,6 +985,13 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
+          if [ "$MODE" = deploy ] && [ -f .move.waiting ]; then
+            docker compose up --no-start --no-deps app
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            echo "waiting $APP_IMAGE" > .start.outcome
+            echo '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.'
+            exit 0
+          fi
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           if [ "$database" != keep ]; then
             if [ -z "$running" ] || [ "$running" = "$target" ]; then
@@ -1054,8 +1062,11 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null
           echo finished > .start.outcome
           REMOTE
+          } | tee "$RUNNER_TEMP/opscrew-start.out"
+          if grep -qxF '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.' "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi
       - id: health
         name: Check that the app is healthy
+        if: steps.start.outputs.waiting != 'true'
         env:
           URL: http://\${{ secrets.OPSCREW_HOST }}/api/health
         run: |
@@ -1216,7 +1227,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -2093,7 +2104,8 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
+          {
+            ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -2196,6 +2208,13 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
+          if [ "$MODE" = deploy ] && [ -f .move.waiting ]; then
+            docker compose up --no-start --no-deps app
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            echo "waiting $APP_IMAGE" > .start.outcome
+            echo '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.'
+            exit 0
+          fi
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           if [ "$database" != keep ]; then
             if [ -z "$running" ] || [ "$running" = "$target" ]; then
@@ -2287,8 +2306,11 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           fi
           echo finished > .start.outcome
           REMOTE
+          } | tee "$RUNNER_TEMP/opscrew-start.out"
+          if grep -qxF '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.' "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi
       - id: health
         name: Check that the app is healthy
+        if: steps.start.outputs.waiting != 'true'
         env:
           URL: http://\${{ secrets.OPSCREW_HOST }}/api/health
         run: |
@@ -2454,7 +2476,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -3371,7 +3393,8 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
+          {
+            ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -3474,6 +3497,13 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db cache
+          if [ "$MODE" = deploy ] && [ -f .move.waiting ]; then
+            docker compose up --no-start --no-deps app
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            echo "waiting $APP_IMAGE" > .start.outcome
+            echo '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.'
+            exit 0
+          fi
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           if [ "$MODE" = rollback ]; then
             if [ "$database" = keep ]; then echo 'A rollback runs no release command: the data and the schema stay as they are.'; else echo 'A rollback runs no release command.'; fi
@@ -3594,8 +3624,11 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           done
           echo finished > .start.outcome
           REMOTE
+          } | tee "$RUNNER_TEMP/opscrew-start.out"
+          if grep -qxF '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.' "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi
       - id: health
         name: Check that the app is healthy
+        if: steps.start.outputs.waiting != 'true'
         env:
           URL: http://\${{ secrets.OPSCREW_HOST }}/api/health
         run: |

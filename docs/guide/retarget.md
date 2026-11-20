@@ -101,6 +101,10 @@ expected length. Nothing changes until you continue.
      web server files when the app comes from your Portainer, or Portainer's stack template when
      it goes there), OpsCrew opens one pull request with them and stops; merge it and run
      `npx opscrew retarget` again.
+   - When the move copies data to a server, its deploys there bring up only the app's image and
+     its services until the copy: the release command and the app start in the maintenance window,
+     on the copied data, so an app whose migrations need its existing tables never runs on an empty
+     database. OpsCrew checks that the image is there and the services run.
    - In Portainer, the app's stacks are planned and approved by hash, as `opscrew provision` does,
      with the exact version the old side runs (the deploy branch is written with it, after your
      approval).
@@ -201,6 +205,7 @@ The summary shows the window's expected length before anything changes:
 | Two servers (cloud or your own) | 2 minutes, plus 1 per 100 MB of data copied |
 | A server and your Portainer | 2 minutes, plus 1 per 900 MB (about 15 MB/s through Portainer's API) |
 | With a bucket that moves | Add a minute per 2,000 objects for its last copy |
+| Onto a server | Add 5 minutes for the deploy that starts the app there |
 
 Data that starts empty doesn't count. In the window, after your approval (which lists each step and
 each piece of data with its size):
@@ -210,13 +215,17 @@ each piece of data with its size):
 3. The services stop cleanly on the old side, and the app and services stop on the new side.
 4. A bucket that moves gets its last copy.
 5. Each piece of data is copied and checked.
-6. The services start on the new side, PostgreSQL is restored, the release command runs, and the
-   app starts and must answer its health check.
+6. The services start on the new side and PostgreSQL is restored.
+7. On a server, the deploy workflow runs there with the image its first deploy left, without a
+   build: the release command runs on the copied data, then the app, its workers and cron jobs
+   start. In your Portainer, the release command runs and the app starts. Either way the app must
+   answer its health check, and on a server its web server stays stopped until the switch.
 
-If anything fails, the window rolls back: the data written on the new side is emptied, the old
-side's services and app start again, and nothing has switched. Your visitors are served by the old
-side, and the next run repeats the window. If the DNS switch fails, the same happens. Finishing or
-aborting the move resumes the scheduled check.
+If anything fails, the window rolls back: the data written on the new side is emptied, a server's
+deploys there go back to bringing up only the image and the services, the old side's services and
+app start again, and nothing has switched. Your visitors are served by the old side, and the next
+run repeats the window. If the DNS switch fails, the same happens. Finishing or aborting the move
+resumes the scheduled check.
 
 Without data to copy (none, or a database hosted elsewhere) and without a bucket that moves, there
 is no window: the old side serves until the switch.

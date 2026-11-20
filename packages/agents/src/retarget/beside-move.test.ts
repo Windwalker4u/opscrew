@@ -121,9 +121,10 @@ describe.skipIf(!findExecutable("git"))(
       // makes its volume, which Docker seeds from the image.
       mountKeptFolder(h, OLD_IPV4, KEPT_FILES);
       const deploy = h.hosts.deploy.bind(h.hosts);
-      h.hosts.deploy = (ip) => {
-        deploy(ip);
+      h.hosts.deploy = (ip, image) => {
+        const deployed = deploy(ip, image);
         mountKeptFolder(h, ip, IMAGE_FILES);
+        return deployed;
       };
       const result = await runRetarget(h.deps, {
         services: h.services,

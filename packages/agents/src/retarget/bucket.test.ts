@@ -526,13 +526,14 @@ describe.skipIf(!findExecutable("git"))("a move that takes the bucket along (US4
       `${OLD_IPV4} size`,
       `${n} sync`,
     ]);
+    // FR-3027: the window starts the app on the new server with a deploy too.
     expect(h.reporter.text()).toContain(
-      "Expected maintenance window: about 3 minutes, for the bucket's last copy.",
+      "Expected maintenance window: about 8 minutes, for the bucket's last copy and the deploy that starts the app.",
     );
     const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
     expect(window?.details).toContain("copy what changed in the bucket shop-uploads");
     expect(window?.details).not.toContain("Docker's archive API");
-    expect(window?.details).toContain("About 3 minutes");
+    expect(window?.details).toContain("About 8 minutes");
     // The window's sync has a timeout of its own, from the bucket's object count.
     expect(b.rclone.runs.find((r) => r.verb === "sync")?.timeoutMs).toBe(8 * 60_000);
   });

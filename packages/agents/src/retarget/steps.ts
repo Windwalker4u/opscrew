@@ -14,6 +14,7 @@ import {
   edgeProxy,
   keepNewerPins,
   type RenderedFile,
+  ROLLBACK_INPUTS,
   serverDeploySecrets,
 } from "@opscrew/iac-templates";
 import {
@@ -74,6 +75,7 @@ import {
 import { composeProject, moveSide, sideTarget, sideWords } from "./sides";
 import { ABORT_COMMAND, approveCommand, providerWords, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
+import { copiesData } from "./window";
 
 const WORKFLOW_WAIT_MS = 30 * 60_000;
 
@@ -624,25 +626,56 @@ async function deployFilesStop(session: MoveSession): Promise<RetargetResult | u
   };
 }
 
-/** Dispatches the deploy workflow on the plan's branch and waits for it to succeed. */
-async function runDeployWorkflow(session: MoveSession): Promise<void> {
+/** One run of the deploy workflow for the new side, and what its messages say. */
+export interface DeployRun {
+  /** The dispatch's inputs: none to build the branch, the image's digest to deploy it alone. */
+  inputs: Record<string, string>;
+  /** What the run is for, after "Running the deploy workflow (<file> on <branch>) ". */
+  purpose: string;
+  /** Said after a failure: where the users are served. */
+  still: string;
+  /** What to do after a failed run, before it is run again. */
+  hint: string;
+}
+
+/**
+ * The run of the deploy workflow before the copy (step `deployed`): a build of the branch, whose
+ * deploy on a server that waits for the move's data brings up only the image and the services.
+ */
+function firstDeploy(session: MoveSession): DeployRun {
+  const words = sideWords(session.plan.target, "new");
+  return {
+    inputs: {},
+    purpose: `for ${words}`,
+    still: `The app on ${sideWords(moveOf(session).from.target, "old")} still serves your users. Nothing else changed.`,
+    hint: `Open the run to see what failed and push a fix (deploys now go to ${words}), then run \`${RUN_COMMAND}\` again. To go back instead, run \`${ABORT_COMMAND}\`.`,
+  };
+}
+
+/** Dispatches the deploy workflow on the plan's branch for `how` and waits for it to succeed. */
+export async function runDeployWorkflow(session: MoveSession, how: DeployRun): Promise<void> {
   const { deps, plan, githubApi } = session;
   const { owner, repo } = session.github;
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const branch = plan.cicd.branch;
-  const words = sideWords(plan.target, "new");
-  const oldStill = `The app on ${sideWords(moveOf(session).from.target, "old")} still serves your users.`;
-  deps.reporter.step(`Running the deploy workflow (${workflowFile} on ${branch}) for ${words}`);
+  const digest = how.inputs[ROLLBACK_INPUTS.digest];
+  deps.reporter.step(`Running the deploy workflow (${workflowFile} on ${branch}) ${how.purpose}`);
   let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
   try {
     // Recorded as soon as GitHub accepts the dispatch, before any wait for its run.
-    const { runId } = await githubApi.dispatchWorkflow(owner, repo, workflowFile, branch, {}, () =>
-      auditMove(session, {
-        kind: "provider-call",
-        action: "dispatch workflow",
-        target: `${owner}/${repo}`,
-        detail: `${workflowFile} on ${branch}`,
-      }),
+    const { runId } = await githubApi.dispatchWorkflow(
+      owner,
+      repo,
+      workflowFile,
+      branch,
+      how.inputs,
+      () =>
+        auditMove(session, {
+          kind: "provider-call",
+          action: "dispatch workflow",
+          target: `${owner}/${repo}`,
+          detail: `${workflowFile} on ${branch}${digest === undefined ? "" : ` with ${digest}`}`,
+        }),
     );
     run = await githubApi.waitForWorkflowRun(owner, repo, {
       workflowFile,
@@ -653,7 +686,7 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
   } catch (error) {
     throw new OpsCrewError(
       codeOf(error),
-      deps.redactor.redact(`Running the deploy workflow failed: ${reasonOf(error)}. ${oldStill}`),
+      deps.redactor.redact(`Running the deploy workflow failed: ${reasonOf(error)}. ${how.still}`),
       {
         hint: `${hintOf(error)}Check the workflow in your repository's Actions tab, then run \`${RUN_COMMAND}\` again, or \`${ABORT_COMMAND}\` to undo the move.`,
       },
@@ -670,10 +703,8 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
   if (!ok) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}. ${oldStill} Nothing else changed.`,
-      {
-        hint: `Open the run to see what failed and push a fix (deploys now go to ${words}), then run \`${RUN_COMMAND}\` again. To go back instead, run \`${ABORT_COMMAND}\`.`,
-      },
+      `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}. ${how.still}`,
+      { hint: how.hint },
     );
   }
   deps.reporter.success(`The deploy workflow succeeded (${run.htmlUrl}).`);
@@ -694,13 +725,14 @@ async function deployedInThisMove(session: MoveSession): Promise<boolean> {
 }
 
 /**
- * Step 4: with a private network, the new app server joins it first (`joinMoveNetwork`); the
- * deploy secrets point to the new side (a server's over SSH, or the build values for
- * the user's Portainer); deploy files that differ for the new side wait for their pull request
- * first; then the new side's deploy: on a server the deploy workflow puts the app there,
- * and the side checks it and stops its edge until the switch; in Portainer its stacks are applied
- * with the version the old side runs; then self-hosted monitoring's host plans for the new app
- * server (`moveMonitoring`).
+ * Step 4: with a private network, the new app server joins it first (`joinMoveNetwork`); on a
+ * server, when the move copies data (FR-3027), the marker that holds the app for it, before the
+ * deploy secrets point to the new side (a server's over SSH, or the build values for the user's
+ * Portainer), so every deploy there sees it; deploy files that differ for the new side wait for
+ * their pull request first; then the new side's deploy: on a server the deploy workflow puts the
+ * app there (at the marker, only its image and services), and the side checks it and stops its
+ * edge until the switch; in Portainer its stacks are applied with the version the old side runs;
+ * then self-hosted monitoring's host plans for the new app server (`moveMonitoring`).
  */
 export async function deployStep(
   session: MoveSession,
@@ -719,6 +751,18 @@ export async function deployStep(
   const joined = await joinMoveNetwork(session);
   if (joined !== undefined) return joined;
   const words = sideWords(plan.target, "new");
+  // A server's deploys bring up only the image and the services until the window copied the data.
+  const waits = side.waitForData !== undefined && copiesData(plan);
+  if (waits) {
+    await side.waitForData?.(session, true);
+    await auditMove(session, {
+      kind: "remote-exec",
+      action: "hold the app for its data",
+      target: words,
+      decision: "approved",
+      detail: `the deploys on ${words} bring up only the app's image and services until the move copied its data`,
+    });
+  }
   const where = {
     host: portainer ? PORTAINER_SECRETS_RECORD : newServer(session).ipv4,
     owner: session.github.owner,
@@ -733,7 +777,7 @@ export async function deployStep(
   if (pending !== undefined) return pending;
   // A script that stopped after the deploy (at a host plan's hash) does not deploy again.
   if (!portainer && !(await deployedInThisMove(session))) {
-    await runDeployWorkflow(session);
+    await runDeployWorkflow(session, firstDeploy(session));
     await writeFileAtomic(deployedFile(session), `${JSON.stringify(moveOf(session).startedAt)}\n`);
   }
   const stop = await side.deploy(session);
@@ -752,7 +796,14 @@ export async function deployStep(
   if (bucket !== undefined) await copyBucket(session, "copy", await bucketKeys(session, bucket));
   await saveMove(session, { ...moveOf(session), step: "deployed" });
   await rm(deployedFile(session), { force: true });
-  deps.reporter.success(`The app runs on ${words}; the old side still serves users.`);
-  await auditStep(session, "deployed", `app deployed and healthy on ${words}`);
+  if (waits) {
+    deps.reporter.success(
+      `The app's image and services are ready on ${words}; the app starts there once its data is copied, and the old side still serves users.`,
+    );
+    await auditStep(session, "deployed", `the app's image and services ready on ${words}`);
+  } else {
+    deps.reporter.success(`The app runs on ${words}; the old side still serves users.`);
+    await auditStep(session, "deployed", `app deployed and healthy on ${words}`);
+  }
   return undefined;
 }

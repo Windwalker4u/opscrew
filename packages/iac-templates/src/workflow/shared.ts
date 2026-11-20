@@ -299,8 +299,8 @@ export function builderBranchOf(
 /**
  * The jobs whose outputs `image` (`<name>@<digest>`) and `tag` (`<name>:<commit tag>`, see
  * {@link environmentTag}) the deploy takes, one of which runs: for an environment that follows a
- * branch, `build` (a push, or a run started by hand) or `verify` (a rollback dispatch); for a
- * promoted environment, `verify`.
+ * branch, `build` (a push, or a run started by hand) or `verify` (a dispatch with a digest,
+ * {@link DEPLOYS_DIGEST}); for a promoted environment, `verify`.
  */
 export function imageJobs(plan: DeployPlan): readonly ("build" | "verify")[] {
   return promoted(plan) ? ["verify"] : ["build", "verify"];
@@ -321,6 +321,14 @@ export const ROLLBACK_INPUTS = { digest: "digest", tag: "tag", rollback: "rollba
  * has `inputs` `{}` (research R6, S3), so it is never compared with `'true'`.
  */
 export const ROLLING_BACK = `inputs.${ROLLBACK_INPUTS.rollback}`;
+
+/**
+ * True, in an environment that follows a branch, in a dispatch that names the image to deploy (an
+ * expression): a rollback's, or one with a digest alone, which `opscrew retarget` gives once a
+ * move copied the app's data to its new server (FR-3027). Neither builds, and both deploy while the
+ * environment's deploys are paused; a push and a run started by hand without inputs have no digest.
+ */
+export const DEPLOYS_DIGEST = `${ROLLING_BACK} || inputs.${ROLLBACK_INPUTS.digest}`;
 
 /** A step's `MODE`: `rollback` in a rollback dispatch, otherwise `deploy`. */
 export const MODE_ENV = `    MODE: \${{ ${ROLLING_BACK} && 'rollback' || 'deploy' }}`;
@@ -439,16 +447,17 @@ export function promotedAbout(
  * `opscrew promote` and `opscrew rollback` dispatch it with the digest and the commit tag
  * ({@link environmentTag} of the environment that built the image, which may be the source's own
  * source), required. For one that follows a branch they are optional: without inputs it builds and
- * deploys the branch, and `opscrew rollback` gives it an earlier image's, which it deploys without
- * a build. A rollback sets `rollback`.
+ * deploys the branch, `opscrew rollback` gives it an earlier image's, which it deploys without
+ * a build, and `opscrew retarget` the digest alone of the image a move's new server holds
+ * ({@link DEPLOYS_DIGEST}), whose commit tag is then its build's. A rollback sets `rollback`.
  */
 function imageDispatch(promotion: boolean): string[] {
   const fills = promotion
     ? "`opscrew promote` or `opscrew rollback` fills it in."
     : "`opscrew rollback` fills it in.";
-  const input = (name: string, description: string) => [
+  const input = (name: string, description: string, by = fills) => [
     `      ${name}:`,
-    `        description: ${description} ${fills}`,
+    `        description: ${description} ${by}`,
     `        required: ${promotion}`,
     "        type: string",
     ...(promotion ? [] : ['        default: ""']),
@@ -456,15 +465,18 @@ function imageDispatch(promotion: boolean): string[] {
   return [
     "  workflow_dispatch:",
     "    inputs:",
-    ...input(
-      ROLLBACK_INPUTS.digest,
-      `${promotion ? "The image" : "For a rollback, the image"} to deploy, by its digest (sha256:…);`,
-    ),
+    ...(promotion
+      ? input(ROLLBACK_INPUTS.digest, "The image to deploy, by its digest (sha256:…);")
+      : input(
+          ROLLBACK_INPUTS.digest,
+          "For a rollback or a move, the image to deploy without a build, by its digest (sha256:…);",
+          "`opscrew rollback` or `opscrew retarget` fills it in.",
+        )),
     ...input(
       ROLLBACK_INPUTS.tag,
       promotion
         ? "The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it);"
-        : "For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod);",
+        : "For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod; without it, its build's);",
     ),
     `      ${ROLLBACK_INPUTS.rollback}:`,
     "        description: Deploy the image without running the release command, for a rollback; `opscrew rollback` sets it.",

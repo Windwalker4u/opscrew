@@ -5,23 +5,19 @@ import { describe, expect, it } from "vitest";
 import { sshArgs } from "../shared";
 import { ScriptedRunner } from "../testing";
 import {
-  PRISMA_P3018,
-  RELEASE_OUTPUT_FRAGMENTS,
-  SQLALCHEMY_ERROR,
-} from "./__fixtures__/release-output";
-import {
   copyDump,
   databaseSize,
   dumpDatabase,
   dumpPath,
-  hasReleaseService,
   isAppHealthy,
+  markWaiting,
   moveTimeoutMs,
+  readDeployed,
   recreateDatabase,
   reloadEdge,
   removeDump,
+  requireServicesUp,
   restoreDatabase,
-  runRelease,
   startService,
   stopService,
   verifyDump,
@@ -507,81 +503,76 @@ describe("copyDump", () => {
   });
 });
 
-describe("release", () => {
-  it("finds the release service in the server's compose file", async () => {
-    const remote = new FakeRemote("h", () => ok("app\nrelease\ndb\ncaddy\n"));
-    expect(await hasReleaseService(remote, { redact: identity, folder: FOLDER })).toBe(true);
+describe("a move's marker on the new server (FR-3027)", () => {
+  const IMAGE = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
+  const ops = { redact: identity, folder: FOLDER };
+
+  it("writes the marker in the app's folder, made first, and removes it", async () => {
+    const remote = new FakeRemote("h");
+    await markWaiting(remote, true, ops);
+    await markWaiting(remote, false, ops);
     expect(remote.calls).toEqual([
       {
-        command: "cd /srv/apps/shop && docker compose --profile release config --services",
+        command: "mkdir -p /srv/apps/shop && : > /srv/apps/shop/.move.waiting",
+        timeoutMs: MIN,
+      },
+      { command: "rm -f /srv/apps/shop/.move.waiting", timeoutMs: MIN },
+    ]);
+    const error = await caught(
+      markWaiting(new FakeRemote("h", () => fail("Permission denied")), true, ops),
+    );
+    expect(error.message).toBe("Could not hold the app for its data on h: Permission denied");
+  });
+
+  it("reads the image the deploy left, and whether it stopped at the marker", async () => {
+    const answer = (outcome: string, image: string) =>
+      new FakeRemote("h", () => ok(`outcome=${outcome}\nimage=${image}\n`));
+    expect(await readDeployed(answer(`waiting ${IMAGE}`, IMAGE), ops)).toEqual({
+      image: IMAGE,
+      waiting: true,
+    });
+    expect(await readDeployed(answer("finished", IMAGE), ops)).toEqual({
+      image: IMAGE,
+      waiting: false,
+    });
+    // A release that failed before the switch wrote no .env; anything but a digest is none.
+    expect(await readDeployed(answer("started", ""), ops)).toEqual({
+      image: undefined,
+      waiting: false,
+    });
+    expect(await readDeployed(answer("waiting x", "ghcr.io/acme/shop:latest"), ops)).toEqual({
+      image: undefined,
+      waiting: false,
+    });
+    const remote = answer("finished", IMAGE);
+    await readDeployed(remote, ops);
+    expect(remote.calls[0]?.command).toBe(
+      "cd /srv/apps/shop && printf 'outcome=%s\\nimage=%s\\n' \"$(cat .start.outcome 2> /dev/null)\" \"$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null)\"",
+    );
+  });
+
+  it("accepts the image and the services running, and names a service that does not run", async () => {
+    const remote = new FakeRemote("h", () => ok("db\ncache\n"));
+    await requireServicesUp(remote, ["db", "cache"], ops);
+    expect(remote.calls).toEqual([
+      {
+        command:
+          "cd /srv/apps/shop && docker image inspect --format '{{.Id}}' \"$(sed -n 's/^APP_IMAGE=//p' .env)\" > /dev/null && docker compose ps --status running --services",
         timeoutMs: MIN,
       },
     ]);
-    const without = new FakeRemote("h", () => ok("app\ndb\ncaddy\n"));
-    expect(await hasReleaseService(without, { redact: identity, folder: FOLDER })).toBe(false);
-    const similar = new FakeRemote("h", () => ok("app\nrelease-notes\n"));
-    expect(await hasReleaseService(similar, { redact: identity, folder: FOLDER })).toBe(false);
-    const error = await caught(
-      hasReleaseService(new FakeRemote("h", () => fail("no configuration file provided")), {
-        redact: identity,
-        folder: FOLDER,
-      }),
+    const stopped = await caught(
+      requireServicesUp(new FakeRemote("h", () => ok("db\n")), ["db", "cache"], ops),
     );
-    expect(error.message).toContain("read the Compose services on h");
-  });
-
-  it("runs the release service in a one-off container with a size-scaled timeout", async () => {
-    const remote = new FakeRemote("h");
-    await runRelease(remote, 250 * MB, { folder: FOLDER });
-    expect(remote.calls).toEqual([
-      {
-        command: "cd /srv/apps/shop && docker compose run --rm --no-deps -T release",
-        timeoutMs: moveTimeoutMs(250 * MB),
-      },
-    ]);
-  });
-
-  it.each([
-    { tool: "Prisma P3018", stderr: PRISMA_P3018 },
-    { tool: "SQLAlchemy", stderr: SQLALCHEMY_ERROR },
-  ])("a failed release ($tool) shows the exit code and none of its output", async ({ stderr }) => {
-    const remote = new FakeRemote("198.51.100.7", () => ({
-      exitCode: 1,
-      stdout: stderr,
-      stderr,
-    }));
-    const error = await caught(runRelease(remote, 0, { folder: FOLDER }));
-    expect(error.code).toBe("COMMAND_FAILED");
-    expect(error.message).toBe(
-      "Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on 198.51.100.7: it exited with code 1 (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).",
+    expect(stopped.message).toBe(
+      "The deploy on h left cache not running, so the app's data can't be copied there yet.",
     );
-    expect(error.hint).toContain("The old server keeps serving your users.");
-    expect(error.hint).toContain(
-      "`ssh deploy@198.51.100.7`, then `cd /srv/apps/shop && docker compose run --rm --no-deps -T release`",
+    const missing = await caught(
+      requireServicesUp(new FakeRemote("h", () => fail("No such image")), ["db"], ops),
     );
-    expect(error.hint).toContain("app.releaseCommand");
-    for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
-      expect(`${error.message}\n${error.hint}`).not.toContain(fragment);
-    }
-  });
-
-  it("a release that times out or loses the connection says so plainly", async () => {
-    const slow = new FakeRemote("h", () => ({
-      exitCode: 1,
-      stdout: "",
-      stderr: SQLALCHEMY_ERROR,
-      timedOut: true,
-    }));
-    const late = await caught(runRelease(slow, 0, { folder: FOLDER }));
-    expect(late.message).toContain("it did not finish within 5 minutes");
-    const broken = new FakeRemote("h", () => {
-      throw new Error(SQLALCHEMY_ERROR);
-    });
-    const lost = await caught(runRelease(broken, 0, { folder: FOLDER }));
-    expect(lost.message).toContain("the SSH connection failed");
-    for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
-      expect(`${late.message}${late.hint}${lost.message}${lost.hint}`).not.toContain(fragment);
-    }
+    expect(missing.message).toBe(
+      "Could not check the app's image and services on h: No such image",
+    );
   });
 });
 

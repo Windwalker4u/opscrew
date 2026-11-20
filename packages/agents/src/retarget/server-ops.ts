@@ -1,12 +1,14 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
-import { durationText, errorMessage, OpsCrewError, type Redactor } from "@opscrew/core";
+import { durationText, errorMessage, listText, OpsCrewError, type Redactor } from "@opscrew/core";
 import {
   appDir,
   EDGE_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
+  MOVE_WAITING,
   OPENLITESPEED_COMMAND,
   processServices,
+  START_OUTCOME,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
@@ -458,59 +460,89 @@ export async function restoreDatabase(
   );
 }
 
-/** The Compose service that runs `app.releaseCommand` (only `docker compose run` starts it). */
-const RELEASE_SERVICE = "release";
-const RELEASE_COMMAND = `docker compose run --rm --no-deps -T ${RELEASE_SERVICE}`;
-
 /**
- * True when the app's `compose.yaml` on the server defines the `release` service: the deployed
- * version has a release command, and its deploy workflow runs it before each new version starts.
+ * Writes (`waiting`) or removes a move's marker in the app's folder (`MOVE_WAITING`, FR-3027):
+ * while it is there, the deploys on the server bring up only the app's image and services, so the
+ * release command never runs on the move's empty databases. The folder is made first: a server
+ * OpsCrew created has none before the app's first deploy.
  */
-export async function hasReleaseService(
+export async function markWaiting(
   remote: RemoteExec,
+  waiting: boolean,
   options: ServerOpOptions,
-): Promise<boolean> {
-  const result = await runStep(
+): Promise<void> {
+  const { folder } = options;
+  const marker = `${folder}/${MOVE_WAITING}`;
+  await runStep(
     remote,
-    `cd ${options.folder} && docker compose --profile ${RELEASE_SERVICE} config --services`,
+    waiting ? `mkdir -p ${folder} && : > ${marker}` : `rm -f ${marker}`,
     MINUTE,
-    { what: "read the Compose services", hint: composePsHint(remote.host, options) },
+    {
+      what: waiting ? "hold the app for its data" : "let the deploys start the app",
+      hint: composePsHint(remote.host, options),
+    },
     options.redact,
   );
-  return result.stdout.split(/\r?\n/).some((line) => line.trim() === RELEASE_SERVICE);
+}
+
+/** The app's image as the deploy workflow names it: GitHub Container Registry, by digest. */
+const IMAGE_BY_DIGEST = /^ghcr\.io\/[^@\s'"`$\\]+@sha256:[0-9a-f]{64}$/;
+
+/** What the server's last deploy left in the app's folder. */
+export interface DeployedState {
+  /** The image `.env` names, by digest; none before a deploy got that far. */
+  image: string | undefined;
+  /** It stopped at a move's marker (`START_OUTCOME` says `waiting <image>`). */
+  waiting: boolean;
+}
+
+/** Reads what the server's last deploy left ({@link DeployedState}); changes nothing. */
+export async function readDeployed(
+  remote: RemoteExec,
+  options: ServerOpOptions,
+): Promise<DeployedState> {
+  const { folder } = options;
+  const result = await runStep(
+    remote,
+    `cd ${folder} && printf 'outcome=%s\\nimage=%s\\n' "$(cat ${START_OUTCOME} 2> /dev/null)" "$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null)"`,
+    MINUTE,
+    { what: "read what the deploy left", hint: composePsHint(remote.host, options) },
+    options.redact,
+  );
+  const field = (name: string) =>
+    new RegExp(`^${name}=(.*)$`, "m").exec(result.stdout)?.[1]?.trim() ?? "";
+  const named = field("image");
+  const image = IMAGE_BY_DIGEST.test(named) ? named : undefined;
+  return { image, waiting: image !== undefined && field("outcome") === `waiting ${image}` };
 }
 
 /**
- * Runs the `release` service (`app.releaseCommand`, usually the database migrations) once in a
- * one-off container of the deployed image, without starting other services. Timeout scaled by
- * {@link moveTimeoutMs}: migrations of the copied data take longer on a larger database.
- *
- * A failure names only the exit code: migration output quotes rows and SQL parameters (Prisma
- * `DbError { detail: … }`, SQLAlchemy `[parameters: …]`), so none of it reaches errors, logs or
- * the audit log. The hint says how to see it on the server.
+ * Checks the state a deploy leaves at a move's marker: the image `.env` names is on the server and
+ * each of `services` (the app's services there) runs. It asks nothing of the app, which starts
+ * only once the move copied its data.
  */
-export async function runRelease(
+export async function requireServicesUp(
   remote: RemoteExec,
-  sizeBytes: number,
-  options: Pick<ServerOpOptions, "folder">,
+  services: readonly string[],
+  options: ServerOpOptions,
 ): Promise<void> {
-  const timeoutMs = moveTimeoutMs(sizeBytes);
-  const failed = (why: string) =>
-    new OpsCrewError(
-      "COMMAND_FAILED",
-      `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${remote.host}: ${why} (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).`,
-      {
-        hint: `The old server keeps serving your users. See the release command's full output on the new server: \`ssh deploy@${remote.host}\`, then \`cd ${options.folder} && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
-      },
-    );
-  let result: CommandResult;
-  try {
-    result = await remote.run(`cd ${options.folder} && ${RELEASE_COMMAND}`, { timeoutMs });
-  } catch {
-    throw failed("the SSH connection failed");
-  }
-  if (result.timedOut) throw failed(`it did not finish within ${durationText(timeoutMs)}`);
-  if (result.exitCode !== 0) throw failed(`it exited with code ${result.exitCode}`);
+  const { folder } = options;
+  const hint = composePsHint(remote.host, options);
+  const result = await runStep(
+    remote,
+    `cd ${folder} && docker image inspect --format '{{.Id}}' "$(sed -n 's/^APP_IMAGE=//p' .env)" > /dev/null && docker compose ps --status running --services`,
+    MINUTE,
+    { what: "check the app's image and services", hint },
+    options.redact,
+  );
+  const running = new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()));
+  const missing = services.filter((service) => !running.has(service));
+  if (missing.length === 0) return;
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    `The deploy on ${remote.host} left ${listText(missing)} not running, so the app's data can't be copied there yet.`,
+    { hint },
+  );
 }
 
 /**

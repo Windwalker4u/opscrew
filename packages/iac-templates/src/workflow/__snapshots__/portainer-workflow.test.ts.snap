@@ -22,12 +22,12 @@ on:
   workflow_dispatch:
     inputs:
       digest:
-        description: For a rollback, the image to deploy, by its digest (sha256:…); \`opscrew rollback\` fills it in.
+        description: For a rollback or a move, the image to deploy without a build, by its digest (sha256:…); \`opscrew rollback\` or \`opscrew retarget\` fills it in.
         required: false
         type: string
         default: ""
       tag:
-        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod); \`opscrew rollback\` fills it in.
+        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod; without it, its build's); \`opscrew rollback\` fills it in.
         required: false
         type: string
         default: ""
@@ -47,7 +47,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !(inputs.rollback || inputs.digest) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -74,7 +74,7 @@ jobs:
 
   build:
     name: Build the image
-    if: \${{ !inputs.rollback }}
+    if: \${{ !(inputs.rollback || inputs.digest) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -146,7 +146,7 @@ jobs:
 
   verify:
     name: Check where the image was built
-    if: \${{ inputs.rollback }}
+    if: \${{ inputs.rollback || inputs.digest }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -197,6 +197,8 @@ jobs:
             exit 1
           fi
           read -r event head_repo branch commit workflow <<< "$record"
+          # A move's deploy gives the digest alone: the image's commit tag is its build's.
+          if [[ -z "$TAG" ]]; then TAG="$commit"; fi
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
           # A fork's pull request runs in this repository too, with its own branch name: only a push, or a
@@ -232,7 +234,7 @@ jobs:
   deploy:
     name: Deploy to Portainer
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -713,12 +715,12 @@ on:
   workflow_dispatch:
     inputs:
       digest:
-        description: For a rollback, the image to deploy, by its digest (sha256:…); \`opscrew rollback\` fills it in.
+        description: For a rollback or a move, the image to deploy without a build, by its digest (sha256:…); \`opscrew rollback\` or \`opscrew retarget\` fills it in.
         required: false
         type: string
         default: ""
       tag:
-        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod); \`opscrew rollback\` fills it in.
+        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod; without it, its build's); \`opscrew rollback\` fills it in.
         required: false
         type: string
         default: ""
@@ -738,7 +740,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !(inputs.rollback || inputs.digest) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -765,7 +767,7 @@ jobs:
 
   build:
     name: Build the image
-    if: \${{ !inputs.rollback }}
+    if: \${{ !(inputs.rollback || inputs.digest) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -837,7 +839,7 @@ jobs:
 
   verify:
     name: Check where the image was built
-    if: \${{ inputs.rollback }}
+    if: \${{ inputs.rollback || inputs.digest }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -888,6 +890,8 @@ jobs:
             exit 1
           fi
           read -r event head_repo branch commit workflow <<< "$record"
+          # A move's deploy gives the digest alone: the image's commit tag is its build's.
+          if [[ -z "$TAG" ]]; then TAG="$commit"; fi
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
           # A fork's pull request runs in this repository too, with its own branch name: only a push, or a
@@ -923,7 +927,7 @@ jobs:
   deploy:
     name: Deploy to Portainer
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:

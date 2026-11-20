@@ -183,7 +183,7 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
   });
 
   it.each([
-    { at: "the release command", op: "release" },
+    { at: "letting the deploys start the app", op: "unmark waiting" },
     { at: "the health check", op: "health" },
   ])(
     "a failure at $at empties the copied mount and the restored database, and leaves the new side stopped",
@@ -197,9 +197,10 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
         (e: unknown) => e,
       );
       expect((error as OpsCrewError).message).toContain("The maintenance window failed");
-      // Nothing of the copy stays on the new side, and it stays stopped.
+      // Nothing of the copy stays on the new side, and it stays stopped, its deploys waiting for
+      // the data again (FR-3027).
       expect(cacheFiles(h, NEW_IPV4)).toEqual([""]);
-      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, db: "empty" });
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, db: "empty", waiting: true });
       expect(states(h, NEW_IPV4, "cache")).toEqual(["exited"]);
       // The old side serves again, its data as it was.
       expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: true, db: "orders before the move" });

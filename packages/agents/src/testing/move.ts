@@ -126,7 +126,8 @@ export type MoveEvent =
   | { type: "remote"; host: string; op: string }
   | { type: "scp"; from: string; to: string }
   | { type: "secret"; name: string }
-  | { type: "dispatch"; ref: string }
+  /** A run of the deploy workflow: a build of `ref`, or the deploy of an image's `digest`. */
+  | { type: "dispatch"; ref: string; digest?: string }
   | { type: "snapshot"; serverId: string }
   | { type: "fetch"; url: string }
   | { type: "resolve"; host: string }
@@ -622,7 +623,16 @@ export interface FakeHost {
   /** What the database holds (a marker, never real data). */
   db: string;
   dump?: string;
+  /** A move's marker in the app's folder (FR-3027): its deploys bring up only the services. */
+  waiting?: boolean;
+  /** The image the last deploy wrote to `.env`. */
+  image?: string;
+  /** What the last deploy's start script recorded (`.start.outcome`). */
+  outcome?: string;
 }
+
+/** The image the deploy workflow's build of the branch pushes. */
+export const BUILT_IMAGE = `ghcr.io/acme/shop@sha256:${"e".repeat(64)}`;
 
 /** The plain operation a server command performs, for the event trail. */
 function opOf(command: string): string {
@@ -645,9 +655,12 @@ function opOf(command: string): string {
   if (command.includes("pg_restore --list")) return "verify dump";
   if (command.includes("pg_restore")) return "restore";
   if (command.includes("DROP DATABASE")) return "empty db";
-  if (command.endsWith("config --services")) return "services?";
-  if (command.endsWith("docker compose run --rm --no-deps -T release")) return "release";
   if (command.startsWith(`rm -f /srv/apps/${APP}/opscrew-move.dump`)) return "rm dump";
+  // A move's marker (FR-3027), what the last deploy left, and the services it started.
+  if (command.endsWith(`: > /srv/apps/${APP}/.move.waiting`)) return "mark waiting";
+  if (command === `rm -f /srv/apps/${APP}/.move.waiting`) return "unmark waiting";
+  if (command.includes("printf 'outcome=%s")) return "deployed?";
+  if (command.endsWith("docker compose ps --status running --services")) return "services up?";
   return command;
 }
 
@@ -853,11 +866,13 @@ export class FakeHosts {
     }
   }
   /**
-   * The deployed compose file has a `release` service (the plan has `app.releaseCommand`): the
-   * deploy migrates the new server's empty database to HEAD, and `release` marks the database
-   * as migrated.
+   * The deployed compose file has a `release` service (the plan has `app.releaseCommand`): each
+   * full deploy migrates the database, an empty one to the schema of HEAD.
    */
   release = false;
+
+  /** The release command fails on an empty database (the framework's `migrate` needs its tables). */
+  releaseNeedsData = false;
 
   constructor(readonly events: MoveEvent[]) {}
 
@@ -939,17 +954,24 @@ export class FakeHosts {
       case "empty db":
         h.db = "empty";
         return ok();
-      case "services?":
-        return ok(this.release ? "app\nrelease\ndb\ncaddy\n" : "app\ndb\ncaddy\n");
-      case "release":
-        if (!this.release) {
-          return { exitCode: 1, stdout: "", stderr: "no such service: release" };
-        }
-        h.db = `${h.db} (migrated)`;
-        return ok();
       case "rm dump":
         h.dump = undefined;
         return ok();
+      case "mark waiting":
+        h.waiting = true;
+        return ok();
+      case "unmark waiting":
+        h.waiting = false;
+        return ok();
+      case "deployed?":
+        return ok(`outcome=${h.outcome ?? ""}\nimage=${h.image ?? ""}\n`);
+      case "services up?":
+        return ok(
+          [...this.docker(ip).containers.values()]
+            .filter((c) => c.labels[COMPOSE_PROJECT_LABEL] === APP && c.state === "running")
+            .map((c) => `${c.labels[COMPOSE_SERVICE_LABEL]}\n`)
+            .join(""),
+        );
       default: {
         const services = /^(stop|start) ([a-z0-9 -]+)$/.exec(op);
         if (services)
@@ -975,22 +997,48 @@ export class FakeHosts {
   }
 
   /**
-   * What the deploy workflow does on `ip`: the app and Caddy run, with an empty database (that
-   * the release command, when there is one, migrated to the schema of HEAD).
+   * What the deploy workflow does on `ip` with `image`: the edge, then at a move's marker only
+   * the services, with the app's container created but never started (FR-3027); otherwise the
+   * release command, when there is one, migrates the database (an empty one to the schema of HEAD,
+   * unless it needs data: then it fails and nothing starts), and the app runs. False when the run
+   * fails.
    */
-  deploy(ip: string): void {
+  deploy(ip: string, image = BUILT_IMAGE): boolean {
     const h = this.host(ip);
-    if (this.release) h.db = "schema of HEAD";
-    h.app = true;
     h.caddy = true;
+    const app = (state: "created" | "running") => {
+      for (const container of this.docker(ip).containers.values()) {
+        if (container.labels[COMPOSE_SERVICE_LABEL] === "app") container.state = state;
+      }
+    };
+    if (h.waiting === true) {
+      this.seed(ip);
+      if (!h.app) app("created");
+      Object.assign(h, { image, outcome: `waiting ${image}` });
+      return true;
+    }
+    if (this.release) {
+      if (h.db === "empty" && this.releaseNeedsData) {
+        h.outcome = "started";
+        return false;
+      }
+      h.db = h.db === "empty" ? "schema of HEAD" : `${h.db} (migrated)`;
+    }
+    Object.assign(h, { app: true, image, outcome: "finished" });
     this.seed(ip);
+    app("running");
+    return true;
   }
 }
 
-/** GitHub fake with the deploy workflow: a successful run deploys to `OPSCREW_HOST`. */
+/**
+ * GitHub fake with the deploy workflow: a successful run deploys to `OPSCREW_HOST`, its build of
+ * the branch or the image a dispatch's digest names.
+ */
 export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
   conclusion: string | null = "success";
-  readonly runs: { workflowFile: string; ref: string }[] = [];
+  readonly runs: { workflowFile: string; ref: string; inputs?: Record<string, string> }[] = [];
+  #digest: string | undefined;
 
   constructor(
     readonly events: MoveEvent[],
@@ -1009,11 +1057,17 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
     _repo: string,
     workflowFile: string,
     ref: string,
-    _inputs?: Record<string, string>,
+    inputs?: Record<string, string>,
     onAccepted?: () => Promise<void>,
   ) {
-    this.runs.push({ workflowFile, ref });
-    this.events.push({ type: "dispatch", ref });
+    const given = inputs !== undefined && Object.keys(inputs).length > 0;
+    this.#digest = inputs?.digest || undefined;
+    this.runs.push({ workflowFile, ref, ...(given ? { inputs } : {}) });
+    this.events.push({
+      type: "dispatch",
+      ref,
+      ...(this.#digest !== undefined ? { digest: this.#digest } : {}),
+    });
     await onAccepted?.();
     return { runId: 99, url: "https://github.com/acme/shop/actions/runs/99" };
   }
@@ -1028,10 +1082,14 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
 
   async waitForWorkflowRun(_owner: string, _repo: string, options: { runId: number }) {
     const host = this.secrets.get("OPSCREW_HOST");
-    if (this.conclusion === "success" && host !== undefined) this.hostsFake.deploy(host);
+    let conclusion = this.conclusion;
+    if (conclusion === "success" && host !== undefined) {
+      const image = this.#digest === undefined ? BUILT_IMAGE : `ghcr.io/acme/shop@${this.#digest}`;
+      if (!this.hostsFake.deploy(host, image)) conclusion = "failure";
+    }
     return {
       id: options.runId,
-      conclusion: this.conclusion,
+      conclusion,
       htmlUrl: "https://github.com/acme/shop/actions/runs/99",
     };
   }

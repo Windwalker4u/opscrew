@@ -130,6 +130,14 @@ export function windowMinutes(bytes: number, portainer: boolean): number {
   return 2 + Math.ceil(Math.max(0, bytes) / PORTAINER_BYTES_PER_MINUTE);
 }
 
+/**
+ * The minutes a maintenance window spends on the new side's deploy when that side is a server
+ * (FR-3027): the deploy workflow's run with the image's digest builds nothing, so it is the check
+ * of the image, the deploy job's steps (the release command, the switch) and its 30-second check of
+ * the workers.
+ */
+export const WINDOW_DEPLOY_MINUTES = 5;
+
 /** What starting each kind of service empty loses, in a few words. */
 const LOSES: Partial<Record<string, string>> = {
   postgres: "every table and row in it",

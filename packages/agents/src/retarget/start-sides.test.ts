@@ -383,7 +383,7 @@ describe.skipIf(!findExecutable("git"))("startMove onto the user's own server or
       to: { provider: "own", arch: "amd64", access: "public", edge: "caddy" },
       extraMonthly: { amount: 0 },
       data: [{ owner: "db", key: "/var/lib/postgresql/data", copy: true }],
-      expectedDowntimeMinutes: 3,
+      expectedDowntimeMinutes: 8,
     });
     expect(summary?.steps[1]).toContain("Set up your new server for the app with a host plan");
     expect(h.reporter.text()).toContain(

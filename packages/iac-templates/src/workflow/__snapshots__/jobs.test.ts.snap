@@ -101,12 +101,12 @@ on:
   workflow_dispatch:
     inputs:
       digest:
-        description: For a rollback, the image to deploy, by its digest (sha256:…); \`opscrew rollback\` fills it in.
+        description: For a rollback or a move, the image to deploy without a build, by its digest (sha256:…); \`opscrew rollback\` or \`opscrew retarget\` fills it in.
         required: false
         type: string
         default: ""
       tag:
-        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod); \`opscrew rollback\` fills it in.
+        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod; without it, its build's); \`opscrew rollback\` fills it in.
         required: false
         type: string
         default: ""
@@ -126,7 +126,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !(inputs.rollback || inputs.digest) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -153,7 +153,7 @@ jobs:
 
   build:
     name: Build the image
-    if: \${{ !inputs.rollback }}
+    if: \${{ !(inputs.rollback || inputs.digest) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -225,7 +225,7 @@ jobs:
 
   verify:
     name: Check where the image was built
-    if: \${{ inputs.rollback }}
+    if: \${{ inputs.rollback || inputs.digest }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -276,6 +276,8 @@ jobs:
             exit 1
           fi
           read -r event head_repo branch commit workflow <<< "$record"
+          # A move's deploy gives the digest alone: the image's commit tag is its build's.
+          if [[ -z "$TAG" ]]; then TAG="$commit"; fi
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
           # A fork's pull request runs in this repository too, with its own branch name: only a push, or a
@@ -311,7 +313,7 @@ jobs:
   deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -1188,7 +1190,8 @@ jobs:
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
+          {
+            ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -1291,6 +1294,13 @@ jobs:
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
+          if [ "$MODE" = deploy ] && [ -f .move.waiting ]; then
+            docker compose up --no-start --no-deps app
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            echo "waiting $APP_IMAGE" > .start.outcome
+            echo '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.'
+            exit 0
+          fi
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
             OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
@@ -1397,8 +1407,11 @@ jobs:
           fi
           echo finished > .start.outcome
           REMOTE
+          } | tee "$RUNNER_TEMP/opscrew-start.out"
+          if grep -qxF '::notice::A move to this server copies the app'\\''s data here first (opscrew retarget), so this deploy pulled the image and started only the app'\\''s services. The release command, the app, its workers and cron start after the copy.' "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi
       - id: health
         name: Check that the app is healthy
+        if: steps.start.outputs.waiting != 'true'
         env:
           URL: https://shop.example.com/api/health
         run: |

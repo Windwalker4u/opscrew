@@ -10,8 +10,8 @@ import {
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readServerAddresses, writeRenderedFiles } from "../shared";
-import { DOMAIN, ED25519, freshFacts, OLD_IPV4 } from "../testing";
-import { NEW_IPV4, PORTAINER, pairHarness } from "./__fixtures__/pairs";
+import { BUILT_IMAGE, DOMAIN, ED25519, freshFacts, OLD_IPV4 } from "../testing";
+import { NEW_IPV4, type PairHarness, PORTAINER, pairHarness } from "./__fixtures__/pairs";
 import { abortRetarget } from "./abort";
 import { finishRetarget } from "./finish";
 import { oldSideTarget } from "./layouts";
@@ -26,6 +26,9 @@ import {
 import { switchStep } from "./switch";
 
 const MAIN_TF = "opscrew/infra/prod/main.tf";
+/** How often the fakes saw `op` on `host`. */
+const ops = (h: PairHarness, host: string, op: string) =>
+  h.events.filter((e) => e.type === "remote" && e.host === host && e.op === op).length;
 /** The server's committed Compose file and Portainer's stack template share this path. */
 const COMPOSE = "opscrew/runtime/compose.yaml";
 
@@ -49,12 +52,25 @@ describe.skipIf(!findExecutable("git"))(
       // Not merged yet: it stops again, opening nothing new.
       expect(await deployStep(h.session, {})).toMatchObject({ done: false });
 
-      // Merged on GitHub: the deploy runs, the app answers there, and its edge stops.
+      // FR-3027: the move's marker was on the new server before the secrets pointed there, so the
+      // merged pull request's push deploy brings up only the image and the services there.
+      const marked = h.events.findIndex((e) => e.type === "remote" && e.op === "mark waiting");
+      expect(marked).toBeGreaterThanOrEqual(0);
+      expect(marked).toBeLessThan(h.events.findIndex((e) => e.type === "secret"));
       await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+      Object.assign(h.hosts.host(NEW_IPV4), { app: false, outcome: undefined });
+      h.hosts.deploy(NEW_IPV4);
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({
+        app: false,
+        outcome: `waiting ${BUILT_IMAGE}`,
+      });
+
+      // Merged on GitHub: the deploy runs, the image and the services wait there, its edge stops.
       expect(await deployStep(h.session, {})).toBeUndefined();
       expect(moveOf(h.session).step).toBe("deployed");
       expect(h.github.runs).toHaveLength(1);
-      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: true, caddy: false });
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, caddy: false, waiting: true });
+      expect(ops(h, NEW_IPV4, "health")).toBe(0);
     });
 
     it("an abort after the workflow's pull request was merged proposes the old side's workflow back", async () => {
@@ -73,6 +89,13 @@ describe.skipIf(!findExecutable("git"))(
       expect(result).toMatchObject({ step: "aborted", done: true });
       expect(h.handler.requests.filter((r) => r.kind === "pull-request").length).toBe(before + 1);
       expect(result.next.join(" ")).toContain("it puts the deploy files for Hetzner Cloud back");
+      // FR-3027: the app's folder goes with its data, the move's marker in it too.
+      const teardown = h.services.own.host.applies.at(-1)?.plan;
+      expect(teardown?.purpose).toBe("teardown");
+      expect(teardown?.steps.find((step) => step.id === "app-dirs")).toMatchObject({
+        state: "change",
+        params: { app: "shop", deleteData: true },
+      });
     });
 
     it("a password-logins choice on the new own server names what the move offers", async () => {

@@ -300,8 +300,9 @@ describe("an extra server a moving service leaves (T1811)", () => {
     const deploy = (plan: DeployPlan) =>
       (parse(content(plan)) as { jobs: { deploy: { if?: string } } }).jobs.deploy;
     for (const step of ["deployed", "switched"] as const) {
+      // A move's own deploy in its window gives the digest (FR-3027): it is not paused.
       expect(deploy(moving(step)).if).toContain(
-        `(inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))`,
+        `(inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))`,
       );
     }
     expect(deploy(inEnvironment(moving("deployed"), { name: "staging" })).if).toContain(

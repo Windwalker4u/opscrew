@@ -133,10 +133,45 @@ const FAILED_LINES = 500;
 
 /**
  * Where the start script records how far this run got, in the app's folder: `started`, then
- * `finished` when it succeeds, or `kept` once the run kept a failure's lines (`keep_failed`). The
- * rollback reads it to tell what failed.
+ * `finished` when it succeeds, or `kept` once the run kept a failure's lines (`keep_failed`), or
+ * `waiting <image>` when it stopped at a move's marker ({@link MOVE_WAITING}). The rollback reads
+ * it to tell what failed; a move reads the image its new server holds.
  */
-const START_OUTCOME = ".start.outcome";
+export const START_OUTCOME = ".start.outcome";
+
+/**
+ * The marker a move to this server leaves in the app's folder while the app's data is still on
+ * the server it moves from (FR-3027): until the move's maintenance window copied the data and
+ * removed it, the start script brings up only the image and the services ({@link moveWaiting}).
+ */
+export const MOVE_WAITING = ".move.waiting";
+
+/** What the start script prints when it stopped at {@link MOVE_WAITING}; the start step reads it. */
+export const MOVE_WAITING_NOTICE =
+  "::notice::A move to this server copies the app's data here first (opscrew retarget), so this deploy pulled the image and started only the app's services. The release command, the app, its workers and cron start after the copy.";
+
+/** Writes the image `$APP_IMAGE` to `.env` in the app's folder, as the version on the server. */
+const WRITE_ENV = "printf 'APP_IMAGE=%s\\n' \"$APP_IMAGE\" > .env";
+
+/**
+ * In mode `deploy` while a move's marker is in the app's folder ({@link MOVE_WAITING}): the app's
+ * container is created, never started, so its volumes are there for the move to copy the app's own
+ * data into; `.env` names the image (the move's commands in the folder read it, and its window
+ * deploys it again); {@link START_OUTCOME} says `waiting <image>`; the notice says why
+ * ({@link MOVE_WAITING_NOTICE}); and the script ends successfully before the snapshot, the release
+ * command, the switch, the workers and cron: nothing changes kamal-proxy's routes.
+ */
+function moveWaiting(): string[] {
+  return [
+    `if [ "$MODE" = deploy ] && [ -f ${MOVE_WAITING} ]; then`,
+    "  docker compose up --no-start --no-deps app",
+    `  ${WRITE_ENV}`,
+    `  echo "waiting $APP_IMAGE" > ${START_OUTCOME}`,
+    `  echo ${shellQuote(MOVE_WAITING_NOTICE)}`,
+    "  exit 0",
+    "fi",
+  ];
+}
 
 /**
  * `keep_failed <service> <container> <why>`: writes the container's last lines (both streams, with
@@ -643,11 +678,10 @@ function switchLines(
     "  exit 1",
     "fi",
   ];
-  const writeEnv = "printf 'APP_IMAGE=%s\\n' \"$APP_IMAGE\" > .env";
   if (strategy === "recreate") {
     return [
       ...holdRequests(plan, onExit),
-      writeEnv,
+      WRITE_ENV,
       "docker compose up -d --no-deps --remove-orphans app",
       'new="$(docker compose ps -aq app)"',
       ...kamal,
@@ -662,7 +696,7 @@ function switchLines(
     '  case " $old " in *" $id "*) ;; *) new="$id" ;; esac',
     "done",
     ...kamal,
-    writeEnv,
+    WRITE_ENV,
     "for id in $old; do",
     '  docker stop "$id" > /dev/null',
     '  docker rm "$id" > /dev/null',
@@ -1380,9 +1414,10 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
  * 3. start the plan's services when they are not running (Compose recreates one only when its own
  *    configuration changed; nothing forces it), then recreate any of them published on the
  *    server's private address that came up without its port ({@link portRepair});
- * 4. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep}), then
- *    the deploy user's crontab line for scheduled snapshots, written or removed ({@link
- *    snapshotScheduleLines}; not in a preview's scripts);
+ * 4. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep}); in
+ *    mode `deploy` while a move's marker is in the app's folder, the script ends here, successfully
+ *    ({@link moveWaiting}); then the deploy user's crontab line for scheduled snapshots, written or
+ *    removed ({@link snapshotScheduleLines}); neither in a preview's scripts;
  * 5. in mode `deploy`, the snapshot of the data under the running version ({@link
  *    snapshotStep}, through the uploaded `snapshot.sh`);
  * 6. the release command in a one-off container of the new image, never in mode `rollback`: an
@@ -1475,6 +1510,8 @@ export function switchCommands(
     ...(steady.length === 0 ? [] : [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]),
     ...portRepair(plan, APP_SERVER),
     ...serviceInit(plan, init, initLog(plan)),
+    // A move to the server keeps the app off its empty services until its data is copied.
+    ...(o.preview === true ? [] : moveWaiting()),
     ...(o.preview === true ? [] : snapshotScheduleLines(plan, APP_SERVER)),
     ...(data ? snapshotStep(plan, appFolder(plan)) : []),
     ...release,

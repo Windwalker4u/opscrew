@@ -35,6 +35,7 @@ import {
 } from "../../testing";
 import { openSession } from "../session";
 import { cloudProviders } from "../sides";
+import { stepBefore } from "../window";
 
 /** The Postgres password the app's generated values hold (synthetic). */
 export const DB_PASSWORD = fakeSecret("generic-password", "move db password");
@@ -188,11 +189,15 @@ export async function pairHarness(from: MoveSideKind, to: MoveSideKind, options:
     { PG_VERSION: file(Buffer.alloc(1024)), "dump.rdb": file(Buffer.from("cached pages")) },
     oldHost === PORTAINER,
   );
-  // The new side's deploy ran: the app is healthy there, its edge stopped.
+  // The new side's deploy ran: the app is healthy in Portainer; until the window, a server's
+  // deploy waited at the move's marker (FR-3027), with only the image and the services, and the
+  // deploy secrets point there for the window's deploy. Its edge is stopped.
   if (newHost === PORTAINER) h.hosts.seed(PORTAINER, {}, true);
   else {
+    h.hosts.host(newHost).waiting = stepBefore(step, "migrated");
     h.hosts.deploy(newHost);
     Object.assign(h.hosts.host(newHost), { caddy: false });
+    h.github.secrets.set("OPSCREW_HOST", newHost);
   }
 
   const portainer = h.hosts.docker(PORTAINER);

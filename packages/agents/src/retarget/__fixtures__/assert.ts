@@ -72,13 +72,14 @@ export function trail(events: readonly MoveEvent[]): string[] {
       }
       case "remote":
         // Read-only checks are left out.
-        return ["ready?", "health", "services?", "verify dump"].includes(e.op)
+        return ["ready?", "health", "verify dump", "deployed?", "services up?"].includes(e.op)
           ? []
           : [`${e.host} ${e.op}`];
       case "scp":
         return [`scp ${e.from} -> ${e.to}`];
       case "dispatch":
-        return [`dispatch ${e.ref}`];
+        // A deploy of an image names its digest, shortened.
+        return [`dispatch ${e.ref}${e.digest === undefined ? "" : ` ${e.digest.slice(0, 19)}`}`];
       case "confirm":
         return [`confirm ${e.name}`];
       case "snapshot":

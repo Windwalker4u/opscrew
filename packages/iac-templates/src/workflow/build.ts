@@ -15,6 +15,7 @@ import {
   buildRunner,
   buildsOnRunner,
   DEPLOY_SECRETS,
+  DEPLOYS_DIGEST,
   DIGEST_REF_PATTERN,
   DOCKER_CONTEXT_HOST,
   environmentName,
@@ -25,7 +26,6 @@ import {
   imageFolder,
   imageSubpath,
   job,
-  ROLLING_BACK,
   run,
   secret,
   sqliteFolder,
@@ -733,7 +733,8 @@ export function buildReads(plan: DeployPlan): string[] {
  * Every builder ends in one `build-push-action` build with a mode=max provenance and an SBOM.
  * Outputs: `image`, the final index digest reference, and `tag`, `<name>:<commit tag>` (the commit
  * for prod, `<commit>-<env>` for another environment: {@link environmentTag}). Then the optional
- * report-only scan. A rollback dispatch skips it: its image exists already. `condition` replaces
+ * report-only scan. A dispatch with a digest (a rollback, a move: {@link DEPLOYS_DIGEST}) skips it:
+ * its image exists already. `condition` replaces
  * that `if:` (the preview workflow's).
  *
  * In a preview environment's workflow (`environment.previews`) the pull request's build is tagged
@@ -746,7 +747,7 @@ export function buildReads(plan: DeployPlan): string[] {
  * first moves the Docker settings into the job's temp folder ({@link OWN_DOCKER_CONFIG}), and its
  * checkout keeps the job's token out of the runner's kept workspace.
  */
-export function buildJob(plan: DeployPlan, condition = `\${{ !${ROLLING_BACK} }}`): string[] {
+export function buildJob(plan: DeployPlan, condition = `\${{ !(${DEPLOYS_DIGEST}) }}`): string[] {
   const builder = plan.app.build?.builder;
   const steps =
     builder === "buildpacks"

@@ -22,10 +22,11 @@ import { APP_SERVER, monitoringServerName, servicesOn } from "@opscrew/plan-sche
 import { sshArgs } from "../../shared";
 import type { MoveServer } from "../removal";
 import {
-  hasReleaseService,
   isAppHealthy,
+  markWaiting,
+  readDeployed,
   reloadEdge,
-  runRelease,
+  requireServicesUp,
   type ServerOpOptions,
   serverOps,
   startService,
@@ -267,11 +268,22 @@ export function sshSide(input: SshSideInput): SshSideParts {
     );
   }
 
+  /** Stops the edge's proxy until traffic is switched to the side, unless other apps share it. */
   async function stopEdge(session: MoveBase): Promise<void> {
     const edge = edgeProxy({ ...session.plan, target: sideTarget(session, input.which) });
     if (await edgeShared(session)) return edgeStays(session, edge);
+    const words = input.words(session);
+    session.deps.reporter.step(
+      `Stopping ${EDGE_PROXIES[edge].label} on ${words} until traffic is switched to it`,
+    );
     const remote = await remoteOf(session);
     await inWords(session, () => stopService(remote, edge, opsOf(session)));
+    await auditMove(session, {
+      kind: "remote-exec",
+      action: `stop ${edge}`,
+      decision: "approved",
+      detail: `on ${words}, until traffic is switched to it`,
+    });
   }
 
   /**
@@ -291,34 +303,40 @@ export function sshSide(input: SshSideInput): SshSideParts {
   return {
     docker,
 
+    // A deploy that stopped at a move's marker left the image and the services: the app starts
+    // only once the move copied its data (FR-3027).
     async deploy(session) {
       const { deps, plan } = session;
       const words = input.words(session);
       const edge = edgeProxy({ ...session.plan, target: sideTarget(session, input.which) });
-      deps.reporter.step(`Checking the app on ${words} over SSH`);
       const remote = await remoteOf(session);
-      await inWords(session, () =>
-        waitAppHealthy(remote, plan.app.port, plan.app.healthPath, {
-          ...opsOf(session),
-          edge,
-          ...waitsOf(session.services),
-        }),
-      );
-      if (await edgeShared(session)) {
-        edgeStays(session, edge);
-        return undefined;
+      const ops = opsOf(session);
+      if ((await inWords(session, () => readDeployed(remote, ops))).waiting) {
+        deps.reporter.step(`Checking the app's image and services on ${words} over SSH`);
+        const services = servicesOn(plan, APP_SERVER).map((service) => service.name);
+        await inWords(session, () => requireServicesUp(remote, services, ops));
+      } else {
+        deps.reporter.step(`Checking the app on ${words} over SSH`);
+        await inWords(session, () =>
+          waitAppHealthy(remote, plan.app.port, plan.app.healthPath, {
+            ...ops,
+            edge,
+            ...waitsOf(session.services),
+          }),
+        );
       }
-      deps.reporter.step(
-        `Stopping ${EDGE_PROXIES[edge].label} on ${words} until traffic is switched to it`,
-      );
-      await inWords(session, () => stopService(remote, edge, opsOf(session)));
-      await auditMove(session, {
-        kind: "remote-exec",
-        action: `stop ${edge}`,
-        decision: "approved",
-        detail: `on ${words}, until traffic is switched to it`,
-      });
+      await stopEdge(session);
       return undefined;
+    },
+
+    async waitForData(session, waiting) {
+      const remote = await remoteOf(session);
+      await inWords(session, () => markWaiting(remote, waiting, opsOf(session)));
+    },
+
+    async deployed(session) {
+      const remote = await remoteOf(session);
+      return inWords(session, () => readDeployed(remote, opsOf(session)));
     },
 
     async stopApp(session) {
@@ -354,15 +372,6 @@ export function sshSide(input: SshSideInput): SshSideParts {
         edgeProxy({ ...session.plan, target: sideTarget(session, input.which) }),
         plan.app.name,
       );
-    },
-
-    async release(session, bytes) {
-      const remote = await remoteOf(session);
-      const ops = opsOf(session);
-      await inWords(session, async () => {
-        // The version deployed there decides: its compose file has a `release` service or not.
-        if (await hasReleaseService(remote, ops)) await runRelease(remote, bytes, ops);
-      });
     },
 
     async volumes(session) {

@@ -10,6 +10,7 @@ import { testContext, testPlan } from "../__fixtures__/plans";
 import { ACTIONS, TOOLS } from "../pins";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { renderEdgeSite, renderRuntimeFiles } from "../runtime";
+import { shellQuote } from "../runtime/services";
 import {
   inEnvironment,
   jobYaml,
@@ -29,10 +30,12 @@ import {
   runnerLabel,
   TUNNEL_DEPLOY_SECRETS,
 } from "./index";
+import { MOVE_WAITING_NOTICE } from "./switch";
 
 type Step = {
   id?: string;
   name?: string;
+  if?: string;
   uses?: string;
   run?: string;
   env?: Record<string, string>;
@@ -426,6 +429,7 @@ function runScript(script: string, fakes: string, env: Record<string, string>, c
       ...process.env,
       WORK: work,
       GITHUB_REPOSITORY: "Acme/Shop",
+      RUNNER_TEMP: work,
       GITHUB_OUTPUT: `${work}/output`,
       GITHUB_STEP_SUMMARY: `${work}/summary`,
       ...env,
@@ -608,10 +612,34 @@ describe("the verify job", { timeout: 180_000 }, () => {
     },
   );
 
+  it.skipIf(!bashWorks())(
+    "FR-3027: checks a move's digest alone, with its build's commit tag, where the environment follows a branch",
+    () => {
+      const own = stepOf(verify(staging), "provenance").run ?? "";
+      const moved = runScript(own, fakes, { ...good, TAG: "" });
+      expect(moved.status, moved.out).toBe(0);
+      expect(moved.outputs).toMatchObject({
+        image: IMAGE,
+        tag: `ghcr.io/acme/shop:${COMMIT}-staging`,
+      });
+      // A promoted environment's dispatch always names the tag.
+      expect(run({ TAG: "" }).status).toBe(1);
+    },
+  );
+
   it("checks a rollback's digest in an environment that follows a branch against that branch", () => {
     const own = verify(staging);
     expect(stepOf(own, "provenance").env?.BUILD_BRANCH).toBe("main");
-    expect(stepOf(own, "provenance").run).toBe(stepOf(verify(promotedProd), "provenance").run);
+    // The same check, but a move's dispatch gives the digest alone (FR-3027): the tag is its build's.
+    const tagged = [
+      "# A move's deploy gives the digest alone: the image's commit tag is its build's.",
+      'if [[ -z "$TAG" ]]; then TAG="$commit-staging"; fi',
+      "",
+    ].join("\n");
+    expect(stepOf(own, "provenance").run).toContain(tagged);
+    expect(stepOf(own, "provenance").run?.replace(tagged, "")).toBe(
+      stepOf(verify(promotedProd), "provenance").run,
+    );
     const developing = DeployPlanSchema.parse({
       ...staging,
       cicd: { ...staging.cicd, branch: "develop" },
@@ -1004,6 +1032,29 @@ describe("the deploy job on a self-hosted runner", { timeout: 180_000 }, () => {
       ]);
       expect(readFileSync(join(work, "login"), "utf8")).toBe("registry-placeholder\n");
       expect(readFileSync(join(work, "script"), "utf8")).toBe(heredoc(start));
+
+      // FR-3027: a script that stopped at a move's marker says so; the step tells the health check.
+      const waiting = runScript(
+        start,
+        [
+          "docker() { cat > /dev/null; }",
+          `sh() { cat > /dev/null; echo ${shellQuote(MOVE_WAITING_NOTICE)}; }`,
+        ].join("\n"),
+        {
+          ...roots,
+          OPSCREW_LOCAL_LOCK: `${work}/local/deploy.lock`,
+          IMAGE,
+          MODE: "deploy",
+          REGISTRY_TOKEN: "registry-placeholder",
+          GITHUB_ACTOR: "octocat",
+        },
+        checkout,
+      );
+      expect(waiting.status, waiting.out).toBe(0);
+      expect(waiting.out).toContain(MOVE_WAITING_NOTICE);
+      expect(waiting.outputs).toMatchObject({ waiting: "true" });
+      const health = (workflow(local).jobs.deploy as Job).steps.find((s) => s.id === "health");
+      expect(health?.if).toBe("steps.start.outputs.waiting != 'true'");
     },
   );
 

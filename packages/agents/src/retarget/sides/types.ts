@@ -5,6 +5,7 @@
  */
 import type { DockerClient, VolumeCarrier } from "@opscrew/connector-docker";
 import type { DestroyPreview } from "../../destroy/types";
+import type { DeployedState } from "../server-ops";
 import type { MoveBase, MoveSession } from "../session";
 import type { RetargetResult } from "../types";
 
@@ -75,9 +76,19 @@ export interface MoveSide {
   prepare(session: MoveSession): Promise<SideStop>;
   /**
    * Step `deployed` (the new side): the app deployed with the image the old side runs, healthy,
-   * and its edge stopped, so it takes no traffic before the switch.
+   * and its edge stopped, so it takes no traffic before the switch. On a server whose deploy
+   * stopped at a move's marker ({@link waitForData}), the image there and its services running.
    */
   deploy(session: MoveSession): Promise<SideStop>;
+  /**
+   * A server's new side, for a move that copies data (FR-3027): `true` writes the marker in the
+   * app's folder that keeps the deploys there to the app's image and services until the data is
+   * there; `false` removes it, so the maintenance window's deploy starts the app. Portainer's side
+   * has none.
+   */
+  waitForData?(session: MoveBase, waiting: boolean): Promise<void>;
+  /** A server's side: what its last deploy left in the app's folder. */
+  deployed?(session: MoveBase): Promise<DeployedState>;
   /** Stops the app, its workers and its cron (not its stateful services, not the edge). */
   stopApp(session: MoveBase): Promise<void>;
   /** Starts what {@link stopApp} stopped. */
@@ -89,7 +100,10 @@ export interface MoveSide {
   stopServices(session: MoveBase, names: readonly string[]): Promise<void>;
   /** Starts the named stateful services, and the monitoring stack {@link stopServices} stopped. */
   startServices(session: MoveBase, names: readonly string[]): Promise<void>;
-  /** Stops the edge (Caddy or nginx and kamal-proxy, or the stack's Caddy on Portainer). */
+  /**
+   * Stops the edge until traffic is switched to the side (Caddy or nginx, or the stack's Caddy on
+   * Portainer); on a server whose edge other apps share, it keeps running.
+   */
   stopEdge(session: MoveBase): Promise<void>;
   /** Starts the edge. */
   startEdge(session: MoveBase): Promise<void>;
@@ -98,12 +112,12 @@ export interface MoveSide {
   /** The app's data mounts on this side: its services', its own and its monitoring stack's. */
   volumes(session: MoveBase): Promise<SideVolume[]>;
   /**
-   * The window on the new side, once the data is there and before the app starts: runs the
+   * Portainer's new side in the window, once the data is there and before the app starts: runs the
    * release command of the version deployed there (`app.releaseCommand`, which migrates the
    * copied data forward) when it has one, with a timeout that grows with the `bytes` copied. Its
-   * output never shows: it may quote rows.
+   * output never shows: it may quote rows. A server's runs in the window's deploy instead.
    */
-  release(session: MoveBase, bytes: number): Promise<void>;
+  release?(session: MoveBase, bytes: number): Promise<void>;
   /**
    * `--finish` (the old side) and `--abort` (the new side): removes what the move made or left
    * there after `confirm` (the typed name): a cloud server through its IaC plan; on the user's

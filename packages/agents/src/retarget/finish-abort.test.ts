@@ -779,7 +779,9 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     const stopAt = window.indexOf(`${OLD_IPV4} stop app`);
     expect(window[stopAt + 1]).toBe(`${OLD_IPV4} ${processes} stop worker cron`);
     expect(window.indexOf(`${OLD_IPV4} dump`)).toBeGreaterThan(stopAt + 1);
-    expect(window).toContain(`${h.newServer.ipv4} start worker cron`);
+    // On the new server the window's deploy starts them with the app, on the copied data (FR-3027).
+    expect(window).not.toContain(`${h.newServer.ipv4} start worker cron`);
+    expect(window).toContain(`dispatch main sha256:${"e".repeat(12)}`);
 
     const mark = h.events.length;
     await abort(h);

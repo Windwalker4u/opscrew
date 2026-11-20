@@ -9,8 +9,10 @@ import {
   block,
   builderBranchOf,
   CHECK_IMAGE,
+  DEPLOYS_DIGEST,
   DIGEST_REF_PATTERN,
   environmentName,
+  environmentTag,
   GHCR_LOGIN,
   githubEnvironment,
   imageJobs,
@@ -81,7 +83,9 @@ const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
  * its own `cicd.branch`, or a promoted environment's builder's), and the image with the commit tag
  * `$TAG` must be this digest. `$TAG` is the run's commit, or `<commit>-<env>`
  * ({@link environmentTag} of the environment that built it, which this workflow cannot know: the
- * source may itself be promoted from another). The image is the app's ({@link imageSubpath}).
+ * source may itself be promoted from another); in an environment that follows a branch, a dispatch
+ * without one (a move's, {@link DEPLOYS_DIGEST}) takes its build's commit, in its own form. The
+ * image is the app's ({@link imageSubpath}).
  * Outputs `image`, `tag` (`<name>:<commit tag>`) and `identity`, the signing identity of the run's
  * workflow on that branch.
  */
@@ -114,6 +118,12 @@ const provenanceCheck = (plan: DeployPlan) => [
     "GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew deploys a digest only when this repository built it.",
   ),
   'read -r event head_repo branch commit workflow <<< "$record"',
+  ...(promoted(plan)
+    ? []
+    : [
+        "# A move's deploy gives the digest alone: the image's commit tag is its build's.",
+        `if [[ -z "$TAG" ]]; then TAG="${environmentTag("$commit", environmentName(plan))}"; fi`,
+      ]),
   "# The run's path can end with @<ref>, which the signing identity carries separately.",
   'workflow="${workflow%%@*}"',
   "# A fork's pull request runs in this repository too, with its own branch name: only a push, or a",
@@ -150,18 +160,18 @@ const provenanceCheck = (plan: DeployPlan) => [
 /**
  * The job that checks a digest input, on GitHub's machines with `actions: read` and
  * `packages: read` only: a promoted environment's first job, and in an environment that follows a
- * branch the job a rollback dispatch runs instead of the build. The digest's provenance check
- * ({@link provenanceCheck}) is against the branch that builds the environment's images (its own
- * `cicd.branch`, or a promoted one's {@link builderBranchOf}) and, with `supplyChain.sign`, its
- * cosign signature by the build run's workflow. Its outputs `image` and `tag` stand for the build
- * job's.
+ * branch the job a dispatch with a digest ({@link DEPLOYS_DIGEST}) runs instead of the build. The
+ * digest's provenance check ({@link provenanceCheck}) is against the branch that builds the
+ * environment's images (its own `cicd.branch`, or a promoted one's {@link builderBranchOf}) and,
+ * with `supplyChain.sign`, its cosign signature by the build run's workflow. Its outputs `image`
+ * and `tag` stand for the build job's.
  */
 function verifyJob(plan: DeployPlan, ctx: Pick<RenderContext, "builderBranch">): string[] {
   const branch = promoted(plan) ? builderBranchOf(plan, ctx) : plan.cicd.branch;
   return job({
     id: "verify",
     name: "Check where the image was built",
-    ...(promoted(plan) ? {} : { if: `\${{ ${ROLLING_BACK} }}` }),
+    ...(promoted(plan) ? {} : { if: `\${{ ${DEPLOYS_DIGEST} }}` }),
     permissions: ["actions: read", "packages: read"],
     outputs: [
       "image: ${{ steps.provenance.outputs.image }}",
@@ -199,18 +209,28 @@ function verifyJob(plan: DeployPlan, ctx: Pick<RenderContext, "builderBranch">):
 }
 
 /**
+ * The dispatches that deploy while the environment's deploys are paused (an expression): a
+ * rollback's; in an environment that follows a branch also one with a digest alone
+ * ({@link DEPLOYS_DIGEST}), as every dispatch of a promoted environment has one.
+ */
+function givesImage(plan: DeployPlan): string {
+  return promoted(plan) ? ROLLING_BACK : DEPLOYS_DIGEST;
+}
+
+/**
  * The jobs before a server's or Portainer's deploy ({@link deployJob}): `paused`
  * ({@link pausedJob}), which says why a run doesn't deploy while the environment is paused (a
- * rollback dispatch deploys), then the jobs that give the deploy its image ({@link imageJobs}): for
- * an environment that follows a branch, the build, which a rollback dispatch skips, and the check
- * of the digest it gives ({@link verifyJob}); for a promoted environment, only that check.
+ * dispatch with an image deploys: {@link givesImage}), then the jobs that give the deploy its image
+ * ({@link imageJobs}): for an environment that follows a branch, the build, which a dispatch with a
+ * digest skips, and the check of the digest it gives ({@link verifyJob}); for a promoted
+ * environment, only that check.
  */
 export function jobsBeforeDeploy(
   plan: DeployPlan,
   ctx: Pick<RenderContext, "builderBranch">,
 ): string[] {
   return [
-    ...pausedJob(plan, ROLLING_BACK),
+    ...pausedJob(plan, givesImage(plan)),
     "",
     ...(promoted(plan) ? [] : [...buildJob(plan), ""]),
     ...verifyJob(plan, ctx),
@@ -226,8 +246,9 @@ export function jobsBeforeDeploy(
  * ran before this deploy (empty on the first one), which the image retention job never deletes and
  * the label job labels `opscrew-<env>-previous`.
  *
- * It is skipped while the environment is paused ({@link unpaused}), except in a rollback dispatch
- * (a rollback of a rollback). In an environment that follows a branch one of `build` and `verify`
+ * It is skipped while the environment is paused ({@link unpaused}), except in a dispatch with an
+ * image ({@link givesImage}): a rollback (of a rollback), or a move's deploy in its maintenance
+ * window. In an environment that follows a branch one of `build` and `verify`
  * is always skipped, so it checks their results itself (research R6, S3).
  */
 export function deployJob(
@@ -245,7 +266,7 @@ export function deployJob(
     id: "deploy",
     name,
     needs: imageJobs(plan),
-    if: `\${{ !cancelled() && (${imaged}) && (${unpaused(plan, ROLLING_BACK)}) }}`,
+    if: `\${{ !cancelled() && (${imaged}) && (${unpaused(plan, givesImage(plan))}) }}`,
     environment: githubEnvironment(plan),
     runsOn: own ? `[self-hosted, ${runnerLabel(plan)}]` : undefined,
     shell: own ? "bash" : undefined,

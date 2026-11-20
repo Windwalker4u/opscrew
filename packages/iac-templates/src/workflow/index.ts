@@ -95,6 +95,7 @@ import {
   HELD_STOP,
   heldProbe,
   heldSaid,
+  MOVE_WAITING_NOTICE,
   OTHERS_HELD,
   RESTORE_HELD,
   rollbackCommands,
@@ -684,7 +685,9 @@ interface Reach {
  * goes into the app's own Docker settings: another app's deploy logs out of the same registry.
  * `MODE` is the switch script's `$2`: a rollback dispatch's `rollback` runs no release command.
  * With extra servers whose data each release snapshots (`others`), `$3` names those whose
- * snapshot the rollback restored ({@link othersStep}).
+ * snapshot the rollback restored ({@link othersStep}). The script's output goes to the log and to
+ * the job's temp folder too: when it stopped at a move's marker ({@link MOVE_WAITING_NOTICE}), the
+ * step's output `waiting` is `true`, and the health check, which would find no app, is skipped.
  */
 function startStep(
   plan: DeployPlan,
@@ -715,9 +718,12 @@ function startStep(
     `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
     '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
     ...reach.login,
-    `    ${reach.sh} -s -- "$IMAGE" "$MODE"${restored ? ' "$RESTORED"' : ""} <<'REMOTE'`,
+    "    {",
+    `      ${reach.sh} -s -- "$IMAGE" "$MODE"${restored ? ' "$RESTORED"' : ""} <<'REMOTE'`,
     // The services' one-time setup steps come from the catalog; no entry has any yet.
     ...remote(switchCommands(plan, initStepsFor(plan), edgeFiles)),
+    '    } | tee "$RUNNER_TEMP/opscrew-start.out"',
+    `    if grep -qxF ${shellQuote(MOVE_WAITING_NOTICE)} "$RUNNER_TEMP/opscrew-start.out"; then echo "waiting=true" >> "$GITHUB_OUTPUT"; fi`,
   ];
 }
 
@@ -1643,8 +1649,10 @@ export async function isMoveReady(
  * labels. A promoted environment instead starts from the digest `opscrew promote` gives it, which
  * its verify job checks, and builds nothing. `opscrew rollback` dispatches either with an earlier
  * image's digest and `rollback` set: the verify job checks it, nothing is built, and the start
- * step runs no release command. While the environment's deploys are paused, only such a dispatch
- * deploys ({@link jobsBeforeDeploy}, {@link deployJob}). The deploy job's secrets, GitHub
+ * step runs no release command; `opscrew retarget` dispatches it with a digest alone in a move's
+ * maintenance window, which builds nothing either and runs the release command. While the
+ * environment's deploys are paused, only such dispatches deploy ({@link jobsBeforeDeploy},
+ * {@link deployJob}). The deploy job's secrets, GitHub
  * environment, runner and concurrency group are the environment's own; on the server's or the
  * local runner it deploys
  * on the runner's own machine, with no SSH ({@link localDeploy}), and on a runner machine over SSH
@@ -1749,6 +1757,8 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...startStep(plan, edgeFiles, reach, others),
     "- id: health",
     "  name: Check that the app is healthy",
+    // A move to the server started only the app's services: the app starts after the copy.
+    "  if: steps.start.outputs.waiting != 'true'",
     "  env:",
     `    URL: ${healthUrl(plan, local)}`,
     ...(homeDnsOnly(plan) && onRunnerMachine(plan)

@@ -81,6 +81,7 @@ import {
   RUN_COMMAND,
   sizeText,
   untilSwitched,
+  WINDOW_DEPLOY_MINUTES,
   windowMinutes,
 } from "./texts";
 import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
@@ -612,9 +613,15 @@ export function moveSummary(
   // The bucket's last copy needs the old app stopped too.
   const copies = data.some((mount) => mount.copy) || bucket !== undefined;
   const bytes = data.filter((mount) => mount.copy).reduce((sum, mount) => sum + mount.bytes, 0);
+  // On a server the app starts with a deploy of its image once the data is there (FR-3027).
+  const server = to.provider !== "portainer";
   const minutes = copies
-    ? windowMinutes(bytes, portainer) + syncMinutes(bucket?.count ?? 0)
+    ? windowMinutes(bytes, portainer) +
+      syncMinutes(bucket?.count ?? 0) +
+      (server ? WINDOW_DEPLOY_MINUTES : 0)
     : undefined;
+  const services =
+    copies && server ? " (only the app's image and services until its data is copied)" : "";
   // Without managed DNS the old app stays stopped until the user's own switch has taken effect.
   const offline = downtimeUntilDnsChange(plan, copies)
     ? `; the app stays offline from then ${untilSwitched(plan)}`
@@ -631,8 +638,8 @@ export function moveSummary(
     to.provider === "portainer"
       ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`
       : to.provider === "own" && to.shares !== undefined
-        ? `Point the GitHub deploy secrets at the server of "${to.shares.app}", run the deploy workflow on ${plan.cicd.branch} and check the app there; the proxy there keeps serving "${to.shares.app}", and is reloaded for the app once DNS switches.`
-        : `Point the GitHub deploy secrets at ${fresh}, run the deploy workflow on ${plan.cicd.branch} and check the app there; its web server stays stopped until the switch.`;
+        ? `Point the GitHub deploy secrets at the server of "${to.shares.app}", run the deploy workflow on ${plan.cicd.branch} and check the app there${services}; the proxy there keeps serving "${to.shares.app}", and is reloaded for the app once DNS switches.`
+        : `Point the GitHub deploy secrets at ${fresh}, run the deploy workflow on ${plan.cicd.branch} and check the app there${services}; its web server stays stopped until the switch.`;
   return {
     from,
     to,
@@ -644,7 +651,7 @@ export function moveSummary(
       ...(bucket !== undefined ? [bucketStep(bucket.moves)] : []),
       deploy,
       copies
-        ? `Maintenance window (about ${minutes} minutes for ${sizeText(bytes)}): stop the app on ${old}, copy its data to ${fresh} and start the app there${offline}.`
+        ? `Maintenance window (about ${minutes} minutes for ${sizeText(bytes)}): stop the app on ${old}, copy its data to ${fresh} and start the app there${server ? ` with the deploy workflow${plan.app.releaseCommand !== undefined ? ", which runs the release command on the copied data" : ""}` : ""}${offline}.`
         : "No maintenance window: there is no data to copy.",
       switchSentence(plan, fresh),
       `Keep ${old} (with its app stopped) until you run \`${FINISH_COMMAND}\`; until the switch, \`${ABORT_COMMAND}\` undoes the move.`,
@@ -686,7 +693,7 @@ function summaryText(
       ? summary.expectedDowntimeMinutes === undefined
         ? [`Data: none on ${old}, so the app stays online until the switch.`]
         : [
-            `Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes, for the bucket's last copy.`,
+            `Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes, for the bucket's last copy${summary.to.provider === "portainer" ? "" : " and the deploy that starts the app"}.`,
           ]
       : [
           `Data on ${old} (OpsCrew read these sizes with a small read-only container there):`,

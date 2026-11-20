@@ -268,8 +268,9 @@ describe("renderWorkflow", () => {
         "docker compose up -d --no-deps --wait db cache",
         "docker compose run --rm --no-deps -T release",
         "--scale",
-        "> .env",
       ].map((part) => remote.indexOf(part));
+      // The switch writes .env last (a move's marker, before the release command, writes it too).
+      order.push(remote.lastIndexOf("> .env"));
       expect(order.every((index) => index >= 0)).toBe(true);
       expect(order).toEqual([...order].sort((a, b) => a - b));
       // The command itself lives in compose.yaml, not in the workflow.

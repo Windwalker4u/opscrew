@@ -12,7 +12,13 @@ import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
-import { type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
+import {
+  type EdgeFiles,
+  MOVE_WAITING,
+  MOVE_WAITING_NOTICE,
+  rollbackCommands,
+  switchCommands,
+} from "./switch";
 
 const ROOTS = [
   'APPS_DIR="${OPSCREW_APPS_DIR:-/srv/apps}"',
@@ -360,6 +366,38 @@ describe.skipIf(!shWorks())(
       );
       expect(read(`${kept}/app.log`)).toBe("copy-line of c1\n");
       expect(start.output).not.toContain("copy-line");
+    });
+
+    it("FR-3027: at a move's marker, brings up only the image, the edge and the services, then ends", () => {
+      const plan = withPlan(localhostPlan(), { releaseCommand: "npm run migrate" });
+      upload(plan, "shop.localhost");
+      write(`${appsDir()}/shop/${MOVE_WAITING}`, "");
+      const start = run(switchCommands(plan, [], localFiles("shop.localhost")));
+      expect(start.status, start.output).toBe(0);
+      expect(start.stdout.split("\n")).toContain(MOVE_WAITING_NOTICE);
+      // .env names the image, for the move's commands and its window's deploy, and so does the outcome.
+      expect(read(`${appsDir()}/shop/.env`)).toBe(`APP_IMAGE=${IMAGE}\n`);
+      expect(read(`${appsDir()}/shop/.start.outcome`)).toBe(`waiting ${IMAGE}\n`);
+      const docker = read(`${work}/docker.log`) ?? "";
+      expect(docker).toContain("docker compose pull\n");
+      expect(docker).toContain(`-f ${edgeDir()}/compose.yaml up -d --wait --remove-orphans\n`);
+      // The app's container is created for its volumes, never started; no release command (the
+      // fake fails any one-off container), no switch, workers or route.
+      expect(docker).toContain("docker compose up --no-start --no-deps app\n");
+      expect(docker).not.toMatch(/ run --rm|--scale|kamal-proxy/);
+      expect(route("shop")).toBeUndefined();
+      expect(existsSync(`${appsDir()}/shop/.failed-deploy`)).toBe(false);
+
+      // Once the move removed the marker, the deploy switches to a copy of the app beside the one
+      // created for its volumes, which goes.
+      rmSync(`${appsDir()}/shop/${MOVE_WAITING}`);
+      const plain = localhostPlan();
+      const after = run(switchCommands(plain, [], localFiles("shop.localhost")));
+      expect(after.status, after.output).toBe(0);
+      expect(after.output).not.toContain(MOVE_WAITING_NOTICE);
+      expect(route("shop")).toBe("shop-app-2:3000 shop.localhost");
+      expect(read(`${work}/docker.log`)).toContain("docker rm c1\n");
+      expect(read(`${appsDir()}/shop/.start.outcome`)).toBe("finished\n");
     });
 
     it("rolls back to the previous image with the app's hostname", () => {
