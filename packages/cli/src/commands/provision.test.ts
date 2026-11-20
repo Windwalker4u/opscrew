@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import {
@@ -13,7 +13,7 @@ import {
 } from "@opscrew/agents/testing";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
-import { resolveProjectPaths } from "@opscrew/core";
+import { ageRecipientOf, generateAgeIdentity, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -88,6 +88,13 @@ function context(p: DeployProject, options: Setup = {}) {
     ),
   });
   return { ctx, engine, github, runner };
+}
+
+/** GitHub whose repository is public. */
+class PublicGitHub extends FakeGitHub {
+  override async getRepo() {
+    return { ...(await super.getRepo()), private: false };
+  }
 }
 
 /** The 64-character hash printed on its own line after "Plan hash (SHA-256):". */
@@ -419,7 +426,9 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       // Without --key-out the plan-only run says the apply needs one; with it, the command repeats it.
       const bare = context(project, { sops });
       expect(await run(bare.ctx, "provision", "--plan-only", "--yes")).toBe(0);
-      expect(bare.ctx.output).toContain("in a script, add --key-out <file outside the repository>");
+      expect(bare.ctx.output).toContain(
+        "in a script, add --recipient <your age public key>, or --key-out <file outside the repository> for a new key",
+      );
       const first = context(project, { sops });
       expect(await run(first.ctx, "provision", "--plan-only", "--yes", "--key-out", keyFile)).toBe(
         0,
@@ -428,7 +437,7 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       expect(first.ctx.output).toContain(
         `    opscrew provision --approve ${hash} --yes --key-out ${keyFile.replaceAll("\\", "/")}\n`,
       );
-      expect(first.ctx.output).not.toContain("in a script, add --key-out");
+      expect(first.ctx.output).not.toContain("needs an age key: in a script");
       const second = context(project, { sops });
       const code = await run(
         second.ctx,
@@ -455,6 +464,153 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       expect(committed).toContain("ENC[AES256_GCM");
       expect(committed).not.toContain(identity);
       expect(await auditText(project)).not.toContain(identity);
+    });
+
+    /** The age recipients the copy in the deploy-setup pull request is encrypted to. */
+    async function copyRecipients(p: DeployProject): Promise<string[]> {
+      const copy = await git(
+        p.env,
+        p.root,
+        "show",
+        "opscrew/deploy-setup:opscrew/secrets.sops.json",
+      );
+      const { sops } = JSON.parse(copy) as { sops: { age: { recipient: string }[] } };
+      return sops.age.map((entry) => entry.recipient);
+    }
+
+    /** Every file under `dir`, outside git's folders, that holds an age private key. */
+    async function filesWithAgeKey(dir: string): Promise<string[]> {
+      const found: string[] = [];
+      for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
+        const file = path.join(entry.parentPath, entry.name);
+        if (!entry.isFile() || file.split(path.sep).some((part) => part.endsWith(".git"))) continue;
+        if ((await readFile(file, "utf8")).includes("AGE-SECRET-KEY-1")) found.push(file);
+      }
+      return found;
+    }
+
+    /** A --plan-only run with `flags`, then the printed --approve command; returns its output. */
+    async function planThenApply(p: DeployProject, sops: FakeSops, flags: string[]) {
+      const planned = context(p, { sops });
+      expect(await run(planned.ctx, "provision", "--plan-only", "--yes", ...flags)).toBe(0);
+      expect(planned.ctx.output).not.toContain("needs an age key: in a script");
+      const printed = /\n {4}opscrew (provision --approve [^\n]*)\n/.exec(planned.ctx.output)?.[1];
+      const applied = context(p, { sops });
+      const code = await run(applied.ctx, ...(printed ?? "").split(" "));
+      expect(code, applied.ctx.errors).toBe(0);
+      return { printed, said: `${applied.ctx.output}${applied.ctx.errors}` };
+    }
+
+    it("--recipient in a script encrypts the copy to that key, writes no key and commits the copy", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const own = generateAgeIdentity().recipient;
+      const { printed, said } = await planThenApply(project, new FakeSops(), ["--recipient", own]);
+      // The approving command repeats it.
+      expect(printed).toMatch(new RegExp(` --recipient ${own}$`));
+      expect(said).toContain(`encrypted to your own age key ${own}`);
+      expect(said).not.toContain("wrote your new age key");
+      expect(await copyRecipients(project)).toEqual([own]);
+      expect(
+        await git(project.env, project.root, "show", "opscrew/deploy-setup:opscrew/.sops.yaml"),
+      ).toContain(own);
+      expect(await filesWithAgeKey(project.dir)).toEqual([]);
+    });
+
+    it("two --recipient flags: the first is the main key, the second the backup key", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const main = generateAgeIdentity().recipient;
+      const backup = generateAgeIdentity().recipient;
+      await planThenApply(project, new FakeSops(), ["--recipient", main, "--recipient", backup]);
+      expect(await copyRecipients(project)).toEqual([main, backup]);
+      expect(await filesWithAgeKey(project.dir)).toEqual([]);
+    });
+
+    it("--recipient with --key-out: the new key and that recipient both open the copy", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const keyFile = path.join(project.dir, "age-key.txt");
+      const backup = generateAgeIdentity().recipient;
+      const { said } = await planThenApply(project, new FakeSops(), [
+        "--key-out",
+        keyFile,
+        "--recipient",
+        backup,
+      ]);
+      const identity = await identityIn(keyFile);
+      expect(said).not.toContain(identity);
+      expect(await copyRecipients(project)).toEqual([ageRecipientOf(identity), backup]);
+    });
+
+    it("refuses a value that isn't an age public key, or a third key, before anything changes", async () => {
+      project = await deployProject();
+      const { ctx, engine, github } = context(project);
+      const approve = ["provision", "--approve", "a".repeat(64), "--yes"];
+      // A private key pasted by mistake is refused and never printed.
+      const secret = generateAgeIdentity().identity;
+      for (const value of ["age1notakey", secret]) {
+        expect(await run(ctx, ...approve, "--recipient", value)).toBe(2);
+        expect(ctx.errors).toContain(
+          "--recipient expects an age public key: one line that starts with age1.",
+        );
+      }
+      expect(`${ctx.output}${ctx.errors}`).not.toContain(secret);
+      const [a, b] = [generateAgeIdentity().recipient, generateAgeIdentity().recipient];
+      const keyFile = path.join(project.dir, "age-key.txt");
+      expect(
+        await run(ctx, ...approve, "--recipient", a, "--recipient", b, "--key-out", keyFile),
+      ).toBe(2);
+      expect(ctx.errors).toContain("The recovery copy is encrypted to at most two age keys");
+      expect(engine.calls).toEqual([]);
+      expect(github.secrets.size).toBe(0);
+      expect(github.pulls).toEqual([]);
+    });
+
+    it("a public repository: a script with --recipient commits no copy, as with --key-out", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const github = new PublicGitHub();
+      const planned = context(project, { github });
+      const own = generateAgeIdentity().recipient;
+      expect(await run(planned.ctx, "provision", "--plan-only", "--yes", "--recipient", own)).toBe(
+        0,
+      );
+      const applied = context(project, { github, sops: new FakeSops() });
+      const code = await run(
+        applied.ctx,
+        "provision",
+        "--approve",
+        printedHash(planned.ctx.output),
+        "--yes",
+        "--recipient",
+        own,
+      );
+      expect(code, applied.ctx.errors).toBe(0);
+      expect(applied.ctx.errors).toContain(
+        "The repository is public, so OpsCrew does not commit the encrypted recovery copy",
+      );
+      await expect(
+        git(project.env, project.root, "show", "opscrew/deploy-setup:opscrew/secrets.sops.json"),
+      ).rejects.toThrow();
+    });
+
+    it("a terminal with --recipient asks only for a backup key", async () => {
+      project = await deployProject();
+      project.env.OPSCREW_SOPS_BIN = FAKE_SOPS;
+      const own = generateAgeIdentity().recipient;
+      const prompts = new ScriptedPrompts([""]);
+      const { ctx } = context(project, {
+        interactive: true,
+        approvals: new ApproveAll(),
+        prompts,
+        sops: new FakeSops(),
+      });
+      expect(await run(ctx, "provision", "--recipient", own), ctx.errors).toBe(0);
+      expect(prompts.calls.map((call) => call.message)).toEqual([
+        expect.stringContaining("Add a second, offline backup key"),
+      ]);
+      expect(await copyRecipients(project)).toEqual([own]);
     });
 
     it("asks for the key file's path in a terminal and offers a backup key", async () => {

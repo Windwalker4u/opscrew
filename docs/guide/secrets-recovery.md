@@ -45,7 +45,21 @@ In a script, name the key file with `--key-out <path>`:
 npx opscrew provision --approve <hash> --yes --key-out ~/opscrew-shop-age-key.txt
 ```
 
-Without it, a script makes no copy yet and says how to make one.
+Or give your own age key's public key with `--recipient <age1…>`. OpsCrew then makes no new key
+and writes no key file, which suits a script whose computer keeps nothing, such as a GitHub
+Actions runner. The pull request carries `opscrew/secrets.sops.json` as it does with `--key-out`.
+
+```bash
+npx opscrew provision --approve <hash> --yes --recipient age1…
+```
+
+Give `--recipient` twice to add a backup key: the first is your main key, the second the backup
+key. With `--key-out` too, the new key is the main key and the recipient its backup. The copy is
+encrypted to every key you give, two at most. A value that isn't an age public key (one line that
+starts with `age1`, which `age-keygen -y <key file>` prints) stops the command before anything
+changes. Never pass the key itself.
+
+Without either, a script makes no copy yet and says how to make one.
 
 **A public repository.** Before the copy is first committed to a public repository, OpsCrew warns
 you: anyone can keep the encrypted file and try to open it later, and the names of the files it

@@ -26,6 +26,7 @@ import {
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
 import {
   approvalDecision,
+  isAgeRecipient,
   isPlanHash,
   OpsCrewError,
   toPosixRelative,
@@ -89,6 +90,8 @@ export interface InfraFlags {
   replaceToken?: ReplaceableToken[];
   /** `--key-out <path>` (`provision` only): the file the recovery copy's first age key goes to. */
   keyOut?: string;
+  /** Every `--recipient <age1…>` (`provision` only): the age public keys the first copy is encrypted to. */
+  recipient?: string[];
   /** `--pages-verification <value>` (`provision` only): GitHub's domain verification value. */
   pagesVerification?: string;
   /** `--allow-downtime` (`provision` only): a script approves a move's maintenance window. */
@@ -158,6 +161,55 @@ function imageChoice(flags: Pick<InfraFlags, "publicImage" | "privateImage">): b
   }
   if (flags.publicImage === true) return true;
   return flags.privateImage === true ? false : undefined;
+}
+
+/**
+ * The `--recipient` values, trimmed and without repeats, checked before anything runs: each an
+ * age public key, and at most two keys with `--key-out`'s new key (the main key and its backup).
+ * A value is never echoed, so a private key pasted by mistake stays unprinted.
+ */
+function checkRecipients(flags: Pick<InfraFlags, "recipient" | "keyOut">): string[] {
+  const recipients = [...new Set((flags.recipient ?? []).map((value) => value.trim()))];
+  if (!recipients.every(isAgeRecipient)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "--recipient expects an age public key: one line that starts with age1.",
+      {
+        hint: "Pass the public half of your age key, which `age-keygen -y <key file>` prints, never the key itself (AGE-SECRET-KEY-1…).",
+      },
+    );
+  }
+  if (recipients.length + (flags.keyOut === undefined ? 0 : 1) > 2) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "The recovery copy is encrypted to at most two age keys: your main key and a backup key.",
+      { hint: "Give --recipient once or twice, or --key-out <path> with one --recipient." },
+    );
+  }
+  return recipients;
+}
+
+/**
+ * The recovery copy's first keys for `opscrew provision` ({@link recoveryOptions}), with the
+ * `--recipient` keys: the first is the main key and a second the backup key; with `--key-out` the
+ * new key is the main one and the recipient its backup. A terminal still offers a backup key when
+ * none was given.
+ */
+function provisionRecovery(
+  ctx: CliContext,
+  keyOut: string | undefined,
+  recipients: readonly string[],
+): Pick<ProvisionOptions, "recovery"> {
+  const base = recoveryOptions(ctx, keyOut);
+  if (recipients.length === 0) return base;
+  const [main, backup] = keyOut === undefined ? recipients : [undefined, recipients[0]];
+  return {
+    recovery: {
+      ...base.recovery,
+      ...(main === undefined ? {} : { recipient: async () => main }),
+      ...(backup === undefined ? {} : { backup: async () => backup }),
+    },
+  };
 }
 
 /** Help text of `--yes` for the commands that write files, secrets and pull requests. */
@@ -367,6 +419,7 @@ export async function runInfraCommand(
     ctx,
     async () => {
       const hashes = checkApproveFlags(command, flags);
+      const recipients = checkRecipients(flags);
       const publicImage = imageChoice(flags);
       const hostKey = flags.hostKey?.trim();
       const confirms = (flags.confirm ?? []).map((value) => value.trim());
@@ -437,7 +490,7 @@ export async function runInfraCommand(
         ...(hostKey === undefined ? {} : { hostKey }),
         ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
         ...portainerImageOptions(publicImage, flags.replaceToken),
-        ...(command === "provision" ? recoveryOptions(ctx, flags.keyOut) : {}),
+        ...(command === "provision" ? provisionRecovery(ctx, flags.keyOut, recipients) : {}),
         ...(flags.pagesVerification === undefined
           ? {}
           : { pagesVerification: flags.pagesVerification }),
@@ -587,6 +640,7 @@ export async function runInfraCommand(
         securityReport: toPosixRelative(deps.paths.root, deps.paths.files.securityReport),
         stackFollows,
         publicImage,
+        recipients,
         confirmNames:
           command === "provision" && confirmNames.size > 0 ? [...confirmNames] : undefined,
         // No key for this app's recovery copy yet: the apply makes its first key.
@@ -594,6 +648,7 @@ export async function runInfraCommand(
           planOnly &&
           command === "provision" &&
           flags.keyOut === undefined &&
+          recipients.length === 0 &&
           (await knownRecipients(deps.paths)) === undefined,
         // `opscrew dns` has no --confirm: a deleting plan is approved in a terminal or by provision.
         dnsDeletes: confirmNames.size > 0 && command === "dns" ? plan?.app.name : undefined,
@@ -631,11 +686,11 @@ export async function runInfraCommand(
               ...(flags.yes === true ? { yes: true } : {}),
               ...(flags.keyOut === undefined ? {} : { keyOut: userPath(ctx, flags.keyOut) }),
             },
-          )}${skipOtherAppsFlag(flags)}${confirmFlags}`,
+          )}${result.recipients.map((key) => ` --recipient ${key}`).join("")}${skipOtherAppsFlag(flags)}${confirmFlags}`,
         );
         if (result.keyWanted) {
           ctx.stdout(
-            "The first encrypted recovery copy of this app's secrets needs a file for your new age key: in a script, add --key-out <file outside the repository> to the command above (a terminal asks for it).\n",
+            "The first encrypted recovery copy of this app's secrets needs an age key: in a script, add --recipient <your age public key>, or --key-out <file outside the repository> for a new key, to the command above (a terminal asks for them).\n",
           );
         }
         if (names.length > 0) {
@@ -897,6 +952,11 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--key-out <path>",
       "The first time OpsCrew makes the encrypted recovery copy of this app's secrets: write your new age key to this file, outside the repository (a terminal asks for it); the key is never printed",
+    )
+    .option(
+      "--recipient <age1…>",
+      "The first time OpsCrew makes the encrypted recovery copy of this app's secrets: encrypt it to this age public key of yours instead of a new key, so a script or CI writes no key file; give it again for a backup key, or with --key-out to add it as the new key's backup",
+      collect,
     )
     .option(
       "--pages-verification <value>",
