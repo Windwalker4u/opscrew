@@ -175,7 +175,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/provider-hetzner --filter=@opscrew/provider-digitalocean --filter=@opscrew/provider-contabo --filter=@opscrew/contracts && pnpm lint`
   - Effort: high
 
-- [ ] T3109 [US4] The phases write since, until, ended and oneTime
+- [x] T3109 [US4] The phases write since, until, ended and oneTime
   - Owns: `packages/agents/src/**` (design's cost, provision, retarget's finish, destroy, the
     backups switch, snapshot deletion, the plan writer's pruning), colocated tests
   - Depends: T3108
@@ -218,9 +218,34 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/status && npx vitest run --root packages/plan-schema && pnpm lint`
   - Effort: high
 
+- [ ] T3113 [US4] A cost item's name stays the same while it bills
+  - Why: the IPv4 and backups items carry where their price came from (`(Hetzner's published rate
+    as of <date>)`, `OpsCrew's default rate…`), and an extra server's item its currency conversion,
+    so a new price list renames a running item and the portal, which keeps a monthly record by
+    name, counts it twice.
+  - Owns: `packages/plan-schema/src/plan.ts` and `schemas/plan.schema.json` (`priceSource` on the
+    cost item only), `packages/agents/src/design/cost.ts`, `design/servers.ts`,
+    `shared/cost-times.ts`, the places that print a cost line (not `src/status/**` or
+    `src/domain/**`, which T3111 owns: report it if they need a change), colocated tests and
+    snapshots
+  - Depends: T3109
+  - Accept:
+    - **The name:** `item` holds only what is billed ("Primary IPv4 address", "Automated backups
+      (20% of the server price)", "Server worker (cx23 in nbg1), with its IPv4 address"). Where
+      its price came from, and a conversion from another currency, go in a new optional
+      `priceSource` string.
+    - **Shown as before:** every place that prints a cost line adds `priceSource` after it, in the
+      same words, so the user sees no change.
+    - **The identity:** `keepCostTimes` matches items by `provider` and `item` alone; the wording
+      constants and the note's regex from T3109's re-review go.
+    - **Tests:** a price list's new date keeps the name and `since`; the printed lines are
+      unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/design src/shared src/monitoring src/retarget/start && pnpm lint`
+  - Effort: medium
+
 **Also in 0.2.11** (a user's ask, the founder's yes of 2026-11-20; not part of the move):
 
-- [ ] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
+- [x] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
   - Why: a Dockerfile that checks a pinned module's commit through GitHub's API calls it anonymously
     from the build, 60 calls an hour per address shared by every job on GitHub's runners, and the
     build fails on the limit.
@@ -276,6 +301,16 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   running until the next run. A `holdNewApp` at the start of a run at `deployed` without the
   pre-copy record closes it.
 - **The one-off MySQL containers have no time limit.**
+
+**Follow-up, after 0.2.11** (T3109's reviews):
+- **An item design drops ends at design time,** not at the apply that removes it (backups off,
+  another server type): `until` is early by the time between design and provision.
+- **After a failed first create**, a rerun records the server's `since` and a setup fee's `at` at
+  the rerun's time, not the creation's.
+- **An abort whose old server type is no longer listed** keeps no `since` for the old side until
+  the next design.
+- **Not timed yet:** the snapshot a move's `--finish` keeps, an extra server's line during a move,
+  site moves, serverless provision, and the backups `opscrew advise --apply` turns on.
 - [x] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one
   Contabo Cloud VPS 4, owned by the first of them):
   - **The first app** moves from its Hetzner CX23 to a new Contabo server of its own, run by the
