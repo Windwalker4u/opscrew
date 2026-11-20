@@ -189,7 +189,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/design src/provision src/retarget src/destroy src/snapshot && pnpm lint`
   - Effort: high
 
-- [ ] T3110 (lead) A real move's past items backfilled by hand into the live app's
+- [x] T3110 (lead) A real move's past items backfilled by hand into the live app's
   plan once T3109 is in, with the move's exact times
 
 - [ ] T3111 [US4] A bought domain's purchase and renewals in the cost
@@ -220,7 +220,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/status && npx vitest run --root packages/plan-schema && pnpm lint`
   - Effort: high
 
-- [ ] T3113 [US4] A cost item's name stays the same while it bills
+- [x] T3113 [US4] A cost item's name stays the same while it bills
   - Why: the IPv4 and backups items carry where their price came from (`(Hetzner's published rate
     as of <date>)`, `OpsCrew's default rate…`), and an extra server's item its currency conversion,
     so a new price list renames a running item and the portal, which keeps a monthly record by
@@ -302,6 +302,9 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   extensions (xdebug, if a development package asks for it). Spike `COMPOSER_NO_DEV=1` through
   Railpack's `--env`.
 - **The drill tests' fakes take 45 s on Windows:** make the fake `sleep` and time limit instant.
+- **An extension another locked package provides:** a polyfill's `provide` of an `ext-*` still puts
+  it on the list, and `install-php-extensions` may not be able to install it. Skip any `ext-*` a
+  locked package lists in `provide`, in detect and in the workflow's script.
 
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
