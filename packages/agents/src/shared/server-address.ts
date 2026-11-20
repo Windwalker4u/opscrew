@@ -93,22 +93,35 @@ export async function setPortainerRecordsAddress(
 
 const ServersOutputSchema = z.record(
   z.string(),
-  z.looseObject({ ipv4: z.unknown().optional(), ipv6: z.unknown().optional() }),
+  z.looseObject({
+    ipv4: z.unknown().optional(),
+    ipv6: z.unknown().optional(),
+    id: z.unknown().optional(),
+  }),
 );
 
+/** A server of the root-module output `servers`: its address, and its provider id when it has one. */
+export interface ProviderServer {
+  address: ServerAddress;
+  id?: string;
+}
+
 /**
- * The address of `provider`'s server from the root-module output `servers` (every server keyed by
- * its provider, whichever module holds it), when valid. A move always goes to another provider,
- * so this tells the server being replaced from the new one without guessing.
+ * `provider`'s server from the root-module output `servers` (every server keyed by its provider,
+ * whichever module holds it), when its address is valid; a server module's has its provider id.
+ * A move always goes to another provider, so this tells the server being replaced from the new
+ * one without guessing.
  */
 export function serverOfProvider(
   outputs: Record<string, unknown>,
   provider: VpsProviderId,
-): ServerAddress | undefined {
+): ProviderServer | undefined {
   const servers = ServersOutputSchema.safeParse(outputs.servers);
   if (!servers.success) return undefined;
   const entry = servers.data[provider];
-  return entry === undefined ? undefined : addressOf(entry.ipv4, entry.ipv6);
+  const address = entry === undefined ? undefined : addressOf(entry.ipv4, entry.ipv6);
+  if (address === undefined) return undefined;
+  return typeof entry?.id === "string" && entry.id !== "" ? { address, id: entry.id } : { address };
 }
 
 /** `the app's server` or `server <name>`: one of the app's servers in a message. */

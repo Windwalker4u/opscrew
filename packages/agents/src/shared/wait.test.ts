@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ApprovalRequest } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
+import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import type { PhaseDeps } from "../context";
@@ -22,6 +22,7 @@ import {
   isNewServerRepairRequest,
   type NewServerRepair,
   readyNewServer,
+  serverInstallFile,
 } from "./wait";
 
 describe("confirmChangedHostKey", () => {
@@ -54,18 +55,23 @@ const QUOTED = fakeSecret("hcloud-token", "first-boot");
 const USER_DATA = "#cloud-config\n# the first-boot file the module renders\n";
 
 /**
- * A new server's first boot (`server`), waited for by `readyNewServer` with a repair through its
- * provider's fake API unless `repair` is false; `answer` decides each approval (default: the
- * app's name typed). The clock is the test's.
+ * A new server's first boot (`server`, or one built from `options`), waited for by
+ * `readyNewServer` with a repair through its provider's fake API (or `servers`) unless `repair`
+ * is false; `answer` decides each approval (default: the app's name typed); `remote` replaces
+ * the deploy user's shell. The clock is the test's.
  */
 async function firstBoot(
   provider: (typeof VPS_PROVIDERS)[number],
   options: FirstBootOptions & {
     answer?: (request: ApprovalRequest) => boolean;
     repair?: boolean;
+    server?: FakeFirstBoot;
+    servers?: NewServerRepair["servers"];
+    remote?: (host: string) => RemoteExec;
   } = {},
 ) {
-  const server = new FakeFirstBoot({ errors: firstBootErrors(QUOTED), ...options });
+  const server =
+    options.server ?? new FakeFirstBoot({ errors: firstBootErrors(QUOTED), ...options });
   const handler = new ScriptedApprovalHandler(options.answer ?? (() => true));
   const deps = await createTestPhaseDeps({
     approvalHandler: handler,
@@ -74,7 +80,7 @@ async function firstBoot(
   await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
   let clock = 0;
   const repair: NewServerRepair = {
-    servers: server.servers,
+    servers: options.servers ?? server.servers,
     serverId: FIRST_BOOT_SERVER_ID,
     app: "shop",
     image: providerProfile(provider).defaultImage,
@@ -90,7 +96,7 @@ async function firstBoot(
     again: AGAIN,
     services: {
       tcpConnect: server.tcpConnect,
-      remote: server.remote,
+      remote: options.remote ?? server.remote,
       now: () => clock,
       sleep: async (ms) => {
         clock += ms;
@@ -122,9 +128,24 @@ function expectNoLeak(everything: string) {
   }
 }
 
+/** The install's hash: the action, the provider, the server, the image and the file's SHA-256. */
+function installHash(provider: string): string {
+  return sha256Hex(
+    JSON.stringify({
+      action: "reinstall",
+      provider,
+      serverId: FIRST_BOOT_SERVER_ID,
+      image: providerProfile(provider as (typeof VPS_PROVIDERS)[number]).defaultImage,
+      userData: sha256Hex(USER_DATA),
+    }),
+  );
+}
+
 describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
   const profile = providerProfile(provider);
   const named = `the new ${profile.displayName} ${profile.serverNoun} shop`;
+  const target = `${provider} server ${FIRST_BOOT_SERVER_ID}`;
+  const hash = installHash(provider);
 
   it("names the failed steps in plain words when no repair is offered", async () => {
     const { result, server, handler, everything } = await firstBoot(provider, { repair: false });
@@ -144,6 +165,7 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
       setup: "ready",
     });
     expect(result).toMatchObject({ created: true, changed: false });
+    expect(result).not.toHaveProperty("installHash");
     expect(server.calls).toEqual([`restart ${FIRST_BOOT_SERVER_ID}`]);
     expect(handler.requests).toHaveLength(1);
     const request = handler.requests[0] as ApprovalRequest;
@@ -152,20 +174,20 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
       title: `Restart ${named}`,
       confirmPhrase: "shop",
     });
+    // No data is lost by a restart: the typed name only, bound to no hash.
     expect(request.allowDestroy).toBeUndefined();
+    expect(request.planHash).toBeUndefined();
     expect(isNewServerRepairRequest(request)).toBe(true);
     expect(request.details).toContain(`The server at ${HOST} did not open SSH within 5 minutes.`);
-    expect(request.details).toContain("It holds nothing yet");
+    expect(request.details).toContain("OpsCrew has no record of a deploy to it.");
+    expect(request.details).not.toContain("holds nothing");
     expect(request.details).toContain(
       `OpsCrew restarts ${named} through ${profile.displayName}'s API`,
     );
-    expect(deps.audit.entries).toContainEqual(
-      expect.objectContaining({
-        kind: "provider-call",
-        action: "restart server",
-        target: `${profile.displayName} ${profile.serverNoun} ${FIRST_BOOT_SERVER_ID}`,
-      }),
-    );
+    expect(deps.audit.entries.filter((e) => e.kind === "provider-call")).toEqual([
+      expect.objectContaining({ action: "restart server", target }),
+      expect.objectContaining({ action: "server restarted", target }),
+    ]);
     expect(deps.reporter.text()).toContain(`success: The server at ${HOST} is ready.`);
     // The title is kept in the approvals record and the audit log: no address there.
     expect(request.title).not.toContain(HOST);
@@ -173,7 +195,7 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     expectNoLeak(everything);
   });
 
-  it("installs a server whose setup failed again, after the app's name, and pins its new key with no question", async () => {
+  it("installs a server whose setup failed again, approved by its hash and the app's name, and pins the new key with no question", async () => {
     const { result, server, handler, deps, everything } = await firstBoot(provider);
     expect(server.calls).toEqual([`reinstall ${FIRST_BOOT_SERVER_ID}`]);
     expect(server.installed).toEqual({ image: profile.defaultImage, userData: USER_DATA });
@@ -182,20 +204,69 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     const request = handler.requests[0] as ApprovalRequest;
     expect(request).toMatchObject({
       kind: "remote-exec",
+      planHash: hash,
       allowDestroy: true,
       confirmPhrase: "shop",
     });
     expect(request.details).toContain(
       `The server at ${HOST} did not finish its first-boot setup: the provider's first-boot command, the package install and OpsCrew's setup script failed.`,
     );
-    expect(request.details).toContain("It holds nothing yet");
-    expect(request.details).toContain("its disk is wiped");
-    expect(result).toMatchObject({ knownHostsLines: `${HOST} ${NEW_HOST_KEY}\n`, created: true });
-    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toBe(`${HOST} ${NEW_HOST_KEY}\n`);
-    expect(deps.audit.entries).toContainEqual(
-      expect.objectContaining({ kind: "provider-call", action: "reinstall server" }),
+    expect(request.details).toContain(
+      "It holds no app (no app folder, no running container), and OpsCrew has no record of a deploy to it.",
     );
+    expect(request.details).toContain("its disk is wiped");
+    expect(request.details).toContain(`Install hash: ${hash}`);
+    // Recorded by its hash, so that provision tells it from an infrastructure plan.
+    const record = JSON.parse(await readFile(serverInstallFile(deps.paths, hash), "utf8"));
+    expect(record).toEqual({
+      provider,
+      serverId: FIRST_BOOT_SERVER_ID,
+      image: profile.defaultImage,
+      userDataSha256: sha256Hex(USER_DATA),
+    });
+    expect(result).toEqual({
+      knownHostsLines: `${HOST} ${NEW_HOST_KEY}\n`,
+      changed: true,
+      created: false,
+      installHash: hash,
+    });
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toBe(`${HOST} ${NEW_HOST_KEY}\n`);
+    expect(deps.audit.entries.filter((e) => e.kind === "provider-call")).toEqual([
+      expect.objectContaining({
+        action: "reinstall server",
+        target,
+        detail: expect.stringContaining(hash),
+      }),
+      expect.objectContaining({ action: "server reinstalled", target }),
+    ]);
     expectNoLeak(everything);
+  });
+
+  it("keeps the install's hash from one run to the next", async () => {
+    const answer = (request: ApprovalRequest) => request.planHash === undefined;
+    const first = await firstBoot(provider, { answer });
+    const second = await firstBoot(provider, { answer });
+    expect(first.handler.requests[0]?.planHash).toBe(hash);
+    expect(second.handler.requests[0]?.planHash).toBe(hash);
+  });
+
+  it("audits an install the provider refused, and stops", async () => {
+    const server = new FakeFirstBoot({ errors: firstBootErrors(QUOTED) });
+    const failing = {
+      ...server.servers,
+      reinstall: async () => {
+        throw new OpsCrewError("PROVIDER_ERROR", "The provider refused the install.");
+      },
+    };
+    const { result, deps } = await firstBoot(provider, { servers: failing });
+    expect(result).toMatchObject({ message: "The provider refused the install." });
+    expect(deps.audit.entries.filter((e) => e.kind === "provider-call")).toEqual([
+      expect.objectContaining({ action: "reinstall server", target }),
+      expect.objectContaining({
+        action: "reinstall failed",
+        detail: expect.stringContaining("The provider refused the install."),
+      }),
+    ]);
   });
 
   it("repairs the live case: a restart, then an install, at most one of each", async () => {
@@ -231,55 +302,68 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
         stuck.calls.push(`restart ${id}`);
       },
     };
-    const deps = await createTestPhaseDeps({ runner: stuck.runner() });
-    await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
-    let clock = 0;
-    const error = await readyNewServer(deps, {
-      host: HOST,
-      server: "server",
-      profile,
-      keyFile: deps.paths.files.deployKey,
-      again: AGAIN,
-      services: {
-        tcpConnect: stuck.tcpConnect,
-        remote: stuck.remote,
-        now: () => clock,
-        sleep: async (ms) => {
-          clock += ms;
-        },
-      },
-      repair: {
-        servers: stays,
-        serverId: FIRST_BOOT_SERVER_ID,
-        app: "shop",
-        image: profile.defaultImage,
-        userData: async () => USER_DATA,
-        command: "opscrew provision",
-        script: "run `opscrew provision --confirm shop`",
-      },
-    }).catch((e: unknown) => e);
+    const { result } = await firstBoot(provider, { network: false, servers: stays });
     expect(stuck.calls).toEqual([`restart ${FIRST_BOOT_SERVER_ID}`]);
-    expect(error).toMatchObject({
+    expect(result).toMatchObject({
       code: "PROVIDER_ERROR",
       message: `The server at ${HOST} did not open SSH within 5 minutes after OpsCrew restarted it.`,
     });
   });
 
-  it("without the approval restarts and installs nothing, and says how to approve it", async () => {
-    for (const network of [false, true]) {
-      const { result, server } = await firstBoot(provider, { network, answer: () => false });
+  it("without the approval restarts and installs nothing, and prints the command that approves it", async () => {
+    const restart = await firstBoot(provider, { network: false, answer: () => false });
+    expect(restart.server.calls).toEqual([]);
+    expect(restart.result).toMatchObject({ code: "APPROVAL_REFUSED" });
+    const refused = restart.result as OpsCrewError;
+    expect(refused.message).toContain("did not open SSH");
+    expect(refused.message).toContain("OpsCrew did not restart it");
+    expect(refused.message).toContain("Nothing was changed.");
+    expect(refused.hint).toBe(
+      "To restart it, run `opscrew provision` again and type shop when asked; in a script, run `opscrew provision --confirm shop`.",
+    );
+
+    const install = await firstBoot(provider, { answer: () => false });
+    expect(install.server.calls).toEqual([]);
+    const error = install.result as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toContain("OpsCrew did not install it");
+    expect(error.hint).toBe(
+      `To install it again, run \`opscrew provision\` again and type shop when asked; in a script, run \`opscrew provision --approve ${hash} --confirm shop\`.`,
+    );
+  });
+
+  it("never offers an install when the deploy user's shell never answered", async () => {
+    const { result, server, handler } = await firstBoot(provider, { login: false });
+    expect(result).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: `The server at ${HOST} did not let the deploy user in to check its first-boot setup within 8 minutes.`,
+    });
+    expect((result as OpsCrewError).hint).toContain("cloud-init status --long");
+    expect(handler.requests).toEqual([]);
+    expect(server.calls).toEqual([]);
+  });
+
+  it("never offers an install for a server that shows an app, and names none of it", async () => {
+    for (const app of ["folder", "container"] as const) {
+      const { result, server, handler, everything } = await firstBoot(provider, { app });
+      expect(result).toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: `The server at ${HOST} did not finish its first-boot setup: the provider's first-boot command, the package install and OpsCrew's setup script failed. It shows an app (OpsCrew's ready mark, an app's folder or a running container), so OpsCrew does not offer to install it again.`,
+      });
+      expect(handler.requests).toEqual([]);
       expect(server.calls).toEqual([]);
-      expect(result).toMatchObject({ code: "APPROVAL_REFUSED" });
-      const error = result as OpsCrewError;
-      expect(error.message).toContain(
-        network ? "did not finish its first-boot setup" : "did not open SSH",
-      );
-      expect(error.message).toContain(`OpsCrew did not ${network ? "install" : "restart"} it`);
-      expect(error.message).toContain("Nothing was changed.");
-      expect(error.hint).toBe(
-        "To repair it, run `opscrew provision` again and type shop when asked; in a script, run `opscrew provision --confirm shop`.",
-      );
+      expectNoLeak(everything);
     }
+  });
+
+  it("never offers an install when the shell stops answering at the look for an app", async () => {
+    const { result, server, handler } = await firstBoot(provider, { app: "silent" });
+    expect(result).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: `The server at ${HOST} did not finish its first-boot setup: the provider's first-boot command, the package install and OpsCrew's setup script failed. It stopped answering the deploy user, so OpsCrew could not check what it holds and does not offer to install it again.`,
+    });
+    expect(handler.requests).toEqual([]);
+    expect(server.calls).toEqual([]);
   });
 
   it("waits for the new system's key while the old one still answers, and stops when it never comes", async () => {
@@ -288,8 +372,8 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     const scans = (slow.deps.runner as ReturnType<FakeFirstBoot["runner"]>).calls.filter(
       (call) => call.command === "ssh-keyscan",
     );
-    // The pin before the install, five scans of the old system, the new one, and its pin.
-    expect(scans).toHaveLength(8);
+    // The pin before the install, five scans of the old system, then the new one, pinned as read.
+    expect(scans).toHaveLength(7);
 
     const never = await firstBoot(provider, { oldScans: 1_000 });
     expect(never.result).toMatchObject({
@@ -306,6 +390,26 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     expect(handler.requests).toEqual([]);
     expect(server.calls).toEqual([]);
   });
+});
+
+it("looks for an app by the ready mark, the apps' folders and Docker's running containers", async () => {
+  const commands: string[] = [];
+  const server = new FakeFirstBoot({ errors: firstBootErrors(QUOTED) });
+  const recording = (host: string) => {
+    const remote = server.remote(host);
+    return {
+      host,
+      run: (command: string, options?: Parameters<typeof remote.run>[1]) => {
+        commands.push(command);
+        return remote.run(command, options);
+      },
+    };
+  };
+  await firstBoot("hetzner", { remote: recording, server });
+  const look = commands.find((command) => command.includes("/srv/apps")) ?? "";
+  for (const part of ["test ! -e /var/lib/opscrew-ready", "ls -A /srv/apps", "docker ps -q"]) {
+    expect(look).toContain(part);
+  }
 });
 
 describe("failedSetupSteps", () => {

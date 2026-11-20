@@ -164,24 +164,20 @@ export async function renameStep(session: MoveSession): Promise<RetargetResult |
   return undefined;
 }
 
-/** The provider's id of each server in the root's `servers` output, by provider. */
-const ServerIdsSchema = z.record(z.string(), z.looseObject({ id: z.string().min(1).optional() }));
-
 /**
  * Waits for SSH on the new server, pins its host key and waits for its first-boot setup. The new
  * server holds nothing before the move deploys to it, so a failed first boot is repaired through
- * its provider (FR-3109) when the outputs give its id.
+ * its provider (FR-3109) when the outputs give its id (`serverId`). An install approved by
+ * `--approve <hash>` uses that flag up.
  */
 async function waitForNewServer(
   session: MoveSession,
   host: string,
-  outputs: Record<string, unknown>,
+  serverId: string | undefined,
 ): Promise<void> {
   const { deps, plan } = session;
   const provider = moveProvider(plan.target);
   const profile = providerProfile(provider);
-  const ids = ServerIdsSchema.safeParse(outputs.servers);
-  const serverId = ids.success ? ids.data[provider]?.id : undefined;
   const target = plan.target;
   const repair: NewServerRepair | undefined =
     serverId === undefined || !isCloudTarget(target)
@@ -205,7 +201,7 @@ async function waitForNewServer(
           command: session.command,
           script: `run \`${session.command} --confirm ${plan.app.name}\``,
         };
-  await readyNewServer(deps, {
+  const ready = await readyNewServer(deps, {
     host,
     server: `new ${profile.serverNoun}`,
     profile,
@@ -214,6 +210,9 @@ async function waitForNewServer(
     services: session.services,
     ...(repair !== undefined ? { repair } : {}),
   });
+  if (ready.installHash !== undefined && ready.installHash === session.approve) {
+    session.approve = undefined;
+  }
 }
 
 /**
@@ -264,13 +263,13 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     );
   }
   // The address goes to OpsCrew's local state, never into opscrew/plan.yaml.
-  await recordNewServer(session, next);
+  await recordNewServer(session, next.address);
   if (outcome.kind === "applied") {
     const at = deps.clock.now().toISOString();
     await savePlan(session, { ...session.plan, ...withApply(session.plan, outcome, at) });
     await recordAdopted(session);
   }
-  await waitForNewServer(session, next.ipv4, outcome.outputs);
+  await waitForNewServer(session, next.address.ipv4, next.id);
   // The new bucket, when the move takes the bucket along.
   const bucketStop = await createBucket(session);
   return bucketStop;

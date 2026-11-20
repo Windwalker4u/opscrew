@@ -119,6 +119,7 @@ import {
   requireGitRepo,
   type ServerAddress,
   serverAddress,
+  serverInstallFile,
   serverlessDnsByProvision,
   stringOutput,
   trackedFiles,
@@ -408,15 +409,17 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
 }
 
 /**
- * True when `hash` names a saved host plan (`host-<hash>.json`), local plan (`local-<hash>.json`)
- * or object storage order (`object-storage-<hash>.json`), each granted by the approval handler.
+ * True when `hash` names a saved host plan (`host-<hash>.json`), local plan (`local-<hash>.json`),
+ * object storage order (`object-storage-<hash>.json`) or a new server's install
+ * (`server-install-<hash>.json`), each granted by the approval handler.
  */
 async function namesHostOrLocalPlan(deps: PhaseDeps, hash: string): Promise<boolean> {
   const name = hash.toLowerCase();
   return (
     (await exists(hostPlanFile(deps.paths, name))) ||
     (await exists(localPlanFile(deps.paths, name))) ||
-    exists(storageOrderPlanFile(deps.paths, name))
+    (await exists(storageOrderPlanFile(deps.paths, name))) ||
+    exists(serverInstallFile(deps.paths, name))
   );
 }
 
@@ -2143,17 +2146,15 @@ function appServerRepair(
     return undefined;
   }
   return {
-    servers:
-      input.services.provider !== undefined
-        ? input.services.provider.servers
-        : vpsConnector(target.provider, deps).servers,
+    servers: (input.services.provider ?? vpsConnector(target.provider, deps)).servers,
     serverId,
     app: plan.app.name,
     image: target.image,
     // The app's server serves the web, as its module's `web` defaults to.
     userData: async () => renderCloudInit({ ...input.firstBoot, web: true }),
     command: input.command,
-    // A script's `--confirm` without `--approve` only plans: the approving run names the plan.
+    // The restart takes the app's name alone, but a script's `--confirm` without `--approve`
+    // only plans: the run that restarts names the infrastructure plan, which changes nothing.
     script: `run \`${input.command} --plan-only\`, then \`${input.command} --approve <the hash it prints> --confirm ${plan.app.name}\``,
   };
 }

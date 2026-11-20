@@ -93,7 +93,7 @@ describe.skipIf(!findExecutable("git"))("a move's new server whose first boot fa
       expect(printed).not.toContain("apt-get");
     });
 
-    it("in a script stops without --confirm, nothing restarted, and goes on with it", async () => {
+    it("in a script restarts with --confirm, and installs only with --approve its hash too", async () => {
       const { h, server } = await movingTo(to, { network: false }, { interactive: false });
       const error = await caught(drive(h));
       expect(error.code).toBe("APPROVAL_REFUSED");
@@ -101,8 +101,20 @@ describe.skipIf(!findExecutable("git"))("a move's new server whose first boot fa
       expect(server.calls).toEqual([]);
 
       h.cli.confirm = "shop";
-      await drive(h);
+      const install = await caught(drive(h));
+      expect(server.calls).toEqual([`restart ${h.newServer.id}`]);
+      const hash = /--approve ([0-9a-f]{64}) --confirm shop`\.$/.exec(install.hint ?? "")?.[1];
+      expect(hash).toBeDefined();
+
+      h.cli.approve = hash;
+      await run(h, { approvePlanHash: hash });
       expect(server.calls).toEqual([`restart ${h.newServer.id}`, `reinstall ${h.newServer.id}`]);
+      // The install used --approve up: no word that it went unused.
+      expect(h.reporter.text()).not.toContain(`did not use --approve ${hash}`);
+      expect(await drive(h, { allowDowntime: true })).toMatchObject({
+        step: "switched",
+        done: true,
+      });
     });
   });
 });

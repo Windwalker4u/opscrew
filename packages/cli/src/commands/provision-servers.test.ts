@@ -337,21 +337,23 @@ describe("opscrew provision --plan-only with several servers", () => {
 });
 
 describe("opscrew provision --approve <hash> --confirm <app> in a script", () => {
+  const INSTALL = "3".repeat(64);
   const repair: ApprovalRequest = {
     kind: "remote-exec",
     title: "Install the new Hetzner Cloud server shop again",
     details:
       "The server at 203.0.113.10 did not finish its first-boot setup: the package install failed.",
+    planHash: INSTALL,
     allowDestroy: true,
     confirmPhrase: "shop",
   };
 
-  it("approves a new server's repair, which only the app's name approves", async () => {
+  it("approves a new server's install by its hash and the app's name, and by nothing less", async () => {
     for (const confirm of [["shop"], []]) {
       const { ctx } = await setup(testPlan({ userSecret: false }));
       let options: RunProvisionOptions = {};
       let approved: boolean | undefined;
-      const flags = { approve: ["3".repeat(64)], confirm };
+      const flags = { approve: [INSTALL], confirm };
       await runInfraCommand(ctx, "provision", flags, async (deps, given) => {
         options = given;
         approved = (await deps.approvals.request(repair)).approved;

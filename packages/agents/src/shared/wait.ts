@@ -1,13 +1,22 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   ApprovalRequest,
   CommandRunner,
   RemoteExec,
   ServerSnapshotApi,
 } from "@opscrew/contracts";
-import { durationText, listText, OpsCrewError, readTextIfExists, realSleep } from "@opscrew/core";
+import {
+  durationText,
+  errorText,
+  listText,
+  OpsCrewError,
+  type ProjectPaths,
+  readTextIfExists,
+  realSleep,
+  sha256Hex,
+} from "@opscrew/core";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -75,19 +84,21 @@ const RESULT_FILE = "/var/lib/cloud/data/result.json";
 const ENDED_FILE = "/run/cloud-init/result.json";
 
 /**
- * How a first-boot setup came out: `ready`, `failed` (cloud-init ended without OpsCrew's mark), or
- * still `running` when the wait ended.
+ * How a first-boot setup came out: `ready`, `failed` (cloud-init ended without OpsCrew's mark),
+ * still `running` when the wait ended, or `unreachable`: the deploy user's shell never answered.
  */
-export type SetupOutcome = "ready" | "failed" | "running";
+export type SetupOutcome = "ready" | "failed" | "running" | "unreachable";
 
 /**
  * Polls the server until cloud-init wrote `/var/lib/opscrew-ready` (`ready`), or ended without it
- * (`failed`); `running` when neither happened within the wait. Connection errors are retried.
+ * (`failed`); at the wait's end `running`, or `unreachable` when the deploy user's shell never
+ * answered. Connection errors are retried.
  */
 export async function waitForCloudInit(
   remote: RemoteExec,
   options: WaitOptions,
 ): Promise<SetupOutcome> {
+  let answered = false;
   const outcome = await pollUntil(async () => {
     try {
       const result = await remote.run(
@@ -95,14 +106,32 @@ export async function waitForCloudInit(
         { timeoutMs: 20_000 },
       );
       const answer = result.stdout.trim();
-      return result.exitCode === 0 && (answer === "ready" || answer === "failed")
-        ? answer
-        : undefined;
+      if (result.exitCode !== 0 || !["ready", "failed", "waiting"].includes(answer)) {
+        return undefined;
+      }
+      answered = true;
+      return answer === "ready" || answer === "failed" ? answer : undefined;
     } catch {
       return undefined; // The server may still be booting; try again.
     }
   }, options);
-  return outcome ?? "running";
+  return outcome ?? (answered ? "running" : "unreachable");
+}
+
+/**
+ * What the deploy user's shell shows on the server: `empty` with no `/var/lib/opscrew-ready`, no
+ * folder under `/srv/apps` and no running container (or no Docker), `used` when it shows one of
+ * them, `silent` when the shell does not answer.
+ */
+async function serverContents(remote: RemoteExec): Promise<"empty" | "used" | "silent"> {
+  const result = await remote
+    .run(
+      `if test ! -e ${READY_FILE} && test -z "$(ls -A /srv/apps 2>/dev/null)" && test -z "$(docker ps -q 2>/dev/null)"; then echo empty; else echo used; fi`,
+      { timeoutMs: 20_000 },
+    )
+    .catch(() => undefined);
+  const answer = result?.exitCode === 0 ? result.stdout.trim() : "";
+  return answer === "empty" || answer === "used" ? answer : "silent";
 }
 
 /** cloud-init's result: each error starts with the module that failed, `('<module>', …)`. */
@@ -294,9 +323,8 @@ function quotePath(path: string): string {
 const INSTALL_WAIT_MS = 10 * 60_000;
 
 /**
- * The repair of a server OpsCrew just created whose first boot failed (FR-3109), offered only for
- * a server that holds nothing yet (before the app's first deploy there), and only through the
- * methods its provider's connector has.
+ * The repair of a server OpsCrew just created whose first boot failed (FR-3109), offered only
+ * before the app's first deploy there, and only through the methods its provider's connector has.
  */
 export interface NewServerRepair {
   /** The provider's server API; a restart and an install are offered only where it has them. */
@@ -311,8 +339,16 @@ export interface NewServerRepair {
   userData: () => Promise<string>;
   /** The command that comes back to this step, for a refusal's hint (`opscrew provision`). */
   command: string;
-  /** How a script approves it, after "in a script, ": ``run `opscrew retarget --confirm shop` ``. */
+  /**
+   * How a script approves the restart with the app's name, after "in a script, "
+   * (``run `opscrew retarget --confirm shop` ``).
+   */
   script: string;
+}
+
+/** What {@link readyNewServer} pinned, and the hash of the install it made, if it made one. */
+export interface ReadyServer extends PinnedHostKey {
+  installHash?: string;
 }
 
 /** The start of the titles of a new server's repairs, which {@link isNewServerRepairRequest} reads. */
@@ -321,7 +357,8 @@ const INSTALL_TITLE = "Install the new ";
 
 /**
  * True for the approval of a new server's repair (its restart, or its install again), which the
- * app's name typed approves, or `--confirm <app>` in a script.
+ * app's name typed approves, or `--confirm <app>` in a script (with `--approve <hash>` for the
+ * install).
  */
 export function isNewServerRepairRequest(
   request: Pick<ApprovalRequest, "kind" | "title">,
@@ -332,61 +369,81 @@ export function isNewServerRepairRequest(
   );
 }
 
-type ReadyDeps = Pick<PhaseDeps, "reporter" | "approvals" | "audit" | "paths" | "runner">;
-type ReadyProfile = Pick<ProviderProfile, "serverNoun" | "displayName" | "consoleUrl">;
+/**
+ * Where an install OpsCrew offered is recorded by its hash (no secret: the first-boot file only by
+ * its SHA-256), so that provision tells its `--approve <hash>` from an infrastructure plan's.
+ */
+export function serverInstallFile(paths: Pick<ProjectPaths, "files">, hash: string): string {
+  return join(paths.files.plansDir, `server-install-${hash.toLowerCase()}.json`);
+}
+
+type ReadyDeps = Pick<
+  PhaseDeps,
+  "reporter" | "approvals" | "audit" | "paths" | "runner" | "redactor"
+>;
+type ReadyProfile = Pick<ProviderProfile, "id" | "serverNoun" | "displayName" | "consoleUrl">;
 
 /**
- * Asks for a repair of the new server, `failure` saying why, with the app's name typed; a refusal
- * stops the run with nothing changed and the command that offers it again.
+ * Asks for a repair of the new server with the app's name typed (and, for the install, bound to
+ * its hash); a refusal stops the run with nothing changed and `hint`.
  */
 async function approveRepair(
   deps: ReadyDeps,
   repair: NewServerRepair,
-  request: { title: string; failure: string; does: string[]; destroys: boolean; verb: string },
+  request: Pick<ApprovalRequest, "title" | "details" | "planHash" | "allowDestroy"> & {
+    failure: string;
+    verb: string;
+    hint: string;
+  },
 ): Promise<void> {
   const decision = await deps.approvals.request({
     kind: "remote-exec",
     // The title is kept in the approvals record and the audit log: no address there.
     title: request.title,
-    details: [
-      request.failure,
-      "It holds nothing yet: OpsCrew created it and has not deployed to it.",
-      ...request.does,
-    ].join("\n"),
-    ...(request.destroys ? { allowDestroy: true } : {}),
+    details: request.details,
+    ...(request.planHash !== undefined ? { planHash: request.planHash } : {}),
+    ...(request.allowDestroy === true ? { allowDestroy: true } : {}),
     confirmPhrase: repair.app,
   });
   if (decision.approved) return;
   throw new OpsCrewError(
     "APPROVAL_REFUSED",
     `${request.failure} OpsCrew did not ${request.verb} it${decision.reason === undefined ? "" : `: ${decision.reason}`}. Nothing was changed.`,
-    {
-      hint: `To repair it, run \`${repair.command}\` again and type ${repair.app} when asked; in a script, ${repair.script}.`,
-    },
+    { hint: request.hint },
   );
 }
 
-/** Records a repair's call to the provider in the audit log, before it is made. */
-async function auditRepair(
+/** Makes a repair's call to the provider, auditing its attempt, its failure and its success. */
+async function repairCall(
   deps: ReadyDeps,
-  repair: NewServerRepair,
-  profile: ReadyProfile,
-  action: string,
+  input: { repair: NewServerRepair; profile: ReadyProfile; detail: string },
+  actions: { attempt: string; failed: string; done: string },
+  call: () => Promise<void>,
 ): Promise<void> {
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action,
-    target: `${profile.displayName} ${profile.serverNoun} ${repair.serverId}`,
-    decision: "approved",
-    detail: `the new ${profile.serverNoun} ${repair.app}, whose first boot failed`,
-  });
+  const { repair, profile } = input;
+  const audit = (action: string, detail: string) =>
+    deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action,
+      target: `${profile.id} server ${repair.serverId}`,
+      decision: "approved",
+      detail: deps.redactor.redact(detail),
+    });
+  await audit(actions.attempt, input.detail);
+  try {
+    await call();
+  } catch (error) {
+    await audit(actions.failed, `${input.detail}: ${errorText(error)}`);
+    throw error;
+  }
+  await audit(actions.done, input.detail);
 }
 
 /**
- * After an install of the server: waits until it presents an SSH host key other than `old` (the
- * old system can still answer for a while after the provider accepted the install), then forgets
- * the old pin and pins the new key with no question (FR-3110).
+ * After an install of the server: waits until it presents SSH host keys none of which is in `old`
+ * (the old system can still answer for a while after the provider accepted the install), then pins
+ * exactly those keys in place of the old pin, with no question (FR-3110).
  */
 async function pinInstalledServer(
   deps: ReadyDeps,
@@ -404,19 +461,19 @@ async function pinInstalledServer(
     `Waiting for the ${server} at ${host} to start from its new install (up to ${durationText(INSTALL_WAIT_MS)})`,
   );
   let answered = false;
-  const changed = await pollUntil(
+  const fresh = await pollUntil(
     async () => {
       const scan = await deps.runner
         .run("ssh-keyscan", ["-T", "10", "-t", "ed25519", host], { timeoutMs: 30_000 })
         .catch(() => undefined);
-      const keys = parseKeyscan(scan?.stdout ?? "").map(keyOf);
-      if (keys.length === 0) return undefined;
+      const lines = parseKeyscan(scan?.stdout ?? "");
+      if (lines.length === 0) return undefined;
       answered = true;
-      return keys.every((key) => !old.includes(key)) ? true : undefined;
+      return lines.some((line) => old.includes(keyOf(line))) ? undefined : lines;
     },
     { timeoutMs: INSTALL_WAIT_MS, intervalMs: CLOUD_INIT_INTERVAL_MS, ...input.waits },
   );
-  if (changed !== true) {
+  if (fresh === undefined) {
     const asked = `${durationText(INSTALL_WAIT_MS)} after ${profile.displayName} accepted its install`;
     throw new OpsCrewError(
       "PROVIDER_ERROR",
@@ -428,14 +485,12 @@ async function pinInstalledServer(
       },
     );
   }
-  const knownHostsFile = deps.paths.files.knownHosts;
-  await writeKnownHost(knownHostsFile, host, []);
-  return pinHostKey({
-    host,
-    console: providerConsole(profile),
-    knownHostsFile,
-    runner: deps.runner,
+  const keys = fresh.map((line) => {
+    const [type = "", key = ""] = keyOf(line).split(" ");
+    return { type, key };
   });
+  const knownHostsLines = await writeKnownHost(deps.paths.files.knownHosts, host, keys);
+  return { knownHostsLines, changed: true, created: false };
 }
 
 /** Why the setup did not finish, with the steps cloud-init named as failed. */
@@ -457,11 +512,13 @@ function setupFailure(subject: string, outcome: SetupOutcome, steps: readonly st
  * messages (`server`, `new Droplet`); a stop names the steps cloud-init reports as failed (FR-3108)
  * and says what to check and then `again` ({@link continuesHint}).
  *
- * With `repair` (a new server reached at its public address), each after its own approval with
- * the app's name typed, at most once per run (FR-3109): a server that never opens SSH is
- * restarted through its provider and waited for again; one whose setup does not finish is
- * installed again from the same image with the same first-boot file, and its new host key
- * replaces the old pin with no question (FR-3110). Returns the key pinned where it was reached.
+ * With `repair` (a new server reached at its public address), at most once each per run
+ * (FR-3109): a server that never opens SSH is restarted through its provider after the app's
+ * name typed, and waited for again; one whose setup did not finish, whose deploy user logged in
+ * and which shows no app (no ready mark, no app folder, no running container), is installed again
+ * from the same image with the same first-boot file after an approval bound to the install's hash,
+ * and its new host key replaces the old pin with no question (FR-3110). Returns the key pinned
+ * where it was reached, and the install's hash when it made one.
  */
 export async function readyNewServer(
   deps: ReadyDeps,
@@ -475,7 +532,7 @@ export async function readyNewServer(
     network?: NetworkReach;
     repair?: NewServerRepair;
   },
-): Promise<PinnedHostKey> {
+): Promise<ReadyServer> {
   const { server, profile, services, network } = input;
   const host = network?.host ?? input.host;
   const port = network?.port ?? 22;
@@ -490,18 +547,20 @@ export async function readyNewServer(
   const servers = repair?.servers;
   const named = `the new ${profile.displayName} ${profile.serverNoun} ${repair?.app ?? ""}`;
   const api = `${profile.displayName}'s API`;
+  const check = `ssh -i ${quotePath(input.keyFile)} -o UserKnownHostsFile=${quotePath(knownHostsFile)} deploy@${host} cloud-init status --long`;
+  const checkHint = `Check what it is doing with \`${check}\`, then ${input.again}`;
   let restarted = false;
-  /** The keys pinned before the install, once OpsCrew installed the server again. */
-  let installedOver: string[] | undefined;
+  /** The install OpsCrew made: its hash, and the keys pinned before it. */
+  let installed: { hash: string; old: string[] } | undefined;
   for (;;) {
     let pinned: PinnedHostKey;
-    if (installedOver !== undefined) {
+    if (installed !== undefined) {
       pinned = await pinInstalledServer(deps, {
         host,
         server,
         profile,
         again: input.again,
-        old: installedOver,
+        old: installed.old,
         waits,
       });
     } else {
@@ -519,16 +578,25 @@ export async function readyNewServer(
         if (network?.unreachable !== undefined) throw network.unreachable;
         const failure = `${subject} did not open SSH within ${durationText(waitMs)}${restarted ? " after OpsCrew restarted it" : ""}.`;
         if (repair !== undefined && servers?.restart !== undefined && !restarted) {
+          const restart = servers.restart.bind(servers);
           await approveRepair(deps, repair, {
             title: `${RESTART_TITLE}${profile.displayName} ${profile.serverNoun} ${repair.app}`,
+            details: [
+              failure,
+              "OpsCrew has no record of a deploy to it.",
+              `OpsCrew restarts ${named} through ${api}, then waits for it again.`,
+            ].join("\n"),
             failure,
-            does: [`OpsCrew restarts ${named} through ${api}, then waits for it again.`],
-            destroys: false,
             verb: "restart",
+            hint: `To restart it, run \`${repair.command}\` again and type ${repair.app} when asked; in a script, ${repair.script}.`,
           });
           deps.reporter.step(`Restarting ${named} through ${api}`);
-          await auditRepair(deps, repair, profile, "restart server");
-          await servers.restart(repair.serverId);
+          await repairCall(
+            deps,
+            { repair, profile, detail: `the new server ${repair.app}, which never opened SSH` },
+            { attempt: "restart server", failed: "restart failed", done: "server restarted" },
+            () => restart(repair.serverId),
+          );
           restarted = true;
           continue;
         }
@@ -560,32 +628,73 @@ export async function readyNewServer(
     });
     if (outcome === "ready") {
       deps.reporter.success(`The ${server} at ${host} is ready.`);
-      return pinned;
+      return installed === undefined ? pinned : { ...pinned, installHash: installed.hash };
+    }
+    if (outcome === "unreachable") {
+      // Without the deploy user's login nothing shows what the server holds: no install.
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `${subject} did not let the deploy user in to check its first-boot setup within ${durationText(CLOUD_INIT_WAIT_MS)}.`,
+        { hint: checkHint },
+      );
     }
     const failure = setupFailure(subject, outcome, await failedSetupSteps(remote));
-    if (repair !== undefined && servers?.reinstall !== undefined && installedOver === undefined) {
+    if (repair !== undefined && servers?.reinstall !== undefined && installed === undefined) {
+      const contents = await serverContents(remote);
+      if (contents !== "empty") {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          contents === "used"
+            ? `${failure} It shows an app (OpsCrew's ready mark, an app's folder or a running container), so OpsCrew does not offer to install it again.`
+            : `${failure} It stopped answering the deploy user, so OpsCrew could not check what it holds and does not offer to install it again.`,
+          { hint: checkHint },
+        );
+      }
+      const reinstall = servers.reinstall.bind(servers);
+      const userData = await repair.userData();
+      const hash = sha256Hex(
+        JSON.stringify({
+          action: "reinstall",
+          provider: profile.id,
+          serverId: repair.serverId,
+          image: repair.image,
+          userData: sha256Hex(userData),
+        }),
+      );
+      // Recorded first, so that a script's `--approve <hash>` names this install.
+      const record = serverInstallFile(deps.paths, hash);
+      await mkdir(dirname(record), { recursive: true });
+      await writeFile(
+        record,
+        `${JSON.stringify({ provider: profile.id, serverId: repair.serverId, image: repair.image, userDataSha256: sha256Hex(userData) }, null, 2)}\n`,
+      );
       await approveRepair(deps, repair, {
         title: `${INSTALL_TITLE}${profile.displayName} ${profile.serverNoun} ${repair.app} again`,
-        failure,
-        does: [
+        details: [
+          failure,
+          "It holds no app (no app folder, no running container), and OpsCrew has no record of a deploy to it.",
           `OpsCrew installs ${named} again through ${api}, from the same image with the same first-boot setup: its disk is wiped, and it keeps its id and addresses.`,
           "Then OpsCrew pins its new SSH host key and waits for its setup again.",
-        ],
-        destroys: true,
+          `Install hash: ${hash}`,
+        ].join("\n"),
+        planHash: hash,
+        allowDestroy: true,
+        failure,
         verb: "install",
+        hint: `To install it again, run \`${repair.command}\` again and type ${repair.app} when asked; in a script, run \`${repair.command} --approve ${hash} --confirm ${repair.app}\`.`,
       });
       const old = keysFor(pinned.knownHostsLines, host);
-      const userData = await repair.userData();
       deps.reporter.step(`Installing ${named} again through ${api}`);
-      await auditRepair(deps, repair, profile, "reinstall server");
-      await servers.reinstall(repair.serverId, { image: repair.image, userData });
-      installedOver = old;
+      await repairCall(
+        deps,
+        { repair, profile, detail: `the new server ${repair.app} from ${repair.image} (${hash})` },
+        { attempt: "reinstall server", failed: "reinstall failed", done: "server reinstalled" },
+        () => reinstall(repair.serverId, { image: repair.image, userData }),
+      );
+      installed = { hash, old };
       continue;
     }
-    const check = `ssh -i ${quotePath(input.keyFile)} -o UserKnownHostsFile=${quotePath(knownHostsFile)} deploy@${host} cloud-init status --long`;
-    throw new OpsCrewError("PROVIDER_ERROR", failure, {
-      hint: `Check what it is doing with \`${check}\`, then ${input.again}`,
-    });
+    throw new OpsCrewError("PROVIDER_ERROR", failure, { hint: checkHint });
   }
 }
 

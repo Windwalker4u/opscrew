@@ -206,10 +206,15 @@ describe("cloud-init template", () => {
                 join(dir, "terraform.tfvars.json"),
                 JSON.stringify({ key: PUBLIC_KEY, check_key_line: line, web }),
               );
+              // Offline: no version check with HashiCorp's server.
               const result = await new NodeCommandRunner().run(
                 engine?.binary ?? name,
                 ["console"],
-                { cwd: dir, input: `${expression}\n` },
+                {
+                  cwd: dir,
+                  input: `${expression}\n`,
+                  env: { ...process.env, CHECKPOINT_DISABLE: "1" },
+                },
               );
               expect(result.exitCode, result.stderr).toBe(0);
               const base64 = /"([A-Za-z0-9+/=]+)"/.exec(result.stdout)?.[1] ?? "";

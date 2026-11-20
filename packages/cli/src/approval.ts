@@ -442,22 +442,23 @@ export class FlagConfirmation implements ApprovalHandler {
 }
 
 /**
- * Answers the repair of a new server whose first boot failed (`isNewServerRepairRequest`: its
- * restart, or its install again), which needs the app's name: one of the `--confirm` values
- * (`names`) approves it, a script without it is refused with the flag to add, and a terminal asks
- * for the name. Every other request goes to `base`.
+ * Answers the repair of a new server whose first boot failed (`isNewServerRepairRequest`), which
+ * needs the app's name: one of the `--confirm` values (`names`) approves its restart, and its
+ * install together with an `--approve` value (`hashes`) that is the install's hash; a script
+ * without them is refused with the flags to add, and a terminal asks for the name. Every other
+ * request goes to `base`.
  */
 export function withServerRepair(
   ctx: CliContext,
-  names: readonly string[],
+  flags: { names: readonly string[]; hashes: readonly string[] },
   base: ApprovalHandler,
   clock: Clock,
 ): ApprovalHandler {
   const typed = new FlagConfirmation(base, {
     kinds: ["remote-exec"],
     what: "repairing the new server",
-    names,
-    hashes: [],
+    names: flags.names,
+    hashes: flags.hashes,
     interactive: ctx.isInteractive,
     print: ctx.stdout,
     clock,

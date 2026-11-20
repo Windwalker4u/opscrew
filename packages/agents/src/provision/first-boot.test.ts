@@ -173,20 +173,30 @@ describe.skipIf(!findExecutable("git"))(
         expect(handler.requests.some((r) => r.title.includes("again"))).toBe(false);
       });
 
-      it("stops a run whose repair was refused with the command that offers it again", async () => {
-        const { deps, server, services } = await setup(
+      it("stops at a refused install with the command that approves its hash, which a script then runs", async () => {
+        let refuse = true;
+        const { deps, server, handler, services } = await setup(
           provider,
           {},
-          { answer: (title) => !title.startsWith("Install") },
+          { answer: (title) => !(refuse && title.startsWith("Install")) },
         );
         const error = (await runProvision(deps, { services }).catch(
           (e: unknown) => e,
         )) as OpsCrewError;
         expect(error.code).toBe("APPROVAL_REFUSED");
-        expect(error.hint).toContain(
-          "in a script, run `opscrew provision --plan-only`, then `opscrew provision --approve <the hash it prints> --confirm shop`.",
-        );
+        const hash =
+          /in a script, run `opscrew provision --approve ([0-9a-f]{64}) --confirm shop`\.$/.exec(
+            error.hint ?? "",
+          )?.[1];
+        expect(hash).toBeDefined();
         expect(server.calls).toEqual([]);
+
+        // The next run names that hash: it is the install's, never taken for an infrastructure plan.
+        refuse = false;
+        await runProvision(deps, { services, approveHashes: [hash as string] });
+        expect(server.calls).toEqual([`reinstall ${FIRST_BOOT_SERVER_ID}`]);
+        const installs = handler.requests.filter((r) => r.title.startsWith("Install"));
+        expect(installs.map((r) => r.planHash)).toEqual([hash, hash]);
       });
     });
   },

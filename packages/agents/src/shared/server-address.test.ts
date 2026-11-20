@@ -660,8 +660,18 @@ describe("helpers", () => {
         digitalocean: { ipv4: "198.51.100.30", ipv6: "not an address", id: "3164445" },
       },
     };
-    expect(serverOfProvider(outputs, "hetzner")).toEqual({ ipv4: IPV4, ipv6: IPV6 });
-    expect(serverOfProvider(outputs, "digitalocean")).toEqual({ ipv4: "198.51.100.30" });
+    expect(serverOfProvider(outputs, "hetzner")).toEqual({
+      address: { ipv4: IPV4, ipv6: IPV6 },
+      id: "4711",
+    });
+    expect(serverOfProvider(outputs, "digitalocean")).toEqual({
+      address: { ipv4: "198.51.100.30" },
+      id: "3164445",
+    });
+    // A server the user owns has no id.
+    expect(serverOfProvider({ servers: { own: { ipv4: IPV4 } } }, "own")).toEqual({
+      address: { ipv4: IPV4 },
+    });
     expect(
       serverOfProvider({ servers: { hetzner: outputs.servers.hetzner } }, "digitalocean"),
     ).toBe(undefined);

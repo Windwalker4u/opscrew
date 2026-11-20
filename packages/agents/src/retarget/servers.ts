@@ -114,8 +114,8 @@ export async function loadMoveServers(
   if ((from === undefined && oldCloud) || (next === undefined && newCloud)) {
     const read = await outputs().catch(() => undefined);
     if (read !== undefined) {
-      if (oldCloud) from ??= serverOfProvider(read, oldCloud);
-      if (newCloud) next ??= serverOfProvider(read, newCloud);
+      if (oldCloud) from ??= serverOfProvider(read, oldCloud)?.address;
+      if (newCloud) next ??= serverOfProvider(read, newCloud)?.address;
     }
   }
   const overSsh = move.from.target.provider !== "portainer";

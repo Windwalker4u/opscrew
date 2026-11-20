@@ -256,6 +256,17 @@ describe("waiting for the server", () => {
     expect(await waitForCloudInit(answering("waiting"), { ...options, ...clock() })).toBe(
       "running",
     );
+    // A shell that never answered the whole wait shows nothing of the server.
+    const silent = {
+      host: "h",
+      run: async () => {
+        throw new Error("ssh: connect to host h port 22: timed out");
+      },
+    };
+    expect(await waitForCloudInit(silent, { ...options, ...clock() })).toBe("unreachable");
+    expect(await waitForCloudInit(answering("Permission denied"), { ...options, ...clock() })).toBe(
+      "unreachable",
+    );
   });
 
   it("pins a new host key, reuses it, and refuses a changed key without confirmation", async () => {

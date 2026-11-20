@@ -384,7 +384,12 @@ async function runCommand(
           clock,
         });
         // The new server's repair when its first boot failed: the app's name, typed or --confirm.
-        const repair = withServerRepair(ctx, typed, handler, clock);
+        const repair = withServerRepair(
+          ctx,
+          { names: typed, hashes: approve === undefined ? [] : [approve] },
+          handler,
+          clock,
+        );
         return withAllowDowntime(ctx, flags.allowDowntime, repair, clock);
       },
     });
@@ -624,7 +629,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--no-snapshot", "With --finish, do not take a snapshot of the old server first")
     .option(
       "--confirm <name>",
-      "The name a deletion asks to be typed, for scripts and CI: the app's, or the bucket's for its deletion; repeat for both (--confirm shop --confirm shop-uploads). The app's name also approves restarting or installing again the new server when its first boot failed",
+      "The name a deletion asks to be typed, for scripts and CI: the app's, or the bucket's for its deletion; repeat for both (--confirm shop --confirm shop-uploads). The app's name also approves restarting the new server when its first boot failed, and installing it again with --approve and the install's hash",
       collect,
     )
     .option("--yes", YES_DESCRIPTION)

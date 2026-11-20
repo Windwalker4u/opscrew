@@ -35,14 +35,21 @@ export function firstBootErrors(quoted: string): string[] {
 export interface FirstBootOptions {
   /** Whether SSH opens at the first boot; false: only after a restart (default true). */
   network?: boolean;
-  /** How the first boot's setup came out (default `failed`). */
-  setup?: SetupOutcome;
+  /** How the first boot's setup came out (default `failed`); `ready`, `failed` or `running`. */
+  setup?: Exclude<SetupOutcome, "unreachable">;
+  /** Whether the deploy user's shell answers (default true); false: every command fails to connect. */
+  login?: boolean;
+  /**
+   * What shows an app on the server: an app's folder under /srv/apps or a running container;
+   * `silent`: the shell stops answering at the look for one.
+   */
+  app?: "folder" | "container" | "silent";
   /** cloud-init's errors once its setup failed (default none). */
   errors?: string[];
   /** How many host key scans the old system still answers after an install (default 2). */
   oldScans?: number;
   /** How the setup comes out after an install (default `ready`). */
-  setupAfterInstall?: SetupOutcome;
+  setupAfterInstall?: Exclude<SetupOutcome, "unreachable">;
   /** Whether the provider's connector has `restart` and `reinstall` (default true). */
   repairs?: boolean;
   /** The deploy user's shell for every other command (default: each fails). */
@@ -61,7 +68,7 @@ export class FakeFirstBoot {
   /** What the last install was given. */
   installed: { image: string; userData: string } | undefined;
   private open: boolean;
-  private setup: SetupOutcome;
+  private setup: Exclude<SetupOutcome, "unreachable">;
   private key = HOST_KEY;
   private oldScans: number;
   private installing = false;
@@ -105,8 +112,10 @@ export class FakeFirstBoot {
 
   readonly remote = (host: string): RemoteExec => ({
     host,
-    run: async (command) =>
-      this.run(command) ?? (await this.options.base?.(host).run(command)) ?? FAILED,
+    run: async (command) => {
+      if (this.options.login === false) throw new Error("ssh: connect to host port 22: timed out");
+      return this.run(command) ?? (await this.options.base?.(host).run(command)) ?? FAILED;
+    },
   });
 
   /** `base` (default: every command succeeds), with `ssh-keyscan` answering as this server. */
@@ -135,6 +144,12 @@ export class FakeFirstBoot {
   /** The first boot's answer to `command`; none for any other command. */
   private run(command: string): CommandResult | undefined {
     const ok = (stdout: string): CommandResult => ({ exitCode: 0, stdout, stderr: "" });
+    // The look for an app before an install: the ready mark, /srv/apps and Docker's containers.
+    if (command.includes("ls -A /srv/apps")) {
+      if (this.options.app === "silent") return FAILED;
+      const used = this.setup === "ready" || this.options.app !== undefined;
+      return ok(`${used ? "used" : "empty"}\n`);
+    }
     if (command.includes("/var/lib/opscrew-ready")) {
       return ok(`${this.setup === "running" ? "waiting" : this.setup}\n`);
     }

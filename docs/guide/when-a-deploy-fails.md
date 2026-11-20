@@ -296,17 +296,18 @@ The server at … did not open SSH within 5 minutes.
 The server at … did not finish its first-boot setup: the package install and OpsCrew's setup script failed.
 ```
 
-The second message names the steps that failed, as the server recorded its first boot. A new
-server holds nothing yet, so OpsCrew offers to repair it through your provider, once per run and
-each time after you type the app's name: a server that never opens SSH is restarted and waited for
-again; one whose setup failed is installed again from the same image with the same first-boot
-setup (its disk is wiped, its addresses stay), and OpsCrew trusts its new SSH host key and waits
-for the setup again. In a script, run `npx opscrew provision --plan-only`, then
-`npx opscrew provision --approve <the hash it prints> --confirm <app name>`; for a move's new
-server, `npx opscrew retarget --confirm <app name>`. Once the app was deployed to a server,
-OpsCrew never offers to install it again. Otherwise check the server in
-[Hetzner Console](https://console.hetzner.cloud) (the message gives a command that shows what the
-server is doing), then run `npx opscrew provision` again: it continues where it stopped.
+The second message names the steps that failed, as the server recorded its first boot. Before
+the app was ever deployed there, OpsCrew offers to repair a new server through your provider, at
+most once each per run. A server that never opens SSH is restarted and waited for again, after
+you type the app's name. A server whose setup failed, which the deploy user can log in to and which
+shows no app (no app folder, no running container), is installed again from the same image with
+the same first-boot setup: its disk is wiped and its addresses stay. That install is approved by
+its own hash and the app's name, and OpsCrew then trusts the server's new SSH host key and waits for
+the setup again. In a script the run stops with the command that approves it, for example
+`npx opscrew provision --approve <hash> --confirm <app name>` (`npx opscrew retarget` for a move's
+new server). Otherwise check the server in [Hetzner Console](https://console.hetzner.cloud) (the
+message gives a command that shows what the server is doing), then run `npx opscrew provision`
+again: it continues where it stopped.
 
 ## When the server itself is in trouble
 

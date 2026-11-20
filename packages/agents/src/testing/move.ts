@@ -1281,8 +1281,8 @@ export class RecordingHandler implements ApprovalHandler {
 /**
  * What a non-interactive CLI run would approve: an infrastructure plan only when `--approve` names
  * its hash (and, for deletions, `--confirm` the app name); the maintenance window only with
- * `--allow-downtime`; a new server's repair only with `--confirm` the app name; secrets, pushes
- * and pull requests (as `--yes` does).
+ * `--allow-downtime`; a new server's repair only with `--confirm` the app name (its install also
+ * with `--approve` its hash); secrets, pushes and pull requests (as `--yes` does).
  */
 export interface CliFlags {
   approve?: string;
@@ -1305,7 +1305,9 @@ export function cliAnswer(flags: () => CliFlags) {
     }
     if (isMaintenanceWindowRequest(request)) return cli.allowDowntime === true;
     if (isNewServerRepairRequest(request)) {
-      return cli.confirm === request.confirmPhrase
+      const hashed =
+        request.planHash === undefined || cli.approve?.toLowerCase() === request.planHash;
+      return hashed && cli.confirm === request.confirmPhrase
         ? { approved: true, confirmation: cli.confirm }
         : false;
     }
