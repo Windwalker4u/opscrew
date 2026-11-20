@@ -56,7 +56,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-docker && npx vitest run --root packages/connectors/docker && pnpm lint`
   - Effort: high
 
-- [ ] T3102 [P] [US1] [US2] The pre-copy, the app checked before the window, and the window's
+- [x] T3102 [P] [US1] [US2] The pre-copy, the app checked before the window, and the window's
   delta
   - Owns: `packages/agents/src/retarget/**`, `packages/agents/src/testing/move.ts`, colocated
     tests; `packages/cli/src/ui/retarget.ts` and `packages/cli/src/commands/retarget.test.ts` for
@@ -90,7 +90,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 3: Then
 
-- [ ] T3103 [US1] [US2] The guide
+- [x] T3103 [US1] [US2] The guide
   - Owns: `docs/guide/retarget.md`
   - Depends: T3102
   - Accept: plan 5., written for users.
@@ -115,7 +115,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   with first-boot `userData`. It is destroy-grade, for a new server only. Hetzner and DigitalOcean
   keep the creation's user data and rebuild from the image; Contabo needs it passed.
 
-- [ ] T3106 [P] [US3] The connectors' restart and reinstall
+- [x] T3106 [P] [US3] The connectors' restart and reinstall
   - Owns: `packages/providers/{hetzner,digitalocean,contabo}/src/**`, their fakes and tests
   - Reads: the contract above; each connector's `powerOn`/`rebuild` code
   - Accept:
@@ -155,7 +155,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 
 ## Phase 5: Every cost in the plan (US4, the founder's decision of 2026-11-20, in 0.2.11)
 
-- [ ] T3108 [P] [US4] The cost schema and the providers' hourly prices
+- [x] T3108 [P] [US4] The cost schema and the providers' hourly prices
   - Owns: `packages/plan-schema/src/**` (and its generated JSON schemas),
     `packages/providers/*/src/**` (price data and catalogs), `packages/contracts/src/**` only for the
     catalog's price fields, colocated tests
@@ -192,6 +192,16 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 - [ ] T3110 (lead) A real move's past items backfilled by hand into the live app's
   plan once T3109 is in, with the move's exact times
 
+**Follow-up, after 0.2.11** (from the live moves):
+- **A slow DNS switch apply:** the switch's apply of two in-place record updates took 5 m 26 s once
+  (about 30 s in another move), inside the downtime. Capture OpenTofu's log next time. Consider
+  switching the records through Cloudflare's API directly, with the plan still approved by its
+  hash.
+
+- **The move's host-apply approvals:** a move records its iac-apply approvals in plan.yaml's
+  `approvals`, but not its host-apply ones (the new side's host plan, the finish's removal), which
+  a plain provision records.
+
 **Follow-up, after 0.2.11** (from a live provision of a second app):
 - **The branch-rule refusal's text:** provision says "did not change anything" when the clone is on
   the wrong branch, after it has already set the GitHub environment's deployment-branch rule.
@@ -213,7 +223,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   running until the next run. A `holdNewApp` at the start of a run at `deployed` without the
   pre-copy record closes it.
 - **The one-off MySQL containers have no time limit.**
-- [ ] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one
+- [x] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one
   Contabo Cloud VPS 4, owned by the first of them):
   - **The first app** moves from its Hetzner CX23 to a new Contabo server of its own, run by the
     lead. This is 031's live run, and 0.2.11 waits for it. Its `--finish` deletes the Hetzner

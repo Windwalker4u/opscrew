@@ -505,7 +505,7 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/workflow && npx vitest run --root packages/agents src/retarget && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3020 (lead) The PHP app's live move onto the first app's server (plan 19.), run by the PHP app's
+- [x] T3020 (lead) The PHP app's live move onto the first app's server (plan 19.), run by the PHP app's
   session; results and "not tested live" rows in `docs/e2e-coverage.md`
 
 **Follow-up, after 0.2.11:**
