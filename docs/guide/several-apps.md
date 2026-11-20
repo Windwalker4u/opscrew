@@ -137,4 +137,4 @@ the first app this way: `npx opscrew destroy --app .` removes its deployment.
 
 Each app gets its own server by default. A further app, or an app from another repository, can
 instead run on a server OpsCrew created for another app: see
-[A second app on a server OpsCrew created](shared-server.md).
+[A second app on another app's server](shared-server.md).

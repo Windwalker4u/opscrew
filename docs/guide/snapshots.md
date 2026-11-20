@@ -324,7 +324,7 @@ npx opscrew restore --server <id>                  # rebuild the server from it
 Your own server, your Portainer and your computer refuse `--server`, and name the data snapshot
 instead. While another app runs on the server, restoring the whole server is refused, and an app
 on another app's server can't take or restore whole-server snapshots at all (see
-[A second app on a server OpsCrew created](shared-server.md)).
+[A second app on another app's server](shared-server.md)).
 
 ## The schedule
 

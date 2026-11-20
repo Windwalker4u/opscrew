@@ -144,7 +144,7 @@ OpsCrew shows Contabo's answer in plain English with what to try next.
 ## Removing the app
 
 While another app runs on the server (see
-[A second app on a server OpsCrew created](shared-server.md)), `npx opscrew destroy` refuses and
+[A second app on another app's server](shared-server.md)), `npx opscrew destroy` refuses and
 names it: remove or move that app first.
 
 Contabo can't delete a server at once. `npx opscrew destroy` cancels it instead, and its plan says
