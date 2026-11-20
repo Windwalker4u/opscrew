@@ -77,6 +77,11 @@ pre-copied data stops the move before any downtime.
 
 - PostgreSQL: its data is still dumped and restored in the window, as today, so a large database
   still makes the window long; the window's estimate says so.
+- MySQL and MariaDB: dumped and restored before the window, so the app's check runs on consistent
+  data. In the window, their data folder is copied as files with the service stopped, about its
+  whole size, so a large one still lengthens the window (research R2).
+- Workers and cron: they run on the new side only during the app's check before the window, and
+  stop right after it, so no job runs on both servers.
 - A file that changes again during the window's copy cannot: the services writing it are stopped.
 - A mount that has no change since the pre-copy is checked by its digest only.
 - Many changed files (a busy app): the window copies them all; its estimate counts the pre-copy's

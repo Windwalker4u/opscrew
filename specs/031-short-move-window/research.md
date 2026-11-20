@@ -30,6 +30,18 @@ So a short window needs both: most of the data copied before it, and no workflow
 - **PostgreSQL** stays as today: dumped and restored in the window. Its dump is already consistent
   while it runs; a live pre-dump would not shorten the window, since the final data must be dumped
   again. Logical replication is left for later.
+- **PostgreSQL, MySQL and MariaDB before the window** (T3102's review, 2026-11-20):
+  - **The problem:** the app's check before the window needs consistent data. A database's files
+    copied while it writes are not a consistent snapshot, and InnoDB may refuse to start on them.
+  - **So:** these three are dumped consistently (`pg_dump`, `mysqldump --single-transaction`) and
+    restored on the new side for the pre-copy.
+  - **In the window:** MySQL's and MariaDB's data folder is copied as files with the service
+    stopped, which is consistent. After the restore the files differ, so that copy is about the
+    whole folder: such a database still lengthens the window by its size.
+  - **Other stateful services** keep the live file copy. One that fails to start on it stops the
+    pre-copy before any downtime.
+- **Workers and cron** start with the app's check before the window and stop right after it, so
+  no job runs on both servers.
 - **Portainer's new side** gains the pre-copy and the delta (its carrier is the same); its app's
   start stays as today.
 
