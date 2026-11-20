@@ -459,7 +459,7 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T3021 [US6] The app starts on a move's new server only after its data is there (FR-3027;
+- [x] T3021 [US6] The app starts on a move's new server only after its data is there (FR-3027;
   found by the PHP app's move, run 1)
   - Owns: `packages/iac-templates/src/workflow/**`, `packages/agents/src/retarget/**`,
     `docs/guide/retarget.md` (the steps' wording only), colocated tests and snapshots
@@ -515,3 +515,14 @@ The founder's additions of 2026-11-19 (spec US6, US7, FR-3021–FR-3026; plan 16
   plan's limits rose since the last applied provision.
 - `shared/wait.ts`'s `confirmChangedHostKey` puts the server's address in the approval title,
   which the audit log keeps (T3017's finding). Fixed at T3017's merge.
+- T3021's review, not built:
+  - **A push between the window and the switch:** it runs a full deploy whose check through the
+    domain reaches the old side, stopped by the window. Keep the marker at `copied` until the
+    switch succeeds.
+  - **Promoted environments** (`environment.promotion`) can't be moved: a move's dispatch without
+    a digest and tag is refused there. Refuse them at the move's start in plain words, or pass the
+    tag.
+  - **Portainer's new side:** its release container runs on the empty data before the copy, as a
+    server's did.
+  - **A hand dispatch with a digest alone** now deploys that image during any deploy pause
+    (`DEPLOYS_DIGEST`): accepted, since it is a deliberate act with write access.

@@ -89,6 +89,17 @@ Swarm).
 6. On a failure in 3–5: the web and the workers go back to the previous image. The run names the
    worker and the command to read its log (`docker compose logs <worker>`).
 
+**A move's new server (030, FR-3027; 2026-11-20):**
+- **While the move waits for its data,** `.move.waiting` in the app's folder holds the app: a deploy
+  in mode `deploy` pulls the image, brings up step 1's services and creates the app's container
+  without starting it, writes `.env` and `waiting <image>` in `.start.outcome`, and ends
+  successfully. It runs no release command, starts no app, workers or cron, and changes no route.
+  A rollback is refused there.
+- **In the window, after the copy,** the marker says `copied`. The move dispatches the deploy with
+  the image's digest (no build), which runs steps 2 to 5 on the copied data. The workflow's check
+  through the domain is skipped, since DNS still points to the old side. The move checks the app
+  over SSH, then removes the marker.
+
 **Guarantees:**
 - Another app's containers are never touched.
 - A service of the same app is restarted only when its own configuration changed.
