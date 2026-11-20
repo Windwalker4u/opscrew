@@ -43,7 +43,7 @@ const maintenance: ApprovalRequest = {
 };
 const hostKey: ApprovalRequest = {
   kind: "remote-exec",
-  title: "Trust the new SSH host key of 198.51.100.30",
+  title: "Trust the server's new SSH host key",
   details: "The server's SSH host key is different from the one OpsCrew pinned earlier.",
 };
 const deletion = (planHash: string): ApprovalRequest => ({

@@ -172,8 +172,10 @@ export function confirmChangedHostKey(
   return async ({ host, previous, current }) => {
     const decision = await deps.approvals.request({
       kind: "remote-exec",
-      title: `Trust the new SSH host key of ${host}`,
+      // The title is kept in the approvals record and the audit log: no address there.
+      title: "Trust the server's new SSH host key",
       details: [
+        `Server: ${host}`,
         "The server's SSH host key is different from the one OpsCrew pinned earlier.",
         "Only accept this if you rebuilt or replaced the server yourself.",
         "Pinned:",
