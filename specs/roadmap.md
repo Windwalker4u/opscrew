@@ -691,14 +691,27 @@ account the founder opens, so each phase's live tests are decided when it starts
 **Amazon CloudFront comes with 033** (S3's files behind it, in its per-component list); in front of
 a whole AWS app it joins 035's contract. **Azure Front Door comes with Azure** (037).
 
-### 034 More server providers, first wave: Vultr, Akamai Cloud (Linode), UpCloud, Scaleway
+### 034 More server providers, first wave: OVHcloud, Kamatera, IONOS Cloud, UpCloud
 
 Each is a provider package on 026's contract (ADR 0029), installed as 033 makes provider packages
-installable, so none of them grows the core. They were picked first because their servers are the
-shape OpsCrew already handles at Hetzner (a server, a firewall, an SSH key, backups or snapshots,
-billed by use), which also makes them places for 032's extra copies. **Research first, per
-provider:** its API and Terraform provider, how it bills a server (and a switched-off one), its
-firewall and private networking, its backups and snapshots, its regions, and its prices read live.
+installable, so none of them grows the core, and each can host 032's extra copies.
+
+**Order** (the founder's decision, 2026-11-20): OVHcloud first, then Kamatera, IONOS Cloud and
+UpCloud. Vultr, Akamai Cloud and Scaleway follow in 036.
+
+**Their shapes differ from Hetzner's more than the second wave's do:**
+- OVHcloud's Public Cloud runs on OpenStack with its own projects and keys.
+- IONOS Cloud builds servers inside a virtual data centre.
+- Kamatera has an API and account model of its own.
+- UpCloud's servers are Hetzner's shape.
+
+**Research first, per provider:**
+- its API and Terraform provider;
+- how it bills a server, and a switched-off one;
+- its firewall and private networking;
+- its backups and snapshots;
+- its regions, and its prices read live;
+- how its account's projects or data centres map to an app.
 
 ### 035 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
 
@@ -721,12 +734,11 @@ cache kept off what must not be cached.
   validated, which of them can block those paths on their free or cheapest plan, their Terraform
   providers, and their prices.
 
-### 036 More server providers, second wave: OVHcloud, IONOS Cloud, Kamatera
+### 036 More server providers, second wave: Vultr, Akamai Cloud (Linode), Scaleway
 
-After the first wave, because their accounts and APIs are shaped further from Hetzner's: OVHcloud's
-Public Cloud runs on OpenStack with its own projects and keys, IONOS Cloud builds servers inside a
-virtual data centre, and Kamatera has an API and account model of its own. **Research first:** the
-same list as 034's, plus how each account's projects or data centres map to an app.
+After the first wave (the founder's decision, 2026-11-20). Their servers are the shape OpsCrew
+already handles at Hetzner (a server, a firewall, an SSH key, backups or snapshots, billed by use).
+**Research first:** the same list as 034's.
 
 ### 037 Azure and 038 Google Cloud
 
