@@ -9,7 +9,6 @@ import {
   MOVE_WAITING,
   OPENLITESPEED_COMMAND,
   processServices,
-  START_OUTCOME,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
@@ -508,7 +507,10 @@ const IMAGE_BY_DIGEST = /^ghcr\.io\/[^@\s'"`$\\]+@sha256:[0-9a-f]{64}$/;
 export interface DeployedState {
   /** The image `.env` names, by digest; none before a deploy got that far. */
   image: string | undefined;
-  /** It stopped at a move's marker (`START_OUTCOME` says `waiting <image>`). */
+  /**
+   * A move's marker holds the app there (it is there and doesn't say copied), with the image
+   * known: whatever a later run recorded, its deploys bring up only the image and the services.
+   */
   waiting: boolean;
 }
 
@@ -520,7 +522,7 @@ export async function readDeployed(
   const { folder } = options;
   const result = await runStep(
     remote,
-    `cd ${folder} && printf 'outcome=%s\\nimage=%s\\n' "$(cat ${START_OUTCOME} 2> /dev/null)" "$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null)"`,
+    `cd ${folder} && printf 'image=%s\\nmarker=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null)" "$(cat ${MOVE_WAITING} 2> /dev/null || echo none)"`,
     MINUTE,
     { what: "read what the deploy left", hint: composePsHint(remote.host, options) },
     options.redact,
@@ -529,7 +531,8 @@ export async function readDeployed(
     new RegExp(`^${name}=(.*)$`, "m").exec(result.stdout)?.[1]?.trim() ?? "";
   const named = field("image");
   const image = IMAGE_BY_DIGEST.test(named) ? named : undefined;
-  return { image, waiting: image !== undefined && field("outcome") === `waiting ${image}` };
+  const marker = field("marker");
+  return { image, waiting: image !== undefined && marker !== "none" && marker !== MOVE_COPIED };
 }
 
 /**

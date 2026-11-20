@@ -526,30 +526,29 @@ describe("a move's marker on the new server (FR-3027)", () => {
     expect(error.message).toBe("Could not hold the app for its data on h: Permission denied");
   });
 
-  it("reads the image the deploy left, and whether it stopped at the marker", async () => {
-    const answer = (outcome: string, image: string) =>
-      new FakeRemote("h", () => ok(`outcome=${outcome}\nimage=${image}\n`));
-    expect(await readDeployed(answer(`waiting ${IMAGE}`, IMAGE), ops)).toEqual({
+  it("reads the image the deploy left, and whether the move's marker holds the app", async () => {
+    const answer = (image: string, marker: string) =>
+      new FakeRemote("h", () => ok(`image=${image}\nmarker=${marker}\n`));
+    // The marker holds the app whatever a later run recorded: an empty one waits for the data.
+    expect(await readDeployed(answer(IMAGE, ""), ops)).toEqual({ image: IMAGE, waiting: true });
+    expect(await readDeployed(answer(IMAGE, "copied"), ops)).toEqual({
       image: IMAGE,
-      waiting: true,
+      waiting: false,
     });
-    expect(await readDeployed(answer("finished", IMAGE), ops)).toEqual({
+    expect(await readDeployed(answer(IMAGE, "none"), ops)).toEqual({
       image: IMAGE,
       waiting: false,
     });
     // A release that failed before the switch wrote no .env; anything but a digest is none.
-    expect(await readDeployed(answer("started", ""), ops)).toEqual({
+    expect(await readDeployed(answer("", ""), ops)).toEqual({ image: undefined, waiting: false });
+    expect(await readDeployed(answer("ghcr.io/acme/shop:latest", ""), ops)).toEqual({
       image: undefined,
       waiting: false,
     });
-    expect(await readDeployed(answer("waiting x", "ghcr.io/acme/shop:latest"), ops)).toEqual({
-      image: undefined,
-      waiting: false,
-    });
-    const remote = answer("finished", IMAGE);
+    const remote = answer(IMAGE, "none");
     await readDeployed(remote, ops);
     expect(remote.calls[0]?.command).toBe(
-      "cd /srv/apps/shop && printf 'outcome=%s\\nimage=%s\\n' \"$(cat .start.outcome 2> /dev/null)\" \"$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null)\"",
+      "cd /srv/apps/shop && printf 'image=%s\\nmarker=%s\\n' \"$(sed -n 's/^APP_IMAGE=//p' .env 2> /dev/null)\" \"$(cat .move.waiting 2> /dev/null || echo none)\"",
     );
   });
 

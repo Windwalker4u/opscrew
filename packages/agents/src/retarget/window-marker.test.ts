@@ -86,18 +86,35 @@ describe.skipIf(!findExecutable("git"))("FR-3027: the window on a server the mov
     expect(h.reporter.text()).toContain("There is no data to copy after all");
   });
 
+  it("with nothing to copy, starts the app while the marker holds it, whatever a later run recorded", async () => {
+    const h = await pairHarness("hetzner", "digitalocean");
+    const move = h.session.plan.retarget;
+    if (move === undefined) throw new Error("no move");
+    h.session.plan = { ...h.session.plan, retarget: { ...move, empty: ["db"] } };
+    // A push deploy failed after the move's own deploy: its outcome says started.
+    h.hosts.host(NEW_IPV4).outcome = "started";
+    expect(await maintenanceWindow(h.session, { allowDowntime: true })).toBe("done");
+    expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: true, marker: undefined });
+  });
+
   it("with nothing to copy, a failed start leaves the new server waiting for its data again", async () => {
     const h = await pairHarness("hetzner", "digitalocean");
     const move = h.session.plan.retarget;
     if (move === undefined) throw new Error("no move");
     h.session.plan = { ...h.session.plan, retarget: { ...move, empty: ["db"] } };
     h.github.conclusion = "failure";
+    // The failed run started the edge there.
+    h.hosts.host(NEW_IPV4).caddy = true;
     const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
       (e: unknown) => e,
     );
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).message).toContain("The deploy workflow did not succeed");
-    expect(h.hosts.host(NEW_IPV4).marker).toBe("waiting");
+    expect(h.hosts.host(NEW_IPV4)).toMatchObject({ marker: "waiting", caddy: false });
+    expect(trail(h.events).slice(-2)).toEqual([
+      `${NEW_IPV4} mark waiting`,
+      `${NEW_IPV4} stop caddy`,
+    ]);
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
   });
 

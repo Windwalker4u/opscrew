@@ -111,5 +111,4 @@ export {
   MOVE_WAITING,
   RESTORE_HELD,
   ROTATION_HOLDER,
-  START_OUTCOME,
 } from "./workflow/switch";

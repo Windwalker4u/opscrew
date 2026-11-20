@@ -192,12 +192,12 @@ function moveWaiting(): string[] {
 }
 
 /**
- * A rollback while a move's marker holds the app stops before any change: the app never ran on
- * this server, so there is no version to go back to.
+ * A rollback (`$2`) while a move's marker holds the app stops before any change, even to
+ * {@link START_OUTCOME}: the app never ran on this server, so there is no version to go back to.
  */
 function moveRollbackRefusal(): string[] {
   return [
-    `if [ "$MODE" = rollback ] && ${MOVE_HOLDS}; then`,
+    `if [ "\${2:-}" = rollback ] && ${MOVE_HOLDS}; then`,
     `  echo ${shellQuote("::error::A move to this server waits for the app's data (opscrew retarget), so the app never ran here and there is no version to roll back to. Nothing was changed. Roll back on the server the app moves from, or abort the move first.")}`,
     "  exit 1",
     "fi",
@@ -1529,11 +1529,11 @@ export function switchCommands(
     `cd ${appFolder(plan)}`,
     ...startLock(plan),
     ...heldRefusal(plan, o),
+    ...(o.preview === true ? [] : moveRollbackRefusal()),
     `echo started > ${START_OUTCOME}`,
     'export APP_IMAGE="$1"',
     'RUN_IMAGE="$1"',
     'MODE="${2:-deploy}"',
-    ...(o.preview === true ? [] : moveRollbackRefusal()),
     ...(data ? approvalCheck(plan, others) : []),
     ...keepFailed(plan),
     EDGE_FUNCTION,

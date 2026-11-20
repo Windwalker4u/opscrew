@@ -405,8 +405,9 @@ describe.skipIf(!shWorks())(
         "::error::A move to this server waits for the app's data (opscrew retarget), so the app never ran here",
       );
       expect(read(`${appsDir()}/shop/.env`)).toBe(`APP_IMAGE=${IMAGE}\n`);
-      // Only the exit's registry logout ran.
+      // Only the exit's registry logout ran, and the folder says what the deploy left.
       expect(read(`${work}/docker.log`)).toBe(`${docker}docker logout ghcr.io\n`);
+      expect(read(`${appsDir()}/shop/.start.outcome`)).toBe(`waiting ${IMAGE}\n`);
 
       // Once the move copied the data, the deploy switches to a copy of the app beside the one
       // created for its volumes, which goes, and says the move checks it.

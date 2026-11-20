@@ -986,14 +986,14 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
           exec 7> .start.lock
           flock 7
           if [ -f .snapshots/.held ]; then held="held $(cat .snapshots/.held)"; case "$held" in "held rotation "*) printf '::error::OpsCrew changed nothing on the server: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${held#held rotation }" ;; *) printf '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.\\n' ;; esac >&2; exit 1; fi
+          if [ "\${2:-}" = rollback ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            echo '::error::A move to this server waits for the app'\\''s data (opscrew retarget), so the app never ran here and there is no version to roll back to. Nothing was changed. Roll back on the server the app moves from, or abort the move first.'
+            exit 1
+          fi
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
-          if [ "$MODE" = rollback ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
-            echo '::error::A move to this server waits for the app'\\''s data (opscrew retarget), so the app never ran here and there is no version to roll back to. Nothing was changed. Roll back on the server the app moves from, or abort the move first.'
-            exit 1
-          fi
           rm -f .database.changed
           database=keep
           target="\${1##*@sha256:}"

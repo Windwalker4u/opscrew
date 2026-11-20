@@ -663,7 +663,7 @@ function opOf(command: string): string {
   if (command.endsWith(`: > /srv/apps/${APP}/.move.waiting`)) return "mark waiting";
   if (command.endsWith(`copied > /srv/apps/${APP}/.move.waiting`)) return "mark copied";
   if (command === `rm -f /srv/apps/${APP}/.move.waiting`) return "remove marker";
-  if (command.includes("printf 'outcome=%s")) return "deployed?";
+  if (command.includes("printf 'image=%s")) return "deployed?";
   if (command.endsWith("docker compose ps --status running --services")) return "services up?";
   return command;
 }
@@ -971,7 +971,9 @@ export class FakeHosts {
         h.marker = undefined;
         return ok();
       case "deployed?":
-        return ok(`outcome=${h.outcome ?? ""}\nimage=${h.image ?? ""}\n`);
+        return ok(
+          `image=${h.image ?? ""}\nmarker=${h.marker === undefined ? "none" : h.marker === "copied" ? "copied" : ""}\n`,
+        );
       case "services up?":
         return ok(
           [...this.docker(ip).containers.values()]

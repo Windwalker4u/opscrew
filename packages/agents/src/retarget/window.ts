@@ -684,6 +684,10 @@ async function startWithoutCopy(
       await quietly(session, clean, `hold the app on ${words} for its data again`, async () =>
         fresh.markMove?.(session, "waiting"),
       );
+      // The deploy may have started the edge: it stays stopped until the switch (a shared one runs).
+      await quietly(session, clean, `stop the web server on ${words}`, () =>
+        fresh.stopEdge(session),
+      );
     }
     throw error;
   }
