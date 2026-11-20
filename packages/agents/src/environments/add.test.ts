@@ -264,7 +264,11 @@ describe("addEnvironment", () => {
   });
 
   it("puts two environments on one own server: prod's connection is the default, its host key kept", async () => {
-    const requirements = { ...makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }) };
+    // Prod took the server of another app of the user's there, so it recorded no budget: 0.
+    const requirements = {
+      ...makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }),
+      budgetMonthly: { amount: 0, currency: "EUR" as const },
+    };
     const { region: _region, ...ownRequirements } = { ...requirements, provider: "own" as const };
     const connection: OwnServerConnectionInput = {
       host: IPV4,

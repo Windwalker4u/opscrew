@@ -82,6 +82,8 @@ async function prodBesideShop() {
   const { region: _region, ...base } = makeRequirements();
   await writeArtifact("requirements", prod.paths.files.requirements, {
     ...base,
+    // A second app's interview records no budget of its own: 0 (FR-3026).
+    budgetMonthly: { amount: 0, currency: "EUR" },
     provider: "own",
     domain: "landing.example.com",
     dnsProvider: "cloudflare",

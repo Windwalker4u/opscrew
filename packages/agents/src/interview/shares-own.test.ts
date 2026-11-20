@@ -260,6 +260,17 @@ describe("the budget beside another app (FR-3026)", () => {
     });
     expect(result.shares).toEqual(project.ref);
     expect(result.requirements.budgetMonthly).toEqual({ amount: 0, currency: "EUR" });
+    // Run again without server answers, as a script or the MCP server does: the reference stays.
+    const { budgetMonthly: _none, ...answered } = await readArtifact(
+      "requirements",
+      project.deps.paths.files.requirements,
+    );
+    await rm(project.deps.paths.files.requirements);
+    const again = await runInterview(project.deps, {
+      answers: { ...BASE, provider: "own", dataCriticality: answered.dataCriticality },
+    });
+    expect(again.shares).toEqual(project.ref);
+    expect(again.requirements.budgetMonthly).toEqual({ amount: 0, currency: "EUR" });
     // A budget given is validated as usual.
     const error = await runInterview(project.deps, {
       answers: {
@@ -318,7 +329,7 @@ describe("the budget beside another app (FR-3026)", () => {
     expect(result.requirements.budgetMonthly).toEqual({ amount: 15, currency: "USD" });
   });
 
-  it("keeps an earlier 0 only beside another app", () => {
+  it("keeps an earlier 0 on a server of the user's, and asks for one elsewhere", () => {
     const now = new Date("2026-11-20T10:00:00.000Z");
     const previous = answersToRequirements(
       { ...BASE, provider: "own", dataCriticality: "none" },
@@ -329,11 +340,22 @@ describe("the budget beside another app (FR-3026)", () => {
       amount: 0,
       currency: "EUR",
     });
-    expect(() => answersToRequirements({}, { now, previous })).toThrow(
+    // Another environment of the app, or the app on another server of the user's: kept.
+    expect(answersToRequirements({}, { now, previous }).budgetMonthly).toEqual({
+      amount: 0,
+      currency: "EUR",
+    });
+    // A given 0 is still refused there, without another app's server.
+    expect(() => answersToRequirements({ budgetMonthly: "0 EUR" }, { now, previous })).toThrow(
+      /budgetMonthly: write an amount above 0/,
+    );
+    // A server OpsCrew creates: asked for one.
+    const cloud = { provider: "hetzner", region: "eu-central" };
+    expect(() => answersToRequirements(cloud, { now, previous })).toThrow(
       /Some required answers are missing: budgetMonthly/,
     );
     expect(
-      answersToRequirements({ budgetMonthly: "12 EUR" }, { now, previous }).budgetMonthly,
+      answersToRequirements({ ...cloud, budgetMonthly: "12 EUR" }, { now, previous }).budgetMonthly,
     ).toEqual({ amount: 12, currency: "EUR" });
   });
 });

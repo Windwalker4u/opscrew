@@ -84,7 +84,6 @@ describe("ownFirstApp", () => {
     const project = await ownFirst();
     const own = await ownFirstApp(project.deps, project.ref);
     expect(own?.plan.app.name).toBe("shop");
-    expect(own?.paths).toEqual(project.first);
     expect(own?.answers).toEqual({
       host: SERVER_IPV4,
       port: PORT,

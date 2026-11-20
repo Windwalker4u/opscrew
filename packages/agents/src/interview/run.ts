@@ -64,7 +64,6 @@ import {
   recordSharedServerAnswers,
   SERVER_FIELDS,
   type ServerQuestion,
-  SHARES_FIELDS,
 } from "./own-server";
 import {
   answersToPortainer,
@@ -420,8 +419,9 @@ export async function runInterview(
     else if (options.ask !== undefined) {
       answers = await options.ask(questions.filter((q) => q.id !== "budgetMonthly"));
     }
-    const ask = options.answers === undefined ? options.ask : undefined;
-    const askBudget = ask !== undefined && isBlank(answers.budgetMonthly);
+    // The terminal's budget question, when its answers left the budget out.
+    const askBudget =
+      options.answers === undefined && isBlank(answers.budgetMonthly) ? options.ask : undefined;
     let split = splitFollowUps(answers, "server", SERVER_FIELDS);
     const portainerSplit = splitFollowUps(split.rest, "portainer", PORTAINER_FIELDS);
     const hostingSplit = splitFollowUps(portainerSplit.rest, "hosting", HOSTING_FIELDS);
@@ -442,9 +442,17 @@ export async function runInterview(
       // A further app is the one in its record's folder (`opscrew app add`).
       return recorded === undefined ? parsed : { ...parsed, appDir: recorded };
     };
-    // The budget waits for the server's answers, which may name another app's server.
-    const budgetLater = askBudget || SHARES_FIELDS.some((field) => !isBlank(split.values[field]));
-    let requirements = parse({}, budgetLater);
+    // The budget waits for the server's answers, which may name another app's server (whose
+    // reference an earlier interview may have kept): it is checked once they are known.
+    let requirements: Requirements;
+    try {
+      requirements = parse({}, true);
+    } catch (error) {
+      // The answers are refused anyway: the refusal names everything missing, the budget too,
+      // unless a terminal asks it later.
+      if (askBudget === undefined) parse({}, false);
+      throw error;
+    }
     // Asked once the provider and region are known: a hosted service's question names the price
     // of the server running it would need.
     if (!hasComponentAnswers(componentSplit) && options.askComponents !== undefined) {
@@ -510,8 +518,8 @@ export async function runInterview(
         "The answers about a server you already have (server.*) were ignored, because the app does not run on your own server.",
       );
     }
-    if (budgetLater && first === undefined && ownFirst === undefined) {
-      const budget = askBudget && ask !== undefined ? await ask(budgetQuestion) : {};
+    if (first === undefined && ownFirst === undefined) {
+      const budget = askBudget === undefined ? {} : await askBudget(budgetQuestion);
       requirements = applyComponentAnswers(parse(budget, false), componentSplit);
     }
     let portainer: PortainerAnswers | undefined;

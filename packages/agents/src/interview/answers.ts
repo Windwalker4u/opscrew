@@ -243,8 +243,14 @@ export function answersToRequirements(
     // An explicit empty answer clears an optional field instead of reusing the previous value.
     if (Object.hasOwn(answers, id) && !required.includes(id)) return undefined;
     if (id === "appDir") return inferred.appDir ?? previous?.appDir;
-    // A budget of 0 is kept only for an app that needs none: any other app is asked for one.
-    if (id === "budgetMonthly" && !noBudget && options.previous?.budgetMonthly.amount === 0) {
+    // An earlier budget of 0 (an app on another app's server) stays on a server of the user's;
+    // a server OpsCrew creates, or any other target, is asked for one.
+    if (
+      id === "budgetMonthly" &&
+      !noBudget &&
+      chosenProvider !== "own" &&
+      options.previous?.budgetMonthly.amount === 0
+    ) {
       return undefined;
     }
     return previous?.[id] ?? inferred[id];
@@ -282,7 +288,7 @@ export function answersToRequirements(
         problems.push("budgetMonthly: write an amount such as `10 EUR` or `20 USD`");
         continue;
       }
-      if (money.amount <= 0 && !noBudget) {
+      if (money.amount <= 0 && !noBudget && given(id)) {
         problems.push("budgetMonthly: write an amount above 0, such as `10 EUR` or `20 USD`");
         continue;
       }
@@ -304,9 +310,7 @@ export function answersToRequirements(
     if (isBlank(value)) continue;
     draft[id] = value;
   }
-  if (noBudget && !problems.some((problem) => problem.startsWith("budgetMonthly"))) {
-    draft.budgetMonthly ??= { amount: 0, currency: "EUR" };
-  }
+  if (noBudget) draft.budgetMonthly ??= { amount: 0, currency: "EUR" };
   if (draft.domain === undefined) draft.dnsProvider = "none";
   else draft.dnsProvider ??= "cloudflare";
 

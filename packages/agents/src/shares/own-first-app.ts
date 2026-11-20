@@ -27,8 +27,6 @@ import { firstAppPaths } from "./reference";
 
 /** The first app on a server the user owns, as this computer knows it ({@link ownFirstApp}). */
 export interface OwnFirstApp {
-  /** Its paths, from its repository folder on this computer. */
-  paths: ProjectPaths;
   /** Its plan, provisioned on a server the user owns. */
   plan: DeployPlan;
   /**
@@ -129,7 +127,6 @@ export async function ownFirstApp(
     ? { agent: true }
     : { agent: false, ...(record.keyPath === undefined ? {} : { keyPath: record.keyPath }) };
   return {
-    paths,
     plan,
     answers: {
       host: record.host,
