@@ -71,6 +71,16 @@ describe("ownServerMemory", () => {
     );
   });
 
+  it("words a refusal for a command that changes the server: nothing changed, design and the command again", () => {
+    const refused = ownServerMemory(2048, 1024, [blog], CADDY_EDGE, undefined, {
+      again: "opscrew provision --env staging",
+    })?.refused;
+    expect(refused?.message).toMatch(/memory limits\. Nothing was changed\.$/);
+    expect(refused?.hint).toBe(
+      "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` and `opscrew provision --env staging` again.",
+    );
+  });
+
   it("warns below 15% free, with how much the other apps take", () => {
     // 4096 - 384 = 3712 MB usable; 1024 + 2048 + 128 leaves 512 MB, 13.8% of it.
     expect(ownServerMemory(4096, 2048, [blog], CADDY_EDGE)?.warning).toBe(

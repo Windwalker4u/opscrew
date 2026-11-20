@@ -619,6 +619,25 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     // Both apps served directly with DNS only: the apps on a server share its firewall.
     const direct = () => ownPlan({ proxied: false });
 
+    it("refuses limits that no longer fit beside the other app's, before anything is planned (FR-3024)", async () => {
+      const s = await setup({ plan: direct(), facts: withOtherApp({ memoryMb: 3000 }) });
+      const error = (await runProvision(s.deps, {
+        services: s.services,
+        hostKey: ED25519_FINGERPRINT,
+      }).catch((e: unknown) => e)) as OpsCrewError;
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        `Your server has 4096 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 3000 MB of memory limits ("blog" 3000 MB), which leaves 584 MB, and this app's containers have 1024 MB of memory limits. Nothing was changed.`,
+      );
+      expect(error.hint).toContain("then run `opscrew design` and `opscrew provision` again.");
+      expect(s.handler.requests).toEqual([]);
+      expect(s.engine.plans).toHaveLength(0);
+      expect(s.host.applies).toHaveLength(0);
+      const printed = `${everythingPrinted(s.deps)}\n${error.message}\n${error.hint}`;
+      expect(printed).not.toContain(OWN_IPV4);
+    });
+
     it("sets up only this app's own items; the shared parts and the other app stay as they are", async () => {
       const s = await setup({ plan: direct(), facts: withOtherApp() });
       // The shared edge runs Caddy, the plan's proxy.

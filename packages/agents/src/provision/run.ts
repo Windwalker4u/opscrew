@@ -127,9 +127,8 @@ import {
   readableDeployPause,
   rotationPauseRefusal,
 } from "../shared/deploy-pause";
-import { boundHostAdapter, hostPlanFile } from "../shared/host-plan";
+import { hostPlanFile } from "../shared/host-plan";
 import { appMemoryMb, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
-import { connectAndInspectOwnServer } from "../shared/own-server";
 import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
@@ -168,6 +167,7 @@ import {
 } from "./origin-tls";
 import {
   applyOwnHostPlan,
+  connectForProvision,
   dashboardsOnNetwork,
   type ExtraOwnServerRun,
   extraOwnReach,
@@ -205,6 +205,7 @@ import {
   type ServerReach,
   setDeploySecrets,
 } from "./secrets";
+import { requireServerFit } from "./server-fit";
 import {
   liftRemovedProtection,
   readyExtraServers,
@@ -632,6 +633,14 @@ async function provisionFlow(
         })
       : [];
   for (const line of restarts) deps.reporter.warn(line);
+  // A server the user owns, or the one a second app shares: connected and inspected (read-only)
+  // now, so its memory holds this app beside the other OpsCrew apps there before anything is
+  // planned (FR-3024); the preparation below goes on from this inspection.
+  const early =
+    ownServer && sharedHost === undefined
+      ? await connectForProvision(deps, { plan, hostKey: options.hostKey, services, phase })
+      : undefined;
+  if (early !== undefined) requireServerFit(deps, plan, early, rerun);
   const cloudflare = await setupCloudflare(deps, plan, services);
   // Previews below the app's zone (FR-2231): the zone checked again, read-only, before any plan.
   const belowZone = appZoneDomain(plan);
@@ -775,17 +784,9 @@ async function provisionFlow(
   const approveHash = saved.apply;
   // `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
-  // A preview environment on the user's own server: inspected now, before any change at GitHub,
-  // and refused when the server holds another app; its preparation below goes on from this.
-  const inspected =
-    previews && ownServer && sharedHost === undefined
-      ? await connectAndInspectOwnServer(deps, {
-          hostKey: options.hostKey,
-          services: { ...services.own, host: boundHostAdapter(services.own?.host) },
-          phase,
-        })
-      : undefined;
-  if (inspected !== undefined) requireServerForPreviews(inspected.facts, plan.app.name, again);
+  // A preview environment on the user's own server: refused before any change at GitHub when the
+  // server holds another app.
+  if (previews && early !== undefined) requireServerForPreviews(early.facts, plan.app.name, again);
   // On another environment's server: that server, checked and inspected the same way.
   const sharedRun =
     sharedHost === undefined
@@ -890,7 +891,7 @@ async function provisionFlow(
       deployKeyFile: deployKey.privateKeyFile,
       phase,
       command,
-      ...(inspected !== undefined ? { inspected } : {}),
+      ...(early !== undefined ? { inspected: early } : {}),
       ...(cloudflare !== undefined ? { cloudflare } : {}),
     });
     // Never beside previews it doesn't host by its own choice: pull requests' code runs there.

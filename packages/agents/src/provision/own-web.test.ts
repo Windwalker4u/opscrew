@@ -211,7 +211,7 @@ describe.skipIf(!findExecutable("git"))("runProvision: web ports of an own serve
     expect(s.host.applies).toHaveLength(0);
   });
 
-  it("stops before connecting to the server when Cloudflare's ranges cannot be read", async () => {
+  it("stops before any change when Cloudflare's ranges cannot be read, after only a read-only look at the server", async () => {
     let reads = 0;
     const cloudflare = {
       ...ownCloudflare(),
@@ -232,7 +232,8 @@ describe.skipIf(!findExecutable("git"))("runProvision: web ports of an own serve
     expect(error.message).toContain("Nothing was changed");
     expect(s.handler.requests).toEqual([]);
     expect(s.engine.plans).toHaveLength(0);
-    expect(s.host.inspections).toBe(0);
+    // The server is inspected (read-only) before anything is planned, for its memory (FR-3024).
+    expect(s.host.inspections).toBe(1);
     expect(s.host.applies).toHaveLength(0);
   });
 

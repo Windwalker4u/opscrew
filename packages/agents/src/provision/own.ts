@@ -638,8 +638,8 @@ export async function prepareOwnServer(
     phase: OwnHostPhase;
     /** The command a stop says to run again, for example `opscrew portainer enable`. */
     command: string;
-    /** The connection and inspection made earlier in this run (a preview environment's). */
-    inspected?: { session: OwnServerSession; facts: HostFacts };
+    /** The connection and inspection made earlier in this run ({@link connectForProvision}). */
+    inspected?: OwnServerInspection;
     /**
      * The app's Cloudflare zone (`setupCloudflare`), which a server at home's address updater
      * keeps the records in. Without it the updater stays as the server has it.
@@ -657,19 +657,12 @@ export async function prepareOwnServer(
   // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
   // a failure stops before anything is changed.
   const webSources = await ownWebSources(deps, plan, input.services.cloudflare);
-  const second =
-    target.shares === undefined
-      ? undefined
-      : await connectSecondApp(deps, plan, { services: { ...own, host }, phase: input.phase });
-  // Provision compares a second app with the first app's plan, read from its folder.
-  const first =
-    second === undefined ? undefined : (second.first ?? (await firstApp(deps, second.ref)));
-  const { session, facts } =
-    second ??
+  const { session, facts, first } =
     input.inspected ??
-    (await connectAndInspectOwnServer(deps, {
+    (await connectForProvision(deps, {
+      plan,
       hostKey: input.options.hostKey,
-      services: { ...own, host },
+      services: input.services,
       phase: input.phase,
     }));
   if ((facts.arch === "amd64" || facts.arch === "arm64") && facts.arch !== target.arch) {
@@ -777,6 +770,47 @@ export async function prepareOwnServer(
     );
   }
   return run;
+}
+
+/** The app's own server as provision connected to and inspected it ({@link connectForProvision}). */
+export interface OwnServerInspection {
+  session: OwnServerSession;
+  facts: HostFacts;
+  /** A second app's first app (`target.shares`), as its folder on this computer describes it. */
+  first?: FirstApp;
+}
+
+/**
+ * Connects to the app's own server and inspects it read-only, audited as `phase`: a second app
+ * (`target.shares`) as {@link connectSecondApp} does, with its first app read from its folder
+ * (`firstApp`); any other as `connectAndInspectOwnServer` does (`hostKey` confirmed or pinned).
+ * @throws OpsCrewError `PHASE_PRECONDITION` from the login or `firstApp`, before any change.
+ */
+export async function connectForProvision(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    hostKey: ProvisionOptions["hostKey"];
+    services: ProvisionServices;
+    phase: OwnHostPhase;
+  },
+): Promise<OwnServerInspection> {
+  const { plan } = input;
+  const own = input.services.own ?? {};
+  if (ownTarget(plan).shares === undefined) {
+    return connectAndInspectOwnServer(deps, {
+      hostKey: input.hostKey,
+      services: { ...own, host: boundHostAdapter(own.host) },
+      phase: input.phase,
+    });
+  }
+  const second = await connectSecondApp(deps, plan, {
+    services: { ...own, host: secondAppAdapter(own.host) },
+    phase: input.phase,
+  });
+  // Provision compares a second app with the first app's plan, read from its folder.
+  const first = second.first ?? (await firstApp(deps, second.ref));
+  return { session: second.session, facts: second.facts, first };
 }
 
 /**

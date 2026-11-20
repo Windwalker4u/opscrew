@@ -214,7 +214,9 @@ function serverAppMb(app: ServerApp): number {
  * than 15% stays free, each saying how much the other apps take; `undefined` when it fits, or
  * when inspection could not read the memory (the own-server option then records a placeholder
  * under 100 MB, and design warns about the server's size already). For an extra server `name`
- * (feature 018), `appMb` is this app's services there, and an `edgeMb` of 0 runs no edge.
+ * (feature 018), `appMb` is this app's services there, and an `edgeMb` of 0 runs no edge. With
+ * `wording.again` (a command that changes the server, such as `opscrew provision`), the refusal
+ * ends "Nothing was changed." and says to run design and that command again.
  */
 export function ownServerMemory(
   serverMb: number,
@@ -222,6 +224,7 @@ export function ownServerMemory(
   others: readonly ServerApp[],
   edgeMb: number,
   name?: string,
+  wording?: { again: string },
 ): { refused?: { message: string; hint: string }; warning?: string } | undefined {
   if (serverMb < 100) return undefined;
   const othersMb = others.reduce((sum, app) => sum + serverAppMb(app), 0);
@@ -242,13 +245,23 @@ export function ownServerMemory(
       others.length === 0
         ? `${Math.max(0, left)} MB are left`
         : `the other OpsCrew ${others.length === 1 ? "app on it takes" : "apps on it take"} ${othersMb} MB of memory limits (${each}), which leaves ${Math.max(0, left - othersMb)} MB`;
+    const unchanged =
+      wording !== undefined
+        ? "Nothing was changed."
+        : name === undefined
+          ? "Nothing was written."
+          : "plan.yaml was not changed.";
+    const again =
+      wording === undefined
+        ? "run `opscrew design` again"
+        : `run \`opscrew design\` and \`${wording.again}\` again`;
     return {
       refused: {
-        message: `${noun} has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system${edge}, ${taken}, and this app's ${name === undefined ? "containers" : "services there"} have ${appMb} MB of memory limits. ${name === undefined ? "Nothing was written." : "plan.yaml was not changed."}`,
+        message: `${noun} has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system${edge}, ${taken}, and this app's ${name === undefined ? "containers" : "services there"} have ${appMb} MB of memory limits. ${unchanged}`,
         hint:
           name === undefined
-            ? "Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then run `opscrew design` again."
-            : `Lower the memory limits of the services on server ${name} in opscrew/plan.yaml, add memory to the server, or place fewer services on it, then run \`opscrew design\` again.`,
+            ? `Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then ${again}.`
+            : `Lower the memory limits of the services on server ${name} in opscrew/plan.yaml, add memory to the server, or place fewer services on it, then ${again}.`,
       },
     };
   }
