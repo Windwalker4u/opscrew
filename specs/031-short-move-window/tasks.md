@@ -132,7 +132,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-hetzner --filter=@opscrew/provider-digitalocean --filter=@opscrew/provider-contabo && pnpm lint`
   - Effort: high
 
-- [ ] T3107 [P] [US3] The wait's diagnosis and its repair
+- [x] T3107 [P] [US3] The wait's diagnosis and its repair
   - Owns: `packages/agents/src/shared/wait.ts` and its callers' wiring, `packages/iac-templates/src/**`
     (a TypeScript renderer of `shared/cloud-init.yaml.tftpl`), `packages/cli/src/**` (the flag),
     `docs/guide/` (one paragraph where new servers are described), colocated tests
@@ -191,6 +191,59 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 
 - [ ] T3110 (lead) A real move's past items backfilled by hand into the live app's
   plan once T3109 is in, with the move's exact times
+
+- [ ] T3111 [US4] A bought domain's purchase and renewals in the cost
+  - Owns: `packages/plan-schema/src/plan.ts` and `schemas/plan.schema.json` (`cost.renewals`
+    only), `packages/agents/src/domain/**`, `packages/agents/src/status/**`, colocated tests
+  - Reads: research.md R4 (a domain OpsCrew bought), `packages/agents/src/shared/cost-times.ts`
+  - Depends: T3109
+  - Accept:
+    - FR-3113.
+    - **The purchase:** `opscrew domain buy` adds `{item: "<domain>, <n> year(s)", provider:
+      <registrar>, price: <the charge>, at}` to `cost.oneTime`, and `{item: <domain>, provider,
+      price: <renewal per year>, next: <expiry>, autoRenew}` to `cost.renewals`. A rerun that
+      finishes a recorded purchase adds neither twice.
+    - **A renewal seen later:** `opscrew status` and `opscrew domain status` read the registrar
+      only once `next` is within 30 days or past. An expiry that moved on adds the renewal to
+      `oneTime` (with `price`, at the day the registrar charged when its answer gives one, else at
+      the old `next`) and moves `next` and the plan's `domain.registration.expiresAt`.
+      `provider` is always the registrar's id from `RegistrarSchema`; a new registrar is announced
+      to the portal's lead. Auto-renew off with `next` within 30 days: a warning that
+      names the date and how to turn it on (`opscrew domain auto-renew on` at Cloudflare and
+      Porkbun, the registrar's dashboard at Namecheap and GoDaddy).
+    - **No entry** for a domain bought elsewhere; old plans without `renewals` stay valid; the
+      plan's pruning keeps `renewals` whole.
+    - **Tests** with a fixed clock and fake registrars: each registrar, a renewal seen, auto-renew
+      off, no registrar call before the 30 days.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents && npx vitest run --root packages/agents src/domain src/status && npx vitest run --root packages/plan-schema && pnpm lint`
+  - Effort: high
+
+**Also in 0.2.11** (a user's ask, the founder's yes of 2026-11-20; not part of the move):
+
+- [ ] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
+  - Why: a Dockerfile that checks a pinned module's commit through GitHub's API calls it anonymously
+    from the build, 60 calls an hour per address shared by every job on GitHub's runners, and the
+    build fails on the limit.
+  - Owns: `packages/plan-schema/src/plan.ts` and `schemas/plan.schema.json` (`app.build.githubToken`
+    only), `packages/iac-templates/src/workflow/build.ts`, `packages/agents/src/design/builder.ts`
+    (a redesign keeps the field), `docs/guide/builders.md`, colocated tests and snapshots
+  - Accept:
+    - **The opt-in:** `app.build.githubToken: true` (optional; only with `builder: own-dockerfile`,
+      refused with any other builder as `webRoot` is). Set by hand in `opscrew/plan.yaml`; a later
+      design keeps it.
+    - **The workflow:** with it, the build step that runs the user's Dockerfile adds
+      `GITHUB_TOKEN=${{ github.token }}` to its `secrets:` (id `GITHUB_TOKEN`), never to
+      `build-args`. The seal build doesn't get it. Without it the workflow is unchanged, byte for
+      byte. The job's permissions don't change.
+    - **The guide** (builders.md, the own Dockerfile's secrets): how to read it,
+      `RUN --mount=type=secret,id=GITHUB_TOKEN,env=GITHUB_TOKEN …`. It never reaches the image, its
+      layers or the provenance, and GitHub revokes it when the job ends. The build job has
+      `packages: write`, so the token can also push to the repository's packages until then:
+      mount it only in the `RUN` that needs it, never in one that installs dependencies.
+    - **Tests:** the secret line present only with the opt-in and only on the Dockerfile's build
+      step; the schema's refusal with another builder; a redesign keeps it.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow && npx vitest run --root packages/agents src/design && pnpm lint`
+  - Effort: medium
 
 **Follow-up, after 0.2.11** (from the live moves):
 - **A slow DNS switch apply:** the switch's apply of two in-place record updates took 5 m 26 s once

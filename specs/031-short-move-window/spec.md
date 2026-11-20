@@ -128,6 +128,11 @@ R4).
    applies, **Then** the item moves to `ended` with its `until`.
 4. **Given** any plan write, **Then** `ended` and `oneTime` keep only the current and the previous
    calendar month.
+5. **Given** a domain bought with `opscrew domain buy`, **When** the purchase finishes, **Then** its
+   price, registrar and time go into `oneTime`, and its renewal (price per year, next date,
+   auto-renew) into `renewals`.
+6. **Given** a domain whose expiry moved on since the plan's `next`, **When** a command reads the
+   registrar, **Then** the renewal goes into `oneTime` at its date and `next` moves on.
 
 ---
 
@@ -194,6 +199,11 @@ R4).
   retarget, destroy, the backups switch and snapshot deletion MUST write `since`, `until`, `ended`
   and `oneTime` as they apply; every plan write MUST prune `ended` and `oneTime` older than the
   previous calendar month.
+- **FR-3113**: `opscrew domain buy` MUST record the purchase in `cost.oneTime` and the domain's
+  renewal in `cost.renewals` (`{item, provider, price, next, autoRenew}`, optional). An `opscrew
+  status` or `opscrew domain status` run once `next` is within 30 days or past MUST read the
+  registrar, record a renewal that happened in `oneTime` at its date and move `next` on; with
+  auto-renew off it warns that the domain expires (research R4).
 
 ### Key Entities
 

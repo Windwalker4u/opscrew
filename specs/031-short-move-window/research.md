@@ -52,7 +52,7 @@ cost:
   monthly: {amount, currency}                 # the running items' monthly total, as before
   breakdown:                                  # running items
     - item: "Server cx23 (nbg1)"
-      provider: hetzner                       # the core's provider id, on every entry
+      provider: hetzner                       # the core's provider id, on every billed entry
       monthly: {amount, currency}             # for an hourly item, its monthly cap
       billing: hourly                         # hourly | monthly | free
       hourly: {amount, currency}              # hourly items only
@@ -61,7 +61,17 @@ cost:
     - {item: "Setup fee (V153)", provider: contabo, price: {amount, currency}, at: 2026-11-20T13:17:00Z}
   ended:                                      # removed this or last calendar month
     - {item, provider, monthly, billing, hourly?, since, until}
+retarget:                                     # only while a move runs
+  from:
+    running:                                  # the old side's items, still billed during the move
+      - {item, provider, monthly, billing, hourly?, since}
 ```
+
+- **A free line** (`billing: free`: a second app, a server of the user's, a Portainer, a hosting
+  account) may have no `provider`.
+- **During a move** `cost` is the new side's alone, and the old side's running items are in
+  `retarget.from.running`, so both are counted while both run. `--finish` moves them to
+  `cost.ended` with `until`; `--abort` puts them back in `cost` (T3109's review, 2026-11-20).
 
 - **Billing models:**
   - Hetzner and DigitalOcean servers, IPv4, backups (20% of the server) and snapshots (per GB)
@@ -72,6 +82,32 @@ cost:
   - A second app's €0 item is `free`.
 - **The portal computes "so far" and the "~" forecast from these.** Older plans without them stay a
   "~" run rate.
+- **A domain OpsCrew bought** (added 2026-11-20, the founder's question; to agree with the portal's
+  lead):
+
+  ```yaml
+  cost:
+    oneTime:
+      - {item: "example.com, 1 year", provider: cloudflare, price: {amount, currency}, at: …}
+    renewals:                                 # charges that recur on their own
+      - item: "example.com"
+        provider: cloudflare                  # the registrar's id: cloudflare, porkbun, namecheap, godaddy
+        price: {amount, currency}             # the renewal price per year, as quoted at the purchase
+        next: 2027-11-20                      # the domain's expiry; the registrar charges up to 30 days before
+        autoRenew: true
+  ```
+
+  - **The purchase** goes into `oneTime` with its price, registrar and time.
+  - **The renewal** shows in the month of `next`, as a "~" forecast. The registrar charges it on
+    its own, so OpsCrew learns of it only when it reads the registrar: `opscrew status` and
+    `opscrew domain status` do once `next` is within 30 days or past (`domain.registration`
+    already holds the expiry). When the expiry moved on, the renewal goes into `oneTime` at the
+    day the registrar charged when its answer gives one (Cloudflare charges up to 30 days early,
+    so the old `next` can fall in the wrong month), else at the old `next`, and `next` moves a year
+    on. The portal's lead agreed (2026-11-20): with `autoRenew: false` the portal forecasts no
+    charge and says the domain expires then; unknown `provider` ids show under "Other
+    providers", so a new registrar is announced to it. With auto-renew off, they warn that the domain expires.
+  - **A domain the user bought elsewhere** has no entry: OpsCrew doesn't know its price.
 
 ## R3. Left for later
 
