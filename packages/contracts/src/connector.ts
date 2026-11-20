@@ -166,6 +166,20 @@ export interface ServerSnapshotApi {
   /** Powers the server on and resolves when the provider reports it done. */
   powerOn(serverId: string): Promise<void>;
   /**
+   * Restarts the server through the provider (a reboot) and resolves once the provider has
+   * accepted it, or reports it done where it reports actions. For a new server that never
+   * answered at its first boot.
+   */
+  restart?(serverId: string): Promise<void>;
+  /**
+   * Installs the server again from the provider's image `image`, keeping its id and addresses,
+   * with the first-boot `userData` (a provider that keeps the creation's user data, as Hetzner and
+   * DigitalOcean do, may ignore it), and resolves once the provider has accepted it. Destroy-grade:
+   * the disk is wiped. Only for a server OpsCrew just created that holds nothing yet. Any password
+   * the provider answers with is dropped, never returned or logged.
+   */
+  reinstall?(serverId: string, request: { image: string; userData: string }): Promise<void>;
+  /**
    * Cancels the server at the end of its term through the provider's API, for a provider whose
    * Terraform cannot (`terraform.connectorRemoval`, ADR 0029 D10), and resolves with the day its
    * contract ends (`2026-12-11`). A server already cancelled resolves with its end date and is not

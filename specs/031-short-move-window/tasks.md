@@ -106,6 +106,53 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     helper shared with `design/own.ts`.
 
   Tests for both.
+## Phase 4: A new server whose first boot failed (US3, the founder's decision of 2026-11-20)
+
+The contract (lead, before the wave): `ServerSnapshotApi` in `packages/contracts/src/connector.ts`
+gains the optional `restart(serverId)` and `reinstall(serverId, { image, userData })`, and the repair is offered only where a connector has them:
+- **`restart`:** reboots the server through the provider.
+- **`reinstall`:** installs the server again from a provider image, keeping its id and addresses,
+  with first-boot `userData`. It is destroy-grade, for a new server only. Hetzner and DigitalOcean
+  keep the creation's user data and rebuild from the image; Contabo needs it passed.
+
+- [ ] T3106 [P] [US3] The connectors' restart and reinstall
+  - Owns: `packages/providers/{hetzner,digitalocean,contabo}/src/**`, their fakes and tests
+  - Reads: the contract above; each connector's `powerOn`/`rebuild` code
+  - Accept:
+    - **Hetzner:** `restart` is `POST /servers/{id}/actions/reboot`; `reinstall` is
+      `POST /servers/{id}/actions/rebuild` with the image name.
+    - **DigitalOcean:** `restart` is the droplet action `reboot`; `reinstall` is the action
+      `rebuild` with the image.
+    - **Contabo:** `restart` is `POST /v1/compute/instances/{id}/actions/restart` (no body);
+      `reinstall` is `PUT /v1/compute/instances/{id}` with `imageId`, the server's `sshKeys` as it
+      has them, `userData` and `defaultUser: "root"`.
+    - **For every provider:** both resolve once the provider has accepted the action, and wait for
+      it where the provider reports actions. Any password the provider answers with is dropped.
+      The tests check each request and that no credential is logged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-hetzner --filter=@opscrew/provider-digitalocean --filter=@opscrew/provider-contabo && pnpm lint`
+  - Effort: high
+
+- [ ] T3107 [P] [US3] The wait's diagnosis and its repair
+  - Owns: `packages/agents/src/shared/wait.ts` and its callers' wiring, `packages/iac-templates/src/**`
+    (a TypeScript renderer of `shared/cloud-init.yaml.tftpl`), `packages/cli/src/**` (the flag),
+    `docs/guide/` (one paragraph where new servers are described), colocated tests
+  - Reads: spec US3, FR-3108–FR-3110; `shared/wait.ts` (`waitForSsh`, `waitForCloudInit`,
+    `pinHostKey`); the contract above
+  - Accept:
+    - FR-3108–FR-3110, as follows.
+    - **The diagnosis:** read `/var/lib/cloud/data/result.json` as deploy, and name the failed
+      steps in plain words (`package_update_upgrade_install` is "the package install", `runcmd`
+      is "OpsCrew's setup script", and so on).
+    - **The approval:** typed name, with a script's `--confirm <app>`. The approval names the
+      server and that it holds nothing yet.
+    - **The install's first-boot file:** rendered by a TypeScript function from the same template
+      as the module's `templatefile`. A test checks it byte for byte against OpenTofu's rendering
+      (with `.tools/bin` tofu, skipping without it).
+    - **Callers:** provision's creation and a move's new side, before their first deploy.
+    - **Tests with fakes** for each provider; a leak check.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew && npx vitest run --root packages/agents src/shared src/provision src/retarget && npx vitest run --root packages/iac-templates src/infra && pnpm lint`
+  - Effort: xhigh
+
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
   restarts the old app without holding the new one. Pass `!stepBefore(move.step, "deployed")` to

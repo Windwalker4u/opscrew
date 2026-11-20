@@ -73,6 +73,40 @@ pre-copied data stops the move before any downtime.
 
 ---
 
+### User Story 3 - A new server whose first boot failed is repaired (Priority: P2)
+
+*(Added 2026-11-20, the founder's decision after the live run: in 0.2.11.)* A server OpsCrew just
+created, for a provision or as a move's new side, can come up without its network at the first
+boot. Its setup then fails (no Docker, no firewall), and a restart alone doesn't run the setup
+again. Today OpsCrew waits, then stops with "did not finish its first-boot setup". Instead, it
+says what failed, and offers the repair: a restart when the server answers nothing, a fresh
+install of the same server (same image, first-boot file and addresses) when its setup failed. It
+then pins the server's new host key itself and goes on.
+
+**Why this priority**: a user can't repair it by hand. `deploy` has no root, root login is off,
+and the provider's install needs the first-boot file OpsCrew rendered.
+
+**Independent Test**: With fakes, for each provider that creates servers: a new server that never
+answers is restarted after the approval; one whose setup failed is installed again after the
+approval, its new host key pinned, and the run goes on to the deploy. Without the approval,
+nothing is restarted or installed.
+
+**Acceptance Scenarios**:
+
+1. **Given** a new server whose first-boot setup failed, **When** the wait ends, **Then** OpsCrew
+   names the failed steps from the server's own cloud-init result (for example "the package install
+   failed"), says the server holds nothing yet, and asks to install it again, typing the app's name
+   to confirm.
+2. **Given** the approval, **When** the install runs, **Then** it uses the same image and first-boot
+   file, keeps the server's id and addresses, forgets the old host key, pins the new one on the
+   first connection, and waits for the setup again.
+3. **Given** a new server that never opens SSH, **When** the wait ends, **Then** OpsCrew asks to
+   restart it through the provider, then waits again.
+4. **Given** a server that holds data (any server after its first deploy), **When** it doesn't
+   answer, **Then** OpsCrew never offers to install it again.
+
+---
+
 ### Edge Cases
 
 - PostgreSQL: its data is still dumped and restored in the window, as today, so a large database
@@ -113,6 +147,16 @@ pre-copied data stops the move before any downtime.
 - **FR-3106**: Every plan, approval by hash, digest check and the window's rollback stay as they
   are. The pre-copy needs no downtime approval and changes nothing on the old side.
 - **FR-3107**: No secret, address or key appears in output, logs, audit entries or fixtures.
+- **FR-3108**: When a server OpsCrew just created doesn't finish its first-boot setup, OpsCrew MUST
+  name the failed steps it can read on the server (cloud-init's result, which the deploy user
+  reads) instead of only "did not finish".
+- **FR-3109**: For such a server, which holds no data yet, OpsCrew MUST offer the repair through
+  the provider's connector, each after an approval in which the user types the app's name: a restart
+  when it never opened SSH, an install of the same image with the same first-boot file when its
+  setup failed. At most one of each per run. It MUST never offer an install for a server after its
+  first deploy.
+- **FR-3110**: After an install OpsCrew made, it MUST forget the server's old host key and pin the
+  new one on the first connection, with no changed-key question.
 
 ### Key Entities
 
