@@ -1,0 +1,101 @@
+---
+description: "Tasks for 031-short-move-window"
+---
+
+# Tasks: A move's maintenance window of about a minute
+
+**Status**: building since 2026-11-20, for 0.2.11 (the founder's decision that day).
+
+**Input**: `specs/031-short-move-window/` (spec.md, plan.md, research.md); features 023 (retarget
+anywhere) and 030 (FR-3027, the move's marker).
+
+**Numbering**: T3101–T3199.
+
+**Format**: `- [ ] T#### [P] [USn] description` + `Owns / Reads / Depends / Accept / Verify /
+Effort`. Implementers never edit `tasks.md`, specs, root configuration, a `package.json`'s
+dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
+`{{FAKE:<kind>}}` (`@opscrew/core/testing`).
+
+**Rules for every task:**
+- **Approvals:** every change goes through a plan or approval as today. The pre-copy needs none: it
+  reads the old side and writes only the new side's mounts.
+- **Leaks:** no address, key, token or file content in output, logs, audit entries or fixtures.
+  Every agents task's tests end with a leak check.
+- **Words:** user-facing text says "the maintenance window", "while your app serves", and never
+  names a task or a feature number.
+- **No network in unit tests;** the Docker client and the move fakes.
+- **Temp files:** run tests with `OPSCREW_TEST_TMP=D:/opscrew-test-tmp`.
+- **Scope:** build only what Accept asks. Report anything else.
+- **Writing files:** long files with the Write or Edit tool, not shell heredocs.
+- **Worktrees:** `D:/opscrew/.claude/worktrees/t31NN`, branched from `main`; `pnpm install` first.
+
+## Phase 1: Foundation (lead)
+
+- [x] T3100 (lead) Spec, research, plan, tasks; the roadmap's new 031
+
+## Phase 2: Wave 1 (parallel)
+
+- [ ] T3101 [P] [US1] The carrier's delta operations
+  - Owns: `packages/connectors/docker/src/**` (the carrier and its tests)
+  - Reads: plan 1.; `carrier.ts` (`DIGEST_SCRIPT`, `readVolume`, `writeVolume`, `volumeDigest`),
+    `one-off.ts`, `client.ts`
+  - Accept:
+    - `ManifestEntry`, `volumeManifest`, `readPaths` and `updateVolume`, exactly as plan 1.
+      gives them, exported from the package root.
+    - The manifest's facts are the ones `DIGEST_SCRIPT` hashes, and an unchanged source's
+      manifest is identical on two reads.
+    - Path lists go through a file in the carrier, never as arguments.
+    - Names with spaces, leading dashes and newlines are handled. A newline in a name is refused
+      with a plain message, which the move turns into a full copy of that mount.
+    - `updateVolume` keeps owners and modes, removes deepest first, and never touches a path
+      outside the mount.
+    - Today's checks and the carrier cleanup apply to the new operations too.
+    - Tests with the Docker client's fake, plus a Docker test (`OPSCREW_DOCKER_TESTS=1`): a
+      volume changed, extended and trimmed after a full copy is brought to the same
+      `volumeDigest` by `readPaths` and `updateVolume` of the delta.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-docker && npx vitest run --root packages/connectors/docker && pnpm lint`
+  - Effort: high
+
+- [ ] T3102 [P] [US1] [US2] The pre-copy, the app checked before the window, and the window's
+  delta
+  - Owns: `packages/agents/src/retarget/**`, `packages/agents/src/testing/move.ts`, colocated
+    tests; `packages/cli/src/ui/retarget.ts` and `packages/cli/src/commands/retarget.test.ts` for
+    the texts
+  - Reads: plan 2.–4.; spec; `retarget/window.ts`, `retarget/steps.ts`, `retarget/sides/ssh.ts`,
+    `sides/portainer.ts`, `sides/types.ts`, `retarget/server-ops.ts`; 030's FR-3027 (the marker)
+  - Depends: T3101's interface, as plan 1. gives it. Code against it with a fake carrier in
+    `testing/move.ts`, and use the real carrier's methods once T3101 is merged.
+  - Accept:
+    - **Plan 3.'s flow:** the pre-copy, then the app started on the pre-copied data and checked
+      over SSH before the window's approval, with a failure stopping before any downtime.
+    - **The window:** the delta per mount through `mountDelta`, the digest check, Postgres as
+      today, the release command on the final data, and the app restarted in place. No workflow
+      run in the window.
+    - **Rollback** as today. A rerun at the approval doesn't copy again.
+    - **A Portainer new side** gains the pre-copy and the delta.
+    - **Plan 4.'s texts and estimates**, with the CLI's question and summary to match.
+    - **Tests with fakes:**
+      - a move whose mounts change between the pre-copy and the window: only the delta is
+        copied, removed paths go, and the digests match;
+      - the old app stopped only from the window's start;
+      - no workflow dispatched inside the window;
+      - a health failure on the pre-copied data stops before the window;
+      - the PHP app's case: a kept folder plus MySQL, with Railpack's PHP image and a release
+        command needing data;
+      - a Portainer new side;
+      - a move with nothing to copy, unchanged;
+      - a leak check.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/agents src/retarget && npx vitest run --root packages/cli src/commands/retarget.test.ts src/ui && pnpm lint`
+  - Effort: xhigh
+
+## Phase 3: Then
+
+- [ ] T3103 [US1] [US2] The guide
+  - Owns: `docs/guide/retarget.md`
+  - Depends: T3102
+  - Accept: plan 5., written for users.
+  - Verify: `pnpm lint`
+  - Effort: medium
+
+- [ ] T3104 (lead) The live run: the PHP app's move onto the first app's server (030's T3020 with this
+  feature), run by the PHP app's session; the coverage rows for both
