@@ -174,11 +174,17 @@ R4).
 - **FR-3108**: When a server OpsCrew just created doesn't finish its first-boot setup, OpsCrew MUST
   name the failed steps it can read on the server (cloud-init's result, which the deploy user
   reads) instead of only "did not finish".
-- **FR-3109**: For such a server, which holds no data yet, OpsCrew MUST offer the repair through
-  the provider's connector, each after an approval in which the user types the app's name: a restart
-  when it never opened SSH, an install of the same image with the same first-boot file when its
-  setup failed. At most one of each per run. It MUST never offer an install for a server after its
-  first deploy.
+- **FR-3109**: For such a server, OpsCrew MUST offer the repair through the provider's connector:
+  - **A restart, when it never opened SSH,** after an approval in which the user types the app's
+    name.
+  - **An install of the same image with the same first-boot file, when its setup failed,** after
+    an approval bound to the install's hash (its provider, server, image and first-boot file),
+    with the app's name typed: `--approve <hash> --confirm <app>` in a script, as a whole-server
+    restore is approved.
+  - **The install's conditions:** only when the deploy user logged in and found no ready marker,
+    no app folder and no running container. Never when the server didn't answer, and never after
+    its first deploy.
+  - **At most one of each per run.** The attempts are audited.
 - **FR-3110**: After an install OpsCrew made, it MUST forget the server's old host key and pin the
   new one on the first connection, with no changed-key question.
 - **FR-3111**: `cost.breakdown` items MAY carry `billing` (`hourly` | `monthly` | `free`), `hourly`
