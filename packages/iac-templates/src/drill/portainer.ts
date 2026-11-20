@@ -14,6 +14,7 @@ import {
   renderPortainerStack,
 } from "../portainer-target";
 import { wrongTarget } from "../providers";
+import { noStartMigrations } from "../railpack-laravel";
 import type { RuntimeContext } from "../runtime";
 import { appHealthcheck } from "../runtime/healthcheck";
 import { planFilePath } from "../workflow/shared";
@@ -125,6 +126,10 @@ export function renderPortainerDrill(
           {
             ...service,
             ...(key === "app" ? appCheck : {}),
+            // The drill counts the restored tables: Railpack's start would migrate them first.
+            ...(key === "app"
+              ? { environment: { ...(service.environment as object), ...noStartMigrations(plan) } }
+              : {}),
             ...(key === "app" && !withApp ? { profiles: ["app"] } : {}),
             restart,
             ...(service.network_mode === undefined ? { networks: ["internal"] } : {}),

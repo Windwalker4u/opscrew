@@ -85,6 +85,30 @@ describe("renderPortainerDrill", () => {
     expect(drill.withApp).not.toContain("caddy");
   });
 
+  it("never lets Railpack's start migrate a Laravel app's restored copy, with or without a release command", () => {
+    for (const release of [true, false]) {
+      const { releaseCommand: _, ...app } = shop.app;
+      const laravel = DeployPlanSchema.parse({
+        ...shop,
+        app: {
+          ...(release ? shop.app : app),
+          build: { ...shop.app.build, runtime: { language: "php", version: "8.5" }, probe: "php" },
+        },
+      });
+      const drill = renderPortainerDrill(laravel, { id: ID, parts: ["db"] }, { image: DIGEST });
+      for (const file of [drill.withApp, drill.services]) {
+        expect(
+          (parse(file) as Stack).services.app?.environment,
+          `with a release command: ${release}`,
+        ).toMatchObject({ RAILPACK_SKIP_MIGRATIONS: "true" });
+      }
+    }
+    const drill = renderPortainerDrill(shop, { id: ID, parts: ["db"] }, { image: DIGEST });
+    expect((parse(drill.withApp) as Stack).services.app?.environment).not.toHaveProperty(
+      "RAILPACK_SKIP_MIGRATIONS",
+    );
+  });
+
   it("refuses another target, an image not pinned by its digest and a part the plan lacks", () => {
     const server = DeployPlanSchema.parse({ ...shop, target: portainerTestPlan().target });
     expect(() =>

@@ -63,12 +63,11 @@ describe("a Laravel app Railpack builds, with a release command", () => {
   });
 
   it("leaves Railpack's start to migrate without a release command, and other images alone", () => {
-    const { webRoot: _, ...build } = { ...LARAVEL, webRoot: "public" };
     const plans = {
       "no release command": laravel(testPlan(), { release: false }),
       "a plain PHP app": laravel(testPlan(), { build: { ...LARAVEL, webRoot: "public" } }),
       "its own Dockerfile": laravel(testPlan(), {
-        build: { ...build, builder: "own-dockerfile", probe: "none" },
+        build: { ...LARAVEL, builder: "own-dockerfile", probe: "none" },
       }),
       "a Node.js app": laravel(testPlan(), {
         build: { ...LARAVEL, runtime: { language: "node", version: "24" }, probe: "node" },

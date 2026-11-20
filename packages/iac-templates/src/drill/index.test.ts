@@ -134,6 +134,31 @@ describe("renderDrill", () => {
     expect(document.services.search.depends_on).toBeUndefined();
   });
 
+  it("never lets Railpack's start migrate a Laravel app's restored copy, with or without a release command", () => {
+    for (const release of [true, false]) {
+      const { releaseCommand: _, ...app } = withRelease.app;
+      const laravel = DeployPlanSchema.parse({
+        ...withRelease,
+        app: {
+          ...(release ? withRelease.app : app),
+          build: {
+            ...withRelease.app.build,
+            runtime: { language: "php", version: "8.5" },
+            probe: "php",
+          },
+        },
+      });
+      // Its tables are counted as the snapshot restored them, not as a migration made them.
+      expect(
+        compose(drill({}, ["db", "cache"], laravel)).services.app.environment,
+        `with a release command: ${release}`,
+      ).toMatchObject({ RAILPACK_SKIP_MIGRATIONS: "true" });
+    }
+    expect(compose(drill()).services.app.environment).not.toHaveProperty(
+      "RAILPACK_SKIP_MIGRATIONS",
+    );
+  });
+
   it("has one network with no internet and no published port, and no proxy", () => {
     const document = compose(drill());
     expect(document.networks).toEqual({ internal: { internal: true } });

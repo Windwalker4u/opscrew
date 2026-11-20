@@ -243,7 +243,9 @@ exist, so those caches hold Laravel's defaults. OpsCrew removes them from the im
 workers and cron read the settings above; the web makes the caches again from them when it starts.
 With a release command (`app.releaseCommand`), every container of the image also gets
 `RAILPACK_SKIP_MIGRATIONS=true`: the migrations run once per deploy, in the release step, and not
-again each time the web starts.
+again each time the web starts. The release command is then what migrates (design sets it to
+`php artisan migrate --force`), so a release command that doesn't migrate means no migration runs
+at all.
 
 ## A variable OpsCrew does not find
 

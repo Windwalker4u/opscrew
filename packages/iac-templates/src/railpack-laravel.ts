@@ -14,13 +14,19 @@ export function railpackLaravel(plan: DeployPlan): boolean {
 }
 
 /**
- * What every container of the app's image gets besides `app.env`: for a Laravel app Railpack builds
- * with a release command, `RAILPACK_SKIP_MIGRATIONS=true`, so the web's start script leaves the
- * migrations to the release step, which runs them once before the new version takes traffic.
- * Without a release command, Railpack's start migrates, as the app's own image would.
+ * For a Laravel app Railpack builds, `RAILPACK_SKIP_MIGRATIONS=true`, which keeps Railpack's start
+ * script from migrating the database; nothing for another image.
+ */
+export function noStartMigrations(plan: DeployPlan): Record<string, string> {
+  return railpackLaravel(plan) ? { RAILPACK_SKIP_MIGRATIONS: "true" } : {};
+}
+
+/**
+ * What every container of the app's image gets besides `app.env`: with a release command,
+ * {@link noStartMigrations}, so the web's start script leaves the migrations to the release step,
+ * which runs them once before the new version takes traffic. Without a release command, Railpack's
+ * start migrates, as the app's own image would.
  */
 export function imageEnvironment(plan: DeployPlan): Record<string, string> {
-  return railpackLaravel(plan) && plan.app.releaseCommand !== undefined
-    ? { RAILPACK_SKIP_MIGRATIONS: "true" }
-    : {};
+  return plan.app.releaseCommand === undefined ? {} : noStartMigrations(plan);
 }

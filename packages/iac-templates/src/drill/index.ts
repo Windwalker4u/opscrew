@@ -10,6 +10,7 @@ import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/p
 import { parse, Scalar, stringify } from "yaml";
 import type { PreviewEnvTemplates } from "../previews";
 import { wrongTarget } from "../providers";
+import { noStartMigrations } from "../railpack-laravel";
 import { renderCompose } from "../runtime";
 import { renderServices } from "../runtime/components";
 import { runtimeDir } from "../runtime-dir";
@@ -199,6 +200,8 @@ export function renderDrill(
               image: o.image,
               ...(o.image.startsWith("opscrew-local/") ? { pull_policy: "never" } : {}),
               env_file: o.previewValues ? [DRILL_VALUES_FILE, "app.env"] : ["app.env"],
+              // The drill counts the restored tables: Railpack's start would migrate them first.
+              environment: { ...(service.environment as object), ...noStartMigrations(plan) },
             }
           : {};
       // Quoted: a YAML 1.1 reader takes a plain `no` for false.
