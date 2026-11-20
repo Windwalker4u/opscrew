@@ -6,8 +6,8 @@ in any direction. That includes moving from one server of yours to another. A si
 [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md).
 
 The new side is set up next to the old one, the app is deployed and checked there, its data is
-copied in a maintenance window, and then your DNS records switch to the new side. The old side
-stays until you say the new one is good.
+copied while the app still serves and what changed since in a short maintenance window, and then
+your DNS records switch to the new side. The old side stays until you say the new one is good.
 
 ```bash
 npx opscrew retarget --to digitalocean   # start the move, or continue it after a stop
@@ -42,7 +42,7 @@ Cloudflare setup to another Cloudflare account instead, see
   user created.
 - **This computer:** run the move on the computer that deployed the app. It has the infrastructure
   state, the SSH keys and the database's password, and the data passes through it, so a fast
-  connection shortens the window.
+  connection shortens the copy and the window.
 - **[Public SSH](public-ssh.md) open:** servers are reached over public SSH before they join the
   app's private network. If you closed it, open it with `npx opscrew secure --open-public-ssh`,
   move, then close it again with `npx opscrew secure --close-public-ssh`.
@@ -102,9 +102,8 @@ expected length. Nothing changes until you continue.
      it goes there), OpsCrew opens one pull request with them and stops; merge it and run
      `npx opscrew retarget` again.
    - When the move copies data to a server, its deploys there bring up only the app's image and
-     its services until the copy: the release command and the app start in the maintenance window,
-     on the copied data, so an app whose migrations need its existing tables never runs on an empty
-     database. OpsCrew checks that the image is there and the services run. A deploy workflow on
+     its services until the copy: the release command and the app start on the copied data, so an
+     app whose migrations need its existing tables never runs on an empty database. OpsCrew checks that the image is there and the services run. A deploy workflow on
      your branch from an earlier OpsCrew doesn't know this, so OpsCrew proposes the new one in a
      pull request first, as for different deploy files.
    - In Portainer, the app's stacks are planned and approved by hash, as `opscrew provision` does,
@@ -113,7 +112,9 @@ expected length. Nothing changes until you continue.
 
    Until you finish or abort the move, a push to your branch deploys to the new side only, so hold
    changes until the switch.
-4. **The maintenance window** copies the data (see below). It needs its own approval.
+4. **The copy and the maintenance window.** The data is copied while the old side still serves
+   your visitors, then the maintenance window copies what changed since (see below). The window
+   needs its own approval.
 5. **The switch.** DNS switches to the new side, from a plan you approve by its hash, and OpsCrew
    checks the app through its domain. The old side stays, with its app stopped, until you
    [finish the move](#finishing-the-move).
@@ -148,8 +149,8 @@ server OpsCrew created for it, a server of yours, your Portainer, or another app
   app. Its host plan holds only the moving app's deploy key line, folders and record. The
   infrastructure plans change nothing at your cloud provider before the switch: they rename the
   app's old server in OpsCrew's infrastructure state, when it has one, and change the DNS records
-  at the switch. The app is then deployed and checked, its data is copied in the maintenance
-  window (its folders and volumes, exactly as they are), and DNS switches. The other app keeps
+  at the switch. The app is then deployed and checked, its data is copied (its folders and
+  volumes, exactly as they are), and DNS switches. The other app keeps
   serving throughout: its proxy keeps running and reloads once, at the switch.
 - **On a server of yours,** the move takes the server's login from the other app, as the interview
   does, and runs as a move to your own server, beside the apps already there.
@@ -166,13 +167,18 @@ Every service on the app's server that keeps data moves with it: [PostgreSQL](ht
 [Elasticsearch](https://www.elastic.co/elasticsearch), [Meilisearch](https://www.meilisearch.com/), [Typesense](https://typesense.org/), [ClickHouse](https://clickhouse.com/) and [Neo4j](https://neo4j.com/), plus the app's own files (a [SQLite](https://www.sqlite.org/)
 database, uploads) and [self-hosted monitoring](monitoring.md) on the app's server.
 
-- **Most services:** each one is stopped cleanly, and its stopped data (its [Docker](https://www.docker.com/) volumes) is copied
-  to the same service on the new side, which was created but not started. Both sides compute a
-  SHA-256 digest of the data, and the copy counts only when they match. Logins and passwords come
-  along with the data. Both sides run the same image versions, which the plan pins.
+- **Most services:** their data (their [Docker](https://www.docker.com/) volumes) is copied as files to the same service on
+  the new side: in full and as they are while they run, then, once each is stopped cleanly in the
+  maintenance window, only what changed since. Both sides then compute a SHA-256 digest of the
+  data, and the copy counts only when they match. Logins and passwords come along with the data.
+  Both sides run the same image versions, which the plan pins.
+- **MySQL and MariaDB** are dumped consistently while they serve (`--single-transaction`), and the
+  dump is restored on the new side. In the window, with the service stopped, their data folder is
+  copied as files and checked like the others; it differs after the restore, so this copies about
+  its whole size.
 - **PostgreSQL** is copied through its dump instead (`pg_dump` and `pg_restore`), which works across
-  versions. The dump is checked on both sides too, and your release command runs on it when the app
-  has one.
+  versions, in full both times: while it serves and again in the window. The dump is checked on
+  both sides too, and your release command runs on it when the app has one.
 - **A service that doesn't stop cleanly** (Docker kills it when the 120 seconds to stop run out, or
   for lack of memory) isn't copied: the window stops and starts the old app again.
 
@@ -200,36 +206,60 @@ app's own files, `monitoring` for the monitoring stack). The summary says what s
 
 ### The maintenance window
 
-The summary shows the window's expected length before anything changes:
+The data is copied twice: in full while the app still serves, then, in the maintenance window,
+only what changed since. The app is offline only for the second copy: an app with 262 MB of files
+and a 219 MB MySQL database, for example, is offline for about 5 minutes instead of for the whole
+copy. The summary shows both lengths before anything changes, here "Expected maintenance window:
+about 5 minutes, after about 12 minutes of copying while your app serves":
 
-| Between | About |
+| Part | About |
 |---|---|
-| Two servers (cloud or your own) | 2 minutes, plus 1 per 100 MB of data copied |
-| A server and your Portainer | 2 minutes, plus 1 per 900 MB (about 15 MB/s through Portainer's API) |
-| With a bucket that moves | Add a minute per 2,000 objects for its last copy |
-| Onto a server | Add 5 minutes for the deploy that starts the app there |
+| The copy while your app serves, between two servers (cloud or your own) | 2 minutes, plus 1 per 100 MB of data |
+| The copy while your app serves, between a server and your Portainer | 2 minutes, plus 1 per 900 MB (about 15 MB/s through Portainer's API) |
+| Onto a server | Add 5 minutes to the copy for the deploy that starts the app there |
+| The maintenance window | 1 minute, plus PostgreSQL's dump and restore and MySQL's or MariaDB's whole data folder at the copy's rate, plus a share of the other files for what changed |
+| With a bucket that moves | Add a minute per 2,000 objects to the window, for its last copy |
 
-Data that starts empty doesn't count. In the window, after your approval (which lists each step and
-each piece of data with its size):
+Data that starts empty doesn't count.
+
+**While your app serves,** once the new side is deployed and with no downtime approval, each piece
+of data is copied in full to the new side (the databases by their dumps), and the other services
+that keep data start there on their copy. On a server, the deploy workflow then runs there with
+the image its first deploy left, without a build: the release command runs on the copied data,
+then the app, its workers and cron jobs start. Your domain still leads to the old side, so the run
+skips its check through the domain and OpsCrew checks the app's health on the server itself; its
+web server stays stopped until the switch, unless other apps there use it. After the check, the
+app, its workers and cron jobs stop there again, so no job runs on both servers until the window.
+Deploys from pushes to your branch wait meanwhile. If anything fails, a service that can't start
+on its copy included, the new side's app stops and the move stops before any downtime: the old
+side keeps serving, and the next run copies again. A run that stopped at the window's approval
+doesn't copy again.
+
+**In the window,** after your approval (which lists each step and each piece of data with its
+size):
 
 1. The app's deploys and the scheduled check pause.
 2. The app, its workers and cron jobs stop on the old side, and PostgreSQL is dumped.
 3. The services stop cleanly on the old side, and the app and services stop on the new side.
 4. A bucket that moves gets its last copy.
-5. Each piece of data is copied and checked.
+5. Each piece of data gets what changed since its first copy (new, changed and removed files,
+   compared by their content), MySQL's or MariaDB's data folder about whole, and is checked.
 6. The services start on the new side and PostgreSQL is restored.
-7. On a server, the deploy workflow runs there with the image its first deploy left, without a
-   build: the release command runs on the copied data, then the app, its workers and cron jobs
-   start. Your domain still leads to the old side, so the run skips its check through the domain
-   and OpsCrew checks the app's health on the server itself; its web server stays stopped until
-   the switch, unless other apps there use it. In your Portainer, the release command runs, the
-   app starts and must answer its health check.
+7. On a server, the release command runs once more, on the final data, and the app, its workers
+   and cron jobs start again in place and must answer OpsCrew's check on the server; no workflow
+   runs. In your Portainer, the release command runs, the app starts and must answer its health
+   check.
+
+A volume with a file whose name contains a line break, and any data when the old side lacks the
+free disk to gather the changes, is copied whole in the window, and the run says so. A large
+PostgreSQL, MySQL or MariaDB database still makes the window longer, since it is copied about in
+full there.
 
 If anything fails, the window rolls back: the data written on the new side is emptied, a server's
 deploys there go back to bringing up only the image and the services, the old side's services and
 app start again, and nothing has switched. Your visitors are served by the old side, and the next
-run repeats the window. If the DNS switch fails, the same happens. Finishing or aborting the move
-resumes the scheduled check.
+run copies that data again while the app serves, then repeats the window. If the DNS switch
+fails, the same happens. Finishing or aborting the move resumes the scheduled check.
 
 Without data to copy (none, or a database hosted elsewhere) and without a bucket that moves, there
 is no window: the old side serves until the switch.
@@ -334,8 +364,8 @@ after it the move can't be aborted. OpsCrew then waits up to 5 minutes for your 
 to the new side before checking the app; if it doesn't yet, run `npx opscrew retarget` again later
 to check.
 
-With data to copy, the app on the old side stays stopped from the copy until your change has
-reached your visitors, so the downtime is the copy plus your DNS change. That is why a low TTL
+With data to copy, the app on the old side stays stopped from the maintenance window until your
+change has reached your visitors, so the downtime is the window plus your DNS change. That is why a low TTL
 matters.
 
 ## Finishing the move
@@ -383,10 +413,11 @@ After the switch, `--abort` refuses: finish the move, then move back with
 
 A move remembers each step in `opscrew/plan.yaml`. If it stops, because a step failed, you declined
 an approval or the terminal closed, run `npx opscrew retarget` again: it continues from the last
-completed step. If it stopped during the maintenance window before the copy was complete, it first
-starts the app on the old side again.
+completed step. If it stopped while copying the data before the maintenance window, the old side
+kept serving, and the run copies again. If it stopped during the window before the copy was
+complete, it first starts the app on the old side again.
 
-If it stops after the copy, before the switch, the app stays offline: its data is already on the new
+If it stops after the window's copy, before the switch, the app stays offline: its data is already on the new
 side. Run `npx opscrew retarget` soon to continue, or `npx opscrew retarget --abort` to start the
 old app again. Don't start the app on the old side yourself, or what it saves won't reach the new
 side.
@@ -457,8 +488,8 @@ When a bucket is deleted at `--finish` or `--abort`, its plan stops on its own, 
 command carries `--approve <its hash> --confirm <bucket name>`.
 
 Without DNS on Cloudflare, pass `--allow-downtime --dns-switched` together only when the records are
-ready to change right after the copy: with `--allow-downtime` alone, the run stops after the copy,
-with the app offline, until you change them and run `npx opscrew retarget --dns-switched`.
+ready to change right after the maintenance window: with `--allow-downtime` alone, the run stops
+after the window, with the app offline, until you change them and run `npx opscrew retarget --dns-switched`.
 
 ## What can't move yet
 
