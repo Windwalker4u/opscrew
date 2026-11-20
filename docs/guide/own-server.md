@@ -229,12 +229,22 @@ Before any change, OpsCrew refuses an app when:
 
 Design checks the memory: the server's memory, minus the memory limits of the apps already there
 and their tunnel connectors, OpsCrew's edge (128 MB) and the system (384 MB), must hold the new
-app's components. It warns when less than 15% stays free.
+app's components. It warns when less than 15% stays free. Provision runs the same check before it
+plans anything, so a memory limit raised by hand in the plan that no longer fits beside the other
+apps is refused before any change.
+
+All apps on the server run as the same `deploy` user, who can become root through Docker. So
+whoever can change one app's deploy workflow or deploy key can reach the other apps' data and
+secrets. Design warns about this whenever the server already holds another OpsCrew app, naming
+each: share a server only between apps the same people may change.
 
 When you remove an app, the others keep running. The edge goes with the last app.
 
+A further app doesn't need the server's login typed again: in its interview, choose
+**A server another of your OpsCrew apps runs on** and name the folder of an app already there (see
+[When the other app is on a server of yours](shared-server.md#when-the-other-app-is-on-a-server-of-yours)).
 A server OpsCrew created for another app can take more apps too: see
-[A second app on a server OpsCrew created](shared-server.md).
+[A second app on another app's server](shared-server.md).
 
 ## Several environments on your server
 

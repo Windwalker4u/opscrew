@@ -1,10 +1,14 @@
-# A second app on a server OpsCrew created
+# A second app on another app's server
 
 A server OpsCrew created for one app at [Hetzner Cloud](hetzner.md),
 [DigitalOcean](digitalocean.md) or [Contabo](contabo.md) can run more apps, from other
 repositories or from the [same one](several-apps.md). The second app gets its own hostnames, its
 own containers, data and deploy key, and its own deploys and approvals. It shares the server, its
 setup and its proxy with the app OpsCrew created the server for. It adds no server to pay for.
+
+A [server of yours](own-server.md) that already runs an OpsCrew app can take a second app the same
+way: you name the app already there, and OpsCrew takes the server's login from it (see
+[When the other app is on a server of yours](#when-the-other-app-is-on-a-server-of-yours)).
 
 On this page, `shop` is the first app: OpsCrew created its server, at `shop.example.com`. `blog`
 is the second app, at `blog.example.com`, beside it.
@@ -35,7 +39,7 @@ Give an app a server of its own when:
    must be on this computer, where it was provisioned.
 
 2. **In the second app's repository, run the interview** and choose **A server another of your
-   OpsCrew apps runs on (one OpsCrew created)**:
+   OpsCrew apps runs on (one OpsCrew created, or one of yours)**:
 
    ```bash
    cd /home/you/code/blog
@@ -45,8 +49,10 @@ Give an app a server of its own when:
    OpsCrew asks for the first app's repository folder, for example `/home/you/code/shop`. When that
    repository has several apps, it asks which one runs on the server; when it has several
    environments, which one (prod by default). It asks nothing else about the server: its address,
-   SSH login and way of serving come from the first app, and there is no budget or region to choose.
-   A wrong folder stops the interview, saying why.
+   SSH login and way of serving come from the first app, and there is no region to choose. There
+   is no budget either: the interview asks the budget last, once it knows the server, so it skips
+   the question here, and an answers file with `server.shares` needs no `budgetMonthly`. A wrong
+   folder stops the interview, saying why.
 
    In scripts, put the answers in a file and pass `--answers <file>`:
 
@@ -86,6 +92,29 @@ the second app's provision, deploys and removal never restart the first app's co
 is shared, though, so a deploy that brings a newer version of it (after you update OpsCrew)
 restarts the edge once, for both apps.
 
+## When the other app is on a server of yours
+
+The same interview option takes an app on a [server you already have](own-server.md), when that
+app is served at the server's public address: behind Cloudflare's proxy, or DNS only. Name its
+repository folder as in step 2. The second app takes that app's address, SSH port, login, key path
+(or the SSH agent) and way of serving from this computer, with the server's host key OpsCrew
+already checked, so nothing about the server is asked again.
+
+From then on, `blog` is simply one more app on your server, as in
+[Several apps on one server](own-server.md#several-apps-on-one-server): its own deploy key, its own
+record, host plans approved by their hash, and the checks and warnings described there. Nothing
+refers to `shop`'s folder afterwards, so you can move or delete that folder.
+
+The interview refuses an app served through a
+[Cloudflare Tunnel](own-server.md#the-cloudflare-tunnel) or on a [server at home](home-hosting.md).
+There, each app gets parts of its own from its own answers (its tunnel, or its address updater and
+token), so they can't be copied from the other app. Choose **A server you already have** instead and answer the server's questions with its own
+login: several apps on one server work there too. It also refuses a preview environment, an app
+that is itself a second app, one not provisioned on this computer, and one in the middle of a
+[move](retarget.md).
+
+The rest of this page is about a server OpsCrew created.
+
 ## What design checks
 
 Before anything is written, design stops, saying what to change, when:
@@ -105,16 +134,18 @@ Before anything is written, design stops, saying what to change, when:
   (`target.edge`) is refused, naming both;
 - **the memory doesn't fit.** The server's memory, minus the memory limits of the first app and of
   every other app there, OpsCrew's edge and the system, must hold the second app's components.
-  Design warns when less than 15% would stay free;
+  Design warns when less than 15% would stay free. Provision runs this check again before it plans
+  anything, so a memory limit raised by hand in the plan (`app.memoryMb`, or a worker's or a
+  service's) that no longer fits is refused before any change;
 - **the app needs a server-wide kernel setting**, which only the first app's server setup may change.
 
 Design also needs the second app's repository to have its GitHub remote, `origin`, and it reads
 Cloudflare's published IP ranges, because it checks the host plan provision will make.
 
-The first app must itself be a fit. Design refuses a first app that isn't on a server OpsCrew
-created, has previews on its server or is itself a preview environment, has
-[public SSH](public-ssh.md) closed, runs a [private network or a VPN](private-network.md), or is
-itself a second app on another app's server.
+The first app must itself be a fit. Design refuses a first app that has previews on its server or
+is itself a preview environment, has [public SSH](public-ssh.md) closed, runs a
+[private network or a VPN](private-network.md), is itself a second app on another app's server, or
+is in the middle of a [move](retarget.md).
 
 ## Who can reach what
 
@@ -202,10 +233,13 @@ Without `--delete-data`, its data is kept on the server, and the first app's com
 stop for it until you delete it with `npx opscrew destroy --delete-data`, or go on past it with
 `--skip-other-apps-check`.
 
-## Moving the second app off
+## Moving an app on or off
 
 To give the second app a server of its own, move it with
 [`npx opscrew retarget`](retarget.md), for example `npx opscrew retarget --to hetzner`. The move
 leaves the first app and the proxy running, and its finish removes the second app from the shared
-server as `destroy` does. A move goes off a shared server only: to join another app's server, run
-the interview as above.
+server as `destroy` does.
+
+An app that already runs somewhere else, with its data, moves onto another app's server with
+`npx opscrew retarget --to own` and `server.shares` in its answers, instead of a fresh setup: see
+[Moving onto another app's server](retarget.md#moving-onto-another-apps-server).

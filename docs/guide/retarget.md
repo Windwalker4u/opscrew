@@ -18,7 +18,7 @@ npx opscrew retarget --abort             # before the switch: back to the old si
 | `--to` | Moves the app to |
 |---|---|
 | `hetzner`, `digitalocean`, `contabo` | A new server at that cloud provider |
-| `own` | A server you already have (OpsCrew asks how to reach it) |
+| `own` | A server you already have (OpsCrew asks how to reach it), or [another app's server](#moving-onto-another-apps-server) |
 | `portainer` | An environment in the Portainer you run (OpsCrew asks for it) |
 | `cloudflare-workers`, `github-pages` | The other site host, for a site |
 
@@ -51,12 +51,16 @@ Cloudflare setup to another Cloudflare account instead, see
   [Without DNS on Cloudflare](#without-dns-on-cloudflare)).
 - **The cost:** both sides run until you finish the move. A new cloud server is billed from its
   creation, and the old one until `--finish` deletes it. The summary shows the new side's monthly
-  price before anything changes; your own server and your Portainer have none. A Contabo server is
+  price before anything changes; your own server, your Portainer and another app's server have
+  none. A Contabo server is
   bought for at least a month, and one that `--finish` removes is billed to the end of its term
   (see [Removing the app](contabo.md#removing-the-app)).
-- **No other app on the server:** a move ends by deleting the old server, so OpsCrew refuses it
-  while another app runs there. An app that runs on another app's server can move off it. See
-  [A second app on a server OpsCrew created](shared-server.md).
+- **No other app on a server the move deletes:** a move off a server OpsCrew created ends by
+  deleting it, so OpsCrew refuses it while another app runs there. An app that runs on another
+  app's server can move off it, and an app can move onto another app's server (see
+  [A second app on another app's server](shared-server.md)).
+- **Onto another app's server:** that app's repository folder on this computer, where it was
+  provisioned. OpsCrew reads its plan and the server's login from it.
 
 ## How a move works
 
@@ -78,7 +82,9 @@ expected length. Nothing changes until you continue.
      `opscrew interview` asks. OpsCrew connects, shows the server's SSH host key fingerprint for
      you to check, and reads its size, memory, disk and architecture without changing anything;
    - **your Portainer:** name it (address, environment), confirm its certificate, and give the
-     public address of its host, where the stack's [Caddy](https://caddyserver.com/) serves the app and the DNS records point.
+     public address of its host, where the stack's [Caddy](https://caddyserver.com/) serves the app and the DNS records point;
+   - **another app's server:** name that app's repository folder (see
+     [Moving onto another app's server](#moving-onto-another-apps-server)).
 2. **Prepare the new side.**
    - **A cloud provider:** the current server is renamed in OpsCrew's infrastructure state, so both
      fit in it (nothing changes in your cloud), and the new server is created next to it, from an
@@ -109,6 +115,43 @@ expected length. Nothing changes until you continue.
 Each plan is shown first and applied only once you approve its exact hash. Storing the new deploy
 secrets, pausing the [scheduled check](alerts.md) and starting the maintenance window each ask for
 your approval too.
+
+### Moving onto another app's server
+
+An app can move, with its data, onto a server where another of your OpsCrew apps runs, and become
+a [second app](shared-server.md) there. Pass `server.shares` with that app's repository folder in
+the answers (see [In scripts](#in-scripts)):
+
+```bash
+npx opscrew retarget --to own --answers onto-shop.yaml
+```
+
+In a terminal, `--to own` first asks the interview's question about the server; choose
+**A server another of your OpsCrew apps runs on** and name the folder. The app can come from a
+server OpsCrew created for it, a server of yours, your Portainer, or another app's server.
+
+- **The checks:** before any change, the move runs the checks design runs for a second app (see
+  [What design checks](shared-server.md#what-design-checks)): the name, the hostnames, the
+  `<app>-pr-<n>` form, the way of serving, the proxy, server-wide kernel settings and the memory,
+  with a warning below 15% free. It also checks that the server has free disk for the data it
+  copies. The summary shows no new server cost, the memory left and the
+  [shared-access warning](shared-server.md#who-can-reach-what). An app with a
+  [private network](private-network.md), [Portainer](portainer.md), [Beszel](beszel.md) or
+  [self-hosted monitoring](monitoring.md) is refused, since those run server-wide.
+- **On a server OpsCrew created for the other app,** the new side is set up as that server's second
+  app. Its host plan holds only the moving app's deploy key line, folders and record. The
+  infrastructure plans change nothing at your cloud provider before the switch: they rename the
+  app's old server in OpsCrew's infrastructure state, when it has one, and change the DNS records
+  at the switch. The app is then deployed and checked, its data is copied in the maintenance
+  window (its folders and volumes, exactly as they are), and DNS switches. The other app keeps
+  serving throughout: its proxy keeps running and reloads once, at the switch.
+- **On a server of yours,** the move takes the server's login from the other app, as the interview
+  does, and runs as a move to your own server, beside the apps already there.
+- **`--abort`,** before the switch, removes only the moving app's parts from the other app's
+  server, and DNS stays on the old side.
+- **`--finish`** removes the old side as for any move (see
+  [Finishing the move](#finishing-the-move)). Afterwards the app is a second app on its new server,
+  with its own deploy key, as after a second app's provision.
 
 ## The data
 
@@ -297,6 +340,7 @@ old side. Then it lists what it removes and asks you to type the app's name:
 |---|---|
 | A cloud server | The server, after a snapshot when the database or backups lived there (`--snapshot` or `--no-snapshot` to choose); the snapshot is billed until you delete it in the provider's console |
 | Your own server | Only the app and its data; never the server |
+| Another app's server | Only the app's own parts; the proxy and the other apps stay |
 | Your Portainer | Only the app's stacks, their volumes and the deploy branch; never Portainer or the environment |
 | A site host | The old Worker or GitHub Pages site |
 
@@ -314,7 +358,8 @@ npx opscrew retarget --abort
 ```
 
 OpsCrew starts the app on the old side again if it was stopped, removes the new side after you type
-the app's name (a new cloud server is deleted; on your own server or Portainer only the app goes),
+the app's name (a new cloud server is deleted; on your own server, your Portainer or another app's
+server only the app goes),
 deletes a new bucket after its own name, points the deploy secrets back to the old side and restores
 your plan. Once you have typed the name, the move can only be aborted, not continued.
 
@@ -346,7 +391,7 @@ flags:
 | Flag | What it does |
 |---|---|
 | `--option <id>` | The new cloud server to move to (the run lists the ids); without it, a script takes the recommended one |
-| `--answers <file>` | Your own server's (`server.*`) or your Portainer's (`portainer.*`) answers, as `opscrew interview --answers` takes them |
+| `--answers <file>` | Your own server's (`server.*`), another app's server (`server.shares*`) or your Portainer's (`portainer.*`) answers, as `opscrew interview --answers` takes them |
 | `--host-key <fingerprint>` | Your new own server's SSH host key (`SHA256:…`), which you checked on the server |
 | `--password-logins off\|keep` | Your new own server, when other users log in with a password: turn password logins off anyway, or keep them |
 | `--portainer-address <ipv4[,ipv6]>` | The public address of your Portainer host, for example `203.0.113.10` |
@@ -380,6 +425,19 @@ npx opscrew retarget --to own --answers own.yaml --host-key SHA256:... --empty c
 npx opscrew retarget --to own --answers own.yaml --host-key SHA256:... --empty cache --approve <hash> --allow-downtime --yes
 # ... one run for each plan, up to the switch; later, once you are happy:
 npx opscrew retarget --finish --approve <hash> --confirm example-app
+```
+
+A move onto another app's server, here the server `shop` runs on, takes its folder instead:
+
+```yaml
+# onto-shop.yaml
+server.shares: /home/you/code/shop
+server.shares-app: admin    # only when that repository has several apps
+server.shares-env: prod     # only when it has several environments
+```
+
+```bash
+npx opscrew retarget --to own --answers onto-shop.yaml --yes
 ```
 
 When a bucket is deleted at `--finish` or `--abort`, its plan stops on its own, and the printed
