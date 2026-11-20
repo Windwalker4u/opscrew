@@ -908,7 +908,8 @@ export class FakeHosts {
    * A one-off MySQL or MariaDB client's command (its service the script's `$1`): the dump writes
    * the service's files into the move volume as text ending in `-- Dump completed`, the check
    * gives its SHA-256, the ping answers, and the restore puts the dump's files into the service's
-   * data, each rewritten as a restore does (`(restored)` added). Root's login file must be there.
+   * data, each rewritten as a restore does (`(restored)` added), the rest left as it was. Root's
+   * login file must be there.
    */
   #mysqlOneOff(ip: string, container: FakeContainer): FakeRun | undefined {
     const [, , script = "", , service = ""] = container.cmd;
@@ -963,7 +964,7 @@ export class FakeHosts {
       string,
       FakeFile & { data?: string },
     ][];
-    data.files.clear();
+    // As a dump's statements do, it replaces what it holds, and leaves the rest as it was.
     for (const [path, file] of entries) {
       const bytes = file.data === undefined ? undefined : Buffer.from(file.data, "base64");
       data.files.set(path, {

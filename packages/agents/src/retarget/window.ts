@@ -33,6 +33,7 @@ import {
   syncMinutes,
 } from "./bucket";
 import { type MountDelta, mountDelta } from "./delta";
+import type { MoveServer } from "./removal";
 import type { DeployedState } from "./server-ops";
 import { assertDistinctServers } from "./servers";
 import {
@@ -820,7 +821,8 @@ export async function maintenanceWindow(
  * The first copy of the move's data (plan.md "3."), before the window, while the old side serves
  * and with the deploys paused: the new side's app and the services whose data is copied stop; each
  * mount is copied whole, but a MySQL's or MariaDB's, which isn't a consistent snapshot while it
- * writes; those services start; then each database (`databases`: Postgres, MySQL, MariaDB) is
+ * writes: its folder there is emptied instead; those services start (waiting until they run, the
+ * emptied ones set up anew from their environment); then each database (`databases`: Postgres, MySQL, MariaDB) is
  * dumped on the old side, consistent while it runs, copied, checked and restored on the new side.
  * Other stateful services (Mongo, Valkey, …) start on their live copy: one that refuses to fails
  * here, before any downtime. On a server ({@link startOnData} with `image`), the deploy then runs
@@ -871,6 +873,19 @@ async function preCopy(
           () => fresh.stopServices(session, freshServices),
           SERVING,
         );
+        // A MySQL's or MariaDB's folder there starts empty: its image sets the server up from its
+        // environment, and the dump lands in an empty server, never on what a failed run left
+        // (a migration of its release command would fail on every rerun). Postgres's restore
+        // recreates its database empty itself.
+        for (const copy of window.copies.filter((mount) => dumped.has(mount.owner))) {
+          await audited(
+            session,
+            `empty ${copy.owner} ${copy.key}`,
+            freshWords,
+            () => docker.fresh.carrier.writeVolume(copy.to, emptyArchive()),
+            SERVING,
+          );
+        }
         for (const copy of window.copies.filter((mount) => !dumped.has(mount.owner))) {
           deps.reporter.step(
             `Copying ${mountWords(copy)} (${sizeText(copy.bytes)}) to ${freshWords} while your app serves`,
@@ -1333,15 +1348,22 @@ function startByHand(session: MoveBase): string {
 
 /**
  * Starts the old side's services and its app again when OpsCrew stopped them (`oldAppStoppedAt`)
- * and clears the mark. Stops with a plain error (the mark stays, so the next run tries again first)
- * when they cannot be started: the app is offline then.
+ * and clears the mark; the app starts even when a service didn't. Stops with a plain error (the
+ * mark stays, so the next run tries again first) when either cannot be started: the app is offline
+ * then. When the window `copied` the data, the new side's app first stops and waits for its data
+ * again ({@link holdNewApp}).
  *
  * Once the old app takes writes again, a copy made before is stale. So when the copy is done
  * (`migrated`), the move first goes back to `deployed` (keeping the mark) and only then is the app
  * started: whatever happens next (a failed start, the user starting it by hand, the process
  * dying), the next run repeats the maintenance window before any switch.
  */
-export async function restartOldApp(session: MoveBase, before = ""): Promise<void> {
+export async function restartOldApp(
+  session: MoveBase,
+  before = "",
+  /** The window copied the data (step `migrated`, or a switch's rollback that left it). */
+  copied = moveOf(session).step === "migrated",
+): Promise<void> {
   let move = moveOf(session);
   if (move.oldAppStoppedAt === undefined) return;
   const { deps } = session;
@@ -1357,12 +1379,25 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
     });
     move = moveOf(session);
   }
+  // The window started the app on the new side: it stops and waits for its data again, so the app
+  // never runs on both servers.
+  if (copied) await holdNewApp(session);
   deps.reporter.step(`Starting the app on ${words} again`);
   const old = moveSide(session, "old");
+  let failure: unknown;
   try {
     await old.startServices(session, statefulServices(session.plan));
+  } catch (error) {
+    failure = error;
+  }
+  // The app starts even when a service didn't: it may serve without it. The failure is said.
+  try {
     await old.startApp(session);
   } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== undefined) {
+    const error = failure;
     await auditMove(session, {
       kind: "remote-exec",
       action: "start app",
@@ -1397,27 +1432,58 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
   }
 }
 
-/** Removes the dump volume on a side; a failure is only a warning (best effort). */
-async function removeDumpQuietly(
-  session: MoveBase,
-  which: "old" | "new",
-  clean: (text: string) => string,
-): Promise<void> {
-  const side = moveSide(session, which);
-  const target = which === "old" ? moveOf(session).from.target : session.plan.target;
-  await quietly(
-    session,
-    clean,
-    `remove the database dump on ${sideWords(target, which)}`,
-    async () => {
-      const docker = await side.docker(session);
-      try {
-        await removeDumpVolume(docker.client, session.plan.app.name);
-      } finally {
-        await docker.close();
-      }
-    },
+/**
+ * Stops the new side's app (its workers and cron too) and holds it there for its data again, with
+ * the move's marker; each a warning only when it fails, so it never keeps the old app offline.
+ */
+async function holdNewApp(session: MoveBase): Promise<void> {
+  const fresh = moveSide(session, "new");
+  const words = sideWords(session.plan.target, "new");
+  const clean = await withoutAddresses(session);
+  await quietly(session, clean, `stop the app on ${words}`, () => fresh.stopApp(session));
+  if (fresh.markMove === undefined) return;
+  await quietly(session, clean, `hold the app on ${words} for its data again`, async () =>
+    fresh.markMove?.(session, "waiting"),
   );
+}
+
+/**
+ * Removes the move volumes a killed run may have left on each of `sides`: Postgres's dump, and each
+ * MySQL's or MariaDB's from the copy before the window. A failure is only a warning (best effort).
+ */
+export async function removeLeftoverDumps(
+  session: MoveBase,
+  sides: readonly MoveServer[],
+): Promise<void> {
+  const { plan } = session;
+  const app = plan.app.name;
+  const removals = [
+    ...(movedPostgres(plan) === undefined
+      ? []
+      : [(client: DockerClient) => removeDumpVolume(client, app)]),
+    ...dumpedServices(plan, new Set()).map(
+      (service) => (client: DockerClient) =>
+        removeMysqlDumpVolume(client, { app, service: service.name }),
+    ),
+  ];
+  if (removals.length === 0) return;
+  const clean = await withoutAddresses(session);
+  for (const which of sides) {
+    const target = which === "old" ? moveOf(session).from.target : plan.target;
+    await quietly(
+      session,
+      clean,
+      `remove the database dumps on ${sideWords(target, which)}`,
+      async () => {
+        const docker = await moveSide(session, which).docker(session);
+        try {
+          for (const remove of removals) await remove(docker.client);
+        } finally {
+          await docker.close();
+        }
+      },
+    );
+  }
 }
 
 /**
@@ -1433,11 +1499,7 @@ export async function recoverInterruptedWindow(session: MoveBase): Promise<void>
     "An earlier run stopped during the maintenance window, before the copy completed. OpsCrew starts the app on the old side again first; the window is repeated with a fresh copy.",
   );
   await restartOldApp(session);
-  if (serviceOf(session.plan, "postgres") === undefined) return;
-  const clean = await withoutAddresses(session);
-  await removeDumpQuietly(session, "old", clean);
-  if (stepBefore(move.step, "deployed")) return;
-  await removeDumpQuietly(session, "new", clean);
+  await removeLeftoverDumps(session, stepBefore(move.step, "deployed") ? ["old"] : ["old", "new"]);
 }
 
 /** `error` itself when it is an `OpsCrewError`, else a plain internal error. */

@@ -21,6 +21,7 @@ import {
   HOST_KEY,
   type MoveHarness,
   moveHarness,
+  NEW_SERVERS,
   OLD_IPV4,
   OLD_IPV6,
   planJsonFor,
@@ -40,6 +41,7 @@ import {
   run,
   trail,
 } from "./__fixtures__/assert";
+import { abortRetarget } from "./abort";
 import type { MoveSession } from "./session";
 import type { RetargetSummary } from "./types";
 import { maintenanceWindow } from "./window";
@@ -737,6 +739,123 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     // Each run: one dump while the app serves, one in the window.
     expect(ops(h, OLD_IPV4, "dump")).toBe(4);
     expectGated(h.events);
+  });
+
+  it("a failed DNS apply after the window leaves the new app, its workers and cron stopped and held, and the old app running", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact("plan", h.paths.files.plan, {
+      ...plan,
+      processes: {
+        workers: [
+          {
+            name: "worker",
+            command: "node worker.js",
+            source: "procfile",
+            count: 1,
+            single: false,
+            stopGraceSeconds: 30,
+            memoryMb: 256,
+            enabled: true,
+          },
+        ],
+        cron: [
+          { name: "cleanup", schedule: "*/15 * * * *", command: "node cleanup.js", enabled: true },
+        ],
+      },
+    });
+    const n = h.newServer.ipv4;
+    h.engine.failApply = (effect) =>
+      effect.dnsTo !== undefined ? "Error: Cloudflare API returned 500" : undefined;
+    const error = await caught(run(h));
+    expect(error.message).toContain("The switch failed");
+    expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
+    const lines = trail(h.events);
+    const back = lines.slice(lines.lastIndexOf(`${n} remove marker`) + 1);
+    // The window started the app there; before the old app starts again, it stops (its workers
+    // and cron too) and the marker holds it for its data.
+    const processes = "cd /srv/apps/shop && docker compose";
+    expect(back.filter((line) => !line.startsWith("apply"))).toEqual([
+      "approve iac-apply",
+      `${n} stop app`,
+      `${n} ${processes} stop worker cron`,
+      `${n} mark waiting`,
+      `${OLD_IPV4} start db`,
+      `${OLD_IPV4} start app`,
+      `${OLD_IPV4} start worker cron`,
+    ]);
+    expect(h.hosts.host(n)).toMatchObject({ app: false, marker: "waiting" });
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    expect((await move(h))?.step).toBe("deployed");
+
+    // The next run copies again while the old app serves, then switches.
+    h.engine.failApply = undefined;
+    expect(await run(h)).toMatchObject({ step: "switched", done: true });
+    expect(h.hosts.host(n)).toMatchObject({ app: true, marker: undefined });
+  });
+
+  it("starts the old app even when its services don't start, and says it failed", async () => {
+    const h = await moveHarness();
+    h.hosts.fail = (ip, op) => {
+      if (ip !== OLD_IPV4 || !windowStarted(h)) return undefined;
+      if (op === "dump") return fail("dump failed");
+      if (op === "start db") return fail("db did not start");
+      return undefined;
+    };
+    const error = await caught(run(h));
+    expect(error.message).toContain("could not start the app on the old server");
+    expect(error.message).toContain("db did not start");
+    // The app runs again all the same: it may serve without its service.
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    expect(trail(h.events).slice(-2)).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
+    expect((await move(h))?.oldAppStoppedAt).toBeDefined();
+  });
+
+  it("an interrupted window's next run, and an abort before the window, remove MySQL's leftover dumps", async () => {
+    /** A move of the app with a MySQL service beside Postgres, stopped after `step`. */
+    const moving = async (crash: (h: MoveHarness) => void) => {
+      const h = await moveHarness();
+      const plan = await readArtifact("plan", h.paths.files.plan);
+      const mysql = {
+        kind: "mysql",
+        version: "8.4",
+        memoryMb: 512,
+        reason: "mysql2",
+        licence: "GPL-2.0",
+      };
+      await writeArtifact(
+        "plan",
+        h.paths.files.plan,
+        DeployPlanSchema.parse({ ...plan, services: [...plan.services, mysql] }),
+      );
+      h.hosts.services = ["db", "mysql"];
+      h.hosts.seed(OLD_IPV4, {
+        ibdata1: { type: "file", mode: 0o600, uid: 999, gid: 999, data: Buffer.from("rows") },
+      });
+      crash(h);
+      await expect(run(h)).rejects.toThrow("interrupted");
+      return h;
+    };
+    const volume = "opscrew-move-dump-shop-mysql";
+    const n = NEW_SERVERS.digitalocean.ipv4;
+
+    // A run killed in the window, after a run killed while copying left MySQL's dumps behind.
+    const window = await moving((h) => crashOn(h, "maintenance window"));
+    for (const ip of [OLD_IPV4, n]) window.hosts.docker(ip).addVolume(volume);
+    expect(await run(window)).toMatchObject({ step: "switched", done: true });
+    for (const ip of [OLD_IPV4, n]) {
+      expect(window.hosts.docker(ip).volumes.has(volume)).toBe(false);
+    }
+
+    // An abort at the window's step: the old side, which stays, keeps no dump.
+    const aborted = await moving((h) => crashAfter(h, "deployed"));
+    aborted.hosts.docker(OLD_IPV4).addVolume(volume);
+    const result = await abortRetarget(aborted.deps, {
+      services: aborted.services,
+      confirm: aborted.confirm,
+    });
+    expect(result).toMatchObject({ step: "aborted", done: true });
+    expect(aborted.hosts.docker(OLD_IPV4).volumes.has(volume)).toBe(false);
   });
 
   it("a failed switch whose old app cannot start goes back before the window anyway", async () => {

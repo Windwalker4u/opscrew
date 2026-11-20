@@ -56,7 +56,7 @@ import {
   RUN_COMMAND,
 } from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
-import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
+import { recoverInterruptedWindow, removeLeftoverDumps, restartOldApp, stepBefore } from "./window";
 
 /**
  * The old server's monthly cost, priced again from its provider's catalogue (the injected one,
@@ -508,6 +508,15 @@ export async function abortRetarget(
         ? { approvePlanHash: options.approvePlanHash }
         : {}),
     });
+    // A copy before the window that was killed may have left its database dumps on the old side,
+    // which stays (an interrupted window's were removed above).
+    if (
+      move.step === "deployed" &&
+      move.abort === undefined &&
+      move.oldAppStoppedAt === undefined
+    ) {
+      await removeLeftoverDumps(session, ["old"]);
+    }
     const result = await abort(session, options);
     warnUnusedApproval(session);
     return result;

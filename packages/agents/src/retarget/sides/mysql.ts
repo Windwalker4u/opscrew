@@ -207,7 +207,10 @@ export async function restoreMysqlDump(
  * Removes the service's move volume from a side, with any one-off or carrier container a lost
  * connection left on it; a volume already gone is fine.
  */
-export async function removeMysqlDumpVolume(client: DockerClient, db: MoveMysql): Promise<void> {
+export async function removeMysqlDumpVolume(
+  client: DockerClient,
+  db: Pick<MoveMysql, "app" | "service">,
+): Promise<void> {
   const volume = mysqlDumpVolume(db);
   for (const container of await client.listContainers([`${ONE_OFF_LABEL}=${volume}`])) {
     await client.removeContainer(container.id);

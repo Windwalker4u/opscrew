@@ -136,7 +136,7 @@ async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<Ops
   await saveMove(session, { ...moveOf(session), step: "deployed" });
   await auditStep(session, "deployed", "back to the step before the maintenance window");
   try {
-    await restartOldApp(session, `${what}, and `);
+    await restartOldApp(session, `${what}, and `, copied);
   } catch (error) {
     return asOpsCrewError(error);
   }

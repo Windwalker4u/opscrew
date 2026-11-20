@@ -485,7 +485,13 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       expect(result).toMatchObject({ step: "aborted", done: true });
       const lines = trail(since(h, mark));
       if (step === "migrated") {
-        expect(lines.slice(0, 2)).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
+        // The app the window started there stops and waits first: it never runs on both servers.
+        expect(lines.slice(0, 4)).toEqual([
+          `${h.newServer.ipv4} stop app`,
+          `${h.newServer.ipv4} mark waiting`,
+          `${OLD_IPV4} start db`,
+          `${OLD_IPV4} start app`,
+        ]);
       }
       const created = !["started", "renamed"].includes(step);
       expect(lines.filter((line) => line.startsWith("apply"))).toEqual(
@@ -818,7 +824,12 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     const mark = h.events.length;
     const error = await caught(abort(h));
     expect(error.code).toBe("CREDENTIALS_INVALID");
-    expect(trail(since(h, mark))).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
+    expect(trail(since(h, mark))).toEqual([
+      `${h.newServer.ipv4} stop app`,
+      `${h.newServer.ipv4} mark waiting`,
+      `${OLD_IPV4} start db`,
+      `${OLD_IPV4} start app`,
+    ]);
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
     expect(h.hosts.host(h.newServer.ipv4).db).toBe("orders before the move");
     expect((await readServerAddresses(h.paths)).retarget).toEqual({

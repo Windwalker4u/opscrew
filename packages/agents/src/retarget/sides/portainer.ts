@@ -22,7 +22,7 @@ import {
   stackPlanHash,
 } from "@opscrew/connector-portainer";
 import type { DockerTransport } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError } from "@opscrew/core";
 import {
   fillPortainerStack,
   IMAGES,
@@ -241,11 +241,36 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
     }
   }
 
+  /**
+   * Starts the stack's containers of `names`, then waits (at most 5 minutes) until each that has a
+   * health check reports healthy, as `docker compose up --wait` does on a server: what follows (the
+   * window's release command) reaches a ready database.
+   */
   async function start(session: MoveBase, names: readonly string[]): Promise<void> {
     const { client } = await sideDocker(session);
+    const started = new Set<string>();
     for (const container of await containers(session, client, names)) {
       await client.startContainer(container.id);
+      started.add(container.id);
     }
+    let waiting: string[] = [];
+    const ready = await pollUntil(
+      async () => {
+        waiting = (await containers(session, client, names))
+          .filter((c) => started.has(c.id) && c.health !== undefined && c.health !== "healthy")
+          .map((c) => c.labels[COMPOSE_SERVICE_LABEL] ?? c.id.slice(0, 12));
+        return waiting.length === 0 ? true : undefined;
+      },
+      { timeoutMs: HEALTH_TIMEOUT_MS, intervalMs: 2000, ...waitsOf(session.services) },
+    );
+    if (ready) return;
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `${listText(waiting)} did not report healthy in your Portainer within 5 minutes.`,
+      {
+        hint: `See why in Portainer (the stack ${portainerStackName(sidePlan(session))}, the container's logs), then run \`${session.command}\` again.`,
+      },
+    );
   }
 
   /** The app, its workers and its cron, which use its data. */

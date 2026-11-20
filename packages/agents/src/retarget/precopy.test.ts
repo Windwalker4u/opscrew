@@ -15,6 +15,7 @@ import {
   PORTAINER,
   pairHarness,
 } from "./__fixtures__/pairs";
+import { moveSide } from "./sides";
 import { maintenanceWindow } from "./window";
 
 /** A file of the app's data (synthetic content, which nothing may print). */
@@ -489,5 +490,100 @@ describe.skipIf(!findExecutable("git"))("the PHP app's move: a kept folder and M
     });
     expect(trail(h.events.slice(mark))).toEqual([]);
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+  });
+  it("a rerun after a copy that failed once its release migrated the copy starts from an empty MySQL", async () => {
+    const h = await forumHarness();
+    // the framework's migration adds a table; it fails where the table is there already, as on a copy
+    // whose migration ran while the dump's restore keeps every table it doesn't hold.
+    h.hosts.hasData = (ip) => {
+      const mysql = files(h, ip, "mysql");
+      if (!mysql.has("shop/settings.ibd") || mysql.has("shop/posts_v2.ibd")) return false;
+      mysql.set("shop/posts_v2.ibd", file("a migrated table"));
+      return true;
+    };
+    // The app's check fails after the deploy's release command migrated the copy.
+    h.hosts.fail = (ip, op) =>
+      ip === NEW_IPV4 && op === "health" ? { exitCode: 1, stdout: "", stderr: "502" } : undefined;
+    const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+      (e: unknown) => e,
+    );
+    expect((error as OpsCrewError).message).toContain("while your app serves failed");
+    expect(files(h, NEW_IPV4, "mysql").has("shop/posts_v2.ibd")).toBe(true);
+
+    // The rerun empties MySQL's folder there before it starts, so the restore lands in an empty
+    // server and the migration runs on the copy again.
+    h.hosts.fail = undefined;
+    expect(await maintenanceWindow(h.session, { allowDowntime: true })).toBe("done");
+    expect(h.audit.entries).toContainEqual(
+      expect.objectContaining({ action: "empty mysql /var/lib/postgresql/data" }),
+    );
+    expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: true, marker: undefined });
+  });
+
+  it("never puts root's password in a one-off container's request, only in its 0600 login file", async () => {
+    const h = await forumHarness();
+    const requests: string[] = [];
+    const logins: FakeFile[] = [];
+    for (const ip of [OLD_IPV4, NEW_IPV4]) {
+      const docker = h.hosts.docker(ip);
+      const previous = docker.onStart;
+      docker.onStart = (container) => {
+        const { image, cmd, env, labels, binds, mounts } = container;
+        requests.push(JSON.stringify({ image, cmd, env, labels, binds, mounts }));
+        const login = container.files?.get("tmp/opscrew.my.cnf");
+        if (login !== undefined) logins.push(login);
+        return previous?.(container);
+      };
+    }
+    expect(await maintenanceWindow(h.session, { allowDowntime: true })).toBe("done");
+    expect(requests.some((request) => request.includes('"mysql:8.4@'))).toBe(true);
+    for (const request of requests) expect(request).not.toContain(ROOT_PASSWORD);
+    // The dump, its check on each side, the ping and the restore each got the login file.
+    expect(logins.length).toBeGreaterThanOrEqual(4);
+    for (const login of logins) {
+      expect(login.mode).toBe(0o600);
+      expect(login.data?.toString("utf8")).toContain(ROOT_PASSWORD);
+    }
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("a Portainer side's start", () => {
+  /** The stack's container of `service` in the user's Portainer. */
+  const container = (h: PairHarness, service: string) => {
+    const found = [...h.hosts.docker(PORTAINER).containers.values()].find(
+      (c) => c.labels["com.docker.compose.service"] === service,
+    );
+    if (found === undefined) throw new Error(`no ${service} container`);
+    return found;
+  };
+
+  it("waits until each started container with a health check reports healthy, as --wait does", async () => {
+    const h = await pairHarness("own", "portainer", { cache: true });
+    const cache = container(h, "cache");
+    cache.state = "exited";
+    cache.health = "starting";
+    let polls = 0;
+    h.session.services.sleep = async () => {
+      polls += 1;
+      if (polls === 2) cache.health = "healthy";
+    };
+    await moveSide(h.session, "new").startServices(h.session, ["cache"]);
+    expect(cache.state).toBe("running");
+    expect(polls).toBe(2);
+
+    // One that never gets there stops the start plainly, within its 5 minutes.
+    cache.health = "starting";
+    let now = 0;
+    h.session.services.sleep = async (ms) => {
+      now += ms;
+    };
+    h.session.services.now = () => now;
+    const error = await moveSide(h.session, "new")
+      .startServices(h.session, ["cache"])
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "COMMAND_FAILED",
+      message: "cache did not report healthy in your Portainer within 5 minutes.",
+    });
   });
 });
