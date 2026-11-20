@@ -113,6 +113,8 @@ const instanceSchema = z.looseObject({
   /** The day a cancelled instance's contract ends (`2026-12-10`); empty while not cancelled. */
   cancelDate: z.string().nullable().optional(),
   errorMessage: z.string().nullable().optional(),
+  /** The ids of the SSH keys (Contabo secrets) the instance was installed with. */
+  sshKeys: z.array(z.number()).optional(),
 });
 /** A Contabo compute instance, as its API answers it. */
 export type ContaboInstance = z.infer<typeof instanceSchema>;
@@ -368,15 +370,34 @@ export class ContaboClient {
   }
 
   /**
-   * Starts an instance action: `shutdown` (a graceful shutdown) or `start`. Contabo's answer only
+   * Starts an instance action: `shutdown` (a graceful shutdown), `start` or `restart`. It is sent
+   * with no body: Contabo refuses a JSON content type with an empty body. Contabo's answer only
    * says the request was taken: wait with {@link waitForStatus}.
    */
-  async instanceAction(instanceId: number, action: "shutdown" | "start"): Promise<void> {
+  async instanceAction(
+    instanceId: number,
+    action: "shutdown" | "start" | "restart",
+  ): Promise<void> {
     await this.#request(
       "POST",
       `/v1/compute/instances/${instanceId}/actions/${action}`,
       acknowledged,
     );
+  }
+
+  /**
+   * Installs an instance again (`PUT /v1/compute/instances/{id}`) from the image `imageId`, with
+   * the SSH keys `sshKeys` (secret ids), the first-boot `userData` and `root` as its default user,
+   * keeping its id and addresses. Contabo answers at once and installs for a few minutes after.
+   * Destroy-grade: the disk is wiped. Nothing of the answer is kept.
+   */
+  async reinstallInstance(
+    instanceId: number,
+    install: { imageId: string; sshKeys: number[]; userData: string },
+  ): Promise<void> {
+    await this.#request("PUT", `/v1/compute/instances/${instanceId}`, acknowledged, {
+      body: { ...install, defaultUser: "root" },
+    });
   }
 
   /**

@@ -1,6 +1,6 @@
 import type { ServerSnapshotApi } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { FakeReply } from "@opscrew/core/testing";
+import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
   CREDENTIALS_ENV,
@@ -48,8 +48,8 @@ function snapshot(id: string, name: string, createdDate: string, instanceId = 10
 }
 
 /** The error `promise` rejects with. */
-async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
-  const error = await promise.then(
+async function failure(promise: Promise<unknown> | undefined): Promise<OpsCrewError> {
+  const error = await (promise ?? Promise.resolve()).then(
     () => undefined,
     (e: unknown) => e,
   );
@@ -369,5 +369,85 @@ describe("servers revert and power", () => {
     await api.powerOn("101");
     expect(calls()[0]).toBe("POST /v1/compute/instances/101/actions/start");
     expect(calls()).toHaveLength(3);
+  });
+});
+
+describe("servers restart and reinstall", () => {
+  const IMAGE = "00000000-0000-4000-8000-000000000001";
+  const USER_DATA = "#cloud-config\npackage_update: true\n";
+  const rootPassword = fakeSecret("generic-password", "root");
+
+  it("restarts through Contabo's action with no body and no JSON content type", async () => {
+    const { api, calls, fake } = setup({
+      "POST /v1/compute/instances/101/actions/restart": {
+        status: 201,
+        body: { data: [{ instanceId: 101, action: "restart" }], _links: {} },
+      },
+    });
+    await expect(api.restart?.("101")).resolves.toBeUndefined();
+    expect(calls()).toEqual(["POST /v1/compute/instances/101/actions/restart"]);
+    const sent = fake.calls.at(-1);
+    expect(sent?.body).toBeUndefined();
+    expect(Object.keys(sent?.headers ?? {}).map((key) => key.toLowerCase())).not.toContain(
+      "content-type",
+    );
+  });
+
+  it("installs again with the image, the instance's own SSH keys, the user data and root", async () => {
+    const { api, calls, fake } = setup({
+      "GET /v1/compute/instances/101": instance(101, "running", { sshKeys: [3001, 3002] }),
+      "PUT /v1/compute/instances/101": {
+        body: {
+          data: [{ tenantId: "DE", customerId: "1", instanceId: 101, rootPassword }],
+          _links: {},
+        },
+      },
+    });
+    const answer = await api.reinstall?.("101", { image: IMAGE, userData: USER_DATA });
+    expect(answer).toBeUndefined();
+    expect(calls()).toEqual(["GET /v1/compute/instances/101", "PUT /v1/compute/instances/101"]);
+    expect(fake.calls.at(-1)?.body).toEqual({
+      imageId: IMAGE,
+      sshKeys: [3001, 3002],
+      userData: USER_DATA,
+      defaultUser: "root",
+    });
+  });
+
+  it("refuses to install an instance with no SSH key, which no one could reach after", async () => {
+    const { api, calls } = setup({
+      "GET /v1/compute/instances/101": instance(101, "running", { sshKeys: [] }),
+    });
+    const error = await failure(api.reinstall?.("101", { image: IMAGE, userData: USER_DATA }));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("has no SSH key");
+    expect(calls()).toEqual(["GET /v1/compute/instances/101"]);
+  });
+
+  it("says what Contabo answered when it refuses the install, sent once, without credentials", async () => {
+    const { api, calls } = setup({
+      "GET /v1/compute/instances/101": instance(101, "running", { sshKeys: [3001] }),
+      "PUT /v1/compute/instances/101": {
+        status: 400,
+        body: { statusCode: 400, message: "imageId must be a UUID" },
+      },
+    });
+    const error = await failure(api.reinstall?.("101", { image: "x", userData: USER_DATA }));
+    expect(error.message).toBe(
+      "Contabo answered HTTP 400 to PUT /v1/compute/instances/101: imageId must be a UUID",
+    );
+    const text = `${error.message} ${error.hint ?? ""}`;
+    for (const secret of [...Object.values(CREDENTIALS_ENV), "access-1"]) {
+      expect(text).not.toContain(secret);
+    }
+    expect(calls().filter((call) => call.startsWith("PUT"))).toHaveLength(1);
+  });
+
+  it("refuses an id that is not an instance's before calling Contabo", async () => {
+    const { api, fake } = setup({});
+    expect((await failure(api.restart?.("101/x"))).code).toBe("INVALID_INPUT");
+    const install = api.reinstall?.("x", { image: IMAGE, userData: USER_DATA });
+    expect((await failure(install)).code).toBe("INVALID_INPUT");
+    expect(fake.calls).toEqual([]);
   });
 });

@@ -213,7 +213,7 @@ describe("HetznerClient.rebuildServer", () => {
         body: { action: action(77, "running").action, root_password: password },
       },
     });
-    const answer = await c.rebuildServer(7, 4711);
+    const answer = await c.rebuildServer(7, "4711");
     expect(answer).toEqual({ actionId: 77 });
     expect(JSON.stringify(answer)).not.toContain(password);
     expect(calls[0]?.body).toEqual({ image: "4711" });
@@ -224,7 +224,7 @@ describe("HetznerClient.rebuildServer", () => {
       { "POST /servers/7/actions/rebuild": { hang: true } },
       { timeoutMs: 5 },
     );
-    const error = (await c.rebuildServer(7, 4711).catch((e: unknown) => e)) as OpsCrewError;
+    const error = (await c.rebuildServer(7, "4711").catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("did not answer within");
     expect(error.hint).toMatch(/may still have been made/);
@@ -236,7 +236,7 @@ describe("HetznerClient.rebuildServer", () => {
     const { client: c } = client({
       "POST /servers/7/actions/rebuild": { status: 201, body: { root_password: password } },
     });
-    const error = (await c.rebuildServer(7, 4711).catch((e: unknown) => e)) as OpsCrewError;
+    const error = (await c.rebuildServer(7, "4711").catch((e: unknown) => e)) as OpsCrewError;
     expect(error.message).toContain("unexpected response");
     expect(errorText(error)).not.toContain(password);
   });

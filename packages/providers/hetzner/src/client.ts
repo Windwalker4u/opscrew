@@ -302,16 +302,17 @@ export class HetznerClient {
   }
 
   /**
-   * Starts rebuilding a server from an image (`POST /servers/{id}/actions/rebuild`), keeping its
-   * id and addresses. Use {@link waitForAction} with the returned `actionId`. The `root_password`
-   * Hetzner may answer with is stripped while parsing and never kept.
+   * Starts rebuilding a server from an image, by its id or its name (`ubuntu-24.04`)
+   * (`POST /servers/{id}/actions/rebuild`), keeping its id and addresses. Use
+   * {@link waitForAction} with the returned `actionId`. The `root_password` Hetzner may answer with
+   * is stripped while parsing and never kept.
    */
-  async rebuildServer(serverId: number, imageId: number): Promise<{ actionId: number }> {
+  async rebuildServer(serverId: number, image: string): Promise<{ actionId: number }> {
     const body = await this.#request(
       `/servers/${encodeURIComponent(String(serverId))}/actions/rebuild`,
       z.object({ action: actionSchema }),
       {},
-      { method: "POST", body: { image: String(imageId) } },
+      { method: "POST", body: { image } },
     );
     return { actionId: body.action.id };
   }
@@ -328,6 +329,14 @@ export class HetznerClient {
   /** Powers a server on (`POST /servers/{id}/actions/poweron`); wait with {@link waitForAction}. */
   powerOnServer(serverId: number): Promise<{ actionId: number }> {
     return this.#serverAction(serverId, "poweron");
+  }
+
+  /**
+   * Reboots a server (`POST /servers/{id}/actions/reboot`, an ACPI request); wait with
+   * {@link waitForAction}.
+   */
+  rebootServer(serverId: number): Promise<{ actionId: number }> {
+    return this.#serverAction(serverId, "reboot");
   }
 
   /** A server's status (`running`, `off`, `stopping`…) and protection (`GET /servers/{id}`). */

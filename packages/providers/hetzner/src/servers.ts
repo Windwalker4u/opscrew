@@ -58,27 +58,7 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
     },
     async rebuild(serverId: string, snapshotId: string): Promise<void> {
       const id = numericId(serverId, "server");
-      const image = numericId(snapshotId, "snapshot");
-      // OpsCrew's servers are delete- and rebuild-protected (Hetzner wants both the same): the
-      // protection is lifted for the rebuild and always set back, as the state records it.
-      const { protection } = await client.getServer(id);
-      const lifted = protection.rebuild;
-      const before = { delete: protection.delete, rebuild: protection.rebuild };
-      let failure: unknown;
-      try {
-        if (lifted) await setProtection(client, id, { delete: false, rebuild: false });
-        const { actionId } = await client.rebuildServer(id, image);
-        await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
-      } catch (error) {
-        failure = error;
-        throw error;
-      } finally {
-        if (lifted) {
-          await setProtection(client, id, before).catch((error: unknown) => {
-            throw unprotected(id, failure, error);
-          });
-        }
-      }
+      await rebuildFrom(client, id, String(numericId(snapshotId, "snapshot")));
     },
     async powerOff(serverId: string): Promise<void> {
       const id = numericId(serverId, "server");
@@ -90,7 +70,41 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       const { actionId } = await client.powerOnServer(numericId(serverId, "server"));
       await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
     },
+    async restart(serverId: string): Promise<void> {
+      const { actionId } = await client.rebootServer(numericId(serverId, "server"));
+      await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
+    },
+    async reinstall(serverId: string, request: { image: string }): Promise<void> {
+      // Hetzner keeps the user data the server was created with and runs it at the new first boot.
+      await rebuildFrom(client, numericId(serverId, "server"), request.image);
+    },
   };
+}
+
+/**
+ * Rebuilds the server from `image` (an image id or name) and waits for it. OpsCrew's servers are
+ * delete- and rebuild-protected (Hetzner wants both the same): the protection is lifted for the
+ * rebuild and always set back, as the state records it.
+ */
+async function rebuildFrom(client: HetznerClient, id: number, image: string): Promise<void> {
+  const { protection } = await client.getServer(id);
+  const lifted = protection.rebuild;
+  const before = { delete: protection.delete, rebuild: protection.rebuild };
+  let failure: unknown;
+  try {
+    if (lifted) await setProtection(client, id, { delete: false, rebuild: false });
+    const { actionId } = await client.rebuildServer(id, image);
+    await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (lifted) {
+      await setProtection(client, id, before).catch((error: unknown) => {
+        throw unprotected(id, failure, error);
+      });
+    }
+  }
 }
 
 /** Sets the server's protection and waits until Hetzner reports it set. */

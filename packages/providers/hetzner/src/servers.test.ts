@@ -601,3 +601,103 @@ describe("servers.powerOff and powerOn", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("servers.restart and reinstall", () => {
+  const sent = (id: number, command: string, status: string, error: unknown = null) => ({
+    body: { action: { ...action(id, status, error), command } },
+  });
+  const server = (on: boolean) => ({
+    body: { server: { id: 7, status: "running", protection: { delete: on, rebuild: on } } },
+  });
+  const rebuildAnswer = {
+    status: 201,
+    body: { ...sent(78, "rebuild_server", "running").body, root_password: password },
+  };
+  const requests = (calls: { method: string; path: string; body?: unknown }[]) =>
+    calls.map((call) => [`${call.method} ${call.path}`, call.body]);
+
+  it("reboots through Hetzner, with no body, and waits for the action", async () => {
+    const { connector, calls } = setup({
+      "POST /servers/7/actions/reboot": { status: 201, ...sent(83, "reboot_server", "running") },
+      "/actions/83": [sent(83, "reboot_server", "running"), sent(83, "reboot_server", "success")],
+    });
+    await expect(connector.servers?.restart?.("7")).resolves.toBeUndefined();
+    expect(requests(calls)).toEqual([
+      ["POST /servers/7/actions/reboot", undefined],
+      ["GET /actions/83", undefined],
+      ["GET /actions/83", undefined],
+    ]);
+  });
+
+  it("surfaces a reboot that ends in error, without the token", async () => {
+    const { connector } = setup({
+      "POST /servers/7/actions/reboot": { status: 201, ...sent(83, "reboot_server", "running") },
+      "/actions/83": sent(83, "reboot_server", "error", { code: "failed", message: "no reboot" }),
+    });
+    const error = await errorOf(connector.servers?.restart?.("7"));
+    expect(error.message).toContain("no reboot");
+    expect(textOf(error)).not.toContain(token);
+  });
+
+  it("rebuilds from the image name, waits, and drops the root password", async () => {
+    const { connector, calls } = setup({
+      "/servers/7": server(false),
+      "POST /servers/7/actions/rebuild": rebuildAnswer,
+      "/actions/78": [sent(78, "rebuild_server", "running"), sent(78, "rebuild_server", "success")],
+    });
+    const answer = await connector.servers?.reinstall?.("7", {
+      image: "ubuntu-24.04",
+      userData: "#cloud-config\n",
+    });
+    expect(answer).toBeUndefined();
+    expect(requests(calls)).toEqual([
+      ["GET /servers/7", undefined],
+      ["POST /servers/7/actions/rebuild", { image: "ubuntu-24.04" }],
+      ["GET /actions/78", undefined],
+      ["GET /actions/78", undefined],
+    ]);
+  });
+
+  it("lifts a protected server's protection for the install and sets it back", async () => {
+    const protect = (id: number) => ({ status: 201, ...sent(id, "change_protection", "success") });
+    const { connector, calls } = setup({
+      "/servers/7": server(true),
+      "POST /servers/7/actions/change_protection": [protect(90), protect(91)],
+      "/actions/90": protect(90),
+      "/actions/91": protect(91),
+      "POST /servers/7/actions/rebuild": rebuildAnswer,
+      "/actions/78": sent(78, "rebuild_server", "success"),
+    });
+    await connector.servers?.reinstall?.("7", { image: "ubuntu-24.04", userData: "" });
+    expect(requests(calls.filter((call) => call.method === "POST"))).toEqual([
+      ["POST /servers/7/actions/change_protection", { delete: false, rebuild: false }],
+      ["POST /servers/7/actions/rebuild", { image: "ubuntu-24.04" }],
+      ["POST /servers/7/actions/change_protection", { delete: true, rebuild: true }],
+    ]);
+  });
+
+  it("surfaces a refused install without the password or token, sent once", async () => {
+    const { connector, calls } = setup({
+      "/servers/7": server(false),
+      "POST /servers/7/actions/rebuild": {
+        status: 422,
+        body: { error: { code: "invalid_input", message: "image not found" } },
+      },
+    });
+    const error = await errorOf(
+      connector.servers?.reinstall?.("7", { image: "ubuntu-0.0", userData: "" }),
+    );
+    expect(error.message).toContain("image not found");
+    expect(textOf(error)).not.toContain(token);
+    expect(textOf(error)).not.toContain(password);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it("rejects a non-numeric server id without calling the API", async () => {
+    const { connector, calls } = setup({});
+    expect((await errorOf(connector.servers?.restart?.("7/x"))).code).toBe("INVALID_INPUT");
+    const install = connector.servers?.reinstall?.("x", { image: "ubuntu-24.04", userData: "" });
+    expect((await errorOf(install)).code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
+  });
+});

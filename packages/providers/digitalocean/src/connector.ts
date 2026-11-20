@@ -248,7 +248,7 @@ function serverApi(
     async rebuild(serverId: string, snapshotId: string): Promise<void> {
       const action = await client.rebuildDroplet(
         numericId(serverId, "Droplet"),
-        numericId(snapshotId, "snapshot"),
+        Number(numericId(snapshotId, "snapshot")),
       );
       await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
     },
@@ -262,6 +262,15 @@ function serverApi(
     },
     async powerOn(serverId: string): Promise<void> {
       const action = await client.powerDroplet(numericId(serverId, "Droplet"), "power_on");
+      await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
+    },
+    async restart(serverId: string): Promise<void> {
+      const action = await client.powerDroplet(numericId(serverId, "Droplet"), "reboot");
+      await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
+    },
+    async reinstall(serverId: string, request: { image: string }): Promise<void> {
+      // DigitalOcean keeps the user data the Droplet was created with for its new first boot.
+      const action = await client.rebuildDroplet(numericId(serverId, "Droplet"), request.image);
       await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
     },
   };

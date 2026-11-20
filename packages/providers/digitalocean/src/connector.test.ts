@@ -678,6 +678,74 @@ describe("digitaloceanConnector.servers power", () => {
   });
 });
 
+describe("digitaloceanConnector.servers restart and reinstall", () => {
+  const sent = (id: number, type: string, status: string) => ({
+    body: action(id, status, { type }),
+  });
+
+  it("reboots through a Droplet action and waits for it", async () => {
+    const { connector: c, calls } = connector({
+      "POST /v2/droplets/7/actions": { status: 201, ...sent(62, "reboot", "in-progress") },
+      "/v2/actions/62": [sent(62, "reboot", "in-progress"), sent(62, "reboot", "completed")],
+    });
+    await expect(c.servers?.restart?.("7")).resolves.toBeUndefined();
+    expect(calls.map((call) => [`${call.method} ${call.path}`, call.body])).toEqual([
+      ["POST /v2/droplets/7/actions", { type: "reboot" }],
+      ["GET /v2/actions/62", undefined],
+      ["GET /v2/actions/62", undefined],
+    ]);
+  });
+
+  it("rebuilds from the image slug and waits for the action", async () => {
+    const { connector: c, calls } = connector({
+      "POST /v2/droplets/7/actions": { status: 201, ...sent(63, "rebuild", "in-progress") },
+      "/v2/actions/63": [sent(63, "rebuild", "in-progress"), sent(63, "rebuild", "completed")],
+    });
+    const done = c.servers?.reinstall?.("7", { image: "ubuntu-24-04-x64", userData: "" });
+    await expect(done).resolves.toBeUndefined();
+    expect(calls.map((call) => [`${call.method} ${call.path}`, call.body])).toEqual([
+      ["POST /v2/droplets/7/actions", { type: "rebuild", image: "ubuntu-24-04-x64" }],
+      ["GET /v2/actions/63", undefined],
+      ["GET /v2/actions/63", undefined],
+    ]);
+  });
+
+  it("surfaces a refused install once, without the token or the backup hint", async () => {
+    const { connector: c, calls } = connector({
+      "POST /v2/droplets/7/actions": {
+        status: 422,
+        body: { id: "unprocessable_entity", message: "You specified an invalid image." },
+      },
+    });
+    const error = await errorOf(
+      c.servers?.reinstall?.("7", { image: "ubuntu-0-0-x64", userData: "" }),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("invalid image");
+    expect(error.hint).not.toContain("backups");
+    expect(textOf(error)).not.toContain(token);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("stops with a PROVIDER_ERROR when the reboot errors", async () => {
+    const { connector: c } = connector({
+      "POST /v2/droplets/7/actions": { status: 201, ...sent(62, "reboot", "in-progress") },
+      "/v2/actions/62": sent(62, "reboot", "errored"),
+    });
+    const error = await errorOf(c.servers?.restart?.("7"));
+    expect(error.message).toContain("(reboot) failed");
+    expect(textOf(error)).not.toContain(token);
+  });
+
+  it("rejects a non-numeric Droplet id without calling the API", async () => {
+    const { connector: c, calls } = connector({});
+    expect((await errorOf(c.servers?.restart?.("7/x"))).code).toBe("INVALID_INPUT");
+    const install = c.servers?.reinstall?.("x", { image: "ubuntu-24-04-x64", userData: "" });
+    expect((await errorOf(install)).code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("digitaloceanConnector.catalog", () => {
   it("uses the dated static table without a token", async () => {
     const { connector: c, calls } = connector({}, {});

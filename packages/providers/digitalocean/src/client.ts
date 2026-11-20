@@ -326,11 +326,12 @@ export class DigitalOceanClient {
   /**
    * Starts rebuilding a Droplet from an image (`POST /v2/droplets/{id}/actions`, `type: "rebuild"`),
    * keeping its id and address, and returns the action; use {@link waitForAction} to wait for it.
-   * DigitalOcean rebuilds from snapshots: a refusal says a backup must be converted first.
+   * `image` is a snapshot's numeric id or a public image's slug (`ubuntu-24-04-x64`). DigitalOcean
+   * rebuilds from snapshots, not backups: a refused id says a backup must be converted first.
    */
   async rebuildDroplet(
     dropletId: string | number,
-    imageId: string | number,
+    image: number | string,
   ): Promise<DigitalOceanAction> {
     const body = await this.#request(
       `/v2/droplets/${encodeURIComponent(String(dropletId))}/actions`,
@@ -338,10 +339,12 @@ export class DigitalOceanClient {
       {},
       {
         method: "POST",
-        body: { type: "rebuild", image: Number(imageId) },
+        body: { type: "rebuild", image },
         hints: {
           forbidden: SNAPSHOT_SCOPE_HINT,
-          refused: `If image ${imageId} is one of the Droplet's backups, convert it to a snapshot first (the Droplet's Backups tab in the DigitalOcean control panel, More, Convert to snapshot), then rebuild from that snapshot.`,
+          ...(typeof image === "number" && {
+            refused: `If image ${image} is one of the Droplet's backups, convert it to a snapshot first (the Droplet's Backups tab in the DigitalOcean control panel, More, Convert to snapshot), then rebuild from that snapshot.`,
+          }),
         },
       },
     );
@@ -351,11 +354,11 @@ export class DigitalOceanClient {
   /**
    * Starts a power action on a Droplet (`POST /v2/droplets/{id}/actions`): `shutdown` (graceful;
    * DigitalOcean only guarantees the request is sent, so wait with {@link waitForDropletStatus}
-   * for `off`) or `power_on` (wait with {@link waitForAction}).
+   * for `off`), or `power_on` and `reboot` (wait with {@link waitForAction}).
    */
   async powerDroplet(
     dropletId: string | number,
-    type: "shutdown" | "power_on",
+    type: "shutdown" | "power_on" | "reboot",
   ): Promise<DigitalOceanAction> {
     const body = await this.#request(
       `/v2/droplets/${encodeURIComponent(String(dropletId))}/actions`,

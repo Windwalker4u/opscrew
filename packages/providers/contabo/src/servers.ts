@@ -128,6 +128,30 @@ export function contaboServerApi(client: ContaboClient): ServerSnapshotApi {
       await client.waitForStatus(id, "running", { timeoutMs: ACTION_TIMEOUT_MS });
     },
 
+    async restart(serverId: string): Promise<void> {
+      // Contabo reports no action to wait for: the caller waits for the server to answer.
+      await client.instanceAction(instanceId(serverId), "restart");
+    },
+
+    async reinstall(serverId: string, request: { image: string; userData: string }): Promise<void> {
+      const id = instanceId(serverId);
+      // Contabo installs with only the keys it is given: the instance's own, as it has them.
+      const { sshKeys } = await client.getInstance(id);
+      if (!sshKeys?.length) {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `Contabo instance ${id} has no SSH key, so OpsCrew could not reach it after installing it again.`,
+          { hint: "Check the instance in Contabo's Customer Control Panel." },
+        );
+      }
+      // Contabo answers at once and installs for about two minutes after; the caller waits.
+      await client.reinstallInstance(id, {
+        imageId: request.image,
+        sshKeys,
+        userData: request.userData,
+      });
+    },
+
     async cancelServer(serverId: string): Promise<string> {
       const id = instanceId(serverId);
       // Cancelled already (a removal run again after a stop): its end date, never a second cancel.
