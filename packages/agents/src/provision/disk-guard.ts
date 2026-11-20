@@ -99,7 +99,9 @@ async function resizes(root: string, plan: DeployPlan): Promise<Resize[]> {
  * Refuses, before any change, a plan that moves a deployed Hetzner Cloud server or DigitalOcean
  * Droplet (the app's or an extra one) to a type with a smaller disk: neither provider can make a
  * disk smaller, and Hetzner Cloud refuses only after it has switched the server off, leaving it
- * off. Disks come from the provider's catalogue (a type's disk, wherever it is sold); a type it
+ * off. A type the provider's catalogue says it can't place in the location now is refused the
+ * same way, since the type change switches the server off before it fails. Disks come from the
+ * provider's catalogue (a type's disk, wherever it is sold); a type it
  * doesn't list is a warning, returned. A new server, a replaced one (another location) and a
  * larger or equal disk pass. Known gaps: a first apply that failed after creating a server leaves
  * no `lastApplyAt`, so its servers aren't checked, and neither is a type a `--plan-only` run from
@@ -123,6 +125,15 @@ export async function requireNoSmallerDisk(input: DiskGuardInput): Promise<strin
     const shrinks = `${profile.displayName} can't make a ${noun}'s disk smaller${switchedOff}`;
     // A type's disk is the type's own: look it up wherever the type is still sold.
     const offers = await (await catalogFor(provider, before.location)).listOffers();
+    // A type the provider can't place there now: the type change switches the server off before
+    // it fails (Hetzner, live 2026-11-20), so it is refused before anything changes.
+    const placed = offers.find((o) => o.id === after.serverType && o.location === after.location);
+    if (placed !== undefined && !placed.available) {
+      refusals.push(
+        `Server ${name} can't move to ${after.serverType} now: ${profile.displayName} has none free in ${after.location} right now${switchedOff}. Set its serverType back to ${before.serverType} or pick a type ${profile.displayName} has there, or run \`${command}\` again later.`,
+      );
+      continue;
+    }
     const diskOf = (type: string) => offers.find((o) => o.id === type)?.diskGb;
     const from = diskOf(before.serverType);
     const to = diskOf(after.serverType);

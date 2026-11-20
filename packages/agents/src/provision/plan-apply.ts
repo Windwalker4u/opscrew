@@ -17,6 +17,7 @@ import {
   type VpsProviderId,
 } from "@opscrew/contracts";
 import {
+  errorText,
   formatMoney,
   listText,
   OpsCrewError,
@@ -232,6 +233,92 @@ function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "pro
   if (cloudflare && !named) return "cloudflare";
   if (named && !cloudflare) return "provider";
   return undefined;
+}
+
+/** The resource changes of a saved plan's JSON this file reads: the servers it updates. */
+const UpdatedServersSchema = z.object({
+  resource_changes: z
+    .array(
+      z.object({
+        type: z.string(),
+        change: z.object({
+          actions: z.array(z.string()),
+          before: z.record(z.string(), z.unknown()).nullable().optional(),
+          after: z.record(z.string(), z.unknown()).nullable().optional(),
+        }),
+      }),
+    )
+    .optional(),
+});
+
+/** The names of the servers (`resourceType`) `planJson` updates in place. */
+function updatedServerNames(planJson: unknown, resourceType: string): string[] {
+  const parsed = UpdatedServersSchema.safeParse(planJson);
+  if (!parsed.success) return [];
+  return (parsed.data.resource_changes ?? []).flatMap((rc) => {
+    if (rc.type !== resourceType || !rc.change.actions.includes("update")) return [];
+    const name = rc.change.after?.name ?? rc.change.before?.name;
+    return typeof name === "string" ? [name] : [];
+  });
+}
+
+/** Provider statuses of a server that is on. */
+const RUNNING = new Set(["running", "active"]);
+
+/**
+ * After a failed apply that updated a server OpsCrew created at a provider that switches a server
+ * off to change it and leaves it off when the change fails (`offAfterRefusedResize`: Hetzner, live
+ * 2026-11-20, with a type it had none of in the location), each such server that is off is started
+ * again through the provider's connector (`servers` in tests). Returns what to say, or `undefined`
+ * when no server can be off.
+ */
+async function startUpdatedServers(
+  deps: PhaseDeps,
+  deployPlan: DeployPlan,
+  saved: Pick<SavedPlan, "planJson">,
+  servers: PlanAndApplyOptions["servers"],
+): Promise<string | undefined> {
+  // Only a server OpsCrew created has a type its provider changes (Portainer, sites and the
+  // user's own servers have none).
+  if (!isCloudTarget(deployPlan.target)) return undefined;
+  const provider = deployPlan.target.provider;
+  if (!cloudProvider(provider).offering.offAfterRefusedResize) return undefined;
+  const profile = providerProfile(provider);
+  const names = updatedServerNames(saved.planJson, profile.serverResourceType);
+  if (names.length === 0) return undefined;
+  const { displayName, serverNoun: noun, consoleUrl } = profile;
+  const api = servers === undefined ? vpsConnector(provider, deps).servers : servers(provider);
+  const check = (name: string) =>
+    `Check that the ${noun} ${name} is on in ${displayName}'s console (${consoleUrl}) and start it there if it isn't.`;
+  if (api === undefined) return names.map(check).join(" ");
+  const found = await api.findAppServers(deployPlan.app.name).catch(() => undefined);
+  const lines: string[] = [];
+  for (const name of names) {
+    const server = found?.find((item) => item.name === name);
+    if (server === undefined) {
+      lines.push(check(name));
+      continue;
+    }
+    if (RUNNING.has(server.status)) continue;
+    const failure = await api.powerOn(server.id).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: "start server",
+      target: name,
+      decision: failure === undefined ? "allow" : "refused",
+      detail: `after a failed apply: ${failure === undefined ? "started" : "start failed"}`,
+    });
+    lines.push(
+      failure === undefined
+        ? `${displayName} switched the ${noun} ${name} off to change it and the change failed, so OpsCrew started it again.`
+        : `${displayName} switched the ${noun} ${name} off to change it, the change failed, and starting it again failed too (${deps.redactor.redact(errorText(failure))}): it is off, so the app is offline. Start it in ${displayName}'s console (${consoleUrl}).`,
+    );
+  }
+  return lines.length > 0 ? lines.join(" ") : undefined;
 }
 
 /**
@@ -936,8 +1023,13 @@ export async function planAndApply(
     // The message shows the last lines; the hint reads every error block of the redacted log.
     const fullLog = deps.redactor.redact(result.log);
     options.applyFailed?.(fullLog, saved);
+    const restarted = await startUpdatedServers(deps, deployPlan, saved, options.servers);
     throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${lastLines(fullLog)}`, {
-      hint: [applyFailureHint(deps, fullLog, options, command), options.failedNote?.(saved)]
+      hint: [
+        restarted,
+        applyFailureHint(deps, fullLog, options, command),
+        options.failedNote?.(saved),
+      ]
         .filter((part) => part !== undefined)
         .join(" "),
     });

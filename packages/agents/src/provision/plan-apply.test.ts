@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
+import type { ResourceChange, ResourceMove, ServerSnapshotApi } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -489,6 +489,68 @@ describe("planAndApply hooks", () => {
     expect((failed as OpsCrewError).code).toBe("ENGINE_FAILED");
     expect(failing.order).toEqual(["notes", "approve", "before", "apply", "failed"]);
     expect(failing.seen.failed).toEqual([`${failing.seen.before[0]}:Error: boom`]);
+  });
+
+  it("starts a server again that the provider left off after its type change failed", async () => {
+    // Live 2026-11-20: Hetzner switched the server off, then had no cx33 to place in nbg1.
+    const resize = {
+      changes: [
+        {
+          address: "module.server.hcloud_server.this",
+          type: "hcloud_server",
+          name: "this",
+          provider: "registry.opentofu.org/hetznercloud/hcloud",
+          action: "update" as const,
+        },
+      ],
+      planJson: {
+        resource_changes: [
+          {
+            type: "hcloud_server",
+            change: {
+              actions: ["update"],
+              before: { name: "shop", server_type: "cx23" },
+              after: { name: "shop", server_type: "cx33" },
+            },
+          },
+        ],
+      },
+      applyOk: false,
+      applyLog: "Error: error during placement of server (resource_unavailable, abc)",
+    };
+    const fakeServers = (status: string, start?: Error) => {
+      const started: string[] = [];
+      const api = {
+        findAppServers: async () => [{ id: "175", name: "shop", status }],
+        powerOn: async (id: string) => {
+          if (start !== undefined) throw start;
+          started.push(id);
+        },
+      } as unknown as ServerSnapshotApi;
+      return { api, started };
+    };
+    const hintOf = async (status: string, start?: Error) => {
+      const s = await hooked(resize);
+      const fake = fakeServers(status, start);
+      const error = await planAndApply(s.deps, { ...s.options, servers: () => fake.api }).catch(
+        (e: unknown) => e as OpsCrewError,
+      );
+      expect((error as OpsCrewError).code).toBe("ENGINE_FAILED");
+      return { hint: (error as OpsCrewError).hint ?? "", started: fake.started };
+    };
+
+    const off = await hintOf("off");
+    expect(off.started).toEqual(["175"]);
+    expect(off.hint).toMatch(
+      /^Hetzner Cloud switched the server shop off to change it and the change failed, so OpsCrew started it again\. /,
+    );
+    const running = await hintOf("running");
+    expect(running.started).toEqual([]);
+    expect(running.hint).not.toContain("started it again");
+    const stuck = await hintOf("off", new Error("locked"));
+    expect(stuck.hint).toContain(
+      "starting it again failed too (locked): it is off, so the app is offline.",
+    );
   });
 
   it("still takes a fixed list of notes", async () => {

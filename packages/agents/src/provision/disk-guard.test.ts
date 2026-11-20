@@ -161,6 +161,33 @@ describe("requireNoSmallerDisk", () => {
     expect(error.message).toContain("Server app can't move from cx33 (80 GB disk) to cx23 (40 GB)");
   });
 
+  it("refuses a type the provider has none of in the location now, before any change", async () => {
+    // Live 2026-11-20: Hetzner switched the server off, then had no cx33 to place in nbg1.
+    const base = euCatalog();
+    const catalog: ComputeCatalog = {
+      provider: base.provider,
+      extras: (location) => base.extras(location),
+      listOffers: async (location) =>
+        (await base.listOffers(location)).map((o) =>
+          o.id === "cx33" && o.location === "nbg1" ? { ...o, available: false } : o,
+        ),
+    };
+    const plan = deployedPlan("cx33");
+    const root = await rootWith(plan, { location: "nbg1", server_type: "cx23" });
+    const error = await refusal(
+      requireNoSmallerDisk({
+        root,
+        plan,
+        catalogFor: async () => catalog,
+        command: "opscrew provision",
+      }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "Server app can't move to cx33 now: Hetzner Cloud has none free in nbg1 right now, and the attempt would leave the server switched off. Set its serverType back to cx23 or pick a type Hetzner Cloud has there, or run `opscrew provision` again later. Nothing was changed.",
+    );
+  });
+
   it("lets a larger disk and the same disk through", async () => {
     // cx23 → cx33 grows the disk; cx33 (80 GB) → cpx22 (80 GB) keeps it.
     const plan = deployedPlan("cx33", [extra("db", "nbg1", "cpx22")]);
