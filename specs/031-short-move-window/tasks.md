@@ -268,6 +268,25 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/design && pnpm lint`
   - Effort: medium
 
+- [ ] T3115 A Laravel image built by Railpack reads the deployment's settings, not the build's
+  - Why: Railpack's Laravel build runs `php artisan optimize` without the app's settings, so the
+    image carries `bootstrap/cache/config.php` (and the routes and events caches) with the
+    defaults: SQLite, `APP_ENV=production`. Only a container started by the image's start script
+    clears it, so the release step migrated SQLite instead of the app's Postgres, and the workers
+    and the scheduler would run with every setting at its default. The web's start script also
+    migrates on each start, beside OpsCrew's release step.
+  - Owns: `packages/iac-templates/src/workflow/build.ts` (the seal), the compose rendering of the
+    processes' environment, `packages/cli/test/e2e/**` (the Docker pass), colocated tests
+  - Accept:
+    - **The seal:** for a Laravel app Railpack builds, the image keeps no `config.php`,
+      `routes-*.php` or `events.php` in `bootstrap/cache` (`packages.php` and `services.php`
+      stay), and the web still starts.
+    - **One migration:** with `app.releaseCommand`, every process of that image gets
+      `RAILPACK_SKIP_MIGRATIONS=true`.
+    - **Tests:** the seal's lines and the processes' environment offline; the Docker pass's
+      Laravel app on Postgres migrates Postgres in the release, and a worker reads `pgsql`.
+  - Effort: high
+
 **Also in 0.2.11** (a user's ask, the founder's yes of 2026-11-20; not part of the move):
 
 - [x] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
