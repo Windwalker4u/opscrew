@@ -106,6 +106,14 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     helper shared with `design/own.ts`.
 
   Tests for both.
+**Follow-up, after 0.2.11** (T3102's last review):
+- **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
+  restarts the old app without holding the new one. Pass `!stepBefore(move.step, "deployed")` to
+  `restartOldApp` at its call.
+- **A run killed between the pre-copy's start of the app and its stop:** the new app keeps
+  running until the next run. A `holdNewApp` at the start of a run at `deployed` without the
+  pre-copy record closes it.
+- **The one-off MySQL containers have no time limit.**
 - [ ] T3104 (lead) The live runs (the founder's decision of 2026-11-20: three apps share one Contabo Cloud VPS 4, owned by the first of them):
   - **the first app** (the first app's repository folder) moves from its Hetzner CX23 to a new Contabo server of its own, run by the
     lead. This is 031's live run, and 0.2.11 waits for it. Its `--finish` deletes the Hetzner
