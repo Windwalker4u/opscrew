@@ -1133,7 +1133,7 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 180_000 },
       const result = bash(`${fake}\n${failing}\n${script()}`, { BUILD_ENV: "", BUILD_SECRETS: "" });
       expect(result.status, result.output).toBe(0);
       expect(result.output).toContain(
-        "::warning::OpsCrew could not read the extensions composer.lock requires; building with the plan's: intl,pdo_pgsql,zip",
+        "::warning::OpsCrew could not read the extensions composer.lock requires, so this build installs the plan's: intl,pdo_pgsql,zip. If composer install stops for a missing extension, put Node on the runner's PATH or run opscrew design again.",
       );
       expect(output()).toContain("php_extensions=intl,pdo_pgsql,zip\n");
     });

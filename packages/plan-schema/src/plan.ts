@@ -1782,6 +1782,8 @@ export const AppBuildSchema = z
      * since Railpack installs them), lower-case, without the prefix and those every PHP 8 build
      * has. Railpack installs them beside the ones the build always adds. Set by design. The names
      * go into a shell line of the deploy workflow, so only letters, digits and `_` are allowed.
+     * An extension Composer finds in another package's `provide` (a polyfill) is listed as well,
+     * and `install-php-extensions` may not be able to install it.
      */
     phpExtensions: z.array(z.string().regex(/^[a-z][a-z0-9_]*$/)).optional(),
   })

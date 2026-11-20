@@ -38,7 +38,8 @@ export interface PhpNeeds {
 /**
  * The extensions every PHP 8 build has: compiled in for good (`core`, `date`, `hash`, `json`,
  * `pcre`, `random`, `reflection`, `spl`, `standard`) or on in every build (`ctype`, `filter`). An
- * app's need for them is met wherever PHP 8 runs.
+ * app's need for them is met wherever PHP 8 runs. The deploy workflow's `PHP_EXTENSIONS_SCRIPT`
+ * (iac-templates' `workflow/build.ts`) has a copy as its `always` list: change them together.
  */
 export const PHP_8_EXTENSIONS: ReadonlySet<string> = new Set([
   "core",

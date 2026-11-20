@@ -135,8 +135,10 @@ function planPhpExtensions(plan: DeployPlan): string | undefined {
  * extensions the Composer packages there require now, each once and sorted: `ext-*` of
  * composer.json's `require` and `require-dev` and of every package in composer.lock's `packages`
  * and `packages-dev` (Railpack installs the development packages too), in the names
- * `install-php-extensions` knows, without those every PHP 8 build has (detect's
- * `PHP_8_EXTENSIONS`) and any a shell line can't carry. A file it can't read adds nothing.
+ * `install-php-extensions` knows, without those every PHP 8 build has and any a shell line can't
+ * carry. A file it can't read adds nothing. Its `always` list is a copy of detect's
+ * `PHP_8_EXTENSIONS`, and its `zend-opcache` name of `INSTALLER_NAMES` in agents'
+ * `design/builder.ts`: change them together.
  */
 const PHP_EXTENSIONS_SCRIPT = [
   'const fs = require("fs");',
@@ -192,7 +194,7 @@ function phpExtensionsRead(plan: DeployPlan, context: string): string[] {
     '  [[ "$read_extensions" =~ ^[a-z0-9_,]+$ ]]; then',
     '  php_extensions="$read_extensions"',
     "else",
-    '  echo "::warning::OpsCrew could not read the extensions composer.lock requires; building with the plan\'s: $php_extensions"',
+    "  echo \"::warning::OpsCrew could not read the extensions composer.lock requires, so this build installs the plan's: $php_extensions. If composer install stops for a missing extension, put Node on the runner's PATH or run opscrew design again.\"",
     "fi",
     'echo "php_extensions=$php_extensions" >> "$GITHUB_OUTPUT"',
   ];

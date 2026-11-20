@@ -3,8 +3,10 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { ownPlan } from "@opscrew/agents/testing";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
-import { removeSecretFiles } from "./builders";
+import { removeSecretFiles, workflowBuild } from "./builders";
 
 const temps: string[] = [];
 afterEach(async () => {
@@ -48,5 +50,36 @@ describe("removeSecretFiles", () => {
       "node_modules/pkg/.env",
       ".git/.env",
     ]);
+  });
+});
+
+describe("workflowBuild", () => {
+  it("hands Railpack a PHP app's extensions as one literal setting, in the prepare step and the secrets", () => {
+    const plan = ownPlan();
+    const build = workflowBuild(
+      DeployPlanSchema.parse({
+        ...plan,
+        app: {
+          ...plan.app,
+          build: {
+            builder: "railpack",
+            chosen: "auto",
+            reason: "A Laravel app: Railpack builds it.",
+            runtime: { language: "php", version: "8.5" },
+            probe: "php",
+            phpExtensions: ["pcntl", "sockets"],
+          },
+        },
+      }),
+    );
+    if (build.builder !== "railpack") throw new Error("Expected a Railpack build.");
+    // The plan's list: the two every PHP image gets, Postgres's driver and the packages' two.
+    const setting = "RAILPACK_PHP_EXTENSIONS=intl,pcntl,pdo_pgsql,sockets,zip";
+    expect(build.prepareEnv).toContain(setting);
+    expect(build.secrets).toContain(setting);
+    // execFile passes each word as it is: no shell is there to expand or unquote one.
+    expect([...build.prepareEnv, ...build.secrets].filter((word) => /[$"']/.test(word))).toEqual(
+      [],
+    );
   });
 });

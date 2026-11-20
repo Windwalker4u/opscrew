@@ -48,7 +48,11 @@ export interface BuilderChoice {
   phpExtensions?: string[];
 }
 
-/** Composer's names that `install-php-extensions`, which Railpack runs, knows by another. */
+/**
+ * Composer's names that `install-php-extensions`, which Railpack runs, knows by another. The
+ * deploy workflow's `PHP_EXTENSIONS_SCRIPT` (iac-templates' `workflow/build.ts`) has a copy:
+ * change them together.
+ */
 const INSTALLER_NAMES: Readonly<Record<string, string>> = { "zend-opcache": "opcache" };
 
 /**
@@ -63,7 +67,8 @@ function installedExtensions(needs: PhpNeeds): [installed: string, composer: str
     const installed = INSTALLER_NAMES[name] ?? name;
     if (/^[a-z][a-z0-9_]*$/.test(installed) && !found.has(installed)) found.set(installed, name);
   }
-  return [...found].sort(([a], [b]) => a.localeCompare(b));
+  // Code-point order, as the workflow's script sorts; the names are unique.
+  return [...found].sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
 /** The extensions Railpack installs for a PHP app's Composer packages ({@link installedExtensions}). */

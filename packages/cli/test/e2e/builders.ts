@@ -31,9 +31,12 @@ export type WorkflowBuild =
       builder: "railpack";
       /** The Railpack frontend the build names as `BUILDKIT_SYNTAX`. */
       frontend: string;
-      /** `NAME=value` settings `railpack prepare` gets as `--env` (the runtime version). */
+      /**
+       * `NAME=value` settings `railpack prepare` gets as `--env`: the runtime version and a PHP
+       * app's extensions.
+       */
       prepareEnv: string[];
-      /** `NAME=value` secrets the build step passes besides the build values (the same version). */
+      /** `NAME=value` secrets the build step passes besides the build values (the same settings). */
       secrets: string[];
       /** The seal Dockerfile's lines after its `FROM`: the `chown` and the `USER`. */
       sealLines: string[];
@@ -104,11 +107,14 @@ export function workflowBuild(plan: DeployPlan, ctx: RuntimeContext = CONTEXT): 
     };
   }
   const railpack = steps.find((step) => step.id === "railpack")?.with;
-  const values = read(
-    script((step) => step.id === "prepare"),
-    /^values=\((.*)\)$/m,
-    "the Railpack prepare settings",
-  );
+  const prepare = script((step) => step.id === "prepare");
+  const values = read(prepare, /^values=\((.*)\)$/m, "the Railpack prepare settings");
+  // A PHP app's extensions come from a shell variable the prepare step sets, which the workflow
+  // widens with composer.lock's at build time; here the plan's list, design's reading of the lock.
+  const extensions = (setting: string) =>
+    /^"?RAILPACK_PHP_EXTENSIONS=/.test(setting)
+      ? `RAILPACK_PHP_EXTENSIONS=${read(prepare, /^php_extensions=([a-z0-9_,]+)$/m, "the PHP extensions")}`
+      : setting;
   return {
     builder: "railpack",
     frontend: read(
@@ -116,12 +122,16 @@ export function workflowBuild(plan: DeployPlan, ctx: RuntimeContext = CONTEXT): 
       /BUILDKIT_SYNTAX=(\S+)/,
       "the Railpack frontend",
     ),
-    prepareEnv: values.split(/\s+/).filter((word) => word !== "" && word !== "--env"),
+    prepareEnv: values
+      .split(/\s+/)
+      .filter((word) => word !== "" && word !== "--env")
+      .map(extensions),
     // The build values come from GitHub secrets (`${{ secrets.… }}`); the rest are literal.
     secrets: String(railpack?.secrets ?? "")
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .filter((line) => line !== "" && !line.startsWith("${{")),
+      .filter((line) => line !== "" && !line.startsWith("${{"))
+      .map(extensions),
     sealLines,
   };
 }
