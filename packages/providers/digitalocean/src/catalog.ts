@@ -3,6 +3,7 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DigitalOceanClient, DigitalOceanSize } from "./client";
 import {
   BACKUP_PERCENT,
+  SNAPSHOT_PER_GB_HOUR,
   SNAPSHOT_PER_GB_MONTH,
   SNAPSHOT_PRICE_AS_OF,
   STATIC_PRICES_AS_OF,
@@ -70,12 +71,16 @@ export class DigitalOceanCatalog implements ComputeCatalog {
           architecture: "x86",
           location: region,
           monthly: { amount: size.price_monthly, currency: "USD" },
+          billing: "hourly",
           pricesIncludeVat: false,
           deprecated: false,
           available: true,
           source: "live",
           asOf,
         };
+        if (size.price_hourly !== undefined) {
+          offer.hourly = { amount: size.price_hourly, currency: "USD" };
+        }
         if (size.description) offer.description = size.description;
         offers.push(offer);
       }
@@ -118,6 +123,8 @@ export class StaticDigitalOceanCatalog implements ComputeCatalog {
           architecture: "x86",
           location: region,
           monthly: { amount: size.monthly, currency: "USD" },
+          billing: "hourly",
+          hourly: { amount: size.hourly, currency: "USD" },
           pricesIncludeVat: false,
           deprecated: false,
           available: true,
@@ -144,6 +151,7 @@ function publishedExtras(): ProviderExtras {
   return {
     backupPercent: BACKUP_PERCENT,
     snapshotPerGbMonth: { amount: SNAPSHOT_PER_GB_MONTH, currency: "USD" },
+    snapshotPerGbHour: { amount: SNAPSHOT_PER_GB_HOUR, currency: "USD" },
     snapshotRateAsOf: SNAPSHOT_PRICE_AS_OF,
     pricesIncludeVat: false,
     source: "static",

@@ -2,11 +2,15 @@ import type { ComputeCatalog, ComputeOffer, Currency, ProviderExtras } from "@op
 import { OpsCrewError } from "@opscrew/core";
 import type { HetznerClient, HetznerPricing, HetznerServerType } from "./client";
 import {
+  HOURS_TO_MONTHLY_CAP,
   STATIC_BACKUP_PERCENT,
+  STATIC_IPV4_HOURLY_EUR,
   STATIC_IPV4_MONTHLY_EUR,
   STATIC_LOCATIONS,
   STATIC_PRICES_AS_OF,
   STATIC_SERVER_TYPES,
+  STATIC_SNAPSHOT_PER_GB_HOUR_EUR,
+  STATIC_SNAPSHOT_PER_GB_MONTH_EUR,
 } from "./static-prices";
 
 export interface HetznerCatalogOptions {
@@ -53,6 +57,7 @@ export class HetznerCatalog implements ComputeCatalog {
           architecture: type.architecture === "arm" ? "arm" : "x86",
           location: price.location,
           monthly: { amount: price.price_monthly.net, currency: "EUR" },
+          billing: "hourly",
           pricesIncludeVat: false,
           deprecated:
             typeDeprecated || (entry?.deprecation !== undefined && entry.deprecation !== null),
@@ -62,6 +67,9 @@ export class HetznerCatalog implements ComputeCatalog {
           source: "live",
           asOf,
         };
+        if (price.price_hourly !== undefined) {
+          offer.hourly = { amount: price.price_hourly.net, currency: "EUR" };
+        }
         if (type.description !== undefined) offer.description = type.description;
         offers.push(offer);
       }
@@ -85,9 +93,15 @@ export class HetznerCatalog implements ComputeCatalog {
       ?.find((ip) => ip.type === "ipv4")
       ?.prices.find((p) => p.location === location);
     if (ipv4 !== undefined) out.ipv4Monthly = { amount: ipv4.price_monthly.net, currency };
+    if (ipv4?.price_hourly !== undefined) {
+      out.ipv4Hourly = { amount: ipv4.price_hourly.net, currency };
+    }
     if (pricing.server_backup !== undefined) out.backupPercent = pricing.server_backup.percentage;
     if (pricing.image !== undefined) {
-      out.snapshotPerGbMonth = { amount: pricing.image.price_per_gb_month.net, currency };
+      const perGbMonth = pricing.image.price_per_gb_month.net;
+      out.snapshotPerGbMonth = { amount: perGbMonth, currency };
+      // The API has no hourly snapshot price: derived as in `static-prices.ts`.
+      out.snapshotPerGbHour = { amount: perGbMonth / HOURS_TO_MONTHLY_CAP, currency };
     }
     return out;
   }
@@ -113,8 +127,9 @@ export class StaticHetznerCatalog implements ComputeCatalog {
     for (const loc of STATIC_LOCATIONS) {
       if (location !== undefined && loc.id !== location) continue;
       for (const type of STATIC_SERVER_TYPES) {
-        const monthly = type.prices[loc.group];
-        if (monthly === undefined) continue;
+        const price = type.prices[loc.group];
+        if (price === undefined) continue;
+        const [monthly, hourly] = price;
         offers.push({
           provider: "hetzner",
           id: type.name,
@@ -125,6 +140,8 @@ export class StaticHetznerCatalog implements ComputeCatalog {
           architecture: type.architecture,
           location: loc.id,
           monthly: { amount: monthly, currency: "EUR" },
+          billing: "hourly",
+          hourly: { amount: hourly, currency: "EUR" },
           pricesIncludeVat: false,
           deprecated: false,
           available: true,
@@ -144,7 +161,10 @@ export class StaticHetznerCatalog implements ComputeCatalog {
     }
     return {
       ipv4Monthly: { amount: STATIC_IPV4_MONTHLY_EUR, currency: "EUR" },
+      ipv4Hourly: { amount: STATIC_IPV4_HOURLY_EUR, currency: "EUR" },
       backupPercent: STATIC_BACKUP_PERCENT,
+      snapshotPerGbMonth: { amount: STATIC_SNAPSHOT_PER_GB_MONTH_EUR, currency: "EUR" },
+      snapshotPerGbHour: { amount: STATIC_SNAPSHOT_PER_GB_HOUR_EUR, currency: "EUR" },
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,

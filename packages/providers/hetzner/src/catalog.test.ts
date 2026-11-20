@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { fakeSleep, fixture, hetznerFetch } from "./__fixtures__/fixtures";
 import { HetznerCatalog, StaticHetznerCatalog } from "./catalog";
 import { HetznerClient } from "./client";
-import { STATIC_PRICES_AS_OF } from "./static-prices";
+import { HOURS_TO_MONTHLY_CAP, STATIC_PRICES_AS_OF } from "./static-prices";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 
@@ -43,9 +43,15 @@ describe("HetznerCatalog (live)", () => {
       cpuType: "shared",
       architecture: "x86",
       monthly: { amount: 5.49, currency: "EUR" },
+      billing: "hourly",
+      hourly: { amount: 0.0088, currency: "EUR" },
       pricesIncludeVat: false,
       source: "live",
       asOf: NOW.toISOString(),
+    });
+    expect(offers.find((o) => o.id === "cpx22" && o.location === "hel1")?.hourly).toEqual({
+      amount: 0.0312,
+      currency: "EUR",
     });
   });
 
@@ -81,13 +87,16 @@ describe("HetznerCatalog (live)", () => {
     const { catalog } = liveCatalog();
     expect(await catalog.extras("fsn1")).toEqual({
       ipv4Monthly: { amount: 0.5, currency: "EUR" },
+      ipv4Hourly: { amount: 0.0008, currency: "EUR" },
       backupPercent: 20,
       snapshotPerGbMonth: { amount: 0.011, currency: "EUR" },
+      snapshotPerGbHour: { amount: 0.011 / HOURS_TO_MONTHLY_CAP, currency: "EUR" },
       pricesIncludeVat: false,
       source: "live",
       asOf: NOW.toISOString(),
     });
     expect((await catalog.extras("ash")).ipv4Monthly).toEqual({ amount: 0.6, currency: "EUR" });
+    expect((await catalog.extras("ash")).ipv4Hourly).toEqual({ amount: 0.001, currency: "EUR" });
     expect((await catalog.extras("sin")).ipv4Monthly).toBeUndefined();
   });
 });
@@ -131,6 +140,23 @@ describe("StaticHetznerCatalog", () => {
     expect((await find("fsn1", "cax11"))?.architecture).toBe("arm");
   });
 
+  it("bills every offer hourly at Hetzner's hourly price per location group", async () => {
+    const find = async (location: string, id: string) =>
+      (await catalog.listOffers(location)).find((o) => o.id === id);
+    expect(await find("nbg1", "cx23")).toMatchObject({
+      billing: "hourly",
+      hourly: { amount: 0.0088, currency: "EUR" },
+    });
+    expect((await find("sin", "cpx22"))?.hourly?.amount).toBe(0.0425);
+    expect((await find("ash", "ccx13"))?.hourly?.amount).toBe(0.0697);
+    for (const offer of await catalog.listOffers()) {
+      // Hetzner's hourly prices reach the monthly price after about 624 hours.
+      const hours = offer.monthly.amount / (offer.hourly?.amount ?? 0);
+      expect(hours, `${offer.id} in ${offer.location}`).toBeGreaterThan(620);
+      expect(hours, `${offer.id} in ${offer.location}`).toBeLessThan(628);
+    }
+  });
+
   it("omits offers with unknown prices", async () => {
     const ash = await catalog.listOffers("ash");
     expect(ash.some((o) => o.id === "cx23")).toBe(false);
@@ -152,7 +178,10 @@ describe("StaticHetznerCatalog", () => {
     ]);
     expect(await catalog.extras("hel1")).toEqual({
       ipv4Monthly: { amount: 0.5, currency: "EUR" },
+      ipv4Hourly: { amount: 0.0008, currency: "EUR" },
       backupPercent: 20,
+      snapshotPerGbMonth: { amount: 0.0143, currency: "EUR" },
+      snapshotPerGbHour: { amount: 0.0143 / 624, currency: "EUR" },
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,

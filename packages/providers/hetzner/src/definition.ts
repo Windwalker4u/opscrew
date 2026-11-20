@@ -8,6 +8,11 @@ import { isRecord } from "@opscrew/core";
 import { HETZNER_TOKEN_HINT } from "./client";
 import { HETZNER_CREDENTIALS, hetznerConnector } from "./connector";
 import { MODULE_FILES } from "./generated/module";
+import {
+  STATIC_BACKUP_PERCENT,
+  STATIC_SNAPSHOT_PER_GB_HOUR_EUR,
+  STATIC_SNAPSHOT_PER_GB_MONTH_EUR,
+} from "./static-prices";
 
 /**
  * Hetzner's price page. Snapshot texts link to it instead of quoting a rate, so they never go
@@ -103,11 +108,17 @@ export const definition: CloudProviderDefinition = {
   },
   offering: {
     currency: "EUR",
+    // Each started hour up to the monthly price (https://docs.hetzner.com/cloud/billing/faq/).
+    billing: { model: "hourly", counts: "started-hour", setupFee: false },
     defaultImage: "ubuntu-24.04",
-    backupPercent: 20,
+    backupPercent: STATIC_BACKUP_PERCENT,
     providerBackups: true,
     backupsOutliveServer: false,
-    snapshots: { kind: "per-gb" },
+    snapshots: {
+      kind: "per-gb",
+      perGbMonth: STATIC_SNAPSHOT_PER_GB_MONTH_EUR,
+      perGbHour: STATIC_SNAPSHOT_PER_GB_HOUR_EUR,
+    },
     serverSnapshotsOutliveServer: true,
     deleteProtection: true,
     resize: true,

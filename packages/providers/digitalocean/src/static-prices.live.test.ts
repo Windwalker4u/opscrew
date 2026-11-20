@@ -23,10 +23,12 @@ const token = process.env.OPSCREW_E2E_DIGITALOCEAN_TOKEN;
 /** Basic regular sizes, the same filter as the live catalogue's shared sizes. */
 const BASIC_SLUG = /^s-\d+vcpu-\d+gb$/;
 const cents = (amount: number) => Math.round(amount * 100);
+/** `0.00893` for an hourly price, which DigitalOcean gives to five decimals. */
+const hundredThousandths = (amount: number) => Math.round(amount * 100_000);
 
 /**
  * Every difference between the static table and the live API: Droplet regions on both sides; for
- * each table size its specs, monthly price (to the cent), availability and every table region it
+ * each table size its specs, monthly price (to the cent) and hourly price, availability and every table region it
  * is not sold in; and live Basic sizes missing from the table. The table deliberately lists only the Basic sizes up to
  * its most expensive one (bigger and CPU-Optimized sizes come from the live API only), so larger
  * live sizes are not differences.
@@ -66,6 +68,14 @@ function compareWithLive(
         `Size ${ours.slug}: monthly $${ours.monthly} in the table, $${size.price_monthly} live.`,
       );
     }
+    if (
+      size.price_hourly === undefined ||
+      hundredThousandths(ours.hourly) !== hundredThousandths(size.price_hourly)
+    ) {
+      out.push(
+        `Size ${ours.slug}: hourly $${ours.hourly} in the table, $${size.price_hourly} live.`,
+      );
+    }
     if (!size.available) out.push(`Size ${ours.slug}: in the table, not available live.`);
     const missing = STATIC_REGIONS.filter(
       (region) => liveRegions.includes(region) && !size.regions.includes(region),
@@ -97,6 +107,7 @@ function apiSize(size: StaticSize, regions: readonly string[] = STATIC_REGIONS):
     memory: size.memoryGb * 1024,
     disk: size.diskGb,
     price_monthly: size.monthly,
+    price_hourly: size.hourly,
     regions: [...regions],
     available: true,
   };
@@ -119,7 +130,7 @@ describe("DigitalOcean price table comparison (offline)", () => {
     const [first, second, ...rest] = STATIC_SIZES;
     if (first === undefined || second === undefined) throw new Error("table too small");
     const sizes = [
-      { ...apiSize(first), price_monthly: first.monthly + 1 },
+      { ...apiSize(first), price_monthly: first.monthly + 1, price_hourly: 0.01042 },
       ...rest.map((s) =>
         apiSize(
           s,
@@ -137,6 +148,7 @@ describe("DigitalOcean price table comparison (offline)", () => {
         "Region ric1: in the table, not offered live.",
         "Region xyz1: offered live, not in the table.",
         `Size ${first.slug}: monthly $${first.monthly} in the table, $${first.monthly + 1} live.`,
+        `Size ${first.slug}: hourly $${first.hourly} in the table, $0.01042 live.`,
         `Size ${second.slug}: in the table, not in the API.`,
         "Size s-1vcpu-3gb: Basic at $9 live, not in the table.",
       ]),

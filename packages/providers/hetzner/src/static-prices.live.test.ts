@@ -14,16 +14,20 @@ import {
 } from "./client";
 import {
   STATIC_BACKUP_PERCENT,
+  STATIC_IPV4_HOURLY_EUR,
   STATIC_IPV4_MONTHLY_EUR,
   STATIC_LOCATIONS,
   STATIC_PRICES_AS_OF,
   STATIC_SERVER_TYPES,
+  STATIC_SNAPSHOT_PER_GB_MONTH_EUR,
 } from "./static-prices";
 
 const token = process.env.OPSCREW_E2E_HCLOUD_TOKEN;
 
 /** `5.49` for a monthly price; the table keeps cents. */
 const cents = (amount: number) => Math.round(amount * 100);
+/** `0.0088` for an hourly price, which Hetzner gives to four decimals. */
+const tenThousandths = (amount: number) => Math.round(amount * 10_000);
 
 /** True when the API says the type can no longer be ordered in `location` (or anywhere). */
 function deprecatedIn(type: HetznerServerType, location: string): boolean {
@@ -36,8 +40,8 @@ function deprecatedIn(type: HetznerServerType, location: string): boolean {
 
 /**
  * Every difference between the static table and the live API: locations and their country, server
- * types and their specs, monthly net prices (to the cent) per location, the primary IPv4 price and
- * the backup percentage. Deprecated live types are not expected in the table; a table entry the
+ * types and their specs, monthly net prices (to the cent) and hourly ones per location, the primary
+ * IPv4's monthly and hourly prices, the backup percentage and the snapshot price per GB. Deprecated live types are not expected in the table; a table entry the
  * API marks deprecated is a difference.
  */
 function compareWithLive(
@@ -90,11 +94,11 @@ function compareWithLive(
     for (const ours of STATIC_SERVER_TYPES) {
       const live = liveTypes.get(ours.name);
       if (live === undefined) continue;
-      const monthly = ours.prices[location.group];
+      const table = ours.prices[location.group];
       const price = live.prices.find((p) => p.location === location.id);
       const sold = price !== undefined && !deprecatedIn(live, location.id);
       const where = `${ours.name} in ${location.id} (${location.group} group)`;
-      if (monthly === undefined) {
+      if (table === undefined) {
         if (sold) out.push(`${where}: sold live, missing from the table.`);
         continue;
       }
@@ -103,8 +107,13 @@ function compareWithLive(
         continue;
       }
       if (!sold) out.push(`${where}: in the table, deprecated live.`);
+      const [monthly, hourly] = table;
       if (cents(monthly) !== cents(price.price_monthly.net)) {
         out.push(`${where}: monthly €${monthly} in the table, €${price.price_monthly.net} live.`);
+      }
+      const liveHourly = price.price_hourly?.net;
+      if (liveHourly === undefined || tenThousandths(hourly) !== tenThousandths(liveHourly)) {
+        out.push(`${where}: hourly €${hourly} in the table, €${liveHourly} live.`);
       }
     }
   }
@@ -128,10 +137,21 @@ function compareWithLive(
     const live = ipv4?.prices.find((p) => p.location === location.id);
     if (live === undefined) {
       out.push(`Primary IPv4 in ${location.id}: in the table, no live price.`);
-    } else if (cents(live.price_monthly.net) !== cents(STATIC_IPV4_MONTHLY_EUR)) {
-      out.push(
-        `Primary IPv4 in ${location.id}: €${STATIC_IPV4_MONTHLY_EUR} a month in the table, €${live.price_monthly.net} live.`,
-      );
+    } else {
+      if (cents(live.price_monthly.net) !== cents(STATIC_IPV4_MONTHLY_EUR)) {
+        out.push(
+          `Primary IPv4 in ${location.id}: €${STATIC_IPV4_MONTHLY_EUR} a month in the table, €${live.price_monthly.net} live.`,
+        );
+      }
+      const liveHourly = live.price_hourly?.net;
+      if (
+        liveHourly === undefined ||
+        tenThousandths(liveHourly) !== tenThousandths(STATIC_IPV4_HOURLY_EUR)
+      ) {
+        out.push(
+          `Primary IPv4 in ${location.id}: €${STATIC_IPV4_HOURLY_EUR} an hour in the table, €${liveHourly} live.`,
+        );
+      }
     }
   }
   const backup = pricing.server_backup?.percentage;
@@ -139,6 +159,12 @@ function compareWithLive(
     out.push("Backup percentage: in the table, not in the API.");
   } else if (backup !== STATIC_BACKUP_PERCENT) {
     out.push(`Backup percentage: ${STATIC_BACKUP_PERCENT}% in the table, ${backup}% live.`);
+  }
+  const snapshot = pricing.image?.price_per_gb_month.net;
+  if (snapshot !== STATIC_SNAPSHOT_PER_GB_MONTH_EUR) {
+    out.push(
+      `Snapshot per GB a month: €${STATIC_SNAPSHOT_PER_GB_MONTH_EUR} in the table, €${snapshot} live.`,
+    );
   }
   return out;
 }
@@ -158,9 +184,16 @@ function apiFromTable(): {
     cpu_type: type.cpuType,
     architecture: type.architecture,
     prices: STATIC_LOCATIONS.flatMap((location) => {
-      const monthly = type.prices[location.group];
-      if (monthly === undefined) return [];
-      return [{ location: location.id, price_monthly: { net: monthly, gross: monthly } }];
+      const price = type.prices[location.group];
+      if (price === undefined) return [];
+      const [monthly, hourly] = price;
+      return [
+        {
+          location: location.id,
+          price_monthly: { net: monthly, gross: monthly },
+          price_hourly: { net: hourly, gross: hourly },
+        },
+      ];
     }),
   }));
   const locations = STATIC_LOCATIONS.map((location, id) => ({
@@ -169,15 +202,25 @@ function apiFromTable(): {
     country: location.country,
   }));
   const ipv4 = { net: STATIC_IPV4_MONTHLY_EUR, gross: STATIC_IPV4_MONTHLY_EUR };
+  const ipv4Hourly = { net: STATIC_IPV4_HOURLY_EUR, gross: STATIC_IPV4_HOURLY_EUR };
+  const snapshot = {
+    net: STATIC_SNAPSHOT_PER_GB_MONTH_EUR,
+    gross: STATIC_SNAPSHOT_PER_GB_MONTH_EUR,
+  };
   const pricing = {
     currency: "EUR",
     primary_ips: [
       {
         type: "ipv4",
-        prices: STATIC_LOCATIONS.map((l) => ({ location: l.id, price_monthly: ipv4 })),
+        prices: STATIC_LOCATIONS.map((l) => ({
+          location: l.id,
+          price_monthly: ipv4,
+          price_hourly: ipv4Hourly,
+        })),
       },
     ],
     server_backup: { percentage: STATIC_BACKUP_PERCENT },
+    image: { price_per_gb_month: snapshot },
   };
   return { types, locations, pricing };
 }
@@ -194,7 +237,13 @@ describe("Hetzner price table comparison (offline)", () => {
     const cx33 = types.find((t) => t.name === "cx33");
     if (cx23 === undefined || cx33 === undefined) throw new Error("table changed");
     cx23.prices = cx23.prices.map((p) =>
-      p.location === "nbg1" ? { ...p, price_monthly: { net: 6.49, gross: 6.49 } } : p,
+      p.location === "nbg1"
+        ? {
+            ...p,
+            price_monthly: { net: 6.49, gross: 6.49 },
+            price_hourly: { net: 0.0104, gross: 0.0104 },
+          }
+        : p,
     );
     cx33.deprecation = { announced: "2026-01-01T00:00:00Z" };
     const differences = compareWithLive(
@@ -213,6 +262,7 @@ describe("Hetzner price table comparison (offline)", () => {
         "Location xyz1: in the API, not in the table.",
         "Server type cax11: in the table, not in the API.",
         "cx23 in nbg1 (eu group): monthly €5.49 in the table, €6.49 live.",
+        "cx23 in nbg1 (eu group): hourly €0.0088 in the table, €0.0104 live.",
         "cx33 in nbg1 (eu group): in the table, deprecated live.",
         "Server type cx99: sold live in fsn1, nbg1, hel1, not in the table.",
         "Backup percentage: 20% in the table, 25% live.",
@@ -225,7 +275,7 @@ describe("Hetzner price table comparison (offline)", () => {
 describe.skipIf(!token)(
   "Hetzner static price table matches the live API (needs OPSCREW_E2E_HCLOUD_TOKEN, skipped without it)",
   () => {
-    it("has the same locations, server types, prices, IPv4 price and backup percentage", async () => {
+    it("has the same locations, server types, prices, IPv4 price, backup percentage and snapshot price", async () => {
       const client = new HetznerClient({ token: token ?? "" });
       const [types, locations, pricing] = await Promise.all([
         client.listServerTypes(),

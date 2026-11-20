@@ -3,6 +3,7 @@ import { TOKEN_PATTERNS } from "@opscrew/core";
 import { DIGITALOCEAN_CREDENTIALS, digitaloceanConnector } from "./connector";
 import { MODULE_FILES } from "./generated/module";
 import { SECOPS } from "./secops";
+import { BACKUP_PERCENT, SNAPSHOT_PER_GB_HOUR, SNAPSHOT_PER_GB_MONTH } from "./static-prices";
 
 const DISPLAY_NAME = "DigitalOcean";
 const TOKEN_VARS = ["DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN"] as const;
@@ -101,11 +102,18 @@ export const definition: CloudProviderDefinition = {
   },
   offering: {
     currency: "USD",
+    // By the second up to the monthly price, reached after 672 hours
+    // (https://docs.digitalocean.com/products/droplets/details/pricing/).
+    billing: { model: "hourly", counts: "second", setupFee: false },
     defaultImage: "ubuntu-24-04-x64",
-    backupPercent: 30,
+    backupPercent: BACKUP_PERCENT,
     providerBackups: true,
     backupsOutliveServer: true,
-    snapshots: { kind: "per-gb" },
+    snapshots: {
+      kind: "per-gb",
+      perGbMonth: SNAPSHOT_PER_GB_MONTH,
+      perGbHour: SNAPSHOT_PER_GB_HOUR,
+    },
     serverSnapshotsOutliveServer: true,
     deleteProtection: false,
     resize: true,

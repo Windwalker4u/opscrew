@@ -115,6 +115,8 @@ const sizeSchema = z.looseObject({
   disk: decimal,
   /** USD per month. */
   price_monthly: decimal,
+  /** USD per hour. */
+  price_hourly: decimal.optional(),
   regions: z.array(z.string()).default([]),
   available: z.boolean(),
   description: z.string().nullable().optional(),

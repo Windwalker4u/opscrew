@@ -55,7 +55,15 @@ export interface ComputeOffer {
   cpuType: "shared" | "dedicated";
   architecture: "x86" | "arm";
   location: string;
+  /** The price for a whole month; for an hourly offer, its monthly cap. */
   monthly: Money;
+  /**
+   * How the provider bills the server: `hourly`, each started hour up to `monthly` (Hetzner,
+   * DigitalOcean), or `monthly`, the full `monthly` at each term's start (Contabo).
+   */
+  billing?: "hourly" | "monthly";
+  /** The price of one hour, for an `hourly` offer. */
+  hourly?: Money;
   pricesIncludeVat: boolean;
   deprecated: boolean;
   available: boolean;
@@ -71,10 +79,17 @@ export interface ComputeOffer {
 /** Location-dependent extra costs used by cost estimates. */
 export interface ProviderExtras {
   ipv4Monthly?: Money;
-  /** Automated backups as a percentage of the server price, for example 20. */
+  /** The primary IPv4's price of one hour, where the provider bills it hourly (Hetzner). */
+  ipv4Hourly?: Money;
+  /**
+   * Automated backups as a percentage of the server price, for example 20. They are billed as the
+   * server is: an hourly offer's backups cost this percentage of its `hourly` price too.
+   */
   backupPercent?: number;
   /** A whole-server snapshot per GB per month, where the provider publishes the rate. */
   snapshotPerGbMonth?: Money;
+  /** A whole-server snapshot per GB per hour, up to {@link snapshotPerGbMonth} in a month. */
+  snapshotPerGbHour?: Money;
   /** When the snapshot rate was read, where that differs from `asOf` (a dated published rate). */
   snapshotRateAsOf?: IsoDateTime;
   /** True when snapshots are included in the server's price up to its offer's `includedSnapshots`. */

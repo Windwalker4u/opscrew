@@ -70,6 +70,35 @@ describe.each(CLOUD_PROVIDERS.map((provider) => [provider.id, provider] as const
       }
     });
 
+    it("prices its offers and extras by its billing facts", async () => {
+      const { billing, snapshots, currency } = provider.offering;
+      const catalog = provider.connector({ env: {} }).catalog();
+      const offers = await catalog.listOffers();
+      expect(offers.length).toBeGreaterThan(0);
+      for (const offer of offers) {
+        const where = `${offer.id} in ${offer.location}`;
+        expect(offer.billing, where).toBe(billing.model);
+        expect(offer.monthly.currency, where).toBe(currency);
+        if (billing.model === "hourly") {
+          expect(offer.hourly?.currency, where).toBe(currency);
+          expect(offer.hourly?.amount, where).toBeGreaterThan(0);
+          expect(offer.hourly?.amount ?? Infinity, where).toBeLessThan(offer.monthly.amount);
+        } else {
+          expect(offer.hourly, where).toBeUndefined();
+        }
+        if (!billing.setupFee) expect(offer.setupFee, where).toBeUndefined();
+      }
+      if (billing.setupFee) expect(offers.some((offer) => offer.setupFee !== undefined)).toBe(true);
+      const extras = await catalog.extras(offers[0]?.location ?? "");
+      if (snapshots.kind === "per-gb") {
+        expect(extras.snapshotPerGbMonth).toEqual({ amount: snapshots.perGbMonth, currency });
+        expect(extras.snapshotPerGbHour).toEqual({ amount: snapshots.perGbHour, currency });
+      }
+      if (extras.ipv4Monthly !== undefined && billing.model === "hourly") {
+        expect(extras.ipv4Hourly?.currency).toBe(currency);
+      }
+    });
+
     it("has no servers without credentials", () => {
       const connector = provider.connector({ env: {} });
       expect(connector.configured).toBe(false);

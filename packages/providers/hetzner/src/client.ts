@@ -41,6 +41,13 @@ const decimal = z.union([z.string(), z.number()]).transform((value, ctx) => {
 
 const priceSchema = z.looseObject({ net: decimal, gross: decimal });
 
+/** A price in one location: a month (the cap) and an hour. */
+const locationPriceSchema = z.looseObject({
+  location: z.string(),
+  price_monthly: priceSchema,
+  price_hourly: priceSchema.optional(),
+});
+
 const deprecationSchema = z.looseObject({
   announced: z.string().optional(),
   unavailable_after: z.string().optional(),
@@ -63,7 +70,7 @@ const serverTypeSchema = z.looseObject({
   architecture: z.string().optional(),
   deprecated: z.union([z.boolean(), deprecationSchema]).nullable().optional(),
   deprecation: deprecationSchema.nullable().optional(),
-  prices: z.array(z.looseObject({ location: z.string(), price_monthly: priceSchema })),
+  prices: z.array(locationPriceSchema),
   locations: z
     .array(
       z.looseObject({
@@ -91,7 +98,7 @@ const pricingSchema = z.looseObject({
     .array(
       z.looseObject({
         type: z.string(),
-        prices: z.array(z.looseObject({ location: z.string(), price_monthly: priceSchema })),
+        prices: z.array(locationPriceSchema),
       }),
     )
     .optional(),

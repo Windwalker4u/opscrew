@@ -29,12 +29,15 @@ describe("StaticContaboCatalog", () => {
         cpuType: "shared",
         architecture: "x86",
         monthly: { currency: "EUR" },
+        // A monthly term, prepaid: no hourly price.
+        billing: "monthly",
         pricesIncludeVat: false,
         available: true,
         deprecated: false,
         source: "static",
         asOf: STATIC_PRICES_AS_OF,
       });
+      expect(offer.hourly).toBeUndefined();
     }
   });
 

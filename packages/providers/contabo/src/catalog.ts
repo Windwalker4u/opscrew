@@ -28,6 +28,7 @@ export class StaticContaboCatalog implements ComputeCatalog {
           architecture: "x86",
           location: region,
           monthly: { amount: plan.monthly, currency: "EUR" },
+          billing: "monthly",
           pricesIncludeVat: false,
           deprecated: false,
           available: true,

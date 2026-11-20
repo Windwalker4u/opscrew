@@ -66,14 +66,29 @@ const regions = z
     }
   });
 
+const price = z.number().nonnegative();
+
 const offering = z.object({
   currency: CurrencySchema,
+  billing: z.discriminatedUnion("model", [
+    z.object({
+      model: z.literal("hourly"),
+      counts: z.enum(["started-hour", "second"]),
+      setupFee: z.boolean(),
+    }),
+    z.object({ model: z.literal("monthly"), setupFee: z.boolean() }),
+  ]),
   defaultImage: z.string(),
   backupPercent: z.number(),
   providerBackups: z.boolean(),
   backupsOutliveServer: z.boolean(),
   snapshots: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("per-gb") }),
+    z
+      .object({ kind: z.literal("per-gb"), perGbMonth: price, perGbHour: price })
+      .refine((rate) => rate.perGbHour <= rate.perGbMonth, {
+        path: ["perGbHour"],
+        message: "must not be more than perGbMonth",
+      }),
     z.object({ kind: z.literal("included") }),
   ]),
   serverSnapshotsOutliveServer: z.boolean(),

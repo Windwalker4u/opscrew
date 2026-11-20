@@ -197,6 +197,8 @@ export const definition: CloudProviderDefinition = {
   },
   offering: {
     currency: "EUR",
+    // The full monthly price at each term's start; Cloud VPS 4 charges a setup fee on a monthly term.
+    billing: { model: "monthly", setupFee: true },
     defaultImage: UBUNTU_24_04_IMAGE_ID,
     backupPercent: 0,
     // Auto Backup (027 R15): Contabo publishes no price per plan for it, only its order page.

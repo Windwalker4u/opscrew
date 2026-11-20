@@ -30,6 +30,7 @@ describe("validateCloudProvider", () => {
       credentials: { ...credentials, mode: "all", tokenRules: [] },
       offering: {
         ...hetzner.offering,
+        billing: { model: "monthly", setupFee: true },
         snapshots: { kind: "included" },
         removal: { kind: "cancel-at-term-end", minimumTermMonths: 1 },
         resize: false,
@@ -74,6 +75,34 @@ describe("validateCloudProvider", () => {
   it("wants functions as functions", () => {
     expect(failure({ ...hetzner, connector: "hetzner" })).toContain(
       "connector: must be a function",
+    );
+  });
+
+  it("wants the billing facts: the model, how an hourly one counts, the setup fee", () => {
+    const { billing: _billing, ...withoutBilling } = hetzner.offering;
+    expect(failure({ ...hetzner, offering: withoutBilling })).toContain("offering.billing:");
+    const hourlyUncounted = { ...hetzner.offering, billing: { model: "hourly", setupFee: false } };
+    expect(failure({ ...hetzner, offering: hourlyUncounted })).toContain(
+      "offering.billing.counts:",
+    );
+    const noSetupFee = { ...hetzner.offering, billing: { model: "monthly" } };
+    expect(failure({ ...hetzner, offering: noSetupFee })).toContain("offering.billing.setupFee:");
+  });
+
+  it("wants a per-GB snapshot price a month and an hour, the hour's not above the month's", () => {
+    const priced = (snapshots: unknown) => ({
+      ...hetzner,
+      offering: { ...hetzner.offering, snapshots },
+    });
+    expect(failure(priced({ kind: "per-gb" }))).toContain("offering.snapshots.perGbMonth:");
+    expect(failure(priced({ kind: "per-gb", perGbMonth: 0.06 }))).toContain(
+      "offering.snapshots.perGbHour:",
+    );
+    expect(failure(priced({ kind: "per-gb", perGbMonth: 0.06, perGbHour: 0.07 }))).toContain(
+      "offering.snapshots.perGbHour: must not be more than perGbMonth",
+    );
+    expect(failure(priced({ kind: "per-gb", perGbMonth: -1, perGbHour: 0 }))).toContain(
+      "offering.snapshots.perGbMonth:",
     );
   });
 

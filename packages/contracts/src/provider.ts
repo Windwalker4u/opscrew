@@ -112,9 +112,24 @@ export type ProviderRemoval =
    */
   | { kind: "cancel-at-term-end"; minimumTermMonths: number };
 
+/**
+ * How the provider bills a server (031, research R4). `setupFee`: true when creating a server can
+ * charge a one-time fee, its amount the offer's `ComputeOffer.setupFee`.
+ */
+export type ProviderBilling =
+  /**
+   * At the offer's `ComputeOffer.hourly` price up to its `monthly` cap, counted by each started
+   * hour (Hetzner) or by the second (DigitalOcean). The automated backups and the primary IPv4 are
+   * billed the same way.
+   */
+  | { model: "hourly"; counts: "started-hour" | "second"; setupFee: boolean }
+  /** The offer's full `monthly` price at the start of each term, prepaid (Contabo). */
+  | { model: "monthly"; setupFee: boolean };
+
 /** What the provider sells and how its servers live and leave. */
 export interface ProviderOffering {
   currency: Currency;
+  billing: ProviderBilling;
   /** Ubuntu 24.04's image name or id at the provider. */
   defaultImage: string;
   /** Daily automated backups as a percentage of the server price (0 without them). */
@@ -130,10 +145,12 @@ export interface ProviderOffering {
   /** True when automated backups survive the server's deletion for a while. */
   backupsOutliveServer: boolean;
   /**
-   * Whole-server snapshots: billed per GB a month, or included in the server's price up to the
-   * count its offer names (`ComputeOffer.includedSnapshots`).
+   * Whole-server snapshots: billed per GB, at the published `perGbMonth` a month and `perGbHour`
+   * an hour up to it (in {@link currency}, excluding VAT; a live catalogue's `ProviderExtras` win),
+   * or included in the server's price up to the count its offer names
+   * (`ComputeOffer.includedSnapshots`).
    */
-  snapshots: { kind: "per-gb" } | { kind: "included" };
+  snapshots: { kind: "per-gb"; perGbMonth: number; perGbHour: number } | { kind: "included" };
   /** True when a whole-server snapshot outlives the server (so one is worth taking before removal). */
   serverSnapshotsOutliveServer: boolean;
   /** True when the server can be protected against deletion (lifted before a teardown). */

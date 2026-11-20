@@ -43,6 +43,8 @@ describe("DigitalOceanCatalog (live)", () => {
       cpuType: "shared",
       architecture: "x86",
       monthly: { amount: 24, currency: "USD" },
+      billing: "hourly",
+      hourly: { amount: 0.03571, currency: "USD" },
       pricesIncludeVat: false,
       deprecated: false,
       available: true,
@@ -53,6 +55,8 @@ describe("DigitalOceanCatalog (live)", () => {
       cpuType: "dedicated",
       memoryGb: 4,
       monthly: { amount: 42, currency: "USD" },
+      billing: "hourly",
+      hourly: { amount: 0.0625, currency: "USD" },
     });
   });
 
@@ -109,6 +113,7 @@ describe("DigitalOceanCatalog (live)", () => {
     expect(extras).toEqual({
       backupPercent: 30,
       snapshotPerGbMonth: { amount: 0.06, currency: "USD" },
+      snapshotPerGbHour: { amount: 0.06 / 672, currency: "USD" },
       snapshotRateAsOf: "2026-11-06T00:00:00.000Z",
       pricesIncludeVat: false,
       source: "static",
@@ -159,6 +164,17 @@ describe("StaticDigitalOceanCatalog", () => {
       ["s-2vcpu-4gb", 24],
       ["s-4vcpu-8gb", 48],
     ]);
+    expect(offers.map((o) => [o.id, o.billing, o.hourly?.amount])).toEqual([
+      ["s-1vcpu-1gb", "hourly", 0.00893],
+      ["s-1vcpu-2gb", "hourly", 0.01786],
+      ["s-2vcpu-2gb", "hourly", 0.02679],
+      ["s-2vcpu-4gb", "hourly", 0.03571],
+      ["s-4vcpu-8gb", "hourly", 0.07143],
+    ]);
+    for (const offer of offers) {
+      // DigitalOcean's monthly price is its hourly one for 672 hours, to the cent.
+      expect(offer.hourly?.amount ?? 0).toBeCloseTo(offer.monthly.amount / 672, 5);
+    }
     expect(offers[0]).toMatchObject({
       provider: "digitalocean",
       vcpus: 1,
@@ -180,6 +196,7 @@ describe("StaticDigitalOceanCatalog", () => {
     expect(await catalog.extras("ams3")).toEqual({
       backupPercent: 30,
       snapshotPerGbMonth: { amount: 0.06, currency: "USD" },
+      snapshotPerGbHour: { amount: 0.06 / 672, currency: "USD" },
       snapshotRateAsOf: "2026-11-06T00:00:00.000Z",
       pricesIncludeVat: false,
       source: "static",
