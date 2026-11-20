@@ -13,6 +13,7 @@ import {
   EDGE_PROXIES,
   edgeProxy,
   keepNewerPins,
+  MOVE_WAITING,
   type RenderedFile,
   ROLLBACK_INPUTS,
   serverDeploySecrets,
@@ -596,20 +597,40 @@ export async function deployFilesChanged(session: MoveSession): Promise<boolean>
 }
 
 /**
- * Before the new side's first deploy: when its deploy files (the workflow, the runtime files the
- * deploy uploads or Portainer's stack template) differ from the old side's, GitHub's branch must
- * hold the new ones first. Until it does, they go into a pull request and the move stops; the next
- * run continues once it is merged.
+ * True when the deploy workflow on GitHub's branch doesn't know a move's marker (FR-3027): an
+ * earlier OpsCrew committed it, so its start script runs the release command and starts the app on
+ * a server whose data the move hasn't copied yet. A workflow OpsCrew can't read there is left to
+ * its dispatch, as before.
  */
-async function deployFilesStop(session: MoveSession): Promise<RetargetResult | undefined> {
+async function workflowIgnoresMarker(session: MoveSession): Promise<boolean> {
+  const { plan } = session;
+  const branch = workflowBranch(plan, session.github.defaultBranch);
+  const committed = await fileOnGitHub(session, branch, plan.cicd.workflowPath);
+  return committed !== undefined && !committed.includes(MOVE_WAITING);
+}
+
+/**
+ * Before the new side's first deploy: when its deploy files (the workflow, the runtime files the
+ * deploy uploads or Portainer's stack template) differ from the old side's, or when the move waits
+ * for its data on a server (`waits`) and GitHub's workflow doesn't know the marker
+ * ({@link workflowIgnoresMarker}), GitHub's branch must hold the new ones first. Until it does,
+ * they go into a pull request and the move stops; the next run continues once it is merged.
+ */
+async function deployFilesStop(
+  session: MoveSession,
+  waits: boolean,
+): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  if (!(await deployFilesChanged(session))) return undefined;
+  const changed = await deployFilesChanged(session);
+  if (!changed && !(waits && (await workflowIgnoresMarker(session)))) return undefined;
   const words = sideWords(plan.target, "new");
   deps.reporter.step(`Checking the deploy files for ${words} on GitHub`);
   const proposal = await proposeDeployFiles(session, plan);
   if (proposal.kind === "merged") return undefined;
-  const differs = `The deploy files for ${words} differ from those on ${proposal.branch}`;
+  const differs = changed
+    ? `The deploy files for ${words} differ from those on ${proposal.branch}`
+    : `The deploy workflow on ${proposal.branch} is an earlier OpsCrew's, which would run the release command and start the app on ${words} before the move copies its data there`;
   return {
     step: move.step,
     done: false,
@@ -773,7 +794,7 @@ export async function deployStep(
   } else {
     await storeDeploySecrets(session, "new");
   }
-  const pending = await deployFilesStop(session);
+  const pending = await deployFilesStop(session, waits);
   if (pending !== undefined) return pending;
   // A script that stopped after the deploy (at a host plan's hash) does not deploy again.
   if (!portainer && !(await deployedInThisMove(session))) {

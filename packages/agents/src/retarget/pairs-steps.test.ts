@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { findExecutable } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
+  MOVE_WAITING,
   PORTAINER_DEPLOY_SECRETS,
   PORTAINER_IMAGE_PLACEHOLDER,
   serverDeploySecrets,
@@ -194,6 +195,64 @@ describe.skipIf(!findExecutable("git"))(
       expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(false);
       expect(h.github.runs).toHaveLength(1);
     });
+
+    it.each([
+      { workflow: "an earlier OpsCrew's, without the marker", supports: false },
+      { workflow: "this OpsCrew's, with the marker", supports: true },
+    ])(
+      "FR-3027: between two cloud servers with the same deploy files, GitHub's workflow being $workflow",
+      async ({ supports }) => {
+        const h = await pairHarness("hetzner", "digitalocean", { step: "created" });
+        expect(await deployFilesChanged(h.session)).toBe(false);
+        // GitHub's branch holds the deploy files; an earlier OpsCrew's start script has no
+        // marker check.
+        const committed = (await renderFiles(h.session)).filter((file) => file.kind !== "infra");
+        const workflow = committed.find((file) => file.path === h.plan.cicd.workflowPath);
+        expect(workflow?.content).toContain(MOVE_WAITING);
+        const files = committed.map((file) =>
+          file === workflow && !supports
+            ? {
+                ...file,
+                content: file.content
+                  .split("\n")
+                  .filter((line) => !line.includes(MOVE_WAITING))
+                  .join("\n"),
+              }
+            : file,
+        );
+        await writeRenderedFiles(h.root, files);
+        await h.git(h.root, "add", ...files.map((file) => file.path));
+        await h.git(h.root, "commit", "-m", "the deploy files on GitHub");
+        await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+
+        const stop = await deployStep(h.session, {});
+        if (supports) {
+          expect(stop).toBeUndefined();
+          expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(false);
+          expect(h.github.runs).toHaveLength(1);
+          return;
+        }
+        // The workflow goes into a pull request, as differing files do, and nothing deploys yet.
+        expect(stop).toMatchObject({ step: "created", done: false });
+        expect(stop?.next.join(" ")).toContain(
+          "The deploy workflow on main is an earlier OpsCrew's, which would run the release command and start the app on the new Droplet on DigitalOcean before the move copies its data there.",
+        );
+        expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(true);
+        expect(h.github.runs).toEqual([]);
+        const proposed = await h.git(h.root, "show", `HEAD:${h.plan.cicd.workflowPath}`);
+        expect(proposed).toContain(MOVE_WAITING);
+
+        // Merged on GitHub: the deploy runs, the app's image and services wait there.
+        await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+        expect(await deployStep(h.session, {})).toBeUndefined();
+        expect(moveOf(h.session).step).toBe("deployed");
+        expect(h.github.runs).toHaveLength(1);
+        expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, waiting: true });
+        // The stop and the pull request name the side in words, never its address.
+        expect(`${stop?.next.join(" ")}
+${JSON.stringify(h.handler.requests)}`).not.toContain(NEW_IPV4);
+      },
+    );
 
     it("a workflow that stays the same deploys at once", async () => {
       const h = await pairHarness("hetzner", "own", { step: "created" });

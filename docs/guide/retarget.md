@@ -104,7 +104,9 @@ expected length. Nothing changes until you continue.
    - When the move copies data to a server, its deploys there bring up only the app's image and
      its services until the copy: the release command and the app start in the maintenance window,
      on the copied data, so an app whose migrations need its existing tables never runs on an empty
-     database. OpsCrew checks that the image is there and the services run.
+     database. OpsCrew checks that the image is there and the services run. A deploy workflow on
+     your branch from an earlier OpsCrew doesn't know this, so OpsCrew proposes the new one in a
+     pull request first, as for different deploy files.
    - In Portainer, the app's stacks are planned and approved by hash, as `opscrew provision` does,
      with the exact version the old side runs (the deploy branch is written with it, after your
      approval).
