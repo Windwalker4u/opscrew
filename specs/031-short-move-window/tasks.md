@@ -192,7 +192,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 - [x] T3110 (lead) A real move's past items backfilled by hand into the live app's
   plan once T3109 is in, with the move's exact times
 
-- [ ] T3111 [US4] A bought domain's purchase and renewals in the cost
+- [x] T3111 [US4] A bought domain's purchase and renewals in the cost
   - Owns: `packages/plan-schema/src/plan.ts` and `schemas/plan.schema.json` (`cost.renewals`
     only), `packages/agents/src/domain/**`, `packages/agents/src/status/**`, colocated tests
   - Reads: research.md R4 (a domain OpsCrew bought), `packages/agents/src/shared/cost-times.ts`
@@ -247,7 +247,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 
 **Also in 0.2.11** (a bug found in a live provision of a second app, 2026-11-20):
 
-- [ ] T3114 A redesign keeps the variables the user added to `app.env` by hand
+- [x] T3114 A redesign keeps the variables the user added to `app.env` by hand
   - Why: design rebuilds `app.env` from detection and keeps only the settings of the variables
     detection still finds (`keepPlanSettings` in `packages/agents/src/design/run.ts`), so a
     variable the user added because detection misses it (a switch the code reads with a default,
