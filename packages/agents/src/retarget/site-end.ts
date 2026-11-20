@@ -26,6 +26,7 @@ import {
   verificationRecordName,
 } from "../serverless/pages/verification";
 import { describeChanges, trackedFiles, writeRenderedFiles } from "../shared";
+import { carryRecords } from "../shared/cost-times";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { clearPending, type MoveAction } from "./pending";
@@ -415,7 +416,11 @@ async function abortSite(
       `OpsCrew could not price ${hostWords(from)} again, so opscrew/plan.yaml keeps the cost of ${hostWords(to)}. Run \`opscrew design\` to refresh it.`,
     );
   }
-  const plan = { ...beforeMove(session.plan), ...(cost !== undefined ? { cost } : {}) };
+  // The repriced cost keeps the plan's records: one-time fees, ended items and renewals.
+  const plan = {
+    ...beforeMove(session.plan),
+    ...(cost !== undefined ? { cost: carryRecords(cost, session.plan.cost) } : {}),
+  };
 
   // 1. The files as before the move, and the old root's plan: it changes nothing unless a switch
   // stopped part-way, and then it puts the hostnames back on the old host. To GitHub Pages, the

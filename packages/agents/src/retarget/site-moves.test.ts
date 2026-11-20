@@ -339,6 +339,15 @@ describe.skipIf(!findExecutable("git"))(
 
       await move(s, { to: "cloudflare-workers" });
       expect((await s.readPlan()).cost.renewals).toEqual([renewal]);
+
+      // Its abort prices the old side again and keeps the renewal too.
+      const aborted = await s.run();
+      const result = await abortRetarget(aborted.deps, {
+        services: s.services,
+        confirm: async () => true,
+      });
+      expect(result).toMatchObject({ step: "aborted", done: true });
+      expect((await s.readPlan()).cost.renewals).toEqual([renewal]);
     });
 
     it("aborts before the switch from GitHub Pages: the Worker's shell is deleted and the deploy setup goes back", async () => {
