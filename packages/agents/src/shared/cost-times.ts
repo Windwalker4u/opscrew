@@ -11,7 +11,7 @@ import type {
   EndedCost,
   OneTimeCost,
 } from "@opscrew/plan-schema";
-import { convertMoney, convertRate } from "../design/cost";
+import { BACKUPS_ITEM, CONVERTED_NOTE, convertMoney, convertRate, IPV4_ITEM } from "../design/cost";
 
 /** Whether `line` is billed over time (hourly or monthly), not free nor of unknown billing. */
 function billed(line: CostItem): boolean {
@@ -135,11 +135,11 @@ export function carryRecords(next: CostEstimate, previous: CostEstimate): CostEs
  */
 function itemKey(line: CostItem): string {
   const { item } = line;
-  const base = item.startsWith("Primary IPv4 address")
-    ? "Primary IPv4 address"
-    : item.startsWith("Automated backups (")
-      ? "Automated backups"
-      : item.replace(/, \S+ converted at 1 EUR = .*$/, "");
+  const base = item.startsWith(IPV4_ITEM)
+    ? IPV4_ITEM
+    : item.startsWith(`${BACKUPS_ITEM} (`)
+      ? BACKUPS_ITEM
+      : item.replace(CONVERTED_NOTE, "");
   return `${line.provider ?? ""}\n${base}`;
 }
 
@@ -158,7 +158,16 @@ function matchRunning(
     const match = running.get(itemKey(line));
     if (match === undefined) return line;
     running.delete(itemKey(line));
-    return line.since === undefined ? { ...line, since: match.since } : line;
+    if (line.since !== undefined) return line;
+    // A line priced this time without its billing keeps the running item's, so it can still end.
+    const billing =
+      line.billing === undefined && match.billing !== undefined
+        ? {
+            billing: match.billing,
+            ...(match.hourly !== undefined ? { hourly: match.hourly } : {}),
+          }
+        : {};
+    return { ...line, ...billing, since: match.since };
   });
   return { breakdown, unmatched: [...running.values()] };
 }

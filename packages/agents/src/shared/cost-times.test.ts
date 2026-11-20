@@ -1,5 +1,6 @@
 import { type CostEstimate, CostEstimateSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { convertedNote } from "../design/cost";
 import { createTestPhaseDeps, testPlan } from "../testing";
 import {
   abortedCost,
@@ -113,6 +114,31 @@ describe("the cost's times (031 US4)", () => {
       { ...backups, since: CREATED },
     ]);
     expect(next.ended).toBeUndefined();
+  });
+
+  it("keeps an extra server whose converted price alone changed, by design's own wording", () => {
+    const usd = (amount: number) => ({ amount, currency: "USD" as const });
+    const extra = { ...server, item: "Server worker (cx23 in nbg1)" };
+    const previous = costOf([
+      { ...extra, item: `${extra.item}${convertedNote(usd(6.04))}`, since: CREATED },
+    ]);
+    const next = keepCostTimes(
+      costOf([{ ...extra, item: `${extra.item}${convertedNote(usd(6.1))}` }]),
+      previous,
+      NOW,
+    );
+    expect(next.breakdown[0]?.since).toBe(CREATED);
+    expect(next.ended).toBeUndefined();
+  });
+
+  it("keeps a running item's billing when design priced it without one, so it can still end", () => {
+    const { billing: _billing, hourly: _hourly, ...unpriced } = server;
+    const kept = keepCostTimes(costOf([unpriced]), costOf([{ ...server, since: CREATED }]), NOW);
+    expect(kept.breakdown).toEqual([{ ...server, since: CREATED }]);
+    const ended = stopBilling(kept, NOW).ended;
+    expect(ended).toEqual([
+      expect.objectContaining({ item: server.item, since: CREATED, until: NOW }),
+    ]);
   });
 
   it("keeps the one-time fees and ended items across designs", () => {

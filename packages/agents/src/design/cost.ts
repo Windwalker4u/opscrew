@@ -28,6 +28,21 @@ export const EXCHANGE_RATE_NOTE =
 /** Automated backup surcharge when neither the catalogue nor the caller gives one (Hetzner's). */
 const DEFAULT_BACKUP_PERCENT = 20;
 
+/**
+ * The words that start the IPv4 and backups items, before a note on where their price came from.
+ * An item keeps its billing start across designs by them (`keepCostTimes`).
+ */
+export const IPV4_ITEM = "Primary IPv4 address";
+export const BACKUPS_ITEM = "Automated backups";
+
+/** An extra server's item ends with this when its price was converted from another currency. */
+export function convertedNote(monthly: Money): string {
+  return `, ${formatMoney(monthly)} converted at 1 EUR = ${USD_PER_EUR.toFixed(2)} USD`;
+}
+
+/** {@link convertedNote}'s words, to find them at an item's end. */
+export const CONVERTED_NOTE = /, \S+ converted at 1 EUR = \d+\.\d{2} USD$/;
+
 /** Rounds to cents. */
 export function roundCents(amount: number): number {
   return Math.round((amount + Number.EPSILON) * 100) / 100;
@@ -272,7 +287,7 @@ export function pricedOffer(
   const rates = nonLiveRates(offer, extras, options);
   if (extras.ipv4Monthly !== undefined) {
     breakdown.push({
-      item: rates.ipv4 ? `Primary IPv4 address (${rates.ipv4.item})` : "Primary IPv4 address",
+      item: rates.ipv4 ? `${IPV4_ITEM} (${rates.ipv4.item})` : IPV4_ITEM,
       provider: offer.provider,
       monthly: convertMoney(extras.ipv4Monthly, currency),
       ...billed(extras.ipv4Hourly),
@@ -281,7 +296,7 @@ export function pricedOffer(
   if (options.backups) {
     const note = rates.backups ? `, ${rates.backups.item}` : "";
     breakdown.push({
-      item: `Automated backups (${percent}% of the server price${note})`,
+      item: `${BACKUPS_ITEM} (${percent}% of the server price${note})`,
       provider: offer.provider,
       monthly: { amount: roundCents((server * percent) / 100), currency },
       // Billed as the server is: the percentage of its hourly price too.

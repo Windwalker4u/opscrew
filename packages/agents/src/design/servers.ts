@@ -16,6 +16,7 @@ import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backupsOnOrderPage, orderPageBackupsText, orderPageProviders } from "./backups";
 import {
+  convertedNote,
   convertMoney,
   convertRate,
   EXCHANGE_RATE_NOTE,
@@ -23,7 +24,6 @@ import {
   pricedOffer,
   priceLabel,
   roundCents,
-  USD_PER_EUR,
 } from "./cost";
 import type { EditedServer } from "./placement-edits";
 import {
@@ -401,10 +401,7 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
     ];
     const extras = included.length === 0 ? "" : `, with ${listText(included)}`;
     const where = ` (${target.serverType} in ${target.location})`;
-    const converted =
-      cost.monthly.currency === currency
-        ? ""
-        : `, ${formatMoney(cost.monthly)} converted at 1 EUR = ${USD_PER_EUR.toFixed(2)} USD`;
+    const converted = cost.monthly.currency === currency ? "" : convertedNote(cost.monthly);
     return {
       // withoutServerCost finds it by these words.
       item: `Server ${server.name}${where}${extras}${converted}`,
