@@ -1519,6 +1519,19 @@ describe("runDesign: the image builder and the deploy strategy", () => {
     expect(plan.app.build).toMatchObject({ builder: "own-dockerfile", chosen: "user" });
   });
 
+  it("keeps the GitHub token the user gave their own Dockerfile's build", async () => {
+    const deps = await setup(nextPostgresFacts({ docker: { dockerfile: "Dockerfile" } }));
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    const build = first.plan.app.build as NonNullable<DeployPlan["app"]["build"]>;
+    expect(build).not.toHaveProperty("githubToken");
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: { ...first.plan.app, build: { ...build, githubToken: true } },
+    });
+    const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(plan.app.build).toMatchObject({ builder: "own-dockerfile", githubToken: true });
+  });
+
   it("keeps the secret, source and optional the user set on each variable still there", async () => {
     const deps = await setup(nextPostgresFacts());
     const first = await runDesign(deps, { catalog: euCatalog() });

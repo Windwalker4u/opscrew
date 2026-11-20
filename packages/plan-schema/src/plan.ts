@@ -1770,6 +1770,12 @@ export const AppBuildSchema = z
      * (`public`), so the rest of the app is never served. Set by design from `facts.webRoot`.
      */
     webRoot: RepoPathSchema.optional(),
+    /**
+     * For the user's own Dockerfile only: true gives its build the workflow's GitHub token as the
+     * BuildKit secret `GITHUB_TOKEN`, for a build that calls GitHub's API. Set by hand; later
+     * designs keep it. Absent means false.
+     */
+    githubToken: z.boolean().optional(),
   })
   .superRefine((build, ctx) => {
     if (
@@ -1781,6 +1787,14 @@ export const AppBuildSchema = z
         path: ["webRoot"],
         message:
           'is only for a PHP app built by Railpack (builder "railpack", runtime.language "php"); remove it',
+      });
+    }
+    if (build.githubToken === true && build.builder !== "own-dockerfile") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["githubToken"],
+        message:
+          'is only for a build from your own Dockerfile (builder "own-dockerfile"); remove it',
       });
     }
   });

@@ -288,6 +288,9 @@
             "webRoot": {
               "type": "string",
               "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            },
+            "githubToken": {
+              "type": "boolean"
             }
           },
           "required": ["builder", "chosen", "reason", "runtime", "probe"],
@@ -2927,6 +2930,9 @@
                 "webRoot": {
                   "type": "string",
                   "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "githubToken": {
+                  "type": "boolean"
                 }
               },
               "required": ["builder", "chosen", "reason", "runtime", "probe"],

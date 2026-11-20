@@ -306,16 +306,21 @@ function sealsImage(plan: DeployPlan): boolean {
 /**
  * `generated-dockerfile` and `own-dockerfile` (and a plan without a builder yet). OpsCrew's own
  * Dockerfile already holds supercronic when the plan has cron jobs, and the SQLite folder; the
- * user's own one builds `build-<commit>` instead, and the seal adds them and the kept folder.
+ * user's own one builds `build-<commit>` instead, and the seal adds them and the kept folder. With
+ * `app.build.githubToken` the build from the user's Dockerfile also gets the job's GitHub token as
+ * the secret `GITHUB_TOKEN` (`secrets` takes one `id=value` per line); the seal build never does.
  */
 function dockerfileSteps(plan: DeployPlan): string[] {
   const source = [
     `context: ${JSON.stringify(plan.app.buildContext || ".")}`,
     `file: ${JSON.stringify(plan.app.dockerfile || "Dockerfile")}`,
   ];
+  const secrets = secret(plan, DEPLOY_SECRETS.buildSecrets);
   const values = [
     `build-args: ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
-    `secrets: ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
+    ...(plan.app.build?.githubToken === true
+      ? ["secrets: |", `  ${secrets}`, "  GITHUB_TOKEN=${{ github.token }}"]
+      : [`secrets: ${secrets}`]),
   ];
   if (!sealsImage(plan)) {
     const note = "# The provenance records build arguments: only non-secret values go there.";

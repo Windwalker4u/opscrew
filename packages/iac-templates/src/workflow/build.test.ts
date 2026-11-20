@@ -240,6 +240,61 @@ describe("an own Dockerfile with cron jobs", () => {
   });
 });
 
+describe("the workflow's GitHub token for an own Dockerfile (app.build.githubToken)", () => {
+  const withToken = (plan: DeployPlan) =>
+    DeployPlanSchema.parse({
+      ...plan,
+      app: { ...plan.app, build: { ...plan.app.build, githubToken: true } },
+    });
+  const secrets = `\${{ secrets.${DEPLOY_SECRETS.buildSecrets} }}`;
+  const mounts = `${secrets}\nGITHUB_TOKEN=\${{ github.token }}\n`;
+  const own = planFor("own-dockerfile");
+  const cron = withProcesses(own, { cron: [NIGHTLY] });
+
+  it("adds it to the Dockerfile's build as a secret mount, never as a build argument", () => {
+    const job = buildJob(withToken(own));
+    const push = step(job, "push");
+    expect(push?.with?.secrets).toBe(mounts);
+    expect(push?.with?.["build-args"]).toBe(`\${{ secrets.${DEPLOY_SECRETS.buildEnv} }}`);
+    expect(job.permissions).toEqual(buildJob(own).permissions);
+    // build-push-action reads `secrets` as one `id=value` per line and skips empty ones, so the
+    // secret's own lines and the token's come through as separate mounts.
+    const token = fakeSecret("github-token");
+    const value = `NPM_TOKEN=${token}\nSENTRY_AUTH_TOKEN=${token}\n`;
+    const lines = String(push?.with?.secrets)
+      .replace(secrets, value)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    expect(lines).toEqual([
+      `NPM_TOKEN=${token}`,
+      `SENTRY_AUTH_TOKEN=${token}`,
+      "GITHUB_TOKEN=${{ github.token }}",
+    ]);
+  });
+
+  it("adds it to the build from the Dockerfile, not to the seal build", () => {
+    const job = buildJob(withToken(cron));
+    expect(step(job, "own")?.with?.secrets).toBe(mounts);
+    expect(String(step(job, "own")?.with?.["build-args"])).not.toContain("GITHUB_TOKEN");
+    expect(step(job, "push")?.name).toBe("Seal and push the image");
+    expect(step(job, "push")?.with).not.toHaveProperty("secrets");
+    expect(jobYaml(rendered(withToken(cron)), "build").match(/github\.token/g)).toHaveLength(1);
+    expect(job.permissions).toEqual(buildJob(cron).permissions);
+  });
+
+  it("leaves the workflow as it is without it", () => {
+    for (const plan of [own, cron]) {
+      const off = DeployPlanSchema.parse({
+        ...plan,
+        app: { ...plan.app, build: { ...plan.app.build, githubToken: false } },
+      });
+      expect(rendered(off)).toBe(rendered(plan));
+      expect(rendered(plan)).not.toContain("github.token");
+    }
+  });
+});
+
 describe("build values", () => {
   /** Evaluates `${{ secrets.NAME }}` the way GitHub does, with `values`. */
   function evaluated(content: string, values: Record<string, string>): Step[] {

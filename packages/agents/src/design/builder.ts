@@ -32,6 +32,8 @@ export interface BuilderChoice {
   automatic: ImageBuilder;
   /** How the Compose health check probes the app, for a tool the image has. */
   probe: NonNullable<AppBuild["probe"]>;
+  /** True when plan.yaml gives the user's own Dockerfile's build the workflow's GitHub token. */
+  githubToken?: true;
   /**
    * Plain-English warnings: about the runtime version (end of life, a new release line, a
    * declaration OpsCrew cannot follow) and about the user's Buildpacks for a language OpsCrew
@@ -41,11 +43,12 @@ export interface BuilderChoice {
 }
 
 /**
- * The plan's `app.build` for `choice`, as design records it and a move keeps it: the choice, the
- * working directory of the user's own image, and the folder a plain PHP app serves, from detection.
+ * The plan's `app.build` for `choice`, as design records it and a move keeps it: the choice (with
+ * the GitHub token plan.yaml gives the user's own Dockerfile), the working directory of the user's
+ * own image, and the folder a plain PHP app serves, from detection.
  */
 export function appBuildOf(choice: BuilderChoice, facts: ProjectFacts): AppBuild {
-  const { builder, chosen, reason, runtime, probe, automatic } = choice;
+  const { builder, chosen, reason, runtime, probe, automatic, githubToken } = choice;
   return {
     builder,
     chosen,
@@ -53,6 +56,7 @@ export function appBuildOf(choice: BuilderChoice, facts: ProjectFacts): AppBuild
     runtime,
     probe,
     automatic,
+    ...(githubToken === undefined ? {} : { githubToken }),
     // Where the app runs in the user's own image, as detection read it.
     ...(builder === "own-dockerfile" && facts.build.workdir !== undefined
       ? { workdir: facts.build.workdir }
@@ -288,10 +292,10 @@ function userChoiceCheck(
  * versions its pinned builder offers, unless the build needs a secret value (Buildpacks has no
  * secret mounts); Railpack for everything else. `automatic` is that order without the
  * repository's own Dockerfile, so a failed deploy can name a builder to switch to. The runtime
- * version follows FR-1228 ({@link resolveRuntime}). Every builder
- * builds for amd64 and arm64 (research R7, R8), so the architecture, part of the contract for
- * `retarget`, decides nothing today. Pure and deterministic: the same inputs give the same result
- * and the same reason.
+ * version follows FR-1228 ({@link resolveRuntime}). The user's own Dockerfile keeps the plan's
+ * `githubToken`; any other builder drops it. Every builder builds for amd64 and arm64 (research
+ * R7, R8), so the architecture, part of the contract for `retarget`, decides nothing today. Pure
+ * and deterministic: the same inputs give the same result and the same reason.
  */
 export function chooseBuilder(
   facts: ProjectFacts,
@@ -316,6 +320,10 @@ export function chooseBuilder(
     runtime: builtRuntime(builder, facts, runtime),
     automatic: auto.builder,
     warnings,
+    // Set by hand for the user's own Dockerfile; another builder gets no token.
+    ...(builder === "own-dockerfile" && recorded?.githubToken === true
+      ? { githubToken: true as const }
+      : {}),
   });
   if (recorded?.chosen === "user") {
     const check = userChoiceCheck(facts, recorded.builder, language, runtime.version, stack);

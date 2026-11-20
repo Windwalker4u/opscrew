@@ -220,6 +220,26 @@ describe("chooseBuilder rules", () => {
     expect(choice(chooseBuilder(facts, plan, "amd64")).builder).toBe("generated-dockerfile");
   });
 
+  it("keeps the GitHub token the user gave their own Dockerfile's build, and only to it", () => {
+    const facts = nextPostgresFacts({ docker: { dockerfile: "Dockerfile" } });
+    const plan = planWith({
+      builder: "own-dockerfile",
+      chosen: "auto",
+      reason: "earlier",
+      runtime: { language: "node", version: "24" },
+      githubToken: true,
+    });
+    const own = choice(chooseBuilder(facts, plan, "amd64"));
+    expect(own).toMatchObject({ builder: "own-dockerfile", githubToken: true });
+    expect(appBuildOf(own, facts).githubToken).toBe(true);
+    // Without the Dockerfile OpsCrew builds with its own, which gets no token.
+    const generated = choice(chooseBuilder(nextPostgresFacts(), plan, "amd64"));
+    expect(generated.builder).toBe("generated-dockerfile");
+    expect(appBuildOf(generated, facts)).not.toHaveProperty("githubToken");
+    const without = choice(chooseBuilder(facts, undefined, "amd64"));
+    expect(appBuildOf(without, facts)).not.toHaveProperty("githubToken");
+  });
+
   it("keeps the user's choice, with what the automatic choice would be", () => {
     const plan = planWith({
       builder: "railpack",

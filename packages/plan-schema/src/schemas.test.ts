@@ -1973,6 +1973,7 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
       automatic?: "generated-dockerfile" | "own-dockerfile" | "buildpacks" | "railpack";
       workdir?: string;
       webRoot?: string;
+      githubToken?: boolean;
     }>();
     for (const probe of ["node", "python", "ruby", "php", "wget", "bash", "none"]) {
       expect(DeployPlanSchema.parse(withBuild(plan, { ...build, probe })).app.build?.probe).toBe(
@@ -2004,6 +2005,22 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
     });
     expect(ProjectFactsSchema.parse(facts("/app")).build.workdir).toBe("/app");
     expect(pathsOf(ProjectFactsSchema.safeParse(facts("app")))).toEqual(["build.workdir"]);
+  });
+
+  it("gives the workflow's GitHub token only to the user's own Dockerfile", async () => {
+    const plan = await validPlan();
+    const own = { ...build, builder: "own-dockerfile", probe: "none", githubToken: true };
+    expect(DeployPlanSchema.parse(withBuild(plan, own)).app.build?.githubToken).toBe(true);
+    for (const builder of ["generated-dockerfile", "buildpacks", "railpack"]) {
+      const result = DeployPlanSchema.safeParse(withBuild(plan, { ...own, builder }));
+      expect(pathsOf(result), builder).toEqual(["app.build.githubToken"]);
+      expect(result.error?.issues[0]?.message, builder).toContain("own-dockerfile");
+      const off = { ...own, builder, githubToken: false };
+      expect(DeployPlanSchema.safeParse(withBuild(plan, off)).success, builder).toBe(true);
+    }
+    expect(DeployPlanSchema.parse(withBuild(plan, build)).app.build).not.toHaveProperty(
+      "githubToken",
+    );
   });
 
   it("keeps the version as the app declares it: major, major.minor or major.minor.patch", async () => {

@@ -128,6 +128,27 @@ adapt` checks it against the baseline and lists each finding with its fix in its
   passed with `--build-arg` is recorded in the image history, so the fix is a [BuildKit](https://docs.docker.com/build/buildkit/) secret mount
   (`RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci`).
 
+A build that calls GitHub's API, for example to check a module's commit, does so without a login
+by default. GitHub then allows 60 calls an hour for each address, and many jobs on GitHub's
+runners share one, so the build can fail on the limit. To give your Dockerfile's build the
+workflow's own GitHub token, set it in `opscrew/plan.yaml` and run `npx opscrew provision`:
+
+```yaml
+app:
+  build:
+    builder: own-dockerfile
+    githubToken: true
+```
+
+The build gets the token as a secret mount named `GITHUB_TOKEN`, never as a build argument. Read it
+in the `RUN` line that calls the API:
+`RUN --mount=type=secret,id=GITHUB_TOKEN,env=GITHUB_TOKEN ./scripts/check-modules.sh`. The token
+never reaches the image, its layers or the provenance record, and GitHub revokes it when the job
+ends. The build job has `packages: write`, so until then the token can also push to your
+repository's packages: mount it only in the `RUN` that needs it, never in one that installs
+dependencies. A later `npx opscrew design` keeps the setting. It works only with your own
+Dockerfile.
+
 The app must listen on the port in its `PORT` variable and answer its health route. When the new
 version does not start or fails its health check, the deploy stops, the running version keeps
 serving, and the message names the builder OpsCrew would choose and how to switch to it: set
