@@ -337,6 +337,29 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && npx vitest run --root packages/cli src/commands/providers && pnpm lint`
   - Effort: high
 
+- [ ] T3117 The secrets recovery copy's recipient in a script: `--recipient <age public key>`
+  - Why: in a script, provision makes the encrypted recovery copy of the app's secrets only with
+    `--key-out`, which writes a new age key where the script runs (a CI runner keeps nothing). A
+    first setup applied from GitHub Actions then has no copy anyone can open. The agents already
+    take a recipient (`RefreshRecoveryOptions.recipient`); only the CLI lacks the flag.
+  - Owns: `packages/cli/src/commands/provision.ts`, the CLI command that refreshes the copy
+    (`secrets`, if it exists), `docs/guide/` (where the recovery copy and `--key-out` are
+    described), colocated tests
+  - Accept:
+    - **The flag:** `--recipient <age1…>`, repeatable, on `opscrew provision` and on the command
+      that refreshes the copy. The copy is encrypted to each recipient, no key is written anywhere,
+      and `opscrew/secrets.sops.json` goes into the deploy-setup pull request exactly as it does
+      from a terminal (a public repository included or left out the same way).
+    - **Checked:** a value that isn't an age public key (`age1` and its Bech32 form, as the core
+      already parses it) is refused with a plain message, before anything changes. With both
+      `--recipient` and `--key-out`, the copy is encrypted to all of them.
+    - **No secret:** the recipients are public keys; no private key or secret is printed, logged
+      or written.
+    - **Tests:** a script run with `--recipient` makes the copy for that key and writes no key
+      file; two recipients; a bad value refused; the terminal's behaviour unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew --filter=@opscrew/agents && npx vitest run --root packages/cli src/commands/provision src/commands/secrets && pnpm lint`
+  - Effort: medium
+
 **Also in 0.2.11** (a user's ask, the founder's yes of 2026-11-20; not part of the move):
 
 - [x] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
