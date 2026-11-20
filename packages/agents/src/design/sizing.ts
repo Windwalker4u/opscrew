@@ -216,7 +216,9 @@ function serverAppMb(app: ServerApp): number {
  * under 100 MB, and design warns about the server's size already). For an extra server `name`
  * (feature 018), `appMb` is this app's services there, and an `edgeMb` of 0 runs no edge. With
  * `wording.again` (a command that changes the server, such as `opscrew provision`), the refusal
- * ends "Nothing was changed." and says to run design and that command again.
+ * ends "Nothing was changed." and says to run design and that command again. With `wording.server`
+ * and `wording.hint` (a move onto another app's server), the refusal ends so too, the server is
+ * named so in the refusal and the warning (`The server of "blog"`), and `hint` is its next step.
  */
 export function ownServerMemory(
   serverMb: number,
@@ -224,7 +226,7 @@ export function ownServerMemory(
   others: readonly ServerApp[],
   edgeMb: number,
   name?: string,
-  wording?: { again: string },
+  wording?: { again: string } | { server: string; hint: string },
 ): { refused?: { message: string; hint: string }; warning?: string } | undefined {
   if (serverMb < 100) return undefined;
   const othersMb = others.reduce((sum, app) => sum + serverAppMb(app), 0);
@@ -237,7 +239,12 @@ export function ownServerMemory(
     ),
   );
   const server = Math.round(serverMb);
-  const noun = name === undefined ? "Your server" : `Server ${name}`;
+  const noun =
+    wording !== undefined && "server" in wording
+      ? wording.server
+      : name === undefined
+        ? "Your server"
+        : `Server ${name}`;
   const edge = edgeMb > 0 ? ` and ${edgeMb} MB for OpsCrew's edge` : "";
   if (!headroom.fits) {
     const left = server - SYSTEM_RESERVE_MB - edgeMb;
@@ -252,16 +259,18 @@ export function ownServerMemory(
           ? "Nothing was written."
           : "plan.yaml was not changed.";
     const again =
-      wording === undefined
+      wording === undefined || !("again" in wording)
         ? "run `opscrew design` again"
         : `run \`opscrew design\` and \`${wording.again}\` again`;
     return {
       refused: {
         message: `${noun} has ${server} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system${edge}, ${taken}, and this app's ${name === undefined ? "containers" : "services there"} have ${appMb} MB of memory limits. ${unchanged}`,
         hint:
-          name === undefined
-            ? `Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then ${again}.`
-            : `Lower the memory limits of the services on server ${name} in opscrew/plan.yaml, add memory to the server, or place fewer services on it, then ${again}.`,
+          wording !== undefined && "hint" in wording
+            ? wording.hint
+            : name === undefined
+              ? `Lower the memory limits in opscrew/plan.yaml (app.memoryMb, and those of the workers and services), add memory to the server, or remove an app from it, then ${again}.`
+              : `Lower the memory limits of the services on server ${name} in opscrew/plan.yaml, add memory to the server, or place fewer services on it, then ${again}.`,
       },
     };
   }

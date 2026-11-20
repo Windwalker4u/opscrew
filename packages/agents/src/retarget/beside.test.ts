@@ -148,6 +148,7 @@ describe.skipIf(!findExecutable("git"))(
       });
       await startMove(h.deps, h.plan, beside(h));
       const warned = h.reporter.text();
+      expect(warned).toContain(`The server of "${FIRST}" keeps only`);
       expect(warned).toContain("% of its memory free after the memory limits of this app");
       expect(warned).toContain(`"${FIRST}" ${appMemoryMb(h.first.plan)} MB`);
       expect(warned).toContain(`"wiki" 256 MB`);
@@ -352,8 +353,8 @@ const REFUSALS: readonly Refusal[] = [
     change: async (h) => {
       h.server.facts = firstAppServer({ memoryGb: 1 });
     },
-    says: `shop doesn't fit beside the apps on the server of "${FIRST}": Your server has 1024 MB of memory.`,
-    hint: "Lower the memory limits in opscrew/plan.yaml",
+    says: `The server of "${FIRST}" has 1024 MB of memory. After 384 MB for the system`,
+    hint: "or name the folder of another app whose server has more memory free; then run `opscrew retarget --to own` again.",
   },
 ];
 

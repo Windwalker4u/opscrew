@@ -4,7 +4,7 @@
  * names the first app (`target.shares`), and design's second-app checks run with the moving app's
  * plan before any change.
  */
-import { listText, toPosixRelative } from "@opscrew/core";
+import { listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { EDGE_PROXIES, edgeMemoryMb, edgeProxy } from "@opscrew/iac-templates";
 import {
   type CostEstimate,
@@ -151,14 +151,14 @@ export async function besideFirstApp(
     ...otherAppsMemory(facts).filter((other) => other.name !== app),
   ];
   const edgeMb = edgeMemoryMb(edgeProxy(first.plan));
-  const memory = ownServerMemory(serverMb, appMemoryMb(moving), others, edgeMb);
+  const memory = ownServerMemory(serverMb, appMemoryMb(moving), others, edgeMb, undefined, {
+    server: `The server of "${name}"`,
+    hint: `Lower the memory limits in ${planFile(deps)} (app.memoryMb, and those of the workers and services), or name the folder of another app whose server has more memory free; then run \`${AGAIN}\` again.`,
+  });
   if (memory?.refused !== undefined) {
-    // Design's figures, with the move's last sentence in place of design's "Nothing was written."
-    throw refusedBeforeChange(
-      "PHASE_PRECONDITION",
-      `${app} doesn't fit beside the apps on the server of "${name}": ${memory.refused.message.replace(/ Nothing was written\.$/, "")}`,
-      `Lower the memory limits in ${planFile(deps)} (app.memoryMb, and those of the workers and services), or name the folder of another app whose server has more memory free; then run \`${AGAIN}\` again.`,
-    );
+    throw new OpsCrewError("PHASE_PRECONDITION", memory.refused.message, {
+      hint: memory.refused.hint,
+    });
   }
   if (memory?.warning !== undefined) deps.reporter.warn(memory.warning);
 
