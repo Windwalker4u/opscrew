@@ -199,6 +199,11 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 - **The PostgreSQL version:** design picks PostgreSQL 17 when the app's Compose file runs 18, and
   says only "The app uses PostgreSQL". It should say why (the version OpsCrew runs), as it does for
   Redis.
+- **Dependabot's file:** there is no plan setting to leave out `.github/dependabot.yml`, which
+  provision writes on every run. A repository that allows Actions only for the deploy removes it
+  by hand from each pull request.
+- **The `.terraform/` folder:** `opscrew/infra/<env>/.terraform/` shows up untracked after
+  provision. The generated `.gitignore` should cover it.
 
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
