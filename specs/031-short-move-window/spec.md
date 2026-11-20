@@ -107,6 +107,30 @@ nothing is restarted or installed.
 
 ---
 
+### User Story 4 - The plan records every cost, so the portal shows it (Priority: P2)
+
+*(Added 2026-11-20, the founder's decision: "it should show every single cost", in 0.2.11.)* A
+move ends one server's billing and starts another's, Contabo charges a setup fee, backups and
+snapshots come and go. `opscrew/plan.yaml`'s `cost` then records each item's billing model
+(hourly up to a monthly cap, a monthly term, or free), its hourly price, when it started, the items
+that ended this month or last (with when), and one-time fees, so the hosted portal can show what
+has run up and mark forecasts as approximate. The field names are agreed with the portal (research
+R4).
+
+**Acceptance Scenarios**:
+
+1. **Given** a design on Hetzner or DigitalOcean, **When** the plan is written, **Then** each item
+   has `billing: hourly`, its `hourly` price and its monthly cap; on Contabo `billing: monthly`; a
+   second app's item `billing: free`.
+2. **Given** a provision that creates a server, **When** it applies, **Then** each billed item gets
+   `since`, and Contabo's setup fee goes into `oneTime` with its time.
+3. **Given** a move's finish, a destroy, backups turned off or a snapshot deleted, **When** it
+   applies, **Then** the item moves to `ended` with its `until`.
+4. **Given** any plan write, **Then** `ended` and `oneTime` keep only the current and the previous
+   calendar month.
+
+---
+
 ### Edge Cases
 
 - PostgreSQL: its data is still dumped and restored in the window, as today, so a large database
@@ -157,6 +181,13 @@ nothing is restarted or installed.
   first deploy.
 - **FR-3110**: After an install OpsCrew made, it MUST forget the server's old host key and pin the
   new one on the first connection, with no changed-key question.
+- **FR-3111**: `cost.breakdown` items MAY carry `billing` (`hourly` | `monthly` | `free`), `hourly`
+  (money) and `since` (time); `cost.oneTime` lists `{item, price, at}`; `cost.ended` lists
+  `{item, monthly, billing, hourly?, since, until}`. All are optional; old plans stay valid.
+- **FR-3112**: Design MUST write `billing` and `hourly` from the providers' price data; provision,
+  retarget, destroy, the backups switch and snapshot deletion MUST write `since`, `until`, `ended`
+  and `oneTime` as they apply; every plan write MUST prune `ended` and `oneTime` older than the
+  previous calendar month.
 
 ### Key Entities
 

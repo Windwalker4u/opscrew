@@ -45,6 +45,33 @@ So a short window needs both: most of the data copied before it, and no workflow
 - **Portainer's new side** gains the pre-copy and the delta (its carrier is the same); its app's
   start stays as today.
 
+## R4. Every cost in the plan (2026-11-20, agreed with the portal's lead)
+
+```yaml
+cost:
+  monthly: {amount, currency}                 # the running items' monthly total, as before
+  breakdown:                                  # running items
+    - item: "Server cx23 (nbg1)"
+      monthly: {amount, currency}             # for an hourly item, its monthly cap
+      billing: hourly                         # hourly | monthly | free
+      hourly: {amount, currency}              # hourly items only
+      since: 2026-11-08T07:13:45Z
+  oneTime:                                    # current and previous calendar month
+    - {item: "Setup fee (V153)", price: {amount, currency}, at: 2026-11-20T13:17:00Z}
+  ended:                                      # removed this or last calendar month
+    - {item, monthly, billing, hourly?, since, until}
+```
+
+- **Billing models:**
+  - Hetzner and DigitalOcean servers, IPv4, backups (20% of the server) and snapshots (per GB)
+    are `hourly`: each started hour up to the monthly cap. DigitalOcean counts seconds, which differs
+    by less than one hour's price.
+  - Contabo is `monthly`: the full price at each term start, from `since`; a removed server's last
+    term was prepaid.
+  - A second app's €0 item is `free`.
+- **The portal computes "so far" and the "~" forecast from these.** Older plans without them stay a
+  "~" run rate.
+
 ## R3. Left for later
 
 - **A direct transfer between the servers** (a one-off key or port installed and removed by the

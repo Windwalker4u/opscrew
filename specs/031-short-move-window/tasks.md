@@ -153,6 +153,45 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew && npx vitest run --root packages/agents src/shared src/provision src/retarget && npx vitest run --root packages/iac-templates src/infra && pnpm lint`
   - Effort: xhigh
 
+## Phase 5: Every cost in the plan (US4, the founder's decision of 2026-11-20, in 0.2.11)
+
+- [ ] T3108 [P] [US4] The cost schema and the providers' hourly prices
+  - Owns: `packages/plan-schema/src/**` (and its generated JSON schemas),
+    `packages/providers/*/src/**` (price data and catalogs), `packages/contracts/src/**` only for the
+    catalog's price fields, colocated tests
+  - Reads: spec US4, FR-3111; research R4; `plan-schema/src/design.ts` (`CostEstimateSchema`); each
+    provider's catalog and static price list
+  - Accept:
+    - **The schema:** R4's fields, all optional. `ended` and `oneTime` currencies equal the
+      monthly total's, and `breakdown` still sums to `monthly`. Old plans stay valid. Regenerate the
+      JSON schemas.
+    - **The providers' price data** gives each offer its hourly price:
+      - Hetzner: the API's `price_hourly`, and a static list with hourly figures;
+      - DigitalOcean: the API's `price_hourly`, and static hourly figures;
+      - the IPv4 and backups items' hourly prices as each provider bills them;
+      - snapshots per GB, hourly and monthly;
+      - Contabo: `monthly` billing and its setup fee, already in its static list.
+    - Tests.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/provider-hetzner --filter=@opscrew/provider-digitalocean --filter=@opscrew/provider-contabo --filter=@opscrew/contracts && pnpm lint`
+  - Effort: high
+
+- [ ] T3109 [US4] The phases write since, until, ended and oneTime
+  - Owns: `packages/agents/src/**` (design's cost, provision, retarget's finish, destroy, the
+    backups switch, snapshot deletion, the plan writer's pruning), colocated tests
+  - Depends: T3108
+  - Accept:
+    - FR-3112.
+    - **The pruning:** at every plan write, `ended` and `oneTime` older than the previous calendar
+      month are pruned.
+    - **A move:** the old side's items go to `ended` at `--finish`; the new side's start at their
+      creation; a Contabo setup fee goes into `oneTime`.
+    - **Tests** for each phase, with a fixed clock.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/design src/provision src/retarget src/destroy src/snapshot && pnpm lint`
+  - Effort: high
+
+- [ ] T3110 (lead) A real move's past items backfilled by hand into the live app's
+  plan once T3109 is in, with the move's exact times
+
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
   restarts the old app without holding the new one. Pass `!stepBefore(move.step, "deployed")` to
