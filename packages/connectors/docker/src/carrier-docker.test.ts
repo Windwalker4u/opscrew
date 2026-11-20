@@ -2,7 +2,8 @@
  * The carrier against the local Docker, through `docker system dial-stdio` processes that core's
  * `NodeStreamRunner` starts: a volume of a few MB with owners, modes and a link is read, written
  * into a second volume that held other files, and the two digests match; the same for a folder
- * bound from the Docker host, and for a volume written into that folder. It pulls the pinned
+ * bound from the Docker host, and for a volume written into that folder; a full copy whose source
+ * then changed is brought to the same digest by the delta of the two manifests. It pulls the pinned
  * busybox, so it runs only with OPSCREW_DOCKER_TESTS=1, and removes what it made (the image too,
  * when it wasn't there before).
  */
@@ -10,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { NodeStreamRunner } from "@opscrew/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { manifestDelta } from "./__fixtures__/delta";
 import { volumeCarrier } from "./carrier";
 import { type DockerClient, dockerClient } from "./client";
 import { dialStdioTransport } from "./dial-stdio";
@@ -42,6 +44,45 @@ chmod 600 /data/app/cache/blob
 ln -s app/config.txt /data/link
 chown -h 1000:1000 /data/link
 chmod 750 /data`;
+
+/**
+ * Before the copy: folder trees, a file and a long name that change type, and a file kept unchanged
+ * in a folder that changes.
+ */
+const TRIMMED = `mkdir -p /data/trim/deep /data/was-dir/inner
+echo t > /data/trim/deep/t
+echo i > /data/was-dir/inner/i
+echo f > /data/was-file
+echo k > /data/app/cache/kept
+head -c 300 /dev/urandom > "/data/$(printf 'l%.0s' $(seq 1 120))"`;
+
+/**
+ * The source's changes after the full copy: content of the same size, a mode, a folder's owner, a
+ * new tree with spaces, leading dashes and a setuid bit, a link turned folder, a new link with its
+ * own owner, a file turned folder, a folder turned file, and a trimmed tree.
+ */
+const CHANGES = `set -e
+dd if=/dev/urandom of=/data/big.bin bs=1 count=16 seek=1000 conv=notrunc 2>/dev/null
+chmod 600 /data/app/config.txt
+chown 1002:1002 /data/app/cache
+rm /data/app/cache/blob
+mkdir -p "/data/-sub dir/-deeper"
+echo n > "/data/-sub dir/ lead.txt"
+echo m > "/data/-sub dir/-deeper/-m"
+chown -R 33:33 "/data/-sub dir"
+chmod 4755 "/data/-sub dir/ lead.txt"
+rm /data/link
+mkdir /data/link
+ln -s big.bin "/data/-new link"
+chown -h 7:7 "/data/-new link"
+rm "/data/$(printf 'l%.0s' $(seq 1 120))"
+mkdir "/data/$(printf 'l%.0s' $(seq 1 120))"
+rm -rf /data/trim
+rm -rf /data/was-dir
+echo d > /data/was-dir
+rm /data/was-file
+mkdir /data/was-file
+echo g > /data/was-file/g`;
 
 const STALE = `set -e
 echo old > /data/stale.txt
@@ -122,6 +163,48 @@ describe.skipIf(reason !== undefined)("the carrier against the local Docker", ()
 
       await shell(`${target.name}:/data`, "chmod 644 /data/app/cache/blob");
       expect(await writer.volumeDigest(target)).not.toBe(digest);
+    } finally {
+      for (const { name } of [source, target]) await here.removeVolume(name).catch(() => {});
+    }
+  }, 300_000);
+
+  it("brings a full copy to the source's digest by the delta after the source changed, grew and shrank", async () => {
+    const source = { kind: "volume", name: `opscrew-test-${run}-delta-source` } as const;
+    const target = { kind: "volume", name: `opscrew-test-${run}-delta-target` } as const;
+    try {
+      for (const { name } of [source, target]) await here.createVolume(name);
+      await shell(`${source.name}:/data`, `${SEED}\n${TRIMMED}`);
+      const reader = volumeCarrier(here, BUSYBOX);
+      const writer = volumeCarrier(there, BUSYBOX);
+      await writer.writeVolume(target, await reader.readVolume(source));
+      expect(await writer.volumeDigest(target)).toBe(await reader.volumeDigest(source));
+
+      await shell(`${source.name}:/data`, CHANGES);
+      const digest = await reader.volumeDigest(source);
+      expect(await writer.volumeDigest(target)).not.toBe(digest);
+
+      const old = await reader.volumeManifest(source);
+      expect(await reader.volumeManifest(source)).toEqual(old);
+      const { copy, remove } = manifestDelta(old, await writer.volumeManifest(target));
+      expect(remove.sort()).toEqual(["./app/cache/blob", "./trim", "./was-dir/inner"]);
+      expect(copy).toContain("./-sub dir/ lead.txt");
+      expect(copy).not.toContain("./app/cache/kept");
+      const started = Date.now();
+      await writer.updateVolume(target, await reader.readPaths(source, copy), remove);
+      const copied = await writer.volumeDigest(target);
+      console.info(
+        `[connector-docker] copied ${copy.length} paths and removed ${remove.length} in ${Date.now() - started} ms; digests ${digest} and ${copied}`,
+      );
+      expect(copied).toBe(digest);
+      expect(await writer.volumeManifest(target)).toEqual(old);
+
+      await shell(`${source.name}:/data`, `touch "/data/$(printf 'a\\nb')"`);
+      await expect(reader.volumeManifest(source)).rejects.toThrow(
+        `The volume ${source.name} holds a name with a line break, which OpsCrew can't compare path by path.`,
+      );
+      for (const { name } of [source, target]) {
+        expect(await here.listContainers([`opscrew.carrier=${name}`])).toEqual([]);
+      }
     } finally {
       for (const { name } of [source, target]) await here.removeVolume(name).catch(() => {});
     }

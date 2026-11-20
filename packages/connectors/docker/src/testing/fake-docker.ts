@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import type { DockerRequest, DockerResponse, DockerTransport } from "@opscrew/contracts";
-import { type TarEntry, tarStream } from "../tar";
-import { parseTar } from "./tar";
+import { MANIFEST_SCRIPT, REMOVE_SCRIPT, STAGE_SCRIPT } from "../carrier";
+import { parseTar, type TarEntry, tarStream } from "../tar";
 
 /** A file, folder or link in a fake volume. */
 export type FakeFile = Omit<TarEntry, "name">;
@@ -26,6 +26,11 @@ export interface FakeContainer {
   /** `HostConfig.Mounts`, as given. */
   mounts: FakeMount[];
   network?: string;
+  /**
+   * Its own file system, by path without the leading `/`: what archives put outside its mounts,
+   * and what the carrier's commands write there.
+   */
+  files?: Map<string, FakeFile>;
   state: "created" | "running" | "exited";
   /** Its health check's answer while it runs; absent without a health check. */
   health?: "starting" | "healthy" | "unhealthy";
@@ -234,6 +239,7 @@ export class FakeDocker implements DockerTransport {
       labels: spec.Labels ?? {},
       binds: spec.HostConfig?.Binds ?? [],
       mounts: given,
+      files: new Map(),
       state: "created",
       exitCode: 0,
       stdout: "",
@@ -297,7 +303,9 @@ export class FakeDocker implements DockerTransport {
 
   /**
    * The carrier's commands: `test ! -L <mount>/<name>` (that the host path is no link), and on
-   * what is mounted at /data: `find /data -mindepth 1 -delete`, the hashing script, `du -sb /data`.
+   * what is mounted at /data: `find /data -mindepth 1 -delete`, the hashing script, `du -sb /data`,
+   * the manifest's listing and the removal of the paths put in at `/opscrew-paths`; and the copy of
+   * those paths from what is mounted at /source into the container's own `/data`.
    */
   private builtIn(container: FakeContainer): FakeRun {
     const [program, ...args] = container.cmd;
@@ -307,9 +315,34 @@ export class FakeDocker implements DockerTransport {
       const host = mount === undefined ? "" : mount.source + path.slice(mount.target.length);
       return { exitCode: this.symlinks.has(host) ? 1 : 0 };
     }
-    const data = mounts(container).find((mount) => mount.target === "/data");
-    const volume = data === undefined ? undefined : this.storage(data.source);
+    const storageAt = (target: string) => {
+      const found = mounts(container).find((mount) => mount.target === target);
+      return found === undefined ? undefined : this.storage(found.source);
+    };
+    const listed = (container.files?.get("opscrew-paths")?.data?.toString("utf8") ?? "")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => (line === "." ? "" : line.slice(2)));
+    const source = storageAt("/source");
+    if (program === "sh" && args[1] === STAGE_SCRIPT && source !== undefined) {
+      for (const inside of listed) {
+        const file = source.files.get(inside);
+        if (file === undefined) return { exitCode: 1, stderr: "tar: No such file or directory\n" };
+        ownFiles(container).set(inside === "" ? "data" : `data/${inside}`, { ...file });
+      }
+      return { exitCode: 0 };
+    }
+    const volume = storageAt("/data");
     if (volume === undefined) return { exitCode: 0 };
+    if (program === "sh" && args[1] === MANIFEST_SCRIPT) return manifest(volume, container);
+    if (program === "sh" && args[1] === REMOVE_SCRIPT) {
+      for (const inside of listed) {
+        for (const path of [...volume.files.keys()]) {
+          if (path === inside || path.startsWith(`${inside}/`)) volume.files.delete(path);
+        }
+      }
+      return { exitCode: 0 };
+    }
     if (program === "find" && args.join(" ") === "/data -mindepth 1 -delete") {
       for (const path of [...volume.files.keys()]) if (path !== "") volume.files.delete(path);
       return { exitCode: 0 };
@@ -325,12 +358,15 @@ export class FakeDocker implements DockerTransport {
 
   private readArchive(container: FakeContainer, path: string): DockerResponse {
     const mount = mounts(container).find((candidate) => candidate.target === path);
-    const volume = mount === undefined ? undefined : this.storage(mount.source);
-    if (volume === undefined) {
+    const base = path.slice(1);
+    const files =
+      mount === undefined
+        ? within(container.files ?? new Map(), base)
+        : this.storage(mount.source)?.files;
+    if (files === undefined || files.size === 0) {
       return json(404, { message: `Could not find the file ${path} in container ${container.id}` });
     }
-    const base = path.slice(1);
-    const entries = [...volume.files]
+    const entries = [...files]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([inside, file]) => {
         const name = inside === "" ? base : `${base}/${inside}`;
@@ -356,18 +392,34 @@ export class FakeDocker implements DockerTransport {
 
   private writeArchive(container: FakeContainer, path: string, archive: Buffer): DockerResponse {
     if (path !== "/") return json(400, { message: "the fake writes archives only at /" });
-    const writes: { volume: FakeVolume; path: string; file: FakeFile }[] = [];
+    const writes: { files: Map<string, FakeFile>; path: string; file: FakeFile }[] = [];
     for (const { name, ...file } of parseTar(archive)) {
       const [top = "", ...rest] = name.replace(/\/$/, "").split("/");
       const mount = mounts(container).find((candidate) => candidate.target === `/${top}`);
       const volume = mount === undefined ? undefined : this.storage(mount.source);
-      if (mount === undefined || volume === undefined) continue;
+      if (mount === undefined || volume === undefined) {
+        writes.push({
+          files: ownFiles(container),
+          path: name.replace(/\/$/, ""),
+          file,
+        });
+        continue;
+      }
       if (mount.readOnly) {
         return json(403, { message: `mounted volume is marked read-only: ${mount.target}` });
       }
-      writes.push({ volume, path: rest.join("/"), file });
+      writes.push({ files: volume.files, path: rest.join("/"), file });
     }
-    for (const write of writes) write.volume.files.set(write.path, write.file);
+    for (const { files, path, file } of writes) {
+      // As Docker does, a path already there is replaced, with its content, unless both are folders.
+      if (file.type !== "dir" || files.get(path)?.type !== "dir") {
+        for (const inside of [...files.keys()]) {
+          if (inside.startsWith(path === "" ? "" : `${path}/`) && inside !== "")
+            files.delete(inside);
+        }
+      }
+      files.set(path, file);
+    }
     return empty(200);
   }
 
@@ -466,6 +518,61 @@ function digest(volume: FakeVolume): string {
     ].join(" "),
   );
   return createHash("sha256").update(lines.sort().join("\n")).digest("hex");
+}
+
+/** A container's own file system, made for one that was added without it. */
+function ownFiles(container: FakeContainer): Map<string, FakeFile> {
+  container.files ??= new Map();
+  return container.files;
+}
+
+/** The files at `base` and under it, by path inside it (`""` is `base` itself). */
+function within(files: Map<string, FakeFile>, base: string): Map<string, FakeFile> {
+  const found = new Map<string, FakeFile>();
+  for (const [path, file] of files) {
+    if (path === base) found.set("", file);
+    else if (path.startsWith(`${base}/`)) found.set(path.slice(base.length + 1), file);
+  }
+  return found;
+}
+
+/**
+ * The manifest script's run on `volume`: its listings written into the container's `/manifest`,
+ * or exit code 3 when a name holds a line break.
+ */
+function manifest(volume: FakeVolume, container: FakeContainer): FakeRun {
+  const stat: string[] = [];
+  const sum: string[] = [];
+  const link: string[] = [];
+  for (const [inside, file] of volume.files) {
+    if (inside.includes("\n")) return { exitCode: 3 };
+    const path = inside === "" ? "." : `./${inside}`;
+    const data = file.data ?? Buffer.alloc(0);
+    const [type, size] =
+      file.type === "dir"
+        ? ["directory", 4096]
+        : file.type === "symlink"
+          ? ["symbolic link", Buffer.byteLength(file.target ?? "")]
+          : [data.length === 0 ? "regular empty file" : "regular file", data.length];
+    stat.push(`${type} ${file.mode.toString(8)} ${file.uid} ${file.gid} ${size} ${path}\n`);
+    if (file.type === "file") {
+      sum.push(`${createHash("sha256").update(data).digest("hex")}  ${path}\n`);
+    }
+    if (file.type === "symlink") link.push(`${path}\n${file.target ?? ""}\n`);
+  }
+  const listing = (lines: string[]): FakeFile => ({
+    type: "file",
+    mode: 0o644,
+    uid: 0,
+    gid: 0,
+    data: Buffer.from(lines.join(""), "utf8"),
+  });
+  const own = ownFiles(container);
+  own.set("manifest", { type: "dir", mode: 0o755, uid: 0, gid: 0 });
+  own.set("manifest/stat", listing(stat));
+  own.set("manifest/sum", listing(sum));
+  own.set("manifest/link", listing(link));
+  return { exitCode: 0 };
 }
 
 /** One frame of Docker's multiplexed log stream: 1 for stdout, 2 for stderr. */

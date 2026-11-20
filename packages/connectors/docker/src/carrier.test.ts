@@ -1,10 +1,20 @@
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import type { DockerTransport } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { type CarrierSource, sweepCarriers, volumeCarrier } from "./carrier";
+import { manifestDelta } from "./__fixtures__/delta";
+import {
+  type CarrierSource,
+  MANIFEST_SCRIPT,
+  type ManifestEntry,
+  REMOVE_SCRIPT,
+  STAGE_SCRIPT,
+  sweepCarriers,
+  volumeCarrier,
+} from "./carrier";
 import { dockerClient } from "./client";
 import { tarStream } from "./tar";
 import { FakeDocker, type FakeFile } from "./testing/fake-docker";
@@ -119,11 +129,20 @@ describe("volumeCarrier.readVolume", () => {
     expect(fake.volumes.has("example-app_cache")).toBe(false);
     await expect(carrier.volumeDigest(missing)).rejects.toMatchObject({ code: "INVALID_INPUT" });
     await expect(carrier.sourceSize(missing)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(carrier.volumeManifest(missing)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(carrier.readPaths(missing, ["./app"])).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
     const source = tarStream([]);
     await expect(carrier.writeVolume(missing, source)).rejects.toMatchObject({
       code: "INVALID_INPUT",
     });
     expect(source.destroyed).toBe(true);
+    const update = tarStream([]);
+    await expect(carrier.updateVolume(missing, update, [])).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+    });
+    expect(update.destroyed).toBe(true);
     expect(fake.calls.filter((call) => call.startsWith("POST /containers"))).toEqual([]);
     expect(fake.volumes.has("example-app_cache")).toBe(false);
   });
@@ -223,9 +242,8 @@ describe("volumeCarrier.volumeDigest", () => {
     );
     expect(a.fake.containers.size).toBe(0);
 
-    const blob = b.fake.volumes.get("example-copy")?.files.get("app/blob");
-    if (blob === undefined) throw new Error("no blob");
-    blob.mode = 0o644;
+    const files = b.fake.volumes.get("example-copy")?.files;
+    files?.set("app/blob", { ...FILES["app/blob"], mode: 0o644 } as FakeFile);
     expect(await b.carrier.volumeDigest(volume("example-copy"))).not.toBe(digest);
   });
 
@@ -310,6 +328,9 @@ describe("volumeCarrier: bound folders", () => {
           () => carrier.volumeDigest(folder(path)),
           () => carrier.sourceSize(folder(path)),
           () => carrier.writeVolume(folder(path), tarStream([])),
+          () => carrier.volumeManifest(folder(path)),
+          () => carrier.readPaths(folder(path), ["./base"]),
+          () => carrier.updateVolume(folder(path), tarStream([]), ["./base"]),
         ]) {
           await expect(attempt(), path).rejects.toMatchObject({ code: "INVALID_INPUT" });
         }
@@ -361,6 +382,9 @@ describe("volumeCarrier: bound folders", () => {
       () => carrier.volumeDigest(PG),
       () => carrier.sourceSize(PG),
       () => carrier.writeVolume(PG, tarStream([])),
+      () => carrier.volumeManifest(PG),
+      () => carrier.readPaths(PG, ["./app"]),
+      () => carrier.updateVolume(PG, tarStream([]), ["./app"]),
     ]) {
       await expect(attempt()).rejects.toMatchObject({
         code: "INVALID_INPUT",
@@ -454,6 +478,362 @@ describe("volumeCarrier: bound folders", () => {
       `The carrier container could not empty folder ${PG_PATH} (exit code 1: find: /data/base: Permission denied).`,
     );
     expect(fake.containers.size).toBe(0);
+  });
+});
+
+const sha256 = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+
+/** {@link FILES}' manifest. */
+const MANIFEST: ManifestEntry[] = [
+  { path: ".", type: "directory", mode: "750", uid: 0, gid: 0, size: 0 },
+  { path: "./app", type: "directory", mode: "755", uid: 1000, gid: 1001, size: 0 },
+  {
+    path: "./app/blob",
+    type: "regular file",
+    mode: "600",
+    uid: 999,
+    gid: 999,
+    size: 70_000,
+    sha256: sha256(Buffer.alloc(70_000, 7)),
+  },
+  {
+    path: "./app/config.txt",
+    type: "regular file",
+    mode: "640",
+    uid: 1000,
+    gid: 1001,
+    size: 3,
+    sha256: sha256(Buffer.from("a=1")),
+  },
+  {
+    path: "./link",
+    type: "symbolic link",
+    mode: "777",
+    uid: 0,
+    gid: 0,
+    size: 14,
+    target: "app/config.txt",
+  },
+];
+
+/** The paths list each carrier was given, as it starts. */
+function lists(fake: FakeDocker): string[] {
+  const seen: string[] = [];
+  fake.onStart = (container) => {
+    seen.push(container.files?.get("opscrew-paths")?.data?.toString("utf8") ?? "");
+    return undefined;
+  };
+  return seen;
+}
+
+/** Each request of `fake`, a container's id as `c`. */
+const order = (fake: FakeDocker) =>
+  fake.calls.map((call) => call.replace(/\/containers\/[0-9a-f]{64}/, "/c"));
+
+describe("volumeCarrier.volumeManifest", () => {
+  it("lists every path with the facts the digest hashes, sorted, from a read-only carrier", async () => {
+    const { fake, carrier } = host();
+    const seen = started(fake);
+    expect(await carrier.volumeManifest(DATA)).toEqual(MANIFEST);
+    expect(await carrier.volumeManifest(DATA)).toEqual(MANIFEST);
+    expect(seen[0]).toEqual(["sh", "-c", MANIFEST_SCRIPT, "example-app_data:/data:ro"]);
+    expect(order(fake).slice(1, 7)).toEqual([
+      "POST /containers/create",
+      "POST /c/start",
+      "POST /c/wait",
+      "GET /c/logs?stdout=1&stderr=1",
+      "GET /c/archive?path=%2Fmanifest",
+      "DELETE /c?force=1",
+    ]);
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("lists names with spaces and leading dashes", async () => {
+    const { fake, carrier } = host();
+    fake.addVolume("example-app_data", {
+      "-a b": { type: "dir", mode: 0o700, uid: 5, gid: 6 },
+      "-a b/ c ": { type: "file", mode: 0o644, uid: 5, gid: 6, data: Buffer.alloc(0) },
+      "-a b/-> d": { type: "symlink", mode: 0o777, uid: 5, gid: 6, target: " c " },
+    });
+    expect(await carrier.volumeManifest(DATA)).toEqual([
+      { path: ".", type: "directory", mode: "755", uid: 0, gid: 0, size: 0 },
+      { path: "./-a b", type: "directory", mode: "700", uid: 5, gid: 6, size: 0 },
+      {
+        path: "./-a b/ c ",
+        type: "regular empty file",
+        mode: "644",
+        uid: 5,
+        gid: 6,
+        size: 0,
+        sha256: sha256(Buffer.alloc(0)),
+      },
+      {
+        path: "./-a b/-> d",
+        type: "symbolic link",
+        mode: "777",
+        uid: 5,
+        gid: 6,
+        size: 3,
+        target: " c ",
+      },
+    ]);
+  });
+
+  it("refuses a name with a line break, without naming it, and removes the carrier", async () => {
+    const { fake, carrier } = host();
+    fake.addVolume("example-app_data", {
+      "secret\nname": { type: "file", mode: 0o644, uid: 0, gid: 0, data: Buffer.from("x") },
+    });
+    const error = await carrier.volumeManifest(DATA).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The volume example-app_data holds a name with a line break, which OpsCrew can't compare path by path.",
+    });
+    expect(JSON.stringify(error)).not.toContain("secret");
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("refuses a name that isn't UTF-8", async () => {
+    const { fake, carrier } = host();
+    fake.onStart = (container) => {
+      for (const name of ["stat", "sum", "link"]) {
+        const data = name === "stat" ? Buffer.from([0x2e, 0x2f, 0xff, 0x0a]) : Buffer.alloc(0);
+        container.files?.set(`manifest/${name}`, {
+          type: "file",
+          mode: 0o644,
+          uid: 0,
+          gid: 0,
+          data,
+        });
+      }
+      return { exitCode: 0 };
+    };
+    await expect(carrier.volumeManifest(DATA)).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The volume example-app_data holds a name that isn't UTF-8, which OpsCrew can't compare path by path.",
+    });
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("fails plainly when the carrier fails or its listing is garbled, and removes it", async () => {
+    const { fake, carrier } = host();
+    fake.onStart = () => ({ exitCode: 1, stderr: "sha256sum: ./x: I/O error\n" });
+    await expect(carrier.volumeManifest(DATA)).rejects.toThrow(
+      "The carrier container could not list volume example-app_data (exit code 1: sha256sum: ./x: I/O error).",
+    );
+    for (const stat of ["directory 755 0 0 4096\n", "directory 755 0 0 4096 ."]) {
+      fake.onStart = (container) => {
+        for (const name of ["stat", "sum", "link"]) {
+          const data = Buffer.from(name === "stat" ? stat : "", "utf8");
+          container.files?.set(`manifest/${name}`, {
+            type: "file",
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+            data,
+          });
+        }
+        return { exitCode: 0 };
+      };
+      await expect(carrier.volumeManifest(DATA)).rejects.toThrow(
+        "The carrier container did not print a readable list of volume example-app_data.",
+      );
+    }
+    expect(fake.containers.size).toBe(0);
+  });
+});
+
+describe("volumeCarrier.readPaths", () => {
+  const NAMES: Record<string, FakeFile> = {
+    ...FILES,
+    "app/sub": { type: "dir", mode: 0o711, uid: 7, gid: 8 },
+    "app/sub/inside": { type: "file", mode: 0o600, uid: 7, gid: 8, data: Buffer.from("in") },
+    "-x y": { type: "dir", mode: 0o700, uid: 5, gid: 6 },
+    "-x y/ z": { type: "file", mode: 0o4750, uid: 5, gid: 6, data: Buffer.from("z") },
+  };
+
+  it("streams only the listed paths, folders without their content, with the folders above them", async () => {
+    const { fake, carrier } = host();
+    fake.addVolume("example-app_data", NAMES);
+    const seen = started(fake);
+    const archive = await carrier.readPaths(DATA, ["./app/sub", "./-x y/ z"]);
+    const entries = parseTar(await readAll(archive));
+    expect(entries.map(({ name, mode, uid, gid }) => [name, mode, uid, gid])).toEqual([
+      ["data/", 0o750, 0, 0],
+      ["data/-x y/", 0o700, 5, 6],
+      ["data/-x y/ z", 0o4750, 5, 6],
+      ["data/app/", 0o755, 1000, 1001],
+      ["data/app/sub/", 0o711, 7, 8],
+    ]);
+    expect(seen).toEqual([["sh", "-c", STAGE_SCRIPT, "example-app_data:/source:ro"]]);
+    expect(fake.containers.size).toBe(0);
+  });
+
+  it("gives the carrier its paths as a file, never as arguments, each folder before its content", async () => {
+    const { fake, carrier } = host();
+    fake.addVolume("example-app_data", NAMES);
+    const given = lists(fake);
+    const archive = await carrier.readPaths(DATA, ["./app/sub", "./-x y/ z"]);
+    archive.resume();
+    await finished(archive);
+    expect(given).toEqual([".\n./-x y\n./-x y/ z\n./app\n./app/sub\n"]);
+    expect(order(fake).slice(1, 4)).toEqual([
+      "POST /containers/create",
+      "PUT /c/archive?path=%2F",
+      "POST /c/start",
+    ]);
+  });
+
+  it("refuses a path with a line break or outside the source, before anything is touched", async () => {
+    const { fake, carrier } = host();
+    await expect(carrier.readPaths(DATA, ["./secret\nname"])).rejects.toThrow(
+      "The volume example-app_data holds a name with a line break, which OpsCrew can't compare path by path.",
+    );
+    for (const path of ["../etc", "/etc", "./app/../../etc", "./", "app", "./app//blob", "./."]) {
+      const error = await carrier.readPaths(DATA, ["./app", path]).catch((e: unknown) => e);
+      expect(error, path).toMatchObject({
+        code: "INVALID_INPUT",
+        message: "A path given for volume example-app_data is not a plain path inside it.",
+      });
+    }
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("fails plainly when a path is gone, and removes the carrier", async () => {
+    const { fake, carrier } = host();
+    await expect(carrier.readPaths(DATA, ["./gone"])).rejects.toThrow(
+      "The carrier container could not read paths of volume example-app_data (exit code 1: tar: No such file or directory).",
+    );
+    expect(fake.containers.size).toBe(0);
+  });
+});
+
+describe("volumeCarrier.updateVolume", () => {
+  const STALE: Record<string, FakeFile> = {
+    ...FILES,
+    old: { type: "dir", mode: 0o755, uid: 0, gid: 0 },
+    "old/b": { type: "dir", mode: 0o755, uid: 0, gid: 0 },
+    "old/b/c": { type: "file", mode: 0o644, uid: 0, gid: 0, data: Buffer.from("c") },
+    "-z": { type: "file", mode: 0o644, uid: 0, gid: 0, data: Buffer.from("z") },
+  };
+
+  it("removes the paths deepest first, then unpacks over the content without emptying it", async () => {
+    const source = host();
+    source.fake.volumes.get("example-app_data")?.files.set("app/config.txt", {
+      type: "file",
+      mode: 0o600,
+      uid: 33,
+      gid: 33,
+      data: Buffer.from("a=2"),
+    });
+    const target = host();
+    target.fake.addVolume("example-app_data", STALE);
+    const given = lists(target.fake);
+    const archive = await source.carrier.readPaths(DATA, ["./app/config.txt"]);
+    await target.carrier.updateVolume(DATA, archive, ["./old", "./-z", "./old/b/c"]);
+    expect(given).toEqual(["./old/b/c\n./old\n./-z\n"]);
+    expect(order(target.fake)).toEqual([
+      "GET /volumes/example-app_data",
+      "POST /containers/create",
+      "PUT /c/archive?path=%2F",
+      "POST /c/start",
+      "POST /c/wait",
+      "GET /c/logs?stdout=1&stderr=1",
+      "PUT /c/archive?path=%2F",
+      "DELETE /c?force=1",
+    ]);
+    expect(Object.fromEntries(target.fake.volumes.get("example-app_data")?.files ?? [])).toEqual(
+      Object.fromEntries(source.fake.volumes.get("example-app_data")?.files ?? []),
+    );
+    expect(source.fake.containers.size + target.fake.containers.size).toBe(0);
+  });
+
+  it("runs the removal in a carrier with the volume mounted read-write", async () => {
+    const { fake, carrier } = host();
+    const seen = started(fake);
+    await carrier.updateVolume(DATA, tarStream([]), []);
+    expect(seen).toEqual([["sh", "-c", REMOVE_SCRIPT, "example-app_data:/data"]]);
+    expect(Object.fromEntries(fake.volumes.get("example-app_data")?.files ?? [])).toEqual(FILES);
+  });
+
+  it("refuses to remove the root or a path outside the source, touching nothing", async () => {
+    const { fake, carrier } = host();
+    for (const path of [".", "../x", "/etc", "./app/../..", "./a\nb"]) {
+      const archive = tarStream([]);
+      const error = await carrier.updateVolume(DATA, archive, [path]).catch((e: unknown) => e);
+      expect(error, path).toMatchObject({ code: "INVALID_INPUT" });
+      expect(archive.destroyed).toBe(true);
+    }
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("unpacks nothing when the removal fails, and removes both carriers", async () => {
+    const source = host();
+    const target = host();
+    target.fake.onStart = () => ({ exitCode: 1, stderr: "rm: can't remove: Permission denied\n" });
+    const archive = await source.carrier.readPaths(DATA, ["./app"]);
+    await expect(target.carrier.updateVolume(DATA, archive, ["./app/blob"])).rejects.toThrow(
+      "The carrier container could not remove paths from volume example-app_data (exit code 1: rm: can't remove: Permission denied).",
+    );
+    expect(target.fake.calls.filter((call) => call.startsWith("PUT"))).toHaveLength(1);
+    expect(archive.destroyed).toBe(true);
+    expect(source.fake.containers.size + target.fake.containers.size).toBe(0);
+  });
+
+  it("removes both carriers before it settles when Docker refuses the archive", async () => {
+    const source = host();
+    const target = host();
+    const archive = await source.carrier.readPaths(DATA, ["./app"]);
+    target.fake.fail("PUT", /\/archive/, 500, "no space left on device");
+    await expect(target.carrier.updateVolume(DATA, archive, [])).rejects.toThrow(
+      /no space left on device/,
+    );
+    expect(source.fake.containers.size + target.fake.containers.size).toBe(0);
+  });
+});
+
+describe("volumeCarrier: the delta", () => {
+  it("brings a copy that was changed, extended and trimmed to the source's digest", async () => {
+    const source = host();
+    const target = host();
+    await target.carrier.writeVolume(DATA, await source.carrier.readVolume(DATA));
+    const files = source.fake.volumes.get("example-app_data")?.files;
+    if (files === undefined) throw new Error("no volume");
+    files.set("app/config.txt", {
+      ...FILES["app/config.txt"],
+      data: Buffer.from("a=2"),
+    } as FakeFile);
+    files.set("app", { type: "dir", mode: 0o750, uid: 1000, gid: 1001 });
+    files.delete("app/blob");
+    files.set("link", { type: "dir", mode: 0o755, uid: 0, gid: 0 });
+    files.set("link/new file", {
+      type: "file",
+      mode: 0o644,
+      uid: 1,
+      gid: 1,
+      data: Buffer.from("n"),
+    });
+    files.set("-new", { type: "symlink", mode: 0o777, uid: 0, gid: 0, target: "app" });
+    expect(await target.carrier.volumeDigest(DATA)).not.toBe(
+      await source.carrier.volumeDigest(DATA),
+    );
+
+    const { copy, remove } = manifestDelta(
+      await source.carrier.volumeManifest(DATA),
+      await target.carrier.volumeManifest(DATA),
+    );
+    expect({ copy, remove }).toEqual({
+      copy: ["./-new", "./app", "./app/config.txt", "./link", "./link/new file"],
+      remove: ["./app/blob"],
+    });
+    await target.carrier.updateVolume(DATA, await source.carrier.readPaths(DATA, copy), remove);
+    expect(await target.carrier.volumeDigest(DATA)).toBe(await source.carrier.volumeDigest(DATA));
+    expect(await target.carrier.volumeManifest(DATA)).toEqual(
+      await source.carrier.volumeManifest(DATA),
+    );
+    expect(source.fake.containers.size + target.fake.containers.size).toBe(0);
   });
 });
 
