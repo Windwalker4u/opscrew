@@ -17,7 +17,7 @@ import { forgetHostKeys } from "../destroy/deletion";
 import type { DestroyPreview } from "../destroy/types";
 import { providerProfile, vpsConnector } from "../providers";
 import { previousBucketKeyFile } from "../provision/storage";
-import { restoreOldConnection, type ServerAddress } from "../shared";
+import { pollUntil, restoreOldConnection, type ServerAddress } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { movingBucketKeys, removeNewBucket, renameBucketBack, writeStorageFiles } from "./bucket";
@@ -39,6 +39,7 @@ import {
   saveMove,
   savePlan,
   useLayout,
+  waitsOf,
   warnUnusedApproval,
   writeFinalFiles,
 } from "./session";
@@ -227,7 +228,10 @@ async function renameBack(
   return undefined;
 }
 
-/** The old side's monthly cost again: a cloud server's priced anew, nothing for the user's own. */
+/**
+ * The old side's monthly cost again: a cloud server's priced anew, nothing for the user's own, and
+ * for a second app the server of the app it shares.
+ */
 async function oldCost(session: MoveSession): Promise<CostEstimate | undefined> {
   const { deps, plan } = session;
   const target = moveOf(session).from.target;
@@ -241,12 +245,16 @@ async function oldCost(session: MoveSession): Promise<CostEstimate | undefined> 
     }
     return cost;
   }
+  // A second app on another app's server keeps that app's item, as its design wrote it.
   return noSideCost(
-    target.provider === "own" ? "own" : "portainer",
+    target.provider === "own" ? target : { provider: "portainer" },
     plan.cost.monthly.currency,
     deps.clock.now().toISOString(),
   );
 }
+
+/** How long an aborted move waits for the old app to answer again: a start, with its health check. */
+const ABORT_HEALTH_WAIT_MS = 2 * 60_000;
 
 /**
  * Once the plan is restored: whether the app answers on the old side, in words. The old side is
@@ -264,19 +272,28 @@ export async function reportAborted(
   const app = plan.app.name;
   const words = sideWords(target, "old");
   const cloud = isCloudProvider(target.provider);
-  const healthy = cloud
-    ? oldAddress !== undefined &&
-      (await isAppHealthy(
-        remoteFor(deps, session.services, session.deployKey.privateKeyFile, oldAddress.ipv4),
-        plan.app.port,
-        plan.app.healthPath,
-        edgeProxy(plan),
-        app,
-      ).catch(() => false))
-    : // `new` is the plan's target: with the move cleared, that is the old side.
-      await moveSide(session, "new")
-        .healthy(session)
-        .catch(() => false);
+  const check = async (): Promise<boolean> =>
+    cloud
+      ? oldAddress !== undefined &&
+        (await isAppHealthy(
+          remoteFor(deps, session.services, session.deployKey.privateKeyFile, oldAddress.ipv4),
+          plan.app.port,
+          plan.app.healthPath,
+          edgeProxy(plan),
+          app,
+        ).catch(() => false))
+      : // `new` is the plan's target: with the move cleared, that is the old side.
+        await moveSide(session, "new")
+          .healthy(session)
+          .catch(() => false);
+  // The old app may have just been started again: it gets the time a start takes (found live: a
+  // single check right after the restart warned about a healthy app).
+  const healthy =
+    (await pollUntil(async () => ((await check()) ? true : undefined), {
+      timeoutMs: ABORT_HEALTH_WAIT_MS,
+      intervalMs: 5000,
+      ...waitsOf(session.services),
+    })) === true;
   // Never the server's address (SC-2303): the user knows their server by its words.
   if (healthy) {
     deps.reporter.success(`The move is aborted; ${app} runs on ${words}.`);

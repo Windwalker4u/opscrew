@@ -262,6 +262,34 @@ describe.skipIf(!findExecutable("git"))("--finish and --abort on a server the us
       expect(text).not.toContain("ssh deploy@");
     }
   });
+
+  it("after an abort, waits for the old app that was just started again before it warns", async () => {
+    // Found live: a single check right after the old app's restart warned about a healthy app.
+    const s = await ownMove("old");
+    await restoreOldConnection(s.deps.paths, { from: "own", to: "hetzner" });
+    const { retarget: _aborted, ...restored } = s.plan;
+    s.session.plan = DeployPlanSchema.parse({ ...restored, target: ownPlan().target });
+    const events: MoveEvent[] = [];
+    const hosts = new FakeHosts(events);
+    let now = 0;
+    s.session.services = {
+      ...s.session.services,
+      remote: hosts.remote,
+      now: () => now,
+      // The app answers once its start is through, after the first check.
+      sleep: async (ms) => {
+        now += ms;
+        hosts.deploy(LAN_IPV4);
+      },
+    };
+    await reportAborted(s.session, { ipv4: OWN_IPV4 });
+    expect(events.filter((event) => "op" in event && event.op === "health").length).toBeGreaterThan(
+      1,
+    );
+    const text = s.deps.reporter.text();
+    expect(text).toContain("The move is aborted; shop runs on your old server.");
+    expect(text).not.toContain("does not answer its health check");
+  });
 });
 
 /** GitHub with branch deletion, as the real client has it. */

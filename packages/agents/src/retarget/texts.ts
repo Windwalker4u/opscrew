@@ -1,7 +1,7 @@
 import type { ApprovalRequest, Currency, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { CostEstimate, DeployPlan } from "@opscrew/plan-schema";
-import { noServerCost } from "../design/own";
+import { noServerCost, sharedServerCostItem } from "../design/own";
 import { providerProfile } from "../providers";
 import { HUNDRED_MB } from "./server-ops";
 
@@ -101,14 +101,16 @@ export function manualSwitchDowntime(
 
 /** The cost of a side that costs a move nothing more: the user's own server, or their Portainer. */
 export function noSideCost(
-  provider: "own" | "portainer",
+  side: { provider: "own"; shares?: { app: string } } | { provider: "portainer" },
   currency: Currency,
   asOf: string,
 ): CostEstimate {
   const item =
-    provider === "own"
-      ? "Your own server (you already pay for it)"
-      : "Your Portainer (you already run it)";
+    side.provider === "portainer"
+      ? "Your Portainer (you already run it)"
+      : side.shares !== undefined
+        ? sharedServerCostItem(side.shares.app)
+        : "Your own server (you already pay for it)";
   return noServerCost(item, currency, asOf);
 }
 

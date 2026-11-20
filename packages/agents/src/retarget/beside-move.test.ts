@@ -297,6 +297,13 @@ describe.skipIf(!findExecutable("git"))("--abort and --finish of a move beside a
       const plan = await readArtifact("plan", h.paths.files.plan);
       expect(plan.retarget).toBeUndefined();
       expect(plan.target.provider).toBe(h.plan.retarget?.from.target.provider);
+      // A second app's old side keeps its first app's cost item (found live: "Your own server").
+      const old = h.plan.retarget?.from.target;
+      if (old?.provider === "own" && old.shares !== undefined) {
+        expect(plan.cost.breakdown.map((line) => line.item)).toEqual([
+          `"${old.shares.app}"'s server (priced with "${old.shares.app}")`,
+        ]);
+      }
       await expectNoLeaks(h);
     },
   );

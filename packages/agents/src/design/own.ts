@@ -172,6 +172,11 @@ export function sharedBackupsNote(app: string): string {
   return `OpsCrew snapshots this app's data on the server with \`opscrew snapshot\`; the server itself is backed up with "${app}".`;
 }
 
+/** A second app's cost item: the server of the app `first`, which is priced with that app. */
+export function sharedServerCostItem(first: string): string {
+  return `"${first}"'s server (priced with "${first}")`;
+}
+
 /**
  * The warning a second app's design summary and host plan approval say plainly (FR-3004), and
  * design's for a server the user owns that holds other OpsCrew apps: every app there runs as the
@@ -369,7 +374,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   const hostLine = host === undefined ? undefined : hostServerNote(host.environment);
   const cost = noServerCost(
     shares !== undefined
-      ? `"${shares.app}"'s server (priced with "${shares.app}")`
+      ? sharedServerCostItem(shares.app)
       : host === undefined
         ? "Your own server (you already pay for it)"
         : `${host.environment}'s server (priced with ${host.environment})`,
