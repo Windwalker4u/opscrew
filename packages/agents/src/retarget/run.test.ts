@@ -268,6 +268,24 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(moving.retarget?.from.target).toMatchObject({ provider: "hetzner", edge: "nginx" });
   });
 
+  it("keeps the provider's backups off on the new server when the user turned them off on the old one", async () => {
+    // Found live: a move from a server without backups planned them on at the new provider.
+    for (const backups of [false, true]) {
+      const h = await moveHarness();
+      const before = await readArtifact("plan", h.paths.files.plan);
+      const target = { ...before.target, backups };
+      await writeArtifact(
+        "plan",
+        h.paths.files.plan,
+        DeployPlanSchema.parse({ ...before, target }),
+      );
+      crashAfter(h, "started");
+      await expect(run(h)).rejects.toThrow("interrupted");
+      const moving = await readArtifact("plan", h.paths.files.plan);
+      expect(moving.target).toMatchObject({ provider: "digitalocean", backups });
+    }
+  });
+
   it.each(["started", "renamed", "created", "deployed", "migrated", "switched"])(
     "SC-503: an interruption after %s resumes and completes the move",
     async (step) => {

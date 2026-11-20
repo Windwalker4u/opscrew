@@ -24,10 +24,16 @@ function planWantsBackups(target: { provider: string; backups?: boolean }): bool
 /**
  * True when the plan asks for backups of the server at `address`: an extra server's module
  * (`module.server_<name>`) follows its own entry in `servers` (the monitoring server keeps none),
- * the app's server and a move's old copy the plan's target.
+ * a move's old app server (`module.server_previous`) the old side's target as the move recorded
+ * it, and the app's server the plan's target.
  */
 function serverWantsBackups(deployPlan: DeployPlan, address: string): boolean {
   const name = /^module.server_([^.]+)./.exec(address)?.[1];
+  // The new side's target says nothing of the old server (found live: a move from a server whose
+  // backups the user had turned off was refused for them).
+  if (name === "previous" && deployPlan.retarget !== undefined) {
+    return planWantsBackups(deployPlan.retarget.from.target);
+  }
   const extra = deployPlan.servers?.find((server) => server.name === name);
   return planWantsBackups(extra?.target ?? deployPlan.target);
 }

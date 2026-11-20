@@ -350,6 +350,27 @@ describe("evaluatePlanPolicies", () => {
     expect(failed(withExtra(true))).toEqual(["backups-for-critical-data"]);
   });
 
+  it("checks a move's old server against the old side's backups, not the new side's", () => {
+    // Found live: the move's rename plan of a server whose backups the user had turned off.
+    const moving = (oldBackups: boolean) => {
+      const json = planJson({ backups: false });
+      const renamed = JSON.parse(
+        JSON.stringify(json).replaceAll("module.server.", "module.server_previous."),
+      );
+      const plan = deployPlan({ backups: true });
+      return evaluatePlanPolicies(renamed, {
+        ...plan,
+        retarget: {
+          from: { target: { ...plan.target, backups: oldBackups } },
+          step: "started",
+          startedAt: "2026-11-20T12:00:00.000Z",
+        },
+      } as typeof plan);
+    };
+    expect(failed(moving(false))).toEqual([]);
+    expect(failed(moving(true))).toEqual(["backups-for-critical-data"]);
+  });
+
   it("flags an unproxied app record", () => {
     expect(failed(evaluatePlanPolicies(planJson({ proxiedRecord: false }), deployPlan()))).toEqual([
       "dns-proxied",

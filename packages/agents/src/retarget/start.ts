@@ -349,6 +349,9 @@ async function cloudSide(
     now: deps.clock.now(),
     // The new server runs the same proxy, whose memory the sizing counts.
     edge,
+    // The provider's backups as the user had them on the old server (found live: a move turned
+    // them on again at the new provider after the user had turned them off).
+    ...(isCloudTarget(plan.target) ? { backups: plan.target.backups } : {}),
   });
   for (const option of designOptions) deps.reporter.info(designOptionLine(option));
   const chosen = await pickOption(designOptions, options);
