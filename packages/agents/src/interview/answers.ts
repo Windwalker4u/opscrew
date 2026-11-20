@@ -33,6 +33,12 @@ export interface AnswersToRequirementsOptions extends InterviewContext {
    * more than one, `appDir` is required and must be one of them.
    */
   appCandidates?: readonly string[];
+  /**
+   * The app runs on a server another of the user's apps runs on (`server.shares`, FR-3026): the
+   * monthly budget is not required, and 0 is a valid one. Without an answer or a previous one it
+   * is 0 EUR.
+   */
+  noBudget?: boolean;
 }
 
 /** Requirements fields that must have an answer (from the answers, previous run or inference). */
@@ -223,8 +229,11 @@ export function answersToRequirements(
     chosenProvider === "hosting" ||
     localhost ||
     isServerlessProvider(chosenProvider);
+  const noBudget = options.noBudget === true;
   const required: readonly QuestionId[] = [
-    ...REQUIRED.filter((id) => !(ownServer && id === "region")),
+    ...REQUIRED.filter(
+      (id) => !(ownServer && id === "region") && !(noBudget && id === "budgetMonthly"),
+    ),
     ...(appCandidates.length > 1 ? (["appDir"] as const) : []),
   ];
   const pick = (id: QuestionId): unknown => {
@@ -234,6 +243,10 @@ export function answersToRequirements(
     // An explicit empty answer clears an optional field instead of reusing the previous value.
     if (Object.hasOwn(answers, id) && !required.includes(id)) return undefined;
     if (id === "appDir") return inferred.appDir ?? previous?.appDir;
+    // A budget of 0 is kept only for an app that needs none: any other app is asked for one.
+    if (id === "budgetMonthly" && !noBudget && options.previous?.budgetMonthly.amount === 0) {
+      return undefined;
+    }
     return previous?.[id] ?? inferred[id];
   };
 
@@ -269,6 +282,10 @@ export function answersToRequirements(
         problems.push("budgetMonthly: write an amount such as `10 EUR` or `20 USD`");
         continue;
       }
+      if (money.amount <= 0 && !noBudget) {
+        problems.push("budgetMonthly: write an amount above 0, such as `10 EUR` or `20 USD`");
+        continue;
+      }
       value = money;
     }
     if (id === "domain" && typeof value === "string") value = normaliseDomain(value);
@@ -286,6 +303,9 @@ export function answersToRequirements(
     }
     if (isBlank(value)) continue;
     draft[id] = value;
+  }
+  if (noBudget && !problems.some((problem) => problem.startsWith("budgetMonthly"))) {
+    draft.budgetMonthly ??= { amount: 0, currency: "EUR" };
   }
   if (draft.domain === undefined) draft.dnsProvider = "none";
   else draft.dnsProvider ??= "cloudflare";

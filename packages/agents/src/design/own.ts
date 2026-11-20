@@ -1,5 +1,5 @@
 import type { ComputeCatalog, ComputeOffer, Currency } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError } from "@opscrew/core";
 import { EDGE_PROXIES, type EdgeProxy, edgeProxy } from "@opscrew/iac-templates";
 import {
   type CostEstimate,
@@ -173,12 +173,15 @@ export function sharedBackupsNote(app: string): string {
 }
 
 /**
- * The warning a second app's design summary and host plan approval say plainly (FR-3004): both
- * apps run as the same `deploy` user, which can become root through Docker, so this app's deploys
- * reach the first app's (`app`) data and secrets.
+ * The warning a second app's design summary and host plan approval say plainly (FR-3004), and
+ * design's for a server the user owns that holds other OpsCrew apps: every app there runs as the
+ * same `deploy` user, which can become root through Docker, so this app's deploys reach the data
+ * and secrets of the others (`apps`, each named).
  */
-export function sharedAccessWarning(app: string): string {
-  return `Anyone who can change this app's deploy workflow or its deploy key can reach the data and secrets of "${app}" too: both apps run on the server as the same deploy user, which can become root through Docker. Share the server only between apps the same people may change.`;
+export function sharedAccessWarning(...apps: [string, ...string[]]): string {
+  const named = listText(apps.map((app) => `"${app}"`));
+  const all = apps.length === 1 ? "both apps run" : "all these apps run";
+  return `Anyone who can change this app's deploy workflow or its deploy key can reach the data and secrets of ${named} too: ${all} on the server as the same deploy user, which can become root through Docker. Share the server only between apps the same people may change.`;
 }
 
 /**

@@ -657,8 +657,10 @@ describe("runInterview", () => {
         return Object.fromEntries(questions.map((q) => [q.id, q.default]));
       },
     });
+    // The budget is asked last, once the server is known (FR-3026).
+    expect(ids(asked[4] ?? [])).toEqual(["budgetMonthly"]);
     const defaults = Object.fromEntries(
-      [...(asked[2] ?? []), ...(asked[3] ?? [])].map((q) => [q.id, q.default]),
+      asked.slice(2).flatMap((round) => round.map((q) => [q.id, q.default])),
     );
     expect(defaults).toMatchObject({
       dataCriticality: "critical",
@@ -685,10 +687,10 @@ describe("runInterview", () => {
       cicd: { ...plan.cicd, deployTags: { enabled: true, release: true } },
     });
 
-    let asked: Question[] = [];
+    const asked: Question[] = [];
     const interactive = await runInterview(deps, {
       ask: async (questions) => {
-        asked = questions;
+        asked.push(...questions);
         return Object.fromEntries(questions.map((q) => [q.id, q.default]));
       },
     });

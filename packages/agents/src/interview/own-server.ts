@@ -43,9 +43,9 @@ const OWN_FIELDS = [
   "sshFrom",
 ] as const;
 /**
- * The follow-ups for a server another of the user's OpsCrew apps runs on, one OpsCrew created for
- * that app (the first app): its repository folder on this computer, its app key (`.` for the
- * repository's first app) and its environment.
+ * The follow-ups for a server another of the user's OpsCrew apps runs on (the first app), one
+ * OpsCrew created for that app or one of the user's: its repository folder on this computer, its
+ * app key (`.` for the repository's first app) and its environment.
  */
 export const SHARES_FIELDS = ["shares", "shares-app", "shares-env"] as const;
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
@@ -420,8 +420,8 @@ const SERVER_KINDS = { own: "own", shares: "shares" } as const;
 
 /**
  * The terminal's first question for a server the user already has: one of theirs, reached with
- * their own SSH login, or the server of another of their OpsCrew apps, one OpsCrew created
- * (the default when the earlier answers named one).
+ * their own SSH login, or the server of another of their OpsCrew apps: one OpsCrew created, or
+ * one of theirs reached at its public address (the default when the earlier answers named one).
  */
 export function serverKindQuestion(
   context: Pick<OwnServerContext, "previous"> = {},
@@ -438,8 +438,8 @@ export function serverKindQuestion(
       },
       {
         value: SERVER_KINDS.shares,
-        label: "A server another of your OpsCrew apps runs on (one OpsCrew created)",
-        hint: "beside that app, with no server to pay for; that app's repository must be on this computer, where it was provisioned",
+        label: "A server another of your OpsCrew apps runs on",
+        hint: "beside that app, with no server to pay for: one OpsCrew created for it, or one of yours it reaches at its public address; that app's repository must be on this computer, where it was provisioned",
       },
     ],
     default: context.previous?.shares === undefined ? SERVER_KINDS.own : SERVER_KINDS.shares,
@@ -470,7 +470,7 @@ export function buildSharesQuestions(context: SharesQuestionsContext = {}): Serv
     {
       id: "server.shares",
       prompt: "Where is the repository of the app whose server this app should share?",
-      help: "That app's repository folder on this computer, for example /home/you/code/inventory. That app must have been provisioned from this computer, on a server OpsCrew created: OpsCrew reads its plan, its server's address and its deploy key there, and copies only the server's public host key. Kept on this computer only.",
+      help: "That app's repository folder on this computer, for example /home/you/code/inventory. That app must have been provisioned from this computer. On a server OpsCrew created, OpsCrew reads that app's plan, its server's address and its deploy key there, and copies only the server's public host key. On a server of yours, this app takes that app's login to the server and the server's pinned host key, and is one more app there. Kept on this computer only.",
       kind: "text",
       ...withDefault(previous?.root),
       required: true,

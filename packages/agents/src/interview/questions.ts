@@ -184,7 +184,8 @@ export function buildQuestions(
       prompt: "What is your monthly budget for hosting?",
       help: "In EUR or USD, for example 10 EUR. OpsCrew shows which options fit it.",
       kind: "money",
-      ...withDefault(previous?.budgetMonthly),
+      // An app on another app's server needed none (0): no default then.
+      ...withDefault(previous?.budgetMonthly.amount === 0 ? undefined : previous?.budgetMonthly),
       required: true,
     },
     {

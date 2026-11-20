@@ -21,8 +21,13 @@ export const RequirementsSchema = z
     schemaVersion: z.literal(1),
     answeredAt: IsoDateTimeSchema,
     expectedMonthlyUsers: UserScaleSchema,
+    /**
+     * The monthly hosting budget. 0 only for an app on a server another of the user's apps runs
+     * on, which needs none (the interview's `server.shares`): the interview asks a positive amount
+     * of every other app.
+     */
     budgetMonthly: z.strictObject({
-      amount: z.number().positive(),
+      amount: z.number().nonnegative(),
       currency: CurrencySchema,
     }),
     /** Where to run the app. */

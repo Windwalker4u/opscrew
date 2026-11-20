@@ -37,6 +37,7 @@ import {
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { type FirstApp, firstApp } from "../shares/first-app";
+import { type OwnFirstApp, ownFirstApp, recordOwnFirstApp } from "../shares/own-first-app";
 import { answersToRequirements } from "./answers";
 import {
   applyComponentAnswers,
@@ -46,7 +47,7 @@ import {
   hostedAdditions,
   splitComponentAnswers,
 } from "./components";
-import { hasFollowUps, splitFollowUps } from "./follow-ups";
+import { hasFollowUps, isBlank, splitFollowUps } from "./follow-ups";
 import {
   HOSTING_FIELDS,
   type HostingAnswers,
@@ -63,6 +64,7 @@ import {
   recordSharedServerAnswers,
   SERVER_FIELDS,
   type ServerQuestion,
+  SHARES_FIELDS,
 } from "./own-server";
 import {
   answersToPortainer,
@@ -85,7 +87,11 @@ import {
 } from "./questions";
 
 export interface InterviewOptions {
-  /** Asks the questions interactively and returns the answers keyed by question id. */
+  /**
+   * Asks the questions interactively and returns the answers keyed by question id. The budget is
+   * asked last, on its own, once the server's answers are known: not at all for a server another
+   * of the user's apps runs on (FR-3026).
+   */
   ask?: (questions: Question[]) => Promise<InterviewAnswers>;
   /**
    * Asks the follow-up questions for a server the user already has (`provider: own`) and returns
@@ -360,7 +366,10 @@ async function environmentSetupNote(
  * answers or `options.askServer` and saves them in `.opscrew/server.json`, never in
  * `opscrew/requirements.yaml`; for the server of another of the user's OpsCrew apps
  * (`server.shares*`) that app is checked first (`firstApp`, which refuses before anything is
- * written) and its server's address is saved with the reference. For an existing Portainer
+ * written) and its server's address is saved with the reference; on a server the user owns its
+ * login, way of serving and pinned host key become this app's own (`ownFirstApp`), with no
+ * reference kept. With `server.shares*` no budget is needed (FR-3026): a terminal asks the budget
+ * after the server's questions, and only for another server. For an existing Portainer
  * (`provider: portainer`) it takes the follow-ups (`portainer.*`) from the answers or
  * `options.askPortainer`, confirms Portainer's certificate and lists its environments through
  * `options.portainer`, and saves them in
@@ -404,22 +413,38 @@ export async function runInterview(
     if (previous !== undefined) reporter.info("Your previous answers are pre-filled.");
 
     let answers: InterviewAnswers = {};
+    // In a terminal the budget is asked once the server is known: an app on a server another of
+    // the user's apps runs on needs none (FR-3026).
+    const budgetQuestion = questions.filter((q) => q.id === "budgetMonthly");
     if (options.answers !== undefined) answers = options.answers;
-    else if (options.ask !== undefined) answers = await options.ask(questions);
+    else if (options.ask !== undefined) {
+      answers = await options.ask(questions.filter((q) => q.id !== "budgetMonthly"));
+    }
+    const ask = options.answers === undefined ? options.ask : undefined;
+    const askBudget = ask !== undefined && isBlank(answers.budgetMonthly);
     let split = splitFollowUps(answers, "server", SERVER_FIELDS);
     const portainerSplit = splitFollowUps(split.rest, "portainer", PORTAINER_FIELDS);
     const hostingSplit = splitFollowUps(portainerSplit.rest, "hosting", HOSTING_FIELDS);
     let componentSplit = splitComponentAnswers(hostingSplit.rest, facts);
-
-    let requirements = answersToRequirements(componentSplit.rest, {
-      now: deps.clock.now(),
-      facts,
-      appCandidates,
-      ...context,
-      ...(previous !== undefined ? { previous } : {}),
-    });
-    // A further app is the one in its record's folder (`opscrew app add`).
-    if (recorded !== undefined) requirements = { ...requirements, appDir: recorded };
+    const answered = componentSplit.rest;
+    const parse = (more: InterviewAnswers, noBudget: boolean): Requirements => {
+      const parsed = answersToRequirements(
+        { ...answered, ...more },
+        {
+          now: deps.clock.now(),
+          facts,
+          appCandidates,
+          ...context,
+          ...(previous !== undefined ? { previous } : {}),
+          noBudget,
+        },
+      );
+      // A further app is the one in its record's folder (`opscrew app add`).
+      return recorded === undefined ? parsed : { ...parsed, appDir: recorded };
+    };
+    // The budget waits for the server's answers, which may name another app's server.
+    const budgetLater = askBudget || SHARES_FIELDS.some((field) => !isBlank(split.values[field]));
+    let requirements = parse({}, budgetLater);
     // Asked once the provider and region are known: a hosted service's question names the price
     // of the server running it would need.
     if (!hasComponentAnswers(componentSplit) && options.askComponents !== undefined) {
@@ -436,6 +461,7 @@ export async function runInterview(
     let ownServer: OwnServerAnswers | undefined;
     let shares: SharesReference | undefined;
     let first: FirstApp | undefined;
+    let ownFirst: OwnFirstApp | undefined;
     let previousServer: OwnServerConnection | undefined;
     let damagedRecord = false;
     if (requirements.provider === "own") {
@@ -468,14 +494,25 @@ export async function runInterview(
         );
       }
       shares = await answersToSharedServer(split, serverContext);
-      // The app named must allow a second app beside it (FR-3002): refused before anything is
-      // written, and how to reach its server is read from its folder.
-      if (shares !== undefined) first = await firstApp(deps, shares);
-      else ownServer = answersToOwnServer(split, serverContext);
+      // On a server of the user's own this app is one more app there, with that server's login
+      // (FR-3025), and no reference is kept.
+      ownFirst = shares === undefined ? undefined : await ownFirstApp(deps, shares);
+      if (ownFirst !== undefined) {
+        ownServer = ownFirst.answers;
+        shares = undefined;
+      } else if (shares !== undefined) {
+        // The app named must allow a second app beside it (FR-3002): refused before anything is
+        // written, and how to reach its server is read from its folder.
+        first = await firstApp(deps, shares);
+      } else ownServer = answersToOwnServer(split, serverContext);
     } else if (hasFollowUps(split)) {
       reporter.warn(
         "The answers about a server you already have (server.*) were ignored, because the app does not run on your own server.",
       );
+    }
+    if (budgetLater && first === undefined && ownFirst === undefined) {
+      const budget = askBudget && ask !== undefined ? await ask(budgetQuestion) : {};
+      requirements = applyComponentAnswers(parse(budget, false), componentSplit);
     }
     let portainer: PortainerAnswers | undefined;
     if (requirements.provider === "portainer") {
@@ -529,7 +566,13 @@ export async function runInterview(
         );
       }
     }
-    if (ownServer !== undefined) {
+    if (ownFirst !== undefined) {
+      // That app's login and pinned host key, copied into this app's state on this computer.
+      await recordOwnFirstApp(paths, ownFirst);
+      reporter.info(
+        `Saved how to reach the server of "${ownFirst.plan.app.name}" in .opscrew/server.json, on this computer only: this app runs there as one more app on your server, with the same login.`,
+      );
+    } else if (ownServer !== undefined) {
       // Connection details stay on this computer: never in requirements.yaml.
       await recordOwnServerAnswers(paths, ownServer);
       reporter.info(
@@ -570,9 +613,10 @@ export async function runInterview(
     const setup = await environmentSetupNote(deps, facts);
     if (setup !== undefined) reporter.info(setup);
     const budget = requirements.budgetMonthly;
+    const sharedWith = (first ?? ownFirst)?.plan.app.name;
     const where =
-      first !== undefined
-        ? `, the server of "${first.plan.app.name}"`
+      sharedWith !== undefined
+        ? `, the server of "${sharedWith}"`
         : requirements.provider === "own"
           ? ", your own server"
           : requirements.provider === "portainer"

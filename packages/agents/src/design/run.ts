@@ -1331,6 +1331,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       });
     }
     if (memory?.warning !== undefined) warn(memory.warning);
+    // The other OpsCrew apps on a server the user owns: their deploys and this app's reach each
+    // other's data (FR-3025). A second app's warning names the first app above.
+    const [other, ...others] = (ownServer?.apps ?? [])
+      .filter((app) => app.name !== plan.app.name)
+      .map((app) => app.name);
+    if (shares === undefined && other !== undefined) warn(sharedAccessWarning(other, ...others));
   }
   // A Raspberry Pi whose data would live on an SD card: warned of, never refused.
   if (chosen.target.provider === "own" && ownServer !== undefined) {

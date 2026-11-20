@@ -29,6 +29,7 @@ import {
   OWN_SERVER_TYPE,
   type OwnServerAccess,
   type OwnServerOptionInput,
+  sharedAccessWarning,
 } from "./own";
 import { optionToPlan } from "./plan";
 import { previewDesignOptions, runDesign } from "./run";
@@ -510,6 +511,41 @@ describe("runDesign for a server the user owns", () => {
       expect(result.warnings.join("\n")).toContain(
         'Your server keeps only 11% of its memory free after the memory limits of this app (512 MB) and of the other OpsCrew app on it (1024 MB: "blog" 1024 MB)',
       );
+    });
+  });
+
+  describe("the shared-access warning (FR-3025)", () => {
+    it("names each other OpsCrew app the server's inspection finds, never this app", async () => {
+      const deps = await setup(ownRequirements());
+      const blog = { name: "blog", memoryMb: 256, tunnel: false };
+      const own = { name: "landing", memoryMb: 256, tunnel: false };
+      const one = await runDesign(deps, {
+        ownServer: { facts: BIG, access: "public", apps: [blog, own] },
+      });
+      const warning = sharedAccessWarning("blog");
+      expect(warning).toContain('the data and secrets of "blog" too: both apps run on the server');
+      expect(one.warnings).toContain(warning);
+      expect(deps.reporter.text()).toContain(warning);
+      const news = { name: "news", memoryMb: 256, tunnel: false };
+      const two = await runDesign(deps, {
+        ownServer: { facts: BIG, access: "public", apps: [blog, own, news] },
+      });
+      const both = sharedAccessWarning("blog", "news");
+      expect(both).toContain('of "blog" and "news" too: all these apps run on the server');
+      expect(two.warnings).toContain(both);
+      expect(two.warnings.join("\n")).not.toContain('"landing"');
+    });
+
+    it("is not said for a server with no other OpsCrew app", async () => {
+      const deps = await setup(ownRequirements());
+      const alone = await runDesign(deps, {
+        ownServer: {
+          facts: BIG,
+          access: "public",
+          apps: [{ name: "landing", memoryMb: 1, tunnel: false }],
+        },
+      });
+      expect(alone.warnings.join("\n")).not.toMatch(/same deploy user/);
     });
   });
 

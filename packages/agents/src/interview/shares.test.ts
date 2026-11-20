@@ -353,7 +353,7 @@ describe("runInterview on the server of another app", () => {
         { value: "own" },
         {
           value: "shares",
-          label: "A server another of your OpsCrew apps runs on (one OpsCrew created)",
+          label: "A server another of your OpsCrew apps runs on",
         },
       ],
     });
