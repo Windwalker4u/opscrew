@@ -245,6 +245,29 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/design src/shared src/monitoring src/retarget/start && pnpm lint`
   - Effort: medium
 
+**Also in 0.2.11** (a bug found in a live provision of a second app, 2026-11-20):
+
+- [ ] T3114 A redesign keeps the variables the user added to `app.env` by hand
+  - Why: design rebuilds `app.env` from detection and keeps only the settings of the variables
+    detection still finds (`keepPlanSettings` in `packages/agents/src/design/run.ts`), so a
+    variable the user added because detection misses it (a switch the code reads with a default,
+    mentioned only in a comment of `.env.example`) disappears without a word, and the next deploy
+    never passes its value.
+  - Owns: `packages/agents/src/design/run.ts`, `packages/agents/src/design/**` tests,
+    `docs/guide/` (the page that describes `app.env`)
+  - Accept:
+    - **Kept:** a previous `source: user` variable that the fresh design doesn't have, and no
+      service fills now, stays in `app.env` as it was. A `generated` or `derived` one goes, as
+      today.
+    - **Said:** design's "Kept your changes in opscrew/plan.yaml" line names each such variable,
+      with a short note to remove it from `app.env` when the app no longer reads it.
+    - **The guide** says how to add a variable detection misses: add it to `app.env` in
+      `opscrew/plan.yaml` with `source: user`, and design keeps it.
+    - **Tests:** a hand-added variable survives a redesign and is named; a derived one that no
+      service fills is dropped; a detected variable keeps today's handling.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/design && pnpm lint`
+  - Effort: medium
+
 **Also in 0.2.11** (a user's ask, the founder's yes of 2026-11-20; not part of the move):
 
 - [x] T3112 The workflow's GitHub token for an own Dockerfile's build, as a secret mount
