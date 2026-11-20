@@ -337,6 +337,28 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && npx vitest run --root packages/cli src/commands/providers && pnpm lint`
   - Effort: high
 
+- [ ] T3118 The catalogue's pricing pages and Cloudflare hosting's tokens
+  - Why: the portal links each approximate price to the provider's own pricing page, and its
+    static-site path to Cloudflare needs the second token Cloudflare hosting uses.
+  - Owns:
+    - the provider contract's new optional `pricingUrl` only: `packages/contracts/src/provider.ts`,
+      each `packages/providers/*/src/definition.ts`, and the registry's check;
+    - `packages/plan-schema/src/catalogue.ts` and its generated schema;
+    - `packages/agents/src/providers/catalogue.ts`;
+    - colocated tests.
+  - Accept:
+    - **`pricingUrl`** on every catalogue entry: the provider's plain public pricing page, from
+      its definition (cloud server providers) or the catalogue's constants (Cloudflare, Workers,
+      the registrars). It is checked the way `signupUrl` is: https, no query string.
+    - **Cloudflare hosting:** an entry `{kind: "cloudflare", id: "cloudflare-workers"}`, the id
+      that `suggestions.staticSite.target` names. Its credentials list the tokens that hosting
+      needs (`CLOUDFLARE_API_TOKEN` and `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`, `mode: "all"`), with
+      `opscrew init`'s own steps and permissions for them.
+    - **Tests:** every entry has a `pricingUrl`; the hosting entry lists both tokens; the schema
+      file is up to date.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/contracts --filter=@opscrew/providers --filter=@opscrew/provider-hetzner --filter=@opscrew/provider-digitalocean --filter=@opscrew/provider-contabo && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && pnpm lint`
+  - Effort: medium
+
 - [x] T3117 The secrets recovery copy's recipient in a script: `--recipient <age public key>`
   - Why: in a script, provision makes the encrypted recovery copy of the app's secrets only with
     `--key-out`, which writes a new age key where the script runs (a CI runner keeps nothing). A
