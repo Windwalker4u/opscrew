@@ -337,7 +337,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && npx vitest run --root packages/cli src/commands/providers && pnpm lint`
   - Effort: high
 
-- [ ] T3117 The secrets recovery copy's recipient in a script: `--recipient <age public key>`
+- [x] T3117 The secrets recovery copy's recipient in a script: `--recipient <age public key>`
   - Why: in a script, provision makes the encrypted recovery copy of the app's secrets only with
     `--key-out`, which writes a new age key where the script runs (a CI runner keeps nothing). A
     first setup applied from GitHub Actions then has no copy anyone can open. The agents already
