@@ -288,7 +288,7 @@ the copy's files and any copy left.
 ## Whole-server snapshots
 
 On a server OpsCrew created at [Hetzner Cloud](hetzner.md),
-[DigitalOcean](digitalocean.md) or [Contabo](contabo.md), the provider can also
+[DigitalOcean](digitalocean.md), [Contabo](contabo.md) or [OVHcloud](ovhcloud.md), the provider can also
 snapshot the whole disk:
 
 ```bash
@@ -318,6 +318,9 @@ npx opscrew restore --server <id>                  # rebuild the server from it
   OpsCrew refuses and says which one to delete. Restoring one that isn't the newest deletes the
   newer ones, and OpsCrew says so first. They go with the server when its term ends (see
   [Deploy to Contabo](contabo.md#snapshots)).
+- **At OVHcloud,** snapshots are billed per GB a month and stay in your Public Cloud project after
+  the server is gone, billed until you delete them in the control panel (see
+  [Deploy to OVHcloud](ovhcloud.md#snapshots)).
 - **DigitalOcean's token** needs two more scopes, `snapshot:delete` and `droplet:admin`, only to
   delete or restore whole-server snapshots. Without them, OpsCrew says so.
 
