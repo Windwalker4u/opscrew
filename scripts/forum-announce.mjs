@@ -87,7 +87,7 @@ if (!tag) {
 const existing = await api("/discussions?filter[tag]=announcements&page[limit]=50");
 const same = existing.data.find((d) => d.attributes.title === title);
 if (same) {
-  console.log(`Already announced: ${forum}/d/${same.id}-${same.attributes.slug}`);
+  console.log(`Already announced: ${forum}/d/${same.id}`);
   process.exit(0);
 }
 const created = await api("/discussions", {
@@ -100,4 +100,4 @@ const created = await api("/discussions", {
     },
   }),
 });
-console.log(`Announced: ${forum}/d/${created.data.id}-${created.data.attributes.slug}`);
+console.log(`Announced: ${forum}/d/${created.data.id}`);
