@@ -320,6 +320,27 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       app records its migration count after a deploy.
   - Effort: high
 
+- [ ] T3123 A Filament app built by Railpack has Filament's published files
+  - Why: Filament's JavaScript, CSS and fonts are published into `public/` by `php artisan
+    filament:upgrade` from Composer's `post-autoload-dump` script, and an app's `.gitignore` keeps
+    them out of the repository. Railpack's `composer install --no-scripts` never runs it, so the
+    image has none of them, and the admin pages render without their scripts and fonts.
+  - Owns:
+    - `packages/iac-templates/src/workflow/build.ts` (the Railpack Laravel seal);
+    - `packages/iac-templates/src/railpack-laravel.ts`;
+    - `packages/cli/test/e2e/**` (the Docker pass);
+    - colocated tests.
+  - Accept:
+    - **The seal:** for a Laravel app that Railpack builds and whose `composer.lock` has
+      `filament/filament`, the seal runs `php artisan filament:assets` before it removes the
+      settings' caches, so nothing it caches stays. Whether to run it is decided at build time
+      from the lock in the image, so no plan setting is needed. If the command fails, the build
+      fails with its words.
+    - **Unchanged:** for any other plan, the workflow stays byte for byte the same.
+    - **Tests:** the seal's lines, offline; and in the Docker pass, a Laravel app with Filament
+      has `public/js/filament/filament/app.js` in the sealed image.
+  - Effort: medium
+
 - [x] T3122 The old-image cleanup never turns a deploy red
   - Why: a deploy run's "Delete old images" job failed the whole run when GitHub answered one
     deletion with HTTP 502. The deploy had succeeded, and a re-run of the job deleted the image.
