@@ -482,6 +482,9 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
 - **A Laravel image of the user's own Dockerfile can bake the same caches:** a `RUN php artisan
   config:cache` or `optimize` line saves the build's settings into the image. `opscrew adapt`'s
   Dockerfile findings could flag it.
+- **Horizon's memory from its own configuration:** 768 MB is a default, not a fit. Reading
+  `config/horizon.php`'s block for the environment (auto balancing runs one process per queue)
+  would size it to the app's queues.
 
 **Follow-up, after 0.2.11** (T3102's last review):
 - **A window killed after the app started in place, before `migrated`:** `recoverInterruptedWindow`
