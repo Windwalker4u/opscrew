@@ -484,25 +484,30 @@ function workerStart(plan: DeployPlan, worker: DeployPlan["processes"]["workers"
 }
 
 /**
+ * The words before a one-off's script per builder, in its Compose service and in a `docker compose
+ * run <service> …` that replaces its command: none for Railpack, whose image runs `bash -c`
+ * itself, and Buildpacks, whose launcher runs one string with bash; `sh -c` otherwise. `sh -c`
+ * under those two would make the image's shell run a bare `sh`, which reads stdin and ends at once
+ * without running the script.
+ */
+export function oneOffShell(plan: DeployPlan): readonly string[] {
+  const builder = plan.app.build?.builder;
+  return builder === "railpack" || builder === "buildpacks" ? [] : ["sh", "-c"];
+}
+
+/**
  * How a one-off container of the app's image (the release command, a preview's seed) runs `script`
- * per builder, as {@link workerStart} does but without `exec`, since the script may chain
- * commands: a Railpack image runs `bash -c` itself, and Buildpacks' launcher runs one string with
- * bash, so `sh -c` before the script would make the image's shell run a bare `sh`, which reads
- * stdin and ends at once without running it.
+ * per builder ({@link oneOffShell}), as {@link workerStart} does but without `exec`, since the
+ * script may chain commands; Buildpacks' through its launcher.
  */
 export function oneOffStart(
   plan: DeployPlan,
   script: string,
 ): { entrypoint?: string[]; command: string[] } {
-  const command = composeLiteral(script);
-  switch (plan.app.build?.builder) {
-    case "buildpacks":
-      return { entrypoint: ["/cnb/lifecycle/launcher"], command: [command] };
-    case "railpack":
-      return { command: [command] };
-    default:
-      return { command: ["sh", "-c", command] };
-  }
+  const command = [...oneOffShell(plan), composeLiteral(script)];
+  return plan.app.build?.builder === "buildpacks"
+    ? { entrypoint: ["/cnb/lifecycle/launcher"], command }
+    : { command };
 }
 
 /** How the cron service starts supercronic per builder. */

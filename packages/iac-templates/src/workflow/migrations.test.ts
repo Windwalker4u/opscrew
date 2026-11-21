@@ -19,6 +19,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testPlan } from "../__fixtures__/plans";
+import { withBuild } from "./__fixtures__/plans";
 import { fakeBin, RAILS_STATUS, runSh, shWorks, write } from "./__fixtures__/sh";
 import { migrationDown, migrationRecord, schemaRecordPath } from "./migrations";
 import { switchCommands } from "./switch";
@@ -193,19 +194,42 @@ const FAKE_DOCKER = [
 
 /**
  * Every migration tool (`npx`, `python`, `alembic`, `flask`, `php`, `bin/rails`): logs its words,
- * `FLASK_APP` and its folder in $WORK/tools.log; prints $WORK/status.out when the test wrote one,
- * else a row of the database, as a migration's output can; prints another row on stderr; exits
- * TOOL_FAIL (default 0).
+ * `FLASK_APP` and its folder in $WORK/tools.log; for a status command, prints $WORK/status.out
+ * when the test wrote one, and else (or for a migration) a row of the database, as a migration's
+ * output can; prints another row on stderr; exits TOOL_FAIL (default 0).
  */
 const FAKE_TOOL = [
   "#!/bin/sh",
   'echo "$(basename "$0") $*${FLASK_APP:+ FLASK_APP=$FLASK_APP} in .${PWD#"$(cd "$WORK/container" && pwd)"}" >> "$WORK/tools.log"',
-  'if [ -f "$WORK/status.out" ]; then cat "$WORK/status.out"; else echo "migrated $SECRET_ROW"; fi',
+  "status() { printf '%s\\n' \"$*\" | grep -qE '(^| )(runner|showmigrations|current|migrate:list|db:migrate:status|migrate:status|migration:show)( |$)'; }",
+  'if status "$@" && [ -f "$WORK/status.out" ]; then cat "$WORK/status.out"; else echo "migrated $SECRET_ROW"; fi',
   'echo "the tool read $SECRET_ROW" >&2',
   'exit "${TOOL_FAIL:-0}"',
 ].join("\n");
 
 const SECRET_ROW = "row-value-from-the-database";
+
+/**
+ * Each tool's status output once its down migrations ran in the tests below: a state other than
+ * the running version's record there, as a down migration that did its work leaves.
+ */
+const AFTER: Record<MigrationTool, string> = {
+  rails: "database: primary\nCurrent version: 20261101000000\n",
+  django: "[X]  contenttypes.0002_remove_content_type_name\n[X]  visits.0001_initial\n",
+  alembic: "",
+  "flask-migrate": "3f1c2b4a5d6e (head)\n",
+  knex: "Found 1 Completed Migration file/files.\n",
+  sequelize: "up 20261101-create-visits.js\ndown 20261102-add-note.js\n",
+  typeorm: "[ ] CreateVisits1791963402636\n[ ] AddNoteToVisits1791963402637\n",
+  laravel: [
+    "  Migration name .............................................. Batch / Status  ",
+    "  0001_01_01_000000_create_users_table ............................... [1] Ran  ",
+    "  0001_01_01_000001_create_cache_table ............................... [1] Ran  ",
+    "  0001_01_01_000002_create_jobs_table ................................ [1] Ran  ",
+    "  2026_11_06_000000_add_note_to_users_table .......................... Pending  ",
+    "",
+  ].join("\n"),
+};
 
 let work = "";
 const at = (name: string) => `${work}/app/${name}`;
@@ -509,22 +533,32 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 1
           "python manage.py migrate sessions zero --noinput in ./web",
         ],
       ],
-    ])("migrates %s, in one one-off of the running image", (_name, tool, was, now, calls) => {
-      recorded(was, now);
-      const result = rollback(PLANS[tool]);
-      expect(result.status, result.output).toBe(0);
-      expect(lines("tools.log")).toEqual(calls);
-      const docker = lines("docker.log");
-      expect(docker).toHaveLength(1);
-      expect(docker[0]).toMatch(/^docker compose run --rm --no-deps -T release sh -c /);
-      expect(docker[0]).toMatch(new RegExp(`\\| APP_IMAGE=${image(B).replace(/[.]/g, "\\.")}$`));
-      expect(result.output).toBe(
-        `OpsCrew migrated the database down with ${tool} to the migrations of the version rolled back to.\nthe step finished\n`,
-      );
-      expect(read("release.log")).toContain(`migrated ${SECRET_ROW}`);
-      expect(read("release.log")).toContain(`the tool read ${SECRET_ROW}`);
-      if (!windows) expect(mode("release.log")).toBe("600");
-    });
+    ])(
+      "migrates %s, in one one-off of the running image, then reads the result",
+      (_name, tool, was, now, calls) => {
+        recorded(was, now);
+        write(`${work}/status.out`, AFTER[tool]);
+        const result = rollback(PLANS[tool]);
+        expect(result.status, result.output).toBe(0);
+        // The down migrations, then the status that shows they changed the database.
+        expect(lines("tools.log").slice(0, calls.length)).toEqual(calls);
+        expect(lines("tools.log")).toHaveLength(calls.length + 1);
+        const docker = lines("docker.log");
+        expect(docker).toHaveLength(2);
+        const status = PLANS[tool].app.migrations?.status ?? "";
+        expect(docker[1]).toBe(
+          `docker compose run --rm --no-deps -T release sh -c ${status} | APP_IMAGE=${image(B)}`,
+        );
+        expect(docker[0]).toMatch(/^docker compose run --rm --no-deps -T release sh -c /);
+        expect(docker[0]).toMatch(new RegExp(`\\| APP_IMAGE=${image(B).replace(/[.]/g, "\\.")}$`));
+        expect(result.output).toBe(
+          `OpsCrew migrated the database down with ${tool} to the migrations of the version rolled back to.\nthe step finished\n`,
+        );
+        expect(read("release.log")).toContain(`migrated ${SECRET_ROW}`);
+        expect(read("release.log")).toContain(`the tool read ${SECRET_ROW}`);
+        if (!windows) expect(mode("release.log")).toBe("600");
+      },
+    );
 
     it.each<[MigrationTool, string, string]>([
       ["rails", "version=20261101000000\n", "version=20261101000000\n"],
@@ -689,6 +723,46 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 1
       );
       expect(read("release.log")).toContain(`the tool read ${SECRET_ROW}`);
     });
+
+    it("never says down migrations ran that left the database as it was, or whose result it can't read", () => {
+      recorded("count=3\n", "count=5\n");
+      // Five migrations ran, as the running version's record says: the down undid none.
+      const unchanged = `${AFTER.laravel.replace("Pending", "[2] Ran")}  2026_11_07_000000_add_tags_to_users_table .......................... [2] Ran  \n`;
+      for (const [after, said] of [
+        [
+          unchanged,
+          "::error::The down migrations with laravel finished, but the database still has the migrations of the version running now, so they changed nothing. Check app.migrations.down in opscrew/plan.yaml; its output stays on the server in",
+        ],
+        [
+          "nothing a status shows\n",
+          "::error::The down migrations with laravel finished, but app.migrations.status in opscrew/plan.yaml then printed nothing OpsCrew can read, so OpsCrew can't tell that they migrated anything. Their output stays on the server in",
+        ],
+      ] as const) {
+        write(`${work}/status.out`, after);
+        const result = rollback(PLANS.laravel);
+        expect(result.status, result.output).toBe(1);
+        expect(result.output).toContain(said);
+        expect(result.output).not.toContain("OpsCrew migrated the database down");
+        expect(result.output).not.toContain(SECRET_ROW);
+      }
+    });
+
+    it.each(["railpack", "buildpacks"] as const)(
+      "runs the status and the down migrations as one string in a %s image, whose entrypoint has its own shell",
+      (builder) => {
+        const plan = withBuild(PLANS.laravel, builder, { language: "php", version: "8.5" });
+        write(`${work}/status.out`, AFTER.laravel);
+        expect(deploy(plan).status).toBe(0);
+        recorded("count=2\n", "count=5\n");
+        const result = rollback(plan);
+        expect(result.status, result.output).toBe(0);
+        expect(lines("docker.log")).toEqual([
+          `docker compose run --rm --no-deps -T release php artisan migrate:status | APP_IMAGE=${image(B)}`,
+          `docker compose run --rm --no-deps -T release php artisan migrate:rollback --step=3 --force | APP_IMAGE=${image(B)}`,
+          `docker compose run --rm --no-deps -T release php artisan migrate:status | APP_IMAGE=${image(B)}`,
+        ]);
+      },
+    );
 
     it("records nothing without app.migrations", () => {
       expect(migrationRecord(testPlan())).toEqual([]);

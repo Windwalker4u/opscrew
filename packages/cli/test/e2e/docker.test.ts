@@ -76,7 +76,7 @@
  * always removed; every container this file starts outside Compose carries the label
  * `opscrew.test=docker-pass`. The images pulled for the services stay, as base images do.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -103,6 +103,7 @@ import {
   hostSettingsServices,
   IMAGES,
   initStepsFor,
+  migrationRecord,
   type PinArch,
   PORTAINER_STACK_VARIABLES,
   portainerSecretVariables,
@@ -1463,6 +1464,44 @@ ${tail(logs.stdout, 40)}`,
           expect(answer.text.trim(), "the database connection the worker's job found").toBe(
             "pgsql",
           );
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(testCase === LARAVEL_POSTGRES)(
+        "records the Laravel app's migrations after the release, as the deploy does in a Railpack image",
+        async () => {
+          if (prepared === undefined) throw new Error("not prepared");
+          const { project } = deployed();
+          const hex = "c".repeat(64);
+          const dir = path.dirname(project.file);
+          // The deploy's record lines, with this project's Compose name, file and env file.
+          const slash = (file: string) => file.replaceAll("\\", "/");
+          const target = [
+            ...["-p", project.name],
+            ...(project.envFile === undefined ? [] : ["--env-file", slash(project.envFile)]),
+            ...["-f", slash(project.file)],
+          ]
+            .map((word) => `'${word}'`)
+            .join(" ");
+          const script = [
+            "set -eu",
+            `docker() { if [ "$1" = compose ]; then shift; command docker compose ${target} "$@"; else command docker "$@"; fi; }`,
+            "if true; then",
+            ...migrationRecord(prepared.plan),
+            "fi",
+          ].join("\n");
+          const ran = spawnSync("sh", ["-s", `${prepared.plan.app.name}@sha256:${hex}`], {
+            cwd: dir,
+            input: script,
+            encoding: "utf8",
+            timeout: TWO_MINUTES,
+          });
+          const output = `${ran.stdout ?? ""}${ran.stderr ?? ""}`;
+          expect(ran.status, tail(output)).toBe(0);
+          expect(output, "the deploy's output").not.toContain("::warning::");
+          // laravel-app's three migrations, which the release ran in PostgreSQL.
+          expect(await readFile(path.join(dir, ".schema", hex), "utf8")).toBe("count=3\n");
         },
         TWO_MINUTES,
       );

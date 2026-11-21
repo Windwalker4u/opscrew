@@ -69,7 +69,7 @@ export * from "./serverless";
 export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";
-export { schemaRecordPath } from "./workflow/migrations";
+export { migrationRecord, schemaRecordPath } from "./workflow/migrations";
 export {
   OUTSIDE_CHECK_JOBS,
   OUTSIDE_CHECK_WORKFLOW_FILE,

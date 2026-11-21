@@ -5,11 +5,20 @@ import {
   type Migrations,
   type MigrationTool,
 } from "@opscrew/plan-schema";
+import { oneOffShell } from "../runtime/components";
 import { shellQuote } from "../runtime/services";
 import { planFilePath, printfFormat, RELEASE_LOG, runbookFilePath, serverLogNote } from "./shared";
 
 /** The migration records' folder in the app's folder (plan.md 12.3). */
 export const SCHEMA_DIR = ".schema";
+
+/**
+ * `docker compose run` of the `release` service with `word`, one shell word (quoted, or a quoted
+ * variable), as its command, in the builder's form ({@link oneOffShell}).
+ */
+function releaseRun(plan: DeployPlan, word: string): string {
+  return ["docker compose run --rm --no-deps -T release", ...oneOffShell(plan), word].join(" ");
+}
 
 /**
  * Version `<hex>`'s migration record: `version=<v>`, `database=<name> <v>` lines (Rails with several
@@ -116,7 +125,7 @@ export function migrationRecord(plan: DeployPlan): string[] {
     'case "$1" in *@sha256:*)',
     '  schema_hex="${1##*@sha256:}"',
     "  schema_status=1",
-    `  if schema_out="$(docker compose run --rm --no-deps -T release sh -c ${shellQuote(migrations.status)} < /dev/null 2>> ${RELEASE_LOG})"; then`,
+    `  if schema_out="$(${releaseRun(plan, shellQuote(migrations.status))} < /dev/null 2>> ${RELEASE_LOG})"; then`,
     `    (umask 077 && mkdir -p ${SCHEMA_DIR} && printf '%s\\n' "$schema_out" | awk ${shellQuote(NORMALIZE[migrations.tool])} > ${record}) && schema_status=0 || schema_status=$?`,
     "  fi",
     '  case "$schema_status" in',
@@ -302,8 +311,18 @@ export function migrationDown(plan: DeployPlan, migrations: Migrations): string[
     "  exit 0",
     "fi",
     "image=\"$(sed -n 's/^APP_IMAGE=//p' .env)\"",
-    `if ! (umask 077; APP_IMAGE="$image" docker compose run --rm --no-deps -T release sh -c "$script" < /dev/null > ${RELEASE_LOG} 2>&1); then`,
+    `if ! (umask 077; APP_IMAGE="$image" ${releaseRun(plan, '"$script"')} < /dev/null > ${RELEASE_LOG} 2>&1); then`,
     `  printf ${printfFormat(`::error::The down migrations with ${tool} failed. Their output ${serverLogNote(plan, RELEASE_LOG)}`)} "$PWD"`,
+    "  exit 1",
+    "fi",
+    // Their own result: a down that changed nothing, or one whose result can't be read, is no down.
+    `if ! after="$(APP_IMAGE="$image" ${releaseRun(plan, shellQuote(migrations.status))} < /dev/null 2>> ${RELEASE_LOG})" ||`,
+    `  ! after="$(printf '%s\\n' "$after" | awk ${shellQuote(NORMALIZE[tool])})"; then`,
+    `  printf ${printfFormat(`::error::The down migrations with ${tool} finished, but app.migrations.status in ${planFilePath(plan)} then printed nothing OpsCrew can read, so OpsCrew can't tell that they migrated anything. Their output ${serverLogNote(plan, RELEASE_LOG)}`)} "$PWD"`,
+    "  exit 1",
+    "fi",
+    'if [ "$after" = "$(cat "$now_record")" ]; then',
+    `  printf ${printfFormat(`::error::The down migrations with ${tool} finished, but the database still has the migrations of the version running now, so they changed nothing. Check app.migrations.down in ${planFilePath(plan)}; its output ${serverLogNote(plan, RELEASE_LOG)}`)} "$PWD"`,
     "  exit 1",
     "fi",
     `echo ${shellQuote(`OpsCrew migrated the database down with ${tool} to the migrations of the version rolled back to.`)}`,
