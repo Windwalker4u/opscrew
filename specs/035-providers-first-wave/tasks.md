@@ -48,9 +48,15 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     lockfile regenerated. `pnpm check` is as green as before (see the baseline note in the PR).
   - Effort: lead
 
-- [ ] T3502 (lead, after [issue #1](https://github.com/opscrew-hub/opscrew/issues/1), opened 2026-11-21) The contract's `rootVariables`
-  - Accept: `ProviderTerraform.rootVariables?` exactly as plan 1., exported from
-    `@opscrew/contracts`; ADR 0029 gains D11. No other file changes, and the typecheck is green.
+- [ ] T3502 (lead; [issue #1](https://github.com/opscrew-hub/opscrew/issues/1) and step 1 of
+  [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), both approved by the core's lead on
+  2026-11-21) The contract's `rootVariables` and `importId`, and `ovhcloud` in `ProviderId`
+  - Accept:
+    - `ProviderTerraform.rootVariables?` and `importId?` exactly as plan 1., exported from
+      `@opscrew/contracts`.
+    - `"ovhcloud"` in `ProviderId` and `VpsProviderId` (nothing reads it until T3510).
+    - ADR 0029 gains D11.
+    - The typecheck is green, with any exhaustive switch the new id leaves over fixed.
   - Effort: lead
 
 ## Phase 2: Wave 1 (parallel)
@@ -80,9 +86,15 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Depends: T3502
   - Accept:
     - A root that renders at least one server (the app's, the previous one during a move, or an
-      extra one) of a provider with `rootVariables` declares each one once: `type = string`,
-      `sensitive = true`, its description, no default.
+      extra one) of a provider with `rootVariables` declares each one once: `type = string`, its
+      description, no default, and **not** `sensitive`. An `import` block's `id` can't be
+      sensitive (plan 2.).
     - No value for it is ever written to `terraform.tfvars.json` or any other rendered file.
+    - `takeover.ts`'s `import` block writes `id = <provider.terraform.importId(id)>` when the
+      provider has `importId`, and `id = "<id>"` otherwise. The id check (`SERVER_ID`) still runs
+      on the server id before it is passed.
+    - A test under `tofu` (and `terraform` where installed, skipping plainly otherwise) plans a
+      root with such an `import` block whose id reads the root variable from `TF_VAR_*`.
     - Every existing snapshot and output for Hetzner, DigitalOcean and Contabo is byte-identical.
     - Tests use a definition fake with one root variable, since OVHcloud isn't in the registry yet:
       the declaration appears once for two servers of that provider, and is absent without them.
@@ -210,14 +222,20 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-ovhcloud && OPSCREW_IT=1 npx vitest run --root packages/providers/ovhcloud && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3510 (lead, after [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), opened 2026-11-21; its step 1, the id in `ProviderId`, comes before T3507 to T3509 can typecheck) `ovhcloud` joins the ids and the registry
+- [ ] T3510 (lead; step 2 of [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), approved
+  2026-11-21; its step 1 is in T3502) `ovhcloud` joins the lists and the registry
   - Accept:
-    - `ovhcloud` in `ProviderId`, `VpsProviderId`, `VpsProviderSchema`, `DEFAULT_IMAGES`
-      (`"Ubuntu 24.04"`) and the generated schemas.
+    - `ovhcloud` in `VpsProviderSchema`, `DEFAULT_IMAGES` (`"Ubuntu 24.04"`) and the generated
+      schemas.
     - `CLOUD_PROVIDERS` after Contabo, with the registry's and the CLI's dependencies and the
       lockfile.
     - Any exhaustive switch left over is fixed.
-    - `npx opscrew providers --json` lists it.
+    - `npx opscrew providers --json` lists it, with its labels, `signupUrl` and `pricingUrl`
+      (`packages/agents/src/providers/catalogue.test.ts`).
+    - The Codex plugin's two copies of the credential list follow OVHcloud's variables:
+      `plugin/.codex-plugin/plugin.json`'s `mcpServers.opscrew.env_vars` and the TOML in
+      `docs/guide/mcp-clients.md` (`packages/cli/src/mcp-clients/codex-plugin.test.ts`), as the
+      core's lead asked in issue #2.
     - `pnpm check` passes, or the failures are only the environment's, named in the PR.
   - Effort: lead
 

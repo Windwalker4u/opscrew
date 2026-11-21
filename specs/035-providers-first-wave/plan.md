@@ -79,7 +79,17 @@ first. Kamatera, IONOS Cloud and UpCloud come later, each in its own pull reques
  * a file. Absent for most providers.
  */
 rootVariables?: readonly { name: string; description: string; fromEnv: string }[];
+/**
+ * The HCL expression of an `import` block's `id` that takes over the server `serverId` (026's
+ * takeover); absent, the quoted id (`"<serverId>"`). OVHcloud imports an instance as
+ * `<project>/<id>`, so its expression reads the project from its root variable.
+ */
+importId?(serverId: string): string;
 ```
+
+`importId` was found while building T3508: `ovh_cloud_instance` imports only as
+`<service_name>/<instance id>` (the provider's `ImportState`), and iac-templates' takeover writes
+`id = "<id>"`. Writing the project id there would put it in `main.tf`.
 
 ADR 0029 gains **D11**: the reason (OVHcloud's `service_name`), the rule (only a credential feeds
 it, only through the environment), and that the vendored HCL then needs `TF_VAR_<name>` set by
@@ -94,9 +104,15 @@ whoever runs it without OpsCrew.
   - `fromEnv` is one of the provider's `credentials.envVars`;
   - the description is not empty.
 - **iac-templates**: every root that renders at least one server of a provider with
-  `rootVariables` declares each one once, `type = string`, `sensitive = true`, with its
-  description and no default. It never writes a value for it to `terraform.tfvars.json`. The
-  roots of the other providers are byte-identical (the existing snapshot tests prove it).
+  `rootVariables` declares each one once, `type = string`, with its description and no default.
+  It never writes a value for it to `terraform.tfvars.json`. The roots of the other providers are
+  byte-identical (the existing snapshot tests prove it).
+  - **Not `sensitive`:** OpenTofu 1.13.9 refuses a sensitive value in an `import` block's `id`
+    ("The import id cannot be sensitive"; the lead's local check, 2026-11-21). A non-sensitive
+    variable there plans fine. The project id isn't a secret, and the redactor still masks its
+    value in everything OpsCrew shows. Terraform is checked by T3504's test where it is installed.
+  - **The takeover's `import` block** writes `id = <importId(serverId)>` when the provider has
+    `importId`, and the quoted id otherwise.
 - **The agents' `projectEngine`** (`shared/engine.ts`): for every built-in provider's root
   variables, when `env[fromEnv]` is set, it sets `env["TF_VAR_" + name]` and registers the value
   with the redactor. A root that doesn't declare the variable ignores it, which is the engines'
