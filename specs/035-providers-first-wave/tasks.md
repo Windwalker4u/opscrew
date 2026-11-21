@@ -145,7 +145,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 3: Wave 2
 
-- [ ] T3507 [P] [US1] [US3] The catalogue and the price table
+- [x] T3507 [P] [US1] [US3] The catalogue and the price table
   - Owns: `packages/providers/ovhcloud/src/catalog.ts`, `catalog.test.ts`, `static-prices.ts`, its
     fixtures under `src/__fixtures__/catalog*`
   - Reads: plan 3.; research R1 sections 7 and 8, and R2.3; `packages/contracts/src/connector.ts`
