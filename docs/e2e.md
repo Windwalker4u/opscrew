@@ -3555,6 +3555,125 @@ What this pass doesn't cover (fakes do): moves to and from Contabo, several serv
 monitoring, rollback, data snapshots, `advise` and `rotate` on Contabo; a create that times out
 (SC-2605); the snapshot limit's refusal; a cancel Contabo refuses; the regions other than EU.
 
+## OVHcloud
+
+`packages/cli/test/live/ovhcloud.test.ts`, with `OPSCREW_E2E_OVHCLOUD=1`, runs OpsCrew on
+OVHcloud Public Cloud (SC-3501, SC-3505, SC-3507): `examples/flask-sqlite` on one `d2-2` (1 vCPU,
+2 GB, 25 GB disk) in DE1 (Limburg) or GRA11 (Gravelines), in a Public Cloud project of yours.
+
+**It costs money, so ask the founder before every run.** OVHcloud bills the server by the hour,
+per second after the first minute, until it is deleted: a `d2-2` costs about €0.0104 an hour
+before VAT. The whole-server snapshot of step 5 costs €0.011 per GB a month while it exists (at
+most 25 GB, so under €0.0004 an hour), and the test deletes it right after the destroy. A pass
+takes one to three hours, so it costs under €0.05. The prices are in
+`packages/providers/ovhcloud/src/static-prices.ts` and on
+[OVHcloud's price page](https://www.ovhcloud.com/en-ie/public-cloud/prices/).
+
+The app is named after the run, `e2e-ovh-<run id>`, so no server of an earlier run is ever taken
+for this one's. OpsCrew gets the four values as `OVH_ENDPOINT`, `OVH_CLIENT_ID`,
+`OVH_CLIENT_SECRET` and `OVH_CLOUD_PROJECT_SERVICE`, as a user's run does, and no other
+provider's token. `OPSCREW_E2E_APP` and `OPSCREW_E2E_REGION` are ignored.
+
+### Before the first run (once, in the control panel)
+
+1. **The project.** In [the control panel](https://manager.eu.ovhcloud.com/), under Public Cloud,
+   create a project for the pass alone (a payment method is needed) and copy its id, shown under
+   the project's name: it is `OVH_CLOUD_PROJECT_SERVICE`.
+2. **The region.** In the project, Settings → Quota & Regions: activate DE1 or GRA11 (or both).
+   Design takes the first of DE1, SBG5, GRA11 and WAW1 where a `d2-2` is offered, and the pass
+   expects DE1 or GRA11, so leave SBG5 and WAW1 off if DE1 is not active.
+3. **The service account.** Identity and Access Management → Identities → Service accounts: create
+   one (OVHcloud's guide: https://docs.ovhcloud.com/en/guides/manage-and-operate/api/manage-service-account).
+   Its client id is `OVH_CLIENT_ID` and its secret, shown once, `OVH_CLIENT_SECRET`.
+4. **Its IAM policy.** Identity and Access Management → Policies → Create a policy: the identity is
+   the service account, the only resource is the Public Cloud project of step 1, and the only
+   actions are `publicCloudProject:apiovh:*`. The account then reaches that project and nothing
+   else in your OVHcloud account.
+
+`OVH_ENDPOINT` is always `ovh-eu` (OVHcloud Europe); the test is skipped with any other value.
+
+### The steps
+
+Each step below is one numbered test, so a run reads as "N of 9 steps":
+1. **The interview.** The example goes to the throwaway repository's `main`, as for
+   [environments](#environments-and-promotion). Then `init --fix`, `analyze --no-ai`, the run's
+   name set in `opscrew/architecture.json`, and `interview --answers` without a provider
+   (`eu-central`, the run's own hostname behind Cloudflare). With only OVHcloud's values set, the
+   interview must choose OVHcloud.
+2. **Design.** The plan must be one `d2-2` in DE1 or GRA11, with no OVHcloud backups, priced in
+   EUR. Then the pass runs `snapshot offsite off` (it tests OVHcloud, not the R2 copies, whose
+   key only Cloudflare's dashboard makes) and, for the recovery copy's age key, `secrets folder`
+   and `--key-out` on every provision, as the rotation passes do.
+3. **Provision.** `adapt`'s pull request is merged. The project must have no server of the app
+   yet. Then provision, each plan approved by its hash. Its output must hold no takeover note, and
+   the project must then have exactly one server, named after the app, with its address recorded
+   by OpsCrew.
+4. **Deploy, verify and status.** The deploy-setup pull request is merged and its deploy run must
+   succeed. The app must answer on its hostname through Cloudflare; `verify` and `status` must
+   pass. A value is written through the app into its SQLite file.
+5. **A whole-server snapshot.** `snapshot --server` must give its price per GB per month, and
+   `snapshot list --json` must list it as kind `server` of the app's server.
+6. **Its restore.** A second value is written. Then `restore --server <id>`, run first without
+   `--approve` and then with `--confirm <app> --approve <hash>`, as in
+   [Snapshots and restores](#snapshots-and-restores); its result must say "and the app answers".
+   The project must still have the same server, OpsCrew's record the same address, the app must
+   read back the first value, and `verify` must pass again.
+7. **Secure and drift.** `secure` must write `SECURITY_REPORT.md` without the findings of a server
+   outside OpsCrew's security group or without an SSH key; `drift` must find no difference.
+8. **Destroy.** `destroy --confirm <app> --no-snapshot`, each plan approved by its hash. Its
+   output must name `OVHcloud snapshot <id>`, the snapshot of step 5, as what stays and keeps
+   billing. The project must have no server of the app, and Cloudflare nothing of the app. Then
+   the test deletes the snapshot through OVHcloud's API.
+9. **Nothing leaked** (SC-3505), always run: none of `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` and
+   `OVH_CLOUD_PROJECT_SERVICE`, and no other known secret, in any CLI output, the deploy job's
+   log, any audit entry, saved plan, state file, report or Cloudflare record, any commit (every
+   branch) or pull request of the run, as for environments. `OVH_ENDPOINT`'s value, `ovh-eu`, is
+   not scanned: it is public, and OpsCrew's own texts name it.
+
+### Cleanup and what stays
+
+The cleanup is the one for environments, after every step and always: `opscrew destroy` if a
+step failed after provision started, then the GitHub environments, deploy secrets and deploy
+pauses, the app's records in Cloudflare, and the repository reset. Then, at OVHcloud, the
+snapshot of step 5 is deleted if it is still there, and a server of the app still in the project
+fails the run with its name and id.
+
+After a finished pass nothing of the run stays at OVHcloud: the destroy deletes the server, its
+security group `opscrew-<app>` and its SSH key `<app>-deploy`, and lists the snapshot as the one
+thing that stays, which the test then deletes. The project, its activated regions, the service
+account and its policy stay for the next run; they cost nothing.
+
+**If a run was interrupted**, in the control panel, in the project: delete the instance
+`e2e-ovh-<run id>` (Compute → Instances), its snapshots (Compute → Instance Snapshot), the
+security group `opscrew-e2e-ovh-<run id>` and the SSH key `e2e-ovh-<run id>-deploy`. In the
+throwaway repository and in Cloudflare, delete what the environments test lists.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_OVHCLOUD` | `1` runs this test. Ask the founder first: it costs up to €0.05. |
+| `OVH_ENDPOINT` | `ovh-eu`. |
+| `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` | The service account's client id and secret ([above](#before-the-first-run-once-in-the-control-panel)). |
+| `OVH_CLOUD_PROJECT_SERVICE` | The Public Cloud project's id. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as for environments. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for your own server: the app answers on the run's own hostname in that zone. |
+
+Without them the test is skipped, with a message naming each one it misses. Set
+`OPSCREW_E2E_OVHCLOUD=1` only on the command line of this one file, never in `.env.e2e` or an
+exported shell.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_OVHCLOUD=1 OVH_ENDPOINT=ovh-eu OVH_CLIENT_ID=… OVH_CLIENT_SECRET=… \
+  OVH_CLOUD_PROJECT_SERVICE=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/ovhcloud.test.ts
+```
+
+What this pass doesn't cover (fakes do): moves to and from OVHcloud, several servers, previews,
+monitoring, rollback, data snapshots, `advise` and `rotate` on OVHcloud; a create that times out
+(SC-3502); a size change's refusal; the regions other than DE1 and GRA11.
+
 ## A cPanel account
 
 `packages/cli/test/live/cpanel.test.ts`, with `OPSCREW_E2E_CPANEL=1`, runs feature 027 on the
