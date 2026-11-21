@@ -604,3 +604,11 @@ question goes to the founder in an issue instead.
 - Resize up and down, and how long the server is offline.
 - The rate limits.
 - A shelved and a stopped instance on the invoice.
+- Added from T3509's review:
+  - **The takeover:** after an `import` of an instance, the first plan shows no change to
+    `networks` (the module sets `networks = [{ auto_assign_public_ip = true }]`, and an imported
+    state may hold more).
+  - **The image name:** `Ubuntu 24.04` matches exactly one image per region. The module resolves it
+    with `one()`, so none means a null `image_id` that only the apply refuses, and two would fail
+    every plan.
+  - **The default user:** cloud-init's first boot works with the image's own user (`ubuntu`).

@@ -197,7 +197,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-ovhcloud && npx vitest run --root packages/providers/ovhcloud && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3509 [US1] [US2] [US3] The definition and the module
+- [x] T3509 [US1] [US2] [US3] The definition and the module
   - Owns: `packages/providers/ovhcloud/src/definition.ts`, `definition.test.ts`, `src/index.ts`,
     `module/**`, `src/generated/**`
   - Reads: plan 3.; research R2 in full; `packages/contracts/src/provider.ts`; Contabo's and
