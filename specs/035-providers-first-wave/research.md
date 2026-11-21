@@ -485,9 +485,16 @@ question goes to the founder in an issue instead.
 
    Whether an `ovh-eu` project can use `BHS5`, `SGP1` and `SYD1` is checked live (R3).
 8. **Regions are activated by the user, not by OpsCrew.**
-   - Before a plan, the connector reads `GET /v2/publicCloud/project/{id}/reference/productAvailability`
-     for the flavor and region. It refuses with a plain message when the region isn't activated (with
-     the control panel's path to add it), the stock is out, or the quota is insufficient.
+   - With the credentials set, the connector's catalogue reads
+     `GET /v2/publicCloud/project/{id}/reference/productAvailability`. It marks an offer unavailable
+     where the region isn't activated, the stock is out, or the quota is insufficient, so design
+     (which keeps only available offers) never proposes it there.
+   - Its `verifyCredentials` lists the project's activated regions, with the control panel's path to
+     add one, in the message `opscrew init` and provision already show.
+   - An apply refused anyway goes through provision's existing path for an unavailable size
+     (`offering.unavailable`). A check of every new server's offer before the plan was the other
+     option. It would change provision for every provider, a shared change this feature doesn't
+     need (changed by the lead on 2026-11-21, while writing the spec).
    - Activating a region through the plan (`ovh_cloud_project_region`) would fail on a region already
      active, and it changes the project, not the app. Saying so is clearer than owning it.
 9. **Firewall: managed by Terraform** (`connectorFirewall: false`).

@@ -58,9 +58,12 @@ go-ahead, the same flow runs against fakes of OVHcloud's API and the engine.
 
    The deploy, verify, status, secure and drift commands then work as on the other providers.
 4. **Given** a region not activated on the project, a plan out of stock in the region, or a project
-   whose quota can't hold the server, **When** provision runs, **Then** it stops before the plan
-   with what OVHcloud answered and what to do (activate the region in the control panel, pick
-   another region or plan, or raise the quota). Nothing is created.
+   whose quota can't hold the server, **When** the user runs `opscrew design`, **Then** that plan
+   isn't offered there. `opscrew init`'s check of the credentials lists the regions activated on
+   the project and says how to activate another in the control panel. **When** a plan made
+   earlier is applied and OVHcloud refuses the server for one of these reasons, **Then** provision
+   stops with OVHcloud's answer and the same advice, as it does for an unavailable size on any
+   provider. No server is created.
 5. **Given** a create that timed out or failed halfway, **When** provision runs again, **Then** a
    server with the app's name that OpsCrew's state doesn't know is shown and taken over in the
    plan, never created a second time.
@@ -209,9 +212,12 @@ UpCloud follows IONOS Cloud, in the same way.
 - **FR-3505**: Design MUST price OVHcloud by the hour and for 730 hours, before VAT, in EUR. Prices
   come from a dated static table, or from OVHcloud's public catalogue when the credentials are
   set. Every price MUST show its date or "live", and there is no setup fee.
-- **FR-3506**: Before a plan, provision MUST check with OVHcloud that the region is activated on
-  the project, the plan is in stock there, and the quota holds it, and stop with what to do when
-  one fails.
+- **FR-3506**: With the credentials set, OVHcloud's catalogue MUST mark a plan unavailable in a
+  region that isn't activated on the project, where it is out of stock, or where the project's
+  quota can't hold it, so design never offers it there. The credential check MUST list the
+  project's activated regions and say how to activate another. An apply OVHcloud refuses for one
+  of these reasons MUST stop with its answer and what to do, through the same path as an
+  unavailable size on any provider.
 - **FR-3507**: Provision MUST create the server with the shared first-boot setup, its SSH key and
   its own firewall with the same rules as the other providers, set explicitly on the server. It
   MUST stop before the deploy when the firewall is not in place.
