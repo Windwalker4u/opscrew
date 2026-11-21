@@ -14,6 +14,7 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
 - **The release after 0.2.11:** [032 a Codex plugin](032-codex-plugin/) (built) and 040 an agent on
   the server, the founder's decisions of 2026-11-21.
 - **Beside them:** 035's first providers, started by a second contributor.
+- **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
   more providers in phases (035–039), each once the founder gives the go-ahead.
 
@@ -573,6 +574,31 @@ protocol:
 - the Portainer stack's access to Docker;
 - the deploy steps it reports;
 - a self-hosted dashboard's URL.
+
+## 041 OpsCrew runs in the user's GitHub Actions, approved from the dashboard
+
+The founder's go-ahead of 2026-11-21, for after 032 and 040: a user who builds their app elsewhere
+(Lovable and the like) deploys and runs every check with nothing installed on their own computer.
+
+- **Where OpsCrew runs:** in the user's own GitHub Actions. On their own server once there is one,
+  through its self-hosted runner (`docs/guide/runners.md`); on GitHub's runners for the first setup
+  and anything that changes the server itself (resize, move, whole-server restore, destroy).
+- **Never through the server agent:** ADR 0036 keeps it read-only, because a command channel there
+  would let whoever took over the dashboard run commands on every user's server.
+- **Tokens:** they stay in the user's GitHub secrets.
+- **The core's part:**
+  - **The state:** what lives in `~/.opscrew` on a user's computer today (deploy keys, generated
+    values, state passphrases) is kept encrypted in the repository or in GitHub secrets, so a
+    runner that forgets everything between runs can go on.
+  - **Every command in a script:** each command a novice needs runs non-interactively, approved by
+    its plan's hash and the typed name (`--approve <hash> --confirm <name>`).
+  - **Left out:** the targets that need the user's own machine (`localhost`, a server at home).
+- **The dashboard's part** (the control plane): showing each plan, collecting the approval and the
+  typed name, and starting the workflow run with them.
+- **Research first:**
+  - what of `~/.opscrew` each command needs, and where each piece can live encrypted;
+  - which commands still prompt in a script;
+  - the workflow the dashboard starts, and its permissions.
 
 ## 033 Scaling across servers
 
