@@ -105,7 +105,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/shared && pnpm lint`
   - Effort: medium
 
-- [ ] T3506 [P] [US1] OVHcloud's API client
+- [x] T3506 [P] [US1] OVHcloud's API client
   - Owns: `packages/providers/ovhcloud/src/client.ts`, `client.test.ts`, `src/__fixtures__/**`
   - Reads: plan 3.; research R1 sections 1 and 10, and R2.4; `packages/providers/contabo/src/client.ts`
     and its tests (the template); go-ovh's `ovh/ovh.go`, `configuration.go` and `error.go`
