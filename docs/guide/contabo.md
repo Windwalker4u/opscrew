@@ -37,7 +37,9 @@ and call nothing.
 export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=… CNTB_OAUTH2_PASS=…
 ```
 
-- **They reach your whole account.** Contabo has no keys limited to some servers or some actions.
+- **They reach your whole account.** Your login email and API password act as you. Contabo can
+  also make API users with a role that allows only some actions or only servers with certain tags,
+  but OpsCrew hasn't been tested with such a user yet.
 - **They stay on your computer.** OpsCrew uses them only there, to plan and change your servers.
   They never go to the server or to GitHub, and OpsCrew masks them in every message, log, audit
   entry and report. Contabo's Terraform provider saves its login in
