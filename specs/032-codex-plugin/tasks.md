@@ -74,3 +74,6 @@ files.
   founder's OpenAI account; recorded in `docs/e2e-coverage.md`.
 - [ ] T3203 (lead) A `/simplify` pass over the feature's code, then the release (0.2.12, by
   `docs/releasing.md`).
+- [ ] T3204 (lead) After 0.2.12 is on npm: the website (opscrew.dev) names the Codex plugin too.
+  Its pricing page's Open source tab says "Claude Code / Codex plugin", and its other pages name
+  Codex wherever they mean the plugin.
