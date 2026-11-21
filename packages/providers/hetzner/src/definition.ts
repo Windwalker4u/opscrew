@@ -64,6 +64,7 @@ export const definition: CloudProviderDefinition = {
   pricingUrl: HETZNER_PRICING_URL,
   credentials: {
     envVars: HETZNER_CREDENTIALS.envVars,
+    labels: { HCLOUD_TOKEN: "Hetzner Cloud API token" },
     mode: "any",
     createUrl: HETZNER_CREDENTIALS.createUrl,
     tokenRules: [

@@ -24,14 +24,23 @@ const tokenRule = z.object({
   description: z.string(),
 });
 
-const credentials = z.object({
-  envVars: z.array(z.string()).min(1, "names no environment variable"),
-  mode: z.enum(["any", "all"]),
-  createUrl: z.string(),
-  tokenRules: z.array(tokenRule),
-  envPrefixes: lines,
-  apiPattern: regex,
-});
+const credentials = z
+  .object({
+    envVars: z.array(z.string()).min(1, "names no environment variable"),
+    labels: z.record(z.string(), z.string().min(1)),
+    mode: z.enum(["any", "all"]),
+    createUrl: z.string(),
+    tokenRules: z.array(tokenRule),
+    envPrefixes: lines,
+    apiPattern: regex,
+  })
+  .superRefine((value, ctx) => {
+    for (const name of value.envVars) {
+      if (value.labels[name] === undefined) {
+        ctx.addIssue({ code: "custom", path: ["labels"], message: `has no label for ${name}` });
+      }
+    }
+  });
 
 const regions = z
   .object({

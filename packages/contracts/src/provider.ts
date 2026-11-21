@@ -76,6 +76,11 @@ export interface ProviderCredentials {
   /** The environment variables, in order. */
   envVars: readonly string[];
   /**
+   * What each of `envVars` holds, in plain words a person reads in a form ("Contabo API password"),
+   * keyed by the variable. Tools show it; OpsCrew's own texts name the variables.
+   */
+  labels: Readonly<Record<string, string>>;
+  /**
    * `any`: the first of `envVars` that is set is the token (Hetzner, DigitalOcean); `all`: every
    * one is needed (Contabo's client id, client secret, API user and API password).
    */

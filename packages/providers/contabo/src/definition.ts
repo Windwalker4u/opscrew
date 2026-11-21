@@ -163,6 +163,12 @@ export const definition: CloudProviderDefinition = {
   pricingUrl: "https://contabo.com/en/vps/",
   credentials: {
     envVars: ENV_VARS,
+    labels: {
+      [CONTABO_ENV.clientId]: "Contabo client ID",
+      [CONTABO_ENV.clientSecret]: "Contabo client secret",
+      [CONTABO_ENV.user]: "Contabo API user (your account's email)",
+      [CONTABO_ENV.password]: "Contabo API password",
+    },
     mode: "all",
     createUrl: CONTABO_CREDENTIALS_URL,
     // Contabo's client id, secret, API user and password have no recognisable format.

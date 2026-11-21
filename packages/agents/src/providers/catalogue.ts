@@ -141,27 +141,35 @@ function smallApp(provider: DeployProvider, currency: Currency): Requirements {
 }
 
 /**
- * A label for a variable no text names: the provider and the rest of its name, after OpsCrew's own
- * prefix (`CNTB_OAUTH2_USER`, `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`).
+ * What Cloudflare's and the registrars' variables hold, in the words a form shows; a cloud server
+ * provider's come from its definition (`credentials.labels`).
  */
-function derivedLabel(name: string, provider: string): string {
-  const own = name.replace(/^OPSCREW_/, "");
-  return `${provider} ${own
-    .slice(own.indexOf("_") + 1)
-    .toLowerCase()
-    .replaceAll("_", " ")}`;
-}
+const LABELS: Readonly<Record<string, string>> = {
+  CLOUDFLARE_API_TOKEN: "Cloudflare API token",
+  OPSCREW_CLOUDFLARE_DEPLOY_TOKEN: "Cloudflare deploy token (Workers only)",
+  PORKBUN_API_KEY: "Porkbun API key",
+  PORKBUN_SECRET_API_KEY: "Porkbun secret API key",
+  NAMECHEAP_API_USER: "Namecheap API user (your account's username)",
+  NAMECHEAP_API_KEY: "Namecheap API key",
+  GODADDY_API_TOKEN: "GoDaddy personal access token",
+};
 
 /**
- * One credential variable. `rule` is the token format of a provider whose variables all hold the
- * one token: its title labels them, and its pattern is theirs when it matches the token alone,
- * as its source means without flags (no group within a wider match, only the `g` flag).
+ * One credential variable, labelled from `labels`. `rule` is the token format of a provider whose
+ * variables all hold the one token: its pattern is theirs when it matches the token alone, as its
+ * source means without flags (no group within a wider match, only the `g` flag).
  */
-function variable(name: string, provider: string, rule?: ProviderTokenRule) {
+function variable(
+  name: string,
+  labels: Readonly<Record<string, string>>,
+  rule?: ProviderTokenRule,
+) {
   const alone = rule !== undefined && rule.group === undefined && rule.pattern.flags === "g";
+  const label = labels[name];
+  if (label === undefined) throw new Error(`The provider catalogue has no label for ${name}.`);
   return {
     name,
-    label: rule?.title ?? derivedLabel(name, provider),
+    label,
     secret: isSecretEnvName(name),
     ...(alone ? { pattern: rule.pattern.source } : {}),
   };
@@ -230,7 +238,7 @@ async function cloudServer(definition: CloudProviderDefinition, catalog: Compute
     currency: offering.currency,
     credentials: {
       mode: credentials.mode,
-      variables: credentials.envVars.map((name) => variable(name, definition.displayName, rule)),
+      variables: credentials.envVars.map((name) => variable(name, credentials.labels, rule)),
       createUrl: credentials.createUrl,
       steps: [texts.init.fix, texts.init.scopeNote.trim()].filter((step) => step !== ""),
     },
@@ -299,7 +307,7 @@ function cloudflare() {
     consoleUrl: CLOUDFLARE_DASHBOARD,
     signupUrl: SIGNUP_PAGES.cloudflare,
   };
-  const variables = envVars.map((variableName) => variable(variableName, name));
+  const variables = envVars.map((variableName) => variable(variableName, LABELS));
   const steps = [cloudflareFix(), CLOUDFLARE_HOSTING_FIX];
   return [
     {
@@ -317,7 +325,7 @@ function cloudflare() {
       pricingUrl: CLOUDFLARE_PRICING.workers,
       credentials: {
         mode: "all",
-        variables: [...variables, variable(CLOUDFLARE_HOSTING.deployTokenVar, name)],
+        variables: [...variables, variable(CLOUDFLARE_HOSTING.deployTokenVar, LABELS)],
         createUrl,
         steps: [...steps, DEPLOY_TOKEN_FIX],
       },
@@ -339,7 +347,7 @@ function registrar(id: RegistrarId) {
     pricingUrl: PRICING_PAGES[id],
     credentials: {
       mode: "all",
-      variables: REGISTRAR_ENV[id].map((variableName) => variable(variableName, name)),
+      variables: REGISTRAR_ENV[id].map((variableName) => variable(variableName, LABELS)),
       createUrl: registrarLinks(id).api,
       steps: [other === undefined ? REGISTRAR_FIX : `${registrarCredentialsFix(other)}.`],
     },

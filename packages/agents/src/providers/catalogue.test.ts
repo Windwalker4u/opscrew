@@ -146,6 +146,19 @@ describe("the provider catalogue", () => {
     expect(variables.NAMECHEAP_API_USER).toMatchObject({ secret: false });
   });
 
+  it("labels each variable in words a person reads, with API and ID in capitals", async () => {
+    const { providers } = await providerCatalogue("1.2.3");
+    const labels = providers.flatMap((provider) =>
+      provider.credentials.variables.map((variable) => variable.label),
+    );
+    expect(labels).toContain("Contabo API password");
+    expect(labels).toContain("Contabo client ID");
+    for (const label of labels) {
+      expect(label).not.toMatch(/\b(api|id|oauth2|pass)\b/);
+      expect(label).not.toMatch(/_/);
+    }
+  });
+
   it("has Cloudflare's token and the registrars, with init's words for each", async () => {
     const { providers } = await providerCatalogue("1.2.3");
     expect(
@@ -194,10 +207,10 @@ describe("the provider catalogue", () => {
       credentials: {
         mode: "all",
         variables: [
-          { name: "CLOUDFLARE_API_TOKEN", label: "Cloudflare api token", secret: true },
+          { name: "CLOUDFLARE_API_TOKEN", label: "Cloudflare API token", secret: true },
           {
             name: "OPSCREW_CLOUDFLARE_DEPLOY_TOKEN",
-            label: "Cloudflare deploy token",
+            label: "Cloudflare deploy token (Workers only)",
             secret: true,
           },
         ],

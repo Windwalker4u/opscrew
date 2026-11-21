@@ -42,6 +42,10 @@ export const definition: CloudProviderDefinition = {
   pricingUrl: PRICING_URL,
   credentials: {
     envVars: TOKEN_VARS,
+    labels: {
+      DIGITALOCEAN_TOKEN: "DigitalOcean API token",
+      DIGITALOCEAN_ACCESS_TOKEN: "DigitalOcean API token",
+    },
     mode: "any",
     createUrl: TOKEN_URL,
     tokenRules: [
