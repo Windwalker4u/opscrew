@@ -63,7 +63,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T3503 [P] [US4] The registry validates `rootVariables`
+- [x] T3503 [P] [US4] The registry validates `rootVariables`
   - Owns: `packages/providers/registry/src/validate.ts`, `validate.test.ts`
   - Reads: plan 1. and 2.; `validate.ts`; `packages/contracts/src/provider.ts`
   - Depends: T3502
