@@ -80,6 +80,14 @@ const TARGETS = {
     // As Contabo's catalog: its prices include VAT.
     pricesIncludeVat: true,
   },
+  ovhcloud: {
+    location: "GRA11",
+    serverType: "d2-2",
+    image: DEFAULT_IMAGES.ovhcloud,
+    amount: 7.59,
+    currency: "EUR",
+    pricesIncludeVat: false,
+  },
 } as const satisfies Record<CloudProvider, unknown>;
 
 /** The services design writes for an app on PostgreSQL (`db`) and one on Redis (`cache`). */

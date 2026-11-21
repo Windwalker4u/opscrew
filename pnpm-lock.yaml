@@ -213,6 +213,9 @@ importers:
       '@opscrew/provider-hetzner':
         specifier: workspace:*
         version: link:../providers/hetzner
+      '@opscrew/provider-ovhcloud':
+        specifier: workspace:*
+        version: link:../providers/ovhcloud
       '@opscrew/providers':
         specifier: workspace:*
         version: link:../providers/registry
@@ -572,6 +575,9 @@ importers:
       '@opscrew/provider-hetzner':
         specifier: workspace:*
         version: link:../hetzner
+      '@opscrew/provider-ovhcloud':
+        specifier: workspace:*
+        version: link:../ovhcloud
       zod:
         specifier: ^4.6.5
         version: 4.6.5

@@ -615,7 +615,9 @@ describe("DeployPlan target on a server the user owns", () => {
       arch: "amd64" | "arm64";
       access: "public" | "tunnel";
       home?: { ipv4: boolean } | undefined;
-      shares?: { app: string; provider: "hetzner" | "digitalocean" | "contabo" } | undefined;
+      shares?:
+        | { app: string; provider: "hetzner" | "digitalocean" | "contabo" | "ovhcloud" }
+        | undefined;
       edge: "caddy" | "nginx" | "openlitespeed";
     }>();
     expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();
@@ -717,9 +719,15 @@ describe("DeployPlan target on a server the user owns", () => {
       "fixture",
     );
     expect(RequirementsSchema.parse({ ...requirements, provider: "own" }).provider).toBe("own");
-    expect(VpsProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo", "own"]);
-    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo"]);
-    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo"]);
+    expect(VpsProviderSchema.options).toEqual([
+      "hetzner",
+      "digitalocean",
+      "contabo",
+      "ovhcloud",
+      "own",
+    ]);
+    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
+    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
   });
 
   it("needs a region for Hetzner and DigitalOcean only, and allows one for an own server", async () => {
@@ -1251,8 +1259,8 @@ describe("DeployPlan target on an existing Portainer", () => {
     );
     // A Portainer target has no server to create or price.
     expect(VpsProviderSchema.options).not.toContain("portainer");
-    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo"]);
-    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo"]);
+    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
+    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
   });
 });
 

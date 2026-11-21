@@ -93,6 +93,7 @@
     "@opscrew/provider-contabo": "workspace:*",
     "@opscrew/provider-digitalocean": "workspace:*",
     "@opscrew/provider-hetzner": "workspace:*",
+    "@opscrew/provider-ovhcloud": "workspace:*",
     "@opscrew/providers": "workspace:*",
     "@opscrew/runtime-claude": "workspace:*",
     "@opscrew/secops": "workspace:*",

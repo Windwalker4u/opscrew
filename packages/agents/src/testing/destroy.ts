@@ -320,6 +320,15 @@ const FAKE_SERVERS: Record<CloudProvider, { server: AppServer; snapshotId: strin
     server: { id: "202611001", name: "shop", status: "running" },
     snapshotId: "202611001:snap1762862400",
   },
+  ovhcloud: {
+    server: {
+      id: "11111111-2222-4333-8444-555555555555",
+      name: "shop",
+      status: "READY",
+      nameOnly: true,
+    },
+    snapshotId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  },
 };
 
 /**

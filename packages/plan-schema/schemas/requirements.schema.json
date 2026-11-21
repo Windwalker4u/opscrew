@@ -38,6 +38,7 @@
         "hetzner",
         "digitalocean",
         "contabo",
+        "ovhcloud",
         "own",
         "portainer",
         "localhost",
