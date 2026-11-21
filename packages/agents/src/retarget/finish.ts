@@ -61,7 +61,7 @@ async function takenSnapshot(session: MoveSession): Promise<string | undefined> 
 
 /**
  * The whole-server snapshots taken earlier of the old cloud server, where they outlive it
- * (`listEarlierSnapshots`): read once, before its removal, and never after, since a provider may
+ * (`listEarlierSnapshots`): read once, before every approval, and never after, since a provider may
  * not answer for them once it is gone. It is found by the app's name: a move always changes the
  * provider, so the old provider holds no other server of that name.
  */
@@ -146,12 +146,12 @@ async function finish(
   // Both buckets' keys when the move took the bucket along, before anything is deleted.
   const keys = await movingBucketKeys(session);
 
-  // 0b. The old app server leaves the private network of the servers that stay.
+  // 0b. The old cloud server's snapshots taken earlier, which stay: read before every approval.
+  const earlier = cloud ? await earlierSnapshots(session) : undefined;
+
+  // 0c. The old app server leaves the private network of the servers that stay.
   const left = await leaveMoveNetwork(session);
   if (left !== undefined) return left;
-
-  // 1a. The old cloud server's snapshots taken earlier, which stay: read before its removal.
-  const earlier = cloud ? await earlierSnapshots(session) : undefined;
 
   // 1. The old side's removal, after the typed name. No look for other apps on an old server
   // OpsCrew created (FR-3012): the move's start refused while one shared it, and no app joins a

@@ -912,13 +912,11 @@ export function remainingAfterDeletion(input: {
     );
   }
   const earlier = earlierRefs(texts, input.earlierSnapshots, input.snapshotId);
-  if (earlier.length === 1) {
+  if (earlier.length > 0) {
+    const [which, it] =
+      earlier.length === 1 ? ["The snapshot", "it"] : [`The ${earlier.length} snapshots`, "them"];
     items.push(
-      `The snapshot of ${input.app} taken earlier (${earlier[0]}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete it in ${texts.console} when you no longer need it.`,
-    );
-  } else if (earlier.length > 1) {
-    items.push(
-      `The ${earlier.length} snapshots of ${input.app} taken earlier (${listText(earlier)}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete them in ${texts.console} when you no longer need them.`,
+      `${which} of ${input.app} taken earlier (${listText(earlier)}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete ${it} in ${texts.console} when you no longer need ${it}.`,
     );
   }
   if (input.backups && texts.keptBackupsRemaining) items.push(texts.keptBackupsRemaining);
