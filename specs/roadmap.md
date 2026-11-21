@@ -5,14 +5,17 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–030. [027 shared hosting](027-shared-hosting/) shipped as 0.2.8 on 2026-11-14, build
+Done: 000–031. [027 shared hosting](027-shared-hosting/) shipped as 0.2.8 on 2026-11-14, build
 arguments from the plan as 0.2.9 on 2026-11-15, [028 moving an app to another Cloudflare
 account](028-cloudflare-account-move/) as 0.2.10. [029 hosting at home](029-home-hosting/), [030
 several apps on a server OpsCrew created](030-shared-created-server/) and [031 a move's maintenance
-window of about a minute](031-short-move-window/) go out together as 0.2.11 (031 building). Next:
-032 a Codex plugin (the founder's decision on 2026-11-21, for the release after 0.2.11), then 033
-scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then more providers in
-phases (035–039), each once the founder gives the go-ahead.
+window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 2026-11-21.
+**Next:**
+- **The release after 0.2.11:** [032 a Codex plugin](032-codex-plugin/) (built) and 040 an agent on
+  the server, the founder's decisions of 2026-11-21.
+- **Beside them:** 035's first providers, started by a second contributor.
+- **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
+  more providers in phases (035–039), each once the founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -546,6 +549,29 @@ from OpenAI's docs of 2026-11-21: [032-codex-plugin/research.md](032-codex-plugi
   - where a plugin sets the tool timeout;
   - whether the IDE extension and Codex cloud load it;
   - a live pass in the Codex CLI with a throwaway app.
+
+## 040 OpsCrew's agent on the server, for live logs and status
+
+The founder's decision of 2026-11-21, at the hosted dashboard's request: in the release after
+0.2.11, beside 032 (he decides the order if both don't fit). It is numbered 040 so that 035, already
+being built, keeps its number.
+
+**Why:** the dashboard's logs come from a GitHub Actions job, a 47-second median from request to
+output. A small agent on the server streams them in about a second. Everything that changes the
+server stays in Actions and in plans approved by their hash.
+
+**What:** [ADR 0036](../docs/adr/0036-server-agent.md) (Proposed) gives the design and the
+protocol:
+- one outbound WebSocket, with an environment's token (`OPSCREW_AGENT_TOKEN`);
+- read-only Docker access, through a socket proxy;
+- logs, the containers' status and a deploy's progress, redacted before they leave the server;
+- installed only where the environment has a token, and removed with it.
+
+**Research first:**
+- the agent's image;
+- the Portainer stack's access to Docker;
+- the deploy steps it reports;
+- a self-hosted dashboard's URL.
 
 ## 033 Scaling across servers
 
