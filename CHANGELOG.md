@@ -4,6 +4,306 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.11] - 2026-11-21
+
+Every deploy workflow of an app on a server or in your Portainer changes. Run `npx opscrew
+provision` for each environment and merge its pull request. A move with `opscrew retarget`
+proposes the new workflow first when yours is older. At that provision, two plans change once, and
+you approve each as usual:
+
+- **Every app with its DNS on Cloudflare** gets an infrastructure plan that only renames its A and
+  AAAA records in OpenTofu's state (`module.dns.cloudflare_dns_record.a` becomes `a[0]`): nothing
+  changes at Cloudflare, but the plan's hash does.
+- **Every server with the Cloudflare-only filter** gets one more file in its host plan, a drop-in
+  for the `nftables` service, so a restart or reload of nftables restarts Docker and the filter
+  comes back with it.
+
+### Added
+
+- **Hosting at home.** Serve your app from a computer at home, such as a Raspberry Pi or a mini PC,
+  at your connection's own public address: answer **yes** when `npx opscrew interview` asks whether
+  the server is at your home. OpsCrew tells you what to forward on your router, serves the site
+  behind Cloudflare's proxy with origin protection (over IPv6 too) or with DNS only, and keeps SSH
+  open to your home network alone. With your DNS on Cloudflare, an address updater on the server
+  keeps the domain's A and AAAA records at your current address, with a token of its own limited
+  to the zone's DNS (`OPSCREW_DNS_UPDATER_TOKEN`), installed through the host plan you approve by
+  its hash. Deploys run on the server's own runner, so GitHub never holds your home's address.
+  `npx opscrew verify` checks from outside your home through a GitHub workflow,
+  `opscrew-outside-check.yml`. Design tells you when your connection has no public IPv4 address of
+  its own and offers the Cloudflare Tunnel or IPv6 instead, and warns about a Raspberry Pi's SD card
+  and power supply. `npx opscrew rotate dns-updater` replaces the updater's token, and `status`,
+  `drift`, `secure`, `destroy` and the move to another Cloudflare account know a server at home.
+  See [Host your app at home](docs/guide/home-hosting.md).
+- **Restore drills.** `npx opscrew restore --drill` restores the latest snapshot (or the one you
+  name, `--only <service>` for one service) into a throwaway copy beside the app, with no internet,
+  no route in and none of your production values, checks that the app starts on it and passes its
+  health check, and removes it. It never touches the app's own data. You approve it by typing
+  `<app>-drill`. It works on servers OpsCrew created, your own server (at home too), your computer,
+  your Portainer (in a second stack) and a hosting account with a panel (in the account's drill
+  database, where the dump is loaded and counted). `--keep` keeps the copy to look at, `--remove`
+  removes it, `--allow-other-version` starts today's image when the snapshot's is gone. See
+  [Restore drills](docs/guide/snapshots.md#restore-drills).
+- **Scheduled restore drills.** `npx opscrew snapshot drill schedule on` (weekly, or `--every
+  daily`), and the next `npx opscrew provision` installs them with the plan you approve by its hash
+  and `<app>-drill` typed: one crontab line on a server, one small dump check per database in a
+  Portainer's stack, OpsCrew's agent on a hosting account. Each keeps its bounds on the target: its
+  own names, the latest snapshot only, no internet, 30 minutes at most. `npx opscrew status` shows
+  the last drill, and the [scheduled check](docs/guide/alerts.md) opens an issue when a drill failed
+  or none ran. See [On a schedule](docs/guide/snapshots.md#on-a-schedule).
+- **A database check in `advise`.** On a server OpsCrew created or your own, `npx opscrew advise`
+  reads each PostgreSQL database read-only, each question under a strict time limit: sessions
+  waiting for a lock, transactions left open, long queries, connections near the limit, slow
+  statements (with `pg_stat_statements`), the database's size against its disk, and tables that
+  look like they miss an index. It creates no login and changes nothing; an index is only ever a
+  proposal. See [The database check](docs/guide/advise.md#the-database-check).
+- **A second app on another app's server.** Run a second app, from another repository or as a
+  further app of the same one, on the server OpsCrew created for your first app: no second server
+  to pay for.
+  - **Setting it up:** in the second app's `npx opscrew interview`, choose **A server another of
+    your OpsCrew apps runs on** and name the first app's repository folder on this computer. There
+    is no budget to give for it.
+  - **A server of yours works too**, when the first app is served at its public address: the
+    second app takes the server's login from the first app on this computer, and design warns
+    that both apps run as the same `deploy` user. A Cloudflare Tunnel or a server at home is
+    refused there: answer the server questions with the server's own login instead.
+  - **Moving an app onto it:** `npx opscrew retarget --to own --answers <file>`, with
+    `server.shares` in the file, moves a live app and its data onto another app's server, from a
+    server of its own, your Portainer or another app's server, with the checks design runs and a
+    plan you approve by its hash at each step. The other app keeps serving throughout. See
+    [Moving onto another app's server](docs/guide/retarget.md#moving-onto-another-apps-server).
+  - **What design checks:** the app must fit in memory beside the others. Its name and hostnames
+    must be its own. It must be served the way the first app is, behind Cloudflare's proxy or with
+    DNS only, and through the same proxy. Design also says plainly that both apps run as the same
+    `deploy` user, who can become root through Docker.
+  - **What provision changes:** the second app's Cloudflare rules, its DNS records pointing at the
+    server, and on the server only its own deploy key line, folders and record, each as a plan you
+    approve by its hash. It checks the memory again first, so a limit raised by hand in
+    `opscrew/plan.yaml` that no longer fits beside the other apps is refused before any change.
+  - **What the second app can then do:** deploy, `verify`, `drift`, take snapshots of its own data,
+    rotate its deploy key, `destroy` (which removes only its own parts) and `retarget` to another
+    server.
+
+  See [A second app on another app's server](docs/guide/shared-server.md).
+- **The first app's commands protect the apps beside it.** On a server OpsCrew created, these
+  commands now look at the server first, read-only, and refuse while another app runs there:
+  - `destroy` and `retarget`;
+  - a `provision` that would replace the server, switch between Cloudflare's proxy and DNS only,
+    or create a private network;
+  - `restore --server`, `secure --close-public-ssh` and `vpn add`;
+  - turning on Beszel or Portainer.
+
+  A resize must still hold every app. When the server can't be reached, they stop and say why.
+  `--skip-other-apps-check` goes on in that case, or when only another app's kept data is there,
+  but never past an app that runs there. The MCP tools `opscrew_plan`, `opscrew_apply`,
+  `opscrew_addon_enable` and `opscrew_portainer_enable` take it as `skipOtherAppsCheck`.
+- **A Laravel queue on a hosting account.** A Laravel app whose jobs go through Laravel's database
+  queue now deploys to a hosting account with a panel: its `php artisan queue:work` runs from cron
+  every minute until the queue is empty (`--stop-when-empty --max-time=50`, unless the command sets
+  its own), beside the scheduler's line, so a queued job starts within about a minute. A queue
+  OpsCrew would run itself, such as Redis or RabbitMQ, is still refused there. See
+  [What fits](docs/guide/hosting-accounts.md#what-fits).
+- **PostgreSQL on a cPanel account** whose host installed it: OpsCrew makes the app's database and
+  user through the hosting plan you approve by its hash, gives the app its `postgresql://` values,
+  and snapshots, restores and drills it with `pg_dump` and `psql`, as it does a MySQL database.
+  Provision stops before making anything when the account's shell lacks either tool. Not tested
+  on a real account yet: tell us how it goes on yours. See
+  [cPanel](docs/guide/cpanel.md).
+- **A new server whose first boot failed is repaired.** A server OpsCrew just created can come up
+  without its network at its first boot, and its setup then never runs: no Docker, no firewall.
+  `provision`, and `retarget` to a new server, now name the steps that failed, as the server
+  recorded them, and offer a repair through your provider, at most once each per run:
+  - **A server that never opens SSH** is restarted, after you type the app's name.
+  - **A server whose setup failed** is installed again from the same image with the same
+    first-boot setup, keeping its addresses. It is offered only while the server shows no app (no
+    app folder, no running container), and approved by its own hash with the app's name typed:
+    `--approve <hash> --confirm <app>` in a script. OpsCrew then trusts the server's new SSH host
+    key itself and goes on.
+
+  See [`opscrew provision` stops half-way](docs/guide/when-a-deploy-fails.md#opscrew-provision-stops-half-way).
+- **`opscrew/plan.yaml` records every cost, with its times.**
+  - **Each item** of the plan's cost says which provider bills it and how: by the hour up to a
+    monthly cap, by the month, or free. It also gives the hourly price, and from when the item
+    bills.
+  - **Past costs:** what ended this month or last stays listed, with when it ended. One-time fees,
+    such as Contabo's setup fee or a domain OpsCrew bought for you, are listed with when they were
+    charged.
+  - **During a move,** the old server's costs are listed beside the new one's until
+    `opscrew retarget --finish`.
+  - **A domain OpsCrew bought** also has its yearly renewal. From 30 days before it,
+    `npx opscrew status` checks the registrar and records the renewal once it happened. It warns
+    when auto-renew is off.
+  - **Older plans** get their times at the next `npx opscrew provision`.
+
+  See [Domains](docs/guide/domains.md).
+- **`npx opscrew providers --json` prints the providers' facts as a catalogue, for tools.** It
+  covers every provider OpsCrew works with: the cloud server providers, Cloudflare and the
+  registrars. For each it gives:
+  - its sign-up and console pages;
+  - the tokens it needs and the steps to create them;
+  - for a server provider, its sizes with their list prices, setup fees and locations.
+
+  It also gives what design would pick for a small app. It reads no network, no credential and no
+  project, and comes with a JSON Schema in `@opscrew/plan-schema`. Without `--json` it lists the
+  providers.
+- **The secrets recovery copy in a script, to your own key.** `npx opscrew provision --recipient
+  <age1…>` encrypts the first recovery copy of the app's secrets to an age public key you already
+  hold, so a setup applied from a script or GitHub Actions keeps a copy only you can open. No key
+  is written anywhere. Give it twice for a backup key, or with `--key-out` for a new key and yours.
+  See [The first time](docs/guide/secrets-recovery.md).
+- **Your Dockerfile's build can use the workflow's GitHub token.** A build that calls GitHub's
+  API, for example to check a module's commit, shares GitHub's limit for calls without a login (60
+  an hour per address) with every job on GitHub's runners, and can fail on it. Set
+  `app.build.githubToken: true` in `opscrew/plan.yaml` and run `npx opscrew provision`: the build
+  from your own Dockerfile then gets the token as the secret mount `GITHUB_TOKEN`
+  (`RUN --mount=type=secret,id=GITHUB_TOKEN,env=GITHUB_TOKEN …`), never in the image. The job can
+  also push to your repository's packages with it, so mount it only where the API is called. See
+  [Your own Dockerfile](docs/guide/builders.md).
+- **The Claude Code plugin's deploy skill and the MCP server** know a server at home and restore
+  drills.
+
+### Changed
+
+- **A move's maintenance window is much shorter.** `opscrew retarget` copies the app's data to
+  the new side while the app still serves, then starts and checks the app there on that copy, all
+  before the window. Its databases are copied there by a consistent dump.
+  - **The window itself:**
+    - the app stops;
+    - only the files that changed since are copied, each copy checked by its digest as before;
+    - the release command runs once more, and the app starts again in place;
+    - then DNS switches.
+
+    No GitHub Actions run happens inside the window.
+  - **Example:** an app with 262 MB of files and a 219 MB MySQL database is offline about 5
+    minutes, after about 12 minutes of copying while it serves.
+  - **Still in the window:** a PostgreSQL database is dumped and restored there again, and a
+    MySQL or MariaDB database's folder is copied about whole, so a large database still lengthens
+    the window.
+
+  See [The maintenance window](docs/guide/retarget.md#the-maintenance-window).
+- **The interview asks the monthly budget last**, once it knows where the app runs, and not at all
+  for a server shared with another app.
+- **The pull requests OpsCrew opens say what OpsCrew checked.** Their review list has two parts:
+  "Checked by OpsCrew", ticked, for what the run checked itself (its secret rules found no secret
+  value in the files the pull request changes; every action the workflow uses is pinned to a
+  commit SHA), and "For you to check", for what only you can judge. A finding moves its item to
+  your list, named, never with its value. The line "The workflow only uses pinned, first-party
+  actions" is gone: the workflow's actions that aren't GitHub's own are named for you instead.
+
+### Fixed
+
+- **A move no longer starts the app on the new server before its data is there.**
+  - **What went wrong:** `opscrew retarget` to a server deployed the app there before the
+    maintenance window copied its data. A release command or a health check that needs the app's
+    existing schema failed on the empty database, and the move stopped. Some PHP frameworks'
+    `migrate`, for one, needs a settings table to exist.
+  - **Now:** until the copy, the new server gets only the image and the app's services, and a
+    rollback there is refused. In the window, once the data is copied, the deploy runs again with
+    the same image (no build): the release command runs on the copied data, then the app starts,
+    and OpsCrew checks it on the server before DNS switches. The window is a few minutes longer for
+    it, and a deploy run that waits for a required reviewer says so.
+  - **Also:** a dispatch of the deploy workflow with an image's digest now deploys that image
+    without a build.
+- **A server type the provider has none of is refused before anything changes.** `opscrew
+  provision` refuses a type the provider can't place in the server's location right now, such as an
+  out-of-stock type at Hetzner Cloud, which switches a server off before it changes its type. Pick
+  another type, or try again later.
+- **A failed type change no longer leaves the server off.** When a server's type change fails at a
+  provider that switched it off first (Hetzner Cloud), provision starts the server again and says
+  so. A server it can't start is named as off, with where to start it.
+- **A Laravel or Rails app's migrations run on each deploy.** A Laravel app with Vite, which Railpack
+  builds as PHP, or a Rails app that Buildpacks build as Ruby, no longer loses its release command
+  (`php artisan migrate --force`, `bin/rails db:migrate`) to a warning that its image lacks PHP or
+  Ruby. When the builder builds the migration tool's own language, the command and the app's
+  migrations stay.
+- **A move keeps the provider's backups as you had them.** `opscrew retarget` to another cloud
+  provider turned the automated backups on there again, although you had turned them off on the
+  old server, and its first plan then failed the backups policy for the old server. The move keeps
+  your choice, and checks the old server against it.
+- **A move keeps a plain PHP app's web root.** `opscrew retarget` rewrote the plan's image build
+  for the new side without `app.build.webRoot`, so the image built there served the whole app
+  instead of its `public/` folder, and failed its health check. The working directory of your own
+  Dockerfile's image (`app.build.workdir`) was dropped the same way.
+- **The release command runs on apps built by Railpack or Buildpacks.** On a server, or in your
+  Portainer, `app.releaseCommand` (your migrations, for example) never ran when Railpack or
+  Buildpacks built the image, and the deploy still said it finished: the image's own shell ran an
+  empty shell instead. It now runs the way each builder's image expects, as workers and cron
+  already did, and its output is in `release.log` on the server. Run `npx opscrew provision`
+  once to rewrite the compose file, then deploy, so the migrations you missed run.
+- **A variable you added to `app.env` by hand stays.** `npx opscrew design` rebuilt the plan's
+  variables from what it found in the code, so one you added because detection misses it (a
+  setting the code reads with a default) disappeared without a word, and the next deploy never
+  passed its value. Design now keeps every variable you provide (`source: user`) and names the ones
+  it can't find in the code, so you can remove them when the app no longer reads them. See
+  [A variable OpsCrew does not find](docs/guide/builders.md#a-variable-opscrew-does-not-find).
+- **A Laravel app built by Railpack reads your server's settings in every container.**
+  - **What went wrong:** Railpack's build saves Laravel's settings into the image with their
+    defaults (SQLite, `APP_ENV=production`), and only the web container cleared them at its start.
+    So the release command migrated SQLite instead of your database, and the first deploy of an app
+    on PostgreSQL or MySQL failed. Workers and cron jobs ran with every setting at its default.
+  - **Now:** the image keeps none of those saved settings, so the release, the workers and cron read
+    the server's. With a release command, your migrations run once per deploy in the release step,
+    no longer again each time the web starts.
+
+  Run `npx opscrew provision` once to get the new deploy workflow.
+- **A Filament app built by Railpack has Filament's scripts, styles and fonts.** Filament publishes
+  them into `public/` from a Composer script, which Railpack's build doesn't run, and an app's
+  `.gitignore` keeps them out of the repository. So the admin pages rendered without them: menus
+  that wouldn't open, a sign-in button without its label. The build now publishes them when the
+  app's `composer.lock` has Filament. Run `npx opscrew provision` once to get the new workflow.
+- **A Laravel app's Horizon worker gets the memory it needs.** Design gave every worker 256 MB, but
+  Horizon runs several PHP processes (a master, a supervisor per entry of `config/horizon.php`, and
+  their workers), so it was killed for lack of memory within seconds and every deploy failed its
+  worker check. A worker running `php artisan horizon` now gets 768 MB by default, and design says
+  why. A limit you set in `opscrew/plan.yaml` stays.
+- **Migration records and down migrations run on apps built by Railpack or Buildpacks.**
+  - **What went wrong:** the image's own entrypoint already runs commands through a shell, so the
+    status of the app's migrations never ran there. Each deploy warned that it could not record
+    them, and a rollback couldn't migrate the database down.
+  - **Now:** both run the way the image expects. After a rollback's down migrations, OpsCrew reads
+    the status again. The rollback's database step fails, instead of being reported as done, when
+    the down migration changed nothing, when its result can't be read, or when it stopped short of
+    the earlier version's migrations (which would start that version on another schema). This
+    applies on every builder.
+- **A PHP app built by Railpack gets the extensions its Composer packages need.** Railpack installs
+  only the extensions the app's own `composer.json` asks for, so a package that needs another one
+  (`pcntl` for a queue dashboard, `sockets` for a test tool) stopped `composer install` in the image
+  build. Design now reads `composer.lock` too, records the list in `app.build.phpExtensions` and
+  says which package needs each one. The deploy workflow reads `composer.lock` again at every
+  build, so a package you add later gets its extensions without another provision. Run
+  `npx opscrew provision` once to get the new workflow.
+- **The plan records the PHP version Railpack builds.** For a PHP app whose `composer.json` asks
+  for `^8.3`, `opscrew/plan.yaml` and `npx opscrew status` said PHP 8.4, while Railpack builds the
+  newest 8.3. Design now records 8.3; run `npx opscrew design` once to correct an existing plan.
+- **An infrastructure plan with no changes** shown with `--plan-only` can now be approved by its
+  hash in a script: `--approve <hash>` no longer says "No saved plan has the hash".
+- **The old-image cleanup no longer turns a successful deploy red.** A deletion GitHub answers with
+  a passing error (429 or 5xx) is tried twice more. An image still left, or a deletion the network
+  cut off, is now a warning: the next deploy deletes it. A cleanup that can't list the images still
+  fails, since it stays broken until someone looks.
+- **A short GitHub outage no longer stops a command** while it reads from GitHub: a read GitHub
+  answers with a server error (500, 502, 503, 504) is tried twice more, a few seconds apart. Writes
+  are never sent twice.
+- **A Cloudflare token without R2 is named as one.** Cloudflare's R2 API answers a valid token that
+  lacks R2 with an authentication error, so the move to another Cloudflare account stopped as if
+  the new account's token were refused. It now names the missing permission, Account → Workers R2
+  Storage → Edit.
+- **MongoDB as a one-node replica set in your Portainer** (`options.replicaSet: true`) starts
+  again: since credential rotation came in, its setup read the root password from a file that a
+  Portainer stack doesn't have, so the replica set never started and the deploy failed. It now
+  falls back to the stack's variable.
+
+### Security
+
+- **The Cloudflare-only filter comes back after nftables restarts.** On a server whose iptables
+  runs on nftables (Ubuntu 24.04's default), `systemctl restart nftables` or `reload` emptied
+  OpsCrew's filter and Docker's own rules, and they stayed empty until Docker restarted. Now the
+  filter is put back and Docker restarts with nftables. ufw's own rules still
+  need `sudo ufw reload` after one (see
+  [a server you already have](docs/guide/own-server.md)).
+- **A server's address stays out of the audit log when its SSH host key changed.** The question
+  whether to trust the new key named the server's address in its title, which OpsCrew keeps in
+  `.opscrew/approvals.jsonl` and the audit log. The address is now shown with the question only.
+
 ## [0.2.10] - 2026-11-18
 
 Nothing to redo. At your next `npx opscrew provision`, the Cloudflare plan of every app in a zone
@@ -769,6 +1069,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.11]: https://github.com/opscrew-hub/opscrew/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/opscrew-hub/opscrew/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/opscrew-hub/opscrew/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/opscrew-hub/opscrew/compare/v0.2.7...v0.2.8
