@@ -48,7 +48,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     lockfile regenerated. `pnpm check` is as green as before (see the baseline note in the PR).
   - Effort: lead
 
-- [ ] T3502 (lead, after the `[035]` rootVariables issue) The contract's `rootVariables`
+- [ ] T3502 (lead, after [issue #1](https://github.com/opscrew-hub/opscrew/issues/1), opened 2026-11-21) The contract's `rootVariables`
   - Accept: `ProviderTerraform.rootVariables?` exactly as plan 1., exported from
     `@opscrew/contracts`; ADR 0029 gains D11. No other file changes, and the typecheck is green.
   - Effort: lead
@@ -210,7 +210,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-ovhcloud && OPSCREW_IT=1 npx vitest run --root packages/providers/ovhcloud && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3510 (lead, after the `[035]` id issue) `ovhcloud` joins the ids and the registry
+- [ ] T3510 (lead, after [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), opened 2026-11-21; its step 1, the id in `ProviderId`, comes before T3507 to T3509 can typecheck) `ovhcloud` joins the ids and the registry
   - Accept:
     - `ovhcloud` in `ProviderId`, `VpsProviderId`, `VpsProviderSchema`, `DEFAULT_IMAGES`
       (`"Ubuntu 24.04"`) and the generated schemas.
@@ -265,4 +265,4 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 - [ ] T3514 (lead) A fresh review of the whole branch, `pnpm check`, research R1 updated with the
   implementers' findings, then the pull request (OVHcloud's)
-- [ ] T3515 (lead) The live pass, only with the founder's go-ahead (it costs money)
+- [ ] T3515 (lead) The live pass, only with the founder's go-ahead (it costs money; [issue #3](https://github.com/opscrew-hub/opscrew/issues/3))
