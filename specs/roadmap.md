@@ -727,6 +727,11 @@ a whole AWS app it joins 036's contract. **Azure Front Door comes with Azure** (
 Each is a provider package on 026's contract (ADR 0029), installed as 034 makes provider packages
 installable, so none of them grows the core, and each can host 033's extra copies.
 
+**Started early** (the founder's decision, 2026-11-21): a second contributor builds this wave beside
+032, from OVHcloud on. Until 034 brings installing, each provider is built in, as Contabo is in
+`packages/providers/`. The contributor and the core's lead coordinate through GitHub issues whose
+titles start with `[035]`.
+
 **Order** (the founder's decision, 2026-11-20): OVHcloud first, then Kamatera, IONOS Cloud and
 UpCloud. Vultr, Akamai Cloud and Scaleway follow in 037.
 
