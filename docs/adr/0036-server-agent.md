@@ -36,10 +36,23 @@ their hash (constitution I); only reading needs to be fast.
    - Nothing listens inbound, so it works behind a home router and with the Cloudflare-only
      filter.
    - It reconnects with an exponential backoff, from 1 s to at most 60 s, with jitter.
+   - **A token refused** (HTTP 401 or 403 on the upgrade) stops it reconnecting. It logs that the
+     token was refused and waits for the next deploy, which writes `agent.env` again and restarts
+     it.
+   - **Liveness:** it answers every `ping` at once. The dashboard pings every 20 s, and counts it
+     offline after 60 s with no message.
 5. **The token.**
-   - **One per environment,** minted by the dashboard. The GitHub App stores it as the GitHub
-     environment's secret `OPSCREW_AGENT_TOKEN`, and the dashboard's URL as the variable
-     `OPSCREW_AGENT_URL`.
+   - **One per environment,** minted by the dashboard and stored through the GitHub App, where the
+     deploy job reads the environment's other secrets:
+     - **With a GitHub environment:** in the one the deploy job runs in (`production`, `<env>`,
+       `<app>-production` or `<app>-<env>`, as `githubEnvironmentFor` names them), as the secret
+       `OPSCREW_AGENT_TOKEN`.
+     - **With prefixed repository secrets**, where there is no deploy environment: as a repository
+       secret named the way OpsCrew prefixes the others (`deploySecretName`). That is
+       `OPSCREW_<APP>_<ENV>_AGENT_TOKEN`, with the app's key and the environment's name in upper
+       case. The first app's own part, and prod's, are left out, so: `OPSCREW_AGENT_TOKEN`,
+       `OPSCREW_STAGING_AGENT_TOKEN`, `OPSCREW_DOCS_AGENT_TOKEN`, `OPSCREW_DOCS_STAGING_AGENT_TOKEN`.
+   - **The URL:** a repository variable, `OPSCREW_AGENT_URL`.
    - **To the server:** the deploy workflow writes both to the agent's own env file there
      (`agent.env`, mode 0600, owned by the deploy user), the way the app's other secrets reach the
      server, and never into a log.
@@ -65,12 +78,12 @@ their hash (constitution I); only reading needs to be fast.
 
 | `type` | Fields | When |
 |---|---|---|
-| `hello` | `agent` (its version), `app`, `environment`, `opscrew` (the CLI version that installed it), `services` (names) | first, on each connection |
+| `hello` | `agent` (its version), `app` (the app's name in `opscrew/plan.yaml`), `environment` (its name, `prod` for the default), `opscrew` (the CLI version that installed it), `services` (names) | first, on each connection; for display only, since the token alone decides which environment it is |
 | `log` | `id`, `service`, `ts` (RFC 3339), `stream` (`stdout` \| `stderr`), `line` (redacted) | per line of a `logs` request |
 | `dropped` | `id`, `count` | lines left out by the rate limit |
 | `end` | `id`, `reason` (`done` \| `cancelled` \| `limit` \| `gone`) | a `logs` request finished |
-| `status` | `id`, `services`: `[{name, state, health?, restarts, startedAt, memoryMb, memoryLimitMb?, image}]` | reply to `status` |
-| `deploy` | `deploy` (its run id), `step`, `state` (`running` \| `done` \| `failed`), `at` | as the deploy's steps change, with no request |
+| `status` | `id`, `services`: `[{name, state, health?, restarts, startedAt?, memoryMb, memoryLimitMb?, image}]` (`startedAt` is absent for a container that never started) | reply to `status` |
+| `deploy` | `deploy` (the GitHub Actions run id, as a string), `step`, `state` (`running` \| `done` \| `failed`), `at` | as the deploy's steps change, with no request |
 | `error` | `id?`, `code`, `message` (plain English, redacted) | a request it can't do |
 | `pong` | `id` | reply to `ping` |
 
@@ -78,7 +91,7 @@ their hash (constitution I); only reading needs to be fast.
 
 | `type` | Fields | Does |
 |---|---|---|
-| `logs` | `id`, `service`, `since?` (RFC 3339 or `1h`-style), `tail?` (lines, at most 5000), `follow?` (boolean) | streams lines, then `end` |
+| `logs` | `id`, `service`, `since?` (RFC 3339, or a duration: a number then `s`, `m`, `h` or `d`), `tail?` (lines, at most 5000), `follow?` (boolean) | streams lines, then `end` |
 | `cancel` | `id` | stops that request |
 | `status` | `id` | one `status` reply |
 | `ping` | `id` | `pong` |
