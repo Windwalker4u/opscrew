@@ -249,6 +249,12 @@ Then `pnpm check` must pass, with any exhaustive switch left over fixed. This is
    unavailable offers out of design, and an apply refused anyway takes the existing path.
 4. **One price table date** (2026-11-21), checked against the catalogue before each release, as
    Contabo's is.
+6. **Design falls back to a dedicated type when no shared one holds the app** (found by T3510's
+   tests). OVHcloud's shared d2 types hold at most 50 GB, so an app with PostgreSQL, which design
+   sizes at 60 GB, had no option at all. `design/options.ts` now offers the dedicated type then,
+   for every provider; Hetzner, DigitalOcean and Contabo always have a shared type that fits, so
+   their options are unchanged. Lowering the disk floor for one provider would branch on its id.
+   The live pass moves from `d2-2` (25 GB, below the 40 GB floor) to `d2-4`.
 5. **Monthly billing, `ovh-ca` and `ovh-us`, automated backups, resizing and delete protection**
    are later, if users ask (research R2).
 

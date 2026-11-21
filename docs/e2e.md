@@ -3558,14 +3558,14 @@ monitoring, rollback, data snapshots, `advise` and `rotate` on Contabo; a create
 ## OVHcloud
 
 `packages/cli/test/live/ovhcloud.test.ts`, with `OPSCREW_E2E_OVHCLOUD=1`, runs OpsCrew on
-OVHcloud Public Cloud (SC-3501, SC-3505, SC-3507): `examples/flask-sqlite` on one `d2-2` (1 vCPU,
-2 GB, 25 GB disk) in DE1 (Limburg) or GRA11 (Gravelines), in a Public Cloud project of yours.
+OVHcloud Public Cloud (SC-3501, SC-3505, SC-3507): `examples/flask-sqlite` on one `d2-4` (2 vCPU,
+4 GB, 50 GB disk; design sizes 40 GB, more than a `d2-2` has) in DE1 (Limburg) or GRA11 (Gravelines), in a Public Cloud project of yours.
 
 **It costs money, so ask the founder before every run.** OVHcloud bills the server by the hour,
-per second with a one-minute minimum, until it is deleted: a `d2-2` costs about €0.0104 an hour
+per second with a one-minute minimum, until it is deleted: a `d2-4` costs about €0.0206 an hour
 before VAT. The whole-server snapshot of step 5 costs €0.011 per GB a month while it exists (at
-most 25 GB, so under €0.0004 an hour), and the test deletes it right after the destroy. A pass
-takes one to three hours, so it costs under €0.05. The prices are in
+most 50 GB, so under €0.0008 an hour), and the test deletes it right after the destroy. A pass
+takes one to three hours, so it costs under €0.07. The prices are in
 `packages/providers/ovhcloud/src/static-prices.ts` and on
 [OVHcloud's price page](https://www.ovhcloud.com/en-ie/public-cloud/prices/).
 
@@ -3580,7 +3580,7 @@ provider's token. `OPSCREW_E2E_APP` and `OPSCREW_E2E_REGION` are ignored.
    create a project for the pass alone (a payment method is needed) and copy its id, shown under
    the project's name: it is `OVH_CLOUD_PROJECT_SERVICE`.
 2. **The region.** In the project, Settings → Quota & Regions: activate DE1 or GRA11 (or both).
-   Design takes the first of DE1, SBG5, GRA11 and WAW1 where a `d2-2` is offered, and the pass
+   Design takes the first of DE1, SBG5, GRA11 and WAW1 where a `d2-4` is offered, and the pass
    expects DE1 or GRA11, so leave SBG5 and WAW1 off if DE1 is not active.
 3. **The service account.** Identity and Access Management → Identities → Service accounts: create
    one (OVHcloud's guide: https://docs.ovhcloud.com/en/guides/manage-and-operate/api/manage-service-account).
@@ -3600,7 +3600,7 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
    name set in `opscrew/architecture.json`, and `interview --answers` without a provider
    (`eu-central`, the run's own hostname behind Cloudflare). With only OVHcloud's values set, the
    interview must choose OVHcloud.
-2. **Design.** The plan must be one `d2-2` in DE1 or GRA11, with no OVHcloud backups, priced in
+2. **Design.** The plan must be one `d2-4` in DE1 or GRA11, with no OVHcloud backups, priced in
    EUR. Then the pass runs `snapshot offsite off` (it tests OVHcloud, not the R2 copies, whose
    key only Cloudflare's dashboard makes) and, for the recovery copy's age key, `secrets folder`
    and `--key-out` on every provision, as the rotation passes do.
@@ -3653,7 +3653,7 @@ throwaway repository and in Cloudflare, delete what the environments test lists.
 
 | Variable | What it is |
 |---|---|
-| `OPSCREW_E2E_OVHCLOUD` | `1` runs this test. Ask the founder first: it costs up to €0.05. |
+| `OPSCREW_E2E_OVHCLOUD` | `1` runs this test. Ask the founder first: it costs up to €0.07. |
 | `OVH_ENDPOINT` | `ovh-eu`. |
 | `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` | The service account's client id and secret ([above](#before-the-first-run-once-in-the-control-panel)). |
 | `OVH_CLOUD_PROJECT_SERVICE` | The Public Cloud project's id. |

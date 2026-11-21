@@ -32,7 +32,7 @@ still differs from the providers OpsCrew has in ways the user must see (R1):
 
 **Why this priority**: it is the feature's point, a server at Europe's largest cloud, billed by use.
 
-**Independent Test**: the live pass on one `d2-2` goes through interview, design, provision,
+**Independent Test**: the live pass on one `d2-4` goes through interview, design, provision,
 deploy, verify, status, secure and drift, and the app answers on its domain. Until the founder's
 go-ahead, the same flow runs against fakes of OVHcloud's API and the engine.
 
@@ -269,7 +269,7 @@ UpCloud follows IONOS Cloud, in the same way.
 - **SC-3506**: `pnpm check` passes on the pull request, or the pull request says plainly which
   test failed and why.
 - **SC-3507**: The founder can run the live pass from `docs/e2e.md` alone. It costs under €0.05 an
-  hour while it runs (one `d2-2` and its snapshot), and nothing after its destroy except what it
+  hour while it runs (one `d2-4` and its snapshot), and nothing after its destroy except what it
   names.
 
 ## Assumptions

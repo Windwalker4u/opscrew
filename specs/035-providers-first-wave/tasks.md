@@ -224,7 +224,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-ovhcloud && OPSCREW_IT=1 npx vitest run --root packages/providers/ovhcloud && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3510 (lead; step 2 of [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), approved
+- [x] T3510 (lead; step 2 of [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), approved
   2026-11-21; its step 1 is in T3502) `ovhcloud` joins the lists and the registry
   - Accept:
     - `ovhcloud` in `VpsProviderId`, `VpsProviderSchema`, `DEFAULT_IMAGES` (`"Ubuntu 24.04"`)
@@ -308,7 +308,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Depends: T3510
   - Accept:
     - The test runs only with `OPSCREW_E2E_OVHCLOUD=1` and the four variables. It goes through the
-      flow of SC-3501 on one `d2-2` and ends with a scan for the four values.
+      flow of SC-3501 on one `d2-4` and ends with a scan for the four values.
     - `docs/e2e.md` gives the steps, the variables, the IAM policy and the cost (under €0.05 an
       hour, and what stays after the destroy).
     - It is never run in this task.

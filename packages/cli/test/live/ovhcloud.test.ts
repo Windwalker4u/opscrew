@@ -1,11 +1,11 @@
 /**
  * The live pass of OVHcloud (docs/e2e.md "OVHcloud", SC-3501, SC-3505, SC-3507):
- * `examples/flask-sqlite` on one `d2-2` in DE1 or GRA11, in the Public Cloud project the four
+ * `examples/flask-sqlite` on one `d2-4` in DE1 or GRA11, in the Public Cloud project the four
  * `OVH_*` variables name. OVHcloud bills it by the hour, so a run costs cents (about €0.0104 an
  * hour for the server, plus its snapshot at €0.011 per GB a month while it exists). The app is
  * named after the run, so nothing of an earlier run is ever taken for this one's. Steps, in order:
  * 1. the interview chooses OVHcloud from its four credentials alone;
- * 2. design: one `d2-2` in DE1 or GRA11, priced in EUR, with no provider backups;
+ * 2. design: one `d2-4` in DE1 or GRA11, priced in EUR, with no provider backups;
  * 3. provision: one server, and no takeover;
  * 4. the first deploy, verify, status, and the app on its domain;
  * 5. a whole-server snapshot, billed per GB; 6. its restore, and verify again;
@@ -56,7 +56,8 @@ const VARIABLES = [
   "OPSCREW_E2E_DOMAIN",
 ];
 /** The plan the pass runs, the smallest OpsCrew offers, and the locations it may run in. */
-const PLAN = "d2-2";
+// The smallest shared model with the 40 GB disk design sizes for (d2-2 has 25 GB).
+const PLAN = "d2-4";
 const LOCATIONS = ["DE1", "GRA11"];
 /** An app with its own SQLite file, whose value shows that the restore put the snapshot back. */
 const EXAMPLE = "flask-sqlite";

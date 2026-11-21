@@ -102,6 +102,8 @@ describe("the provider catalogue", () => {
       { provider: "hetzner", size: "cx33", location: "nbg1" },
       { provider: "digitalocean", size: "s-2vcpu-4gb", location: "fra1" },
       { provider: "contabo", size: "V153", location: "EU" },
+      // OVHcloud's shared d2 hold at most 50 GB, so an app with PostgreSQL (60 GB) gets b3-16.
+      { provider: "ovhcloud", size: "b3-16", location: "DE1" },
     ]);
     expect(suggestions.staticSite).toMatchObject({
       target: "cloudflare-workers",
