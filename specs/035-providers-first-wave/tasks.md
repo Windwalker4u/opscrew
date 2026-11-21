@@ -165,7 +165,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-ovhcloud && npx vitest run --root packages/providers/ovhcloud && pnpm lint`
   - Effort: high
 
-- [ ] T3508 [P] [US1] [US2] [US3] The server API and the connector
+- [x] T3508 [P] [US1] [US2] [US3] The server API and the connector
   - Owns: `packages/providers/ovhcloud/src/servers.ts`, `servers.test.ts`, `connector.ts`,
     `connector.test.ts`, their fixtures
   - Reads: plan 3.; research R1 sections 5, 8, 9 and 10; `ServerSnapshotApi` and `VpsConnector`
