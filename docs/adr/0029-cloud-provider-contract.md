@@ -95,6 +95,10 @@ kinds, not on which cloud.
     or the audit log. It is not declared `sensitive`, because an `import` block's `id` can't be
     sensitive (OpenTofu 1.13.9). It is no secret, and the redactor masks its value in everything
     OpsCrew shows.
+  - **Only a value that isn't secret may feed a root variable.** It appears in plans and their
+    JSON, which the engine prints and OpsCrew keeps in `.opscrew/plans`. A provider never names a
+    token, a password or a client secret in `fromEnv`; reviews check it, since the registry can't
+    tell a secret by its name.
   - **`terraform.importId`:** the HCL expression of the takeover's `import` `id` (026's takeover
     of a lost server). Absent, the quoted id. OVHcloud's instance imports as `<project>/<id>`, so
     its expression is `"${var.ovhcloud_project_id}/<id>"`.
