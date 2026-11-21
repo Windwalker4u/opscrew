@@ -241,7 +241,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - `pnpm check` passes, or the failures are only the environment's, named in the PR.
   - Effort: lead
 
-- [ ] T3516 (lead, after [issue #5](https://github.com/opscrew-hub/opscrew/issues/5), opened
+- [x] T3516 (lead, after [issue #5](https://github.com/opscrew-hub/opscrew/issues/5), opened
   2026-11-21; before T3510) The SSH key check and the deploy-key match read any provider's shape
   - Found by T3509: `ovh_cloud_instance` takes `ssh_key_name`, and `ovh_cloud_ssh_key` has no `id`.
   - Accept:

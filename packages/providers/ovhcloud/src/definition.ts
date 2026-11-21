@@ -140,6 +140,8 @@ const SECOPS: ProviderSecOps = {
     "The server has none of OpsCrew's security groups, so OVHcloud puts it on your project's default group, which lets every port be reached from the internet. Attach the OpsCrew security group.",
   keylessText:
     "The server has no SSH key; OVHcloud needs one to create a Linux server. Add the deploy key.",
+  // The instance takes one key by its name (`ovh_cloud_instance.ssh_key_name`), not `ssh_keys`.
+  sshKeyAttribute: "ssh_key_name",
   backupsText:
     "OpsCrew turns on no OVHcloud backups: its own snapshots of the app's data cover them.",
 };

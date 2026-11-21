@@ -307,6 +307,11 @@ export interface ProviderSecOps {
   attachedText: string;
   unattachedText: string;
   keylessText: string;
+  /**
+   * The server's attribute that holds its SSH key or keys, which the "uses SSH keys" check reads;
+   * absent, `ssh_keys` (OVHcloud's instance takes one key by its name, `ssh_key_name`).
+   */
+  sshKeyAttribute?: string;
   backupsText: string;
   /**
    * True when `server` has the provider's automated backups on, read from `resources` (the plan's
