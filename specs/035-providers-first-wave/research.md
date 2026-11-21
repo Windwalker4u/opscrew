@@ -419,6 +419,30 @@ Read 2026-11-21 (IE catalogue, EUR before VAT):
   `OVH_APPLICATION_KEY`, `OVH_APPLICATION_SECRET` and `OVH_CONSUMER_KEY` for application keys, and
   `OVH_ACCESS_TOKEN`.
 
+### Confirmed while building the client (T3506, 2026-11-21)
+
+- **API base** (go-ovh `ovh/ovh.go`, `master`): `OvhEU` is `https://api.eu.ovhcloud.com/1.0`.
+  `getTarget` drops `/1.0` for a path that starts with `/v1/` or `/v2/`, so the v2 base is
+  `https://api.eu.ovhcloud.com/v2`. The v2 schema (`eu.api.ovh.com/v2/publicCloud.json`) has no
+  `basePath`; its paths are relative, for example `/publicCloud/project/{projectId}/compute/instance`.
+- **Token** (go-ovh `configuration.go`; OVHcloud's guide "authenticate the API with a service
+  account"):
+  - the request is a form-encoded POST to `https://auth.eu.ovhcloud.com/oauth2/token` with
+    `grant_type=client_credentials`, `client_id`, `client_secret` and `scope=all`;
+  - the answer is `{access_token, token_type: "Bearer", expires_in: 3599, scope: "all"}`, sent as
+    `Authorization: Bearer`;
+  - the service account's pair has no time limit (the service-account guide).
+- **Errors** (go-ovh `error.go`):
+  - the body is `{class, message, details}`, with `details` a string map. A missing right has
+    `unauthorizedActionsByAuthentication` or `unauthorizedActionsByIAM`.
+  - `X-Ovh-QueryID` comes in a header.
+  - go-ovh itself never retries and doesn't handle a 401.
+- **Still unverified, for the live pass:**
+  - whether a 429 comes with `Retry-After` (the client waits on it for reads only, at most 60
+    seconds, and 2 seconds without the header);
+  - the error `class` names;
+  - the HTTP status of a missing IAM right (the client reads `details`, whatever the status).
+
 ## R2. The lead's decisions for OVHcloud (2026-11-21)
 
 These are technical choices the brief leaves to the lead. Each one gives its reason. A product
