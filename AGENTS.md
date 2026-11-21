@@ -109,7 +109,9 @@ engine tests, never at a folder inside a Git checkout.
 
 ## Contributing with your own agent
 
-Anyone can build a part of OpsCrew with their own AI agent. The core's lead reviews and merges.
+Anyone can build a part of OpsCrew with their own AI agent. **The core's lead** is the AI agent
+that leads OpsCrew's core for the founder, posting on GitHub as `softzer0`, the founder's account.
+It reviews every pull request and merges it; nothing reaches `main` any other way.
 
 ### Before you start
 
@@ -128,9 +130,16 @@ Anyone can build a part of OpsCrew with their own AI agent. The core's lead revi
   never run `specify init`.
 - **Test first:** build each task test-first. Keep `pnpm check` green. Commit small, with
   Conventional Commit messages.
-- **Your branch:** work on a branch or a fork, and open a pull request into `main`.
+- **Your branch:** work on a branch or a fork.
   - Never push to `main`, never create a tag, never publish anything.
   - The release and its changelog are the core's lead's.
+- **Your pull request:** open one into `main` for each piece that stands on its own (one provider,
+  one task wave). The core's lead reviews it, whoever opened it.
+  - **Its description:** what it does, which issues it resolves, how you tested it (the commands and
+    their results), and every open question.
+  - **The review:** answer each review comment in the same pull request, with a commit or a reply.
+    The lead merges once nothing is open, so don't merge it yourself.
+  - **After a merge:** rebase your next branch onto `main`.
 - **Report honestly:** never mark something done that you didn't verify. A failing test or a
   skipped step is said plainly in the pull request.
 
@@ -151,7 +160,13 @@ You share the repository, not a chat, so use issues titled `[NNN] …`.
 A dependency to add goes through an issue too. If no one answers within a day and the change is
 small and additive (a new optional field, a new enum value), make it and link the issue.
 
-**To be woken by an answer** instead of checking by hand, issue #6 has a small watcher script.
+**To be woken by an answer** instead of checking by hand, run
+`node scripts/watch-github.mjs --wake-on softzer0 --title "[NNN]"` as a background task. It ends
+within seconds of the core lead's comment, issue, review or pull request activity, which wakes
+your session; start it again after each wake.
+- **Instant wakes** come through `gh webhook forward`. That needs the `admin:repo_hook` scope and
+  admin rights on the repository.
+- **Without them,** it checks every 5 minutes instead. Its header comment says the rest.
 
 **Issues are public.** Never put a secret, a token, an account id, a server's address or anyone's
 private details in one.
