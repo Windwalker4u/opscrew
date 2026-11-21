@@ -149,7 +149,7 @@ export async function stateContents(
   } catch {
     return "unknown"; // no usable engine here: the command's own engine setup says so plainly
   }
-  const env: Record<string, string | undefined> = { ...deps.env };
+  const env = engineEnv(deps.env);
   if (encrypted) {
     if (reader.info.name !== "tofu") return "unknown";
     const passphrase = (await readTextIfExists(deps.paths.files.statePassphrase))?.trim();

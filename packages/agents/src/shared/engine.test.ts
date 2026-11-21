@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { IacEngine, IacEngineName, ResourceAction } from "@opscrew/contracts";
+import type { IacEngine, IacEngineName, IacRunOptions, ResourceAction } from "@opscrew/contracts";
 import { tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
@@ -323,6 +323,20 @@ describe("stateContents", () => {
       expect(await stateContents(deps, file, async () => engine)).toBe(expected);
       expect(engine.stateCalls).toEqual([{ file, encryption: undefined }]);
     }
+  });
+
+  it("gives its state list none of the address updater's tokens", async () => {
+    const { deps, file } = await setup(plainState([]));
+    deps.env.OPSCREW_DNS_UPDATER_TOKEN = fakeSecret("cloudflare-token", "updater");
+    deps.env.OPSCREW_NEW_DNS_UPDATER_TOKEN = fakeSecret("cloudflare-token", "new-updater");
+    const engine = listing(undefined);
+    const list = vi.spyOn(engine, "stateResources");
+    await stateContents(deps, file, async () => engine);
+    const [, options] = list.mock.calls[0] as unknown as [string, IacRunOptions?];
+    const env = options?.env;
+    expect(env).toBeDefined();
+    expect(env).not.toHaveProperty("OPSCREW_DNS_UPDATER_TOKEN");
+    expect(env).not.toHaveProperty("OPSCREW_NEW_DNS_UPDATER_TOKEN");
   });
 
   it("holds nothing without a state file or with a blank one, without asking for an engine", async () => {
