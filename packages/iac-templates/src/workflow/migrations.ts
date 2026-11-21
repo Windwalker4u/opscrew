@@ -290,13 +290,25 @@ function railsDown(
  *
  * Every value from a record is checked against `^[A-Za-z0-9_.:-]+$` before use. A missing record,
  * a value that isn't one, or a count that grew going back exits non-zero before any change. The
- * command runs in one one-off of the running version's image (the `release` service with the
- * image `.env` names: `APP_IMAGE` is `$1`'s, the earlier version's, in the script), its output in
- * `release.log`, never printed.
+ * command runs in a one-off of the running version's image (the `release` service with the image
+ * `.env` names: `APP_IMAGE` is `$1`'s, the earlier version's, in the script), in the builder's
+ * form ({@link releaseRun}), its output in `release.log`, never printed. A second one-off of that
+ * image then runs `status`, its errors also in `release.log`, and the step exits non-zero when it
+ * prints nothing the tool's record reads, when it still shows the running version's record (the
+ * down changed nothing), or, for every tool but Django and Rails with several databases, when it
+ * isn't the earlier version's record exactly (a down that went only part of the way).
  */
 export function migrationDown(plan: DeployPlan, migrations: Migrations): string[] {
   const { tool } = migrations;
   const error = (text: string) => `echo ${shellQuote(`::error::${text}`)}; exit 1;`;
+  // Where the status after the down must be the earlier version's record exactly: every tool but
+  // Django (its `--plan` order) and Rails with several databases (one only the newer version has).
+  const exact =
+    MIGRATION_TOOLS[tool].unit === "apps"
+      ? undefined
+      : tool === "rails"
+        ? `! grep -q '^database=' "$now_record" && `
+        : "";
   return [
     `was_record=${SCHEMA_DIR}/"$target"`,
     `now_record=${SCHEMA_DIR}/"$running"`,
@@ -325,6 +337,14 @@ export function migrationDown(plan: DeployPlan, migrations: Migrations): string[
     `  printf ${printfFormat(`::error::The down migrations with ${tool} finished, but the database still has the migrations of the version running now, so they changed nothing. Check app.migrations.down in ${planFilePath(plan)}; its output ${serverLogNote(plan, RELEASE_LOG)}`)} "$PWD"`,
     "  exit 1",
     "fi",
+    ...(exact === undefined
+      ? []
+      : [
+          `if ${exact}[ "$after" != "$(cat "$was_record")" ]; then`,
+          `  printf ${printfFormat(`::error::The down migrations with ${tool} finished, but the database isn't at the migrations of the version rolled back to (its record in ${SCHEMA_DIR} on the server), so that version would start on another schema. Check app.migrations.down in ${planFilePath(plan)}; its output ${serverLogNote(plan, RELEASE_LOG)}`)} "$PWD"`,
+          "  exit 1",
+          "fi",
+        ]),
     `echo ${shellQuote(`OpsCrew migrated the database down with ${tool} to the migrations of the version rolled back to.`)}`,
   ];
 }

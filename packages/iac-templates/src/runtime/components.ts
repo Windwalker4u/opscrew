@@ -465,22 +465,13 @@ export function crontab(plan: DeployPlan): string {
 }
 
 /**
- * How a worker's command starts per builder, as PID 1 so it gets SIGTERM (contracts/components.md
- * "Process start forms"): the command starts with `exec`. Under Buildpacks it runs through the
- * launcher, also for a Procfile worker, whose name need not be its Procfile type.
+ * How a worker's command starts per builder ({@link oneOffStart}), as PID 1 so it gets SIGTERM
+ * (contracts/components.md "Process start forms"): the command starts with `exec`. Under
+ * Buildpacks it runs through the launcher, also for a Procfile worker, whose name need not be its
+ * Procfile type.
  */
 function workerStart(plan: DeployPlan, worker: DeployPlan["processes"]["workers"][number]): object {
-  const command = composeLiteral(`exec ${worker.command}`);
-  switch (plan.app.build?.builder) {
-    case "buildpacks":
-      // One string, which the launcher runs with bash.
-      return { entrypoint: ["/cnb/lifecycle/launcher"], command: [command] };
-    case "railpack":
-      // The image runs `bash -c` with one string.
-      return { command: [command] };
-    default:
-      return { command: ["sh", "-c", command] };
-  }
+  return oneOffStart(plan, `exec ${worker.command}`);
 }
 
 /**

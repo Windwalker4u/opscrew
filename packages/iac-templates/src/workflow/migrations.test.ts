@@ -210,8 +210,9 @@ const FAKE_TOOL = [
 const SECRET_ROW = "row-value-from-the-database";
 
 /**
- * Each tool's status output once its down migrations ran in the tests below: a state other than
- * the running version's record there, as a down migration that did its work leaves.
+ * Each tool's status output once its down migrations ran in the tests below: the earlier
+ * version's record there (for Django and Rails with several databases, a state other than the
+ * running version's), as a down migration that did its work leaves.
  */
 const AFTER: Record<MigrationTool, string> = {
   rails: "database: primary\nCurrent version: 20261101000000\n",
@@ -445,7 +446,7 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 1
   });
 
   describe("at a rollback", () => {
-    it.each<[string, MigrationTool, string, string, string[]]>([
+    it.each<[string, MigrationTool, string, string, string[], string?]>([
       [
         "Rails to the earlier version",
         "rails",
@@ -459,6 +460,7 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 1
         "version=0\n",
         "version=20261106000000\n",
         ["rails db:migrate VERSION=0 in ."],
+        "database: primary\nCurrent version: 0\n",
       ],
       [
         "Rails per database, newest first, VERSION=0 for a database the earlier version lacks",
@@ -534,10 +536,10 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 1
         ],
       ],
     ])(
-      "migrates %s, in one one-off of the running image, then reads the result",
-      (_name, tool, was, now, calls) => {
+      "migrates %s in a one-off of the running image, then checks the result with the status in a second one",
+      (_name, tool, was, now, calls, after) => {
         recorded(was, now);
-        write(`${work}/status.out`, AFTER[tool]);
+        write(`${work}/status.out`, after ?? AFTER[tool]);
         const result = rollback(PLANS[tool]);
         expect(result.status, result.output).toBe(0);
         // The down migrations, then the status that shows they changed the database.
@@ -753,14 +755,39 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 1
         const plan = withBuild(PLANS.laravel, builder, { language: "php", version: "8.5" });
         write(`${work}/status.out`, AFTER.laravel);
         expect(deploy(plan).status).toBe(0);
-        recorded("count=2\n", "count=5\n");
+        recorded("count=3\n", "count=5\n");
         const result = rollback(plan);
         expect(result.status, result.output).toBe(0);
         expect(lines("docker.log")).toEqual([
           `docker compose run --rm --no-deps -T release php artisan migrate:status | APP_IMAGE=${image(B)}`,
-          `docker compose run --rm --no-deps -T release php artisan migrate:rollback --step=3 --force | APP_IMAGE=${image(B)}`,
+          `docker compose run --rm --no-deps -T release php artisan migrate:rollback --step=2 --force | APP_IMAGE=${image(B)}`,
           `docker compose run --rm --no-deps -T release php artisan migrate:status | APP_IMAGE=${image(B)}`,
         ]);
+      },
+    );
+
+    it.each<[string, MigrationTool, string, string, string]>([
+      ["Knex", "knex", "count=1\n", "count=3\n", "Found 2 Completed Migration files.\n"],
+      ["Laravel", "laravel", "count=3\n", "count=5\n", AFTER.laravel.replace("Pending", "[2] Ran")],
+      ["Alembic", "alembic", "version=base\n", "version=7c9d1e2f3a4b\n", "1a2b3c4d5e6f\n"],
+      [
+        "Rails with one database",
+        "rails",
+        "version=20261101000000\n",
+        "version=20261106000000\n",
+        "database: primary\nCurrent version: 20261104000000\n",
+      ],
+    ])(
+      "refuses %s's down migrations that went only part of the way",
+      (_name, tool, was, now, after) => {
+        recorded(was, now);
+        write(`${work}/status.out`, after);
+        const result = rollback(PLANS[tool]);
+        expect(result.status, result.output).toBe(1);
+        expect(result.output).toContain(
+          `::error::The down migrations with ${tool} finished, but the database isn't at the migrations of the version rolled back to (its record in .schema on the server), so that version would start on another schema. Check app.migrations.down in opscrew/plan.yaml; its output stays on the server in`,
+        );
+        expect(result.output).not.toContain("OpsCrew migrated the database down");
       },
     );
 

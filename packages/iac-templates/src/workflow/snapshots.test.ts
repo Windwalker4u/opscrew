@@ -136,8 +136,9 @@ const FAKE_DOCKER = [
   '  "compose stop") if [ -n "${KILL_AT_STOP:-}" ]; then kill -9 "$PPID"; fi ;;',
   '  "compose run")',
   '    if [ "$last" = release ]; then exit 0; fi',
-  // The release image's own one-offs (the down migrations, the records) succeed with DOWN_OK.
-  '    case " $* " in *" -T release "*) if [ -n "${DOWN_OK:-}" ]; then exit 0; fi ;; esac',
+  // The release image's own one-offs (the down migrations, the records) succeed with DOWN_OK; Knex's
+  // status then shows the two migrations of A, the version the down migrations went back to.
+  '    case " $* " in *" -T release "*) if [ -n "${DOWN_OK:-}" ]; then case " $* " in *" migrate:list"*) echo "Found 2 Completed Migration files." ;; esac; exit 0; fi ;; esac',
   '    host=""; service=""; script=""; p1=""; p2=""',
   '    for arg in "$@"; do',
   '      if [ "$p1" = -v ]; then host="${arg%%:/snapshot*}"; fi',

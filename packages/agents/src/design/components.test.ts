@@ -560,6 +560,18 @@ describe("designComponents: workers and cron", () => {
       ["horizon", 768],
       ["celery-worker", 256],
     ]);
+    // Commands that only name Horizon are one PHP process, as any other worker.
+    const named = designed({
+      workers: [
+        library("status", "php artisan horizon:status"),
+        library("queue", "php artisan queue:work --queue=horizon"),
+      ],
+    });
+    expect(named.components.processes.workers.map((w) => [w.name, w.memoryMb])).toEqual([
+      ["status", 256],
+      ["queue", 256],
+    ]);
+    expect(named.lines.filter((line) => line.includes("Horizon runs"))).toEqual([]);
     expect(lines).toContain(
       "Worker horizon (768 MB): php artisan horizon. Horizon runs several PHP processes (a master, a supervisor per entry of config/horizon.php and their workers), so it gets 768 MB by default.",
     );
