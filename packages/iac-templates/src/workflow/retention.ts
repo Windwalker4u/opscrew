@@ -305,10 +305,11 @@ async function main() {
       console.log("::warning::" + failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
     }
   } catch (error) {
-    fail(
-      (deleting ? "OpsCrew stopped deleting old images: " : "OpsCrew could not list the images, so it deleted none: ") +
-        error.message + ". The deploy itself succeeded; the next deploy tries again.",
-    );
+    const words = error.message + ". The deploy itself succeeded; the next deploy tries again.";
+    // A deletion cut off (the network) is a warning, as GitHub's own refusals are; not being
+    // able to list the images means retention is broken until someone looks.
+    if (deleting) console.log("::warning::OpsCrew stopped deleting old images: " + words);
+    else fail("OpsCrew could not list the images, so it deleted none: " + words);
   }
 }`;
 }

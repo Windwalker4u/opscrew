@@ -725,6 +725,15 @@ describe("the retention step's program", () => {
     );
     expect(result.log.some((line) => line.startsWith("::error::"))).toBe(false);
   });
+
+  it("only warns when the network cuts a deletion off", async () => {
+    const api = registry({ pushes, deleteAnswers: { [a.index.id]: [0] } });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(result.log.at(-1)).toBe(
+      "::warning::OpsCrew stopped deleting old images: fetch failed. The deploy itself succeeded; the next deploy tries again.",
+    );
+  });
 });
 
 describe("the retention job", () => {

@@ -426,8 +426,14 @@ jobs:
             const deleteVersions = async (base, versions, ids) => {
               let failed = 0;
               for (const v of versions.filter((version) => ids.has(version.id))) {
-                const response = await github("DELETE", base + "/" + v.id);
                 const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                let response = await github("DELETE", base + "/" + v.id);
+                // GitHub answers 429 or 5xx for a moment at times: try it twice more.
+                for (let retry = 1; retry <= 2 && (response.status === 429 || response.status >= 500); retry++) {
+                  console.log("GitHub answered HTTP " + response.status + " to deleting " + what + "; trying again in 5 s.");
+                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                  response = await github("DELETE", base + "/" + v.id);
+                }
                 if (response.ok) {
                   console.log("Deleted " + what);
                 } else if (response.status === 404) {
@@ -451,7 +457,8 @@ jobs:
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + " of pull requests' images.");
               deleting = true;
               const failed = await deleteVersions(base, versions, ids);
-              if (failed > 0) fail(failed + " image versions were not deleted; the next preview run tries again.");
+              // The next preview run deletes them, so the run stays green.
+              if (failed > 0) console.log("::warning::" + failed + " image versions were not deleted; the next preview run tries again.");
             } catch (error) {
               fail(
                 (deleting ? "OpsCrew stopped deleting pull requests' images: " : "OpsCrew could not list the images, so it deleted none: ") +
@@ -668,8 +675,14 @@ jobs:
             const deleteVersions = async (base, versions, ids) => {
               let failed = 0;
               for (const v of versions.filter((version) => ids.has(version.id))) {
-                const response = await github("DELETE", base + "/" + v.id);
                 const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                let response = await github("DELETE", base + "/" + v.id);
+                // GitHub answers 429 or 5xx for a moment at times: try it twice more.
+                for (let retry = 1; retry <= 2 && (response.status === 429 || response.status >= 500); retry++) {
+                  console.log("GitHub answered HTTP " + response.status + " to deleting " + what + "; trying again in 5 s.");
+                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                  response = await github("DELETE", base + "/" + v.id);
+                }
                 if (response.ok) {
                   console.log("Deleted " + what);
                 } else if (response.status === 404) {
@@ -693,7 +706,8 @@ jobs:
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + " of pull requests' images.");
               deleting = true;
               const failed = await deleteVersions(base, versions, ids);
-              if (failed > 0) fail(failed + " image versions were not deleted; the next preview run tries again.");
+              // The next preview run deletes them, so the run stays green.
+              if (failed > 0) console.log("::warning::" + failed + " image versions were not deleted; the next preview run tries again.");
             } catch (error) {
               fail(
                 (deleting ? "OpsCrew stopped deleting pull requests' images: " : "OpsCrew could not list the images, so it deleted none: ") +

@@ -174,6 +174,8 @@ export function registry(o: {
     const del = new RegExp(`^${base}/(\\d+)$`).exec(url);
     if (del && method === "DELETE") {
       const status = o.deleteAnswers?.[Number(del[1])]?.shift() ?? 204;
+      // 0 stands for a request the network cut off: `fetch` throws.
+      if (status === 0) throw new TypeError("fetch failed");
       return { ok: status < 300, status, json: async () => ({}) };
     }
     return notFound;
