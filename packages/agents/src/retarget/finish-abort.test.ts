@@ -224,24 +224,22 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
   it("names the old server's snapshots taken earlier in What remains, read once before its removal", async () => {
     const h = await moveHarness();
     await run(h);
-    const api = h.services.servers?.hetzner as ServerSnapshotApi;
-    /** Where in the trail each read happened. */
-    const readAt: number[] = [];
-    api.listSnapshots = async (serverId) => {
-      readAt.push(h.events.length);
-      return serverId === OLD_IDS.hetzner
-        ? ["101", "snap-4711"].map((id) => ({ id, createdAt: "2026-10-01T00:00:00Z" }))
-        : [];
-    };
+    h.snapshotsOf[OLD_IDS.hetzner] = ["101", "snap-4711"];
     const mark = h.events.length;
-    const result = await finish(h);
+    let listedAtName: string[] = [];
+    let approvalsAtName = -1;
+    const result = await finish(h, {
+      confirm: async (preview) => {
+        listedAtName = [...h.listed];
+        approvalsAtName = since(h, mark).filter((e) => e.type === "approval").length;
+        return h.confirm(preview);
+      },
+    });
     expect(result).toMatchObject({ step: "finished", snapshotId: "snap-4711" });
     // Once, before the typed name and every approval; never after the deletion.
-    expect(readAt).toHaveLength(1);
-    const first = h.events.findIndex(
-      (e, i) => i >= mark && (e.type === "approval" || e.type === "confirm"),
-    );
-    expect(readAt[0]).toBeLessThanOrEqual(first);
+    expect(listedAtName).toEqual([OLD_IDS.hetzner]);
+    expect(approvalsAtName).toBe(0);
+    expect(h.listed).toEqual([OLD_IDS.hetzner]);
     const earlier =
       "The snapshot of shop taken earlier (Hetzner image 101). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete it in the Hetzner Cloud Console when you no longer need it.";
     expect(result.next).toContain(earlier);
@@ -255,6 +253,7 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
   it("finishes the move when the old server's snapshots cannot be listed, and says so once", async () => {
     const h = await moveHarness();
     await run(h);
+    // The provider fails on purpose.
     const api = h.services.servers?.hetzner as ServerSnapshotApi;
     api.listSnapshots = async () => {
       throw new OpsCrewError("PROVIDER_ERROR", "Hetzner answered 503.");

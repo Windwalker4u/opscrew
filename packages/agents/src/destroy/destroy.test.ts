@@ -15,7 +15,6 @@ import type {
   ApprovalRequest,
   FetchLike,
   ResourceChange,
-  ServerSnapshotApi,
 } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -2258,15 +2257,6 @@ describe.skipIf(!findExecutable("git"))(
   },
 );
 
-/** `listSnapshots` answers with `byServer`'s ids; each call is the event `list:<server id>`. */
-function earlierSnapshots(s: Setup, byServer: Record<string, string[]>): void {
-  // Through the contract's type: the fake's own `listSnapshots` takes no id.
-  (s.servers as ServerSnapshotApi).listSnapshots = async (serverId) => {
-    s.events.push(`list:${serverId}`);
-    return (byServer[serverId] ?? []).map((id) => ({ id, createdAt: "2026-10-01T00:00:00Z" }));
-  };
-}
-
 /** How often `text` occurs in `within`. */
 function occurrences(within: string | undefined, text: string): number {
   return (within ?? "").split(text).length - 1;
@@ -2305,21 +2295,23 @@ describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken ea
 
   it("reads them once before any approval and names each in the summary, the approval and What remains", async () => {
     const s = await setup();
-    earlierSnapshots(s, { "4711": ["101", "102"] });
+    s.servers.snapshotsOf = { "4711": ["101", "102"] };
     let summary = "";
+    let listedAtName: string[] = [];
+    let eventsAtName: string[] = [];
     const result = await runDestroy(s.deps, {
       services: s.services,
       confirm: async () => {
         summary = s.deps.reporter.text();
+        listedAtName = [...s.servers.listed];
+        eventsAtName = [...s.events];
         return true;
       },
     });
     // Once, before the typed name, the snapshot and every approval; never after the deletion.
-    expect(s.events.filter((e) => e.startsWith("list:"))).toEqual(["list:4711"]);
-    expect(s.events.indexOf("list:4711")).toBeLessThan(s.events.indexOf("snapshot:create"));
-    expect(s.events.indexOf("list:4711")).toBeLessThan(
-      s.events.findIndex((e) => e.startsWith("approval:")),
-    );
+    expect(listedAtName).toEqual(["4711"]);
+    expect(eventsAtName).toEqual(["plan:destroy"]);
+    expect(s.servers.listed).toEqual(["4711"]);
     expect(summary).toContain(`info: ${HETZNER_LINE}`);
     const destroy = destroyRequest(s);
     expect(destroy?.details).toContain(HETZNER_LINE);
@@ -2353,7 +2345,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken ea
       snapshotId: "9001",
       takenAt: "2026-10-11T11:00:00.000Z",
     });
-    earlierSnapshots(s, { "4711": ["101", "9001"] });
+    s.servers.snapshotsOf = { "4711": ["101", "9001"] };
     const result = await runDestroy(s.deps, { services: s.services });
     expect(s.servers.snapshots).toEqual([]);
     const destroy = destroyRequest(s);
@@ -2374,9 +2366,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken ea
       script: { resources: DO_RESOURCES },
       env: DO_ENV,
     });
-    earlierSnapshots(s, { "3164444": ["7001"] });
+    s.servers.snapshotsOf = { "3164444": ["7001"] };
     const result = await runDestroy(s.deps, { services: s.services });
-    expect(s.events.filter((e) => e.startsWith("list:"))).toEqual(["list:3164444"]);
+    expect(s.servers.listed).toEqual(["3164444"]);
     const line =
       "The snapshot of shop taken earlier stays: DigitalOcean snapshot 7001 (DigitalOcean bills snapshots per GB per month at the rate listed on https://www.digitalocean.com/pricing; OpsCrew never deletes it).";
     expect(s.deps.reporter.text()).toContain(`info: ${line}`);
@@ -2394,9 +2386,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken ea
       env: OVH_ENV,
     });
     // The fake engine's state id of an OVHcloud instance.
-    earlierSnapshots(s, { "this-1": ["cccccccc-dddd-4eee-8fff-000000000001"] });
+    s.servers.snapshotsOf = { "this-1": ["cccccccc-dddd-4eee-8fff-000000000001"] };
     const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
-    expect(s.events.filter((e) => e.startsWith("list:"))).toEqual(["list:this-1"]);
+    expect(s.servers.listed).toEqual(["this-1"]);
     const ref = "OVHcloud snapshot cccccccc-dddd-4eee-8fff-000000000001";
     const text = s.deps.reporter.text();
     const details = destroyRequest(s)?.details;
@@ -2421,9 +2413,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken ea
 
   it("says in one line when the list cannot be read, and the teardown goes on", async () => {
     const s = await setup();
-    s.servers.listSnapshots = async () => {
-      throw new OpsCrewError("PROVIDER_ERROR", "Hetzner answered 503.");
-    };
+    s.servers.listError = new OpsCrewError("PROVIDER_ERROR", "Hetzner answered 503.");
     const result = await runDestroy(s.deps, { services: s.services });
     expect(result.destroyed).toEqual(deployedResources());
     expect(s.deps.reporter.lines.filter((l) => l.message.includes("taken earlier"))).toEqual([
@@ -2440,7 +2430,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken ea
     /** The run's output, approvals and remains with its root and plan hashes made neutral. */
     const said = async (byServer: Record<string, string[]>) => {
       const s = await setup();
-      earlierSnapshots(s, byServer);
+      s.servers.snapshotsOf = byServer;
       const result = await runDestroy(s.deps, { services: s.services });
       const neutral = (text: string) =>
         s.handler.requests

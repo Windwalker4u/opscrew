@@ -1416,6 +1416,10 @@ export async function moveFakes(
   await writeFile(join(root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
 
   const events: MoveEvent[] = [];
+  /** The snapshot ids the providers' `listSnapshots` answer, by server id (none by default). */
+  const snapshotsOf: Record<string, string[]> = {};
+  /** The server ids the providers' `listSnapshots` were asked for, in order. */
+  const listed: string[] = [];
   const hosts = new FakeHosts(events);
   hosts.release = options.release === true;
   hosts.services = options.postgres === false ? [] : ["db"];
@@ -1455,8 +1459,12 @@ export async function moveFakes(
       events.push({ type: "snapshot", serverId });
       return { snapshotId: `snap-${serverId}` };
     },
-    listSnapshots: async () => {
-      throw new Error("listSnapshots is not implemented yet");
+    listSnapshots: async (serverId) => {
+      listed.push(serverId);
+      return (snapshotsOf[serverId] ?? []).map((id) => ({
+        id,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      }));
     },
     deleteSnapshot: async () => {
       throw new Error("deleteSnapshot is not implemented yet");
@@ -1537,6 +1545,8 @@ export async function moveFakes(
     firewalls,
     poweredOff,
     look,
+    snapshotsOf,
+    listed,
   };
 }
 

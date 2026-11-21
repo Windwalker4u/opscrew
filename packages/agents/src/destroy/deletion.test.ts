@@ -11,7 +11,6 @@ import type {
   IacRunOptions,
   PlanSummary,
   ResourceChange,
-  ServerSnapshotApi,
   VpsProviderId,
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
@@ -665,17 +664,6 @@ describe("remainingAfterDeletion", () => {
   });
 });
 
-/** Makes `servers` answer `listSnapshots` with `byServer`'s ids; returns the ids it was asked for. */
-function listing(servers: FakeServers, byServer: Record<string, string[]>): string[] {
-  const asked: string[] = [];
-  // Through the contract's type: the fake's own `listSnapshots` takes no id.
-  (servers as ServerSnapshotApi).listSnapshots = async (serverId) => {
-    asked.push(serverId);
-    return (byServer[serverId] ?? []).map((id) => ({ id, createdAt: "2026-10-01T00:00:00Z" }));
-  };
-  return asked;
-}
-
 describe("listEarlierSnapshots", () => {
   const providers = [
     {
@@ -701,14 +689,13 @@ describe("listEarlierSnapshots", () => {
   it.each(providers)("reads $provider's snapshots of the server the state records", async (p) => {
     const { session, deps } = await setup({ provider: p.provider });
     const servers = new FakeServers([], p.provider);
-    const asked = listing(servers, { [p.id]: [...p.snapshots] });
+    servers.snapshotsOf = { [p.id]: [...p.snapshots], "5000": ["5001"] };
     expect(await listEarlierSnapshots(session, { ids: [p.id], servers })).toEqual(p.snapshots);
-    expect(asked).toEqual([p.id]);
+    expect(servers.listed).toEqual([p.id]);
     expect(servers.lookups).toEqual([]);
     // Without the state's id, the server with the name: the app's, or an extra server's.
     expect(await listEarlierSnapshots(session, { ids: [], servers })).toEqual(p.snapshots);
     servers.servers.push({ id: "5000", name: "shop-data", status: "running" });
-    listing(servers, { "5000": ["5001"] });
     expect(await listEarlierSnapshots(session, { ids: [], name: "shop-data", servers })).toEqual([
       "5001",
     ]);
@@ -721,9 +708,7 @@ describe("listEarlierSnapshots", () => {
     async (p) => {
       const { session, deps } = await setup({ provider: p.provider });
       const servers = new FakeServers([], p.provider);
-      servers.listSnapshots = async () => {
-        throw new OpsCrewError("PROVIDER_ERROR", "The provider answered 503.");
-      };
+      servers.listError = new OpsCrewError("PROVIDER_ERROR", "The provider answered 503.");
       expect(await listEarlierSnapshots(session, { ids: [p.id], servers })).toBeUndefined();
       expect(deps.reporter.lines).toEqual([
         {
@@ -759,7 +744,7 @@ describe("readEarlierSnapshots", () => {
   it("reads only the deleted servers at providers whose snapshots outlive them", async () => {
     const { session } = await setup();
     const servers = new FakeServers();
-    const asked = listing(servers, { "4711": ["101"], "5000": ["5001"] });
+    servers.snapshotsOf = { "4711": ["101"], "5000": ["5001"] };
     const earlier = await readEarlierSnapshots(
       session,
       [
@@ -772,7 +757,7 @@ describe("readEarlierSnapshots", () => {
       { servers },
     );
     expect(earlier).toEqual({ app: ["101"], data: ["5001"] });
-    expect(asked).toEqual(["4711", "5000"]);
+    expect(servers.listed).toEqual(["4711", "5000"]);
   });
 });
 

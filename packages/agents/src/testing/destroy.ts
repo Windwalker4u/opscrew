@@ -370,8 +370,20 @@ export class FakeServers implements ServerSnapshotApi {
     return { snapshotId: this.snapshotId };
   }
 
-  async listSnapshots(): Promise<ServerSnapshot[]> {
-    throw new Error("listSnapshots is not implemented yet");
+  /** The snapshot ids `listSnapshots` answers, by server id (none by default). */
+  snapshotsOf: Record<string, string[]> = {};
+  /** The server ids `listSnapshots` was asked for, in order. */
+  readonly listed: string[] = [];
+  /** Fails `listSnapshots`, as a provider that cannot answer. */
+  listError: Error | undefined;
+
+  async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
+    this.listed.push(serverId);
+    if (this.listError) throw this.listError;
+    return (this.snapshotsOf[serverId] ?? []).map((id) => ({
+      id,
+      createdAt: "2026-10-01T00:00:00.000Z",
+    }));
   }
 
   async deleteSnapshot(): Promise<void> {
