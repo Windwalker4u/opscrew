@@ -31,31 +31,25 @@ export function registerPlacementTool(
     {
       title: "Estimate a service on a server of its own",
       description:
-        "Estimate what giving one of the app's services (a database, a cache, a broker) a server of its own would cost and how much slower each query from the app would get: the new server's type, vCPUs, memory and monthly price, the app's monthly total with it, and the estimated delay of each query (with what it adds to a page making 20 queries in a row, and a warning when it is large). For a server the user owns there is no price, and the delay is measured by `opscrew status` once the servers are linked. Reads opscrew/plan.yaml and the provider's prices; writes nothing. To place the service, the user sets `server` on it and adds the server under `servers` in opscrew/plan.yaml, then calls opscrew_select_design (or runs `npx opscrew design`).",
+        "Estimate the monthly cost and per-query delay of giving one of the app's services its own server. Writes nothing; to place it, the user sets `server` on the service in opscrew/plan.yaml, then opscrew_select_design.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         ...environmentInput,
-        service: z.string().min(1).describe("The service's name in opscrew/plan.yaml, e.g. db."),
+        service: z.string().min(1).describe("The service's name in the plan, e.g. db."),
         provider: z
           .enum(VpsProviderSchema.options)
-          .describe(
-            `Where the server would be: a new ${orText(CLOUD_PROVIDERS.map((p) => p.name))} server, or the user's own.`,
-          ),
+          .describe("Where the new server would be: a cloud provider or the user's own."),
         location: z
           .string()
           .min(1)
           .optional()
-          .describe(
-            `A new cloud server's location (e.g. fsn1, nbg1, hel1 at Hetzner; fra1, ams3 at DigitalOcean; EU, US-east at Contabo). Required for ${listText(CLOUD_IDS)}.`,
-          ),
+          .describe("A cloud server's location, e.g. fsn1; not for own."),
         serverType: z
           .string()
           .min(1)
           .optional()
-          .describe(
-            "A new cloud server's type (e.g. cx23). Default: the smallest that holds the service.",
-          ),
+          .describe("Cloud server type; default the smallest that fits."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

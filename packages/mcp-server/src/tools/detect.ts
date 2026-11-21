@@ -43,7 +43,7 @@ export function registerDetectTool(server: McpServer, deps: ResolvedMcpDeps): vo
     {
       title: "Detect the app's stack",
       description:
-        "Detect the project's stack deterministically: languages, frameworks, app kind, package manager, build and start commands, port, environment variable names (never values), databases and other services, Docker files and which builder it came from (Lovable, Bolt, Replit, v0, Base44). Returns the facts, a plain-English summary and deployment risks. Writes nothing.",
+        "Detect the app's stack (frameworks, commands, port, environment variable names, services, Docker files, builder) and its deployment risks. Writes nothing. Next: opscrew_interview_questions.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

@@ -55,7 +55,7 @@ export function registerSecretsTools(
     "opscrew_secrets_status",
     {
       title: "Recovery copy status",
-      description: `Show the encrypted recovery copy of what OpsCrew keeps on the user's computer for the app (its generated secrets, the deploy key, the infrastructure state and its records) in ${COPY_PATH}: when it was last updated, how many age keys open it, whether it is behind the files on this computer, and the folder it is also written to. Writes nothing.`,
+      description: `Show the encrypted recovery copy of OpsCrew's local files (${COPY_PATH}): last update, how many keys open it, whether it is behind, and its folder copy. Writes nothing.`,
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -71,7 +71,8 @@ export function registerSecretsTools(
     "opscrew_secrets_restore",
     {
       title: "Restore from the recovery copy",
-      description: `Rebuild OpsCrew's files on the user's computer (generated secrets, deploy key, infrastructure state, records) from the encrypted recovery copy (${COPY_PATH}, or the folder copy passed as from), with the user's age key read from keyFile, a file the user names. Never read that file yourself, and never ask the user to paste the key into the chat. When files on this computer differ from the copy, nothing is written and the result lists their paths and the names of the generated values that differ (never values); ask the user which side to keep, then call again with onConflict. A wrong key changes nothing. The next provision reuses the restored files.`,
+      description:
+        "Rebuild OpsCrew's local files from the encrypted recovery copy with the age key file the user names. On a conflict nothing is written: ask the user which side to keep, then call again with onConflict.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -79,19 +80,15 @@ export function registerSecretsTools(
         keyFile: z
           .string()
           .min(1)
-          .describe("Full path of the user's age key file. Only the user names it."),
+          .describe("Full path of the user's age key file, named by the user."),
         from: z
           .string()
           .optional()
-          .describe(
-            `Full path of another copy to restore from, such as the folder copy (default ${COPY_PATH}).`,
-          ),
+          .describe(`Another copy to restore from (default ${COPY_PATH}).`),
         onConflict: z
           .enum(["use-copy", "keep-local"])
           .optional()
-          .describe(
-            "Only after the user chose: use-copy writes the copy's version of each differing file, keep-local keeps this computer's and restores the rest.",
-          ),
+          .describe("Only after the user chose which side to keep."),
       },
       annotations: {
         readOnlyHint: false,
@@ -141,7 +138,8 @@ export function registerSecretsTools(
     "opscrew_secrets_rotate",
     {
       title: "New key for the recovery copy",
-      description: `Make a new age key for the encrypted recovery copy, write it once to keyOut (a full path outside the repository that the user chose; never read that file), encrypt the copy to it (keeping, replacing or dropping the backup key) and propose ${COPY_PATH} and opscrew/.sops.yaml in a pull request, each step approved by the user in a dialog. The key is never returned. Older commits stay readable with the old key; the result says when to change the secrets themselves. Refuses when the client cannot show dialogs.`,
+      description:
+        "Make a new age key for the recovery copy, write it once to keyOut, re-encrypt the copy and propose it in a pull request, each step approved by the user in a dialog.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -149,14 +147,12 @@ export function registerSecretsTools(
         keyOut: z
           .string()
           .min(1)
-          .describe("Full path of a new file for the new age key, outside the repository."),
+          .describe("New key file path outside the repo, chosen by the user."),
         backup: z
           .string()
           .nullable()
           .optional()
-          .describe(
-            "The backup key's public key (age1…) to use instead of the current one; null drops the backup key; leave it out to keep it.",
-          ),
+          .describe("Backup public key (age1…) to use instead; null drops it; omit to keep it."),
       },
       annotations: {
         readOnlyHint: false,
@@ -206,16 +202,12 @@ export function registerSecretsTools(
     {
       title: "Folder for the recovery copy",
       description:
-        "Set the folder OpsCrew also writes the encrypted recovery copy to each time it changes (a full path outside the repository that the user chose, for example a backup drive or a synced folder), or stop with folder null. The setting is this computer's.",
+        "Set a folder outside the repository, chosen by the user, that also gets the recovery copy on each change, or null to stop. This computer's setting.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         ...environmentInput,
-        folder: z
-          .string()
-          .min(1)
-          .nullable()
-          .describe("Full path of the folder, or null to stop writing the folder copy."),
+        folder: z.string().min(1).nullable().describe("Full folder path, or null to stop."),
       },
       annotations: IDEMPOTENT_WRITE,
     },

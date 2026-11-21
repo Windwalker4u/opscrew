@@ -237,17 +237,26 @@ describe("the MCP interview and a hosting account", () => {
     });
   });
 
-  it("takes the hosting.* answers in opscrew_save_requirements", async () => {
-    const client = await interview({});
+  it("takes the hosting.* answers in opscrew_save_requirements, each explained with the questions", async () => {
+    const client = await interview({
+      OPSCREW_SFTP_HOST: "sftp.example.com",
+      OPSCREW_SFTP_USER: "acct",
+      OPSCREW_SFTP_KEY: "/home/user/.ssh/id_ed25519",
+    });
     const { tools } = await client.listTools();
     const save = tools.find((tool) => tool.name === "opscrew_save_requirements");
-    const answers = (save?.inputSchema.properties?.answers ?? {}) as {
-      properties?: Record<string, { description?: string }>;
-    };
+    // Any answer id is taken; runInterview validates the answers (issue #9).
+    expect(save?.inputSchema.properties?.answers).toMatchObject({ type: "object" });
+    const offered = text(
+      (await client.callTool({
+        name: "opscrew_interview_questions",
+        arguments: {},
+      })) as CallToolResult,
+    );
     for (const field of ["hostname", "port", "hostKey", "folder", "phpPath"]) {
-      expect(answers.properties?.[`hosting.${field}`]?.description).toBeTruthy();
+      expect(offered).toMatch(new RegExp(`- hosting\\.${field}: \\S`));
     }
-    expect(answers.properties?.provider?.description).toContain('"hosting"');
+    expect(offered).toMatch(/Answer: .*"hosting" \(a shared hosting account/);
   });
 });
 

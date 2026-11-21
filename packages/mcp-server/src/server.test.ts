@@ -166,8 +166,19 @@ describe("createOpscrewMcpServer", () => {
     ]) {
       expect(instructions, rule).toContain(rule);
     }
-    // What each tool does is in its description, the details of the flow in the skill.
-    expect(instructions.length).toBeLessThan(2_800);
+    // The shared inputs and the rules several tools share are here once (issue #9); what each tool
+    // does is in its description, the details of the flow in the skill.
+    for (const rule of [
+      "Shared inputs: projectDir",
+      "refuses when the client cannot show dialogs",
+      "Pass opscrew_apply every hash opscrew_plan returned",
+      "only when the user says so; ask, never guess",
+      "Never read a key file the user names",
+      "never pass a token as a tool input",
+    ]) {
+      expect(instructions, rule).toContain(rule);
+    }
+    expect(instructions.length).toBeLessThan(4_000);
   });
 
   it("lists the seven planning tools with descriptions, schemas and annotations", async () => {
@@ -226,12 +237,11 @@ describe("createOpscrewMcpServer", () => {
       expect(input, name).toContain("--skip-other-apps-check");
       expect(input, name).toContain("approves nothing");
     }
-    const answers = byName.get("opscrew_save_requirements")?.inputSchema.properties?.answers as {
-      properties: Record<string, { description?: string }>;
-    };
-    expect(answers.properties["server.shares"]?.description).toContain("repository folder");
-    expect(answers.properties["server.shares-app"]?.description).toContain("With server.shares");
-    expect(answers.properties["server.shares-env"]?.description).toContain("default prod");
+    // The answers' help comes with the questions, not in the tool list (issue #9).
+    const questions = textOf(await h.call("opscrew_interview_questions"));
+    expect(questions).toMatch(/- server\.shares: .*repository folder/);
+    expect(questions).toMatch(/- server\.shares-app: With server\.shares/);
+    expect(questions).toMatch(/- server\.shares-env: .*default prod/);
   });
 
   it("opscrew_scan returns counts, masked top findings and the report path", async () => {

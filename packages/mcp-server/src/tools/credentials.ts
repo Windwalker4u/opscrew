@@ -22,7 +22,7 @@ export function registerCredentialsTool(server: McpServer, deps: ResolvedMcpDeps
     {
       title: "List the credentials and their age",
       description:
-        "List the credentials OpsCrew made for an environment (each service's generated secrets, the app's own secrets, the SSH keys, the private network's and devices' keys and logins, Cloudflare's tokens, the state passphrase, the add-ons' passwords, the recovery copy's key), each by the name `npx opscrew rotate <name>` takes, with how it rotates (seamless, a short swap, a restart, users logged out, new device configurations), when it was made or last rotated and what else changes; then the user's own tokens with their expiry where the provider shows it. Read-only, never a value. Rotating stays in the user's terminal, because each rotation is a plan the user approves by its hash: `npx opscrew rotate <name>`.",
+        "List an environment's credentials by rotate name, how each rotates and its date, then the user's tokens with their expiry; never a value. Rotating stays in the user's terminal: `npx opscrew rotate <name>`.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

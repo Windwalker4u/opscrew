@@ -55,7 +55,7 @@ export function registerLogsTool(
     "opscrew_logs",
     {
       title: "OpsCrew logs",
-      description: `Read the app's latest log lines (newest last, each with its time and part) where it runs: on a server over SSH, in the user's Portainer, in local Docker, a server-rendered app's requests on Cloudflare's hosting, or on a hosting account with a panel the agent's last lines (its deploys and their checks; the app's own errors are in the user's panel). GitHub Pages and a static site on Cloudflare keep no request logs: their last deploy runs instead. Read-only, never follows, secrets masked; at most ${MAX_LOG_LINES} lines and 64 KiB (truncated: true when more were left out). Call opscrew_status first, then read the failing part with a short since (for example 15m). After a deploy whose new version failed its checks, failed: true reads the lines OpsCrew kept of that removed copy.`,
+      description: `Read the app's latest log lines where it runs, secrets masked, at most ${MAX_LOG_LINES}. Call opscrew_status first, then read the failing part with a short since; failed: true reads the lines kept of a new version that failed its checks.`,
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -64,28 +64,22 @@ export function registerLogsTool(
           .string()
           .min(1)
           .optional()
-          .describe(
-            "The part whose lines to read: app (the web process, the default), a worker, a cron job or a service by its name in the plan, cron, or edge (the proxy in front of the app). A wrong name is refused with the names there are.",
-          ),
+          .describe("app (default), a worker, cron job or service by name, cron, or edge."),
         since: z
           .string()
           .min(1)
           .optional()
-          .describe("Only lines of the last 30s, 15m, 2h or 3d. Prefer a short span."),
+          .describe("Only lines of the last 30s, 15m, 2h or 3d; prefer short."),
         tail: z
           .number()
           .int()
           .min(1)
           .optional()
-          .describe(
-            `How many of the latest lines (default 200). At most ${MAX_LOG_LINES} are returned, so never ask for more.`,
-          ),
+          .describe(`Latest lines (default 200, at most ${MAX_LOG_LINES}).`),
         failed: z
           .boolean()
           .optional()
-          .describe(
-            "true: the lines OpsCrew kept of the last new version that failed its checks, before it removed that copy (of the part that failed unless service names another). Not with since. Servers and this computer only: Portainer and the sites keep none.",
-          ),
+          .describe("Lines kept of the last version that failed its checks; not with since."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

@@ -20,21 +20,19 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
     {
       title: "Security scan",
       description:
-        "Scan the repository for security problems: leaked keys, Supabase service-role keys in frontend code, tables without row-level security, open Firebase rules, risky Docker or framework settings and known-vulnerable dependencies. Writes opscrew/SECURITY_SCAN.md and returns the counts per severity and the most severe findings with masked evidence. Findings in test code and in the paths opscrew/scan.yaml ignores are left out and counted (a recognisable secret there keeps its severity). No model is used; the only network use is the dependency lookup, which `offline: true` turns off.",
+        "Scan the repository for security problems (leaked keys, exposed data access, risky settings, vulnerable dependencies); writes opscrew/SECURITY_SCAN.md and returns the counts and the worst findings, masked.",
       inputSchema: {
         ...projectDirInput,
         offline: z
           .boolean()
           .optional()
-          .describe(
-            "Skip the dependency vulnerability lookup so no package names are sent to the OSV database. Default false.",
-          ),
+          .describe("Skip the OSV dependency lookup, which sends package names."),
         top: z
           .int()
           .min(1)
           .max(100)
           .optional()
-          .describe("How many findings to return, most severe first. Default 10."),
+          .describe("How many findings to return (default 10)."),
       },
       annotations: IDEMPOTENT_WRITE,
     },

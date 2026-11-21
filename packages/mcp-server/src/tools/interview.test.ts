@@ -235,11 +235,12 @@ describe("the interview tools and the server-less targets", () => {
     const offered = data.questions.find((q) => q.id === "provider")?.options?.map((o) => o.value);
     expect(offered).toEqual(expect.arrayContaining(["cloudflare-workers", "github-pages"]));
 
-    const { tools } = await (await connect({})).client.listTools();
-    const save = tools.find((tool) => tool.name === "opscrew_save_requirements");
-    const help = JSON.stringify(save?.inputSchema);
+    // Every target is named in the provider answer's help, which comes with the questions.
+    const help = textOf(result)
+      .split("\n")
+      .find((line) => line.includes("Answer: Where the app runs"));
     for (const target of ["localhost", "cloudflare-workers", "github-pages", "portainer", "own"]) {
-      expect(help).toContain(`\\"${target}\\"`);
+      expect(help).toContain(`"${target}"`);
     }
   });
 

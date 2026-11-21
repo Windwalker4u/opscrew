@@ -81,7 +81,8 @@ export function registerDriftTool(
     "opscrew_drift",
     {
       title: "Infrastructure drift",
-      description: `Check whether the deployment still matches opscrew/plan.yaml: resources someone changed in the cloud provider (${CLOUD_NAMES}) or Cloudflare console (with the changed attribute names, never values), infrastructure changes not applied yet, and generated files that were edited or are missing. On a server the user already owns it also connects over SSH, inspects the server read-only and compares it with what OpsCrew set up (SSH settings, firewall, deploy user, runtime directories, containers); the first time from this computer the user confirms its SSH host key in a dialog. In a Portainer the user already runs it compares the app's stacks with what OpsCrew would set up now: the stack file, the environment keys (never values; changed values by key name only), the redeploy setting, the registry entry and the opscrew-deploy branch, plus the Cloudflare resources (Portainer's address never appears). Needs a provisioned deployment and its state on this computer. Never changes anything; to undo drift the user runs \`npx opscrew provision\` in a terminal.`,
+      description:
+        "Check whether the deployment still matches opscrew/plan.yaml (cloud and Cloudflare resources, unapplied changes, generated files, the server or Portainer setup). Read-only; the user undoes drift with `npx opscrew provision`.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

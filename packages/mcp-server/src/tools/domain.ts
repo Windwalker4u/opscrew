@@ -67,29 +67,27 @@ export function registerDomainCheckTool(server: McpServer, deps: ResolvedMcpDeps
     {
       title: "Check domain availability",
       description:
-        "Check whether a domain can be bought, with its first-year and renewal prices, plus suggestions for a name. Checks Cloudflare Registrar by default (needs the CLOUDFLARE_API_TOKEN environment variable with the optional Registrar permission); `registrar` checks Porkbun, Namecheap or GoDaddy instead (with their own API keys); `compare` checks every registrar that is set up and lists the prices side by side, cheapest renewal first. Names that cannot be bought through the API come with a plain reason. Never buys or connects anything: tell the user to run `npx opscrew domain buy <domain> [--registrar <id>]` or `npx opscrew domain connect <domain>` in their own terminal.",
+        "Check whether a domain can be bought, with prices and name suggestions, at one or every registrar set up. Never buys: the user runs `npx opscrew domain buy <domain>` or `npx opscrew domain connect <domain>` in their terminal.",
       inputSchema: {
         ...projectDirInput,
         query: z
           .string()
           .min(1)
           .max(253)
-          .describe("A name or a full domain, for example `shopapp` or `shopapp.com`."),
+          .describe("A name or domain, e.g. shopapp or shopapp.com."),
         account: z
           .string()
           .min(1)
           .optional()
-          .describe("Cloudflare account id, needed only when the token can use several accounts."),
+          .describe("Cloudflare account id, when the token has several."),
         registrar: z
           .enum(REGISTRAR_IDS)
           .optional()
-          .describe("Check at this registrar instead of Cloudflare. Not together with `compare`."),
+          .describe("Check here instead of Cloudflare; not with compare."),
         compare: z
           .boolean()
           .optional()
-          .describe(
-            "Check the name at every registrar that is set up and list the prices side by side. Not together with `registrar`.",
-          ),
+          .describe("Compare every registrar set up; not with registrar."),
       },
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },

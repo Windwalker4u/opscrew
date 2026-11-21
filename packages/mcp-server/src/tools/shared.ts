@@ -22,37 +22,24 @@ import { appsOf, environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
 
-/** The `projectDir` input every OpsCrew tool accepts. */
+/*
+ * The inputs most tools share carry no description: the server's instructions explain them once,
+ * since a client without tool search loads every tool's schema in every session (issue #9).
+ */
+
+/** The `projectDir` input every OpsCrew tool accepts: the repository root (default: cwd). */
 export const projectDirInput = {
-  projectDir: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Absolute path of the project's repository root. Defaults to the MCP server's working directory.",
-    ),
+  projectDir: z.string().min(1).optional(),
 };
 
-/** The `environment` input of the tools that act on one of the app's environments. */
+/** The `environment` input of the tools that act on one of the app's environments (default prod). */
 export const environmentInput = {
-  environment: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "The app's environment to act on, for example staging (opscrew_env_list names them). Leave it out while the app has only prod; with several, name the one the user means.",
-    ),
+  environment: z.string().min(1).optional(),
 };
 
-/** The `app` input of the tools that act on one of the repository's apps. */
+/** The `app` input of the tools that act on one of the repository's apps (default the first). */
 export const appInput = {
-  app: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "The repository's app to act on: the key opscrew_app_add gave it, or . for the first app (opscrew_app_list names them). Leave it out while the repository has one app; with several, name the one the user means.",
-    ),
+  app: z.string().min(1).optional(),
 };
 
 /**
@@ -64,7 +51,7 @@ export const skipOtherAppsCheckInput = {
     .boolean()
     .optional()
     .describe(
-      "The CLI's --skip-other-apps-check, only on the user's explicit choice after OpsCrew stopped: go on when OpsCrew can't look at the server for other apps, or when only their kept data is there. An app that runs there is still refused, and it approves nothing.",
+      "The CLI's --skip-other-apps-check, only on the user's explicit choice; approves nothing.",
     ),
 };
 
