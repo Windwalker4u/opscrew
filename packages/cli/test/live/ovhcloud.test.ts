@@ -10,9 +10,10 @@
  * 4. the first deploy, verify, status, and the app on its domain;
  * 5. a whole-server snapshot, billed per GB; 6. its restore, and verify again;
  * 7. secure and drift;
- * 8. destroy: the server gone, the snapshot named as what stays, then deleted by the test;
+ * 8. destroy: the server gone, its snapshots named as what stays, then deleted by the test;
  * 9. none of the four values in any output, log, audit entry, state file or commit.
- * Whatever fails after provision, the cleanup still destroys the app and deletes the snapshot.
+ * Whatever fails after provision, the cleanup still destroys the app and deletes every snapshot
+ * the run recorded.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -97,14 +98,27 @@ describe.skipIf(MISSING.length > 0)(
     const ageKey = () => join(run.work, "age-key.txt");
     let serverId = "";
     let ipv4: string | undefined;
-    /** The whole-server snapshot of step 5, until the test deletes it. */
+    /** The whole-server snapshot of step 5, which step 6 restores. */
     let snapshot = "";
+    /** Every snapshot of the app's server the run knows of, until the test deletes it. */
+    const snapshots = new Set<string>();
+    let api: ServerSnapshotApi | undefined;
 
-    /** OVHcloud's server API through OpsCrew's own connector, with the four values. */
+    /**
+     * OVHcloud's server API through OpsCrew's own connector, with the four values, built on first
+     * use (the definition is looked up only when a step runs).
+     */
     function ovhcloud(): ServerSnapshotApi {
-      const servers = cloudProvider("ovhcloud").connector({ env: credentials }).servers;
-      if (servers === undefined) throw new Error("OpsCrew's OVHcloud connector has no server API.");
-      return servers;
+      api ??= cloudProvider("ovhcloud").connector({ env: credentials }).servers;
+      if (api === undefined) throw new Error("OpsCrew's OVHcloud connector has no server API.");
+      return api;
+    }
+
+    /** Records every snapshot OVHcloud lists for the app's server, so the cleanup deletes them. */
+    async function recordServerSnapshots(): Promise<void> {
+      if (serverId === "") return;
+      for (const { id } of await ovhcloud().listSnapshots(serverId)) snapshots.add(id);
+      log(`observed: ${snapshots.size} snapshots of the server recorded for the cleanup`);
     }
 
     run.step(
@@ -114,6 +128,13 @@ describe.skipIf(MISSING.length > 0)(
         await run.prepareRepo({
           commit: `e2e: examples/${EXAMPLE} on OVHcloud`,
           env: { ...credentials, CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
+          // Only OVHcloud's credentials, so the interview has no other provider to choose.
+          drop: [
+            "CNTB_OAUTH2_CLIENT_ID",
+            "CNTB_OAUTH2_CLIENT_SECRET",
+            "CNTB_OAUTH2_USER",
+            "CNTB_OAUTH2_PASS",
+          ],
         });
         await envs.snapshotGithub();
         await run.initFix();
@@ -215,11 +236,25 @@ describe.skipIf(MISSING.length > 0)(
       "5. snapshot --server: a whole-server snapshot, billed per GB per month",
       minutes(30),
       async () => {
-        const taken = await run.opscrewOk("snapshot", "--server");
+        // A snapshot taken by a run that failed or timed out may still be at OVHcloud: record them all.
+        const taken = await run
+          .opscrewWithin(minutes(25), "snapshot", "--server")
+          .catch(async (error: unknown) => {
+            await recordServerSnapshots();
+            throw error;
+          });
+        if (taken.exitCode !== 0) {
+          await recordServerSnapshots();
+          throw new Error(
+            `opscrew snapshot --server exited with ${taken.exitCode}:
+${run.tail(taken.output)}`,
+          );
+        }
         expect(unsaid(taken.output, ["per GB per month"]), "its price").toEqual([]);
         const id = serverSnapshotId(taken.output);
         if (id === undefined) throw new Error(`No snapshot id:\n${run.tail(taken.output)}`);
         snapshot = id;
+        snapshots.add(id);
         const listed = snapshotOf(await listSnapshots(run), id);
         expect(listed.kind, "its kind").toBe("server");
         expect(listed.server?.name, "its server").toBe(app);
@@ -270,20 +305,29 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "8. destroy: the server deleted, the snapshot named as what stays and bills, nothing else left at OVHcloud or in Cloudflare; then the test deletes the snapshot",
+      "8. destroy: the server deleted, its snapshots named as what stays and bills, nothing else left at OVHcloud or in Cloudflare; then the test deletes them",
       minutes(30),
       async () => {
         const from = run.outputs.size;
         await envs.destroy("prod");
         const output = [...run.outputs.values()].slice(from).join("\n");
-        expect(unsaid(output, [`OVHcloud snapshot ${snapshot}`]), "what destroy said").toEqual([]);
+        // Depends on destroy naming every whole-server snapshot that outlives the server
+        // (opscrew-hub/opscrew#7).
+        expect(
+          unsaid(
+            output,
+            [...snapshots].map((id) => `OVHcloud snapshot ${id}`),
+          ),
+          "the snapshots destroy names as staying",
+        ).toEqual([]);
         expect(await ovhcloud().findAppServers(app), "the app's servers at OVHcloud").toEqual([]);
         await run.expectCloudflareClean();
-        await ovhcloud().deleteSnapshot(snapshot);
-        log(
-          `observed: the server ${serverId} deleted; the snapshot ${snapshot} deleted by the test`,
-        );
-        snapshot = "";
+        for (const id of [...snapshots]) {
+          await ovhcloud().deleteSnapshot(id);
+          snapshots.delete(id);
+          log(`observed: the snapshot ${id} deleted by the test`);
+        }
+        log(`observed: the server ${serverId} deleted`);
       },
     );
 
@@ -301,11 +345,12 @@ describe.skipIf(MISSING.length > 0)(
     envs.registerCleanup({
       last: async (attempt) => {
         if (run.appName === undefined) return;
-        if (snapshot !== "") {
-          const id = snapshot;
-          await attempt(`delete the snapshot ${id} at OVHcloud`, () =>
-            ovhcloud().deleteSnapshot(id),
-          );
+        for (const id of [...snapshots]) {
+          await attempt(`delete the snapshot ${id} at OVHcloud`, async () => {
+            await ovhcloud().deleteSnapshot(id);
+            snapshots.delete(id);
+            log(`cleanup: the snapshot ${id} deleted at OVHcloud`);
+          });
         }
         await attempt(`check that nothing of ${app} is left at OVHcloud`, async () => {
           const left = await ovhcloud().findAppServers(app);

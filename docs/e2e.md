@@ -3562,7 +3562,7 @@ OVHcloud Public Cloud (SC-3501, SC-3505, SC-3507): `examples/flask-sqlite` on on
 2 GB, 25 GB disk) in DE1 (Limburg) or GRA11 (Gravelines), in a Public Cloud project of yours.
 
 **It costs money, so ask the founder before every run.** OVHcloud bills the server by the hour,
-per second after the first minute, until it is deleted: a `d2-2` costs about €0.0104 an hour
+per second with a one-minute minimum, until it is deleted: a `d2-2` costs about €0.0104 an hour
 before VAT. The whole-server snapshot of step 5 costs €0.011 per GB a month while it exists (at
 most 25 GB, so under €0.0004 an hour), and the test deletes it right after the destroy. A pass
 takes one to three hours, so it costs under €0.05. The prices are in
@@ -3612,7 +3612,9 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
    succeed. The app must answer on its hostname through Cloudflare; `verify` and `status` must
    pass. A value is written through the app into its SQLite file.
 5. **A whole-server snapshot.** `snapshot --server` must give its price per GB per month, and
-   `snapshot list --json` must list it as kind `server` of the app's server.
+   `snapshot list --json` must list it as kind `server` of the app's server. The test records its
+   id; if `snapshot --server` fails or times out, it records every snapshot OVHcloud lists for the
+   server (OpsCrew names them `opscrew-<app>-…`), so the cleanup deletes them all.
 6. **Its restore.** A second value is written. Then `restore --server <id>`, run first without
    `--approve` and then with `--confirm <app> --approve <hash>`, as in
    [Snapshots and restores](#snapshots-and-restores); its result must say "and the app answers".
@@ -3621,9 +3623,10 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
 7. **Secure and drift.** `secure` must write `SECURITY_REPORT.md` without the findings of a server
    outside OpsCrew's security group or without an SSH key; `drift` must find no difference.
 8. **Destroy.** `destroy --confirm <app> --no-snapshot`, each plan approved by its hash. Its
-   output must name `OVHcloud snapshot <id>`, the snapshot of step 5, as what stays and keeps
-   billing. The project must have no server of the app, and Cloudflare nothing of the app. Then
-   the test deletes the snapshot through OVHcloud's API.
+   output must name each snapshot of the server the run recorded (`OVHcloud snapshot <id>`), as
+   the snapshots that stay and keep billing. The project must have no server of the app, and
+   Cloudflare nothing of the app. Then the test deletes each of those snapshots through OVHcloud's
+   API.
 9. **Nothing leaked** (SC-3505), always run: none of `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` and
    `OVH_CLOUD_PROJECT_SERVICE`, and no other known secret, in any CLI output, the deploy job's
    log, any audit entry, saved plan, state file, report or Cloudflare record, any commit (every
@@ -3634,13 +3637,13 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
 
 The cleanup is the one for environments, after every step and always: `opscrew destroy` if a
 step failed after provision started, then the GitHub environments, deploy secrets and deploy
-pauses, the app's records in Cloudflare, and the repository reset. Then, at OVHcloud, the
-snapshot of step 5 is deleted if it is still there, and a server of the app still in the project
-fails the run with its name and id.
+pauses, the app's records in Cloudflare, and the repository reset. Then, at OVHcloud, each
+snapshot the run recorded and has not deleted yet is deleted, each one named in the log, and a
+server of the app still in the project fails the run with its name and id.
 
 After a finished pass nothing of the run stays at OVHcloud: the destroy deletes the server, its
-security group `opscrew-<app>` and its SSH key `<app>-deploy`, and lists the snapshot as the one
-thing that stays, which the test then deletes. The project, its activated regions, the service
+security group `opscrew-<app>` and its SSH key `<app>-deploy`, and names the server's snapshots
+as what stays and keeps billing; the test then deletes them. The project, its activated regions, the service
 account and its policy stay for the next run; they cost nothing.
 
 **If a run was interrupted**, in the control panel, in the project: delete the instance
