@@ -111,8 +111,18 @@ issues, releases), https://contabo.com/en/vps/ and the OpenTofu registry. The Op
 client id, a client secret, the API user (the account's login email) and an API password, all
 from the Customer Control Panel under Account → Security. Every call sends
 `Authorization: Bearer …` and an `x-request-id` (a UUIDv4). Access and refresh tokens both expire
-(cntb reads the refresh token's `exp`); their lifetimes are unverified. No scoped keys were found:
-these credentials reach the whole account.
+(cntb reads the refresh token's `exp`); their lifetimes are unverified. With the account's own
+login email as the API user, these credentials reach the whole account.
+
+Correction (2026-11-21): Contabo's API does have limited users. `POST /v1/roles` takes
+`permissions[]` of `{ apiName, actions: CREATE|READ|UPDATE|DELETE, resources: tag ids }` (`READ`
+is the GET endpoints; `resources` limits the role to resources carrying those tags; `admin` and
+`accessAllResources` override the limits), and `POST /v1/users` creates an API user with roles,
+who sets a password through Contabo's activation email and logs in with the account's client id
+and secret plus their own email and password (the `PermissionRequest` and `CreateRoleRequest`
+schemas in <https://raw.githubusercontent.com/contabo/cntb/master/openapi/api/openapi.yaml>).
+Unverified: whether Contabo's Terraform provider's plan and refresh, and OpsCrew's firewall read,
+work with a `READ`-only user; that needs a live test.
 
 **Instances** (`/v1/compute/instances`): create, get, rename (`PATCH`), reinstall (`PUT`, with
 image, SSH keys, user data and default user), start, stop, restart, shutdown, rescue, and cancel
