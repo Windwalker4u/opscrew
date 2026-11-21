@@ -562,7 +562,8 @@ server stays in Actions and in plans approved by their hash.
 
 **What:** [ADR 0036](../docs/adr/0036-server-agent.md) (Proposed) gives the design and the
 protocol:
-- one outbound WebSocket, with an environment's token (`OPSCREW_AGENT_TOKEN`);
+- one outbound WebSocket, with an environment's own token (`OPSCREW_AGENT_TOKEN` for the first app's
+  prod, prefixed like the other deploy secrets elsewhere);
 - read-only Docker access, through a socket proxy;
 - logs, the containers' status and a deploy's progress, redacted before they leave the server;
 - installed only where the environment has a token, and removed with it.

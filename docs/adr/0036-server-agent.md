@@ -43,15 +43,23 @@ their hash (constitution I); only reading needs to be fast.
      offline after 60 s with no message.
 5. **The token.**
    - **One per environment,** minted by the dashboard and stored through the GitHub App, where the
-     deploy job reads the environment's other secrets:
+     deploy job reads the environment's other secrets.
+   - **Its name,** in every mode, is the one OpsCrew gives the environment's other deploy secrets
+     (`deploySecretName`): `OPSCREW_<APP>_<ENV>_AGENT_TOKEN`, with the app's key and the
+     environment's name in upper case and `_` for `-`. The first app's own part, and prod's, are
+     left out:
+     - `OPSCREW_AGENT_TOKEN` for the first app's prod;
+     - `OPSCREW_STAGING_AGENT_TOKEN` for its staging;
+     - `OPSCREW_DOCS_AGENT_TOKEN` and `OPSCREW_DOCS_STAGING_AGENT_TOKEN` for an app `docs`.
+
+     GitHub falls back from a missing environment secret to a repository secret of the same name,
+     and a name of its own per environment keeps one environment's agent from ever connecting with
+     another's token.
+   - **Where it's stored:**
      - **With a GitHub environment:** in the one the deploy job runs in (`production`, `<env>`,
-       `<app>-production` or `<app>-<env>`, as `githubEnvironmentFor` names them), as the secret
-       `OPSCREW_AGENT_TOKEN`.
-     - **With prefixed repository secrets**, where there is no deploy environment: as a repository
-       secret named the way OpsCrew prefixes the others (`deploySecretName`). That is
-       `OPSCREW_<APP>_<ENV>_AGENT_TOKEN`, with the app's key and the environment's name in upper
-       case. The first app's own part, and prod's, are left out, so: `OPSCREW_AGENT_TOKEN`,
-       `OPSCREW_STAGING_AGENT_TOKEN`, `OPSCREW_DOCS_AGENT_TOKEN`, `OPSCREW_DOCS_STAGING_AGENT_TOKEN`.
+       `<app>-production` or `<app>-<env>`, as `githubEnvironmentFor` names them).
+     - **With prefixed repository secrets**, where there is no deploy environment: in the
+       repository.
    - **The URL:** a repository variable, `OPSCREW_AGENT_URL`.
    - **To the server:** the deploy workflow writes both to the agent's own env file there
      (`agent.env`, mode 0600, owned by the deploy user), the way the app's other secrets reach the
