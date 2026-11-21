@@ -370,7 +370,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && npx vitest run --root packages/cli src/commands/providers && pnpm lint`
   - Effort: high
 
-- [ ] T3118 The catalogue's pricing pages and Cloudflare hosting's tokens
+- [x] T3118 The catalogue's pricing pages and Cloudflare hosting's tokens
   - Why: the portal links each approximate price to the provider's own pricing page, and its
     static-site path to Cloudflare needs the second token Cloudflare hosting uses.
   - Owns:
