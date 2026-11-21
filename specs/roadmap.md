@@ -554,8 +554,9 @@ from OpenAI's docs of 2026-11-21: [032-codex-plugin/research.md](032-codex-plugi
 ## 040 OpsCrew's agent on the server, for live logs and status
 
 The founder's decision of 2026-11-21, at the hosted dashboard's request: in the release after
-0.2.11, beside 032 (he decides the order if both don't fit). It is numbered 040 so that 035, already
-being built, keeps its number.
+0.2.11, together with 032 in one release (his word the same day). Building starts after his weekly
+usage resets, on Wednesday 2026-11-25 at 02:00. It is numbered 040 so that 035, already being built, keeps its
+number.
 
 **Why:** the dashboard's logs come from a GitHub Actions job, a 47-second median from request to
 output. A small agent on the server streams them in about a second. Everything that changes the
