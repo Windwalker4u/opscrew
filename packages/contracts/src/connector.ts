@@ -7,6 +7,8 @@ export type ProviderId =
   | "digitalocean"
   /** Contabo (026): a cloud server provider whose servers are cancelled at the end of their term. */
   | "contabo"
+  /** OVHcloud's Public Cloud (035): a cloud server provider billed by the hour, in a project. */
+  | "ovhcloud"
   /** A server the user already owns, reached over SSH (no provider API). */
   | "own"
   /**

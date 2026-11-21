@@ -48,13 +48,15 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     lockfile regenerated. `pnpm check` is as green as before (see the baseline note in the PR).
   - Effort: lead
 
-- [ ] T3502 (lead; [issue #1](https://github.com/opscrew-hub/opscrew/issues/1) and step 1 of
+- [x] T3502 (lead; [issue #1](https://github.com/opscrew-hub/opscrew/issues/1) and step 1 of
   [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), both approved by the core's lead on
   2026-11-21) The contract's `rootVariables` and `importId`, and `ovhcloud` in `ProviderId`
   - Accept:
     - `ProviderTerraform.rootVariables?` and `importId?` exactly as plan 1., exported from
       `@opscrew/contracts`.
-    - `"ovhcloud"` in `ProviderId` and `VpsProviderId` (nothing reads it until T3510).
+    - `"ovhcloud"` in `ProviderId` only, which the catalogue and connector need (nothing reads
+      it until T3510). `VpsProviderId` joins with plan-schema's target enums in T3510, since
+      design and the interview read it against them.
     - ADR 0029 gains D11.
     - The typecheck is green, with any exhaustive switch the new id leaves over fixed.
   - Effort: lead
@@ -225,8 +227,8 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 - [ ] T3510 (lead; step 2 of [issue #2](https://github.com/opscrew-hub/opscrew/issues/2), approved
   2026-11-21; its step 1 is in T3502) `ovhcloud` joins the lists and the registry
   - Accept:
-    - `ovhcloud` in `VpsProviderSchema`, `DEFAULT_IMAGES` (`"Ubuntu 24.04"`) and the generated
-      schemas.
+    - `ovhcloud` in `VpsProviderId`, `VpsProviderSchema`, `DEFAULT_IMAGES` (`"Ubuntu 24.04"`)
+      and the generated schemas.
     - `CLOUD_PROVIDERS` after Contabo, with the registry's and the CLI's dependencies and the
       lockfile.
     - Any exhaustive switch left over is fixed.
