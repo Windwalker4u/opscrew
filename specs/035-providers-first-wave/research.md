@@ -443,6 +443,38 @@ Read 2026-11-21 (IE catalogue, EUR before VAT):
   - the error `class` names;
   - the HTTP status of a missing IAM right (the client reads `details`, whatever the status).
 
+### Confirmed while building the server API (T3508 and its review, 2026-11-21)
+
+- **Listing instances:** `GET /v2/publicCloud/project/{p}/compute/instance?name=` is a
+  case-insensitive substring match (`name` is `string[]`, "Repeatable"), so the connector keeps
+  only the exact `<app>` and `<app>-…` names.
+- **Statuses:** v2's `common.ResourceStatusEnum` is `CREATING`, `CREATION_PLANNED`, `DELETING`,
+  `ERROR`, `OUT_OF_SYNC`, `READY`, `SUSPENDED` and `UNKNOWN`, `UPDATING`. There is no `DELETED`, and
+  lists return `DELETING` rows, which the connector leaves out of servers and snapshots.
+- **Snapshots:**
+  - create: `POST …/compute/snapshot` with `targetSpec {name, instance {id}, location {region}}`;
+  - list: `GET …/compute/snapshot?instanceId=`;
+  - get and delete: `GET` and `DELETE …/compute/snapshot/{id}`;
+  - `currentState.size` is in bytes and nullable. No name constraint is documented.
+- **Power:** `POST …/compute/instance/{id}/action` with `STOP`, `START` or `REBOOT` (`hard` applies
+  only to `REBOOT`; soft by default).
+- **Reinstall:** v1 only, `POST /cloud/project/{p}/region/{r}/instance/{id}/reinstall {imageId,
+  imageRegionName}` (PRODUCTION), answering a `cloud.Operation`. v2 reinstalls only when the image
+  or user data changes, so a restore from the same snapshot twice would do nothing there.
+  - It is followed with `GET /cloud/project/{p}/operation/{id}`, marked **BETA** in `cloud.json`,
+    until `completed` (`in-error` and `canceled` fail).
+  - The reinstall takes no user data. OpenStack keeps the creation's; check on the live pass.
+- **Regions and project:** `GET /v2/publicCloud/project/{p}` (`name`) and
+  `GET …/reference/region` (`name`, `activated`; BETA).
+- **Control panel:** OVHcloud's guides ("How to use the Public Cloud interface", "How to increase
+  Public Cloud quotas") put region activation at Public Cloud → the project → Settings → Quota &
+  Regions.
+- **v2 lists are cursor-paginated** (`X-Pagination-Cursor-Next`, default page size undocumented).
+  The name, `instanceId` and region filters keep OpsCrew's lists to one page. Following the cursor
+  in the client is a follow-up.
+- **Import:** `ovh_cloud_instance` imports as `<service_name>/<instance id>` (the provider's
+  `ImportState`), hence the contract's `importId` (ADR 0029, D11).
+
 ## R2. The lead's decisions for OVHcloud (2026-11-21)
 
 These are technical choices the brief leaves to the lead. Each one gives its reason. A product
