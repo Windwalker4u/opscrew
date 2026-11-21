@@ -7,6 +7,7 @@ import {
   type JsonClient,
   jsonClient,
   listText,
+  lowerFirst,
   OpsCrewError,
   RATE_LIMIT_HINT,
   type RequestFailure,
@@ -291,6 +292,8 @@ export class OvhcloudClient {
       client_secret: clientSecret,
       scope: "all",
     });
+    const signal = AbortSignal.timeout(this.#http.timeoutMs);
+    const host = new URL(OVHCLOUD_TOKEN_URL).host;
     let response: Response;
     let text: string;
     try {
@@ -302,15 +305,21 @@ export class OvhcloudClient {
           "User-Agent": this.#userAgent,
         },
         body: form.toString(),
-        signal: AbortSignal.timeout(this.#http.timeoutMs),
+        signal,
       });
       text = await response.text();
     } catch {
-      throw this.#failure(
-        "PROVIDER_ERROR",
-        `Could not reach OVHcloud's sign-in (${new URL(OVHCLOUD_TOKEN_URL).host}).`,
-        CONNECTION_HINT,
-      );
+      throw signal.aborted
+        ? this.#failure(
+            "PROVIDER_ERROR",
+            `OVHcloud's sign-in (${host}) did not answer within ${durationText(this.#http.timeoutMs)}.`,
+            "Try again in a few minutes.",
+          )
+        : this.#failure(
+            "PROVIDER_ERROR",
+            `Could not reach OVHcloud's sign-in (${host}).`,
+            CONNECTION_HINT,
+          );
     }
     const json = parseJson(text);
     if (!response.ok) {
@@ -405,7 +414,10 @@ export class OvhcloudClient {
         return fail(
           "CREDENTIALS_INVALID",
           `OVHcloud refused the service account's access token (HTTP 401, ${request}): ${detail}`,
-          OVHCLOUD_CREDENTIALS_HINT,
+          // A post isn't sent again with a new token, but the next request gets one.
+          method === "POST"
+            ? `OVHcloud refused the access token, so nothing was changed. Run the command again; only if it fails the same way, ${lowerFirst(OVHCLOUD_CREDENTIALS_HINT)}`
+            : OVHCLOUD_CREDENTIALS_HINT,
         );
       case 403:
         return fail(

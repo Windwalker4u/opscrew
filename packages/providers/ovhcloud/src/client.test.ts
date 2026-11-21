@@ -228,6 +228,16 @@ describe("OvhcloudClient sign-in", () => {
     expect(error.message).toBe("Could not reach OVHcloud's sign-in (auth.eu.ovhcloud.com).");
     expect(error.hint).toBe("Check your internet connection and try again.");
   });
+
+  it("says the sign-in did not answer in time when it times out", async () => {
+    const { client } = setup({ [TOKEN]: { hang: true } }, { timeoutMs: 20 });
+    const error = await failure(client.get(client.projectPath("v2"), acknowledged));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toMatch(
+      /^OVHcloud's sign-in \(auth\.eu\.ovhcloud\.com\) did not answer within \d+ seconds?\.$/,
+    );
+    expect(error.hint).toBe("Try again in a few minutes.");
+  });
 });
 
 describe("OvhcloudClient requests", () => {
@@ -405,6 +415,17 @@ describe("OvhcloudClient errors", () => {
     expect(apiCalls(calls)).toHaveLength(2);
   });
 
+  it.each<[string, Record<string, string>, number]>([
+    ["waits at most a minute", { "Retry-After": "600" }, 60_000],
+    ["waits 2 seconds without Retry-After", {}, 2_000],
+  ])("%s before repeating a read after a 429", async (_, headers, wait) => {
+    const { client, time } = setup({
+      "/v1/": [apiError(429, { message: "Too many requests" }, headers), { body: {} }],
+    });
+    await client.get(client.projectPath("v1"), acknowledged);
+    expect(time.waits).toEqual([wait]);
+  });
+
   it("maps other statuses to plain English with the next step", async () => {
     const cases: [number, RegExp][] = [
       [400, /refused the request as sent/],
@@ -454,7 +475,13 @@ describe("OvhcloudClient never sends a post twice", () => {
       [`POST ${snapshot}`]: apiError(401, { message: "You must login first" }),
       "GET /v1/": { body: {} },
     });
-    await failure(client.post(snapshot, acknowledged, {}));
+    const error = await failure(client.post(snapshot, acknowledged, {}));
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.message).toContain("You must login first");
+    expect(error.hint).toMatch(
+      /^OVHcloud refused the access token, so nothing was changed\. Run the command again; only if it fails the same way, /,
+    );
+    expect(error.hint).toContain("create a service account");
     await client.get(client.projectPath("v1"), acknowledged);
     expect(apiCalls(calls).map((call) => call.headers.Authorization)).toEqual([
       `Bearer ${accessToken("1")}`,
