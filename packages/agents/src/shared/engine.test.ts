@@ -45,6 +45,21 @@ describe("chooseEngine", () => {
       expect.objectContaining({ homeCacheFiles: files }),
     );
   });
+
+  it("starts every command of the engine without the address updater's tokens", async () => {
+    const deps = await createTestPhaseDeps();
+    deps.env.OPSCREW_DNS_UPDATER_TOKEN = fakeSecret("cloudflare-token", "updater");
+    deps.env.OPSCREW_NEW_DNS_UPDATER_TOKEN = fakeSecret("cloudflare-token", "new-updater");
+    deps.env.CLOUDFLARE_API_TOKEN = fakeSecret("cloudflare-token", "own");
+    vi.mocked(selectEngine).mockClear();
+    await chooseEngine(deps, "auto");
+    const { env } = vi.mocked(selectEngine).mock.calls[0]?.[1] ?? {};
+    expect(env).not.toHaveProperty("OPSCREW_DNS_UPDATER_TOKEN");
+    expect(env).not.toHaveProperty("OPSCREW_NEW_DNS_UPDATER_TOKEN");
+    expect(env?.CLOUDFLARE_API_TOKEN).toBe(deps.env.CLOUDFLARE_API_TOKEN);
+    // This computer's own variables stay as they are.
+    expect(deps.env.OPSCREW_DNS_UPDATER_TOKEN).toBeDefined();
+  });
 });
 
 const tofu = async (): Promise<IacEngine> => new FakeEngine();

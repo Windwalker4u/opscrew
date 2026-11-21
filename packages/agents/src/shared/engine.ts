@@ -194,8 +194,22 @@ export type EngineDeps = Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor"
 export type EngineFactory = (preference: EnginePreference) => Promise<IacEngine>;
 
 /**
+ * Variables of this computer the engine never gets: the address updater's tokens, which only a
+ * server at home holds (they reach it on the host adapter's standard input).
+ */
+const NOT_FOR_THE_ENGINE = ["OPSCREW_DNS_UPDATER_TOKEN", "OPSCREW_NEW_DNS_UPDATER_TOKEN"];
+
+/** `env` without {@link NOT_FOR_THE_ENGINE}: what every command of the engine starts from. */
+function engineEnv(env: PhaseDeps["env"]): Record<string, string | undefined> {
+  const kept: Record<string, string | undefined> = { ...env };
+  for (const name of NOT_FOR_THE_ENGINE) delete kept[name];
+  return kept;
+}
+
+/**
  * The engine for `preference`: the factory's (a fake in tests), else `selectEngine`'s, which
- * removes every registered provider's login cache around each command.
+ * removes every registered provider's login cache around each command and starts each command
+ * from this computer's environment without {@link NOT_FOR_THE_ENGINE}.
  */
 export function chooseEngine(
   deps: EngineDeps,
@@ -205,7 +219,7 @@ export function chooseEngine(
   if (factory !== undefined) return factory(preference);
   return selectEngine(preference, {
     runner: deps.runner,
-    env: deps.env,
+    env: engineEnv(deps.env),
     redactor: deps.redactor,
     now: () => deps.clock.now(),
     homeCacheFiles: CLOUD_PROVIDERS.flatMap((provider) => provider.terraform.homeCacheFiles),
@@ -263,12 +277,6 @@ async function environmentStateKeyName(paths: ProjectPaths): Promise<StateKeyNam
 }
 
 /**
- * Variables of this computer the engine never gets: the address updater's tokens, which only a
- * server at home holds (they reach it on the host adapter's standard input).
- */
-const NOT_FOR_THE_ENGINE = ["OPSCREW_DNS_UPDATER_TOKEN", "OPSCREW_NEW_DNS_UPDATER_TOKEN"];
-
-/**
  * The project's IaC engine and its environment: the phase's without {@link NOT_FOR_THE_ENGINE},
  * plus `TF_ENCRYPTION` from the project's state passphrase when the plan encrypts its state and
  * the engine is OpenTofu (Terraform cannot; callers say so where it matters), under the key name
@@ -287,8 +295,7 @@ export async function projectEngine(
     options.preference ?? plan.infra.engine,
     options.services?.engine,
   );
-  const env: Record<string, string | undefined> = { ...deps.env };
-  for (const name of NOT_FOR_THE_ENGINE) delete env[name];
+  const env = engineEnv(deps.env);
   if (!plan.infra.stateEncryption || engine.info.name !== "tofu") return { engine, env };
   if (await exists(nextStatePassphraseFile(deps.paths).file)) {
     const { root, environment, app } = deps.paths;
