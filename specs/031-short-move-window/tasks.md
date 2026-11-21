@@ -320,7 +320,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       app records its migration count after a deploy.
   - Effort: high
 
-- [ ] T3122 The old-image cleanup never turns a deploy red
+- [x] T3122 The old-image cleanup never turns a deploy red
   - Why: a deploy run's "Delete old images" job failed the whole run when GitHub answered one
     deletion with HTTP 502. The deploy had succeeded, and a re-run of the job deleted the image.
   - Owns: `packages/iac-templates/src/workflow/retention.ts` and
