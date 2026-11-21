@@ -1,4 +1,4 @@
-import type { ComputeCatalog, VpsConnector } from "@opscrew/contracts";
+import type { VpsConnector } from "@opscrew/contracts";
 import { Redactor } from "@opscrew/core";
 import type { FakeCall, FakeReply } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -11,12 +11,12 @@ import {
   PROJECT,
 } from "./__fixtures__/fixtures";
 import { instance, project, region, SERVER, V2 } from "./__fixtures__/servers";
-import { OVHCLOUD_API_URL, type OvhcloudClient } from "./client";
+import { OvhcloudCatalog, StaticOvhcloudCatalog } from "./catalog";
+import { OVHCLOUD_API_URL } from "./client";
 import { type OvhcloudConnector, ovhcloudConnector } from "./connector";
 
-// Type-level check: the connector is a VPS connector but for its id, which joins `ProviderId`
-// with the provider's other ids.
-const asVps = (c: OvhcloudConnector) => c satisfies Omit<VpsConnector, "id">;
+// Type-level check: the OVHcloud connector satisfies the VPS connector contract.
+const asVps = (c: OvhcloudConnector) => c satisfies VpsConnector;
 
 /** Every value OpsCrew must never show: the three credentials and the access token. */
 const SECRETS = [...Object.values(CREDENTIALS), accessToken("1")];
@@ -27,22 +27,14 @@ function connector(
   redactor?: Redactor,
 ) {
   const fake = ovhFetch(routes);
-  const built: (OvhcloudClient | undefined)[] = [];
-  // Only the catalogue's identity matters here; its prices are the catalogue's own tests'.
-  const catalog = {} as ComputeCatalog;
   return {
-    connector: ovhcloudConnector(
-      { env, fetch: fake.fetch, sleep: async () => {}, ...(redactor ? { redactor } : {}) },
-      {
-        catalog: (client) => {
-          built.push(client);
-          return catalog;
-        },
-      },
-    ),
+    connector: ovhcloudConnector({
+      env,
+      fetch: fake.fetch,
+      sleep: async () => {},
+      ...(redactor ? { redactor } : {}),
+    }),
     calls: fake.calls,
-    built,
-    catalog,
   };
 }
 
@@ -89,16 +81,22 @@ describe("ovhcloudConnector", () => {
     }
   });
 
-  it("builds the catalogue once, from the client when the values are set", () => {
-    const set = connector({});
-    expect(set.connector.catalog()).toBe(set.catalog);
-    expect(set.connector.catalog()).toBe(set.catalog);
-    expect(set.built).toHaveLength(1);
-    expect(set.built[0]).toBeDefined();
+  it("gives the live catalogue, once, when the values are set, reading through its fetch", async () => {
+    const { connector: c, calls } = connector({ "/": { status: 503, body: { message: "down" } } });
+    const catalog = c.catalog();
+    expect(catalog).toBeInstanceOf(OvhcloudCatalog);
+    expect(c.catalog()).toBe(catalog);
+    await expect(catalog.listOffers()).rejects.toThrow();
+    expect(calls.some((call) => call.path.startsWith("/v1/order/catalog/public/cloud"))).toBe(true);
+  });
 
-    const unset = connector({}, {});
-    expect(unset.connector.catalog()).toBe(unset.catalog);
-    expect(unset.built).toEqual([undefined]);
+  it("gives the dated static catalogue without the values, and calls nothing", async () => {
+    const { connector: c, calls } = connector({}, {});
+    const catalog = c.catalog();
+    expect(catalog).toBeInstanceOf(StaticOvhcloudCatalog);
+    expect(c.catalog()).toBe(catalog);
+    expect((await catalog.listOffers()).length).toBeGreaterThan(0);
+    expect(calls).toEqual([]);
   });
 
   it("reaches the project through the server API it gives", async () => {
@@ -169,16 +167,19 @@ describe("verifyCredentials", () => {
     expect(check.message).toContain("Quota & Regions");
   });
 
-  it("names the project plainly when it has no name", async () => {
+  it("names the project plainly when it has no name, never by the id its state may carry", async () => {
     const { connector: c } = connector({
       [`GET ${V2}/reference/region`]: { body: [region("GRA11", true)] },
-      [`GET ${V2}`]: { body: { ...project(null), currentState: { mode: "CLASSIC" } } },
+      // An unnamed project: its `currentState.name` is its id.
+      [`GET ${V2}`]: { body: project(null) },
     });
     const check = await c.verifyCredentials();
+    expect(check.ok).toBe(true);
     expect(check.identity).toBeUndefined();
     expect(check.message).toMatch(
-      /^The OVHcloud service account works with your Public Cloud project\. /,
+      /^The OVHcloud service account works with your Public Cloud project\. Regions activated on it: GRA11\. /,
     );
+    expect(check.message).not.toContain("REDACTED");
   });
 
   it("shows OVHcloud's refusal in plain English, with the IAM action to allow", async () => {

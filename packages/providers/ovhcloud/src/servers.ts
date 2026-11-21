@@ -161,7 +161,7 @@ export function ovhcloudServerApi(
      * The project's instances named `<app>` or `<app>-<name>`, every one `nameOnly`: OVHcloud's
      * instances have no tags, so the generic takeover adopts one only after OpsCrew's own apply
      * stopped while creating it. An instance OVHcloud is still creating is reported by the name
-     * its create asked for.
+     * its create asked for; one it is deleting is left out.
      */
     async findAppServers(app: string): Promise<AppServer[]> {
       // OVHcloud's `name` filter matches any part of the name, in any case.
@@ -169,7 +169,11 @@ export function ovhcloudServerApi(
         name: app,
       });
       return instances
-        .filter(({ targetSpec: { name } }) => name === app || name.startsWith(`${app}-`))
+        .filter(
+          ({ resourceStatus, targetSpec: { name } }) =>
+            // One OVHcloud is deleting is no longer the app's (v2 has no `DELETED`).
+            resourceStatus !== "DELETING" && (name === app || name.startsWith(`${app}-`)),
+        )
         .map((instance) => ({
           id: instance.id,
           name: instance.targetSpec.name,
@@ -222,7 +226,10 @@ export function ovhcloudServerApi(
       return { snapshotId: created.id };
     },
 
-    /** The instance's snapshots named `opscrew-<app>-<its id>-<time>`, oldest first. */
+    /**
+     * The instance's snapshots named `opscrew-<app>-<its id>-<time>`, oldest first, but those
+     * OVHcloud is deleting.
+     */
     async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
       const id = instanceId(serverId);
       const snapshots = await client.get(`${v2}/compute/snapshot`, z.array(snapshotSchema), {
@@ -230,8 +237,10 @@ export function ovhcloudServerApi(
       });
       return snapshots
         .filter(
-          ({ targetSpec: { name } }) =>
-            name.startsWith(SNAPSHOT_PREFIX) && name.includes(`-${id}-`),
+          ({ resourceStatus, targetSpec: { name } }) =>
+            resourceStatus !== "DELETING" &&
+            name.startsWith(SNAPSHOT_PREFIX) &&
+            name.includes(`-${id}-`),
         )
         .map((snapshot) => {
           const size = snapshot.currentState?.size;

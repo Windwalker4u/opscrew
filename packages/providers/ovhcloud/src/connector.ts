@@ -8,6 +8,7 @@ import type {
 } from "@opscrew/contracts";
 import { errorText, listText, Redactor, realSleep } from "@opscrew/core";
 import { z } from "zod";
+import { OvhcloudCatalog, StaticOvhcloudCatalog } from "./catalog";
 import {
   OVHCLOUD_CREDENTIALS_URL,
   OVHCLOUD_ENV,
@@ -32,43 +33,28 @@ export const OVHCLOUD_CREDENTIALS: CredentialRequirement = {
 const ACTIVATE_REGION =
   "To activate another, open your project under Public Cloud in the control panel, then Quota & Regions under Settings.";
 
-/** `publicCloud.project.ProjectAsyncWithIAM` (v2): its name, which the control panel shows. */
-const projectSchema = z.looseObject({
-  name: z.string().nullish(),
-  currentState: z.looseObject({ name: z.string().nullish() }).nullish(),
-});
+/**
+ * `publicCloud.project.ProjectAsyncWithIAM` (v2): its name, null for a project never named. Its
+ * `currentState.name` is not read: for an unnamed project it is the project's id.
+ */
+const projectSchema = z.looseObject({ name: z.string().nullish() });
 
 /** `publicCloud.reference.Region` (v2): whether it is activated on the project. */
 const regionSchema = z.looseObject({ name: z.string(), activated: z.boolean() });
 
-/**
- * The OVHcloud connector. Its id joins `ProviderId` with the provider's other ids; until then it
- * is a {@link VpsConnector} in everything but its id.
- */
-export interface OvhcloudConnector extends Omit<VpsConnector, "id"> {
+/** The OVHcloud connector. */
+export interface OvhcloudConnector extends VpsConnector {
   readonly id: "ovhcloud";
-}
-
-/** What the connector is built with besides OpsCrew's dependencies. */
-export interface OvhcloudConnectorOptions {
-  /**
-   * Builds the price catalogue, live through `client` when the credentials are set (`undefined`
-   * otherwise). Called once, on the first `catalog()`.
-   */
-  catalog(client: OvhcloudClient | undefined): ComputeCatalog;
 }
 
 /**
  * Creates the OVHcloud connector: the credential check, the catalogue and the server API, in the
  * Public Cloud project the credentials name. The four values are read from `OVH_*` and registered
  * with the redactor as they are read; without all four, or with an endpoint other than `ovh-eu`,
- * nothing calls OVHcloud. Terraform manages the firewall (a security group), so there are no
- * connector firewalls, backups or object storage.
+ * nothing calls OVHcloud and the catalogue is the dated static table. Terraform manages the
+ * firewall (a security group), so there are no connector firewalls, backups or object storage.
  */
-export function ovhcloudConnector(
-  deps: ProviderConnectorDeps,
-  options: OvhcloudConnectorOptions,
-): OvhcloudConnector {
+export function ovhcloudConnector(deps: ProviderConnectorDeps): OvhcloudConnector {
   const redactor = deps.redactor ?? new Redactor();
   const read = readOvhcloudCredentials(deps.env, redactor);
   const now = () => (deps.now ?? (() => new Date()))().getTime();
@@ -96,7 +82,13 @@ export function ovhcloudConnector(
     configured: client !== undefined,
     servers: client === undefined ? undefined : ovhcloudServerApi(client, { redactor, sleep, now }),
     catalog: () => {
-      catalog ??= options.catalog(client);
+      catalog ??=
+        client === undefined
+          ? new StaticOvhcloudCatalog()
+          : new OvhcloudCatalog(client, {
+              ...(deps.fetch && { fetch: deps.fetch }),
+              ...(deps.now && { now: deps.now }),
+            });
       return catalog;
     },
     verifyCredentials: async () =>
@@ -120,7 +112,7 @@ async function verifyProject(
       `${client.projectPath("v2")}/reference/region`,
       z.array(regionSchema),
     );
-    const name = project.name || project.currentState?.name || undefined;
+    const name = project.name || undefined;
     const activated = regions
       .filter((region) => region.activated)
       .map((region) => region.name)

@@ -105,6 +105,20 @@ describe("findAppServers", () => {
     ]);
   });
 
+  it("leaves out an instance OVHcloud is deleting", async () => {
+    const { api } = setup({
+      [`GET ${V2}/compute/instance`]: {
+        body: [
+          instance({ id: OTHER, name: "shop", resourceStatus: "DELETING" }),
+          instance({ id: WORKER, name: "shop-worker" }),
+        ],
+      },
+    });
+    expect(await api.findAppServers("shop")).toEqual([
+      { id: WORKER, name: "shop-worker", status: "ACTIVE", nameOnly: true },
+    ]);
+  });
+
   it("reports none when the project has no instance of the app", async () => {
     const { api } = setup({ [`GET ${V2}/compute/instance`]: { body: [] } });
     expect(await api.findAppServers("shop")).toEqual([]);
@@ -225,6 +239,13 @@ describe("snapshots", () => {
             id: WORKER,
             name: `opscrew-shop-${OTHER}-20261119T080000Z`,
             createdAt: "2026-11-19T08:00:00Z",
+          }),
+          // Being deleted: gone in a moment, so not one of the instance's snapshots any more.
+          snapshot({
+            id: "33333333-3333-4333-8333-333333333333",
+            name: `opscrew-shop-${SERVER}-20261118T080000Z`,
+            createdAt: "2026-11-18T08:00:00Z",
+            resourceStatus: "DELETING",
           }),
         ],
       },
@@ -572,6 +593,9 @@ describe("ids", () => {
  * The generic takeover's choice (`lostServers` in the agents' provision): of the app's servers the
  * provider reports, the one named as the plan's server, not cancelled, alone with that name, and
  * taken over when only its name matched only if the last apply stopped while creating it.
+ *
+ * A stand-in for the end-to-end SC-3502 test, which runs `lostServers` itself and moves to the
+ * agents once `ovhcloud` is in the providers' registry.
  */
 function takeover(found: AppServer[], name: string, applyStoppedCreatingIt: boolean) {
   const live = found.filter((s) => s.name === name && s.cancelledUntil === undefined);
