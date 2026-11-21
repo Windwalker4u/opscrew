@@ -193,3 +193,88 @@ From the openai/codex repository on main: `codex-rs/core-plugins/src/manifest.rs
 - **The release:** step 6 of `docs/releasing.md` also bumps the Codex manifest's version and the
   pinned `opscrew@<release>`. The test above fails when they differ from the Claude plugin's.
 - **The live pass** in the Codex CLI needs an OpenAI account, so it waits for the founder.
+
+## R9. The marketplace file and the server's sandbox, read from Codex's source (2026-11-21)
+
+From the openai/codex repository at commit `bfe3c825` (main, 2026-11-21):
+- [`codex-rs/core-plugins/src/marketplace.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/core-plugins/src/marketplace.rs):
+  `RawMarketplaceManifest`, `RawMarketplaceManifestPlugin`, `MarketplacePluginPolicy` and
+  `resolve_local_plugin_source_path`;
+- [`codex-rs/exec-server-protocol/src/protocol.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/exec-server-protocol/src/protocol.rs)
+  and [`codex-rs/utils/plugins/src/plugin_namespace.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/utils/plugins/src/plugin_namespace.rs):
+  which plugin manifest Codex reads.
+
+The category names come from OpenAI's own marketplace,
+[`openai/plugins` `.agents/plugins/marketplace.json`](https://github.com/openai/plugins/blob/981b02c0c44058b595f3b4180002c3ae3c806d40/.agents/plugins/marketplace.json)
+(commit `981b02c0`, 2026-11-18).
+
+- **Which file:** Codex takes the first that exists under the repository's root, in this order:
+  1. `.agents/plugins/marketplace.json`;
+  2. `.agents/plugins/api_marketplace.json`;
+  3. `.claude-plugin/marketplace.json`;
+  4. `.cursor-plugin/marketplace.json`.
+
+  So Codex reads OpsCrew's `.agents/` file, and Claude Code keeps its own.
+- **The top level:** `name` and `plugins` are required. `interface.displayName` is optional.
+- **Each plugin entry:**
+  - `name` and `source` are required; `policy` and `category` are optional.
+  - Any other key (`version`, `description` and the like) is kept as a fallback manifest. Codex uses
+    it only when the plugin's folder has no manifest of its own.
+  - An entry whose source is unknown or invalid is skipped with a warning, not refused.
+- **`source`:**
+  - A local source is a string path or `{ "source": "local", "path": "./…" }`. The other kinds are
+    `url`, `git-subdir` and `npm`.
+  - A local path must start with `./` (`.` alone means the root) and hold no `..`.
+  - It resolves against the repository's root, not against `.agents/plugins/`.
+- **`policy`:**
+  - `installation`: `NOT_AVAILABLE`, `AVAILABLE` (the default) or `INSTALLED_BY_DEFAULT`.
+  - `authentication`: `ON_INSTALL` (the default) or `ON_USE`.
+  - `products` (`CODEX`, `CHATGPT`, `ATLAS`) is optional. Left out, the plugin installs everywhere;
+    an empty list makes it uninstallable.
+- **`category`:** free text, and it wins over the manifest's `interface.category`. OpenAI's own
+  marketplace uses "Developer Tools", "Productivity" and the like.
+- **The plugin's manifest:** in the plugin's folder Codex reads, in this order:
+  1. a root `plugin.json` in the Agent Plugin format;
+  2. `.codex-plugin/plugin.json`;
+  3. `.claude-plugin/plugin.json`;
+  4. `.cursor-plugin/plugin.json`.
+
+  So in `plugin/` Codex reads `.codex-plugin/plugin.json`, and Claude Code keeps its own.
+- **The manifest's `interface` keys** are camelCase: `displayName`, `shortDescription`,
+  `longDescription`, `developerName`, `category`, and `websiteUrl` (also `websiteURL`).
+
+Two more findings from the same commit, which the guide and the network error rely on:
+- **The commands** ([`codex-rs/cli/src/plugin_cmd.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/cli/src/plugin_cmd.rs)
+  and `marketplace_cmd.rs`):
+  - `codex plugin add <plugin>@<marketplace>` installs a plugin, and `codex plugin remove` uninstalls it;
+  - `codex plugin marketplace add|list|upgrade|remove` manages the marketplaces.
+- **The sandbox doesn't reach a local MCP server.**
+  - Codex starts a stdio server as its own child process, with no sandbox:
+    [`codex-rs/rmcp-client/src/stdio_server_launcher.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/rmcp-client/src/stdio_server_launcher.rs)
+    (`LocalStdioServerLauncher`; the executor path passes `sandbox: None`).
+  - A server gets the sandbox's rules only when it asks for them with the experimental
+    `codex/sandbox-state` capability; then it must apply them itself
+    ([`codex-rs/codex-mcp/README.md`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/codex-mcp/README.md)).
+    OpsCrew's server doesn't ask.
+  - So OpsCrew's tools, and the `tofu`, `ssh` and `git` they run, reach the network whatever
+    `sandbox_mode` and `network_access` say. The sandbox limits only the commands Codex runs
+    itself in its shell.
+- **Approval dialogs** ([`codex-rs/codex-mcp/src/elicitation.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/codex-mcp/src/elicitation.rs)):
+  - Codex accepts a dialog on its own only when its form has no field, with
+    `approval_policy = "never"` and full disk access. OpsCrew's form always has one (`approve`
+    or `confirmation`).
+  - Otherwise, with `never`, Codex declines the dialog or shows it to the user.
+  - Its automatic reviewer
+    ([`codex-rs/ext/guardian-reviewer/src/elicitation.rs`](https://raw.githubusercontent.com/openai/codex/bfe3c825702e9235a631a1db58f291bed7a44cfe/codex-rs/ext/guardian-reviewer/src/elicitation.rs))
+    reviews only dialogs whose `_meta` marks them as Codex's approval requests, which OpsCrew's
+    don't.
+  - Every answer Codex gives on its own carries an empty `{}`, which OpsCrew reads as not approved.
+  - So Codex never approves an OpsCrew plan.
+
+**Decision (build):** the file is as the contract says:
+- `source` is `{ "source": "local", "path": "./plugin" }`;
+- `policy` is `AVAILABLE` and `ON_INSTALL`, with no `products`;
+- `category` is "Developer Tools".
+
+The entry also carries `version`, a fallback key Codex ignores while the plugin has its manifest, so
+a test can tie it to Claude's marketplace file.
