@@ -96,6 +96,23 @@ describe("the preview images program", () => {
     expect(log).toContain(`Deleted ${closed.index.digest} (pr-5-${commit(1)})`);
   });
 
+  it("only warns, and the step stays green, when a deletion still fails after its retries", async () => {
+    const closed = push("b", 0, [`pr-5-${commit(1)}`]);
+    const api = registry({
+      pushes: [closed],
+      open: [7],
+      deleteAnswers: { [closed.index.id]: [503, 503, 503] },
+    });
+    const log: string[] = [];
+    const process: FakeProcess = { env: env() };
+    await program({ process, fetch: api.fetch, log }).main();
+    expect(process.exitCode).toBeUndefined();
+    expect(api.deleted().filter((c) => c === `DELETE ${base}/${closed.index.id}`)).toHaveLength(3);
+    expect(log.at(-1)).toBe(
+      "::warning::1 image versions were not deleted; the next preview run tries again.",
+    );
+  });
+
   it.each([
     ["no pull request number", { NUMBER: "" }],
     ["a number that is not one", { NUMBER: "7;" }],

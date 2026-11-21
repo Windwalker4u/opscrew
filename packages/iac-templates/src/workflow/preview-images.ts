@@ -78,7 +78,8 @@ async function main() {
     console.log("The package has " + versions.length + " image versions; deleting " + ids.size + " of pull requests' images.");
     deleting = true;
     const failed = await deleteVersions(base, versions, ids);
-    if (failed > 0) fail(failed + " image versions were not deleted; the next preview run tries again.");
+    // The next preview run deletes them, so the run stays green.
+    if (failed > 0) console.log("::warning::" + failed + " image versions were not deleted; the next preview run tries again.");
   } catch (error) {
     fail(
       (deleting ? "OpsCrew stopped deleting pull requests' images: " : "OpsCrew could not list the images, so it deleted none: ") +

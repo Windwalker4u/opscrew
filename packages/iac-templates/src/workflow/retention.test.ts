@@ -665,24 +665,65 @@ describe("the retention step's program", () => {
 
   it("counts a version another environment's deploy deleted first as deleted", async () => {
     const gone = a.index.id;
-    const api = registry({ pushes, goneDelete: [gone] });
+    const api = registry({ pushes, deleteAnswers: { [gone]: [404] } });
     const result = await runMain(api);
     expect(result.exitCode).toBeUndefined();
+    expect(api.deleted().filter((call) => call === `DELETE ${base}/${gone}`)).toHaveLength(1);
     expect(result.log).toContain(`Already deleted: ${a.index.digest} (${commit(1)})`);
   });
 
-  it("goes on when a deletion fails, and fails the step", async () => {
+  /** The DELETE requests for version `id`. */
+  const deletionsOf = (api: ReturnType<typeof registry>, id: number) =>
+    api.deleted().filter((call) => call === `DELETE ${base}/${id}`);
+
+  it("deletes a version on a retry when GitHub first answers 502", async () => {
+    const api = registry({ pushes, deleteAnswers: { [a.index.id]: [502] } });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(deletionsOf(api, a.index.id)).toHaveLength(2);
+    expect(result.log).toContain(
+      `GitHub answered HTTP 502 to deleting ${a.index.digest} (${commit(1)}); trying again in 5 s.`,
+    );
+    expect(result.log).toContain(`Deleted ${a.index.digest} (${commit(1)})`);
+    expect(result.log.some((line) => line.startsWith("::"))).toBe(false);
+  });
+
+  it("retries a deletion GitHub answers with 429", async () => {
+    const api = registry({ pushes, deleteAnswers: { [a.index.id]: [429, 429] } });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(deletionsOf(api, a.index.id)).toHaveLength(3);
+    expect(result.log).toContain(`Deleted ${a.index.digest} (${commit(1)})`);
+  });
+
+  it("only warns, and the step stays green, when a 502 stays after two retries", async () => {
+    const api = registry({ pushes, deleteAnswers: { [a.index.id]: [502, 502, 502] } });
+    const result = await runMain(api);
+    expect(result.exitCode).toBeUndefined();
+    expect(deletionsOf(api, a.index.id)).toHaveLength(3);
+    expect(api.deleted()).toHaveLength(9 + 2);
+    expect(result.log).toContain(
+      `::warning::GitHub did not delete ${a.index.digest} (${commit(1)}): HTTP 502.`,
+    );
+    expect(result.log.at(-1)).toBe(
+      "::warning::1 image versions were not deleted; the next deploy tries again. The deploy itself succeeded.",
+    );
+  });
+
+  it("goes on when GitHub refuses a deletion, never retries it, and only warns", async () => {
     const refused = a.index.id;
-    const api = registry({ pushes, failDelete: [refused] });
+    const api = registry({ pushes, deleteAnswers: { [refused]: [403] } });
     const result = await runMain(api);
     expect(api.deleted()).toHaveLength(9);
-    expect(result.exitCode).toBe(1);
+    expect(deletionsOf(api, refused)).toHaveLength(1);
+    expect(result.exitCode).toBeUndefined();
     expect(result.log).toContain(
       `::warning::GitHub did not delete ${a.index.digest} (${commit(1)}): HTTP 403.`,
     );
     expect(result.log.at(-1)).toBe(
-      "::error::1 image versions were not deleted; the next deploy tries again. The deploy itself succeeded.",
+      "::warning::1 image versions were not deleted; the next deploy tries again. The deploy itself succeeded.",
     );
+    expect(result.log.some((line) => line.startsWith("::error::"))).toBe(false);
   });
 });
 

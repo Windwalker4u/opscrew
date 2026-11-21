@@ -198,8 +198,14 @@ exports[`the retention job > runs after a healthy deploy, with only packages: wr
             const deleteVersions = async (base, versions, ids) => {
               let failed = 0;
               for (const v of versions.filter((version) => ids.has(version.id))) {
-                const response = await github("DELETE", base + "/" + v.id);
                 const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                let response = await github("DELETE", base + "/" + v.id);
+                // GitHub answers 429 or 5xx for a moment at times: try it twice more.
+                for (let retry = 1; retry <= 2 && (response.status === 429 || response.status >= 500); retry++) {
+                  console.log("GitHub answered HTTP " + response.status + " to deleting " + what + "; trying again in 5 s.");
+                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                  response = await github("DELETE", base + "/" + v.id);
+                }
                 if (response.ok) {
                   console.log("Deleted " + what);
                 } else if (response.status === 404) {
@@ -236,8 +242,9 @@ exports[`the retention job > runs after a healthy deploy, with only packages: wr
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
               deleting = true;
               const failed = await deleteVersions(base, versions, ids);
+              // Retention is not broken: the next deploy deletes them, so the deploy stays green.
               if (failed > 0) {
-                fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+                console.log("::warning::" + failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
               }
             } catch (error) {
               fail(
@@ -446,8 +453,14 @@ exports[`the retention job > when off, still runs to delete intermediate images 
             const deleteVersions = async (base, versions, ids) => {
               let failed = 0;
               for (const v of versions.filter((version) => ids.has(version.id))) {
-                const response = await github("DELETE", base + "/" + v.id);
                 const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                let response = await github("DELETE", base + "/" + v.id);
+                // GitHub answers 429 or 5xx for a moment at times: try it twice more.
+                for (let retry = 1; retry <= 2 && (response.status === 429 || response.status >= 500); retry++) {
+                  console.log("GitHub answered HTTP " + response.status + " to deleting " + what + "; trying again in 5 s.");
+                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                  response = await github("DELETE", base + "/" + v.id);
+                }
                 if (response.ok) {
                   console.log("Deleted " + what);
                 } else if (response.status === 404) {
@@ -484,8 +497,9 @@ exports[`the retention job > when off, still runs to delete intermediate images 
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
               deleting = true;
               const failed = await deleteVersions(base, versions, ids);
+              // Retention is not broken: the next deploy deletes them, so the deploy stays green.
               if (failed > 0) {
-                fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+                console.log("::warning::" + failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
               }
             } catch (error) {
               fail(

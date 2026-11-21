@@ -44,9 +44,10 @@ export const REACH = `const reach = (digests) => {
  * `packageVersions()`, the package's versions API under the owner's kind of account;
  * `readPackage(base, protect)`, the versions and what each tagged or protected one lists, read again
  * while a version goes during the reading; and `deleteVersions(base, versions, ids)`, which deletes
- * those `ids` and returns how many GitHub did not delete. They read `GITHUB_REPOSITORY`,
- * `GITHUB_ACTOR` and `TOKEN`. `pages(path, what, field)` reads every page of a GitHub API list
- * (`what` names the API in errors; `field`, when given, is the answer's list).
+ * those `ids` (a deletion GitHub answers with 429 or 5xx is tried twice more, 5 s apart) and
+ * returns how many GitHub did not delete. They read `GITHUB_REPOSITORY`, `GITHUB_ACTOR` and
+ * `TOKEN`. `pages(path, what, field)` reads every page of a GitHub API list (`what` names the API
+ * in errors; `field`, when given, is the answer's list).
  */
 export function registryCode(plan: AppEnvironment): string {
   const key = plan.app.key;
@@ -132,8 +133,14 @@ export function registryCode(plan: AppEnvironment): string {
   const deleteVersions = async (base, versions, ids) => {
     let failed = 0;
     for (const v of versions.filter((version) => ids.has(version.id))) {
-      const response = await github("DELETE", base + "/" + v.id);
       const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+      let response = await github("DELETE", base + "/" + v.id);
+      // GitHub answers 429 or 5xx for a moment at times: try it twice more.
+      for (let retry = 1; retry <= 2 && (response.status === 429 || response.status >= 500); retry++) {
+        console.log("GitHub answered HTTP " + response.status + " to deleting " + what + "; trying again in 5 s.");
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        response = await github("DELETE", base + "/" + v.id);
+      }
       if (response.ok) {
         console.log("Deleted " + what);
       } else if (response.status === 404) {
@@ -293,8 +300,9 @@ async function main() {
     console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
     deleting = true;
     const failed = await deleteVersions(base, versions, ids);
+    // Retention is not broken: the next deploy deletes them, so the deploy stays green.
     if (failed > 0) {
-      fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+      console.log("::warning::" + failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
     }
   } catch (error) {
     fail(

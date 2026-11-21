@@ -104,8 +104,11 @@ export function registry(o: {
   failManifest?: boolean;
   /** How many manifest reads answer 404 first, as when another environment's deploy deletes. */
   goneManifests?: number;
-  failDelete?: number[];
-  goneDelete?: number[];
+  /**
+   * By version id, the HTTP statuses GitHub answers its deletions with, in turn; once they run out,
+   * it deletes the version (204).
+   */
+  deleteAnswers?: Record<number, number[]>;
   /** The repository's workflows (default {@link WORKFLOWS}). */
   workflows?: { name: string; state: string }[];
   /** The numbers of the repository's open pull requests (default none). */
@@ -170,11 +173,8 @@ export function registry(o: {
     }
     const del = new RegExp(`^${base}/(\\d+)$`).exec(url);
     if (del && method === "DELETE") {
-      const id = Number(del[1]);
-      if (o.goneDelete?.includes(id)) return notFound;
-      return o.failDelete?.includes(id)
-        ? { ok: false, status: 403, json: async () => ({}) }
-        : { ok: true, status: 204, json: async () => ({}) };
+      const status = o.deleteAnswers?.[Number(del[1])]?.shift() ?? 204;
+      return { ok: status < 300, status, json: async () => ({}) };
     }
     return notFound;
   };
