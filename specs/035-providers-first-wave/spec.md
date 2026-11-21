@@ -189,9 +189,9 @@ UpCloud follows IONOS Cloud, in the same way.
   against the public catalogue before each release.
 - **A firewall OVHcloud refuses to create or attach**: provision stops before the deploy and
   leaves no server reachable without one.
-- **OVHcloud's values in the app's environment or files**: `opscrew scan` reports a variable named
-  like OVHcloud's credentials, as it does other providers'. The values have no recognisable
-  format of their own.
+- **OVHcloud's values in the app's environment or files**: the analysis treats the app's `OVH_*`
+  variables as provider credentials, as it does other providers' prefixes. The values have no
+  recognisable format of their own, so `opscrew scan` has no rule that matches them.
 
 ## Requirements *(mandatory)*
 
