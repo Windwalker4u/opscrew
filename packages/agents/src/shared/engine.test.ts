@@ -220,6 +220,10 @@ describe("projectEngine", () => {
     const { env } = await projectEngine(deps, testPlan(), { services: { engine: terraform } });
     expect(env).toEqual(deps.env);
     expect(env).not.toHaveProperty("TF_VAR_fake_project_id");
+    // A blank credential counts as not set.
+    deps.env.FAKE_PROJECT_ID = "   ";
+    const blank = await projectEngine(deps, testPlan(), { services: { engine: terraform } });
+    expect(blank.env).not.toHaveProperty("TF_VAR_fake_project_id");
   });
 
   it("gives Terraform no encryption", async () => {

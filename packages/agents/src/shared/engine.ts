@@ -279,7 +279,7 @@ async function environmentStateKeyName(paths: ProjectPaths): Promise<StateKeyNam
 
 /**
  * Sets `TF_VAR_<name>` in `env` for each built-in provider's root variable whose credential
- * `fromEnv` is set there, registering the value with the redactor (ADR 0029, D11). A root that
+ * `fromEnv` is set (not blank) there, registering the value with the redactor (ADR 0029, D11). A root that
  * doesn't declare the variable ignores it.
  */
 function setRootVariables(
@@ -288,7 +288,7 @@ function setRootVariables(
 ): void {
   for (const variable of CLOUD_PROVIDERS.flatMap((p) => p.terraform.rootVariables ?? [])) {
     const value = env[variable.fromEnv];
-    if (value === undefined) continue;
+    if (value === undefined || value.trim() === "") continue;
     redactor.addLiteral(value, variable.fromEnv);
     env[`TF_VAR_${variable.name}`] = value;
   }
