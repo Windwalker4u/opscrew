@@ -392,6 +392,10 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/contracts --filter=@opscrew/providers --filter=@opscrew/provider-hetzner --filter=@opscrew/provider-digitalocean --filter=@opscrew/provider-contabo && npx vitest run --root packages/plan-schema && npx vitest run --root packages/agents src/providers && pnpm lint`
   - Effort: medium
 
+- [x] T3121 (lead) The catalogue's credential labels in words a person reads ("Contabo API
+  password", not "Contabo oauth2 pass"): each provider's definition carries `credentials.labels`, the
+  registry refuses one without a label, and Cloudflare's and the registrars' are in the catalogue
+
 - [x] T3117 The secrets recovery copy's recipient in a script: `--recipient <age public key>`
   - Why: in a script, provision makes the encrypted recovery copy of the app's secrets only with
     `--key-out`, which writes a new age key where the script runs (a CI runner keeps nothing). A
