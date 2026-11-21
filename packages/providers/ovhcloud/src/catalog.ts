@@ -259,19 +259,18 @@ async function readPrices(http: JsonClient): Promise<LivePrices> {
     "OVHcloud",
     "read its public price catalogue",
   );
+  const find = (planCode: string) => addons.find((a) => a.planCode === planCode);
+  const parseRow = <S extends z.ZodType>(planCode: string, found: unknown, schema: S) =>
+    parseAnswer(schema, found, "OVHcloud", `read the price of ${planCode}`);
   const row = <S extends z.ZodType>(planCode: string, schema: S) =>
-    parseAnswer(
-      schema,
-      addons.find((a) => a.planCode === planCode),
-      "OVHcloud",
-      `read the price of ${planCode}`,
-    );
+    parseRow(planCode, find(planCode), schema);
   const flavors: StaticFlavor[] = [];
   for (const flavor of STATIC_FLAVORS) {
     const planCode = `${flavor.name}.consumption`;
+    const found = find(planCode);
     // A plan the catalogue no longer sells isn't offered.
-    if (!addons.some((a) => a.planCode === planCode)) continue;
-    const { pricings, blobs } = row(planCode, flavorAddonSchema);
+    if (found === undefined) continue;
+    const { pricings, blobs } = parseRow(planCode, found, flavorAddonSchema);
     flavors.push({
       name: flavor.name,
       vcpus: blobs.technical.cpu.cores,
@@ -290,6 +289,8 @@ async function readPrices(http: JsonClient): Promise<LivePrices> {
 
 /** The `flavor@location` pairs the project can create an instance of now. */
 async function readAvailability(client: OvhcloudClient): Promise<Set<string>> {
+  // X-Pagination-Cursor isn't followed: the answer has one entry per product type, and
+  // `type=INSTANCE` leaves a single group, so there is no second page.
   const groups = await client.get(
     `${client.projectPath("v2")}/reference/productAvailability`,
     availabilitySchema,
