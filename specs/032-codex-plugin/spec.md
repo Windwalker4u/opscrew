@@ -57,8 +57,9 @@ is refused by OpsCrew itself, with the same message as in Claude Code.
 1. **Given** Codex set to ask for no approval, **When** Codex calls the apply tool without an
    approved hash, **Then** OpsCrew refuses it and nothing changes.
 2. **Given** Codex's default mode, **When** Codex calls a tool that only reads (status, plan,
-   analyze), **Then** Codex doesn't prompt the user; **When** it calls one that changes or deletes,
-   **Then** Codex prompts.
+   analyze), **Then** Codex doesn't prompt the user; **When** it calls one that deletes or reaches
+   beyond this computer, **Then** Codex prompts. A write to the project's own files (an app added to
+   `opscrew/plan.yaml`) runs as Codex's own file edits do.
 
 ---
 
@@ -79,8 +80,9 @@ local target runs to the end.
 1. **Given** the guide page, **When** a user follows it, **Then** they set network access, a tool
    time limit long enough for an apply, and their provider tokens passed from their environment,
    never written into a configuration file.
-2. **Given** Codex's default settings, **When** an OpsCrew tool can't reach the network, **Then**
-   the error names the Codex setting to change.
+2. **Given** Codex, **When** an OpsCrew tool can't reach the network, **Then** the error says that
+   Codex's sandbox settings don't cause it (Codex runs OpsCrew's server outside its sandbox,
+   research R9) and points to the computer's own connection.
 
 ---
 
@@ -120,9 +122,11 @@ local target runs to the end.
   - where it doesn't work (the IDE extension, Codex cloud) and why.
 - **FR-3207**: Tokens MUST never be written into a Codex configuration file by OpsCrew or its
   guide; they reach the MCP server from the user's environment.
-- **FR-3208**: When a tool call fails because OpsCrew can't reach the network from Codex, its message
-  MUST name Codex's setting to change. A call Codex cuts off at its time limit can't be reported by
-  OpsCrew, so the plugin sets a limit long enough for an apply.
+- **FR-3208**: When a tool call fails because OpsCrew can't reach the network under Codex, its message
+  MUST say that Codex's sandbox settings don't cause it and point to the computer's own
+  connection: Codex runs OpsCrew's server outside its sandbox (research R9). A call Codex cuts off
+  at its time limit can't be reported by OpsCrew, so the plugin sets a limit long enough for an
+  apply.
 - **FR-3209**: The release handbook MUST bump the Codex plugin with the Claude Code plugin, at each
   release, and its check MUST cover both.
 - **FR-3210**: The plugin MUST NOT be submitted to OpenAI's public plugin directory in this feature

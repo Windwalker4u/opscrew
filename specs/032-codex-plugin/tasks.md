@@ -8,7 +8,7 @@ files.
 
 ## Wave 1
 
-- [ ] T3201 [US1] [US2] [US3] The Codex plugin, its server entry, the annotation rule and the guide
+- [x] T3201 [US1] [US2] [US3] The Codex plugin, its server entry, the annotation rule and the guide
   - **Owns:**
     - `plugin/.codex-plugin/**`, `plugin/validate.mjs`, `plugin/README.md`;
     - `.agents/plugins/marketplace.json`;
@@ -61,6 +61,12 @@ files.
       pinned `opscrew@<release>`, beside the Claude ones.
   - **Verify:** `pnpm turbo run typecheck --filter=opscrew --filter=@opscrew/mcp-server && npx vitest run --root packages/cli src/mcp-clients && npx vitest run --root packages/mcp-server && node plugin/validate.mjs && pnpm lint`
   - **Effort:** high
+
+## Follow-ups
+
+- **`opscrew_render` writes the deploy key:** it is marked read-only, but it creates the project's
+  deploy key in the OpsCrew home when missing. Move that to `opscrew_plan`, so the preview is a
+  pure read.
 
 ## Wave 2 (lead)
 
