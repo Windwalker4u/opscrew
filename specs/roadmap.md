@@ -614,9 +614,20 @@ The founder's go-ahead of 2026-11-21, for after 032 and 040: a user who builds t
     pull request the run opens.
   - **The dashboard's model** drives the chat. A core step that uses a model reaches it through the
     dashboard's gateway (`ANTHROPIC_BASE_URL`), so no other model adapter is needed for this.
-- **To settle in the spec:** a run's own `GITHUB_TOKEN` can't write repository secrets. State a run
-  creates must therefore go back to the dashboard to store, or into the pull request, encrypted to
-  the CI key.
+- **State a run creates** (a deploy key, a state passphrase), agreed with the dashboard's lead
+  (2026-11-21). A run's own `GITHUB_TOKEN` can't write repository secrets, so:
+  1. **The key comes in:** the dashboard passes the target's GitHub secrets public key (the
+     repository's, or the deploy environment's) as two non-secret dispatch inputs, `secrets_key_id`
+     and `secrets_key`.
+  2. **The run seals each new value** to it with a sealed box, as GitHub's API expects, the way
+     provision already seals deploy secrets.
+  3. **The report carries only ciphertext:** `report.json` lists
+     `secrets: [{name, keyId, encryptedValue, place}]`.
+  4. **The dashboard stores them** with its GitHub App and records the names. It never holds a
+     value it can read.
+  5. **A key GitHub rotated meanwhile** is refused, and the run starts again.
+
+  Nothing secret goes into the pull request, so a public repository needs no special case.
 - **Research first:**
   - what of `~/.opscrew` each command needs, and where each piece can live encrypted;
   - which commands still prompt in a script;
