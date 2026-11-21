@@ -241,6 +241,17 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - `pnpm check` passes, or the failures are only the environment's, named in the PR.
   - Effort: lead
 
+- [ ] T3516 (lead, after [issue #5](https://github.com/opscrew-hub/opscrew/issues/5), opened
+  2026-11-21; before T3510) The SSH key check and the deploy-key match read any provider's shape
+  - Found by T3509: `ovh_cloud_instance` takes `ssh_key_name`, and `ovh_cloud_ssh_key` has no `id`.
+  - Accept:
+    - `ProviderSecOps.sshKeyAttribute?` in the contract, default `"ssh_keys"`, read by
+      `packages/secops/src/policies/plan.ts`. OVHcloud's definition sets `"ssh_key_name"`.
+    - `packages/agents/src/rotate/infra.ts`' `DEPLOY_KEY_TYPES` matches `<address>.`, not only
+      `<address>.id`.
+    - Tests for both. Hetzner, DigitalOcean and Contabo are unchanged.
+  - Effort: lead
+
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T3511 [P] [US5] The guide
