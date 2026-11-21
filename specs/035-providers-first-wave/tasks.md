@@ -103,7 +103,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates && pnpm lint`
   - Effort: high
 
-- [ ] T3505 [P] [US4] The engine gets each root variable from the environment
+- [x] T3505 [P] [US4] The engine gets each root variable from the environment
   - Owns: `packages/agents/src/shared/engine.ts`, `engine.test.ts`
   - Reads: plan 2.; `shared/engine.ts` (`projectEngine`, `NOT_FOR_THE_ENGINE`), `shared/root-variables.ts`
   - Depends: T3502
