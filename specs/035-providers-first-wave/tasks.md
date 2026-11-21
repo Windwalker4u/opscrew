@@ -81,7 +81,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/providers && npx vitest run --root packages/providers/registry && pnpm lint`
   - Effort: medium
 
-- [ ] T3504 [P] [US4] iac-templates declares a provider's root variables
+- [x] T3504 [P] [US4] iac-templates declares a provider's root variables
   - Owns: `packages/iac-templates/src/infra/**` (and its tests and snapshots)
   - Reads: plan 1. and 2.; `infra/servers.ts` (`serverVariables`, `providerBlock`, `renderedServers`),
     `infra/index.ts`, where `terraform.tfvars.json` is written
