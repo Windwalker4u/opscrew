@@ -199,6 +199,19 @@ describe("createOpscrewMcpServer", () => {
     expect(byName.get("opscrew_save_requirements")?.inputSchema.required).toContain("answers");
   });
 
+  // Codex prompts before a tool that isn't read-only when either hint is true or missing.
+  it("every tool states whether it only reads, and every other tool whether it deletes and reaches outside", async () => {
+    const h = await connect(await fixture("static-vite"));
+    const { tools } = await h.client.listTools();
+    expect(tools.length).toBeGreaterThan(40);
+    for (const { name, annotations } of tools) {
+      expect(typeof annotations?.readOnlyHint, name).toBe("boolean");
+      if (annotations?.readOnlyHint === true) continue;
+      expect(typeof annotations?.destructiveHint, name).toBe("boolean");
+      expect(typeof annotations?.openWorldHint, name).toBe("boolean");
+    }
+  });
+
   it("the tools that could break other apps on the server take skipOtherAppsCheck, and the answers name the shared server's keys", async () => {
     const h = await connect(await fixture("static-vite"));
     const { tools } = await h.client.listTools();

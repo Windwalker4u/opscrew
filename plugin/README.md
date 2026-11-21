@@ -15,6 +15,21 @@ claude plugin install opscrew@opscrew
 Or inside a Claude Code session: `/plugin marketplace add opscrew-hub/opscrew`, then
 `/plugin install opscrew@opscrew`.
 
+### In Codex
+
+This folder is also a plugin for OpenAI's Codex (the CLI and the ChatGPT desktop app), with the same
+skills: `.codex-plugin/plugin.json` is its manifest, and `.agents/plugins/marketplace.json` at the
+repository's root lists it.
+
+```bash
+codex plugin marketplace add opscrew-hub/opscrew
+codex plugin add opscrew@opscrew
+```
+
+Codex installs no npm package for a plugin, so its manifest starts the MCP server with
+`npx -y opscrew@<version> mcp`, at the plugin's version. The settings Codex needs are on
+[the Codex plugin's guide page](../docs/guide/codex-plugin.md).
+
 When Claude Code installs the plugin, it also installs the OpsCrew CLI at the plugin's version
 (`opscrew` 0.1.0 from npm) and its dependencies, exactly as `package-lock.json` pins them, with npm
 and without running any install script. The plugin's MCP server then runs that copy:

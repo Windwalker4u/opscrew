@@ -58,12 +58,19 @@ export function serverCommand(version: string): { command: string; args: string[
   return { command: "npx", args: ["-y", `opscrew@${version}`, "mcp"] };
 }
 
-/** OpsCrew's table in Codex's `config.toml`, as data. */
+/**
+ * OpsCrew's table in Codex's `config.toml`, as data; the Codex plugin's manifest holds the same
+ * server.
+ */
 export function codexEntry(version: string) {
   return {
     ...serverCommand(version),
     // Codex waits 10 seconds by default, less than npx's first download of OpsCrew.
     startup_timeout_sec: 120,
+    // Codex stops a tool call after 60 seconds by default, far less than an apply takes.
+    tool_timeout_sec: 1800,
+    // Tells the server it runs under Codex, for the errors that name Codex's settings.
+    env: { OPSCREW_MCP_CLIENT: "codex" },
     env_vars: [...CREDENTIAL_VARIABLES],
   };
 }
@@ -72,11 +79,16 @@ export function codexEntry(version: string) {
 export function codexTable(version: string): string {
   const entry = codexEntry(version);
   const quoted = (values: readonly string[]) => values.map((value) => JSON.stringify(value));
+  const env = Object.entries(entry.env).map(
+    ([name, value]) => `${name} = ${JSON.stringify(value)}`,
+  );
   return [
     `[mcp_servers.${SERVER_NAME}]`,
     `command = ${JSON.stringify(entry.command)}`,
     `args = [${quoted(entry.args).join(", ")}]`,
     `startup_timeout_sec = ${entry.startup_timeout_sec}`,
+    `tool_timeout_sec = ${entry.tool_timeout_sec}`,
+    `env = { ${env.join(", ")} }`,
     "env_vars = [",
     ...quoted(entry.env_vars).map((name) => `  ${name},`),
     "]",

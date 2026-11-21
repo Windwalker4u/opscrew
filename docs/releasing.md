@@ -87,14 +87,21 @@ rm release-notes.md
 
 The script makes the section's links absolute, at the tag, and adds the compare link.
 
-## 6. Update the Claude Code plugin
+## 6. Update the plugins for Claude Code and Codex
 
-Do this after npm has the version: the plugin's lockfile records its integrity from the registry.
+Do this after npm has the version: the Claude plugin's lockfile records its integrity from the
+registry, and the Codex plugin downloads that version with npx.
 
-1. Set `version` in `plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and
-   the exact `opscrew` version in `plugin/package.json`.
+1. Set the new version in each plugin:
+   - **Claude Code:** `version` in `plugin/.claude-plugin/plugin.json` and
+     `.claude-plugin/marketplace.json`, and the exact `opscrew` version in `plugin/package.json`.
+   - **Codex:** `version` in `plugin/.codex-plugin/plugin.json` and
+     `.agents/plugins/marketplace.json`, and `opscrew@<version>` in the manifest's
+     `mcpServers.opscrew.args`.
 2. Regenerate the lockfile: run `npm install --package-lock-only --ignore-scripts` in `plugin/`.
-3. Check it: `node plugin/validate.mjs` and `claude plugin validate plugin`.
+3. Check them: `node plugin/validate.mjs` (both plugins), `claude plugin validate plugin`, and
+   `npx vitest run --root packages/cli src/mcp-clients/codex-plugin.test.ts`, which fails when the
+   Codex plugin's server or versions differ from the Claude plugin's.
 4. Install it as Claude Code does: copy `plugin/package.json` and `plugin/package-lock.json` into
    an empty folder outside the repository and run `npm ci --ignore-scripts` there. Check that
    `node node_modules/opscrew/dist/opscrew.js --version` prints the new version, and that the size

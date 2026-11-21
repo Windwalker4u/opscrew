@@ -1,6 +1,67 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { portainerAddressNames } from "@opscrew/agents";
-import { describe, expect, it } from "vitest";
-import { withoutPortainer } from "./shared";
+import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
+import { CONNECTION_HINT, OpsCrewError } from "@opscrew/core";
+import { afterEach, describe, expect, it } from "vitest";
+import { resolveMcpDeps } from "../deps";
+import { runTool, withoutPortainer } from "./shared";
+
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()?.();
+});
+
+/** The text of a tool call that fails with `error`, in a server started with `env`. */
+async function failedText(env: Record<string, string>, error: unknown): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-shared-"));
+  cleanups.push(() => rm(dir, { recursive: true, force: true }));
+  const deps = resolveMcpDeps({
+    version: "0.0.0-test",
+    env: { OPSCREW_HOME: path.join(dir, "home"), ...env },
+    fetch: forbiddenFetch,
+    runner: new ScriptedRunner(),
+    cwd: dir,
+  });
+  const result: CallToolResult = await runTool(deps, "opscrew_test", undefined, async () => {
+    throw error;
+  });
+  expect(result.isError).toBe(true);
+  return result.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+}
+
+const CODEX = { OPSCREW_MCP_CLIENT: "codex" };
+/** How the API clients report a provider they couldn't reach. */
+const UNREACHABLE = new OpsCrewError("PROVIDER_ERROR", "Could not reach the Hetzner Cloud API.", {
+  hint: CONNECTION_HINT,
+});
+const UNREACHABLE_TEXT = `Could not reach the Hetzner Cloud API.\n\nNext step: ${CONNECTION_HINT}`;
+
+describe("runTool, when the network can't be reached", () => {
+  it("under Codex, adds a sentence on Codex's sandbox settings", async () => {
+    const text = await failedText(CODEX, UNREACHABLE);
+    expect(text.startsWith(`${UNREACHABLE_TEXT} `)).toBe(true);
+    expect(text).toContain("`[sandbox_workspace_write]` `network_access`");
+    expect(text).toContain("`sandbox_mode`");
+    // A hint a tool put in its place keeps the cause; a bare failure of fetch has its code.
+    const rehinted = new OpsCrewError("PROVIDER_ERROR", "x", { hint: "y", cause: UNREACHABLE });
+    expect(await failedText(CODEX, rehinted)).toContain("[sandbox_workspace_write]");
+    const lookup = Object.assign(new Error("getaddrinfo ENOTFOUND api.osv.dev"), {
+      code: "ENOTFOUND",
+    });
+    const fetchFailed = new TypeError("fetch failed", { cause: lookup });
+    expect(await failedText(CODEX, fetchFailed)).toContain("[sandbox_workspace_write]");
+  });
+
+  it("leaves the message as it was outside Codex, and for any other error", async () => {
+    expect(await failedText({}, UNREACHABLE)).toBe(UNREACHABLE_TEXT);
+    expect(await failedText({ OPSCREW_MCP_CLIENT: "other" }, UNREACHABLE)).toBe(UNREACHABLE_TEXT);
+    const other = new OpsCrewError("INVALID_INPUT", "Not a plan.", { hint: "Run opscrew plan." });
+    expect(await failedText(CODEX, other)).toBe("Not a plan.\n\nNext step: Run opscrew plan.");
+  });
+});
 
 describe("withoutPortainer", () => {
   it("with the host `portainer`, replaces its address but never the product's own name", () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Checks the OpsCrew Claude Code plugin and the repository marketplace file: the required fields
-// of the documented plugin format, a name and a description for every skill, and the MCP server
-// pinned to the plugin's version (FR-111). Exit code 1 on any error.
+// Checks the OpsCrew plugin for Claude Code and for Codex, and the repository's marketplace file
+// for each: the required fields of each format, a name and a description for every skill, and the
+// MCP server pinned to the plugin's version (FR-111, FR-3209). Exit code 1 on any error.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,10 +129,74 @@ if (marketplace) {
   }
 }
 
+// .codex-plugin/plugin.json, Codex's manifest (research R7 and R9): the same skills, and the server
+// inline as `npx -y opscrew@<version> mcp`, since Codex installs no npm package for a plugin.
+// Its paths must start with ./ and stay inside the plugin's folder.
+const codex = readJson(join(pluginDir, ".codex-plugin", "plugin.json"));
+const codexServer = codex?.mcpServers?.opscrew;
+if (codex) {
+  if (codex.name !== manifest?.name || codex.version !== version) {
+    errors.push(".codex-plugin/plugin.json: `name` and `version` must equal the Claude manifest's");
+  }
+  if (codex.skills !== "./skills/") {
+    errors.push('.codex-plugin/plugin.json: `skills` must be "./skills/", the folder both read');
+  }
+  const args = ["-y", `opscrew@${version}`, "mcp"];
+  if (codexServer?.command !== "npx" || JSON.stringify(codexServer.args) !== JSON.stringify(args)) {
+    errors.push(`.codex-plugin/plugin.json: mcpServers.opscrew must run npx ${args.join(" ")}`);
+  }
+  // Tokens reach the server from the user's environment, by name only: `env` holds no value.
+  if (
+    JSON.stringify(codexServer?.env) !== JSON.stringify({ OPSCREW_MCP_CLIENT: "codex" }) ||
+    !Array.isArray(codexServer?.env_vars) ||
+    !codexServer.env_vars.every((name) => /^[A-Z][A-Z0-9_]*$/.test(name))
+  ) {
+    errors.push(
+      ".codex-plugin/plugin.json: mcpServers.opscrew must name its tokens in `env_vars` and set only OPSCREW_MCP_CLIENT in `env`",
+    );
+  }
+}
+
+// .agents/plugins/marketplace.json, Codex's marketplace file, which Codex reads before Claude's
+// (research R9). A local source starts with ./, holds no .., and resolves from the repository's
+// root. Codex refuses the whole file on a policy value it doesn't know.
+const codexMarketplace = readJson(join(repoRoot, ".agents", "plugins", "marketplace.json"));
+if (codexMarketplace) {
+  const where = ".agents/plugins/marketplace.json";
+  if (codexMarketplace.name !== marketplace?.name) {
+    errors.push(`${where}: \`name\` must equal .claude-plugin/marketplace.json's`);
+  }
+  const entries = Array.isArray(codexMarketplace.plugins) ? codexMarketplace.plugins : [];
+  if (entries.length === 0) errors.push(`${where}: \`plugins\` must list at least one plugin`);
+  for (const entry of entries) {
+    const path = entry.source?.source === "local" ? entry.source.path : undefined;
+    if (
+      typeof path !== "string" ||
+      !path.startsWith("./") ||
+      path.split(/[\\/]/).includes("..") ||
+      !existsSync(join(repoRoot, path, ".codex-plugin", "plugin.json"))
+    ) {
+      errors.push(
+        `${where}: ${entry.name} needs a local source "./<folder>" with a .codex-plugin/plugin.json`,
+      );
+    }
+    if (entry.name !== codex?.name || entry.version !== version) {
+      errors.push(`${where}: ${entry.name} must be the plugin ${codex?.name} at ${version}`);
+    }
+    const { installation = "AVAILABLE", authentication = "ON_INSTALL" } = entry.policy ?? {};
+    if (
+      !["NOT_AVAILABLE", "AVAILABLE", "INSTALLED_BY_DEFAULT"].includes(installation) ||
+      !["ON_INSTALL", "ON_USE"].includes(authentication)
+    ) {
+      errors.push(`${where}: ${entry.name} has a policy Codex doesn't know`);
+    }
+  }
+}
+
 if (errors.length > 0) {
   for (const error of errors) console.error(`error: ${error}`);
   process.exit(1);
 }
 console.log(
-  `OpsCrew plugin OK: ${skills.length} skills, ${Object.keys(servers ?? {}).length} MCP server(s).`,
+  `OpsCrew plugin OK for Claude Code and Codex: ${skills.length} skills, ${Object.keys(servers ?? {}).length} MCP server(s).`,
 );

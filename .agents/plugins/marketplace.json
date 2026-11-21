@@ -1,0 +1,13 @@
+{
+  "name": "opscrew",
+  "interface": { "displayName": "OpsCrew" },
+  "plugins": [
+    {
+      "name": "opscrew",
+      "version": "0.2.11",
+      "source": { "source": "local", "path": "./plugin" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer Tools"
+    }
+  ]
+}

@@ -9,6 +9,9 @@ Cursor and VS Code.
 npx opscrew mcp install
 ```
 
+In the Codex CLI and the ChatGPT desktop app, [OpsCrew's Codex plugin](codex-plugin.md) adds the
+same server with OpsCrew's skills. Codex's IDE extension loads no plugin and needs this entry.
+
 It looks for each app on your computer, shows the file it changes in each and the entry it adds,
 and asks once before it writes anything. Then restart each app it changed.
 
@@ -60,9 +63,9 @@ No token goes into any app's file. OpsCrew's server reads your tokens (`HCLOUD_T
 `CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN` and the others the guide's pages name) from the environment
 the app starts it in.
 
-- **Codex** passes on the variables its entry names. OpsCrew's entry lists the names of the tokens
-  OpsCrew reads (`env_vars`, names only, never a value); Codex doesn't document whether it passes on
-  others. Set the tokens in the environment Codex starts in.
+- **Codex** passes on only a short list of its own variables (such as `HOME` and `PATH`) and the
+  variables its entry names. OpsCrew's entry lists the names of the tokens OpsCrew reads
+  (`env_vars`, names only, never a value). Set the tokens in the environment Codex starts in.
 - **Apps started from the desktop on Windows** read your user environment variables: set the tokens
   there, in Windows' settings, then restart the app.
 - **Elsewhere** the vendors don't document which variables an app started from the desktop passes
@@ -114,14 +117,21 @@ before it writes anything.
 }
 ```
 
-**Codex**, in `config.toml`. Codex waits 10 seconds for a server to start by default, less than the
-first download of OpsCrew, so the entry gives it 120:
+**Codex**, in `config.toml`. The entry sets these besides the command:
+- **The start limit:** Codex waits 10 seconds for a server to start by default, less than the first
+  download of OpsCrew, so the entry gives it 120.
+- **The call limit:** Codex stops a tool call after 60 seconds by default, much less than an apply
+  takes, so the entry gives each call 30 minutes.
+- **`OPSCREW_MCP_CLIENT`:** tells OpsCrew's server that it runs under Codex, for its error
+  messages. It isn't a token.
 
 ```toml
 [mcp_servers.opscrew]
 command = "npx"
 args = ["-y", "opscrew@<version>", "mcp"]
 startup_timeout_sec = 120
+tool_timeout_sec = 1800
+env = { OPSCREW_MCP_CLIENT = "codex" }
 env_vars = [
   "HCLOUD_TOKEN",
   "DIGITALOCEAN_TOKEN",

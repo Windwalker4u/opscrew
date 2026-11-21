@@ -79,6 +79,7 @@ catalogue. Its schema is
 ## Using OpsCrew
 
 - [OpsCrew in Claude Code: the plugin](claude-code-plugin.md)
+- [OpsCrew in Codex: the plugin](codex-plugin.md)
 - [OpsCrew in other AI apps: Claude Desktop, Codex, Cursor and VS Code](mcp-clients.md)
 
 ## Security

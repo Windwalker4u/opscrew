@@ -11,7 +11,13 @@ import {
   runnerHostAddresses,
 } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, replaceNames, resolveProjectPaths } from "@opscrew/core";
+import {
+  CONNECTION_HINT,
+  isUserFacingError,
+  OpsCrewError,
+  replaceNames,
+  resolveProjectPaths,
+} from "@opscrew/core";
 import { appsOf, environmentsOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
@@ -252,13 +258,48 @@ function toUserFacing(error: unknown): UserFacingError {
   };
 }
 
+/** Node's codes for a host name that can't be looked up and a network or host out of reach. */
+const UNREACHABLE_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "ECONNREFUSED",
+]);
+
+/**
+ * True when `error`, or an error it was caused by, could not reach the network: an API client's
+ * {@link CONNECTION_HINT}, or one of Node's {@link UNREACHABLE_CODES}.
+ */
+function isUnreachable(error: unknown): boolean {
+  for (let link = error; typeof link === "object" && link !== null; ) {
+    const { code, hint, cause } = link as { code?: unknown; hint?: unknown; cause?: unknown };
+    if (hint === CONNECTION_HINT || UNREACHABLE_CODES.has(String(code))) return true;
+    link = cause;
+  }
+  return false;
+}
+
+/**
+ * Said under Codex (`OPSCREW_MCP_CLIENT=codex`, which the Codex plugin sets) after a network
+ * failure. Codex starts a local MCP server as its own process, outside its sandbox: the sandbox
+ * reaches a server only when the server asks for it (Codex's `codex/sandbox-state` capability),
+ * and OpsCrew's doesn't. So loosening the sandbox wouldn't help.
+ */
+const CODEX_NETWORK_NOTE =
+  "Codex runs OpsCrew's tools outside its sandbox, so Codex's `sandbox_mode` and `[sandbox_workspace_write]` `network_access` settings don't cause this: check this computer's own connection and firewall.";
+
 /** An error tool result (`isError: true`) with the message and the next step, redacted. */
 function errorResult(
   deps: ResolvedMcpDeps,
   error: unknown,
   messages: readonly ReportedMessage[],
 ): CallToolResult {
-  const failure = toUserFacing(error);
+  const base = toUserFacing(error);
+  const failure =
+    deps.env.OPSCREW_MCP_CLIENT === "codex" && isUnreachable(error)
+      ? { ...base, hint: [base.hint, CODEX_NETWORK_NOTE].filter(Boolean).join(" ") }
+      : base;
   const text =
     failure.hint === undefined
       ? failure.message

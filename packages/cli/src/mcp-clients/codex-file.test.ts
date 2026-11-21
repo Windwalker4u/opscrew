@@ -25,7 +25,7 @@ const USER_TEXT = [
 const data = (text: string) => structuredClone(parse(text));
 
 describe("changeCodex", () => {
-  it("creates a missing file with OpsCrew's table: npx, the start limit and the names only", () => {
+  it("creates a missing file with OpsCrew's table: npx, the time limits, the client and the names only", () => {
     const change = changeCodex(undefined, VERSION);
     expect(change).toEqual({ kind: "write", replaced: false, text: codexTable(VERSION) });
     expect(data(codexTable(VERSION))).toEqual({ mcp_servers: { opscrew: codexEntry(VERSION) } });
@@ -33,6 +33,8 @@ describe("changeCodex", () => {
       command: "npx",
       args: ["-y", `opscrew@${VERSION}`, "mcp"],
       startup_timeout_sec: 120,
+      tool_timeout_sec: 1800,
+      env: { OPSCREW_MCP_CLIENT: "codex" },
       env_vars: CREDENTIAL_VARIABLES,
     });
   });
