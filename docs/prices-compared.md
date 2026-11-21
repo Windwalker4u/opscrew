@@ -53,7 +53,7 @@ design asks for this app (2 vCPU, 4 GB, 60 GB):
 OVHcloud was not part of the comparison above, and design was not run against it. From OVHcloud's
 public catalogue of 2026-11-21, before VAT, for 730 hours (a month always on):
 - **d2-4 (2 vCPU, 4 GB): €15.04,** but its 50 GB disk is under the 60 GB design asks for this app.
-- **b3-16 (4 vCPU, 16 GB, 100 GB disk): €74.68,** the smallest model OpsCrew offers with the disk.
+- **b3-16 (4 vCPU, 16 GB, 100 GB disk): €74.68,** the only model OpsCrew offers with that disk.
 - **Billed by the hour,** per second, until the server is deleted: a removal costs nothing more.
 - **No provider backups:** OpsCrew's own snapshots cover the data
   (see [Snapshots and restores](guide/snapshots.md)).

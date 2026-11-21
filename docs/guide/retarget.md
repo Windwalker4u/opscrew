@@ -35,7 +35,8 @@ Cloudflare setup to another Cloudflare account instead, see
 
 - **The tokens of both sides:** `HCLOUD_TOKEN` for Hetzner, `DIGITALOCEAN_TOKEN` for DigitalOcean,
   the four `CNTB_OAUTH2_*` values for Contabo (see [the credentials](contabo.md#the-credentials)),
-  the four `OVH_*` values for OVHcloud (see [Before you start](ovhcloud.md#before-you-start)),
+  the four `OVH_*` values for OVHcloud, whose region must be activated in your Public Cloud project
+  first (see [Before you start](ovhcloud.md#before-you-start)),
   `PORTAINER_API_KEY` for Portainer, plus your GitHub token, and `CLOUDFLARE_API_TOKEN` when your
   domain's DNS is on Cloudflare. A missing or rejected token stops the move before anything
   changes. In Portainer, use the token of the user who deployed the app's stacks (OpsCrew's own
@@ -56,8 +57,7 @@ Cloudflare setup to another Cloudflare account instead, see
   none. A Contabo server is
   bought for at least a month, and one that `--finish` removes is billed to the end of its term
   (see [Removing the app](contabo.md#removing-the-app)). An OVHcloud server is billed by the hour
-  until `--finish` deletes it, and the region it moves to must be activated in your Public Cloud
-  project first (see [Before you start](ovhcloud.md#before-you-start)).
+  until `--finish` deletes it.
 - **No other app on a server the move deletes:** a move off a server OpsCrew created ends by
   deleting it, so OpsCrew refuses it while another app runs there. An app that runs on another
   app's server can move off it, and an app can move onto another app's server (see

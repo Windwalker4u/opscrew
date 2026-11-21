@@ -11,8 +11,8 @@ your own account, as it does at [Hetzner Cloud](hetzner.md), [DigitalOcean](digi
 - **Servers in your Public Cloud project.** OVHcloud keeps servers in a Public Cloud project, which
   you create once. OpsCrew puts the app's server, its SSH key and its security group (OVHcloud's
   firewall) in that project, and touches nothing else in your account.
-- **Billed by the hour.** A server is billed per second after its first minute, from the moment it
-  runs until it is deleted. Deleting it stops its billing at once: there is no term to run out, unlike
+- **Billed by the hour.** A server is billed per second, with a one-minute minimum, from the moment
+  it runs until it is deleted. Deleting it stops its billing at once: there is no term to run out, unlike
   [Contabo](contabo.md).
 - **Prices in EUR, before VAT.**
 
@@ -22,8 +22,9 @@ your own account, as it does at [Hetzner Cloud](hetzner.md), [DigitalOcean](digi
    Public Cloud. The project is free, but OVHcloud asks for a payment method when you create it.
 2. **Activate the regions you'll use.** Open Public Cloud → your project → Settings → Quota &
    Regions, and activate the regions OpsCrew will use for your app (see [Regions](#regions)). OpsCrew
-   never activates a region for you: design offers only models in regions your Public Cloud project
-   has activated, and `npx opscrew init` lists the ones it has.
+   never activates a region for you. With the four variables set (step 5), `npx opscrew init` lists
+   the regions your Public Cloud project has activated, and design offers only the models it can
+   have there; without them, design shows every model in every region.
 3. **Create a service account** under Identity and Access Management → Identities → Service account
    (OVHcloud's guide:
    <https://docs.ovhcloud.com/en/guides/manage-and-operate/api/manage-service-account>). Keep its
@@ -69,9 +70,9 @@ your own account, as it does at [Hetzner Cloud](hetzner.md), [DigitalOcean](digi
    - the server, billed by the hour, with Ubuntu 24.04 and the same first-boot hardening as on the
      other providers;
    - its SSH key, `<app>-deploy`;
-   - its security group, `opscrew-<app>`, with the same rules as on the other providers: SSH from
-     the networks you allow, the web ports on the server that serves your site, and nothing else.
-     OpsCrew always attaches it: your Public Cloud project's default group lets every port be
+   - an OVHcloud security group, `opscrew-<app>`, attached from the first boot: SSH from the
+     networks you allow, the web ports (80 and 443, and UDP 443 for HTTP/3) on the server that
+     serves your site, ping, and WireGuard where it is used. OpsCrew always attaches it: your Public Cloud project's default group lets every port be
      reached from the internet.
 5. `npx opscrew verify`, `npx opscrew secure` and `npx opscrew drift` work as on the other
    providers.
@@ -126,7 +127,7 @@ names it: remove or move that app first.
 anything. Then it deletes:
 
 - **the server,** whose billing stops when it is deleted;
-- **its security group and its SSH key.**
+- **its security group, its SSH key and the DNS records OpsCrew made for the app.**
 
 When the server holds your app's data, OpsCrew first offers a snapshot of it. **What keeps
 billing:**
@@ -171,10 +172,13 @@ Each of these is a limit of OpsCrew on OVHcloud for now, with what to do instead
   OpsCrew's own data snapshots, with their encrypted copy off the server, cover your data instead:
   see [Snapshots and restores](snapshots.md).
 - **No resizing.** OpsCrew can't change a server's model in place, so design and advise refuse a
-  new size on OVHcloud. Move to a new server instead with `npx opscrew retarget` (see
-  [Moving your app somewhere else](retarget.md)), or take a data snapshot with its off-server copy,
-  `npx opscrew destroy`, then design and provision the new size and restore the copy, as
-  [on Contabo](contabo.md#changing-the-size).
+  new size on OVHcloud. Instead:
+  - **move to another provider** with `npx opscrew retarget --to <provider>`, with a short
+    maintenance window while the data is copied (see [Moving your app somewhere else](retarget.md));
+    `retarget` doesn't move an app within OVHcloud;
+  - or **stay on OVHcloud, with downtime:** take a data snapshot with its off-server copy, remove
+    the server with `npx opscrew destroy`, choose the new size with `npx opscrew design`, run
+    `npx opscrew provision`, then restore the copy, as [on Contabo](contabo.md#changing-the-size).
 - **No delete protection.** Deleting the server in the control panel deletes it and its disk at
   once. Use `npx opscrew destroy` instead, which shows the plan, offers a snapshot and asks for the
   typed name first.
@@ -198,7 +202,7 @@ OpsCrew passes it that way and never writes it to a file in your repository.
 ## Replacing the credentials
 
 `npx opscrew rotate` lists OVHcloud's values among your own tokens. Create a new service account
-with the same IAM policy, set `OVH_CLIENT_ID` and `OVH_CLIENT_SECRET`,
-then run `npx opscrew rotate ovhcloud`, and delete the old one in the control panel under Identity
+(it has no rights until a policy names it), add it to the IAM policy limited to your Public Cloud
+project, set `OVH_CLIENT_ID` and `OVH_CLIENT_SECRET`, then run `npx opscrew rotate ovhcloud`, and delete the old one in the control panel under Identity
 and Access Management → Identities → Service account: see
 [Rotating your app's credentials](credential-rotation.md).

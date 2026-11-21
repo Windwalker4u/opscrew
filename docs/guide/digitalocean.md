@@ -1,7 +1,8 @@
 # Deploy to DigitalOcean
 
 OpsCrew can create your app's server at [DigitalOcean](https://www.digitalocean.com/), a Droplet
-on your own account, as it does at [Hetzner Cloud](hetzner.md) and [Contabo](contabo.md). You get a
+on your own account, as it does at [Hetzner Cloud](hetzner.md), [Contabo](contabo.md) and
+[OVHcloud](ovhcloud.md). You get a
 hardened server, the app deployed from [GitHub](https://github.com/) with TLS, health checks and
 rollback, and the `verify`, `secure` and `drift` checks.
 
@@ -17,7 +18,8 @@ rollback, and the `verify`, `secure` and `drift` checks.
 - **Prices in USD, before tax,** with the IPv4 address included, and data centres in Germany, the
   Netherlands, the US and Singapore.
 
-To compare, see [Deploy to Hetzner Cloud](hetzner.md) and [Deploy to Contabo](contabo.md). Once
+To compare, see [Deploy to Hetzner Cloud](hetzner.md), [Deploy to Contabo](contabo.md) and
+[Deploy to OVHcloud](ovhcloud.md). Once
 your app runs, `npx opscrew advise` proposes a move when another provider has the same server for
 less (see [Cost](advise.md#cost)).
 
@@ -162,7 +164,7 @@ disk: see [Changing a server's type](advise.md#changing-a-servers-type).
 
 Another region means a new Droplet: design says so first, because the next `provision` deletes the
 old Droplet with the data on it. To move the app to another provider, use
-`npx opscrew retarget --to hetzner` or `--to contabo` (see
+`npx opscrew retarget --to hetzner`, `--to contabo` or `--to ovhcloud` (see
 [Moving your app somewhere else](retarget.md)).
 
 ## Removing the app
