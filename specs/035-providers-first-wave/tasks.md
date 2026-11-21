@@ -252,6 +252,29 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - Tests for both. Hetzner, DigitalOcean and Contabo are unchanged.
   - Effort: lead
 
+- [ ] T3517 [US2] Destroy and a move's finish name the whole-server snapshots that outlive the
+  server ([issue #7](https://github.com/opscrew-hub/opscrew/issues/7), approved 2026-11-21)
+  - Owns: `packages/agents/src/destroy/**`, `packages/agents/src/retarget/finish.ts` and their
+    tests
+  - Reads: spec US2, FR-3510; the issue's four points; `destroy/deletion.ts`
+    (`remainingAfterDeletion`), `destroy/run.ts`, `retarget/finish.ts`; `ServerSnapshotApi`
+  - Accept:
+    - **Read once:** for each server being deleted at a provider with
+      `offering.serverSnapshotsOutliveServer`, `listSnapshots(serverId)` is read once, before the
+      approval, and reused for "What remains". It is never read again after the deletion.
+    - **Named in full:** each snapshot is named in the plan's summary, the approval text and "What
+      remains", with `snapshotRef` and `snapshotBilling`, once each. The one destroy takes or
+      reuses (`snapshotId`) isn't repeated.
+    - **Passed in:** the list goes into `remainingAfterDeletion` as a field (`earlierSnapshots`).
+      `retarget/finish.ts` passes it the same way, through the same helper, when it deletes the
+      old server.
+    - **Unreadable list:** one plain line through the reporter, naming `texts.console`, and the
+      removal goes on.
+    - **Deletes nothing:** OpsCrew still deletes no snapshot at a destroy.
+    - **Tests** with each provider's fake. Output without such snapshots is unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/destroy src/retarget && pnpm lint`
+  - Effort: high
+
 ## Phase 4: Wave 3 (parallel)
 
 - [x] T3511 [P] [US5] The guide
