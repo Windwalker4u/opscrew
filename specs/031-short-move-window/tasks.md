@@ -320,6 +320,26 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       app records its migration count after a deploy.
   - Effort: high
 
+- [ ] T3122 The old-image cleanup never turns a deploy red
+  - Why: a deploy run's "Delete old images" job failed the whole run when GitHub answered one
+    deletion with HTTP 502. The deploy had succeeded, and a re-run of the job deleted the image.
+  - Owns: `packages/iac-templates/src/workflow/retention.ts` and
+    `packages/iac-templates/src/workflow/preview-images.ts` (the shared `deleteVersions`), colocated
+    tests
+  - Accept:
+    - **Retried:** a deletion GitHub answers with 429 or 5xx is tried twice more, a few seconds
+      apart. A 404 stays "already deleted", and any other answer isn't retried.
+    - **A warning:** versions still not deleted after the retries are a `::warning::` with the same
+      words ("…the next deploy tries again. The deploy itself succeeded."), and the job ends green.
+      The same holds for the preview images' cleanup.
+    - **Still an error:** a failure to list or read the package, or to tell which images the
+      server runs, stays an error, since retention is then broken until someone looks.
+    - **Tests:** a 502 then a success deletes it; a 502 that stays ends with the warning and exit
+      code 0; a 403 isn't retried. The retries' pause must not slow the tests, so make it a value
+      the test can shorten.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/workflow/retention src/workflow/preview-images && pnpm lint`
+  - Effort: medium
+
 **Also in 0.2.11** (the hosted portal's ask, the founder's yes of 2026-11-20; not part of the move):
 
 - [x] T3116 `opscrew providers --json`: the providers' facts as a machine-readable catalogue
