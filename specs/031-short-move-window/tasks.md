@@ -287,7 +287,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       Laravel app on Postgres migrates Postgres in the release, and a worker reads `pgsql`.
   - Effort: high
 
-- [ ] T3119 A Laravel Horizon worker gets the memory it needs
+- [x] T3119 A Laravel Horizon worker gets the memory it needs
   - Why: design sizes every worker at 256 MB (`design/components.ts`). Horizon is a process
     manager: a master, a supervisor per `config/horizon.php` entry and their workers, each a full
     PHP process. It measured 594 MB at rest on a live deploy, so the deploy's worker check fails at
@@ -301,7 +301,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
     - **Tests:** a Horizon worker's default and its line; another worker keeps 256 MB.
   - Effort: medium
 
-- [ ] T3120 Migration status and down migrations run in Railpack and Buildpacks images
+- [x] T3120 Migration status and down migrations run in Railpack and Buildpacks images
   - Why: `app.migrations`' status (`packages/iac-templates/src/workflow/migrations.ts`, around
     line 119) and its down migrations (around 305) run `docker compose run … release sh -c
     "<script>"`. Under Railpack's and Buildpacks' entrypoint, which wraps the command in its own
