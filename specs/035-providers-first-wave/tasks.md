@@ -254,7 +254,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T3511 [P] [US5] The guide
+- [x] T3511 [P] [US5] The guide
   - Owns: `docs/guide/ovhcloud.md`, and OVHcloud's lines in `docs/prices-compared.md`,
     `docs/guide/snapshots.md`, `retarget.md` and `credential-rotation.md`
   - Reads: spec US5; research R2 and R3; `docs/guide/contabo.md` (the model); README's provider
@@ -279,7 +279,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: medium
 
-- [ ] T3513 [P] [US5] The live test and its steps
+- [x] T3513 [P] [US5] The live test and its steps
   - Owns: `packages/cli/test/live/ovhcloud.test.ts`, OVHcloud's section of `docs/e2e.md`
   - Reads: `packages/cli/test/live/contabo.test.ts`, `docs/e2e.md`'s Contabo section, spec SC-3507
   - Depends: T3510

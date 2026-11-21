@@ -612,3 +612,6 @@ question goes to the founder in an issue instead.
     with `one()`, so none means a null `image_id` that only the apply refuses, and two would fail
     every plan.
   - **The default user:** cloud-init's first boot works with the image's own user (`ubuntu`).
+- Added from T3513's review: whether OVHcloud's `instanceId` snapshot filter still finds an
+  instance's snapshots after the instance is deleted. The live pass records the ids before the
+  destroy, so it doesn't depend on it.

@@ -72,8 +72,8 @@ your own account, as it does at [Hetzner Cloud](hetzner.md), [DigitalOcean](digi
    - its SSH key, `<app>-deploy`;
    - an OVHcloud security group, `opscrew-<app>`, attached from the first boot: SSH from the
      networks you allow, the web ports (80 and 443, and UDP 443 for HTTP/3) on the server that
-     serves your site, ping, and WireGuard where it is used. OpsCrew always attaches it: your Public Cloud project's default group lets every port be
-     reached from the internet.
+     serves your site, ping, and WireGuard where it is used. OpsCrew always attaches it: your
+     Public Cloud project's default group lets every port be reached from the internet.
 5. `npx opscrew verify`, `npx opscrew secure` and `npx opscrew drift` work as on the other
    providers.
 
