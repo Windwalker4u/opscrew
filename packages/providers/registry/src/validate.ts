@@ -132,6 +132,14 @@ const CONNECTOR_FIREWALL = "terraform_data.firewall";
 /** A resource's opening line in `extraShared.resources`: `resource "<type>" "<name>" {`. */
 const RESOURCE_LINE = /^resource "(\w+)" "(\w+)" \{$/;
 
+/** The variables of every server module; a root variable must not clash with one, prefixed or not. */
+const SERVER_VARIABLES = ["location", "server_type", "image", "backups", "delete_protection"];
+
+/** A root variable's name (ADR 0029, D11): an HCL identifier. */
+const HCL_IDENTIFIER = /^[a-z][a-z0-9_]*$/;
+
+const rootVariable = z.object({ name: z.string(), description: z.string(), fromEnv: z.string() });
+
 const terraform = z.object({
   provider: z.object({ name: z.string(), source: z.string(), version: z.string() }),
   serverResourceType: z.string(),
@@ -155,6 +163,8 @@ const terraform = z.object({
   deleteProtectionVariable: z.boolean(),
   descriptions: z.object({ location: z.string(), serverType: z.string(), backups: z.string() }),
   moduleArguments: fn<Definition["terraform"]["moduleArguments"]>(),
+  rootVariables: z.array(rootVariable).optional(),
+  importId: fn<NonNullable<Definition["terraform"]["importId"]>>().optional(),
   extraShared: z
     .object({
       resources: lines,
@@ -277,7 +287,36 @@ const definitionSchema: z.ZodType<Definition> = z
         message: "is needed exactly when offering.resize is true",
       });
     }
+    checkRootVariables(definition, ctx);
   });
+
+/**
+ * Each root variable (ADR 0029, D11): an HCL identifier clashing with no server variable, declared
+ * once, read from one of the provider's credential variables, and described.
+ */
+function checkRootVariables(definition: Definition, ctx: z.RefinementCtx): void {
+  const seen = new Set<string>();
+  for (const [index, variable] of (definition.terraform.rootVariables ?? []).entries()) {
+    const { name, description, fromEnv } = variable;
+    const issue = (field: string, problem: string) =>
+      ctx.addIssue({
+        code: "custom",
+        path: ["terraform", "rootVariables", index, field],
+        message: `"${name}" ${problem}`,
+      });
+    if (!HCL_IDENTIFIER.test(name)) {
+      issue("name", `must be an HCL identifier (${HCL_IDENTIFIER.source})`);
+    }
+    const server = SERVER_VARIABLES.find((v) => name === v || name.endsWith(`_${v}`));
+    if (server !== undefined) issue("name", `collides with the server variable ${server}`);
+    if (seen.has(name)) issue("name", "is declared twice");
+    seen.add(name);
+    if (!definition.credentials.envVars.includes(fromEnv)) {
+      issue("fromEnv", `reads ${fromEnv}, which is not one of credentials.envVars`);
+    }
+    if (description.trim() === "") issue("description", "has no description");
+  }
+}
 
 /**
  * Checks a cloud provider definition against the contract (ADR 0029) and returns it unchanged.
