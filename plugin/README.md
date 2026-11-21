@@ -99,6 +99,8 @@ steps you run:
   for the cost estimates.
 - **Contabo** (api.contabo.com, and auth.contabo.com for its sign-in): servers, firewalls, SSH keys
   and snapshots. Its prices come from a dated list, since it has no price API.
+- **OVHcloud** (api.eu.ovhcloud.com, and auth.eu.ovhcloud.com for its sign-in): servers, security
+  groups, SSH keys and snapshots in your Public Cloud project, and live prices.
 - **Cloudflare:** DNS records, TLS settings, rules and Workers; DNS-over-HTTPS lookups
   (cloudflare-dns.com) when it checks a site.
 - **Porkbun, Namecheap and GoDaddy**, only in the `domain` steps: availability, prices, purchases

@@ -69,11 +69,11 @@ encrypted copy off the server. A whole-server snapshot is deleted at its provide
 
 ## A snapshot of the whole server
 
-On a server OpsCrew created at Hetzner, DigitalOcean or Contabo, `npx opscrew snapshot --server`
-has the provider snapshot the server's whole disk while it runs; a live snapshot may not be
-consistent, and `--stop` shuts the server down for it, after the user approves that downtime. At
-Hetzner and DigitalOcean it costs a monthly price (the summary shows it), and volumes attached to
-the server are not in it. `npx opscrew restore --server <id>` rebuilds the server from it in place,
+On a server OpsCrew created at Hetzner, DigitalOcean, Contabo or OVHcloud,
+`npx opscrew snapshot --server` has the provider snapshot the server's whole disk while it runs; a
+live snapshot may not be consistent, and `--stop` shuts the server down for it, after the user
+approves that downtime. At Hetzner and DigitalOcean it costs a monthly price (the summary shows
+it), and volumes attached to the server are not in it. `npx opscrew restore --server <id>` rebuilds the server from it in place,
 keeping its address, after the user types the server's name; everything written on it since is
 lost, and OpsCrew then checks that the app answers. On the user's own server or Portainer
 `--server` is refused: the data snapshot is the one to use there.
@@ -92,6 +92,15 @@ On Contabo:
   place; the other way is `npx opscrew retarget` to another provider): take one,
   `npx opscrew destroy`, design and provision the new size, then
   `npx opscrew restore <id> --from offsite --key-file <path>`.
+
+On OVHcloud:
+
+- Snapshots are billed per GB a month (the summary shows the rate), and they outlive the server:
+  `npx opscrew destroy` leaves them, and they keep billing until the user deletes them in the
+  control panel (Public Cloud → the project → Compute → Instance Snapshot).
+- OpsCrew turns on no OVHcloud backups (their images outlive the server and keep billing too): the
+  data snapshot with its copy off the server covers the data. A server can't be resized either:
+  the way to another size is the same as on Contabo.
 
 ## Scheduled snapshots
 
