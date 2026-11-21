@@ -505,7 +505,10 @@ export type ServerApiInput = Pick<SnapshotBeforeDeleteInput, "servers" | "sleep"
  * The provider's server API: `input.servers` (tests), else the provider connector's, built from its
  * token; a missing token stops.
  */
-export function serverApi(scope: ServerScope, input: ServerApiInput): ServerSnapshotApi {
+export function serverApi(
+  scope: Pick<ServerScope, "deps" | "provider" | "command">,
+  input: ServerApiInput,
+): ServerSnapshotApi {
   const { deps, provider } = scope;
   const texts = destroyTexts(provider);
   const options: VpsConnectorOptions = {
@@ -817,13 +820,87 @@ export async function forgetHostKeys(
 }
 
 /**
+ * The ids of the whole-server snapshots OpsCrew took earlier of the server being deleted (`name`,
+ * default the app's server), through its provider's `listSnapshots`. Read once, before the
+ * deletion's approval, and never after the deletion: some providers stop answering for a server's
+ * snapshots once it is gone. The server is the one with the ids the infrastructure state records
+ * (`ids`), or without them the one named `name` among the app's servers. When the list cannot be
+ * read, one line says so and where to look, and the deletion goes on (`undefined`).
+ */
+export async function listEarlierSnapshots(
+  scope: Pick<ServerScope, "deps" | "provider" | "app" | "command">,
+  input: ServerApiInput & { ids: readonly string[]; name?: string | undefined },
+): Promise<string[] | undefined> {
+  const { deps } = scope;
+  const name = input.name ?? scope.app;
+  try {
+    const api = serverApi(scope, input);
+    const ids =
+      input.ids.length > 0
+        ? input.ids
+        : (await api.findAppServers(scope.app))
+            .filter((server) => server.name === name)
+            .map((server) => server.id);
+    const listed: string[] = [];
+    for (const id of ids) {
+      listed.push(...(await api.listSnapshots(id)).map((snapshot) => snapshot.id));
+    }
+    return listed;
+  } catch (error) {
+    const texts = destroyTexts(scope.provider);
+    deps.reporter.warn(
+      deps.redactor.redact(
+        `OpsCrew could not list the snapshots of ${name} taken earlier (${failureReason(error)}); any there stay and keep billing, so check them in ${texts.console}.`,
+      ),
+    );
+    return undefined;
+  }
+}
+
+/** The snapshots taken earlier (`earlier`) but the one the deletion takes or reuses, by reference. */
+function earlierRefs(
+  texts: DestroyTexts,
+  earlier: readonly string[] | undefined,
+  snapshotId: string | undefined,
+): string[] {
+  return (earlier ?? []).filter((id) => id !== snapshotId).map((id) => texts.snapshotRef(id));
+}
+
+/**
+ * The line in a deletion's summary and approval that names the whole-server snapshots taken earlier
+ * of the server `name` (`earlier`, from {@link listEarlierSnapshots}), which stay and keep billing;
+ * the one the deletion takes or reuses (`snapshotId`) is named on its own. None without them.
+ */
+export function earlierSnapshotsLine(
+  provider: VpsProviderId,
+  name: string,
+  earlier: readonly string[] | undefined,
+  snapshotId?: string,
+): string | undefined {
+  const texts = destroyTexts(provider);
+  const refs = earlierRefs(texts, earlier, snapshotId);
+  if (refs.length === 0) return undefined;
+  const which =
+    refs.length === 1
+      ? `The snapshot of ${name} taken earlier stays`
+      : `The ${refs.length} snapshots of ${name} taken earlier stay`;
+  return `${which}: ${listText(refs)} (${texts.snapshotBilling}; OpsCrew never deletes ${refs.length === 1 ? "it" : "them"}).`;
+}
+
+/**
  * What the provider still keeps after a server was deleted, in plain English: the snapshot taken
- * first, and automatic backups the provider keeps after the deletion (DigitalOcean).
+ * first, the snapshots taken earlier, and automatic backups the provider keeps after the deletion
+ * (DigitalOcean).
  */
 export function remainingAfterDeletion(input: {
   provider: VpsProviderId;
   app: string;
   snapshotId?: string | undefined;
+  /**
+   * The ids of the whole-server snapshots taken earlier, as {@link listEarlierSnapshots} read them
+   * before the deletion; the one in `snapshotId` is left out.
+   */
+  earlierSnapshots?: readonly string[] | undefined;
   /** Whether the deleted server had the provider's automatic backups on. */
   backups: boolean;
 }): string[] {
@@ -832,6 +909,16 @@ export function remainingAfterDeletion(input: {
   if (input.snapshotId !== undefined) {
     items.push(
       `The snapshot of ${input.app} (${texts.snapshotRef(input.snapshotId)}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete it in ${texts.console} when you no longer need it.`,
+    );
+  }
+  const earlier = earlierRefs(texts, input.earlierSnapshots, input.snapshotId);
+  if (earlier.length === 1) {
+    items.push(
+      `The snapshot of ${input.app} taken earlier (${earlier[0]}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete it in ${texts.console} when you no longer need it.`,
+    );
+  } else if (earlier.length > 1) {
+    items.push(
+      `The ${earlier.length} snapshots of ${input.app} taken earlier (${listText(earlier)}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete them in ${texts.console} when you no longer need them.`,
     );
   }
   if (input.backups && texts.keptBackupsRemaining) items.push(texts.keptBackupsRemaining);

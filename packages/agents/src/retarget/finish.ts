@@ -10,12 +10,13 @@ import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import {
   forgetHostKeys,
+  listEarlierSnapshots,
   readSnapshotRecord,
   remainingAfterDeletion,
   removeSnapshotRecord,
 } from "../destroy/deletion";
 import { deleteDeployBranch } from "../destroy/portainer";
-import { cancelTerm } from "../destroy/texts";
+import { cancelTerm, snapshotsOutlive } from "../destroy/texts";
 import { commandFlags } from "../environments/choice";
 import { publishDeploySetup } from "../provision";
 import { previousBucketKeyFile } from "../provision/storage";
@@ -56,6 +57,22 @@ async function takenSnapshot(session: MoveSession): Promise<string | undefined> 
   return recorded?.provider === previousCloud(moveOf(session)).provider
     ? recorded.snapshotId
     : undefined;
+}
+
+/**
+ * The whole-server snapshots taken earlier of the old cloud server, where they outlive it
+ * (`listEarlierSnapshots`): read once, before its removal, and never after, since a provider may
+ * not answer for them once it is gone. It is found by the app's name: a move always changes the
+ * provider, so the old provider holds no other server of that name.
+ */
+async function earlierSnapshots(session: MoveSession): Promise<string[] | undefined> {
+  const { provider } = previousCloud(moveOf(session));
+  if (!snapshotsOutlive(provider)) return undefined;
+  const servers = session.services.servers?.[provider];
+  return listEarlierSnapshots(
+    { deps: session.deps, provider, app: session.plan.app.name, command: session.command },
+    { ids: [], ...(servers ? { servers } : {}) },
+  );
 }
 
 /**
@@ -133,6 +150,9 @@ async function finish(
   const left = await leaveMoveNetwork(session);
   if (left !== undefined) return left;
 
+  // 1a. The old cloud server's snapshots taken earlier, which stay: read before its removal.
+  const earlier = cloud ? await earlierSnapshots(session) : undefined;
+
   // 1. The old side's removal, after the typed name. No look for other apps on an old server
   // OpsCrew created (FR-3012): the move's start refused while one shared it, and no app joins a
   // server whose first app is moving (`firstApp`); after the switch the recorded address is the
@@ -193,7 +213,9 @@ async function finish(
   await deps.state.markPhase("retarget", "ok", `moved to ${place}`);
   if (cloud) {
     const { provider, backups } = previousTarget(move);
-    remaining.unshift(...remainingAfterDeletion({ provider, app, snapshotId, backups }));
+    remaining.unshift(
+      ...remainingAfterDeletion({ provider, app, snapshotId, earlierSnapshots: earlier, backups }),
+    );
   }
   // The cancelled old server, billed until its contract ends.
   remaining.unshift(...cancelled);

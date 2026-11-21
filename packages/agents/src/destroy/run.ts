@@ -96,11 +96,13 @@ import { destroySharedPreviews } from "./previews";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
 import {
   confirmExtraServers,
+  earlierSnapshotsLines,
   extraOwnServers,
   extraProtectedServers,
   extraProtectionVars,
   extraServersRemaining,
   forgetExtraCloudServers,
+  readEarlierSnapshots,
   removeExtraOwnServers,
   reopenPublicSsh,
   type ServerSnapshot,
@@ -161,6 +163,8 @@ interface DestroyContext {
    * approval and before its apply, through its provider's API (`input`).
    */
   cancel?: { servers: readonly ServerSnapshot[]; input: ServerApiInput };
+  /** The lines naming the snapshots taken earlier that stay (`earlierSnapshotsLines`), for the approval. */
+  earlierSnapshots?: readonly string[];
 }
 
 /**
@@ -301,6 +305,7 @@ async function destroyInfrastructure(
         ...(ctx.servers ?? []),
         ...(warning ? [warning] : []),
         snapshotLine,
+        ...(ctx.earlierSnapshots ?? []),
         // The off-server copies outlive the server, wherever they are: OpsCrew never deletes them.
         ...(offsiteCopiesStay(plan) === "" ? [] : [offsiteCopiesStay(plan).trim()]),
         ...(tunnelChange(summary.changes, "delete") && !serverDeleted
@@ -544,6 +549,8 @@ function remainingAfterDestroy(input: {
   plan: DeployPlan;
   texts: DestroyTexts;
   snapshotId: string | undefined;
+  /** The ids of the app's server's snapshots taken earlier, read before the teardown. */
+  earlierSnapshots: readonly string[] | undefined;
   github: GitHubTarget;
   secretsRemoved: readonly string[];
   /** `--delete-data`: the bucket goes with the app's data; otherwise it is said to stay. */
@@ -557,6 +564,7 @@ function remainingAfterDestroy(input: {
       provider: planProvider(plan),
       app: plan.app.name,
       snapshotId: input.snapshotId,
+      earlierSnapshots: input.earlierSnapshots,
       backups: cloudTarget(plan.target).backups,
     }),
     ...(bucket !== undefined ? [bucket] : []),
@@ -761,6 +769,9 @@ async function destroyDeployment(
   // The servers whose provider cancels them at the end of their term instead of deleting them.
   const cancelling = cancelledServers(snapshots);
   if (cancelling.length > 0) ctx.cancel = { servers: cancelling, input: services };
+  // The snapshots taken earlier that outlive the servers: read once, now, for the summary, the
+  // approval and "What remains" (a provider may not answer for them once the server is gone).
+  const earlier = await readEarlierSnapshots(session, snapshots, services);
   if (preview.changes.length > 0) {
     deps.reporter.info(
       ["The teardown deletes these resources:", ...describeChanges(preview.changes)].join("\n"),
@@ -792,6 +803,7 @@ async function destroyDeployment(
       `A snapshot of server ${snapshot.server} (${snapshot.name}) is taken first too (${extra.snapshotBilling}; \`--no-snapshot\` skips it).`,
     );
   }
+  for (const line of earlierSnapshotsLines(name, snapshots, earlier)) deps.reporter.info(line);
   if (cancelling.length > 0) {
     // Said before the prompt: the servers stay billed to the end of their term.
     deps.reporter.warn(cancelNotes(cancelling, name).join("\n"));
@@ -870,6 +882,7 @@ async function destroyDeployment(
       ...(services.now ? { now: services.now } : {}),
     });
     const snapshotId = snapshotIds[APP_SERVER];
+    ctx.earlierSnapshots = earlierSnapshotsLines(name, snapshots, earlier, snapshotIds);
 
     // 6. Lift delete protection (only where the provider has it), on every Hetzner server
     protection = await liftProtection(session, {
@@ -953,13 +966,14 @@ async function destroyDeployment(
     plan,
     texts,
     snapshotId,
+    earlierSnapshots: earlier[APP_SERVER],
     github,
     secretsRemoved,
     bucketDeleted: options.deleteData === true,
     files: await deploymentFiles(deps, plan),
   });
   // The extra servers' snapshots and kept backups, each by its name at the provider.
-  remaining.push(...extraServersRemaining(plan, snapshotIds));
+  remaining.push(...extraServersRemaining(plan, snapshotIds, earlier));
   remaining.push(...bucketStillListed(bucketDeleted));
   // The cancelled servers, billed until their contracts end.
   remaining.unshift(...(cancelled ?? []));
