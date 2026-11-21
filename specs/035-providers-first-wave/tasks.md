@@ -41,7 +41,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 - [x] T3500 (lead) Research, spec, plan, tasks
 
-- [ ] T3501 (lead) The package's skeleton
+- [x] T3501 (lead) The package's skeleton
   - Accept: `packages/providers/ovhcloud` with `package.json` (`@opscrew/provider-ovhcloud`, the
     same dependencies, scripts and `exports` as `@opscrew/provider-contabo`), `tsconfig.json`,
     `vitest.config.ts`, an empty `module/` folder, `src/index.ts` exporting nothing yet, and the
