@@ -1247,6 +1247,7 @@ describe("DeployPlan target on an existing Portainer", () => {
       "hetzner",
       "digitalocean",
       "contabo",
+      "ovhcloud",
       "own",
       "portainer",
       "localhost",
@@ -1553,7 +1554,7 @@ describe("DeployPlan environment", () => {
 
   it('runs the deploy job on the server only on a cloud or own server ("server")', async () => {
     const message =
-      'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo or own); use "github" here';
+      'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo, ovhcloud or own); use "github" here';
     const plan = await staging({ runner: "server" });
     for (const target of [plan.target, own]) {
       expect(DeployPlanSchema.safeParse({ ...plan, target }).success, target.provider).toBe(true);
@@ -1600,7 +1601,7 @@ describe("DeployPlan environment", () => {
       expect(parseArtifact("plan", text, "plan.yaml")).toEqual(parsed);
     }
     const message =
-      'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo or own): a runner machine deploys to the server over SSH; use "github" here';
+      'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo, ovhcloud or own): a runner machine deploys to the server over SSH; use "github" here';
     for (const target of [portainer, local]) {
       const result = DeployPlanSchema.safeParse({ ...plan, target, dns: noDns });
       expect(issue(result), target.provider).toEqual([{ path: "environment.runner", message }]);

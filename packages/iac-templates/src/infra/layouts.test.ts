@@ -391,12 +391,16 @@ describe("renderInfra move layouts", () => {
       backups: hetzner.backups,
     });
     expect(values("abort-rename")).not.toHaveProperty("previous_location");
-    // Every value in tfvars belongs to a declared variable without a default.
+    // Every value in tfvars belongs to a declared variable without a default; a provider's root
+    // variables come only from TF_VAR_*, never from tfvars.
+    const fromEnv = new Set(
+      CLOUD_PROVIDERS.flatMap(({ terraform }) => terraform.rootVariables ?? []).map((v) => v.name),
+    );
     for (const [from, to] of DIRECTIONS) {
       for (const name of LAYOUT_NAMES) {
         const files = render(name, from, to);
         const declared = variableNames(content(files, "prod/variables.tf")).filter(
-          (v) => !v?.endsWith("delete_protection"),
+          (v) => !v?.endsWith("delete_protection") && !fromEnv.has(v ?? ""),
         );
         expect(Object.keys(JSON.parse(content(files, "tfvars.json")))).toEqual(declared);
       }

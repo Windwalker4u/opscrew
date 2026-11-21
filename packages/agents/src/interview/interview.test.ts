@@ -301,6 +301,11 @@ describe("provider question", () => {
           hint: "cheap servers in Germany, the US and Singapore; monthly contracts, a removal ends at the end of the term; prices in EUR",
         },
         {
+          value: "ovhcloud",
+          label: "OVHcloud",
+          hint: "servers in Germany, France and Poland, plus Canada, Singapore and Australia; billed by the hour, per second, until deleted; prices in EUR; needs a Public Cloud project",
+        },
+        {
           value: "own",
           label: "A server you already have",
           hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere, also a computer at home; you already pay for it",

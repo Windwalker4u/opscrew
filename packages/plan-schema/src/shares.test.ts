@@ -96,7 +96,7 @@ describe("target.shares", () => {
     expect(own?.properties.shares).toMatchObject({
       additionalProperties: false,
       required: ["app", "provider"],
-      properties: { provider: { enum: ["hetzner", "digitalocean", "contabo"] } },
+      properties: { provider: { enum: ["hetzner", "digitalocean", "contabo", "ovhcloud"] } },
     });
   });
 });

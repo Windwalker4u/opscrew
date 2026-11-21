@@ -123,6 +123,24 @@ describe("the provider catalogue", () => {
     const cx23 = sizes("hetzner").find((size) => size.id === "cx23");
     expect(cx23).toBeDefined();
     expect(cx23?.setupFee).toBeUndefined();
+    // OVHcloud bills by the hour, with no setup fee, at one price in every location.
+    expect(sizes("ovhcloud").map((size) => size.id)).toEqual([
+      "d2-2",
+      "d2-4",
+      "d2-8",
+      "b3-8",
+      "b3-16",
+    ]);
+    const d22 = sizes("ovhcloud").find((size) => size.id === "d2-2");
+    expect(d22).toMatchObject({
+      vcpu: 1,
+      memoryMb: 2048,
+      diskGb: 25,
+      hourly: 0.0104,
+      locations: ["DE1", "SBG5", "GRA11", "WAW1", "BHS5", "SGP1", "SYD1"],
+    });
+    expect(d22?.monthly).toBeCloseTo(7.59, 2);
+    expect(sizes("ovhcloud").every((size) => size.setupFee === undefined)).toBe(true);
   });
 
   it("gives a token's format where the value alone has one, and marks the secrets", async () => {
@@ -240,6 +258,7 @@ describe("the provider catalogue", () => {
       "cloud-server hetzner": "https://www.hetzner.com/cloud",
       "cloud-server digitalocean": "https://www.digitalocean.com/pricing",
       "cloud-server contabo": "https://contabo.com/en/vps/",
+      "cloud-server ovhcloud": "https://www.ovhcloud.com/en-ie/public-cloud/prices/",
       "cloudflare cloudflare": "https://www.cloudflare.com/plans/",
       "cloudflare cloudflare-workers":
         "https://developers.cloudflare.com/workers/platform/pricing/",

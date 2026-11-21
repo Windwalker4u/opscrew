@@ -174,6 +174,10 @@ describe("runAdvise: one server", () => {
       "DigitalOcean's prices in fra1",
       "DigitalOcean's prices in ams3",
       "Contabo's prices in EU",
+      "OVHcloud's prices in DE1",
+      "OVHcloud's prices in SBG5",
+      "OVHcloud's prices in GRA11",
+      "OVHcloud's prices in WAW1",
       "Dependabot alerts",
       "Dependabot's open pull requests",
       "the GitHub token's expiry",
@@ -190,6 +194,9 @@ describe("runAdvise: one server", () => {
       ),
       expect.stringMatching(
         /^live prices: HCLOUD_TOKEN is not set, so prices come from Hetzner's published price list dated \d{4}-\d{2}-\d{2}/,
+      ),
+      expect.stringMatching(
+        /^live prices: OVH_CLIENT_ID is not set, so prices come from OVHcloud's published price list dated \d{4}-\d{2}-\d{2}/,
       ),
     ]);
     expect(s.github?.calls).toEqual([

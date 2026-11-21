@@ -718,6 +718,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "hetzner",
       "digitalocean",
       "contabo",
+      "ovhcloud",
       "own",
       "portainer",
       "localhost",
@@ -740,7 +741,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
           ).toEqual(["environment.runner"]);
           expect(result.error?.issues[0]?.message, what).toMatch(
             new RegExp(
-              `^can be "${environment.runner}" only on a server OpsCrew creates or your own server \\(target.provider hetzner, digitalocean, contabo or own\\)`,
+              `^can be "${environment.runner}" only on a server OpsCrew creates or your own server \\(target.provider hetzner, digitalocean, contabo, ovhcloud or own\\)`,
             ),
           );
         }

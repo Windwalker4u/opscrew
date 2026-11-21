@@ -25,8 +25,10 @@ describe("the server modules after a rebuild from a snapshot", () => {
     ]),
   )("%s ignores changes to the server's image", (file, type) => {
     const body = resourceBody(MODULE_FILES[file] ?? "", type);
-    // The attribute the module sets from its `image` variable (`image`, Contabo's `image_id`).
-    const image = /^ {2}(\w+) += var\.image$/m.exec(body)?.[1];
+    // The attribute the module sets from its `image` variable (`image`, Contabo's `image_id`), or
+    // OVHcloud's `image_id` from the id it looks up by that name (`local.image_id`).
+    const source = type === "ovh_cloud_instance" ? "local\\.image_id" : "var\\.image";
+    const image = new RegExp(`^ {2}(\\w+) += ${source}$`, "m").exec(body)?.[1];
     expect(image).toBeDefined();
     const ignored = /ignore_changes = \[([^\]]*)\]/.exec(lifecycle(body, type));
     expect(ignored?.[1]?.split(",").map((name) => name.trim())).toContain(image);
