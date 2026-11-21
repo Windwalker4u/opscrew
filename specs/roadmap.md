@@ -595,6 +595,28 @@ The founder's go-ahead of 2026-11-21, for after 032 and 040: a user who builds t
   - **Left out:** the targets that need the user's own machine (`localhost`, a server at home).
 - **The dashboard's part** (the control plane): showing each plan, collecting the approval and the
   typed name, and starting the workflow run with them.
+- **The split, agreed with the dashboard's lead (2026-11-21):**
+  - **The workflow file and its dispatch are the dashboard's:** `opscrew-cloud.yml`, with one
+    generic `operate` job (`op`, `targets`, `args`, `hash`, `confirm`).
+  - **The commands, their flags and their report are the core's.** That makes the contract the
+    commands, not the runner.
+  - **Each change is two runs.** A plan (`--plan-only`) writes a `report.json`. The apply
+    (`--approve <hash>`, plus `--confirm` where asked) plans again and refuses if the hash
+    changed.
+  - **Every command writes a versioned `report.json`** whose schema the core exports. It holds:
+    - its status;
+    - for a plan, the plan's hash, the changes, the cost before and after, the policy results, and
+      whether a name must be typed;
+    - for an apply, what changed and the verify result;
+    - for a failure, the step and its first line;
+    - what the user must do next.
+  - **Small state** goes in GitHub secrets or variables, and **generated files** go through the
+    pull request the run opens.
+  - **The dashboard's model** drives the chat. A core step that uses a model reaches it through the
+    dashboard's gateway (`ANTHROPIC_BASE_URL`), so no other model adapter is needed for this.
+- **To settle in the spec:** a run's own `GITHUB_TOKEN` can't write repository secrets. State a run
+  creates must therefore go back to the dashboard to store, or into the pull request, encrypted to
+  the CI key.
 - **Research first:**
   - what of `~/.opscrew` each command needs, and where each piece can live encrypted;
   - which commands still prompt in a script;
