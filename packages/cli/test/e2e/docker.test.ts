@@ -198,6 +198,16 @@ const LARAVEL_POSTGRES: Case = {
   overlay: "laravel-postgres",
 };
 
+/**
+ * laravel-app with Filament in its composer.lock: the seal publishes Filament's files, which
+ * Composer's scripts would and Railpack's `composer install --no-scripts` doesn't.
+ */
+const LARAVEL_FILAMENT: Case = {
+  name: "laravel-app-filament",
+  example: "laravel-app",
+  overlay: "laravel-filament",
+};
+
 /** The cron job a user adds to celery-worker's plan: a command, which design never finds in code. */
 function withHeartbeat(plan: DeployPlan): DeployPlan {
   const job = { name: "heartbeat", schedule: "* * * * *", command: "python heartbeat.py" };
@@ -225,6 +235,7 @@ const ALL_CASES: Case[] = [
   ...exampleNames().map((name) => ({ name, example: name, ...DESIGNED[name] })),
   PRISMA,
   LARAVEL_POSTGRES,
+  LARAVEL_FILAMENT,
   {
     name: "node-mongo-portainer",
     example: "node-mongo",
@@ -1427,6 +1438,36 @@ describe.skipIf(SKIP !== undefined)(
             expect((await docker(["exec", name, "test", "-f", file])).exitCode, file).toBe(0);
           }
           console.info(`${example}: prisma --version:\n${tail(output, 12)}`);
+        },
+        TWO_MINUTES,
+      );
+
+      it.runIf(testCase === LARAVEL_FILAMENT)(
+        "a Filament app's image has Filament's published files, served, and leaves no file of root's for the app",
+        async () => {
+          if (prepared === undefined) throw new Error("not prepared");
+          const { container: name } = app();
+          const file = "/app/public/js/filament/filament/app.js";
+          const found = await docker(["exec", name, "test", "-f", file]);
+          expect(found.exitCode, `${example}: ${file} in the sealed image`).toBe(0);
+          await untilAnswer(
+            name,
+            prepared.plan.app.port,
+            { path: "/js/filament/filament/app.js" },
+            30_000,
+            (a) => a.status === 200,
+          );
+          // The seal ran artisan as root: nothing of it may be left where the app writes.
+          const roots = await docker([
+            "exec",
+            name,
+            "find",
+            "/app/storage",
+            "/app/bootstrap/cache",
+            "-user",
+            "0",
+          ]);
+          expect(roots.stdout.trim(), `${example}: files of root's the app can't write`).toBe("");
         },
         TWO_MINUTES,
       );

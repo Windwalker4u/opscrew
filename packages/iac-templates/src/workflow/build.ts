@@ -242,8 +242,20 @@ const LARAVEL_CACHES =
   "RUN rm -f /app/bootstrap/cache/config.php /app/bootstrap/cache/routes-*.php /app/bootstrap/cache/events.php";
 
 /**
+ * Filament's JavaScript, CSS and fonts, which `php artisan filament:upgrade` publishes into
+ * `public/` from Composer's `post-autoload-dump` script and an app's `.gitignore` keeps out of the
+ * repository: Railpack's `composer install --no-scripts` never runs it. The seal publishes them
+ * when the image's `composer.lock` has `filament/filament`, as root, so they are the web root's
+ * like the rest of it, and before {@link LARAVEL_CACHES}, so nothing it caches stays. Laravel logs
+ * to stderr there, so no log file of root's is left in `storage/`. A failure fails the build with
+ * the command's words. (Double quotes only: the seal's lines are written in single quotes.)
+ */
+const FILAMENT_ASSETS =
+  'RUN if grep -qF "\\"filament/filament\\"" /app/composer.lock 2>/dev/null; then cd /app && LOG_CHANNEL=stderr php artisan filament:assets; fi';
+
+/**
  * More seal lines per language: for PHP {@link FRANKENPHP_SEAL}, then for an app without a web
- * root (Laravel, {@link railpackLaravel}) {@link LARAVEL_STORAGE_LINK} and
+ * root (Laravel, {@link railpackLaravel}) {@link LARAVEL_STORAGE_LINK}, {@link FILAMENT_ASSETS} and
  * {@link LARAVEL_CACHES}; with one (a plain PHP app), first the app's folder
  * ({@link appRoot}) mode 1777, as `/tmp`: the app's user may create files there (a web installer
  * writes its settings file through a temporary file and a rename), but the sticky bit keeps it
@@ -253,7 +265,7 @@ const LARAVEL_CACHES =
 function railpackSeal(plan: DeployPlan): string[] {
   if (plan.app.build?.runtime.language !== "php") return [];
   return railpackLaravel(plan)
-    ? [FRANKENPHP_SEAL, LARAVEL_STORAGE_LINK, LARAVEL_CACHES]
+    ? [FRANKENPHP_SEAL, LARAVEL_STORAGE_LINK, FILAMENT_ASSETS, LARAVEL_CACHES]
     : [`RUN chmod 1777 ${appRoot(plan)}`, FRANKENPHP_SEAL];
 }
 
