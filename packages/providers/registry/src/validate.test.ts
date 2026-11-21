@@ -250,6 +250,8 @@ describe("validateCloudProvider", () => {
         ["db_location", "location"],
         ["previous_image", "image"],
         ["web_delete_protection", "delete_protection"],
+        ["server_ipv4", "server_ipv4"],
+        ["previous_server_ipv6", "server_ipv6"],
       ]) {
         expect(failure(withRoot({ ...variable, name }))).toContain(
           `terraform.rootVariables.0.name: "${name}" collides with the server variable ${server}`,
@@ -272,11 +274,13 @@ describe("validateCloudProvider", () => {
     });
 
     it("wants a description", () => {
-      const message = failure(withRoot({ ...variable, description: "" }));
-      expect(message).toContain('The cloud provider definition "hetzner" is not valid');
-      expect(message).toContain(
-        'terraform.rootVariables.0.description: "hetzner_project" has no description',
-      );
+      for (const description of ["", "   "]) {
+        const message = failure(withRoot({ ...variable, description }));
+        expect(message).toContain('The cloud provider definition "hetzner" is not valid');
+        expect(message).toContain(
+          'terraform.rootVariables.0.description: "hetzner_project" has no description',
+        );
+      }
     });
 
     it("wants the import id a function, when there is one", () => {

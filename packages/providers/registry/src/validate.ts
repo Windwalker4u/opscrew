@@ -132,8 +132,19 @@ const CONNECTOR_FIREWALL = "terraform_data.firewall";
 /** A resource's opening line in `extraShared.resources`: `resource "<type>" "<name>" {`. */
 const RESOURCE_LINE = /^resource "(\w+)" "(\w+)" \{$/;
 
-/** The variables of every server module; a root variable must not clash with one, prefixed or not. */
-const SERVER_VARIABLES = ["location", "server_type", "image", "backups", "delete_protection"];
+/**
+ * The variables of every server module, and the addresses iac-templates declares in a root that can
+ * render a cloud server; a root variable must not clash with one, prefixed or not.
+ */
+const SERVER_VARIABLES = [
+  "location",
+  "server_type",
+  "image",
+  "backups",
+  "delete_protection",
+  "server_ipv4",
+  "server_ipv6",
+];
 
 /** A root variable's name (ADR 0029, D11): an HCL identifier. */
 const HCL_IDENTIFIER = /^[a-z][a-z0-9_]*$/;
