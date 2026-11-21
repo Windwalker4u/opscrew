@@ -107,7 +107,8 @@ local target runs to the end.
 - **FR-3202**: The Codex plugin and the Claude Code plugin MUST use one copy of each skill. Any
   difference Codex needs is generated from it, and a check fails when the two disagree.
 - **FR-3203**: The plugin MUST start OpsCrew's deterministic MCP server, pinned to the release's
-  CLI, with no model call and no network at start.
+  CLI, with no model call. Codex installs no npm package for a plugin, so the first start downloads
+  that release with npx (research R7).
 - **FR-3204**: Every MCP tool MUST declare whether it only reads, changes, or deletes, so that
   Codex's approval modes prompt only at changes. A check fails when a tool lacks the declaration.
 - **FR-3205**: No Codex setting MAY bypass OpsCrew's approval bound to the plan's hash: the MCP
@@ -119,8 +120,9 @@ local target runs to the end.
   - where it doesn't work (the IDE extension, Codex cloud) and why.
 - **FR-3207**: Tokens MUST never be written into a Codex configuration file by OpsCrew or its
   guide; they reach the MCP server from the user's environment.
-- **FR-3208**: When a tool call fails for a cause Codex's settings explain (no network, a time limit
-  reached), OpsCrew's message MUST name the setting to change.
+- **FR-3208**: When a tool call fails because OpsCrew can't reach the network from Codex, its message
+  MUST name Codex's setting to change. A call Codex cuts off at its time limit can't be reported by
+  OpsCrew, so the plugin sets a limit long enough for an apply.
 - **FR-3209**: The release handbook MUST bump the Codex plugin with the Claude Code plugin, at each
   release, and its check MUST cover both.
 - **FR-3210**: The plugin MUST NOT be submitted to OpenAI's public plugin directory in this feature

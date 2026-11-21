@@ -128,3 +128,68 @@ The user's `config.toml` then needs, besides the plugin:
 - https://learn.chatgpt.com/docs/custom-prompts
 - https://learn.chatgpt.com/docs/environments/cloud-environment
 - https://learn.chatgpt.com/docs/codex/ide
+
+## R7. The plugin's files, read from Codex's source (2026-11-21)
+
+From the openai/codex repository on main: `codex-rs/core-plugins/src/manifest.rs` and `loader.rs`,
+`codex-rs/codex-mcp/src/plugin_config.rs` and `agent_plugin_config.rs`, and
+`codex-rs/config/src/mcp_types.rs` and `types.rs`.
+
+- **Two formats.**
+  - The Claude-compatible one is `.codex-plugin/plugin.json`, with `.mcp.json` by default.
+  - The newer Agent Plugin format is a root `plugin.json` with a `mcp.json` that needs a `$schema`.
+- **The manifest's fields** (camelCase):
+  - `skills`: a `./` path, or a list of paths;
+  - `mcpServers`: a `./` path, or the servers inline as an object;
+  - `interface`: the plugin's display fields;
+  - every path must start with `./` and must not contain `..`.
+- **A stdio server is accepted** in the Claude-compatible format. Each server is Codex's own
+  `McpServerConfig`, with these keys:
+  - `command`, `args`, `env`, `env_vars`, `cwd`;
+  - `startup_timeout_sec`, `tool_timeout_sec`, `enabled`.
+
+  Unknown keys are refused. A relative `cwd` resolves against the plugin's folder. The format
+  expands no `${…}` variable, so Claude's `${CLAUDE_PLUGIN_ROOT}` can't be shared.
+- **No npm install.** Codex copies a plugin to `~/.codex/plugins/cache/…`; an `npm` source runs
+  `npm pack --ignore-scripts`. Nothing runs `npm install`, so a plugin can't count on
+  `node_modules`.
+- **The server's environment** is a short default list (HOME, PATH, USER and the like), plus `env`
+  and the names in `env_vars`.
+- **Approvals** (`core/src/mcp_tool_call.rs`, `requires_mcp_tool_approval`). In the default `auto`
+  mode, a tool marked `readOnlyHint: true` never prompts. Any other tool prompts when
+  `destructiveHint` or `openWorldHint` is true or missing. `writes` prompts unless the tool is
+  read-only.
+- **The user's plugin settings** (`[plugins.<plugin>.mcp_servers.<server>]`) take the approval
+  mode and the enabled tools, but no time limit.
+- **The IDE extension** loads no plugin, but it reads the same `[mcp_servers]` configuration as the
+  CLI (OpenAI's MCP page). Codex cloud: not documented anywhere, so it is left out.
+
+## R8. Decisions (lead, 2026-11-21)
+
+- **Format: the Claude-compatible one, in the same `plugin/` folder.**
+  - `.codex-plugin/plugin.json` sits beside `.claude-plugin/plugin.json`.
+  - `skills: "./skills/"` points at the one copy of the skills both tools read.
+  - The MCP server goes inline in `mcpServers`, so Codex's file never collides with Claude's
+    `.mcp.json`.
+  - *Rationale:* one folder, one copy of the skills, and the only format whose server takes
+    `env_vars` and the time limits.
+  - *Rejected:* the Agent Plugin format, which takes neither; a second plugin folder, which would
+    need a second copy of the skills, since paths can't leave the plugin's folder.
+- **The server: the CLI's own Codex entry** (`codexEntry` in
+  `packages/cli/src/mcp-clients/entry.ts`), the same that `npx opscrew mcp` already writes into
+  `config.toml`. That is `npx -y opscrew@<release> mcp`, `startup_timeout_sec`, and `env_vars` from
+  `CREDENTIAL_VARIABLES`. A test checks the manifest's server equals `codexEntry` of the pinned
+  release.
+  - *Rationale:* one source, and npx works with no install step, as Codex needs.
+  - *Rejected:* bundling `node_modules` into a separate npm package, which would mean a second
+    package to publish each release.
+- **Time limit:** `codexEntry` gains `tool_timeout_sec`, long enough for an apply. That also fixes
+  the hand-written Codex setup, which is cut off at Codex's 60 seconds today.
+- **Marketplace:** `.agents/plugins/marketplace.json`, Codex's own file, with the same plugin and
+  version as `.claude-plugin/marketplace.json`.
+- **Approvals:** every MCP tool states `readOnlyHint`. A tool that isn't read-only also states
+  `destructiveHint` and `openWorldHint`, so Codex's default mode prompts exactly where it should. A
+  test fails on a tool that leaves one out.
+- **The release:** step 6 of `docs/releasing.md` also bumps the Codex manifest's version and the
+  pinned `opscrew@<release>`. The test above fails when they differ from the Claude plugin's.
+- **The live pass** in the Codex CLI needs an OpenAI account, so it waits for the founder.
