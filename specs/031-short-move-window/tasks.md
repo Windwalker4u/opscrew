@@ -320,7 +320,7 @@ gains the optional `restart(serverId)` and `reinstall(serverId, { image, userDat
       app records its migration count after a deploy.
   - Effort: high
 
-- [ ] T3123 A Filament app built by Railpack has Filament's published files
+- [x] T3123 A Filament app built by Railpack has Filament's published files
   - Why: Filament's JavaScript, CSS and fonts are published into `public/` by `php artisan
     filament:upgrade` from Composer's `post-autoload-dump` script, and an app's `.gitignore` keeps
     them out of the repository. Railpack's `composer install --no-scripts` never runs it, so the
