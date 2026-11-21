@@ -252,7 +252,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - Tests for both. Hetzner, DigitalOcean and Contabo are unchanged.
   - Effort: lead
 
-- [ ] T3517 [US2] Destroy and a move's finish name the whole-server snapshots that outlive the
+- [x] T3517 [US2] Destroy and a move's finish name the whole-server snapshots that outlive the
   server ([issue #7](https://github.com/opscrew-hub/opscrew/issues/7), approved 2026-11-21)
   - Owns: `packages/agents/src/destroy/**`, `packages/agents/src/retarget/finish.ts` and their
     tests
