@@ -1,6 +1,6 @@
 ---
 name: opscrew-snapshots
-description: Back up and restore the data of an app OpsCrew deployed, with OpsCrew's snapshots: see which snapshots exist (read-only), and guide the user through taking one before a risky change, putting one back, deleting one, a snapshot of the whole server at Hetzner or DigitalOcean, scheduled snapshots and an encrypted copy off the server, each run in their own terminal. Use when the user asks "is my data backed up?", "back up my database", "take a snapshot", "restore yesterday's data", "I deleted rows by mistake", "what snapshots do I have?", "schedule backups", "keep a copy somewhere else", "what if the server dies?", or about backups on their own server or Portainer.
+description: Back up and restore the data of an app OpsCrew deployed, with OpsCrew's snapshots: see which snapshots exist (read-only), and guide the user through taking one before a risky change, putting one back, deleting one, a snapshot of the whole server at Hetzner, DigitalOcean, Contabo or OVHcloud, scheduled snapshots and an encrypted copy off the server, each run in their own terminal. Use when the user asks "is my data backed up?", "back up my database", "take a snapshot", "restore yesterday's data", "I deleted rows by mistake", "what snapshots do I have?", "schedule backups", "keep a copy somewhere else", "what if the server dies?", or about backups on their own server or Portainer.
 ---
 
 # Snapshots and restores with OpsCrew

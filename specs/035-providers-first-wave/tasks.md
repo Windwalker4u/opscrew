@@ -293,7 +293,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T3512 [P] [US5] The plugin's skills and the MCP text
+- [x] T3512 [P] [US5] The plugin's skills and the MCP text
   - Owns: `plugin/**`, `packages/mcp-server/src/**` (text only)
   - Reads: spec US5.3; how 026's T2618 added Contabo
   - Depends: T3510

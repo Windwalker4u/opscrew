@@ -11,8 +11,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 
 ## Rules (always)
 
-- Never run `tofu`, `terraform`, `hcloud`, `doctl`, `cntb`, `ovhcloud`, `aws`, `gcloud`, `az`,
-  `ssh` or `curl` yourself for this flow. Infrastructure changes happen only through OpsCrew, after
+- Never run `tofu`, `terraform`, `hcloud`, `doctl`, `cntb`, `ovhcloud`, `openstack`, `aws`, `gcloud`,
+  `az`, `ssh` or `curl` yourself for this flow. Infrastructure changes happen only through OpsCrew, after
   the user approves a plan.
 - Never ask the user to paste tokens, passwords or `.env` values into this chat, and never print
   them. Secrets are entered in the user's own terminal by `opscrew provision`.
@@ -191,10 +191,12 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
        user's Public Cloud project, and that project's id in `OVH_CLOUD_PROJECT_SERVICE`.
      - First the user creates the Public Cloud project and activates the regions the app uses
        (Settings → Quota & Regions in the control panel): OpsCrew never activates a region.
-     - Servers are billed by the hour (per second); deleting one stops its billing at once. Its
-       snapshots outlive the server and keep billing per GB until deleted in the control panel.
-     - No provider backups (OpsCrew's data snapshots cover the data), no resize (a move instead,
-       the same two ways as on Contabo) and no delete protection (deleting the server in the
+     - Servers are billed by the hour (per second, with a one-minute minimum); deleting one stops
+       its billing at once. Its snapshots outlive the server and keep billing per GB until deleted
+       in the control panel.
+     - No provider backups (OpsCrew's data snapshots cover the data), no resize (the same two ways as
+       on Contabo: `retarget` to another provider, which doesn't move within OVHcloud, or a new
+       OVHcloud server with downtime) and no delete protection (deleting the server in the
        control panel deletes its disk at once: use `npx opscrew destroy`).
    - **On a hosting account.** There is one option, the account, without a price, with what the
      app gets there (the hostname, its PHP version, the database, the cron jobs). Say what differs
