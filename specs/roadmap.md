@@ -16,7 +16,8 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
 - **Beside them:** 035's first providers, started by a second contributor.
 - **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
-  more providers in phases (035–039), each once the founder gives the go-ahead.
+  more providers in phases (035–039), then 042 GitLab and 043 Forgejo and Gitea, each once the
+  founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -881,6 +882,49 @@ contract.
   Vultr and Akamai. OpsCrew would deploy into a Cloudways application through its API, the way it
   deploys into a hosting account (027).
 
+## 042 GitLab, opening the contract for git platforms
+
+**The decision:** GitLab, Forgejo and Gitea join GitHub as git platforms, in the core and in the
+dashboard, which reaches each through one adapter (founder, 2026-11-21). They come after 039, so
+the order above stays as it is; he can move them earlier.
+
+**The contract:** GitLab comes first, as decided on 2026-10-14. It opens with a contract for the git
+platform, with GitHub moved behind it (026's rule, as ADR 0029 did for cloud providers). Each
+platform is one package, and no code outside it branches on a platform's id. The contract covers
+what `@opscrew/connector-github` does today:
+- the repository's files and branches, and deploy keys;
+- environments, secrets and variables: GitLab's protected and masked CI/CD variables, scoped to an
+  environment;
+- the deploy pipeline (`.gitlab-ci.yml`), started and read;
+- the image registry: GitLab's container registry beside GHCR;
+- the runner on the user's server (GitLab Runner) and the runners guide;
+- previews per merge request (022), with CI's standing approval (ADR 0026) enforced the same way;
+- `opscrew init` telling the platform from the remote: gitlab.com, or a self-managed host.
+
+**What waits:** 041's runs started from the dashboard reach each platform once it has the
+contract. GitHub Pages as a site host stays GitHub's unless research finds GitLab Pages worth
+adding.
+
+**Research first:** GitLab's API for CI/CD variables, deploy keys and pipeline triggers; the
+registry's tokens; and which of these the Free tier has, such as protected environments.
+
+## 043 Forgejo and Gitea
+
+**How they come in:** after 042, through its contract. Forgejo (a fork of Gitea, which Codeberg
+runs) and Gitea, hosted or on the user's own server.
+
+**What it builds:**
+- **The deploy workflow:** Forgejo's and Gitea's Actions read GitHub Actions' workflow syntax for
+  the most part, so the workflow is GitHub's template with the differences research finds.
+- **One connector or two:** one connector serves both if their APIs still match (secrets,
+  variables, deploy keys, containers in the package registry); otherwise two.
+
+**Research first:**
+- the version of each that has the Actions secrets and variables API;
+- whether a workflow can be started through the API (for 041);
+- the workflow folder and `runs-on` labels;
+- how far each one's runner differs from GitHub's.
+
 ## Later, not yet placed
 
 - **Node.js and Python apps through cPanel's Application Manager and Plesk's Node.js, if users
@@ -935,12 +979,11 @@ contract.
   Proxmox API from a cloud-init template, then 009's host setup and tunnel path (Terraform
   provider `bpg/proxmox` to be researched). Until then, Proxmox users create a VM themselves and
   use their own server (009) or their Portainer (010).
-- **Other code hosts and CI** (founder, 2026-10-14): GitHub Actions stays first; next GitLab
-  (merge requests, protected and masked CI/CD variables, `.gitlab-ci.yml`, gitlab.com and
-  self-managed), then Azure DevOps (pull requests, variable groups, `azure-pipelines.yml`,
-  workload-identity service connections; pairs with Azure). Each needs a code-host connector, not
-  only a pipeline template. GitLab opens with a contract for the code host, with GitHub moved
-  behind it (026's rule, founder, 2026-11-11). Jenkins is not planned; Ansible is not used.
+- **Other code hosts and CI** (founder, 2026-10-14):
+  - **Placed:** GitLab is now 042 and Forgejo and Gitea 043 (founder, 2026-11-21).
+  - **Azure DevOps stays here:** pull requests, variable groups, `azure-pipelines.yml` and
+    workload-identity service connections. It pairs with Azure and joins 042's contract.
+  - **Not planned:** Jenkins; Ansible is not used.
 - **Kubernetes:** out of v1. Later, deploying into a cluster the user already runs (EKS, GKE,
   AKS, DOKS, k3s) with Helm charts and the same plan, approval and security gates; OpsCrew never
   creates clusters.
