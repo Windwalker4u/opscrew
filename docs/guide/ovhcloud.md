@@ -90,6 +90,10 @@ quota, OpsCrew shows OVHcloud's answer in plain English with what to try next.
 | b3-8 | 2, dedicated | 8 GB | 50 GB | 0.0512 | 37.38 |
 | b3-16 | 4, dedicated | 16 GB | 100 GB | 0.1023 | 74.68 |
 
+An app with a PostgreSQL database needs a 60 GB disk, and every model but `b3-16` has at most
+50 GB, so on OVHcloud such an app gets `b3-16`: €74.68 for 730 hours before VAT. An app without a
+database fits a `d2-4` (€15.04).
+
 - **Before VAT,** dated 2026-11-21, from OVHcloud's public catalogue. OVHcloud adds your country's
   VAT on the invoice. OpsCrew shows every provider's prices before VAT.
 - **Live when the credentials are set.** With the four variables, design reads the prices from

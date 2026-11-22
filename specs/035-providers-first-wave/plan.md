@@ -33,7 +33,7 @@ first. Kamatera, IONOS Cloud and UpCloud come later, each in its own pull reques
 - **Infrastructure**: OpenTofu and Terraform 1.6+ in the common dialect, with the `ovh/ovh`
   provider pinned `~> 2.25.0` (2.25.0 was published 2026-11-13).
 - **OVHcloud API**: `https://api.eu.ovhcloud.com/1.0` and `https://api.eu.ovhcloud.com/v2`
-  (go-ovh's `OvhEU`; the v2 base is to be confirmed against the v2 schema by T3505), with OAuth2
+  (go-ovh's `OvhEU`; the v2 base is to be confirmed against the v2 schema by T3506), with OAuth2
   client credentials from `https://auth.eu.ovhcloud.com/oauth2/token`, scope `all` (go-ovh
   `ovh.go` and `configuration.go`, read 2026-11-21). The public catalogue is
   `GET /1.0/order/catalog/public/cloud?ovhSubsidiary=IE`.
@@ -63,13 +63,13 @@ first. Kamatera, IONOS Cloud and UpCloud come later, each in its own pull reques
 - **V. Deterministic first**: the catalogue, availability and every check are code. No model is
   involved. ✅
 - **VI. Contracts first**: one optional field, `rootVariables`, owned by `@opscrew/contracts`, is
-  changed in its own task (T3501) and recorded in ADR 0029 as D11. The id joins the lists in
-  T3509. ✅
+  changed in its own task (T3502) and recorded in ADR 0029 as D11. The id joins the lists in
+  T3510. ✅
 - **VII. Test-first**: every task names its `Verify:` command. ✅
 
 ## Design
 
-### 1. The contract: `ProviderTerraform.rootVariables` (T3501, lead, after the issue)
+### 1. The contract: `ProviderTerraform.rootVariables` (T3502, lead, after the issue)
 
 ```ts
 /**
@@ -196,7 +196,7 @@ whoever runs it without OpsCrew.
   from the instance's `security_group_ids` or, before apply, from the plan configuration's
   references, as Contabo's definition reads its firewall's.
 
-### 4. The id joins the lists (T3509, lead, after the issue)
+### 4. The id joins the lists (T3510, lead, after the issue)
 
 `ovhcloud` in:
 - `ProviderId` and `VpsProviderId` (contracts);
@@ -260,14 +260,6 @@ Then `pnpm check` must pass, with any exhaustive switch left over fixed. This is
 
 ## Order
 
-- **T3500 (lead):** research, spec, plan, tasks; the `[035]` issues for `rootVariables` and the id.
-- **T3501 (lead, after the rootVariables issue):** the contract field and ADR 0029 D11.
-- **Wave 1:** T3502 the registry's validation ∥ T3503 iac-templates ∥ T3504 the agents'
-  `projectEngine` ∥ T3505 OVHcloud's client. T3505 needs only the contract as it is.
-- **Wave 2:** T3506 the catalogue and price table ∥ T3507 the server API and connector. Then
-  T3508, the definition and module, which needs T3501 and T3507.
-- **T3509 (lead, after the id issue):** `ovhcloud` joins the ids, the schemas and the registry.
-- **Wave 3:** T3510 the guide ∥ T3511 the plugin skills and MCP text ∥ T3512 the live test file and
-  `docs/e2e.md`.
-- **T3513 (lead):** a fresh review of the whole branch, `pnpm check`, then the pull request.
-  **T3514 (lead):** the live pass, only with the founder's go-ahead.
+`tasks.md` holds the order, the waves and each task's number (T3501 to T3518), and the issues each
+one waited for. The plan's first draft numbered them one lower; the numbers above follow
+`tasks.md`.

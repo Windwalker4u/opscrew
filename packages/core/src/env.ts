@@ -54,7 +54,7 @@ const CREDENTIAL_PARTS = new Set([
 ]);
 
 /** Always removed, whatever model provider is configured. */
-const ALWAYS_PREFIXES = ["TF_VAR_", "CONTABO_", "CNTB_", "ARM_", "VSCODE_GIT_ASKPASS_"];
+const ALWAYS_PREFIXES = ["TF_VAR_", "CONTABO_", "CNTB_", "OVH_", "ARM_", "VSCODE_GIT_ASKPASS_"];
 
 /** Model credentials the agent SDK needs; never removed. */
 const MODEL_CREDENTIALS = new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
@@ -93,7 +93,7 @@ function isRemoved(name: string, env: Record<string, string | undefined>): boole
 
 /**
  * Returns a new environment for the agent subprocess without secrets ({@link isSecretEnvName}),
- * `TF_VAR_*`, `ARM_*`, `CONTABO_*`, `CNTB_*` (Contabo's credentials), the account names of provider credentials (`CLOUDFLARE_EMAIL`,
+ * `TF_VAR_*`, `ARM_*`, `CONTABO_*`, `CNTB_*` (Contabo's credentials), `OVH_*` (OVHcloud's), the account names of provider credentials (`CLOUDFLARE_EMAIL`,
  * `NAMECHEAP_API_USER`) and credential channels such as `SSH_AUTH_SOCK`.
  * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are kept; `AWS_*`, Google
  * credentials/`CLOUDSDK_*` and `AZURE_*` (plus `ANTHROPIC_FOUNDRY_API_KEY`) are kept only when

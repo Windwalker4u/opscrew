@@ -208,7 +208,9 @@ UpCloud follows IONOS Cloud, in the same way.
 - **FR-3504**: Its credentials MUST be read from `OVH_ENDPOINT`, `OVH_CLIENT_ID`,
   `OVH_CLIENT_SECRET` and `OVH_CLOUD_PROJECT_SERVICE`, all four required, with `OVH_ENDPOINT`
   equal to `ovh-eu`. They MUST be redacted everywhere, the project id included, used only on the
-  user's computer, and never written to state, tfvars, the server or CI.
+  user's computer, and never written to tfvars, a committed file, the server or CI. The
+  project id is the one exception for state: every OVHcloud resource records it as `service_name`
+  in the Terraform state and in saved plans, which stay on the user's computer (ADR 0029, D11).
 - **FR-3505**: Design MUST price OVHcloud by the hour and for 730 hours, before VAT, in EUR. Prices
   come from a dated static table, or from OVHcloud's public catalogue when the credentials are
   set. Every price MUST show its date or "live", and there is no setup fee.
@@ -264,8 +266,9 @@ UpCloud follows IONOS Cloud, in the same way.
 - **SC-3504**: OVHcloud's tasks change nothing outside its package, the built-in list, the
   provider id lists, the contract's one optional field and its consumers, and the docs.
 - **SC-3505**: No output, log, audit entry, generated or committed file of the fake runs holds any
-  of the four OVHcloud values. The live pass, when the founder runs it, checks the same across its
-  state files too.
+  of the four OVHcloud values. The live pass, when the founder runs it, checks the same, and its
+  state files and saved plans for the client id and secret (the project id is in them as
+  `service_name`, as FR-3504 says).
 - **SC-3506**: `pnpm check` passes on the pull request, or the pull request says plainly which
   test failed and why.
 - **SC-3507**: The founder can run the live pass from `docs/e2e.md` alone. It costs under €0.05 an

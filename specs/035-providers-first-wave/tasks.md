@@ -275,6 +275,37 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/destroy src/retarget && pnpm lint`
   - Effort: high
 
+- [ ] T3518 [US1] [US3] OVHcloud through OpsCrew's own flows, with fakes (T3514's review)
+  - Owns: new or extended tests under `packages/agents/src/**` and `packages/cli/test/live/**`;
+    `packages/providers/ovhcloud/src/servers.test.ts`;
+    `packages/iac-templates/src/infra/root-variables.test.ts`;
+    `packages/agents/src/destroy/destroy.test.ts`
+  - Reads: spec SC-3501, SC-3502, SC-3505, FR-3504 (as reworded); ADR 0029 D11;
+    `packages/agents/src/testing/deploy.ts` (the OVHcloud target), `testing/destroy.ts`
+    (`FakeServers`); `packages/agents/src/provision/takeover.test.ts`
+  - Accept:
+    - **SC-3501 with fakes:** one flow test in agents on an OVHcloud app (`testing/deploy.ts`'s
+      target, the fake engine and `FakeServers`) that runs provision, verify, status, secure,
+      drift, `snapshot --server` and its `restore --server`, and asserts:
+      - the engine gets `TF_VAR_ovhcloud_project_id` and the root declares the variable;
+      - no rendered or committed file holds the project id's value;
+      - SecOps's checks run on `ovh_cloud_instance` and pass;
+      - snapshot and restore go through `ServerSnapshotApi`;
+      - a leak check of the four values at the end.
+    - **SC-3502 in agents:** an OVHcloud case in `provision/takeover.test.ts`: a create that timed
+      out, then a second provision that takes the instance over. `main.tf` holds
+      `id = "${var.ovhcloud_project_id}/<id>"` and never the project id itself. The copy of the
+      takeover's choice in `servers.test.ts` is deleted.
+    - **Cleanups:**
+      - `root-variables.test.ts`'s stale comment is fixed, with one assertion on the real
+        OVHcloud definition;
+      - `destroy.test.ts` ~2278's project-id-shaped literal becomes `fakeSecret(...)`;
+      - the live test's header price is €0.0206 (d2-4);
+      - the live test's leak scan keeps checking state files and saved plans for the client id
+        and secret, but not the project id (FR-3504).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/provider-ovhcloud --filter=@opscrew/iac-templates && npx vitest run --root packages/agents src/provision src/destroy && npx vitest run --root packages/providers/ovhcloud && pnpm lint`
+  - Effort: high
+
 ## Phase 4: Wave 3 (parallel)
 
 - [x] T3511 [P] [US5] The guide
