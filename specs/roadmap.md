@@ -634,6 +634,10 @@ The founder's go-ahead of 2026-11-21, for after 032 and 040: a user who builds t
   - what of `~/.opscrew` each command needs, and where each piece can live encrypted;
   - which commands still prompt in a script;
   - the workflow the dashboard starts, and its permissions.
+- **The spec goes to the dashboard's lead** as soon as it is committed (agreed 2026-11-22): each
+  op's flags, the versioned `report.json` schema and where the core exports it, the `secrets[]`
+  entry, and the `operate` job's inputs. The dashboard builds nothing on 041 before then. It is
+  written during 040's build, so it is ready when 0.2.12 ships.
 
 ## 033 Scaling across servers
 
