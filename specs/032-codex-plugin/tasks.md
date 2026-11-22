@@ -68,6 +68,32 @@ files.
   deploy key in the OpsCrew home when missing. Move that to `opscrew_plan`, so the preview is a
   pure read.
 
+## Also in 0.2.12 (founder, 2026-11-22)
+
+- [x] T3205 (lead) `opscrew scan` leaves out a guessed secret in test code and in ignored paths
+  (asked through the dashboard's session)
+  - **Why:** since T2841 a `secrets/generic-high-entropy` guess in test code or in a path
+    `opscrew/scan.yaml` ignores is listed as info. That leaves bogus findings on users, such as 11
+    from a PHP app's tests and one from a `*.test.ts` file in the dashboard, and only "Not a
+    problem" on each one silences them.
+  - **Owns:** `packages/secops/src/{scan/ignore,scan/run,rules/secrets,report/markdown}.ts` and
+    their tests, the TSDoc of `IgnoredFindings` (`packages/contracts/src/secops.ts`) and of the scan
+    config's schema (`packages/plan-schema/src/scan-config.ts`), `docs/guide/security.md`'s scan
+    section
+  - **Accept:**
+    - A guess in test code, or in a path an `opscrew/scan.yaml` entry leaves out (its `rules`
+      unset or naming `secrets/generic-high-entropy`), is left out like every other finding there
+      and counted in `ignored` (by rule, test code or its entry), so in the summary's "Ignored:"
+      line, `SECURITY_SCAN.md` and `--json`.
+    - Every secret the scan recognises keeps its severity wherever it sits: a provider's token
+      format, a private key, a committed `.env` with values, a gitleaks hit,
+      `supabase/service-role-in-client`.
+    - The secrets rule no longer lowers a guess in a test file to info itself; the ignore step
+      decides, in one place.
+    - Tests: a guess in test code and in an ignored path left out and counted; a recognised token
+      in test code stays high or critical; a guess in app code stays high.
+  - **Verify:** `pnpm turbo run typecheck --filter=@opscrew/secops && npx vitest run --root packages/secops && pnpm lint`
+
 ## Wave 2 (lead)
 
 - [ ] T3202 (lead) The live pass in the Codex CLI ([quickstart.md](quickstart.md)), with the

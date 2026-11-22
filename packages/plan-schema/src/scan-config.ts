@@ -24,7 +24,7 @@ export const ScanIgnoreEntrySchema = z.strictObject({
   reason: text("is missing: say why these findings do not matter"),
 });
 
-/** `opscrew/scan.yaml`: what `opscrew scan` leaves out. Optional; secrets are never left out. */
+/** `opscrew/scan.yaml`: what `opscrew scan` leaves out. Optional; recognised secrets never are. */
 export const ScanConfigSchema = z.strictObject({
   ignore: z.array(ScanIgnoreEntrySchema, {
     error: (issue) => (issue.input === undefined ? "is missing: list the ignore rules" : undefined),

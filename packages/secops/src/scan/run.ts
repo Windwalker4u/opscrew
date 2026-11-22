@@ -227,7 +227,7 @@ async function runOne(
  * stops the scan), findings deduplicated, sanitized (repo-relative paths, secret-shaped text
  * masked) and sorted, counts per severity, and `project` = the directory name. Findings in test
  * code and in the paths `opscrew/scan.yaml` ignores are left out and counted in `ignored`; a
- * secret there stays (a guessed one in an ignored path as info).
+ * secret the scan recognises stays (a guessed one is left out too).
  * @throws ArtifactError when `opscrew/scan.yaml` is invalid.
  */
 export async function runScan(root: string, options: RunScanOptions): Promise<ScanReport> {

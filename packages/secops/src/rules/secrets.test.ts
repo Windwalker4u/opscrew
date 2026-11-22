@@ -220,34 +220,10 @@ describe("secrets/generic-high-entropy", () => {
     );
   }
 
-  it("reports a random value in a test file as info, saying it is in a test file", async () => {
-    const value = fakeSecret("generic-password", "tests");
-    const files = [
-      "tests/Http/LoginTest.php",
-      "test/login.js",
-      "src/__tests__/login.ts",
-      "spec/login_spec.rb",
-      "src/LoginTest.php",
-      "src/login.test.ts",
-      "pkg/login_test.go",
-      "src/login.spec.ts",
-    ];
-    const findings = await scanFiles(
-      Object.fromEntries(files.map((file) => [file, `$x = ["password" => "${value}"];\n`])),
-    );
-    expect(findings.map((f) => f.file).sort()).toEqual([...files].sort());
-    for (const finding of findings) {
-      expect(finding.severity).toBe("info");
-      expect(finding.description).toMatch(/in a test file/);
-    }
-    expectNoFakeValues(findings, [value]);
-  });
-
-  it("keeps a random value in app code high", async () => {
+  it("reports a random value as high", async () => {
     const value = fakeSecret("generic-password", "app");
     const [finding] = await scanFiles({ "src/Mailer.php": `$c = ["api_key" => "${value}"];\n` });
     expect(finding?.severity).toBe("high");
-    expect(finding?.description).not.toMatch(/test file/);
   });
 
   it("does not report words, word lists, constant names or Name/1.0 strings", async () => {

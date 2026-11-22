@@ -79,7 +79,10 @@ export interface ScanReport {
   ignored?: IgnoredFindings;
 }
 
-/** What a scan left out, counted so nothing is ignored silently. Secrets are never left out. */
+/**
+ * What a scan left out, counted so nothing is ignored silently. A secret the scan recognises is
+ * never left out.
+ */
 export interface IgnoredFindings {
   total: number;
   /** Findings left out per rule id. */

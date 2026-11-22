@@ -144,15 +144,28 @@ describe("applyIgnores", () => {
     );
   });
 
-  it("keeps a recognisable secret in test code at its severity", () => {
+  it("keeps a recognisable secret in test code at its severity and leaves out a guessed one", () => {
     const secrets = [
       finding("secrets/github-token", "test/fixtures/repo.json", "secret"),
       finding("secrets/private-key", "tests/keys/id_rsa", "secret"),
       finding("gitleaks/generic-api-key", "src/api.mock.ts", "secret"),
     ];
-    const result = applyIgnores(secrets, [], same);
+    const result = applyIgnores(
+      [
+        ...secrets,
+        finding("secrets/generic-high-entropy", "tests/Feature/LoginTest.php", "secret"),
+        finding("secrets/generic-high-entropy", "apps/web/src/settings/settings.test.ts", "secret"),
+      ],
+      [],
+      same,
+    );
     expect(result.findings).toEqual(secrets);
-    expect(result.ignored).toBeUndefined();
+    expect(result.ignored).toEqual({
+      total: 2,
+      byRule: { "secrets/generic-high-entropy": 2 },
+      testCode: 2,
+      entries: [],
+    });
   });
 
   it("leaves out every rule in an entry's paths, or only its rules when it names some", () => {
@@ -196,27 +209,41 @@ describe("applyIgnores", () => {
     });
   });
 
-  it("keeps a recognisable secret in an ignored path at its severity, a guessed one as info", () => {
+  it("keeps a recognisable secret in an ignored path at its severity and leaves out a guessed one", () => {
     const result = applyIgnores(
       [
         finding("supabase/service-role-in-client", "e2e/app/admin.ts", "supabase"),
         finding("gitleaks/generic-api-key", "e2e/app/config.ts", "secret"),
         finding("secrets/committed-env", "e2e/app/.env", "secret"),
         finding("secrets/generic-high-entropy", "e2e/app/seed.ts", "secret"),
+        finding("secrets/generic-high-entropy", "legacy/seed.ts", "secret"),
       ],
-      [{ paths: ["e2e/"], reason: "End-to-end apps" }],
+      [
+        { paths: ["e2e/"], reason: "End-to-end apps" },
+        { paths: ["legacy/"], rules: ["config/dockerfile-root"], reason: "Retired image" },
+      ],
       same,
     );
-    expect(result.ignored).toBeUndefined();
-    expect(result.findings.map((f) => `${f.ruleId}:${f.severity}`)).toEqual([
-      "supabase/service-role-in-client:high",
-      "gitleaks/generic-api-key:high",
-      "secrets/committed-env:high",
-      "secrets/generic-high-entropy:info",
+    expect(result.findings.map((f) => `${f.ruleId}@${f.file}:${f.severity}`)).toEqual([
+      "supabase/service-role-in-client@e2e/app/admin.ts:high",
+      "gitleaks/generic-api-key@e2e/app/config.ts:high",
+      "secrets/committed-env@e2e/app/.env:high",
+      "secrets/generic-high-entropy@legacy/seed.ts:high",
     ]);
-    expect(result.findings[3]?.description).toBe(
-      'It is a problem. opscrew/scan.yaml ignores this path ("End-to-end apps"), so this guess is reported as info; if it is a real secret, rotate it.',
-    );
+    expect(result.ignored).toEqual({
+      total: 1,
+      byRule: { "secrets/generic-high-entropy": 1 },
+      testCode: 0,
+      entries: [
+        { paths: ["e2e/"], reason: "End-to-end apps", count: 1 },
+        {
+          paths: ["legacy/"],
+          rules: ["config/dockerfile-root"],
+          reason: "Retired image",
+          count: 0,
+        },
+      ],
+    });
   });
 });
 
@@ -249,7 +276,7 @@ describe("readScanIgnores", () => {
 });
 
 describe("runScan with opscrew/scan.yaml", () => {
-  it("leaves out ignored findings, keeps secrets there and counts them in the report", async () => {
+  it("leaves out ignored findings and guessed secrets, keeps recognised ones, counts them", async () => {
     const token = fakeSecret("github-token", "ignored");
     const testToken = fakeSecret("github-token", "tests");
     const guess = fakeSecret("generic-password", "ignored");
@@ -280,18 +307,17 @@ describe("runScan with opscrew/scan.yaml", () => {
       "secrets/github-token@examples/demo/config.js:critical",
       "secrets/github-token@tests/fixtures/repo.js:critical",
       "config/flask-debug@app.py:high",
-      "secrets/generic-high-entropy@examples/demo/login.php:info",
-      "secrets/generic-high-entropy@src/__mocks__/login.php:info",
     ]);
-    expect(report.findings[3]?.description).toContain(
-      'opscrew/scan.yaml ignores this path ("Example apps, never deployed"), so this guess is reported as info',
-    );
     expect(report.ignored).toEqual({
-      total: 3,
-      byRule: { "config/dockerfile-root": 1, "config/flask-debug": 2 },
-      testCode: 1,
+      total: 5,
+      byRule: {
+        "config/dockerfile-root": 1,
+        "config/flask-debug": 2,
+        "secrets/generic-high-entropy": 2,
+      },
+      testCode: 2,
       entries: [
-        { paths: ["examples/"], reason: "Example apps, never deployed", count: 1 },
+        { paths: ["examples/"], reason: "Example apps, never deployed", count: 2 },
         {
           paths: ["legacy/Dockerfile"],
           rules: ["config/dockerfile-root"],
@@ -304,15 +330,20 @@ describe("runScan with opscrew/scan.yaml", () => {
 
     const summary = renderScanSummary(report);
     expect(summary).toContain(
-      "Ignored: 3 (config/dockerfile-root: 1, config/flask-debug: 2): 1 in test code, 2 by opscrew/scan.yaml\n" +
-        "  1  examples/: Example apps, never deployed\n" +
+      "Ignored: 5 (config/dockerfile-root: 1, config/flask-debug: 2, secrets/generic-high-entropy: 2): 2 in test code, 3 by opscrew/scan.yaml\n" +
+        "  2  examples/: Example apps, never deployed\n" +
         "  1  legacy/Dockerfile (config/dockerfile-root): Retired image\n",
     );
     const markdown = renderScanMarkdown(report);
     expect(markdown).toContain("## Ignored");
     expect(markdown).toContain("| `config/flask-debug` | 2 |");
-    expect(markdown).toContain("| `examples/` | all | Example apps, never deployed | 1 |");
-    expect(JSON.parse(JSON.stringify(report)).ignored.total).toBe(3);
+    expect(markdown).toContain("| `secrets/generic-high-entropy` | 2 |");
+    expect(markdown).toContain("| `examples/` | all | Example apps, never deployed | 2 |");
+    expect(markdown).toContain(
+      "A secret the scan recognises is never left out: it keeps its severity wherever it sits.",
+    );
+    for (const text of [summary, markdown]) expect(text).not.toContain(guess);
+    expect(JSON.parse(JSON.stringify(report)).ignored.total).toBe(5);
   });
 
   it("stops before any scanner runs when opscrew/scan.yaml is invalid", async () => {

@@ -7,7 +7,6 @@ import {
   basename,
   isEnvFile,
   isPlaceholderValue,
-  isTestFile,
   lineLocator,
   MAX_LINE_LENGTH,
   mapConcurrent,
@@ -260,7 +259,6 @@ function scanLines(file: string, text: string): Finding[] {
   const findings: Finding[] = [];
   const envFile = isEnvFile(file);
   const docs = DOC_EXTENSION.test(file);
-  const testFile = isTestFile(file);
   const lines = splitLines(text);
   for (const [index, lineText] of lines.entries()) {
     if (lineText.length > MAX_LINE_LENGTH || lineText.length < 8) continue;
@@ -291,19 +289,16 @@ function scanLines(file: string, text: string): Finding[] {
       const span = { start, end: start + value.length };
       if (overlaps(spans, span)) continue;
       spans.push(span);
-      const description = `A random-looking value is assigned to "${name}", which looks like a password, token or key written directly in the file.`;
       findings.push(
         createFinding({
           ruleId: "secrets/generic-high-entropy",
           title: `Hard-coded secret in "${name}"`,
-          severity: testFile ? "info" : "high",
+          severity: "high",
           category: "secret",
           file,
           line,
           evidence: `${name}=${maskSecret(value)}`,
-          description: testFile
-            ? `${description} It is in a test file, so it is most likely a made-up value for the tests; if it is a real secret, rotate it.`
-            : description,
+          description: `A random-looking value is assigned to "${name}", which looks like a password, token or key written directly in the file.`,
           remediation: ROTATE,
           source: SOURCE,
           rawMatch: value,
