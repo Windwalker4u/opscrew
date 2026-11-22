@@ -860,7 +860,9 @@ cache kept off what must not be cached.
 
 ### 037 More server providers, second wave: Vultr, Akamai Cloud (Linode), Scaleway
 
-After the first wave (the founder's decision, 2026-11-20). Their servers are the shape OpsCrew
+After the first wave (the founder's decision, 2026-11-20). **Started early** (the founder's
+decision, 2026-11-22): 035's contributor builds it right after 035, ahead of 036, coordinating
+through issues titled `[037]`. Their servers are the shape OpsCrew
 already handles at Hetzner (a server, a firewall, an SSH key, backups or snapshots, billed by use).
 **Research first:** the same list as 035's.
 
