@@ -2,7 +2,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CHECK_MARK, initPassed, runInitChecks } from "@opscrew/agents";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { CLOUD_NAMES } from "../providers";
 import { projectDirInput, runTool } from "./shared";
 
 /**

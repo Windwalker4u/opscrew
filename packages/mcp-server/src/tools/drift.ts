@@ -9,7 +9,6 @@ import {
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
-import { CLOUD_NAMES } from "../providers";
 import {
   type CallExtra,
   clientSupportsElicitation,

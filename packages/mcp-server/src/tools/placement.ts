@@ -1,12 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { placementEstimate, resolveCatalog } from "@opscrew/agents";
 import type { ComputeCatalog } from "@opscrew/contracts";
-import { formatMoney, listText, OpsCrewError, orText } from "@opscrew/core";
+import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { readArtifact, VpsProviderSchema } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
+import { cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { CLOUD_IDS } from "../providers";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
 
 /** Test-only collaborators for `opscrew_placement_estimate` (production reads the provider's prices). */

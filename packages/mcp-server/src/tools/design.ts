@@ -19,7 +19,7 @@ import {
   runDesign,
 } from "@opscrew/agents";
 import type { ApprovalHandler } from "@opscrew/contracts";
-import { formatMoney, OpsCrewError, orText, taxLabel, toPosixRelative } from "@opscrew/core";
+import { formatMoney, OpsCrewError, taxLabel, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
 import {
   costItemText,
@@ -28,10 +28,9 @@ import {
   isServerlessProvider,
   readArtifact,
 } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
+import { cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
-import { CLOUD_NAMES } from "../providers";
 import {
   type CallExtra,
   clientSupportsElicitation,

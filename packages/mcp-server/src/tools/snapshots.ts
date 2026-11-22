@@ -1,8 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listSnapshots, type SnapshotServices, snapshotListLines } from "@opscrew/agents";
-import { orText } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import type { ResolvedMcpDeps } from "../deps";
 import { refuseUnconfirmedOwnServer } from "./elicitation";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
