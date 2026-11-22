@@ -9,7 +9,9 @@ describe("a whole-server snapshot's id", () => {
   });
 
   it("refuses a UUID as a data snapshot's id, and anything else that isn't one of those shapes", () => {
-    expect(() => requireSnapshotId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")).toThrow(/only letters and digits./);
+    expect(() => requireSnapshotId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")).toThrow(
+      /only letters and digits./,
+    );
     for (const id of [
       "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
       "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/x",
