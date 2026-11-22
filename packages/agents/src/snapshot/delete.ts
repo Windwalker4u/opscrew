@@ -114,7 +114,7 @@ async function deleteAtProvider(found: ProviderSnapshot): Promise<DeletedSnapsho
  * and, with the off-server copy on, in its bucket, and deletes it after the destroy-grade approval.
  * Every machine that holds a part loses it, and the bucket its copy.
  * @throws OpsCrewError `INVALID_INPUT` for an id that isn't letters and digits (or a whole-server
- * snapshot's two such parts around one colon),
+ * snapshot's two such parts around one colon, or a UUID),
  * `PHASE_PRECONDITION` for each refusal and an unknown id, `CREDENTIALS_MISSING` without the
  * bucket's key, `APPROVAL_REFUSED` when the id is not typed, `COMMAND_FAILED` and
  * `PROVIDER_ERROR` when a deletion fails.

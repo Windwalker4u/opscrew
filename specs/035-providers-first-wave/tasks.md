@@ -275,7 +275,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/destroy src/retarget && pnpm lint`
   - Effort: high
 
-- [ ] T3518 [US1] [US3] OVHcloud through OpsCrew's own flows, with fakes (T3514's review)
+- [x] T3518 [US1] [US3] OVHcloud through OpsCrew's own flows, with fakes (T3514's review)
   - Owns: new or extended tests under `packages/agents/src/**` and `packages/cli/test/live/**`;
     `packages/providers/ovhcloud/src/servers.test.ts`;
     `packages/iac-templates/src/infra/root-variables.test.ts`;
@@ -348,6 +348,6 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 5: Finish (lead)
 
-- [ ] T3514 (lead) A fresh review of the whole branch, `pnpm check`, research R1 updated with the
+- [x] T3514 (lead) A fresh review of the whole branch, `pnpm check`, research R1 updated with the
   implementers' findings, then the pull request (OVHcloud's)
 - [ ] T3515 (lead) The live pass, only with the founder's go-ahead (it costs money; [issue #3](https://github.com/opscrew-hub/opscrew/issues/3))
