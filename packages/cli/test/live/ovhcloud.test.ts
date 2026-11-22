@@ -1,7 +1,7 @@
 /**
  * The live pass of OVHcloud (docs/e2e.md "OVHcloud", SC-3501, SC-3505, SC-3507):
  * `examples/flask-sqlite` on one `d2-4` in DE1 or GRA11, in the Public Cloud project the four
- * `OVH_*` variables name. OVHcloud bills it by the hour, so a run costs cents (about €0.0104 an
+ * `OVH_*` variables name. OVHcloud bills it by the hour, so a run costs cents (about €0.0206 an
  * hour for the server, plus its snapshot at €0.011 per GB a month while it exists). The app is
  * named after the run, so nothing of an earlier run is ever taken for this one's. Steps, in order:
  * 1. the interview chooses OVHcloud from its four credentials alone;
@@ -11,7 +11,8 @@
  * 5. a whole-server snapshot, billed per GB; 6. its restore, and verify again;
  * 7. secure and drift;
  * 8. destroy: the server gone, its snapshots named as what stays, then deleted by the test;
- * 9. none of the four values in any output, log, audit entry, state file or commit.
+ * 9. none of the four values in any output, log, audit entry or commit, and neither the client id
+ *    nor its secret in a state file or saved plan (the project id is there as `service_name`).
  * Whatever fails after provision, the cleanup still destroys the app and deletes every snapshot
  * the run recorded.
  */
@@ -337,7 +338,8 @@ ${run.tail(taken.output)}`,
       minutes(10),
       async () =>
         run.expectNothingLeaked([
-          ...(await envs.leaks({ cloudflare: true })),
+          // The project's id is in the state files and saved plans as `service_name` (FR-3504).
+          ...(await envs.leaks({ cloudflare: true, inState: ["OVH_CLOUD_PROJECT_SERVICE"] })),
           ...(await deployLogLeaks(run, deployRuns)),
         ]),
       { always: true },

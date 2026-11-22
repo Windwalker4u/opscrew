@@ -655,17 +655,21 @@ export class AppEnvironments {
    * in a commit or pull request either. `userCidrs`, the SSH sources the test planned itself (in
    * `plan.yaml`), are cut out of the texts first. With `cloudflare`, also the Cloudflare plans and
    * records ({@link LiveRun.sharedPlanLeaks}). `others` are the repository's further apps, whose
-   * local files are searched too. Returns the problems, by label and place only.
+   * local files are searched too. `inState` labels the values the saved plans and state files hold
+   * by design (a provider's root variable, as OVHcloud's project id: ADR 0029, D11), which are
+   * searched for everywhere else. Returns the problems, by label and place only.
    */
   async leaks(options: {
     cloudflare: boolean;
     userCidrs?: readonly string[];
     others?: readonly AppEnvironments[];
+    inState?: readonly string[];
   }): Promise<string[]> {
     const { run } = this;
     if (!run.repoReady) return [];
     const known = run.scrubber.entries().filter(({ label }) => label !== TESTER_LABEL);
     const secrets = known.filter(({ label }) => !label.startsWith("server-"));
+    const stateSecrets = secrets.filter(({ label }) => !(options.inState ?? []).includes(label));
     const problems: string[] = [];
     const search = (where: string, text: string, values: typeof known) => {
       const planned = (options.userCidrs ?? []).reduce(
@@ -686,7 +690,8 @@ export class AppEnvironments {
       const app = envs.options.app === undefined ? "" : `, app ${envs.options.app}`;
       for (const environment of new Set(["prod", ...envs.apps.keys()])) {
         for (const source of await localLeakSources(envs.paths(environment))) {
-          search(`${source.where} (${environment}${app})`, source.text, secrets);
+          const values = source.kind === "state" ? stateSecrets : secrets;
+          search(`${source.where} (${environment}${app})`, source.text, values);
         }
       }
     }

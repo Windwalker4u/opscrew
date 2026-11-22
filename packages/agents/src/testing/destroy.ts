@@ -390,8 +390,12 @@ export class FakeServers implements ServerSnapshotApi {
     throw new Error("deleteSnapshot is not implemented yet");
   }
 
-  async rebuild(): Promise<void> {
-    throw new Error("rebuild is not implemented yet");
+  /** Every rebuild of a server from a snapshot, in order. */
+  readonly rebuilt: { serverId: string; snapshotId: string }[] = [];
+
+  async rebuild(serverId: string, snapshotId: string): Promise<void> {
+    this.events.push(`rebuild:${serverId}`);
+    this.rebuilt.push({ serverId, snapshotId });
   }
 
   async powerOff(): Promise<void> {

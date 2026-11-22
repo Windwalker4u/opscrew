@@ -2275,7 +2275,7 @@ const OVH_ENV = {
   OVH_ENDPOINT: "ovh-eu",
   OVH_CLIENT_ID: "opscrew-test-client",
   OVH_CLIENT_SECRET: fakeSecret("hcloud-token", "ovh-client-secret"),
-  OVH_CLOUD_PROJECT_SERVICE: "0f0e0d0c0b0a49388776655443322110",
+  OVH_CLOUD_PROJECT_SERVICE: fakeSecret("generic-password", "ovh-project-id"),
 };
 const OVH_RESOURCES: ResourceChange[] = [
   ["ovh_cloud_ssh_key", "deploy"],

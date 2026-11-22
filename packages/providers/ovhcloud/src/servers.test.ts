@@ -1,8 +1,7 @@
-import type { AppServer, FetchLike } from "@opscrew/contracts";
+import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError, Redactor } from "@opscrew/core";
 import type { FakeCall, FakeReply } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
 import {
   accessToken,
   CREDENTIALS,
@@ -586,72 +585,6 @@ describe("ids", () => {
     const error = await failure(call(api));
     expect(error.code).toBe("INVALID_INPUT");
     expect(requests(calls)).toEqual([]);
-  });
-});
-
-/**
- * The generic takeover's choice (`lostServers` in the agents' provision): of the app's servers the
- * provider reports, the one named as the plan's server, not cancelled, alone with that name, and
- * taken over when only its name matched only if the last apply stopped while creating it.
- *
- * A stand-in for the end-to-end SC-3502 test, which runs `lostServers` itself and moves to the
- * agents once `ovhcloud` is in the providers' registry.
- */
-function takeover(found: AppServer[], name: string, applyStoppedCreatingIt: boolean) {
-  const live = found.filter((s) => s.name === name && s.cancelledUntil === undefined);
-  if (live.length > 1) return "stop: several";
-  const [taken] = live;
-  if (taken === undefined) return "create";
-  if (taken.nameOnly === true && !applyStoppedCreatingIt) return "stop: not OpsCrew's";
-  return { takeover: taken.id };
-}
-
-describe("a create that timed out (SC-3502)", () => {
-  it("leaves an instance findAppServers reports, which the next provision takes over instead of creating another", async () => {
-    const create = `${V2}/compute/instance` as const;
-    // OVHcloud keeps the instance as soon as it takes the create, then never answers it.
-    const created: unknown[] = [];
-    const fake = ovhFetch({
-      [`POST ${create}`]: { hang: true },
-      [`GET ${create}`]: { body: created },
-    });
-    const fetch: FetchLike = (input, init) => {
-      if (init?.method === "POST" && String(input).endsWith(create)) {
-        const { targetSpec } = JSON.parse(String(init.body)) as { targetSpec: { name: string } };
-        created.push(
-          instance({ name: targetSpec.name, resourceStatus: "CREATING", powerState: null }),
-        );
-      }
-      return fake.fetch(input, init);
-    };
-
-    // The first provision: the engine's create of the app's server gets no answer in time.
-    const redactor = new Redactor();
-    readOvhcloudCredentials(CREDENTIALS_ENV, redactor);
-    const engine = new OvhcloudClient({ credentials: CREDENTIALS, redactor, fetch, timeoutMs: 20 });
-    const timedOut = await failure(
-      engine.post(create, z.unknown(), {
-        targetSpec: {
-          name: "shop",
-          flavor: { id: "b1a2c3d4-0000-4000-8000-000000000001" },
-          image: { id: IMAGE },
-          location: { region: "GRA11" },
-          sshKeyName: "shop-deploy",
-        },
-      }),
-    );
-    expect(timedOut.message).toContain("did not answer within");
-
-    // The second provision: the takeover reads the app's servers before planning.
-    const { api } = setup({}, fetch);
-    const found = await api.findAppServers("shop");
-    expect(found).toEqual([{ id: SERVER, name: "shop", status: "CREATING", nameOnly: true }]);
-    expect(takeover(found, "shop", true)).toEqual({ takeover: SERVER });
-    // Only its name matched, so without the marker of the stopped apply it is never taken over.
-    expect(takeover(found, "shop", false)).toBe("stop: not OpsCrew's");
-    expect(
-      fake.calls.filter((call) => call.method === "POST" && call.path === create),
-    ).toHaveLength(1);
   });
 });
 

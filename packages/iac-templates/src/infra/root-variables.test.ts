@@ -1,7 +1,8 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript templates.
 // A provider whose server module reads a root variable fed from one of its credentials (ADR 0029,
 // D11): the root declares it once, never writes its value, and the takeover's `import` id reads it.
-// No built-in provider has one yet, so Contabo's definition is faked with one and an `importId`.
+// OVHcloud's definition has one (its project's id, checked last); Contabo's is faked with one and an
+// `importId` here, so a variable shared by two servers and a mix of providers are tested too.
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,6 +147,25 @@ describe("taking over a server of such a provider", () => {
         { server: "app", id: '1"}\nresource "x" "y" {' },
       ]),
     ).toThrow("is not a server id");
+  });
+});
+
+describe("OVHcloud's own definition", () => {
+  it("declares its project's id and imports a taken-over instance as <project>/<id>", () => {
+    const plan = testPlan({ provider: "ovhcloud" });
+    const id = "11111111-2222-4333-8444-555555555555";
+    const files = withServerImports(renderInfra(plan, testContext()), plan, [
+      { server: "app", id },
+    ]);
+    expect({
+      declared: file(files, "variables.tf").includes('variable "ovhcloud_project_id" {'),
+      imports: imports(file(files, "main.tf")),
+    }).toEqual({
+      declared: true,
+      imports: [
+        `import {\n  to = module.server.ovh_cloud_instance.this\n  id = "\${var.ovhcloud_project_id}/${id}"\n}`,
+      ],
+    });
   });
 });
 
