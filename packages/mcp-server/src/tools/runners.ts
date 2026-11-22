@@ -24,10 +24,7 @@ export interface RunnerHostToolOptions {
   github?: RunnerGitHubApi;
 }
 
-const NAME_INPUT = z
-  .string()
-  .min(1)
-  .describe("The runner machine's name in the project, for example home or build-box.");
+const NAME_INPUT = z.string().min(1).describe("Its name in the project, e.g. home.");
 
 /** The terminal command that adds the machine `name`, without its address. */
 const addCommand = (name: string) => `npx opscrew runner host add ${name} --ssh <user@host[:port]>`;
@@ -39,16 +36,12 @@ const PARTS = z
 
 /** The hardening inputs, as the CLI's `--harden`, `--no-harden` and `--ssh-from`. */
 const HARDEN_INPUTS = {
-  harden: PARTS.describe(
-    "Only when the user asks (off by default): ssh hardens SSH logins (key-only, no passwords or root); firewall adds OpsCrew's own SSH firewall, which lets only sshFrom reach SSH.",
-  ),
+  harden: PARTS.describe("Only when the user asks: ssh and/or firewall."),
   sshFrom: z
     .array(z.string().min(1))
     .min(1)
     .optional()
-    .describe(
-      'With harden "firewall": the IPv4 or IPv6 addresses or networks the user names that may reach SSH (such as their own public address); never guess them, ask the user. They replace the earlier ones.',
-    ),
+    .describe("With firewall: addresses the user names that may reach SSH."),
 };
 
 /** The change the hardening inputs ask for (`on`, `off`, `sshFrom`). */
@@ -109,7 +102,7 @@ export function registerRunnerHostTools(
     {
       title: "List the runner machines",
       description:
-        "List the runner machines this computer knows for the project (machines of the user's that run environments' deploy jobs and builds): each one's CPU, whether Docker is installed, the hardening the user chose (ssh, firewall; applied with the machine's next approved host plan) and the environments whose deploy job runs there. Never their address. Writes nothing.",
+        "List the runner machines this computer knows: CPU, Docker, the chosen hardening and the environments using each. Never their address. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -144,23 +137,18 @@ export function registerRunnerHostTools(
     {
       title: "Set up a runner machine",
       description:
-        "Set up a machine of the user's (a home server, a spare PC, a VM with Ubuntu or Debian) as a runner machine: OpsCrew connects over SSH with the user's key file or SSH agent (never a password), the user confirms its SSH host key in a dialog the first time, OpsCrew inspects it read-only and shows its host plan (Docker and the deploy user, and the hardening the user asks for, none by default: the machine may be a desktop), and applies it only after the USER approves the plan's hash in a dialog. Hardening (harden): ssh for key-only SSH logins with no passwords or root, firewall with sshFrom for OpsCrew's own nftables table that lets only those addresses reach SSH and changes nothing else; each undoes itself on the machine unless a new login works, and OpsCrew refuses a firewall that leaves out the address it connects from. The login stays on this computer, never in a file of the repository. Then an environment can choose it: opscrew_env_set with runner host and runnerHost. Refuses when the client cannot show dialogs.",
+        "Set up a machine of the user's as a runner machine over SSH (key file or agent, never a password), with optional hardening; its host plan is applied only after the USER approves it in a dialog. Then opscrew_env_set with runner host.",
       inputSchema: {
         ...projectDirInput,
         name: NAME_INPUT,
-        user: z
-          .string()
-          .min(1)
-          .describe("The SSH user: root or a user with passwordless sudo, as the user says."),
-        host: z.string().min(1).describe("The machine's address or host name, as the user says."),
-        port: z.number().int().min(1).max(65535).optional().describe("The SSH port (default 22)."),
+        user: z.string().min(1).describe("SSH user: root or one with passwordless sudo."),
+        host: z.string().min(1).describe("Its address or host name, from the user."),
+        port: z.number().int().min(1).max(65535).optional().describe("SSH port (default 22)."),
         keyFile: z
           .string()
           .min(1)
           .optional()
-          .describe(
-            "The full path of the user's private key file (absolute or ~/…); leave it out to use the SSH agent. Never read the file.",
-          ),
+          .describe("Private key file path; omit for the SSH agent."),
         ...HARDEN_INPUTS,
       },
       annotations: {
@@ -213,12 +201,12 @@ export function registerRunnerHostTools(
     {
       title: "Change a runner machine's hardening",
       description:
-        "Change what OpsCrew hardens on a runner machine this computer knows, only when the user asks: harden turns parts on (ssh: key-only SSH logins, no passwords or root; firewall with sshFrom: OpsCrew's own nftables table that lets only those addresses reach SSH and changes no other port, rule or default policy), noHarden turns parts off (OpsCrew removes only that part). OpsCrew connects with the pinned host key, inspects the machine read-only, shows its host plan and applies it only after the USER approves the plan's hash in a dialog. Each SSH or firewall change undoes itself on the machine unless a new login works, and OpsCrew refuses a firewall that leaves out the address it connects from. Refuses when the client cannot show dialogs.",
+        "Change a runner machine's hardening, only when the user asks (harden turns parts on, noHarden off); applied after the USER approves its host plan in a dialog.",
       inputSchema: {
         ...projectDirInput,
         name: NAME_INPUT,
         ...HARDEN_INPUTS,
-        noHarden: PARTS.describe("The parts to turn off: ssh, firewall."),
+        noHarden: PARTS.describe("Parts to turn off."),
       },
       annotations: {
         readOnlyHint: false,
@@ -274,7 +262,7 @@ export function registerRunnerHostTools(
     {
       title: "Remove a runner machine",
       description:
-        "Take back what OpsCrew set up on a runner machine (this project's runners, the deploy user OpsCrew created and its home folder; Docker and the machine stay) and forget its login on this computer. Refused while an environment's deploy job runs there. Only when the user asks for it: the user confirms by typing the machine's name in a dialog. A machine OpsCrew cannot reach is only forgotten, with its runners' registrations at GitHub, after the same typed name. Refuses when the client cannot show dialogs.",
+        "Undo OpsCrew's setup on a runner machine and forget its login. Refused while an environment's deploy job runs there. Only when the user asks; they type its name in a dialog.",
       inputSchema: { ...projectDirInput, name: NAME_INPUT },
       annotations: {
         readOnlyHint: false,

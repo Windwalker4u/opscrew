@@ -6,10 +6,7 @@ import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
 import { projectDirInput, runTool, toolApp } from "./shared";
 
-const KEY_INPUT = z
-  .string()
-  .min(1)
-  .describe("The app's key, for example docs (lower-case letters, digits, -).");
+const KEY_INPUT = z.string().min(1).describe("App key, e.g. docs (lower-case letters, digits, -).");
 
 /**
  * The tools for several apps in one repository (contracts/apps.md "CLI and MCP"):
@@ -22,7 +19,7 @@ export function registerAppTools(server: McpServer, deps: ResolvedMcpDeps): void
     {
       title: "List the repository's apps",
       description:
-        "List the repository's apps: the first app (the repository's own, which has no key; pass app . for it), then each further app opscrew_app_add added, with its key, its folder and whether it is deployed. Pass a further app's key as app to every other tool to act on it. Writes nothing.",
+        "List the repository's apps: the first (app .) and each further app with its key, folder and whether it is deployed. Pass a key as app to the other tools. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -42,14 +39,11 @@ export function registerAppTools(server: McpServer, deps: ResolvedMcpDeps): void
     {
       title: "Add an app of the repository",
       description:
-        "Add a further app of the repository in its own folder (for example a documentation site in sites/docs beside the landing page): checks that the folder holds an app OpsCrew can deploy and that none of the names the key gives (workflow, deploy secrets, GitHub environment, image, branches) is another app's or environment's, then writes only its record, opscrew/apps/<key>/app.yaml. The app then has its own plans, environments, workflows, secrets, state and approvals. Next: the planning tools with app set to its key (opscrew_interview_questions, opscrew_save_requirements, opscrew_design_options, opscrew_select_design).",
+        "Add a further app in its own folder of the repository (checks the folder and that its names are free) and write opscrew/apps/<key>/app.yaml. Next: the planning tools with app set to its key.",
       inputSchema: {
         ...projectDirInput,
         key: KEY_INPUT,
-        dir: z
-          .string()
-          .min(1)
-          .describe("The app's folder in the repository, for example sites/docs."),
+        dir: z.string().min(1).describe("Its folder, e.g. sites/docs."),
       },
       annotations: {
         readOnlyHint: false,
@@ -73,7 +67,7 @@ export function registerAppTools(server: McpServer, deps: ResolvedMcpDeps): void
     {
       title: "Remove an app of the repository",
       description:
-        "Remove a further app's files: its record, plans and answers in opscrew/apps/<key>, its infrastructure code and deploy workflows, and what OpsCrew keeps for it on this computer (its deploy keys, state passphrases and generated secrets). Its folder in the repository stays. Refused while the app is deployed (the user destroys it first with `npx opscrew destroy --app <key>`), and never the first app. Only when the user asks for it: the user confirms by typing the app's key in a dialog. Refuses when the client cannot show dialogs.",
+        "Remove a further app's OpsCrew files and local data; its folder stays. Refused while deployed (`npx opscrew destroy --app <key>` first) and for the first app. Only when the user asks; they type its key in a dialog.",
       inputSchema: { ...projectDirInput, key: KEY_INPUT },
       annotations: {
         readOnlyHint: false,

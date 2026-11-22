@@ -279,7 +279,8 @@ export function registerDesignTools(
     "opscrew_design_options",
     {
       title: "Deployment options",
-      description: `Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (${CLOUD_NAMES}) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with ${orText(CLOUD_PROVIDERS.flatMap((p) => p.texts.design.livePricesVar ?? []))} set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). For a site on Cloudflare's hosting or GitHub Pages it offers that one option, with the price and limits of the provider's published plans, or says why the target does not fit the app. For the user's hosting account (cPanel, Plesk, DirectAdmin or SFTP) it reads the account (through its panel with OPSCREW_HOSTING_* from the MCP server's environment) and offers that account as the one option, without a price, with what the app gets there (the hostname, its PHP version, the database and the cron jobs), or says why the app doesn't fit a hosting account (workers, queues, Redis, a database engine the account lacks) and which target to choose instead. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.`,
+      description:
+        "Offer 2–3 deployment options for the saved requirements, each with monthly cost, budget fit and trade-offs, one recommended; for an own server, Portainer, hosting account or static-site host, that one target or why it doesn't fit. Writes nothing. Next: opscrew_select_design.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -404,15 +405,12 @@ export function registerDesignTools(
     {
       title: "Choose a deployment option",
       description:
-        "Write opscrew/plan.yaml for the deployment option the user chose (an id from opscrew_design_options), including the code changes the app needs before it can be deployed. Returns the image builder, the deploy strategy and the supply-chain settings (image signing, deploy tags, image retention), each with its reason; settings the user changed in opscrew/plan.yaml (app.build.builder with app.build.chosen: user, deploy.strategy, supplyChain.sign, cicd.deployTags, cicd.imageRetention) are kept. Also writes opscrew/architecture.json from deterministic detection when it does not exist yet. Creates no infrastructure.",
+        "Write opscrew/plan.yaml for the option the user chose, with the code changes the app needs first and its build, deploy and supply-chain settings; settings the user edited are kept. Creates no infrastructure.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         ...environmentInput,
-        optionId: z
-          .string()
-          .min(1)
-          .describe("Id of the chosen option, as returned by opscrew_design_options."),
+        optionId: z.string().min(1).describe("An option id from opscrew_design_options."),
       },
       annotations: IDEMPOTENT_WRITE,
     },

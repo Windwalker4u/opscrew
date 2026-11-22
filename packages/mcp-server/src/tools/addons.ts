@@ -42,11 +42,7 @@ const KINDS: [AddonKind, ...AddonKind[]] = [
 ];
 
 const kindInput = {
-  addon: z
-    .enum(KINDS)
-    .describe(
-      "The add-on: beszel, grafana-cloud or monitoring (self-hosted Prometheus, Loki and Grafana).",
-    ),
+  addon: z.enum(KINDS).describe("The add-on."),
 };
 
 /** What the model is told about the add-ons' secrets, in every result that names them. */
@@ -191,7 +187,7 @@ export function registerAddonTools(
     {
       title: "Add-on status",
       description:
-        "Show whether Beszel (a light dashboard on the server), Grafana Cloud (Grafana Alloy sending the app's logs and the server's metrics to the user's Grafana Cloud stack) and self-hosted monitoring (Prometheus, Loki and Grafana on the user's own server) are on for the app, their versions and memory, their containers' state and memory (read over SSH, read-only, when one is on) and how to open them. With monitoring on, also its stack's containers, when each server's last figures and log line arrived (servers silent for more than 5 minutes flagged, with what to check), the disk taken and the retention. Never returns a password, token or public address. Changes nothing.",
+        "Show which add-ons (Beszel, Grafana Cloud, self-hosted monitoring) are on, with versions, containers' state and memory, monitoring's freshness, disk and retention, and how to open them. Read-only; never a password or token.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -215,89 +211,54 @@ export function registerAddonTools(
     {
       title: "Turn an add-on on",
       description:
-        "Add Beszel or Grafana Cloud's collector (Grafana Alloy) to the app's server (a cloud server or the user's own), pinned, with a memory limit, reading Docker only through a read-only proxy. Beszel: mode hub (its dashboard and agent on the server, reached through an SSH tunnel, or with access subdomain plus hostname and allowEmails behind Cloudflare Access) or agent (only the agent, connected to the user's hub: hubUrl, hubKey, and the token from OPSCREW_BESZEL_TOKEN). Grafana Cloud: metricsUrl, metricsUser, logsUrl, logsUser of the user's stack, logSampling, and the token from OPSCREW_GRAFANA_CLOUD_TOKEN (scopes metrics:write and logs:write only); its estimate against the free tier is shown with the plan. Tokens are never tool inputs: they come only from the MCP server's environment. Each plan (the host plan with each container's memory and price share; for a subdomain also the Cloudflare and infrastructure plans) is shown to the USER in a dialog and applied only after they approve it; the coding agent cannot approve. Refuses when the client cannot show dialogs. Monitoring (self-hosted Prometheus, Loki and Grafana, with Grafana Alloy on each of the environment's servers): by default on a small server of its own at the app's provider (on server), or on the app's server with on app; newServer for one of this environment's own when the repository has one; metricsDays and logsDays for the retention. It only writes the plan, after saying the server, its price, each server's agent memory, the retention and its disk estimate: nothing changes until the user runs `npx opscrew provision` in a terminal, which shows each change for their approval by its hash.",
+        "Add Beszel, Grafana Cloud's collector or self-hosted monitoring to the app's servers. Tokens come only from the server's environment (OPSCREW_BESZEL_TOKEN, OPSCREW_GRAFANA_CLOUD_TOKEN). The USER approves each plan in a dialog; monitoring only writes the plan, for `npx opscrew provision` in a terminal.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         ...environmentInput,
         ...kindInput,
-        mode: z
-          .enum(["hub", "agent"])
-          .optional()
-          .describe("Beszel (the CLI's --mode): hub (the default) or agent."),
+        mode: z.enum(["hub", "agent"]).optional().describe("Beszel: hub (default) or agent."),
         access: z
           .enum(["local", "subdomain"])
           .optional()
-          .describe(
-            "Beszel's dashboard (--access): local (only through an SSH tunnel, the default) or subdomain (behind Cloudflare Access).",
-          ),
+          .describe("Beszel: local (SSH tunnel, default) or subdomain."),
         hostname: z
           .string()
           .optional()
-          .describe(
-            "With access subdomain (--hostname): the dashboard's hostname, or a label of the app's Cloudflare domain (for example beszel).",
-          ),
+          .describe("With subdomain: the dashboard's hostname or label."),
         allowEmails: z
           .array(z.string())
           .optional()
-          .describe(
-            "With access subdomain (--allow-email): the email addresses Cloudflare Access lets in (at least one).",
-          ),
-        hubUrl: z
-          .string()
-          .optional()
-          .describe("Beszel's agent mode (--hub-url): the https address of the user's hub."),
-        hubKey: z
-          .string()
-          .optional()
-          .describe("Beszel's agent mode (--hub-key): the hub's public key (ssh-ed25519 …)."),
-        metricsUrl: z
-          .string()
-          .optional()
-          .describe("Grafana Cloud (--metrics-url): the stack's Prometheus remote_write URL."),
-        metricsUser: z
-          .string()
-          .optional()
-          .describe("Grafana Cloud (--metrics-user): the numeric user id of its Prometheus."),
-        logsUrl: z
-          .string()
-          .optional()
-          .describe("Grafana Cloud (--logs-url): the stack's Loki push URL."),
-        logsUser: z
-          .string()
-          .optional()
-          .describe("Grafana Cloud (--logs-user): the numeric user id of its Loki."),
+          .describe("With subdomain: the emails Access lets in."),
+        hubUrl: z.string().optional().describe("Beszel agent: the user's hub address."),
+        hubKey: z.string().optional().describe("Beszel agent: the hub's public key."),
+        metricsUrl: z.string().optional().describe("Grafana Cloud: Prometheus remote_write URL."),
+        metricsUser: z.string().optional().describe("Grafana Cloud: Prometheus user id."),
+        logsUrl: z.string().optional().describe("Grafana Cloud: Loki push URL."),
+        logsUser: z.string().optional().describe("Grafana Cloud: Loki user id."),
         logSampling: z
           .number()
           .int()
           .optional()
-          .describe(
-            "Grafana Cloud (--log-sampling): the percentage of log lines sent, 1 to 100 (default 100).",
-          ),
+          .describe("Grafana Cloud: percent of log lines sent (default 100)."),
         on: z
           .enum(["app", "server"])
           .optional()
-          .describe(
-            "Monitoring (--on): server (the default: the repository's monitoring server, or a small one of its own) or app (the app's server, with at least 4 GB of memory).",
-          ),
+          .describe("Monitoring: server (default, its own) or app (needs 4 GB)."),
         newServer: z
           .boolean()
           .optional()
-          .describe(
-            "Monitoring (--new-server): a monitoring server of this environment's own, even when the repository has one.",
-          ),
+          .describe("Monitoring: a server for this environment alone."),
         metricsDays: z
           .number()
           .int()
           .optional()
-          .describe(
-            "Monitoring (--metrics-days): the days figures are kept, 1 to 90 (default 15).",
-          ),
+          .describe("Monitoring: days figures are kept (default 15)."),
         logsDays: z
           .number()
           .int()
           .optional()
-          .describe("Monitoring (--logs-days): the days logs are kept, 1 to 30 (default 7)."),
+          .describe("Monitoring: days logs are kept (default 7)."),
         ...skipOtherAppsCheckInput,
       },
       annotations: IDEMPOTENT_WRITE,
@@ -336,7 +297,7 @@ export function registerAddonTools(
     {
       title: "Turn an add-on off",
       description:
-        "Remove Beszel or Grafana Alloy from the app's server, with everything it added there (Grafana Alloy's buffer and token, Beszel's agent token, the tunnel and Access of Beszel's subdomain). Beszel's hub always keeps its history (its dashboard's data) through this tool: deleting it needs the app's name typed by the user, in a terminal (`npx opscrew addon disable beszel`). The data already in Grafana Cloud stays in the user's account. Every plan is approved by the user in a dialog; the coding agent cannot approve. Refuses when the client cannot show dialogs. Monitoring: it only takes it out of the plan; the user then runs `npx opscrew provision` in a terminal, which removes each agent and the stack by hash-approved plans, and deletes the monitoring server, or the stack's data on the app's server, only after the user types its name.",
+        "Remove an add-on from the app's server after the USER approves each plan in a dialog. Deleting Beszel's history is terminal-only (`npx opscrew addon disable beszel`); monitoring leaves the plan, for `npx opscrew provision`.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput, ...kindInput },
       annotations: {
         readOnlyHint: false,

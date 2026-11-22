@@ -15,13 +15,11 @@ export function registerInitCheckTool(server: McpServer, deps: ResolvedMcpDeps):
     "opscrew_init_check",
     {
       title: "OpsCrew preflight",
-      description: `Check that everything OpsCrew needs is ready: git and a GitHub remote, OpenTofu or Terraform, ssh, the cloud provider credentials (${CLOUD_NAMES}, whichever is planned), the Cloudflare and GitHub tokens and what they can access, an optional model key, optional scanners, and .opscrew/ and .terraform/ in .gitignore. Returns a checklist where every problem has its fix. Token values are never shown. With offline: true, tokens are only checked for presence. Changes nothing.`,
+      description:
+        "Check what OpsCrew needs (git and a GitHub remote, OpenTofu or Terraform, ssh, the cloud, Cloudflare and GitHub tokens, scanners, .gitignore); returns a checklist with fixes, never a token value. Changes nothing.",
       inputSchema: {
         ...projectDirInput,
-        offline: z
-          .boolean()
-          .optional()
-          .describe("Do not verify tokens over the network; only check that they are set."),
+        offline: z.boolean().optional().describe("Only check that tokens are set."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

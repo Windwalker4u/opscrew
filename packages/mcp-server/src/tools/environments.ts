@@ -37,10 +37,7 @@ export interface EnvironmentToolOptions {
   promote?: PromoteServices;
 }
 
-const NAME_INPUT = z
-  .string()
-  .min(1)
-  .describe("The environment's name, for example staging or dev (lower-case letters, digits, -).");
+const NAME_INPUT = z.string().min(1).describe("Environment name, e.g. staging (a-z, 0-9, -).");
 
 /**
  * The environment tools (contracts/environments.md "Commands"): `opscrew_env_add`,
@@ -58,7 +55,7 @@ export function registerEnvironmentTools(
     {
       title: "List the app's environments",
       description:
-        "List the app's environments (prod, then each one added beside it): where each runs, how it gets new versions (each push to the branch it follows, or promoted from another environment), where its deploy job runs (GitHub's machines, a runner on the server, on the user's computer or on a runner machine of the user's) and whether it is deployed. Writes nothing.",
+        "List the app's environments: where each runs, how it gets new versions, where its deploy job runs and whether it is deployed. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -85,7 +82,7 @@ export function registerEnvironmentTools(
     {
       title: "Add an environment",
       description:
-        "Add an environment beside prod (staging, dev, …): write its own answers (only those that differ from prod's) to opscrew/environments/<name>/requirements.yaml and design it, with its monthly cost. Its build, components and port follow the image: its own design's when it is built from a branch, or the plan's of the environment it is promoted from. Ask the user its questions first; answers left out take their defaults: provider (prod's, or localhost, the user's computer, for dev; a site whose prod is on cloudflare-workers or github-pages keeps prod's target, each environment on Cloudflare with its own Worker, and GitHub Pages allows prod only), region, expectedMonthlyUsers (<1k), domain (<name>.<prod's domain>), from (main: built and deployed on each push; or an environment it is promoted from), branch (with from main: the branch whose pushes build and deploy it, one the repository has and no other environment follows; default: the repository's default branch. When the repository has a branch named like the environment, such as develop for dev, OpsCrew's note names it: offer the user promotion first, where only the first environment follows a branch and one image moves dev → staging → prod, or each environment on its own branch), runner (github, server, local, or host: a runner machine of the user's, opscrew_runner_host_list), runnerHost (with host: the machine's name; the only one by default) and build (github, the default, or runner: built on its own runner, a runner machine with the server's CPU or the user's computer, never the server). Next: the user provisions it with `npx opscrew provision --env <name>` or opscrew_plan with environment.",
+        "Add an environment beside prod (staging, dev, …) from the user's answers that differ from prod's, and design it with its cost; offer promotion first when a branch is named like it. Next: `npx opscrew provision --env <name>` or opscrew_plan with environment.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -94,12 +91,12 @@ export function registerEnvironmentTools(
           .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
           .optional()
           .describe(
-            "The user's answers by question id: provider, region, expectedMonthlyUsers, domain, from, branch, runner, runnerHost, build (and a server's server.* or a Portainer's portainer.* follow-ups).",
+            "Answers by question id (provider, region, domain, from, branch, runner, build, …).",
           ),
         optionId: z
           .string()
           .optional()
-          .describe("The design option the user chose (default: the recommended one)."),
+          .describe("The user's design option (default the recommended)."),
       },
       annotations: {
         readOnlyHint: false,
@@ -146,7 +143,7 @@ export function registerEnvironmentTools(
     {
       title: "Change how an environment gets new versions",
       description:
-        "Change an environment's plan: its deploy source (from: main, built and deployed on each push, or another existing environment it is promoted from, never itself and never in a cycle), the branch whose pushes build and deploy it from main (branch: one the repository has and no other environment follows), and where its deploy job runs (runner: github, server, local or host, a runner machine of the user's, with runnerHost its name) and where its image is built (build: github, or runner on a runner machine with the server's CPU or the local runner; never the server's runner). The change reaches GitHub and the runners with its next provision, which shows each change first.",
+        "Change an environment's deploy source (main or another environment, never a cycle), branch, runner and build place. It reaches GitHub with the next provision.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -155,22 +152,18 @@ export function registerEnvironmentTools(
           .string()
           .min(1)
           .optional()
-          .describe("main, or the environment it is promoted from (for example staging)."),
-        branch: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("The branch it follows from main (for example develop)."),
+          .describe("main, or the environment it is promoted from."),
+        branch: z.string().min(1).optional().describe("The branch it follows from main."),
         runner: z.enum(["github", "server", "local", "host"]).optional(),
         runnerHost: z
           .string()
           .min(1)
           .optional()
-          .describe("With runner host: the runner machine (default: the project's only one)."),
+          .describe("With runner host: the machine (default the only one)."),
         build: z
           .enum(["github", "runner"])
           .optional()
-          .describe("With runner: where the image is built (default: the plan's, where it fits)."),
+          .describe("With runner: where the image is built."),
       },
       annotations: {
         readOnlyHint: false,
@@ -260,7 +253,7 @@ export function registerEnvironmentTools(
     {
       title: "Remove an environment",
       description:
-        "Remove an environment's files: its plan and answers, its infrastructure code and deploy workflow, and what OpsCrew keeps for it on this computer. Refused while it is deployed (the user destroys it first with `npx opscrew destroy --env <name>`) or while another environment is promoted from it. Never prod. Only when the user asks for it: the user confirms by typing the environment's name in a dialog. Refuses when the client cannot show dialogs.",
+        "Remove an environment's files and local data. Refused while deployed (`npx opscrew destroy --env <name>` first), while another is promoted from it, and for prod. Only when the user asks; they type its name in a dialog.",
       inputSchema: { ...projectDirInput, ...appInput, name: NAME_INPUT },
       annotations: {
         readOnlyHint: false,
@@ -313,29 +306,25 @@ export function registerEnvironmentTools(
     {
       title: "Promote an image to an environment",
       description:
-        "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, without rebuilding. For a site on Cloudflare's hosting it deploys the exact build its source runs (by run id and SHA-256); GitHub Pages refuses promotion: each environment builds its own site. To undo a release, ask the user to run `npx opscrew rollback` in their terminal instead: it goes back to the previous version, asks how to treat the database (restore the snapshot taken before the release where the environment takes them, or keep it) and the app's queues, and pauses the environment's deploys until `npx opscrew rollback --resume`, which a promotion does not. digest and version deploy an image or a site version the user names. OpsCrew checks the image's build provenance (a push of this repository to the branch the environment that built the image follows), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
+        "Deploy to a promoted environment exactly the image or build its source runs; the USER approves it in a dialog. To undo a release, the user runs `npx opscrew rollback` in their terminal instead.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
-        to: NAME_INPUT.describe("The environment to deploy to, for example prod."),
+        to: NAME_INPUT.describe("Target environment, e.g. prod."),
         digest: z
           .string()
           .optional()
-          .describe(
-            "Only when the user names it: the image digest (sha256:…) of the target's previous image, or the one its source runs.",
-          ),
+          .describe("Only when the user names it: an image digest (sha256:…)."),
         version: z
           .string()
           .optional()
-          .describe(
-            "Only when the user names it, on Cloudflare's hosting or GitHub Pages: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before.",
-          ),
+          .describe("Only when the user names it: an earlier Worker version or Pages run id."),
         allowOldSecrets: z
           .array(z.string().regex(WORKER_SECRET_NAME))
           .min(1)
           .optional()
           .describe(
-            "Only with version on Cloudflare's hosting, after OpsCrew refused that rollback because these secrets changed since the version was active, and only when the user confirmed their old values are still safe: the secret names the refusal listed. The version then runs with their old values.",
+            "Only after a refused rollback, once the user confirmed: the secret names listed.",
           ),
       },
       annotations: {

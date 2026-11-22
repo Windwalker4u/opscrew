@@ -14,7 +14,6 @@ import {
   hostingReach,
   inferredAnswers,
   NEW_CERTIFICATE_WARNING,
-  PORTAINER_FIELDS,
   type PortainerAccess,
   PortainerCertificateError,
   type PortainerInterviewOptions,
@@ -24,7 +23,6 @@ import {
   repositoryPrivate,
   requestedProvider,
   runInterview,
-  SERVER_FIELDS,
   serverlessTargetsFor,
   withPlanSettings,
 } from "@opscrew/agents";
@@ -35,7 +33,6 @@ import {
   isServerlessProvider,
   type ProjectFacts,
   type Question,
-  QuestionIdSchema,
   type Requirements,
   readArtifact,
 } from "@opscrew/plan-schema";
@@ -95,6 +92,8 @@ type ShownQuestion = Omit<Question, "id"> & { id: string };
 function renderQuestion(question: ShownQuestion, index: number): string {
   const lines = [`${index + 1}. ${question.prompt} (answer id: ${question.id})`];
   if (question.help) lines.push(`   ${question.help}`);
+  const help = answerHelp(question.id);
+  if (help !== undefined) lines.push(`   Answer: ${help}`);
   if (question.options && question.options.length > 0) {
     lines.push(
       `   Choices: ${question.options.map((o) => `${o.value} = ${o.label}${o.hint ? ` (${o.hint})` : ""}`).join("; ")}`,
@@ -187,41 +186,29 @@ const PORTAINER_ANSWER_HELP: Record<string, string> = {
   "portainer.port": "Existing Portainer with web 'proxy': the host port the app listens on.",
 };
 
-const answersShape = {
-  ...Object.fromEntries(
-    QuestionIdSchema.options.map((id) => [
-      id,
-      AnswerValueSchema.optional().describe(ANSWER_HELP[id] ?? `Answer for ${id}.`),
-    ]),
-  ),
-  ...Object.fromEntries(
-    // Every follow-up the agents ask (SERVER_FIELDS), described where this file knows it.
-    SERVER_FIELDS.map((field) => `server.${field}`).map((id) => [
-      id,
-      AnswerValueSchema.optional().describe(
-        SERVER_ANSWER_HELP[id] ??
-          "Own server: the answer to this question from opscrew_interview_questions.",
-      ),
-    ]),
-  ),
-  ...Object.fromEntries(
-    HOSTING_FIELDS.map((field) => `hosting.${field}`).map((id) => [
-      id,
-      AnswerValueSchema.optional().describe(
-        HOSTING_ANSWER_HELP[id] ?? "Hosting account: the answer to this follow-up question.",
-      ),
-    ]),
-  ),
-  ...Object.fromEntries(
-    PORTAINER_FIELDS.map((field) => `portainer.${field}`).map((id) => [
-      id,
-      AnswerValueSchema.optional().describe(
-        PORTAINER_ANSWER_HELP[id] ??
-          "Existing Portainer: the answer to this question from opscrew_interview_questions.",
-      ),
-    ]),
-  ),
-};
+/**
+ * How to give one answer, by its answer id; shown with the questions so `tools/list` stays small
+ * (issue #9). `runInterview` validates the answers.
+ */
+function answerHelp(id: string): string | undefined {
+  return (
+    ANSWER_HELP[id] ??
+    SERVER_ANSWER_HELP[id] ??
+    HOSTING_ANSWER_HELP[id] ??
+    PORTAINER_ANSWER_HELP[id]
+  );
+}
+
+/** The answers for a server OpsCrew created for another of the user's apps. */
+const SHARES_ANSWER_IDS = ["server.shares", "server.shares-app", "server.shares-env"];
+
+/** `- <id>: <help>` lines for the answer ids that have help. */
+function answerHelpLines(ids: readonly string[]): string[] {
+  return ids.flatMap((id) => {
+    const help = answerHelp(id);
+    return help === undefined ? [] : [`- ${id}: ${help}`];
+  });
+}
 
 /** What to ask, by how the environment reaches the hosting account, when the user chooses it. */
 const HOSTING_FOLLOW_UPS: Readonly<Record<"panel" | "sftp", string>> = {
@@ -312,7 +299,8 @@ export function registerInterviewTools(
     "opscrew_interview_questions",
     {
       title: "Interview questions",
-      description: `List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (${CLOUD_PROVIDERS.map((p) => `${p.displayName}, `).join("")}a server the user already has, with its SSH follow-up questions, a Portainer the user already runs, with its follow-up questions, or a hosting account the user already pays for when the MCP server's environment reaches one, with its follow-up answers; for a site that needs no server also Cloudflare's hosting or GitHub Pages, where they fit), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.`,
+      description:
+        "List the deployment questions for this app, with choices, defaults and answer formats, including the follow-ups for an own server, Portainer or hosting account. Ask the user each, then call opscrew_save_requirements. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -418,6 +406,7 @@ export function registerInterviewTools(
           ...serverQuestions.map(renderQuestion),
           `When the server is at home (server.home true), don't ask server.reachable. Pass server.sshFrom only when the user names the networks that may reach SSH: ${SERVER_ANSWER_HELP["server.sshFrom"]}`,
           "When the app should run beside another of the user's OpsCrew apps, on the server OpsCrew created for that app, pass provider \"own\" with server.shares (that app's repository folder on this computer), and server.shares-app and server.shares-env when that repository has several apps or environments, instead of the questions above.",
+          ...answerHelpLines(SHARES_ANSWER_IDS),
           "",
           `Only when the user chooses "portainer" (a Portainer they already run), also ask these and pass them as portainer.* answers. The access token comes only from the PORTAINER_API_KEY environment variable of the MCP server: never ask for it or a password. The address stays on the user's computer only; do not write it into any file. When OpsCrew connects, the user confirms Portainer's certificate in a dialog; never confirm it or pass a fingerprint yourself. The choices for web and redeploy follow the domain answered above: a Cloudflare Tunnel and Cloudflare redeploys need a domain on Cloudflare, Caddy needs a domain.`,
           ...(portainer !== undefined
@@ -427,7 +416,17 @@ export function registerInterviewTools(
             : []),
           "",
           ...portainerQuestions.map(renderQuestion),
-          ...(hosting === undefined ? [] : ["", HOSTING_FOLLOW_UPS[hosting]]),
+          ...(hosting === undefined
+            ? []
+            : [
+                "",
+                HOSTING_FOLLOW_UPS[hosting],
+                ...answerHelpLines(
+                  hosting === "panel"
+                    ? ["hosting.hostname"]
+                    : HOSTING_FIELDS.map((field) => `hosting.${field}`),
+                ),
+              ]),
         ].join("\n");
         return {
           text,
@@ -449,15 +448,13 @@ export function registerInterviewTools(
     {
       title: "Save the deployment requirements",
       description:
-        "Validate the user's interview answers and write opscrew/requirements.yaml. Pass the answers keyed by the answer ids returned by opscrew_interview_questions. Answers that are not given fall back to the previous requirements, then to values inferred from the code. For a Portainer the user already runs it connects to Portainer with PORTAINER_API_KEY to list its environments; the first time (or when the certificate changed) the USER confirms Portainer's certificate in a dialog, which the coding agent cannot answer. Returns the saved requirements, or which answers are missing or invalid.",
+        "Validate the user's answers and write opscrew/requirements.yaml; returns the requirements, or the answers to ask again. For a Portainer the user confirms its certificate in a dialog. Next: opscrew_design_options.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         answers: z
-          .looseObject(answersShape)
-          .describe(
-            "Answers keyed by answer id (the question ids from opscrew_interview_questions).",
-          ),
+          .record(z.string(), AnswerValueSchema)
+          .describe("Answers keyed by the answer ids opscrew_interview_questions lists."),
       },
       annotations: {
         readOnlyHint: false,

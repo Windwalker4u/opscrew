@@ -23,7 +23,8 @@ export function registerSnapshotsTool(
     "opscrew_snapshots",
     {
       title: "List the snapshots",
-      description: `List an environment's snapshots of its data, newest first, read where they are: on the app's servers (each part on the server that holds it), on this computer, in the user's Portainer, and the whole-server snapshots at ${orText(CLOUD_PROVIDERS.map((p) => p.name))}. Each has its id, kind (by hand, before a release, scheduled, whole server), time, the version that ran, size, its services (copied, left out or failed), where it is, and whether its encrypted copy off the server exists (in a bucket, or a folder on the user's own machine over SFTP). Reads read-only and changes nothing; never a dumped value, password or address. Taking, restoring and deleting a snapshot, and turning the schedule or the off-server copy on or off, stay in the user's terminal because they ask for approval: \`npx opscrew snapshot\`, \`npx opscrew restore <id>\`, \`npx opscrew snapshot delete <id>\`, \`npx opscrew snapshot schedule on|off\`, \`npx opscrew snapshot offsite on|off\`.`,
+      description:
+        "List an environment's data snapshots, newest first, with kind, time, version, size, services, place and off-server copy. Read-only. Taking, restoring (`npx opscrew restore <id>`), deleting and scheduling snapshots stay in the user's terminal (`npx opscrew snapshot …`) because they ask for approval.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

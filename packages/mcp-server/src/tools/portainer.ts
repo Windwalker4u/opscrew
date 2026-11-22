@@ -78,7 +78,7 @@ export function registerPortainerTools(
     {
       title: "Portainer status",
       description:
-        "Show whether Portainer (a web UI for the containers) is on for this project, its version, how it is reached (only through an SSH tunnel, or also on a subdomain behind Cloudflare Access), the local address to open and where the admin password file is on the user's computer. Never returns the password. Changes nothing and contacts nothing.",
+        "Show whether Portainer (a web UI for the containers) is on for this project, its version, how it is reached and where its admin password file is; never the password. Contacts nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -113,21 +113,17 @@ export function registerPortainerTools(
     {
       title: "Turn Portainer on",
       description:
-        "Install Portainer CE (pinned version) on the deployment's server, listening only on the server itself and reached through an SSH tunnel; its admin password is generated on the user's computer and never shown here. Optional opt-in: subdomain plus allowEmails serve it on that subdomain of the app's Cloudflare domain behind Cloudflare Access (needs Cloudflare Zero Trust turned on). The host plan (and, for a subdomain, the Cloudflare plan of OpsCrew's shared Cloudflare resources and the infrastructure plan) is shown to the USER in a dialog and applied only after they approve it; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
+        "Install Portainer CE on the deployment's server, reached through an SSH tunnel or, opt-in, a subdomain behind Cloudflare Access. The USER approves each plan in a dialog; its password stays on their computer.",
       inputSchema: {
         ...projectDirInput,
         subdomain: z
           .string()
           .optional()
-          .describe(
-            "Opt-in: serve Portainer on this subdomain of the app's Cloudflare domain behind Cloudflare Access (for example portainer). Leave out to keep it reachable only through an SSH tunnel.",
-          ),
+          .describe("Opt-in: serve it on this subdomain behind Cloudflare Access."),
         allowEmails: z
           .array(z.string())
           .optional()
-          .describe(
-            "With subdomain: the email addresses Cloudflare Access lets in (at least one).",
-          ),
+          .describe("With subdomain: the emails Access lets in."),
         ...skipOtherAppsCheckInput,
       },
       annotations: IDEMPOTENT_WRITE,
@@ -167,15 +163,13 @@ export function registerPortainerTools(
     {
       title: "Turn Portainer off",
       description:
-        "Remove Portainer from the deployment's server (and the tunnel and Access application of its subdomain). Its data (users and settings) always stays: deleting it is not possible through this tool and stays in the terminal, where the user runs `npx opscrew portainer disable --delete-data` and types the app's name. Every plan is approved by the user in a dialog; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
+        "Remove Portainer from the server (and its subdomain's tunnel and Access). Its data stays: deleting it is terminal-only, `npx opscrew portainer disable --delete-data`. The USER approves each plan in a dialog.",
       inputSchema: {
         ...projectDirInput,
         deleteData: z
           .boolean()
           .optional()
-          .describe(
-            "Not accepted: true is refused. Deleting Portainer's data stays in the terminal (`npx opscrew portainer disable --delete-data`).",
-          ),
+          .describe("Not accepted: deleting the data is terminal-only."),
       },
       annotations: {
         readOnlyHint: false,

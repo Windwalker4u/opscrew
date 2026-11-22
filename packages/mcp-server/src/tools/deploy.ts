@@ -181,7 +181,7 @@ const PUBLIC_IMAGE_INPUT = z
   .boolean()
   .optional()
   .describe(
-    "The user's Portainer, only when the user says so: true when the app's image on GitHub Container Registry is public (Portainer pulls it without a registry entry), false to switch a remembered public image back to private. Omit it to keep the remembered choice; never guess. Pass the same value to opscrew_plan and opscrew_apply (the stack plan's hash depends on it).",
+    "Portainer, only when the user says so: is the app's image public? Same for plan and apply.",
   );
 
 /** The CLI's `--replace-token repository|registry` for the user's Portainer. */
@@ -189,17 +189,13 @@ const REPLACE_TOKENS_INPUT = z
   .array(z.enum(REPLACEABLE_TOKENS))
   .max(2)
   .optional()
-  .describe(
-    'The user\'s Portainer, only when the user rotated a token and asks to send it again: "repository" (OPSCREW_REPO_READ_TOKEN) and/or "registry" (OPSCREW_GHCR_READ_TOKEN). Never the tokens themselves. Pass the same value to opscrew_plan and opscrew_apply.',
-  );
+  .describe("Portainer, after the user rotated a token: resend it. Same for plan and apply.");
 
 /** The CLI's `--pages-verification <value>` for a site on GitHub Pages. */
 const PAGES_VERIFICATION_INPUT = z
   .string()
   .optional()
-  .describe(
-    "A site on GitHub Pages, only when OpsCrew stopped asking for it: the value of GitHub's domain verification record, which the user copies from their GitHub account's Pages settings after adding the domain there (it is public in DNS, not a secret). Pass the same value to opscrew_plan and opscrew_apply.",
-  );
+  .describe("GitHub Pages, when asked: the user's verification value. Same for plan and apply.");
 
 /** What to do about a missing or damaged saved plan through MCP. */
 const PLAN_AGAIN =
@@ -441,7 +437,7 @@ export function registerDeployTools(
     {
       title: "Preview the deployment files",
       description:
-        "Preview the deployment files OpsCrew generates from opscrew/plan.yaml: the OpenTofu/Terraform code under opscrew/infra, the Docker Compose and Caddy files under opscrew/runtime and the GitHub Actions deploy workflow. Lists each file as new, changed or unchanged compared with the repository. Writes nothing (opscrew_plan writes the files). It reads the GitHub origin remote (and the Cloudflare zone when the plan has a Cloudflare domain) to fill in the files, and creates the project deploy key in the OpsCrew home when it is missing.",
+        "Preview the files OpsCrew generates from opscrew/plan.yaml, each new, changed or unchanged; writes nothing in the repository (it may create the deploy key in the OpsCrew home). Next: opscrew_plan.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -480,7 +476,7 @@ export function registerDeployTools(
     "opscrew_plan",
     {
       title: "Plan the infrastructure",
-      description: `Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (${CLOUD_NAMES}) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. When other users on that server log in with a password and no SSH key, OpsCrew stops until the user chooses: pass passwordLogins 'off' (turn password logins off anyway) or 'keep' (leave them on), the CLI's --password-logins, and pass the same value to opscrew_apply. In a Portainer the user already runs, it inspects Portainer read-only (with PORTAINER_API_KEY and the certificate the user confirmed in the interview) and returns the stack plan (the app's stacks, the registry entry, the repository access and the redeploy setting, each marked as already in place or a change) with its own hash, next to the Cloudflare infrastructure plan when the app uses a tunnel or Cloudflare redeploys; when the stack plan needs the tunnel's token it follows after the infrastructure apply. When the app uses a Cloudflare zone it also returns the Cloudflare plan (cloudflarePlanHash): what OpsCrew changes in its shared rules in the zone (the probe block and the strict TLS rule, which list the hostnames of every OpsCrew app there; rules OpsCrew did not create are never changed) and in the account's Zero Trust organization and one-time PIN login. It is approved on its own, before the other plans; when only it is returned, the infrastructure plan follows after it is applied. When the app keeps its files in a bucket on Cloudflare R2, DigitalOcean Spaces, Hetzner Object Storage or Contabo Object Storage, it also returns the bucket's plan (storagePlanHash, the opscrew/infra/storage root, with its monthly price), approved on its own; the bucket's key is the user's own and comes only from their terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, and in the user's Portainer the stack plan follows once the bucket exists. At Contabo, until the account has object storage in the bucket's region, storagePlanHash is the plan that orders it through Contabo's API (Contabo makes its key, which OpsCrew reads there and never shows), and the bucket's plan follows once it exists. For an environment on the user's computer (localhost) it returns the local plan (the containers, networks, volumes and files OpsCrew would create or change there) with its hash, which opscrew_apply takes as planHash. When the environment's deploy job runs on a runner machine of the user's, or leaves one, it also returns each machine's host plan (runnerHostPlanHashes), each approved on its own. For a site on GitHub Pages it returns the Pages plan (pagesPlanHash: the site published by the workflow and its custom domain, set before any DNS record points at GitHub), the site's DNS records (planHash) and GitHub's domain verification record (pagesVerificationPlanHash), each approved on its own; when OpsCrew stops for the verification value, the user copies it from their GitHub account's Pages settings and you pass it as pagesVerification. For a site on Cloudflare's hosting it returns the Worker and its custom domains (planHash) and the redirect rules (plain HTTP to HTTPS, and www) in the Cloudflare plan. For an app on the user's hosting account (cPanel, Plesk, DirectAdmin) it returns hosting plan A (the agent, its files and its cron line) with its hash (hostingPlanHashes) and the terminal command that applies it: hosting plan B (the app) is built from the agent's first report on the account, so a hosting account is set up in the user's terminal, never through opscrew_apply. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's credentials (${CLOUD_CREDENTIALS}; none for the user's own server, whose SSH host key must have been confirmed once; PORTAINER_API_KEY for the user's Portainer) and GitHub access in the MCP server's environment.`,
+      description: `Write the generated files and make each plan the deployment needs, with its hash, changes, monthly cost and policy results. Never applies: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's credentials (${CLOUD_CREDENTIALS}; PORTAINER_API_KEY for Portainer) and GitHub access in the server's environment.`,
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -488,9 +484,9 @@ export function registerDeployTools(
         engine: z
           .enum(["auto", "tofu", "terraform"])
           .optional()
-          .describe("IaC engine to use; defaults to the plan's choice (OpenTofu when installed)."),
+          .describe("IaC engine; default the plan's choice."),
         passwordLogins: PASSWORD_LOGINS_INPUT.describe(
-          'The user\'s own server, only when OpsCrew stopped because other users log in with a password and no SSH key: the user\'s explicit choice, "off" (turn password logins off anyway) or "keep" (leave them on). Ask the user; never choose for them. The host plan shows the choice and the user approves it.',
+          "Own server, when OpsCrew asked: the user's choice.",
         ),
         publicImage: PUBLIC_IMAGE_INPUT,
         replaceTokens: REPLACE_TOKENS_INPUT,
@@ -762,68 +758,28 @@ export function registerDeployTools(
     "opscrew_apply",
     {
       title: "Apply an approved plan",
-      description: `Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (${CLOUD_NAMES}, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash), with the same passwordLogins choice given to opscrew_plan, if any. In a Portainer the user already runs, also pass stackPlanHash: the stack plan is shown and approved in its own dialog before OpsCrew changes anything in Portainer (when only a stack plan was returned, pass it as planHash; when the stack plan followed the infrastructure plan, it is shown in a dialog after that apply), with the same publicImage and replaceTokens given to opscrew_plan, if any. When opscrew_plan returned a Cloudflare plan, also pass its cloudflarePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog first, and a Cloudflare plan with another hash is refused before any dialog. A Cloudflare plan that deletes OpsCrew's rule asks the user to type the app's name in its dialog. When opscrew_plan returned a bucket plan, also pass its storagePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog. On the user's computer (localhost), pass the local plan's hash as planHash: it is shown and approved in its own dialog. When opscrew_plan returned runnerHostPlanHashes, pass them too: each runner machine's host plan is shown and approved in its own dialog. For a site on GitHub Pages, also pass pagesPlanHash and pagesVerificationPlanHash as opscrew_plan returned them (and the same pagesVerification): each is shown and approved in its own dialog, and a Pages plan with another hash is refused before any dialog. Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with \`opscrew provision\` in a terminal. Refuses when the client cannot show dialogs, and for an app on a hosting account, which the user sets up with \`npx opscrew provision\` in a terminal.`,
+      description:
+        "Apply exactly the plans opscrew_plan returned (every hash, same names, same choices), each after the USER approves it in a dialog, then open the deploy pull request. Deploy secrets need OPSCREW_APP_ENV_FILE, else the user finishes with `npx opscrew provision`, as for a hosting account.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         ...environmentInput,
-        planHash: z
-          .string()
-          .optional()
-          .describe(
-            "SHA-256 hash of the saved plan, exactly as returned by opscrew_plan (leave it out when opscrew_plan returned only a Cloudflare plan).",
-          ),
-        cloudflarePlanHash: z
-          .string()
-          .optional()
-          .describe(
-            "SHA-256 hash of the Cloudflare plan (OpsCrew's shared rules in the zone and the account's Zero Trust pieces), exactly as returned by opscrew_plan. Without it a Cloudflare plan is refused.",
-          ),
-        hostPlanHash: z
-          .string()
-          .optional()
-          .describe(
-            "The user's own server: SHA-256 hash of the host plan, exactly as returned by opscrew_plan.",
-          ),
-        stackPlanHash: z
-          .string()
-          .optional()
-          .describe(
-            "The user's Portainer: SHA-256 hash of the stack plan, exactly as returned by opscrew_plan.",
-          ),
-        storagePlanHash: z
-          .string()
-          .optional()
-          .describe(
-            "The app's bucket: SHA-256 hash of the bucket plan (the opscrew/infra/storage root), exactly as returned by opscrew_plan. Its key comes only from the user's terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, never from the chat.",
-          ),
-        backupsPlanHash: z
-          .string()
-          .optional()
-          .describe(
-            "The bucket of the snapshots' off-server copies: SHA-256 hash of its plan (the opscrew/infra/backups root), exactly as returned by opscrew_plan. Its key comes only from the user's terminal or OPSCREW_OFFSITE_ACCESS_KEY_ID and OPSCREW_OFFSITE_SECRET_ACCESS_KEY, never from the chat.",
-          ),
+        planHash: z.string().optional().describe("The plan's hash from opscrew_plan."),
+        cloudflarePlanHash: z.string().optional().describe("The Cloudflare plan's hash."),
+        hostPlanHash: z.string().optional().describe("Own server: the host plan's hash."),
+        stackPlanHash: z.string().optional().describe("Portainer: the stack plan's hash."),
+        storagePlanHash: z.string().optional().describe("The bucket plan's hash."),
+        backupsPlanHash: z.string().optional().describe("The snapshot copies' bucket plan hash."),
         runnerHostPlanHashes: z
           .array(z.string())
           .optional()
-          .describe(
-            "The runner machines' host plans: their SHA-256 hashes, exactly as returned by opscrew_plan.",
-          ),
-        pagesPlanHash: z
-          .string()
-          .optional()
-          .describe(
-            "A site on GitHub Pages: SHA-256 hash of the Pages plan, exactly as returned by opscrew_plan. Without it a Pages plan is refused.",
-          ),
+          .describe("Each runner machine's host plan hash."),
+        pagesPlanHash: z.string().optional().describe("GitHub Pages: the Pages plan's hash."),
         pagesVerificationPlanHash: z
           .string()
           .optional()
-          .describe(
-            "A site on GitHub Pages: SHA-256 hash of the plan of GitHub's domain verification record, exactly as returned by opscrew_plan.",
-          ),
-        passwordLogins: PASSWORD_LOGINS_INPUT.describe(
-          "The user's own server: the same password-logins choice that was passed to opscrew_plan (the host plan's hash depends on it).",
-        ),
+          .describe("GitHub Pages: the verification plan's hash."),
+        passwordLogins: PASSWORD_LOGINS_INPUT.describe("The same choice given to opscrew_plan."),
         publicImage: PUBLIC_IMAGE_INPUT,
         replaceTokens: REPLACE_TOKENS_INPUT,
         pagesVerification: PAGES_VERIFICATION_INPUT,
@@ -831,7 +787,7 @@ export function registerDeployTools(
           .string()
           .optional()
           .describe(
-            "The first time OpsCrew makes the encrypted recovery copy of the app's secrets: the full path of a file outside the repository, which the user chose, for their new age key. OpsCrew writes the key there once and never returns it; never read that file. Without it, no copy is made yet and the result says how to make it.",
+            "First recovery copy: the new age key's path outside the repo, chosen by the user.",
           ),
         ...skipOtherAppsCheckInput,
       },
@@ -1159,21 +1115,16 @@ export function registerDeployTools(
     {
       title: "Security check of the deployment",
       description:
-        "Re-scan the repository, re-check the applied plan against the security policies, run hardening checks on the server over SSH (password and root login, firewall, fail2ban, automatic updates, Docker exposure, listening ports, pending reboot, disk) and probe from outside that only the expected ports answer. In a Portainer the user already runs it checks the app's stack through Portainer's API instead (never the host: its firewall, SSH and Portainer's own security stay the user's, as do backups). With deep, it also runs three pinned audits, read-only: Lynis on the server (through Docker over SSH), and ssh-audit and testssl.sh in Docker on the user's computer (skipped with how to enable them when Docker is missing; in a Portainer only testssl.sh), each with its known noise set apart; this takes a few minutes. Writes opscrew/SECURITY_REPORT.md and returns every check result and the problems to fix. Changes nothing on the server or in Portainer.",
+        "Re-scan, re-check policies, check the server's hardening (in Portainer, the app's stack) and probe its ports from outside; deep adds Lynis, ssh-audit and testssl.sh. Writes opscrew/SECURITY_REPORT.md; changes nothing.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
         ...environmentInput,
-        offline: z
-          .boolean()
-          .optional()
-          .describe("Skip the online dependency-vulnerability lookup (default false)."),
+        offline: z.boolean().optional().describe("Skip the online dependency lookup."),
         deep: z
           .boolean()
           .optional()
-          .describe(
-            "Also run the deeper checks: Lynis, ssh-audit and testssl.sh (default false). Only when the user asks for them.",
-          ),
+          .describe("Also run Lynis, ssh-audit and testssl.sh; only when the user asks."),
       },
       annotations: IDEMPOTENT_WRITE,
     },
@@ -1228,7 +1179,7 @@ export function registerDeployTools(
     {
       title: "Verify the live deployment",
       description:
-        "Check the live deployment from outside: DNS, HTTPS and certificate validity, the HTTP-to-HTTPS redirect, the health endpoint, security headers, that .env and .git are not served, that the origin is not reachable around Cloudflare, and the latest GitHub Actions deploy run. Writes opscrew/RUNBOOK.md (deploys, rollbacks, logs, SSH access, backups, secret rotation, costs) and returns every check result. Run it after the deploy pull request is merged. For an app in the user's Portainer behind their own reverse proxy, pass url: the address the proxy serves the app on (refused for every other deployment).",
+        "Check the live deployment from outside (DNS, HTTPS, redirect, health, headers, no .env or .git served, origin hidden, last deploy run) and write opscrew/RUNBOOK.md. Run it after the deploy pull request is merged.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -1236,9 +1187,7 @@ export function registerDeployTools(
         url: z
           .string()
           .optional()
-          .describe(
-            "Only for an app in the user's Portainer behind their own reverse proxy: the address the proxy serves the app on (for example https://shop.example.com), checked instead of the domain. Ask the user for it.",
-          ),
+          .describe("Portainer behind the user's own proxy only: the app's address there."),
       },
       annotations: IDEMPOTENT_WRITE,
     },
