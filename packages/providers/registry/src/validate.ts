@@ -172,6 +172,7 @@ const terraform = z.object({
   module: z.object({ name: z.string(), files: moduleFiles }),
   credentialsComment: z.string(),
   deleteProtectionVariable: z.boolean(),
+  firstBoot: z.enum(["cloud-init", "script"]).optional(),
   descriptions: z.object({ location: z.string(), serverType: z.string(), backups: z.string() }),
   moduleArguments: fn<Definition["terraform"]["moduleArguments"]>(),
   rootVariables: z.array(rootVariable).optional(),

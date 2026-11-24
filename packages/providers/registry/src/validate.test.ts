@@ -41,6 +41,16 @@ describe("validateCloudProvider", () => {
     expect(validateCloudProvider(contabo)).toBe(contabo);
   });
 
+  it("accepts both first-boot kinds, and refuses any other", () => {
+    const cloudInit = { ...hetzner, terraform: { ...terraform, firstBoot: "cloud-init" } };
+    expect(validateCloudProvider(cloudInit)).toBe(cloudInit);
+    const script = { ...hetzner, terraform: { ...terraform, firstBoot: "script" } };
+    expect(validateCloudProvider(script)).toBe(script);
+    expect(failure({ ...hetzner, terraform: { ...terraform, firstBoot: "startup" } })).toContain(
+      "terraform.firstBoot",
+    );
+  });
+
   it("wants the resize downtime exactly when the provider resizes in place", () => {
     expect(failure({ ...hetzner, texts: withoutResize })).toContain(
       "texts.resizeOffline: is needed exactly when offering.resize is true",

@@ -105,6 +105,21 @@ kinds, not on which cloud.
   - **Without OpsCrew:** whoever runs the vendored HCL sets `TF_VAR_<name>` themselves. The
     provider's guide page says so (constitution II).
 
+- **D12: a provider may take the first-boot setup as a startup script** (feature 035, Kamatera; the
+  contract question of issue #13, 2026-11-24).
+  - **Why:** Kamatera's Terraform takes a `startup_script` (a shell script, ForceNew) and no user
+    data, so the shared `cloud-init.yaml.tftpl` can't be handed to it. Whether its Ubuntu image
+    runs cloud-init at all is unverified (research R4 §9).
+  - **`terraform.firstBoot`:** `cloud-init` (the default, and every provider before Kamatera) or
+    `script`. Both render the same first-boot steps from the same context: with `script`,
+    iac-templates writes `first-boot.sh` instead of `cloud-init.yaml.tftpl`, and the module passes
+    it where the provider takes a startup script.
+  - **The script** guards itself with a marker, so a second boot changes nothing. It installs
+    cloud-init when the image lacks it, writes the cloud-config to the NoCloud seed and runs it.
+    The live pass proves when it runs, and whether cloud-init is there.
+  - **The vendored module keeps its script**, so a user who deletes OpsCrew keeps the same first
+    boot (constitution II).
+
 ## Consequences
 
 - Adding a cloud server provider is one package and one line in the registry, plus its id in
