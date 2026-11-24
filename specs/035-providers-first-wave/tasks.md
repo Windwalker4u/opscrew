@@ -398,8 +398,11 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     (where `cloud-init.yaml.tftpl` is added), `infra/index.ts`
   - Depends: T3520
   - Accept:
-    - A root with a `firstBoot: "script"` provider gets `first-boot.sh` in its module folder and
-      no `cloud-init.yaml.tftpl`; the module reads that file where it takes a startup script.
+    - A root with a `firstBoot: "script"` provider gets `first-boot.sh.tftpl` **beside**
+      `cloud-init.yaml.tftpl`: the wrapper can't carry the key or the web flag, which only
+      `templatefile` knows at apply time, so the module renders the cloud-config, base64-encodes
+      it and passes the wrapper to the startup script. A provider whose `firstBoot` is absent or
+      `cloud-init` gets no wrapper and no other change.
     - The script is rendered from the same context as the cloud-init one, and it:
       - guards itself with a marker (`/var/lib/opscrew/first-boot.done`), so a second run changes
         nothing;

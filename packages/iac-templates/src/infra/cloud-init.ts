@@ -22,12 +22,12 @@ function jsonencode(text: string): string {
 }
 
 /**
- * Renders a template the way `templatefile` renders `cloud-init.yaml.tftpl`: keeps or drops the
- * lines of each whole-line `%{ if <bool> ~}` … `%{ endif ~}`, puts in the string variables (their
- * values as they are, never read as patterns or templates) and unescapes `$${` and `%%{`. Throws
- * on any other interpolation or directive.
+ * Renders a template the way `templatefile` renders one under OpenTofu and Terraform: keeps or
+ * drops the lines of each whole-line `%{ if <bool> ~}` … `%{ endif ~}`, puts in the string
+ * variables (their values as they are, never read as patterns or templates) and unescapes `$${`
+ * and `%%{`. Throws on any other interpolation or directive.
  */
-function templatefile(source: string, vars: Record<string, string | boolean>): string {
+export function templatefile(source: string, vars: Record<string, string | boolean>): string {
   const kept = source.replace(
     /^%\{ if (\w+) ~\}\n([\s\S]*?)^%\{ endif ~\}\n/gm,
     (_match, name: string, body: string) => {

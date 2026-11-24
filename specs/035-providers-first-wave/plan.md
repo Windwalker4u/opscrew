@@ -291,9 +291,11 @@ firstBoot?: "cloud-init" | "script";
 ```
 
 - **iac-templates:** today it writes `cloud-init.yaml.tftpl` into every server module's folder and
-  the module reads it. With `script`, it writes `first-boot.sh` **instead**, rendered from the same
-  `cloudInitContext` (users, keys, packages, write_files and runcmd become the script's steps),
-  and the module passes it to `startup_script`.
+  the module reads it. With `script`, it also writes `first-boot.sh.tftpl`, the generic wrapper:
+  the module renders the cloud-config, base64-encodes it (`base64encode`), and passes the wrapper
+  to `startup_script`. The wrapper ships **beside** the cloud-config rather than replacing it,
+  because the deploy key and the web flag are values only `templatefile` knows at apply time, so
+  the steps have to stay a template. The other providers never get the wrapper.
 - **The script's shape:** a bash script with a marker guard (`/var/lib/opscrew/first-boot.done`),
   which installs cloud-init when the image lacks it, writes the cloud-config to
   `/var/lib/cloud/seed/nocloud-net/user-data`, and runs `cloud-init clean`, `init --local`, `init`
@@ -390,8 +392,9 @@ firstBoot?: "cloud-init" | "script";
     definition's image;
   - `kamatera_server` with `name = var.name`, `datacenter_id = var.location`, the plan's CPU,
     memory and disks, `billing_cycle = "hourly"`, `ssh_pubkey = var.deploy_ssh_public_key`,
-    `startup_script = file("${path.module}/first-boot.sh")`, `daily_backup = false`,
-    `power_on = true` and `allow_recreate = false`;
+    `startup_script = templatefile("${path.module}/first-boot.sh.tftpl", { cloud_config_b64 =
+    base64encode(templatefile("${path.module}/cloud-init.yaml.tftpl", …)) })`,
+    `daily_backup = false`, `power_on = true` and `allow_recreate = false`;
   - `lifecycle.ignore_changes` on `image_id`, `ssh_pubkey` and `startup_script`, so a change is
     never planned (they would recreate the server);
   - no password argument: the provider generates one and records it in state as
@@ -440,8 +443,8 @@ stay on the user's computer.
 - **The registry:** its conformance test over the five definitions, and Kamatera's `firstBoot` and
   `sshKeyAttribute` validated.
 - **iac-templates:** every existing snapshot byte-identical; a root with a `firstBoot: "script"`
-  provider writes `first-boot.sh` and no `cloud-init.yaml.tftpl`, and the script runs the same
-  steps (checked by string and by `sh -n`).
+  provider gets `first-boot.sh.tftpl` beside `cloud-init.yaml.tftpl`, and the rendered script
+  carries the same cloud-config, base64-encoded (checked by decoding it, and by `sh -n`).
 - **The client, with `fetch` fakes:** the two headers on every call; a queued create awaited; a
   command that ends in `error` fails with its `log`; a 500 with `errors[].info` in plain English;
   no `post` retried; a leak check.
