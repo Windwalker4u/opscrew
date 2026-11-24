@@ -1,13 +1,15 @@
-# Feature Specification: More server providers, first wave (OVHcloud first)
+# Feature Specification: More server providers, first wave (OVHcloud, then Kamatera)
 
 **Feature Branch**: `035-providers-first-wave` (feature directory `specs/035-providers-first-wave`)
 **Created**: 2026-11-21
-**Status**: Draft (OVHcloud). Kamatera, IONOS Cloud and UpCloud are later phases of this feature.
+**Status**: OVHcloud built on `035-providers-first-wave`, its pull request open for review. Kamatera
+specified 2026-11-24 on `035-kamatera`. IONOS Cloud and UpCloud are later phases of this feature.
 **Input**: The roadmap's "035 More server providers, first wave" (the founder's order of
 2026-11-20: OVHcloud first, then Kamatera, IONOS Cloud and UpCloud). Each provider is a package on
 the cloud provider contract (ADR 0029), built in as Contabo is, and ships complete in its own pull
 request before the next one starts. Research: [research.md](research.md). R1 has OVHcloud's facts,
-R2 the lead's 15 decisions with their reasons, and R3 what only the live pass can check.
+R2 the lead's decisions for it, R3 what only its live pass can check, and R4 Kamatera's facts,
+including the two findings that await a decision in issue #13.
 
 ## Why
 
@@ -25,6 +27,21 @@ still differs from the providers OpsCrew has in ways the user must see (R1):
 - **snapshots outlive the server** and keep billing until they are deleted;
 - a later change of the first-boot script or of the image **reinstalls the server and wipes its
   disk**.
+
+Kamatera is smaller and cheaper to start on, with data centres in Europe, North America and Asia,
+and an hourly rate that is exactly its monthly one divided by 730. Its smallest server costs $4 a
+month. It differs in ways the user must see (R4), and two of them touch the safety model:
+- it has a **firewall, but only in its console and off by default**, with no API, Terraform
+  resource or CLI route, so the plan can't set or prove a cloud firewall. The only protection
+  OpsCrew can install is a firewall on the server itself, set up at the first boot;
+- there is **no user data**: the first boot is delivered as a **startup script**, and whether the
+  image runs cloud-init at all is unverified;
+- servers carry **no tags, and names are not unique**: a duplicate is renamed `<name>(1)`, which
+  loses the server and leaves it billing;
+- a **stopped server still bills** for its IP and disk; only a terminate ends the cost;
+- its Terraform provider covers no **snapshot, backup, tag or SSH-key resource**, so whole-server
+  snapshots go through the connector's API;
+- an API **key cannot be scoped**, so it can do everything on the account.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -158,16 +175,128 @@ in no generated or committed file, and the engine gets it only from the environm
 
 ---
 
-### User Story 6 - Kamatera (Priority: later phase, not built now)
+### User Story 6 - Deploy an app to a Kamatera server (Priority: P1)
 
-Kamatera follows once OVHcloud's pull request is merged. Its research, stories and requirements
-are added to this folder then.
+**Why this priority**: this is Kamatera's point: a cheap server, in Europe, North America or Asia,
+that a person can try without a company account, billed by the minute.
 
-### User Story 7 - IONOS Cloud (Priority: later phase, not built now)
+**Independent Test**: against fakes of Kamatera's API and the engine, interview, design, provision,
+deploy, verify, status, secure and drift run on a Kamatera app. The live pass, which needs an
+account and the founder's go-ahead (issue #14), proves the same on one `A-2-4`.
 
-IONOS Cloud follows Kamatera, in the same way.
+**Acceptance Scenarios**:
 
-### User Story 8 - UpCloud (Priority: later phase, not built now)
+1. **Given** `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET` in the environment (and
+   `KAMATERA_API_URL` only to override the endpoint), **When** the user runs `opscrew interview`,
+   **Then** OpsCrew offers Kamatera next to the other cloud providers, with the regions and
+   datacenters it serves. When only Kamatera's values are set, it chooses Kamatera without asking.
+2. **When** the user runs `opscrew design`, **Then** the options show Kamatera's plans, from a dated
+   table of Kamatera's public calculator prices, each with:
+   - the hourly price and the monthly figure for 730 hours, in US dollars before VAT;
+   - the price table's date;
+   - no setup fee, and that billing stops when the server is terminated, not when it is stopped;
+   - that a stopped server still costs about a tenth of its running price, for its IP and disk;
+   - no provider backups (OpsCrew's own snapshots cover the data).
+3. **When** the user runs `opscrew provision` and approves the plan by its hash, **Then** OpsCrew
+   creates on the user's account:
+   - the server, from Ubuntu 24.04, with a **unique name** (`opscrew-<app>-<random>`), because
+     Kamatera renames a duplicate and loses it;
+   - its SSH key, as the public key text the server takes (Kamatera has no key resource);
+   - the shared first-boot setup, delivered as the **startup script** Kamatera's Terraform accepts
+     instead of user data;
+   - the app's **server firewall** in that script (default deny; SSH from the allowed networks, the
+     web ports on a server that serves the web, WireGuard where it is used), since Kamatera's
+     console firewall is off by default and OpsCrew can't set it.
+
+   The plan says "cloud firewall: none; server firewall: on", and `opscrew secure` fails until the
+   server's firewall is in place. The deploy, verify, status, secure and drift commands then work
+   as on the other providers.
+4. **Given** a plan Kamatera refuses (the account's price limit, its server allotment, or no
+   capacity in the datacenter), **When** the plan is applied, **Then** provision stops with
+   Kamatera's answer and what to do, and no server is created.
+5. **Given** a create that timed out, **When** provision runs again, **Then** a server with the
+   app's name that OpsCrew's state doesn't know is shown and taken over in the plan, never created
+   a second time. **Given** a server named `<name>(1)` — a duplicate Kamatera renamed — **Then**
+   provision reports it, names it, and ignores neither the stray server nor its billing.
+6. **Given** values that are missing or wrong, **Then** `opscrew init` and provision name what is
+   missing and link Kamatera's page for API keys. They say the key can do everything on the account
+   and recommend a separate Kamatera account for OpsCrew.
+
+---
+
+### User Story 7 - Remove an app from Kamatera honestly (Priority: P1)
+
+**Why this priority**: a stopped Kamatera server keeps billing, and its snapshots may outlive it.
+A removal that says "free now" when it isn't would cost the user money without warning.
+
+**Independent Test**: against fakes, `opscrew destroy` terminates the server, and its plan names
+what stops and what may keep billing.
+
+**Acceptance Scenarios**:
+
+1. **Given** an app on Kamatera, **When** the user runs `opscrew destroy`, **Then** the plan says:
+   - the server is **terminated** (powered off first if it is on), and its hourly billing stops at
+     the terminate, which the provider runs as a queued command;
+   - a server that was only **stopped** still billed, and only the terminate ends the cost;
+   - OpsCrew removes the app's DNS records;
+   - whole-server snapshots and backups may outlive the server and keep billing per GB; each is
+     named, and OpsCrew deletes none of them.
+2. **Given** data on the server, **Then** OpsCrew offers its own data snapshot with the encrypted
+   copy off the server first, as on every provider (024). A whole-server snapshot is offered too,
+   with its monthly cost per GB.
+3. **Then** the approval and the typed confirmation of the server's name come before anything is
+   deleted, as on every provider.
+
+---
+
+### User Story 8 - Everything around a server, on Kamatera (Priority: P2)
+
+**Acceptance Scenarios**:
+
+1. **Whole-server snapshots** (`opscrew snapshot --server`, `restore --server`) work through
+   Kamatera's API, because its Terraform provider has no snapshot resource, priced per GB a
+   month. A restore rebuilds the server from the snapshot, after the approval that any restore
+   needs.
+2. **Moves** (`opscrew retarget`) work to and from Kamatera like any other server target. A change
+   of plan size is refused with the reason and the way to do it: a move to a new server, because a
+   disk-size change fails at Kamatera's API and a CPU or memory change is unverified.
+3. **Several servers** (018), **previews on a server** (022), **monitoring** (020), **logs**,
+   **rollback** and **data snapshots** (019, 024) work on Kamatera servers as on the others.
+4. **`opscrew advise`** includes Kamatera in its cost comparisons, labelled with the price table's
+   date.
+5. **`opscrew rotate`** lists Kamatera's API key among the user's own credentials, with how to
+   replace it (025).
+6. **No provider backups, no delete protection, no resize:** each is said plainly where it matters
+   (design, the runbook, the guide), with what OpsCrew does instead.
+
+---
+
+### User Story 9 - In the guide, and a live pass the founder can run (Priority: P3)
+
+**Acceptance Scenarios**:
+
+1. **Given** the guide, **Then** a page for Kamatera says:
+   - how to create the API key, and that it can do everything on the account, so a separate
+     Kamatera account for OpsCrew is the safer way;
+   - which datacenters OpsCrew offers, and what each OpsCrew region maps to;
+   - how billing works: by the minute, hourly = monthly / 730, stopping at the terminate, and what
+     keeps billing (a stopped server, snapshots);
+   - the traffic allowance per datacenter and what exceeding it costs;
+   - what isn't offered: a cloud firewall OpsCrew can manage (its console one is yours to turn on),
+     provider backups, resizing, delete protection and monthly billing.
+2. **Given** `docs/e2e.md`, **Then** the Kamatera live pass has its steps, its variables and what it
+   costs (about $0.03 an hour on one `A-2-4`), so the founder can run it, or give a throwaway
+   account.
+3. **Then** the MCP tools accept `kamatera` wherever they accept a cloud provider, and the deploy
+   and snapshot skills say what differs on Kamatera.
+
+---
+
+### User Story 10 - IONOS Cloud (Priority: later phase, not built now)
+
+IONOS Cloud follows Kamatera. Its research, stories and requirements are added to this folder then.
+
+### User Story 11 - UpCloud (Priority: later phase, not built now)
 
 UpCloud follows IONOS Cloud, in the same way.
 
@@ -192,6 +321,38 @@ UpCloud follows IONOS Cloud, in the same way.
 - **OVHcloud's values in the app's environment or files**: the analysis treats the app's `OVH_*`
   variables as provider credentials, as it does other providers' prefixes. The values have no
   recognisable format of their own, so `opscrew scan` has no rule that matches them.
+- **A duplicate name at Kamatera**: the API renames the new server `<name>(1)`, which the
+  Terraform provider then loses, leaving it billing (R4 §2). OpsCrew's names carry a random suffix
+  and are checked against the account's list, the `(1)` form included, before every apply. A stray
+  `(1)` server is reported, never ignored, and a failed create is never retried blindly.
+- **A create refused for the account's price limit, its server allotment or no capacity**: the
+  plan stops with Kamatera's answer and the setting to raise, as an unavailable size does on the
+  other providers.
+- **Kamatera's plan-time check can't reach its price file** (`console.kamatera.com`): the plan
+  fails with that address named and the way to fix it (the network, or a proxy), because the
+  provider validates the datacenter and the plan against it.
+- **The startup script's second boot**: whether the image runs it once or on every boot is
+  unverified (R4 §9). The script is idempotent, so a second run changes nothing, and the live pass
+  says which it is.
+- **A change to the startup script, the image or the SSH key after create**: it is never planned.
+  Kamatera marks all three as needing a recreate, and OpsCrew keeps `allow_recreate = false`, so
+  the server keeps what it booted with and a change means a new server.
+- **An API key that can do everything**: there is no scope, role or IP allow-list at Kamatera
+  (R4 §1). `init` and the guide say so and recommend a separate account; the key is redacted
+  everywhere.
+- **The generated root password**: Kamatera's provider stores the password it generates in the
+  Terraform state. OpsCrew gives it a random value it never shows and relies on the SSH key, and
+  the guide says the password is in the state on the user's computer.
+- **Traffic beyond the allowance** ($0.01 a GB, 5000 GB in Europe and North America, 1000 GB in
+  Asia and Sydney): design shows the allowance and the rate, and the guide says what exceeding it
+  costs.
+- **A datacenter OpsCrew's regions don't map** (for example one of Kamatera's four Israeli codes):
+  design says the region isn't served there, with the nearest one that is.
+- **Whole-server snapshots may or may not outlive the server** at Kamatera (unverified): OpsCrew
+  takes the cautious value, offers one before a removal, and names it and its price.
+- **The console firewall is off by default**: the plan never claims a cloud firewall for
+  Kamatera. The guide shows how to turn the console one on as a second layer, and that OpsCrew
+  doesn't manage or verify it.
 
 ## Requirements *(mandatory)*
 
@@ -242,6 +403,54 @@ UpCloud follows IONOS Cloud, in the same way.
   the environment (US4). Providers that name none MUST be unchanged.
 - **FR-3514**: The MCP tools, the plugin skills and the guide (an OVHcloud page, plus the pages
   that list providers) MUST cover OVHcloud (US5). `docs/e2e.md` MUST give the live pass's steps.
+- **FR-3515**: Kamatera MUST be a built-in cloud server provider, `kamatera`, in its own package
+  written for the contract (ADR 0029), added to the built-in list after OVHcloud. No code outside
+  its package, the built-in list, the provider id lists and the docs MAY branch on it.
+- **FR-3516**: Its connector MUST call Kamatera's API with a typed client, signed in by the API key
+  in `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET` (`KAMATERA_API_URL` only overrides the
+  endpoint). Both values MUST be registered with the redactor, and an answer MUST be validated
+  before use. A create MUST never be repeated.
+- **FR-3517**: Its servers MUST be created through the IaC engine with Kamatera's Terraform
+  provider (`Kamatera/kamatera`), pinned to an exact version, which is the only one found. The plan
+  MUST keep `disable_validations` off, as the provider's validation is what refuses an unknown
+  datacenter or plan, and the error MUST name the price file it couldn't read when that is why.
+- **FR-3518**: Design MUST price Kamatera in US dollars by the hour and for 730 hours, before VAT,
+  from a dated table of its public calculator prices. Every price MUST show its date, there is no
+  setup fee, and design, the runbook and the guide MUST say that a stopped server still bills
+  about a tenth and that only a terminate ends the cost.
+- **FR-3519**: Every Kamatera server MUST get a unique name with a random suffix
+  (`opscrew-<app>-<random>`, valid as `[a-zA-Z0-9()_-]`, at least 4 characters). Before every
+  apply, OpsCrew MUST read the account's server list and check the name and its `<name>(1)` form,
+  take over a server the state doesn't know instead of creating another, and report a stray `(1)`
+  server rather than ignoring it.
+- **FR-3520**: Because Kamatera has no user data, the shared first-boot setup MUST be delivered as
+  the `startup_script` its Terraform accepts. The contract MUST gain an optional first-boot kind
+  (`cloud-init`, the default, or `script`) so the same steps render as that script, and no other
+  provider's generated files MAY change. The script MUST run once, as root, after the network is
+  up; whether the image would also run cloud-init MUST be settled on the live pass.
+- **FR-3521**: Kamatera has no cloud firewall that OpsCrew can set or prove (R4 §4). The plan
+  therefore MUST NOT claim one: the app's firewall MUST be installed on the server by the first
+  boot (default deny; SSH from the allowed networks, the web ports on a server that serves the
+  web, WireGuard where it is used), and `opscrew secure` MUST fail until it is in place. The plan,
+  the design summary and the guide MUST say "cloud firewall: none; server firewall: on". This
+  changes the safety model for one provider and waits for the founder's decision in issue #13;
+  without it, Kamatera's work stops at the decision and the queue moves on.
+- **FR-3522**: Destroy MUST terminate the server (powering it off first when it is on) after the
+  approval and the typed name, with the plan saying that the terminate is a queued command, that a
+  stopped server had kept billing, and which whole-server snapshots or backups may stay and keep
+  billing. OpsCrew MUST delete no snapshot of its own at a destroy.
+- **FR-3523**: Whole-server snapshots, restores, moves, several servers, previews, monitoring,
+  logs, rollback, data snapshots, advise, rotate, status, secure and drift MUST work for Kamatera
+  as US8 says. Snapshots MUST go through the connector's API, since Kamatera's Terraform has no
+  snapshot resource. A size change MUST be refused with a move named as the way.
+- **FR-3524**: The interview MUST offer Kamatera and map OpsCrew's regions to its datacenter codes:
+  eu-central to `EU-FR` (Frankfurt), eu-north to `EU-ST` (Stockholm), us-east to `US-NY2` (New
+  York), us-west to `US-SC` (Santa Clara) and ap-southeast to `AS-SG` (Singapore), each with the
+  codes that aren't confirmed named as unverified. Any region that maps elsewhere MUST be said in
+  design.
+- **FR-3525**: The MCP tools, the plugin skills and the guide (a Kamatera page, plus the pages that
+  list providers) MUST cover Kamatera (US9). `docs/e2e.md` MUST give its live pass's steps, and the
+  plugin's and the CLI's credential lists MUST include Kamatera's two variables.
 
 ### Key Entities
 
@@ -251,6 +460,13 @@ UpCloud follows IONOS Cloud, in the same way.
   server's own, with its description and the credential it is fed from.
 - **OVHcloud price table**: the offered plans' hourly and 730-hour prices in EUR before VAT, the
   snapshot price per GB, its date and its source (the public catalogue, IE subsidiary).
+- **Kamatera account**: the flat account the API key belongs to. It holds every server, with no
+  project, folder or resource group, and its datacenters are codes such as `EU-FR`.
+- **Kamatera price table**: the offered plans' monthly and hourly prices in USD before VAT, the
+  snapshot rate per GB, the traffic allowance per datacenter, its date and its source (Kamatera's
+  public calculator data).
+- **First-boot kind**: whether a provider's servers take the shared setup as cloud-init (every
+  provider so far) or as a startup script (Kamatera), each rendering the same steps.
 
 ## Success Criteria *(mandatory)*
 
@@ -274,6 +490,22 @@ UpCloud follows IONOS Cloud, in the same way.
 - **SC-3507**: The founder can run the live pass from `docs/e2e.md` alone. It costs under €0.05 an
   hour while it runs (one `d2-4` and its snapshot), and nothing after its destroy except what it
   names.
+- **SC-3508**: With fakes of Kamatera's API and the engine, interview, design, provision, verify,
+  status, secure, drift, a whole-server snapshot and its restore, and destroy each run on a
+  Kamatera app, with no real cloud call in any test.
+- **SC-3509**: With a fake Kamatera API that times out on create, a second provision creates no
+  second server; with one that renamed the server `<name>(1)`, the plan reports the stray server
+  and creates nothing.
+- **SC-3510**: For the example apps on Hetzner, DigitalOcean, Contabo and OVHcloud, the generated
+  files are byte-identical before and after Kamatera's tasks, and every existing test passes.
+- **SC-3511**: No output, log, audit entry, generated or committed file of the fake runs holds
+  Kamatera's client id or secret. The live pass checks the same, and its state files are checked
+  for both values except the random root password Kamatera's provider records, which OpsCrew never
+  shows.
+- **SC-3512**: `pnpm check` passes on Kamatera's pull request, or the pull request says plainly
+  which test failed and why.
+- **SC-3513**: The founder can run Kamatera's live pass from `docs/e2e.md` alone. It costs about
+  $0.03 an hour on one `A-2-4` and nothing after its destroy except what it names.
 
 ## Assumptions
 
@@ -291,8 +523,28 @@ UpCloud follows IONOS Cloud, in the same way.
   - the error texts for no stock and no quota;
   - the time to a running server;
   - IPv6 by default.
+- Kamatera's prices are US dollars, before VAT, hourly only, from its public calculator data of
+  2026-11-22. Monthly billing is later, if users ask.
+- Only Kamatera's `A` (availability) and `B` (general purpose) CPU types are offered. `T`
+  (burstable) adds a per-vCPU charge above a tenth of average CPU, and `D` (dedicated) is priced
+  for a whole core; neither is offered now.
+- Kamatera's account is flat: no projects, folders or resource groups, so an app is found by its
+  servers' names, and the key is recommended to belong to an account of its own.
+- Kamatera's private networks, load balancers and Kubernetes are out of scope: an app is one server
+  plus what 018 and 022 add.
+- Kamatera's live pass needs an account and the founder's go-ahead (issue #14). It costs about
+  $0.03 an hour on one `A-2-4`. Until then, everything is built and tested against fakes, and
+  these facts wait for it (research R4, "To test live"):
+  - the datacenter codes and their cities, including Stockholm's and Singapore's;
+  - the Ubuntu 24.04 `os` and `code` strings, the login user and where the key lands;
+  - whether the startup script runs once and when, and whether the image has cloud-init;
+  - the seconds to a ready server, and the `(1)` rename on a duplicate name;
+  - the error texts for no capacity and for the account's limits;
+  - whether a terminate removes disks, snapshots and backups;
+  - the powered-off rate, IPv6, and whether the console firewall has an API route.
 - Not in scope:
   - OVHcloud's object storage, automated backups, private networks (vRack), load balancers and
     local zones;
-  - monthly billing, resizing and delete protection;
-  - Kamatera, IONOS Cloud and UpCloud, which are this feature's later phases.
+  - monthly billing, resizing and delete protection, for both providers;
+  - Kamatera's private networks, Kubernetes and its console firewall automation;
+  - IONOS Cloud and UpCloud, which are this feature's later phases.
