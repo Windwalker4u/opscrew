@@ -904,7 +904,9 @@ export function deploySecrets(input: {
   servers?: readonly ServerReach[];
   offsite?: string;
 }): Record<string, string> {
-  const release = releaseDbEnvFile(input.plan, input.environment.values.services);
+  const release = hasReleaseDbEnv(input.plan)
+    ? releaseDbEnvFile(input.plan, input.environment.values.services)
+    : undefined;
   return {
     [DEPLOY_SECRETS.host]: input.host,
     [DEPLOY_SECRETS.sshKey]: input.privateKey,

@@ -1072,9 +1072,10 @@ describe("detect's php-plain and laravel-sail fixtures: facts → plan → produ
       DB_CONNECTION: "pgsql",
       DB_DATABASE: "app",
       DB_HOST: "db",
-      DB_PASSWORD: env.values.db?.password,
+      // A new PostgreSQL has its own logins (047): the app gets the runtime one.
+      DB_PASSWORD: env.values.services.db?.["runtime-password"],
       DB_PORT: "5432",
-      DB_USERNAME: "app",
+      DB_USERNAME: "app_runtime",
       QUEUE_CONNECTION: "redis",
       SESSION_DRIVER: "redis",
     });
