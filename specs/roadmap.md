@@ -981,6 +981,9 @@ module's first version: an app's PostgreSQL service names the extensions it need
 - **The image:** OpsCrew picks a pinned image that has every named extension (the official
   `pgvector/pgvector` image for `vector`), and refuses an extension it has no image for, before
   anything changes, with the list it supports.
+- **PostGIS too** (the founder, 2026-11-25: many apps use maps and geodata): the official
+  `postgis/postgis` image, after `vector`. It is built for amd64 only, so design then offers only
+  amd64 servers. Its config tables and `topology` schema keep 047's restore rules.
 - **The database:** `CREATE EXTENSION IF NOT EXISTS` runs before the app's migrations, as the
   role that may create them, so the app's own role needs no more rights.
 - **The lifecycle:** snapshots, restores, restore drills and moves keep the extensions, and
