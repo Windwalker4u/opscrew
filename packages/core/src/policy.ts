@@ -234,12 +234,17 @@ function segmentRegex(segment: string): RegExp {
     } else if (c === "?") {
       re += ".";
     } else if (c === "[") {
-      const close = segment.indexOf("]", i + 2);
+      // The first `]` after `[` (or after `[!`) is a member, not the end.
+      const close = segment.indexOf("]", segment[i + 1] === "!" ? i + 3 : i + 2);
       if (close < 0) {
         re += "\\[";
         continue;
       }
-      let body = segment.slice(i + 1, close).replace(/\\/g, "\\\\");
+      // A `]` right after `[` or `[!` is a member (globset), so it is escaped for the JS class.
+      let body = segment
+        .slice(i + 1, close)
+        .replace(/\\/g, "\\\\")
+        .replace(/]/g, "\\]");
       if (body.startsWith("!")) body = `^${body.slice(1)}`;
       re += `[${body}]`;
       i = close;

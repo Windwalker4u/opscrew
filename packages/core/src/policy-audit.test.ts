@@ -274,6 +274,12 @@ describe("#21: Grep cannot read files Read refuses", () => {
           const input = withMode(mode, { pattern: "^DB_PASSWORD=a", ...extra });
           expect(grep(input), JSON.stringify(input)).toBe("ask");
         }
+        // A `]` right after `[` (or `[!`) is a member of the class, as ripgrep's globset reads
+        // it: `*.p[]e]m` matches `server.pem`, so it is never allowed.
+        for (const glob of ["*.p[]e]m", "*.p[!]a]m"]) {
+          const input = withMode(mode, { pattern: "^DB_PASSWORD=a", glob });
+          expect(grep(input), JSON.stringify(input)).not.toBe("allow");
+        }
       }
       expect(tool("Grep", { pattern: "TODO" }, "read-only")).toMatchObject({
         reason: expect.stringContaining("Add a `glob`"),
