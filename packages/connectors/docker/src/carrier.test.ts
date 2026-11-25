@@ -172,7 +172,7 @@ describe("volumeCarrier.writeVolume", () => {
       "POST /c/wait",
       "GET /c/logs?stdout=1&stderr=1",
       "PUT /c/archive?path=%2F",
-      "DELETE /c?force=1",
+      "DELETE /c?force=1&v=1",
     ]);
     const files = target.fake.volumes.get("example-app_data")?.files;
     expect(files?.has("stale")).toBe(false);
@@ -562,7 +562,7 @@ describe("volumeCarrier.volumeManifest", () => {
       "POST /c/wait",
       "GET /c/logs?stdout=1&stderr=1",
       "GET /c/archive?path=%2Fmanifest",
-      "DELETE /c?force=1",
+      "DELETE /c?force=1&v=1",
     ]);
     expect(fake.containers.size).toBe(0);
   });
@@ -817,7 +817,7 @@ describe("volumeCarrier.updateVolume", () => {
       "POST /c/wait",
       "GET /c/logs?stdout=1&stderr=1",
       "PUT /c/archive?path=%2F",
-      "DELETE /c?force=1",
+      "DELETE /c?force=1&v=1",
     ]);
     expect(Object.fromEntries(target.fake.volumes.get("example-app_data")?.files ?? [])).toEqual(
       Object.fromEntries(source.fake.volumes.get("example-app_data")?.files ?? []),

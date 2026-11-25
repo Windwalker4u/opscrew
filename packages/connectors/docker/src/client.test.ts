@@ -199,7 +199,7 @@ describe("dockerClient: containers", () => {
     expect(await docker.containerLogs(id)).toEqual({ stdout: "out line\n", stderr: "err line\n" });
     await docker.removeContainer(id);
     expect(fake.containers.has(id)).toBe(false);
-    expect(fake.calls.at(-1)).toBe(`DELETE /containers/${id}?force=1`);
+    expect(fake.calls.at(-1)).toBe(`DELETE /containers/${id}?force=1&v=1`);
   });
 
   it("takes an already started or stopped container as done, and passes the stop timeout", async () => {

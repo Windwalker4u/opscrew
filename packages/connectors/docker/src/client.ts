@@ -355,7 +355,7 @@ export function dockerClient(transport: DockerTransport): DockerClient {
 
     removeContainer: (id) =>
       done(
-        { method: "DELETE", path: `/containers/${id}?force=1` },
+        { method: "DELETE", path: `/containers/${id}?force=1&v=1` },
         `remove container ${short(id)}`,
       ),
 
