@@ -64,6 +64,19 @@ secrets. How depends on the service:
 | A short swap | PostgreSQL, MariaDB, MongoDB, Neo4j, RabbitMQ, Kafka, Redpanda, OpenSearch, Elasticsearch, ClickHouse, NATS | The service takes the new value first. Until the app runs on it (its rolling switch, about 30 seconds), new connections the running app opens fail; connections already open stay. NATS's change also closes the open ones, and the app's clients reconnect. |
 | A restart | Meilisearch's master key, Typesense's start key, Garage's RPC secret | The service starts again with the new value (about 5 seconds for Meilisearch, 10 for Typesense, 2 for Garage) and answers no one meanwhile. A new Meilisearch master key also changes every API key made from it. |
 
+A PostgreSQL with [two logins](databases.md#two-logins) has three generated secrets, and
+`npx opscrew rotate db` rotates all of them, each as a short swap:
+
+| Secret | Login | Where the new value goes |
+|---|---|---|
+| `password` | `app`, the superuser | The database |
+| `owner-password` | `app_owner` | The database and the release command (`release.db.env`) |
+| `runtime-password` | `app_runtime` | The database and the app (`app.env`) |
+
+On a server, neither `owner-password` nor `runtime-password` restarts the database: the login's
+password changes while it runs. In your Portainer, a rotation updates the stack, and Portainer
+recreates the stack's services, the database's included, as it does for every rotation there.
+
 The order is always the same:
 
 1. where the app deploys from GitHub, its deploys pause and GitHub's secrets take the new values
