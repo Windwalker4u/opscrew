@@ -1602,7 +1602,28 @@ function evaluatePattern(ctx: PathContext, pattern: string, field: string, secre
   return undefined;
 }
 
-function evaluateFileTool(tool: string, input: Record<string, unknown>, ctx: PathContext) {
+/**
+ * True when a Grep `glob` selects only files whose names are not secrets'. ripgrep matches a glob
+ * without `/` against names at any depth, so each alternative's last segment decides. A negated
+ * glob (`!x`) selects everything else, and ripgrep reads any brace group as alternatives (`{*}` is
+ * `*`), so neither counts.
+ */
+function globAvoidsSecrets(glob: string): boolean {
+  if (glob.startsWith("!")) return false;
+  const alternatives = expandBraces(glob);
+  if (alternatives === undefined) return false;
+  return alternatives.every((alternative) => {
+    const last = alternative.split(/[\\/]+/).at(-1) ?? "";
+    if (last === "" || /[{}]/.test(alternative) || isSecretPath(alternative)) return false;
+    return !globRisk(last, false).mayMatchSecret;
+  });
+}
+
+function evaluateFileTool(
+  tool: string,
+  input: Record<string, unknown>,
+  ctx: PathContext,
+): ToolDecision {
   switch (tool) {
     case "Read":
       return evaluateFilePath(ctx, input.file_path, "read", "file_path") ?? allow();
@@ -1622,9 +1643,25 @@ function evaluateFileTool(tool: string, input: Record<string, unknown>, ctx: Pat
       const pathDecision =
         input.path === undefined ? undefined : evaluateFilePath(ctx, input.path, "read", "path");
       if (pathDecision !== undefined) return pathDecision;
-      if (input.glob === undefined) return allow();
-      if (typeof input.glob !== "string") return deny("The `glob` argument is not a string.");
-      return evaluatePattern(ctx, input.glob, "glob", true) ?? allow();
+      const glob = input.glob;
+      if (glob !== undefined && typeof glob !== "string") {
+        return deny("The `glob` argument is not a string.");
+      }
+      const globDecision =
+        glob === undefined ? undefined : evaluatePattern(ctx, glob, "glob", true);
+      if (globDecision !== undefined) return globDecision;
+      // The SDK's Grep runs ripgrep with `--hidden`, and in content mode it returns the lines it
+      // finds: without a glob that keeps secret files out, it would show what Read refuses.
+      const mode = input.output_mode;
+      const showsLines = mode !== undefined && mode !== "files_with_matches" && mode !== "count";
+      if (showsLines && !(glob !== undefined && globAvoidsSecrets(glob))) {
+        return {
+          decision: "ask",
+          reason:
+            "Needs approval: Grep would show lines from every file it searches, secret files included. Add a `glob` that names the files to search, such as `*.ts`.",
+        };
+      }
+      return allow();
     }
     default:
       return deny(`Unknown tool \`${tool}\` is not allowed.`);

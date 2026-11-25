@@ -237,6 +237,54 @@ describe("#20: input redirection gets the same secret checks as arguments", () =
   }
 });
 
+describe("#21: Grep cannot return lines from files Read refuses", () => {
+  for (const host of HOSTS) {
+    const { tool } = hostPolicy(host, false);
+    const grep = (input: Record<string, unknown>) => tool("Grep", input, "read-only").decision;
+
+    it(`asks before a content search that could reach a secret file (${host.platform})`, () => {
+      for (const input of [
+        { pattern: "SECRET", output_mode: "content" },
+        { pattern: "SECRET", output_mode: "content", path: "." },
+        { pattern: "SECRET", output_mode: "content", path: "src" },
+        { pattern: "SECRET", output_mode: "content", glob: "*" },
+        { pattern: "SECRET", output_mode: "content", glob: "**" },
+        { pattern: "SECRET", output_mode: "content", glob: "**/*" },
+        { pattern: "SECRET", output_mode: "content", glob: "{*}" },
+        { pattern: "SECRET", output_mode: "content", glob: "*.json" },
+        { pattern: "SECRET", output_mode: "content", glob: "!*.md" },
+        { pattern: "SECRET", output_mode: "content", glob: "{*.ts,*}" },
+        { pattern: "SECRET", output_mode: "content", type: "js" },
+        { pattern: "SECRET", output_mode: "content", "-C": 3 },
+        { pattern: "SECRET", output_mode: "lines" },
+      ]) {
+        expect(grep(input), JSON.stringify(input)).toBe("ask");
+      }
+    });
+
+    it(`allows content searches limited to files that are not secrets (${host.platform})`, () => {
+      for (const input of [
+        { pattern: "TODO", output_mode: "content", glob: "*.ts" },
+        { pattern: "TODO", output_mode: "content", glob: "*.{ts,tsx}" },
+        { pattern: "TODO", output_mode: "content", glob: "**/*.ts", path: "src" },
+        { pattern: "TODO", output_mode: "content", glob: "src/**/*.py", "-n": true },
+      ]) {
+        expect(grep(input), JSON.stringify(input)).toBe("allow");
+      }
+    });
+
+    it(`keeps file-name and count searches and the existing denials (${host.platform})`, () => {
+      expect(grep({ pattern: "TODO" })).toBe("allow");
+      expect(grep({ pattern: "TODO", output_mode: "files_with_matches", path: "." })).toBe("allow");
+      expect(grep({ pattern: "TODO", output_mode: "count" })).toBe("allow");
+      expect(grep({ pattern: "x", path: ".env" })).toBe("deny");
+      expect(grep({ pattern: "x", glob: "*.pem" })).toBe("deny");
+      expect(grep({ pattern: "x", glob: "*.pem", output_mode: "content" })).toBe("deny");
+      expect(grep({ pattern: "x", glob: "*.{ts,env}", output_mode: "content" })).toBe("deny");
+    });
+  }
+});
+
 describe("#23: a dangling link is never treated as a new file inside the project", () => {
   for (const host of HOSTS) {
     const { bash, tool } = hostPolicy(host, true);
