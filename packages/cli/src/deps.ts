@@ -48,6 +48,7 @@ import {
   systemClock,
 } from "@opscrew/core";
 import { ClaudeAgentRuntime } from "@opscrew/runtime-claude";
+import { OpenAIAgentRuntime } from "@opscrew/runtime-openai";
 import { createApprovalHandler } from "./approval";
 import type { CliContext } from "./context";
 import { clackPrompts, type UiPrompts } from "./ui/prompts";
@@ -204,9 +205,33 @@ function claudeConfigured(env: Record<string, string | undefined>): boolean {
   );
 }
 
+/** Credentials that make the OpenAI Responses runtime usable. */
+function openaiConfigured(env: Record<string, string | undefined>): boolean {
+  return (env.OPENAI_API_KEY ?? "").trim() !== "";
+}
+
+/** Picks which built-in AI runtime to create from `env`, or `undefined` when none is configured. */
+function selectRuntimeKind(
+  env: Record<string, string | undefined>,
+  reporter: Reporter,
+): "claude" | "openai" | undefined {
+  const raw = env.OPSCREW_RUNTIME?.trim() ?? "";
+  const forced = raw.toLowerCase();
+  if (forced === "openai") return "openai";
+  if (forced === "claude" || forced === "anthropic") return "claude";
+  if (raw !== "") {
+    reporter.warn(
+      `Ignoring unknown OPSCREW_RUNTIME=${JSON.stringify(raw)}; expected "claude" or "openai".`,
+    );
+  }
+  if (claudeConfigured(env)) return "claude";
+  if (openaiConfigured(env)) return "openai";
+  return undefined;
+}
+
 /** Plain-English hint shown when a command could use a model but none is configured. */
 export const MODEL_SETUP_HINT =
-  "To use the AI agents, set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN), or set CLAUDE_CODE_USE_BEDROCK=1, CLAUDE_CODE_USE_VERTEX=1 or CLAUDE_CODE_USE_FOUNDRY=1 with that provider's credentials.";
+  "To use the AI agents, set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN), OPENAI_API_KEY (with optional OPENAI_BASE_URL for compatible gateways), or set CLAUDE_CODE_USE_BEDROCK=1, CLAUDE_CODE_USE_VERTEX=1 or CLAUDE_CODE_USE_FOUNDRY=1 with that provider's credentials.";
 
 /**
  * Builds the {@link PhaseDeps} for one command run from `ctx` (see `buildPhaseDeps`): project
@@ -255,7 +280,21 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
   };
   if (options.ai === false) return deps;
   if (extra.runtime !== undefined) return { ...deps, runtime: extra.runtime };
-  if (!claudeConfigured(ctx.env)) return deps;
+  const chosen = selectRuntimeKind(ctx.env, deps.reporter);
+  if (chosen === undefined) return deps;
+  if (chosen === "openai") {
+    const runtime = new OpenAIAgentRuntime({
+      policy: new DefaultToolPolicy({ realpath: nodeRealpath }),
+      audit: deps.audit,
+      redact: ctx.redactor.redact,
+      approvals: deps.approvals,
+      runner: deps.runner,
+      fetch: deps.fetch,
+      env: ctx.env,
+      ...(options.model === undefined ? {} : { defaultModel: options.model }),
+    });
+    return { ...deps, runtime };
+  }
   // Phases record their own spend in the cost ledger, so the runtime gets none (no doubles).
   const confirmInstall = sdkInstallConsent(ctx, options.assumeYes === true);
   const runtime = new ClaudeAgentRuntime({

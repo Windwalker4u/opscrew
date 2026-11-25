@@ -89,7 +89,9 @@ export async function runAnalyze(
   deps: PhaseDeps,
   options: AnalyzeOptions = {},
 ): Promise<AnalyzeResult> {
-  const { ai = true, model = DEFAULT_ANALYST_MODEL } = options;
+  const { ai = true } = options;
+  const model =
+    options.model ?? deps.runtime?.defaultModelFor?.("analyze") ?? DEFAULT_ANALYST_MODEL;
   const { reporter, paths } = deps;
   return runPhase(deps, "analyze", async () => {
     await ensureStateDir(paths);

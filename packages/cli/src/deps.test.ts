@@ -4,6 +4,7 @@ import path from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { FakeAgentRuntime, fakeSecret } from "@opscrew/core/testing";
 import { ClaudeAgentRuntime } from "@opscrew/runtime-claude";
+import { OpenAIAgentRuntime } from "@opscrew/runtime-openai";
 import { describe, expect, it } from "vitest";
 import { createPhaseDeps, modelOption, promptsOf, servicesOf, withServices } from "./deps";
 import { createTestContext } from "./test-context";
@@ -61,6 +62,51 @@ describe("createPhaseDeps", () => {
     expect(createPhaseDeps(ctx, { ai: false }).runtime).toBeUndefined();
     const bedrock = createTestContext({ cwd: root, env: { CLAUDE_CODE_USE_BEDROCK: "1" } });
     expect(createPhaseDeps(bedrock).runtime).toBeInstanceOf(ClaudeAgentRuntime);
+  });
+
+  it("selects OpenAI when OPENAI_API_KEY is set without Anthropic, or when OPSCREW_RUNTIME=openai", async () => {
+    const openaiKey = fakeSecret("openai-key");
+    const anthropicKey = fakeSecret("anthropic-key");
+
+    const openaiOnly = createTestContext({
+      cwd: root,
+      env: { OPSCREW_HOME: home, OPENAI_API_KEY: openaiKey },
+    });
+    expect(createPhaseDeps(openaiOnly).runtime).toBeInstanceOf(OpenAIAgentRuntime);
+    expect(createPhaseDeps(openaiOnly, { ai: false }).runtime).toBeUndefined();
+
+    const both = createTestContext({
+      cwd: root,
+      env: { OPSCREW_HOME: home, ANTHROPIC_API_KEY: anthropicKey, OPENAI_API_KEY: openaiKey },
+    });
+    expect(createPhaseDeps(both).runtime).toBeInstanceOf(ClaudeAgentRuntime);
+
+    const forcedOpenai = createTestContext({
+      cwd: root,
+      env: {
+        OPSCREW_HOME: home,
+        ANTHROPIC_API_KEY: anthropicKey,
+        OPENAI_API_KEY: openaiKey,
+        OPSCREW_RUNTIME: "openai",
+      },
+    });
+    expect(createPhaseDeps(forcedOpenai).runtime).toBeInstanceOf(OpenAIAgentRuntime);
+    expect(createPhaseDeps(forcedOpenai, { ai: false }).runtime).toBeUndefined();
+
+    const forcedWithoutKey = createTestContext({
+      cwd: root,
+      env: { OPSCREW_HOME: home, OPSCREW_RUNTIME: "openai" },
+    });
+    const runtime = createPhaseDeps(forcedWithoutKey).runtime;
+    expect(runtime).toBeInstanceOf(OpenAIAgentRuntime);
+    expect((await runtime?.isConfigured())?.ok).toBe(false);
+
+    const typo = createTestContext({
+      cwd: root,
+      env: { OPSCREW_HOME: home, OPENAI_API_KEY: openaiKey, OPSCREW_RUNTIME: "openaai" },
+    });
+    expect(createPhaseDeps(typo).runtime).toBeInstanceOf(OpenAIAgentRuntime);
+    expect(typo.errors).toContain('Ignoring unknown OPSCREW_RUNTIME="openaai"');
   });
 
   it("uses attached services, but never a runtime with --no-ai", async () => {
