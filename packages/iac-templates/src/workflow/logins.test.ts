@@ -7,6 +7,7 @@ import { renderContext, serviceRotation } from "../catalog";
 import { withLogins } from "../catalog/__fixtures__/plans";
 import { loginsCheck, loginsLoad } from "../catalog/postgres-logins";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
+import { shellQuote } from "../runtime/services";
 import { inEnvironment, localhostPlan, serverPlan, splitPlan } from "./__fixtures__/plans";
 import { DEPLOY_SECRETS, deploySecretNamesFor, maskFileScript, renderWorkflow } from "./index";
 import { type RotateStep, renderRotateScript, rotateEnvFiles } from "./rotate";
@@ -146,12 +147,15 @@ describe("snapshots of a PostgreSQL with its own logins (047)", () => {
   });
 
   it("restores so on the server, on the extra server the database is placed on too", () => {
-    expect(snapshotScript(withLogins(testPlan())).join("\n")).toContain(
-      "CREATE DATABASE app OWNER app_owner",
-    );
+    for (const [plan, server] of [
+      [withLogins(testPlan()), "app"],
+      [withLogins(splitPlan()), "data"],
+    ] as const) {
+      const db = snapshotParts(plan, server).find((each) => each.name === "db");
+      const load = db === undefined ? undefined : partRestore(db).load?.(FILE);
+      expect(load, server).toContain(loginsLoad({ host: "db", file: FILE, setup: true }));
+      expect(snapshotScript(plan, server).join("\n")).toContain(`ro db ${shellQuote(load ?? "")}`);
+    }
     expect(snapshotScript(testPlan()).join("\n")).not.toContain("app_owner");
-    expect(snapshotScript(withLogins(splitPlan()), "data").join("\n")).toContain(
-      "CREATE DATABASE app OWNER app_owner",
-    );
   });
 });
