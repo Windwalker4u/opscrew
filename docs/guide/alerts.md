@@ -252,6 +252,8 @@ It needs:
 
 - the app's DNS on Cloudflare (`dns.provider: cloudflare`), since the Worker runs in the Cloudflare
   account of the app's zone. The plan is refused otherwise;
+- a server, a Portainer, or a site on Cloudflare or GitHub Pages: a [hosting account](hosting-accounts.md)
+  can't use the Worker yet, and its plan is refused with `runner: actions` as the way on;
 - a [webhook](#the-webhook-slack-discord-or-ntfy) for the repository. The Worker opens no GitHub
   issue, so its messages go only there, and `provision` stops before any change without one;
 - two more permissions on the Cloudflare token, listed in
