@@ -1,3 +1,4 @@
+import path from "node:path";
 // Types only: the SDK itself is loaded on the first phase (`loadClaudeAgentSdk`).
 import type {
   CanUseTool,
@@ -502,12 +503,21 @@ class PhaseRun<T> {
         `${decision.reason} No one is available to approve it in this run, so it was denied.`,
       );
     }
+    let details = this.#redact([target ? `${tool}: ${target}` : tool, decision.reason].join("\n"));
+    const content = actionsFileContent(tool, input, request.projectRoot);
+    if (content !== undefined) {
+      // Redacted before the cut, so a cut can never split a secret.
+      const shown = this.#redact(content);
+      const left = shown.length - SHOWN_CONTENT;
+      details += `\n\nThe new content:\n${shown.slice(0, SHOWN_CONTENT)}`;
+      if (left > 0) details += `\n… ${left} more characters not shown`;
+    }
     let approved = false;
     try {
       const answer = await approvals.request({
         kind: "tool-call",
         title: `Allow the ${request.phase} agent to use ${tool}?`,
-        details: this.#redact([target ? `${tool}: ${target}` : tool, decision.reason].join("\n")),
+        details,
       });
       approved = answer.approved === true;
     } catch {
@@ -736,6 +746,33 @@ function describeInput(tool: string, input: unknown): string | undefined {
       ? pick("command")
       : (pick("file_path") ?? pick("notebook_path") ?? pick("pattern") ?? pick("path"));
   return value;
+}
+
+/** Characters of a GitHub Actions file's new content an approval request shows. */
+const SHOWN_CONTENT = 4000;
+
+/**
+ * The new text a Write, Edit or MultiEdit puts into a GitHub Actions file: anything under
+ * `.github/`, or an `action.yml`/`action.yaml` anywhere. GitHub runs it with the repository's
+ * secrets once pushed, so whoever approves the write sees what it says, not only its name.
+ */
+function actionsFileContent(tool: string, input: unknown, root: string): string | undefined {
+  if (!isRecord(input) || typeof input.file_path !== "string") return undefined;
+  const segments = path
+    .relative(root, path.resolve(root, input.file_path))
+    .toLowerCase()
+    .split(/[\\/]+/);
+  const base = segments.at(-1);
+  if (segments[0] !== ".github" && base !== "action.yml" && base !== "action.yaml") {
+    return undefined;
+  }
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  if (tool === "Write") return text(input.content);
+  if (tool === "Edit") return text(input.new_string);
+  if (tool === "MultiEdit" && Array.isArray(input.edits)) {
+    return input.edits.map((edit) => (isRecord(edit) ? text(edit.new_string) : "")).join("\n---\n");
+  }
+  return undefined;
 }
 
 /** Shortens text for audit targets. Callers redact first, so a cut can never split a secret. */

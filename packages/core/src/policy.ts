@@ -438,6 +438,8 @@ const DEPLOY_WORKFLOW = /^\.github\/workflows\/opscrew-deploy(?:-[a-z][a-z0-9-]*
 
 /** Every other GitHub Actions workflow and action, and the folders that hold them. */
 const ACTIONS_FILE = /^\.github\/(?:workflows|actions)(?:\/|$)/;
+/** A GitHub Action's definition, wherever it is. */
+const ACTION_NAMES = new Set(["action.yml", "action.yaml"]);
 
 /**
  * Project-relative locations agents may never write, and GitHub Actions files, which they may
@@ -461,7 +463,8 @@ function writeRule(rel: string): { ask: boolean; reason: string } | undefined {
   if (DEPLOY_WORKFLOW.test(joined)) {
     return never("the OpsCrew deploy workflows are rendered by OpsCrew, not edited by agents");
   }
-  if (ACTIONS_FILE.test(joined)) {
+  // A local action can live in any folder (`uses: ./tools/deploy`).
+  if (ACTIONS_FILE.test(joined) || ACTION_NAMES.has(segments.at(-1) ?? "")) {
     return {
       ask: true,
       reason: "GitHub Actions runs it with the repository's secrets once pushed",

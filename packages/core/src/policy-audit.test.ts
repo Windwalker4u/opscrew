@@ -490,6 +490,12 @@ describe("#24: writing a GitHub Actions workflow needs the user's approval", () 
         expect(edit(rel), rel).toBe("ask");
         expect(tool("MultiEdit", { file_path: rel, edits: [] }).decision, rel).toBe("ask");
       }
+      // A local action can live anywhere (`uses: ./tools/deploy`).
+      for (const rel of ["action.yml", "action.yaml", "tools/deploy/action.yml", "x/Action.YAML"]) {
+        expect(write(rel), rel).toBe("ask");
+        expect(edit(rel), rel).toBe("ask");
+      }
+      expect(bash("cat README.md > tools/x/action.yml").decision).toBe("ask");
       expect(write(host.at(".github", "workflows", "ci.yml"))).toBe("ask");
       expect(bash("cat README.md > .github/workflows/ci.yml").decision).toBe("ask");
       expect(bash("git status >> .github/actions/x/action.yml").decision).toBe("ask");
@@ -502,6 +508,8 @@ describe("#24: writing a GitHub Actions workflow needs the user's approval", () 
       expect(bash("cat README.md > .github/workflows/opscrew-deploy.yml").decision).toBe("deny");
       expect(write(".github/dependabot.yml")).toBe("allow");
       expect(write("src/app.ts")).toBe("allow");
+      expect(write("docs/action.md")).toBe("allow");
+      expect(write("src/reaction.yml")).toBe("allow");
       expect(tool("Read", { file_path: ".github/workflows/ci.yml" }).decision).toBe("allow");
     });
   }
