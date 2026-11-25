@@ -94,9 +94,17 @@
   - in them, the tables, partitioned tables, views, materialized views, standalone sequences
     (a sequence owned by a column moves with its table, and `ALTER SEQUENCE … OWNER` on it
     fails), functions, procedures, aggregates, types and domains (not a table's row type, nor an
-    array type) that `app` owns.
-- **Extensions** stay the superuser's: only a superuser can own most of them, and their functions
-  keep `EXECUTE` for `PUBLIC`.
+    array type), collations, statistics objects, text search configurations and dictionaries,
+    operators, operator classes and operator families that `app` owns.
+  - **A range's multirange:** PostgreSQL 17 moves it with its range and refuses `ALTER TYPE` on
+    it alone; 16 (16.10) moves only the range, so there the multirange gets its own statement.
+- **Extensions** stay the superuser's, with every object of theirs and their own schemas
+  (PostGIS's `topology`): only a superuser can own most of them, and their functions keep
+  `EXECUTE` for `PUBLIC`.
+- **Event triggers:** the setup refuses a database that has them, before anything changes. An
+  event trigger's function runs as whoever changes the database, and the switch gives
+  `app_owner` the functions the superuser made, so the superuser's setup would run code the
+  owner may change.
 - **Large objects** owned by `app` move too (`pg_largeobject_metadata`).
 
 ### R5 The runtime login's rights, now and for later migrations
@@ -104,7 +112,10 @@
 The lead's list, which a real Laravel app on 047 needs:
 
 - **On what exists**, in every schema `app_owner` owns: `SELECT, INSERT, UPDATE, DELETE` on all
-  tables, `USAGE, SELECT` on all sequences, and `USAGE` on the schema.
+  tables, `USAGE, SELECT` on all sequences, `USAGE` on the schema and `SELECT, UPDATE` on large
+  objects. They are given once, while `app_owner` has no default privileges yet (a new database,
+  the switch, or the load of a dump from before it), so a migration that narrows them stays
+  narrowed (the lead, 2026-11-25).
 - **On what the migrations create later:**
   - `ALTER DEFAULT PRIVILEGES FOR ROLE app_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO
     app_runtime`;
@@ -196,16 +207,29 @@ The lead's list, which a real Laravel app on 047 needs:
      step's run first, which makes any role that is missing. Where it runs in a one-off container
      (a move's sides), the new side's deploy has made them, and the load refuses with a plain
      message when they are missing.
-  2. `DROP DATABASE IF EXISTS app WITH (FORCE)` and `CREATE DATABASE app OWNER app_owner`;
-  3. `pg_restore --single-transaction` as the superuser, without `--no-owner`, so the owners and
-     grants come back as they were;
-  4. the grants part of the setup (R5, R6: database-level grants and `PUBLIC`'s revokes), which
-     needs no password.
-- **Why the superuser loads it, and not the owner as the contribution did:** a snapshot is
-  OpsCrew's own dump of the app's database, which restores load as the superuser today. Loading
-  as the owner also fails on objects only a superuser may own, such as most extensions and their
-  comments. The runtime login can't create functions, triggers or any other object that would run
-  code at load time.
+  2. a dump with event triggers is refused (R4), from `pg_restore -l`'s list, before step 1 changes
+     anything;
+  3. `DROP DATABASE IF EXISTS app WITH (FORCE)` and `CREATE DATABASE app`, the superuser's until the
+     extensions are made, so `app_owner` can't add anything to it before them;
+  4. as the superuser, with `--no-owner`, the dump's schemas and extensions (and the extensions'
+     comments): extensions need a superuser, and they may live in the app's schemas. Then the
+     setup's moves give the database and the schemas to `app_owner`;
+  5. as `app_owner`, logged in with its own password, everything else with `--no-owner` and
+     `--single-transaction`, but the rights and the rows of the extensions' own tables. Every
+     object is then `app_owner`'s, also from a dump made before the switch;
+  6. as the superuser, the rows of the extensions' own tables (`pg_extension_config_dump`, such
+     as PostGIS's `spatial_ref_sys`), whose constraints are the extension's, and the dump's
+     rights (`ACL`, `DEFAULT ACL`), which run no code;
+  7. the grants part of the setup (R5, R6: database-level grants and `PUBLIC`'s revokes, and the
+     runtime login's rights when the dump came from before the switch), which needs no password.
+- **Why the owner loads the app's objects:** a CHECK constraint, a domain or a trigger can call a
+  function `app_owner` owns while the rows are restored. Run by the superuser, such a function can
+  `ALTER ROLE app_owner SUPERUSER` (the outside review of 2026-11-25 showed it). Under the
+  superuser's login, `pg_restore --role=app_owner` only sets the role, which the function can
+  `RESET` (checked on 17), so `app_owner` logs in itself.
+- **What still needs the superuser:** extensions, their tables' rows and the rights, as above.
+  Operator classes and families need one too, so a dump with them can't load as `app_owner` and
+  fails with PostgreSQL's own error.
 - **Without `logins`,** every load is exactly as today.
 - **The drill:** its copy's env gets placeholder passwords (`previewSecretFill`), as for
   `password` today, so the drill never holds a real login's password. Its check also runs the
