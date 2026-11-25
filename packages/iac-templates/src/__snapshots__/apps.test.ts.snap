@@ -139,9 +139,12 @@ jobs:
           IMAGE: \${{ steps.final.outputs.ref }}
         run: |
           set -euo pipefail
-          docker pull --quiet "$IMAGE"
-          docker logout ghcr.io
-          if ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock <pin:IMAGES.trivy> image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then
+          pulled=1
+          docker pull --quiet "$IMAGE" || { sleep 10; docker pull --quiet "$IMAGE"; } || pulled=0
+          docker logout ghcr.io || true
+          if [ "$pulled" = 0 ]; then
+            echo "::warning::The image scan (Trivy) could not pull the image, so this build has no scan report. The deploy goes on: the scan only reports."
+          elif ! docker run --rm -v /var/run/docker.sock:/var/run/docker.sock <pin:IMAGES.trivy> image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then
             echo "::warning::The image scan (Trivy) could not run, so this build has no scan report. The deploy goes on: the scan only reports."
           fi
 
