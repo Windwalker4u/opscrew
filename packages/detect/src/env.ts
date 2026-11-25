@@ -307,11 +307,14 @@ const PHP_NAME = `["']([A-Z][A-Z0-9_]*)["']`;
 
 /**
  * PHP's reads of a variable, each with the text that gives it a default right after the match:
- * `env('X', …)` and `->string|int|bool|float('X', …)` a second argument, `getenv('X') ?: …`,
- * `$_ENV['X'] ?? …` and `$_SERVER['X'] ?? …`.
+ * `env('X', …)` and `->string|int|bool|float('X', …)` a second argument, `env('X') ?: …` and
+ * `env('X') ?? …`, `getenv('X') ?: …`, `$_ENV['X'] ?? …` and `$_SERVER['X'] ?? …`.
  */
 const PHP_READS: readonly { pattern: RegExp; fallback: RegExp }[] = [
-  { pattern: new RegExp(`(?<![\\w$>:])env\\(\\s*${PHP_NAME}`, "g"), fallback: /^\s*,/ },
+  {
+    pattern: new RegExp(`(?<![\\w$>:])env\\(\\s*${PHP_NAME}`, "g"),
+    fallback: /^\s*(?:,|\)\s*(?:\?:|\?\?))/,
+  },
   {
     pattern: new RegExp(`->(?:string|int|bool|float)\\(\\s*${PHP_NAME}`, "g"),
     fallback: /^\s*,/,

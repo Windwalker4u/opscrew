@@ -106,9 +106,11 @@ export interface RuntimeAvailability {
   hint?: string;
 }
 
-/** Runs one LLM-backed phase. Implemented by `@opscrew/runtime-claude`; faked in tests. */
+/** Runs one LLM-backed phase. Implemented by `@opscrew/runtime-claude` and `@opscrew/runtime-openai`; faked in tests. */
 export interface AgentRuntime {
   readonly id: string;
+  /** Default model id for `phase` when the caller did not specify `--model` or `OPSCREW_MODEL`. */
+  defaultModelFor?(phase: PhaseName): string;
   isConfigured(): Promise<RuntimeAvailability>;
   runPhase<T>(request: PhaseRequest<T>): Promise<PhaseResult<T>>;
 }

@@ -782,6 +782,40 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       expect(engine.calls).toEqual([]);
       expect(handler.requests).toEqual([]);
     });
+
+    it("stops off the environment's branch before it reaches the provider, Cloudflare or GitHub", async () => {
+      const base = testPlan();
+      const plan = DeployPlanSchema.parse({
+        ...base,
+        cicd: { ...base.cicd, branch: "deploy/demo" },
+      });
+      const verified: string[] = [];
+      const { deps, services, github, engine, handler } = await setup({
+        plan,
+        services: {
+          provider: {
+            configured: true,
+            verify: async () => {
+              verified.push("provider");
+              return { ok: true, message: "ok" };
+            },
+          },
+        },
+      });
+
+      await expect(runProvision(deps, { services })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message:
+          "This clone is on main, but the deployment files go on a new branch from the latest deploy/demo, so OpsCrew did not change anything.",
+        hint: "Run `git checkout deploy/demo && git pull`, then run `opscrew provision` again.",
+      });
+      expect(verified).toEqual([]);
+      expect(github.lookups).toEqual([]);
+      expect(engine.calls).toEqual([]);
+      expect(handler.requests).toEqual([]);
+      // A plan-only run commits nothing, so it may run from any branch.
+      await expect(runProvision(deps, { services, planOnly: true })).resolves.toBeDefined();
+    });
   });
 
   it("says once that the address may already be public when the plan turns the proxy on", async () => {

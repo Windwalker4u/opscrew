@@ -135,9 +135,14 @@ export class GitClient {
     return (await this.#run(["log", "-1", "--format=%s", ref, "--"])).stdout.trim();
   }
 
+  /**
+   * Stages exactly `paths`: files OpsCrew wrote or removed, never a folder or a wildcard. They are
+   * added even when the app's `.gitignore` ignores them (`*.pem` would drop OpsCrew's public
+   * `pull.pem`); no other ignored file is.
+   */
   async add(paths: readonly string[]): Promise<void> {
     if (paths.length === 0) return;
-    await this.#run(["add", "--", ...paths]);
+    await this.#run(["add", "-f", "--", ...paths]);
   }
 
   /**

@@ -162,12 +162,21 @@ A dependency to add goes through an issue too. If no one answers within a day an
 small and additive (a new optional field, a new enum value), make it and link the issue.
 
 **To be woken by an answer** instead of checking by hand, run
-`node scripts/watch-github.mjs --wake-on softzer0 --title "[NNN]"` as a background task. It ends
+`node scripts/watch-github.mjs --wake-on softzer0 --title "NNN"` as a background task. It ends
 within seconds of the core lead's comment, issue, review or pull request activity, which wakes
 your session; start it again after each wake.
+- **The number alone** (`--title "044"`, not `"[044]"`) matches both your `[044] …` issues and
+  your pull request, whose title should name it too, as the scope of any type (`feat(044): …`,
+  `fix(044): …`, `docs(044): …`). With the brackets, a review on your pull request never wakes
+  you.
 - **Instant wakes** come through `gh webhook forward`. That needs the `admin:repo_hook` scope and
   admin rights on the repository.
 - **Without them,** it checks every 5 minutes instead. Its header comment says the rest.
+
+**Labels:** give each issue and pull request its feature's label (`feature/NNN`; ask in the issue
+if it doesn't exist yet) or `core`, plus a type (`enhancement`, `bug`, `question`, `documentation`),
+and `needs-founder` when it waits on the founder (money, accounts, a product or release decision).
+`security` marks a security finding.
 
 **Issues are public.** Never put a secret, a token, an account id, a server's address or anyone's
 private details in one.

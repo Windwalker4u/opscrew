@@ -14,10 +14,12 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
 - **0.2.12** (the founder, 2026-11-25): 046 an uptime check that doesn't use GitHub Actions, the
   agent tool policy's security fixes (#16 to #24), the fixes in #26, [032 a Codex
   plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left), and 047 an app's
-  PostgreSQL never running as the superuser (the founder, 2026-11-25).
+  PostgreSQL never running as the superuser, and 048 changing an app's values without a full
+  provision (the founder, 2026-11-25).
 - **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
-  would hold 046 back.
+  would hold 046 back. With it, 049 each app's own network on a shared server (the lead's
+  hardening call, 2026-11-25).
 - **Beside them:** 035's first providers, started by a second contributor.
 - **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
@@ -862,6 +864,9 @@ This is the one provider where the firewall is the server's own.
 
 ### 036 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
 
+**Started early** (the founder, 2026-11-25): a contributor builds it after 045, ahead of 033 and
+034, coordinating through issues titled `[036]`.
+
 It opens with the contract for the DNS and edge provider, with Cloudflare moved behind it (026's
 rule: a contract when the second implementation arrives); designing it with three at once keeps it
 from being shaped by one. Bunny.net and Gcore also host DNS, so a domain can leave Cloudflare
@@ -977,12 +982,15 @@ module's first version: an app's PostgreSQL service names the extensions it need
 - **The image:** OpsCrew picks a pinned image that has every named extension (the official
   `pgvector/pgvector` image for `vector`), and refuses an extension it has no image for, before
   anything changes, with the list it supports.
+- **PostGIS too** (the founder, 2026-11-25: many apps use maps and geodata): the official
+  `postgis/postgis` image, after `vector`. It is built for amd64 only, so design then offers only
+  amd64 servers. Its config tables and `topology` schema keep 047's restore rules.
 - **The database:** `CREATE EXTENSION IF NOT EXISTS` runs before the app's migrations, as the
   role that may create them, so the app's own role needs no more rights.
 - **The lifecycle:** snapshots, restores, restore drills and moves keep the extensions, and
   switching an existing database's image is shown in the plan with its restart.
-- **After 0.2.13,** and after the database changes of the private-deployment contribution are
-  settled, since both change the same PostgreSQL service.
+- **Built by a contributor** (the founder, 2026-11-25), once 047 is on `main`, since both change
+  the same PostgreSQL service. Issue `[045]`.
 
 ## 046 An uptime check that doesn't use GitHub Actions
 
@@ -1036,6 +1044,43 @@ injection in the app has every right.
   by the owner first, or `CREATE` on it.
 - **In 0.2.12** (the founder, 2026-11-25), built in parallel with 046's server checks. 045, which
   changes the same PostgreSQL service, comes after it.
+
+## 048 Change an app's values without a full provision
+
+The founder's request (2026-11-25): add or change one app value for an environment without
+running `provision` again. A re-provision reapplies the Cloudflare, DNS and host plans just to
+store a value.
+- **The commands:**
+  - `npx opscrew values set --env <env> NAME` reads the value from stdin or `--from-file`,
+    never from argv or shell history;
+  - `values unset NAME` removes one;
+  - `values list --env <env>` shows names and where each comes from, never a value.
+
+  Multi-line values (a PEM key) work.
+- **What it changes:** only the environment's stored app values, in its GitHub environment
+  secret, OpsCrew's home and the recovery copy, through the same approval rules as provision's
+  secret step. No infrastructure plan runs.
+- **The app sees them after a deploy:** with `--redeploy` it starts one, and otherwise it says the
+  next deploy applies them.
+- **In 0.2.12** (the founder, 2026-11-25: build it now). A value is taken only from stdin or a
+  file, never from argv, and every output shows names only, so no value can be echoed back.
+
+## 049 Each app's own network on a shared server
+
+A security review of an app on a shared server (2026-11-25). Every OpsCrew app on a server joins
+the edge's one network, `opscrew-edge`. So a taken-over container of one app can reach another
+app's port directly, from a private address. An app that trusts proxies on private addresses (as
+it should, for the real path: Cloudflare, Caddy, kamal-proxy) then takes that container's forged
+`X-Forwarded-For` as the client's address, which defeats limits kept per address.
+- **The fix (the lead's call):** each app gets its own network, which only that app's containers
+  and the edge's kamal-proxy join. Caddy reaches only kamal-proxy, on the edge's own network. A
+  fixed kamal-proxy address that apps trust exactly was the other option. It was turned down
+  because a neighbour could still reach the app's port.
+- **What to keep:** when the edge's containers are recreated (a new edge version), kamal-proxy
+  joins every app's network again before it routes, so no app on the server goes down. An
+  existing server switches over at the next deploy of each app, under the host plan approved by
+  its hash.
+- **In 0.2.13**, beside 040. It changes the edge, the deploy's switch step and the host plans.
 
 ## Later, not yet placed
 

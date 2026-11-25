@@ -1199,6 +1199,7 @@ jobs:
               grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
               mkdir -p "$APPS_DIR"/shop/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
+              if grep -qi 'exec.*operation not permitted' "$APPS_DIR"/shop/.failed-deploy/"$1".log; then printf '::error::The %s container could not start its program ("operation not permitted" in its log). Its image'\\''s binary most likely carries a file capability, as FrankenPHP'\\''s and Caddy'\\''s do (cap_net_bind_service), and OpsCrew runs the app'\\''s containers with every capability dropped (cap_drop: ALL) and no-new-privileges, under which the kernel refuses to start such a binary. Drop the capability in your Dockerfile after the FROM line, with setcap -r <binary> where the image has setcap, or by copying the binary over itself (cp <binary> /tmp/copy && mv /tmp/copy <binary>); have the app listen on a port above 1024, and push again.\\n' "$1"; fi
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
               echo kept > .start.outcome
             ) || true
@@ -1427,6 +1428,7 @@ jobs:
               grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
               mkdir -p "$APPS_DIR"/shop/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
+              if grep -qi 'exec.*operation not permitted' "$APPS_DIR"/shop/.failed-deploy/"$1".log; then printf '::error::The %s container could not start its program ("operation not permitted" in its log). Its image'\\''s binary most likely carries a file capability, as FrankenPHP'\\''s and Caddy'\\''s do (cap_net_bind_service), and OpsCrew runs the app'\\''s containers with every capability dropped (cap_drop: ALL) and no-new-privileges, under which the kernel refuses to start such a binary. Drop the capability in your Dockerfile after the FROM line, with setcap -r <binary> where the image has setcap, or by copying the binary over itself (cp <binary> /tmp/copy && mv /tmp/copy <binary>); have the app listen on a port above 1024, and push again.\\n' "$1"; fi
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
               echo kept > .start.outcome
             ) || true
@@ -3029,6 +3031,7 @@ jobs:
               grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
               mkdir -p "$APPS_DIR"/shop/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
+              if grep -qi 'exec.*operation not permitted' "$APPS_DIR"/shop/.failed-deploy/"$1".log; then printf '::error::The %s container could not start its program ("operation not permitted" in its log). Its image'\\''s binary most likely carries a file capability, as FrankenPHP'\\''s and Caddy'\\''s do (cap_net_bind_service), and OpsCrew runs the app'\\''s containers with every capability dropped (cap_drop: ALL) and no-new-privileges, under which the kernel refuses to start such a binary. Drop the capability in your Dockerfile after the FROM line, with setcap -r <binary> where the image has setcap, or by copying the binary over itself (cp <binary> /tmp/copy && mv /tmp/copy <binary>); have the app listen on a port above 1024, and push again.\\n' "$1"; fi
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
               echo kept > .start.outcome
             ) || true
@@ -3266,6 +3269,7 @@ jobs:
               grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
               mkdir -p "$APPS_DIR"/shop/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
+              if grep -qi 'exec.*operation not permitted' "$APPS_DIR"/shop/.failed-deploy/"$1".log; then printf '::error::The %s container could not start its program ("operation not permitted" in its log). Its image'\\''s binary most likely carries a file capability, as FrankenPHP'\\''s and Caddy'\\''s do (cap_net_bind_service), and OpsCrew runs the app'\\''s containers with every capability dropped (cap_drop: ALL) and no-new-privileges, under which the kernel refuses to start such a binary. Drop the capability in your Dockerfile after the FROM line, with setcap -r <binary> where the image has setcap, or by copying the binary over itself (cp <binary> /tmp/copy && mv /tmp/copy <binary>); have the app listen on a port above 1024, and push again.\\n' "$1"; fi
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
               echo kept > .start.outcome
             ) || true
