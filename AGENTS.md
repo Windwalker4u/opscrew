@@ -173,6 +173,11 @@ your session; start it again after each wake.
   admin rights on the repository.
 - **Without them,** it checks every 5 minutes instead. Its header comment says the rest.
 
+**Labels:** give each issue and pull request its feature's label (`feature/NNN`; ask in the issue
+if it doesn't exist yet) or `core`, plus a type (`enhancement`, `bug`, `question`, `documentation`),
+and `needs-founder` when it waits on the founder (money, accounts, a product or release decision).
+`security` marks a security finding.
+
 **Issues are public.** Never put a secret, a token, an account id, a server's address or anyone's
 private details in one.
 
