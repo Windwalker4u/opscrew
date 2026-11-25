@@ -328,9 +328,14 @@ describe.each([
   it.runIf(github)(
     "reaches its own provision after the repository checks, with no Dockerfile, and stops at the GitHub remote",
     async () => {
+      // A clone of the plan's branch (`main`).
       const runner = new ScriptedRunner((_command, args) => ({
         exitCode: 0,
-        stdout: args.includes("--is-inside-work-tree") ? "true\n" : "",
+        stdout: args.includes("--is-inside-work-tree")
+          ? "true\n"
+          : args.includes("--abbrev-ref")
+            ? "main\n"
+            : "",
         stderr: "",
       }));
       const deps = await serverlessProject(runner);

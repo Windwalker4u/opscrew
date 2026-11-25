@@ -44,6 +44,7 @@ import {
   isServerUnit,
 } from "./frameworks";
 import { readGitInfo } from "./git";
+import { LARAVEL_CONFIG_DEFAULTS } from "./laravel-config";
 import {
   type DependencyEcosystem,
   findDependency,
@@ -106,7 +107,7 @@ import {
 } from "./sources";
 import { detectObjectStorage, detectSqlite } from "./storage";
 import { vercelRouting } from "./vercel-routing";
-import { dockerfileWorkdir } from "./workdir";
+import { dockerfileWorkdir, fileCapabilityNote } from "./workdir";
 
 /** Options for {@link detectProject}. */
 export interface DetectOptions {
@@ -220,8 +221,10 @@ function detectLanguages(files: readonly string[], units: readonly Unit[]): Lang
   const languages = new Set<Language>();
   for (const file of files) {
     const name = basenameRel(file);
-    // Tool configuration (vite.config.js, .eslintrc.cjs) does not define the app's language.
+    // Tool configuration (vite.config.js, .eslintrc.cjs) does not define the app's language, nor
+    // do the scripts of tools in hidden folders (.github/, a spec tool's .specify/scripts/*.py).
     if (/\.config\.[cm]?[jt]s$/.test(name) || /^\.[\w-]+rc\.[cm]?js$/.test(name)) continue;
+    if (/(?:^|\/)\.[^/]+\//.test(file)) continue;
     const dot = name.lastIndexOf(".");
     const language = dot > 0 ? LANGUAGE_BY_EXTENSION[name.slice(dot + 1).toLowerCase()] : undefined;
     if (language) languages.add(language);
@@ -498,6 +501,13 @@ export async function detectProjectDetails(
   await mapLimit(phpFiles, 16, async (file) => {
     phpReads.push(...extractPhpEnvReads((await read(file)) ?? ""));
   });
+  // The defaults of Laravel's own config files that the app does not publish.
+  if (appFrameworkNames.has("laravel")) {
+    for (const [file, names] of Object.entries(LARAVEL_CONFIG_DEFAULTS)) {
+      if (fileSet.has(joinRel(appDir, `config/${file}`))) continue;
+      for (const name of names) phpReads.push({ name, hasDefault: true });
+    }
+  }
   const viteReads = await viteConfigReads(appDir, filesIn, fileSet, read);
   const collected = collectEnvVars(ownSignals, viteReads, envFiles, phpReads);
   const { configUrlSchemes, envUrls } = collected;
@@ -762,6 +772,10 @@ export async function detectProjectDetails(
     : undefined;
 
   const notes: string[] = [];
+  // A base image whose server binary cannot start in OpsCrew's hardened container.
+  const capability =
+    dockerfile && dockerText !== undefined ? fileCapabilityNote(dockerText, dockerfile) : undefined;
+  if (capability) notes.push(capability);
   // Processes besides the web one, and the app's storage.
   const sources: AppSources = {
     appDir,
