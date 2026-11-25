@@ -51,7 +51,7 @@ import {
   renderedCheckKeyLine,
   resumeCheck,
 } from "../check/provision";
-import { requireCheckSettingsPlace, requireUptimeWebhook } from "../check/settings";
+import { requireCheckSettingsPlace, requireUptimeSettings } from "../check/settings";
 import { planProvisionUptime, provisionUptime } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { setupFeeOf } from "../design/cost";
@@ -521,9 +521,9 @@ async function provisionFlow(
     throw serverlessDnsByProvision(plan.target.provider, planFile(plan));
   }
   // The check's interval and webhook are the repository's: only opscrew/plan.yaml sets them. The
-  // Cloudflare uptime Worker opens no issue, so it needs that webhook.
+  // Cloudflare uptime Worker opens no issue, so it needs that webhook (and no hosting account).
   requireCheckSettingsPlace(deps.paths, plan);
-  await requireUptimeWebhook(deps.paths, plan);
+  await requireUptimeSettings(deps.paths, plan);
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
   const flags = await commandFlags(root, deps.paths.environment, deps.paths.app);

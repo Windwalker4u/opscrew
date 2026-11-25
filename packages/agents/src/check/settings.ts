@@ -2,6 +2,7 @@ import { type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import {
   ArtifactError,
   type DeployPlan,
+  isHostingTarget,
   type Observability,
   readOptionalArtifact,
 } from "@opscrew/plan-schema";
@@ -66,15 +67,31 @@ export function usesUptimeWorker(plan: DeployPlan): boolean {
 }
 
 /**
- * Stops (`ARTIFACT_INVALID`, naming `opscrew/plan.yaml`) when `plan`'s environment chooses the
- * Cloudflare uptime Worker and the repository's settings have no webhook: the Worker opens no
- * GitHub issue, so without a webhook nobody would hear of a down app. Read-only.
+ * Stops (`ARTIFACT_INVALID`) when `plan`'s environment chooses the Cloudflare uptime Worker where
+ * it can't run: on a hosting account (naming the plan's file; not available there yet), or
+ * without the repository's webhook (naming `opscrew/plan.yaml`): the Worker opens no GitHub issue,
+ * so without a webhook nobody would hear of a down app. Read-only.
  */
-export async function requireUptimeWebhook(
-  paths: Pick<ProjectPaths, "root" | "homeDir">,
+export async function requireUptimeSettings(
+  paths: Pick<ProjectPaths, "root" | "homeDir" | "files">,
   plan: DeployPlan,
 ): Promise<void> {
   if (!usesUptimeWorker(plan)) return;
+  if (isHostingTarget(plan.target)) {
+    const file = toPosixRelative(paths.root, paths.files.plan);
+    throw new ArtifactError({
+      code: "ARTIFACT_INVALID",
+      file,
+      issues: [
+        {
+          path: "observability.check.runner",
+          message:
+            'can\'t be "cloudflare" on a hosting account: the Cloudflare uptime Worker isn\'t available for hosting accounts yet',
+        },
+      ],
+      hint: `Set observability.check.runner to "actions" in ${file}, then run the command again.`,
+    });
+  }
   if ((await repositoryCheckSettings(paths, plan))?.webhook !== undefined) return;
   const file = toPosixRelative(paths.root, appPaths(paths, undefined).files.plan);
   throw new ArtifactError({

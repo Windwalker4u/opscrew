@@ -6,13 +6,14 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { hostingTestPlan } from "../hosting/__fixtures__/account";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { createTestPhaseDeps, testPlan } from "../testing";
 import {
   checkRunner,
   checksInActions,
   requireCheckSettingsPlace,
-  requireUptimeWebhook,
+  requireUptimeSettings,
   usesUptimeWorker,
   withDesignedCheck,
 } from "./settings";
@@ -127,12 +128,12 @@ describe("the check's runner", () => {
   });
 });
 
-describe("requireUptimeWebhook", () => {
+describe("requireUptimeSettings", () => {
   it("refuses the Cloudflare uptime Worker without the repository's webhook, naming opscrew/plan.yaml", async () => {
     const deps = await createTestPhaseDeps();
     let error: unknown;
     try {
-      await requireUptimeWebhook(deps.paths, plan({ enabled: true, runner: "cloudflare" }));
+      await requireUptimeSettings(deps.paths, plan({ enabled: true, runner: "cloudflare" }));
     } catch (caught) {
       error = caught;
     }
@@ -150,22 +151,49 @@ describe("requireUptimeWebhook", () => {
   it("takes another environment's webhook from opscrew/plan.yaml", async () => {
     const deps = await createTestPhaseDeps({ environment: "staging" });
     const staging = plan({ enabled: true, runner: "cloudflare" }, { environment: "staging" });
-    await expect(requireUptimeWebhook(deps.paths, staging)).rejects.toThrow(ArtifactError);
+    await expect(requireUptimeSettings(deps.paths, staging)).rejects.toThrow(ArtifactError);
     const prod = resolveProjectPaths(deps.paths.root, { env: deps.env });
     await writeArtifact("plan", prod.files.plan, plan({ enabled: true, webhook: "slack" }));
-    await expect(requireUptimeWebhook(deps.paths, staging)).resolves.toBeUndefined();
+    await expect(requireUptimeSettings(deps.paths, staging)).resolves.toBeUndefined();
+  });
+
+  it("refuses the Worker on a hosting account, saying to use the Actions check", async () => {
+    const deps = await createTestPhaseDeps();
+    const hosting = DeployPlanSchema.parse({
+      ...hostingTestPlan({ cloudflare: true }),
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    let error: unknown;
+    try {
+      await requireUptimeSettings(deps.paths, hosting);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ArtifactError);
+    const artifact = error as ArtifactError;
+    expect(artifact.file).toBe("opscrew/plan.yaml");
+    expect(artifact.issues).toEqual([
+      {
+        path: "observability.check.runner",
+        message:
+          'can\'t be "cloudflare" on a hosting account: the Cloudflare uptime Worker isn\'t available for hosting accounts yet',
+      },
+    ]);
+    expect(artifact.hint).toBe(
+      'Set observability.check.runner to "actions" in opscrew/plan.yaml, then run the command again.',
+    );
   });
 
   it("asks nothing of the Actions check, nor of a check that is off", async () => {
     const deps = await createTestPhaseDeps();
     await expect(
-      requireUptimeWebhook(deps.paths, plan({ enabled: true })),
+      requireUptimeSettings(deps.paths, plan({ enabled: true })),
     ).resolves.toBeUndefined();
     await expect(
-      requireUptimeWebhook(deps.paths, plan({ enabled: false, runner: "cloudflare" })),
+      requireUptimeSettings(deps.paths, plan({ enabled: false, runner: "cloudflare" })),
     ).resolves.toBeUndefined();
     await expect(
-      requireUptimeWebhook(
+      requireUptimeSettings(
         deps.paths,
         plan({ enabled: true, runner: "cloudflare", webhook: "ntfy" }),
       ),
