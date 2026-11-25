@@ -11,10 +11,12 @@ account](028-cloudflare-account-move/) as 0.2.10. [029 hosting at home](029-home
 several apps on a server OpsCrew created](030-shared-created-server/) and [031 a move's maintenance
 window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 2026-11-21.
 **Next:**
-- **0.2.12, first** (the founder, 2026-11-25): 046 an uptime check that doesn't use GitHub Actions,
-  the agent tool policy's security fixes (#16 to #24) and the fixes in #26.
-- **0.2.13:** [032 a Codex plugin](032-codex-plugin/) (built) and 040 an agent on the server, the
-  founder's decisions of 2026-11-21, released together.
+- **0.2.12** (the founder, 2026-11-25): 046 an uptime check that doesn't use GitHub Actions, the
+  agent tool policy's security fixes (#16 to #24), the fixes in #26, and [032 a Codex
+  plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left).
+- **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
+  pass needs the dashboard's side merged behind an operator-only switch a few days before, which
+  would hold 046 back.
 - **Beside them:** 035's first providers, started by a second contributor.
 - **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
@@ -972,7 +974,7 @@ module's first version: an app's PostgreSQL service names the extensions it need
 
 ## 046 An uptime check that doesn't use GitHub Actions
 
-The founder's decision (2026-11-25): built first and released as 0.2.12, before 032 and 040. In a private
+The founder's decision (2026-11-25): built first and released as 0.2.12, with 032; 040 follows in 0.2.13. In a private
 repository the scheduled check costs Actions minutes, so a user who turns it off has no down alert
 at all. Cloudflare's standalone Health Checks need the Pro plan, but Workers' free plan has Cron
 Triggers (5 per account), with fetch time not counted as CPU.
