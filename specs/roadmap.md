@@ -18,7 +18,8 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
   provision (the founder, 2026-11-25).
 - **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
-  would hold 046 back.
+  would hold 046 back. With it, 049 each app's own network on a shared server (the lead's
+  hardening call, 2026-11-25).
 - **Beside them:** 035's first providers, started by a second contributor.
 - **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
@@ -1063,6 +1064,23 @@ store a value.
   next deploy applies them.
 - **In 0.2.12** (the founder, 2026-11-25: build it now). A value is taken only from stdin or a
   file, never from argv, and every output shows names only, so no value can be echoed back.
+
+## 049 Each app's own network on a shared server
+
+A security review of an app on a shared server (2026-11-25). Every OpsCrew app on a server joins
+the edge's one network, `opscrew-edge`. So a taken-over container of one app can reach another
+app's port directly, from a private address. An app that trusts proxies on private addresses (as
+it should, for the real path: Cloudflare, Caddy, kamal-proxy) then takes that container's forged
+`X-Forwarded-For` as the client's address, which defeats limits kept per address.
+- **The fix (the lead's call):** each app gets its own network, which only that app's containers
+  and the edge's kamal-proxy join. Caddy reaches only kamal-proxy, on the edge's own network. A
+  fixed kamal-proxy address that apps trust exactly was the other option. It was turned down
+  because a neighbour could still reach the app's port.
+- **What to keep:** when the edge's containers are recreated (a new edge version), kamal-proxy
+  joins every app's network again before it routes, so no app on the server goes down. An
+  existing server switches over at the next deploy of each app, under the host plan approved by
+  its hash.
+- **In 0.2.13**, beside 040. It changes the edge, the deploy's switch step and the host plans.
 
 ## Later, not yet placed
 
