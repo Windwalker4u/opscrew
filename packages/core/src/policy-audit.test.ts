@@ -285,6 +285,45 @@ describe("#21: Grep cannot return lines from files Read refuses", () => {
   }
 });
 
+describe("#22: only a bare command name found on the PATH is pre-approved", () => {
+  for (const host of HOSTS) {
+    const { bash } = hostPolicy(host, false);
+
+    it(`does not allow a command run by its path (${host.platform})`, () => {
+      for (const command of [
+        "./cat",
+        "./cat README.md",
+        "subdir/cat",
+        "../tools/cat",
+        "/tmp/cat",
+        "/usr/bin/cat README.md",
+        "./cat.exe",
+        "./git status",
+        "./ls",
+        "./grep x README.md",
+        "./find . -name x",
+        "./mkdir -p x",
+        "./tree",
+        String.raw`'.\cat' README.md`,
+        String.raw`'C:\tools\cat.exe' README.md`,
+      ]) {
+        expect(bash(command).decision, command).toBe("ask");
+      }
+    });
+
+    it(`keeps bare names allowed and path-qualified denials denied (${host.platform})`, () => {
+      expect(bash("cat README.md").decision).toBe("allow");
+      expect(bash("git status").decision).toBe("allow");
+      expect(bash("grep x README.md").decision).toBe("allow");
+      expect(bash("\\cat README.md").decision).toBe("allow");
+      expect(bash("./npm test").decision).toBe("ask");
+      expect(bash("/usr/local/bin/terraform plan").decision).toBe("deny");
+      expect(bash("./curl https://example.com").decision).toBe("deny");
+      expect(bash("./cat .env").decision).toBe("deny");
+    });
+  }
+});
+
 describe("#23: a dangling link is never treated as a new file inside the project", () => {
   for (const host of HOSTS) {
     const { bash, tool } = hostPolicy(host, true);

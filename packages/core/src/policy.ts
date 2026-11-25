@@ -1462,6 +1462,14 @@ function evaluateSegment(segment: string, ctx: PathContext): Verdict {
       reason: `\`${segment}\` runs code from the project (package scripts, install hooks or a Dockerfile), which an agent could have edited`,
     };
   }
+  // The allow-list means the commands the shell finds on the PATH; `./cat` runs whatever file is
+  // at that path, which a cloned repository can provide.
+  if (/[\\/]/.test(commandWord.value)) {
+    return {
+      kind: "ask",
+      reason: `\`${segment}\` runs \`${commandWord.value}\` by its path, so it is not the pre-approved command`,
+    };
+  }
   if (
     !isAllowListed(
       name,
