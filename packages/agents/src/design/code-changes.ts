@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Finding, SEVERITIES } from "@opscrew/contracts";
 import { plural } from "@opscrew/core";
-import { listProjectFiles } from "@opscrew/detect";
+import { isAppCodeFile, listProjectFiles } from "@opscrew/detect";
 import {
   type CodeChangeKind,
   type DeployPlan,
@@ -32,6 +32,8 @@ export interface CodeChangeSignals {
   nextConfig?: { path: string; standalone: boolean; tracingRoot?: boolean };
   /** App source files that pass a literal port number to `listen(...)` / `run(port=...)`. */
   hardcodedPortFiles?: readonly string[];
+  /** The app's own Dockerfile (`facts.docker.dockerfile`) sets its port with `EXPOSE`. */
+  dockerfileExposesPort?: boolean;
   /** File where the server app is created; the health endpoint is added there. */
   serverEntry?: string;
   /**
@@ -202,6 +204,10 @@ export async function collectCodeChangeSignals(
     }
   }
   signals.hardcodedPortFiles = hardcoded.sort();
+  const dockerfile = facts.docker.dockerfile;
+  if (dockerfile !== undefined) {
+    signals.dockerfileExposesPort = /^\s*EXPOSE\s+\d/im.test(await read(dockerfile));
+  }
 
   if (usesDjango(facts)) {
     const settings = files
@@ -285,10 +291,17 @@ export function deriveCodeChanges(
       "The app has no Dockerfile; OpsCrew adds a production Dockerfile for the detected stack that runs as a non-root user.",
     );
   }
-  // Only the `.dockerignore` at the root of the build context applies to the build.
+  // Only the `.dockerignore` at the root of the build context applies to the build, or BuildKit's
+  // `<Dockerfile>.dockerignore` beside the user's own Dockerfile, which replaces it.
   const dockerignore =
     builder === undefined ? undefined : under(buildContextFor(facts, builder), ".dockerignore");
-  if (dockerignore !== undefined && facts.docker.dockerignore !== dockerignore) {
+  const besideDockerfile =
+    builder === "own-dockerfile" && facts.docker.dockerfile !== undefined
+      ? `${facts.docker.dockerfile}.dockerignore`
+      : undefined;
+  const ignoreBeside =
+    besideDockerfile !== undefined && (signals.files ?? []).includes(besideDockerfile);
+  if (dockerignore !== undefined && facts.docker.dockerignore !== dockerignore && !ignoreBeside) {
     add(
       "dockerignore",
       "dockerignore",
@@ -308,7 +321,14 @@ export function deriveCodeChanges(
   }
 
   if (builder !== undefined && facts.appKind !== "static-spa") {
-    (signals.hardcodedPortFiles ?? []).forEach((file, i) => {
+    // When the app's own Dockerfile sets the port, only the app's own code must read it, not a
+    // helper script or a test (`isAppCodeFile`).
+    const appDir = appDirOf(facts);
+    const portSet = builder === "own-dockerfile" && signals.dockerfileExposesPort === true;
+    const portFiles = (signals.hardcodedPortFiles ?? []).filter(
+      (file) => !portSet || isAppCodeFile(isRootDir(appDir) ? file : file.slice(appDir.length + 1)),
+    );
+    portFiles.forEach((file, i) => {
       add(
         `port-config-${i + 1}`,
         "port-config",
