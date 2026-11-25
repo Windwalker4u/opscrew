@@ -95,6 +95,26 @@ describe("fileCapabilityNote", () => {
     expect(fileCapabilityNote("FROM caddy-builder:2\n", "Dockerfile")).toBeUndefined();
   });
 
+  it("still warns when the Dockerfile adds the capability, or copies other files", () => {
+    const franken = "FROM dunglas/frankenphp:1-php8.4\n";
+    for (const line of [
+      // FrankenPHP's non-root setup adds the capability, which cap_drop ALL cannot grant.
+      "RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/local/bin/frankenphp",
+      "RUN cp docker/frankenphp.ini /usr/local/etc/php/conf.d/frankenphp.ini",
+    ]) {
+      expect(fileCapabilityNote(`${franken}${line}\n`, "Dockerfile"), line).toContain(
+        "cap_net_bind_service",
+      );
+    }
+    expect(
+      fileCapabilityNote("FROM caddy:2\nRUN cp Caddyfile /etc/caddy/Caddyfile\n", "Dockerfile"),
+    ).toContain("/usr/bin/caddy");
+    // A removal with other flags still counts.
+    expect(
+      fileCapabilityNote(`${franken}RUN setcap -v -r /usr/local/bin/frankenphp\n`, "Dockerfile"),
+    ).toBeUndefined();
+  });
+
   it("is among the notes of an app with its own Dockerfile", async () => {
     const root = await makeTree(
       {

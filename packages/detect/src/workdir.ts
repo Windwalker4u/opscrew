@@ -47,7 +47,7 @@ const CAPABILITY_BINARIES: Readonly<Record<string, string>> = {
  * with a file capability (FrankenPHP's and Caddy's images, followed through stage aliases): the
  * app's container runs with `cap_drop: ALL` and no-new-privileges, under which the kernel refuses
  * to start such a binary. Undefined for other images, or when the stage drops the capability
- * (`setcap`, or a `cp` of the binary).
+ * (`setcap -r`, or a `cp` of the binary by its path).
  */
 export function fileCapabilityNote(text: string, path: string): string | undefined {
   const stages: { image: string; alias?: string; lines: string[] }[] = [];
@@ -73,7 +73,9 @@ export function fileCapabilityNote(text: string, path: string): string | undefin
   const name = repository.split("/").at(-1)?.toLowerCase() ?? "";
   const binary = CAPABILITY_BINARIES[name];
   if (binary === undefined) return undefined;
-  const dropped = new RegExp(`\\bsetcap\\b|\\bcp\\s[^\\n]*\\b${name}\\b`);
+  // Only a removal (`setcap -r`) or a copy of the binary itself drops it; `setcap …=+eip` adds it.
+  const escaped = binary.replaceAll(".", "\\.");
+  const dropped = new RegExp(`\\bsetcap\\s+(?:-\\S+\\s+)*-r\\b|\\bcp\\s+\\S*${escaped}\\b`);
   if (chain.some((stage) => stage.lines.some((line) => dropped.test(line)))) return undefined;
   const file = posix.basename(binary);
   return `${path} builds on ${repository}, whose ${file} binary (${binary}) carries the file capability cap_net_bind_service. OpsCrew runs the app's container with every capability dropped (cap_drop: ALL) and no-new-privileges, so the kernel refuses to start that binary ("operation not permitted") and the deploy fails its health check. Drop the capability in the Dockerfile, after the FROM line: \`RUN setcap -r ${binary}\` (where the image has setcap), or copy the binary over itself, which drops it: \`RUN cp ${binary} /tmp/${file} && mv /tmp/${file} ${binary}\`. The app then needs a port above 1024 (8080, say).`;
