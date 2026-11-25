@@ -1,7 +1,10 @@
 export type {
   UptimeEntry,
+  UptimeEntryServer,
   UptimeHook,
   UptimeHostState,
+  UptimeReport,
+  UptimeServerReport,
   UptimeState,
 } from "../../uptime/worker.mjs";
 export { UPTIME_WORKER_SCRIPT, UPTIME_WORKER_SHA256 } from "../generated/uptime";
