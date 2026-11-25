@@ -86,7 +86,7 @@ export async function requireUptimeSettings(
         {
           path: "observability.check.runner",
           message:
-            'can\'t be "cloudflare" on a hosting account: the Cloudflare uptime Worker isn\'t available for hosting accounts yet',
+            "can't be \"cloudflare\" on a hosting account: the Cloudflare uptime Worker isn't available for hosting accounts yet",
         },
       ],
       hint: `Set observability.check.runner to "actions" in ${file}, then run the command again.`,

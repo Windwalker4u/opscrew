@@ -176,7 +176,7 @@ describe("requireUptimeSettings", () => {
       {
         path: "observability.check.runner",
         message:
-          'can\'t be "cloudflare" on a hosting account: the Cloudflare uptime Worker isn\'t available for hosting accounts yet',
+          "can't be \"cloudflare\" on a hosting account: the Cloudflare uptime Worker isn't available for hosting accounts yet",
       },
     ]);
     expect(artifact.hint).toBe(
