@@ -367,6 +367,24 @@ function locate(ctx: PathContext, absolute: string): Resolution {
   return { status: "inside", rel: ctx.api.relative(ctx.root, absolute) };
 }
 
+/**
+ * True when a `..` in `raw` comes after a link. The kernel, and Git Bash on Windows, take `link/..`
+ * to the folder above where the link points, while `path.resolve` drops both by text, so the
+ * path checked would not be the one opened. Throws when `realpath` does.
+ */
+function dotDotAfterLink(ctx: PathContext, raw: string): boolean {
+  const segments = raw.split(ctx.win ? /[\\/]/ : "/");
+  const key = (s: string | undefined) => (ctx.win ? s?.toLowerCase() : s);
+  for (const [i, segment] of segments.entries()) {
+    if (segment !== "..") continue;
+    const before = ctx.api.resolve(ctx.root, segments.slice(0, i).join(ctx.api.sep));
+    const real = realPathOf(ctx, before);
+    if (real === undefined) continue;
+    if (key(ctx.api.dirname(real)) !== key(realPathOf(ctx, ctx.api.dirname(before)))) return true;
+  }
+  return false;
+}
+
 function withSecrets(location: Resolution): Resolution {
   return location.status === "inside" && isSecretPath(location.rel)
     ? { status: "secret" }
@@ -392,6 +410,9 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
   // ~/.aws/credentials), so the checks apply to where the path really leads.
   let real: string | undefined;
   try {
+    if (dotDotAfterLink(ctx, raw)) {
+      return { status: "unknown", why: "has `..` after a link, which climbs from where it points" };
+    }
     real = realPathOf(ctx, absolute);
   } catch {
     // `realpath` throws for an entry that exists but does not resolve: a link whose target is

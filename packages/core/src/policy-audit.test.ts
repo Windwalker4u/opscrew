@@ -57,6 +57,9 @@ function fakeFs(host: Host) {
   links[at("docs", "sshdir")] = at(".ssh");
   links[at("docs", "sshdir", "config")] = at(".ssh", "config");
   links[at("docs", "aws")] = `${home}${sep}.aws${sep}credentials`;
+  // A `..` after these starts from where they point: the project's root, a folder in the home.
+  links[at("docs", "in2")] = at("src");
+  links[at("docs", "l")] = `${home}${sep}.cache`;
   const dangling = new Set([at("docs", "out")]);
   return (absolute: string): string | undefined => {
     if (dangling.has(absolute)) throw new Error(`ENOENT: ${absolute} is a dangling link`);
@@ -390,6 +393,65 @@ describe("#23: a dangling link is never treated as a new file inside the project
     expect(bash("cat < docs/sshdir/config")).toBe("deny");
     expect(bash("cat README.md > docs/sshdir/config")).toBe("deny");
     expect(bash("cat README.md")).toBe("allow");
+  });
+});
+
+describe("#18, #19, #20, #23: a `..` after a link starts from where the link points", () => {
+  // The kernel resolves `link/..` from the link's target, while path.resolve removes it by text.
+  // On Windows, Node's file APIs remove it by text too, but Git Bash (where the Bash tool runs)
+  // follows the link, as it does on POSIX, so the check applies on both.
+  for (const host of HOSTS) {
+    const { bash, tool } = hostPolicy(host, true);
+
+    it(`refuses writes through docs/in2 -> src (${host.platform})`, () => {
+      for (const command of [
+        "cat README.md > docs/in2/../.github/workflows/opscrew-deploy.yml",
+        "cat README.md > docs/in2/../opscrew/plan.yaml",
+        "mkdir -p docs/in2/../opscrew/x",
+      ]) {
+        expect(bash(command).decision, command).toBe("deny");
+      }
+      const write = { file_path: "docs/in2/../opscrew/plan.yaml", content: "x" };
+      expect(tool("Write", write).decision).toBe("deny");
+    });
+
+    it(`refuses reads and writes through docs/l -> a home folder (${host.platform})`, () => {
+      expect(bash("cat README.md > docs/l/../.profile").decision).toBe("deny");
+      expect(bash("cat docs/l/../.vault-token").decision).toBe("ask");
+      expect(bash("cat < docs/l/../.bash_history").decision).toBe("ask");
+      expect(tool("Read", { file_path: "docs/l/../.vault-token" }).decision).toBe("deny");
+    });
+
+    it(`keeps .. after ordinary folders and paths through links allowed (${host.platform})`, () => {
+      expect(bash("cat docs/../README.md").decision).toBe("allow");
+      expect(bash("cat src/../package.json").decision).toBe("allow");
+      expect(bash("ls > docs/../listing.txt").decision).toBe("allow");
+      expect(tool("Write", { file_path: "src/../docs/new.md", content: "x" }).decision).toBe(
+        "allow",
+      );
+      expect(bash("cat docs/in2/index.ts").decision).toBe("allow");
+    });
+  }
+
+  it("refuses a .. after a real link", async () => {
+    const base = await tempDir("policy-dotdot-");
+    const root = join(base, "app");
+    mkdirSync(join(root, "docs"), { recursive: true });
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "README.md"), "# app\n");
+    symlinkSync(join(root, "src"), join(root, "docs", "j"), "junction");
+    const policy = new DefaultToolPolicy({ realpath: nodeRealpath });
+    const bash = (command: string) =>
+      policy.evaluate({
+        tool: "Bash",
+        input: { command },
+        profile: "edit-repo",
+        projectRoot: root,
+        phase: "adapt",
+      }).decision;
+
+    expect(bash("cat README.md > docs/j/../opscrew/plan.yaml")).toBe("deny");
+    expect(bash("cat docs/../README.md")).toBe("allow");
   });
 });
 
