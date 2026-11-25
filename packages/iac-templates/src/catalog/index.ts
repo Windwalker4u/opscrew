@@ -185,15 +185,77 @@ const SPLIT_LOGIN: Readonly<Record<string, keyof DatabaseSettings>> = {
   DB_PASS: "password",
 };
 
+/** A PostgreSQL's URL's names an app reads besides the catalog's, as agents' `serviceUrlKind`. */
+const POSTGRES_ALIAS =
+  /^(?:DATABASE_URL|DATABASE_URI|SQLALCHEMY_DATABASE_URI|POSTGRES_UR[LI]|DB_UR[LI])$/;
+/** `<prefix>_DATABASE_URL`/`_URI`; the capture is the prefix. */
+const PREFIXED_ALIAS = /^(\w+?)_DATABASE_UR[LI]$/;
+/**
+ * Prefix segments that mark another database engine or a database that is not production's
+ * (tests, Prisma's shadow database, local development): such names are never derived.
+ */
+const OTHER_DATABASE_SEGMENTS = new Set([
+  "MONGO",
+  "MONGODB",
+  "MYSQL",
+  "MARIADB",
+  "SQLITE",
+  "CLICKHOUSE",
+  "MSSQL",
+  "SQLSERVER",
+  "ORACLE",
+  "COCKROACH",
+  "COCKROACHDB",
+  "TIMESCALE",
+  "NEO4J",
+  "CASSANDRA",
+  "LIBSQL",
+  "TURSO",
+  "PLANETSCALE",
+  "REDIS",
+  "ELASTIC",
+  "ELASTICSEARCH",
+  "TEST",
+  "TESTS",
+  "TESTING",
+  "SHADOW",
+  "DEV",
+  "DEVELOPMENT",
+  "LOCAL",
+  "E2E",
+  "CI",
+  "STAGING",
+]);
+
+/**
+ * True for a name agents derive from the app's PostgreSQL's address (`design` plans it as
+ * `derived`, `assembleAppEnv` fills it): `DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`,
+ * `POSTGRES_URL`, `DB_URL` and `*_DATABASE_URL`/`_URI`, but not a name bundlers expose to browsers
+ * nor a prefix naming another engine or a non-production database (`TEST_DATABASE_URL`).
+ */
+function postgresAlias(name: string): boolean {
+  if (isClientExposedEnvName(name)) return false;
+  if (POSTGRES_ALIAS.test(name)) return true;
+  const prefix = PREFIXED_ALIAS.exec(name)?.[1];
+  return (
+    prefix !== undefined && !prefix.split("_").some((part) => OTHER_DATABASE_SEGMENTS.has(part))
+  );
+}
+
 /**
  * The release command's database variables (047): for each PostgreSQL with `logins: separate`, the
  * names `app.env` has its address under, each with the owner's login `app_owner` and `secret`'s
- * `owner-password`. Those are the catalog's names (`DATABASE_URL`) and the app's own detected
- * variable, unless another service gives `app.env` that name (one service's own `variable` is
- * its alone; else the first service's), and, when the app reads `DB_HOST` and the database is the
- * one whose split settings `app.env` holds (the SQL database whose variable is `DATABASE_URL`,
- * else the first), the user's and the password's split names the app reads. `release.db.env`
- * holds them, which the release reads after `app.env`. Empty without such a PostgreSQL.
+ * `owner-password`, so the release never logs in as the runtime login. Those are:
+ * - the catalog's names (`DATABASE_URL`) and the app's own detected variable, unless another
+ *   service gives `app.env` that name (one service's own `variable` is its alone; else the first
+ *   service's);
+ * - when the app reads `DB_HOST` and the database is the one whose split settings `app.env` holds
+ *   (the SQL database whose variable is `DATABASE_URL`, else the first), the user's and the
+ *   password's split names the app reads;
+ * - the app's other derived names for the first PostgreSQL's address ({@link postgresAlias}).
+ *
+ * `release.db.env` holds them, which the release reads after `app.env`. Empty without such a
+ * PostgreSQL.
  */
 export function releaseVariables(
   plan: DeployPlan,
@@ -224,13 +286,23 @@ export function releaseVariables(
     for (const name of mine) release[name] = address;
   }
   const reads = new Set(plan.app.env.map((variable) => variable.name));
-  if (!reads.has("DB_HOST")) return release;
   const sql = running.filter((s) => serviceSpec(s.kind).databaseSettings !== undefined);
-  const split = sql.find((s) => s.variable === "DATABASE_URL") ?? sql[0];
-  if (split === undefined || !postgresLogins(split)) return release;
-  const { settings } = owner(split);
-  for (const [name, setting] of Object.entries(SPLIT_LOGIN)) {
-    if (reads.has(name) && !given.has(name)) release[name] = settings[setting];
+  const split = reads.has("DB_HOST")
+    ? (sql.find((s) => s.variable === "DATABASE_URL") ?? sql[0])
+    : undefined;
+  if (split !== undefined && postgresLogins(split)) {
+    const { settings } = owner(split);
+    for (const [name, setting] of Object.entries(SPLIT_LOGIN)) {
+      if (reads.has(name) && !given.has(name)) release[name] = settings[setting];
+    }
+  }
+  const first = running.find((s) => s.kind === "postgres");
+  if (first !== undefined && postgresLogins(first)) {
+    for (const { name, source } of plan.app.env) {
+      if (source === "derived" && !given.has(name) && postgresAlias(name)) {
+        release[name] = owner(first).address;
+      }
+    }
   }
   return release;
 }

@@ -1,4 +1,4 @@
-import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, type PlanService } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testPlan } from "../__fixtures__/plans";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
@@ -230,6 +230,52 @@ describe("the release's database variables (releaseVariables)", () => {
       ["DB_HOST", "DB_USERNAME", "DB_PASSWORD"],
     );
     expect(releaseVariables(mysqlSplit, secretOf)).toEqual({ PG_URL: OWNER_URL });
+  });
+
+  it("gives the derived aliases of the app's PostgreSQL the owner's login too", () => {
+    const aliases = withAppEnv(withLogins(testPlan()), [
+      "POSTGRES_URL",
+      "DB_URL",
+      "SQLALCHEMY_DATABASE_URI",
+      "PRIMARY_DATABASE_URL",
+      // Not PostgreSQL's: a test database, another engine, a name the browser gets.
+      "TEST_DATABASE_URL",
+      "MONGO_DATABASE_URL",
+      "NEXT_PUBLIC_DATABASE_URL",
+      "REDIS_URL",
+    ]);
+    expect(releaseVariables(aliases, secretOf)).toEqual({
+      DATABASE_URL: OWNER_URL,
+      POSTGRES_URL: OWNER_URL,
+      DB_URL: OWNER_URL,
+      SQLALCHEMY_DATABASE_URI: OWNER_URL,
+      PRIMARY_DATABASE_URL: OWNER_URL,
+    });
+    // The user's own value is no alias OpsCrew fills, so the release keeps it.
+    const own = DeployPlanSchema.parse({
+      ...aliases,
+      app: {
+        ...aliases.app,
+        env: [{ name: "POSTGRES_URL", secret: true, source: "user" }],
+      },
+    });
+    expect(releaseVariables(own, secretOf)).toEqual({ DATABASE_URL: OWNER_URL });
+    // The aliases name the first PostgreSQL that runs; without its own logins, nothing changes.
+    const second = withAppEnv(
+      DeployPlanSchema.parse({
+        ...withServices([
+          { kind: "postgres", name: "main" },
+          { kind: "postgres", name: "db", variable: "PG_URL" },
+        ]),
+      }),
+      ["POSTGRES_URL"],
+    );
+    const db = second.services[1];
+    const onlySecond = DeployPlanSchema.parse({
+      ...second,
+      services: [second.services[0], { ...db, options: { logins: "separate" } }],
+    });
+    expect(releaseVariables(onlySecond, secretOf)).toEqual({ PG_URL: OWNER_URL });
   });
 
   it("names the private address of the extra server the database is placed on", () => {
