@@ -41,15 +41,19 @@ services:
    `REVOKE ALL ON SCHEMA public FROM PUBLIC`. `CONNECT` stays with `PUBLIC`: with no schema or
    object rights a login connects but reads nothing, and the devices' and monitoring logins need
    it (research R6).
-4. **The runtime login, now**, for each schema `app_owner` owns: `GRANT USAGE ON SCHEMA s`,
-   `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA s`, and
-   `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA s`, each `TO app_runtime`.
+4. **The runtime login, now:** each schema and object step 2 moves gets its rights `TO
+   app_runtime` with the move: `USAGE` on a schema, `SELECT, INSERT, UPDATE, DELETE` on a table or
+   view, `USAGE, SELECT` on a sequence (a column's too), and `SELECT, UPDATE` on a large object.
+   So they are given once, at the switch of an existing database or the load of a dump from before
+   it. A later setup or load leaves the objects' rights as they are, so a migration that narrows
+   them (`REVOKE DELETE ON t FROM app_runtime`) stays narrowed. A load keeps the dump's own ACLs.
 5. **The runtime login, later:** `ALTER DEFAULT PRIVILEGES FOR ROLE app_owner GRANT SELECT,
    INSERT, UPDATE, DELETE ON TABLES TO app_runtime`, the same for `USAGE, SELECT ON SEQUENCES` and
-   for `USAGE ON SCHEMAS`.
+   for `USAGE ON SCHEMAS`. They cover whatever the owner creates later.
 
 Steps 2 to 5 are **the grants part**, which needs no password: the loads run it after a restore.
-The step's **check** is one query that returns `t` only when all five hold.
+The step's **check** is one query that returns `t` only when steps 1, 2, 3 and 5 hold. It doesn't
+look at step 4's rights, which the app's migrations may narrow.
 
 ## The secrets and env
 

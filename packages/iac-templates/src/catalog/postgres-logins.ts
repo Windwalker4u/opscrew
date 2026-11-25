@@ -50,32 +50,52 @@ function notInExtension(catalog: string, oid: string): string {
 }
 
 /**
- * One `ALTER … OWNER TO app_owner` for each of the app's schemas and objects the superuser owns
- * (research R4): `REASSIGN OWNED` can't take objects from the bootstrap superuser, which owns the
- * system catalogs. The schemas include `public`, which PostgreSQL 15 gives `pg_database_owner`. A
- * sequence of a column (serial, identity) moves with its table, a table's row type and every
- * array type with their own type, and a range's multirange needs its own statement.
+ * Each of the app's schemas and objects the superuser owns, as two statements (research R4): its
+ * `ALTER … OWNER TO app_owner`, and the runtime login's rights on it, or NULL where `PUBLIC`'s
+ * suffice. `REASSIGN OWNED` can't take objects from the bootstrap superuser, which owns the system
+ * catalogs. The schemas include `public`, which PostgreSQL 15 gives `pg_database_owner`. A sequence
+ * of a column (serial, identity) moves with its table, so it gets only its grant; a table's row
+ * type and every array type move with their own type, and a range's multirange needs its own
+ * statement.
+ *
+ * The runtime login's rights on what exists are given here only, with the move: at the switch of
+ * a database, or the load of a dump from before it. Later setups and loads leave them as they are,
+ * so a migration that narrows them stays narrowed. What the owner creates later is covered by its
+ * default privileges.
  */
 const MOVES = [
-  `SELECT format('ALTER SCHEMA %I OWNER TO ${OWNER}', n.nspname) FROM pg_namespace n`,
+  `SELECT format('ALTER SCHEMA %I OWNER TO ${OWNER}', n.nspname),`,
+  `  format('GRANT USAGE ON SCHEMA %I TO ${RUNTIME}', n.nspname)`,
+  "  FROM pg_namespace n",
   `  WHERE n.nspowner IN ('${SUPERUSER}'::regrole, 'pg_database_owner'::regrole) AND ${APP_SCHEMA}`,
   "UNION ALL",
-  `SELECT format('ALTER %s %s OWNER TO ${OWNER}', CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, c.oid::regclass)`,
+  `SELECT format('ALTER %s %s OWNER TO ${OWNER}', CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, c.oid::regclass),`,
+  `  CASE c.relkind WHEN 'S' THEN format('GRANT USAGE, SELECT ON SEQUENCE %s TO ${RUNTIME}', c.oid::regclass)`,
+  `    ELSE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %s TO ${RUNTIME}', c.oid::regclass) END`,
   "  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace",
   `  WHERE c.relowner = '${SUPERUSER}'::regrole AND ${APP_SCHEMA} AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')`,
   "  AND NOT EXISTS (SELECT FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND (d.deptype = 'e' OR c.relkind = 'S' AND d.deptype IN ('a', 'i')))",
   "UNION ALL",
-  `SELECT format('ALTER ROUTINE %s OWNER TO ${OWNER}', p.oid::regprocedure)`,
+  `SELECT NULL, format('GRANT USAGE, SELECT ON SEQUENCE %s TO ${RUNTIME}', s.oid::regclass)`,
+  "  FROM pg_class s JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = s.oid",
+  "    AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')",
+  "  JOIN pg_class c ON c.oid = d.refobjid JOIN pg_namespace n ON n.oid = c.relnamespace",
+  `  WHERE s.relkind = 'S' AND c.relowner = '${SUPERUSER}'::regrole AND ${APP_SCHEMA} AND ${notInExtension("pg_class", "c.oid")}`,
+  "UNION ALL",
+  `SELECT format('ALTER ROUTINE %s OWNER TO ${OWNER}', p.oid::regprocedure), NULL`,
   "  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace",
   `  WHERE p.proowner = '${SUPERUSER}'::regrole AND ${APP_SCHEMA} AND ${notInExtension("pg_proc", "p.oid")}`,
   "UNION ALL",
-  `SELECT format('ALTER TYPE %s OWNER TO ${OWNER}', t.oid::regtype)`,
+  `SELECT format('ALTER TYPE %s OWNER TO ${OWNER}', t.oid::regtype), NULL`,
   "  FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace",
   `  WHERE t.typowner = '${SUPERUSER}'::regrole AND ${APP_SCHEMA} AND t.typtype IN ('c', 'd', 'e', 'm', 'r')`,
   "  AND (t.typtype <> 'c' OR (SELECT c.relkind FROM pg_class c WHERE c.oid = t.typrelid) = 'c')",
   `  AND ${notInExtension("pg_type", "t.oid")}`,
   "UNION ALL",
-  `SELECT format('ALTER LARGE OBJECT %s OWNER TO ${OWNER}', l.oid)`,
+  // PostgreSQL before 18 has no default privileges for large objects; those the runtime login makes
+  // are its own.
+  `SELECT format('ALTER LARGE OBJECT %s OWNER TO ${OWNER}', l.oid),`,
+  `  format('GRANT SELECT, UPDATE ON LARGE OBJECT %s TO ${RUNTIME}', l.oid)`,
   `  FROM pg_largeobject_metadata l WHERE l.lomowner = '${SUPERUSER}'::regrole`,
 ];
 
@@ -112,11 +132,13 @@ function roles(service: string): string[] {
 }
 
 /**
- * The setup's steps 2 to 5, the grants part (data-model.md), which needs no password: the owners,
- * what `PUBLIC` loses, and the runtime login's data rights on what exists and, through the owner's
- * global default privileges, on whatever the owner creates later (a new schema too). `CONNECT`
- * stays with `PUBLIC`: without a schema's `USAGE` a login reads nothing, and the devices' and the
- * monitoring logins connect through it (research R6).
+ * The setup's steps 2 to 5, the grants part (data-model.md), which needs no password: the owners
+ * with the runtime login's rights on what moved ({@link MOVES}), what `PUBLIC` loses, and, through
+ * the owner's global default privileges, the runtime login's data rights on whatever the owner
+ * creates later (a new schema too). `CONNECT` stays with `PUBLIC`: without a schema's `USAGE` a
+ * login reads nothing, and the devices' and the monitoring logins connect through it (research R6).
+ * So the runtime login may also connect to the `postgres` database and make temporary tables
+ * there, which is left as it is: none of the app's data is there.
  */
 const GRANTS = [
   `ALTER DATABASE ${DATABASE} OWNER TO ${OWNER};`,
@@ -124,19 +146,15 @@ const GRANTS = [
   "\\gexec",
   `REVOKE TEMPORARY ON DATABASE ${DATABASE} FROM PUBLIC;`,
   "REVOKE ALL ON SCHEMA public FROM PUBLIC;",
-  `SELECT format('GRANT USAGE ON SCHEMA %I TO ${RUNTIME}', n.nspname),`,
-  `  format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO ${RUNTIME}', n.nspname),`,
-  `  format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO ${RUNTIME}', n.nspname)`,
-  `  FROM pg_namespace n WHERE n.nspowner = '${OWNER}'::regrole`,
-  "\\gexec",
   `ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${RUNTIME};`,
   `ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER} GRANT USAGE, SELECT ON SEQUENCES TO ${RUNTIME};`,
   `ALTER DEFAULT PRIVILEGES FOR ROLE ${OWNER} GRANT USAGE ON SCHEMAS TO ${RUNTIME};`,
 ];
 
 /**
- * Whether all five steps hold: `t` or `f`. Each role is looked up with `to_regrole`, which gives
- * NULL rather than an error before the setup made it.
+ * Whether steps 1, 2, 3 and 5 hold: `t` or `f`. Step 4's rights come only with the moves of step
+ * 2, and the app's migrations may narrow them. Each role is looked up with `to_regrole`, which
+ * gives NULL rather than an error before the setup made it.
  */
 const CHECK = [
   "SELECT (",
@@ -150,18 +168,6 @@ const CHECK = [
   "  )",
   `  AND NOT has_database_privilege('public', '${DATABASE}', 'TEMPORARY')`,
   "  AND NOT has_schema_privilege('public', 'public', 'USAGE, CREATE')",
-  `  AND NOT EXISTS (SELECT FROM pg_namespace n WHERE n.nspowner = to_regrole('${OWNER}')`,
-  `    AND NOT has_schema_privilege(to_regrole('${RUNTIME}'), n.oid, 'USAGE'))`,
-  "  AND NOT EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace",
-  `    WHERE n.nspowner = to_regrole('${OWNER}') AND CASE`,
-  `      WHEN c.relkind = 'S' THEN NOT (has_sequence_privilege(to_regrole('${RUNTIME}'), c.oid, 'USAGE')`,
-  `        AND has_sequence_privilege(to_regrole('${RUNTIME}'), c.oid, 'SELECT'))`,
-  "      WHEN c.relkind IN ('r', 'p', 'v', 'm', 'f') THEN NOT (",
-  ...["SELECT", "INSERT", "UPDATE", "DELETE"].map(
-    (privilege, i) =>
-      `        ${i === 0 ? "" : "AND "}has_table_privilege(to_regrole('${RUNTIME}'), c.oid, '${privilege}')`,
-  ),
-  "      ) END)",
   "  AND (SELECT count(*) FROM pg_default_acl d, aclexplode(d.defaclacl) a",
   `    WHERE d.defaclrole = to_regrole('${OWNER}') AND d.defaclnamespace = 0 AND a.grantee = to_regrole('${RUNTIME}')`,
   "    AND (d.defaclobjtype, a.privilege_type) IN (('r', 'SELECT'), ('r', 'INSERT'), ('r', 'UPDATE'),",
