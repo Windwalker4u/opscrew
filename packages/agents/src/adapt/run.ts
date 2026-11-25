@@ -209,7 +209,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   const { paths, reporter } = deps;
   const ai = options.ai ?? true;
   const push = options.push ?? true;
-  const model = options.model ?? CODE_CHANGE_MODEL;
+  const model = options.model ?? deps.runtime?.defaultModelFor?.("adapt") ?? CODE_CHANGE_MODEL;
   const { say, warn, audit } = voice(deps);
 
   reporter.step("Preparing the code for deployment");

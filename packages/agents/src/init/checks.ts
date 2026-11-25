@@ -173,7 +173,7 @@ const NETWORK_TIMEOUT_MS = 10_000;
 const OFFLINE_NOTE = "offline: only checked that it is set, not that it works";
 
 const MODEL_HINT =
-  "Set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN), or route through a cloud provider by setting CLAUDE_CODE_USE_BEDROCK=1, CLAUDE_CODE_USE_VERTEX=1 or CLAUDE_CODE_USE_FOUNDRY=1 with that provider's credentials.";
+  "Set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN), OPENAI_API_KEY (with optional OPENAI_BASE_URL for compatible gateways), or route Claude through a cloud provider by setting CLAUDE_CODE_USE_BEDROCK=1, CLAUDE_CODE_USE_VERTEX=1 or CLAUDE_CODE_USE_FOUNDRY=1 with that provider's credentials.";
 
 const REMOTE_FIX =
   "Create the repository on GitHub, run `git remote add origin https://github.com/<owner>/<repo>.git`, push, then run `opscrew init` again.";
@@ -1672,6 +1672,7 @@ async function checkModel(deps: PhaseDeps): Promise<CheckResult> {
   const fromEnv =
     hasEnv(env, "ANTHROPIC_API_KEY") ||
     hasEnv(env, "ANTHROPIC_AUTH_TOKEN") ||
+    hasEnv(env, "OPENAI_API_KEY") ||
     ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].some(
       (name) => env[name] === "1",
     );

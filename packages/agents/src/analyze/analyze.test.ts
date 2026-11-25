@@ -329,6 +329,26 @@ describe("runAnalyze", () => {
     expect(markdown).not.toContain(token);
   });
 
+  it("uses the runtime's defaultModelFor('analyze') when no explicit model is passed", async () => {
+    const runtime = new FakeAgentRuntime({
+      phases: {
+        analyze: {
+          output: { summary: "OpenAI-analyzed static site.", risks: [] },
+        },
+      },
+    });
+    const customRuntime = Object.assign(runtime, {
+      defaultModelFor: (phase: string) => (phase === "analyze" ? "gpt-5-mini" : "gpt-5"),
+    });
+    const deps = await createTestPhaseDeps({
+      root: await project("static-vite"),
+      runtime: customRuntime,
+    });
+    await runAnalyze(deps);
+    expect(runtime.requests[0]?.model).toBe("gpt-5-mini");
+    expect(deps.reporter.text()).toContain("Asking the Analyst (gpt-5-mini)");
+  });
+
   it("keeps a registered name in the corrected start command but masks secrets", async () => {
     const secret = fakeSecret("generic-password");
     const runtime = new FakeAgentRuntime({

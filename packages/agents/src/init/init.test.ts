@@ -922,6 +922,18 @@ describe("runInitChecks", () => {
       const model = await check("model", { env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB } });
       expect(model.status).toBe("warn");
       expect(model.fix).toContain("ANTHROPIC_API_KEY");
+      expect(model.fix).toContain("OPENAI_API_KEY");
+    });
+
+    it("accepts OPENAI_API_KEY", async () => {
+      const model = await check("model", {
+        env: {
+          HCLOUD_TOKEN: HCLOUD,
+          GITHUB_TOKEN: GITHUB,
+          OPENAI_API_KEY: fakeSecret("openai-key"),
+        },
+      });
+      expect(model.status).toBe("pass");
     });
 
     it("accepts a cloud provider flag", async () => {
