@@ -933,6 +933,16 @@ const UPTIME_HINTS: FailHints = {
   auth: `The Cloudflare uptime check needs the account permissions ${listText([...CLOUDFLARE_UPTIME_PERMISSIONS])} on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/**
+ * Cloudflare's error code (with HTTP 403) for a Workers call in an account that never chose its
+ * workers.dev subdomain, which only the user chooses (it's a public name).
+ */
+const NO_SUBDOMAIN_CODE = 10063;
+
+/** What to do when the account has no workers.dev subdomain yet. */
+export const WORKERS_SUBDOMAIN_HINT =
+  "Open Workers & Pages in Cloudflare's dashboard once, which asks you to choose one, then run provision again.";
+
 /** Cloudflare's error code (with HTTP 400) for a KV namespace title the account already has. */
 const KV_TITLE_EXISTS_CODE = 10014;
 /** Cloudflare's error code (with HTTP 404) for a KV key that does not exist. */
@@ -1386,6 +1396,13 @@ export class CloudflareClient {
   }
 
   #fail(status: number, body: EnvelopeBody, what: string, hints: FailHints = {}): never {
+    if (body.errors.some((e) => Number(e.code) === NO_SUBDOMAIN_CODE)) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `Your Cloudflare account has no workers.dev subdomain yet, so Cloudflare refused to ${what}.`,
+        { hint: WORKERS_SUBDOMAIN_HINT },
+      );
+    }
     const detail = this.#detail(status, body);
     if (status === 403) {
       throw new CloudflareError(`Cloudflare refused the request to ${what}: ${detail}.`, {
@@ -2738,6 +2755,20 @@ export class CloudflareClient {
       method: "DELETE",
       hints: UPTIME_HINTS,
     });
+  }
+
+  /**
+   * The account's workers.dev subdomain (`GET …/workers/subdomain`); `undefined` when the account
+   * has none yet (code 10007): a Worker's Cron Triggers need one. Read-only.
+   */
+  async workersSubdomain(accountId: string): Promise<string | undefined> {
+    const answer = await this.#request(
+      `/accounts/${encodeURIComponent(accountId)}/workers/subdomain`,
+    );
+    if (noWorker(answer)) return undefined;
+    const what = "read the account's workers.dev subdomain";
+    return this.#result(answer, z.looseObject({ subdomain: z.string() }), what, UPTIME_HINTS)
+      .subdomain;
   }
 
   /**

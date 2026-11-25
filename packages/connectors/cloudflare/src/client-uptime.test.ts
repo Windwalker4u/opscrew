@@ -328,6 +328,40 @@ describe("the Worker's schedules, secrets and deletion", () => {
   });
 });
 
+describe("the account's workers.dev subdomain", () => {
+  const SUBDOMAIN = `/accounts/${ACCOUNT}/workers/subdomain`;
+
+  it("is read, or undefined when the account has none yet (code 10007)", async () => {
+    const { client } = clientWith({ [`GET ${SUBDOMAIN}`]: ok({ subdomain: "acme" }) });
+    expect(await client.workersSubdomain(ACCOUNT)).toBe("acme");
+    const none = clientWith({
+      [`GET ${SUBDOMAIN}`]: refuse(404, 10007, "This subdomain does not exist."),
+    });
+    expect(await none.client.workersSubdomain(ACCOUNT)).toBeUndefined();
+  });
+
+  it("names it, not the token, when a call is refused for want of one (code 10063)", async () => {
+    const { client } = clientWith({
+      [`PUT ${SCRIPT}/schedules`]: refuse(
+        403,
+        10063,
+        "You need a workers.dev subdomain in order to proceed",
+      ),
+    });
+    const error = await rejection(
+      client.putWorkerSchedules(ACCOUNT, "opscrew-uptime", ["* * * * *"]),
+    );
+    expect(error).not.toBeInstanceOf(CloudflareError);
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "Your Cloudflare account has no workers.dev subdomain yet, so Cloudflare refused to set the schedule of the Worker opscrew-uptime.",
+    );
+    expect(error.hint).toBe(
+      "Open Workers & Pages in Cloudflare's dashboard once, which asks you to choose one, then run provision again.",
+    );
+  });
+});
+
 describe("the uptime permissions", () => {
   it("name each one the token lacks, probed read-only", async () => {
     const workers = `GET /accounts/${ACCOUNT}/workers/scripts`;

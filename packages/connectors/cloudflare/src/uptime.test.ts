@@ -88,6 +88,7 @@ function facts(ids: string[], more: Partial<UptimeFacts> = {}): UptimeFacts {
     sha256: sha256Hex(V1),
     entries: Object.fromEntries(ids.map((id) => [uptimeEntryKey(id), entryFor(id)])),
     secrets: ids.map(uptimeSecretName),
+    workersSubdomain: true,
     denied: [],
     ...more,
   };
@@ -105,9 +106,30 @@ describe("inspectUptime", () => {
       sha256: sha256Hex(V1),
       entries: { [uptimeEntryKey(SHOP)]: entryFor(SHOP) },
       secrets: [uptimeSecretName(SHOP)],
+      workersSubdomain: true,
       denied: [],
     });
     expect(fake.writes()).toEqual([]);
+  });
+
+  it("stops the plan before any change when the account has no workers.dev subdomain", async () => {
+    const { fake, client } = setup();
+    fake.subdomain = undefined;
+    const read = await inspectUptime(client, ACCOUNT);
+    expect(read.workersSubdomain).toBe(false);
+    const plan = planUptime(read, wanting(SHOP));
+    expect(plan.findings).toEqual([
+      {
+        code: "workers-subdomain-missing",
+        message: "Your Cloudflare account has no workers.dev subdomain yet.",
+        hint: "Open Workers & Pages in Cloudflare's dashboard once, which asks you to choose one, then run provision again.",
+      },
+    ]);
+    const error = await rejection(applyUptime(client, plan, wanting(SHOP), plan.hash));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(fake.writes()).toEqual([]);
+    // Removing an entry needs no subdomain.
+    expect(planUptime(read, leaving(SHOP)).findings).toEqual([]);
   });
 
   it("names a permission Cloudflare refuses, and the plan stops on it", async () => {
@@ -377,7 +399,14 @@ describe("applyUptime", () => {
     const { fake, client } = setup();
     const result = await provision(client, wanting(SHOP));
     expect(result).toEqual({
-      applied: ["create-namespace", "upload-script", "put-secret", "put-entry"],
+      applied: [
+        "create-namespace",
+        "upload-script",
+        "set-schedule",
+        "record-sha256",
+        "put-secret",
+        "put-entry",
+      ],
       notes: [],
     });
     const kv = `/accounts/${ACCOUNT}/storage/kv/namespaces`;
@@ -415,8 +444,22 @@ describe("applyUptime", () => {
       applyUptime(client2, blog, wanting(BLOG), blog.hash),
     ]);
     expect(results.map((r) => r.applied)).toEqual([
-      ["create-namespace", "upload-script", "put-secret", "put-entry"],
-      ["create-namespace", "upload-script", "put-secret", "put-entry"],
+      [
+        "create-namespace",
+        "upload-script",
+        "set-schedule",
+        "record-sha256",
+        "put-secret",
+        "put-entry",
+      ],
+      [
+        "create-namespace",
+        "upload-script",
+        "set-schedule",
+        "record-sha256",
+        "put-secret",
+        "put-entry",
+      ],
     ]);
     // Both creates were sent; Cloudflare refused the second, which used the first's namespace.
     const kv = `/accounts/${ACCOUNT}/storage/kv/namespaces`;
@@ -524,6 +567,8 @@ describe("applyUptime", () => {
     expect((error as UptimeApplyError).applied).toEqual([
       "create-namespace",
       "upload-script",
+      "set-schedule",
+      "record-sha256",
       "put-secret",
       "put-entry",
     ]);
@@ -531,6 +576,20 @@ describe("applyUptime", () => {
     expect(error.hint).toContain("Run the command again");
     // Running it again plans the secret back.
     expect(kinds(await planFor(client, wanting(SHOP)))).toEqual(["put-secret"]);
+  });
+
+  it("lists exactly the steps done when the schedule is refused after the upload", async () => {
+    const { fake, client } = setup();
+    const plan = await planFor(client, wanting(SHOP));
+    fake.faults.push({
+      match: `PUT /accounts/${ACCOUNT}/workers/scripts/opscrew-uptime/schedules`,
+      reply: refuse(403, 10063, "You need a workers.dev subdomain in order to proceed"),
+    });
+    const error = await rejection(applyUptime(client, plan, wanting(SHOP), plan.hash));
+    expect(error).toBeInstanceOf(UptimeApplyError);
+    expect((error as UptimeApplyError).applied).toEqual(["create-namespace", "upload-script"]);
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("Your Cloudflare account has no workers.dev subdomain yet");
   });
 
   it("lists the changes already applied when one fails part-way", async () => {
@@ -542,7 +601,12 @@ describe("applyUptime", () => {
     });
     const error = await rejection(applyUptime(client, plan, wanting(SHOP), plan.hash));
     expect(error).toBeInstanceOf(UptimeApplyError);
-    expect((error as UptimeApplyError).applied).toEqual(["create-namespace", "upload-script"]);
+    expect((error as UptimeApplyError).applied).toEqual([
+      "create-namespace",
+      "upload-script",
+      "set-schedule",
+      "record-sha256",
+    ]);
     expect(error.message).toContain("secret refused");
   });
 

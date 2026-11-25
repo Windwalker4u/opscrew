@@ -70,6 +70,11 @@ export class FakeUptime {
   readonly hooks: FakeUptimeHook[] = [];
   /** What the token may not do (HTTP 403): `kv` for Workers KV, `workers` for the Workers. */
   readonly denied = new Set<"kv" | "workers">();
+  /**
+   * The account's workers.dev subdomain; `undefined`: it never chose one, so its subdomain reads
+   * 404 (code 10007) and setting a Worker's schedules is refused (HTTP 403, code 10063).
+   */
+  subdomain: string | undefined = "opscrew-test";
   readonly #fallback: FetchLike | undefined;
   #ids = 0;
 
@@ -85,6 +90,7 @@ export class FakeUptime {
     const account = `/accounts/${this.accountId}`;
     const scripts = `${account}/workers/scripts/`;
     const ours =
+      route === `${account}/workers/subdomain` ||
       route.startsWith(`${account}/storage/kv/namespaces`) ||
       (route.startsWith(scripts) &&
         /^[^/]+(?:\/schedules|\/secrets(?:\/[^/]+)?)?$/.test(route.slice(scripts.length)));
@@ -136,6 +142,11 @@ export class FakeUptime {
       return this.#kv(method, route.slice(kv.length), url, body);
     }
     if (this.denied.has("workers")) return DENIED;
+    if (route === `/accounts/${this.accountId}/workers/subdomain` && method === "GET") {
+      return this.subdomain === undefined
+        ? refuse(404, 10007, "This subdomain does not exist.")
+        : ok({ subdomain: this.subdomain });
+    }
     const [, name = "", rest = ""] =
       /^\/accounts\/[^/]+\/workers\/scripts\/([^/]+)(.*)$/.exec(route) ?? [];
     return this.#script(method, decodeURIComponent(name), rest, body);
@@ -215,6 +226,9 @@ export class FakeUptime {
       return ok(null);
     }
     if (rest === "/schedules" && method === "PUT") {
+      if (this.subdomain === undefined) {
+        return refuse(403, 10063, "You need a workers.dev subdomain in order to proceed");
+      }
       script.crons = (body as { cron: string }[]).map((s) => s.cron);
       return ok({
         schedules: script.crons.map((cron) => ({ cron, created_on: "", modified_on: "" })),

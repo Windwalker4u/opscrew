@@ -210,6 +210,19 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     expect(account.uptime.namespace("opscrew-uptime")?.values.has(uptimeEntryKey(ID))).toBe(true);
   });
 
+  it("stops before any server is created when the account has no workers.dev subdomain", async () => {
+    const { deps, handler, services, account, engines } = await setup(workerPlan());
+    account.uptime.subdomain = undefined;
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("Your Cloudflare account has no workers.dev subdomain yet."),
+      hint: expect.stringContaining("Open Workers & Pages in Cloudflare's dashboard once"),
+    });
+    expect(engines.flatMap((engine) => engine.applied)).toEqual([]);
+    expect(handler.requests.map((r) => r.kind)).not.toContain("iac-apply");
+    expect(account.uptime.writes()).toEqual([]);
+  });
+
   it("refuses a 41st hostname in the account before any server is created", async () => {
     const { deps, handler, services, account, engines } = await setup(workerPlan());
     otherHostnames(account, 40);

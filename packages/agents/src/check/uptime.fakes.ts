@@ -69,6 +69,7 @@ const UPTIME_CALLS = new Set<string>([
   "listWorkerSecrets",
   "putWorkerSecret",
   "deleteWorkerSecret",
+  "workersSubdomain",
 ]);
 
 /**

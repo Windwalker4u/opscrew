@@ -22,6 +22,7 @@ import {
   type CloudflareClient,
   CloudflareError,
   KvNamespaceExistsError,
+  WORKERS_SUBDOMAIN_HINT,
 } from "./client";
 
 /** The pieces in the user's Cloudflare account, as the Worker's script expects them. */
@@ -138,6 +139,8 @@ export interface UptimeFacts {
   entries: Record<string, UptimeEntry>;
   /** The names of the Worker's secrets; null when the account has no such Worker. */
   secrets: string[] | null;
+  /** The account has its workers.dev subdomain, which a Worker's Cron Triggers need. */
+  workersSubdomain: boolean;
   /** The token permissions a read was refused for (HTTP 403), as the token builder names them. */
   denied: string[];
 }
@@ -172,7 +175,11 @@ export type UptimeChange =
 
 /** A blocking finding: what OpsCrew found and the next step, in plain English. */
 export interface UptimeFinding {
-  code: "too-many-hostnames" | "permission-missing" | "secret-missing";
+  code:
+    | "too-many-hostnames"
+    | "permission-missing"
+    | "secret-missing"
+    | "workers-subdomain-missing";
   message: string;
   hint: string;
 }
@@ -194,7 +201,10 @@ export interface UptimePlan {
 }
 
 export interface UptimeApplyResult {
-  /** The changes made, in order, by kind. */
+  /**
+   * The steps done, in order: each change by its kind, and an upload as `upload-script`,
+   * `set-schedule` and `record-sha256`.
+   */
   applied: string[];
   /** What the apply decided on its own, in plain English (the Worker kept for a new entry). */
   notes: string[];
@@ -275,6 +285,7 @@ export async function inspectUptime(
     sha256: null,
     entries: {},
     secrets: null,
+    workersSubdomain: false,
     denied: [],
   };
   /** `read()`, with `permission` noted when Cloudflare refuses it with HTTP 403. */
@@ -298,6 +309,7 @@ export async function inspectUptime(
   });
   await allowed(WORKERS_PERMISSION, async () => {
     facts.secrets = (await client.listWorkerSecrets(accountId, WORKER)) ?? null;
+    facts.workersSubdomain = (await client.workersSubdomain(accountId)) !== undefined;
   });
   return facts;
 }
@@ -355,6 +367,13 @@ export function planUptime(facts: UptimeFacts, desired: UptimeDesired): UptimePl
     const stored = facts.entries[key];
     if (stored === undefined || canonicalJson(stored) !== canonicalJson(entry)) {
       changes.push({ kind: "put-entry", key, entry });
+    }
+    if (!facts.workersSubdomain) {
+      findings.push({
+        code: "workers-subdomain-missing",
+        message: "Your Cloudflare account has no workers.dev subdomain yet.",
+        hint: WORKERS_SUBDOMAIN_HINT,
+      });
     }
     const counted = others.reduce((n, k) => n + (facts.entries[k]?.hosts.length ?? 0), 0);
     if (counted + entry.hosts.length > UPTIME_RESOURCES.maxHostnames) {
@@ -601,14 +620,17 @@ export async function applyUptime(
             ],
             keepBindings: ["secret_text"],
           });
+          applied.push("upload-script");
           await client.putWorkerSchedules(accountId, WORKER, [UPTIME_RESOURCES.cron]);
+          applied.push("set-schedule");
           await client.putKv(
             accountId,
             ns(),
             WORKER_KEY,
             JSON.stringify({ sha256: change.sha256 }),
           );
-          break;
+          applied.push("record-sha256");
+          continue;
         case "put-secret":
           await client.putWorkerSecret(accountId, WORKER, {
             name: change.name,
