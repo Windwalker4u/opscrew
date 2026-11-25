@@ -9,18 +9,20 @@ example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "SAMEORIGIN"
-		Referrer-Policy "strict-origin-when-cross-origin"
+		?X-Content-Type-Options "nosniff"
+		?X-Frame-Options "SAMEORIGIN"
+		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
+		-X-Powered-By
 	}
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			X-Content-Type-Options "nosniff"
-			X-Frame-Options "SAMEORIGIN"
-			Referrer-Policy "strict-origin-when-cross-origin"
+			?X-Content-Type-Options "nosniff"
+			?X-Frame-Options "SAMEORIGIN"
+			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
+			-X-Powered-By
 		}
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}

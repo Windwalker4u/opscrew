@@ -367,7 +367,7 @@ describe("the app's site file", () => {
     );
   });
 
-  it("sets HSTS and the baseline headers and removes Server in every site with a hostname", () => {
+  it("sets HSTS, the baseline headers unless the app sent its own, and removes Server and X-Powered-By in every site with a hostname", () => {
     const sites = [
       renderCaddyfile(shop, ctx),
       renderCaddyfile(shop, { ...ctx, originTls: { hostnames: ["example.com"] } }),
@@ -380,10 +380,11 @@ describe("the app's site file", () => {
     const header = [
       "\theader {",
       '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
-      '\t\tX-Content-Type-Options "nosniff"',
-      '\t\tX-Frame-Options "SAMEORIGIN"',
-      '\t\tReferrer-Policy "strict-origin-when-cross-origin"',
+      '\t\t?X-Content-Type-Options "nosniff"',
+      '\t\t?X-Frame-Options "SAMEORIGIN"',
+      '\t\t?Referrer-Policy "strict-origin-when-cross-origin"',
       "\t\t-Server",
+      "\t\t-X-Powered-By",
       "\t}",
     ];
     for (const content of sites) {

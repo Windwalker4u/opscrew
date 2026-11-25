@@ -91,7 +91,7 @@ services:
       - 443:443
       - 443:443/udp
     labels:
-      dev.opscrew.caddyfile-sha256: 5235d51c7dbd9e3e65fcd8fd9a325c58aafbb89153b5128d7199be52f2160ae2
+      dev.opscrew.caddyfile-sha256: 50d8d01018580b2075675963e9d295041469ae7ddf090d89282082a47a7e8daf
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -138,18 +138,20 @@ configs:
       	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      		X-Content-Type-Options "nosniff"
-      		X-Frame-Options "SAMEORIGIN"
-      		Referrer-Policy "strict-origin-when-cross-origin"
+      		?X-Content-Type-Options "nosniff"
+      		?X-Frame-Options "SAMEORIGIN"
+      		?Referrer-Policy "strict-origin-when-cross-origin"
       		-Server
+      		-X-Powered-By
       	}
       	handle_errors {
       		header {
       			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      			X-Content-Type-Options "nosniff"
-      			X-Frame-Options "SAMEORIGIN"
-      			Referrer-Policy "strict-origin-when-cross-origin"
+      			?X-Content-Type-Options "nosniff"
+      			?X-Frame-Options "SAMEORIGIN"
+      			?Referrer-Policy "strict-origin-when-cross-origin"
       			-Server
+      			-X-Powered-By
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
       	}
@@ -224,7 +226,7 @@ services:
     ports:
       - 8080:80
     labels:
-      dev.opscrew.caddyfile-sha256: 985bc6421d64f53b3e8f9a8160ec9a1a8569e239d5bd31db51d2b4c0fac78450
+      dev.opscrew.caddyfile-sha256: ad11d12ba588ee961a290d647da2334f547b7ac244616442d35006f1b29ae264
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -270,18 +272,20 @@ configs:
       	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      		X-Content-Type-Options "nosniff"
-      		X-Frame-Options "SAMEORIGIN"
-      		Referrer-Policy "strict-origin-when-cross-origin"
+      		?X-Content-Type-Options "nosniff"
+      		?X-Frame-Options "SAMEORIGIN"
+      		?Referrer-Policy "strict-origin-when-cross-origin"
       		-Server
+      		-X-Powered-By
       	}
       	handle_errors {
       		header {
       			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      			X-Content-Type-Options "nosniff"
-      			X-Frame-Options "SAMEORIGIN"
-      			Referrer-Policy "strict-origin-when-cross-origin"
+      			?X-Content-Type-Options "nosniff"
+      			?X-Frame-Options "SAMEORIGIN"
+      			?Referrer-Policy "strict-origin-when-cross-origin"
       			-Server
+      			-X-Powered-By
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
       	}
@@ -634,7 +638,7 @@ services:
     image: <pin:IMAGES.caddy>
     restart: unless-stopped
     labels:
-      dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
+      dev.opscrew.caddyfile-sha256: d20126aaf19494a89435876c3b31ad741424779ebeaa4f1c38e5704e0503e769
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -706,18 +710,20 @@ configs:
       	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      		X-Content-Type-Options "nosniff"
-      		X-Frame-Options "SAMEORIGIN"
-      		Referrer-Policy "strict-origin-when-cross-origin"
+      		?X-Content-Type-Options "nosniff"
+      		?X-Frame-Options "SAMEORIGIN"
+      		?Referrer-Policy "strict-origin-when-cross-origin"
       		-Server
+      		-X-Powered-By
       	}
       	handle_errors {
       		header {
       			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      			X-Content-Type-Options "nosniff"
-      			X-Frame-Options "SAMEORIGIN"
-      			Referrer-Policy "strict-origin-when-cross-origin"
+      			?X-Content-Type-Options "nosniff"
+      			?X-Frame-Options "SAMEORIGIN"
+      			?Referrer-Policy "strict-origin-when-cross-origin"
       			-Server
+      			-X-Powered-By
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
       	}
@@ -1320,7 +1326,7 @@ services:
     image: <pin:IMAGES.caddy>
     restart: unless-stopped
     labels:
-      dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
+      dev.opscrew.caddyfile-sha256: d20126aaf19494a89435876c3b31ad741424779ebeaa4f1c38e5704e0503e769
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -1396,18 +1402,20 @@ configs:
       	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      		X-Content-Type-Options "nosniff"
-      		X-Frame-Options "SAMEORIGIN"
-      		Referrer-Policy "strict-origin-when-cross-origin"
+      		?X-Content-Type-Options "nosniff"
+      		?X-Frame-Options "SAMEORIGIN"
+      		?Referrer-Policy "strict-origin-when-cross-origin"
       		-Server
+      		-X-Powered-By
       	}
       	handle_errors {
       		header {
       			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      			X-Content-Type-Options "nosniff"
-      			X-Frame-Options "SAMEORIGIN"
-      			Referrer-Policy "strict-origin-when-cross-origin"
+      			?X-Content-Type-Options "nosniff"
+      			?X-Frame-Options "SAMEORIGIN"
+      			?Referrer-Policy "strict-origin-when-cross-origin"
       			-Server
+      			-X-Powered-By
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
       	}
@@ -1887,7 +1895,7 @@ services:
     image: <pin:IMAGES.caddy>
     restart: unless-stopped
     labels:
-      dev.opscrew.caddyfile-sha256: 63613838c6f472ff762261c1663fe2ca8b67a23914aedc686dcdcb14d613d39b
+      dev.opscrew.caddyfile-sha256: d20126aaf19494a89435876c3b31ad741424779ebeaa4f1c38e5704e0503e769
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -1962,18 +1970,20 @@ configs:
       	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      		X-Content-Type-Options "nosniff"
-      		X-Frame-Options "SAMEORIGIN"
-      		Referrer-Policy "strict-origin-when-cross-origin"
+      		?X-Content-Type-Options "nosniff"
+      		?X-Frame-Options "SAMEORIGIN"
+      		?Referrer-Policy "strict-origin-when-cross-origin"
       		-Server
+      		-X-Powered-By
       	}
       	handle_errors {
       		header {
       			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      			X-Content-Type-Options "nosniff"
-      			X-Frame-Options "SAMEORIGIN"
-      			Referrer-Policy "strict-origin-when-cross-origin"
+      			?X-Content-Type-Options "nosniff"
+      			?X-Frame-Options "SAMEORIGIN"
+      			?Referrer-Policy "strict-origin-when-cross-origin"
       			-Server
+      			-X-Powered-By
       		}
       		respond "{err.status_code} {err.status_text}" {err.status_code}
       	}

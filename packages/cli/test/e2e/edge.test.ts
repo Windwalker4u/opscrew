@@ -11,6 +11,7 @@
  *   setting at the top of certbot's renewal file);
  * - a hostname no app serves is refused on HTTP and in the TLS handshake;
  * - the headers and the TLS versions visitors see are recorded, then compared across the proxies;
+ *   on Caddy the app's own security headers win, but for HSTS, and X-Powered-By is removed;
  * - a WebSocket reaches the app through the proxy and kamal-proxy ("Spike results" 5);
  * - a proxied app with origin TLS (a certificate from OpsCrew's own request, signed by the local
  *   CA) refuses a client without Cloudflare's client certificate, serves one with it, and presents
@@ -59,6 +60,8 @@ import {
   LocalCa,
   LocalEdge,
   OPENSSL,
+  OWN_HEADERS,
+  OWN_HEADERS_PATH,
   type Pebble,
   requestLoop,
   SH,
@@ -330,6 +333,22 @@ describe.skipIf(SKIP !== undefined)("the shared edge on Docker, with Pebble (014
           entry.headers = headers;
           entry.tls = versions;
         }
+      },
+      TWO_MINUTES,
+    );
+
+    it.skipIf(proxy !== "caddy")(
+      "keeps the app's own security headers but HSTS, and removes X-Powered-By, on Caddy",
+      async () => {
+        const answer = await get(SHOP, { path: OWN_HEADERS_PATH });
+        expect(answer.headers["referrer-policy"]).toBe(OWN_HEADERS["Referrer-Policy"]);
+        expect(answer.headers["x-frame-options"]).toBe(OWN_HEADERS["X-Frame-Options"]);
+        // The default the app did not set, and OpsCrew's HSTS over the app's.
+        expect(answer.headers["x-content-type-options"]).toBe("nosniff");
+        expect(answer.headers["strict-transport-security"]).toBe(
+          "max-age=31536000; includeSubDomains",
+        );
+        expect(answer.headers["x-powered-by"]).toBeUndefined();
       },
       TWO_MINUTES,
     );

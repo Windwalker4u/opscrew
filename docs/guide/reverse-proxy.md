@@ -19,8 +19,10 @@ target:
 Visitors get the same protections from all three:
 
 - TLS 1.2 and 1.3 only, and HTTP redirected to HTTPS;
-- the same security headers: `Strict-Transport-Security`, `X-Content-Type-Options: nosniff` and
-  `Referrer-Policy: strict-origin-when-cross-origin`, and no server version;
+- the same security headers: `Strict-Transport-Security: max-age=31536000; includeSubDomains`,
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN` and
+  `Referrer-Policy: strict-origin-when-cross-origin`, and no server version (see
+  [your app's own headers](#your-apps-own-headers));
 - WebSockets and long requests (up to 300 seconds);
 - a refusal for hostnames the server does not serve (a 403 page on OpenLiteSpeed);
 - uploads: no limit on Caddy; on nginx up to `app.maxBodyMb` in `opscrew/plan.yaml` (100 MB unless
@@ -34,6 +36,17 @@ already holds other OpsCrew apps, provision refuses a different choice before ch
 While the server holds only this app, the proxy can be switched: the plan shows the switch and the
 short interruption it causes (a few seconds for proxied hostnames, under a minute for DNS-only ones,
 while the new proxy gets its certificates). Switching several apps at once is not supported yet.
+
+## Your app's own headers
+
+On Caddy, your app may send its own `X-Content-Type-Options`, `X-Frame-Options` or
+`Referrer-Policy`, for example a stricter `Referrer-Policy: no-referrer`: Caddy then passes your
+app's value on and adds OpsCrew's only to the answers that have none.
+`Strict-Transport-Security` is always OpsCrew's: Caddy replaces your app's value with it. Caddy
+also removes `Server` and `X-Powered-By` from every answer, so visitors don't see which server
+or framework runs the app.
+
+On nginx and OpenLiteSpeed, the proxy always sends OpsCrew's values of these headers.
 
 ## Certificates
 

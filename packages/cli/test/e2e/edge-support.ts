@@ -267,15 +267,31 @@ export async function startPebble(network: string, dir: string): Promise<Pebble>
 /** The text the stand-in app sends first on a WebSocket. */
 export const WEBSOCKET_HELLO = "hello over a websocket";
 
+/** The path where the stand-in app sends {@link OWN_HEADERS} with its answer. */
+export const OWN_HEADERS_PATH = "/own-headers";
+
+/** Security headers of the app's own, which the edge's defaults must not replace (but HSTS). */
+export const OWN_HEADERS: Readonly<Record<string, string>> = {
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Strict-Transport-Security": "max-age=60",
+  "X-Powered-By": "Express",
+};
+
 /**
- * The stand-in app (Node.js, `node -e`): 200 with `body` on every path, a WebSocket upgrade
- * answered with 101 and one text frame ({@link WEBSOCKET_HELLO}), and a prompt exit on SIGTERM.
+ * The stand-in app (Node.js, `node -e`): 200 with `body` on every path (with
+ * {@link OWN_HEADERS} on {@link OWN_HEADERS_PATH}), a WebSocket upgrade answered with 101 and one
+ * text frame ({@link WEBSOCKET_HELLO}), and a prompt exit on SIGTERM.
  */
 export function standInScript(body: string, port: number): string {
   return [
     'const crypto = require("node:crypto");',
     'process.on("SIGTERM", () => process.exit(0));',
-    `const server = require("node:http").createServer((q, s) => s.end(${JSON.stringify(body)}));`,
+    `const own = ${JSON.stringify(OWN_HEADERS)};`,
+    'const server = require("node:http").createServer((q, s) => {',
+    `  if (q.url === ${JSON.stringify(OWN_HEADERS_PATH)}) for (const [n, v] of Object.entries(own)) s.setHeader(n, v);`,
+    `  s.end(${JSON.stringify(body)});`,
+    "});",
     'server.on("upgrade", (req, socket) => {',
     '  const accept = crypto.createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");',
     '  socket.write("HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n");',
