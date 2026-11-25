@@ -316,7 +316,7 @@ still shows those figures when you ask.
 
 - **No pause:** OpsCrew doesn't pause the Worker while [`npx opscrew retarget`](retarget.md) or a
   move runs, so it may send a down message and then a recovered one.
-- **Another Cloudflare account:** `npx opscrew cloudflare-move` refuses an app that the Worker
+- **Another Cloudflare account:** [`npx opscrew cloudflare move`](cloudflare-move.md) refuses an app that the Worker
   checks. Set `observability.check.runner` to `actions`, run `npx opscrew provision`, then move.
 
 ### Switching back
