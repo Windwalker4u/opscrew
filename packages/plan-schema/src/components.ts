@@ -143,7 +143,13 @@ function serviceEntry<K extends z.ZodType, O extends z.ZodType>(kind: K, options
 export const REDIS_PROTOCOL_KINDS = ["valkey", "redis", "dragonfly"] as const;
 
 /** Kinds with options of their own; every other kind has none. */
-const KINDS_WITH_OPTIONS = [...REDIS_PROTOCOL_KINDS, "mongodb", "kafka", "redpanda"] as const;
+const KINDS_WITH_OPTIONS = [
+  ...REDIS_PROTOCOL_KINDS,
+  "postgres",
+  "mongodb",
+  "kafka",
+  "redpanda",
+] as const;
 
 /**
  * The mode of an engine on the Redis protocol. `cache`: evicts the least recently used keys and
@@ -176,6 +182,19 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
        */
       threads: z.int().min(1).max(256).optional(),
     }),
+  ),
+  serviceEntry(
+    z.literal("postgres"),
+    z
+      .strictObject({
+        /**
+         * `separate`: the app runs as a login without DDL rights and its migrations as the
+         * schema's owner, never as the superuser (ADR 0037). Design writes it; absent only on
+         * databases made before it.
+         */
+        logins: z.literal("separate", { message: 'must be "separate"' }).optional(),
+      })
+      .prefault({}),
   ),
   serviceEntry(
     z.literal("mongodb"),
@@ -226,6 +245,11 @@ export function serviceOf<K extends PlanService["kind"]>(
   return owner.services.find(
     (service): service is PlanService & { kind: K } => service.kind === kind && service.enabled,
   );
+}
+
+/** Whether a service is a PostgreSQL whose app and migrations have their own logins (`logins: separate`). */
+export function postgresLogins(service: PlanService): boolean {
+  return service.kind === "postgres" && service.options.logins === "separate";
 }
 
 /**

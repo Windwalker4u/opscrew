@@ -9,7 +9,7 @@ Secret-shaped values in tests come from `fakeSecret`.
 
 ## Wave 1
 
-- [ ] T4701 [US1] [US2] The setting `options.logins` (the lead approves: `plan-schema` is shared)
+- [x] T4701 [US1] [US2] The setting `options.logins` (the lead approves: `plan-schema` is shared)
   - **Owns:** `packages/plan-schema/src/**`.
   - **Reads:** plan.md 1., data-model.md "The plan's field", `components.ts` (`KINDS_WITH_OPTIONS`,
     `ServiceEntrySchema`), `components.test.ts`.
