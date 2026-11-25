@@ -202,7 +202,7 @@ describe("DefaultToolPolicy: Bash parsing rules", () => {
     expect(bash(command).decision).toBe("deny");
   });
 
-  it("splits on newlines and carriage returns", () => {
+  it("splits on newlines and denies carriage returns", () => {
     expect(bash("pnpm test\ncurl https://example.com").decision).toBe("deny");
     expect(bash("pnpm test\r\ncurl https://example.com").decision).toBe("deny");
     expect(bash("git status\ngit diff").decision).toBe("allow");
@@ -677,9 +677,10 @@ describe("DefaultToolPolicy: file tools", () => {
       ["Read", { file_path: "/home/dev/app/opscrew/plan.yaml" }],
       ["Glob", { pattern: "**/*.ts" }],
       ["Glob", { pattern: "*.json", path: "/home/dev/app/src" }],
-      ["Grep", { pattern: "TODO" }],
+      // A Grep needs a glob that keeps secret files out (#21).
+      ["Grep", { pattern: "TODO", glob: "*.ts" }],
       ["Grep", { pattern: "TODO", path: "src", glob: "*.ts" }],
-      ["Grep", { pattern: "process\\.env", path: "/home/dev/app" }],
+      ["Grep", { pattern: "process\\.env", path: "/home/dev/app", glob: "*.ts" }],
     ];
     for (const [tool, input] of samples) {
       for (const profile of ["read-only", "edit-repo"] as const) {
@@ -763,8 +764,9 @@ describe("DefaultToolPolicy: file tools", () => {
     }
     expect(read("opscrew/plan.yaml", POSIX, "edit-repo")).toBe("allow");
     expect(read(".github/workflows/opscrew-deploy.yml", POSIX, "edit-repo")).toBe("allow");
-    expect(write(".github/workflows/ci.yml")).toBe("allow");
-    expect(write(".github/workflows/opscrew-deployment-notes.yml")).toBe("allow");
+    // Any other workflow runs with the repository's secrets once pushed, so it needs approval.
+    expect(write(".github/workflows/ci.yml")).toBe("ask");
+    expect(write(".github/workflows/opscrew-deployment-notes.yml")).toBe("ask");
     expect(write("src/opscrew/helper.ts")).toBe("allow");
     expect(write("/home/dev/app/src/new.ts")).toBe("allow");
     expect(write(".gitignore")).toBe("allow");

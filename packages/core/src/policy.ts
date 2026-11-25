@@ -6,7 +6,7 @@
  * denied (or, for Bash commands that are not clearly dangerous, sent to a human as `ask`).
  * It is pure and synchronous; the host platform only decides how paths are compared.
  */
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   BUILTIN_TOOLS,
@@ -234,12 +234,17 @@ function segmentRegex(segment: string): RegExp {
     } else if (c === "?") {
       re += ".";
     } else if (c === "[") {
-      const close = segment.indexOf("]", i + 2);
+      // The first `]` after `[` (or after `[!`) is a member, not the end.
+      const close = segment.indexOf("]", segment[i + 1] === "!" ? i + 3 : i + 2);
       if (close < 0) {
         re += "\\[";
         continue;
       }
-      let body = segment.slice(i + 1, close).replace(/\\/g, "\\\\");
+      // A `]` right after `[` or `[!` is a member (globset), so it is escaped for the JS class.
+      let body = segment
+        .slice(i + 1, close)
+        .replace(/\\/g, "\\\\")
+        .replace(/]/g, "\\]");
       if (body.startsWith("!")) body = `^${body.slice(1)}`;
       re += `[${body}]`;
       i = close;
@@ -308,8 +313,13 @@ interface PathContext {
   realRoot?: string;
 }
 
+/**
+ * Where a path leads. `secret` is a location inside the root that may hold secrets, kept apart
+ * from `inside` so that a caller checking only for `inside` can never let one through.
+ */
 type Resolution =
   | { status: "inside"; rel: string }
+  | { status: "secret" }
   | { status: "outside" }
   | { status: "unknown"; why: string };
 
@@ -362,7 +372,35 @@ function locate(ctx: PathContext, absolute: string): Resolution {
   return { status: "inside", rel: ctx.api.relative(ctx.root, absolute) };
 }
 
-/** Resolves a path string against the project root without touching the filesystem. */
+/**
+ * True when a `..` in `raw` comes after a link. The kernel, and Git Bash on Windows, take `link/..`
+ * to the folder above where the link points, while `path.resolve` drops both by text, so the
+ * path checked would not be the one opened. Throws when `realpath` does.
+ */
+function dotDotAfterLink(ctx: PathContext, raw: string): boolean {
+  const segments = raw.split(ctx.win ? /[\\/]/ : "/");
+  const key = (s: string | undefined) => (ctx.win ? s?.toLowerCase() : s);
+  for (const [i, segment] of segments.entries()) {
+    if (segment !== "..") continue;
+    const before = ctx.api.resolve(ctx.root, segments.slice(0, i).join(ctx.api.sep));
+    const real = realPathOf(ctx, before);
+    if (real === undefined) continue;
+    if (key(ctx.api.dirname(real)) !== key(realPathOf(ctx, ctx.api.dirname(before)))) return true;
+  }
+  return false;
+}
+
+function withSecrets(location: Resolution): Resolution {
+  return location.status === "inside" && isSecretPath(location.rel)
+    ? { status: "secret" }
+    : location;
+}
+
+/**
+ * Resolves a path string against the project root, through links when `realpath` is set. Every
+ * tool's path checks start here, so a secret file is reported as `secret` wherever it is reached
+ * from, a link committed to the repository included.
+ */
 function resolvePath(ctx: PathContext, raw: string): Resolution {
   if (raw.includes("\0")) return { status: "unknown", why: "contains a NUL byte" };
   if (raw.startsWith("~")) return { status: "unknown", why: "is relative to a home directory" };
@@ -372,16 +410,29 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
   }
   const absolute = ctx.api.resolve(ctx.root, raw);
   const lexical = locate(ctx, absolute);
-  if (lexical.status !== "inside" || ctx.realpath === undefined) return lexical;
+  if (lexical.status !== "inside" || ctx.realpath === undefined) return withSecrets(lexical);
   // A link inside the project may lead anywhere (a cloned repository can commit one pointing at
   // ~/.aws/credentials), so the checks apply to where the path really leads.
-  const real = realPathOf(ctx, absolute);
-  if (real === undefined) return lexical;
+  let real: string | undefined;
+  try {
+    if (dotDotAfterLink(ctx, raw)) {
+      return { status: "unknown", why: "has `..` after a link, which climbs from where it points" };
+    }
+    real = realPathOf(ctx, absolute);
+  } catch {
+    // `realpath` throws for an entry that exists but does not resolve: a link whose target is
+    // missing would be followed by the write that creates it, wherever it points.
+    return {
+      status: "unknown",
+      why: "is a link whose target does not exist or cannot be resolved",
+    };
+  }
+  if (real === undefined) return withSecrets(lexical);
   const resolved = locate({ ...ctx, root: ctx.realRoot ?? ctx.root }, real);
   if (resolved.status === "outside") {
     return { status: "unknown", why: "is a link that leads outside the project" };
   }
-  return resolved;
+  return withSecrets(resolved);
 }
 
 /**
@@ -390,19 +441,39 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
  */
 const DEPLOY_WORKFLOW = /^\.github\/workflows\/opscrew-deploy(?:-[a-z][a-z0-9-]*)?\.ya?ml$/;
 
-/** Project-relative locations agents may never write. */
-function protectedWriteReason(rel: string): string | undefined {
+/** Every other GitHub Actions workflow and action, and the folders that hold them. */
+const ACTIONS_FILE = /^\.github\/(?:workflows|actions)(?:\/|$)/;
+/** A GitHub Action's definition, wherever it is. */
+const ACTION_NAMES = new Set(["action.yml", "action.yaml"]);
+
+/**
+ * Project-relative locations agents may never write, and GitHub Actions files, which they may
+ * write only with the user's approval (`ask`): once pushed, GitHub runs them with the
+ * repository's secrets, and the commit approval shows only their names.
+ */
+function writeRule(rel: string): { ask: boolean; reason: string } | undefined {
   const segments = rel
     .split(/[\\/]+/)
     .filter((s) => s !== "")
     .map(normalizeSegment);
-  if (segments.includes(".git")) return "git internals (.git/) are never edited by agents";
-  if (segments.includes(".opscrew")) return "OpsCrew state (.opscrew/) is never edited by agents";
-  if (segments[0] === "opscrew") {
-    return "OpsCrew artefacts (opscrew/) are written by validated code, not by agents";
+  const never = (reason: string) => ({ ask: false, reason });
+  if (segments.includes(".git")) return never("git internals (.git/) are never edited by agents");
+  if (segments.includes(".opscrew")) {
+    return never("OpsCrew state (.opscrew/) is never edited by agents");
   }
-  if (DEPLOY_WORKFLOW.test(segments.join("/"))) {
-    return "the OpsCrew deploy workflows are rendered by OpsCrew, not edited by agents";
+  if (segments[0] === "opscrew") {
+    return never("OpsCrew artefacts (opscrew/) are written by validated code, not by agents");
+  }
+  const joined = segments.join("/");
+  if (DEPLOY_WORKFLOW.test(joined)) {
+    return never("the OpsCrew deploy workflows are rendered by OpsCrew, not edited by agents");
+  }
+  // A local action can live in any folder (`uses: ./tools/deploy`).
+  if (ACTIONS_FILE.test(joined) || ACTION_NAMES.has(segments.at(-1) ?? "")) {
+    return {
+      ask: true,
+      reason: "GitHub Actions runs it with the repository's secrets once pushed",
+    };
   }
   return undefined;
 }
@@ -453,8 +524,6 @@ function lexCommand(command: string): Lexed {
     if (c === "\\") {
       if (next === "\n") {
         i += 2;
-      } else if (next === "\r" && command[i + 2] === "\n") {
-        i += 3;
       } else {
         current += command.slice(i, i + 2);
         i += 2;
@@ -478,7 +547,7 @@ function lexCommand(command: string): Lexed {
       i = end + 1;
       continue;
     }
-    if (c === "\n" || c === "\r" || c === ";") {
+    if (c === "\n" || c === ";") {
       push();
       i++;
     } else if (c === "(" || c === ")") {
@@ -1204,7 +1273,9 @@ function isAllowListed(name: string, args: string[]): boolean {
     case "find":
       return true;
     case "tree":
-      return !args.some((t) => t === "-o");
+      // `-o <file>` writes the listing to a file, and `-R` writes `00Tree.html` into every folder
+      // it reaches, inside an option cluster too (`-ao <file>`, `-aR`).
+      return !args.some((t) => /^-[^-]/.test(t) && /[oR]/.test(t));
     case "grep":
       return !args.some(
         (t, i) =>
@@ -1282,9 +1353,13 @@ function writeVerdict(ctx: PathContext, word: Word, raw: string, what: string): 
   if (location.status === "outside") {
     return { kind: "deny", reason: `${what} \`${raw}\` is outside the project root.` };
   }
-  const protectedReason = protectedWriteReason(location.rel);
-  if (protectedReason !== undefined) {
-    return { kind: "deny", reason: `${what} \`${raw}\` is protected: ${protectedReason}.` };
+  if (location.status === "secret") {
+    return { kind: "deny", reason: `${what} \`${raw}\` leads to a file that may contain secrets.` };
+  }
+  const rule = writeRule(location.rel);
+  if (rule?.ask) return { kind: "ask", reason: `it writes \`${raw}\`: ${rule.reason}` };
+  if (rule !== undefined) {
+    return { kind: "deny", reason: `${what} \`${raw}\` is protected: ${rule.reason}.` };
   }
   return { kind: "allow" };
 }
@@ -1294,17 +1369,22 @@ function redirectVerdict(ctx: PathContext, redirect: Redirect): Verdict {
   const value = target.value;
   if ((op === ">&" || op === "<&") && /^(\d+|-)$/.test(value)) return { kind: "allow" };
   if (value === "/dev/null" && !target.dynamic) return { kind: "allow" };
-  if (op === "<" || op === "<&") {
-    const location = wordResolution(ctx, target, value);
-    if (location.status !== "inside") {
-      return { kind: "ask", reason: `it reads \`${value}\`, which is outside the project root` };
-    }
-    return { kind: "allow" };
-  }
+  const reads = op === "<" || op === "<&";
+  // bash expands a wildcard in a redirection target (`cat < .en[v]` reads `.env`).
   if (target.glob || target.brace) {
-    return { kind: "deny", reason: `The redirection target \`${value}\` cannot be verified.` };
+    return reads
+      ? { kind: "ask", reason: `it reads \`${value}\`, a wildcard that cannot be checked` }
+      : { kind: "deny", reason: `The redirection target \`${value}\` cannot be verified.` };
   }
-  return writeVerdict(ctx, target, value, "The redirection target");
+  if (!reads) return writeVerdict(ctx, target, value, "The redirection target");
+  const location = wordResolution(ctx, target, value);
+  if (location.status === "secret") {
+    return { kind: "deny", reason: `The command reads \`${value}\`, which may contain secrets.` };
+  }
+  if (location.status !== "inside") {
+    return { kind: "ask", reason: `it reads \`${value}\`, which is outside the project root` };
+  }
+  return { kind: "allow" };
 }
 
 function rmVerdict(ctx: PathContext, args: Word[]): Verdict | undefined {
@@ -1415,6 +1495,7 @@ function evaluateSegment(segment: string, ctx: PathContext): Verdict {
       if (name === "chmod" && /^[ugoa]*[+=-][rwxXst]*$|^\d{3,4}$/.test(part)) continue;
       const verdict = writeVerdict(ctx, word, part, `\`${name}\` target`);
       if (verdict.kind === "deny") return verdict;
+      if (verdict.kind === "ask") pending ??= verdict;
     }
   }
 
@@ -1429,6 +1510,14 @@ function evaluateSegment(segment: string, ctx: PathContext): Verdict {
     return {
       kind: "ask",
       reason: `\`${segment}\` runs code from the project (package scripts, install hooks or a Dockerfile), which an agent could have edited`,
+    };
+  }
+  // The allow-list means the commands the shell finds on the PATH; `./cat` runs whatever file is
+  // at that path, which a cloned repository can provide.
+  if (/[\\/]/.test(commandWord.value)) {
+    return {
+      kind: "ask",
+      reason: `\`${segment}\` runs \`${commandWord.value}\` by its path, so it is not the pre-approved command`,
     };
   }
   if (
@@ -1446,12 +1535,24 @@ function evaluateSegment(segment: string, ctx: PathContext): Verdict {
     if (word.glob && globRisk(word.value, true).mayMatchSecret) {
       return { kind: "ask", reason: `the wildcard \`${word.value}\` could match secret files` };
     }
+    if (word.glob && ctx.realpath !== undefined) {
+      return {
+        kind: "ask",
+        reason: `the wildcard \`${word.value}\` could match a link, and where it leads cannot be checked`,
+      };
+    }
     const part = pathPart(word.value);
     if (part === undefined) continue;
     if (ctx.win && name !== "git" && WIN_SHORT_NAME.test(part)) {
       return { kind: "ask", reason: `\`${part}\` may be a Windows short file name` };
     }
     const location = wordResolution(ctx, word, part);
+    if (location.status === "secret") {
+      return {
+        kind: "deny",
+        reason: `The command references \`${part}\`, which leads to a file that may contain secrets.`,
+      };
+    }
     if (location.status !== "inside") {
       return {
         kind: "ask",
@@ -1467,6 +1568,14 @@ function evaluateBash(command: unknown, ctx: PathContext): ToolDecision {
     return deny("Bash was called without a command.");
   }
   if (command.includes("\0")) return deny("The command contains a NUL byte.");
+  // Shells disagree on a carriage return: bash on Linux keeps it as a character (so `\` + CR + LF
+  // ends the line), Git Bash on Windows drops it (so a bare CR joins two words). Neither ends a
+  // command there, so the policy cannot tell what would run.
+  if (command.includes("\r")) {
+    return deny(
+      "The command contains a carriage return, which shells read differently; end lines with a plain line feed (\\n).",
+    );
+  }
   if (command.includes("$(") || command.includes("`")) {
     return deny("Command substitution (`$(...)` or backticks) is not allowed.");
   }
@@ -1504,7 +1613,12 @@ function evaluateBash(command: unknown, ctx: PathContext): ToolDecision {
 
 type FileMode = "read" | "write";
 
-function evaluateFilePath(ctx: PathContext, raw: unknown, mode: FileMode, field: string) {
+function evaluateFilePath(
+  ctx: PathContext,
+  raw: unknown,
+  mode: FileMode,
+  field: string,
+): ToolDecision | undefined {
   if (typeof raw !== "string" || raw === "") {
     return deny(`The \`${field}\` argument is missing or not a string.`);
   }
@@ -1521,13 +1635,16 @@ function evaluateFilePath(ctx: PathContext, raw: unknown, mode: FileMode, field:
   if (location.status === "unknown")
     return deny(`\`${raw}\` ${location.why}, which is not allowed.`);
   if (location.status === "outside") return deny(`\`${raw}\` is outside the project root.`);
-  if (isSecretPath(location.rel)) {
+  if (location.status === "secret") {
     return deny(`\`${raw}\` may contain secrets, so agents cannot access it.`);
   }
   if (mode === "write") {
     if (location.rel === "") return deny("Agents cannot write the project root itself.");
-    const reason = protectedWriteReason(location.rel);
-    if (reason !== undefined) return deny(`\`${raw}\` is protected: ${reason}.`);
+    const rule = writeRule(location.rel);
+    if (rule?.ask) {
+      return { decision: "ask", reason: `Needs approval: it writes \`${raw}\`: ${rule.reason}.` };
+    }
+    if (rule !== undefined) return deny(`\`${raw}\` is protected: ${rule.reason}.`);
   }
   return undefined;
 }
@@ -1551,7 +1668,28 @@ function evaluatePattern(ctx: PathContext, pattern: string, field: string, secre
   return undefined;
 }
 
-function evaluateFileTool(tool: string, input: Record<string, unknown>, ctx: PathContext) {
+/**
+ * True when a Grep `glob` selects only files whose names are not secrets'. ripgrep matches a glob
+ * without `/` against names at any depth, so each alternative's last segment decides. A negated
+ * glob (`!x`) selects everything else, ripgrep reads any brace group as alternatives (`{*}` is
+ * `*`), and on Unix it reads `\` as an escape (`*.pe\m` is `*.pem`), so none of these counts.
+ */
+function globAvoidsSecrets(glob: string): boolean {
+  if (glob.startsWith("!") || glob.includes("\\")) return false;
+  const alternatives = expandBraces(glob);
+  if (alternatives === undefined) return false;
+  return alternatives.every((alternative) => {
+    const last = alternative.split(/[\\/]+/).at(-1) ?? "";
+    if (last === "" || /[{}]/.test(alternative) || isSecretPath(alternative)) return false;
+    return !globRisk(last, false).mayMatchSecret;
+  });
+}
+
+function evaluateFileTool(
+  tool: string,
+  input: Record<string, unknown>,
+  ctx: PathContext,
+): ToolDecision {
   switch (tool) {
     case "Read":
       return evaluateFilePath(ctx, input.file_path, "read", "file_path") ?? allow();
@@ -1571,9 +1709,24 @@ function evaluateFileTool(tool: string, input: Record<string, unknown>, ctx: Pat
       const pathDecision =
         input.path === undefined ? undefined : evaluateFilePath(ctx, input.path, "read", "path");
       if (pathDecision !== undefined) return pathDecision;
-      if (input.glob === undefined) return allow();
-      if (typeof input.glob !== "string") return deny("The `glob` argument is not a string.");
-      return evaluatePattern(ctx, input.glob, "glob", true) ?? allow();
+      const glob = input.glob;
+      if (glob !== undefined && typeof glob !== "string") {
+        return deny("The `glob` argument is not a string.");
+      }
+      const globDecision =
+        glob === undefined ? undefined : evaluatePattern(ctx, glob, "glob", true);
+      if (globDecision !== undefined) return globDecision;
+      // The SDK's Grep runs ripgrep with `--hidden`, so it reads secret files Read refuses: in
+      // content mode it returns their lines, and even the names or counts of matching files tell
+      // whether `^DB_PASSWORD=a` is in .env. Only a glob that keeps them out makes it safe.
+      if (glob === undefined || !globAvoidsSecrets(glob)) {
+        return {
+          decision: "ask",
+          reason:
+            "Needs approval: Grep reads every file it searches, secret files included. Add a `glob` that names the files to search, such as `*.ts`.",
+        };
+      }
+      return allow();
     }
     default:
       return deny(`Unknown tool \`${tool}\` is not allowed.`);
@@ -1597,18 +1750,28 @@ export interface DefaultToolPolicyOptions {
   platform?: NodeJS.Platform;
   /**
    * Resolves symbolic links and junctions on the real filesystem, returning `undefined` for a path
-   * that does not exist (see {@link nodeRealpath}). When set, every path is also checked where it
-   * really leads; without it, paths are checked as written.
+   * that does not exist and throwing for one that exists but does not resolve, such as a link
+   * whose target is missing (see {@link nodeRealpath}). When set, every path is also checked where
+   * it really leads, and such a link is refused; without it, paths are checked as written.
    */
   realpath?: (absolute: string) => string | undefined;
 }
 
-/** `fs.realpathSync.native`, or `undefined` when the path does not exist. */
+/**
+ * `fs.realpathSync.native`: `undefined` when nothing is at the path, and the error when something
+ * is there but does not resolve (a link whose target is missing, or a loop), so the policy never
+ * takes such a link for a new file.
+ */
 export function nodeRealpath(absolute: string): string | undefined {
   try {
     return realpathSync.native(absolute);
-  } catch {
-    return undefined;
+  } catch (error) {
+    try {
+      lstatSync(absolute);
+    } catch {
+      return undefined;
+    }
+    throw error;
   }
 }
 
