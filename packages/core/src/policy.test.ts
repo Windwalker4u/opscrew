@@ -763,8 +763,9 @@ describe("DefaultToolPolicy: file tools", () => {
     }
     expect(read("opscrew/plan.yaml", POSIX, "edit-repo")).toBe("allow");
     expect(read(".github/workflows/opscrew-deploy.yml", POSIX, "edit-repo")).toBe("allow");
-    expect(write(".github/workflows/ci.yml")).toBe("allow");
-    expect(write(".github/workflows/opscrew-deployment-notes.yml")).toBe("allow");
+    // Any other workflow runs with the repository's secrets once pushed, so it needs approval.
+    expect(write(".github/workflows/ci.yml")).toBe("ask");
+    expect(write(".github/workflows/opscrew-deployment-notes.yml")).toBe("ask");
     expect(write("src/opscrew/helper.ts")).toBe("allow");
     expect(write("/home/dev/app/src/new.ts")).toBe("allow");
     expect(write(".gitignore")).toBe("allow");

@@ -415,19 +415,36 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
  */
 const DEPLOY_WORKFLOW = /^\.github\/workflows\/opscrew-deploy(?:-[a-z][a-z0-9-]*)?\.ya?ml$/;
 
-/** Project-relative locations agents may never write. */
-function protectedWriteReason(rel: string): string | undefined {
+/** Every other GitHub Actions workflow and action, and the folders that hold them. */
+const ACTIONS_FILE = /^\.github\/(?:workflows|actions)(?:\/|$)/;
+
+/**
+ * Project-relative locations agents may never write, and GitHub Actions files, which they may
+ * write only with the user's approval (`ask`): once pushed, GitHub runs them with the
+ * repository's secrets, and the commit approval shows only their names.
+ */
+function writeRule(rel: string): { ask: boolean; reason: string } | undefined {
   const segments = rel
     .split(/[\\/]+/)
     .filter((s) => s !== "")
     .map(normalizeSegment);
-  if (segments.includes(".git")) return "git internals (.git/) are never edited by agents";
-  if (segments.includes(".opscrew")) return "OpsCrew state (.opscrew/) is never edited by agents";
-  if (segments[0] === "opscrew") {
-    return "OpsCrew artefacts (opscrew/) are written by validated code, not by agents";
+  const never = (reason: string) => ({ ask: false, reason });
+  if (segments.includes(".git")) return never("git internals (.git/) are never edited by agents");
+  if (segments.includes(".opscrew")) {
+    return never("OpsCrew state (.opscrew/) is never edited by agents");
   }
-  if (DEPLOY_WORKFLOW.test(segments.join("/"))) {
-    return "the OpsCrew deploy workflows are rendered by OpsCrew, not edited by agents";
+  if (segments[0] === "opscrew") {
+    return never("OpsCrew artefacts (opscrew/) are written by validated code, not by agents");
+  }
+  const joined = segments.join("/");
+  if (DEPLOY_WORKFLOW.test(joined)) {
+    return never("the OpsCrew deploy workflows are rendered by OpsCrew, not edited by agents");
+  }
+  if (ACTIONS_FILE.test(joined)) {
+    return {
+      ask: true,
+      reason: "GitHub Actions runs it with the repository's secrets once pushed",
+    };
   }
   return undefined;
 }
@@ -1308,9 +1325,10 @@ function writeVerdict(ctx: PathContext, word: Word, raw: string, what: string): 
   if (location.status === "secret") {
     return { kind: "deny", reason: `${what} \`${raw}\` leads to a file that may contain secrets.` };
   }
-  const protectedReason = protectedWriteReason(location.rel);
-  if (protectedReason !== undefined) {
-    return { kind: "deny", reason: `${what} \`${raw}\` is protected: ${protectedReason}.` };
+  const rule = writeRule(location.rel);
+  if (rule?.ask) return { kind: "ask", reason: `it writes \`${raw}\`: ${rule.reason}` };
+  if (rule !== undefined) {
+    return { kind: "deny", reason: `${what} \`${raw}\` is protected: ${rule.reason}.` };
   }
   return { kind: "allow" };
 }
@@ -1446,6 +1464,7 @@ function evaluateSegment(segment: string, ctx: PathContext): Verdict {
       if (name === "chmod" && /^[ugoa]*[+=-][rwxXst]*$|^\d{3,4}$/.test(part)) continue;
       const verdict = writeVerdict(ctx, word, part, `\`${name}\` target`);
       if (verdict.kind === "deny") return verdict;
+      if (verdict.kind === "ask") pending ??= verdict;
     }
   }
 
@@ -1563,7 +1582,12 @@ function evaluateBash(command: unknown, ctx: PathContext): ToolDecision {
 
 type FileMode = "read" | "write";
 
-function evaluateFilePath(ctx: PathContext, raw: unknown, mode: FileMode, field: string) {
+function evaluateFilePath(
+  ctx: PathContext,
+  raw: unknown,
+  mode: FileMode,
+  field: string,
+): ToolDecision | undefined {
   if (typeof raw !== "string" || raw === "") {
     return deny(`The \`${field}\` argument is missing or not a string.`);
   }
@@ -1585,8 +1609,11 @@ function evaluateFilePath(ctx: PathContext, raw: unknown, mode: FileMode, field:
   }
   if (mode === "write") {
     if (location.rel === "") return deny("Agents cannot write the project root itself.");
-    const reason = protectedWriteReason(location.rel);
-    if (reason !== undefined) return deny(`\`${raw}\` is protected: ${reason}.`);
+    const rule = writeRule(location.rel);
+    if (rule?.ask) {
+      return { decision: "ask", reason: `Needs approval: it writes \`${raw}\`: ${rule.reason}.` };
+    }
+    if (rule !== undefined) return deny(`\`${raw}\` is protected: ${rule.reason}.`);
   }
   return undefined;
 }

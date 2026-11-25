@@ -392,3 +392,47 @@ describe("#23: a dangling link is never treated as a new file inside the project
     expect(bash("cat README.md")).toBe("allow");
   });
 });
+
+describe("#24: writing a GitHub Actions workflow needs the user's approval", () => {
+  for (const host of HOSTS) {
+    const { bash, tool } = hostPolicy(host, false);
+    const write = (file_path: string) => tool("Write", { file_path, content: "x" }).decision;
+    const edit = (file_path: string) =>
+      tool("Edit", { file_path, old_string: "a", new_string: "b" }).decision;
+
+    it(`asks before Write, Edit or Bash change a workflow or action (${host.platform})`, () => {
+      for (const rel of [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yaml",
+        ".github/workflows/new-backdoor.yml",
+        ".github/workflows/opscrew-deployment-notes.yml",
+        ".github/actions/setup/action.yml",
+        ".GitHub/Workflows/ci.yml",
+      ]) {
+        expect(write(rel), rel).toBe("ask");
+        expect(edit(rel), rel).toBe("ask");
+        expect(tool("MultiEdit", { file_path: rel, edits: [] }).decision, rel).toBe("ask");
+      }
+      expect(write(host.at(".github", "workflows", "ci.yml"))).toBe("ask");
+      expect(bash("cat README.md > .github/workflows/ci.yml").decision).toBe("ask");
+      expect(bash("git status >> .github/actions/x/action.yml").decision).toBe("ask");
+      expect(bash("mkdir -p .github/workflows").decision).toBe("ask");
+    });
+
+    it(`keeps the deploy workflows denied and other files allowed (${host.platform})`, () => {
+      expect(write(".github/workflows/opscrew-deploy.yml")).toBe("deny");
+      expect(write(".github/workflows/opscrew-deploy-prod.yml")).toBe("deny");
+      expect(bash("cat README.md > .github/workflows/opscrew-deploy.yml").decision).toBe("deny");
+      expect(write(".github/dependabot.yml")).toBe("allow");
+      expect(write("src/app.ts")).toBe("allow");
+      expect(tool("Read", { file_path: ".github/workflows/ci.yml" }).decision).toBe("allow");
+    });
+  }
+
+  it("resolves a Windows workflow path with backslashes", () => {
+    const { tool } = hostPolicy(WIN, false);
+    expect(
+      tool("Write", { file_path: String.raw`.github\workflows\ci.yml`, content: "x" }).decision,
+    ).toBe("ask");
+  });
+});
