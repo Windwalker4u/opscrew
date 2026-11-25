@@ -22,8 +22,9 @@ Adding `options.extensions` on a PostgreSQL service lets an app declare the exte
 1. **Given** a plan with a `postgres` service and `options: { logins: "separate", extensions: ["vector"] }`, **When** OpsCrew renders Compose / Portainer stack files, **Then** the database uses the pinned `pgvector/pgvector` digest for that PostgreSQL major version (default 17: `pgvector/pgvector:0.8.7-pg17-trixie@sha256:...`), and no unrelated service changes.
 2. **Given** `options.extensions: ["pgcrypto", "pg_trgm"]` (standard `contrib` extensions only), **When** OpsCrew renders the database service, **Then** it stays on the pinned `postgres:*-alpine` image and creates each extension before migrations.
 3. **Given** `options.extensions` omits `vector` and is unset/empty, **When** OpsCrew renders existing plans, **Then** every generated file is byte-for-byte identical to before.
-4. **Given** an unsupported extension such as `postgis` or `unknown_ext`, **When** the plan is validated or provisioned, **Then** OpsCrew refuses before changing anything, naming the unsupported extension and listing the supported extensions (noting PostGIS comes later if users ask).
-5. **Given** `options.extensions` is set on a non-PostgreSQL service or contains duplicates/empty strings, **Then** `plan-schema` refuses it with a clear message.
+4. **Given** an unsupported extension (or combining `vector` and `postgis` in one database, since no single official image carries both), **When** the plan is validated or provisioned, **Then** OpsCrew refuses before changing anything, naming the problem and listing the supported extensions.
+5. **Given** `options.extensions` includes a PostGIS extension (`postgis`, `postgis_topology`, `postgis_raster`, `postgis_sfcgal`), **When** the user runs `opscrew design` or `opscrew provision`, **Then** OpsCrew selects the pinned official `postgis/postgis` image (`amd64` only), offers only `amd64` server types in design, and refuses an `arm64` server with a plain-English explanation.
+6. **Given** `options.extensions` is set on a non-PostgreSQL service or contains duplicates/empty strings, **Then** `plan-schema` refuses it with a clear message.
 
 ---
 
@@ -46,7 +47,7 @@ Adding `options.extensions` on a PostgreSQL service lets an app declare the exte
 
 ### User Story 3 - Snapshots, restores, restore drills, and moves preserve extensions (Priority: P1)
 
-**Independent Test**: In a real Docker test (`OPSCREW_DOCKER_TESTS=1`), dump a database with `vector` rows and an index, restore it (in place, into a throwaway drill container, and in a move), and verify `vector` is installed, rows/indexes are intact, and `app_runtime` can query them.
+**Independent Test**: In real Docker tests (`OPSCREW_DOCKER_TESTS=1`), dump and restore (in place, into a throwaway drill container, and in a move): (a) a database with `vector` rows and an index, and (b) a database with PostGIS geometry data, `spatial_ref_sys` rows, and a `topology` schema — verifying extensions, data, `spatial_ref_sys`, and `topology` are preserved while `app_owner` remains non-superuser and `app_runtime` can query them.
 
 **Acceptance Scenarios**:
 
@@ -61,7 +62,7 @@ Adding `options.extensions` on a PostgreSQL service lets an app declare the exte
 
 **Acceptance Scenarios**:
 
-1. `docs/guide/databases.md` documents `options.extensions` with an example (`extensions: [vector]`), the supported extensions list, that `vector` switches the image to `pgvector/pgvector` with a snapshot + restart + reindex on existing databases, and that PostGIS comes later if users ask.
+1. `docs/guide/databases.md` documents `options.extensions` with examples (`extensions: [vector]` and `extensions: [postgis]`), the supported extensions list, that `vector` switches to `pgvector/pgvector` (snapshot + restart + reindex on existing databases), and that `postgis` uses `postgis/postgis` on `amd64` servers only (and cannot be combined with `vector` in one service).
 
 ## Functional Requirements
 

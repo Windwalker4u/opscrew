@@ -42,8 +42,23 @@ From `docker-library/postgres` `17/alpine3.23/Dockerfile`:
 - Built `FROM postgres:17-trixie`, so it carries **every standard PostgreSQL 17 `contrib` extension above** PLUS **`vector`** (`pgvector` `0.8.7`).
 - Therefore, requesting `extensions: [vector, pgcrypto, pg_trgm]` is satisfied by one single pinned image (`pgvector/pgvector`).
 
-### 3. Other third-party extension images (evaluated and deferred)
-- **`postgis/postgis` (`17-3.5-alpine` / `17-3.5`):** checked Docker Hub on 2026-11-25 — `17-3.5-alpine` publishes **`linux/amd64` only** (no `arm64` image), PostGIS is GPL-2.0+, and there is no official image combining `postgis` + `pgvector`. Left out of 045 (refused with the supported list) until users ask.
+### 3. Official `postgis/postgis` images (Step 2 of 045, founder & core lead 2026-11-25)
+
+From `github.com/postgis/docker-postgis` (`initdb-postgis.sh`) and Docker Hub (`hub.docker.com/v2/repositories/postgis/postgis/tags`, checked 2026-11-25):
+
+- **Verified pinned manifest digests (PostGIS 3.7, Alpine — same musl libc as `postgres:*-alpine`):**
+  - PG 17 (default): `postgis/postgis:17-3.7-alpine@sha256:357cbb8c459016596cd49539037c099128ff5bb07e382df283c5acb026c63d5a` (~190 MB compressed)
+  - PG 16: `postgis/postgis:16-3.7-alpine@sha256:5c640cecd236ab5e5755637818a55f8e55ceebd23370d667025bb97280a3d62a`
+  - PG 15: `postgis/postgis:15-3.7-alpine@sha256:7f7b453e0bde9dd7aa874585e5cea15704ed6e4d9fd9a1f48976267be99710a5`
+- **Architectures:** **`linux/amd64` only** (no `arm64` manifest). When any PostGIS extension (`postgis`, `postgis_topology`, `postgis_raster`, `postgis_sfcgal`) is requested, design offers only `amd64` server types and refuses `arm64` servers with a plain-English explanation.
+- **Extensions carried:** all standard PostgreSQL `contrib` extensions PLUS `postgis`, `postgis_topology`, `postgis_raster`, and `postgis_sfcgal`. (Note: PostGIS 3.7 removed `postgis_tiger_geocoder`, confirmed in `initdb-postgis.sh`.)
+- **First-start init script (`initdb-postgis.sh`):** on an empty `PGDATA`, the image creates `template_postgis` and automatically runs `CREATE EXTENSION IF NOT EXISTS postgis;` and `CREATE EXTENSION IF NOT EXISTS postgis_topology;` into `$POSTGRES_DB` (`app`), which creates the `topology` schema owned by superuser `app`. On an existing `PGDATA` volume (switching from `postgres:17-alpine`), `/docker-entrypoint-initdb.d/` does not run, so OpsCrew's superuser setup step runs `CREATE EXTENSION IF NOT EXISTS` explicitly.
+- **Interaction with 047 (ADR 0037):**
+  - Extension schemas (`topology`, linked to `postgis_topology` via `pg_depend` `deptype = 'e'`) stay owned by superuser `app` (never reassigned to `app_owner`).
+  - Extension config tables (such as `spatial_ref_sys`) are restored by the superuser as matched whole entries with their owner (`047`'s load rules), keeping `app_owner` non-superuser afterwards.
+  - Because `postgis/postgis:17-3.7-alpine` uses Alpine (musl), switching from `postgres:17-alpine` keeps the same libc (snapshot-first + restart still required and shown in the plan).
+- **Licence:** PostGIS is GPL-2.0+. Because OpsCrew only pulls the official container image that the user's own server runs and never links GPL code into the CLI, GPL is no obstacle (constitution X).
+- **Combining `vector` and `postgis`:** no single official image carries both `pgvector` and `postgis`, so requesting both in the same service is refused before anything changes with a plain-English message.
 - Any extension not in the supported catalog is refused before any plan or change, listing the supported extensions cleanly.
 
 ## R3. Privileges and interaction with 047 (ADR 0037)
@@ -85,7 +100,9 @@ relocatable = true
 All three recommendations were approved by the core's lead (`softzer0`) on 2026-11-25:
 
 1. **Plan field:** `service.options.extensions: string[]`, beside 047's `service.options.logins` (approved as an optional, additive field in `packages/plan-schema`).
-2. **Supported list:** `vector` (switches the pinned image to `pgvector/pgvector` by digest) plus the curated list of standard PostgreSQL `contrib` extensions that need no `shared_preload_libraries` (`pgcrypto`, `uuid-ossp`, `pg_trgm`, `citext`, `hstore`, `unaccent`, `fuzzystrmatch`, `btree_gin`, `btree_gist`, `ltree`, `intarray`, `cube`, `earthdistance`, `tablefunc`, `isn`, `lo`, `bloom`), staying on `postgres:*-alpine`. Refuse `postgis` and any unknown name before anything changes, listing the supported extensions; the guide says PostGIS comes later if users ask.
+2. **Supported list:**
+   - **Step 1:** `vector` (switches the pinned image to `pgvector/pgvector` by digest) plus standard PostgreSQL `contrib` extensions needing no `shared_preload_libraries` (`pgcrypto`, `uuid-ossp`, `pg_trgm`, `citext`, `hstore`, `unaccent`, `fuzzystrmatch`, `btree_gin`, `btree_gist`, `ltree`, `intarray`, `cube`, `earthdistance`, `tablefunc`, `isn`, `lo`, `bloom`), staying on `postgres:*-alpine`.
+   - **Step 2 (founder & core lead update, 2026-11-25):** PostGIS (`postgis`, `postgis_topology`, `postgis_raster`, `postgis_sfcgal`) on the pinned official `postgis/postgis:*-3.7-alpine` image (`amd64` only; design offers only `amd64` servers and refuses `arm64` with a plain message; `spatial_ref_sys` and `topology` schema follow 047's load rules; GPL image pulled on user's server is fine). Combining `vector` and `postgis` in one service, or naming any unknown extension, is refused before anything changes with the supported list.
 3. **Switching an existing database's image (musl -> glibc):** a snapshot first, the image switch approved by its hash, then `REINDEX DATABASE` and `ALTER DATABASE ... REFRESH COLLATION VERSION` in the setup step. The plan states plainly that it restarts the database and that reindexing can take a while on a large database. Proven in the `OPSCREW_DOCKER_TESTS=1` Docker test starting from a populated `postgres:17-alpine` volume with a text index.
 4. **Privileges:** `vector` is untrusted, so `CREATE EXTENSION IF NOT EXISTS` runs inside 047's superuser setup step before migrations, requiring no extra privileges on `app_owner` or `app_runtime`.
 
