@@ -2,7 +2,19 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { generateAgeIdentity, NodeCommandRunner, sha256Hex, sopsEncrypt } from "@opscrew/core";
 import { LOCAL_TOOLS } from "@opscrew/iac-templates";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { readReportKey } from "../check/key";
+import { planProvisionUptime, provisionUptime, readUptimeRecord } from "../check/uptime";
+import {
+  FakeReportServer,
+  fakeUptimeAccount,
+  reportServices,
+  uptimePlan,
+  WEBHOOK_URL,
+} from "../check/uptime.fakes";
+import { recordServerAddress } from "../shared/server-record";
+import { SERVER_IPV4 } from "../testing";
 import { FAKE_SOPS } from "./__fixtures__/fake-sops";
 import {
   exposed,
@@ -89,6 +101,73 @@ describe("restoreRecoveryCopy", () => {
     for (const secret of [VALUES.db, VALUES.redis, identity]) {
       expect(redacted).not.toContain(secret);
     }
+  });
+
+  it("brings back the uptime report's key and record: the next provision asks for no webhook and writes no secret (046)", async () => {
+    const plan = uptimePlan("cloudflare");
+    const github = async () => ({ owner: "acme", repo: "shop" });
+    const command = "opscrew provision";
+    const { client } = fakeUptimeAccount();
+    const services = { sharedCloudflare: client, ...reportServices(new FakeReportServer()) };
+    // The first computer provisions the Worker's entry, its server's report and the copy.
+    const first = await recoveryWorld({ env: { OPSCREW_CHECK_WEBHOOK: WEBHOOK_URL } });
+    // The server record is the real one provision writes (the fixture's is a stand-in).
+    const { "state/server.json": _server, ...files } = provisionedFiles();
+    await writeLocal(first.deps, files);
+    await writeArtifact("plan", first.deps.paths.files.plan, plan);
+    await recordServerAddress(first.deps.paths, { ipv4: SERVER_IPV4 });
+    const step = await planProvisionUptime(first.deps, {
+      plan,
+      github,
+      services,
+      command,
+      ask: false,
+    });
+    await provisionUptime(first.deps, step, { command, phase: "provision" });
+    const key = await readReportKey(first.deps.paths, first.deps.redactor);
+    const record = await readUptimeRecord(first.deps.paths);
+    expect(record?.reportKey).toBe(key?.sha256);
+    const keyFile = join(first.keys, "age-key.txt");
+    const made = await refreshRecoveryCopy(first.deps, PLAN, {
+      repositoryPrivate: async () => true,
+      keyOut: async () => keyFile,
+    });
+    if (!made.changed) throw new Error(`no copy: ${made.warning}`);
+
+    // A new computer restores both.
+    const second = await recoveryWorld({ sops: first.sops, interactive: true });
+    await writeRepositoryFiles(second.root, made.repositoryFiles);
+    const result = await restoreRecoveryCopy(second.deps, {
+      identity: await readFile(keyFile, "utf8"),
+    });
+    expect(result.restored).toEqual(
+      expect.arrayContaining(["home/uptime_report_key", "state/uptime.json"]),
+    );
+    expect(await readReportKey(second.deps.paths, second.deps.redactor)).toEqual(key);
+    expect(await readUptimeRecord(second.deps.paths)).toEqual(record);
+    if (POSIX) {
+      const mode = (await stat(localPath(second.deps.paths, "home/uptime_report_key"))).mode;
+      expect(mode & 0o777).toBe(0o600);
+    }
+
+    // Its provision keeps the Worker's secret: nothing is asked, and nothing in Cloudflare changes.
+    await writeArtifact("plan", second.deps.paths.files.plan, plan);
+    const asked: string[] = [];
+    const again = await planProvisionUptime(second.deps, {
+      plan,
+      github,
+      services: {
+        ...services,
+        askCheckWebhook: async (question) => {
+          asked.push(question.prompt);
+          return WEBHOOK_URL;
+        },
+      },
+      command,
+      ask: true,
+    });
+    expect(asked).toEqual([]);
+    expect(again?.plan.changes).toEqual([]);
   });
 
   it("a wrong key, or text that is no key, writes nothing", async () => {
