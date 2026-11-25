@@ -5,7 +5,6 @@ import type {
   AuditLog,
   BuiltinTool,
   CommandRunner,
-  Effort,
   FetchLike,
   PhaseName,
   PhaseRequest,
@@ -25,21 +24,18 @@ import {
 } from "@opscrew/core";
 import OpenAI from "openai";
 import type {
-  Response as OpenAIResponse,
   ResponseCreateParamsNonStreaming,
-  ResponseFunctionToolCall,
   ResponseInputItem,
-  ResponseOutputItem,
 } from "openai/resources/responses/responses";
 import { z } from "zod";
-import { calculateUsageCostUsd, supportsReasoningEffort, type UsageLike } from "./pricing";
+import { calculateUsageCost, resolveModelPrice, supportsReasoningEffort } from "./pricing";
 import { executeBuiltinTool, toolDefinitionsFor } from "./tools";
 
-/** Default OpenAI model for the Code-change agent and general phases. */
-export const DEFAULT_OPENAI_MODEL = "gpt-5";
+/** Default OpenAI model for the Code-change agent and general phases (`gpt-6.2-sol`). */
+export const DEFAULT_OPENAI_MODEL = "gpt-6.2-sol";
 
-/** Default OpenAI model for the read-only Analyst (`analyze` phase). */
-export const DEFAULT_OPENAI_ANALYST_MODEL = "gpt-5-mini";
+/** Default OpenAI model for the read-only Analyst (`analyze` phase: `gpt-6-luna`). */
+export const DEFAULT_OPENAI_ANALYST_MODEL = "gpt-6-luna";
 
 const DEFAULT_MAX_TURNS = 40;
 const SHOWN_CONTENT = 4000;
@@ -54,19 +50,7 @@ const CREDENTIAL_HINT =
 export type ResponsesCreateFn = (
   params: ResponseCreateParamsNonStreaming,
   options?: { signal?: AbortSignal },
-) => Promise<OpenAIResponseLike>;
-
-/** Minimal structural shape of a Responses API response needed by the runtime loop. */
-export interface OpenAIResponseLike {
-  readonly id?: string;
-  readonly model?: string;
-  readonly status?: string | null;
-  readonly output?: readonly ResponseOutputItem[];
-  readonly output_text?: string;
-  readonly usage?: UsageLike | null;
-  readonly incomplete_details?: { readonly reason?: string | null } | null;
-  readonly error?: { readonly message?: string | null } | null;
-}
+) => Promise<unknown>;
 
 export interface OpenAIAgentRuntimeOptions {
   /** Decides every tool call (normally `DefaultToolPolicy`). */
@@ -79,7 +63,7 @@ export interface OpenAIAgentRuntimeOptions {
   costLedger?: {
     append(entry: { phase: PhaseName; model?: string; costUsd: number }): Promise<void>;
   };
-  /** Explicit default model overriding the per-phase defaults (`gpt-5-mini` / `gpt-5`). */
+  /** Explicit default model overriding the per-phase defaults (`gpt-6-luna` / `gpt-6.2-sol`). */
   defaultModel?: string;
   /** Parent environment. Defaults to `process.env`. */
   env?: Record<string, string | undefined>;
@@ -89,7 +73,100 @@ export interface OpenAIAgentRuntimeOptions {
   fetch?: FetchLike;
   /** Direct Responses API transport override for deterministic unit tests. */
   responsesCreate?: ResponsesCreateFn;
+  /** Host platform override for `Bash` shell resolution (defaults to `process.platform`). */
+  platform?: NodeJS.Platform;
+  /** File-existence check override for `Bash` shell resolution (defaults to `existsSync`). */
+  fileExists?: (filePath: string) => boolean;
+  /** Executable lookup override for `Bash` shell resolution (defaults to `findExecutable`). */
+  findBin?: (name: string, env: Record<string, string | undefined>) => string | undefined;
 }
+
+// =============================================================================================
+// Responses API response validation (constitution V)
+// =============================================================================================
+
+const OutputTextPartSchema = z.looseObject({
+  type: z.literal("output_text"),
+  text: z.string(),
+});
+
+const OutputRefusalPartSchema = z.looseObject({
+  type: z.literal("refusal"),
+  refusal: z.string(),
+});
+
+const OtherContentPartSchema = z.looseObject({
+  type: z.string().refine((t) => t !== "output_text" && t !== "refusal", {
+    message: "Malformed message content part",
+  }),
+});
+
+const MessageOutputItemSchema = z.looseObject({
+  type: z.literal("message"),
+  content: z.array(
+    z.union([OutputTextPartSchema, OutputRefusalPartSchema, OtherContentPartSchema]),
+  ),
+});
+
+const FunctionCallOutputItemSchema = z.looseObject({
+  type: z.literal("function_call"),
+  call_id: z.string().min(1),
+  name: z.string().min(1),
+  arguments: z.string(),
+});
+
+const ReasoningSummaryPartSchema = z.looseObject({
+  type: z.string(),
+  text: z.string().optional(),
+});
+
+const ReasoningOutputItemSchema = z.looseObject({
+  type: z.literal("reasoning"),
+  id: z.string().optional(),
+  encrypted_content: z.string().nullable().optional(),
+  summary: z.array(ReasoningSummaryPartSchema).optional(),
+});
+
+const OtherOutputItemSchema = z.looseObject({
+  type: z.string().refine((t) => t !== "function_call" && t !== "message" && t !== "reasoning", {
+    message: "Malformed output item",
+  }),
+});
+
+const OutputItemSchema = z.union([
+  FunctionCallOutputItemSchema,
+  MessageOutputItemSchema,
+  ReasoningOutputItemSchema,
+  OtherOutputItemSchema,
+]);
+
+const UsageSchema = z.looseObject({
+  input_tokens: z.number().nullable().optional(),
+  output_tokens: z.number().nullable().optional(),
+  input_tokens_details: z
+    .looseObject({ cached_tokens: z.number().nullable().optional() })
+    .nullable()
+    .optional(),
+  cost: z.number().nullable().optional(),
+});
+
+const OpenAIResponseSchema = z.looseObject({
+  id: z.string().optional(),
+  model: z.string().optional(),
+  status: z.string().nullable().optional(),
+  output: z.array(OutputItemSchema).optional(),
+  output_text: z.string().optional(),
+  usage: UsageSchema.nullable().optional(),
+  incomplete_details: z
+    .looseObject({ reason: z.string().nullable().optional() })
+    .nullable()
+    .optional(),
+  error: z.looseObject({ message: z.string().nullable().optional() }).nullable().optional(),
+});
+
+type ValidatedResponse = z.infer<typeof OpenAIResponseSchema>;
+type ValidatedOutputItem = z.infer<typeof OutputItemSchema>;
+type ValidatedFunctionCall = z.infer<typeof FunctionCallOutputItemSchema>;
 
 /**
  * `AgentRuntime` backed by the official `openai` SDK's Responses API (`responses.create`, stateless
@@ -163,6 +240,16 @@ class OpenAIPhaseRun<T> {
       return this.#finish(this.#failed(createResponse));
     }
 
+    const hasGatewayBaseUrl = (this.env.OPENAI_BASE_URL ?? "").trim() !== "";
+    if (
+      request.maxBudgetUsd !== undefined &&
+      !hasGatewayBaseUrl &&
+      this.options.responsesCreate === undefined &&
+      resolveModelPrice(this.#model) === undefined
+    ) {
+      return this.#finish(this.#failed(unpricedModelMessage(this.#model)));
+    }
+
     const profileTools = PROFILE_TOOLS[request.profile] ?? [];
     const builtins = profileTools.filter(
       (name) => request.builtinTools === undefined || request.builtinTools.includes(name),
@@ -185,9 +272,9 @@ class OpenAIPhaseRun<T> {
       }
 
       const params = this.#buildParams(instructions, [...input], toolDefs);
-      let response: OpenAIResponseLike;
+      let rawResponse: unknown;
       try {
-        response = await createResponse(
+        rawResponse = await createResponse(
           params,
           request.signal === undefined ? undefined : { signal: request.signal },
         );
@@ -200,12 +287,28 @@ class OpenAIPhaseRun<T> {
         break;
       }
 
+      const validated = OpenAIResponseSchema.safeParse(rawResponse);
+      if (!validated.success) {
+        result = this.#failed(
+          `OpenAI returned an unexpected response format (${validated.error.issues[0]?.message ?? "invalid payload"}).`,
+        );
+        break;
+      }
+      const response = validated.data;
+
       if (response.id !== undefined) this.#sessionId ??= response.id;
       if (typeof response.model === "string" && response.model.trim() !== "") {
         this.#model = response.model;
       }
       this.#turns += 1;
-      this.#costUsd += calculateUsageCostUsd(this.#model, response.usage);
+
+      const usageCost = calculateUsageCost(this.#model, response.usage);
+      this.#costUsd += usageCost.costUsd;
+
+      if (request.maxBudgetUsd !== undefined && !usageCost.priced) {
+        result = this.#failed(unpricedModelMessage(this.#model));
+        break;
+      }
 
       const outputItems = response.output ?? [];
       const refusal = extractRefusal(outputItems, response);
@@ -221,7 +324,11 @@ class OpenAIPhaseRun<T> {
       }
 
       const toolCalls = outputItems.filter(
-        (item): item is ResponseFunctionToolCall => item.type === "function_call",
+        (item): item is ValidatedFunctionCall =>
+          item.type === "function_call" &&
+          "call_id" in item &&
+          "name" in item &&
+          "arguments" in item,
       );
 
       if (
@@ -249,7 +356,8 @@ class OpenAIPhaseRun<T> {
       }
 
       for (const item of outputItems) {
-        input.push(redactDeep(item, (text) => this.#redact(text)) as ResponseInputItem);
+        const forwarded = this.#forwardOutputItem(item);
+        if (forwarded !== undefined) input.push(forwarded);
       }
 
       for (const call of toolCalls) {
@@ -277,6 +385,54 @@ class OpenAIPhaseRun<T> {
     return this.#finish(result);
   }
 
+  /**
+   * Converts a response output item for stateless multi-turn replay (`store: false`).
+   * - Reasoning items require `encrypted_content` (requested via `include: ["reasoning.encrypted_content"]`);
+   *   `encrypted_content` is kept unredacted so the API can verify it, while any summary text is redacted.
+   *   Reasoning items without `encrypted_content` are dropped so OpenAI never returns 404 for `rs_...`.
+   * - Function calls and assistant messages are redacted and replayed without server-stored ids.
+   */
+  #forwardOutputItem(item: ValidatedOutputItem): ResponseInputItem | undefined {
+    if (item.type === "reasoning") {
+      const encrypted = "encrypted_content" in item ? item.encrypted_content : undefined;
+      if (typeof encrypted !== "string" || encrypted === "") return undefined;
+      const summary =
+        "summary" in item && Array.isArray(item.summary)
+          ? redactDeep(item.summary, (text) => this.#redact(text))
+          : [];
+      return {
+        type: "reasoning",
+        summary,
+        encrypted_content: encrypted,
+      } as ResponseInputItem;
+    }
+    if (
+      item.type === "function_call" &&
+      "call_id" in item &&
+      typeof item.call_id === "string" &&
+      "name" in item &&
+      typeof item.name === "string" &&
+      "arguments" in item &&
+      typeof item.arguments === "string"
+    ) {
+      return {
+        type: "function_call",
+        call_id: item.call_id,
+        name: item.name,
+        arguments: this.#redact(item.arguments),
+      } as ResponseInputItem;
+    }
+    if (item.type === "message" && "content" in item && Array.isArray(item.content)) {
+      const text = extractText([item], undefined);
+      if (text === "") return undefined;
+      return {
+        role: "assistant",
+        content: this.#redact(text),
+      } as ResponseInputItem;
+    }
+    return undefined;
+  }
+
   #resolveTransport(): ResponsesCreateFn | string {
     if (this.options.responsesCreate !== undefined) return this.options.responsesCreate;
     const apiKey = (this.env.OPENAI_API_KEY ?? "").trim();
@@ -296,7 +452,7 @@ class OpenAIPhaseRun<T> {
       client.responses.create(
         params,
         options?.signal === undefined ? undefined : { signal: options.signal },
-      ) as Promise<OpenAIResponse>;
+      );
   }
 
   #buildParams(
@@ -305,6 +461,7 @@ class OpenAIPhaseRun<T> {
     toolDefs: ReturnType<typeof toolDefinitionsFor>,
   ): ResponseCreateParamsNonStreaming {
     const { request } = this;
+    const reasoningModel = supportsReasoningEffort(this.#model);
     const params: ResponseCreateParamsNonStreaming = {
       model: this.#model,
       instructions,
@@ -312,8 +469,11 @@ class OpenAIPhaseRun<T> {
       store: false,
     };
     if (toolDefs.length > 0) params.tools = toolDefs;
-    if (request.effort !== undefined && supportsReasoningEffort(this.#model)) {
-      params.reasoning = { effort: mapEffort(request.effort) };
+    if (reasoningModel) {
+      params.include = ["reasoning.encrypted_content"];
+      if (request.effort !== undefined) {
+        params.reasoning = { effort: request.effort };
+      }
     }
     if (request.output !== undefined) {
       params.text = {
@@ -335,7 +495,7 @@ class OpenAIPhaseRun<T> {
   }
 
   async #handleToolCall(
-    call: ResponseFunctionToolCall,
+    call: ValidatedFunctionCall,
     enabledTools: ReadonlySet<string>,
     runner: CommandRunner,
   ): Promise<string> {
@@ -422,6 +582,9 @@ class OpenAIPhaseRun<T> {
       env: this.env,
       runner,
       ...(this.request.signal === undefined ? {} : { signal: this.request.signal }),
+      ...(this.options.platform === undefined ? {} : { platform: this.options.platform }),
+      ...(this.options.fileExists === undefined ? {} : { fileExists: this.options.fileExists }),
+      ...(this.options.findBin === undefined ? {} : { findBin: this.options.findBin }),
     });
 
     try {
@@ -590,17 +753,8 @@ class OpenAIPhaseRun<T> {
   }
 }
 
-function mapEffort(effort: Effort): "low" | "medium" | "high" {
-  switch (effort) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-    case "xhigh":
-    case "max":
-      return "high";
-  }
+function unpricedModelMessage(model: string): string {
+  return `OpsCrew does not have a list price for model "${model}" and the API did not report a turn cost, so it cannot enforce the spending limit. Pick a priced OpenAI model (such as ${DEFAULT_OPENAI_ANALYST_MODEL} or ${DEFAULT_OPENAI_MODEL}) or a gateway that reports usage.cost.`;
 }
 
 function sanitizeSchemaName(name: string): string {
@@ -609,13 +763,15 @@ function sanitizeSchemaName(name: string): string {
 }
 
 function extractRefusal(
-  output: readonly ResponseOutputItem[],
-  response: OpenAIResponseLike,
+  output: readonly ValidatedOutputItem[],
+  response: ValidatedResponse,
 ): string | undefined {
   for (const item of output) {
-    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+    if (item.type !== "message" || !("content" in item) || !Array.isArray(item.content)) continue;
     for (const part of item.content) {
-      if (part.type === "refusal") return part.refusal;
+      if (part.type === "refusal" && "refusal" in part && typeof part.refusal === "string") {
+        return part.refusal;
+      }
     }
   }
   if (
@@ -628,14 +784,19 @@ function extractRefusal(
 }
 
 function extractText(
-  output: readonly ResponseOutputItem[],
+  output: readonly ValidatedOutputItem[],
   fallbackOutputText: string | undefined,
 ): string {
   const parts: string[] = [];
   for (const item of output) {
-    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+    if (item.type !== "message" || !("content" in item) || !Array.isArray(item.content)) continue;
     for (const part of item.content) {
-      if (part.type === "output_text" && part.text.trim() !== "") {
+      if (
+        part.type === "output_text" &&
+        "text" in part &&
+        typeof part.text === "string" &&
+        part.text.trim() !== ""
+      ) {
         parts.push(part.text);
       }
     }

@@ -13,17 +13,13 @@ import type {
 } from "@opscrew/contracts";
 import { DefaultToolPolicy, nodeRealpath, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import type {
-  ResponseCreateParamsNonStreaming,
-  ResponseOutputItem,
-} from "openai/resources/responses/responses";
+import type { ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   DEFAULT_OPENAI_ANALYST_MODEL,
   DEFAULT_OPENAI_MODEL,
   OpenAIAgentRuntime,
-  type OpenAIResponseLike,
   type ResponsesCreateFn,
 } from "./runtime";
 
@@ -69,24 +65,24 @@ afterEach(async () => {
   }
 });
 
-function msg(text: string): ResponseOutputItem {
+function msg(text: string) {
   return {
-    type: "message",
+    type: "message" as const,
     id: "msg_1",
-    role: "assistant",
-    status: "completed",
-    content: [{ type: "output_text", text, annotations: [] }],
+    role: "assistant" as const,
+    status: "completed" as const,
+    content: [{ type: "output_text" as const, text, annotations: [] }],
   };
 }
 
-function fnCall(callId: string, name: string, args: Record<string, unknown>): ResponseOutputItem {
+function fnCall(callId: string, name: string, args: Record<string, unknown>) {
   return {
-    type: "function_call",
+    type: "function_call" as const,
     id: `fc_${callId}`,
     call_id: callId,
     name,
     arguments: JSON.stringify(args),
-    status: "completed",
+    status: "completed" as const,
   };
 }
 
@@ -134,7 +130,7 @@ describe("OpenAIAgentRuntime configuration and defaults", () => {
     expect(await configured.isConfigured()).toEqual({ ok: true });
   });
 
-  it("picks gpt-5-mini for analyze, gpt-5 for adapt, and honours explicit defaultModel", () => {
+  it("picks gpt-6-luna for analyze, gpt-6.2-sol for adapt, and honours explicit defaultModel", () => {
     const { runtime } = makeRuntime({});
     expect(runtime.id).toBe("openai-responses");
     expect(runtime.defaultModelFor("analyze")).toBe(DEFAULT_OPENAI_ANALYST_MODEL);
@@ -147,23 +143,41 @@ describe("OpenAIAgentRuntime configuration and defaults", () => {
 });
 
 describe("OpenAIAgentRuntime execution loop", () => {
-  it("runs a multi-turn read-only phase, validates structured output, and records cost", async () => {
+  it("requests reasoning.encrypted_content, replays encrypted reasoning unredacted, drops unencrypted reasoning, and validates structured output", async () => {
     const root = await makeTempProject();
     await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "demo-app" }));
+    const secret = fakeSecret("hcloud-token");
+    const redactor = new Redactor();
+    redactor.addLiteral(secret, "HCLOUD_TOKEN");
+    // Simulate an encrypted_content blob that happens to contain a literal pattern
+    const opaqueCiphertext = `enc_v1_${secret}_tail`;
     const seenParams: ResponseCreateParamsNonStreaming[] = [];
     const ledger: Array<{ phase: PhaseName; model?: string; costUsd: number }> = [];
 
-    const turns: OpenAIResponseLike[] = [
+    const turns = [
       {
         id: "resp_1",
-        model: "gpt-5-mini-2026-03-01",
+        model: "gpt-6-luna",
         status: "completed",
-        output: [fnCall("call_1", "Read", { file_path: "package.json" })],
+        output: [
+          {
+            type: "reasoning",
+            id: "rs_with_enc",
+            summary: [{ type: "summary_text", text: `Checked ${secret}` }],
+            encrypted_content: opaqueCiphertext,
+          },
+          {
+            type: "reasoning",
+            id: "rs_no_enc",
+            summary: [],
+          },
+          fnCall("call_1", "Read", { file_path: "package.json" }),
+        ],
         usage: { input_tokens: 1000, output_tokens: 200 },
       },
       {
         id: "resp_2",
-        model: "gpt-5-mini-2026-03-01",
+        model: "gpt-6-luna",
         status: "completed",
         output: [msg(JSON.stringify({ summary: "Node app demo-app", risks: ["No health check"] }))],
         usage: {
@@ -175,9 +189,10 @@ describe("OpenAIAgentRuntime execution loop", () => {
     ];
     let turn = 0;
     const { runtime, audit } = makeRuntime({
+      redactor,
       responsesCreate: async (params) => {
         seenParams.push(params);
-        return turns[turn++] as OpenAIResponseLike;
+        return turns[turn++];
       },
       costLedger: {
         append: async (entry) => {
@@ -194,7 +209,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
       projectRoot: root,
       profile: "read-only",
       output: { name: "architecture_summary", schema },
-      effort: "medium",
+      effort: "xhigh",
     });
 
     expect(result.ok).toBe(true);
@@ -205,15 +220,23 @@ describe("OpenAIAgentRuntime execution loop", () => {
     expect(result.costUsd).toBeGreaterThan(0);
     expect(seenParams).toHaveLength(2);
     expect(seenParams[0]?.store).toBe(false);
-    expect(seenParams[0]?.reasoning).toEqual({ effort: "medium" });
+    expect(seenParams[0]?.include).toEqual(["reasoning.encrypted_content"]);
+    expect(seenParams[0]?.reasoning).toEqual({ effort: "xhigh" });
     expect(seenParams[0]?.tools?.map((t) => (t.type === "function" ? t.name : ""))).toEqual([
       "Read",
       "Glob",
       "Grep",
     ]);
     expect(seenParams[0]?.text?.format?.type).toBe("json_schema");
-    // Turn 2 includes the tool result with package.json content
-    const secondInput = seenParams[1]?.input as Array<{ type?: string; output?: string }>;
+
+    // Second turn must preserve encrypted reasoning unredacted, drop unencrypted reasoning,
+    // redact reasoning summary, and include function_call + function_call_output.
+    const secondInput = seenParams[1]?.input as unknown as Array<Record<string, unknown>>;
+    const reasoningItems = secondInput.filter((item) => item.type === "reasoning");
+    expect(reasoningItems).toHaveLength(1);
+    expect(reasoningItems[0]?.encrypted_content).toBe(opaqueCiphertext);
+    expect(reasoningItems[0]?.id).toBeUndefined();
+    expect(JSON.stringify(reasoningItems[0]?.summary)).not.toContain(secret);
     const toolOut = secondInput.find((item) => item.type === "function_call_output");
     expect(toolOut?.output).toContain("demo-app");
 
@@ -223,26 +246,57 @@ describe("OpenAIAgentRuntime execution loop", () => {
     expect(audit.entries.some((e) => e.kind === "phase" && e.action === "analyze")).toBe(true);
   });
 
-  it("enforces ToolPolicy denials and never executes forbidden tools or reads .env", async () => {
+  it("omits reasoning and include for chat-only models such as gpt-5-chat-latest", async () => {
+    const root = await makeTempProject();
+    const seenParams: ResponseCreateParamsNonStreaming[] = [];
+    const { runtime } = makeRuntime({
+      responsesCreate: async (params) => {
+        seenParams.push(params);
+        return {
+          id: "resp_chat",
+          model: "gpt-5-chat-latest",
+          status: "completed",
+          output: [msg("ok")],
+          usage: { input_tokens: 100, output_tokens: 20 },
+        };
+      },
+    });
+    const res = await runtime.runPhase({
+      phase: "analyze",
+      systemPrompt: "sys",
+      prompt: "hello",
+      projectRoot: root,
+      profile: "none",
+      model: "gpt-5-chat-latest",
+      effort: "high",
+    });
+    expect(res.ok).toBe(true);
+    expect(seenParams[0]?.reasoning).toBeUndefined();
+    expect(seenParams[0]?.include).toBeUndefined();
+  });
+
+  it("enforces ToolPolicy denials and refuses unknown or hosted tool names (web_search, Task)", async () => {
     const root = await makeTempProject();
     await writeFile(path.join(root, ".env"), "SECRET=super-secret-value\n");
     const events: RuntimeEvent[] = [];
     const seenInputs: unknown[] = [];
 
-    const turns: OpenAIResponseLike[] = [
+    const turns = [
       {
         id: "resp_1",
-        model: "gpt-5-mini",
+        model: "gpt-6-luna",
         status: "completed",
         output: [
           fnCall("c1", "Read", { file_path: ".env" }),
           fnCall("c2", "Write", { file_path: "hacked.txt", content: "bad" }),
+          fnCall("c3", "web_search", { query: "secrets" }),
+          fnCall("c4", "Task", { prompt: "spawn subagent" }),
         ],
         usage: { input_tokens: 500, output_tokens: 100 },
       },
       {
         id: "resp_2",
-        model: "gpt-5-mini",
+        model: "gpt-6-luna",
         status: "completed",
         output: [msg("Done without secrets.")],
         usage: { input_tokens: 500, output_tokens: 50 },
@@ -252,7 +306,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
     const { runtime, audit } = makeRuntime({
       responsesCreate: async (params) => {
         seenInputs.push(params.input);
-        return turns[i++] as OpenAIResponseLike;
+        return turns[i++];
       },
     });
 
@@ -267,8 +321,9 @@ describe("OpenAIAgentRuntime execution loop", () => {
 
     expect(res.ok).toBe(true);
     expect(JSON.stringify(seenInputs)).not.toContain("super-secret-value");
-    expect(audit.entries.filter((e) => e.kind === "tool-denied")).toHaveLength(2);
-    expect(events.filter((e) => e.kind === "tool-denied")).toHaveLength(2);
+    const denied = audit.entries.filter((e) => e.kind === "tool-denied");
+    expect(denied.map((e) => e.action)).toEqual(["Read", "Write", "web_search", "Task"]);
+    expect(events.filter((e) => e.kind === "tool-denied")).toHaveLength(4);
     await expect(readFile(path.join(root, "hacked.txt"), "utf8")).rejects.toThrow();
   });
 
@@ -283,10 +338,10 @@ describe("OpenAIAgentRuntime execution loop", () => {
     const approvalRequests: ApprovalRequest[] = [];
     const seenParams: ResponseCreateParamsNonStreaming[] = [];
 
-    const turns: OpenAIResponseLike[] = [
+    const turns = [
       {
         id: "resp_1",
-        model: "gpt-5",
+        model: "gpt-6.2-sol",
         status: "completed",
         output: [
           fnCall("c1", "Read", { file_path: "notes.txt" }),
@@ -299,7 +354,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
       },
       {
         id: "resp_2",
-        model: "gpt-5",
+        model: "gpt-6.2-sol",
         status: "completed",
         output: [msg("All done.")],
         usage: { input_tokens: 1200, output_tokens: 50 },
@@ -316,7 +371,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
       },
       responsesCreate: async (params) => {
         seenParams.push(params);
-        return turns[i++] as OpenAIResponseLike;
+        return turns[i++];
       },
     });
 
@@ -329,7 +384,6 @@ describe("OpenAIAgentRuntime execution loop", () => {
     });
 
     expect(res.ok).toBe(true);
-    // Secret must never appear in prompts, tool outputs sent to OpenAI, or approval previews
     expect(JSON.stringify(seenParams)).not.toContain(secret);
     expect(approvalRequests).toHaveLength(1);
     expect(approvalRequests[0]?.details).toContain("The new content:");
@@ -340,6 +394,82 @@ describe("OpenAIAgentRuntime execution loop", () => {
     await expect(readFile(path.join(root, ".github/workflows/ci.yml"), "utf8")).rejects.toThrow();
   });
 
+  it("fails closed under maxBudgetUsd for unpriced models unless gateway reports usage.cost", async () => {
+    const root = await makeTempProject();
+
+    // Unpriced model without gateway usage.cost -> fail closed before any tool or turn 2
+    let calls = 0;
+    const { runtime: unpriced } = makeRuntime({
+      responsesCreate: async () => {
+        calls++;
+        return {
+          id: "r_unpriced",
+          model: "custom/mystery-model",
+          status: "completed",
+          output: [fnCall("c1", "Glob", { pattern: "*.ts" })],
+          usage: { input_tokens: 1000, output_tokens: 200 },
+        };
+      },
+    });
+    const denied = await unpriced.runPhase({
+      phase: "analyze",
+      systemPrompt: "sys",
+      prompt: "p",
+      projectRoot: root,
+      profile: "read-only",
+      model: "custom/mystery-model",
+      maxBudgetUsd: 0.5,
+    });
+    expect(denied.ok).toBe(false);
+    expect(denied.stopReason).toBe("error");
+    expect(denied.error).toContain("list price");
+    expect(calls).toBe(1);
+
+    // Same unknown model WITH gateway usage.cost succeeds and records cost
+    const { runtime: gateway } = makeRuntime({
+      responsesCreate: async () => ({
+        id: "r_gw",
+        model: "custom/mystery-model",
+        status: "completed",
+        output: [msg("ok")],
+        usage: { input_tokens: 1000, output_tokens: 200, cost: 0.012 },
+      }),
+    });
+    const ok = await gateway.runPhase({
+      phase: "analyze",
+      systemPrompt: "sys",
+      prompt: "p",
+      projectRoot: root,
+      profile: "none",
+      model: "custom/mystery-model",
+      maxBudgetUsd: 0.5,
+    });
+    expect(ok.ok).toBe(true);
+    expect(ok.costUsd).toBeCloseTo(0.012, 6);
+  });
+
+  it("validates API responses with zod and fails cleanly on malformed function_call arguments", async () => {
+    const root = await makeTempProject();
+    const { runtime } = makeRuntime({
+      responsesCreate: async () => ({
+        id: "r_bad",
+        model: "gpt-6-luna",
+        status: "completed",
+        output: [{ type: "function_call", call_id: "c1", name: "Read", arguments: 12345 }],
+      }),
+    });
+    const res = await runtime.runPhase({
+      phase: "analyze",
+      systemPrompt: "sys",
+      prompt: "p",
+      projectRoot: root,
+      profile: "read-only",
+    });
+    expect(res.ok).toBe(false);
+    expect(res.stopReason).toBe("error");
+    expect(res.error).toContain("unexpected response format");
+  });
+
   it("maps invalid_output, max_turns, budget_exceeded, refused, aborted, and 401 auth errors", async () => {
     const root = await makeTempProject();
 
@@ -348,7 +478,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
       const { runtime } = makeRuntime({
         responsesCreate: async () => ({
           id: "r1",
-          model: "gpt-5-mini",
+          model: "gpt-6-luna",
           status: "completed",
           output: [msg('{"wrong": true}')],
           usage: { input_tokens: 100, output_tokens: 20 },
@@ -371,7 +501,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
       const { runtime } = makeRuntime({
         responsesCreate: async () => ({
           id: "r2",
-          model: "gpt-5-mini",
+          model: "gpt-6-luna",
           status: "completed",
           output: [fnCall("c1", "Glob", { pattern: "*.ts" })],
           usage: { input_tokens: 100, output_tokens: 20 },
@@ -395,10 +525,10 @@ describe("OpenAIAgentRuntime execution loop", () => {
       const { runtime } = makeRuntime({
         responsesCreate: async () => ({
           id: "r3",
-          model: "gpt-5",
+          model: "gpt-6.2-sol",
           status: "completed",
           output: [fnCall("c1", "Glob", { pattern: "*.ts" })],
-          usage: { input_tokens: 1_000_000, output_tokens: 100_000 }, // $2.25
+          usage: { input_tokens: 1_000_000, output_tokens: 100_000 }, // $3.00
         }),
       });
       const res = await runtime.runPhase({
@@ -419,7 +549,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
       const { runtime } = makeRuntime({
         responsesCreate: async () => ({
           id: "r4",
-          model: "gpt-5",
+          model: "gpt-6.2-sol",
           status: "completed",
           output: [
             {
@@ -513,7 +643,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
           JSON.stringify({
             id: "resp_gw",
             object: "response",
-            model: "gpt-5-mini",
+            model: "gpt-6-luna",
             status: "completed",
             output: [msg("Gateway works.")],
             usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },

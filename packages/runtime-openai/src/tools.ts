@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BuiltinTool, CommandRunner } from "@opscrew/contracts";
@@ -13,6 +14,9 @@ const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const MAX_BASH_TIMEOUT_MS = 300_000;
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".opscrew"]);
+
+/** Anthropic credentials that `sanitizeAgentEnv` keeps for Claude, never needed under OpenAI. */
+const ANTHROPIC_CREDENTIAL_NAMES = new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
 
 const TOOL_SCHEMAS: Readonly<Record<BuiltinTool, FunctionTool>> = {
   Read: {
@@ -139,11 +143,45 @@ export interface ToolExecutionContext {
   readonly env: Record<string, string | undefined>;
   readonly runner: CommandRunner;
   readonly signal?: AbortSignal;
+  /** Host platform; defaults to `process.platform` (injectable for tests). */
+  readonly platform?: NodeJS.Platform;
+  /** Checks whether a file exists on disk; defaults to `existsSync` (injectable for tests). */
+  readonly fileExists?: (filePath: string) => boolean;
+  /** Executable lookup on `PATH`; defaults to `findExecutable` (injectable for tests). */
+  readonly findBin?: (name: string, env: Record<string, string | undefined>) => string | undefined;
 }
 
 export interface ToolExecResult {
   readonly ok: boolean;
   readonly output: string;
+}
+
+/**
+ * Sanitizes the environment for a `Bash` subprocess under the OpenAI runtime.
+ *
+ * Unlike the Claude Agent SDK subprocess (which needs `ANTHROPIC_API_KEY` or cloud-routing
+ * credentials), the OpenAI client runs in-process, so child shell commands receive neither
+ * OpenAI credentials nor Anthropic/Bedrock/Vertex/Foundry credentials.
+ */
+export function sanitizeOpenAiBashEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  // Strip Claude cloud-routing flags before calling `sanitizeAgentEnv` so AWS_*, GOOGLE_*,
+  // CLOUDSDK_*, AZURE_* and ANTHROPIC_FOUNDRY_API_KEY are always removed too.
+  const withoutClaudeRouting: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(env)) {
+    const upper = name.toUpperCase();
+    if (
+      upper === "CLAUDE_CODE_USE_BEDROCK" ||
+      upper === "CLAUDE_CODE_USE_VERTEX" ||
+      upper === "CLAUDE_CODE_USE_FOUNDRY" ||
+      ANTHROPIC_CREDENTIAL_NAMES.has(upper)
+    ) {
+      continue;
+    }
+    withoutClaudeRouting[name] = value;
+  }
+  return sanitizeAgentEnv(withoutClaudeRouting);
 }
 
 /**
@@ -177,7 +215,9 @@ export async function executeBuiltinTool(
   }
 }
 
-type PathCheck = { ok: true; absolute: string; rel: string } | { ok: false; error: string };
+type PathCheck =
+  | { ok: true; absolute: string; rootReal: string; rel: string }
+  | { ok: false; error: string };
 
 function isWithin(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
@@ -192,7 +232,12 @@ function resolveInsideRoot(
   if (typeof rawPath !== "string" || rawPath.trim() === "") {
     return { ok: false, error: "Path argument is missing or empty." };
   }
-  const rootReal = safeRealpath(projectRoot);
+  let rootReal: string | undefined;
+  try {
+    rootReal = nodeRealpath(projectRoot);
+  } catch {
+    rootReal = undefined;
+  }
   if (rootReal === undefined) {
     return { ok: false, error: "Project root does not exist." };
   }
@@ -244,15 +289,7 @@ function resolveInsideRoot(
   if (relReal !== "" && isSecretPath(relReal)) {
     return { ok: false, error: `\`${rawPath}\` leads to a file that may contain secrets.` };
   }
-  return { ok: true, absolute: resolvedReal, rel: relReal.split(path.sep).join("/") };
-}
-
-function safeRealpath(dir: string): string | undefined {
-  try {
-    return nodeRealpath(dir);
-  } catch {
-    return undefined;
-  }
+  return { ok: true, absolute: resolvedReal, rootReal, rel: relReal.split(path.sep).join("/") };
 }
 
 function capOutput(text: string): string {
@@ -425,11 +462,9 @@ async function runGlob(
       ? resolveInsideRoot(projectRoot, ".", "read")
       : resolveInsideRoot(projectRoot, input.path, "read");
   if (!baseCheck.ok) return { ok: false, output: baseCheck.error };
-  const rootReal = safeRealpath(projectRoot);
-  if (rootReal === undefined) return { ok: false, output: "Project root does not exist." };
 
   const files: string[] = [];
-  await walkFiles(rootReal, baseCheck.absolute, files, 10_000);
+  await walkFiles(baseCheck.rootReal, baseCheck.absolute, files, 10_000);
   const matcher = globToRegExp(input.pattern);
   const basePrefix = baseCheck.rel === "" ? "" : `${baseCheck.rel}/`;
   const matches: string[] = [];
@@ -471,8 +506,6 @@ async function runGrep(
       ? resolveInsideRoot(projectRoot, ".", "read")
       : resolveInsideRoot(projectRoot, input.path, "read");
   if (!baseCheck.ok) return { ok: false, output: baseCheck.error };
-  const rootReal = safeRealpath(projectRoot);
-  if (rootReal === undefined) return { ok: false, output: "Project root does not exist." };
 
   const globStr = typeof input.glob === "string" && input.glob !== "" ? input.glob : undefined;
   const globMatcher = globStr !== undefined ? globToRegExp(globStr) : undefined;
@@ -483,7 +516,7 @@ async function runGrep(
   if (info.isFile()) {
     candidates.push(baseCheck.rel);
   } else if (info.isDirectory()) {
-    await walkFiles(rootReal, baseCheck.absolute, candidates, 10_000);
+    await walkFiles(baseCheck.rootReal, baseCheck.absolute, candidates, 10_000);
   }
 
   const hits: string[] = [];
@@ -493,7 +526,7 @@ async function runGrep(
       const target = globHasSlash ? rel : path.posix.basename(rel);
       if (!globMatcher.test(target)) continue;
     }
-    const full = path.join(rootReal, rel);
+    const full = path.join(baseCheck.rootReal, rel);
     let fileInfo: Awaited<ReturnType<typeof stat>>;
     try {
       fileInfo = await stat(full);
@@ -518,6 +551,79 @@ async function runGrep(
   return { ok: true, output: capOutput(hits.join("\n") + suffix) };
 }
 
+/** True when a Windows path points into System32, SysWOW64 or WindowsApps (WSL/store shims). */
+function isForbiddenWindowsShellPath(candidate: string): boolean {
+  const segments = candidate.toLowerCase().split(/[\\/]+/);
+  return (
+    segments.includes("system32") ||
+    segments.includes("syswow64") ||
+    segments.includes("windowsapps")
+  );
+}
+
+/**
+ * Finds Git for Windows' `bash.exe` (never WSL's `System32\bash.exe`, never `WindowsApps`, and
+ * never `cmd.exe`, whose quoting and `%VAR%` expansion disagree with `DefaultToolPolicy`).
+ */
+export function resolveGitBashWindows(
+  env: Record<string, string | undefined>,
+  fileExists: (filePath: string) => boolean = existsSync,
+  findBin: (
+    name: string,
+    env: Record<string, string | undefined>,
+  ) => string | undefined = findExecutable,
+): string | undefined {
+  const explicit = env.CLAUDE_CODE_GIT_BASH_PATH?.trim();
+  if (explicit && !isForbiddenWindowsShellPath(explicit) && fileExists(explicit)) {
+    return explicit;
+  }
+  const gitBin = findBin("git", env);
+  if (gitBin !== undefined && !isForbiddenWindowsShellPath(gitBin)) {
+    const dir = path.win32.dirname(gitBin);
+    const parent = path.win32.dirname(dir);
+    const candidates = [
+      path.win32.join(dir, "bash.exe"),
+      path.win32.join(parent, "bin", "bash.exe"),
+      path.win32.join(parent, "usr", "bin", "bash.exe"),
+    ];
+    for (const candidate of candidates) {
+      if (!isForbiddenWindowsShellPath(candidate) && fileExists(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolves the bash executable for the Bash tool so commands are parsed with the same bash grammar
+ * as `DefaultToolPolicy`. Returns `{ ok: false, reason }` on Windows when Git Bash is absent.
+ */
+export function resolveBashCommand(
+  script: string,
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+  fileExists: (filePath: string) => boolean = existsSync,
+  findBin: (
+    name: string,
+    env: Record<string, string | undefined>,
+  ) => string | undefined = findExecutable,
+): { ok: true; command: string; args: string[] } | { ok: false; reason: string } {
+  if (platform === "win32") {
+    const gitBash = resolveGitBashWindows(env, fileExists, findBin);
+    if (gitBash === undefined) {
+      return {
+        ok: false,
+        reason:
+          "Bash is not available on Windows without Git for Windows (Git Bash). Install Git for Windows or set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe.",
+      };
+    }
+    return { ok: true, command: gitBash, args: ["-c", script] };
+  }
+  const bash = findBin("bash", env) ?? "bash";
+  return { ok: true, command: bash, args: ["-c", script] };
+}
+
 async function runBash(
   input: Record<string, unknown>,
   ctx: ToolExecutionContext,
@@ -525,15 +631,24 @@ async function runBash(
   if (typeof input.command !== "string" || input.command.trim() === "") {
     return { ok: false, output: "The `command` argument is missing or empty." };
   }
+  const shell = resolveBashCommand(
+    input.command,
+    ctx.env,
+    ctx.platform ?? process.platform,
+    ctx.fileExists ?? existsSync,
+    ctx.findBin ?? findExecutable,
+  );
+  if (!shell.ok) {
+    return { ok: false, output: `Bash denied: ${shell.reason}` };
+  }
   const requestedTimeout =
     typeof input.timeout_ms === "number" &&
     Number.isFinite(input.timeout_ms) &&
     input.timeout_ms > 0
       ? Math.min(input.timeout_ms, MAX_BASH_TIMEOUT_MS)
       : DEFAULT_BASH_TIMEOUT_MS;
-  const sanitizedEnv = sanitizeAgentEnv(ctx.env);
-  const { command, args } = shellCommandFor(input.command, ctx.env);
-  const result = await ctx.runner.run(command, args, {
+  const sanitizedEnv = sanitizeOpenAiBashEnv(ctx.env);
+  const result = await ctx.runner.run(shell.command, shell.args, {
     cwd: ctx.projectRoot,
     env: sanitizedEnv,
     timeoutMs: requestedTimeout,
@@ -549,16 +664,4 @@ async function runBash(
     return { ok: false, output: `Exit code ${result.exitCode}\n${body}` };
   }
   return { ok: true, output: body };
-}
-
-function shellCommandFor(
-  script: string,
-  env: Record<string, string | undefined>,
-): { command: string; args: string[] } {
-  if (process.platform === "win32") {
-    const bash = findExecutable("bash", env);
-    if (bash !== undefined) return { command: bash, args: ["-c", script] };
-    return { command: env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", script] };
-  }
-  return { command: "/bin/sh", args: ["-c", script] };
 }

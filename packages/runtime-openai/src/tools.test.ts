@@ -4,7 +4,12 @@ import path from "node:path";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { executeBuiltinTool, toolDefinitionsFor } from "./tools";
+import {
+  executeBuiltinTool,
+  resolveBashCommand,
+  sanitizeOpenAiBashEnv,
+  toolDefinitionsFor,
+} from "./tools";
 
 const tempDirs: string[] = [];
 
@@ -48,6 +53,105 @@ describe("toolDefinitionsFor", () => {
     expect(byName.Glob?.required).toEqual(["pattern"]);
     expect(byName.Grep?.required).toEqual(["pattern"]);
     expect(byName.Bash?.required).toEqual(["command"]);
+  });
+});
+
+describe("resolveBashCommand", () => {
+  it("runs bash (never /bin/sh) on POSIX platforms", () => {
+    const resolved = resolveBashCommand(
+      "echo $'hello'",
+      { PATH: "/usr/bin" },
+      "linux",
+      () => true,
+      (name) => (name === "bash" ? "/usr/bin/bash" : undefined),
+    );
+    expect(resolved).toEqual({ ok: true, command: "/usr/bin/bash", args: ["-c", "echo $'hello'"] });
+
+    const fallbackName = resolveBashCommand(
+      "echo ok",
+      {},
+      "darwin",
+      () => false,
+      () => undefined,
+    );
+    expect(fallbackName).toEqual({ ok: true, command: "bash", args: ["-c", "echo ok"] });
+  });
+
+  it("uses CLAUDE_CODE_GIT_BASH_PATH or Git for Windows bin\\bash.exe on Windows", () => {
+    const fromEnv = resolveBashCommand(
+      "ls",
+      { CLAUDE_CODE_GIT_BASH_PATH: "C:\\Program Files\\Git\\bin\\bash.exe" },
+      "win32",
+      (p) => p === "C:\\Program Files\\Git\\bin\\bash.exe",
+      () => undefined,
+    );
+    expect(fromEnv).toEqual({
+      ok: true,
+      command: "C:\\Program Files\\Git\\bin\\bash.exe",
+      args: ["-c", "ls"],
+    });
+
+    const besideGit = resolveBashCommand(
+      "ls",
+      {},
+      "win32",
+      (p) => p === "C:\\Program Files\\Git\\bin\\bash.exe",
+      (name) => (name === "git" ? "C:\\Program Files\\Git\\cmd\\git.exe" : undefined),
+    );
+    expect(besideGit).toEqual({
+      ok: true,
+      command: "C:\\Program Files\\Git\\bin\\bash.exe",
+      args: ["-c", "ls"],
+    });
+  });
+
+  it("rejects System32/WindowsApps bash and never falls back to cmd.exe on Windows", () => {
+    const wslOnly = resolveBashCommand(
+      "cat 'a & echo X %SECRET% & '",
+      {
+        CLAUDE_CODE_GIT_BASH_PATH: "C:\\WINDOWS\\System32\\bash.exe",
+        ComSpec: "C:\\WINDOWS\\System32\\cmd.exe",
+      },
+      "win32",
+      () => true,
+      (name) => (name === "bash" ? "C:\\WINDOWS\\System32\\bash.exe" : undefined),
+    );
+    expect(wslOnly.ok).toBe(false);
+    if (!wslOnly.ok) expect(wslOnly.reason).toContain("Git for Windows");
+
+    const storeApp = resolveBashCommand(
+      "ls",
+      {
+        CLAUDE_CODE_GIT_BASH_PATH:
+          "C:\\Users\\dev\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe",
+      },
+      "win32",
+      () => true,
+      () => undefined,
+    );
+    expect(storeApp.ok).toBe(false);
+  });
+});
+
+describe("sanitizeOpenAiBashEnv", () => {
+  it("strips OpenAI, Anthropic, Claude cloud-routing and provider credentials", () => {
+    const cleaned = sanitizeOpenAiBashEnv({
+      PATH: "/usr/bin",
+      NODE_ENV: "test",
+      OPENAI_API_KEY: fakeSecret("openai-key"),
+      ANTHROPIC_API_KEY: fakeSecret("anthropic-key"),
+      ANTHROPIC_AUTH_TOKEN: fakeSecret("anthropic-key"),
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_SECRET_ACCESS_KEY: fakeSecret("aws-secret-access-key"),
+      CLAUDE_CODE_USE_VERTEX: "1",
+      GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp.json",
+      CLAUDE_CODE_USE_FOUNDRY: "1",
+      AZURE_CLIENT_SECRET: fakeSecret("generic-password"),
+      ANTHROPIC_FOUNDRY_API_KEY: fakeSecret("anthropic-key"),
+      HCLOUD_TOKEN: fakeSecret("hcloud-token"),
+      CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token"),
+    });
+    expect(cleaned).toEqual({ PATH: "/usr/bin", NODE_ENV: "test" });
   });
 });
 
@@ -180,7 +284,7 @@ describe("executeBuiltinTool", () => {
     expect(grepped.output).not.toContain("server.key");
   });
 
-  it("runs Bash with sanitized environment stripping OPENAI_API_KEY and provider secrets", async () => {
+  it("runs Bash with sanitized environment and denies when Git Bash is unavailable on Windows", async () => {
     const root = await makeTempProject();
     const runner = new RecordingRunner();
     runner.next = { exitCode: 0, stdout: "node v22\n", stderr: "", timedOut: false };
@@ -188,6 +292,9 @@ describe("executeBuiltinTool", () => {
     const env = {
       PATH: "/usr/bin",
       OPENAI_API_KEY: fakeSecret("openai-key"),
+      ANTHROPIC_API_KEY: fakeSecret("anthropic-key"),
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_SECRET_ACCESS_KEY: fakeSecret("aws-secret-access-key"),
       HCLOUD_TOKEN: fakeSecret("hcloud-token"),
       CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token"),
       NODE_ENV: "test",
@@ -196,16 +303,41 @@ describe("executeBuiltinTool", () => {
     const res = await executeBuiltinTool(
       "Bash",
       { command: "node -v" },
-      { projectRoot: root, env, runner },
+      {
+        projectRoot: root,
+        env,
+        runner,
+        platform: "linux",
+        findBin: (name) => (name === "bash" ? "/usr/bin/bash" : undefined),
+      },
     );
     expect(res.ok).toBe(true);
     expect(res.output).toContain("node v22");
     expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.command).toBe("/usr/bin/bash");
     const passedEnv = runner.calls[0]?.options?.env ?? {};
     expect(passedEnv.NODE_ENV).toBe("test");
     expect(passedEnv.OPENAI_API_KEY).toBeUndefined();
+    expect(passedEnv.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(passedEnv.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(passedEnv.HCLOUD_TOKEN).toBeUndefined();
     expect(passedEnv.CLOUDFLARE_API_TOKEN).toBeUndefined();
     expect(runner.calls[0]?.options?.cwd).toBe(root);
+
+    const noGitBash = await executeBuiltinTool(
+      "Bash",
+      { command: "node -v" },
+      {
+        projectRoot: root,
+        env,
+        runner,
+        platform: "win32",
+        fileExists: () => false,
+        findBin: () => undefined,
+      },
+    );
+    expect(noGitBash.ok).toBe(false);
+    expect(noGitBash.output).toContain("Git for Windows");
+    expect(runner.calls).toHaveLength(1); // runner was never invoked
   });
 });

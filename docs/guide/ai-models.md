@@ -37,8 +37,12 @@ export OPENAI_API_KEY=sk-...
 OpsCrew uses OpenAI's Responses API (`store: false`, so repository contents are not persisted on
 OpenAI's servers). Default OpenAI models:
 
-- `gpt-5-mini` for `analyze` (read-only Analyst);
-- `gpt-5` for `adapt` (Code-change agent).
+- `gpt-6-luna` for `analyze` (read-only Analyst);
+- `gpt-6.2-sol` for `adapt` (Code-change agent).
+
+On Windows, the `Bash` tool requires Git for Windows (Git Bash) — OpsCrew never falls back to
+`cmd.exe` or WSL `bash.exe`. Set `CLAUDE_CODE_GIT_BASH_PATH` if Git Bash is installed outside your
+`PATH`.
 
 ### OpenRouter and other OpenAI-compatible gateways
 
@@ -48,7 +52,7 @@ pick the model with `OPSCREW_MODEL` or `--model`:
 ```bash
 export OPENAI_API_KEY=sk-or-...
 export OPENAI_BASE_URL=https://openrouter.ai/api/v1
-export OPSCREW_MODEL=openai/gpt-5-mini
+export OPSCREW_MODEL=openai/gpt-6-luna
 ```
 
 ## Choosing between Anthropic and OpenAI
@@ -73,7 +77,8 @@ Both runtimes enforce the exact same boundary:
   policy and stays inside your project root. Secret files (`.env`, private keys, credentials) are
   denied, and actions that need confirmation ask for your approval first.
 - All prompts, tool outputs, logs and audit lines pass through OpsCrew's redactor before leaving
-  your machine. Child shell commands run with a sanitized environment that excludes `OPENAI_API_KEY`
-  and all cloud credentials.
+  your machine. Child shell commands run with a sanitized environment that excludes `OPENAI_API_KEY`,
+  Anthropic credentials, and all cloud credentials.
 - Every phase's estimated spend is recorded in `.opscrew/costs.jsonl` and capped by the phase's
-  budget limit.
+  budget limit (unpriced custom models fail closed under a budget cap unless the gateway reports
+  `usage.cost`).

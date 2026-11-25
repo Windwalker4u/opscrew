@@ -28,7 +28,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--no-ai", "Use only the deterministic analysis (no model, no cost)")
     .option(
       "--model <id>",
-      "Model for the Analyst (default claude-haiku-5-5 or gpt-5-mini, or OPSCREW_MODEL)",
+      "Model for the Analyst (default claude-haiku-5-5 or gpt-6-luna, or OPSCREW_MODEL)",
     )
     .option(
       "--dir <folder>",

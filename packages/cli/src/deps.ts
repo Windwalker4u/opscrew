@@ -213,10 +213,17 @@ function openaiConfigured(env: Record<string, string | undefined>): boolean {
 /** Picks which built-in AI runtime to create from `env`, or `undefined` when none is configured. */
 function selectRuntimeKind(
   env: Record<string, string | undefined>,
+  reporter: Reporter,
 ): "claude" | "openai" | undefined {
-  const forced = (env.OPSCREW_RUNTIME ?? "").trim().toLowerCase();
+  const raw = env.OPSCREW_RUNTIME?.trim() ?? "";
+  const forced = raw.toLowerCase();
   if (forced === "openai") return "openai";
   if (forced === "claude" || forced === "anthropic") return "claude";
+  if (raw !== "") {
+    reporter.warn(
+      `Ignoring unknown OPSCREW_RUNTIME=${JSON.stringify(raw)}; expected "claude" or "openai".`,
+    );
+  }
   if (claudeConfigured(env)) return "claude";
   if (openaiConfigured(env)) return "openai";
   return undefined;
@@ -273,7 +280,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
   };
   if (options.ai === false) return deps;
   if (extra.runtime !== undefined) return { ...deps, runtime: extra.runtime };
-  const chosen = selectRuntimeKind(ctx.env);
+  const chosen = selectRuntimeKind(ctx.env, deps.reporter);
   if (chosen === undefined) return deps;
   if (chosen === "openai") {
     const runtime = new OpenAIAgentRuntime({

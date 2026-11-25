@@ -100,6 +100,13 @@ describe("createPhaseDeps", () => {
     const runtime = createPhaseDeps(forcedWithoutKey).runtime;
     expect(runtime).toBeInstanceOf(OpenAIAgentRuntime);
     expect((await runtime?.isConfigured())?.ok).toBe(false);
+
+    const typo = createTestContext({
+      cwd: root,
+      env: { OPSCREW_HOME: home, OPENAI_API_KEY: openaiKey, OPSCREW_RUNTIME: "openaai" },
+    });
+    expect(createPhaseDeps(typo).runtime).toBeInstanceOf(OpenAIAgentRuntime);
+    expect(typo.errors).toContain('Ignoring unknown OPSCREW_RUNTIME="openaai"');
   });
 
   it("uses attached services, but never a runtime with --no-ai", async () => {
