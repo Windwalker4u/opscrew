@@ -39,6 +39,7 @@ import type {
 import type { FirewallApis } from "../shared/firewalls";
 import type { ProviderBackupsApis } from "../shared/provider-backups";
 import type { OtherAppsServices } from "../shares/guard";
+import type { LoginsSnapshot } from "./postgres-logins";
 import type { StorageKeyQuestion } from "./storage";
 
 /**
@@ -146,6 +147,11 @@ export interface ProvisionServices {
   tcpConnect?: TcpConnect;
   /** Remote shell on the new server (default: `SshRemoteExec` with the deploy key). */
   remote?: (host: string) => RemoteExec;
+  /**
+   * The snapshot a switch to PostgreSQL's own logins takes first (047), with the parts `skip` names
+   * left out (default: `opscrew snapshot`'s, with these services).
+   */
+  snapshot?: LoginsSnapshot;
   /**
    * The Docker API of the server `server` (default: `docker system dial-stdio` over its login; in the
    * user's Portainer, `app`'s is Portainer's Docker proxy), where the off-server copy's write check

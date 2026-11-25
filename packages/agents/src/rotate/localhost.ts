@@ -15,10 +15,11 @@ import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   localComposeProject,
   processServices,
+  RELEASE_DB_ENV,
   RESTORE_HELD,
   ROTATION_HOLDER,
   SNAPSHOT_GENERATIONS,
-  serviceSpec,
+  serviceRotation,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -32,6 +33,7 @@ import {
   requireOwnLocalApp,
 } from "../localhost/services";
 import { requireNoCloudflareMove } from "../provision/guard";
+import { releaseDbEnvFile } from "../provision/secrets";
 import { withAppEnv } from "./app-values";
 import {
   type DockerRotation,
@@ -115,10 +117,12 @@ export async function rotateLocalServices(
   };
   /**
    * The env files as provision writes them, with `values` on their `which` side: the rotated
-   * services' own and, unless `servicesOnly`, the app's.
+   * services' own and, unless `servicesOnly`, the release's (with a PostgreSQL's own logins) and
+   * the app's.
    */
   const rewrite = async (values: RotationValues, which: keyof ValuePair, servicesOnly = false) => {
-    const texts = serviceEnvTexts(plan, await serviceValues(deps, plan, values, which));
+    const sides = await serviceValues(deps, plan, values, which);
+    const texts = serviceEnvTexts(plan, sides);
     for (const name of Object.keys(values.services)) {
       const content = texts[`${name}.env`];
       if (content !== undefined) {
@@ -126,6 +130,10 @@ export async function rotateLocalServices(
       }
     }
     if (servicesOnly) return;
+    const release = releaseDbEnvFile(plan, sides);
+    if (release !== undefined) {
+      await writeFileAtomic(join(folder, RELEASE_DB_ENV.file), release, { mode: 0o600 });
+    }
     const app = join(folder, "app.env");
     const text = await readTextIfExists(app);
     if (text !== undefined) {
@@ -139,7 +147,7 @@ export async function rotateLocalServices(
         (s) =>
           s.enabled &&
           values.services[s.name] !== undefined &&
-          serviceSpec(s.kind).rotation.secrets.some((r) => r.recreate),
+          serviceRotation(s).secrets.some((r) => r.recreate),
       )
       .map((s) => s.name);
 

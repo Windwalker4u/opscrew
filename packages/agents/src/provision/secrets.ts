@@ -22,8 +22,11 @@ import {
   deploySecretNamesFor,
   githubEnvironment,
   grantHashSecret,
+  hasReleaseDbEnv,
   OFFSITE_ENV_SECRET,
   PORTAINER_DEPLOY_SECRETS,
+  RELEASE_DB_ENV,
+  releaseVariables,
   serverDeploySecrets,
   serviceEnvSecret,
   serviceSpec,
@@ -36,6 +39,7 @@ import {
   environmentsOf,
   isHostingTarget,
   isServerlessProvider,
+  postgresLogins,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -381,9 +385,30 @@ export function serviceEnvFiles(
 }
 
 /**
+ * The release command's own env file, `release.db.env`, with a PostgreSQL's `logins: separate`
+ * (047): the database's variables (`releaseVariables`) with the owner's login and the services'
+ * secrets `services` (by service, then secret name; a preview environment's placeholders for its
+ * env templates). None without one.
+ */
+export function releaseDbEnvFile(
+  plan: DeployPlan,
+  services: Readonly<Record<string, Readonly<Record<string, string>>>>,
+): string | undefined {
+  if (!hasReleaseDbEnv(plan)) return undefined;
+  const variables = releaseVariables(plan, (service, name) => {
+    const value = services[service.name]?.[name];
+    if (value === undefined) throw new Error(`${service.name} has no secret ${name}.`);
+    return value;
+  });
+  const lines = Object.entries(variables).map(([name, value]) => dotenvLine(name, value));
+  return `${lines.join("\n")}\n`;
+}
+
+/**
  * Every GitHub Actions secret provision may have set for the plan's environment, by its name there
  * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
- * service (enabled or not, an earlier run may have set it), the off-server copy's env file
+ * service (enabled or not, an earlier run may have set it), the release's env file once a
+ * PostgreSQL has its own logins (`OPSCREW_RELEASE_DB_ENV`), the off-server copy's env file
  * (`OFFSITE_ENV_SECRET`) while `snapshots.offsite` is on (turning it off deletes it as stale),
  * each extra server's
  * address and known hosts and, on a server the user owns, the tunnel's service token. In the user's
@@ -405,6 +430,8 @@ export function deploySecretNames(plan: DeployPlan): string[] {
         : [
             ...Object.values(DEPLOY_SECRETS),
             ...plan.services.map((service) => serviceEnvSecret(service.name)),
+            // The release's own env file, once a PostgreSQL has its own logins (047).
+            ...(plan.services.some(postgresLogins) ? [RELEASE_DB_ENV.secret] : []),
             ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
             ...(plan.servers ?? []).flatMap((server) =>
               Object.values(serverDeploySecrets(server.name)),
@@ -857,7 +884,8 @@ export interface ServerReach {
 
 /**
  * The GitHub Actions secrets the deploy workflow reads, with one per running service
- * ({@link serviceEnvSecrets}). In tunnel mode (a server the user owns without a public address)
+ * ({@link serviceEnvSecrets}) and, with a PostgreSQL's own logins, the release's env file
+ * ({@link releaseDbEnvFile}, `OPSCREW_RELEASE_DB_ENV`). In tunnel mode (a server the user owns without a public address)
  * `tunnel` adds the Cloudflare Access service token the workflow reaches SSH through; `host` is
  * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.
  * With origin TLS, `originTls` is the origin certificate's PEM, then its key's
@@ -876,6 +904,9 @@ export function deploySecrets(input: {
   servers?: readonly ServerReach[];
   offsite?: string;
 }): Record<string, string> {
+  const release = hasReleaseDbEnv(input.plan)
+    ? releaseDbEnvFile(input.plan, input.environment.values.services)
+    : undefined;
   return {
     [DEPLOY_SECRETS.host]: input.host,
     [DEPLOY_SECRETS.sshKey]: input.privateKey,
@@ -890,6 +921,7 @@ export function deploySecrets(input: {
       }),
     ),
     [DEPLOY_SECRETS.appEnv]: input.environment.appEnv,
+    ...(release === undefined ? {} : { [RELEASE_DB_ENV.secret]: release }),
     ...serviceEnvSecrets(input.plan, input.environment),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
     [DEPLOY_SECRETS.buildSecrets]: input.environment.buildSecrets,

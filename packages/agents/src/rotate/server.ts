@@ -15,21 +15,29 @@ import {
   DEPLOY_PAUSED_VARIABLE,
   DEPLOY_SECRETS,
   hasLogin,
+  RELEASE_DB_ENV,
   ROTATE_APPROVAL_FILE,
   ROTATE_DIR,
   rotateApprovalLine,
   rotateInput,
   serviceEnvSecret,
+  serviceSecrets,
   serviceSpec,
   shellQuote,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, onOneServer, type PlanService } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  onOneServer,
+  type PlanService,
+  postgresLogins,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import type { GitHubSetup } from "../provision/credentials";
 import { requireNoCloudflareMove } from "../provision/guard";
-import { deploySecretPlace, setSecretAt } from "../provision/secrets";
+import { deploySecretPlace, releaseDbEnvFile, setSecretAt } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { registerAppSecrets } from "../shared/app-secrets";
@@ -223,7 +231,7 @@ function namedServices(plan: DeployPlan, names: readonly string[], flags: string
   }
   const services = plan.services.filter((service) => names.includes(service.name));
   for (const service of services) {
-    if (serviceSpec(service.kind).secrets.length > 0 && hasLogin(service)) continue;
+    if (serviceSecrets(service).length > 0 && hasLogin(service)) continue;
     throw new OpsCrewError(
       "INVALID_INPUT",
       `${service.name} has no login OpsCrew made, so there is nothing of it to rotate. Nothing was changed.`,
@@ -372,12 +380,15 @@ async function readAppEnv(
 
 /**
  * The deploy secrets a rotation of `services` replaces, by their unprefixed names: the app's
- * settings and each running one's env file.
+ * settings, the release's with a PostgreSQL's own logins, and each running one's env file.
  */
 function rotatedSecrets(services: readonly PlanService[]): string[] {
+  const running = services.filter((s) => s.enabled);
   return [
     DEPLOY_SECRETS.appEnv,
-    ...services.filter((s) => s.enabled).map((s) => serviceEnvSecret(s.name)),
+    // A PostgreSQL's own logins change the release's env file too (047).
+    ...(running.some(postgresLogins) ? [RELEASE_DB_ENV.secret] : []),
+    ...running.map((s) => serviceEnvSecret(s.name)),
   ];
 }
 
@@ -563,8 +574,10 @@ async function envFilesWith(
   side: "old" | "new",
 ): Promise<Record<string, string>> {
   const { from, to } = await serviceSides(deps, plan, values, side);
+  const release = releaseDbEnvFile(plan, to);
   return {
     ...serviceEnvTexts(plan, to),
+    ...(release === undefined ? {} : { [RELEASE_DB_ENV.file]: release }),
     ...(appEnv === undefined
       ? {}
       : { "app.env": withAppEnv(swapAppEnv(plan, appEnv, values, from, to), values.app, side) }),
@@ -581,7 +594,9 @@ function secretValues(
       const file =
         name === DEPLOY_SECRETS.appEnv
           ? "app.env"
-          : `${services.find((s) => serviceEnvSecret(s.name) === name)?.name}.env`;
+          : name === RELEASE_DB_ENV.secret
+            ? RELEASE_DB_ENV.file
+            : `${services.find((s) => serviceEnvSecret(s.name) === name)?.name}.env`;
       return [name, files[file] as string];
     }),
   );

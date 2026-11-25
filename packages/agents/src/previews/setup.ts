@@ -38,7 +38,7 @@ import { commandFlags } from "../environments/choice";
 import { environmentPaths } from "../environments/paths";
 import type { NetworkServer } from "../provision/network";
 import { previewTlsOf, readOriginTlsValues } from "../provision/origin-tls";
-import { serviceEnvFiles } from "../provision/secrets";
+import { releaseDbEnvFile, serviceEnvFiles } from "../provision/secrets";
 import { serverForNetwork } from "../provision/servers";
 import type { ProvisionPhase } from "../provision/steps";
 import type { ProvisionServices } from "../provision/types";
@@ -127,8 +127,13 @@ export async function previewEnvironment(
     deps.redactor.addLiteral(value, "preview-value");
   }
   const names = Object.keys(own.values);
+  const release = releaseDbEnvFile(template, env.values.services);
   return {
-    templates: { app: env.appEnv, services: serviceEnvFiles(template, env) },
+    templates: {
+      app: env.appEnv,
+      ...(release === undefined ? {} : { release }),
+      services: serviceEnvFiles(template, env),
+    },
     values: names.map((name) => `${dotenvLine(name, own.values[name] as string)}\n`).join(""),
     valueNames: names,
     missing: own.missing,

@@ -7,7 +7,7 @@
  * either side of them. No value is ever shown, logged or audited.
  */
 import { OpsCrewError } from "@opscrew/core";
-import { serviceSpec } from "@opscrew/iac-templates";
+import { serviceSecrets, serviceSpec } from "@opscrew/iac-templates";
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -112,7 +112,7 @@ export async function newRotationValues(
   }
   for (const service of services) {
     const secrets: Record<string, ValuePair> = {};
-    for (const { name, format } of serviceSpec(service.kind).secrets) {
+    for (const { name, format } of serviceSecrets(service)) {
       const old = keptValue(kept, service, name);
       if (old === undefined) {
         throw new OpsCrewError(
@@ -148,7 +148,7 @@ export async function serviceValues(
   const services: ServiceValues = {};
   for (const service of plan.services.filter((s) => s.enabled)) {
     const secrets: Record<string, string> = {};
-    for (const { name } of serviceSpec(service.kind).secrets) {
+    for (const { name } of serviceSecrets(service)) {
       const value = values.services[service.name]?.[name]?.[side] ?? keptValue(kept, service, name);
       if (value === undefined) {
         throw new OpsCrewError(

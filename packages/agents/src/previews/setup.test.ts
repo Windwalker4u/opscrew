@@ -9,7 +9,7 @@ import {
 import { generateP256 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderPreviewRecipe } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { NetworkServer } from "../provision/network";
 import { generatedValuesFile } from "../shared/app-secrets";
@@ -100,6 +100,33 @@ describe("previewEnvironment", () => {
       expect(templates).not.toContain(value);
     }
     expect(deps.redactor.redact(`key ${STRIPE}`)).not.toContain(STRIPE);
+  });
+});
+
+describe("previewEnvironment with PostgreSQL's two logins (047)", () => {
+  it("gives the release its own env template with the owner's login, and the app the runtime's", async () => {
+    const { deps, plan, root } = await previewProject();
+    const separate = DeployPlanSchema.parse({
+      ...plan,
+      services: plan.services.map((s) =>
+        s.kind === "postgres" ? { ...s, options: { logins: "separate" } } : s,
+      ),
+    });
+    await writeFile(join(root, ".env.preview"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
+    const env = await previewEnvironment(deps, separate);
+    expect(env.templates.release).toBe(
+      "DATABASE_URL=postgresql://app_owner:@SECRET:db-owner-password:hex32@@db:5432/app\n",
+    );
+    expect(env.templates.app).toContain(
+      "DATABASE_URL=postgresql://app_runtime:@SECRET:db-runtime-password:hex32@@db:5432/app",
+    );
+    expect(env.templates.services.db).toContain(
+      "OPSCREW_OWNER_PASSWORD=@SECRET:db-owner-password:hex32@",
+    );
+    expect(env.templates.services.db).toContain(
+      "OPSCREW_RUNTIME_PASSWORD=@SECRET:db-runtime-password:hex32@",
+    );
+    expect((await previewEnvironment(deps, plan)).templates.release).toBeUndefined();
   });
 });
 

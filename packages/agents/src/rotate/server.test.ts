@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { exists, OpsCrewError } from "@opscrew/core";
-import { serviceSpec } from "@opscrew/iac-templates";
+import { RELEASE_DB_ENV, serviceSecrets, serviceSpec } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -289,11 +289,13 @@ async function world(
   }));
   const old: Generated = { env: { SESSION_SECRET: hex() }, services: {} };
   for (const service of plan.services) {
+    // Postgres's password is kept apart (`dbPassword`); its two logins' (047) with the others.
+    const kept = serviceSecrets(service).filter(
+      (secret) => !(service.kind === "postgres" && secret.name === "password"),
+    );
     if (service.kind === "postgres") old.dbPassword = hex();
-    else {
-      old.services[service.name] = Object.fromEntries(
-        serviceSpec(service.kind).secrets.map((secret) => [secret.name, hex()]),
-      );
+    if (kept.length > 0) {
+      old.services[service.name] = Object.fromEntries(kept.map((secret) => [secret.name, hex()]));
     }
   }
   await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
@@ -491,6 +493,39 @@ describe("rotateServices on one server", () => {
     const values = await generated(w);
     expect(values.services.cache?.password).not.toBe(w.old.services.cache?.password);
     expect(w.handler.requests[0]?.details).toContain("cache (Valkey) is off");
+  });
+});
+
+describe("rotateServices with PostgreSQL's two logins (047)", () => {
+  it("rotates the owner's and the runtime's passwords as swaps with no restart, and the release's env file with them", async () => {
+    const base = stagingPlan([{ kind: "postgres", name: "db" }]);
+    const plan = stagingPlan([{ kind: "postgres", name: "db" }], {
+      fields: {
+        services: base.services.map((s) => ({ ...s, options: { logins: "separate" } })),
+      },
+    });
+    const w = await world(plan);
+    await w.run(["db"]);
+
+    const kept = (await generated(w)).services.db ?? {};
+    const owner = kept["owner-password"] as string;
+    const runtime = kept["runtime-password"] as string;
+    const old = w.old.services.db ?? {};
+    expect(owner).not.toBe(old["owner-password"]);
+    expect(runtime).not.toBe(old["runtime-password"]);
+    const [request] = w.handler.requests.filter((r) => r.kind === "remote-exec");
+    for (const secret of ["owner-password", "runtime-password"]) {
+      expect(request?.details).toContain(`db (PostgreSQL), its ${secret}: a short swap`);
+    }
+    expect(request?.details).not.toContain("restarts");
+    // GitHub's and rotate.sh's release.db.env name the owner with the new password.
+    const release = `DATABASE_URL=postgresql://app_owner:${owner}@db:5432/app\n`;
+    expect(secret(w, "RELEASE_DB_ENV")).toBe(release);
+    const [run] = w.servers.app.runs;
+    const input = readInput(run as ScriptRun, ["app.env", RELEASE_DB_ENV.file, "db.env"]);
+    expect(input.files[RELEASE_DB_ENV.file]).toBe(release);
+    expect(input.files["app.env"]).toContain(`app_runtime:${runtime}@db:5432/app`);
+    expectNoValue(w, [owner, runtime, ...Object.values(old)]);
   });
 });
 

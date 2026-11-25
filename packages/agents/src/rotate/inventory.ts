@@ -9,6 +9,8 @@ import {
   addressUpdaterName,
   hasLogin,
   type RotationMode,
+  serviceRotation,
+  serviceSecrets,
   serviceSpec,
   tunnelMode,
   usesTunnel,
@@ -85,7 +87,8 @@ const MODE_COST: Readonly<Record<RotationMode, number>> = { dual: 0, swap: 1, re
 
 /** A service's credential: all its generated secrets under its plan name. */
 function serviceCredential(service: PlanService): Omit<Credential, "date"> {
-  const { title, rotation } = serviceSpec(service.kind);
+  const { title } = serviceSpec(service.kind);
+  const rotation = serviceRotation(service);
   const base = { name: service.name, kind: "service" as const };
   if (!hasLogin(service)) {
     return {
@@ -301,7 +304,7 @@ export async function credentialInventory(
         ? generated.dbPassword !== undefined
         : generated.services?.[service.name] !== undefined;
     for (const service of plan.services) {
-      if (serviceSpec(service.kind).secrets.length === 0) continue;
+      if (serviceSecrets(service).length === 0) continue;
       if (service.enabled || kept(service)) made.push(serviceCredential(service));
     }
     made.push(
