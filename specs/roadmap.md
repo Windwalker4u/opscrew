@@ -12,8 +12,9 @@ several apps on a server OpsCrew created](030-shared-created-server/) and [031 a
 window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 2026-11-21.
 **Next:**
 - **0.2.12** (the founder, 2026-11-25): 046 an uptime check that doesn't use GitHub Actions, the
-  agent tool policy's security fixes (#16 to #24), the fixes in #26, and [032 a Codex
-  plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left).
+  agent tool policy's security fixes (#16 to #24), the fixes in #26, [032 a Codex
+  plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left), and 047 an app's
+  PostgreSQL never running as the superuser (the founder, 2026-11-25).
 - **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
   would hold 046 back.
@@ -1033,7 +1034,8 @@ injection in the app has every right.
   That part reviewed as sound; its rotation must not restart the database.
 - **Research:** a library that creates its own schema at runtime (pg-boss) needs that schema made
   by the owner first, or `CREATE` on it.
-- **After 0.2.13,** beside 045, which changes the same PostgreSQL service.
+- **In 0.2.12** (the founder, 2026-11-25), built in parallel with 046's server checks. 045, which
+  changes the same PostgreSQL service, comes after it.
 
 ## Later, not yet placed
 
