@@ -147,3 +147,28 @@ describe("changeCheckPause", () => {
     expect(handler.requests).toEqual([]);
   });
 });
+
+describe("changeCheckPause with the Cloudflare uptime Worker", () => {
+  it("has no pause: a move's or a retarget's window changes nothing, and reads no variable", async () => {
+    const { deps, handler, github, target } = await setup();
+    const base = plan();
+    const worker = DeployPlanSchema.parse({
+      ...base,
+      dns: { provider: "cloudflare", domain: "shop.example.com", proxied: true, www: false },
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    let read = false;
+    github.getRepoVariable = async () => {
+      read = true;
+      return undefined;
+    };
+    for (const reason of ["retarget", "destroyed", undefined] as const) {
+      await expect(changeCheckPause(deps, target, worker, reason, "provision")).resolves.toBe(
+        "unchanged",
+      );
+    }
+    expect(read).toBe(false);
+    expect(handler.requests).toEqual([]);
+    expect(github.variables.size).toBe(0);
+  });
+});

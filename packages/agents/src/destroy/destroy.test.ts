@@ -26,6 +26,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { fakeUptimeAccount, provisionedUptime, WEBHOOK_URL } from "../check/uptime.fakes";
 import { applyMarkerFile } from "../provision/takeover";
 import { ensureStatePassphrase, readServerAddresses, recordServerAddress } from "../shared";
 import {
@@ -332,6 +333,66 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     );
     const approval = s.handler.requests.find((request) => request.kind === "github-secrets");
     expect(approval?.details).toContain("  OPSCREW_CHECK_SERVER");
+  });
+
+  it("removes the Cloudflare uptime Worker's entry under the typed name, the Worker with the last entry", async () => {
+    const base = deployedPlan({ domain: "shop.example.com" });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    const { uptime, client } = fakeUptimeAccount();
+    // A scripted destroy: only what the typed name covers is approved, nothing else is asked.
+    const s = await setup({
+      plan,
+      answer: scriptedConfirm("shop"),
+      services: { sharedCloudflare: client },
+    });
+    await provisionedUptime(s.deps, plan, client);
+    const provisioned = uptime.writes().length;
+    let shownBeforeName = "";
+    let writesBeforeName = 0;
+    await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => {
+        shownBeforeName = s.deps.reporter.text();
+        writesBeforeName = uptime.writes().length;
+        return true;
+      },
+    });
+    const removal =
+      "This also removes the uptime check's entry for acme/shop (prod) from the Cloudflare Worker opscrew-uptime, and the Worker, its trigger and its KV namespace opscrew-uptime, which no other entry uses:";
+    // Planned before the typed name, read-only, its words and hash shown and in the approval.
+    expect(shownBeforeName).toContain(removal);
+    const request = s.handler.requests.find(
+      (r) => r.kind === "cloudflare-apply" && r.title.includes("uptime"),
+    );
+    expect(shownBeforeName).toContain(`Cloudflare uptime plan hash: ${request?.planHash}`);
+    const destroy = s.handler.requests.find(
+      (r) => r.kind === "iac-apply" && r.title.startsWith("Delete shop"),
+    );
+    expect(destroy?.details).toContain(removal);
+    expect(destroy?.details).not.toContain("OPSCREW_CHECK_PAUSED");
+    // Applied under the teardown's typed name (allowDestroy), with no other question.
+    expect(request).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+    expect(s.events).not.toContain("approval:github-settings");
+    expect(s.github.variables.get(CHECK_PAUSED_VARIABLE)).toBeUndefined();
+    expect(writesBeforeName).toBe(provisioned);
+    // The last entry: the Worker, its trigger and secrets, and the namespace go too.
+    expect(uptime.scripts.has("opscrew-uptime")).toBe(false);
+    expect(uptime.namespace("opscrew-uptime")).toBeUndefined();
+    // After the infrastructure, before the secrets.
+    const at = (action: string) => s.deps.audit.entries.findIndex((e) => e.action === action);
+    expect(at("cloudflare uptime apply started")).toBeGreaterThan(
+      s.deps.audit.entries.findIndex((e) => e.kind === "iac"),
+    );
+    expect(at("cloudflare uptime apply started")).toBeLessThan(
+      s.deps.audit.entries.findIndex((e) => e.kind === "secret-set"),
+    );
+    // No GitHub check secrets to remove for it, and the webhook's address is nowhere.
+    expect(s.github.deleted).not.toContain("OPSCREW_CHECK_SSH_KEY");
+    const seen = JSON.stringify([s.deps.reporter.lines, s.deps.audit.entries, s.handler.requests]);
+    expect(seen).not.toContain(WEBHOOK_URL);
   });
 
   it("keeps the check key while another environment still has the check", async () => {

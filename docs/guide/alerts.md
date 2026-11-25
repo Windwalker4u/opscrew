@@ -4,7 +4,9 @@ OpsCrew adds a scheduled check to your repository that runs in [GitHub Actions](
 checks that your app answers, that its certificate is valid and that its server's disk has room.
 When something fails, it opens a GitHub issue, so everyone watching the repository is told, and it
 can post the same message to [Slack](https://slack.com/), [Discord](https://discord.com/) or [ntfy](https://ntfy.sh/). When the app recovers, it closes the issue and
-says how long the problem lasted.
+says how long the problem lasted. When your DNS is on Cloudflare,
+a Worker in your own Cloudflare account can check that the app answers instead, with no Actions
+minutes: see [In your Cloudflare account instead of GitHub Actions](#in-your-cloudflare-account-instead-of-github-actions).
 
 Nothing runs on your server for it, apart from a disk job on a server that deploys from its own
 runner. With the default interval it costs nothing: Actions minutes are free in a public repository,
@@ -228,6 +230,104 @@ command) and the secrets
 `OPSCREW_CHECK_SSH_KEY` and `OPSCREW_CHECK_SERVER` (with the environment's prefix outside prod) stay
 until the environment is destroyed. To delete the secrets earlier, run `gh secret delete <name>` for
 each.
+
+## In your Cloudflare account instead of GitHub Actions
+
+In a private repository the scheduled check uses Actions minutes. If you'd rather not spend them,
+a Worker in your Cloudflare account, on Cloudflare's free plan, can check that the app answers
+instead, and post down and recovered messages to your webhook.
+
+### Choosing it
+
+Set the runner in the environment's plan, beside `enabled`:
+
+```yaml
+observability:
+  check:
+    enabled: true
+    runner: cloudflare   # or actions, the default
+```
+
+It needs:
+
+- the app's DNS on Cloudflare (`dns.provider: cloudflare`), since the Worker runs in the Cloudflare
+  account of the app's zone. The plan is refused otherwise;
+- a server, a Portainer, or a site on Cloudflare or GitHub Pages: a [hosting account](hosting-accounts.md)
+  can't use the Worker yet, and its plan is refused with `runner: actions` as the way on;
+- a [webhook](#the-webhook-slack-discord-or-ntfy) for the repository. The Worker opens no GitHub
+  issue, so its messages go only there, and `provision` stops before any change without one;
+- two more permissions on the Cloudflare token, listed in
+  [The Cloudflare token](security.md#the-cloudflare-token). `npx opscrew init` names any that is
+  missing.
+
+Then run `npx opscrew provision`. It shows a Cloudflare plan with its hash for you to approve:
+
+- the Worker `opscrew-uptime`, its schedule of every 5 minutes and its storage (a Workers KV
+  namespace, also named `opscrew-uptime`), each created only when missing;
+- this environment's entry: its hostnames and its health path;
+- the entry's webhook secret, by name only. The address is stored only as a secret of the Worker,
+  never in the plan, a log or a file.
+
+There is one Worker per Cloudflare account, shared by every app that chooses it. A second app's
+plan adds only its own entry and secret, and names the other apps' entries it keeps.
+
+A new schedule can take up to 15 minutes to start at Cloudflare, so the first run may come that
+late.
+
+### What counts as down
+
+Every 5 minutes, the Worker tries each hostname once at its health path over HTTPS, the same
+hostnames as the Actions check. A try fails on no answer within 10 seconds, or a status outside 200
+to 399. Redirects aren't followed, so a redirect counts as an answer.
+
+One failed try sends nothing. A second failure in a row, at the next run, sends one "down" message,
+so you hear within about 10 minutes, and a restart during a deploy doesn't alert. While the app
+stays down, nothing more is sent. When it answers again, one "recovered" message, within about 5
+minutes, says how long it was down.
+
+The reason in a down message is one of:
+
+- **not reachable:** no answer, a network error, or Cloudflare saying it couldn't reach the server;
+- **an invalid certificate:** Cloudflare couldn't verify the server's certificate;
+- **answered with status N,** for any other failing status.
+
+The messages are fixed text: the app, the environment, the hostname, the reason, the times and the
+command `npx opscrew status`. They never hold what your app answered, its headers or an address.
+A message that can't be sent is sent again at the next run.
+
+`npx opscrew status` says that the Worker checks the environment, and lists the hostnames that are
+down and since when. When the Worker or the entry is gone, it says to run `npx opscrew provision`.
+
+### What it doesn't check
+
+The Worker can't reach your server, so for an environment with `runner: cloudflare` these checks
+don't run: the disk, the [scheduled snapshots](snapshots.md#the-schedule), the
+[restore drills](snapshots.md#on-a-schedule) and the certificate's days left. **The disk,
+snapshot, restore-drill and certificate-days checks need `runner: actions`.** `npx opscrew status`
+still shows those figures when you ask.
+
+### Cloudflare's free limits
+
+- **40 hostnames per Cloudflare account,** across every app's entries. The plan refuses the 41st
+  before anything changes; keep `runner: actions` for that app.
+- **The schedule** takes one of the 5 Cron Triggers that Cloudflare's free plan gives an account.
+- **Workers KV's daily limits** are your account's, shared with your own Workers. A healthy day
+  writes nothing, and each failure costs a few writes.
+
+### Moves and planned work
+
+- **No pause:** OpsCrew doesn't pause the Worker while [`npx opscrew retarget`](retarget.md) or a
+  move runs, so it may send a down message and then a recovered one.
+- **Another Cloudflare account:** [`npx opscrew cloudflare move`](cloudflare-move.md) refuses an app that the Worker
+  checks. Set `observability.check.runner` to `actions`, run `npx opscrew provision`, then move.
+
+### Switching back
+
+Set `runner: actions`, or turn the check off, and run `npx opscrew provision`. Its plan removes only
+this environment's entry, its state and its secret. The Worker, its schedule and its storage stay,
+even when no app uses them: they cost nothing, do nothing, and the next app reuses them. They go
+only when the last app that has an entry is removed with `npx opscrew destroy`, under destroy's own
+typed confirmation.
 
 ## What it can't do
 

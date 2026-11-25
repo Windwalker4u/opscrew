@@ -1,6 +1,10 @@
+import { uptimeEntryKey, uptimeStateKey } from "@opscrew/connector-cloudflare";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { uptimeEntry } from "../check/uptime";
+import { fakeUptimeAccount, uptimePlan } from "../check/uptime.fakes";
 import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, FakeGitHub, ScriptedRunner, SERVER_IPV4, testPlan } from "../testing";
 import { checkStateReport } from "./check-state";
@@ -122,5 +126,66 @@ describe("the scheduled check's state", () => {
       "  Open alerts: none",
     ]);
     expect(report.check).toEqual({ workflow: "active", alerts: [] });
+  });
+});
+
+describe("the Cloudflare uptime Worker's state", () => {
+  /** Deps in the repository, reaching the fake account with a Cloudflare token. */
+  async function withAccount() {
+    const deps = await inRepository();
+    const { uptime } = fakeUptimeAccount();
+    deps.env.CLOUDFLARE_API_TOKEN = fakeSecret("cloudflare-token", "status");
+    deps.fetch = uptime.fetch;
+    return { deps, uptime };
+  }
+
+  it("is read from Cloudflare, not GitHub, and lists the hostnames down", async () => {
+    const { deps, uptime } = await withAccount();
+    const plan = uptimePlan("cloudflare");
+    // Provisioned from another computer: this one has no record, so the zone and git say where.
+    const id = "acme/shop/shop/prod";
+    uptime.addNamespace("opscrew-uptime");
+    const namespace = uptime.namespace("opscrew-uptime");
+    namespace?.values.set(
+      uptimeEntryKey(id),
+      JSON.stringify(uptimeEntry(plan, "acme/shop", "slack")),
+    );
+    namespace?.values.set(
+      uptimeStateKey(id),
+      JSON.stringify({
+        hosts: {
+          "shop.example.com": {
+            status: "down",
+            since: "2026-11-25T10:05:00Z",
+            reason: "an invalid certificate",
+          },
+        },
+      }),
+    );
+    uptime.scripts.set("opscrew-uptime", {
+      content: "",
+      compatibilityDate: "2026-10-01",
+      bindings: [],
+      secrets: new Map(),
+      crons: ["*/5 * * * *"],
+    });
+
+    const { lines, check } = await checkStateReport(deps, plan, null);
+    expect(lines[0]).toBe(
+      "Uptime check (the Cloudflare Worker opscrew-uptime, read from Cloudflare now):",
+    );
+    expect(lines.at(-1)).toBe(
+      "    shop.example.com since 2026-11-25T10:05:00Z: an invalid certificate",
+    );
+    expect(check).toBeUndefined();
+    expect(uptime.writes().filter((call) => call.path.includes("/values/"))).toEqual([]);
+  });
+
+  it("says to run provision when the Worker is missing", async () => {
+    const { deps } = await withAccount();
+    const { lines } = await checkStateReport(deps, uptimePlan("cloudflare"), null);
+    expect(lines.slice(1)).toEqual([
+      "  The Worker opscrew-uptime is missing from the Cloudflare account, so nothing checks the app now. Run `opscrew provision` to set it up again.",
+    ]);
   });
 });

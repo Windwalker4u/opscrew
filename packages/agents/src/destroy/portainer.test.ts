@@ -7,6 +7,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { CHECK_PAUSED_VARIABLE, serviceSpec } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { fakeUptimeAccount, provisionedUptime, withUptimeAccount } from "../check/uptime.fakes";
 import {
   deployImage,
   everythingShown,
@@ -846,6 +847,39 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.handler.requests.some((request) => request.kind === "stack-apply")).toBe(false);
     expect(asked).toEqual(["acme/shop:opscrew-deploy"]);
     expect(s.events.indexOf("github:delete-branch")).toBeGreaterThan(s.events.indexOf("iac-apply"));
+  });
+
+  it("removes the Cloudflare uptime Worker's entry under the stack teardown's typed name, with no pause", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    const before = await readArtifact("plan", s.deps.paths.files.plan);
+    const plan = DeployPlanSchema.parse({
+      ...before,
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    await writeArtifact("plan", s.deps.paths.files.plan, plan);
+    const { uptime, client } = fakeUptimeAccount();
+    await provisionedUptime(s.deps, plan, client);
+    s.answer(scriptedConfirm("shop"));
+    const shared = s.services.sharedCloudflare;
+    await runDestroy(s.deps, {
+      services: {
+        ...services(s),
+        sharedCloudflare: shared === undefined ? client : withUptimeAccount(shared, client),
+      },
+    });
+    const note =
+      "This also removes the uptime check's entry for acme/shop (prod) from the Cloudflare Worker opscrew-uptime, and the Worker, its trigger and its KV namespace opscrew-uptime, which no other entry uses:";
+    const teardown = s.handler.requests.find((request) => request.kind === "stack-apply");
+    expect(teardown?.details).toContain(note);
+    expect(s.handler.requests.find((r) => r.title.includes("uptime plan"))).toMatchObject({
+      kind: "cloudflare-apply",
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    expect(s.events).not.toContain("approve:github-settings");
+    expect(s.github.variables.get(CHECK_PAUSED_VARIABLE)).toBeUndefined();
+    expect(uptime.scripts.has("opscrew-uptime")).toBe(false);
+    expect(uptime.namespace("opscrew-uptime")).toBeUndefined();
   });
 
   it("a scripted destroy pauses the scheduled check under the typed confirmation that says so", async () => {

@@ -23,7 +23,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm lint`
   - **Effort:** medium
 
-- [ ] T4602 [US1] The Worker's script, embedded, and `checkHosts`
+- [x] T4602 [US1] The Worker's script, embedded, and `checkHosts`
   - **Owns:**
     - `packages/iac-templates/uptime/**` (new: `worker.mjs`, `worker.d.mts`);
     - `packages/iac-templates/src/uptime/**` (new: index and tests);
@@ -71,7 +71,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - **Effort:** high
 
-- [ ] T4603 [US1] [US2] The uptime adapter in the Cloudflare connector
+- [x] T4603 [US1] [US2] The uptime adapter in the Cloudflare connector
   - **Owns:** `packages/connectors/cloudflare/src/client.ts` (the new methods),
     `packages/connectors/cloudflare/src/uptime.ts` (new), `uptime.test.ts` (new),
     `client-uptime.test.ts` (new), `src/index.ts` (exports), and `src/testing/**` (a fake
@@ -121,7 +121,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
 
 ## Wave 2
 
-- [ ] T4604 [US1] [US2] [US3] The agents' wiring: provision, destroy, status, design, init, moves
+- [x] T4604 [US1] [US2] [US3] The agents' wiring: provision, destroy, status, design, init, moves
   - **Owns:**
     - `packages/agents/src/check/**`, with the new `uptime.ts` and its tests;
     - `packages/agents/src/destroy/{common,run,own,portainer,serverless}.ts` and their tests;
@@ -170,7 +170,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - **Effort:** xhigh
 
-- [ ] T4605 [US1] The guide
+- [x] T4605 [US1] The guide
   - **Owns:** `docs/guide/alerts.md`, `docs/guide/security.md` (the Cloudflare token's list).
   - **Reads:** plan.md 5., spec.md, research R1 to R5, the rest of `alerts.md`.
   - **Depends:** none in code; written from the spec, and checked against T4604 at review.
@@ -368,11 +368,11 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
 
 ## The lead's wave
 
-- [ ] T4690 (lead) A fresh review of the merged waves, by a reviewer that didn't build them:
+- [x] T4690 (lead) A fresh review of the merged waves, by a reviewer that didn't build them:
   safety (hashes, re-reads, `allowDestroy`, the host step), secrets (the report key), the
   report handler's refusals, and the guide against the code.
-- [ ] T4691 (lead) `/simplify` over the feature's diff.
-- [ ] T4692 (lead) The live pass of [quickstart.md](quickstart.md).
+- [x] T4691 (lead) `/simplify` over the feature's diff.
+- [x] T4692 (lead) The live pass of [quickstart.md](quickstart.md).
   - **Where:** the founder's own Cloudflare account. It's free and reversible, so it needs no
     extra go-ahead.
   - **Nothing left behind:** proven by listing the Workers, the KV namespaces and the secrets

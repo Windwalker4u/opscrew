@@ -6,8 +6,9 @@ import type { ApprovalRequest, FetchLike, ResourceChange } from "@opscrew/contra
 import { findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { CHECK_PAUSED_VARIABLE, pagesVerificationRootDir } from "@opscrew/iac-templates";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { fakeUptimeAccount, provisionedUptime, withUptimeAccount } from "../check/uptime.fakes";
 import { runProvision } from "../provision/run";
 import { pagesPlanHash, planPagesTeardown } from "../serverless/pages/plan";
 import { pagesVerificationStateFile } from "../shared";
@@ -70,6 +71,46 @@ const PAUSE_NOTE = "This also pauses the scheduled check for example-app/prod";
 async function withCheck(file: string): Promise<void> {
   const plan = await readArtifact("plan", file);
   await writeArtifact("plan", file, { ...plan, observability: { check: { enabled: true } } });
+}
+
+/**
+ * Turns the check on in the Cloudflare uptime Worker in the plan of `deps`' project, and provisions
+ * its entry in a fake account (`fakeUptimeAccount`) for `github`, as provision leaves it.
+ */
+async function withUptimeWorker(
+  deps: Awaited<ReturnType<typeof createTestPhaseDeps>>,
+  github?: { owner: string; repo: string },
+) {
+  const file = deps.paths.files.plan;
+  const plan = DeployPlanSchema.parse({
+    ...(await readArtifact("plan", file)),
+    observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+  });
+  await writeArtifact("plan", file, plan);
+  const account = fakeUptimeAccount();
+  await provisionedUptime(deps, plan, account.client, github);
+  return account;
+}
+
+/** The uptime Worker's removal: the last entry's, so the Worker and its namespace go too. */
+const UPTIME_NOTE =
+  "This also removes the uptime check's entry for acme/shop (example-app, prod) from the Cloudflare Worker opscrew-uptime, and the Worker, its trigger and its KV namespace opscrew-uptime, which no other entry uses:";
+
+/** The Worker's entry went under the typed name, with no pause of the GitHub check. */
+function expectUptimeRemoved(
+  account: ReturnType<typeof fakeUptimeAccount>,
+  handler: ScriptedApprovalHandler,
+  github: FakeDestroyGitHub,
+): void {
+  expect(handler.requests.find((r) => r.title.includes("uptime plan"))).toMatchObject({
+    kind: "cloudflare-apply",
+    allowDestroy: true,
+    confirmPhrase: "example-app",
+  });
+  expect(kinds(handler)).not.toContain("github-settings");
+  expect(github.variables.get(CHECK_PAUSED_VARIABLE)).toBeUndefined();
+  expect(account.uptime.scripts.has("opscrew-uptime")).toBe(false);
+  expect(account.uptime.namespace("opscrew-uptime")).toBeUndefined();
 }
 
 /** The check is paused for the environment, audited under the approval titled `title`. */
@@ -138,6 +179,8 @@ async function cloudflareSite() {
       confirm?: boolean;
       /** What the state still holds (default: the Worker, its domains and its settings). */
       resources?: ResourceChange[];
+      /** The uptime Worker's account (a `fakeUptimeAccount`'s client), the zone's account too. */
+      uptime?: CloudflareClient;
     } = {},
   ) => {
     const events: string[] = [];
@@ -169,11 +212,14 @@ async function cloudflareSite() {
         engine: async () => engine,
         github,
         cloudflare: fakeCloudflare(),
-        sharedCloudflare: new CloudflareClient({
-          token: fakeSecret("cloudflare-token", "destroy-shared"),
-          fetch: logged,
-          sleep: async () => undefined,
-        }),
+        sharedCloudflare: ((shared) =>
+          o.uptime === undefined ? shared : withUptimeAccount(shared, o.uptime))(
+          new CloudflareClient({
+            token: fakeSecret("cloudflare-token", "destroy-shared"),
+            fetch: logged,
+            sleep: async () => undefined,
+          }),
+        ),
         sleep: async () => undefined,
       },
       confirm: async (preview) => {
@@ -288,6 +334,19 @@ describe.skipIf(!findExecutable("git"))("destroy on Cloudflare's hosting", () =>
     expectPaused(github, run, request(handler, "iac-apply").title);
   });
 
+  it("a scripted destroy removes the Cloudflare uptime Worker's entry under the Worker plan's typed name", async () => {
+    const site = await cloudflareSite();
+    const account = await withUptimeWorker(site.deps);
+    const { handler, github, result } = await site.destroy({
+      answer: scriptedConfirm("example-app"),
+      uptime: account.client,
+    });
+    await result;
+    expect(request(handler, "iac-apply").details).toContain(UPTIME_NOTE);
+    expect(request(handler, "iac-apply").details).not.toContain(PAUSE_NOTE);
+    expectUptimeRemoved(account, handler, github);
+  });
+
   it("deletes nothing when the shared rules' plan is refused after the Worker's was approved", async () => {
     const site = await cloudflareSite();
     const refused = await site.destroy({ answer: (r) => r.kind !== "cloudflare-apply" });
@@ -340,7 +399,12 @@ async function pagesSite(options: PagesPlanOptions = {}) {
 
   /** One destroy run; its changes go into the shared `log`. */
   const destroy = async (
-    o: { answer?: (r: ApprovalRequest) => boolean; deleteVerification?: boolean } = {},
+    o: {
+      answer?: (r: ApprovalRequest) => boolean;
+      deleteVerification?: boolean;
+      /** The uptime Worker's account (a `fakeUptimeAccount`'s client). */
+      uptime?: CloudflareClient;
+    } = {},
   ) => {
     log.length = 0;
     const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
@@ -354,7 +418,12 @@ async function pagesSite(options: PagesPlanOptions = {}) {
     const github = new FakeDestroyGitHub(log);
     const previews: DestroyPreview[] = [];
     const result = runDestroy(run, {
-      services: { engine: async () => engine, github, cloudflare },
+      services: {
+        engine: async () => engine,
+        github,
+        cloudflare,
+        ...(o.uptime === undefined ? {} : { sharedCloudflare: o.uptime }),
+      },
       confirm: async (preview) => {
         previews.push(preview);
         return true;
@@ -466,6 +535,20 @@ describe.skipIf(!findExecutable("git"))("destroy on GitHub Pages", () => {
     expect(request(handler, "iac-apply").details).toContain(PAUSE_NOTE);
     expect(request(handler, "pages-apply").details).not.toContain(PAUSE_NOTE);
     expectPaused(github, run, request(handler, "iac-apply").title);
+  });
+
+  it("a scripted destroy removes the Cloudflare uptime Worker's entry under the DNS records' typed name", async () => {
+    const site = await pagesSite();
+    const account = await withUptimeWorker(site.deps, PAGES_REPO);
+    const { handler, github, result } = await site.destroy({
+      answer: scriptedConfirm("example-app"),
+      uptime: account.client,
+    });
+    await result;
+    expect(request(handler, "iac-apply").details).toContain(
+      UPTIME_NOTE.replace("acme/shop (example-app, prod)", "example-org/example-app (prod)"),
+    );
+    expectUptimeRemoved(account, handler, github);
   });
 
   it("with --delete-verification, deletes the verification record last", async () => {

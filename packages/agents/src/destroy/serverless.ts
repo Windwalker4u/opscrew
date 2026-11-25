@@ -10,6 +10,7 @@ import type { ApprovalRecord, PlanSummary, ResourceChange } from "@opscrew/contr
 import { exists, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { pagesVerificationRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { planUptimeTeardown } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
 import { missing } from "../provision/credentials";
@@ -217,6 +218,8 @@ export async function destroyCloudflareWorkers(
   const preview = await previewDeletion(session, { suffix: "destroy-preview", destroy: true });
   const shared = await planSharedRemoval(deps, plan, services);
   const rules = removalDetails(shared);
+  // The environment's entry in the Cloudflare uptime Worker, removed where the check's pause runs.
+  const uptime = await planUptimeTeardown(deps, plan, { services, github, command: COMMAND });
   if (preview.changes.length === 0 && rules === undefined && !hasDeployment(plan)) {
     throw nothingDeployed(plan);
   }
@@ -229,7 +232,7 @@ export async function destroyCloudflareWorkers(
       : "The Worker and its custom domains are already deleted; OpsCrew finishes the cleanup.",
   );
   if (rules !== undefined) deps.reporter.info(rules);
-  for (const note of checkPauseNote(plan)) deps.reporter.info(note);
+  for (const note of checkPauseNote(plan, uptime)) deps.reporter.info(note);
   await confirmDeletion(
     scope,
     {
@@ -252,7 +255,7 @@ export async function destroyCloudflareWorkers(
       `Delete the Worker of ${name} and its custom domains on Cloudflare (${plural(count, "resource")} to delete)`,
     notes: [
       "The Worker's secrets go with it. OpsCrew applies this plan once this app's hostnames have left its shared Cloudflare rules (the next approval).",
-      ...checkPauseNote(plan),
+      ...checkPauseNote(plan, uptime),
     ],
     unchanged: "Nothing was deleted.",
   });
@@ -273,7 +276,7 @@ export async function destroyCloudflareWorkers(
       : await applyRootDeletion(session, worker, "the Worker and its custom domains");
 
   // 8. The deploy secrets, and OpsCrew's record of the deployment
-  await pauseCheckForTeardown(deps, github, plan, worker?.approval);
+  await pauseCheckForTeardown(deps, github, plan, worker?.approval, uptime);
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: "The Worker and its custom domains are deleted.",
@@ -471,6 +474,10 @@ export async function destroyGithubPages(
     recordChanges.length === 0 &&
     teardown.steps.length === 0;
   const lead = (first: boolean, what: string) => `${first ? "The teardown" : "Then it"} ${what}:`;
+  // The environment's entry in the Cloudflare uptime Worker, removed where the check's pause runs.
+  const uptime = verificationOnly
+    ? undefined
+    : await planUptimeTeardown(deps, plan, { services, github, command: COMMAND });
   deps.reporter.info(
     [
       ...changeLines(
@@ -499,7 +506,7 @@ export async function destroyGithubPages(
       ...(held && !deleteVerification ? [kept] : []),
     ].join("\n"),
   );
-  if (!verificationOnly) for (const note of checkPauseNote(plan)) deps.reporter.info(note);
+  if (!verificationOnly) for (const note of checkPauseNote(plan, uptime)) deps.reporter.info(note);
   await confirmDeletion(
     scope,
     {
@@ -527,7 +534,7 @@ export async function destroyGithubPages(
         `Delete the DNS records of ${domain} on Cloudflare (${plural(count, "resource")} to delete)`,
       notes: [
         `They go first, while the GitHub Pages site still claims ${domain}: no record ever points at GitHub with no site claiming the domain. The Pages plan that removes the site follows (its own approval).`,
-        ...checkPauseNote(plan),
+        ...checkPauseNote(plan, uptime),
       ],
       unchanged: "Nothing was deleted.",
     });
@@ -582,7 +589,9 @@ export async function destroyGithubPages(
 
   // 8. The app's values for its build, and OpsCrew's record of the deployment (an earlier run
   // wrote it when only the verification record was left).
-  if (!verificationOnly) await pauseCheckForTeardown(deps, github, plan, recordsApproval);
+  if (!verificationOnly) {
+    await pauseCheckForTeardown(deps, github, plan, recordsApproval, uptime);
+  }
   const secretsRemoved =
     verificationOnly || deploySecretNames(plan).length === 0
       ? []

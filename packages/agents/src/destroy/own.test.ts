@@ -14,6 +14,7 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { renderWorkflow, TOOLS } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { fakeUptimeAccount, provisionedUptime, withUptimeAccount } from "../check/uptime.fakes";
 import {
   everythingPrinted,
   LAN_IPV4,
@@ -879,6 +880,45 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
       action: "destroy-confirm",
       decision: "refused",
     });
+  });
+
+  it("removes the Cloudflare uptime Worker's entry under the host plan's typed name, with no pause", async () => {
+    const s = await deployed();
+    const before = await readArtifact("plan", s.deps.paths.files.plan);
+    const plan = DeployPlanSchema.parse({
+      ...before,
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    await writeArtifact("plan", s.deps.paths.files.plan, plan);
+    const { uptime, client } = fakeUptimeAccount();
+    await provisionedUptime(s.deps, plan, client);
+    s.answer(scriptedConfirm("shop"));
+    let shownBeforeName = "";
+    const shared = s.services.sharedCloudflare;
+    if (shared === undefined) throw new Error("the project has no shared Cloudflare client");
+    await runDestroy(s.deps, {
+      // The app's zone, with OpsCrew's shared rules, and the Worker in its account.
+      services: { ...services(s), sharedCloudflare: withUptimeAccount(shared, client) },
+      confirm: async () => {
+        shownBeforeName = s.deps.reporter.text();
+        return true;
+      },
+    });
+    const note =
+      "This also removes the uptime check's entry for acme/shop (prod) from the Cloudflare Worker opscrew-uptime, and the Worker, its trigger and its KV namespace opscrew-uptime, which no other entry uses:";
+    expect(shownBeforeName).toContain(note);
+    const teardown = s.handler.requests.find((request) => request.kind === "host-apply");
+    expect(teardown?.details).toContain(note);
+    const removal = s.handler.requests.find((request) => request.title.includes("uptime plan"));
+    expect(removal).toMatchObject({
+      kind: "cloudflare-apply",
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    expect(kinds(s)).not.toContain("github-settings");
+    expect(s.github.variables.get("OPSCREW_CHECK_PAUSED")).toBeUndefined();
+    expect(uptime.scripts.has("opscrew-uptime")).toBe(false);
+    expect(uptime.namespace("opscrew-uptime")).toBeUndefined();
   });
 
   it("pauses the scheduled check, and the last app's teardown removes the repository's check key", async () => {

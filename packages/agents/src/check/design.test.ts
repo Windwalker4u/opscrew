@@ -163,3 +163,23 @@ describe("readCheckRepository", () => {
     ).resolves.toEqual({});
   });
 });
+
+describe("checkDesignText with the Cloudflare uptime Worker", () => {
+  it("counts no Actions minutes and says what only the Actions check does", () => {
+    const worker = DeployPlanSchema.parse({
+      ...cloud,
+      observability: { check: { enabled: true, runner: "cloudflare" } },
+    });
+    const { lines, warnings } = checkDesignText(
+      worker,
+      { webhook: "discord", intervalMinutes: 5 },
+      { public: false, includedMinutes: 2_000, hasIssues: false },
+    );
+    expect(lines).toEqual([
+      "Scheduled check: every 5 minutes by the Worker opscrew-uptime in the Cloudflare account of the app's zone, with no Actions minutes and at no cost. It checks each hostname's health path once a run, and posts to the Discord webhook when one fails twice in a row and when it answers again. One Cloudflare account's Worker checks at most 40 hostnames, across its OpsCrew apps.",
+      "The disk, snapshot, restore-drill and certificate-days checks need `runner: actions`.",
+    ]);
+    // Neither the interval nor the repository's issues concern it.
+    expect(warnings).toEqual([]);
+  });
+});

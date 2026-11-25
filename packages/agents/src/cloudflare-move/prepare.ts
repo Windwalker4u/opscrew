@@ -8,10 +8,13 @@
  * after any interruption (or a script's run with `--approve <hash>`) goes on from where the last
  * one stopped and does nothing twice. A's account is only read.
  */
-import { listText } from "@opscrew/core";
+import { listText, toPosixRelative } from "@opscrew/core";
 import type { CloudflareMove } from "@opscrew/plan-schema";
+import { usesUptimeWorker } from "../check/settings";
+import { readUptimeRecord } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { lookupPublishedDs } from "../domain/connect-dns";
+import { commandFlags } from "../environments/choice";
 import { firstCopies, measureBuckets } from "./buckets";
 import { checkMoveStart, otherAppHostnames } from "./checks";
 import { besideConnector, moveTunnels } from "./connector";
@@ -52,7 +55,8 @@ import { applyZone, planZone } from "./zone";
 /**
  * `opscrew cloudflare move [--to <account>]`: prepares the app in B, or continues a recorded
  * move's prepare (without `--to`; a different `--to` is refused). Refused before any change while
- * the move is being aborted or finished. Until every covered environment is `prepared`: the checks
+ * the move is being aborted or finished, and while an environment has the uptime check in the
+ * Cloudflare Worker. Until every covered environment is `prepared`: the checks
  * of the move's start, then, on the first run only, the summary and `confirmStart` (refused:
  * nothing changed) and the record written with `dsAtStart` from the public DS lookup; then the zone
  * plan and each environment's steps (plan 4.4). The mark is written last. Stops on purpose
@@ -64,6 +68,7 @@ export async function prepareMove(
 ): Promise<MoveResult> {
   const session = await openMoveSession(deps, { ...options, command: MOVE_COMMAND });
   requirePreparing(session);
+  await requireNoUptimeEntry(session);
   requireRecordedZone(session);
   await bSetup(session);
   const others = await otherAppHostnames(session);
@@ -118,6 +123,24 @@ function requirePreparing(session: MoveSession): void {
     throw refusal(
       `The move of ${zone} is finishing: ${adopted.environment} runs on the new Cloudflare account already, so there is nothing left to prepare.`,
       `Run \`${FINISH_COMMAND}\` to go on with the finish.`,
+    );
+  }
+}
+
+/**
+ * Stops before any change when a covered environment has the uptime check in the Cloudflare
+ * Worker (`observability.check.runner: cloudflare`, or an entry this computer recorded): the
+ * Worker and its entry are in A, and the move takes them along to no account.
+ */
+async function requireNoUptimeEntry(session: MoveSession): Promise<void> {
+  const { root } = session.deps.paths;
+  for (const environment of session.environments) {
+    const { plan, paths } = environment;
+    if (!usesUptimeWorker(plan) && (await readUptimeRecord(paths)) === undefined) continue;
+    const flags = await commandFlags(root, environment.environment, plan.app.key);
+    throw refusal(
+      `The uptime check of ${environment.environment} runs in the Cloudflare Worker opscrew-uptime of the current account, and a move to another Cloudflare account doesn't take it along.`,
+      `Set observability.check.runner to "actions" in ${toPosixRelative(root, paths.files.plan)}, run \`opscrew provision${flags}\` (it removes the Worker's entry), then run \`${MOVE_COMMAND}\` again.`,
     );
   }
 }

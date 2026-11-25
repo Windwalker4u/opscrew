@@ -5,6 +5,7 @@ import {
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
+  CLOUDFLARE_UPTIME_PERMISSIONS,
   type CloudflareClient,
   cloudflareConnector,
   inspectShared,
@@ -40,6 +41,7 @@ import {
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
+import { checksInActions, usesUptimeWorker } from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { PAGES_NOT_ALLOWED } from "../design/serverless";
 import {
@@ -121,8 +123,13 @@ export type InitCheckId =
   | "namecheap"
   | "godaddy"
   | "github"
-  /** Listed only with the scheduled check on: the GitHub token's permissions it needs. */
+  /** Listed only with the scheduled check on in GitHub Actions: the GitHub token's permissions it needs. */
   | "scheduled-check"
+  /**
+   * Listed only with the check in the Cloudflare uptime Worker: the Cloudflare token's Workers
+   * Scripts and Workers KV Storage permissions in the account of the app's zone.
+   */
+  | "uptime-check"
   | "model"
   | "scanners"
   | "gitignore";
@@ -410,10 +417,22 @@ export async function runInitChecks(
         true,
       ),
     ),
-    ...(artifacts.plan?.observability?.check?.enabled === true
+    ...(artifacts.plan !== undefined && checksInActions(artifacts.plan)
       ? [
           guard("scheduled-check", "GitHub permissions for the scheduled check", true, () =>
             withBudget(checkScheduledCheck(github), budget, "GitHub", true),
+          ),
+        ]
+      : []),
+    ...(artifacts.plan !== undefined && usesUptimeWorker(artifacts.plan)
+      ? [
+          guard("uptime-check", "Cloudflare permissions for the uptime check", true, () =>
+            withBudget(
+              checkUptimePermissions(artifacts.plan?.dns.domain, cloudflare),
+              budget,
+              "Cloudflare",
+              true,
+            ),
           ),
         ]
       : []),
@@ -1182,6 +1201,45 @@ async function checkCloudflareLogs(
   return {
     status: "pass",
     message: `CLOUDFLARE_API_TOKEN holds ${OBSERVABILITY_PERMISSION} for the account that holds ${zone.name}, so \`opscrew logs\` can read the Worker's logs.`,
+  };
+}
+
+/**
+ * The Cloudflare uptime Worker (`observability.check.runner: cloudflare`): whether the Cloudflare
+ * token holds {@link CLOUDFLARE_UPTIME_PERMISSIONS} in the account that holds the app's zone
+ * (`uptimePermissions`, read-only), naming each missing one. Not checked offline, nor before the
+ * Cloudflare token check finds the zone.
+ */
+async function checkUptimePermissions(
+  domain: string | undefined,
+  access: CloudflareAccess,
+): Promise<CheckResult> {
+  const needs = listText([...CLOUDFLARE_UPTIME_PERMISSIONS]);
+  if (access.state === "offline") {
+    return {
+      status: "skip",
+      message: `Not checked (offline). The uptime check in the Cloudflare Worker needs ${needs} on CLOUDFLARE_API_TOKEN.`,
+    };
+  }
+  const notChecked: CheckResult = {
+    status: "skip",
+    message:
+      "Not checked: the Cloudflare token check above says what OpsCrew's Cloudflare token needs first.",
+  };
+  if (access.state === "unset" || domain === undefined) return notChecked;
+  const zone = await access.client.findZone(domain);
+  if (zone?.accountId === undefined) return notChecked;
+  const { missing } = await access.client.uptimePermissions(zone.accountId);
+  if (missing.length > 0) {
+    return {
+      status: "fail",
+      message: `CLOUDFLARE_API_TOKEN lacks ${listText(missing)} for the account that holds ${zone.name}, which the uptime check in the Cloudflare Worker needs.`,
+      fix: `Add ${listText(missing)} to CLOUDFLARE_API_TOKEN at ${CLOUDFLARE_TOKEN_PAGE}, then run \`opscrew init\` again. Or set observability.check.runner to "actions" in the plan.`,
+    };
+  }
+  return {
+    status: "pass",
+    message: `CLOUDFLARE_API_TOKEN holds ${needs} for the account that holds ${zone.name}, so OpsCrew can set up the uptime Worker there.`,
   };
 }
 

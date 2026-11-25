@@ -108,3 +108,24 @@ describe("checkFiles", () => {
     await expect(checkFiles(deps, plan, { ...REPO, isPublic })).resolves.toEqual([]);
   });
 });
+
+describe("checkFiles with the Cloudflare uptime Worker", () => {
+  it("renders nothing, and reads no visibility, when the Worker checks every environment", async () => {
+    const { deps, at } = await project();
+    const worker = DeployPlanSchema.parse({
+      ...checked(testPlan({ domain: "shop.example.com" })),
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    await writeArtifact("plan", at().files.plan, worker);
+    let read = false;
+    const files = await checkFiles(deps, worker, {
+      ...REPO,
+      isPublic: async () => {
+        read = true;
+        return false;
+      },
+    });
+    expect(files).toEqual([]);
+    expect(read).toBe(false);
+  });
+});

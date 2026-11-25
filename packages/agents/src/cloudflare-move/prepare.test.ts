@@ -1,7 +1,13 @@
 import { findExecutable, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { backupsRootDir, pagesVerificationRootDir, storageRootDir } from "@opscrew/iac-templates";
-import type { CloudflareMove, DeployPlan } from "@opscrew/plan-schema";
+import {
+  type CloudflareMove,
+  type DeployPlan,
+  DeployPlanSchema,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { fakeUptimeAccount, provisionedUptime } from "../check/uptime.fakes";
 import { environmentPaths } from "../environments/paths";
 import { APP_BUCKET, BACKUPS_BUCKET } from "./buckets.fakes";
 import { readMarks } from "./marks";
@@ -169,6 +175,32 @@ describe.skipIf(!findExecutable("git"))("prepareMove", () => {
     }
     expect(w.wroteToA()).toBe(false);
     expect(await w.leaks(JSON.stringify(result))).toBe(false);
+  });
+
+  it("refuses an app with an uptime entry, saying to switch to the Actions check and provision first", async () => {
+    const w = await prepareWorld("proxied");
+    const plan = await w.planNow();
+    const worker = DeployPlanSchema.parse({
+      ...plan,
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    await writeArtifact("plan", w.deps.paths.files.plan, worker);
+    const refused = {
+      code: "PHASE_PRECONDITION",
+      message:
+        "The uptime check of prod runs in the Cloudflare Worker opscrew-uptime of the current account, and a move to another Cloudflare account doesn't take it along. Nothing was changed.",
+      hint: 'Set observability.check.runner to "actions" in opscrew/plan.yaml, run `opscrew provision` (it removes the Worker\'s entry), then run `opscrew cloudflare move` again.',
+    };
+    await expect(w.run()).rejects.toMatchObject(refused);
+    expect(w.requests).toEqual([]);
+    expect(w.wroteToA()).toBe(false);
+
+    // Switched back without a provision, this computer still records the entry: still refused.
+    const { client } = fakeUptimeAccount();
+    await provisionedUptime(w.deps, worker, client);
+    await writeArtifact("plan", w.deps.paths.files.plan, plan);
+    await expect(w.run()).rejects.toMatchObject(refused);
+    expect(w.requests).toEqual([]);
   });
 
   it("fails a site's shadow apply that lost -var custom_domains=false, as OpenTofu does", async () => {

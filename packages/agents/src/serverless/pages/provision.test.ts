@@ -1,12 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { CloudflareDnsRecord } from "@opscrew/connector-cloudflare";
+import type { CloudflareClient, CloudflareDnsRecord } from "@opscrew/connector-cloudflare";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_PAUSED_VARIABLE, pagesVerificationRootDir } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it, vi } from "vitest";
+import { fakeUptimeAccount, WEBHOOK_URL } from "../../check/uptime.fakes";
 import { runProvision } from "../../provision/run";
 import type { ProvisionOptions } from "../../provision/types";
 import { pagesVerificationStateFile } from "../../shared";
@@ -69,9 +70,11 @@ async function setup(options: SetupOptions = {}) {
       ask?: (question: { domain: string; page: string }) => Promise<string>;
       /** This run's clock (default: the test deps' fixed time). */
       now?: Date;
+      /** The Cloudflare client for OpsCrew's own pieces (the uptime Worker's account). */
+      sharedCloudflare?: CloudflareClient;
     } = {},
   ) => {
-    const { answer, ask, now, ...provision } = runOptions;
+    const { answer, ask, now, sharedCloudflare, ...provision } = runOptions;
     const handler = new ScriptedApprovalHandler(answer ?? options.answer ?? (() => true));
     const deps = await createTestPhaseDeps({
       root: project.root,
@@ -91,6 +94,7 @@ async function setup(options: SetupOptions = {}) {
         cloudflare,
         sleep: async () => undefined,
         ...(ask !== undefined ? { askPagesVerification: ask } : {}),
+        ...(sharedCloudflare !== undefined ? { sharedCloudflare } : {}),
       },
     });
     return { deps, handler, result };
@@ -430,6 +434,29 @@ describe.skipIf(!findExecutable("git"))("provision on GitHub Pages", () => {
     expect(sitesChanges().at(-1)).toBe(`pages PUT /pages {"https_enforced":true}`);
     expect(pages.state.site?.httpsEnforced).toBe(true);
     expect(fourth.deps.reporter.text()).toContain("HTTPS is enforced for docs.example.com");
+  });
+
+  it("--plan-only shows the Cloudflare uptime plan with its hash, and changes nothing there", async () => {
+    const s = await setup();
+    const file = join(s.root, "opscrew", "plan.yaml");
+    await writeArtifact("plan", file, {
+      ...(await readArtifact("plan", file)),
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "ntfy" } },
+    });
+    s.env.OPSCREW_CHECK_WEBHOOK = WEBHOOK_URL;
+    const account = fakeUptimeAccount();
+    const shown = await s.run({
+      planOnly: true,
+      pagesVerification: VERIFICATION,
+      sharedCloudflare: account.client,
+    });
+    const planned = await shown.result;
+    expect(planned.uptimePlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(shown.deps.reporter.text()).toContain(
+      `Cloudflare uptime plan ${planned.uptimePlanHash}. In a script, approve it too`,
+    );
+    expect(account.uptime.writes()).toEqual([]);
+    expect(changes(s.log)).toEqual([]);
   });
 
   it("shows every plan with --plan-only, then applies exactly those by their hashes", async () => {

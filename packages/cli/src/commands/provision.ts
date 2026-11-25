@@ -526,6 +526,10 @@ export async function runInfraCommand(
           // Deleting OpsCrew's rule needs the app's name, like an infrastructure plan that deletes.
           if (result.cloudflarePlanDeletes === true && named !== undefined) confirmNames.add(named);
         }
+        // So is the uptime Worker's plan in the zone's account (the scheduled check's runner).
+        if (result.uptimePlanHash !== undefined) {
+          planned.push({ label: "Cloudflare uptime plan", hash: result.uptimePlanHash });
+        }
         // Leaving home: the host plan that removes the address updater, then its records'
         // deletion, which needs the app's name typed.
         if (result.leaveHomeHostPlanHash !== undefined) {
