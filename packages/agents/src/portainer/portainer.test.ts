@@ -162,6 +162,13 @@ async function cloudSetup(
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
 
+/**
+ * A plan file's text without the record a run that writes the generated files adds (the OpsCrew
+ * version that wrote them, `deployment.generatedBy`, and so `updatedAt`).
+ */
+const withoutGeneratedBy = (text: string) =>
+  text.replace(/^updatedAt: .*\n/m, "").replace(/^ {2}generatedBy: .*\n/m, "");
+
 function printed(deps: Awaited<ReturnType<typeof cloudSetup>>["deps"]): string {
   return `${deps.reporter.text()}\n${JSON.stringify(deps.audit.entries)}`;
 }
@@ -501,7 +508,9 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     });
     expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(engine.applied).toHaveLength(0);
-    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+    expect(withoutGeneratedBy(await readFile(s.deps.paths.files.plan, "utf8"))).toBe(
+      withoutGeneratedBy(original),
+    );
 
     const mismatch = (await portainerEnable(s.deps, {
       subdomain: "portainer",
@@ -632,7 +641,9 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(error.hint).toContain("opscrew portainer enable --approve");
     expect(existsSync(pendingPortainerFile(s.deps.paths))).toBe(true);
     expect(engine.applied).toHaveLength(0);
-    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+    expect(withoutGeneratedBy(await readFile(s.deps.paths.files.plan, "utf8"))).toBe(
+      withoutGeneratedBy(original),
+    );
 
     refuseIac = false;
     const result = await portainerEnable(s.deps, {

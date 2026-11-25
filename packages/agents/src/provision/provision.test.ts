@@ -142,6 +142,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(plan.deployment).toEqual({
       lastPlanHash: result.planHash,
       lastApplyAt: "2026-10-11T12:00:00.000Z",
+      generatedBy: "0.0.0-test",
     });
     // The apply changed the plan, so it says when.
     expect(plan.updatedAt).toBe("2026-10-11T12:00:00.000Z");
