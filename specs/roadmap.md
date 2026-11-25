@@ -993,8 +993,8 @@ Triggers (5 per account), with fetch time not counted as CPU.
   default and as today.
 - **What it checks:** with `cloudflare`, a Worker in the user's own Cloudflare account fetches each
   app's health address over HTTPS every 5 minutes. A failed request counts as down, and that
-  includes an invalid certificate and the whole server being down. The disk and snapshot checks
-  stay with the Actions check or the server, since a Worker can't reach the server.
+  includes an invalid certificate and the whole server being down. The server reports its disk
+  and snapshot checks itself (below).
 - **Alerts:** the same Slack, Discord or ntfy webhook the Actions check uses, stored as a Worker
   secret. One message when an app goes down and one when it recovers, with the state kept in
   Workers KV and written only when it changes. It opens no GitHub issue: that would need a GitHub
@@ -1006,6 +1006,16 @@ Triggers (5 per account), with fetch time not counted as CPU.
 - **The safety gate:** the Worker, its trigger, its KV namespace and its secrets are changed only
   through a plan approved by its hash, like the rest of the app's Cloudflare setup, and the plan
   names the other apps' entries it keeps. Tests use fakes, with no live Cloudflare.
+- **A complete alternative** (the founder, 2026-11-25; 0.2.12 waits for it). With `runner:
+  cloudflare`, nothing needs GitHub Actions any more. Each environment chooses its own runner.
+  - **The server checks itself:** a timer on each server OpsCrew manages, installed by a host
+    plan approved by its hash, checks the disk, the last snapshot and the restore drill against
+    the Actions check's thresholds.
+  - **It reports only on change:** to the Worker's own address, signed with the app's own
+    secret, when a check fails or recovers, plus one heartbeat a day. Workers KV's free writes
+    (about 1,000 a day per account) allow nothing more frequent.
+  - **The Worker alerts** through the same webhook, and also when a server's heartbeat is more
+    than a day late. Together with the 5-minute address check, that covers a server that's down.
 
 ## Later, not yet placed
 
