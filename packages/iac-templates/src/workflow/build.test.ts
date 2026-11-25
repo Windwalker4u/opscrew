@@ -139,7 +139,7 @@ describe("the build job", () => {
     expect(at("docker logout ghcr.io")).toBeLessThan(at(IMAGES.trivy.ref));
     expect(script).toContain("--exit-code 0");
     // A scan that cannot run (Trivy's database out of reach) warns; the deploy goes on.
-    expect(script).toContain(`if ! docker run --rm`);
+    expect(script).toContain(`elif ! docker run --rm`);
     expect(at("::warning::The image scan (Trivy) could not run")).toBeGreaterThan(
       at(IMAGES.trivy.ref),
     );
@@ -670,6 +670,41 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 180_000 },
     `  printf '[image]\\n  tags = ["x"]\\n  digest = "${DIGEST}"\\n  manifest-size = 1\\n' > "$dir/report.toml"`,
     "}",
   ].join("\n");
+
+  it("the report-only scan never fails the job: a pull is retried once, then only warns", () => {
+    const script =
+      step(buildJob(planFor(BUILDERS[0] as ImageBuilder)), "Scan the image (report only)")?.run ??
+      "";
+    // docker and sleep stubbed: `pull` fails PULL_FAILS times, every call is logged.
+    const stubs = [
+      "docker() {",
+      '  echo "$1" >> "$RUNNER_TEMP/calls"',
+      '  if [[ "$1" == pull ]]; then',
+      '    local n; n=$(cat "$RUNNER_TEMP/pulls" 2>/dev/null || echo 0); n=$((n + 1))',
+      '    echo "$n" > "$RUNNER_TEMP/pulls"; (( n > PULL_FAILS ))',
+      "  fi",
+      "}",
+      'sleep() { echo "sleep $1" >> "$RUNNER_TEMP/calls"; }',
+    ].join("\n");
+    const calls = () =>
+      readFileSync(join(work, "tmp", "calls"), "utf8")
+        .trim()
+        .split("\n");
+    const image = `ghcr.io/acme/shop@${DIGEST}`;
+
+    const failing = bash(`${stubs}\n${script}`, { IMAGE: image, PULL_FAILS: "2" });
+    expect(failing.status, failing.output).toBe(0);
+    expect(failing.output).toContain("::warning::The image scan (Trivy) could not pull the image");
+    // The logout still runs, so the job never keeps its write token; Trivy doesn't run.
+    expect(calls()).toEqual(["pull", "sleep 10", "pull", "logout"]);
+
+    rmSync(join(work, "tmp", "calls"));
+    rmSync(join(work, "tmp", "pulls"));
+    const retried = bash(`${stubs}\n${script}`, { IMAGE: image, PULL_FAILS: "1" });
+    expect(retried.status, retried.output).toBe(0);
+    expect(retried.output).not.toContain("::warning::");
+    expect(calls()).toEqual(["pull", "sleep 10", "pull", "logout", "run"]);
+  });
 
   it("reads pack's digest from report.toml and passes each build value with --env", () => {
     const script = step(buildJob(planFor("buildpacks")), "pack")?.run ?? "";

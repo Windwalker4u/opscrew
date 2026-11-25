@@ -792,10 +792,16 @@ function scan(plan: DeployPlan): string[] {
     "    IMAGE: ${{ steps.final.outputs.ref }}",
     ...run([
       "set -euo pipefail",
-      'docker pull --quiet "$IMAGE"',
-      "docker logout ghcr.io",
-      // It only reports, so a scan that cannot run (Trivy's database out of reach) warns instead.
-      `if ! ${noPathConv}docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then`,
+      // It only reports, so nothing here fails the job: the pull of the image this job just pushed
+      // is retried once (a registry hiccup), and the logout always runs, so the job never keeps its
+      // write token.
+      "pulled=1",
+      'docker pull --quiet "$IMAGE" || { sleep 10; docker pull --quiet "$IMAGE"; } || pulled=0',
+      "docker logout ghcr.io || true",
+      'if [ "$pulled" = 0 ]; then',
+      '  echo "::warning::The image scan (Trivy) could not pull the image, so this build has no scan report. The deploy goes on: the scan only reports."',
+      // A scan that cannot run (Trivy's database out of reach) warns too.
+      `elif ! ${noPathConv}docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${IMAGES.trivy.ref} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"; then`,
       '  echo "::warning::The image scan (Trivy) could not run, so this build has no scan report. The deploy goes on: the scan only reports."',
       "fi",
     ]),
