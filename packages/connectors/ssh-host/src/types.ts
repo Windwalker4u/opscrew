@@ -342,9 +342,13 @@ export const UPTIME_REPORT_URL_RE =
 export const UPTIME_ENTRY_RE =
   /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}\/[a-z0-9][a-z0-9-]{0,40}\/[a-z0-9][a-z0-9-]{0,40}$/;
 
-/** A credential's name in the rotation record (`deploy-key`). */
-const CredentialNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, {
-  message: "must be a credential's name such as deploy-key",
+/**
+ * A credential's name in the rotation record, a copy of plan-schema's `CredentialNameSchema`: a
+ * lower-case name (`deploy-key`), optionally followed by `:` and a part (`app:SECRET_KEY_BASE`,
+ * `grant:laptop/cache`).
+ */
+const CredentialNameSchema = z.string().regex(/^[a-z][a-z0-9-]*(?::[A-Za-z0-9_./-]+)?$/, {
+  message: "must be a credential's name such as deploy-key or app:SECRET_KEY_BASE",
 });
 
 /**
