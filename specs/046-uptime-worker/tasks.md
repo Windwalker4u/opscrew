@@ -7,7 +7,7 @@ Two build waves, then the lead's. Inside a wave, no two tasks share an Owns path
 
 ## Wave 1
 
-- [ ] T4601 [US3] The setting `observability.check.runner` (the lead approves: `plan-schema` is
+- [x] T4601 [US3] The setting `observability.check.runner` (the lead approves: `plan-schema` is
   shared)
   - **Owns:** `packages/plan-schema/src/**`.
   - **Reads:** plan.md 1., data-model.md "The plan's field", `observability.test.ts`.
