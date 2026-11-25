@@ -3,13 +3,14 @@ import { join } from "node:path";
 import type { IacEngine, ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { exists, OpsCrewError, readTextIfExists, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import { storageRootDir } from "@opscrew/iac-templates";
+import { runtimeDir, storageRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { providerBucket, storageEngineEnv, storageStateFile } from "../provision/storage";
 import { type ProjectEngine, projectEngine, type StorageLogin } from "../shared";
+import { trackedFiles } from "../shared/github";
 import {
   type AttributesByType,
   LIFECYCLE_IGNORED,
@@ -201,15 +202,35 @@ const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const byAddress = (a: { address: string }, b: { address: string }) => byText(a.address, b.address);
 
 /**
+ * The environment's plan file, repository-relative, when git tracks some of the files generated
+ * from it (the deploy workflow, the runtime or the infrastructure folder) but not the plan itself:
+ * a clone then has the files without the plan they come from ({@link DriftReport.uncommittedPlan}).
+ * Undefined when git tracks the plan, none of those files, or can't say.
+ */
+export async function uncommittedPlan(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  plan: Pick<DeployPlan, "app" | "environment" | "cicd" | "infra">,
+): Promise<string | undefined> {
+  const file = toPosixRelative(deps.paths.root, deps.paths.files.plan);
+  const generated = [plan.cicd.workflowPath, runtimeDir(plan), plan.infra.dir];
+  const tracked = await trackedFiles(deps, [file, ...generated]);
+  return tracked.length === 0 || tracked.includes(file) ? undefined : file;
+}
+
+/**
  * The drift report from what a check found: resources by address (with their attribute names
- * sorted), files by path, foreign DNS records by name, type and content; `clean` when nothing
- * differs anywhere; the notes redacted. The check is audited by its counts.
+ * sorted), files by path, foreign DNS records by name, type and content, and the plan when it
+ * isn't committed ({@link uncommittedPlan}); `clean` when nothing differs anywhere; the notes
+ * redacted. The check is audited by its counts.
  */
 export async function finishDriftReport(
-  deps: Pick<PhaseDeps, "audit" | "clock" | "redactor">,
-  plan: Pick<DeployPlan, "infra">,
-  found: Omit<DriftReport, "clean" | "checkedAt" | "notes"> & { notes: readonly string[] },
+  deps: Pick<PhaseDeps, "audit" | "clock" | "redactor" | "paths" | "runner">,
+  plan: Pick<DeployPlan, "app" | "environment" | "cicd" | "infra">,
+  found: Omit<DriftReport, "clean" | "checkedAt" | "notes" | "uncommittedPlan"> & {
+    notes: readonly string[];
+  },
 ): Promise<DriftReport> {
+  const planFile = await uncommittedPlan(deps, plan);
   const drift = found.drift
     .map((entry) => ({ ...entry, attributes: [...entry.attributes].sort(byText) }))
     .sort(byAddress);
@@ -234,7 +255,8 @@ export async function finishDriftReport(
     hostDifferences === 0 &&
     portainerDifferences === 0 &&
     ruleDifferences === 0 &&
-    siteDifferences === 0;
+    siteDifferences === 0 &&
+    planFile === undefined;
   const { notes, ...rest } = found;
   const report: DriftReport = {
     ...rest,
@@ -242,6 +264,7 @@ export async function finishDriftReport(
     pending,
     files,
     foreignDnsRecords,
+    ...(planFile !== undefined ? { uncommittedPlan: planFile } : {}),
     clean,
     checkedAt: deps.clock.now().toISOString(),
     ...(notes.length > 0 ? { notes: notes.map((note) => deps.redactor.redact(note)) } : {}),
@@ -253,7 +276,7 @@ export async function finishDriftReport(
     target: plan.infra.dir,
     detail: clean
       ? "no drift"
-      : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${files.changed.length + files.created.length} files differ${found.host !== undefined ? `, ${hostDifferences} differences on the server` : ""}${found.portainer !== undefined ? `, ${portainerDifferences} differences in Portainer` : ""}${found.cloudflareRules !== undefined ? `, ${ruleDifferences} differences in OpsCrew's shared Cloudflare rules` : ""}${found.site !== undefined ? `, ${siteDifferences} differences of the site` : ""}`,
+      : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${files.changed.length + files.created.length} files differ${found.host !== undefined ? `, ${hostDifferences} differences on the server` : ""}${found.portainer !== undefined ? `, ${portainerDifferences} differences in Portainer` : ""}${found.cloudflareRules !== undefined ? `, ${ruleDifferences} differences in OpsCrew's shared Cloudflare rules` : ""}${found.site !== undefined ? `, ${siteDifferences} differences of the site` : ""}${planFile !== undefined ? `, ${planFile} not committed` : ""}`,
   });
   return report;
 }

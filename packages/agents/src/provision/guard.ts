@@ -1,5 +1,9 @@
+import { realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudflareMove, DeployPlan } from "@opscrew/plan-schema";
+import type { PhaseDeps } from "../context";
 import { placeWords } from "../retarget/sides";
 
 /** What to say while `opscrew retarget` is moving the deployment. */
@@ -79,4 +83,36 @@ export function requireNoMoveInProgress(
     throw new OpsCrewError("PHASE_PRECONDITION", move.message, { hint: move.hint });
   }
   if (options.allowCloudflareMove !== true) requireNoCloudflareMove(plan);
+}
+
+/**
+ * Whether `root` is `temp` or inside it, comparing real paths (links resolved; a path that doesn't
+ * exist as it is), without case on Windows.
+ */
+export async function inTempFolder(
+  root: string,
+  temp: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  const real = (path: string) => realpath(path).catch(() => resolve(path));
+  const [inner, outer] = (await Promise.all([real(root), real(temp)])).map((path) =>
+    platform === "win32" ? path.toLowerCase() : path,
+  );
+  const rel = relative(outer ?? "", inner ?? "");
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/**
+ * Warns, without stopping, when the project is in the system's temporary folder (`tempDir`,
+ * default `os.tmpdir()`), which the system may clear: the plan, the generated files and the
+ * deployment's state there could be lost.
+ */
+export async function warnInTempFolder(
+  deps: Pick<PhaseDeps, "paths" | "reporter">,
+  tempDir: string = tmpdir(),
+): Promise<void> {
+  if (!(await inTempFolder(deps.paths.root, tempDir))) return;
+  deps.reporter.warn(
+    `This project is in the system's temporary folder (${tempDir}), which the system may clear at any time: its plan, its generated files and the deployment's state (.opscrew/) could be lost. Commit opscrew/, and keep the project in a folder that isn't temporary, such as one in your home folder.`,
+  );
 }

@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, type Retarget } from "@opscrew/plan-schema";
@@ -5,7 +8,13 @@ import { describe, expect, it } from "vitest";
 import { leaksToken, twoAccounts, withCloudflareMove } from "../cloudflare-move/record.fakes";
 import { requireNoDeployOrMove } from "../snapshot/run";
 import { createTestPhaseDeps, sitePlan, testPlan } from "../testing";
-import { moveInProgress, requireNoCloudflareMove, requireNoMoveInProgress } from "./guard";
+import {
+  inTempFolder,
+  moveInProgress,
+  requireNoCloudflareMove,
+  requireNoMoveInProgress,
+} from "./guard";
+import { runProvision } from "./run";
 
 /** A plan moving from Hetzner Cloud to DigitalOcean, at `step`, optionally being aborted. */
 function moving(abort?: NonNullable<Retarget["abort"]>["step"]): DeployPlan {
@@ -181,5 +190,44 @@ describe("snapshot during a move to another Cloudflare account", () => {
     const plan = withCloudflareMove(local, twoAccounts(), "prepared");
     const run = { deps, plan, environment: "prod", flags: "", services: {} };
     await expect(requireNoDeployOrMove(run, "take a snapshot")).resolves.toBeUndefined();
+  });
+});
+
+describe("inTempFolder", () => {
+  it("tells a project inside the system's temporary folder, by its real path", async () => {
+    const base = await mkdtemp(join(tmpdir(), "opscrew-temp-guard-"));
+    const temp = join(base, "Temp");
+    const project = join(temp, "shop");
+    const kept = join(base, "projects", "shop");
+    await mkdir(project, { recursive: true });
+    await mkdir(kept, { recursive: true });
+    expect(await inTempFolder(project, temp)).toBe(true);
+    expect(await inTempFolder(temp, temp)).toBe(true);
+    expect(await inTempFolder(kept, temp)).toBe(false);
+    // A sibling whose name starts like the temporary folder's is not inside it.
+    await mkdir(join(base, "Temporary"), { recursive: true });
+    expect(await inTempFolder(join(base, "Temporary"), temp)).toBe(false);
+    // Windows compares paths without case.
+    expect(await inTempFolder(project.toUpperCase(), temp, "win32")).toBe(true);
+    // A link into the temporary folder is inside it.
+    const link = join(base, "link");
+    await symlink(project, link, "junction");
+    expect(await inTempFolder(link, temp)).toBe(true);
+  });
+
+  it("makes provision warn, and go on, for a project in the temporary folder", async () => {
+    const deps = await createTestPhaseDeps();
+    await expect(
+      runProvision(deps, { services: { tempDir: dirname(deps.paths.root) } }),
+    ).rejects.toThrow();
+    const warnings = deps.reporter.lines.filter((line) => line.level === "warn");
+    expect(warnings.map((line) => line.message)).toEqual([
+      expect.stringContaining("is in the system's temporary folder"),
+    ]);
+    const other = await createTestPhaseDeps();
+    await expect(
+      runProvision(other, { services: { tempDir: join(other.paths.root, "elsewhere") } }),
+    ).rejects.toThrow();
+    expect(other.reporter.lines.filter((line) => line.level === "warn")).toEqual([]);
   });
 });

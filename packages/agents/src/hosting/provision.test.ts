@@ -403,6 +403,9 @@ async function project(account: Account, o: ProjectOptions = {}) {
       engine: async () => engine,
       cloudflare,
       sleep: agent(account, text, requests),
+      // The project sits in the test's temporary folder: guard.test.ts covers that warning, and the
+      // pauses below are the run's first warnings.
+      tempDir: join(root, "elsewhere"),
     };
     const work =
       o.hosting === undefined

@@ -16,6 +16,7 @@ import type { HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { OpsCrewError, readTextIfExists, sha256Hex, upperFirst } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { uncommittedPlan } from "../drift/infra";
 import type { DriftReport, HostingDifference } from "../drift/types";
 import { commandFlags } from "../environments/choice";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
@@ -276,6 +277,7 @@ export async function hostingDrift(
   differences.push(...keys.differences);
   notes.push(...keys.notes);
 
+  const planFile = await uncommittedPlan(deps, plan);
   const redact = (text: string) => deps.redactor.redact(text);
   await deps.audit.append({
     kind: "provider-call",
@@ -283,7 +285,10 @@ export async function hostingDrift(
     action: "drift-check of the app on the hosting account (read-only)",
     target: "hosting account",
     decision: "allow",
-    detail: differences.length === 0 ? "no drift" : `${differences.length} differences`,
+    detail:
+      differences.length === 0 && planFile === undefined
+        ? "no drift"
+        : `${differences.length} differences${planFile !== undefined ? `, ${planFile} not committed` : ""}`,
   });
   return {
     drift: [],
@@ -291,7 +296,8 @@ export async function hostingDrift(
     files: { changed: [], created: [] },
     foreignDnsRecords: [],
     hosting: differences.map((d) => ({ title: redact(d.title), detail: redact(d.detail) })),
-    clean: differences.length === 0,
+    ...(planFile !== undefined ? { uncommittedPlan: planFile } : {}),
+    clean: differences.length === 0 && planFile === undefined,
     checkedAt: deps.clock.now().toISOString(),
     provider: "hosting",
     ...(notes.length > 0 ? { notes: notes.map(redact) } : {}),

@@ -119,3 +119,7 @@ your-app/
 Another environment keeps its own plan, runbook, security report, runtime files and recovery copy
 under `opscrew/environments/<env>/`, and its infrastructure code under `opscrew/infra/<env>/`
 ([environments](environments.md)).
+
+Commit the plan with the files that come from it: `npx opscrew drift` reports generated files whose
+plan isn't committed. Keep the project in a folder that isn't temporary: `npx opscrew provision`
+warns when it runs from the system's temporary folder, which the system may clear.

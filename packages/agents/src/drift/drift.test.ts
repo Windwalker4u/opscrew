@@ -646,6 +646,31 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(renderDriftReport(report)).toContain("matches the plan");
   });
 
+  it("reports committed generated files whose plan isn't committed, and says what to do", async () => {
+    const { deps, services, git, root } = await setup();
+    // Before anything is committed there is nothing to report.
+    const before = await runDrift(deps, { services });
+    expect(before.uncommittedPlan).toBeUndefined();
+    expect(before.clean).toBe(true);
+
+    await git(root, "add", "opscrew/runtime", ".github");
+    await git(root, "commit", "-m", "the generated files only");
+    const report = await runDrift(deps, { services });
+    expect(report.uncommittedPlan).toBe("opscrew/plan.yaml");
+    expect(report.clean).toBe(false);
+    const text = renderDriftReport(report);
+    expect(text).toContain("opscrew/plan.yaml is not committed");
+    expect(text).toContain("git add opscrew/plan.yaml");
+    expect(text).toContain("`opscrew provision`");
+    expect(text).not.toContain("matches the plan");
+
+    await git(root, "add", "opscrew/plan.yaml");
+    await git(root, "commit", "-m", "the plan");
+    const after = await runDrift(deps, { services });
+    expect(after.uncommittedPlan).toBeUndefined();
+    expect(after.clean).toBe(true);
+  });
+
   it("ignores DigitalOcean tag counts, firewall status and droplet prices", async () => {
     const token = fakeSecret("digitalocean-token", "drift-schema");
     const engine = new DriftEngine({

@@ -153,7 +153,7 @@ import {
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { renderedServers, requireNoSmallerDisk } from "./disk-guard";
-import { requireNoMoveInProgress } from "./guard";
+import { requireNoMoveInProgress, warnInTempFolder } from "./guard";
 import { type LeavingHome, switchAccessMode } from "./home-switch";
 import { monitoringHostPlans } from "./monitoring";
 import { checkOffsiteWriteOnServers } from "./offsite-check";
@@ -2100,7 +2100,8 @@ export interface RunProvisionOptions extends ProvisionOptions {
  * records what it created in `.opscrew/server.json`, then stores the deploy secrets and opens the
  * pull request (see `provisionPortainer`).
  *
- * With `finishMove` it only deletes a moved service's old copy (`finishMove`).
+ * With `finishMove` it only deletes a moved service's old copy (`finishMove`). Otherwise a project
+ * in the system's temporary folder gets a warning before the flow starts (`warnInTempFolder`).
  */
 export async function runProvision(
   deps: PhaseDeps,
@@ -2113,6 +2114,7 @@ export async function runProvision(
   // An unreadable plan is reported by the flow itself (and recorded as a failed phase).
   const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   if (plan !== undefined) requireNoMoveInProgress(plan);
+  await warnInTempFolder(deps, options.services?.tempDir);
   const { liftConfirmedBy, ...flow } = options;
   return runPhaseFlow(
     deps,
