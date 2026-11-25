@@ -764,7 +764,7 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
       // allowed
       { tool: "Read", input: { file_path: inside } },
       { tool: "Edit", input: { file_path: inside, old_string: "a", new_string: "b" } },
-      { tool: "Grep", input: { pattern: "REDIS_URL" } },
+      { tool: "Grep", input: { pattern: "REDIS_URL", glob: "*.py" } },
       { tool: "StructuredOutput", input: { changes: [] } },
     ];
     const { runtime, audit, outcomes } = setup([init(), ...steps, success()]);

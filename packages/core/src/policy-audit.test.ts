@@ -240,46 +240,61 @@ describe("#20: input redirection gets the same secret checks as arguments", () =
   }
 });
 
-describe("#21: Grep cannot return lines from files Read refuses", () => {
+describe("#21: Grep cannot read files Read refuses", () => {
+  // Matching file names and counts are an oracle too: `^DB_PASSWORD=a` tells whether .env holds it.
+  const MODES = ["content", "files_with_matches", "count", undefined];
+  const withMode = (mode: string | undefined, input: Record<string, unknown>) =>
+    mode === undefined ? input : { ...input, output_mode: mode };
+
   for (const host of HOSTS) {
     const { tool } = hostPolicy(host, false);
     const grep = (input: Record<string, unknown>) => tool("Grep", input, "read-only").decision;
 
-    it(`asks before a content search that could reach a secret file (${host.platform})`, () => {
-      for (const input of [
-        { pattern: "SECRET", output_mode: "content" },
-        { pattern: "SECRET", output_mode: "content", path: "." },
-        { pattern: "SECRET", output_mode: "content", path: "src" },
-        { pattern: "SECRET", output_mode: "content", glob: "*" },
-        { pattern: "SECRET", output_mode: "content", glob: "**" },
-        { pattern: "SECRET", output_mode: "content", glob: "**/*" },
-        { pattern: "SECRET", output_mode: "content", glob: "{*}" },
-        { pattern: "SECRET", output_mode: "content", glob: "*.json" },
-        { pattern: "SECRET", output_mode: "content", glob: "!*.md" },
-        { pattern: "SECRET", output_mode: "content", glob: "{*.ts,*}" },
-        { pattern: "SECRET", output_mode: "content", type: "js" },
-        { pattern: "SECRET", output_mode: "content", "-C": 3 },
-        { pattern: "SECRET", output_mode: "lines" },
-      ]) {
-        expect(grep(input), JSON.stringify(input)).toBe("ask");
+    it(`asks in every mode unless a glob keeps secret files out (${host.platform})`, () => {
+      for (const mode of [...MODES, "lines"]) {
+        for (const extra of [
+          {},
+          { path: "." },
+          { path: "src" },
+          { path: "src/index.ts" },
+          { glob: "*" },
+          { glob: "**" },
+          { glob: "**/*" },
+          { glob: "{*}" },
+          { glob: "*.json" },
+          { glob: "!*.md" },
+          { glob: "{*.ts,*}" },
+          // ripgrep reads `\` as an escape on Unix: `*.pe\m` is `*.pem`, `.en\v` is `.env`.
+          { glob: "*.pe\\m" },
+          { glob: ".en\\v" },
+          { glob: "src\\*.ts" },
+          { type: "js" },
+          { "-C": 3 },
+        ]) {
+          const input = withMode(mode, { pattern: "^DB_PASSWORD=a", ...extra });
+          expect(grep(input), JSON.stringify(input)).toBe("ask");
+        }
+      }
+      expect(tool("Grep", { pattern: "TODO" }, "read-only")).toMatchObject({
+        reason: expect.stringContaining("Add a `glob`"),
+      });
+    });
+
+    it(`allows every mode limited to files that are not secrets (${host.platform})`, () => {
+      for (const mode of MODES) {
+        for (const extra of [
+          { glob: "*.ts" },
+          { glob: "*.{ts,tsx}" },
+          { glob: "**/*.ts", path: "src" },
+          { glob: "src/**/*.py", "-n": true },
+        ]) {
+          const input = withMode(mode, { pattern: "TODO", ...extra });
+          expect(grep(input), JSON.stringify(input)).toBe("allow");
+        }
       }
     });
 
-    it(`allows content searches limited to files that are not secrets (${host.platform})`, () => {
-      for (const input of [
-        { pattern: "TODO", output_mode: "content", glob: "*.ts" },
-        { pattern: "TODO", output_mode: "content", glob: "*.{ts,tsx}" },
-        { pattern: "TODO", output_mode: "content", glob: "**/*.ts", path: "src" },
-        { pattern: "TODO", output_mode: "content", glob: "src/**/*.py", "-n": true },
-      ]) {
-        expect(grep(input), JSON.stringify(input)).toBe("allow");
-      }
-    });
-
-    it(`keeps file-name and count searches and the existing denials (${host.platform})`, () => {
-      expect(grep({ pattern: "TODO" })).toBe("allow");
-      expect(grep({ pattern: "TODO", output_mode: "files_with_matches", path: "." })).toBe("allow");
-      expect(grep({ pattern: "TODO", output_mode: "count" })).toBe("allow");
+    it(`keeps the existing denials (${host.platform})`, () => {
       expect(grep({ pattern: "x", path: ".env" })).toBe("deny");
       expect(grep({ pattern: "x", glob: "*.pem" })).toBe("deny");
       expect(grep({ pattern: "x", glob: "*.pem", output_mode: "content" })).toBe("deny");

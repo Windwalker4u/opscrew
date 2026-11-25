@@ -677,9 +677,10 @@ describe("DefaultToolPolicy: file tools", () => {
       ["Read", { file_path: "/home/dev/app/opscrew/plan.yaml" }],
       ["Glob", { pattern: "**/*.ts" }],
       ["Glob", { pattern: "*.json", path: "/home/dev/app/src" }],
-      ["Grep", { pattern: "TODO" }],
+      // A Grep needs a glob that keeps secret files out (#21).
+      ["Grep", { pattern: "TODO", glob: "*.ts" }],
       ["Grep", { pattern: "TODO", path: "src", glob: "*.ts" }],
-      ["Grep", { pattern: "process\\.env", path: "/home/dev/app" }],
+      ["Grep", { pattern: "process\\.env", path: "/home/dev/app", glob: "*.ts" }],
     ];
     for (const [tool, input] of samples) {
       for (const profile of ["read-only", "edit-repo"] as const) {
