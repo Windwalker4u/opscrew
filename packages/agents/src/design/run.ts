@@ -52,6 +52,7 @@ import { type CheckRepositoryApi, checkDesignText, readCheckRepository } from ".
 import {
   repositoryCheckSettings,
   requireCheckSettingsPlace,
+  requireUptimeWebhook,
   withDesignedCheck,
 } from "../check/settings";
 import type { PhaseDeps } from "../context";
@@ -1394,6 +1395,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   }
   await requireOwnHostnames(paths, plan);
   requireCheckSettingsPlace(paths, plan);
+  // The Cloudflare uptime Worker opens no issue: it needs the repository's webhook.
+  await requireUptimeWebhook(paths, plan);
   // No other app or environment of the repository may share its names or its Pages site.
   const self = { ...(paths.app === undefined ? {} : { app: paths.app }), environment: name };
   await requireUniqueNames(
