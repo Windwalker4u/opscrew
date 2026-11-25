@@ -58,4 +58,13 @@ describe("renderDeployment", () => {
       expect(rendered.at(-1)).toEqual(renderWorkflow(plan, serverless));
     }
   });
+
+  it("renders the same bytes whichever OpsCrew version renders them, so an upgrade is no drift", () => {
+    const plan = withServices([{ kind: "mysql" }]);
+    const release = renderDeployment(plan, { ...ctx, opscrewVersion: "0.2.12" });
+    expect(renderDeployment(plan, { ...ctx, opscrewVersion: "0.2.13-dev.abc1234" })).toEqual(
+      release,
+    );
+    expect(release.map((file) => file.content).join("\n")).not.toMatch(/0\.2\.1[23]/);
+  });
 });

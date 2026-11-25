@@ -93,6 +93,12 @@ export interface DriftReport {
    */
   files: { changed: string[]; created: string[] };
   /**
+   * The plan the environment's generated files cite (`opscrew/plan.yaml`, another environment's
+   * in its folder), when git tracks some of them (the deploy workflow, the runtime or the
+   * infrastructure folder) but not the plan; absent otherwise.
+   */
+  uncommittedPlan?: string;
+  /**
    * DNS records at the app's hostnames that OpsCrew did not create (someone replaced or added one
    * in the Cloudflare dashboard). Type, name and content, sorted by name, type and content.
    */

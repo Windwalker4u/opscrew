@@ -193,6 +193,8 @@ export interface ProvisionServices {
   portainer?: PortainerServices;
   /** Finds an optional tool on `PATH`, such as gixy-ng (default: `findExecutable`). */
   which?: (name: string) => string | undefined;
+  /** The system's temporary folder, whose files are not kept (default: `os.tmpdir()`). */
+  tempDir?: string;
   /** The localhost target: this computer's OS, CPU, ports, requests and GHCR (fakes in tests). */
   localhost?: LocalhostServices;
   /** GitHub's runner API for a self-hosted runner (default: the client of the user's token). */

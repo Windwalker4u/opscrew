@@ -14,11 +14,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { buildVersion, gitAt } from "../packages/cli/scripts/build-version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliDir = join(root, "packages", "cli");
 const keep = process.argv.includes("--keep");
 const expectedVersion = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8")).version;
+// What `--version` prints: the package's version on its release tag v<version>, otherwise
+// <version>-dev.<short commit>, as the bundle's build embeds it.
+const expectedReported = buildVersion(expectedVersion, gitAt(root));
 const expectedCommands = [
   "init",
   "scan",
@@ -127,7 +131,10 @@ try {
   copyFileSync(tarball, join(emptyDir, tarballs[0]));
   const local = `./${tarballs[0]}`;
   const version = run("npx", ["--yes", local, "--version"], emptyDir).trim();
-  check(version === expectedVersion, `npx ${local} --version printed "${version}"`);
+  check(
+    version === expectedReported,
+    `npx ${local} --version printed "${version}" (expected "${expectedReported}")`,
+  );
   const help = run("npx", ["--yes", local, "--help"], emptyDir);
   const missing = expectedCommands.filter((c) => !new RegExp(`^\\s+${c}\\b`, "m").test(help));
   check(missing.length === 0, `--help lists ${expectedCommands.join(", ")}`);

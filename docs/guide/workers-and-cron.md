@@ -45,6 +45,10 @@ stopped (by a deploy, a restart or a scale-down), it gets SIGTERM and `stopGrace
 its current job. OpsCrew starts the command so that the signal reaches it directly; your worker
 only needs to handle SIGTERM, as Celery, Sidekiq and Laravel's queue already do.
 
+A command of plain words, such as `php artisan queue:work`, runs as it is, without a shell, so
+an `ENTRYPOINT` of your own Dockerfile gets the command itself. A command that needs a shell (`&&`,
+a pipe, a variable, quotes) runs through `sh -c`. The release command runs the same way.
+
 ## How a deploy updates them
 
 1. The services start first (the database, the queue) and stay up.

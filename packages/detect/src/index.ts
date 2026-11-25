@@ -40,6 +40,7 @@ export {
 export {
   BUILT_IN_HEALTH_FILES,
   builtInHealthEndpoint,
+  isAppCodeFile,
   type NestGlobalPrefix,
   nestGlobalPrefix,
   nestRoutePath,

@@ -3,12 +3,23 @@ import { Redactor, registerEnvSecrets } from "@opscrew/core";
 import { version as packageVersion } from "../package.json";
 import { TerminalReporter } from "./reporter";
 
+/** Set by the bundle's build (tsup.config.ts, `scripts/build-version.mjs`); absent from source. */
+declare const __OPSCREW_VERSION__: string | undefined;
+
+/**
+ * The version this CLI reports and generated files record: the bundle's, which is the release's
+ * own only when built on its tag (`<version>-dev.<short commit>` otherwise), or `<version>-dev`
+ * when it runs from source.
+ */
+export const CLI_VERSION =
+  typeof __OPSCREW_VERSION__ === "string" ? __OPSCREW_VERSION__ : `${packageVersion}-dev`;
+
 /** Everything a command needs from the outside world. Tests build their own. */
 export interface CliContext {
   /** Absolute project directory; the global `--cwd <dir>` option replaces it before an action. */
   cwd: string;
   env: Record<string, string | undefined>;
-  /** Version of the `opscrew` package. */
+  /** OpsCrew's version ({@link CLI_VERSION}). */
   version: string;
   /** True when a human can answer prompts (stdin and stdout are TTYs and `CI` is not set). */
   isInteractive: boolean;
@@ -39,7 +50,7 @@ export function createDefaultContext(): CliContext {
   return {
     cwd: process.cwd(),
     env,
-    version: packageVersion,
+    version: CLI_VERSION,
     isInteractive:
       process.stdin.isTTY === true && process.stdout.isTTY === true && !isTruthy(env.CI),
     stdout,

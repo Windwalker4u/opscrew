@@ -300,6 +300,59 @@ describe("collectCodeChangeSignals", () => {
     expect(ignoreOf(member, "railpack")).toBe(".dockerignore");
   });
 
+  it("counts BuildKit's ignore file beside the app's own Dockerfile as its .dockerignore", async () => {
+    const facts = makeFacts({ docker: { dockerfile: "deploy/web/Dockerfile" } });
+    const kinds = async (files: Record<string, string>) => {
+      const root = await project({ "package.json": "{}", ...files });
+      const signals = await collectCodeChangeSignals(root, facts);
+      return deriveCodeChanges(facts, "own-dockerfile", undefined, signals).map((c) => c.kind);
+    };
+    const dockerfile = { "deploy/web/Dockerfile": "FROM node:24\n" };
+    expect(
+      await kinds({ ...dockerfile, "deploy/web/Dockerfile.dockerignore": ".env\n.git\n" }),
+    ).not.toContain("dockerignore");
+    // Without it, or beside another Dockerfile, the build context's root needs one.
+    expect(await kinds(dockerfile)).toContain("dockerignore");
+    expect(
+      await kinds({ ...dockerfile, "deploy/api/Dockerfile.dockerignore": ".env\n" }),
+    ).toContain("dockerignore");
+  });
+
+  it("asks no port change of a helper script when the app's own Dockerfile EXPOSEs its port, but keeps it for the app's server", async () => {
+    const php = makeFacts({
+      languages: ["javascript", "php"],
+      packageManager: "none",
+      docker: { dockerfile: "Dockerfile", dockerignore: ".dockerignore" },
+    });
+    const files = {
+      "composer.json": "{}",
+      "public/index.php": "<?php echo 'ok';\n",
+      "scripts/x/ingress.mjs": 'import http from "node:http";\nhttp.createServer().listen(9000);\n',
+    };
+    const ports = async (facts: ProjectFacts, more: Record<string, string>) => {
+      const signals = await collectCodeChangeSignals(await project({ ...files, ...more }), facts);
+      return deriveCodeChanges(facts, "own-dockerfile", undefined, signals)
+        .filter((c) => c.kind === "port-config")
+        .map((c) => c.path);
+    };
+    expect(await ports(php, { Dockerfile: "FROM php:8.3-apache\nEXPOSE 8080\n" })).toEqual([]);
+    // Without EXPOSE the Dockerfile doesn't set the port, so the check stays.
+    expect(await ports(php, { Dockerfile: "FROM php:8.3-apache\n" })).toEqual([
+      "scripts/x/ingress.mjs",
+    ]);
+    // The app's own server code keeps it, EXPOSE or not.
+    const node = makeFacts({
+      docker: { dockerfile: "Dockerfile", dockerignore: ".dockerignore" },
+      frameworks: [{ name: "express", path: "." }],
+    });
+    expect(
+      await ports(node, {
+        Dockerfile: "FROM node:24\nEXPOSE 3000\n",
+        "src/server.js": "const app = express();\napp.listen(3000);\n",
+      }),
+    ).toEqual(["src/server.js"]);
+  });
+
   it("asks a Django app without STATIC_ROOT to set it, so collectstatic works in the image", async () => {
     const facts = makeFacts({
       languages: ["python"],

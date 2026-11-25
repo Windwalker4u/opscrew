@@ -71,7 +71,7 @@ services:
     tmpfs:
       - /etc/caddy/tls/shop:mode=0700
     labels:
-      dev.opscrew.caddyfile-sha256: 12c55cdac33a31c0f1e412b74d20e39a3c939071bceab8a37a948df2c98f071d
+      dev.opscrew.caddyfile-sha256: 5704d313605aca436783a729f4a068867f310da28d516c0dc3c2bc70c61c40ec
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -128,19 +128,21 @@ configs:
       	}
       	header {
       		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      		X-Content-Type-Options "nosniff"
-      		X-Frame-Options "SAMEORIGIN"
-      		Referrer-Policy "strict-origin-when-cross-origin"
       		-Server
+      		-X-Powered-By
       	}
+      	header ?X-Content-Type-Options "nosniff"
+      	header ?X-Frame-Options "SAMEORIGIN"
+      	header ?Referrer-Policy "strict-origin-when-cross-origin"
       	handle_errors {
       		header {
       			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      			X-Content-Type-Options "nosniff"
-      			X-Frame-Options "SAMEORIGIN"
-      			Referrer-Policy "strict-origin-when-cross-origin"
       			-Server
+      			-X-Powered-By
       		}
+      		header ?X-Content-Type-Options "nosniff"
+      		header ?X-Frame-Options "SAMEORIGIN"
+      		header ?Referrer-Policy "strict-origin-when-cross-origin"
       		respond "{err.status_code} {err.status_text}" {err.status_code}
       	}
       }

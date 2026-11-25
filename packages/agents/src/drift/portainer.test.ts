@@ -87,7 +87,10 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     expect(s.fake.mutations()).toHaveLength(mutations);
     // Values were compared by keyed fingerprints (the client got the value key).
     expect(s.clients.at(-1)?.valueKey).toHaveLength(32);
-    expect(report.notes ?? []).toEqual([]);
+    // Provision recorded the OpsCrew version that wrote the files: a note, never a difference.
+    expect(report.notes ?? []).toEqual([
+      "The generated files were last written by OpsCrew 0.0.0-test.",
+    ]);
     expect(
       (await readdir(s.deps.paths.files.plansDir)).filter((f) => f.startsWith("drift-")),
     ).toEqual([]);
@@ -347,7 +350,10 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     storage.scenario.changes = [];
     const clean = await drift(s);
     expect(clean.clean).toBe(true);
-    expect(clean.notes ?? []).toEqual([expect.stringContaining("manages no Cloudflare resources")]);
+    expect(clean.notes ?? []).toEqual([
+      expect.stringContaining("manages no Cloudflare resources"),
+      "The generated files were last written by OpsCrew 0.0.0-test.",
+    ]);
     expect(storage.initOptions?.backendConfig?.path).toBe(storageStateFile(s.deps.paths));
 
     // The bucket deleted in the dashboard: its root plans it again.

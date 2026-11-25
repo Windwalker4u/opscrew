@@ -88,7 +88,7 @@ describe("opscrew mcp install and uninstall", () => {
   });
 
   /** A context whose home is a temporary folder and on which `claude` isn't installed. */
-  async function context(options: { interactive?: boolean } = {}) {
+  async function context(options: { interactive?: boolean; version?: string } = {}) {
     home = path.join(await mkdtemp(path.join(tmpdir(), "opscrew-mcp-install-")), "home");
     await mkdir(home);
     const calls: string[] = [];
@@ -101,6 +101,7 @@ describe("opscrew mcp install and uninstall", () => {
     const ctx = createTestContext({
       env: { PATH: "" },
       isInteractive: options.interactive ?? false,
+      ...(options.version === undefined ? {} : { version: options.version }),
     });
     withServices(ctx, { homedir: home, runner });
     return { ctx, home, calls };
@@ -122,6 +123,14 @@ describe("opscrew mcp install and uninstall", () => {
     expect(await run(ctx, "mcp", "uninstall", "--client", "cursor", "--yes")).toBe(0);
     expect(JSON.parse(await readFile(cursor, "utf8"))).toEqual({ mcpServers: {} });
     expect(await readFile(codex, "utf8")).toContain("[mcp_servers.opscrew]");
+  });
+
+  it("from a build between releases, starts the release npm has, not the build's own version", async () => {
+    const { ctx, home } = await context({ version: "0.2.12-dev.abc1234" });
+    expect(await run(ctx, "mcp", "install", "--client", "cursor", "--yes")).toBe(0);
+    expect(JSON.parse(await readFile(path.join(home, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { opscrew: { command: "npx", args: ["-y", "opscrew@0.2.12", "mcp"] } },
+    });
   });
 
   it("changes nothing in a script without --yes, and refuses an unknown id", async () => {

@@ -201,7 +201,8 @@ export function renderDriftReport(
     stacks.length === 0 &&
     rules.length === 0 &&
     site.length === 0 &&
-    hosting.length === 0
+    hosting.length === 0 &&
+    report.uncommittedPlan === undefined
   ) {
     lines.push(
       report.provider === "hosting"
@@ -220,6 +221,15 @@ export function renderDriftReport(
       ...notes,
     );
     return lines.join("\n");
+  }
+
+  const uncommitted = report.uncommittedPlan;
+  if (uncommitted !== undefined) {
+    lines.push(
+      `${uncommitted} is not committed, but the generated files that come from it are: a clone of the repository has the files without their plan, so OpsCrew can't check or change this deployment from there.`,
+      `Commit it (\`git add ${uncommitted}\`, then commit and push), or run ${provision} again, which commits it with the files it renders.`,
+      "",
+    );
   }
 
   if (host.length > 0 && local) {

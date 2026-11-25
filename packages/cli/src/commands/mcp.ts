@@ -27,7 +27,10 @@ function untilClosed(stdin: Readable, isProcessStdin: boolean): Promise<void> {
   });
 }
 
-/** `opscrew mcp install|uninstall`: OpsCrew's server in the AI apps on this computer. */
+/**
+ * `opscrew mcp install|uninstall`: OpsCrew's server in the AI apps on this computer. The apps start
+ * it from npm, so a build between releases (`<version>-dev…`) sets up its release, `<version>`.
+ */
 async function setUp(
   ctx: CliContext,
   action: McpClientsAction,
@@ -39,7 +42,7 @@ async function setUp(
     clients: options.client,
     yes: options.yes === true,
     interactive: ctx.isInteractive,
-    version: ctx.version,
+    version: ctx.version.replace(/-dev(?:\..*)?$/, ""),
     system: {
       home: services.homedir ?? homedir(),
       env: ctx.env,

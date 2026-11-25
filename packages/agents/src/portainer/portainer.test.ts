@@ -162,6 +162,13 @@ async function cloudSetup(
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
 
+/**
+ * A plan file's text without the record a run that writes the generated files adds (the OpsCrew
+ * version that wrote them, `deployment.generatedBy`, and so `updatedAt`).
+ */
+const withoutGeneratedBy = (text: string) =>
+  text.replace(/^updatedAt: .*\n/m, "").replace(/^ {2}generatedBy: .*\n/m, "");
+
 function printed(deps: Awaited<ReturnType<typeof cloudSetup>>["deps"]): string {
   return `${deps.reporter.text()}\n${JSON.stringify(deps.audit.entries)}`;
 }
@@ -280,6 +287,32 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
       hostname: "portainer.example.com",
     });
     expect(result.status.url).toBe("https://portainer.example.com");
+  });
+
+  it("records the OpsCrew version that wrote its files over an older one, though it holds the plan it read before", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: token },
+    });
+    const deployed = testPlan({ domain: "shop.example.com", deployed: true });
+    const plan = { ...deployed, deployment: { ...deployed.deployment, generatedBy: "0.2.11" } };
+    const s = await cloudSetup({ engine, plan });
+    await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    });
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.deployment.generatedBy).toBe(s.deps.version);
   });
 
   it("audits enable and disable as the portainer phase, never as provision", async () => {
@@ -501,7 +534,9 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     });
     expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(engine.applied).toHaveLength(0);
-    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+    expect(withoutGeneratedBy(await readFile(s.deps.paths.files.plan, "utf8"))).toBe(
+      withoutGeneratedBy(original),
+    );
 
     const mismatch = (await portainerEnable(s.deps, {
       subdomain: "portainer",
@@ -632,7 +667,9 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(error.hint).toContain("opscrew portainer enable --approve");
     expect(existsSync(pendingPortainerFile(s.deps.paths))).toBe(true);
     expect(engine.applied).toHaveLength(0);
-    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+    expect(withoutGeneratedBy(await readFile(s.deps.paths.files.plan, "utf8"))).toBe(
+      withoutGeneratedBy(original),
+    );
 
     refuseIac = false;
     const result = await portainerEnable(s.deps, {

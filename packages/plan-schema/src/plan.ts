@@ -2486,6 +2486,11 @@ const DeployPlanFieldsSchema = z.strictObject({
        * server's name. Design compares it with `services[].server` to find a move.
        */
       placement: z.record(ComponentNameSchema, z.string()).optional(),
+      /**
+       * The OpsCrew version that last wrote the generated files (`0.2.12`, or `0.2.12-dev.<commit>`
+       * for a build between releases). Information only: no comparison reads it.
+       */
+      generatedBy: z.string().min(1).optional(),
     })
     .prefault({}),
   retarget: RetargetSchema.optional(),

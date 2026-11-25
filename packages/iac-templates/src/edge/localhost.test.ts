@@ -253,9 +253,13 @@ describe("the app's site on this computer", () => {
       ["Referrer-Policy", "strict-origin-when-cross-origin"],
     ];
     expect(caddy).toContain(
-      ["\theader {", ...baseline.map(([n, v]) => `\t\t${n} "${v}"`), "\t\t-Server", "\t}"].join(
-        "\n",
-      ),
+      [
+        "\theader {",
+        "\t\t-Server",
+        "\t\t-X-Powered-By",
+        "\t}",
+        ...baseline.map(([n, v]) => `\theader ?${n} "${v}"`),
+      ].join("\n"),
     );
     for (const [name, value] of baseline) {
       expect(nginx).toContain(`\tadd_header ${name} "${value}" always;\n`);

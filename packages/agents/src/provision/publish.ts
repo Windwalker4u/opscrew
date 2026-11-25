@@ -865,7 +865,8 @@ async function changesOf(
 
 /**
  * A plan file without what OpsCrew records as it deploys and verifies (`updatedAt`,
- * `deployment.firstDeployAt`, `lastApplyAt`, `lastPlanHash`), which alone is no change to propose.
+ * `deployment.firstDeployAt`, `lastApplyAt`, `lastPlanHash`, `generatedBy`), which alone is no
+ * change to propose.
  */
 function withoutRecords(text: string): unknown {
   const { updatedAt: _updated, deployment, ...rest } = parse(text) ?? {};
@@ -873,6 +874,7 @@ function withoutRecords(text: string): unknown {
     firstDeployAt: _first,
     lastApplyAt: _apply,
     lastPlanHash: _hash,
+    generatedBy: _generatedBy,
     ...kept
   } = deployment ?? {};
   return { ...rest, deployment: kept };
