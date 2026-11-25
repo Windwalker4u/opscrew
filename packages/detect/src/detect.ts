@@ -107,7 +107,7 @@ import {
 } from "./sources";
 import { detectObjectStorage, detectSqlite } from "./storage";
 import { vercelRouting } from "./vercel-routing";
-import { dockerfileWorkdir } from "./workdir";
+import { dockerfileWorkdir, fileCapabilityNote } from "./workdir";
 
 /** Options for {@link detectProject}. */
 export interface DetectOptions {
@@ -772,6 +772,10 @@ export async function detectProjectDetails(
     : undefined;
 
   const notes: string[] = [];
+  // A base image whose server binary cannot start in OpsCrew's hardened container.
+  const capability =
+    dockerfile && dockerText !== undefined ? fileCapabilityNote(dockerText, dockerfile) : undefined;
+  if (capability) notes.push(capability);
   // Processes besides the web one, and the app's storage.
   const sources: AppSources = {
     appDir,

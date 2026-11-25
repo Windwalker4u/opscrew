@@ -205,12 +205,22 @@ function moveRollbackRefusal(): string[] {
 }
 
 /**
+ * printf's format (`%s`: the Compose service) for a container whose program the kernel refused
+ * to start: a binary with a file capability (FrankenPHP's and Caddy's) under the hardening every
+ * app container runs with, and how to drop the capability in the image.
+ */
+const CAPABILITY_REFUSED =
+  "::error::The %s container could not start its program (\"operation not permitted\" in its log). Its image's binary most likely carries a file capability, as FrankenPHP's and Caddy's do (cap_net_bind_service), and OpsCrew runs the app's containers with every capability dropped (cap_drop: ALL) and no-new-privileges, under which the kernel refuses to start such a binary. Drop the capability in your Dockerfile after the FROM line, with setcap -r <binary> where the image has setcap, or by copying the binary over itself (cp <binary> /tmp/copy && mv /tmp/copy <binary>); have the app listen on a port above 1024, and push again.";
+
+/**
  * `keep_failed <service> <container> <why>`: writes the container's last lines (both streams, with
  * Docker's timestamps) to `<service>.log` in {@link FAILED_DEPLOY_DIR}, then `about` for this run's
  * image (`$RUN_IMAGE`), readable by the deploy user only (umask 077, as `release.log`). The first
  * lines a run keeps clear what an earlier run kept, of any image; then {@link START_OUTCOME} says
- * `kept`. It never fails the script: keeping the lines changes nothing in what the deploy or the
- * rollback does.
+ * `kept`. When the lines show the container's program refused at exec ("operation not
+ * permitted"), it says why ({@link CAPABILITY_REFUSED}); the lines themselves stay on the server.
+ * It never fails the script: keeping the lines changes nothing in what the deploy or the rollback
+ * does.
  */
 function keepFailed(plan: DeployPlan): string[] {
   const dir = `${appFolder(plan)}/${FAILED_DEPLOY_DIR}`;
@@ -221,6 +231,7 @@ function keepFailed(plan: DeployPlan): string[] {
     `    grep -qxF kept ${START_OUTCOME} 2> /dev/null || rm -rf ${dir}`,
     `    mkdir -p ${dir}`,
     `    docker logs --timestamps --tail ${FAILED_LINES} "$2" > ${dir}/"$1".log 2>&1`,
+    `    if grep -qi 'exec.*operation not permitted' ${dir}/"$1".log; then printf ${printfFormat(CAPABILITY_REFUSED)} "$1"; fi`,
     `    printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > ${dir}/about`,
     `    echo kept > ${START_OUTCOME}`,
     "  ) || true",

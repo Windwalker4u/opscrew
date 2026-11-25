@@ -149,6 +149,23 @@ repository's packages: mount it only in the `RUN` that needs it, never in one th
 dependencies. A later `npx opscrew design` keeps the setting. It works only with your own
 Dockerfile.
 
+OpsCrew runs the app's containers with every Linux capability dropped (`cap_drop: ALL`) and
+`no-new-privileges`. Under them the kernel refuses to start a binary that carries a file
+capability, so the container stops with "operation not permitted". The FrankenPHP and Caddy images
+ship such a binary (`cap_net_bind_service`, to listen on ports 80 and 443). When your Dockerfile
+builds on one of them, `npx opscrew design` warns you, and a deploy that fails for this reason
+says so. Drop the capability in your Dockerfile after the `FROM` line, and have the app listen on
+a port above 1024 (8080, say):
+
+```dockerfile
+FROM dunglas/frankenphp:1-php8.4
+# A plain copy of the binary drops its file capability.
+RUN cp /usr/local/bin/frankenphp /tmp/frankenphp && mv /tmp/frankenphp /usr/local/bin/frankenphp
+```
+
+`RUN setcap -r /usr/local/bin/frankenphp` does the same where the image has `setcap`. For Caddy's
+image the binary is `/usr/bin/caddy`.
+
 The app must listen on the port in its `PORT` variable and answer its health route. When the new
 version does not start or fails its health check, the deploy stops, the running version keeps
 serving, and the message names the builder OpsCrew would choose and how to switch to it: set
