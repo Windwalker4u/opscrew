@@ -18,7 +18,7 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
-import { checkHosts, IMAGES, snapshotParts } from "@opscrew/iac-templates";
+import { CHECK_THRESHOLDS, checkHosts, IMAGES, snapshotParts } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   credentialMaxAgeDaysOf,
@@ -44,9 +44,6 @@ import { checkReachesOverSsh, usesUptimeWorker } from "./settings";
 /** What design and provision say on a target with no server OpsCrew reaches (spec, edge cases). */
 export const UPTIME_ONLY_LINE =
   "This target has no server OpsCrew reaches, so the Worker checks its address only: the disk, snapshot, restore-drill, certificate-days and credential-age checks need `runner: actions`.";
-
-/** check.mjs's thresholds (check.json's `thresholds`): the server's checks use the same. */
-export const REPORT_THRESHOLDS = { diskWarn: 85, diskHigh: 95, certDays: 14 } as const;
 
 /**
  * The image root steps run in where the login becomes root only through Docker (the deploy login
@@ -204,7 +201,11 @@ export async function reportSettings(
     server: input.server.id,
     ...(input.server.drill === undefined ? {} : { drill: input.server.drill }),
     hosts: checkHosts(plan).map((host) => host.hostname),
-    thresholds: { ...REPORT_THRESHOLDS },
+    thresholds: {
+      diskWarn: CHECK_THRESHOLDS.diskWarn,
+      diskHigh: CHECK_THRESHOLDS.diskHigh,
+      certDays: CHECK_THRESHOLDS.certDays,
+    },
     ...(credentials === undefined ? {} : { credentials }),
     keySha256: input.key.sha256,
   };

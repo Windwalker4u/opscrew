@@ -62,8 +62,11 @@ const CHECK_RUNNER = "ubuntu-slim";
 
 const CHECK_DIR = "opscrew/check";
 
-/** The spec's thresholds: disk 85% and 95%, 14 days of certificate, three tries 30 s apart. */
-const THRESHOLDS: CheckThresholds = {
+/**
+ * The spec's thresholds: disk 85% and 95%, 14 days of certificate, three tries 30 s apart. The
+ * servers' uptime reports (feature 046) check the disk and certificates against the same.
+ */
+export const CHECK_THRESHOLDS: CheckThresholds = {
   diskWarn: 85,
   diskHigh: 95,
   certDays: 14,
@@ -197,7 +200,7 @@ export function renderCheck(input: {
   const config: CheckConfig = {
     version: 1,
     intervalMinutes,
-    thresholds: THRESHOLDS,
+    thresholds: CHECK_THRESHOLDS,
     ...(webhook === undefined ? {} : { webhook }),
     public: repo.public,
     environments: environments.map(({ environment }) => environment),

@@ -3,13 +3,14 @@ import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeUptime } from "@opscrew/connector-cl
 import {
   type ApplyOptions,
   type ApplyResult,
+  type DesiredUptimeReport,
   type HostFacts,
   type HostPlan,
   type HostStep,
   hostPlanHash,
-  UPTIME_REPORT_CONFIG_DIR,
   UPTIME_REPORT_VERSION,
   type UptimeReportFacts,
+  uptimeReportConfigText,
   uptimeReportFileHashes,
 } from "@opscrew/connector-ssh-host";
 import type { FetchLike, RemoteExec } from "@opscrew/contracts";
@@ -181,36 +182,37 @@ export function noUptimeReport(): UptimeReportFacts {
 /** A root file with `mode` and SHA-256 `sha256`, as inspection reads it. */
 const rootFile = (mode: string, sha256: string) => ({ mode, owner: "root", sha256 });
 
-/**
- * The instance's config as the `uptime-report` step writes it, from the step's params (a copy of
- * ssh-host's `uptimeReportConfigText`, which it doesn't export): so the next inspection finds it
- * in place.
- */
-function configText(p: HostStep["params"]): string {
+/** The settings the `uptime-report` step's params carry (the step's own params format). */
+function reportOf(p: HostStep["params"]): DesiredUptimeReport {
   const lines = (value: unknown, sep: string) =>
     String(value ?? "")
       .split(sep)
       .filter((line) => line !== "");
-  return [
-    `# ${UPTIME_REPORT_CONFIG_DIR}/${p.instance}.conf`,
-    `# Managed by OpsCrew: what the uptime report of ${p.entry} checks on this server.`,
-    `url=${p.url}`,
-    `entry=${p.entry}`,
-    `server=${p.server}`,
-    `app=${p.app}`,
-    `drill=${p.drill}`,
-    `disk_warn=${p.diskWarn}`,
-    `disk_high=${p.diskHigh}`,
-    `cert_days=${p.certDays}`,
-    ...lines(p.hosts, " ").map((host) => `host=${host}`),
+  const drill = p.drill === "weekly" || p.drill === "daily" ? p.drill : undefined;
+  return {
+    url: String(p.url),
+    entry: String(p.entry),
+    server: String(p.server),
+    ...(drill === undefined ? {} : { drill }),
+    hosts: lines(p.hosts, " "),
+    thresholds: {
+      diskWarn: Number(p.diskWarn),
+      diskHigh: Number(p.diskHigh),
+      certDays: Number(p.certDays),
+    },
     ...(p.maxAgeDays === undefined
-      ? []
-      : [
-          `max_age_days=${p.maxAgeDays}`,
-          ...lines(p.credentials, "\n").map((line) => `credential=${line}`),
-        ]),
-    "",
-  ].join("\n");
+      ? {}
+      : {
+          credentials: {
+            maxAgeDays: Number(p.maxAgeDays),
+            dates: lines(p.credentials, "\n").map((line) => {
+              const [name = "", at = "", source] = line.split(" ");
+              return { name, at, source: source as "made" | "rotated" | "first-deploy" };
+            }),
+          },
+        }),
+    keySha256: String(p.keySha256),
+  };
 }
 
 /**
@@ -245,7 +247,7 @@ export class FakeReportServer {
       const instance = {
         instance: String(p.instance),
         app: String(p.app),
-        config: rootFile("600", sha256Hex(configText(p))),
+        config: rootFile("600", sha256Hex(uptimeReportConfigText(String(p.app), reportOf(p)))),
         key: rootFile("600", String(p.keySha256)),
         timer: { enabled: true, active: true },
       };

@@ -1,4 +1,3 @@
-import { renderCheck } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { credentialsRecordFile } from "../rotate/record";
@@ -6,7 +5,7 @@ import { recordOwnServer } from "../shared/server-record";
 import { ensureDeployKey } from "../shared/ssh-keys";
 import { createTestPhaseDeps, ED25519_FINGERPRINT, ownPlan, portainerPlan } from "../testing";
 import { ownServerId } from "./files";
-import { REPORT_THRESHOLDS, reportCredentials, reportServers } from "./reports";
+import { reportCredentials, reportServers } from "./reports";
 
 /** `base` with the check on in the Cloudflare uptime Worker, and `extra` merged in. */
 function worker(base: DeployPlan, extra: Record<string, unknown> = {}): DeployPlan {
@@ -16,17 +15,6 @@ function worker(base: DeployPlan, extra: Record<string, unknown> = {}): DeployPl
     ...extra,
   });
 }
-
-it("the server's thresholds are the scheduled check's, as check.json has them", () => {
-  const plan = DeployPlanSchema.parse({
-    ...ownPlan(),
-    observability: { check: { enabled: true } },
-  });
-  const files = renderCheck({ plans: [plan], repo: { owner: "acme", name: "shop", public: true } });
-  const json = files.find((file) => file.path === "opscrew/check/check.json")?.content ?? "{}";
-  const { diskWarn, diskHigh, certDays } = JSON.parse(json).thresholds;
-  expect(REPORT_THRESHOLDS).toEqual({ diskWarn, diskHigh, certDays });
-});
 
 describe("reportServers", () => {
   it("lists the app's server by its id in the scheduled check, with its drills, since today", async () => {
