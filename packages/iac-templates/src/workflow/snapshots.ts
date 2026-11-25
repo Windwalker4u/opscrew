@@ -347,9 +347,9 @@ const DATABASES: Record<(typeof DATABASE_KINDS)[number], DatabaseCommands> = {
 
 /**
  * The exact restore of the database `part` into its running service `host` from `file`: its
- * kind's, and with PostgreSQL's `logins: separate` (047) the logins' load, which makes any missing
- * login first with the passwords of the container's environment (the service's own, or a drill
- * copy's), keeps the dump's owners and grants, and grants again what the dump lacks (`loginsLoad`).
+ * kind's, and with PostgreSQL's `logins: separate` (047) the logins' load (`loginsLoad`), which
+ * makes any missing login first and restores the app's objects as the owner, with the passwords of
+ * the container's environment (the service's own, or a drill copy's).
  */
 function databaseRestore(
   part: SnapshotPart & { kind: (typeof DATABASE_KINDS)[number] },
