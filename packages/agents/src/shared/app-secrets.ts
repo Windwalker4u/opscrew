@@ -1,9 +1,10 @@
 import { isAbsolute, join } from "node:path";
-import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type Redactor, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import { PREVIOUS_VALUES } from "@opscrew/iac-templates";
 import { type DeployPlan, WireGuardKeySchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { readAppValues } from "../values/record";
 import {
   type AppEnvironment,
   addressVariable,
@@ -106,19 +107,7 @@ export async function registerAppSecrets(
     environment === undefined
       ? await keptSecrets(deps, plan, generated)
       : assembledSecrets(environment);
-  for (const [name, value] of Object.entries(named)) {
-    // Host lists and APP_URL hold the domain (or the address), and DB_HOST and the like a service's
-    // address (a private one on another server), which OpsCrew's own messages show as usual; a
-    // fixed production setting is a plain word (`production`). None is masked.
-    if (
-      !addressVariable(name) &&
-      !publicSplitSetting(name) &&
-      fixedProductionValue(name) !== value
-    ) {
-      deps.redactor.addLiteral(value, "app-env");
-      for (const entry of previousEntries(name, value)) deps.redactor.addLiteral(entry, "app-env");
-    }
-  }
+  registerNamedValues(deps.redactor, named);
   // Each service's generated secrets (Postgres's password among them).
   for (const value of secrets) deps.redactor.addLiteral(value, "app-env");
   for (const key of Object.values(generated.network ?? {})) {
@@ -130,6 +119,29 @@ export async function registerAppSecrets(
   const { grafanaAdminPassword, postgresPassword } = generated.monitoring ?? {};
   for (const password of [grafanaAdminPassword, postgresPassword]) {
     if (password !== undefined) deps.redactor.addLiteral(password, "monitoring-password");
+  }
+}
+
+/**
+ * Registers the app's values `named` (by variable name) with the redactor, except the app's
+ * address, the split settings that hold no secret and fixed production words.
+ */
+export function registerNamedValues(
+  redactor: Pick<Redactor, "addLiteral">,
+  named: Readonly<Record<string, string>>,
+): void {
+  for (const [name, value] of Object.entries(named)) {
+    // Host lists and APP_URL hold the domain (or the address), and DB_HOST and the like a service's
+    // address (a private one on another server), which OpsCrew's own messages show as usual; a
+    // fixed production setting is a plain word (`production`). None is masked.
+    if (
+      !addressVariable(name) &&
+      !publicSplitSetting(name) &&
+      fixedProductionValue(name) !== value
+    ) {
+      redactor.addLiteral(value, "app-env");
+      for (const entry of previousEntries(name, value)) redactor.addLiteral(entry, "app-env");
+    }
   }
 }
 
@@ -146,7 +158,13 @@ async function keptSecrets(
   plan: DeployPlan,
   generated: z.output<typeof GeneratedValuesSchema>,
 ): Promise<AppSecrets> {
-  const named: Record<string, string> = { ...generated.env };
+  // The values recorded at the last run (`app_values.json`), then the generated ones.
+  const recorded = await readAppValues(deps);
+  const named: Record<string, string> = {
+    ...recorded?.app,
+    ...recorded?.build,
+    ...generated.env,
+  };
   const file = deps.env.OPSCREW_APP_ENV_FILE?.trim();
   if (file) {
     const text = await readTextIfExists(isAbsolute(file) ? file : join(deps.paths.root, file));

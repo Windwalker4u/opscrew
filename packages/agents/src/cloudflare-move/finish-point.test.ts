@@ -2,6 +2,8 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { PORTAINER_OFFSITE_VARIABLES, PORTAINER_STACK_VARIABLES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { r2Endpoint } from "../shared";
+import { appEnvText } from "../shared/app-env";
+import { readAppValues, writeAppValues } from "../values/record";
 import { BACKUPS_BUCKET } from "./buckets.fakes";
 import {
   A_TUNNEL_TOKEN,
@@ -14,6 +16,7 @@ import {
 } from "./finish.fakes";
 import { backToA, lastCopyOnce, pointAtB } from "./finish-point";
 import { finishWorld } from "./finish-removal.fakes";
+import { environmentDeps } from "./texts";
 
 describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   it("gives the deploy secrets B's values in one approval, names only, then deploys once", async () => {
@@ -59,6 +62,17 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
     expect(w.handler.requests).toHaveLength(1);
     expect(w.github.dispatches).toHaveLength(1);
     expect(w.leaks()).toBe(false);
+  });
+
+  it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
+    const w = await serverPointWorld();
+    const deps = environmentDeps(w.session, w.environment);
+    await writeAppValues(deps, { app: { STALE: "x" }, build: {} });
+    const point = await pointAtB(w.session, w.environment);
+    await point.approve();
+    await point.secrets();
+    const record = await readAppValues(deps);
+    expect(appEnvText(record?.app ?? {})).toBe(w.github.secrets.get("OPSCREW_APP_ENV"));
   });
 
   it("writes nothing when what it would write no longer has the approved hash, or without the approval", async () => {

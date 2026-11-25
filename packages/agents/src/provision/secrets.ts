@@ -66,6 +66,7 @@ import {
   registerAppSecrets,
 } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
+import { readAppValues, writeAppValues } from "../values/record";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -237,6 +238,8 @@ export async function buildAppEnvironment(
   const previous = (await readGenerated(deps)) as
     | (GeneratedValues & Partial<Record<(typeof KEPT_VALUES)[number], unknown>>)
     | undefined;
+  // The values recorded at the last run (`opscrew values set` changes them there).
+  const recorded = await readAppValues(deps);
   const environment = await assembleAppEnv({
     plan,
     ...(dotenvText !== undefined ? { dotenvText } : {}),
@@ -244,7 +247,15 @@ export async function buildAppEnvironment(
     ...(serverHost !== undefined ? { serverHost } : {}),
     ...(previous ? { previous } : {}),
     ...(options.storage !== undefined ? { storage: options.storage } : {}),
+    ...(recorded !== undefined ? { kept: { ...recorded.app, ...recorded.build } } : {}),
   });
+  if (ask && environment.kept.length > 0) {
+    const { root, app } = deps.paths;
+    const one = environment.kept.length === 1;
+    deps.reporter.info(
+      `OpsCrew kept the ${one ? "value" : "values"} it has of ${listText(environment.kept)} from an earlier run and didn't ask for ${one ? "it" : "them"} again. Change ${one ? "it" : "one"} with \`opscrew values set${await commandFlags(root, name, app)} ${one ? environment.kept[0] : "<NAME>"}\`.`,
+    );
+  }
   // The origin TLS values stay as provision's Cloudflare step left them, and the network's keys
   // and the device logins' passwords as design and `vpn` made them.
   const kept = Object.fromEntries(
@@ -259,6 +270,7 @@ export async function buildAppEnvironment(
     generatedValuesFile(deps),
     `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
   );
+  await writeAppValues(deps, { app: environment.values.app, build: environment.values.build });
   await registerAppSecrets(deps, plan, environment);
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);
   else reportUnsetVariables(deps, environment);

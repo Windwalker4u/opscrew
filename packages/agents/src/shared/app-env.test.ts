@@ -3,11 +3,14 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
 import {
+  appEnvText,
   assembleAppEnv,
+  buildLinesText,
   dotenvLine,
   type EnvQuestion,
   hostListKind,
   parseDotenv,
+  readDotenvLine,
   serviceFilledNames,
   serviceUrlKind,
 } from "./app-env";
@@ -917,5 +920,81 @@ describe("assembleAppEnv: a PHP app's settings (US8)", () => {
       ...SPLIT.map((variable) => variable.name),
     ]);
     expect(serviceFilledNames(on(SPLIT, []))).toEqual(new Set());
+  });
+});
+
+describe("the values OpsCrew keeps between runs (048)", () => {
+  const STRIPE = fakeSecret("stripe-live-key", "kept");
+  const env: Env = [...DJANGO, { name: "STRIPE_SECRET_KEY", secret: true, source: "user" }];
+
+  it("reads every form dotenvLine writes back to the value", () => {
+    const pem = fakeSecret("private-key-pem", "kept-pem");
+    for (const value of [
+      "plain-value_1.2:3/4@5+6=7",
+      "with space",
+      `it's "quoted"`,
+      `backslash $HOME $$ and "quotes"\nline two`,
+      pem,
+      "",
+    ]) {
+      expect(readDotenvLine(dotenvLine("NAME", value))).toEqual(["NAME", value]);
+    }
+    expect(readDotenvLine("# a comment")).toBeUndefined();
+  });
+
+  it("renders the app's env file and the build lines sorted by name", () => {
+    expect(appEnvText({ B: "two words", A: "1" })).toBe("A=1\nB='two words'\n");
+    expect(appEnvText({})).toBe("\n");
+    expect(buildLinesText({ VITE_B: "b", NEXT_PUBLIC_A: "a" })).toBe("NEXT_PUBLIC_A=a\nVITE_B=b\n");
+  });
+
+  it("takes a kept value instead of asking for it, and names it", async () => {
+    const asked: string[] = [];
+    const result = await assembleAppEnv({
+      plan: plan(env),
+      serverHost: ADDRESS,
+      kept: { STRIPE_SECRET_KEY: STRIPE },
+      ask: async (question) => {
+        asked.push(question.name);
+        return { skip: true };
+      },
+    });
+    expect(asked).toEqual(["DJANGO_DEBUG"]);
+    expect(result.values.app.STRIPE_SECRET_KEY).toBe(STRIPE);
+    expect(result.kept).toEqual(["STRIPE_SECRET_KEY"]);
+  });
+
+  it("lets the values file win over a kept value, and fills a value it lacks", async () => {
+    const other = fakeSecret("stripe-live-key", "file");
+    const fromFile = await assembleAppEnv({
+      plan: plan(env),
+      dotenvText: `STRIPE_SECRET_KEY=${other}\n`,
+      serverHost: ADDRESS,
+      kept: { STRIPE_SECRET_KEY: STRIPE },
+    });
+    expect(fromFile.values.app.STRIPE_SECRET_KEY).toBe(other);
+    expect(fromFile.kept).toEqual([]);
+    const fromKept = await assembleAppEnv({
+      plan: plan(env),
+      dotenvText: "",
+      serverHost: ADDRESS,
+      kept: { STRIPE_SECRET_KEY: STRIPE },
+    });
+    expect(fromKept.values.app.STRIPE_SECRET_KEY).toBe(STRIPE);
+    expect(fromKept.kept).toEqual(["STRIPE_SECRET_KEY"]);
+  });
+
+  it("never takes a kept value for a generated or derived one", async () => {
+    const result = await assembleAppEnv({
+      plan: plan(env),
+      dotenvText: `STRIPE_SECRET_KEY=${STRIPE}\n`,
+      serverHost: ADDRESS,
+      previous: { env: { DJANGO_SECRET_KEY: "kept-generated" } },
+      kept: { DJANGO_SECRET_KEY: "stale", DATABASE_URL: "stale", DJANGO_ALLOWED_HOSTS: "stale" },
+    });
+    expect(result.values.app.DJANGO_SECRET_KEY).toBe("kept-generated");
+    expect(result.values.app.DATABASE_URL).not.toBe("stale");
+    expect(result.values.app.DJANGO_ALLOWED_HOSTS).toBe(ADDRESS);
+    expect(result.kept).toEqual([]);
   });
 });

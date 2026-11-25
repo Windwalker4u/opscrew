@@ -12,6 +12,7 @@ import type { GitHubSetup } from "../provision/credentials";
 import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import { dotenvLine, readValidJson, serverWords } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
+import { recordAppEnvText } from "../values/record";
 import type { MoveShell } from "./shells";
 
 /** The app's settings file on its server. */
@@ -152,10 +153,11 @@ export async function writeMask(
 
 /**
  * Stores `text` as the GitHub secret `OPSCREW_APP_ENV` of the plan's environment (where its deploy
- * secrets live), so the next deploy writes the same settings. Audited by name only.
+ * secrets live), so the next deploy writes the same settings, and in OpsCrew's record of the app's
+ * values (048). Audited by name only.
  */
 export async function storeAppEnv(
-  deps: Pick<PhaseDeps, "audit">,
+  deps: Pick<PhaseDeps, "audit" | "paths">,
   github: Pick<GitHubSetup, "api" | "owner" | "repo">,
   plan: DeployPlan,
   text: string,
@@ -167,4 +169,5 @@ export async function storeAppEnv(
     text,
     "provision",
   );
+  await recordAppEnvText(deps, text);
 }

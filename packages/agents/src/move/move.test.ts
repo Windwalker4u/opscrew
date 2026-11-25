@@ -2,6 +2,8 @@ import { CHECK_PAUSED_VARIABLE, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-temp
 import { ADDON_MEMORY_DEFAULTS, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { MONITORING_VERSIONS } from "../monitoring/settings";
+import { appEnvText } from "../shared/app-env";
+import { readAppValues, writeAppValues } from "../values/record";
 import { moveWorld } from "./__fixtures__/world";
 import { runMove } from "./index";
 
@@ -60,6 +62,15 @@ function backOnOldCopy(w: World) {
 }
 
 describe("runMove", () => {
+  it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
+    const w = await moveWorld({ step: "started" });
+    w.servers.data.running.add("db");
+    await writeAppValues(w.deps, { app: { STALE: "x" }, build: {} });
+    await runMove(w.deps, { plan: w.plan, services: w.services });
+    const record = await readAppValues(w.deps);
+    expect(appEnvText(record?.app ?? {})).toBe(w.github.secrets.get("OPSCREW_APP_ENV"));
+  });
+
   it("waits for the deploy to start the new copy, changing nothing", async () => {
     const w = await moveWorld({ step: "started" });
     const plan = await runMove(w.deps, { plan: w.plan, services: w.services });

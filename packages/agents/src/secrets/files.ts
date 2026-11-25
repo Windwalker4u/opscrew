@@ -11,7 +11,7 @@ import {
   readTextIfExists,
   toPosixRelative,
 } from "@opscrew/core";
-import { previousEntries } from "../shared/app-secrets";
+import { previousEntries, registerNamedValues } from "../shared/app-secrets";
 
 /** Prod's copy in the repository (committed); {@link copyPath} gives each environment's. */
 export const COPY_PATH = "opscrew/secrets.sops.json";
@@ -27,6 +27,7 @@ export function copyPath(paths: Pick<ProjectPaths, "root" | "artefactsDir">): st
 /** From the project's folder in OpsCrew's home (`~/.opscrew/projects/<id>/`). */
 const HOME_FILES = [
   "generated_values.json",
+  "app_values.json",
   "deploy_key",
   "deploy_key.pub",
   "known_hosts",
@@ -52,6 +53,9 @@ const TFSTATE = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.tfstate$/;
 
 /** The copy's path of the generated values, whose values are registered one by one. */
 const GENERATED_VALUES = "home/generated_values.json";
+
+/** The copy's path of the app's recorded values (048), registered as provision registers them. */
+const APP_VALUES = "home/app_values.json";
 
 /**
  * True for a path the copy may hold: `home/` and a name of the list, `state/` and a record of the
@@ -127,9 +131,14 @@ function generatedLeaves(text: string | undefined): Map<string, string> {
 /**
  * Registers every value inside `files`' generated values with the redactor, each by itself, and
  * each entry of an app's previous-value variable on its own too (`previousEntries`), under the
- * label provision gives them (`app-env`).
+ * label provision gives them (`app-env`); and the app's recorded values (`registerNamedValues`).
  */
 export function registerGeneratedValues(redactor: Redactor, files: Record<string, string>): void {
+  const recorded = generatedLeaves(files[APP_VALUES]);
+  registerNamedValues(
+    redactor,
+    Object.fromEntries([...recorded].map(([name, value]) => [name.replace(/^[^.]*./, ""), value])),
+  );
   for (const [name, value] of generatedLeaves(files[GENERATED_VALUES])) {
     redactor.addLiteral(value, "app-env");
     if (!name.startsWith("env.")) continue;

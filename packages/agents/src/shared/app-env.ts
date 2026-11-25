@@ -61,6 +61,44 @@ export function dotenvLine(name: string, value: string): string {
   return `${name}="${escaped}"`;
 }
 
+/**
+ * The name and value of one line {@link dotenvLine} wrote (plain, single-quoted, or double-quoted
+ * with `\\`, `\"`, `\n` and `$$`); `undefined` for a line that holds no variable.
+ */
+export function readDotenvLine(line: string): [string, string] | undefined {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+  if (match === null) return undefined;
+  const name = match[1] as string;
+  const raw = match[2] as string;
+  const quoted = (quote: string) => raw.length >= 2 && raw.startsWith(quote) && raw.endsWith(quote);
+  if (quoted("'")) return [name, raw.slice(1, -1)];
+  if (!quoted('"')) return [name, raw];
+  const value = raw
+    .slice(1, -1)
+    .replace(/\\([\\"n])|\$\$/g, (_all, escaped: string | undefined) =>
+      escaped === undefined ? "$" : escaped === "n" ? "\n" : escaped,
+    );
+  return [name, value];
+}
+
+/** The app's env file (`OPSCREW_APP_ENV`): a {@link dotenvLine} per value, sorted by name. */
+export function appEnvText(values: Readonly<Record<string, string>>): string {
+  return `${sortedEntries(values)
+    .map(([name, value]) => dotenvLine(name, value))
+    .join("\n")}\n`;
+}
+
+/** The build values' lines (`OPSCREW_BUILD_ENV`, `OPSCREW_BUILD_SECRETS`): `NAME=value`, sorted. */
+export function buildLinesText(values: Readonly<Record<string, string>>): string {
+  return `${sortedEntries(values)
+    .map(([name, value]) => `${name}=${value}`)
+    .join("\n")}\n`;
+}
+
+function sortedEntries(values: Readonly<Record<string, string>>): [string, string][] {
+  return Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
+}
+
 export type EnvAnswer = { useLocal: true } | { value: string } | { skip: true };
 
 export interface EnvQuestion {
@@ -635,6 +673,12 @@ export interface AssembleAppEnvOptions {
   /** The user's key for the plan's provider bucket, and R2's endpoint (see {@link StorageLogin}). */
   storage?: StorageLogin;
   /**
+   * The app's values OpsCrew recorded at its last run (`app_values.json`), by name: a variable this
+   * run would ask for takes its value without asking, and one it would read from `dotenvText`
+   * takes it when the file has none. Never for a generated, derived or fixed value.
+   */
+  kept?: Readonly<Record<string, string>>;
+  /**
    * A preview environment's env templates instead of values (ADR 0026): each value OpsCrew would
    * generate is the preview server's placeholder in the format it needs (`previewSecret`: a
    * service's secret as `<service>-<secret>`, an app variable by its name), never recorded in
@@ -681,6 +725,8 @@ export interface AppEnvironment {
   unresolved: string[];
   /** Everything this run generated or reused, to pass as `previous` next time. */
   generated: GeneratedValues;
+  /** The variables that took a `kept` value, by name. */
+  kept: string[];
   /**
    * The same values by name, exactly as set (no env-file quoting), for a target that takes them one
    * by one, such as a Portainer stack's environment: `app` holds what {@link appEnv} holds, `build`
@@ -728,6 +774,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const missing: string[] = [];
   const defaulted: string[] = [];
   const unresolved: string[] = [];
+  const keptNames: string[] = [];
   const newPassword = options.password ?? randomPassword;
   const generatedEnv: Record<string, string> = {};
   const generated: GeneratedValues = { env: generatedEnv };
@@ -814,6 +861,14 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       const generate = options.password ?? (() => newGeneratedValue(variable.name));
       value = userValue ?? options.previous?.env?.[variable.name] ?? generate();
       if (userValue === undefined) generatedEnv[variable.name] = value;
+    } else if (
+      options.kept?.[variable.name] !== undefined &&
+      // An interactive run's local file holds development values; a script's file wins.
+      (options.ask !== undefined || local.get(variable.name) === undefined)
+    ) {
+      value = options.kept[variable.name];
+      keptNames.push(variable.name);
+      users = true;
     } else if (options.ask) {
       const answer = await options.ask({
         name: variable.name,
@@ -868,21 +923,18 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     );
   }
 
-  const sortedLines = (values: Map<string, string>, format: (n: string, v: string) => string) =>
-    [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([n, v]) => format(n, v));
-  const buildLines = (values: Map<string, string>) =>
-    `${sortedLines(values, (n, v) => `${n}=${v}`).join("\n")}\n`;
   const sorted = (entries: Iterable<[string, string]>) =>
     Object.fromEntries([...entries].sort(([a], [b]) => a.localeCompare(b)));
   const allBuild = [...build.entries(), ...buildSecrets.entries()];
   return {
-    appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
-    buildEnv: buildLines(build),
-    buildSecrets: buildLines(buildSecrets),
+    appEnv: appEnvText(Object.fromEntries(app)),
+    buildEnv: buildLinesText(Object.fromEntries(build)),
+    buildSecrets: buildLinesText(Object.fromEntries(buildSecrets)),
     names: [...new Set([...app.keys(), ...own.keys(), ...allBuild.map(([name]) => name)])].sort(),
     defaulted,
     unresolved,
     generated,
+    kept: keptNames,
     values: {
       app: sorted(app.entries()),
       build: sorted(allBuild),

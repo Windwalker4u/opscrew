@@ -23,7 +23,11 @@ import { allocateNetwork } from "../network";
 import { credentialsRecordFile } from "../rotate/record";
 import { tokenDatesFile } from "../rotate/record-tokens";
 import { keepPendingRotation } from "../rotate/values-pending";
-import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
+import {
+  generatedValuesFile,
+  recordGeneratedEntries,
+  registerAppSecrets,
+} from "../shared/app-secrets";
 import {
   createProject,
   createTestPhaseDeps,
@@ -40,6 +44,7 @@ import {
 } from "../testing";
 import { pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
+import { readAppValues, writeAppValues } from "../values/record";
 import { runProvision } from "./run";
 import {
   buildAppEnvironment,
@@ -1207,5 +1212,51 @@ describe("the deploy secrets OpsCrew stored before", () => {
     expect(handler.requests.find((r) => r.kind === "github-secrets")?.details).not.toContain(
       "Deleted",
     );
+  });
+});
+
+describe("the record of the app's values (048)", () => {
+  const KEY = fakeSecret("stripe-live-key", "048-record");
+
+  it("records what it assembled, and a script reuses a recorded value its file lacks", async () => {
+    const deps = await createTestPhaseDeps();
+    deps.interactive = false;
+    await writeFile(join(deps.paths.root, "prod.env"), `STRIPE_SECRET_KEY=${KEY}\n`);
+    deps.env.OPSCREW_APP_ENV_FILE = "prod.env";
+    const first = await buildAppEnvironment(deps, testPlan(), {});
+    expect(await readAppValues(deps)).toEqual({
+      app: first.values.app,
+      build: first.values.build,
+    });
+    expect(first.values.app.STRIPE_SECRET_KEY).toBe(KEY);
+    await writeFile(join(deps.paths.root, "prod.env"), "");
+    const again = await buildAppEnvironment(deps, testPlan(), {});
+    expect(again.values.app.STRIPE_SECRET_KEY).toBe(KEY);
+    expect(deps.reporter.text()).not.toContain(KEY);
+  });
+
+  it("doesn't ask a terminal again for a recorded value, and says which it kept", async () => {
+    const deps = await createTestPhaseDeps();
+    deps.interactive = true;
+    await writeAppValues(deps, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
+    const asked: string[] = [];
+    const environment = await buildAppEnvironment(deps, testPlan(), {
+      askEnv: async (question) => {
+        asked.push(question.name);
+        return { skip: true };
+      },
+    });
+    expect(asked).toEqual([]);
+    expect(environment.values.app.STRIPE_SECRET_KEY).toBe(KEY);
+    expect(deps.reporter.text()).toContain(
+      "info: OpsCrew kept the value it has of STRIPE_SECRET_KEY from an earlier run and didn't ask for it again. Change it with `opscrew values set STRIPE_SECRET_KEY`.",
+    );
+  });
+
+  it("registers the recorded values with the redactor when nothing is assembled", async () => {
+    const deps = await createTestPhaseDeps();
+    await writeAppValues(deps, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
+    await registerAppSecrets(deps, testPlan());
+    expect(deps.redactor.redact(`key ${KEY}`)).not.toContain(KEY);
   });
 });

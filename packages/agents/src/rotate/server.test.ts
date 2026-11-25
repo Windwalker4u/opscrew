@@ -18,7 +18,7 @@ import { serviceEnvFiles } from "../provision/secrets";
 import type { GitHubApi } from "../provision/types";
 import { copyPath } from "../secrets/files";
 import { updateServerAddresses } from "../shared";
-import { assembleAppEnv } from "../shared/app-env";
+import { appEnvText, assembleAppEnv } from "../shared/app-env";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import {
   DATA_IPV4,
@@ -35,6 +35,7 @@ import {
   testKeyMaker,
   testKeyPair,
 } from "../testing";
+import { readAppValues, writeAppValues } from "../values/record";
 import { rotateGrant } from "./network-grant";
 import { rotationContext } from "./plan";
 import { credentialsRecordFile, recordRotation } from "./record";
@@ -391,6 +392,15 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 const secret = (w: World, name: string) => w.github.secrets.get(`/OPSCREW_STAGING_${name}`);
 
 describe("rotateServices on one server", () => {
+  it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
+    const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
+    await writeAppValues(w.deps, { app: { STALE: "x" }, build: { VITE_A: "a" } });
+    await w.run(["db"]);
+    const record = await readAppValues(w.deps);
+    expect(appEnvText(record?.app ?? {})).toBe(secret(w, "APP_ENV"));
+    expect(record?.build).toEqual({ VITE_A: "a" });
+  });
+
   it("rotates the database: the plan approved by its hash, GitHub's secrets and rotate.sh with the new values, then the record", async () => {
     const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
     const result = await w.run(["db"]);
