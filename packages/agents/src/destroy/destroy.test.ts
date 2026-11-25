@@ -10,7 +10,12 @@ import {
 } from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { AppRecord } from "@opscrew/connector-ssh-host";
-import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  FetchLike,
+  ResourceChange,
+} from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { CHECK_PAUSED_VARIABLE, cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
@@ -2251,6 +2256,208 @@ describe.skipIf(!findExecutable("git"))(
     });
   },
 );
+
+/** How often `text` occurs in `within`. */
+function occurrences(within: string | undefined, text: string): number {
+  return (within ?? "").split(text).length - 1;
+}
+
+/** The teardown's approval (`Delete shop …`). */
+function destroyRequest(s: Setup): ApprovalRequest | undefined {
+  return s.handler.requests.find(
+    (r) => r.kind === "iac-apply" && r.title.startsWith("Delete shop"),
+  );
+}
+
+/** OVHcloud's four values, none of which may appear in any output. */
+const OVH_ENV = {
+  HCLOUD_TOKEN: undefined,
+  OVH_ENDPOINT: "ovh-eu",
+  OVH_CLIENT_ID: "opscrew-test-client",
+  OVH_CLIENT_SECRET: fakeSecret("hcloud-token", "ovh-client-secret"),
+  OVH_CLOUD_PROJECT_SERVICE: fakeSecret("generic-password", "ovh-project-id"),
+};
+const OVH_RESOURCES: ResourceChange[] = [
+  ["ovh_cloud_ssh_key", "deploy"],
+  ["ovh_cloud_security_group", "this"],
+  ["ovh_cloud_instance", "this"],
+].map(([type, name]) => ({
+  address: `module.server.${type}.${name}`,
+  type: type as string,
+  name: name as string,
+  provider: "registry.opentofu.org/ovh/ovh",
+  action: "delete",
+}));
+
+describe.skipIf(!findExecutable("git"))("runDestroy names the snapshots taken earlier", () => {
+  const HETZNER_LINE =
+    "The 2 snapshots of shop taken earlier stay: Hetzner image 101 and Hetzner image 102 (Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud; OpsCrew never deletes them).";
+
+  it("reads them once before any approval and names each in the summary, the approval and What remains", async () => {
+    const s = await setup();
+    s.servers.snapshotsOf = { "4711": ["101", "102"] };
+    let summary = "";
+    let listedAtName: string[] = [];
+    let eventsAtName: string[] = [];
+    const result = await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => {
+        summary = s.deps.reporter.text();
+        listedAtName = [...s.servers.listed];
+        eventsAtName = [...s.events];
+        return true;
+      },
+    });
+    // Once, before the typed name, the snapshot and every approval; never after the deletion.
+    expect(listedAtName).toEqual(["4711"]);
+    expect(eventsAtName).toEqual(["plan:destroy"]);
+    expect(s.servers.listed).toEqual(["4711"]);
+    expect(summary).toContain(`info: ${HETZNER_LINE}`);
+    const destroy = destroyRequest(s);
+    expect(destroy?.details).toContain(HETZNER_LINE);
+    const remaining = result.remaining.join("\n");
+    expect(remaining).toContain(
+      "The 2 snapshots of shop taken earlier (Hetzner image 101 and Hetzner image 102). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete them in the Hetzner Cloud Console when you no longer need them.",
+    );
+    for (const ref of ["Hetzner image 101", "Hetzner image 102"]) {
+      expect(occurrences(summary, ref)).toBe(1);
+      expect(occurrences(destroy?.details, ref)).toBe(1);
+      expect(occurrences(remaining, ref)).toBe(1);
+    }
+    // The snapshot this run took is named on its own, once.
+    expect(occurrences(destroy?.details, "Hetzner image 9001")).toBe(1);
+    expect(occurrences(remaining, "Hetzner image 9001")).toBe(1);
+    // The approval is bound to the engine plan's hash, whatever its details say.
+    const applied = s.engine.applied.find((a) => a.kind === "destroy");
+    expect(applied?.approval.approvedPlanHash).toBe(destroy?.planHash);
+    // Nothing deletes a snapshot.
+    expect(providerCalls(s.deps).map((call) => call[0])).toEqual([
+      "create snapshot",
+      "snapshot ready",
+    ]);
+  });
+
+  it("leaves out the snapshot an earlier run took and this one reuses", async () => {
+    const s = await setup();
+    await writeSnapshotRecord(s.deps, {
+      provider: "hetzner",
+      serverId: "4711",
+      snapshotId: "9001",
+      takenAt: "2026-10-11T11:00:00.000Z",
+    });
+    s.servers.snapshotsOf = { "4711": ["101", "9001"] };
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(s.servers.snapshots).toEqual([]);
+    const destroy = destroyRequest(s);
+    expect(destroy?.details).toContain("Snapshot: Hetzner image 9001 keeps a copy of the server");
+    expect(destroy?.details).toContain(
+      "The snapshot of shop taken earlier stays: Hetzner image 101 (Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud; OpsCrew never deletes it).",
+    );
+    const remaining = result.remaining.join("\n");
+    for (const ref of ["Hetzner image 101", "Hetzner image 9001"]) {
+      expect(occurrences(destroy?.details, ref)).toBe(1);
+      expect(occurrences(remaining, ref)).toBe(1);
+    }
+  });
+
+  it("on DigitalOcean, names the Droplet's snapshots taken earlier", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    s.servers.snapshotsOf = { "3164444": ["7001"] };
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(s.servers.listed).toEqual(["3164444"]);
+    const line =
+      "The snapshot of shop taken earlier stays: DigitalOcean snapshot 7001 (DigitalOcean bills snapshots per GB per month at the rate listed on https://www.digitalocean.com/pricing; OpsCrew never deletes it).";
+    expect(s.deps.reporter.text()).toContain(`info: ${line}`);
+    expect(destroyRequest(s)?.details).toContain(line);
+    expect(result.remaining).toContain(
+      "The snapshot of shop taken earlier (DigitalOcean snapshot 7001). DigitalOcean bills snapshots per GB per month at the rate listed on https://www.digitalocean.com/pricing and OpsCrew never deletes them; delete it in the DigitalOcean control panel when you no longer need it.",
+    );
+    expect(occurrences(result.remaining.join("\n"), "DigitalOcean snapshot 7001")).toBe(1);
+  });
+
+  it("on OVHcloud, names them without a snapshot of its own, and leaks none of its values", async () => {
+    const s = await setup({
+      plan: deployedPlan({ provider: "ovhcloud" }),
+      script: { resources: OVH_RESOURCES },
+      env: OVH_ENV,
+    });
+    // The fake engine's state id of an OVHcloud instance.
+    s.servers.snapshotsOf = { "this-1": ["cccccccc-dddd-4eee-8fff-000000000001"] };
+    const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
+    expect(s.servers.listed).toEqual(["this-1"]);
+    const ref = "OVHcloud snapshot cccccccc-dddd-4eee-8fff-000000000001";
+    const text = s.deps.reporter.text();
+    const details = destroyRequest(s)?.details;
+    const remaining = result.remaining.join("\n");
+    expect(text).toContain(`info: The snapshot of shop taken earlier stays: ${ref} (OVHcloud`);
+    expect(details).toContain(`The snapshot of shop taken earlier stays: ${ref} (OVHcloud`);
+    expect(remaining).toContain(`The snapshot of shop taken earlier (${ref}).`);
+    expect(remaining).toContain("delete it in the OVHcloud control panel");
+    expect(occurrences(details, ref)).toBe(1);
+    expect(occurrences(remaining, ref)).toBe(1);
+    // Leak check: none of OVHcloud's four values in output, approvals or audit entries.
+    const said = [
+      text,
+      ...s.handler.requests.map((r) => `${r.title}\n${r.details}`),
+      JSON.stringify(s.deps.audit.entries),
+      remaining,
+    ].join("\n");
+    for (const value of Object.values(OVH_ENV)) {
+      if (value !== undefined && value !== "ovh-eu") expect(said).not.toContain(value);
+    }
+  });
+
+  it("says in one line when the list cannot be read, and the teardown goes on", async () => {
+    const s = await setup();
+    s.servers.listError = new OpsCrewError("PROVIDER_ERROR", "Hetzner answered 503.");
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.destroyed).toEqual(deployedResources());
+    expect(s.deps.reporter.lines.filter((l) => l.message.includes("taken earlier"))).toEqual([
+      {
+        level: "warn",
+        message:
+          "OpsCrew could not list the snapshots of shop taken earlier (Hetzner answered 503); any there stay and keep billing, so check them in the Hetzner Cloud Console.",
+      },
+    ]);
+    expect(destroyRequest(s)?.details).not.toContain("taken earlier");
+  });
+
+  it("without snapshots taken earlier, says exactly what it said before", async () => {
+    /** The run's output, approvals and remains with its root and plan hashes made neutral. */
+    const said = async (byServer: Record<string, string[]>) => {
+      const s = await setup();
+      s.servers.snapshotsOf = byServer;
+      const result = await runDestroy(s.deps, { services: s.services });
+      const neutral = (text: string) =>
+        s.handler.requests
+          .reduce((t, r) => t.split(r.planHash ?? "\0").join("<hash>"), text)
+          .split(s.root)
+          .join("<root>");
+      return {
+        text: neutral(s.deps.reporter.text()),
+        approvals: s.handler.requests.map((r) => neutral(`${r.title}\n${r.details}`)),
+        remaining: result.remaining.map(neutral),
+      };
+    };
+    const without = await said({});
+    const named = await said({ "4711": ["101"] });
+    expect(without.text).not.toContain("taken earlier");
+    const drop = (text: string) =>
+      text
+        .split("\n")
+        .filter((line) => !line.includes("Hetzner image 101"))
+        .join("\n");
+    expect(drop(named.text)).toBe(without.text);
+    expect(named.approvals.map(drop)).toEqual(without.approvals);
+    expect(named.remaining.filter((item) => !item.includes("Hetzner image 101"))).toEqual(
+      without.remaining,
+    );
+  });
+});
 
 /** The error `promise` rejects with. */
 async function expectError(promise: Promise<unknown>): Promise<OpsCrewError> {

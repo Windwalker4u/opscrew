@@ -1,6 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import { definition as hetzner } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
+import { CLOUD_PROVIDERS } from "./index";
 import { validateCloudProvider } from "./validate";
 
 const { credentials, regions, terraform } = hetzner;
@@ -216,5 +217,88 @@ describe("validateCloudProvider", () => {
     expect(failure(shared({ sshKeyId: "coalesce(hcloud_ssh_key.other.id)" }))).toContain(
       "terraform.extraShared.sshKeyId: names none of the resources declared",
     );
+  });
+  describe("root variables", () => {
+    const [envVar] = credentials.envVars;
+    const variable = { name: "hetzner_project", description: "The project.", fromEnv: envVar };
+    const withRoot = (...rootVariables: unknown[]) => ({
+      ...hetzner,
+      terraform: { ...terraform, rootVariables },
+    });
+
+    it("accepts a definition without them, and well-formed ones", () => {
+      expect(terraform).not.toHaveProperty("rootVariables");
+      const valid = withRoot(variable);
+      expect(validateCloudProvider(valid)).toBe(valid);
+    });
+
+    it("wants each name an HCL identifier", () => {
+      for (const name of ["Project", "1project", "project-id", "_project", ""]) {
+        expect(failure(withRoot({ ...variable, name }))).toContain(
+          `terraform.rootVariables.0.name: "${name}" must be an HCL identifier (^[a-z][a-z0-9_]*$)`,
+        );
+      }
+    });
+
+    it("refuses a name that is or ends like a server variable", () => {
+      for (const [name, server] of [
+        ["location", "location"],
+        ["server_type", "server_type"],
+        ["image", "image"],
+        ["backups", "backups"],
+        ["delete_protection", "delete_protection"],
+        ["db_location", "location"],
+        ["previous_image", "image"],
+        ["web_delete_protection", "delete_protection"],
+        ["server_ipv4", "server_ipv4"],
+        ["previous_server_ipv6", "server_ipv6"],
+      ]) {
+        expect(failure(withRoot({ ...variable, name }))).toContain(
+          `terraform.rootVariables.0.name: "${name}" collides with the server variable ${server}`,
+        );
+      }
+      const near = withRoot({ ...variable, name: "imageset" }, { ...variable, name: "locations" });
+      expect(validateCloudProvider(near)).toBe(near);
+    });
+
+    it("refuses a name repeated within the definition", () => {
+      expect(failure(withRoot(variable, { ...variable }))).toContain(
+        'terraform.rootVariables.1.name: "hetzner_project" is declared twice',
+      );
+    });
+
+    it("wants it fed from one of the provider's credential variables", () => {
+      expect(failure(withRoot({ ...variable, fromEnv: "OTHER_VAR" }))).toContain(
+        'terraform.rootVariables.0.fromEnv: "hetzner_project" reads OTHER_VAR, which is not one of credentials.envVars',
+      );
+    });
+
+    it("wants a description", () => {
+      for (const description of ["", "   "]) {
+        const message = failure(withRoot({ ...variable, description }));
+        expect(message).toContain('The cloud provider definition "hetzner" is not valid');
+        expect(message).toContain(
+          'terraform.rootVariables.0.description: "hetzner_project" has no description',
+        );
+      }
+    });
+
+    it("wants the import id a function, when there is one", () => {
+      expect(failure({ ...hetzner, terraform: { ...terraform, importId: "x" } })).toContain(
+        "terraform.importId: must be a function",
+      );
+      const importing = { ...hetzner, terraform: { ...terraform, importId: (id: string) => id } };
+      expect(validateCloudProvider(importing)).toBe(importing);
+    });
+
+    it("are declared by no two built-in providers under the same name", () => {
+      const owners = new Map<string, string>();
+      for (const provider of CLOUD_PROVIDERS) {
+        for (const { name } of provider.terraform.rootVariables ?? []) {
+          expect(owners.get(name), `${name} of ${provider.id}`).toBeUndefined();
+          owners.set(name, provider.id);
+        }
+      }
+    });
   });
 });

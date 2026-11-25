@@ -72,6 +72,8 @@ describe("opscrew_placement_estimate", () => {
     const tool = tools.find((t) => t.name === "opscrew_placement_estimate");
     expect(tool?.annotations?.readOnlyHint).toBe(true);
     expect(tool?.inputSchema.required).toEqual(["service", "provider"]);
+    const { provider } = tool?.inputSchema.properties ?? {};
+    expect(provider).toMatchObject({ enum: expect.arrayContaining(["contabo", "ovhcloud"]) });
   });
 
   it("prices a new cloud server for one service and estimates each query's delay", async () => {

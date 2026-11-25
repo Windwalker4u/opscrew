@@ -28,8 +28,10 @@ import {
   assertDeletionPlan,
   confirmDeletion,
   type DeletionSession,
+  earlierSnapshotsLine,
   forgetHostKeys,
   liftProtection,
+  listEarlierSnapshots,
   previewDeletion,
   remainingAfterDeletion,
   serverApi,
@@ -37,6 +39,7 @@ import {
   snapshotWanted,
   takeSnapshotBeforeDelete,
 } from "./deletion";
+import { readEarlierSnapshots, type ServerSnapshot } from "./servers";
 import type { DestroyPreview } from "./types";
 
 const sha256 = (data: string) => createHash("sha256").update(data).digest("hex");
@@ -508,7 +511,7 @@ describe("serverApi", () => {
     const api = async (provider: VpsProviderId, env: Record<string, string>) => {
       const deps = await createTestPhaseDeps({ env });
       const scope = { deps, provider, app: "shop", command: "opscrew destroy", what: "teardown" };
-      return () => serverApi({ ...scope, phase: "provision" }, {});
+      return () => serverApi(scope, {});
     };
     expect(await api("hetzner", {})).toThrow(
       expect.objectContaining({
@@ -658,5 +661,167 @@ describe("remainingAfterDeletion", () => {
     expect(remainingAfterDeletion({ provider: "hetzner", app: "shop", backups: false })).toEqual(
       [],
     );
+  });
+});
+
+describe("listEarlierSnapshots", () => {
+  const providers = [
+    {
+      provider: "hetzner",
+      id: "4711",
+      snapshots: ["101", "102"],
+      console: "the Hetzner Cloud Console",
+    },
+    {
+      provider: "digitalocean",
+      id: "3164444",
+      snapshots: ["7001"],
+      console: "the DigitalOcean control panel",
+    },
+    {
+      provider: "ovhcloud",
+      id: "11111111-2222-4333-8444-555555555555",
+      snapshots: ["cccccccc-dddd-4eee-8fff-000000000001"],
+      console: "the OVHcloud control panel",
+    },
+  ] as const;
+
+  it.each(providers)("reads $provider's snapshots of the server the state records", async (p) => {
+    const { session, deps } = await setup({ provider: p.provider });
+    const servers = new FakeServers([], p.provider);
+    servers.snapshotsOf = { [p.id]: [...p.snapshots], "5000": ["5001"] };
+    expect(await listEarlierSnapshots(session, { ids: [p.id], servers })).toEqual(p.snapshots);
+    expect(servers.listed).toEqual([p.id]);
+    expect(servers.lookups).toEqual([]);
+    // Without the state's id, the server with the name: the app's, or an extra server's.
+    expect(await listEarlierSnapshots(session, { ids: [], servers })).toEqual(p.snapshots);
+    servers.servers.push({ id: "5000", name: "shop-data", status: "running" });
+    expect(await listEarlierSnapshots(session, { ids: [], name: "shop-data", servers })).toEqual([
+      "5001",
+    ]);
+    expect(servers.lookups).toEqual(["shop", "shop"]);
+    expect(deps.reporter.lines).toEqual([]);
+  });
+
+  it.each(providers)(
+    "says in one line where to look when $provider's list cannot be read, and goes on",
+    async (p) => {
+      const { session, deps } = await setup({ provider: p.provider });
+      const servers = new FakeServers([], p.provider);
+      servers.listError = new OpsCrewError("PROVIDER_ERROR", "The provider answered 503.");
+      expect(await listEarlierSnapshots(session, { ids: [p.id], servers })).toBeUndefined();
+      expect(deps.reporter.lines).toEqual([
+        {
+          level: "warn",
+          message: `OpsCrew could not list the snapshots of shop taken earlier (The provider answered 503); any there stay and keep billing, so check them in ${p.console}.`,
+        },
+      ]);
+    },
+  );
+
+  it("says so when the provider's token is missing", async () => {
+    const deps = await createTestPhaseDeps({ env: {} });
+    const scope = { deps, provider: "hetzner" as const, app: "shop", command: "opscrew destroy" };
+    expect(await listEarlierSnapshots(scope, { ids: ["4711"] })).toBeUndefined();
+    expect(deps.reporter.text()).toBe(
+      "warn: OpsCrew could not list the snapshots of shop taken earlier (No Hetzner Cloud token found: set HCLOUD_TOKEN); any there stay and keep billing, so check them in the Hetzner Cloud Console.",
+    );
+  });
+});
+
+describe("readEarlierSnapshots", () => {
+  const server = (overrides: Partial<ServerSnapshot>): ServerSnapshot => ({
+    server: "app",
+    provider: "hetzner",
+    module: "module.server.",
+    inState: true,
+    ids: ["4711"],
+    data: { serverData: true, backups: false },
+    wanted: true,
+    ...overrides,
+  });
+
+  it("reads only the deleted servers at providers whose snapshots outlive them", async () => {
+    const { session } = await setup();
+    const servers = new FakeServers();
+    servers.snapshotsOf = { "4711": ["101"], "5000": ["5001"] };
+    const earlier = await readEarlierSnapshots(
+      session,
+      [
+        server({}),
+        server({ server: "data", name: "shop-data", module: "module.server_data.", ids: ["5000"] }),
+        // Contabo's snapshots go with the server; a server the teardown keeps is not read.
+        server({ server: "cache", provider: "contabo", name: "shop-cache", ids: ["202611001"] }),
+        server({ server: "kept", name: "shop-kept", inState: false, ids: ["6000"] }),
+      ],
+      { servers },
+    );
+    expect(earlier).toEqual({ app: ["101"], data: ["5001"] });
+    expect(servers.listed).toEqual(["4711", "5000"]);
+  });
+});
+
+describe("earlierSnapshotsLine", () => {
+  it("names each snapshot taken earlier once, without the one the deletion takes or reuses", () => {
+    expect(earlierSnapshotsLine("hetzner", "shop", ["101", "9001", "102"], "9001")).toBe(
+      "The 2 snapshots of shop taken earlier stay: Hetzner image 101 and Hetzner image 102 (Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud; OpsCrew never deletes them).",
+    );
+    expect(earlierSnapshotsLine("digitalocean", "shop-data", ["7001"])).toBe(
+      "The snapshot of shop-data taken earlier stays: DigitalOcean snapshot 7001 (DigitalOcean bills snapshots per GB per month at the rate listed on https://www.digitalocean.com/pricing; OpsCrew never deletes it).",
+    );
+    expect(earlierSnapshotsLine("hetzner", "shop", ["9001"], "9001")).toBeUndefined();
+    expect(earlierSnapshotsLine("hetzner", "shop", [])).toBeUndefined();
+    expect(earlierSnapshotsLine("hetzner", "shop", undefined)).toBeUndefined();
+  });
+});
+
+describe("remainingAfterDeletion with the snapshots taken earlier", () => {
+  it("names each once, after the one taken first, which it leaves out", () => {
+    expect(
+      remainingAfterDeletion({
+        provider: "hetzner",
+        app: "shop",
+        snapshotId: "9001",
+        earlierSnapshots: ["101", "9001", "102"],
+        backups: false,
+      }),
+    ).toEqual([
+      "The snapshot of shop (Hetzner image 9001). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete it in the Hetzner Cloud Console when you no longer need it.",
+      "The 2 snapshots of shop taken earlier (Hetzner image 101 and Hetzner image 102). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete them in the Hetzner Cloud Console when you no longer need them.",
+    ]);
+    const ovh = remainingAfterDeletion({
+      provider: "ovhcloud",
+      app: "shop",
+      earlierSnapshots: ["cccccccc-dddd-4eee-8fff-000000000001"],
+      backups: false,
+    });
+    expect(ovh).toHaveLength(1);
+    expect(ovh[0]).toMatch(
+      /^The snapshot of shop taken earlier \(OVHcloud snapshot cccccccc-dddd-4eee-8fff-000000000001\)\. OVHcloud keeps snapshots .* and OpsCrew never deletes them; delete it in the OVHcloud control panel when you no longer need it\.$/,
+    );
+  });
+
+  it("is unchanged without snapshots taken earlier", () => {
+    for (const provider of ["hetzner", "digitalocean", "ovhcloud"] as const) {
+      for (const backups of [true, false]) {
+        const today = remainingAfterDeletion({
+          provider,
+          app: "shop",
+          snapshotId: "9001",
+          backups,
+        });
+        for (const earlierSnapshots of [[], ["9001"], undefined]) {
+          expect(
+            remainingAfterDeletion({
+              provider,
+              app: "shop",
+              snapshotId: "9001",
+              earlierSnapshots,
+              backups,
+            }),
+          ).toEqual(today);
+        }
+      }
+    }
   });
 });

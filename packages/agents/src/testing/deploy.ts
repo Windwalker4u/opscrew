@@ -87,6 +87,7 @@ const TARGETS = {
   hetzner: { location: "nbg1", serverType: "cx23" },
   digitalocean: { location: "fra1", serverType: "s-1vcpu-2gb", image: "ubuntu-24-04-x64" },
   contabo: { location: "EU", serverType: "V153", image: DEFAULT_IMAGES.contabo },
+  ovhcloud: { location: "GRA11", serverType: "d2-2", image: DEFAULT_IMAGES.ovhcloud },
 } as const;
 
 /** A valid `opscrew/plan.yaml` input (parsed with the schema so defaults are filled). */

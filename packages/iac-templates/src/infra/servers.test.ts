@@ -380,10 +380,19 @@ describe("the wanted backups of the servers whose provider's connector turns the
   });
 });
 
+/**
+ * The locals a module names its deploy key and web rules by: OVHcloud names a key by its name
+ * (`ssh_key_name`), and lists the web's ports to repeat per network (`web_ports`).
+ */
+const MODULE_LOCALS: Readonly<Record<string, { key: string; web: string }>> = {
+  "ovhcloud-instance": { key: "ssh_key_name", web: "web_ports" },
+};
+
 describe("the server modules", () => {
   for (const module of CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name)) {
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
     const variables = MODULE_FILES[`${module}/variables.tf`] ?? "";
+    const locals = MODULE_LOCALS[module] ?? { key: "ssh_key_id", web: "web_rules" };
 
     it(`${module} takes web, wireguard_port and ssh_key_id, and outputs ssh_key_id`, () => {
       expect(variables).toMatch(/variable "web" \{[^}]*type {8}= bool\n {2}default {5}= true/);
@@ -394,7 +403,7 @@ describe("the server modules", () => {
         /variable "ssh_key_id" \{[^}]*type {8}= string\n {2}default {5}= null/,
       );
       expect(MODULE_FILES[`${module}/outputs.tf`]).toMatch(
-        /output "ssh_key_id" \{[^}]*value {7}= local\.ssh_key_id/,
+        new RegExp(`output "ssh_key_id" \\{[^}]*value {7}= local\\.${locals.key}`),
       );
       // The deploy key only without ssh_key_id.
       expect(main).toMatch(
@@ -402,7 +411,9 @@ describe("the server modules", () => {
       );
       // A firewall's dynamic rule blocks, or the rules of the firewall the connector applies (ADR
       // 0029, D8), which a `for` expression lists.
-      expect(main).toMatch(/(?:for_each =|for \w+ in) var\.web \? local\.web_rules : \[\]/);
+      expect(main).toMatch(
+        new RegExp(`(?:for_each =|for \\w+ in) var\\.web \\? local\\.${locals.web} : \\[\\]`),
+      );
       expect(main).toMatch(/(?:for_each =|for \w+ in) var\.wireguard_port\[\*\]/);
     });
   }

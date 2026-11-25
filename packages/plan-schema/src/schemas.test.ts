@@ -615,7 +615,9 @@ describe("DeployPlan target on a server the user owns", () => {
       arch: "amd64" | "arm64";
       access: "public" | "tunnel";
       home?: { ipv4: boolean } | undefined;
-      shares?: { app: string; provider: "hetzner" | "digitalocean" | "contabo" } | undefined;
+      shares?:
+        | { app: string; provider: "hetzner" | "digitalocean" | "contabo" | "ovhcloud" }
+        | undefined;
       edge: "caddy" | "nginx" | "openlitespeed";
     }>();
     expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();
@@ -717,9 +719,15 @@ describe("DeployPlan target on a server the user owns", () => {
       "fixture",
     );
     expect(RequirementsSchema.parse({ ...requirements, provider: "own" }).provider).toBe("own");
-    expect(VpsProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo", "own"]);
-    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo"]);
-    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo"]);
+    expect(VpsProviderSchema.options).toEqual([
+      "hetzner",
+      "digitalocean",
+      "contabo",
+      "ovhcloud",
+      "own",
+    ]);
+    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
+    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
   });
 
   it("needs a region for Hetzner and DigitalOcean only, and allows one for an own server", async () => {
@@ -1239,6 +1247,7 @@ describe("DeployPlan target on an existing Portainer", () => {
       "hetzner",
       "digitalocean",
       "contabo",
+      "ovhcloud",
       "own",
       "portainer",
       "localhost",
@@ -1251,8 +1260,8 @@ describe("DeployPlan target on an existing Portainer", () => {
     );
     // A Portainer target has no server to create or price.
     expect(VpsProviderSchema.options).not.toContain("portainer");
-    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo"]);
-    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo"]);
+    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
+    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean", "contabo", "ovhcloud"]);
   });
 });
 
@@ -1545,7 +1554,7 @@ describe("DeployPlan environment", () => {
 
   it('runs the deploy job on the server only on a cloud or own server ("server")', async () => {
     const message =
-      'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo or own); use "github" here';
+      'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo, ovhcloud or own); use "github" here';
     const plan = await staging({ runner: "server" });
     for (const target of [plan.target, own]) {
       expect(DeployPlanSchema.safeParse({ ...plan, target }).success, target.provider).toBe(true);
@@ -1592,7 +1601,7 @@ describe("DeployPlan environment", () => {
       expect(parseArtifact("plan", text, "plan.yaml")).toEqual(parsed);
     }
     const message =
-      'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo or own): a runner machine deploys to the server over SSH; use "github" here';
+      'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean, contabo, ovhcloud or own): a runner machine deploys to the server over SSH; use "github" here';
     for (const target of [portainer, local]) {
       const result = DeployPlanSchema.safeParse({ ...plan, target, dns: noDns });
       expect(issue(result), target.provider).toEqual([{ path: "environment.runner", message }]);

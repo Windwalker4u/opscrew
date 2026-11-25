@@ -12,10 +12,12 @@ import type { SnapshotKind } from "./types";
 export const SNAPSHOT_ID = /^[0-9A-Za-z]+$/;
 
 /**
- * A whole-server snapshot's id at its provider: a number (Hetzner, DigitalOcean), or two parts of
- * letters and digits around one colon (`<instance>:<snapshot>`, Contabo's).
+ * A whole-server snapshot's id at its provider: a number (Hetzner, DigitalOcean), two parts of
+ * letters and digits around one colon (`<instance>:<snapshot>`, Contabo's), or a lowercase UUID
+ * (OVHcloud's).
  */
-export const SERVER_SNAPSHOT_ID = /^(?:\d+|[0-9A-Za-z]+:[0-9A-Za-z]+)$/;
+export const SERVER_SNAPSHOT_ID =
+  /^(?:\d+|[0-9A-Za-z]+:[0-9A-Za-z]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 /**
  * Stops (`INVALID_INPUT`) when `id` is no data snapshot's id ({@link SNAPSHOT_ID}) and, with
@@ -26,7 +28,7 @@ export function requireSnapshotId(id: string, options: { server?: boolean } = {}
   if (SNAPSHOT_ID.test(id) || (options.server === true && SERVER_SNAPSHOT_ID.test(id))) return;
   const rule =
     options.server === true
-      ? "an id has only letters and digits, or two such parts around one colon for a whole-server snapshot"
+      ? "an id has only letters and digits; a whole-server snapshot's can also be two such parts around one colon, or a UUID"
       : "an id has only letters and digits";
   throw new OpsCrewError(
     "INVALID_INPUT",

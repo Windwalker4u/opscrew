@@ -258,9 +258,12 @@ export async function buildDesignOptionSet(
     requirements.uptime === "high" ||
     requirements.expectedMonthlyUsers === "10k-100k" ||
     requirements.expectedMonthlyUsers === ">100k";
-  const dedicated = wantsDedicated
-    ? candidates.find((c) => c.offer.cpuType === "dedicated")
-    : undefined;
+  // A provider whose shared types can't hold the app (OVHcloud's d2 have at most 50 GB of disk,
+  // and an app with PostgreSQL needs 60) is offered its dedicated type rather than nothing.
+  const dedicated =
+    wantsDedicated || shared.length === 0
+      ? candidates.find((c) => c.offer.cpuType === "dedicated")
+      : undefined;
 
   const picked: [DesignTier, Candidate][] = [];
   if (lean) picked.push(["lean", lean]);

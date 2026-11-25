@@ -307,24 +307,25 @@ export async function leakSourcesOf(app: LeakSourceApp, which = ""): Promise<Lea
  * each saved plan in `.opscrew/plans/` that is not encrypted, the reports
  * (`opscrew/SECURITY_REPORT.md`, `opscrew/RUNBOOK.md`), the record `.opscrew/cloudflare.json`, the
  * engine's state files in `.opscrew/tfstate/`, and the files in `extra` (a folder copy of the
- * recovery copy). Search them for secrets only: plans and state name the server's address.
+ * recovery copy). Search them for secrets only: plans and state name the server's address. The
+ * saved plans and state files are of kind `state`, the others `file`.
  */
 export async function localLeakSources(
   paths: ReturnType<typeof resolveProjectPaths>,
   extra: readonly string[] = [],
 ): Promise<LeakSource[]> {
   const sources: LeakSource[] = [];
-  const read = async (file: string, where: string) => {
+  const read = async (file: string, where: string, kind: LeakSource["kind"] = "file") => {
     if (!existsSync(file)) return;
     const text = await readFile(file, "utf8");
-    if (!isEncryptedPlan(text)) sources.push({ kind: "file", where, text });
+    if (!isEncryptedPlan(text)) sources.push({ kind, where, text });
   };
   for (const [dir, what] of [
     [paths.files.plansDir, "the saved plan"],
     [paths.files.tfstateDir, "the state file"],
   ] as const) {
     if (!existsSync(dir)) continue;
-    for (const file of await readdir(dir)) await read(join(dir, file), `${what} ${file}`);
+    for (const file of await readdir(dir)) await read(join(dir, file), `${what} ${file}`, "state");
   }
   await read(paths.files.securityReport, "opscrew/SECURITY_REPORT.md");
   await read(paths.files.runbook, "opscrew/RUNBOOK.md");
@@ -366,7 +367,7 @@ export interface CliRun {
 
 /** One text the leak search reads; `where` names it in a leak. */
 export interface LeakSource {
-  kind: "commits" | "pull request" | "audit log" | "file";
+  kind: "commits" | "pull request" | "audit log" | "file" | "state";
   where: string;
   text: string;
 }

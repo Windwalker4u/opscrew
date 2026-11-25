@@ -36,6 +36,7 @@ import {
   freshFacts,
   type MemoryReporter,
   moveHarness,
+  OLD_IDS,
   OLD_IPV4,
   OWN_IPV4,
   ownRunner,
@@ -585,11 +586,22 @@ describe.skipIf(!findExecutable("git"))("a move of an app with Postgres on an ex
     const started = await keys(m.h.deps);
     expect(started[PREVIOUS_MEMBER]).toBe(m.privateKeys.app);
 
+    // The old server's snapshots taken earlier are read before every approval of the finish,
+    // data's network plan first among them.
+    const listedAt: [string, number][] = [];
+    const answer = m.h.handler.answer;
+    m.h.handler.answer = (request) => {
+      listedAt.push([request.title, m.h.listed.length]);
+      return answer(request);
+    };
     const finished = await finishRetarget(m.h.deps, {
       services: m.services,
       confirm: m.h.confirm,
     });
     expect(finished).toMatchObject({ step: "finished", done: true });
+    expect(m.h.listed).toEqual([OLD_IDS.hetzner]);
+    expect(listedAt[0]?.[0]).toContain("server data");
+    expect(listedAt.every(([, listed]) => listed === 1)).toBe(true);
     expect(peersOf(m.data().at(-1) as HostPlan).map((p) => p.name)).toEqual([APP_SERVER]);
     expect(await keys(m.h.deps)).toEqual({ app: started.app, data: m.privateKeys.data });
     const final = await readArtifact("plan", m.h.paths.files.plan);

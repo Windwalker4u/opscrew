@@ -79,6 +79,8 @@ describe.skipIf(!findExecutable("git"))("a move and Contabo's firewall", () => {
     const mark = h.events.length;
 
     await finish(h);
+    // Contabo's snapshots go with the server, so none is listed.
+    expect(h.listed).toEqual([]);
     expect(h.poweredOff).toEqual([OLD_IDS.contabo]);
     expect(firewallTrail(h.events.slice(mark))).toEqual([
       `cancel ${OLD_IDS.contabo}`,

@@ -231,7 +231,7 @@ function providerPolicies(
 
   for (const server of servers) {
     const hasFirewall = provider.attached(server, firewalls, planJson);
-    const hasKeys = isSet(server, "ssh_keys");
+    const hasKeys = isSet(server, provider.sshKeyAttribute ?? "ssh_keys");
     results.push(
       result(
         "firewall-attached",

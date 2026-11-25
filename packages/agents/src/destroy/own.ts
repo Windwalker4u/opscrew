@@ -113,12 +113,15 @@ import { deleteHomeRecords, proposeOutsideCheckRemoval, updaterTokenLeft } from 
 import { leaveSharedMonitoring } from "./monitoring";
 import {
   confirmExtraServers,
+  type EarlierSnapshots,
+  earlierSnapshotsLines,
   extraOwnServers,
   extraProtectedServers,
   extraProtectionVars,
   extraServersRemaining,
   forgetExtraCloudServers,
   project,
+  readEarlierSnapshots,
   removeExtraOwnServers,
   reopenPublicSsh,
   type ServerSnapshot,
@@ -708,6 +711,8 @@ export async function destroyOwnServer(
   let engineSetup: ProjectEngine | undefined;
   /** The extra servers OpsCrew created that the teardown deletes, each with or without a snapshot. */
   let snapshots: ServerSnapshot[] = [];
+  /** Their snapshots taken earlier, read once now (a provider may not answer once they are gone). */
+  let earlier: EarlierSnapshots = {};
   if (removeApp && stateHere) {
     const setup = await setupEngine(deps, plan, options);
     const dir = join(deps.paths.root, plan.infra.dir);
@@ -723,6 +728,7 @@ export async function destroyOwnServer(
       { changes: resources, planJson: preview.planJson },
       options.snapshot,
     );
+    earlier = await readEarlierSnapshots(iac, snapshots, services);
     engineSetup = setup;
   }
   // The extra servers the teardown deletes whose provider cancels them instead (FR-2609).
@@ -830,6 +836,7 @@ export async function destroyOwnServer(
       deps.reporter.info(dataSnapshotOffer(plan, withData, flag));
     }
     if (servers.length > 0) deps.reporter.info(["The app's servers:", ...servers].join("\n"));
+    for (const line of earlierSnapshotsLines(name, snapshots, earlier)) deps.reporter.info(line);
     const confirmation = {
       name,
       confirmPrompt: destroyConfirmPrompt(name, "own"),
@@ -962,9 +969,14 @@ export async function destroyOwnServer(
         // there is one).
         notes: removeApp && hostSteps.length === 0 ? checkPauseNote(plan) : [],
         // The extra servers this plan cancels: shut down first, billed to the end of their term.
+        // Then the snapshots taken earlier that stay.
         planNotes: (changes) => {
           const inPlan = cancelledIn(cancelling, changes);
-          return [...shutdownLines(inPlan, name), ...cancelNotes(inPlan, name)];
+          return [
+            ...shutdownLines(inPlan, name),
+            ...cancelNotes(inPlan, name),
+            ...earlierSnapshotsLines(name, snapshots, earlier, snapshotIds),
+          ];
         },
       });
     }
@@ -1176,7 +1188,7 @@ export async function destroyOwnServer(
     ...(shares !== undefined ? { firstApp: shares.app } : {}),
   });
   // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
-  remaining.push(...extraServersRemaining(given, snapshotIds));
+  remaining.push(...extraServersRemaining(given, snapshotIds, earlier));
   // The cancelled extra servers, billed until their contracts end.
   remaining.unshift(...cancelled);
   if (removeApp) {

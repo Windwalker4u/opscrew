@@ -7,6 +7,8 @@ export type ProviderId =
   | "digitalocean"
   /** Contabo (026): a cloud server provider whose servers are cancelled at the end of their term. */
   | "contabo"
+  /** OVHcloud's Public Cloud (035): a cloud server provider billed by the hour, in a project. */
+  | "ovhcloud"
   /** A server the user already owns, reached over SSH (no provider API). */
   | "own"
   /**
@@ -112,7 +114,10 @@ export interface ComputeCatalog {
  * a server the user already owns (`own`, which OpsCrew never creates or deletes). An existing
  * Portainer (`portainer`) is not one: there is no server to create, size or price.
  */
-export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean" | "contabo" | "own">;
+export type VpsProviderId = Extract<
+  ProviderId,
+  "hetzner" | "digitalocean" | "contabo" | "ovhcloud" | "own"
+>;
 
 /** A server OpsCrew created for an app, as the provider reports it. */
 export interface AppServer {

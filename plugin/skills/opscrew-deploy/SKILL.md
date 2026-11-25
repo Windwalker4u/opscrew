@@ -11,9 +11,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 
 ## Rules (always)
 
-- Never run `tofu`, `terraform`, `hcloud`, `doctl`, `cntb`, `aws`, `gcloud`, `az`, `ssh` or `curl`
-  yourself for this flow. Infrastructure changes happen only through OpsCrew, after the user
-  approves a plan.
+- Never run `tofu`, `terraform`, `hcloud`, `doctl`, `cntb`, `ovhcloud`, `openstack`, `aws`, `gcloud`,
+  `az`, `ssh` or `curl` yourself for this flow. Infrastructure changes happen only through OpsCrew, after
+  the user approves a plan.
 - Never ask the user to paste tokens, passwords or `.env` values into this chat, and never print
   them. Secrets are entered in the user's own terminal by `opscrew provision`.
 - Do not edit files under `opscrew/`, `.opscrew/` or `.github/workflows/opscrew-deploy*.yml`;
@@ -30,12 +30,14 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    asking the user.
 3. **Interview.** Call `opscrew_interview_questions`. Ask the user every returned question (use the
    question's options when it has them), then call `opscrew_save_requirements` with the answers.
-   One question is where to run the app: Hetzner Cloud, DigitalOcean (Droplets), Contabo or a
-   server the user already has (`own`: a rented server elsewhere, a company machine or a home
-   server). Its default is the provider whose credentials are already set (`HCLOUD_TOKEN`,
-   `DIGITALOCEAN_TOKEN`, or all four of Contabo's `CNTB_OAUTH2_CLIENT_ID`,
-   `CNTB_OAUTH2_CLIENT_SECRET`, `CNTB_OAUTH2_USER` and `CNTB_OAUTH2_PASS`), otherwise Hetzner
-   Cloud; let the user choose. For a site that needs no
+   One question is where to run the app: Hetzner Cloud, DigitalOcean (Droplets), Contabo,
+   OVHcloud or a server the user already has (`own`: a rented server elsewhere, a company machine
+   or a home server). Its default is the provider whose credentials are already set
+   (`HCLOUD_TOKEN`, `DIGITALOCEAN_TOKEN`, all four of Contabo's `CNTB_OAUTH2_CLIENT_ID`,
+   `CNTB_OAUTH2_CLIENT_SECRET`, `CNTB_OAUTH2_USER` and `CNTB_OAUTH2_PASS`, or all four of
+   OVHcloud's `OVH_ENDPOINT`, `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` and
+   `OVH_CLOUD_PROJECT_SERVICE`), otherwise Hetzner Cloud; let the user choose. For a site that
+   needs no
    server, the question also offers `cloudflare-workers` (Cloudflare's hosting: static files free,
    and server-side rendering for Astro, Next.js, Nuxt and SvelteKit) and `github-pages` (GitHub
    Pages: static only, public sites, no custom headers, no commercial use), only where they fit
@@ -183,6 +185,19 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
        provision the new size, then `npx opscrew restore <id> --from offsite --key-file <path>`.
      - No provider backups (OpsCrew's data snapshots cover the data) and no Contabo object storage
        (the bucket is Garage on the server, or Cloudflare R2).
+   - **On OVHcloud.** Say what differs before the user pays:
+     - It needs all four `OVH_*` values: `OVH_ENDPOINT=ovh-eu` (OVHcloud Europe accounts only), a
+       service account's `OVH_CLIENT_ID` and `OVH_CLIENT_SECRET`, limited by an IAM policy to the
+       user's Public Cloud project, and that project's id in `OVH_CLOUD_PROJECT_SERVICE`.
+     - First the user creates the Public Cloud project and activates the regions the app uses
+       (Settings → Quota & Regions in the control panel): OpsCrew never activates a region.
+     - Servers are billed by the hour (per second, with a one-minute minimum); deleting one stops
+       its billing at once. Its snapshots outlive the server and keep billing per GB until deleted
+       in the control panel.
+     - No provider backups (OpsCrew's data snapshots cover the data), no resize (the same two ways as
+       on Contabo: `retarget` to another provider, which doesn't move within OVHcloud, or a new
+       OVHcloud server with downtime) and no delete protection (deleting the server in the
+       control panel deletes its disk at once: use `npx opscrew destroy`).
    - **On a hosting account.** There is one option, the account, without a price, with what the
      app gets there (the hostname, its PHP version, the database, the cron jobs). Say what differs
      from a server:
@@ -211,10 +226,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    npx opscrew provision
    ```
 
-   It checks the credentials of their cloud provider (Hetzner Cloud, DigitalOcean or Contabo),
-   plus their Cloudflare and GitHub tokens, shows the plan and asks for approval, creates the
-   server, stores the deploy secrets in GitHub and opens a pull request with the infrastructure
-   and deploy workflow. Merging that pull request deploys the app.
+   It checks the credentials of their cloud provider (Hetzner Cloud, DigitalOcean, Contabo or
+   OVHcloud), plus their Cloudflare and GitHub tokens, shows the plan and asks for approval,
+   creates the server, stores the deploy secrets in GitHub and opens a pull request with the
+   infrastructure and deploy workflow. Merging that pull request deploys the app.
 
    If the user wants to approve from here instead, call `opscrew_plan`, show them the plan, cost
    and policy results, then call `opscrew_apply` with the plan hash. OpsCrew asks the user in a
@@ -354,9 +369,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   every item marked ✗ (tools to install, tokens to create). `npx opscrew init --fix` also adds
   `.opscrew/` to `.gitignore`.
 - **Drift.** When the user asks whether anything changed, or after they worked in the Hetzner Cloud,
-  DigitalOcean, Contabo or Cloudflare console (or on their own server over SSH, or in Portainer),
-  call `opscrew_drift`. It reports changes made outside OpsCrew (attribute names only; on their own
-  server also its SSH, firewall, deploy user and runtime files; in their Portainer the app's stack
+  DigitalOcean, Contabo, OVHcloud or Cloudflare console (or on their own server over SSH, or in
+  Portainer), call `opscrew_drift`. It reports changes made outside OpsCrew (attribute names only;
+  on their own server also its SSH, firewall, deploy user and runtime files; in their Portainer the app's stack
   file, environment keys, redeploy setting, registry entry and deploy branch, never a value),
   changes not applied yet and edited generated files, and changes nothing. Once the app was
   deployed on a server it also names a component of the plan with no container there, a
@@ -529,7 +544,7 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   to the user and pass that hash to `opscrew_apply` as `planHash`.
 - **Runner machines.** A machine of the user's (a home server, a spare PC, a VM with Ubuntu or
   Debian) can run environments' deploy jobs, and with `build` `runner` their builds, if its CPU is
-  the server's (OpsCrew's Hetzner, DigitalOcean and Contabo servers are x86-64).
+  the server's (OpsCrew's Hetzner, DigitalOcean, Contabo and OVHcloud servers are x86-64).
   `opscrew_runner_host_add` with `name`, `user`, `host` and, unless the key is in the SSH agent,
   `keyFile` (ask the user; never a password, and never read the key file): the user confirms its
   host key and approves its host plan in dialogs. `opscrew_runner_host_list` names the machines,
@@ -599,9 +614,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
   in their own terminal: it offers a snapshot first (the database is deleted with the server), asks
   them to type the server name and removes the deploy secrets from GitHub. On Contabo it cancels
-  the server instead: billed to the end of its term, shut down at once, its end date shown. The
-  app's bucket stays, with its files, unless they add `--delete-data`. On their own server it
-  never deletes or reinstalls the server: it removes the app and its Cloudflare records after they
+  the server instead: billed to the end of its term, shut down at once, its end date shown. On
+  OVHcloud the server's billing stops, but its snapshots stay and keep billing per GB until the
+  user deletes them in the control panel. The app's bucket stays, with its files, unless they add
+  `--delete-data`. On their own server it never deletes or reinstalls the server: it removes the app and its Cloudflare records after they
   type the app's name, keeps the app's data unless they add `--delete-data`, and reverses
   OpsCrew's own changes to the server only with `--undo-host` (a separate plan they approve).
   OpsCrew's snapshots of the app's data stay there too unless they add `--delete-data`. On every
@@ -667,8 +683,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   and types the app's name; the tool refuses to do it.
 - **A service on a server of its own.** On a cloud server or the user's own server, any of the
   app's services (a database, a cache, a broker) can run on a server of its own, at the same or
-  another provider (Hetzner, DigitalOcean, Contabo) or on another server the user owns with a public
-  address; the web process, workers, cron jobs and add-ons stay on the app's server. Before the
+  another provider (Hetzner, DigitalOcean, Contabo, OVHcloud) or on another server the user owns
+  with a public address; the web process, workers, cron jobs and add-ons stay on the app's server. Before the
   user decides, call `opscrew_placement_estimate` with the service, the provider, the location and
   optionally the server type: pass on the new server's price, the app's new monthly total and the
   delay each query gets (with what it adds to a page making 20 queries; say so when it warns). The
@@ -699,8 +715,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 - **Moving the app somewhere else.** Moving a live app to another cloud provider, to a server
   the user owns or into their Portainer (and from any of these to another) is terminal-only on
   purpose; there is no tool for it, and you must not try to perform its steps yourself. Tell the
-  user to run `npx opscrew retarget --to <hetzner|digitalocean|contabo|own|portainer>` in their own
-  terminal (`npx opscrew retarget --help` explains the flags). For their own server or Portainer
+  user to run `npx opscrew retarget --to <hetzner|digitalocean|contabo|ovhcloud|own|portainer>` in
+  their own terminal (`npx opscrew retarget --help` explains the flags). For their own server or Portainer
   it asks the same questions as the interview (how to reach the server; Portainer's address,
   certificate and environment, and its host's public address). It prepares the new side next to
   the old one and deploys the app there, then copies the app's data in a maintenance window: it

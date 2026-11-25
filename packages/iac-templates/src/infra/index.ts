@@ -47,6 +47,7 @@ import {
   keyVariables,
   previousWireguardArgument,
   providerBlock,
+  rootVariables,
   type SharedLayout,
   serverTfvars,
   serverVariables,
@@ -386,6 +387,7 @@ function variables(
       return addressVariables(side.prefix, `${previous ? "the previous" : "your"} ${noun}`);
     }),
     ...shape.extras.flatMap((extra) => serverVariables(extra, extra.name)),
+    ...rootVariables([...shape.servers, ...shape.extras]),
     ...(hasModules(shape) ? keyVariables(checkKey) : []),
     ...(shape.servers.length > 0
       ? [

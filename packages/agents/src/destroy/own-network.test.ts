@@ -128,6 +128,34 @@ describe.skipIf(!findExecutable("git"))(
       expect((await readServerAddresses(w.s.deps.paths)).servers).toBeUndefined();
     });
 
+    it("names the extra server's snapshots taken earlier, read once before its typed name", async () => {
+      const w = await splitOwnProject();
+      // The extra server's id as the state records it.
+      w.snapshots.snapshotsOf = { "4711": ["201"] };
+      let summary = "";
+      let listedAtName: string[] = [];
+      const result = await runDestroy(w.s.deps, {
+        services: w.services,
+        confirm: async () => {
+          summary ||= w.s.deps.reporter.text();
+          if (listedAtName.length === 0) listedAtName = [...w.snapshots.listed];
+          return true;
+        },
+      });
+      const line =
+        "The snapshot of shop-data taken earlier stays: Hetzner image 201 (Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud; OpsCrew never deletes it).";
+      expect(listedAtName).toEqual(["4711"]);
+      expect(w.snapshots.listed).toEqual(["4711"]);
+      expect(summary).toContain(`info: ${line}`);
+      const deletion = w.s.handler.requests.find((r) =>
+        r.title.includes("DNS records on Cloudflare and the server shop-data"),
+      );
+      expect(deletion?.details.split(line).length).toBe(2);
+      expect(result.remaining).toContainEqual(
+        "The snapshot of shop-data taken earlier (Hetzner image 201). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete it in the Hetzner Cloud Console when you no longer need it.",
+      );
+    });
+
     it("says the protection is lifted when the teardown stops before the server goes", async () => {
       const w = await splitOwnProject();
       w.answer((request) => !request.title.startsWith("Delete the DNS records"));

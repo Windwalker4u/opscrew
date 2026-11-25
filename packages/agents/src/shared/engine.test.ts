@@ -34,6 +34,31 @@ vi.mock("@opscrew/iac-engine", async (importOriginal) => ({
   selectEngine: vi.fn(async () => new FakeEngine()),
 }));
 
+/** The registry with Hetzner given one root variable, fed from `FAKE_PROJECT_ID`. */
+vi.mock("@opscrew/providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@opscrew/providers")>();
+  return {
+    ...actual,
+    CLOUD_PROVIDERS: actual.CLOUD_PROVIDERS.map((provider) =>
+      provider.id === "hetzner"
+        ? {
+            ...provider,
+            terraform: {
+              ...provider.terraform,
+              rootVariables: [
+                {
+                  name: "fake_project_id",
+                  description: "The project.",
+                  fromEnv: "FAKE_PROJECT_ID",
+                },
+              ],
+            },
+          }
+        : provider,
+    ),
+  };
+});
+
 describe("chooseEngine", () => {
   it("has the engine remove every registered provider's login cache", async () => {
     const deps = await createTestPhaseDeps();
@@ -175,6 +200,30 @@ describe("projectEngine", () => {
     await expect(
       projectEngine(deps, testPlan(), { services: { engine: terraform } }),
     ).resolves.toBeDefined();
+  });
+
+  it("passes each provider's root variable as TF_VAR_ from its credential, masked", async () => {
+    const project = "fake-project-0001";
+    for (const plan of [testPlan(), { infra: { ...testPlan().infra, stateEncryption: false } }]) {
+      const deps = await createTestPhaseDeps();
+      deps.env.FAKE_PROJECT_ID = project;
+      const { env } = await projectEngine(deps, plan, { services: { engine: tofu } });
+      expect(env.TF_VAR_fake_project_id).toBe(project);
+      expect(deps.redactor.redact(`id ${project}`)).not.toContain(project);
+      // This computer's own environment is left as it was.
+      expect(deps.env).not.toHaveProperty("TF_VAR_fake_project_id");
+    }
+  });
+
+  it("changes nothing for a root variable whose credential is not set", async () => {
+    const deps = await createTestPhaseDeps();
+    const { env } = await projectEngine(deps, testPlan(), { services: { engine: terraform } });
+    expect(env).toEqual(deps.env);
+    expect(env).not.toHaveProperty("TF_VAR_fake_project_id");
+    // A blank credential counts as not set.
+    deps.env.FAKE_PROJECT_ID = "   ";
+    const blank = await projectEngine(deps, testPlan(), { services: { engine: terraform } });
+    expect(blank.env).not.toHaveProperty("TF_VAR_fake_project_id");
   });
 
   it("gives Terraform no encryption", async () => {
@@ -337,6 +386,16 @@ describe("stateContents", () => {
     expect(env).toBeDefined();
     expect(env).not.toHaveProperty("OPSCREW_DNS_UPDATER_TOKEN");
     expect(env).not.toHaveProperty("OPSCREW_NEW_DNS_UPDATER_TOKEN");
+  });
+
+  it("gives the engine each provider's root variable as TF_VAR_, masked", async () => {
+    const { deps, file } = await setup(plainState([MANAGED_TUNNEL]));
+    deps.env.FAKE_PROJECT_ID = "fake-project-0001";
+    const engine = listing(undefined);
+    const spy = vi.spyOn(engine as IacEngine, "stateResources");
+    await stateContents(deps, file, async () => engine);
+    expect(spy.mock.calls[0]?.[1]?.env?.TF_VAR_fake_project_id).toBe("fake-project-0001");
+    expect(deps.redactor.redact("fake-project-0001")).not.toContain("fake-project-0001");
   });
 
   it("holds nothing without a state file or with a blank one, without asking for an engine", async () => {

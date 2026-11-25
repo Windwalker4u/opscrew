@@ -94,11 +94,17 @@ export const NEW_SERVERS: Record<CloudProvider, { id: string; ipv4: string; ipv6
   hetzner: { id: "4712", ipv4: "198.51.100.20", ipv6: "2001:db8:20::1" },
   digitalocean: { id: "3164445", ipv4: "198.51.100.30", ipv6: "2001:db8:30::1" },
   contabo: { id: "202611002", ipv4: "198.51.100.40", ipv6: "2001:db8:40::1" },
+  ovhcloud: {
+    id: "11111111-2222-4333-8444-666666666666",
+    ipv4: "198.51.100.50",
+    ipv6: "2001:db8:50::1",
+  },
 };
 export const OLD_IDS: Record<CloudProvider, string> = {
   hetzner: "4711",
   digitalocean: "3164444",
   contabo: "202611001",
+  ovhcloud: "11111111-2222-4333-8444-555555555555",
 };
 
 /** Everything the fakes saw, in order: the trail SC-502 is checked on. */
@@ -152,6 +158,7 @@ const MODULE_PROVIDER: Record<string, CloudProvider> = {
   "hetzner-vps": "hetzner",
   "digitalocean-droplet": "digitalocean",
   "contabo-vps": "contabo",
+  "ovhcloud-instance": "ovhcloud",
 };
 
 const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> = {
@@ -174,16 +181,23 @@ const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> =
     // The firewall Contabo's connector applies after the apply (ADR 0029, D8).
     ["terraform_data", "firewall"],
   ],
+  ovhcloud: [
+    ["ovh_cloud_ssh_key", "deploy"],
+    ["ovh_cloud_security_group", "this"],
+    ["ovh_cloud_instance", "this"],
+  ],
 };
 const SERVER_TYPE: Record<CloudProvider, string> = {
   hetzner: "hcloud_server",
   digitalocean: "digitalocean_droplet",
   contabo: "contabo_instance",
+  ovhcloud: "ovh_cloud_instance",
 };
 const REGISTRY: Record<CloudProvider, string> = {
   hetzner: "registry.opentofu.org/hetznercloud/hcloud",
   digitalocean: "registry.opentofu.org/digitalocean/digitalocean",
   contabo: "registry.opentofu.org/contabo/contabo",
+  ovhcloud: "registry.opentofu.org/ovh/ovh",
 };
 
 interface FakeConfig {
@@ -1402,6 +1416,10 @@ export async function moveFakes(
   await writeFile(join(root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
 
   const events: MoveEvent[] = [];
+  /** The snapshot ids the providers' `listSnapshots` answer, by server id (none by default). */
+  const snapshotsOf: Record<string, string[]> = {};
+  /** The server ids the providers' `listSnapshots` were asked for, in order. */
+  const listed: string[] = [];
   const hosts = new FakeHosts(events);
   hosts.release = options.release === true;
   hosts.services = options.postgres === false ? [] : ["db"];
@@ -1441,8 +1459,12 @@ export async function moveFakes(
       events.push({ type: "snapshot", serverId });
       return { snapshotId: `snap-${serverId}` };
     },
-    listSnapshots: async () => {
-      throw new Error("listSnapshots is not implemented yet");
+    listSnapshots: async (serverId) => {
+      listed.push(serverId);
+      return (snapshotsOf[serverId] ?? []).map((id) => ({
+        id,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      }));
     },
     deleteSnapshot: async () => {
       throw new Error("deleteSnapshot is not implemented yet");
@@ -1523,6 +1545,8 @@ export async function moveFakes(
     firewalls,
     poweredOff,
     look,
+    snapshotsOf,
+    listed,
   };
 }
 
@@ -1600,6 +1624,7 @@ export function targetOf(kind: MoveSideKind, records = true): DeployPlan["target
     case "hetzner":
     case "digitalocean":
     case "contabo":
+    case "ovhcloud":
       return movePlan({ from: kind }).target;
     case "own":
       return {

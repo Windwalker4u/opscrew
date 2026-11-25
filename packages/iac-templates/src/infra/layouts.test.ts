@@ -18,6 +18,7 @@ const MODULE_DIRS: Record<CloudProvider, string> = {
   hetzner: "hetzner-vps",
   digitalocean: "digitalocean-droplet",
   contabo: "contabo-vps",
+  ovhcloud: "ovhcloud-instance",
 };
 const CREDENTIALS_COMMENTS: Record<CloudProvider, string> = {
   hetzner: "# Token from the HCLOUD_TOKEN environment variable (never stored in files or state).",
@@ -25,6 +26,8 @@ const CREDENTIALS_COMMENTS: Record<CloudProvider, string> = {
     "# Token from the DIGITALOCEAN_TOKEN environment variable (never stored in files or state).",
   contabo:
     "# Credentials from the CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS environment variables (never stored in files or state).",
+  ovhcloud:
+    "# Credentials from the OVH_ENDPOINT, OVH_CLIENT_ID and OVH_CLIENT_SECRET environment variables (never stored in files or state); the Public Cloud project's id from TF_VAR_ovhcloud_project_id.",
 };
 const CLOUD_IDS = CLOUD_PROVIDERS.map(({ id }) => id as CloudProvider);
 const MOVES_ONLY: readonly LayoutName[] = ["rename", "abort-rename"];
@@ -388,12 +391,16 @@ describe("renderInfra move layouts", () => {
       backups: hetzner.backups,
     });
     expect(values("abort-rename")).not.toHaveProperty("previous_location");
-    // Every value in tfvars belongs to a declared variable without a default.
+    // Every value in tfvars belongs to a declared variable without a default; a provider's root
+    // variables come only from TF_VAR_*, never from tfvars.
+    const fromEnv = new Set(
+      CLOUD_PROVIDERS.flatMap(({ terraform }) => terraform.rootVariables ?? []).map((v) => v.name),
+    );
     for (const [from, to] of DIRECTIONS) {
       for (const name of LAYOUT_NAMES) {
         const files = render(name, from, to);
         const declared = variableNames(content(files, "prod/variables.tf")).filter(
-          (v) => !v?.endsWith("delete_protection"),
+          (v) => !v?.endsWith("delete_protection") && !fromEnv.has(v ?? ""),
         );
         expect(Object.keys(JSON.parse(content(files, "tfvars.json")))).toEqual(declared);
       }

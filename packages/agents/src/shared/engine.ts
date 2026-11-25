@@ -150,6 +150,7 @@ export async function stateContents(
     return "unknown"; // no usable engine here: the command's own engine setup says so plainly
   }
   const env = engineEnv(deps.env);
+  setRootVariables(env, deps.redactor);
   if (encrypted) {
     if (reader.info.name !== "tofu") return "unknown";
     const passphrase = (await readTextIfExists(deps.paths.files.statePassphrase))?.trim();
@@ -277,8 +278,27 @@ async function environmentStateKeyName(paths: ProjectPaths): Promise<StateKeyNam
 }
 
 /**
+ * Sets `TF_VAR_<name>` in `env` for each built-in provider's root variable whose credential
+ * `fromEnv` is set (not blank) there, registering the value with the redactor (ADR 0029, D11). A root that
+ * doesn't declare the variable ignores it.
+ */
+function setRootVariables(
+  env: Record<string, string | undefined>,
+  redactor: PhaseDeps["redactor"],
+): void {
+  for (const variable of CLOUD_PROVIDERS.flatMap((p) => p.terraform.rootVariables ?? [])) {
+    const value = env[variable.fromEnv];
+    if (value === undefined || value.trim() === "") continue;
+    redactor.addLiteral(value, variable.fromEnv);
+    env[`TF_VAR_${variable.name}`] = value;
+  }
+}
+
+/**
  * The project's IaC engine and its environment: the phase's without {@link NOT_FOR_THE_ENGINE},
- * plus `TF_ENCRYPTION` from the project's state passphrase when the plan encrypts its state and
+ * with `TF_VAR_<name>` for each built-in provider's root variable whose credential `fromEnv` is
+ * set (its value registered with the redactor; a root that doesn't declare it ignores it), plus
+ * `TF_ENCRYPTION` from the project's state passphrase when the plan encrypts its state and
  * the engine is OpenTofu (Terraform cannot; callers say so where it matters), under the key name
  * the environment's state has ({@link environmentStateKeyName}). The passphrase is handled as
  * {@link ProjectEngineOptions.passphrase} says; it is registered with the redactor, and a damaged
@@ -296,6 +316,7 @@ export async function projectEngine(
     options.services?.engine,
   );
   const env = engineEnv(deps.env);
+  setRootVariables(env, deps.redactor);
   if (!plan.infra.stateEncryption || engine.info.name !== "tofu") return { engine, env };
   if (await exists(nextStatePassphraseFile(deps.paths).file)) {
     const { root, environment, app } = deps.paths;

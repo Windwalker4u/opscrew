@@ -320,6 +320,15 @@ const FAKE_SERVERS: Record<CloudProvider, { server: AppServer; snapshotId: strin
     server: { id: "202611001", name: "shop", status: "running" },
     snapshotId: "202611001:snap1762862400",
   },
+  ovhcloud: {
+    server: {
+      id: "11111111-2222-4333-8444-555555555555",
+      name: "shop",
+      status: "READY",
+      nameOnly: true,
+    },
+    snapshotId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  },
 };
 
 /**
@@ -361,16 +370,32 @@ export class FakeServers implements ServerSnapshotApi {
     return { snapshotId: this.snapshotId };
   }
 
-  async listSnapshots(): Promise<ServerSnapshot[]> {
-    throw new Error("listSnapshots is not implemented yet");
+  /** The snapshot ids `listSnapshots` answers, by server id (none by default). */
+  snapshotsOf: Record<string, string[]> = {};
+  /** The server ids `listSnapshots` was asked for, in order. */
+  readonly listed: string[] = [];
+  /** Fails `listSnapshots`, as a provider that cannot answer. */
+  listError: Error | undefined;
+
+  async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
+    this.listed.push(serverId);
+    if (this.listError) throw this.listError;
+    return (this.snapshotsOf[serverId] ?? []).map((id) => ({
+      id,
+      createdAt: "2026-10-01T00:00:00.000Z",
+    }));
   }
 
   async deleteSnapshot(): Promise<void> {
     throw new Error("deleteSnapshot is not implemented yet");
   }
 
-  async rebuild(): Promise<void> {
-    throw new Error("rebuild is not implemented yet");
+  /** Every rebuild of a server from a snapshot, in order. */
+  readonly rebuilt: { serverId: string; snapshotId: string }[] = [];
+
+  async rebuild(serverId: string, snapshotId: string): Promise<void> {
+    this.events.push(`rebuild:${serverId}`);
+    this.rebuilt.push({ serverId, snapshotId });
   }
 
   async powerOff(): Promise<void> {

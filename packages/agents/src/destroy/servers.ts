@@ -47,8 +47,11 @@ import {
   confirmDeletion,
   type DeletionScope,
   type DeletionSession,
+  earlierSnapshotsLine,
   forgetHostKeys,
+  listEarlierSnapshots,
   remainingAfterDeletion,
+  type ServerApiInput,
   type SnapshotBeforeDeleteInput,
   snapshotWanted,
   takeSnapshotBeforeDelete,
@@ -82,20 +85,68 @@ export function extraProtectionVars(plan: DeployPlan): Record<string, string> {
 
 /**
  * What remains of each extra server OpsCrew created once the teardown deleted it: its snapshot
- * (`snapshotIds`, by server name) and its kept backups, each by its name at the provider.
+ * (`snapshotIds`, by server name), the snapshots taken earlier (`earlier`, by server name) and its
+ * kept backups, each by its name at the provider.
  */
 export function extraServersRemaining(
   plan: DeployPlan,
   snapshotIds: Readonly<Record<string, string | undefined>>,
+  earlier: EarlierSnapshots,
 ): string[] {
   return extraCloudServers(plan).flatMap((server) =>
     remainingAfterDeletion({
       provider: server.provider,
       app: server.resource,
       snapshotId: snapshotIds[server.name],
+      earlierSnapshots: earlier[server.name],
       backups: server.backups,
     }),
   );
+}
+
+/** The ids of the whole-server snapshots taken earlier of each server, by its name in the plan. */
+export type EarlierSnapshots = Readonly<Record<string, readonly string[] | undefined>>;
+
+/**
+ * The whole-server snapshots taken earlier of each of `snapshots` the teardown deletes at a provider
+ * whose snapshots outlive the server (`listEarlierSnapshots`), by server name. Read once, before the
+ * confirmation and the approval, and reused for "What remains"; a list that cannot be read is said
+ * and left out, and never stops the teardown.
+ */
+export async function readEarlierSnapshots(
+  scope: Pick<DeletionScope, "deps" | "app" | "command">,
+  snapshots: readonly ServerSnapshot[],
+  input: ServerApiInput,
+): Promise<EarlierSnapshots> {
+  const earlier: Record<string, string[] | undefined> = {};
+  for (const snapshot of snapshots.filter((s) => s.inState && snapshotsOutlive(s.provider))) {
+    earlier[snapshot.server] = await listEarlierSnapshots(
+      { ...scope, provider: snapshot.provider },
+      { ...input, ids: snapshot.ids, name: snapshot.name },
+    );
+  }
+  return earlier;
+}
+
+/**
+ * The lines naming each server's snapshots taken earlier (`earlierSnapshotsLine`), but the one the
+ * teardown took or reused of it (`snapshotIds`, once known), for the summary and the approval.
+ */
+export function earlierSnapshotsLines(
+  app: string,
+  snapshots: readonly ServerSnapshot[],
+  earlier: EarlierSnapshots,
+  snapshotIds: Readonly<Record<string, string | undefined>> = {},
+): string[] {
+  return snapshots.flatMap((s) => {
+    const line = earlierSnapshotsLine(
+      s.provider,
+      s.name ?? app,
+      earlier[s.server],
+      snapshotIds[s.server],
+    );
+    return line === undefined ? [] : [line];
+  });
 }
 
 /**

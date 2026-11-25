@@ -1,6 +1,6 @@
 ---
 name: opscrew-snapshots
-description: Back up and restore the data of an app OpsCrew deployed, with OpsCrew's snapshots: see which snapshots exist (read-only), and guide the user through taking one before a risky change, putting one back, deleting one, a snapshot of the whole server at Hetzner or DigitalOcean, scheduled snapshots and an encrypted copy off the server, each run in their own terminal. Use when the user asks "is my data backed up?", "back up my database", "take a snapshot", "restore yesterday's data", "I deleted rows by mistake", "what snapshots do I have?", "schedule backups", "keep a copy somewhere else", "what if the server dies?", or about backups on their own server or Portainer.
+description: Back up and restore the data of an app OpsCrew deployed, with OpsCrew's snapshots: see which snapshots exist (read-only), and guide the user through taking one before a risky change, putting one back, deleting one, a snapshot of the whole server at Hetzner, DigitalOcean, Contabo or OVHcloud, scheduled snapshots and an encrypted copy off the server, each run in their own terminal. Use when the user asks "is my data backed up?", "back up my database", "take a snapshot", "restore yesterday's data", "I deleted rows by mistake", "what snapshots do I have?", "schedule backups", "keep a copy somewhere else", "what if the server dies?", or about backups on their own server or Portainer.
 ---
 
 # Snapshots and restores with OpsCrew
@@ -69,11 +69,11 @@ encrypted copy off the server. A whole-server snapshot is deleted at its provide
 
 ## A snapshot of the whole server
 
-On a server OpsCrew created at Hetzner, DigitalOcean or Contabo, `npx opscrew snapshot --server`
-has the provider snapshot the server's whole disk while it runs; a live snapshot may not be
-consistent, and `--stop` shuts the server down for it, after the user approves that downtime. At
-Hetzner and DigitalOcean it costs a monthly price (the summary shows it), and volumes attached to
-the server are not in it. `npx opscrew restore --server <id>` rebuilds the server from it in place,
+On a server OpsCrew created at Hetzner, DigitalOcean, Contabo or OVHcloud,
+`npx opscrew snapshot --server` has the provider snapshot the server's whole disk while it runs; a
+live snapshot may not be consistent, and `--stop` shuts the server down for it, after the user
+approves that downtime. At Hetzner and DigitalOcean it costs a monthly price (the summary shows
+it), and volumes attached to the server are not in it. `npx opscrew restore --server <id>` rebuilds the server from it in place,
 keeping its address, after the user types the server's name; everything written on it since is
 lost, and OpsCrew then checks that the app answers. On the user's own server or Portainer
 `--server` is refused: the data snapshot is the one to use there.
@@ -92,6 +92,15 @@ On Contabo:
   place; the other way is `npx opscrew retarget` to another provider): take one,
   `npx opscrew destroy`, design and provision the new size, then
   `npx opscrew restore <id> --from offsite --key-file <path>`.
+
+On OVHcloud:
+
+- Snapshots are billed per GB a month (the summary shows the rate), and they outlive the server:
+  `npx opscrew destroy` leaves them, and they keep billing until the user deletes them in the
+  control panel (Public Cloud → the project → Compute → Instance Snapshot).
+- OpsCrew turns on no OVHcloud backups (their images outlive the server and keep billing too): the
+  data snapshot with its copy off the server covers the data. A server can't be resized either:
+  the way to another size is the same as on Contabo.
 
 ## Scheduled snapshots
 

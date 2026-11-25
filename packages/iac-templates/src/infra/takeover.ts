@@ -55,7 +55,10 @@ function addressOf({ module, provider }: CreatedServer): string {
 /** Provider ids as OpsCrew's connectors give them: digits, letters and `-`, `_`, `.`, `:`. */
 const SERVER_ID = /^[\w.:-]+$/;
 
-/** The `import` block, with its comment, that takes over one server. */
+/**
+ * The `import` block, with its comment, that takes over one server: its `id` is the provider's
+ * `importId` of the checked server id when it has one, else the quoted id.
+ */
 function importBlock(plan: DeployPlan, { server, id }: ServerTakeover): string[] {
   const created = createdServer(plan, server);
   if (created === undefined) {
@@ -70,7 +73,7 @@ function importBlock(plan: DeployPlan, { server, id }: ServerTakeover): string[]
     "# created it but stopped before the state recorded it. Importing it changes nothing there.",
     "import {",
     `  to = ${addressOf(created)}`,
-    `  id = "${id}"`,
+    `  id = ${provider.terraform.importId?.(id) ?? `"${id}"`}`,
     "}",
     "",
   ];

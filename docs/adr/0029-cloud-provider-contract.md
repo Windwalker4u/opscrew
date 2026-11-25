@@ -83,6 +83,28 @@ kinds, not on which cloud.
   sends the cancel without the body Contabo's API requires, so it fails before calling Contabo,
   while the same cancel with an empty body works.
 
+- **D11: a provider may bring root variables fed from its credentials, and its own import id**
+  (feature 035, OVHcloud; approved by the core's lead in issue #1, 2026-11-21).
+  - **Why:** every OVHcloud resource names its Public Cloud project (`service_name`), and
+    `ovh_cloud_instance`, unlike the provider's legacy resources, reads it from no environment
+    variable. The project id is a value the app needs that is not a server variable.
+  - **`terraform.rootVariables`:** each variable comes from one of the provider's
+    `credentials.envVars` (`fromEnv`). OpsCrew declares it once in each root that renders a
+    server of that provider, and passes it to every engine command only as `TF_VAR_<name>`, its
+    value registered with the redactor. It is never in `terraform.tfvars.json`, a committed file
+    or the audit log. It is not declared `sensitive`, because an `import` block's `id` can't be
+    sensitive (OpenTofu 1.13.9). It is no secret, and the redactor masks its value in everything
+    OpsCrew shows.
+  - **Only a value that isn't secret may feed a root variable.** It appears in plans and their
+    JSON, which the engine prints and OpsCrew keeps in `.opscrew/plans`. A provider never names a
+    token, a password or a client secret in `fromEnv`; reviews check it, since the registry can't
+    tell a secret by its name.
+  - **`terraform.importId`:** the HCL expression of the takeover's `import` `id` (026's takeover
+    of a lost server). Absent, the quoted id. OVHcloud's instance imports as `<project>/<id>`, so
+    its expression is `"${var.ovhcloud_project_id}/<id>"`.
+  - **Without OpsCrew:** whoever runs the vendored HCL sets `TF_VAR_<name>` themselves. The
+    provider's guide page says so (constitution II).
+
 ## Consequences
 
 - Adding a cloud server provider is one package and one line in the registry, plus its id in

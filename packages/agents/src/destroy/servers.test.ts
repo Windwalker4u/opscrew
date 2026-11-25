@@ -292,6 +292,39 @@ describe.skipIf(!findExecutable("git"))("runDestroy with extra servers (US2 #6, 
     expect((none.services.servers as FakeServers).snapshots).toEqual([]);
   });
 
+  it("names the snapshots taken earlier of every server it deletes, each by its name", async () => {
+    const s = await setup(deployedSplit("cloud"));
+    const servers = s.services.servers as FakeServers;
+    // Both fake servers have the state id 4711: the app's is read first, then shop-data's.
+    const answers = [["101"], ["201", "202"]];
+    let reads = 0;
+    servers.listSnapshots = async () =>
+      (answers[reads++] ?? []).map((id) => ({ id, createdAt: "2026-10-01T00:00:00Z" }));
+    const result = await runDestroy(s.deps, {
+      services: s.services,
+      snapshot: false,
+      confirm: async () => true,
+    });
+    expect(reads).toBe(2);
+    const destroy = s.handler.requests.find((r) => r.title.startsWith("Delete shop"));
+    const billing =
+      "Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud";
+    expect(destroy?.details).toContain(
+      `The snapshot of shop taken earlier stays: Hetzner image 101 (${billing}; OpsCrew never deletes it).`,
+    );
+    expect(destroy?.details).toContain(
+      `The 2 snapshots of shop-data taken earlier stay: Hetzner image 201 and Hetzner image 202 (${billing}; OpsCrew never deletes them).`,
+    );
+    expect(result.remaining).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^The snapshot of shop taken earlier \(Hetzner image 101\)\./),
+        expect.stringMatching(
+          /^The 2 snapshots of shop-data taken earlier \(Hetzner image 201 and Hetzner image 202\)\./,
+        ),
+      ]),
+    );
+  });
+
   it("removes OpsCrew's part from an extra own server after the infrastructure, SSH reopened first", async () => {
     const plan = deployedSplit("own", false);
     const s = await setup(plan);

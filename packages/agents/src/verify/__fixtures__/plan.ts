@@ -28,6 +28,7 @@ const TARGETS = {
     image: "ubuntu-24-04-x64",
   },
   contabo: { provider: "contabo", location: "EU", serverType: "V153" },
+  ovhcloud: { provider: "ovhcloud", location: "GRA11", serverType: "d2-2" },
 } as const;
 
 /** A deploy plan for the `shop` app, with a domain by default and the server provisioned. */

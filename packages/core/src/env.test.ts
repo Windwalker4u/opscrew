@@ -67,6 +67,10 @@ describe("sanitizeAgentEnv", () => {
     // Contabo's client id and API user (the account's email): parts of its credentials.
     "CNTB_OAUTH2_CLIENT_ID",
     "CNTB_OAUTH2_USER",
+    // OVHcloud's endpoint, client id and project id: parts of its credentials.
+    "OVH_ENDPOINT",
+    "OVH_CLIENT_ID",
+    "OVH_CLOUD_PROJECT_SERVICE",
     "ARM_CLIENT_ID",
     "ARM_SUBSCRIPTION_ID",
     "AZURE_CLIENT_ID",

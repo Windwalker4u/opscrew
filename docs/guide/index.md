@@ -8,6 +8,7 @@ an app yet.
 - [Deploy to Hetzner Cloud](hetzner.md)
 - [Deploy to DigitalOcean](digitalocean.md)
 - [Deploy to Contabo](contabo.md)
+- [Deploy to OVHcloud](ovhcloud.md)
 - [Deploy to a server you already have](own-server.md)
 - [Host your app at home](home-hosting.md)
 - [Deploy to a Portainer you already run](portainer-target.md)

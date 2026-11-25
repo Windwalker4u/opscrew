@@ -4,8 +4,8 @@ Prices as of 2026-11-03, excluding VAT and sales tax. They change often: check t
 quoting a figure, and redo this page rather than editing one number.
 
 AWS, Google Cloud and Azure are planned targets that OpsCrew does not support yet, so they are
-named here but not priced. [Contabo](guide/contabo.md) became a target after this comparison; see
-[Contabo](#contabo) below.
+named here but not priced. [Contabo](guide/contabo.md) and [OVHcloud](guide/ovhcloud.md) became
+targets after this comparison; see [Contabo](#contabo) and [OVHcloud](#ovhcloud) below.
 
 ## The reference app
 
@@ -47,6 +47,18 @@ design asks for this app (2 vCPU, 4 GB, 60 GB):
   (see [Snapshots and restores](guide/snapshots.md)).
 - **At least a month:** a removal ends the contract at the end of its term
   (see [Deploy to Contabo](guide/contabo.md)).
+
+### OVHcloud
+
+OVHcloud was not part of the comparison above, and design was not run against it. From OVHcloud's
+public catalogue of 2026-11-21, before VAT, for 730 hours (a month always on):
+- **d2-4 (2 vCPU, 4 GB): €15.04,** but its 50 GB disk is under the 60 GB design asks for this app.
+- **b3-16 (4 vCPU, 16 GB, 100 GB disk): €74.68,** the only model OpsCrew offers with that disk.
+- **Billed by the hour,** per second, until the server is deleted: a removal costs nothing more.
+- **No provider backups:** OpsCrew's own snapshots cover the data
+  (see [Snapshots and restores](guide/snapshots.md)).
+
+See [Deploy to OVHcloud](guide/ovhcloud.md).
 
 ## On popular platforms
 
@@ -98,6 +110,8 @@ Notes:
   https://www.digitalocean.com/pricing/app-platform,
   https://www.digitalocean.com/pricing/managed-databases
 - **Contabo:** https://contabo.com/en/vps/
+- **OVHcloud:** https://www.ovhcloud.com/en-ie/public-cloud/prices/,
+  https://eu.api.ovh.com/v1/order/catalog/public/cloud?ovhSubsidiary=IE
 - **Heroku:** https://www.heroku.com/pricing,
   https://devcenter.heroku.com/articles/heroku-postgres-plans
 - **Railway:** https://railway.com/pricing

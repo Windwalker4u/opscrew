@@ -7,13 +7,15 @@ import { listText, OpsCrewError } from "@opscrew/core";
 import { definition as contabo } from "@opscrew/provider-contabo";
 import { definition as digitalocean } from "@opscrew/provider-digitalocean";
 import { definition as hetzner } from "@opscrew/provider-hetzner";
+import { definition as ovhcloud } from "@opscrew/provider-ovhcloud";
 import { validateCloudProvider } from "./validate";
 
-/** The built-in cloud server providers, in order: Hetzner, DigitalOcean, Contabo. */
+/** The built-in cloud server providers, in order: Hetzner, DigitalOcean, Contabo, OVHcloud. */
 export const CLOUD_PROVIDERS: readonly CloudProviderDefinition[] = [
   hetzner,
   digitalocean,
   contabo,
+  ovhcloud,
 ].map(validateCloudProvider);
 
 /**

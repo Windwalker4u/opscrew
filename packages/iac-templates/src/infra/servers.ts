@@ -129,6 +129,24 @@ export function serverVariables(
 }
 
 /**
+ * The root variables of the providers of `servers` (ADR 0029, D11), each declared once: a string
+ * with its description and no default, whose value OpsCrew passes only as `TF_VAR_<name>` and never
+ * writes to `terraform.tfvars.json`. Not sensitive: a takeover's `import` id reads it, and the
+ * engines refuse a sensitive one there. None for providers without root variables.
+ */
+export function rootVariables(
+  servers: readonly { provider: CloudProviderDefinition }[],
+): VariableSpec[] {
+  const specs = new Map<string, VariableSpec>();
+  for (const { provider } of servers) {
+    for (const { name, description } of provider.terraform.rootVariables ?? []) {
+      specs.set(name, { name, type: "string", description });
+    }
+  }
+  return [...specs.values()];
+}
+
+/**
  * The variables of a server OpsCrew does not create, which the DNS records point at:
  * `<prefix>server_ipv4` and `<prefix>server_ipv6` (null without IPv6). The CLI passes them as
  * `TF_VAR_*` from `.opscrew/server.json`; they are never written to a committed file. `what`

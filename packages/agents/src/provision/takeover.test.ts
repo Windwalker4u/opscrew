@@ -9,6 +9,7 @@ import type {
   AppServer,
   CloudProviderDefinition,
   PlanSummary,
+  ResourceChange,
   ServerSnapshotApi,
   VpsConnector,
 } from "@opscrew/contracts";
@@ -29,6 +30,14 @@ import {
   testPlan,
   writeFakeState,
 } from "../testing";
+import {
+  OVH_ADDRESSES,
+  OVH_ENV,
+  OVH_PROJECT,
+  OVH_SERVER_ID,
+  ovhChange,
+  ovhcloudPlanJson,
+} from "./__fixtures__/ovhcloud";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { previewDeploymentFiles } from "./render";
 import { runProvision } from "./run";
@@ -99,17 +108,69 @@ class StateEngine extends FakeEngine {
   override readonly stateResources = async () => [...this.inState];
 }
 
+/** A provider's server module as {@link LostServerEngine} plans it. */
+interface ServerModule {
+  /** The server's state address, and the module's other resources' (each created first). */
+  server: string;
+  others: string[];
+  /** The create of `address` in the plan's changes. */
+  create: (address: string) => ResourceChange;
+  /** The plan's JSON: the server's create, or its import of `id`. */
+  planJson: (importing: string | undefined) => unknown;
+}
+
+const HETZNER: ServerModule = {
+  server: SERVER,
+  others: ["module.server.hcloud_ssh_key.deploy", "module.server.hcloud_firewall.this"],
+  create: (address) => ({
+    address,
+    type: address.split(".")[2] as string,
+    name: address.split(".")[3] as string,
+    provider: "registry.opentofu.org/hetznercloud/hcloud",
+    action: "create",
+  }),
+  planJson: (id) => {
+    const json = planJsonFor();
+    const [server] = json.resource_changes;
+    return id === undefined
+      ? json
+      : {
+          ...json,
+          resource_changes: [
+            { ...server, change: { ...server?.change, actions: ["no-op"], importing: { id } } },
+          ],
+        };
+  },
+};
+
+const OVHCLOUD: ServerModule = {
+  server: OVH_ADDRESSES.server,
+  others: [OVH_ADDRESSES.key, OVH_ADDRESSES.group],
+  create: (address) => ovhChange(address, "create"),
+  planJson: (id) => ovhcloudPlanJson(id === undefined ? {} : { importing: id }),
+};
+
 /**
- * An engine like the real one for a lost server: a plan creates the Hetzner server unless the
- * root module imports it, then plans the import instead.
+ * An engine like the real one for a lost server: a plan creates the server unless the root module
+ * imports it, then plans the import instead, its id evaluated as the engine does (each
+ * `${var.<name>}` from `TF_VAR_<name>` in its environment, a missing one an error).
  */
 class LostServerEngine extends StateEngine {
   /** The plans made, by what each creates. */
   readonly creates: string[][] = [];
   /** The plans made, by the server id each imports (`undefined`: none). */
   readonly imported: (string | undefined)[] = [];
+  /** The root's `main.tf` each plan read. */
+  readonly mains: string[] = [];
   /** The state has outputs before this run applies anything (a deployment that exists). */
   deployed = false;
+
+  constructor(
+    scenario: FakeEngineScenario = {},
+    readonly module: ServerModule = HETZNER,
+  ) {
+    super(scenario);
+  }
 
   override async output(): Promise<Record<string, unknown>> {
     return this.deployed ? this.outputs : super.output();
@@ -120,35 +181,23 @@ class LostServerEngine extends StateEngine {
     planFile: string,
     options?: Parameters<FakeEngine["plan"]>[2],
   ): Promise<PlanSummary> {
+    const { module } = this;
     const main = await readFile(join(dir, "main.tf"), "utf8");
-    const id = /import \{\n {2}to = module\.server\.hcloud_server\.this\n {2}id = "(\w+)"/.exec(
-      main,
-    )?.[1];
-    const create = [
-      "module.server.hcloud_ssh_key.deploy",
-      "module.server.hcloud_firewall.this",
-      ...(id === undefined ? [SERVER] : []),
-    ].filter((address) => !this.inState.includes(address));
-    const json = planJsonFor();
-    const [server] = json.resource_changes;
+    const to = module.server.replaceAll(".", "\\.");
+    const block = new RegExp(`import \\{\\n {2}to = ${to}\\n {2}id = "([^"\\n]+)"`).exec(main)?.[1];
+    const id = block?.replace(/\$\{var\.(\w+)\}/g, (_, name: string) => {
+      const value = options?.env?.[`TF_VAR_${name}`];
+      if (value === undefined) throw new Error(`Error: No value for required variable ${name}`);
+      return value;
+    });
+    const create = [...module.others, ...(id === undefined ? [module.server] : [])].filter(
+      (address) => !this.inState.includes(address),
+    );
     Object.assign(this.scenario, {
-      changes: create.map((address) => ({
-        address,
-        type: address.split(".")[2] as string,
-        name: address.split(".")[3] as string,
-        provider: "registry.opentofu.org/hetznercloud/hcloud",
-        action: "create" as const,
-      })),
-      planJson:
-        id === undefined
-          ? json
-          : {
-              ...json,
-              resource_changes: [
-                { ...server, change: { ...server?.change, actions: ["no-op"], importing: { id } } },
-              ],
-            },
+      changes: create.map(module.create),
+      planJson: module.planJson(id),
     } satisfies FakeEngineScenario);
+    this.mains.push(main);
     this.creates.push(create);
     this.imported.push(id);
     return super.plan(dir, planFile, options);
@@ -254,6 +303,70 @@ describe.skipIf(!findExecutable("git"))("provision takes over a server the state
     });
     expect(preview.changed).toEqual([]);
     expect(preview.created).toEqual([]);
+  });
+
+  it("SC-3502: on OVHcloud too, importing the instance by its project's id from the environment", async () => {
+    const provider = fakeServers();
+    const engine = new LostServerEngine(
+      {
+        applyOk: false,
+        applyLog: "Error: timeout while waiting for state to become 'ACTIVE' (last state: 'BUILD')",
+        outputs: { server_ipv4: "203.0.113.10", server_id: OVH_SERVER_ID, server_name: "shop" },
+      },
+      OVHCLOUD,
+    );
+    const run = await setup({
+      plan: testPlan({ provider: "ovhcloud", userSecret: false }),
+      engine,
+      servers: provider.api,
+      env: OVH_ENV,
+    });
+
+    // The first provision: its create of the instance gets no answer in time.
+    await expect(runProvision(run.deps, { services: run.services })).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+    });
+    expect(provider.lookups).toEqual([]);
+    expect(engine.creates[0]).toContain(OVH_ADDRESSES.server);
+    expect(JSON.parse(await readFile(applyMarkerFile(run.deps.paths), "utf8"))).toMatchObject({
+      servers: [OVH_ADDRESSES.server],
+    });
+
+    // OVHcloud has the instance, which it reports by its name only; the state lacks it.
+    provider.servers.push({ id: OVH_SERVER_ID, name: "shop", status: "CREATING", nameOnly: true });
+    engine.inState = [OVH_ADDRESSES.key, OVH_ADDRESSES.group];
+    await writeFakeState(run.deps.paths);
+    engine.scenario.applyOk = true;
+
+    const result = await runProvision(run.deps, { services: run.services });
+    expect(provider.lookups).toEqual(["shop"]);
+    expect(engine.creates[1]).toEqual([]);
+    // The import's id names the project only by its root variable; the engine reads its value
+    // from TF_VAR_ovhcloud_project_id.
+    expect(engine.mains[1]).toContain(
+      `import {\n  to = ${OVH_ADDRESSES.server}\n  id = "\${var.ovhcloud_project_id}/${OVH_SERVER_ID}"\n}`,
+    );
+    expect(engine.imported[1]).toBe(`${OVH_PROJECT}/${OVH_SERVER_ID}`);
+    expect(applyRequest(run.handler)?.details).toContain(
+      `OVHcloud has the server shop (id ${OVH_SERVER_ID}, CREATING) without OpsCrew's tag, which the infrastructure state lacks: OpsCrew's last provision of prod stopped while creating it. The plan takes it over with an import instead of buying another server`,
+    );
+    expect(result.applied).toBe(true);
+    expect(existsSync(applyMarkerFile(run.deps.paths))).toBe(false);
+
+    // The project's id is in no main.tf, rendered or committed, and masked in what was shown.
+    const committed = await run.git(
+      run.root,
+      "show",
+      `${DEPLOY_SETUP_BRANCH}:opscrew/infra/prod/main.tf`,
+    );
+    for (const main of [...engine.mains, await run.main(), committed]) {
+      expect(main).not.toContain(OVH_PROJECT);
+    }
+    const shown = `${run.deps.reporter.text()}\n${JSON.stringify(run.handler.requests)}`;
+    for (const value of [OVH_ENV.OVH_CLIENT_ID, OVH_ENV.OVH_CLIENT_SECRET]) {
+      expect(shown).not.toContain(value);
+    }
+    expect(run.deps.redactor.redact(shown)).not.toContain(OVH_PROJECT);
   });
 
   it("takes over a tagged server the state lacks without an earlier stop", async () => {

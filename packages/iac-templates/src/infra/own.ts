@@ -32,6 +32,7 @@ import {
   keyTfvars,
   keyVariables,
   providerBlock,
+  rootVariables,
   serverTfvars,
   serverVariables,
 } from "./servers";
@@ -75,6 +76,7 @@ function variables(
   if (extras.length > 0) {
     specs.push(
       ...extras.flatMap((extra) => serverVariables(extra, extra.name)),
+      ...rootVariables(extras),
       ...keyVariables(checkKey),
     );
   }

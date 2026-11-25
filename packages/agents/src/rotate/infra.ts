@@ -143,15 +143,24 @@ const ACCESS_TOKEN = "module.access.cloudflare_zero_trust_access_service_token.s
 const ACCESS_POLICY = "module.access.cloudflare_zero_trust_access_policy.ssh[0]";
 
 /**
+ * True when the HCL expression `expression` reads an attribute of the resource `address`: its id
+ * (`coalesce(hcloud_ssh_key.deploy.id)`) or another one (OVHcloud's key has only a name,
+ * `ovh_cloud_ssh_key.deploy.name`). `…deploy.` never matches `…deployer.`.
+ */
+export function readsResource(expression: string, address: string): boolean {
+  return expression.includes(`${address}.`);
+}
+
+/**
  * The provider objects of the deploy key, which a server gets only when it is created: the type of
- * the shared resource whose id each provider's extra servers take as their key (its definition's
+ * the shared resource each provider's extra servers take their key from (its definition's
  * `extraShared.sshKeyId`, for example `coalesce(hcloud_ssh_key.deploy.id)`).
  */
 const DEPLOY_KEY_TYPES: ReadonlySet<string> = new Set(
   VPS_PROVIDERS.flatMap((provider) => {
     const { sshKeyId } = cloudProvider(provider).terraform.extraShared;
     return sharedResources(provider)
-      .filter((address) => sshKeyId.includes(`${address}.id`))
+      .filter((address) => readsResource(sshKeyId, address))
       .map((address) => address.slice(0, address.indexOf(".")));
   }),
 );

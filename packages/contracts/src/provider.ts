@@ -238,6 +238,21 @@ export interface ProviderTerraform {
    * each extra server's module gets.
    */
   extraShared: { resources: readonly string[]; sshKeyId: string; appTag?: string };
+  /**
+   * Root variables the provider's server module calls read (`var.<name>` in
+   * {@link moduleArguments}) that are not a server's own (ADR 0029, D11): OpsCrew declares each
+   * in the root module once, not `sensitive` (an `import` block's `id` may read it), and passes it
+   * to every engine command only as `TF_VAR_<name>` from the credential variable `fromEnv`,
+   * registered with the redactor, never in a file. Absent for most providers (OVHcloud's project
+   * id).
+   */
+  rootVariables?: readonly { name: string; description: string; fromEnv: string }[];
+  /**
+   * The HCL expression of the `id` of the `import` block that takes over the server `serverId`
+   * (026's takeover); absent, the quoted id. OVHcloud imports an instance as `<project>/<id>`, so
+   * its expression reads the project from its root variable (ADR 0029, D11).
+   */
+  importId?(serverId: string): string;
 }
 
 /**
@@ -292,6 +307,11 @@ export interface ProviderSecOps {
   attachedText: string;
   unattachedText: string;
   keylessText: string;
+  /**
+   * The server's attribute that holds its SSH key or keys, which the "uses SSH keys" check reads;
+   * absent, `ssh_keys` (OVHcloud's instance takes one key by its name, `ssh_key_name`).
+   */
+  sshKeyAttribute?: string;
   backupsText: string;
   /**
    * True when `server` has the provider's automated backups on, read from `resources` (the plan's

@@ -1,10 +1,12 @@
 # Deploy to a server you already have
 
 OpsCrew can deploy your app to a server you already pay for or run yourself: a rented server at
-[Contabo](https://contabo.com/), [OVH](https://www.ovhcloud.com/), [Hetzner Robot](https://robot.hetzner.com/), [Vultr](https://www.vultr.com/) or [Linode](https://www.linode.com/), a machine at work, or a mini PC or Raspberry Pi at
+[Contabo](https://contabo.com/), [OVHcloud](https://www.ovhcloud.com/) (its VPS or dedicated servers), [Hetzner Robot](https://robot.hetzner.com/), [Vultr](https://www.vultr.com/) or [Linode](https://www.linode.com/), a machine at work, or a mini PC or Raspberry Pi at
 home. You get the same result as on the servers OpsCrew creates for you: a hardened server, the app
 deployed from [GitHub](https://github.com/) with TLS, health checks and rollback, and the `verify`, `secure` and `drift`
-checks.
+checks. To have OpsCrew create the server for you instead, see [Hetzner Cloud](hetzner.md),
+[DigitalOcean](digitalocean.md), [Contabo](contabo.md) and [OVHcloud](ovhcloud.md), whose Public
+Cloud servers OpsCrew creates itself.
 
 OpsCrew never creates, reinstalls or deletes your server. It inspects it first, shows you every
 change it would make, and changes nothing until you approve that exact list.

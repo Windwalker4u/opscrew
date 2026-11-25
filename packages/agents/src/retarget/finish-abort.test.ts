@@ -1,5 +1,6 @@
 import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { ServerSnapshotApi } from "@opscrew/contracts";
 import { findExecutable, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
 import { type CostItem, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -218,6 +219,55 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     expect(variables).toContain('variable "delete_protection"');
     expect(variables).not.toContain("previous_");
     expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
+  });
+
+  it("names the old server's snapshots taken earlier in What remains, read once before its removal", async () => {
+    const h = await moveHarness();
+    await run(h);
+    h.snapshotsOf[OLD_IDS.hetzner] = ["101", "snap-4711"];
+    const mark = h.events.length;
+    let listedAtName: string[] = [];
+    let approvalsAtName = -1;
+    const result = await finish(h, {
+      confirm: async (preview) => {
+        listedAtName = [...h.listed];
+        approvalsAtName = since(h, mark).filter((e) => e.type === "approval").length;
+        return h.confirm(preview);
+      },
+    });
+    expect(result).toMatchObject({ step: "finished", snapshotId: "snap-4711" });
+    // Once, before the typed name and every approval; never after the deletion.
+    expect(listedAtName).toEqual([OLD_IDS.hetzner]);
+    expect(approvalsAtName).toBe(0);
+    expect(h.listed).toEqual([OLD_IDS.hetzner]);
+    const earlier =
+      "The snapshot of shop taken earlier (Hetzner image 101). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete it in the Hetzner Cloud Console when you no longer need it.";
+    expect(result.next).toContain(earlier);
+    // The snapshot the finish took is named on its own, once.
+    const remains = result.next.join("\n");
+    expect(remains.split("Hetzner image 101").length - 1).toBe(1);
+    expect(remains.split("Hetzner image snap-4711").length - 1).toBe(1);
+    expect(h.reporter.text()).toContain(`  - ${earlier}`);
+  });
+
+  it("finishes the move when the old server's snapshots cannot be listed, and says so once", async () => {
+    const h = await moveHarness();
+    await run(h);
+    // The provider fails on purpose.
+    const api = h.services.servers?.hetzner as ServerSnapshotApi;
+    api.listSnapshots = async () => {
+      throw new OpsCrewError("PROVIDER_ERROR", "Hetzner answered 503.");
+    };
+    const result = await finish(h);
+    expect(result).toMatchObject({ step: "finished", done: true });
+    const lines = h.reporter.lines.filter((line) => line.message.includes("taken earlier"));
+    expect(lines).toEqual([
+      {
+        level: "warn",
+        message:
+          "OpsCrew could not list the snapshots of shop taken earlier (Hetzner answered 503); any there stay and keep billing, so check them in the Hetzner Cloud Console.",
+      },
+    ]);
   });
 
   it("US3: a script finishes with --confirm and one --approve per plan", async () => {

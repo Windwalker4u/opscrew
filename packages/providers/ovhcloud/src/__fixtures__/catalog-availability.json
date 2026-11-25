@@ -1,0 +1,472 @@
+[
+  {
+    "type": "INSTANCE",
+    "models": [
+      {
+        "name": "d2-2",
+        "links": [
+          {
+            "kind": "SPECS",
+            "href": "/v2/publicCloud/project/{projectId}/reference/instance/flavor?name=d2-2"
+          }
+        ],
+        "locations": [
+          {
+            "name": "DE1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "DE1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SBG5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SBG5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "GRA11",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "GRA11": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "WAW1",
+            "availabilityZones": [],
+            "regionActivated": false,
+            "quotaStatus": "UNKNOWN",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "WAW1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "BHS5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "BHS5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SGP1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SGP1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SYD1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SYD1": "AVAILABLE"
+            },
+            "links": []
+          }
+        ]
+      },
+      {
+        "name": "d2-4",
+        "links": [
+          {
+            "kind": "SPECS",
+            "href": "/v2/publicCloud/project/{projectId}/reference/instance/flavor?name=d2-4"
+          }
+        ],
+        "locations": [
+          {
+            "name": "DE1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "DE1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SBG5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SBG5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "GRA11",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "GRA11": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "WAW1",
+            "availabilityZones": [],
+            "regionActivated": false,
+            "quotaStatus": "UNKNOWN",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "WAW1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "BHS5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "BHS5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SGP1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SGP1": "LOW"
+            },
+            "links": []
+          },
+          {
+            "name": "SYD1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SYD1": "AVAILABLE"
+            },
+            "links": []
+          }
+        ]
+      },
+      {
+        "name": "d2-8",
+        "links": [
+          {
+            "kind": "SPECS",
+            "href": "/v2/publicCloud/project/{projectId}/reference/instance/flavor?name=d2-8"
+          }
+        ],
+        "locations": [
+          {
+            "name": "DE1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "DE1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SBG5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SBG5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "GRA11",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "INSUFFICIENT",
+            "quotaLimitedBy": [
+              "CORES",
+              "RAM"
+            ],
+            "stockStatus": {
+              "GRA11": "AVAILABLE"
+            },
+            "links": [
+              {
+                "kind": "QUOTA",
+                "href": "/v2/publicCloud/project/{projectId}/quota"
+              }
+            ]
+          },
+          {
+            "name": "WAW1",
+            "availabilityZones": [],
+            "regionActivated": false,
+            "quotaStatus": "UNKNOWN",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "WAW1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "BHS5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "BHS5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SGP1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SGP1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SYD1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SYD1": "AVAILABLE"
+            },
+            "links": []
+          }
+        ]
+      },
+      {
+        "name": "b3-8",
+        "links": [
+          {
+            "kind": "SPECS",
+            "href": "/v2/publicCloud/project/{projectId}/reference/instance/flavor?name=b3-8"
+          }
+        ],
+        "locations": [
+          {
+            "name": "DE1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "DE1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SBG5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SBG5": "OUT_OF_STOCK"
+            },
+            "links": []
+          },
+          {
+            "name": "GRA11",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "GRA11": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "WAW1",
+            "availabilityZones": [],
+            "regionActivated": false,
+            "quotaStatus": "UNKNOWN",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "WAW1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "BHS5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "BHS5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SGP1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SGP1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SYD1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SYD1": "AVAILABLE"
+            },
+            "links": []
+          }
+        ]
+      },
+      {
+        "name": "b3-16",
+        "links": [
+          {
+            "kind": "SPECS",
+            "href": "/v2/publicCloud/project/{projectId}/reference/instance/flavor?name=b3-16"
+          }
+        ],
+        "locations": [
+          {
+            "name": "DE1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "DE1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SBG5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SBG5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "GRA11",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "GRA11": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "WAW1",
+            "availabilityZones": [],
+            "regionActivated": false,
+            "quotaStatus": "UNKNOWN",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "WAW1": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "BHS5",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "BHS5": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "SGP1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "SGP1": "AVAILABLE"
+            },
+            "links": []
+          }
+        ]
+      },
+      {
+        "name": "c3-4",
+        "links": [],
+        "locations": [
+          {
+            "name": "GRA11",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "GRA11": "AVAILABLE"
+            },
+            "links": []
+          },
+          {
+            "name": "UK1",
+            "availabilityZones": [],
+            "regionActivated": true,
+            "quotaStatus": "SUFFICIENT",
+            "quotaLimitedBy": [],
+            "stockStatus": {
+              "UK1": "AVAILABLE"
+            },
+            "links": []
+          }
+        ]
+      }
+    ]
+  }
+]

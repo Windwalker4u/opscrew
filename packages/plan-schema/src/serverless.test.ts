@@ -718,6 +718,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "hetzner",
       "digitalocean",
       "contabo",
+      "ovhcloud",
       "own",
       "portainer",
       "localhost",
@@ -725,7 +726,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "github-pages",
       "hosting",
     ]);
-    const onServer = new Set(["hetzner", "digitalocean", "contabo", "own"]);
+    const onServer = new Set(["hetzner", "digitalocean", "contabo", "ovhcloud", "own"]);
     const runnerHost = { name: "home-box", arch: "amd64" };
     for (const provider of DeployProviderSchema.options) {
       for (const environment of [{ runner: "server" }, { runner: "host", runnerHost }]) {
@@ -740,7 +741,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
           ).toEqual(["environment.runner"]);
           expect(result.error?.issues[0]?.message, what).toMatch(
             new RegExp(
-              `^can be "${environment.runner}" only on a server OpsCrew creates or your own server \\(target.provider hetzner, digitalocean, contabo or own\\)`,
+              `^can be "${environment.runner}" only on a server OpsCrew creates or your own server \\(target.provider hetzner, digitalocean, contabo, ovhcloud or own\\)`,
             ),
           );
         }
@@ -766,8 +767,8 @@ describe("onServer: the runners that deploy on or to a server", () => {
 
 describe("the unions", () => {
   it("have one predicate each: a server, a cloud server, and server-less", async () => {
-    const servers = ["hetzner", "digitalocean", "contabo", "own"];
-    const clouds = ["hetzner", "digitalocean", "contabo"];
+    const servers = ["hetzner", "digitalocean", "contabo", "ovhcloud", "own"];
+    const clouds = ["hetzner", "digitalocean", "contabo", "ovhcloud"];
     const serverless = ["cloudflare-workers", "github-pages"];
     for (const provider of DeployProviderSchema.options) {
       expect(onOneServer(provider), provider).toBe(servers.includes(provider));
