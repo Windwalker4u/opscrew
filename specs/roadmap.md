@@ -638,6 +638,9 @@ The founder's go-ahead of 2026-11-21, for after 032 and 040: a user who builds t
   op's flags, the versioned `report.json` schema and where the core exports it, the `secrets[]`
   entry, and the `operate` job's inputs. The dashboard builds nothing on 041 before then. It is
   written during 040's build, so it is ready when 0.2.12 ships.
+- **The run's AI cost goes into `report.json`** (the dashboard's lead, 2026-11-25): the cost
+  ledger's entries for the run, totalled per model, so the dashboard shows AI spent on the user's
+  own keys without reading a second artifact.
 
 ## 033 Scaling across servers
 
@@ -931,7 +934,32 @@ runs) and Gitea, hosted or on the user's own server.
 - the workflow folder and `runs-on` labels;
 - how far each one's runner differs from GitHub's.
 
+## 044 OpenAI API keys beside Anthropic's
+
+The founder's request (2026-11-25, through the dashboard's lead): "we should also add openai api
+key alongside anthropic and openrouter support". Today only the phases that use a model (the
+Analyst's reading of the code and the Code-change agent's edits) need one, through
+`@opscrew/runtime-claude`, with an Anthropic key, Bedrock, Vertex, Foundry, or an
+Anthropic-compatible gateway such as OpenRouter's.
+- **A second runtime,** `@opscrew/runtime-openai`, behind the same `AgentRuntime` contract, used
+  when the run has `OPENAI_API_KEY` and no Anthropic credentials (both set: Anthropic, unless
+  `OPSCREW_RUNTIME=openai`). `OPENAI_BASE_URL` points it at a compatible gateway.
+- **The same safety:** every tool call the model makes goes through OpsCrew's tool policy
+  (`packages/core/src/policy.ts`), the same profiles and the same redaction as the Claude runtime.
+  An SDK whose built-in tools run outside that policy is ruled out.
+- **The same accounting:** each phase's spend goes into the cost ledger (`.opscrew/costs.jsonl`),
+  priced from the model's list price, and `--max-budget` stops it the same way.
+- **Research first** (official sources only): OpenAI's SDKs for an agent loop with our own tools
+  (the Responses API, the Agents SDK, and whether 032's Codex work helps), the default model and
+  effort, structured output validated with zod, and pricing for the ledger.
+
 ## Later, not yet placed
+
+- **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
+  module that writes end-to-end tests and runs them in the user's Actions): `promote` reads a named
+  check's result for the preview's commit and refuses a failed one unless the user overrides it,
+  and each preview's address is published in a known place a later workflow can read. Nothing is
+  needed before that module's second version.
 
 - **Node.js and Python apps through cPanel's Application Manager and Plesk's Node.js, if users
   ask** (founder, 2026-11-18, from 027's plan 8.): on a cPanel host without CloudLinux. 027 runs
