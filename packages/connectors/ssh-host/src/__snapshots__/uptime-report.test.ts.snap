@@ -80,7 +80,14 @@ $HOSTS
 EOF
 while IFS=' ' read -r name at source rest; do
   [ -n "$name$at$source$rest" ] || continue
-  case "$name" in '' | *[!A-Za-z0-9._-]*) invalid ;; esac
+  # plan-schema's credential name: a lower-case name, then maybe \`:\` and a part
+  # (app:SECRET_KEY_BASE, grant:laptop/cache). No quote, backslash or blank, so it is safe as a
+  # word of the config and the state, and in the report's JSON.
+  case "$name" in [a-z]*) ;; *) invalid ;; esac
+  case "\${name%%:*}" in *[!a-z0-9-]*) invalid ;; esac
+  if [ "\${name%%:*}" != "$name" ]; then
+    case "\${name#*:}" in '' | *[!A-Za-z0-9_./-]*) invalid ;; esac
+  fi
   case "$at" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z) ;; *) invalid ;; esac
   case "$at" in *[!0-9TZ:.-]*) invalid ;; esac
   case "$source" in made | rotated | first-deploy) ;; *) invalid ;; esac

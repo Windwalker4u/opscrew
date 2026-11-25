@@ -396,6 +396,39 @@ describe.skipIf(reason !== undefined)(
       });
     });
 
+    it("takes the plan's credential names, with : and /, into its report, journal and state", () => {
+      const now = nowSeconds();
+      // As plan-schema's CredentialNameSchema allows them.
+      const names = ["app:SECRET_KEY_BASE", "grant:laptop/cache"];
+      const dates = names.map((name) => ({
+        name,
+        at: iso(now - 400 * DAY),
+        source: "made" as const,
+      }));
+      on({ credentials: { maxAgeDays: 365, dates } }, (sh) => {
+        const run = runReport(sh);
+        expect(only(run).body.credentials).toEqual(
+          names.map((name) => ({ name, status: "old", days: 400, source: "made" })),
+        );
+        expect(run.journal).toBe(
+          "uptime report: disk ok, snapshot none, drill none, credential app:SECRET_KEY_BASE old, credential grant:laptop/cache old; sent a change report\n",
+        );
+        expect(sh.read("/statedir/state")).toMatch(/^status credential:grant:laptop\/cache old$/m);
+        // The next run reads them back from its state: no change, nothing sent.
+        expect(runReport(sh).sent).toEqual([]);
+      });
+      // Anything else in a name is still an invalid config.
+      on({}, (sh) => {
+        for (const name of ['app:"x"', "grant:laptop\\cache", "POSTGRES_PASSWORD", "app:"]) {
+          sh.write(
+            "/creds/config",
+            `${uptimeReportConfigText("shop", REPORT)}max_age_days=365\ncredential=${name} 2026-01-01T00:00:00Z made\n`,
+          );
+          expect(runReport(sh).status, name).toBe(2);
+        }
+      });
+    });
+
     it("sends only on a status change, or 24 hours after its last report", () => {
       on({}, (sh) => {
         const first = only(runReport(sh));

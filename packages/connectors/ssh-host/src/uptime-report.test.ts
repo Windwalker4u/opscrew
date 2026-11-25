@@ -44,7 +44,8 @@ const REPORT: DesiredUptimeReport = {
     maxAgeDays: 365,
     dates: [
       { name: "deploy-key", at: "2026-01-10T09:00:00Z", source: "rotated" },
-      { name: "POSTGRES_PASSWORD", at: "2025-12-01T08:00:00.000Z", source: "first-deploy" },
+      { name: "app:SECRET_KEY_BASE", at: "2025-12-01T08:00:00.000Z", source: "first-deploy" },
+      { name: "grant:laptop/cache", at: "2026-02-01T08:00:00Z", source: "made" },
     ],
   },
   keySha256: KEY_SHA256,
@@ -135,7 +136,8 @@ host=shop.example.com
 host=www.shop.example.com
 max_age_days=365
 credential=deploy-key 2026-01-10T09:00:00Z rotated
-credential=POSTGRES_PASSWORD 2025-12-01T08:00:00.000Z first-deploy
+credential=app:SECRET_KEY_BASE 2025-12-01T08:00:00.000Z first-deploy
+credential=grant:laptop/cache 2026-02-01T08:00:00Z made
 `);
     const { credentials: _c, drill: _d, ...plain } = REPORT;
     expect(uptimeReportConfigText("shop", { ...plain, hosts: [] })).not.toMatch(
@@ -169,7 +171,7 @@ describe("planning the uptime-report step", () => {
       certDays: 14,
       maxAgeDays: 365,
       credentials:
-        "deploy-key 2026-01-10T09:00:00Z rotated\nPOSTGRES_PASSWORD 2025-12-01T08:00:00.000Z first-deploy",
+        "deploy-key 2026-01-10T09:00:00Z rotated\napp:SECRET_KEY_BASE 2025-12-01T08:00:00.000Z first-deploy\ngrant:laptop/cache 2026-02-01T08:00:00Z made",
       version: 1,
       packages: "",
       keySha256: KEY_SHA256,
@@ -183,7 +185,7 @@ describe("planning the uptime-report step", () => {
       `${CONFIG} (600, root's)`,
       `${KEY_FILE} (600, root's), the report key supplied at apply time, which this plan names by its SHA-256 only`,
       "the hostnames shop.example.com and www.shop.example.com",
-      "the credentials deploy-key and POSTGRES_PASSWORD with their 365-day limit, never a value",
+      "the credentials deploy-key, app:SECRET_KEY_BASE and grant:laptop/cache with their 365-day limit, never a value",
       "as deploy",
       "LoadCredential=",
       "127.0.0.1:443",
@@ -283,6 +285,14 @@ describe("planning the uptime-report step", () => {
           dates: [{ name: "a b", at: "2026-01-01T00:00:00Z", source: "made" as const }],
         },
       },
+      // plan-schema's CredentialNameSchema: a lower-case name, then `:` and a part.
+      ...["POSTGRES_PASSWORD", "app:", "app:a b", "grant:laptop\\cache", 'app:"x"'].map((name) => ({
+        ...REPORT,
+        credentials: {
+          maxAgeDays: 365,
+          dates: [{ name, at: "2026-01-01T00:00:00Z", source: "made" as const }],
+        },
+      })),
     ]) {
       expect(() => planUptimeReport({ app: "shop", facts: NO_FACTS, enable })).toThrow(
         OpsCrewError,
