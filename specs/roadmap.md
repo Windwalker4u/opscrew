@@ -863,6 +863,9 @@ This is the one provider where the firewall is the server's own.
 
 ### 036 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
 
+**Started early** (the founder, 2026-11-25): a contributor builds it after 045, ahead of 033 and
+034, coordinating through issues titled `[036]`.
+
 It opens with the contract for the DNS and edge provider, with Cloudflare moved behind it (026's
 rule: a contract when the second implementation arrives); designing it with three at once keeps it
 from being shaped by one. Bunny.net and Gcore also host DNS, so a domain can leave Cloudflare
@@ -982,8 +985,8 @@ module's first version: an app's PostgreSQL service names the extensions it need
   role that may create them, so the app's own role needs no more rights.
 - **The lifecycle:** snapshots, restores, restore drills and moves keep the extensions, and
   switching an existing database's image is shown in the plan with its restart.
-- **After 0.2.13,** and after the database changes of the private-deployment contribution are
-  settled, since both change the same PostgreSQL service.
+- **Built by a contributor** (the founder, 2026-11-25), once 047 is on `main`, since both change
+  the same PostgreSQL service. Issue `[045]`.
 
 ## 046 An uptime check that doesn't use GitHub Actions
 
