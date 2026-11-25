@@ -522,17 +522,21 @@ describe("#24: writing a GitHub Actions workflow needs the user's approval", () 
   });
 });
 
-describe("tree's output option, in any spelling, is not pre-approved", () => {
+describe("#16: tree's options that write files are not pre-approved", () => {
   for (const host of HOSTS) {
     const { bash } = hostPolicy(host, false);
 
-    it(`asks for -o inside an option cluster (${host.platform})`, () => {
+    it(`asks for -o or -R, inside an option cluster too (${host.platform})`, () => {
       for (const command of [
         "tree -o out.txt",
         "tree -ao opscrew/plan.yaml",
         "tree -oa .github/workflows/opscrew-deploy.yml",
         "tree -aoutfile",
         "tree -o/tmp/x README.md",
+        // -R writes 00Tree.html into every folder it reaches.
+        "tree -R -L 1 src",
+        "tree -RL 1 src",
+        "tree -aR src",
       ]) {
         expect(bash(command).decision, command).not.toBe("allow");
       }
