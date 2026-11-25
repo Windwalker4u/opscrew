@@ -74,14 +74,15 @@ object. Its PostgreSQL design reviewed as sound, but:
     of 2026-11-25 showed it). So `pg_restore` logs in as `app_owner` itself. `--role=app_owner`
     under the superuser's login isn't enough: the function can `RESET ROLE` back to the superuser.
   - **How:**
-    - create `app` owned by `app_owner`;
+    - create `app`, the superuser's until its extensions are made;
     - as the superuser, the dump's schemas and extensions (extensions need a superuser), then the
-      schemas moved to `app_owner`;
+      database and the schemas moved to `app_owner`;
     - as `app_owner`, everything else with `--no-owner`, so every object is `app_owner`'s, also
       from a dump made before the switch;
     - as the superuser, the rows of the extensions' own tables (`pg_extension_config_dump`, such as
-      PostGIS's `spatial_ref_sys`), whose constraints are the extension's, and the dump's rights,
-      which run no code;
+      PostGIS's `spatial_ref_sys`), matched whole with their owner so no table of `app_owner`'s
+      passes for one, whose constraints are the extension's, and the dump's rights, which run no
+      code;
     - then the setup's grants part.
   - **The drill** uses placeholder passwords.
   - **Moves** work with both logins.

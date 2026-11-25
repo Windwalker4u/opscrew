@@ -300,12 +300,14 @@ describe.skipIf(!shWorks())("the load of a dump", () => {
     "218; 1259 16441 TABLE shop t app_owner",
     "3469; 0 0 ACL shop TABLE t app_owner",
     "3457; 0 16441 TABLE DATA shop t app_owner",
-    "3366; 0 16458 TABLE DATA ext settings app",
+    // An extension's own table, and the owner's table whose name starts with its name.
+    "3366; 0 16458 TABLE DATA public cfg app",
+    "3367; 0 16460 TABLE DATA public cfg trap app_owner",
     "3504; 2613 16447 BLOB METADATA - 16447 app_owner",
     "2090; 826 16448 DEFAULT ACL - DEFAULT PRIVILEGES FOR TABLES app_owner",
   ];
   /** The fakes' output: the TOC from `pg_restore -l`, an extension's table from the config query. */
-  const DUMP = { PG_RESTORE_PRINTS: TOC.join("\n"), PSQL_PRINTS: " TABLE DATA ext settings " };
+  const DUMP = { PG_RESTORE_PRINTS: TOC.join("\n"), PSQL_PRINTS: "TABLE DATA public cfg app" };
   const entries = (list: string | undefined) =>
     (list ?? "").split("\n").filter((line) => /^\d+;/.test(line));
 
@@ -317,7 +319,7 @@ describe.skipIf(!shWorks())("the load of a dump", () => {
     expect(toc).toBe(`pg_restore [-l] [${file}]`);
     expect(roles).toContain("[-h] [db] [-U] [app] [-d] [postgres]");
     expect(database).toContain(
-      "[-c] [DROP DATABASE IF EXISTS app WITH (FORCE)] [-c] [CREATE DATABASE app OWNER app_owner]",
+      "[-c] [DROP DATABASE IF EXISTS app WITH (FORCE)] [-c] [CREATE DATABASE app]",
     );
     expect(superuser).toMatch(/^pg_restore \[-h\] \[db\] \[-U\] \[app\] .*\[--no-owner\] .*\[-L\]/);
     expect(moves).toContain("[-U] [app] [-d] [app]");
@@ -332,8 +334,8 @@ describe.skipIf(!shWorks())("the load of a dump", () => {
     expect(grants).toContain("[-h] [db] [-U] [app] [-d] [app]");
     expect(ran.lists.map(entries)).toEqual([
       [TOC[3], TOC[5], TOC[6], TOC[7]],
-      [TOC[8], TOC[9], TOC[11], TOC[13]],
-      [TOC[4], TOC[10], TOC[14], TOC[12]],
+      [TOC[8], TOC[9], TOC[11], TOC[13], TOC[14]],
+      [TOC[4], TOC[10], TOC[15], TOC[12]],
     ]);
     expect(ran.psqlStdin).toContain(`getenv owner_password ${OWNER_PASSWORD_ENV}`);
   });

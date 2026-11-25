@@ -209,10 +209,11 @@ The lead's list, which a real Laravel app on 047 needs:
      message when they are missing.
   2. a dump with event triggers is refused (R4), from `pg_restore -l`'s list, before step 1 changes
      anything;
-  3. `DROP DATABASE IF EXISTS app WITH (FORCE)` and `CREATE DATABASE app OWNER app_owner`;
+  3. `DROP DATABASE IF EXISTS app WITH (FORCE)` and `CREATE DATABASE app`, the superuser's until the
+     extensions are made, so `app_owner` can't add anything to it before them;
   4. as the superuser, with `--no-owner`, the dump's schemas and extensions (and the extensions'
      comments): extensions need a superuser, and they may live in the app's schemas. Then the
-     setup's moves give the schemas to `app_owner`;
+     setup's moves give the database and the schemas to `app_owner`;
   5. as `app_owner`, logged in with its own password, everything else with `--no-owner` and
      `--single-transaction`, but the rights and the rows of the extensions' own tables. Every
      object is then `app_owner`'s, also from a dump made before the switch;

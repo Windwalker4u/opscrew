@@ -366,13 +366,25 @@ const FIRST = "SCHEMA|EXTENSION|COMMENT - EXTENSION";
 /** What the superuser restores last: the rights, which run no code. */
 const LAST = "ACL|DEFAULT ACL";
 
-/** The table-of-contents lines' part for the extensions' own tables, whose rows a dump keeps. */
+/**
+ * The extensions' own tables, whose rows a dump keeps, as `pg_restore -l` lists their rows after
+ * the entry's ID and OIDs: `TABLE DATA <schema> <table> <owner>`.
+ */
 const EXTENSION_TABLES = [
   "SET search_path = pg_catalog;",
-  "SELECT ' TABLE DATA ' || n.nspname || ' ' || c.relname || ' ' FROM pg_extension e",
-  "  CROSS JOIN LATERAL unnest(e.extconfig) AS x(oid) JOIN pg_class c ON c.oid = x.oid",
-  "  JOIN pg_namespace n ON n.oid = c.relnamespace;",
+  "SELECT 'TABLE DATA ' || n.nspname || ' ' || c.relname || ' ' || pg_get_userbyid(c.relowner)",
+  "  FROM pg_extension e CROSS JOIN LATERAL unnest(e.extconfig) AS x(oid)",
+  "  JOIN pg_class c ON c.oid = x.oid JOIN pg_namespace n ON n.oid = c.relnamespace;",
 ];
+
+/**
+ * The dump's table-of-contents lines that are (`rows`) or aren't an extension's table's rows, each
+ * compared whole without its ID and OIDs, owner included: the owner login's table named like one
+ * (`cfg trap` beside `cfg`) never matches, and it can't own anything as the superuser.
+ */
+function extensionRows(rows: boolean): string {
+  return `awk 'FILENAME == ARGV[1] { t[$0]; next } { e = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", e) } (e in t) == ${rows ? 1 : 0}' "$d/extension-tables" "$d/toc"`;
+}
 
 /**
  * The load of a dump with the two logins (data-model.md), one sh command in a subshell, its lists
@@ -381,8 +393,10 @@ const EXTENSION_TABLES = [
  * under the superuser's login (`--role` only sets the role) they could make the owner a superuser.
  * 1. the dump's table of contents, and the refusal of event triggers;
  * 2. the logins made (`setup`), or a refusal without them, before anything is dropped;
- * 3. the database made anew, owned by the owner;
- * 4. as the superuser, the dump's schemas and extensions, then the owners moved;
+ * 3. the database made anew, the superuser's until its extensions are made, so the owner can't
+ *    add anything to it before them;
+ * 4. as the superuser, the dump's schemas and extensions, then the owners moved (the database's
+ *    too);
  * 5. as the owner, everything else, without the owners (`--no-owner`: a dump from before the
  *    logins gives the owner every object), the rights and the extensions' tables' rows;
  * 6. as the superuser, the extensions' tables' rows, whose constraints are the extension's, and the
@@ -404,14 +418,14 @@ export function loginsLoad(o: LoginsLoad): string {
     `pg_restore -l ${file} > "$d/toc"`,
     `{ ! grep -qE ${entries("EVENT TRIGGER")} "$d/toc" || { echo ${shellQuote(eventTriggers(host))} >&2; false; }; }`,
     logins,
-    `${psql("postgres", host)} -c "DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)" -c "CREATE DATABASE ${DATABASE} OWNER ${OWNER}"`,
+    `${psql("postgres", host)} -c "DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)" -c "CREATE DATABASE ${DATABASE}"`,
     `{ grep -E ${entries(FIRST)} "$d/toc" || true; } > "$d/first"`,
     restore(SUPERUSER, "first", " --no-owner"),
     piped(transaction(OWNERS), DATABASE, host),
     `${piped(EXTENSION_TABLES, DATABASE, host, " -At")} > "$d/extension-tables"`,
-    `grep -vE ${entries(`${FIRST}|${LAST}`)} "$d/toc" | { grep -v -F -f "$d/extension-tables" || true; } > "$d/owner"`,
+    `{ ${extensionRows(false)} | grep -vE ${entries(`${FIRST}|${LAST}`)} || true; } > "$d/owner"`,
     `PGPASSWORD="$${OWNER_PASSWORD_ENV}" ${restore(OWNER, "owner", " --no-owner")}`,
-    `{ grep -E ${entries(LAST)} "$d/toc"; grep -F -f "$d/extension-tables" "$d/toc"; true; } > "$d/last"`,
+    `{ grep -E ${entries(LAST)} "$d/toc"; ${extensionRows(true)}; true; } > "$d/last"`,
     restore(SUPERUSER, "last"),
     loginsGrants(host),
   ];

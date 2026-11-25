@@ -81,8 +81,9 @@ function attempt(args: string[], env: Record<string, string> = {}, input = ""): 
 const names = (env: Record<string, string>) => Object.keys(env).flatMap((name) => ["-e", name]);
 
 /**
- * An extension like PostGIS's topology, installed in every container: its own schema, and a table
- * whose rows a dump keeps (`pg_extension_config_dump`).
+ * Two extensions, installed in every container: `opscrew_test`, like PostGIS's topology, with its
+ * own schema and a table whose rows a dump keeps (`pg_extension_config_dump`); and `opscrew_cfg`,
+ * whose such table `cfg` is in `public`, where the owner login may name a table `cfg trap`.
  */
 const TEST_EXTENSION = {
   "opscrew_test.control": "default_version = '1.0'\nrelocatable = false\nsuperuser = true\n",
@@ -90,6 +91,12 @@ const TEST_EXTENSION = {
     "CREATE SCHEMA opscrew_test;",
     "CREATE TABLE opscrew_test.settings (k text PRIMARY KEY, v text);",
     "SELECT pg_catalog.pg_extension_config_dump('opscrew_test.settings', '');",
+    "",
+  ].join("\n"),
+  "opscrew_cfg.control": "default_version = '1.0'\nrelocatable = false\nsuperuser = true\n",
+  "opscrew_cfg--1.0.sql": [
+    "CREATE TABLE cfg (k text);",
+    "SELECT pg_catalog.pg_extension_config_dump('cfg', '');",
     "",
   ].join("\n"),
 };
@@ -642,11 +649,27 @@ describe.skipIf(reason !== undefined).each(VERSIONS)(
         expect(objects(target)).toBe(switched);
         expect(target.sql(deleteOnLines)).toBe("f");
         expect(target.sql("SELECT v FROM opscrew_test.settings;")).toBe("v");
+        expect(
+          target.sql('SELECT (SELECT k FROM public.cfg), (SELECT i FROM public."cfg trap");'),
+        ).toBe("x|1");
         expect(target.checks()).toBe(true);
         expect(target.owner("CREATE TABLE after_load (id serial, v text);").output).toBe("");
         dataWork(target, "after_load");
         expect(target.owner("DROP TABLE after_load;").output).toBe("");
       }
+
+      it("lets no owner's table pass for an extension's own table in a load", () => {
+        // An extension's table `cfg` in public, whose rows the superuser restores, and the owner's
+        // `cfg trap`, whose name starts the same and whose CHECK is the trap.
+        db.sql("CREATE EXTENSION opscrew_cfg; INSERT INTO public.cfg VALUES ('x');");
+        const trap = db.owner(
+          'CREATE TABLE public."cfg trap" (i int CHECK (public.ok(i))); INSERT INTO public."cfg trap" VALUES (1);',
+        );
+        expect(trap.output).toBe("");
+        expect(db.checks()).toBe(true);
+        // Every load below must keep both, and run the trap as the owner login only.
+        switched = objects(db);
+      });
 
       it("keeps the owners and grants when a dump is loaded in place", () => {
         expect(db.sh("pg_dump -U app -Fc -f /tmp/app.dump app").status).toBe(0);

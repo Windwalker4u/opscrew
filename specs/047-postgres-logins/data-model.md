@@ -99,12 +99,14 @@ No step runs the app's code as the superuser: a CHECK, a domain or a trigger can
 1. a dump whose `pg_restore -l` lists event triggers is refused, with the setup's message;
 2. the setup's step 1, where the load is in the database's container; elsewhere, the check that
    both roles exist;
-3. `DROP DATABASE IF EXISTS app WITH (FORCE)`, then `CREATE DATABASE app OWNER app_owner`;
+3. `DROP DATABASE IF EXISTS app WITH (FORCE)`, then `CREATE DATABASE app`, the superuser's until
+   step 4 has made the extensions, so `app_owner` can't add anything before them;
 4. as `app`, `pg_restore --no-owner` of the dump's `SCHEMA` and `EXTENSION` entries (and the
    extensions' comments), then step 2 (the owners);
 5. as `app_owner`, with `$OPSCREW_OWNER_PASSWORD`: `pg_restore --no-owner --single-transaction`
    of every other entry but the rights (`ACL`, `DEFAULT ACL`) and the rows of the extensions' own
-   tables (`pg_extension_config_dump`);
+   tables (`pg_extension_config_dump`), each entry matched whole with its owner (`TABLE DATA
+   <schema> <table> app`), so no table of `app_owner`'s passes for one;
 6. as `app`, those rows and the rights;
 7. the grants part.
 
