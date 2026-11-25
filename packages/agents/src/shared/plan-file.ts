@@ -24,8 +24,8 @@ export async function writePlan(
  * Writes `plan` to `opscrew/plan.yaml` with `updatedAt` now, pruned as {@link writePlan} prunes,
  * unless it equals the plan there apart from `updatedAt`: then the file stays as it is, so a run
  * with nothing to change commits nothing. Every phase that records something in the plan writes it here.
- * A plan without `deployment.generatedBy` keeps the one on disk ({@link recordGeneratedBy} sets it
- * while a phase holds an older copy of the plan).
+ * `deployment.generatedBy` stays the one on disk, which only {@link recordGeneratedBy} writes, often
+ * while a phase holds an older copy of the plan.
  */
 export async function writePlanIfChanged(
   deps: Pick<PhaseDeps, "paths" | "clock">,
@@ -33,7 +33,7 @@ export async function writePlanIfChanged(
 ): Promise<void> {
   const file = deps.paths.files.plan;
   const onDisk = await readOptionalArtifact("plan", file);
-  const generatedBy = plan.deployment.generatedBy ?? onDisk?.deployment.generatedBy;
+  const generatedBy = onDisk?.deployment.generatedBy ?? plan.deployment.generatedBy;
   const pruned = prunedPlan(
     generatedBy === undefined ? plan : { ...plan, deployment: { ...plan.deployment, generatedBy } },
     deps.clock.now(),
@@ -56,10 +56,12 @@ export async function writePlanIfChanged(
 export async function recordGeneratedBy(
   deps: Pick<PhaseDeps, "paths" | "clock" | "version">,
 ): Promise<void> {
-  const plan = await readOptionalArtifact("plan", deps.paths.files.plan);
+  const file = deps.paths.files.plan;
+  const plan = await readOptionalArtifact("plan", file);
   if (plan === undefined || plan.deployment.generatedBy === deps.version) return;
-  await writePlanIfChanged(deps, {
+  await writeArtifact("plan", file, {
     ...plan,
+    updatedAt: deps.clock.now().toISOString(),
     deployment: { ...plan.deployment, generatedBy: deps.version },
   });
 }

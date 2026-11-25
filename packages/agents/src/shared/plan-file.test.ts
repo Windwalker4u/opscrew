@@ -38,6 +38,24 @@ describe("deployment.generatedBy", () => {
     expect((await read()).deployment.generatedBy).toBe("0.2.12-dev.abc1234");
   });
 
+  it("moves forward after an upgrade, though the phase still holds the plan it read before", async () => {
+    const deps = await createTestPhaseDeps({ version: "0.2.12" });
+    const base = testPlan();
+    const held = { ...base, deployment: { ...base.deployment, generatedBy: "0.2.11" } };
+    await writePlanIfChanged(deps, held);
+
+    await approveAndWriteRenderedFiles(deps, deps.paths.root, [FILE]);
+    // The phase writes the copy it read before the files, which names 0.2.11.
+    await writePlanIfChanged(deps, {
+      ...held,
+      deployment: { ...held.deployment, lastApplyAt: "2026-11-25T08:00:00.000Z" },
+    });
+    expect((await readArtifact("plan", deps.paths.files.plan)).deployment).toMatchObject({
+      generatedBy: "0.2.12",
+      lastApplyAt: "2026-11-25T08:00:00.000Z",
+    });
+  });
+
   it("is a note in drift's report, saying when it was a build between releases", () => {
     expect(generatedByNote(undefined)).toBeUndefined();
     expect(generatedByNote("0.2.12")).toBe(

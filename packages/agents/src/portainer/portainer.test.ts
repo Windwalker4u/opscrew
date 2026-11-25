@@ -289,6 +289,32 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(result.status.url).toBe("https://portainer.example.com");
   });
 
+  it("records the OpsCrew version that wrote its files over an older one, though it holds the plan it read before", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: token },
+    });
+    const deployed = testPlan({ domain: "shop.example.com", deployed: true });
+    const plan = { ...deployed, deployment: { ...deployed.deployment, generatedBy: "0.2.11" } };
+    const s = await cloudSetup({ engine, plan });
+    await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    });
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.deployment.generatedBy).toBe(s.deps.version);
+  });
+
   it("audits enable and disable as the portainer phase, never as provision", async () => {
     const { token } = tunnelSecrets();
     const engine = new FakeEngine({
