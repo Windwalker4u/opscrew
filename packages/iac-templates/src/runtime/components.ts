@@ -478,14 +478,27 @@ function workerStart(plan: DeployPlan, worker: DeployPlan["processes"]["workers"
 const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 /**
+ * POSIX's special builtins, the builtins scripts use most, and the reserved words: a shell runs
+ * them itself, and an image has no program by these names.
+ */
+const SHELL_WORDS = new Set([
+  ...[".", ":", "break", "continue", "eval", "exec", "exit", "export", "readonly", "return"],
+  ...["set", "shift", "times", "trap", "unset", "source", "cd", "ulimit", "umask", "alias"],
+  ...["command", "wait", "read", "!", "{", "}", "if", "then", "else", "elif", "fi", "for"],
+  ...["while", "until", "do", "done", "case", "esac", "in"],
+]);
+
+/**
  * `command`'s words when it needs no shell: plain words ({@link PLAIN_WORD}) on one line, the
- * first no `VAR=value` assignment; undefined otherwise (`&&`, `|`, `;`, redirections, `$`,
- * backticks, quotes, globs, `~`, a line break, a leading assignment).
+ * first no `VAR=value` assignment and no shell builtin or keyword ({@link SHELL_WORDS});
+ * undefined otherwise (`&&`, `|`, `;`, redirections, `$`, backticks, quotes, globs, `~`, a line
+ * break, a leading assignment, `exec`, `cd`, `if`…).
  */
 function plainWords(command: string): string[] | undefined {
   const words = command.trim().split(/[ \t]+/);
   if (!words.every((word) => PLAIN_WORD.test(word))) return undefined;
-  return words[0]?.includes("=") ? undefined : words;
+  const first = words[0] ?? "";
+  return first.includes("=") || SHELL_WORDS.has(first) ? undefined : words;
 }
 
 /**

@@ -500,6 +500,20 @@ describe("the workers", () => {
       "node *.js",
       "node ~/a.js",
       "NODE_ENV=production node a.js",
+      // A shell's own builtins and keywords, which no image has as a program.
+      "exec node a.js",
+      "cd app",
+      ". ./env.sh",
+      "source env.sh",
+      "export A=1",
+      "ulimit -n 4096",
+      "set -e",
+      "trap exit TERM",
+      "eval node",
+      "if",
+      "for",
+      "while",
+      "case",
     ];
     for (const command of shells) {
       const rendered = services(
