@@ -173,7 +173,10 @@ export async function monitoringPassword(
  * stops when another computer rotated a value this computer keeps an older one of
  * (`assertValuesCurrent`) and while a rotation of the environment is unfinished (naming how to
  * finish or undo it), then records when this computer first saw each of the user's tokens the
- * environment uses (`tokenFirstSeen`, by fingerprint).
+ * environment uses (`tokenFirstSeen`, by fingerprint). Where the app's settings are one GitHub
+ * secret (`OPSCREW_APP_ENV`, a server's), what it assembled is recorded (`app_values.json`, 048)
+ * for `opscrew values`; a recorded value is offered to keep in a terminal and fills one the
+ * values file of a script lacks.
  * @throws OpsCrewError `PHASE_PRECONDITION` for either stop.
  */
 export async function buildAppEnvironment(
@@ -263,7 +266,11 @@ export async function buildAppEnvironment(
     generatedValuesFile(deps),
     `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
   );
-  await writeAppValues(deps, { app: environment.values.app, build: environment.values.build });
+  // Only where `opscrew values` renders the app's env secret from them: elsewhere the user's own
+  // values stay off this computer, as they always were.
+  if (deploySecretNamesFor(plan).includes(DEPLOY_SECRETS.appEnv)) {
+    await writeAppValues(deps, { app: environment.values.app, build: environment.values.build });
+  }
   await registerAppSecrets(deps, plan, environment);
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);
   else reportUnsetVariables(deps, environment);

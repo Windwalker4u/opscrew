@@ -1250,6 +1250,19 @@ describe("the record of the app's values (048)", () => {
     expect(environment.values.app.STRIPE_SECRET_KEY).toBe(KEY);
   });
 
+  it("records nothing for a site, whose values stay off this computer", async () => {
+    const deps = await createTestPhaseDeps();
+    deps.interactive = false;
+    await writeFile(
+      join(deps.paths.root, "prod.env"),
+      `API_KEY=${KEY}
+`,
+    );
+    deps.env.OPSCREW_APP_ENV_FILE = "prod.env";
+    await buildAppEnvironment(deps, sitePlan({ env: ["API_KEY"] }), {});
+    expect(await readAppValues(deps)).toBeUndefined();
+  });
+
   it("registers the recorded values with the redactor when nothing is assembled", async () => {
     const deps = await createTestPhaseDeps();
     await writeAppValues(deps, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });

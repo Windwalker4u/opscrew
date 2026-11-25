@@ -31,11 +31,16 @@ home and the recovery copy, without provision's infrastructure, Cloudflare, DNS 
    kept only the generated values on this computer; the user's own came from `.env.<env>` or
    `OPSCREW_APP_ENV_FILE` at each run, and the full app env existed only in GitHub's write-only
    secret and on the server. So `values set` couldn't rebuild `OPSCREW_APP_ENV` without asking for
-   every other value. Provision's `buildAppEnvironment` now writes what it assembled,
+   every other value. Where the app's settings are the one secret `OPSCREW_APP_ENV` (a server's),
+   provision's `buildAppEnvironment` now writes what it assembled,
    `{ app, build }` by name, to `app_values.json` in the project's home (0600), which the recovery
    copy holds. `values set` changes that record and renders the secrets from it with the same
    formatting as provision (sorted `dotenvLine`s; `NAME=value` build lines, split by the plan's
    `secret`).
+   - **Only there:** a site's values are one secret each, so `values set` needs no record, and
+     elsewhere `values` refuses; the user's own values stay off this computer as before.
+   - **The bucket's key** is among the app's values, so it is in the record and the recovery copy
+     too (the lead may prefer to leave it out and ask for the key again).
    - **Why not recompute with `assembleAppEnv`:** it needs the bucket's key and endpoint (a
      Contabo API call, R2's account) and the server's address, which a values change shouldn't
      need. **Why not read `app.env` over SSH, as rotate does:** the build values aren't on the
