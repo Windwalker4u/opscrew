@@ -73,8 +73,9 @@ A PostgreSQL with [two logins](databases.md#two-logins) has three generated secr
 | `owner-password` | `app_owner` | The database and the release command (`release.db.env`) |
 | `runtime-password` | `app_runtime` | The database and the app (`app.env`) |
 
-Neither `owner-password` nor `runtime-password` restarts the database: the login's password
-changes while it runs.
+On a server, neither `owner-password` nor `runtime-password` restarts the database: the login's
+password changes while it runs. In your Portainer, a rotation updates the stack, and Portainer
+recreates the stack's services, the database's included, as it does for every rotation there.
 
 The order is always the same:
 
