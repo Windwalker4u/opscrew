@@ -44,6 +44,7 @@ import {
   isServerUnit,
 } from "./frameworks";
 import { readGitInfo } from "./git";
+import { LARAVEL_CONFIG_DEFAULTS } from "./laravel-config";
 import {
   type DependencyEcosystem,
   findDependency,
@@ -500,6 +501,13 @@ export async function detectProjectDetails(
   await mapLimit(phpFiles, 16, async (file) => {
     phpReads.push(...extractPhpEnvReads((await read(file)) ?? ""));
   });
+  // The defaults of Laravel's own config files that the app does not publish.
+  if (appFrameworkNames.has("laravel")) {
+    for (const [file, names] of Object.entries(LARAVEL_CONFIG_DEFAULTS)) {
+      if (fileSet.has(joinRel(appDir, `config/${file}`))) continue;
+      for (const name of names) phpReads.push({ name, hasDefault: true });
+    }
+  }
   const viteReads = await viteConfigReads(appDir, filesIn, fileSet, read);
   const collected = collectEnvVars(ownSignals, viteReads, envFiles, phpReads);
   const { configUrlSchemes, envUrls } = collected;

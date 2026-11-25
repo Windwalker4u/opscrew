@@ -900,6 +900,42 @@ describe("Laravel apps", () => {
     });
   });
 
+  it("makes a variable optional that Laravel's own config reads with a default, unless the app publishes that file", async () => {
+    // Laravel 11 and later read the config files an app does not publish from the framework.
+    const facts = await detectProject(
+      await laravel(
+        {},
+        {
+          ".env.example": [
+            "MAIL_MAILER=log",
+            "MAIL_HOST=127.0.0.1",
+            "MAIL_USERNAME=",
+            "SESSION_DRIVER=database",
+            "SESSION_SECURE_COOKIE=true",
+            "CACHE_STORE=database",
+            "QUEUE_CONNECTION=database",
+            "APP_KEY=",
+            "SHOP_API_TOKEN=",
+            "",
+          ].join("\n"),
+          // The app publishes its own queue settings, which read the connection without a default.
+          "config/queue.php": "<?php\nreturn ['default' => env('QUEUE_CONNECTION')];\n",
+        },
+      ),
+    );
+    expect(Object.fromEntries(facts.envVars.map((v) => [v.name, v.hasDefault ?? false]))).toEqual({
+      APP_KEY: false,
+      CACHE_STORE: true,
+      MAIL_HOST: true,
+      MAIL_MAILER: true,
+      MAIL_USERNAME: false,
+      QUEUE_CONNECTION: false,
+      SESSION_DRIVER: true,
+      SESSION_SECURE_COOKIE: false,
+      SHOP_API_TOKEN: false,
+    });
+  });
+
   it("keeps its uploads in storage/app, apart from SQLite's folder", async () => {
     const facts = await detectProject(await laravel({}));
     expect(facts.files).toEqual({ dir: "storage/app" });
