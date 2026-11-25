@@ -55,10 +55,11 @@ export async function runUptime(env, io) {
       continue;
     }
     const old = state?.hosts ?? {};
-    // A hostname no longer in the entry leaves the state at its next write.
+    // A hostname no longer in the entry leaves the state now, with no message.
     const next = {};
     for (const { hostname } of entry.hosts) if (old[hostname]) next[hostname] = old[hostname];
-    entries.push({ id, entry, hook, old, next, changed: false, tried: new Set() });
+    const changed = Object.keys(old).some((hostname) => next[hostname] === undefined);
+    entries.push({ id, entry, hook, old, next, changed, tried: new Set() });
   }
 
   const tries = entries.flatMap((e) => e.entry.hosts.map((host) => ({ e, host })));

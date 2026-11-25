@@ -551,7 +551,7 @@ describe("runUptime's odd entries", () => {
     expect(world.posts).toHaveLength(1);
   });
 
-  it("a hostname dropped from its entry leaves the state at the next write, with no message", async () => {
+  it("drops a hostname no longer in its entry from the state at once, with no message", async () => {
     const world = new World([ID, entry({ hostnames: ["a.example.com", "b.example.com"] })]);
     world.answer(500, "a.example.com", "b.example.com");
     await world.run();
@@ -560,14 +560,29 @@ describe("runUptime's odd entries", () => {
     world.kv.data.set(`entry:${ID}`, JSON.stringify(entry({ hostnames: ["b.example.com"] })));
     const writes = world.kv.writes;
     await world.run();
-    // Nothing changed for b, so nothing is written, and a stays until the next write.
-    expect(world.kv.writes).toBe(writes);
-    expect(Object.keys(world.state()?.hosts ?? {})).toEqual(["a.example.com", "b.example.com"]);
+    // a, down, left the entry: the state is written without it, and nothing is posted.
+    expect(world.kv.writes).toBe(writes + 1);
+    expect(Object.keys(world.state()?.hosts ?? {})).toEqual(["b.example.com"]);
+    expect(world.posts).toHaveLength(2);
+    // Nothing else changed, so the next run writes nothing.
+    await world.run();
+    expect(world.kv.writes).toBe(writes + 1);
     world.answer(200, "b.example.com");
     await world.run();
     expect(world.posts).toHaveLength(3);
     expect(world.posts[2]?.body).toContain("is up again on b.example.com");
     expect(world.state()).toBeUndefined();
+  });
+
+  it("drops a suspect hostname no longer in its entry too, deleting a state left empty", async () => {
+    const world = new World([ID, entry({ hostnames: ["a.example.com", "b.example.com"] })]);
+    world.answer(500, "a.example.com");
+    await world.run();
+    expect(world.state()?.hosts["a.example.com"]?.status).toBe("suspect");
+    world.kv.data.set(`entry:${ID}`, JSON.stringify(entry({ hostnames: ["b.example.com"] })));
+    await world.run();
+    expect(world.state()).toBeUndefined();
+    expect(world.posts).toEqual([]);
   });
 });
 
