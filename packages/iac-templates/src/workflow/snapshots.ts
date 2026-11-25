@@ -4,6 +4,7 @@ import {
   DATABASE_KINDS,
   type DeployPlan,
   ONLINE_SNAPSHOT_KINDS,
+  postgresLogins,
   REDIS_PROTOCOL_KINDS,
   type SelfHostedServiceKind,
   servicesOn,
@@ -11,6 +12,7 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
+import { loginsCheck, loginsLoad } from "../catalog/postgres-logins";
 import { IMAGES } from "../pins";
 import { FILES_VOLUME, SQLITE_VOLUME } from "../runtime";
 import { shellQuote } from "../runtime/services";
@@ -85,6 +87,11 @@ export interface SnapshotPart {
   /** Valkey's, Redis's and Dragonfly's mode (`options.mode`). */
   mode?: "cache" | "queue";
   /**
+   * PostgreSQL's `logins: separate` (047): its restore keeps the two logins' owners and grants,
+   * and a drill's count needs them in place.
+   */
+  logins?: true;
+  /**
    * The image the service runs, as its Compose service pins it, which `about.json` records with
    * its copy; none for the app's volumes.
    */
@@ -127,6 +134,7 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
       file: `${service.name}.${extension}`,
       online: onlineKind(service.kind),
       ...("mode" in service.options ? { mode: service.options.mode } : {}),
+      ...(postgresLogins(service) ? { logins: true as const } : {}),
       image: IMAGES[serviceSpec(service.kind).image].ref,
     };
   });
@@ -338,11 +346,27 @@ const DATABASES: Record<(typeof DATABASE_KINDS)[number], DatabaseCommands> = {
 };
 
 /**
+ * The exact restore of the database `part` into its running service `host` from `file`: its
+ * kind's, and with PostgreSQL's `logins: separate` (047) the logins' load, which makes any missing
+ * login first with the passwords of the container's environment (the service's own, or a drill
+ * copy's), keeps the dump's owners and grants, and grants again what the dump lacks (`loginsLoad`).
+ */
+function databaseRestore(
+  part: SnapshotPart & { kind: (typeof DATABASE_KINDS)[number] },
+  host: string,
+  file: string,
+): string {
+  return part.logins === true
+    ? loginsLoad({ host, file, setup: true })
+    : DATABASES[part.kind].restore(host, file);
+}
+
+/**
  * A restore drill's read of the restored database `part` (029 research R17): sh inside its running
  * container, with its environment and its login from there (no password in an argument), that
- * prints one number once the server answers (`pg_isready` for PostgreSQL): the tables of the
- * database `app`, or for MongoDB its collections. Undefined for a part that is none of the four
- * databases.
+ * prints one number once the server answers (`pg_isready` for PostgreSQL), and with PostgreSQL's
+ * `logins: separate` once its logins check passes (047): the tables of the database `app`, or for
+ * MongoDB its collections. Undefined for a part that is none of the four databases.
  */
 export function databaseCount(part: SnapshotPart): string | undefined {
   const { name: host, kind } = part;
@@ -350,8 +374,10 @@ export function databaseCount(part: SnapshotPart): string | undefined {
   const { login } = DATABASES[kind];
   const tables = "SELECT COUNT(*) FROM information_schema.tables";
   switch (kind) {
-    case "postgres":
-      return `${login} && pg_isready -q -h ${host} -U app -d app && psql -X -q -At -h ${host} -U app -d app -c "${tables} WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"`;
+    case "postgres": {
+      const logins = part.logins === true ? `${loginsCheck(host)} && ` : "";
+      return `${login} && pg_isready -q -h ${host} -U app -d app && ${logins}psql -X -q -At -h ${host} -U app -d app -c "${tables} WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"`;
+    }
     case "mysql":
     case "mariadb": {
       const [client, admin] =
@@ -528,10 +554,11 @@ export function partRestore(part: SnapshotPart): PartRestore {
   }
   const { name: service, kind } = part;
   if (databaseKind(kind)) {
-    const commands = DATABASES[kind];
+    const { login } = DATABASES[kind];
     return {
       stop: false,
-      load: (file) => `umask 077 && ${commands.login} && ${commands.restore(service, file)}`,
+      load: (file) =>
+        `umask 077 && ${login} && ${databaseRestore({ ...part, kind }, service, file)}`,
     };
   }
   const dirs = dataDirs(serviceSpec(kind)).map(([, dir]) => dir);

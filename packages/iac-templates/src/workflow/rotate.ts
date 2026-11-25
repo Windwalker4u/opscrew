@@ -1,9 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { POSTGRES_OWNER_SECRET } from "../catalog";
 import type { RotationCommand, RotationMode, RotationStep } from "../catalog/types";
 import { shellQuote } from "../runtime/services";
 import { maskFileScript } from "./index";
-import { opscrew, said } from "./shared";
+import { opscrew, RELEASE_DB_ENV, said } from "./shared";
 import { SNAPSHOT_GENERATIONS, SNAPSHOTS_DIR } from "./snapshots";
 import {
   appFolder,
@@ -75,6 +76,11 @@ export interface RotateStep {
   envFile: string;
   /** The catalog's mode: a `restart` step gets its new env file and is recreated in step 3. */
   mode: RotationMode;
+  /**
+   * The secrets it changes, by the catalog's names: PostgreSQL's `owner-password` (047) changes the
+   * release's {@link RELEASE_DB_ENV} too.
+   */
+  secrets?: readonly string[];
   /** Makes the new value work: `OPSCREW_OLD` is the value the service has, `OPSCREW_NEW` the new. */
   begin: readonly RotationStep[];
   /** Drops the old value once the app runs on the new one. */
@@ -98,14 +104,20 @@ export interface RotateStep {
 
 /**
  * The env files `rotate.sh` on `server` reads from its input, in order: on the app's server the
- * app's first, then each step's once.
+ * app's first, then the release's when a step there changes its login, then each step's once.
  */
 export function rotateEnvFiles(
   steps: readonly RotateStep[],
   server: string = APP_SERVER,
 ): string[] {
+  const release =
+    server === APP_SERVER && steps.some((step) => step.secrets?.includes(POSTGRES_OWNER_SECRET));
   return [
-    ...new Set([...(server === APP_SERVER ? [APP_ENV] : []), ...steps.map((s) => s.envFile)]),
+    ...new Set([
+      ...(server === APP_SERVER ? [APP_ENV] : []),
+      ...(release ? [RELEASE_DB_ENV.file] : []),
+      ...steps.map((s) => s.envFile),
+    ]),
   ];
 }
 

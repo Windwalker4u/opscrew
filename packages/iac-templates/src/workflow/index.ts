@@ -58,6 +58,7 @@ import {
   DOCKER_CONTEXT_HOST,
   deploySecretName,
   deploysInPlace,
+  hasReleaseDbEnv,
   healthPath,
   imageOutput,
   MODE_ENV,
@@ -67,6 +68,7 @@ import {
   promoted,
   promotedAbout,
   provisionCommand,
+  RELEASE_DB_ENV,
   ROLLING_BACK,
   refuse,
   run,
@@ -127,7 +129,9 @@ export {
   environmentTag,
   filesFolder,
   githubEnvironment,
+  hasReleaseDbEnv,
   healthPath,
+  RELEASE_DB_ENV,
   ROLLBACK_INPUTS,
   runnerLabel,
   serviceEnvSecret,
@@ -548,16 +552,25 @@ const HOST_LIST_NAMES =
 const APP_ENV_FILE: EnvFile = { file: "app.env", secret: DEPLOY_SECRETS.appEnv };
 
 /**
+ * The app's env files on the app's server: `app.env`, and with a PostgreSQL's own logins the
+ * release's {@link RELEASE_DB_ENV} (047), each from its deploy secret.
+ */
+function appEnvFiles(plan: DeployPlan): EnvFile[] {
+  return [APP_ENV_FILE, ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV] : [])];
+}
+
+/**
  * The masking file Grafana Alloy reads on `server`: on the app's server with Grafana Cloud on
- * (`observability.grafanaCloud.enabled`) or monitoring on, from `app.env`; on an extra server with
- * monitoring on, from the env files it receives (`envFiles`). It is `mask.re` in the app's folder
- * `dir`, written in place (Alloy follows the file, not a rename) on the stdin of a command `on` the
- * machine, owner-only as the env files, right after them. It holds every value of those env files
- * of 8 characters or more (each line of a multi-line value, as the redactor's literals) except the
- * host lists ({@link HOST_LIST_NAMES}), longest first (RE2's alternation takes the first that
- * matches, so a value that begins another can't leave the rest of it unmasked), escaped and joined
- * as one RE2 alternation in a capture group (Alloy's `stage.replace` masks only groups), or
- * `[^\s\S]`, which never matches, when there is none. Nothing on a server Alloy doesn't run on.
+ * (`observability.grafanaCloud.enabled`) or monitoring on, from {@link appEnvFiles}; on an extra
+ * server with monitoring on, from the env files it receives (`envFiles`). It is `mask.re` in the
+ * app's folder `dir`, written in place (Alloy follows the file, not a rename) on the stdin of a
+ * command `on` the machine, owner-only as the env files, right after them. It holds every value of
+ * those env files of 8 characters or more (each line of a multi-line value, as the redactor's
+ * literals) except the host lists ({@link HOST_LIST_NAMES}), longest first (RE2's alternation takes
+ * the first that matches, so a value that begins another can't leave the rest of it unmasked),
+ * escaped and joined as one RE2 alternation in a capture group (Alloy's `stage.replace` masks only
+ * groups), or `[^\s\S]`, which never matches, when there is none. Nothing on a server Alloy
+ * doesn't run on.
  */
 function maskFileWrite(
   plan: DeployPlan,
@@ -607,9 +620,9 @@ function maskFileWrite(
 /**
  * The deploy's masking script ({@link maskFileWrite}) as a bash script that runs on `server` (the
  * app's by default), from the env files in the app's folder `dir` there (by default its path on
- * the server): `app.env` on the app's server, the env files of the services that run there on an
- * extra one. For a change of the app's settings outside the deploy (a service's move between the
- * app's servers, a credential rotation). Empty where Alloy masks no log line.
+ * the server): {@link appEnvFiles} on the app's server, the env files of the services that run
+ * there on an extra one. For a change of the app's settings outside the deploy (a service's move
+ * between the app's servers, a credential rotation). Empty where Alloy masks no log line.
  */
 export function maskFileScript(
   plan: DeployPlan,
@@ -617,7 +630,7 @@ export function maskFileScript(
   dir: string = appDir(plan),
 ): string {
   const envFiles =
-    server === APP_SERVER ? [APP_ENV_FILE] : serviceEnvFiles(servicesRunningOn(plan, server));
+    server === APP_SERVER ? appEnvFiles(plan) : serviceEnvFiles(servicesRunningOn(plan, server));
   const lines = maskFileWrite(plan, server, envFiles, dir, HERE);
   if (lines.length === 0) return "";
   const script = [
@@ -994,7 +1007,9 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
     `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
     `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFileWrites(upload.envFiles, dir, OVER_SSH),
-    ...maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], dir, OVER_SSH).map((line) => `    ${line}`),
+    ...maskFileWrite(plan, APP_SERVER, appEnvFiles(plan), dir, OVER_SSH).map(
+      (line) => `    ${line}`,
+    ),
     ...(upload.edgeFiles.originTls
       ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
       : []),
@@ -1509,7 +1524,9 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
     '    mkdir -p "$dir"',
     `    cp -r ${upload.files.join(" ")} "$dir"/`,
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
-    ...maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], '"$dir"', HERE).map((line) => `    ${line}`),
+    ...maskFileWrite(plan, APP_SERVER, appEnvFiles(plan), '"$dir"', HERE).map(
+      (line) => `    ${line}`,
+    ),
     ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
     ...snapshotUpload(plan, APP_SERVER, '"$dir"', HERE),
   ];
@@ -1547,8 +1564,9 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
  * Today's names (before {@link deploySecretName}) of every GitHub Actions secret the plan's deploy
  * workflow can read, which `opscrew provision` sets: the build values (none for a promoted
  * environment, which builds nothing); for a Portainer target, in redeploy mode `cloudflare`, the
- * webhook's; for a server, the app's env file, one per service with secrets and the origin
- * certificate (not behind a tunnel), plus, when the deploy runs over SSH (on GitHub's machines or
+ * webhook's; for a server, the app's env file (and with a PostgreSQL's own logins the release's,
+ * {@link RELEASE_DB_ENV}), one per service with secrets and the origin certificate (not behind a
+ * tunnel), plus, when the deploy runs over SSH (on GitHub's machines or
  * a runner machine), the connection: the host, the SSH key, the known hosts and in tunnel mode the
  * Access service token. The server's and the local runner deploy on their own machine, so they
  * need no connection secret. With extra servers, each one's {@link serverDeploySecrets} (only its
@@ -1611,6 +1629,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     ...connection,
     ...extra,
     DEPLOY_SECRETS.appEnv,
+    ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV.secret] : []),
     ...enabledServices(plan).map(({ name }) => serviceEnvSecret(name)),
     ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
@@ -1708,7 +1727,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
 
   // The services on the app's server; each extra server's get their env files in its own step.
   const envFiles = [
-    APP_ENV_FILE,
+    ...appEnvFiles(plan),
     ...serviceEnvFiles(servicesOn(plan, APP_SERVER)),
     ...offsiteEnvFiles(plan, APP_SERVER),
   ];

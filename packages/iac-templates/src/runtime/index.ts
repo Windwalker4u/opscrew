@@ -26,7 +26,7 @@ import { imageEnvironment } from "../railpack-laravel";
 import { runtimeDir } from "../runtime-dir";
 import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
-import { hasCronJobs, planFilePath } from "../workflow/shared";
+import { hasCronJobs, hasReleaseDbEnv, planFilePath, RELEASE_DB_ENV } from "../workflow/shared";
 import {
   appVolumes,
   crontab,
@@ -165,8 +165,9 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
   const image = "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}";
   const healthcheck = appHealthcheck(plan);
   const backing = renderServices(plan, { kind: "server" });
-  const environment = () => ({
-    env_file: ["app.env"],
+  // `files`: the env files a container reads after app.env (the release's own, with logins).
+  const environment = (files: readonly string[] = []) => ({
+    env_file: ["app.env", ...files],
     environment: { PORT: String(plan.app.port), ...imageEnvironment(plan) },
   });
   const app: Record<string, unknown> = {
@@ -187,25 +188,27 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
   const services: Record<string, unknown> = { app };
   // A one-off container of the app's image, environment and network running `command`; only
   // `docker compose run <name>` starts it (the deploy runs `release` before the app is replaced).
-  const oneOff = (name: string, command: string) => ({
+  const oneOff = (name: string, command: string, files: readonly string[] = []) => ({
     image,
     ...pull,
     profiles: [name],
-    ...environment(),
+    ...environment(files),
     ...appVolumes(plan),
     ...oneOffStart(plan, command),
     ...memoryLimit(plan.app.memoryMb),
     ...hardened({ noCapabilities: true, internal: true }),
   });
   const release = plan.app.releaseCommand;
-  if (release !== undefined) services.release = oneOff("release", release);
+  // With a PostgreSQL's own logins, the release (migrations) logs in as its owner (047).
+  const releaseFiles = hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV.file] : [];
+  if (release !== undefined) services.release = oneOff("release", release, releaseFiles);
   if (o.seed !== undefined) services.seed = oneOff("seed", o.seed);
   Object.assign(
     services,
     renderProcesses(plan, {
       image,
       pull,
-      environment,
+      environment: () => environment(),
       dependsOn: backing.dependsOn,
       crontab: local ? { configs: [STACK_CRONTAB] } : { volumes: [SERVER_CRONTAB.mount] },
     }),

@@ -40,6 +40,30 @@ export function withServices(
   });
 }
 
+/**
+ * `plan` with each PostgreSQL's own logins for the app and its migrations (`logins: separate`,
+ * 047), as design writes it for a new database.
+ */
+export function withLogins(plan: DeployPlan): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...plan,
+    services: plan.services.map((service) =>
+      service.kind === "postgres" ? { ...service, options: { logins: "separate" } } : service,
+    ),
+  });
+}
+
+/** `plan` with `app.env` declaring each of `names`, derived (a password's a secret). */
+export function withAppEnv(plan: DeployPlan, names: readonly string[]): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      env: names.map((name) => ({ name, secret: name.includes("PASS"), source: "derived" })),
+    },
+  });
+}
+
 /** A WireGuard public key made at runtime from `seed` (the base64 of its SHA-256), never a literal. */
 function wireGuardKey(seed: string): string {
   return createHash("sha256").update(seed).digest("base64");

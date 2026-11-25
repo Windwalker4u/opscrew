@@ -9,6 +9,7 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
+import { OWNER_PASSWORD_ENV, RUNTIME_PASSWORD_ENV } from "../catalog/postgres-logins";
 import { DRILL_LIMIT_SECONDS, DRILL_RECORD_PREFIX } from "../drill/record";
 import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours, drillWatchdog } from "../drill/script";
 import { offsiteExpires } from "../infra/storage";
@@ -454,6 +455,9 @@ interface ScratchServer {
   login?: string;
 }
 
+/** A new random value made in the drill's own shell: 16 random bytes as hex. */
+const RANDOM_VALUE = "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')";
+
 /** The image's tool that runs a command as another user: gosu, or su-exec on Alpine. */
 const AS_USER = '"$(command -v gosu || command -v su-exec)"';
 
@@ -497,7 +501,7 @@ const SCRATCH_SERVERS: Readonly<Partial<Record<PortainerSnapshotPart["kind"], Sc
     run: `${AS_USER} mongodb mongod --dbpath "$S"/data --bind_ip localhost --port 27017 --nounixsocket --wiredTigerCacheSizeGB 0.25`,
     ready: `HOME=/tmp mongosh --quiet --nodb --eval 'connect("mongodb://localhost:27017/admin").runCommand({ ping: 1 })'`,
     stop: "TERM",
-    login: `export MONGO_INITDB_ROOT_PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')" && HOME=/tmp mongosh --quiet --nodb --eval 'connect("mongodb://localhost:27017/admin").createUser({ user: "app", pwd: process.env.MONGO_INITDB_ROOT_PASSWORD, roles: ["root"] })'`,
+    login: `export MONGO_INITDB_ROOT_PASSWORD="${RANDOM_VALUE}" && HOME=/tmp mongosh --quiet --nodb --eval 'connect("mongodb://localhost:27017/admin").createUser({ user: "app", pwd: process.env.MONGO_INITDB_ROOT_PASSWORD, roles: ["root"] })'`,
   },
 };
 
@@ -537,6 +541,12 @@ const SCRATCH_READY_SECONDS = 300;
  */
 function drillScript(part: DrillPart): string[] {
   const { scratch: server } = part;
+  // With PostgreSQL's own logins, the restore makes them on the scratch server, with new values
+  // of the drill's own, never the app's (047).
+  const login =
+    part.logins === true
+      ? `export ${OWNER_PASSWORD_ENV}="${RANDOM_VALUE}" ${RUNTIME_PASSWORD_ENV}="${RANDOM_VALUE}"`
+      : server.login;
   const [data = "/data"] = dataDirs(serviceSpec(part.service.kind)).map(([, dir]) => dir);
   const file = `${DIR}/"$drill_id"/${part.file}`;
   // The restore and the count a restore and a server's drill run, against the scratch server.
@@ -606,9 +616,9 @@ function drillScript(part: DrillPart): string[] {
     `    if [ "$drill_wait" -ge ${SCRATCH_READY_SECONDS} ] || [ -e "$S"/.timed-out ]; then ${fail("failed", "start")}; fi`,
     "    sleep 1",
     "  done",
-    ...(server.login === undefined
+    ...(login === undefined
       ? []
-      : [`  { ${server.login}; } < /dev/null >> "$S"/log 2>&1 || ${fail("failed", "start")}`]),
+      : [`  { ${login}; } < /dev/null >> "$S"/log 2>&1 || ${fail("failed", "start")}`]),
     // The dump restored as a restore does, timed, then its tables or collections counted.
     '  drill_t="$(date +%s)"',
     `  (${load}) < /dev/null >> "$S"/log 2>&1 || ${fail("not-restored", part.name)}`,
