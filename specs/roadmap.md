@@ -14,7 +14,8 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
 - **0.2.12** (the founder, 2026-11-25): 046 an uptime check that doesn't use GitHub Actions, the
   agent tool policy's security fixes (#16 to #24), the fixes in #26, [032 a Codex
   plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left), and 047 an app's
-  PostgreSQL never running as the superuser (the founder, 2026-11-25).
+  PostgreSQL never running as the superuser, and 048 changing an app's values without a full
+  provision (the founder, 2026-11-25).
 - **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
   would hold 046 back.
@@ -1054,7 +1055,8 @@ store a value.
   secret step. No infrastructure plan runs.
 - **The app sees them after a deploy:** with `--redeploy` it starts one, and otherwise it says the
   next deploy applies them.
-- **Planned for 0.2.13,** beside 040, without delaying 0.2.12.
+- **In 0.2.12** (the founder, 2026-11-25: build it now). A value is taken only from stdin or a
+  file, never from argv, and every output shows names only, so no value can be echoed back.
 
 ## Later, not yet placed
 
