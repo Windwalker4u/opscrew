@@ -18,6 +18,7 @@ import {
 } from "./entries";
 import type { DatabaseSettings, ServiceContext, ServiceSpec } from "./types";
 
+export * from "./postgres-logins";
 export { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, kafkaTool, SERVICE_SPECS };
 
 /** {@link SERVICE_SPECS} by kind: one entry for every kind (a test checks each is there). */

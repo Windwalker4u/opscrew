@@ -14,6 +14,7 @@ export {
   serviceSpec,
   splitDatabaseSettings,
 } from "./catalog";
+export * from "./catalog/postgres-logins";
 export type {
   DatabaseSettings,
   GeneratedSecret,
