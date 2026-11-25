@@ -95,8 +95,8 @@ elsewhere; `values set` and `values unset` refuse with a plain message naming `o
   are refused with why.
 - **FR-4809**: `--redeploy` starts the environment's deploy workflow on its branch through the
   GitHub connector and prints the run; without it, the output says the next deploy applies them.
-- **FR-4810**: provision records the app's values it assembled in OpsCrew's home, and reuses a
-  recorded value of a variable it would otherwise ask for or read from `OPSCREW_APP_ENV_FILE`
+- **FR-4810**: provision records the app's values it assembled in OpsCrew's home. A terminal
+  offers to keep a recorded value first; a script takes it when `OPSCREW_APP_ENV_FILE` has none
   (the file still wins). Rotations and moves that rewrite the app's env secret update the record.
 - **FR-4811**: no MCP tool: values stay terminal-only.
 

@@ -99,7 +99,7 @@ function sortedEntries(values: Readonly<Record<string, string>>): [string, strin
   return Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
 }
 
-export type EnvAnswer = { useLocal: true } | { value: string } | { skip: true };
+export type EnvAnswer = { useLocal: true } | { keep: true } | { value: string } | { skip: true };
 
 export interface EnvQuestion {
   name: string;
@@ -110,6 +110,11 @@ export interface EnvQuestion {
   localFile: string;
   /** True when {@link localFile} has a value the user may reuse for the environment. */
   localValueAvailable: boolean;
+  /**
+   * True when OpsCrew keeps a value of the variable from an earlier run (`app_values.json`), which
+   * the user may keep (`{ keep: true }`); absent otherwise.
+   */
+  keptValueAvailable?: true;
   /**
    * True when the app's code has a default for the variable: leaving it unset (an empty answer)
    * keeps that default. Always set by {@link assembleAppEnv}.
@@ -673,9 +678,9 @@ export interface AssembleAppEnvOptions {
   /** The user's key for the plan's provider bucket, and R2's endpoint (see {@link StorageLogin}). */
   storage?: StorageLogin;
   /**
-   * The app's values OpsCrew recorded at its last run (`app_values.json`), by name: a variable this
-   * run would ask for takes its value without asking, and one it would read from `dotenvText`
-   * takes it when the file has none. Never for a generated, derived or fixed value.
+   * The app's values OpsCrew recorded at its last run (`app_values.json`), by name: `ask` offers
+   * to keep one (`keptValueAvailable`), and a variable read from `dotenvText` takes it when the
+   * file has none. Never for a generated, derived or fixed value.
    */
   kept?: Readonly<Record<string, string>>;
   /**
@@ -725,8 +730,6 @@ export interface AppEnvironment {
   unresolved: string[];
   /** Everything this run generated or reused, to pass as `previous` next time. */
   generated: GeneratedValues;
-  /** The variables that took a `kept` value, by name. */
-  kept: string[];
   /**
    * The same values by name, exactly as set (no env-file quoting), for a target that takes them one
    * by one, such as a Portainer stack's environment: `app` holds what {@link appEnv} holds, `build`
@@ -774,7 +777,6 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const missing: string[] = [];
   const defaulted: string[] = [];
   const unresolved: string[] = [];
-  const keptNames: string[] = [];
   const newPassword = options.password ?? randomPassword;
   const generatedEnv: Record<string, string> = {};
   const generated: GeneratedValues = { env: generatedEnv };
@@ -861,27 +863,23 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       const generate = options.password ?? (() => newGeneratedValue(variable.name));
       value = userValue ?? options.previous?.env?.[variable.name] ?? generate();
       if (userValue === undefined) generatedEnv[variable.name] = value;
-    } else if (
-      options.kept?.[variable.name] !== undefined &&
-      // An interactive run's local file holds development values; a script's file wins.
-      (options.ask !== undefined || local.get(variable.name) === undefined)
-    ) {
-      value = options.kept[variable.name];
-      keptNames.push(variable.name);
-      users = true;
     } else if (options.ask) {
+      const keptValue = options.kept?.[variable.name];
       const answer = await options.ask({
         name: variable.name,
         secret: variable.secret,
         environment: options.local?.environment ?? "prod",
         localFile: options.local?.file ?? ".env",
         localValueAvailable: local.has(variable.name),
+        ...(keptValue === undefined ? {} : { keptValueAvailable: true as const }),
         optional,
       });
       if ("useLocal" in answer) value = local.get(variable.name);
+      else if ("keep" in answer) value = keptValue;
       else if ("value" in answer) value = answer.value;
     } else {
-      value = local.get(variable.name);
+      // The values file wins; a value it lacks comes from the earlier run's.
+      value = local.get(variable.name) ?? options.kept?.[variable.name];
       users = true;
     }
     if (value === undefined) {
@@ -934,7 +932,6 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     defaulted,
     unresolved,
     generated,
-    kept: keptNames,
     values: {
       app: sorted(app.entries()),
       build: sorted(allBuild),

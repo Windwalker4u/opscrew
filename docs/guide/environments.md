@@ -220,8 +220,8 @@ connection value per environment: a staging database, a test-mode key. Then stag
 prod's data or money.
 
 Provision keeps the values it stored on this computer, beside the passwords it generated, and in
-the [recovery copy](secrets-recovery.md). A later provision reuses them: a terminal doesn't ask for
-them again, and in scripts a value in the file `OPSCREW_APP_ENV_FILE` names still wins.
+the [recovery copy](secrets-recovery.md). A later provision reuses them: a terminal offers to keep
+each one, and in scripts a value in the file `OPSCREW_APP_ENV_FILE` names still wins.
 
 ### Changing one value
 

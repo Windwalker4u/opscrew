@@ -7,15 +7,17 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
 - [ ] T4801 [US1] The record of the app's values in OpsCrew's home
   - **Owns:** `packages/agents/src/values/record.ts` (new) and its test,
     `packages/agents/src/shared/app-env.ts`, `packages/agents/src/shared/app-secrets.ts`,
-    `packages/agents/src/provision/secrets.ts`, `packages/agents/src/secrets/files.ts`, the
+    `packages/agents/src/provision/secrets.ts`, `packages/agents/src/secrets/files.ts`,
+    `packages/cli/src/ui/env-prompt.ts` (the keep choice), the
     one-line hooks in `packages/agents/src/rotate/server.ts`, `packages/agents/src/move/app-env.ts`
     and `packages/agents/src/cloudflare-move/finish-point.ts`, and their tests.
   - **Reads:** plan.md 1.–3., `assembleAppEnv`, `buildAppEnvironment`, `registerAppSecrets`.
   - **Accept:**
     - `buildAppEnvironment` writes `app_values.json` (0600) with the assembled `app` and `build`
       values; the recovery copy lists it and registers its values with the redactor.
-    - `assembleAppEnv`'s `kept` values fill a variable it would ask for or read from the values
-      file (the file wins); `kept` names come back for provision's note.
+    - `assembleAppEnv`'s `kept` values: a terminal's question offers to keep one
+      (`keptValueAvailable`, answer `{ keep: true }`, the CLI's prompt's first choice); a script
+      takes one its values file lacks (the file wins).
     - `readDotenvLine` reads every form `dotenvLine` writes (plain, single-quoted, double-quoted
       with `\\`, `\"`, `\n`, `$$`) back to the value; `recordAppEnvText` replaces the record's
       `app` with a text's values, and does nothing without a record.
@@ -43,7 +45,8 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
 
 - [ ] T4803 [US1] [US2] [US3] `opscrew values set|unset|list`
   - **Owns:** `packages/cli/src/commands/values.ts` (new) and its test,
-    `packages/cli/src/commands/index.ts`, `packages/cli/src/deps.ts` (the stdin service).
+    `packages/cli/src/commands/index.ts`, `packages/cli/src/program.test.ts` (the command
+    count), `packages/cli/src/deps.ts` (the stdin service).
   - **Accept:**
     - stdin: a terminal's hidden prompt, or the whole piped input (a PEM kept exactly, one line
       without its line end); `--from-file`; `NAME=value` refused without echo; values registered

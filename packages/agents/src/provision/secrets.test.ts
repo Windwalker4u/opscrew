@@ -1235,22 +1235,19 @@ describe("the record of the app's values (048)", () => {
     expect(deps.reporter.text()).not.toContain(KEY);
   });
 
-  it("doesn't ask a terminal again for a recorded value, and says which it kept", async () => {
+  it("offers a terminal the recorded value to keep", async () => {
     const deps = await createTestPhaseDeps();
     deps.interactive = true;
     await writeAppValues(deps, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
-    const asked: string[] = [];
+    const offered: (true | undefined)[] = [];
     const environment = await buildAppEnvironment(deps, testPlan(), {
       askEnv: async (question) => {
-        asked.push(question.name);
-        return { skip: true };
+        offered.push(question.keptValueAvailable);
+        return { keep: true };
       },
     });
-    expect(asked).toEqual([]);
+    expect(offered).toEqual([true]);
     expect(environment.values.app.STRIPE_SECRET_KEY).toBe(KEY);
-    expect(deps.reporter.text()).toContain(
-      "info: OpsCrew kept the value it has of STRIPE_SECRET_KEY from an earlier run and didn't ask for it again. Change it with `opscrew values set STRIPE_SECRET_KEY`.",
-    );
   });
 
   it("registers the recorded values with the redactor when nothing is assembled", async () => {

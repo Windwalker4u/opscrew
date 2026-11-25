@@ -45,10 +45,10 @@ home and the recovery copy, without provision's infrastructure, Cloudflare, DNS 
    servers, and a Cloudflare move's bucket keys. Each now also writes that text into the record
    (`recordAppEnvText`, which reads OpsCrew's own `dotenvLine` format back). Without it a later
    `values set` would put back an old database password or address.
-3. **Provision reuses the record.** A variable provision would ask for, or read from
-   `OPSCREW_APP_ENV_FILE`, takes the recorded value when the file has none (the file wins); a
-   terminal run doesn't ask for it again and says which it kept. Otherwise a name added with
-   `values set` would be asked again, or stop a script.
+3. **Provision reuses the record.** A variable provision reads from `OPSCREW_APP_ENV_FILE` takes
+   the recorded value when the file has none (the file wins), and a terminal offers to keep the
+   recorded value first (still asking, so a value stays changeable on every target). Otherwise a
+   name added with `values set` could be skipped by mistake, or stop a script.
 4. **What it refuses:** a target whose values don't live in GitHub (Portainer, hosting accounts,
    this computer, preview environments); an environment with no record; a new build-time name or a
    new name of a site (the Dockerfile's `ARG` and the site's workflow name each variable, so only

@@ -145,7 +145,7 @@ export async function checkValueChange(
   const record = await readAppValues(deps);
   if (kind === "server" && record === undefined) {
     throw stop(
-      `This computer has no record of the app's values of ${environment} (OpsCrew keeps one since version 0.2.12), so it can't store one value without the others.`,
+      `This computer has no record of the app's values of ${environment}, so it can't store one value without the others.`,
       `Run \`${provision}\` once on this computer, which records them, or bring the record from the computer that ran it with \`opscrew secrets restore${flags}\`.`,
     );
   }
@@ -153,7 +153,7 @@ export async function checkValueChange(
   if (change.redeploy === true && promoted) {
     throw refuse(
       `The ${environment} environment deploys the image of the environment it is promoted from, so --redeploy can't start its deploy.`,
-      `Leave --redeploy out: the next \`opscrew promote${flags.replace(/ --env \S+/, "")} --to ${environment}\` applies the values.`,
+      `Leave --redeploy out: the next promotion to ${environment} applies the values.`,
     );
   }
   const read = new Set(deploySecretNamesFor(plan));

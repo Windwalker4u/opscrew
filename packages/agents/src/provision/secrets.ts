@@ -249,13 +249,6 @@ export async function buildAppEnvironment(
     ...(options.storage !== undefined ? { storage: options.storage } : {}),
     ...(recorded !== undefined ? { kept: { ...recorded.app, ...recorded.build } } : {}),
   });
-  if (ask && environment.kept.length > 0) {
-    const { root, app } = deps.paths;
-    const one = environment.kept.length === 1;
-    deps.reporter.info(
-      `OpsCrew kept the ${one ? "value" : "values"} it has of ${listText(environment.kept)} from an earlier run and didn't ask for ${one ? "it" : "them"} again. Change ${one ? "it" : "one"} with \`opscrew values set${await commandFlags(root, name, app)} ${one ? environment.kept[0] : "<NAME>"}\`.`,
-    );
-  }
   // The origin TLS values stay as provision's Cloudflare step left them, and the network's keys
   // and the device logins' passwords as design and `vpn` made them.
   const kept = Object.fromEntries(

@@ -948,20 +948,22 @@ describe("the values OpsCrew keeps between runs (048)", () => {
     expect(buildLinesText({ VITE_B: "b", NEXT_PUBLIC_A: "a" })).toBe("NEXT_PUBLIC_A=a\nVITE_B=b\n");
   });
 
-  it("takes a kept value instead of asking for it, and names it", async () => {
-    const asked: string[] = [];
+  it("offers a terminal to keep a kept value", async () => {
+    const asked: EnvQuestion[] = [];
     const result = await assembleAppEnv({
       plan: plan(env),
       serverHost: ADDRESS,
       kept: { STRIPE_SECRET_KEY: STRIPE },
       ask: async (question) => {
-        asked.push(question.name);
-        return { skip: true };
+        asked.push(question);
+        return question.keptValueAvailable === true ? { keep: true } : { skip: true };
       },
     });
-    expect(asked).toEqual(["DJANGO_DEBUG"]);
+    expect(asked.map((q) => [q.name, q.keptValueAvailable])).toEqual([
+      ["DJANGO_DEBUG", undefined],
+      ["STRIPE_SECRET_KEY", true],
+    ]);
     expect(result.values.app.STRIPE_SECRET_KEY).toBe(STRIPE);
-    expect(result.kept).toEqual(["STRIPE_SECRET_KEY"]);
   });
 
   it("lets the values file win over a kept value, and fills a value it lacks", async () => {
@@ -973,7 +975,6 @@ describe("the values OpsCrew keeps between runs (048)", () => {
       kept: { STRIPE_SECRET_KEY: STRIPE },
     });
     expect(fromFile.values.app.STRIPE_SECRET_KEY).toBe(other);
-    expect(fromFile.kept).toEqual([]);
     const fromKept = await assembleAppEnv({
       plan: plan(env),
       dotenvText: "",
@@ -981,7 +982,6 @@ describe("the values OpsCrew keeps between runs (048)", () => {
       kept: { STRIPE_SECRET_KEY: STRIPE },
     });
     expect(fromKept.values.app.STRIPE_SECRET_KEY).toBe(STRIPE);
-    expect(fromKept.kept).toEqual(["STRIPE_SECRET_KEY"]);
   });
 
   it("never takes a kept value for a generated or derived one", async () => {
@@ -995,6 +995,5 @@ describe("the values OpsCrew keeps between runs (048)", () => {
     expect(result.values.app.DJANGO_SECRET_KEY).toBe("kept-generated");
     expect(result.values.app.DATABASE_URL).not.toBe("stale");
     expect(result.values.app.DJANGO_ALLOWED_HOSTS).toBe(ADDRESS);
-    expect(result.kept).toEqual([]);
   });
 });
