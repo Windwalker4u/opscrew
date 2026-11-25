@@ -91,6 +91,7 @@ describe("plan.observability", () => {
           intervalMinutes?: 5 | 10 | 15 | 20 | 30 | 60 | undefined;
           webhook?: "slack" | "discord" | "ntfy" | undefined;
           credentials?: boolean | undefined;
+          runner?: "actions" | "cloudflare" | undefined;
         }
       | undefined
     >();
@@ -189,6 +190,46 @@ describe("the scheduled check's fields", () => {
       },
       { path: "observability.check.webhook", message: 'must be "slack", "discord" or "ntfy"' },
     ]);
+  });
+});
+
+describe("where the scheduled check runs (observability.check.runner)", () => {
+  it("accepts actions and cloudflare, and leaves a plan without it as it was", async () => {
+    for (const runner of ["actions", "cloudflare"]) {
+      const plan = await serverPlan({ observability: { check: { enabled: true, runner } } });
+      expect(DeployPlanSchema.parse(plan).observability?.check).toEqual({ enabled: true, runner });
+    }
+    const plain = DeployPlanSchema.parse(
+      await serverPlan({ observability: { check: { enabled: true } } }),
+    );
+    expect(plain.observability?.check).toEqual({ enabled: true });
+    expect(serializeArtifact("plan", plain)).not.toContain("runner");
+  });
+
+  it("refuses another runner with the allowed values", async () => {
+    const result = DeployPlanSchema.safeParse(
+      await serverPlan({ observability: { check: { runner: "lambda" } } }),
+    );
+    expect(issues(result)).toEqual([
+      { path: "observability.check.runner", message: 'must be "actions" or "cloudflare"' },
+    ]);
+  });
+
+  it("refuses cloudflare when the app's DNS is not on Cloudflare", async () => {
+    const base = await serverPlan();
+    const offCloudflare = (runner: string) => ({
+      ...base,
+      dns: { provider: "none", domain: "app.example.com", proxied: false, www: false },
+      observability: { check: { enabled: true, runner } },
+    });
+    expect(issues(DeployPlanSchema.safeParse(offCloudflare("cloudflare")))).toEqual([
+      {
+        path: "observability.check.runner",
+        message:
+          'can be "cloudflare" only when dns.provider is "cloudflare": the Worker runs in the Cloudflare account of the app\'s zone; set observability.check.runner to "actions", or put the app\'s DNS on Cloudflare',
+      },
+    ]);
+    expect(DeployPlanSchema.safeParse(offCloudflare("actions")).success).toBe(true);
   });
 });
 

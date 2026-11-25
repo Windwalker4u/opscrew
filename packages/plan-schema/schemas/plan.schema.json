@@ -2210,6 +2210,10 @@
             },
             "credentials": {
               "type": "boolean"
+            },
+            "runner": {
+              "type": "string",
+              "enum": ["actions", "cloudflare"]
             }
           },
           "additionalProperties": false

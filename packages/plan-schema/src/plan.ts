@@ -769,6 +769,13 @@ export const ObservabilityCheckSchema = z.strictObject({
     .optional(),
   /** Flags credentials older than `credentials.maxAgeDays`. Absent: off. */
   credentials: z.boolean().optional(),
+  /**
+   * Where the check runs: GitHub Actions, or a Worker in the Cloudflare account of the app's zone
+   * (only with `dns.provider: cloudflare`). Absent: actions.
+   */
+  runner: z
+    .enum(["actions", "cloudflare"], { error: 'must be "actions" or "cloudflare"' })
+    .optional(),
 });
 
 /** The add-ons' default container memory limits in MB. */
@@ -984,6 +991,14 @@ function checkObservability(plan: DeployPlanFields, ctx: z.RefinementCtx): void 
       path: ["observability", "check", "enabled"],
       message:
         "must be false with the localhost target: GitHub can't reach your computer, so the scheduled check could never see the app; set observability.check.enabled to false",
+    });
+  }
+  if (observability?.check?.runner === "cloudflare" && plan.dns.provider !== "cloudflare") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["observability", "check", "runner"],
+      message:
+        'can be "cloudflare" only when dns.provider is "cloudflare": the Worker runs in the Cloudflare account of the app\'s zone; set observability.check.runner to "actions", or put the app\'s DNS on Cloudflare',
     });
   }
   checkMonitoring(plan, ctx);
