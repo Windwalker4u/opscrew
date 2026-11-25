@@ -153,8 +153,9 @@ OpsCrew runs the app's containers with every Linux capability dropped (`cap_drop
 `no-new-privileges`. Under them the kernel refuses to start a binary that carries a file
 capability, so the container stops with "operation not permitted". The FrankenPHP and Caddy images
 ship such a binary (`cap_net_bind_service`, to listen on ports 80 and 443). When your Dockerfile
-builds on one of them, `npx opscrew design` warns you, and a deploy that fails for this reason
-says so. Drop the capability in your Dockerfile after the `FROM` line, and have the app listen on
+builds on one of them, `npx opscrew design` warns you. When the image starts the binary from a
+shell script that logs the refusal, as FrankenPHP's does, a deploy that fails for this reason says
+so too. Drop the capability in your Dockerfile after the `FROM` line, and have the app listen on
 a port above 1024 (8080, say):
 
 ```dockerfile
