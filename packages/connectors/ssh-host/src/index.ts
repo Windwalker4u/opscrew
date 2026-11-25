@@ -203,6 +203,7 @@ export {
   UPTIME_REPORT_TIMER_UNIT,
   UPTIME_REPORT_USER_AGENT,
   UPTIME_REPORT_VERSION,
+  uptimeReportConfigText,
   uptimeReportFileHashes,
   uptimeReportInstance,
   uptimeReportTimer,

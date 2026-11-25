@@ -780,14 +780,16 @@ export function inspectRunnersScript(): string {
 
 /**
  * The read-only script `inspectHost` runs as root (as the apply does: root, sudo or Docker) for
- * the private networks' state and ufw's added rules, and with `apps` the apps' records too (root's
- * only, so the login that becomes root only through Docker reads them there).
+ * the private networks' state and ufw's added rules, and with `apps` the apps' records and the
+ * uptime report too (root's only, in 0700 folders, so the login that becomes root only through
+ * Docker reads them there).
  */
 export function networkInspectScript(options: { apps?: boolean } = {}): string {
+  const rootOnly = new Set(["apps", "uptime-report"]);
   return sectionsScript("network.inspect", [
     ["network", NETWORK_SNIPPET],
     ...INSPECT_SECTIONS.filter(
-      ([name]) => name === "ufw-added" || (options.apps === true && name === "apps"),
+      ([name]) => name === "ufw-added" || (options.apps === true && rootOnly.has(name)),
     ),
   ]);
 }
@@ -1234,12 +1236,13 @@ export async function inspectHost(
   }
   const sections = splitSections(read.stdout);
   const network = parseNetworkState(section(sections, "network").text);
-  // Through Docker, ufw's rules and the apps' records are read only here: the other facts are read
-  // as the login.
+  // Through Docker, ufw's rules, the apps' records and the uptime report are read only here: the
+  // other facts are read as the login.
   if (!docker) return { ...facts, network };
   const ufwRules = parseUfwAdded(section(sections, "ufw-added").text);
   const apps = parseAppRecords(section(sections, "apps").text);
-  return { ...facts, network, firewall: { ...facts.firewall, ufwRules }, apps };
+  const uptimeReport = parseUptimeReport(section(sections, "uptime-report").text);
+  return { ...facts, network, firewall: { ...facts.firewall, ufwRules }, apps, uptimeReport };
 }
 
 /**

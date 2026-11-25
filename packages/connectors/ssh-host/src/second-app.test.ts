@@ -36,6 +36,17 @@ import { planHost, planTeardown } from "./plan";
 import { dockerRootCommand } from "./privilege";
 import { stepScripts } from "./steps";
 import { type DesiredHost, DesiredHostSchema, type HostPlan, type HostStep } from "./types";
+import {
+  renderUptimeReportScript,
+  UPTIME_REPORT_CONFIG_DIR,
+  UPTIME_REPORT_SCRIPT,
+  UPTIME_REPORT_SERVICE_TEXT,
+  UPTIME_REPORT_SERVICE_UNIT,
+  UPTIME_REPORT_STATE_DIR,
+  UPTIME_REPORT_TIMER_TEXT,
+  UPTIME_REPORT_TIMER_UNIT,
+  uptimeReportInstance,
+} from "./uptime-report";
 
 /** The image root steps run in through Docker (the agents pass `IMAGES.caddy.ref`). */
 const IMAGE = `caddy:2.11.7-alpine@sha256:${"0".repeat(63)}1`;
@@ -831,6 +842,88 @@ describe("applying a second app's plan", () => {
       code: "PHASE_PRECONDITION",
     });
     expect(recordOf(fake, "shop")).toBeUndefined();
+    expect(fake.users.get("deploy")?.keys).toEqual(FIXTURE);
+  });
+});
+
+describe("a second app's uptime report (feature 046)", () => {
+  const SHOP_REPORT = uptimeReportInstance("acme/shop/shop/prod");
+  const FIRST_REPORT = uptimeReportInstance("example/inventory/inventory/prod");
+  const conf = (instance: string) => `${UPTIME_REPORT_CONFIG_DIR}/${instance}.conf`;
+  const keyFile = (instance: string) => `${UPTIME_REPORT_CONFIG_DIR}/${instance}.key`;
+  const stateFile = (instance: string) => `${UPTIME_REPORT_STATE_DIR}/${instance}/state`;
+  const UNITS = [UPTIME_REPORT_SCRIPT, UPTIME_REPORT_SERVICE_UNIT, UPTIME_REPORT_TIMER_UNIT];
+
+  /** "shop" set up beside "inventory", each app in `apps` with its report as its step left it. */
+  async function withReports(apps: readonly [string, string][]): Promise<FakeHost> {
+    const fake = createdServer();
+    await applyApproved(fake, plan(await facts(fake), second(fake)), { rootImage: IMAGE });
+    deployApp(fake, "shop");
+    fake.files.set(UPTIME_REPORT_SCRIPT, renderUptimeReportScript());
+    fake.files.set(UPTIME_REPORT_SERVICE_UNIT, UPTIME_REPORT_SERVICE_TEXT);
+    fake.files.set(UPTIME_REPORT_TIMER_UNIT, UPTIME_REPORT_TIMER_TEXT);
+    fake.madeDirs.add(UPTIME_REPORT_CONFIG_DIR);
+    for (const [instance, app] of apps) {
+      fake.files.set(conf(instance), `app=${app}\n`);
+      fake.files.set(keyFile(instance), `${"ab".repeat(32)}\n`);
+      fake.files.set(stateFile(instance), "sent 1\n");
+      fake.uptimeReportTimers.add(instance);
+    }
+    return fake;
+  }
+
+  it("is read as root through Docker, and the share's teardown removes only its own", async () => {
+    const fake = await withReports([
+      [SHOP_REPORT, "shop"],
+      [FIRST_REPORT, FIRST],
+    ]);
+    // The login can't list the folder (0700, root's): only the read through Docker finds them.
+    expect((await inspectHost(fake)).uptimeReport?.instances).toEqual([]);
+    const found = await facts(fake);
+    expect(found.uptimeReport?.instances.map((item) => [item.instance, item.app]).sort()).toEqual(
+      [
+        [SHOP_REPORT, "shop"],
+        [FIRST_REPORT, FIRST],
+      ].sort(),
+    );
+    const hostPlan = teardown(found);
+    expect(hostPlan.steps.find((step) => step.id === "uptime-report")).toMatchObject({
+      state: "change",
+      params: { remove: true, instances: SHOP_REPORT, shared: false },
+    });
+    fake.calls.length = 0;
+    await applyApproved(fake, hostPlan, { command: "opscrew destroy", rootImage: IMAGE });
+    const removal = fake.calls.filter((call) => call.name.startsWith("uptime-report."));
+    expect(removal.length).toBeGreaterThan(0);
+    expect(removal.every((call) => call.docker !== undefined)).toBe(true);
+    // shop's timer, config, key and state are gone; inventory's and the shared files stay.
+    expect(fake.uptimeReportTimers.has(SHOP_REPORT)).toBe(false);
+    for (const path of [conf(SHOP_REPORT), keyFile(SHOP_REPORT), stateFile(SHOP_REPORT)]) {
+      expect(fake.files.has(path), path).toBe(false);
+    }
+    expect(fake.uptimeReportTimers.has(FIRST_REPORT)).toBe(true);
+    for (const path of [conf(FIRST_REPORT), keyFile(FIRST_REPORT), stateFile(FIRST_REPORT)]) {
+      expect(fake.files.has(path), path).toBe(true);
+    }
+    for (const path of UNITS) expect(fake.files.has(path), path).toBe(true);
+  });
+
+  it("removes the script and units with the share's report when it is the last one", async () => {
+    const fake = await withReports([[SHOP_REPORT, "shop"]]);
+    const hostPlan = teardown(await facts(fake));
+    expect(hostPlan.steps.find((step) => step.id === "uptime-report")?.params).toEqual({
+      remove: true,
+      instances: SHOP_REPORT,
+      shared: true,
+    });
+    await applyApproved(fake, hostPlan, { command: "opscrew destroy", rootImage: IMAGE });
+    expect(fake.uptimeReportTimers.size).toBe(0);
+    for (const path of [...UNITS, conf(SHOP_REPORT), keyFile(SHOP_REPORT)]) {
+      expect(fake.files.has(path), path).toBe(false);
+    }
+    // The first app is untouched.
+    expect(fake.dirs.has(`/srv/apps/${FIRST}`)).toBe(true);
+    expect(fake.containers.some((container) => container.project === FIRST)).toBe(true);
     expect(fake.users.get("deploy")?.keys).toEqual(FIXTURE);
   });
 });
