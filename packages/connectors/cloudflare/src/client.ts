@@ -717,6 +717,10 @@ const WorkerSchedulesSchema = z.looseObject({
   schedules: z.array(z.looseObject({ cron: z.string().min(1) })),
 });
 const WorkerSecretSchema = z.looseObject({ name: z.string().min(1), type: z.string() });
+const WorkerSubdomainSchema = z.looseObject({
+  enabled: z.boolean(),
+  previews_enabled: z.boolean(),
+});
 
 /** Most KV namespaces one list request answers (Cloudflare's largest page). */
 const KV_NAMESPACES_PAGE = 100;
@@ -2759,16 +2763,55 @@ export class CloudflareClient {
 
   /**
    * The account's workers.dev subdomain (`GET …/workers/subdomain`); `undefined` when the account
-   * has none yet (code 10007): a Worker's Cron Triggers need one. Read-only.
+   * has none yet (code 10007, or an empty one): a Worker's Cron Triggers and its workers.dev
+   * address need one. Read-only.
    */
-  async workersSubdomain(accountId: string): Promise<string | undefined> {
+  async getWorkersSubdomain(accountId: string): Promise<string | undefined> {
     const answer = await this.#request(
       `/accounts/${encodeURIComponent(accountId)}/workers/subdomain`,
     );
     if (noWorker(answer)) return undefined;
     const what = "read the account's workers.dev subdomain";
-    return this.#result(answer, z.looseObject({ subdomain: z.string() }), what, UPTIME_HINTS)
-      .subdomain;
+    const { subdomain } = this.#result(
+      answer,
+      z.looseObject({ subdomain: z.string() }),
+      what,
+      UPTIME_HINTS,
+    );
+    return subdomain || undefined;
+  }
+
+  /**
+   * Whether the Worker's workers.dev address and its previews' are on (`GET
+   * …/workers/scripts/{name}/subdomain`); `undefined` when the account has no such Worker. Read-only.
+   */
+  async getWorkerSubdomain(
+    accountId: string,
+    worker: string,
+  ): Promise<{ enabled: boolean; previewsEnabled: boolean } | undefined> {
+    const answer = await this.#request(`${workerPath(accountId, worker)}/subdomain`);
+    if (noWorker(answer)) return undefined;
+    const what = `read the workers.dev address of the Worker ${worker}`;
+    const read = this.#result(answer, WorkerSubdomainSchema, what, UPTIME_HINTS);
+    return { enabled: read.enabled, previewsEnabled: read.previews_enabled };
+  }
+
+  /**
+   * Turns the Worker's workers.dev address and its previews' on or off (`POST
+   * …/workers/scripts/{name}/subdomain`), set explicitly since the API states no default. Sent once.
+   */
+  async setWorkerSubdomain(
+    accountId: string,
+    worker: string,
+    setting: { enabled: boolean; previewsEnabled: boolean },
+  ): Promise<void> {
+    const what = `set the workers.dev address of the Worker ${worker}`;
+    const answer = await this.#send(`${workerPath(accountId, worker)}/subdomain`, what, {
+      method: "POST",
+      body: { enabled: setting.enabled, previews_enabled: setting.previewsEnabled },
+      hints: UPTIME_HINTS,
+    });
+    this.#parseWrite(WorkerSubdomainSchema, answer.body.result, what);
   }
 
   /**

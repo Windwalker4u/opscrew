@@ -1,10 +1,12 @@
 /**
  * The uptime check in the user's Cloudflare account (feature 046): one Worker per account,
  * `opscrew-uptime`, with a Cron Trigger every 5 minutes and one Workers KV namespace, shared by
- * every OpsCrew app there. Each environment owns one KV entry, the state the Worker keeps for it
- * and one Worker secret (its webhook's address). `inspectUptime` reads them, `planUptime` plans one
- * environment's change, `applyUptime` applies a plan approved by its hash (`cloudflare-apply`), as
- * the shared-resources adapter does (ADR 0014). See `specs/046-uptime-worker/data-model.md`.
+ * every OpsCrew app there, and its workers.dev address, where servers send their reports. Each
+ * environment owns one KV entry, the state the Worker keeps for it, its servers' last reports and
+ * one Worker secret (its webhook's address and report key). `inspectUptime` reads them,
+ * `planUptime` plans one environment's change, `applyUptime` applies a plan approved by its hash
+ * (`cloudflare-apply`), as the shared-resources adapter does (ADR 0014). See
+ * `specs/046-uptime-worker/data-model.md`.
  */
 import {
   canonicalJson,
@@ -40,10 +42,13 @@ const { worker: WORKER, namespace: NAMESPACE } = UPTIME_RESOURCES;
 const [WORKERS_PERMISSION, KV_PERMISSION] = CLOUDFLARE_UPTIME_PERMISSIONS;
 const ENTRY_PREFIX = "entry:";
 const STATE_PREFIX = "state:";
+const REPORT_PREFIX = "report:";
 /** The KV key that records the SHA-256 of the script last uploaded. */
 const WORKER_KEY = "opscrew:worker";
 
 const HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
+/** A server's id in the Actions check: never an address and never a `/`, so its report key is its own. */
+const SERVER_ID = /^[A-Za-z0-9_-]+$/;
 
 const UptimeEntrySchema = z.looseObject({
   version: z.literal(1),
@@ -62,6 +67,21 @@ const UptimeEntrySchema = z.looseObject({
   webhook: z.enum(["slack", "discord", "ntfy"]),
   /** The name of the Worker secret holding the webhook's address: {@link uptimeSecretName}. */
   secret: z.string().regex(/^HOOK_[0-9a-f]{16}$/),
+  /** The servers whose reports the Worker accepts, each since it was first listed. */
+  servers: z
+    .array(
+      z.looseObject({
+        id: z.string().regex(SERVER_ID),
+        since: z.iso.datetime(),
+        /** Present while the app has scheduled restore drills. */
+        drill: z.string().min(1).optional(),
+      }),
+    )
+    .optional(),
+  /** The flags of the `opscrew rotate` command in a credential's message. */
+  rotate: z.string().optional(),
+  /** Test only: the live test's shorter silence limit; `planUptime` refuses it otherwise. */
+  heartbeatMinutes: z.number().int().positive().optional(),
 });
 
 /** One environment's KV entry (`entry:<id>`): what the Worker checks and where it posts. */
@@ -93,8 +113,18 @@ export function parseUptimeState(text: string): UptimeState | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-/** The Worker secret's value (data-model.md): the webhook's address and, for ntfy, its token. */
-const WebhookSecretSchema = z.object({ url: z.url(), token: z.string().min(1).optional() });
+/**
+ * The Worker secret's value (data-model.md): the webhook's address, for ntfy its token, and the
+ * environment's report key (32 bytes in hex) that signs its servers' reports.
+ */
+const WebhookSecretSchema = z.object({
+  url: z.url(),
+  token: z.string().min(1).optional(),
+  report: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+});
 
 const WorkerRecordSchema = z.looseObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
 
@@ -106,6 +136,17 @@ export function uptimeEntryKey(id: string): string {
 /** `state:<id>`, the state the Worker keeps for the environment. */
 export function uptimeStateKey(id: string): string {
   return `${STATE_PREFIX}${id}`;
+}
+
+/** `report:<id>/<server>`, the server's last report, which only the Worker writes. */
+export function uptimeReportKey(id: string, server: string): string {
+  return `${REPORT_PREFIX}${id}/${server}`;
+}
+
+/** The report keys of `id`'s servers among `keys`, not those of an id that starts the same. */
+function reportsOf(keys: readonly string[], id: string): string[] {
+  const prefix = uptimeReportKey(id, "");
+  return keys.filter((k) => k.startsWith(prefix) && SERVER_ID.test(k.slice(prefix.length)));
 }
 
 /** `HOOK_<the first 16 hex characters of the SHA-256 of id>`, the environment's secret. */
@@ -139,8 +180,15 @@ export interface UptimeFacts {
   entries: Record<string, UptimeEntry>;
   /** The names of the Worker's secrets; null when the account has no such Worker. */
   secrets: string[] | null;
-  /** The account has its workers.dev subdomain, which a Worker's Cron Triggers need. */
-  workersSubdomain: boolean;
+  /**
+   * The account's workers.dev subdomain, which a Worker's Cron Triggers and its workers.dev address
+   * need; null when the account has none yet.
+   */
+  accountSubdomain: string | null;
+  /** The Worker's workers.dev address is on, where the servers send their reports. */
+  workersDev: boolean;
+  /** Every server's report key (`report:<id>/<server>`). */
+  reports: string[];
   /** The token permissions a read was refused for (HTTP 403), as the token builder names them. */
   denied: string[];
 }
@@ -164,9 +212,13 @@ export type UptimeChange =
   | { kind: "create-namespace" }
   /** Also sets the schedule and records the SHA-256. */
   | { kind: "upload-script"; sha256: string }
+  /** The Worker's workers.dev address on, its previews off. */
+  | { kind: "set-subdomain" }
   | { kind: "put-secret"; name: string }
   | { kind: "put-entry"; key: string; entry: UptimeEntry }
-  /** And its state key. */
+  /** The report key of a server that left the entry. */
+  | { kind: "delete-report"; key: string }
+  /** And its state key and its servers' report keys. */
   | { kind: "delete-entry"; key: string }
   | { kind: "delete-secret"; name: string }
   /** With its trigger and secrets. */
@@ -179,7 +231,8 @@ export interface UptimeFinding {
     | "too-many-hostnames"
     | "permission-missing"
     | "secret-missing"
-    | "workers-subdomain-missing";
+    | "workers-dev-missing"
+    | "test-only-field";
   message: string;
   hint: string;
 }
@@ -196,6 +249,11 @@ export interface UptimePlan {
   findings: UptimeFinding[];
   /** It deletes the Worker or the namespace: only with `desired.destroy`. */
   destroys: boolean;
+  /**
+   * Where the environment's servers send their reports (`https://opscrew-uptime.<account
+   * subdomain>.workers.dev/report`); null when the account has no workers.dev subdomain.
+   */
+  reportUrl: string | null;
   /** SHA-256 of the canonical JSON of `accountId`, `id`, `changes` and `expect`. */
   hash: string;
 }
@@ -285,7 +343,9 @@ export async function inspectUptime(
     sha256: null,
     entries: {},
     secrets: null,
-    workersSubdomain: false,
+    accountSubdomain: null,
+    workersDev: false,
+    reports: [],
     denied: [],
   };
   /** `read()`, with `permission` noted when Cloudflare refuses it with HTTP 403. */
@@ -306,10 +366,17 @@ export async function inspectUptime(
       // Listed but gone: being deleted (a list can lag a minute behind).
       if (text !== undefined) facts.entries[key] = readValue(UptimeEntrySchema, text, key);
     }
+    if (shared.namespaceId !== null) {
+      const reports = await client.listKvKeys(accountId, shared.namespaceId, REPORT_PREFIX);
+      facts.reports = [...reports].sort();
+    }
   });
   await allowed(WORKERS_PERMISSION, async () => {
     facts.secrets = (await client.listWorkerSecrets(accountId, WORKER)) ?? null;
-    facts.workersSubdomain = (await client.workersSubdomain(accountId)) !== undefined;
+    facts.accountSubdomain = (await client.getWorkersSubdomain(accountId)) ?? null;
+    if (facts.secrets !== null) {
+      facts.workersDev = (await client.getWorkerSubdomain(accountId, WORKER))?.enabled ?? false;
+    }
   });
   return facts;
 }
@@ -328,14 +395,26 @@ function secretProblem(secret: string): string | undefined {
   return parsed.success ? undefined : zodIssues(parsed.error);
 }
 
-/** The desired secret's shape: the webhook's address, from the user. */
+/** What only OpsCrew's own code gets wrong. */
+const BUG_HINT = "This is a bug in OpsCrew; please report it.";
+
+/** The desired entry's and secret's shapes: the entry the Worker reads, the user's webhook. */
 function checkDesired(desired: UptimeDesired): void {
   const { id } = desired;
+  const entry =
+    desired.entry === undefined ? undefined : UptimeEntrySchema.safeParse(desired.entry);
+  if (entry?.success === false) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `The uptime entry of ${uptimeLabel(id)} is not what the uptime Worker reads (${zodIssues(entry.error)}), so OpsCrew changes nothing in Cloudflare.`,
+      { hint: BUG_HINT },
+    );
+  }
   const secret = desired.secret === undefined ? undefined : secretProblem(desired.secret);
   if (secret !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The webhook's secret for ${uptimeLabel(id)} is not a webhook address with an optional ntfy token (${secret}), so OpsCrew changes nothing in Cloudflare.`,
+      `The webhook's secret for ${uptimeLabel(id)} is not a webhook address with an optional ntfy token and report key (${secret}), so OpsCrew changes nothing in Cloudflare.`,
       {
         hint: "Set OPSCREW_CHECK_WEBHOOK to the webhook's full address (https://…), then run the command again.",
       },
@@ -343,8 +422,28 @@ function checkDesired(desired: UptimeDesired): void {
   }
 }
 
-/** Pure: the changes, blocking findings and the plan's SHA-256 (`plan.hash`). */
-export function planUptime(facts: UptimeFacts, desired: UptimeDesired): UptimePlan {
+/** `entry` with each server's `since` kept from the stored entry: when it was first listed. */
+function keepSince(entry: UptimeEntry, stored: UptimeEntry | undefined): UptimeEntry {
+  if (entry.servers === undefined) return entry;
+  const since = new Map(stored?.servers?.map((server) => [server.id, server.since]));
+  return {
+    ...entry,
+    servers: entry.servers.map((server) => ({
+      ...server,
+      since: since.get(server.id) ?? server.since,
+    })),
+  };
+}
+
+/**
+ * Pure: the changes, blocking findings and the plan's SHA-256 (`plan.hash`). Only the live test
+ * passes `liveTest`, which allows the entry's `heartbeatMinutes`.
+ */
+export function planUptime(
+  facts: UptimeFacts,
+  desired: UptimeDesired,
+  options: { liveTest?: boolean } = {},
+): UptimePlan {
   checkDesired(desired);
   const key = uptimeEntryKey(desired.id);
   const secret = uptimeSecretName(desired.id);
@@ -357,22 +456,36 @@ export function planUptime(facts: UptimeFacts, desired: UptimeDesired): UptimePl
   if (facts.denied.length > 0) {
     findings.push(permissionMissing(facts.denied));
   } else if (desired.entry !== undefined) {
-    const { entry } = desired;
+    const stored = facts.entries[key];
+    const entry = keepSince(desired.entry, stored);
     if (facts.namespaceId === null) changes.push({ kind: "create-namespace" });
     if (facts.secrets === null || facts.sha256 !== desired.script.sha256) {
       changes.push({ kind: "upload-script", sha256: desired.script.sha256 });
     }
+    if (!facts.workersDev) changes.push({ kind: "set-subdomain" });
     if (desired.secret !== undefined) changes.push({ kind: "put-secret", name: secret });
     else if (!facts.secrets?.includes(secret)) findings.push(secretMissing(desired.id, secret));
-    const stored = facts.entries[key];
     if (stored === undefined || canonicalJson(stored) !== canonicalJson(entry)) {
       changes.push({ kind: "put-entry", key, entry });
     }
-    if (!facts.workersSubdomain) {
+    // After the entry, which no longer lists the server, so the Worker takes no report from it.
+    const listed = new Set(entry.servers?.map((server) => uptimeReportKey(desired.id, server.id)));
+    for (const report of reportsOf(facts.reports, desired.id)) {
+      if (!listed.has(report)) changes.push({ kind: "delete-report", key: report });
+    }
+    if (facts.accountSubdomain === null) {
       findings.push({
-        code: "workers-subdomain-missing",
-        message: "Your Cloudflare account has no workers.dev subdomain yet.",
+        code: "workers-dev-missing",
+        message:
+          "Your Cloudflare account has no workers.dev subdomain yet, which the uptime Worker's trigger and the servers' reports need.",
         hint: WORKERS_SUBDOMAIN_HINT,
+      });
+    }
+    if (entry.heartbeatMinutes !== undefined && options.liveTest !== true) {
+      findings.push({
+        code: "test-only-field",
+        message: `The uptime entry of ${uptimeLabel(desired.id)} sets heartbeatMinutes, which only OpsCrew's live test may set.`,
+        hint: BUG_HINT,
       });
     }
     const counted = others.reduce((n, k) => n + (facts.entries[k]?.hosts.length ?? 0), 0);
@@ -395,6 +508,10 @@ export function planUptime(facts: UptimeFacts, desired: UptimeDesired): UptimePl
     expect,
     findings,
     destroys: changes.some((c) => c.kind === "delete-script" || c.kind === "delete-namespace"),
+    reportUrl:
+      facts.accountSubdomain === null
+        ? null
+        : `https://${WORKER}.${facts.accountSubdomain}.workers.dev/report`,
   };
   return { ...plan, hash: uptimePlanHash(plan) };
 }
@@ -435,19 +552,32 @@ const WEBHOOKS: Record<UptimeEntry["webhook"], string> = {
   ntfy: "ntfy",
 };
 
-/** One change in plain English. */
-function changeText(change: UptimeChange, label: string): string {
+/** ", and take reports from a and b" for an entry with servers. */
+function serversText(entry: UptimeEntry): string {
+  const ids = entry.servers?.map((server) => server.id) ?? [];
+  return ids.length === 0 ? "" : `, and take reports from ${listText(ids)}`;
+}
+
+/** One change of the plan in plain English. */
+function changeText(change: UptimeChange, plan: UptimePlan): string {
+  const label = uptimeLabel(plan.id);
   switch (change.kind) {
     case "create-namespace":
       return `Create the Workers KV namespace ${NAMESPACE}, where the uptime Worker keeps its entries and what is down. Every OpsCrew app in this Cloudflare account shares it.`;
     case "upload-script":
       return `Upload the Worker ${WORKER} (its script's SHA-256 starts ${change.sha256.slice(0, 12)}) with its trigger every 5 minutes (${UPTIME_RESOURCES.cron}). Every OpsCrew app in this Cloudflare account shares it, and the upload keeps their webhook secrets.`;
+    case "set-subdomain": {
+      const address = plan.reportUrl?.replace(/\/report$/, "");
+      return `Turn on the workers.dev address of the Worker ${WORKER}${address === undefined ? "" : `, ${address}`}, where the servers send their reports (its previews stay off).`;
+    }
     case "put-secret":
       return `Set the Worker secret ${change.name}: the webhook's address for ${label} (its value is never shown).`;
     case "put-entry":
-      return `Write the entry of ${label}: check ${listText(change.entry.hosts.map((h) => `${h.hostname}${h.healthPath}`))} and post to ${WEBHOOKS[change.entry.webhook]}.`;
+      return `Write the entry of ${label}: check ${listText(change.entry.hosts.map((h) => `${h.hostname}${h.healthPath}`))} and post to ${WEBHOOKS[change.entry.webhook]}${serversText(change.entry)}.`;
+    case "delete-report":
+      return `Delete the last report of the server ${change.key.slice(uptimeReportKey(plan.id, "").length)}, which no longer reports for ${label}.`;
     case "delete-entry":
-      return `Delete the entry of ${label} and what the Worker keeps for it.`;
+      return `Delete the entry of ${label}, what the Worker keeps for it and its servers' last reports.`;
     case "delete-secret":
       return `Delete the Worker secret ${change.name}.`;
     case "delete-script":
@@ -464,7 +594,7 @@ function changeText(change: UptimeChange, label: string): string {
 export function describeUptimePlan(plan: UptimePlan): string {
   const label = uptimeLabel(plan.id);
   const lines = [`Cloudflare uptime plan for ${label}: ${plural(plan.changes.length, "change")}.`];
-  for (const change of plan.changes) lines.push(`  ~ ${changeText(change, label)}`);
+  for (const change of plan.changes) lines.push(`  ~ ${changeText(change, plan)}`);
   for (const finding of plan.findings) {
     lines.push(`  ! ${finding.message}`, `      ${finding.hint}`);
   }
@@ -631,6 +761,12 @@ export async function applyUptime(
           );
           applied.push("record-sha256");
           continue;
+        case "set-subdomain":
+          await client.setWorkerSubdomain(accountId, WORKER, {
+            enabled: true,
+            previewsEnabled: false,
+          });
+          break;
         case "put-secret":
           await client.putWorkerSecret(accountId, WORKER, {
             name: change.name,
@@ -640,11 +776,20 @@ export async function applyUptime(
         case "put-entry":
           await client.putKv(accountId, ns(), change.key, JSON.stringify(change.entry));
           break;
-        case "delete-entry":
-          // The state first: a stop between the two leaves the entry, so the next plan deletes both.
+        case "delete-report":
+          await client.deleteKv(accountId, ns(), change.key);
+          break;
+        case "delete-entry": {
+          // Listed now, so a report written since the plan goes too. The reports and the state
+          // first: a stop before the entry goes leaves it, so the next plan deletes them all.
+          const listed = await client.listKvKeys(accountId, ns(), uptimeReportKey(plan.id, ""));
+          for (const report of reportsOf(listed, plan.id)) {
+            await client.deleteKv(accountId, ns(), report);
+          }
           await client.deleteKv(accountId, ns(), uptimeStateKey(plan.id));
           await client.deleteKv(accountId, ns(), change.key);
           break;
+        }
         case "delete-secret":
           await client.deleteWorkerSecret(accountId, WORKER, change.name);
           break;
