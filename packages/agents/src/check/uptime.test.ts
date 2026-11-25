@@ -358,6 +358,24 @@ describe("the uptime entry's teardown", () => {
     expect(namespaceOf(s.uptime).values.has(uptimeEntryKey("acme/blog/blog/prod"))).toBe(true);
   });
 
+  it("stops, never skipping, when neither a record nor a GitHub remote says which entry it is", async () => {
+    const s = await setup();
+    await expect(
+      planUptimeTeardown(s.deps, uptimePlan("cloudflare"), {
+        services: s.services,
+        github: {},
+        command: "opscrew destroy",
+      }),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining(
+        "OpsCrew can't tell which entry of the Cloudflare uptime Worker opscrew-uptime is this environment's",
+      ),
+      hint: expect.stringContaining("from the repository's clone"),
+    });
+    expect(s.uptime.calls).toEqual([]);
+  });
+
   it("plans nothing for an environment without an entry this computer knows of", async () => {
     const s = await setup();
     await expect(

@@ -121,7 +121,9 @@ async function removeUptimeRecord(paths: Pick<ProjectPaths, "stateDir">) {
 /**
  * Where the environment's entry is, or goes: while the plan chooses the Worker, its id from
  * `repository` (else the record's) in the recorded account, else the account of the app's zone;
- * otherwise as this computer recorded it. `undefined` when it has none.
+ * otherwise as this computer recorded it. `undefined` when it has none. Stops when the plan
+ * chooses the Worker and neither the record nor `repository` names the entry: OpsCrew never
+ * passes over an entry it can't find.
  */
 async function uptimeTarget(
   paths: Pick<ProjectPaths, "stateDir">,
@@ -131,7 +133,15 @@ async function uptimeTarget(
   const record = await readUptimeRecord(paths);
   if (!usesUptimeWorker(plan)) return record;
   const id = input.repository === undefined ? record?.id : uptimeId(plan, input.repository);
-  if (id === undefined) return undefined;
+  if (id === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew can't tell which entry of the Cloudflare uptime Worker ${WORKER} is this environment's: this computer has no record of it (.opscrew/uptime.json), and the repository has no GitHub remote named origin. Nothing was changed.`,
+      {
+        hint: "Run the command from the repository's clone that has its GitHub remote (origin), or from the computer that provisioned the app.",
+      },
+    );
+  }
   return { accountId: record?.accountId ?? (await zoneAccount(input.client, plan)), id };
 }
 
