@@ -1037,6 +1037,25 @@ injection in the app has every right.
 - **In 0.2.12** (the founder, 2026-11-25), built in parallel with 046's server checks. 045, which
   changes the same PostgreSQL service, comes after it.
 
+## 048 Change an app's values without a full provision
+
+The founder's request (2026-11-25): add or change one app value for an environment without
+running `provision` again. A re-provision reapplies the Cloudflare, DNS and host plans just to
+store a value.
+- **The commands:**
+  - `npx opscrew values set --env <env> NAME` reads the value from stdin or `--from-file`,
+    never from argv or shell history;
+  - `values unset NAME` removes one;
+  - `values list --env <env>` shows names and where each comes from, never a value.
+
+  Multi-line values (a PEM key) work.
+- **What it changes:** only the environment's stored app values, in its GitHub environment
+  secret, OpsCrew's home and the recovery copy, through the same approval rules as provision's
+  secret step. No infrastructure plan runs.
+- **The app sees them after a deploy:** with `--redeploy` it starts one, and otherwise it says the
+  next deploy applies them.
+- **Planned for 0.2.13,** beside 040, without delaying 0.2.12.
+
 ## Later, not yet placed
 
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
