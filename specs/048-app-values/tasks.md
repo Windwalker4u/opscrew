@@ -10,7 +10,8 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
     `packages/agents/src/provision/secrets.ts`, `packages/agents/src/secrets/files.ts`,
     `packages/cli/src/ui/env-prompt.ts` (the keep choice), the
     one-line hooks in `packages/agents/src/rotate/server.ts`, `packages/agents/src/move/app-env.ts`
-    and `packages/agents/src/cloudflare-move/finish-point.ts`, and their tests.
+    and `packages/agents/src/cloudflare-move/finish-point.ts`, and their tests;
+    `packages/agents/src/provision/storage.test.ts` (its leak scan leaves out the test's home).
   - **Reads:** plan.md 1.–3., `assembleAppEnv`, `buildAppEnvironment`, `registerAppSecrets`.
   - **Accept:**
     - `buildAppEnvironment` writes `app_values.json` (0600) with the assembled `app` and `build`

@@ -15,8 +15,8 @@ generated again, and your data stays as it is.
 Everything OpsCrew keeps on your computer for the app and cannot rebuild:
 
 - the generated values (service passwords and keys, route-job secrets) and the deploy key;
-- the app's values as provision last stored them in GitHub, your own among them, which
-  [`opscrew values`](environments.md#changing-one-value) changes one at a time;
+- the app's values as provision last stored them in GitHub, your own and the bucket's key among
+  them, which [`opscrew values`](environments.md#changing-one-value) changes one at a time;
 - the infrastructure state and its passphrase;
 - OpsCrew's records of the server and of the app's [Cloudflare](https://www.cloudflare.com/) settings;
 - in your [Portainer](https://www.portainer.io/), the stack's key, webhook and Portainer password files.
