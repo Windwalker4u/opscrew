@@ -219,6 +219,28 @@ describe("provisionCheck with the Cloudflare uptime Worker", () => {
     });
   });
 
+  it("fails without a word of success when another app's upload drops its secret meanwhile", async () => {
+    const s = await setup();
+    const plan = uptimePlan("cloudflare");
+    await writeArtifact("plan", s.deps.paths.files.plan, plan);
+    const step = await s.plan(plan);
+    // Another app's upload at the same moment keeps no secret, as the live pass saw it happen.
+    s.uptime.hooks.push({
+      match: `GET /accounts/${FAKE_ACCOUNT_ID}/workers/scripts/opscrew-uptime/secrets`,
+      run: () => s.uptime.scripts.get("opscrew-uptime")?.secrets.clear(),
+    });
+    await expect(
+      provisionUptime(s.deps, step, { command: "opscrew provision", phase: "provision" }),
+    ).rejects.toMatchObject({
+      message:
+        "Another app changed the shared uptime Worker at the same moment, so this app's settings didn't stick.",
+      hint: "Run provision again.",
+    });
+    expect(s.deps.reporter.text()).not.toContain("Changed the Cloudflare uptime Worker");
+    expect(await readUptimeRecord(s.deps.paths)).toBeUndefined();
+    expect(s.deps.audit.entries.map((e) => e.action)).toContain("cloudflare uptime apply failed");
+  });
+
   it("a refused approval changes nothing in Cloudflare and says how to apply it later", async () => {
     const s = await setup({ answer: () => false });
     await expect(s.provision(uptimePlan("cloudflare"))).rejects.toMatchObject({

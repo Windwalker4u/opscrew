@@ -104,11 +104,12 @@ Secrets: <https://developers.cloudflare.com/api/resources/workers/subresources/s
 
 Permissions for all of R4: Workers Scripts Write.
 
-**To confirm in the live pass:**
-- that a secret's `PUT` also deploys the new version, as Wrangler's `secret put` does;
-- that an upload which happens at the same moment as another app's secret `PUT` keeps that secret.
-
-The apply checks the second at its end (plan.md, 3.).
+**What the live pass (T4692) showed:**
+- A secret's `PUT` also deploys the new version, as Wrangler's `secret put` does.
+- An upload at the same moment as another app's secret `PUT` does not keep that secret: the
+  secret is lost. So the apply reads its secret and its entry back at its end, and when either
+  is missing it fails, reporting no success: "Another app changed the shared uptime Worker at
+  the same moment, so this app's settings didn't stick. Run provision again."
 
 ## R5. `fetch()` and certificates
 

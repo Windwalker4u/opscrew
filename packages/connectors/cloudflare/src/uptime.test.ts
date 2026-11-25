@@ -554,7 +554,7 @@ describe("applyUptime", () => {
     expect(fake.namespace("opscrew-uptime")).toBeDefined();
   });
 
-  it("fails with 'run the command again' when its secret is missing at the end", async () => {
+  it("fails, saying another app's change at the same moment lost its settings, when its secret is missing at the end", async () => {
     const { fake, client } = setup();
     const plan = await planFor(client, wanting(SHOP));
     // An upload at the same moment that kept no secret, just before the apply reads them back.
@@ -572,8 +572,10 @@ describe("applyUptime", () => {
       "put-secret",
       "put-entry",
     ]);
-    expect(error.message).toContain(`the Worker secret ${uptimeSecretName(SHOP)}`);
-    expect(error.hint).toContain("Run the command again");
+    expect(error.message).toBe(
+      "Another app changed the shared uptime Worker at the same moment, so this app's settings didn't stick.",
+    );
+    expect(error.hint).toBe("Run provision again.");
     // Running it again plans the secret back.
     expect(kinds(await planFor(client, wanting(SHOP)))).toEqual(["put-secret"]);
   });

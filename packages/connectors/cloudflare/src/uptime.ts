@@ -684,25 +684,22 @@ async function keptFor(
   return true;
 }
 
-/** Reads the environment's secret and entry back: another app's upload may have dropped one. */
+/**
+ * Reads the environment's secret and entry back, and fails when either is missing: an upload by
+ * another app at the same moment drops a secret set meanwhile (the live pass showed it).
+ */
 async function checkWritten(
   client: CloudflareClient,
   plan: UptimePlan,
   namespaceId: string,
 ): Promise<void> {
-  const secret = uptimeSecretName(plan.id);
   const secrets = await client.listWorkerSecrets(plan.accountId, WORKER);
   const entry = await client.getKv(plan.accountId, namespaceId, uptimeEntryKey(plan.id));
-  const label = uptimeLabel(plan.id);
-  const missing = [
-    ...(secrets?.includes(secret) ? [] : [`the Worker secret ${secret}`]),
-    ...(entry === undefined ? [`the entry of ${label}`] : []),
-  ];
-  if (missing.length === 0) return;
+  if (secrets?.includes(uptimeSecretName(plan.id)) && entry !== undefined) return;
   throw new OpsCrewError(
     "PROVIDER_ERROR",
-    `After the change, ${listText(missing)} ${missing.length === 1 ? "is" : "are"} missing from the Cloudflare uptime Worker: another OpsCrew app's change at the same moment may have dropped ${missing.length === 1 ? "it" : "them"}.`,
-    { hint: "Run the command again: OpsCrew reads the current state and puts it back." },
+    "Another app changed the shared uptime Worker at the same moment, so this app's settings didn't stick.",
+    { hint: "Run provision again." },
   );
 }
 
