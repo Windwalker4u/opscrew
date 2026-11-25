@@ -94,6 +94,16 @@ export function checkEnvironmentKey(plan: DeployPlan): string {
 }
 
 /**
+ * The hostnames the check fetches for the plan, each with its health path: the plan's
+ * `healthPath`, or `/` on a serverless target. The Actions check and the Cloudflare uptime Worker
+ * check the same ones.
+ */
+export function checkHosts(plan: DeployPlan): CheckEnvironment["hosts"] {
+  const path = isServerlessTarget(plan.target) ? "/" : healthPath(plan);
+  return siteHosts(plan).map((hostname) => ({ hostname, healthPath: path }));
+}
+
+/**
  * The content of an environment's server secret ({@link CHECK_SECRETS}' `server`): a JSON list
  * with one entry per server the check reaches over SSH, each with its name in the plan as `id`
  * (`app` for the app's server, or an extra server's name).
@@ -107,7 +117,7 @@ export function checkServerSecret(servers: readonly ServerEntry[]): string {
 /**
  * The scheduled check's files, one set for the repository, from every app's and environment's plan
  * (`plans`) with `observability.check.enabled`; none when no plan has it on, and none for a
- * destroyed environment:
+ * destroyed environment or one the Cloudflare uptime Worker checks (`runner: cloudflare`):
  * - `.github/workflows/opscrew-check.yml`: on a schedule at minutes off the hour and by hand, the
  *   `check` job on GitHub's machines, plus one job per server whose deploys run on its own runner
  *   or a runner machine, which checks that server's disk there, and one per extra server of such
@@ -146,6 +156,7 @@ export function renderCheck(input: {
   const { repo } = input;
   const plans = input.plans
     .filter((plan) => plan.observability?.check?.enabled === true)
+    .filter((plan) => plan.observability?.check?.runner !== "cloudflare")
     .filter((plan) => plan.deployment.destroyedAt === undefined)
     .sort(byApp);
   if (plans.length === 0) return [];
@@ -158,7 +169,6 @@ export function renderCheck(input: {
 
   const seen = new Set<string>();
   const environments: { plan: DeployPlan; environment: CheckEnvironment }[] = plans.map((plan) => {
-    const path = isServerlessTarget(plan.target) ? "/" : healthPath(plan);
     /** `server`, unless an earlier environment checks its disk. */
     const once = (server: CheckServer | undefined) => {
       if (server === undefined || seen.has(server.id)) return undefined;
@@ -174,7 +184,7 @@ export function renderCheck(input: {
       plan,
       environment: {
         key: checkEnvironmentKey(plan),
-        hosts: siteHosts(plan).map((hostname) => ({ hostname, healthPath: path })),
+        hosts: checkHosts(plan),
         ...(server === undefined ? {} : { server }),
         ...(extraServers.length === 0 ? {} : { extraServers }),
         ...(snapshots === undefined ? {} : { snapshots }),

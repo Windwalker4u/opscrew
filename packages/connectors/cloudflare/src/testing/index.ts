@@ -1,6 +1,7 @@
 /**
  * Test helpers of `@opscrew/connector-cloudflare` for `CloudflareClient`: a fake zone and account,
- * and a fake Cloudflare with several accounts, each reached by its own token.
+ * a fake Cloudflare with several accounts, each reached by its own token, and a fake account for
+ * the uptime Worker (Workers KV, module uploads, schedules and secrets).
  */
 export type {
   FakeAccessItem,
@@ -30,6 +31,13 @@ export {
   type FakeWorkerFigures,
   type FakeWorkerRequest,
 } from "./fake-observability";
+export {
+  type FakeKvNamespace,
+  FakeUptime,
+  type FakeUptimeCall,
+  type FakeUptimeHook,
+  type FakeUptimeScript,
+} from "./fake-uptime";
 export {
   FAKE_ACCOUNT_ID,
   FAKE_ZONE_ID,

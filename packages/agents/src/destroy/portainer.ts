@@ -23,6 +23,7 @@ import {
   portainerVersionVolume,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { planUptimeTeardown } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
 import { providerBucket } from "../provision";
@@ -571,6 +572,10 @@ export async function destroyPortainer(
   // This app's hostnames in OpsCrew's shared Cloudflare rules: removed after the rest.
   const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
   const cloudflarePlan = removalDetails(shared);
+  // The environment's entry in the Cloudflare uptime Worker likewise, where the check's pause runs.
+  const uptime = removeApp
+    ? await planUptimeTeardown(deps, plan, { services, github, command: COMMAND })
+    : undefined;
   deps.reporter.info(
     teardownSummary({
       resources,
@@ -590,7 +595,7 @@ export async function destroyPortainer(
   else if (!deleteData && removeApp && bucketAt !== undefined) {
     deps.reporter.info(bucketStays(bucketAt));
   }
-  if (removeApp) for (const note of checkPauseNote(plan)) deps.reporter.info(note);
+  if (removeApp) for (const note of checkPauseNote(plan, uptime)) deps.reporter.info(note);
   await confirmDeletion(
     scope,
     {
@@ -630,7 +635,7 @@ export async function destroyPortainer(
           stackWork.length === 0
             ? [
                 ...(branchNote !== undefined ? [branchNote] : []),
-                ...(removeApp ? checkPauseNote(plan) : []),
+                ...(removeApp ? checkPauseNote(plan, uptime) : []),
               ]
             : [],
       });
@@ -654,7 +659,7 @@ export async function destroyPortainer(
                   ]
                 : []),
               ...(branchNote !== undefined ? [branchNote] : []),
-              ...(removeApp ? checkPauseNote(plan) : []),
+              ...(removeApp ? checkPauseNote(plan, uptime) : []),
               portainerStays(plan),
             ],
             refused: `The removal of ${name} from your Portainer was not approved, so nothing in your Portainer was changed and nothing in Cloudflare was deleted.`,
@@ -721,7 +726,7 @@ export async function destroyPortainer(
   // 7. Deploy secrets and OpsCrew's record of the deployment
   let secretsRemoved: string[] = [];
   if (removeApp) {
-    await pauseCheckForTeardown(deps, github, plan, stackApproval ?? removal?.approval);
+    await pauseCheckForTeardown(deps, github, plan, stackApproval ?? removal?.approval, uptime);
     secretsRemoved = await removeDeploySecrets(deps, github, {
       plan,
       done: "The app is removed from your Portainer and Cloudflare.",

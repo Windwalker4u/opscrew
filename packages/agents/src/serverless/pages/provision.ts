@@ -10,6 +10,7 @@ import {
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { appFlag } from "../../apps/choice";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../../check/provision";
+import { provisionUptime } from "../../check/uptime";
 import type { PhaseDeps } from "../../context";
 import { missing, setupCloudflare, setupGitHub } from "../../provision/credentials";
 import { deploySetupDependabot } from "../../provision/dependabot";
@@ -352,8 +353,19 @@ export async function provisionPages(
       : {}),
   };
   if (planOnly) {
+    // The uptime Worker's plan is shown with its hash too, approved next to the others.
+    const uptimePlanHash = await provisionUptime(deps, input.uptime, {
+      command,
+      phase: "provision",
+      planOnly: true,
+    });
     if (learned.zoneLearned) await writePlanIfChanged(deps, plan);
-    return { ...hashes, applied: false, outputs: {} };
+    return {
+      ...hashes,
+      ...(uptimePlanHash !== undefined ? { uptimePlanHash } : {}),
+      applied: false,
+      outputs: {},
+    };
   }
 
   // 5. The record, the app's values for its build, the pull request, and what is left.
@@ -380,6 +392,7 @@ export async function provisionPages(
     github,
     storeSecrets: options.secrets !== false,
     services,
+    uptime: input.uptime,
     command,
     phase: "provision",
   });

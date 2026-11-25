@@ -109,6 +109,16 @@ export const CLOUDFLARE_OBSERVABILITY_PERMISSIONS = [
   `${OBSERVABILITY_PERMISSION} (only for logs on Cloudflare hosting)`,
 ] as const;
 
+/** The account permission Workers KV needs, named as in the token builder. */
+const KV_PERMISSION = "Account → Workers KV Storage → Edit";
+
+/**
+ * The permissions the uptime check in the user's Cloudflare account needs (feature 046): its
+ * Worker, trigger and secrets, and its KV namespace. Probed with
+ * {@link CloudflareClient.uptimePermissions}.
+ */
+export const CLOUDFLARE_UPTIME_PERMISSIONS = [WORKERS_PERMISSION, KV_PERMISSION] as const;
+
 /** The zone rule phases OpsCrew adds its own rule to, next to the user's rules. */
 export type ManagedRulesetPhase =
   | "http_config_settings"
@@ -459,6 +469,8 @@ interface RawAnswer {
   envelope: boolean;
   /** The answer's JSON as it came (GraphQL answers are not envelopes). */
   json: unknown;
+  /** The answer's body as text (a Workers KV value is sent as it is stored). */
+  text: string;
 }
 
 const TokenVerifySchema = z.looseObject({
@@ -648,7 +660,7 @@ const CatchAllSchema = z.looseObject({ enabled: z.boolean().nullish() });
 const RulesetListSchema = z.array(z.looseObject({ kind: z.string(), phase: z.string().nullish() }));
 const NamedSchema = z.looseObject({ name: z.string().min(1) });
 const R2BucketsSchema = z.looseObject({ buckets: z.array(NamedSchema).nullish() });
-const R2CursorSchema = z.looseObject({ cursor: z.string().nullish() }).optional();
+const CursorSchema = z.looseObject({ cursor: z.string().nullish() }).optional();
 const WebAnalyticsSiteSchema = z.looseObject({
   host: z.string().nullish(),
   site_tag: z.string().min(1),
@@ -698,6 +710,20 @@ const ZoneWorkerDomainSchema = z.looseObject({
   zone_id: z.string().min(1),
   service: z.string().min(1),
 });
+
+const KvNamespaceSchema = z.looseObject({ id: z.string().min(1), title: z.string() });
+const KvKeySchema = z.looseObject({ name: z.string().min(1) });
+const WorkerSchedulesSchema = z.looseObject({
+  schedules: z.array(z.looseObject({ cron: z.string().min(1) })),
+});
+const WorkerSecretSchema = z.looseObject({ name: z.string().min(1), type: z.string() });
+
+/** Most KV namespaces one list request answers (Cloudflare's largest page). */
+const KV_NAMESPACES_PAGE = 100;
+/** Most KV keys one list request answers (Cloudflare's largest page). */
+const KV_KEYS_PAGE = 1000;
+/** The file name of a Worker module upload's main module. */
+const MAIN_MODULE = "worker.mjs";
 
 /** Most versions one read lists: Cloudflare keeps the last 100 for a rollback. */
 const WORKER_VERSIONS_PAGE = 100;
@@ -902,6 +928,47 @@ const WORKERS_HINTS: FailHints = {
   auth: `Cloudflare hosting needs the account permission "${WORKERS_PERMISSION}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/** Hints for the uptime check's Worker, its trigger and secrets, and Workers KV. */
+const UPTIME_HINTS: FailHints = {
+  auth: `The Cloudflare uptime check needs the account permissions ${listText([...CLOUDFLARE_UPTIME_PERMISSIONS])} on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/**
+ * Cloudflare's error code (with HTTP 403) for a Workers call in an account that never chose its
+ * workers.dev subdomain, which only the user chooses (it's a public name).
+ */
+const NO_SUBDOMAIN_CODE = 10063;
+
+/** What to do when the account has no workers.dev subdomain yet. */
+export const WORKERS_SUBDOMAIN_HINT =
+  "Open Workers & Pages in Cloudflare's dashboard once, which asks you to choose one, then run provision again.";
+
+/** Cloudflare's error code (with HTTP 400) for a KV namespace title the account already has. */
+const KV_TITLE_EXISTS_CODE = 10014;
+/** Cloudflare's error code (with HTTP 404) for a KV key that does not exist. */
+const KV_KEY_NOT_FOUND_CODE = 10009;
+
+/**
+ * The account already has a Workers KV namespace with this title: Cloudflare keeps titles unique,
+ * so two applies creating the same one at the same moment get one namespace.
+ */
+export class KvNamespaceExistsError extends OpsCrewError {
+  readonly title: string;
+
+  constructor(title: string) {
+    super("PHASE_PRECONDITION", `The account already has a Workers KV namespace titled ${title}.`);
+    this.name = "KvNamespaceExistsError";
+    this.title = title;
+  }
+}
+
+/** A binding of a Worker module upload, named as in the Cloudflare API. */
+export interface WorkerKvBinding {
+  type: "kv_namespace";
+  name: string;
+  namespace_id: string;
+}
+
 /** Hints for deleting a zone. */
 const ZONE_DELETE_HINTS: FailHints = {
   auth: `Deleting a zone needs the token permission "Zone → Zone → Edit" for it. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
@@ -957,6 +1024,12 @@ const ACCOUNT_PROBES: Record<
   },
 };
 
+/** The read-only call that probes the Workers KV permission (Cloudflare's smallest page is 5). */
+const KV_PROBE = {
+  path: "/storage/kv/namespaces?per_page=5",
+  what: "list the account's Workers KV namespaces",
+};
+
 /** The zone permission each zone-level need is, as the token builder names it. */
 const ZONE_PERMISSIONS: Record<ZonePermissionNeed, string> = {
   dns: "Zone → DNS → Edit",
@@ -990,6 +1063,15 @@ const LOGS_HINTS: FailHints = {
   auth: `Logs on Cloudflare hosting need the account permission "${OBSERVABILITY_PERMISSION}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/** `text` parsed as JSON; `undefined` when it is not JSON. */
+function jsonOrUndefined(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
 /** A tail frame's JSON (binary or text); `undefined` when it is not JSON. */
 function frameJson(data: unknown): unknown {
   const text =
@@ -998,12 +1080,7 @@ function frameJson(data: unknown): unknown {
       : data instanceof ArrayBuffer
         ? new TextDecoder().decode(data)
         : undefined;
-  if (text === undefined) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
+  return text === undefined ? undefined : jsonOrUndefined(text);
 }
 
 /** Cloudflare's error code (with HTTP 404) for "This Worker does not exist on your account". */
@@ -1017,6 +1094,16 @@ function noWorker(answer: RawAnswer): boolean {
 /** `/accounts/{id}/workers/scripts/{name}`. */
 function workerPath(accountId: string, worker: string): string {
   return `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(worker)}`;
+}
+
+/** `/accounts/{id}/storage/kv/namespaces`, then `rest`. */
+function kvPath(accountId: string, rest = ""): string {
+  return `/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces${rest}`;
+}
+
+/** `…/namespaces/{namespace}/values/{key}`: the key percent-encoded, as Cloudflare asks. */
+function kvValuePath(accountId: string, namespaceId: string, key: string): string {
+  return kvPath(accountId, `/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(key)}`);
 }
 
 function toClientCertificate(
@@ -1041,7 +1128,12 @@ function aopPath(zoneId: string): string {
 
 interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  /** Sent as JSON. */
   body?: unknown;
+  /** Sent instead of `body`: a multipart form (`fetch` sets its boundary). */
+  form?: FormData;
+  /** Sent instead of `body`, as plain text. */
+  text?: string;
   headers?: Record<string, string>;
   auth?: boolean;
   /**
@@ -1204,7 +1296,12 @@ export class CloudflareClient {
     };
     const init: RequestInit = { headers };
     if (method !== "GET") init.method = method;
-    if (options.body !== undefined) {
+    if (options.form !== undefined) {
+      init.body = options.form;
+    } else if (options.text !== undefined) {
+      headers["Content-Type"] = "text/plain;charset=UTF-8";
+      init.body = options.text;
+    } else if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(options.body);
     }
@@ -1260,9 +1357,11 @@ export class CloudflareClient {
         continue;
       }
       let json: unknown;
+      let text = "";
       let jsonOk = true;
       try {
-        json = await response.json();
+        text = await response.text();
+        json = JSON.parse(text);
       } catch {
         jsonOk = false;
         json = { success: false, errors: [{ message: `HTTP ${response.status}` }] };
@@ -1274,7 +1373,7 @@ export class CloudflareClient {
             success: false,
             errors: [{ message: `Unexpected response (HTTP ${response.status})` }],
           };
-      return { status: response.status, body, envelope: jsonOk && parsed.success, json };
+      return { status: response.status, body, envelope: jsonOk && parsed.success, json, text };
     }
   }
 
@@ -1297,6 +1396,13 @@ export class CloudflareClient {
   }
 
   #fail(status: number, body: EnvelopeBody, what: string, hints: FailHints = {}): never {
+    if (body.errors.some((e) => Number(e.code) === NO_SUBDOMAIN_CODE)) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `Your Cloudflare account has no workers.dev subdomain yet, so Cloudflare refused to ${what}.`,
+        { hint: WORKERS_SUBDOMAIN_HINT },
+      );
+    }
     const detail = this.#detail(status, body);
     if (status === 403) {
       throw new CloudflareError(`Cloudflare refused the request to ${what}: ${detail}.`, {
@@ -1374,6 +1480,8 @@ export class CloudflareClient {
     options: {
       method: "POST" | "PATCH" | "PUT" | "DELETE";
       body?: unknown;
+      form?: FormData;
+      text?: string;
       hints?: FailHints;
       refusal?: (body: EnvelopeBody) => OpsCrewError | undefined;
     },
@@ -2226,6 +2334,18 @@ export class CloudflareClient {
   }
 
   /**
+   * Which of {@link CLOUDFLARE_UPTIME_PERMISSIONS} the token lacks: the Workers one as
+   * {@link accountPermissions} probes it, then Workers KV by listing the account's namespaces.
+   * Read-only.
+   */
+  async uptimePermissions(accountId: string): Promise<{ missing: string[] }> {
+    const { missing } = await this.accountPermissions(accountId, ["workers"]);
+    const path = `/accounts/${encodeURIComponent(accountId)}${KV_PROBE.path}`;
+    if (await this.#lacks(path, KV_PROBE.what, UPTIME_HINTS)) missing.push(KV_PERMISSION);
+    return { missing };
+  }
+
+  /**
    * Which of the zone permissions in `needs` the token lacks for the zone, named as in the token
    * builder: DNS, each OpsCrew rule phase (its entrypoint ruleset), SSL and certificates, and the
    * zone settings. Probed with read-only calls, as {@link accountPermissions}. Read-only.
@@ -2399,7 +2519,7 @@ export class CloudflareClient {
         `/accounts/${encodeURIComponent(accountId)}/r2/buckets?${query}`,
       );
       names.push(...(this.#result(answer, R2BucketsSchema, what).buckets ?? []).map((b) => b.name));
-      cursor = this.#parse(R2CursorSchema, answer.body.result_info, what)?.cursor ?? "";
+      cursor = this.#parse(CursorSchema, answer.body.result_info, what)?.cursor ?? "";
     } while (cursor);
     return names;
   }
@@ -2467,6 +2587,237 @@ export class CloudflareClient {
       `/accounts/${encodeURIComponent(accountId)}/workers/domains/${encodeURIComponent(domainId)}`,
       `detach the Workers custom domain ${domainId}`,
       { method: "DELETE", hints: WORKERS_HINTS },
+    );
+  }
+
+  /**
+   * The account's Workers KV namespaces, every page (`GET /accounts/{id}/storage/kv/namespaces`):
+   * a page shorter than the largest ends the list. Read-only.
+   */
+  async listKvNamespaces(accountId: string): Promise<{ id: string; title: string }[]> {
+    const what = "list the account's Workers KV namespaces";
+    const out: { id: string; title: string }[] = [];
+    for (let page = 1; ; page++) {
+      const query = new URLSearchParams({
+        page: String(page),
+        per_page: String(KV_NAMESPACES_PAGE),
+      });
+      const items = await this.#call(
+        `${kvPath(accountId)}?${query}`,
+        z.array(KvNamespaceSchema),
+        what,
+        { hints: UPTIME_HINTS },
+      );
+      out.push(...items.map((n) => ({ id: n.id, title: n.title })));
+      if (items.length < KV_NAMESPACES_PAGE) return out;
+    }
+  }
+
+  /**
+   * Creates a Workers KV namespace (`POST …/storage/kv/namespaces`) and answers its id. Sent once.
+   * @throws KvNamespaceExistsError when the account already has one with this title.
+   */
+  async createKvNamespace(accountId: string, title: string): Promise<string> {
+    const what = `create the Workers KV namespace ${title}`;
+    const answer = await this.#send(kvPath(accountId), what, {
+      method: "POST",
+      body: { title },
+      hints: UPTIME_HINTS,
+      refusal: (body) =>
+        body.errors.some((e) => Number(e.code) === KV_TITLE_EXISTS_CODE)
+          ? new KvNamespaceExistsError(title)
+          : undefined,
+    });
+    return this.#parseWrite(KvNamespaceSchema, answer.body.result, what).id;
+  }
+
+  /** Deletes a Workers KV namespace with every key in it (`DELETE …/namespaces/{id}`). Sent once. */
+  async deleteKvNamespace(accountId: string, namespaceId: string): Promise<void> {
+    await this.#send(
+      kvPath(accountId, `/${encodeURIComponent(namespaceId)}`),
+      `delete the Workers KV namespace ${namespaceId}`,
+      { method: "DELETE", hints: UPTIME_HINTS },
+    );
+  }
+
+  /** The names of the namespace's keys that start with `prefix`, every page. Read-only. */
+  async listKvKeys(accountId: string, namespaceId: string, prefix: string): Promise<string[]> {
+    const what = `list the keys of the Workers KV namespace ${namespaceId}`;
+    const names: string[] = [];
+    let cursor = "";
+    do {
+      const query = new URLSearchParams({
+        prefix,
+        limit: String(KV_KEYS_PAGE),
+        ...(cursor ? { cursor } : {}),
+      });
+      const answer = await this.#request(
+        `${kvPath(accountId, `/${encodeURIComponent(namespaceId)}/keys`)}?${query}`,
+      );
+      const keys = this.#result(answer, z.array(KvKeySchema), what, UPTIME_HINTS);
+      names.push(...keys.map((key) => key.name));
+      cursor = this.#parse(CursorSchema, answer.body.result_info, what)?.cursor ?? "";
+    } while (cursor);
+    return names;
+  }
+
+  /**
+   * A key's value as it is stored, or `undefined` when the namespace has no such key
+   * (`GET …/values/{key}`). The caller validates it. Read-only.
+   */
+  async getKv(accountId: string, namespaceId: string, key: string): Promise<string | undefined> {
+    const answer = await this.#request(kvValuePath(accountId, namespaceId, key));
+    if (answer.status === 200) return answer.text;
+    if (
+      answer.status === 404 &&
+      answer.body.errors.some((e) => Number(e.code) === KV_KEY_NOT_FOUND_CODE)
+    ) {
+      return undefined;
+    }
+    this.#fail(answer.status, answer.body, `read the Workers KV key ${key}`, UPTIME_HINTS);
+  }
+
+  /** Writes a key's value, as plain text (`PUT …/values/{key}`). Sent once. */
+  async putKv(accountId: string, namespaceId: string, key: string, value: string): Promise<void> {
+    await this.#send(kvValuePath(accountId, namespaceId, key), `write the Workers KV key ${key}`, {
+      method: "PUT",
+      text: value,
+      hints: UPTIME_HINTS,
+    });
+  }
+
+  /** Deletes a key; a key that is already gone is no error (`DELETE …/values/{key}`). Sent once. */
+  async deleteKv(accountId: string, namespaceId: string, key: string): Promise<void> {
+    await this.#send(kvValuePath(accountId, namespaceId, key), `delete the Workers KV key ${key}`, {
+      method: "DELETE",
+      hints: UPTIME_HINTS,
+    });
+  }
+
+  /**
+   * Uploads and deploys a Worker of one ES module (`PUT …/workers/scripts/{name}`, multipart): the
+   * `metadata` part names the main module, the compatibility date, the bindings and the binding
+   * types to keep from the previous upload (`keepBindings`, so `secret_text` keeps every secret).
+   * Sent once.
+   */
+  async uploadWorkerModule(
+    accountId: string,
+    worker: string,
+    module: {
+      content: string;
+      compatibilityDate: string;
+      bindings: readonly WorkerKvBinding[];
+      keepBindings: readonly string[];
+    },
+  ): Promise<void> {
+    const what = `upload the Worker ${worker}`;
+    const form = new FormData();
+    form.append(
+      "metadata",
+      JSON.stringify({
+        main_module: MAIN_MODULE,
+        compatibility_date: module.compatibilityDate,
+        bindings: module.bindings,
+        keep_bindings: module.keepBindings,
+      }),
+    );
+    form.append(
+      MAIN_MODULE,
+      new Blob([module.content], { type: "application/javascript+module" }),
+      MAIN_MODULE,
+    );
+    const answer = await this.#send(workerPath(accountId, worker), what, {
+      method: "PUT",
+      form,
+      hints: UPTIME_HINTS,
+    });
+    this.#parseWrite(z.looseObject({}), answer.body.result, what);
+  }
+
+  /** Sets the Worker's Cron Triggers to exactly `crons` (`PUT …/schedules`). Sent once. */
+  async putWorkerSchedules(
+    accountId: string,
+    worker: string,
+    crons: readonly string[],
+  ): Promise<void> {
+    const what = `set the schedule of the Worker ${worker}`;
+    const answer = await this.#send(`${workerPath(accountId, worker)}/schedules`, what, {
+      method: "PUT",
+      body: crons.map((cron) => ({ cron })),
+      hints: UPTIME_HINTS,
+    });
+    this.#parseWrite(WorkerSchedulesSchema, answer.body.result, what);
+  }
+
+  /** Deletes a Worker with its triggers and secrets (`DELETE …/workers/scripts/{name}`). Sent once. */
+  async deleteWorkerScript(accountId: string, worker: string): Promise<void> {
+    await this.#send(workerPath(accountId, worker), `delete the Worker ${worker}`, {
+      method: "DELETE",
+      hints: UPTIME_HINTS,
+    });
+  }
+
+  /**
+   * The account's workers.dev subdomain (`GET …/workers/subdomain`); `undefined` when the account
+   * has none yet (code 10007): a Worker's Cron Triggers need one. Read-only.
+   */
+  async workersSubdomain(accountId: string): Promise<string | undefined> {
+    const answer = await this.#request(
+      `/accounts/${encodeURIComponent(accountId)}/workers/subdomain`,
+    );
+    if (noWorker(answer)) return undefined;
+    const what = "read the account's workers.dev subdomain";
+    return this.#result(answer, z.looseObject({ subdomain: z.string() }), what, UPTIME_HINTS)
+      .subdomain;
+  }
+
+  /**
+   * The names of the Worker's secrets (`GET …/secrets`), never their values; `undefined` when the
+   * account has no such Worker. Read-only.
+   */
+  async listWorkerSecrets(accountId: string, worker: string): Promise<string[] | undefined> {
+    const answer = await this.#request(`${workerPath(accountId, worker)}/secrets`);
+    if (noWorker(answer)) return undefined;
+    const secrets = this.#result(
+      answer,
+      z.array(WorkerSecretSchema),
+      `list the secrets of the Worker ${worker}`,
+      UPTIME_HINTS,
+    );
+    return secrets.map((secret) => secret.name);
+  }
+
+  /**
+   * Sets one secret of the Worker (`PUT …/secrets`, type `secret_text`), which deploys it. Its
+   * value is registered with the redactor before the request, and so is each string field of a
+   * JSON object value on its own (the uptime webhook's `url` and `token`), so no error can show
+   * them. Sent once.
+   */
+  async putWorkerSecret(
+    accountId: string,
+    worker: string,
+    secret: { name: string; text: string },
+  ): Promise<void> {
+    this.#redactor.addLiteral(secret.text, secret.name);
+    const fields = z.record(z.string(), z.unknown()).safeParse(jsonOrUndefined(secret.text));
+    for (const value of Object.values(fields.data ?? {})) {
+      if (typeof value === "string") this.#redactor.addLiteral(value, secret.name);
+    }
+    const what = `set the secret ${secret.name} of the Worker ${worker}`;
+    const answer = await this.#send(`${workerPath(accountId, worker)}/secrets`, what, {
+      method: "PUT",
+      body: { name: secret.name, text: secret.text, type: "secret_text" },
+      hints: UPTIME_HINTS,
+    });
+    this.#parseWrite(WorkerSecretSchema, answer.body.result, what);
+  }
+
+  /** Deletes one secret of the Worker by its name (`DELETE …/secrets/{name}`). Sent once. */
+  async deleteWorkerSecret(accountId: string, worker: string, name: string): Promise<void> {
+    await this.#send(
+      `${workerPath(accountId, worker)}/secrets/${encodeURIComponent(name)}`,
+      `delete the secret ${name} of the Worker ${worker}`,
+      { method: "DELETE", hints: UPTIME_HINTS },
     );
   }
 

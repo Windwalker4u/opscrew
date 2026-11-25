@@ -5,6 +5,7 @@ import { CHECK_PAUSED_VARIABLE, checkEnvironmentKey } from "@opscrew/iac-templat
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { checksInActions } from "./settings";
 
 /** The GitHub calls the pause needs (a `GitHubClient` or a test fake). */
 export type CheckPauseApi = Pick<
@@ -37,8 +38,9 @@ export type CheckPauseOutcome = "changed" | "unchanged" | "refused";
  * entry changed, and written back (deleted once no environment is paused), after a
  * `github-settings` approval, or under `given`, an approval that already covers it (destroy's
  * typed confirmation, whose details say so): then nothing is asked, and a refused one changes
- * nothing. Audited. Only an environment with the check on is paused or resumed (without it the
- * variable is not even read); nothing to change asks nothing. A variable that is not OpsCrew's
+ * nothing. Audited. Only an environment with the check on in GitHub Actions is paused or resumed
+ * (without it the variable is not even read: the Cloudflare uptime Worker has no pause); nothing
+ * to change asks nothing. A variable that is not OpsCrew's
  * JSON stops with how to fix it.
  */
 export async function changeCheckPause(
@@ -49,8 +51,8 @@ export async function changeCheckPause(
   phase: PhaseName,
   given?: ApprovalRecord,
 ): Promise<CheckPauseOutcome> {
-  // Without the check on, the variable is not read (the token may lack Variables).
-  if (plan.observability?.check?.enabled !== true) return "unchanged";
+  // Without the check on in Actions, the variable is not read (the token may lack Variables).
+  if (!checksInActions(plan)) return "unchanged";
   const { api, owner, repo } = target;
   const key = checkEnvironmentKey(plan);
   const where = `${owner}/${repo}`;

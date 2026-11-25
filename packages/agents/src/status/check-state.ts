@@ -1,11 +1,14 @@
 /**
  * The scheduled check's state in `status` (feature 017, FR-1708): whether GitHub runs its
- * workflow, and the repository's open alerts, read from GitHub when the command runs.
+ * workflow, and the repository's open alerts, read from GitHub when the command runs; for an
+ * environment the Cloudflare uptime Worker checks (feature 046), the Worker's state instead.
  */
 import type { CheckWorkflowState } from "@opscrew/connector-github";
 import { errorText, isUserFacingError } from "@opscrew/core";
 import { CHECK_LABEL, CHECK_WORKFLOW_FILE } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { checksInActions, usesUptimeWorker } from "../check/settings";
+import { uptimeStatusLines } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import type { GitHubApi } from "../provision/types";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
@@ -38,17 +41,19 @@ function stateLine(state: CheckWorkflowState, actions: string): string {
 }
 
 /**
- * The scheduled check's state and its lines, when `plan` has the check on: the workflow's state
- * (`checkWorkflowState`), with how to turn it on again when GitHub turned it off, and the open
- * alerts with their links (`openIssues`). A line that says why instead when GitHub cannot be read.
- * `github` is the client (`null`: no token; default: the user's token).
+ * The scheduled check's state and its lines, when `plan` has the check on in GitHub Actions: the
+ * workflow's state (`checkWorkflowState`), with how to turn it on again when GitHub turned it off,
+ * and the open alerts with their links (`openIssues`). A line that says why instead when GitHub
+ * cannot be read. `github` is the client (`null`: no token; default: the user's token). With the
+ * Cloudflare uptime Worker, its lines (`uptimeStatusLines`), read from Cloudflare.
  */
 export async function checkStateReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   github?: Pick<GitHubApi, "checkWorkflowState" | "openIssues"> | null,
 ): Promise<{ lines: string[]; check?: CheckState }> {
-  if (plan.observability?.check?.enabled !== true) return { lines: [] };
+  if (usesUptimeWorker(plan)) return { lines: await uptimeStatusLines(deps, plan) };
+  if (!checksInActions(plan)) return { lines: [] };
   const head = `Scheduled check (.github/workflows/${CHECK_WORKFLOW_FILE}, read from GitHub now):`;
   try {
     const api = github === undefined ? await githubClientFromToken(deps) : github;

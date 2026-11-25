@@ -112,3 +112,87 @@ describe("init with the scheduled check on", () => {
     await expect(scheduledCheck([], { enabled: false })).resolves.toBeUndefined();
   });
 });
+
+describe("init with the Cloudflare uptime Worker", () => {
+  const CLOUDFLARE = fakeSecret("cloudflare-token", "init-uptime");
+  const ACCOUNT = "fedcba9876543210fedcba9876543210";
+
+  /** Cloudflare with the zone example.com, the token lacking `missing` (`workers`, `kv`). */
+  function cloudflare(missing: readonly string[]): FetchLike {
+    const ok = (result: unknown) => json(200, { success: true, errors: [], messages: [], result });
+    const refuse = () =>
+      json(403, { success: false, errors: [{ code: 10000, message: "Authentication error" }] });
+    return async (input) => {
+      const url = new URL(String(input));
+      const path = url.pathname.replace(/^\/client\/v4/, "");
+      if (url.hostname === "api.github.com") return github([])(input);
+      if (path === "/user/tokens/verify") return ok({ id: "t", status: "active" });
+      if (path === "/zones") {
+        const name = url.searchParams.get("name");
+        return ok(
+          name === "example.com"
+            ? [{ id: "0".repeat(32), name, status: "active", account: { id: ACCOUNT } }]
+            : [],
+        );
+      }
+      if (path === `/accounts/${ACCOUNT}/workers/scripts`) {
+        return missing.includes("workers") ? refuse() : ok([]);
+      }
+      if (path === `/accounts/${ACCOUNT}/storage/kv/namespaces`) {
+        return missing.includes("kv") ? refuse() : ok([]);
+      }
+      return json(200, { success: true, errors: [], messages: [], result: [] });
+    };
+  }
+
+  async function uptimeCheck(missing: readonly string[], offline = false) {
+    const deps = await createTestPhaseDeps({
+      env: { GITHUB_TOKEN: GITHUB, CLOUDFLARE_API_TOKEN: CLOUDFLARE },
+      runner: repo,
+      fetch: cloudflare(missing),
+    });
+    await writeArtifact(
+      "plan",
+      deps.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...testPlan({ domain: "shop.example.com" }),
+        observability: { check: { enabled: true, runner: "cloudflare", webhook: "ntfy" } },
+      }),
+    );
+    const checks = await runInitChecks(deps, {
+      ...(offline ? { offline: true } : {}),
+      services: { which: (name) => `/usr/bin/${name}`, nodeVersion: "22.12.0" },
+    });
+    expect(JSON.stringify(checks)).not.toContain(CLOUDFLARE);
+    // The GitHub check's issues, workflow and variables don't concern the Worker.
+    expect(checks.find((check) => check.id === "scheduled-check")).toBeUndefined();
+    return checks.find((check) => check.id === "uptime-check");
+  }
+
+  it("passes when the token holds Workers Scripts and Workers KV Storage", async () => {
+    expect(await uptimeCheck([])).toMatchObject({
+      title: "Cloudflare permissions for the uptime check",
+      status: "pass",
+      message:
+        "CLOUDFLARE_API_TOKEN holds Account → Workers Scripts → Edit and Account → Workers KV Storage → Edit for the account that holds example.com, so OpsCrew can set up the uptime Worker there.",
+    });
+  });
+
+  it("names a missing Workers Scripts or Workers KV Storage permission", async () => {
+    const kv = await uptimeCheck(["kv"]);
+    expect(kv?.status).toBe("fail");
+    expect(kv?.message).toBe(
+      "CLOUDFLARE_API_TOKEN lacks Account → Workers KV Storage → Edit for the account that holds example.com, which the uptime check in the Cloudflare Worker needs.",
+    );
+    expect(kv?.fix).toContain("Add Account → Workers KV Storage → Edit to CLOUDFLARE_API_TOKEN");
+    expect(kv?.fix).toContain('set observability.check.runner to "actions"');
+    const both = await uptimeCheck(["workers", "kv"]);
+    expect(both?.message).toContain(
+      "lacks Account → Workers Scripts → Edit and Account → Workers KV Storage → Edit",
+    );
+  });
+
+  it("is not checked offline", async () => {
+    expect(await uptimeCheck(["kv"], true)).toMatchObject({ status: "skip" });
+  });
+});

@@ -23,6 +23,7 @@ import {
   type DeployPlan,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { planUptimeTeardown } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
 import {
@@ -797,6 +798,10 @@ export async function destroyOwnServer(
   // This app's hostnames in OpsCrew's shared Cloudflare rules: removed after the rest.
   const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
   const cloudflarePlan = removalDetails(shared);
+  // The environment's entry in the Cloudflare uptime Worker likewise, where the check's pause runs.
+  const uptime = removeApp
+    ? await planUptimeTeardown(deps, plan, { services, github, command: COMMAND })
+    : undefined;
   let bucket: BucketDeletion | undefined;
   if (removeApp) {
     const removed = [...previewSteps, ...hostSteps].map((step) => step.title);
@@ -824,7 +829,7 @@ export async function destroyOwnServer(
     const keptBucket = deleteData ? undefined : providerBucket(plan);
     if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
     else if (keptBucket !== undefined) deps.reporter.info(bucketStays(keptBucket));
-    for (const note of checkPauseNote(plan)) deps.reporter.info(note);
+    for (const note of checkPauseNote(plan, uptime)) deps.reporter.info(note);
     const servers = serverLines(plan, snapshots);
     // The extra servers a provider cancels: billed to the end of their term (said before the names).
     if (cancelling.length > 0) deps.reporter.warn(cancelNotes(cancelling, name).join("\n"));
@@ -967,7 +972,7 @@ export async function destroyOwnServer(
         words,
         // The check's pause is said in the typed confirmation it goes under (the host plan's when
         // there is one).
-        notes: removeApp && hostSteps.length === 0 ? checkPauseNote(plan) : [],
+        notes: removeApp && hostSteps.length === 0 ? checkPauseNote(plan, uptime) : [],
         // The extra servers this plan cancels: shut down first, billed to the end of their term.
         // Then the snapshots taken earlier that stay.
         planNotes: (changes) => {
@@ -1013,7 +1018,7 @@ export async function destroyOwnServer(
                 `${TUNNEL_AFTER_SERVER} so this goes first; the approved Cloudflare plan follows once Cloudflare reports no active connections for the tunnel.`,
               ]
             : []),
-          ...checkPauseNote(plan),
+          ...checkPauseNote(plan, uptime),
           stays,
         ],
         refused: `The removal of ${name} from your server was not approved, so nothing on your server was changed${already}.`,
@@ -1066,7 +1071,7 @@ export async function destroyOwnServer(
   /** At home: the outside check's workflow, while no pull request removes it. */
   let homeLeft: string[] = [];
   if (removeApp) {
-    await pauseCheckForTeardown(deps, github, plan, teardownApproval ?? removal?.approval);
+    await pauseCheckForTeardown(deps, github, plan, teardownApproval ?? removal?.approval, uptime);
     secretsRemoved = await removeDeploySecrets(deps, github, {
       plan,
       done: "The app is removed from your server and Cloudflare.",

@@ -18,7 +18,7 @@ export interface CheckServerReach {
 }
 
 /** Each webhook kind as the user knows it. */
-const WEBHOOK_NAMES = { slack: "Slack", discord: "Discord", ntfy: "ntfy" } as const;
+export const WEBHOOK_NAMES = { slack: "Slack", discord: "Discord", ntfy: "ntfy" } as const;
 
 /**
  * The webhook's secrets: its address (`OPSCREW_CHECK_WEBHOOK`), from the variable of that name

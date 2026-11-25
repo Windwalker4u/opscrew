@@ -379,6 +379,11 @@ export interface ProvisionResult {
   /** With `--plan-only`: the scheduled check key's host plan hash (`check-key`), to approve too. */
   checkKeyPlanHash?: string;
   /**
+   * With `--plan-only`: the hash of the Cloudflare uptime Worker's plan (`cloudflare-apply`), to
+   * approve too; absent when it changes nothing.
+   */
+  uptimePlanHash?: string;
+  /**
    * The runner machines' host plan hashes (each file is `.opscrew/plans/host-<hash>.json`): the
    * environment's runner removed from each machine it left, then, with `runner: host`, installed on
    * its machine. With `--plan-only` they are the hashes to approve.

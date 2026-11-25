@@ -154,6 +154,7 @@ describe("provisionCheck with extra servers", () => {
         },
         reach: APP_REACH,
       },
+      uptime: undefined,
       storeSecrets: true,
       services: {},
       command: "opscrew provision",

@@ -15,6 +15,7 @@ import {
   CHECK_LABEL,
   CHECK_WORKFLOW_FILE,
   checkEnvironmentKey,
+  checkHosts,
   checkServerSecret,
   renderCheck,
 } from "./index";
@@ -204,6 +205,24 @@ describe("renderCheck", () => {
     expect(renderCheck({ plans: [plan], repo: PUBLIC })).toEqual([]);
     const off = DeployPlanSchema.parse({ ...plan, observability: { check: { enabled: false } } });
     expect(renderCheck({ plans: [off], repo: PUBLIC })).toEqual([]);
+  });
+
+  it("leaves out an environment the Cloudflare uptime Worker checks, and renders nothing with only those", () => {
+    const prod = withCheck(testPlan({ domain: "shop.example.com" }));
+    const worker = withCheck(ofApp(testPlan({ domain: "docs.example.com" }), "docs"), {
+      runner: "cloudflare",
+    });
+    expect(
+      configOf(renderCheck({ plans: [prod, worker], repo: PUBLIC })).environments.map(
+        (environment: { key: string }) => environment.key,
+      ),
+    ).toEqual(["shop/prod"]);
+    expect(renderCheck({ plans: [worker], repo: PUBLIC })).toEqual([]);
+    // The Actions runner, named or not, renders as before.
+    const actions = withCheck(testPlan({ domain: "shop.example.com" }), { runner: "actions" });
+    expect(renderCheck({ plans: [actions], repo: PUBLIC })).toEqual(
+      renderCheck({ plans: [prod], repo: PUBLIC }),
+    );
   });
 
   it("leaves out destroyed environments", () => {
@@ -593,5 +612,20 @@ describe("the check's names", () => {
       repo: PUBLIC,
     });
     expect(files.map((f) => f.path)).toContain(`.github/workflows/${CHECK_WORKFLOW_FILE}`);
+  });
+});
+
+describe("checkHosts", () => {
+  it("gives renderCheck's hostnames and health path, with / on a serverless target", () => {
+    const server = withCheck(testPlan({ domain: "example.com", www: true }));
+    expect(checkHosts(server)).toEqual([
+      { hostname: "example.com", healthPath: "/api/health" },
+      { hostname: "www.example.com", healthPath: "/api/health" },
+    ]);
+    expect(configOf(renderCheck({ plans: [server], repo: PUBLIC })).environments[0].hosts).toEqual(
+      checkHosts(server),
+    );
+    const site = ssrPlan();
+    expect(checkHosts(site)).toEqual([{ hostname: site.dns.domain, healthPath: "/" }]);
   });
 });

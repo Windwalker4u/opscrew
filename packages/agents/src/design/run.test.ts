@@ -947,6 +947,37 @@ describe("runDesign", () => {
       expect(again.reporter.text()).toContain("opscrew/plan.yaml is up to date");
     });
 
+    it("refuses the Cloudflare uptime Worker without the repository's webhook, naming opscrew/plan.yaml", async () => {
+      const deps = await setup(
+        staticSpaFacts(),
+        makeRequirements({ dnsProvider: "cloudflare", domain: "app.example.com" }),
+      );
+      const first = await runDesign(deps, { catalog: euCatalog() });
+      const worker = {
+        ...first.plan,
+        observability: { check: { enabled: true, runner: "cloudflare" as const } },
+      };
+      await writeArtifact("plan", deps.paths.files.plan, worker);
+      const again = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+      await expect(runDesign(again, { catalog: euCatalog() })).rejects.toMatchObject({
+        code: "ARTIFACT_INVALID",
+        file: "opscrew/plan.yaml",
+      });
+      // Before any change: the plan stays as the user wrote it.
+      expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(worker);
+
+      // With the webhook, design shows the Worker's line and no Actions minutes.
+      await writeArtifact("plan", deps.paths.files.plan, {
+        ...worker,
+        observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+      });
+      const third = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+      const designed = await runDesign(third, { catalog: euCatalog() });
+      expect(designed.lines).toContain(
+        "The disk, snapshot, restore-drill and certificate-days checks need `runner: actions`.",
+      );
+    });
+
     it("leaves www off for a new domain, whatever the old one had", async () => {
       const deps = await setup(
         staticSpaFacts(),

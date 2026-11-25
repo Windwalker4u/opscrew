@@ -19,6 +19,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { fakeUptimeAccount, WEBHOOK_URL, withUptimeAccount } from "../../check/uptime.fakes";
 import { runProvision } from "../../provision/run";
 import type { ProvisionServices } from "../../provision/types";
 import { runSecure } from "../../secure/run";
@@ -664,6 +665,27 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     expect(committed).toContain("opscrew/cloudflare/wrangler.jsonc");
     expect(third.prUrl).toBe(OPEN_PULL.url);
     expectNoSecrets(await everything(s));
+  });
+
+  it("--plan-only shows the Cloudflare uptime plan with its hash, and changes nothing there", async () => {
+    const base = sitePlan({ env: ["API_KEY"] });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    const s = await setup({ plan, env: { OPSCREW_CHECK_WEBHOOK: WEBHOOK_URL } });
+    const account = fakeUptimeAccount();
+    const services = {
+      ...s.services,
+      sharedCloudflare: withUptimeAccount(fakeSharedCloudflare(s.zone), account.client),
+    };
+    const shown = await runProvision(s.deps, { services, planOnly: true });
+    expect(shown.uptimePlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(s.deps.reporter.text()).toContain(
+      `Cloudflare uptime plan ${shown.uptimePlanHash}. In a script, approve it too`,
+    );
+    expect(account.uptime.writes()).toEqual([]);
+    expect(s.deps.reporter.text()).not.toContain(WEBHOOK_URL);
   });
 
   it("--plan-only shows both plans; --approve applies exactly them, the Cloudflare plan's hash never as the IaC plan's", async () => {

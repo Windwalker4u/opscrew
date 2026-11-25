@@ -57,8 +57,11 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
   });
 }
 
-/** Hetzner, Cloudflare and GitHub as they answer each token; `rejected` tokens are refused. */
-function net(rejected: readonly string[] = []): FetchLike {
+/**
+ * Hetzner, Cloudflare and GitHub as they answer each token; `rejected` tokens are refused, and
+ * with `kvDenied` Cloudflare refuses to list the account's Workers KV namespaces.
+ */
+function net(rejected: readonly string[] = [], kvDenied = false): FetchLike {
   const zone = new FakeZone();
   return async (input, init) => {
     const url = new URL(String(input));
@@ -86,6 +89,14 @@ function net(rejected: readonly string[] = []): FetchLike {
       }
       if (url.pathname === "/client/v4/accounts") {
         return json(200, { success: true, errors: [], result: [] });
+      }
+      if (url.pathname === `/client/v4/accounts/${FAKE_ACCOUNT_ID}/storage/kv/namespaces`) {
+        return kvDenied
+          ? json(403, {
+              success: false,
+              errors: [{ code: 10000, message: "Authentication error" }],
+            })
+          : json(200, { success: true, errors: [], result: [] });
       }
       if (url.pathname === "/client/v4/zones") {
         const zones =
@@ -140,6 +151,8 @@ async function setup(
   env: Record<string, string>,
   o: {
     rejected?: string[];
+    /** Cloudflare refuses the token's Workers KV read. */
+    kvDenied?: boolean;
     approve?: boolean;
     /** Another environment of the project in `root`. */
     root?: string;
@@ -150,7 +163,7 @@ async function setup(
 ): Promise<TestPhaseDeps> {
   const deps = await createTestPhaseDeps({
     runner: repoRunner(),
-    fetch: net(o.rejected),
+    fetch: net(o.rejected, o.kvDenied),
     approvalHandler: new ScriptedApprovalHandler(() => o.approve ?? true),
     ...(o.root === undefined ? {} : { root: o.root }),
     ...(o.environment === undefined ? {} : { environment: o.environment }),
@@ -369,6 +382,22 @@ describe("replaceToken", () => {
     expect(error.hint).toContain("Read & Write API token");
     expect(await exists(tokenDatesFile(deps.paths))).toBe(false);
     expect((await readCredentialsRecord(deps)).environments).toEqual({});
+    expectNoValue(deps, error);
+  });
+
+  it("checks a new Cloudflare token's uptime Worker permissions as init does", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...testPlan({ domain: "shop.example.com", deployed: true }),
+      observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+    });
+    const deps = await setup(plan, { CLOUDFLARE_API_TOKEN: CLOUDFLARE }, { kvDenied: true });
+    const error = await failure(replaceToken(deps, plan, "cloudflare", { init: INIT }));
+    expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
+    expect(error.message).toContain(
+      "does not pass OpsCrew's check: CLOUDFLARE_API_TOKEN lacks Account → Workers KV Storage → Edit",
+    );
+    expect(error.hint).toContain("Add Account → Workers KV Storage → Edit to CLOUDFLARE_API_TOKEN");
+    expect(await exists(tokenDatesFile(deps.paths))).toBe(false);
     expectNoValue(deps, error);
   });
 
