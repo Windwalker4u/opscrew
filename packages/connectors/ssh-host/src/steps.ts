@@ -179,6 +179,22 @@ import {
   textUpTo,
 } from "./types";
 import {
+  renderUptimeReportScript,
+  UPTIME_REPORT_CONFIG_DIR,
+  UPTIME_REPORT_SCRIPT,
+  UPTIME_REPORT_SERVICE_TEXT,
+  UPTIME_REPORT_SERVICE_UNIT,
+  UPTIME_REPORT_STATE_DIR,
+  UPTIME_REPORT_TIMER_TEXT,
+  UPTIME_REPORT_TIMER_UNIT,
+  UPTIME_REPORT_USER,
+  UPTIME_REPORT_VERSION,
+  UptimeReportParamsSchema,
+  uptimeReportConfigText,
+  uptimeReportService,
+  uptimeReportTimer,
+} from "./uptime-report";
+import {
   dockerBackendCheck,
   sortedIpv6Networks,
   sortedNetworks,
@@ -2910,6 +2926,235 @@ systemctl daemon-reload`,
 }
 
 // ---------------------------------------------------------------------------------------------
+// uptime-report: one environment's server checks, reported to the Cloudflare uptime Worker, a
+// script and two template units (see uptime-report.ts)
+
+const UptimeReportRemoveParams = z.strictObject({
+  remove: z.literal(true),
+  /** The instances to remove. */
+  instances: words(z.string().regex(/^[0-9a-f]{16}$/)),
+  /** The script and units go too once no other config is left. */
+  shared: z.boolean(),
+});
+
+/**
+ * `owned <path> '<mode> <owner>'`, `script_version` (line 2 of the script on the server),
+ * `shared_ok` (the script and units are this version's, or a newer version's) and `instance_ok`
+ * (the instance's config, key and timer are as planned).
+ */
+const UPTIME_REPORT_HELPERS = `${FILE_IS}
+owned() { [ -e "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%a %U' "$1" 2>/dev/null)" = "$2" ]; }
+script_version() {
+  if [ -f "$SCRIPT" ]; then sed -n '2s/^# opscrew-uptime-report version \\([0-9][0-9]*\\)$/\\1/p' "$SCRIPT"; fi
+}
+shared_ok() {
+  v=$(script_version)
+  [ -n "$v" ] || return 1
+  if [ "$v" -gt "$VERSION" ]; then
+    [ -f "$SERVICE_UNIT" ] && [ -f "$TIMER_UNIT" ]
+    return
+  fi
+  [ "$v" -eq "$VERSION" ] || return 1
+  file_is "$SCRIPT" "$SCRIPT_SHA256" && file_is "$SERVICE_UNIT" "$SERVICE_SHA256" && file_is "$TIMER_UNIT" "$TIMER_SHA256" || return 1
+  owned "$SCRIPT" '755 root' && owned "$SERVICE_UNIT" '644 root' && owned "$TIMER_UNIT" '644 root'
+}
+instance_ok() {
+  owned "$CONFIG_DIR" '700 root' || return 1
+  file_is "$CONFIG" "$CONFIG_SHA256" && owned "$CONFIG" '600 root' || return 1
+  file_is "$KEY_FILE" "$KEY_SHA256" && owned "$KEY_FILE" '600 root' || return 1
+  [ "$(systemctl is-enabled "$TIMER" 2>/dev/null)" = enabled ] && systemctl is-active --quiet "$TIMER"
+}`;
+
+function uptimeReportScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "setup" || step.params.remove === true) {
+    return uptimeReportRemoveScripts(plan, step);
+  }
+  const p = params(step, UptimeReportParamsSchema);
+  if (p.app !== plan.app) throw invalid(step, "app");
+  const script = renderUptimeReportScript();
+  const config = uptimeReportConfigText(p.app, p.report);
+  const files = {
+    VERSION: UPTIME_REPORT_VERSION,
+    DEPLOY_USER: UPTIME_REPORT_USER,
+    OPSCREW_DIR,
+    SCRIPT: UPTIME_REPORT_SCRIPT,
+    SERVICE_UNIT: UPTIME_REPORT_SERVICE_UNIT,
+    TIMER_UNIT: UPTIME_REPORT_TIMER_UNIT,
+    CONFIG_DIR: UPTIME_REPORT_CONFIG_DIR,
+    CONFIG: `${UPTIME_REPORT_CONFIG_DIR}/${p.instance}.conf`,
+    KEY_FILE: `${UPTIME_REPORT_CONFIG_DIR}/${p.instance}.key`,
+    TIMER: uptimeReportTimer(p.instance),
+    SERVICE: uptimeReportService(p.instance),
+    SCRIPT_SHA256: sha256Hex(script),
+    SERVICE_SHA256: sha256Hex(UPTIME_REPORT_SERVICE_TEXT),
+    TIMER_SHA256: sha256Hex(UPTIME_REPORT_TIMER_TEXT),
+    CONFIG_SHA256: sha256Hex(config),
+    KEY_SHA256: p.report.keySha256,
+  };
+  const failed = "OpsCrew's uptime report is not set up as planned.";
+  const spec = scripts({
+    name: "uptime-report",
+    params: {
+      ...files,
+      SCRIPT_B64: base64(script),
+      SERVICE_B64: base64(UPTIME_REPORT_SERVICE_TEXT),
+      TIMER_B64: base64(UPTIME_REPORT_TIMER_TEXT),
+      CONFIG_B64: base64(config),
+    },
+    helpers: UPTIME_REPORT_HELPERS,
+    verify: "  shared_ok && instance_ok",
+    snapshot: `if [ -e "$SCRIPT" ]; then echo prev.installed=true; else echo prev.installed=false; fi
+if [ -e "$CONFIG" ]; then echo prev.instance=true; else echo prev.instance=false; fi`,
+    apply: `umask 077
+# The key, read before anything else can read the session's stdin. Only builtins and sha256sum's
+# stdin see it; it is checked against the plan's SHA-256 before it is written.
+key=''
+IFS= read -r key || true
+case "$key" in *[!0-9a-f]*) key='' ;; esac
+if [ "\${#key}" -ne 64 ]; then
+  key=''
+  fail 'No valid report key arrived on standard input, so the uptime report was not set up. Nothing was changed.'
+fi
+if [ "$(printf '%s' "$key" | sha256sum | cut -d ' ' -f 1)" != "$KEY_SHA256" ]; then
+  key=''
+  fail 'The report key that arrived on standard input is not the one the plan names, so it was not written. Nothing was changed.'
+fi
+systemd=$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \\([0-9][0-9]*\\).*$/\\1/p')
+if [ -z "$systemd" ] || [ "$systemd" -lt 247 ]; then
+  key=''
+  fail "The uptime report needs systemd 247 or newer (for LoadCredential=), and this server has \${systemd:-an unknown version}. Nothing was changed."
+fi
+if ! id -u "$DEPLOY_USER" >/dev/null 2>&1; then
+  key=''
+  fail "The uptime report runs as $DEPLOY_USER, and this server has no such user. Nothing was changed."
+fi
+for tool in curl openssl sha256sum timeout awk; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    key=''
+    fail "$tool is not installed, so the uptime report cannot run. Nothing was changed."
+  fi
+done
+# 1. The shared script and units, when they are missing or older: a newer version stays.
+v=$(script_version)
+if [ -z "$v" ] || [ "$v" -lt "$VERSION" ] || { [ "$v" -eq "$VERSION" ] && ! shared_ok; }; then
+  install -d -m 0755 "$(dirname "$SCRIPT")" "$(dirname "$SERVICE_UNIT")"
+  printf '%s' "$SCRIPT_B64" | base64 -d | write_file "$SCRIPT" 0755
+  printf '%s' "$SERVICE_B64" | base64 -d | write_file "$SERVICE_UNIT" 0644
+  printf '%s' "$TIMER_B64" | base64 -d | write_file "$TIMER_UNIT" 0644
+fi
+# 2. The config and the key: root's only, in a root-only folder.
+install -d -m 0700 "$OPSCREW_DIR" "$CONFIG_DIR"
+chmod 0700 "$CONFIG_DIR"
+printf '%s' "$CONFIG_B64" | base64 -d | write_file "$CONFIG" 0600
+printf '%s' "$key" | write_file "$KEY_FILE" 0600
+key=''
+# 3. The timer: its first run comes right away; the verify runs it once more and reads its line.
+systemctl daemon-reload
+systemctl enable --now --quiet "$TIMER"`,
+    failed,
+    ...(p.packages === ""
+      ? {}
+      : {
+          preApply: applyScript(
+            "uptime-report.packages",
+            { PACKAGES: p.packages },
+            "",
+            `apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
+# shellcheck disable=SC2086 # the package names the plan checked.
+apt_get install --no-install-recommends $PACKAGES || fail "Installing $PACKAGES failed; see ${APT_LOG} on the server."`,
+          ),
+        }),
+    secrets: { names: ["uptimeReportKey"] as const, required: true },
+    doing: "setting up the uptime report",
+    timeoutMs: 5 * MINUTE,
+  });
+  // The verify runs the service once and reads the run's journal line: a report the Worker took,
+  // or no change since the last one it took.
+  const verify = buildScript(
+    "uptime-report.verify",
+    { ...files, VERIFY_FAILED: failed },
+    `${APT_FUNCTIONS}
+${UPTIME_REPORT_HELPERS}
+{ shared_ok && instance_ok; } || fail "$VERIFY_FAILED" 5
+since=$(date +%s)
+systemctl start "$SERVICE" >/dev/null 2>&1 || true
+line=$(journalctl -u "$SERVICE" --since "@$since" -o cat --no-pager 2>/dev/null | grep '^uptime report: ' | tail -n 1) || line=''
+case "$line" in
+  *'; sent a '*' report' | *'; no change') exit 0 ;;
+  '') fail "The uptime report's first run wrote no line to the journal. See journalctl -u $SERVICE on the server, then run the command again." 5 ;;
+  *) fail "The uptime report's first run did not reach the Worker (\${line#uptime report: }). Check that this environment's Cloudflare plan was applied, then run the command again." 5 ;;
+esac`,
+  );
+  return { ...spec, verify };
+}
+
+/**
+ * The removal of the instances: each one's timer, config, key and state; with `shared`, the
+ * script, the units and the folder once no other config is left. A setup or teardown plan removes
+ * only instances whose config names its app; an undo removes any left behind.
+ */
+function uptimeReportRemoveScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const p = params(step, UptimeReportRemoveParams);
+  return scripts({
+    name: "uptime-report.remove",
+    params: {
+      APP: plan.purpose === "undo" ? "" : plan.app,
+      INSTANCES: p.instances.join(" "),
+      SHARED: p.shared,
+      SCRIPT: UPTIME_REPORT_SCRIPT,
+      SERVICE_UNIT: UPTIME_REPORT_SERVICE_UNIT,
+      TIMER_UNIT: UPTIME_REPORT_TIMER_UNIT,
+      CONFIG_DIR: UPTIME_REPORT_CONFIG_DIR,
+      STATE_DIR: UPTIME_REPORT_STATE_DIR,
+    },
+    helpers: `gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
+# A config of an instance this removal does not name.
+others_left() {
+  for f in "$CONFIG_DIR"/*.conf; do
+    [ -e "$f" ] || continue
+    i=\${f##*/}
+    case " $INSTANCES " in *" \${i%.conf} "*) ;; *) return 0 ;; esac
+  done
+  return 1
+}`,
+    verify: `  for i in $INSTANCES; do
+    gone "$CONFIG_DIR/$i.conf" && gone "$CONFIG_DIR/$i.key" && gone "$STATE_DIR/$i" || return 1
+    [ "$(systemctl is-enabled "opscrew-uptime-report@$i.timer" 2>/dev/null)" != enabled ] || return 1
+  done
+  if [ "$SHARED" = true ] && ! others_left; then
+    gone "$SCRIPT" && gone "$SERVICE_UNIT" && gone "$TIMER_UNIT" && gone "$CONFIG_DIR" || return 1
+  fi
+  return 0`,
+    apply: `# Another app's instance stays: an app's plan removes only those its configs name.
+if [ -n "$APP" ]; then
+  for i in $INSTANCES; do
+    c="$CONFIG_DIR/$i.conf"
+    if [ -f "$c" ] && ! grep -qx "app=$APP" "$c"; then
+      fail "The uptime report $i on this server is not \\"$APP\\"'s, so OpsCrew does not remove it. Nothing was changed."
+    fi
+  done
+fi
+for i in $INSTANCES; do
+  systemctl disable --now --quiet "opscrew-uptime-report@$i.timer" >/dev/null 2>&1 || true
+  systemctl stop "opscrew-uptime-report@$i.service" >/dev/null 2>&1 || true
+  rm -f "$CONFIG_DIR/$i.conf" "$CONFIG_DIR/$i.key"
+  rm -rf "$STATE_DIR/$i"
+done
+if [ "$SHARED" = true ] && ! others_left; then
+  rm -f "$SCRIPT" "$SERVICE_UNIT" "$TIMER_UNIT"
+  rm -rf "$CONFIG_DIR"
+  for d in "$STATE_DIR" "$(dirname "$SCRIPT")"; do
+    if [ -d "$d" ] && [ ! -L "$d" ] && [ -z "$(ls -A "$d")" ]; then rmdir "$d"; fi
+  done
+fi
+systemctl daemon-reload`,
+    failed: "OpsCrew's uptime report is still on the server.",
+    doing: "removing the uptime report",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // edge: the shared edge goes with the last app (a teardown step only)
 
 function edgeScripts(plan: HostPlan, step: HostStep): StepScripts {
@@ -4803,6 +5048,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return portainerScripts(plan, step);
     case "check-key":
       return checkKeyScripts(step);
+    case "uptime-report":
+      return uptimeReportScripts(plan, step);
     case "previews":
       return previewsScripts(plan, step);
     case "monitoring":

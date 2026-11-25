@@ -1,0 +1,435 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the uptime report's files > renders the units and the script as the contract, with the version on line 2 > script 1`] = `
+"#!/bin/sh
+# opscrew-uptime-report version 1
+# Managed by OpsCrew: checks this server for one environment of an app and reports to the
+# Cloudflare uptime Worker. opscrew-uptime-report@<instance>.timer runs it every 5 minutes as the
+# deploy user, with the instance's config and report key as systemd credentials. It reads the
+# disk and the app's last scheduled snapshot and restore drill as the scheduled check's key does,
+# the days left on the certificates this server serves for the app on 127.0.0.1:443, and once a
+# day the age of the credentials its config dates (names and dates only). It sends a signed report
+# only when a status changes, and a heartbeat 24 hours after its last report. The key reaches no
+# other program: the signature is an HMAC-SHA256 (RFC 2104) built with sha256sum. The journal
+# gets one line per run, with the statuses only. \`opscrew destroy\` removes it.
+set -eu
+LC_ALL=C
+export LC_ALL
+AGENT='OpsCrew uptime report'
+CONFIG="\${CREDENTIALS_DIRECTORY:-/nonexistent}/config"
+KEY_FILE="\${CREDENTIALS_DIRECTORY:-/nonexistent}/key"
+STATE="\${STATE_DIRECTORY:?}/state"
+DAY=86400
+NL='
+'
+NOW=$(date -u +%s)
+
+# An invalid config or key stops the run before anything is read or sent.
+invalid() {
+  echo 'uptime report: its config or its key is not valid'
+  exit 2
+}
+# digits <value>: a whole number.
+digits() {
+  case "$1" in '' | *[!0-9]*) return 1 ;; esac
+}
+# days_of <seconds>: the whole days, rounded down, in $days.
+days_of() {
+  days=$(($1 / DAY))
+  if [ "$1" -lt 0 ] && [ $(($1 % DAY)) -ne 0 ]; then days=$((days - 1)); fi
+}
+# epoch <time>: its Unix seconds in $epoch; false when date cannot read it.
+epoch() {
+  epoch=$(date -u -d "$1" +%s 2>/dev/null) && digits "$epoch"
+}
+
+# 1. The config, read line by line (never sourced), and the key, both checked first.
+URL='' ENTRY='' SERVER='' APP='' DRILL='' DISK_WARN='' DISK_HIGH='' CERT_DAYS='' MAX_AGE=''
+HOSTS='' CREDS=''
+[ -f "$CONFIG" ] || invalid
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    '' | '#'*) ;;
+    url=*) URL=\${line#url=} ;;
+    entry=*) ENTRY=\${line#entry=} ;;
+    server=*) SERVER=\${line#server=} ;;
+    app=*) APP=\${line#app=} ;;
+    drill=*) DRILL=\${line#drill=} ;;
+    disk_warn=*) DISK_WARN=\${line#disk_warn=} ;;
+    disk_high=*) DISK_HIGH=\${line#disk_high=} ;;
+    cert_days=*) CERT_DAYS=\${line#cert_days=} ;;
+    max_age_days=*) MAX_AGE=\${line#max_age_days=} ;;
+    host=*) HOSTS="$HOSTS\${line#host=}$NL" ;;
+    credential=*) CREDS="$CREDS\${line#credential=}$NL" ;;
+    *) invalid ;;
+  esac
+done < "$CONFIG"
+case "$URL" in https://opscrew-uptime.*.workers.dev/report) ;; *) invalid ;; esac
+case "$URL" in *[!a-z0-9./:-]*) invalid ;; esac
+case "$ENTRY" in '' | *[!A-Za-z0-9._/-]*) invalid ;; esac
+case "$SERVER" in '' | *[!A-Za-z0-9._-]*) invalid ;; esac
+case "$APP" in '' | *[!a-z0-9-]*) invalid ;; esac
+case "$DRILL" in '' | weekly | daily) ;; *) invalid ;; esac
+for n in "$DISK_WARN" "$DISK_HIGH" "$CERT_DAYS"; do digits "$n" || invalid; done
+[ -z "$MAX_AGE" ] || digits "$MAX_AGE" || invalid
+[ -z "$CREDS" ] || [ -n "$MAX_AGE" ] || invalid
+while IFS= read -r host; do
+  case "$host" in *[!a-z0-9.-]* | .* | *. | *..*) invalid ;; esac
+done <<EOF
+$HOSTS
+EOF
+while IFS=' ' read -r name at source rest; do
+  [ -n "$name$at$source$rest" ] || continue
+  case "$name" in '' | *[!A-Za-z0-9._-]*) invalid ;; esac
+  case "$at" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z) ;; *) invalid ;; esac
+  case "$at" in *[!0-9TZ:.-]*) invalid ;; esac
+  case "$source" in made | rotated | first-deploy) ;; *) invalid ;; esac
+  [ -z "$rest" ] || invalid
+done <<EOF
+$CREDS
+EOF
+KEY=''
+if [ -f "$KEY_FILE" ]; then
+  { IFS= read -r KEY || [ -n "$KEY" ]; } < "$KEY_FILE" || KEY=''
+fi
+case "$KEY" in *[!0-9a-f]*) KEY='' ;; esac
+[ "\${#KEY}" -eq 64 ] || invalid
+# The HMAC's two keys (RFC 2104) as printf escapes: the key XOR 0x36 and XOR 0x5c, padded to
+# SHA-256's 64-byte block. Only the shell's builtins ever see the key.
+IPAD='' OPAD='' rest=$KEY i=0
+while [ "$i" -lt 64 ]; do
+  b=0
+  if [ -n "$rest" ]; then
+    tail=\${rest#??}
+    b=$((0x\${rest%"$tail"}))
+    rest=$tail
+  fi
+  x=$((b ^ 54))
+  IPAD="$IPAD\\\\$((x / 64))$((x / 8 % 8))$((x % 8))"
+  x=$((b ^ 92))
+  OPAD="$OPAD\\\\$((x / 64))$((x / 8 % 8))$((x % 8))"
+  i=$((i + 1))
+done
+KEY='' rest=''
+# sign <text>: the hex HMAC-SHA256 of <text> with the report key, in $signature.
+sign() {
+  inner=$({ printf "$IPAD"; printf '%s' "$1"; } | sha256sum)
+  inner=\${inner%% *}
+  escaped=''
+  while [ -n "$inner" ]; do
+    tail=\${inner#??}
+    x=$((0x\${inner%"$tail"}))
+    escaped="$escaped\\\\$((x / 64))$((x / 8 % 8))$((x % 8))"
+    inner=$tail
+  done
+  signature=$({ printf "$OPAD"; printf "$escaped"; } | sha256sum)
+  signature=\${signature%% *}
+}
+
+# 2. The last report: when it was sent, its statuses, and the credentials' last daily check.
+sent='' checked='' prev='' carried=''
+if [ -f "$STATE" ]; then
+  while IFS=' ' read -r kind a b c d e; do
+    case "$kind" in
+      sent) if digits "$a"; then sent=$a; fi ;;
+      checked) if digits "$a"; then checked=$a; fi ;;
+      status) prev="$prev$NL$a $b" ;;
+      credential) carried="$carried$a $b $c $d $e$NL" ;;
+    esac
+  done < "$STATE"
+fi
+
+# 3. The disk, and the app's last scheduled snapshot and restore drill: the check key's own command
+# for this app's folder, so the scheduled check's rules read the same lines.
+answer=$(export LC_ALL=C; df -P -B1 / && echo scheduled && for d in /srv/apps/$APP/; do a=\${d%/}; a=\${a##*/}; case $a in *[!a-z0-9-]*) continue;; esac; l=$d.snapshots/scheduled.log; test -f $l || continue; echo scheduled $a at $(stat -c %Y $l); m=$(grep -anE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1); test -z $m || echo scheduled $a id \${m#*:}; echo scheduled $a after $(tail -n +$((\${m%%:*}+1)) $l | grep -c '[^[:space:]]'); for p in $d.snapshots/*.partial; do if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi; break; done; echo scheduled $a drill $(grep -aE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z scheduled (healthy|unhealthy|not-restored|failed) ' $d.snapshots/drills.log 2>/dev/null | tail -n 1 | cut -d ' ' -f 1,3); s=$(stat -c %Y $d.drill-recipe/schedule 2>/dev/null) && o=$(ls $d.snapshots 2>/dev/null | grep -xE '[0-9]{8}T[0-9]{6}Z' | head -n 1) && test x$o != x && t=$(stat -c %Y $d.snapshots/$o) && echo scheduled $a since $((s>t?s:t)) || true; done) || answer=''
+read_ok=no
+case "$NL$answer$NL" in *"\${NL}scheduled$NL"*) read_ok=yes ;; esac
+# The answer's lines: df's last one, and this app's \`scheduled <app> \` ones.
+dfline='' s_at='' s_id='' s_after='' s_running=no d_seen=no d_line='' d_since=''
+while IFS= read -r l; do
+  case "$l" in
+    "scheduled $APP "*) l=\${l#"scheduled $APP "} ;;
+    '' | scheduled*) continue ;;
+    *)
+      dfline=$l
+      continue
+      ;;
+  esac
+  case "$l" in
+    'at '*) s_at=\${l#at } ;;
+    'id '*) s_id=\${l#id } ;;
+    'after '*) s_after=\${l#after } ;;
+    running) s_running=yes ;;
+    drill) d_seen=yes ;;
+    'drill '*) d_seen=yes d_line=\${l#drill } ;;
+    'since '*) d_since=\${l#since } ;;
+  esac
+done <<EOF
+$answer
+EOF
+disk=unknown
+disk_json='{"status":"unknown"}'
+# df's last line: its total, used and available bytes are the 5th to 3rd fields from the end.
+set -f
+# shellcheck disable=SC2086 # split on blanks, with globbing off.
+set -- $dfline
+set +f
+if [ "$read_ok" = yes ] && [ "$#" -ge 6 ]; then
+  while [ "$#" -gt 5 ]; do shift; done
+  total=$1 used=$2 free=$3
+  if digits "$total" && digits "$used" && digits "$free" && [ $((used + free)) -gt 0 ]; then
+    percent=$(((used * 100 + used + free - 1) / (used + free)))
+    disk=ok
+    if [ "$percent" -ge "$DISK_HIGH" ]; then
+      disk=high
+    elif [ "$percent" -ge "$DISK_WARN" ]; then
+      disk=warn
+    fi
+    disk_json="{\\"status\\":\\"$disk\\",\\"percent\\":$percent,\\"free\\":$free,\\"total\\":$total}"
+  fi
+fi
+snapshot=unknown
+snapshot_json='{"status":"unknown"}'
+if [ "$read_ok" != yes ]; then
+  :
+elif [ -z "$s_at" ]; then
+  snapshot=none
+  snapshot_json='{"status":"none"}'
+elif [ "$s_running" = no ] && digits "$s_at" && digits "$s_after"; then
+  case "$s_id" in
+    '')
+      snapshot=failed
+      snapshot_json='{"status":"failed"}'
+      ;;
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+      snapshot=ok
+      if [ "$s_after" -gt 0 ]; then snapshot=copy-failed; fi
+      snapshot_json="{\\"status\\":\\"$snapshot\\",\\"id\\":\\"$s_id\\"}"
+      ;;
+  esac
+fi
+drill=none
+drill_json='{"status":"none"}'
+if [ -n "$DRILL" ]; then
+  drill=unknown
+  drill_json='{"status":"unknown"}'
+  period=$((7 * DAY))
+  if [ "$DRILL" = daily ]; then period=$DAY; fi
+  limit=$((2 * period + 3600))
+  if [ "$read_ok" != yes ] || [ "$d_seen" = no ]; then
+    :
+  elif [ -z "$d_line" ]; then
+    # None ran yet: late once the schedule has had a snapshot to restore for that long.
+    if digits "$d_since" && [ "\${#d_since}" -le 12 ] && [ $((NOW - d_since)) -gt "$limit" ]; then
+      drill=late
+      drill_json='{"status":"late"}'
+    fi
+  else
+    end=\${d_line%% *} result=\${d_line#* }
+    case "$end" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
+        case "$result" in
+          healthy | unhealthy | not-restored | failed)
+            if epoch "$end"; then
+              drill=ok
+              if [ "$result" != healthy ]; then
+                drill=failed
+              elif [ $((NOW - epoch)) -gt "$limit" ]; then
+                drill=late
+              fi
+              drill_json="{\\"status\\":\\"$drill\\",\\"result\\":\\"$result\\",\\"at\\":\\"$end\\"}"
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  fi
+fi
+statuses="disk $disk\${NL}snapshot $snapshot\${NL}drill $drill"
+said="disk $disk, snapshot $snapshot, drill $drill"
+
+# 4. The certificates this server serves for the app, as Caddy serves them on 127.0.0.1:443 with
+# each hostname as SNI: no file is read. No TLS answer is none.
+certs=''
+while IFS= read -r host; do
+  [ -n "$host" ] || continue
+  status=none
+  item="{\\"hostname\\":\\"$host\\",\\"status\\":\\"none\\"}"
+  end=$(timeout 10 openssl s_client -connect 127.0.0.1:443 -servername "$host" < /dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null) || end=''
+  case "$end" in
+    notAfter=*)
+      if epoch "\${end#notAfter=}"; then
+        days_of $((epoch - NOW))
+        status=ok
+        if [ "$days" -lt 0 ]; then
+          status=expired
+        elif [ "$days" -lt "$CERT_DAYS" ]; then
+          status=warn
+        fi
+        item="{\\"hostname\\":\\"$host\\",\\"status\\":\\"$status\\",\\"days\\":$days}"
+      fi
+      ;;
+  esac
+  certs="\${certs:+$certs,}$item"
+  statuses="$statuses\${NL}certificate:$host $status"
+  said="$said, certificate $host $status"
+done <<EOF
+$HOSTS
+EOF
+
+# 5. The credentials' ages, once a day (or when the config's dates changed): in between, the last
+# check's results, kept in the state file.
+creds_json=''
+fresh=no
+if [ -n "$MAX_AGE" ]; then
+  have=''
+  while IFS=' ' read -r name at source status days; do
+    [ -n "$name" ] || continue
+    case "$status" in ok | old) ;; *) have=- ;; esac
+    digits "\${days#-}" || have=-
+    [ "$have" = - ] || have="$have$name $at $source$NL"
+  done <<EOF
+$carried
+EOF
+  lines=$carried
+  if [ -z "$checked" ] || [ $((NOW - checked)) -ge "$DAY" ] || [ "$have" != "$CREDS" ]; then
+    fresh=yes checked=$NOW lines=''
+    while IFS=' ' read -r name at source; do
+      [ -n "$name" ] || continue
+      epoch "$at" || invalid
+      age=$((NOW - epoch))
+      days_of "$age"
+      status=ok
+      if [ "$age" -gt $((MAX_AGE * DAY)) ]; then status=old; fi
+      lines="$lines$name $at $source $status $days$NL"
+    done <<EOF
+$CREDS
+EOF
+  fi
+  creds=''
+  while IFS=' ' read -r name at source status days; do
+    [ -n "$name" ] || continue
+    creds="\${creds:+$creds,}{\\"name\\":\\"$name\\",\\"status\\":\\"$status\\",\\"days\\":$days,\\"source\\":\\"$source\\"}"
+    statuses="$statuses\${NL}credential:$name $status"
+    said="$said, credential $name $status"
+  done <<EOF
+$lines
+EOF
+  creds_json=",\\"credentials\\":[$creds]"
+fi
+
+# 6. A change is a status that differs from the last report's; unknown is none, and keeps the
+# last known status.
+changed=no saved=''
+while IFS=' ' read -r key status; do
+  [ -n "$key" ] || continue
+  was=''
+  case "$prev$NL" in *"$NL$key "*)
+    was=\${prev#*"$NL$key "}
+    was=\${was%%"$NL"*}
+    ;;
+  esac
+  if [ "$status" = unknown ]; then
+    saved="$saved$key \${was:-unknown}$NL"
+  else
+    if [ "$status" != "$was" ]; then changed=yes; fi
+    saved="$saved$key $status$NL"
+  fi
+done <<EOF
+$statuses
+EOF
+
+# write_state <time of the last report>: the state, through a temporary file and a rename.
+write_state() {
+  {
+    echo "sent $1"
+    if [ -n "$checked" ]; then echo "checked $checked"; fi
+    while IFS= read -r l; do
+      [ -z "$l" ] || echo "status $l"
+    done <<EOF
+$saved
+EOF
+    while IFS= read -r l; do
+      [ -z "$l" ] || echo "credential $l"
+    done <<EOF
+\${lines:-}
+EOF
+  } > "$STATE.tmp"
+  mv -f "$STATE.tmp" "$STATE"
+}
+
+# 7. Send on a change, or 24 hours after the last report; the state is kept unless the Worker
+# accepted it, so the next run sends again.
+kind=heartbeat
+if [ "$changed" = yes ] || [ -z "$sent" ]; then kind=change; fi
+if [ "$kind" = change ] || [ $((NOW - sent)) -ge "$DAY" ]; then
+  body="{\\"version\\":1,\\"server\\":\\"$SERVER\\",\\"kind\\":\\"$kind\\",\\"disk\\":$disk_json,\\"snapshot\\":$snapshot_json,\\"drill\\":$drill_json,\\"certificates\\":[$certs]$creds_json}"
+  sign "$NOW$NL$body"
+  code=$(printf '%s' "$body" | curl -sS --max-time 20 -o /dev/null -w '%{http_code}' -A "$AGENT" \\
+    -H 'Content-Type: application/json' -H "X-OpsCrew-Entry: $ENTRY" -H "X-OpsCrew-Time: $NOW" \\
+    -H "X-OpsCrew-Signature: $signature" --data-binary @- "$URL" 2>/dev/null) || code=''
+  case "$code" in
+    2[0-9][0-9])
+      write_state "$NOW"
+      said="$said; sent a $kind report"
+      ;;
+    '' | 000) said="$said; the Worker could not be reached, so the next run sends again" ;;
+    *) said="$said; the Worker refused the report (HTTP $code), so the next run sends again" ;;
+  esac
+else
+  if [ "$fresh" = yes ]; then write_state "$sent"; fi
+  said="$said; no change"
+fi
+echo "uptime report: $said"
+"
+`;
+
+exports[`the uptime report's files > renders the units and the script as the contract, with the version on line 2 > service 1`] = `
+"# /etc/systemd/system/opscrew-uptime-report@.service
+# Managed by OpsCrew: checks this server for the uptime entry %i and reports its changes to the
+# Cloudflare uptime Worker. \`opscrew destroy\` removes it.
+[Unit]
+Description=OpsCrew uptime report %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+LoadCredential=config:/etc/opscrew/uptime-report/%i.conf
+LoadCredential=key:/etc/opscrew/uptime-report/%i.key
+StateDirectory=opscrew-uptime-report/%i
+StateDirectoryMode=0700
+ExecStart=/usr/local/lib/opscrew/uptime-report.sh
+TimeoutStartSec=300
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+"
+`;
+
+exports[`the uptime report's files > renders the units and the script as the contract, with the version on line 2 > timer 1`] = `
+"# /etc/systemd/system/opscrew-uptime-report@.timer
+# Managed by OpsCrew: runs the uptime report %i every 5 minutes.
+[Unit]
+Description=OpsCrew uptime report %i, every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+"
+`;

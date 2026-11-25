@@ -43,6 +43,8 @@ const MOVED = [
   "/var/lib/opscrew-dns-updater",
   "/var/lib/private/opscrew-dns-updater",
   "/usr/local/sbin/opscrew-dns-updater",
+  "/var/lib/opscrew-uptime-report",
+  "/usr/local/lib/opscrew",
 ];
 
 const SCRIPT_PATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
