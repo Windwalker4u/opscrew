@@ -25,7 +25,7 @@ Secret-shaped values in tests come from `fakeSecret`.
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm lint`
   - **Effort:** medium
 
-- [ ] T4702 [US1] [US2] [US3] The logins' SQL, proven on real PostgreSQL 16 and 17
+- [x] T4702 [US1] [US2] [US3] The logins' SQL, proven on real PostgreSQL 16 and 17
   - **Owns:** `packages/iac-templates/src/catalog/postgres-logins.ts` (new),
     `postgres-logins.test.ts` (new), `postgres-logins.docker.test.ts` (new), and the export lines
     in `packages/iac-templates/src/catalog/index.ts` and `packages/iac-templates/src/index.ts`.
@@ -91,7 +91,7 @@ Secret-shaped values in tests come from `fakeSecret`.
   - **Verify:** `OPSCREW_DOCKER_TESTS=1 OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm --filter @opscrew/iac-templates exec vitest run src/catalog/postgres-logins && pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - **Effort:** xhigh
 
-- [ ] T4706 [US1] [US2] The guide
+- [x] T4706 [US1] [US2] The guide
   - **Owns:** `docs/guide/databases.md`, `docs/guide/credential-rotation.md`.
   - **Reads:** plan.md 6., spec.md, data-model.md, research R5, R6 and R12, the rest of
     `databases.md`.
@@ -114,7 +114,7 @@ Secret-shaped values in tests come from `fakeSecret`.
 
 ## Wave 2
 
-- [ ] T4703 [US1] [US2] [US3] The catalog, the release's env file, the workflow and snapshots
+- [x] T4703 [US1] [US2] [US3] The catalog, the release's env file, the workflow and snapshots
   - **Owns:**
     - `packages/iac-templates/src/catalog/entries.ts`, `catalog/index.ts` (not T4702's export
       lines), `catalog/*.test.ts` (not T4702's files) and `catalog/__fixtures__/**`;
@@ -161,12 +161,12 @@ Secret-shaped values in tests come from `fakeSecret`.
 
 ## Wave 3
 
-- [ ] T4704 [US1] [US2] Design, provision's switch, destroy and rotate
+- [x] T4704 [US1] [US2] Design, provision's switch, destroy and rotate
   - **Owns:** `packages/agents/src/design/**`, `packages/agents/src/provision/**`,
     `packages/agents/src/destroy/**`, `packages/agents/src/rotate/**`,
     `packages/agents/src/shared/app-secrets.ts` and its test.
   - **Reads:** plan.md 4., data-model.md "The plan's field" and "Provision's texts", research R2,
-    R9 and R11, `provision/publish.ts` (the plan at `HEAD`), ADR 0037, `provision/secrets.ts`
+    R9 and R11, `shared/app-secrets.ts` (the generated values), ADR 0037, `provision/secrets.ts`
     (`deploySecretNames`), `destroy/common.ts` (the by-hand list), the on-demand snapshot in
     `agents/src/snapshot`, and the review's findings 6 and 7.
   - **Depends:** T4701, T4703.
@@ -178,8 +178,9 @@ Secret-shaped values in tests come from `fakeSecret`.
       PostgreSQL lacks `logins` (the one below 15 on an older version), and changes nothing
       because of it. A pinned older version is never refused.
     - **The switch:**
-      - with `logins` new against `HEAD` on a deployed environment, the plan shown holds the four
-        switch lines, and its hash covers them;
+      - with `logins` new on a deployed environment whose generated values keep the superuser's
+        password but no `owner-password`, the plan shown holds data-model.md's switch lines, and
+        its hash covers them;
       - after approval, the snapshot is taken before any secret or file is written;
       - a failed snapshot stops provision with nothing written, saying what to do next;
       - `--approve <wrong hash>` changes nothing.
@@ -195,7 +196,7 @@ Secret-shaped values in tests come from `fakeSecret`.
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - **Effort:** high
 
-- [ ] T4705 [US3] Moves, restores and the drill keep the two logins
+- [x] T4705 [US3] Moves, restores and the drill keep the two logins
   - **Owns:** `packages/agents/src/retarget/**`, `packages/agents/src/move/**`,
     `packages/agents/src/snapshot/**`, `packages/agents/src/testing/move.ts`.
   - **Reads:** plan.md 5., data-model.md "The load of a dump", research R10, `retarget/server-ops.ts`,
@@ -222,7 +223,7 @@ Secret-shaped values in tests come from `fakeSecret`.
 
 ## The lead's wave
 
-- [ ] T4790 (lead) A fresh review of the merged waves, by a reviewer that didn't build them:
+- [x] T4790 (lead) A fresh review of the merged waves, by a reviewer that didn't build them:
   - the approval of the switch and what its hash covers;
   - that no app container gets the superuser's password, and only the release the owner's;
   - no password in an argument or a log;
