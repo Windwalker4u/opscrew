@@ -298,6 +298,23 @@ describe("the Worker's schedules, secrets and deletion", () => {
     expect(redactor.redact(`posted ${value}`)).toBe("posted [REDACTED:HOOK_A]");
   });
 
+  it("masks the webhook's address and token on their own too", async () => {
+    const url = `https://ntfy.example.com/${fakeSecret("generic-password", "url")}`;
+    const token = fakeSecret("generic-password", "token");
+    const redactor = new Redactor();
+    const { client } = clientWith(
+      { [`PUT ${SCRIPT}/secrets`]: ok({ name: "HOOK_A", type: "secret_text" }) },
+      redactor,
+    );
+    await client.putWorkerSecret(ACCOUNT, "opscrew-uptime", {
+      name: "HOOK_A",
+      text: JSON.stringify({ url, token }),
+    });
+    expect(redactor.redact(`posting to ${url} with ${token}`)).toBe(
+      "posting to [REDACTED:HOOK_A] with [REDACTED:HOOK_A]",
+    );
+  });
+
   it("masks a registered secret in every other method's refusal too", async () => {
     const redactor = new Redactor();
     const secret = fakeSecret("generic-password", "kv");

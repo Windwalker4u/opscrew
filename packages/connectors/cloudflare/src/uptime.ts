@@ -74,6 +74,9 @@ const UptimeEntrySchema = z.looseObject({
   secret: z.string().regex(/^HOOK_[0-9a-f]{16}$/),
 });
 
+/** The Worker secret's value (data-model.md): the webhook's address and, for ntfy, its token. */
+const WebhookSecretSchema = z.object({ url: z.url(), token: z.string().min(1).optional() });
+
 const WorkerRecordSchema = z.looseObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
 
 /** `entry:<id>`, the environment's entry. */
@@ -283,9 +286,31 @@ export async function inspectUptime(
 
 // --- Plan ----------------------------------------------------------------------------------------
 
-/** The desired entry, checked: every field, its id and its secret's name. */
+/** Why the webhook secret's value is not its shape (undefined: it is), never quoting it. */
+function secretProblem(secret: string): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(secret);
+  } catch {
+    return "it is not JSON";
+  }
+  const parsed = WebhookSecretSchema.safeParse(value);
+  return parsed.success ? undefined : zodIssues(parsed.error);
+}
+
+/** The desired secret's shape, then the entry: every field, its id and its secret's name. */
 function checkDesired(desired: UptimeDesired): void {
   const { entry, id } = desired;
+  const secret = desired.secret === undefined ? undefined : secretProblem(desired.secret);
+  if (secret !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The webhook's secret for ${uptimeLabel(id)} is not a webhook address with an optional ntfy token (${secret}), so OpsCrew changes nothing in Cloudflare.`,
+      {
+        hint: "Set OPSCREW_CHECK_WEBHOOK to the webhook's full address (https://…), then run the command again.",
+      },
+    );
+  }
   if (entry === undefined) return;
   const parsed = UptimeEntrySchema.safeParse(entry);
   const problem = !parsed.success
@@ -484,7 +509,11 @@ function checkGiven(plan: UptimePlan, desired: UptimeDesired): void {
       );
     }
   }
-  if (plan.destroys && desired.destroy !== true) {
+  // From the hashed changes, not `destroys`, which the hash does not cover.
+  const deletes = plan.changes.some(
+    (c) => c.kind === "delete-script" || c.kind === "delete-namespace",
+  );
+  if (deletes && desired.destroy !== true) {
     throw mismatch("This uptime plan deletes the Worker, which only a destroy may do");
   }
 }

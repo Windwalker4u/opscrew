@@ -264,6 +264,34 @@ describe("planUptime", () => {
     expect(describeUptimePlan(plan)).toContain(`Set the Worker secret ${uptimeSecretName(SHOP)}`);
   });
 
+  it("refuses a webhook secret that isn't an address and an optional token, without showing it", () => {
+    const address = `https://ntfy.example.com/${fakeSecret("generic-password", "bad")}`;
+    for (const secret of [
+      address,
+      JSON.stringify({ url: address.replace("https://", "") }),
+      JSON.stringify({ url: address, token: "" }),
+      JSON.stringify({ token: fakeSecret("generic-password", "token") }),
+      JSON.stringify([address]),
+    ]) {
+      const error = (() => {
+        try {
+          planUptime(facts([]), { ...wanting(SHOP), secret });
+        } catch (e) {
+          return e;
+        }
+      })() as OpsCrewError;
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toContain("The webhook's secret for acme/shop (prod)");
+      expect(errorText(error)).not.toContain(secret);
+      expect(errorText(error)).not.toContain(address);
+    }
+    const withToken = JSON.stringify({ url: address, token: fakeSecret("generic-password", "t") });
+    expect(kinds(planUptime(facts([]), { ...wanting(SHOP), secret: withToken }))).toContain(
+      "put-secret",
+    );
+  });
+
   it("refuses an entry that isn't the environment's", () => {
     expect(() => planUptime(facts([]), { ...wanting(SHOP), entry: entryFor(BLOG) })).toThrowError(
       /cannot write/,
@@ -304,6 +332,19 @@ describe("applyUptime", () => {
     const error = await rejection(applyUptime(client, plan, leaving(SHOP), plan.hash));
     expect(error.code).toBe("PLAN_HASH_MISMATCH");
     expect(fake.writes()).toEqual([]);
+  });
+
+  it("refuses changes that delete the Worker without destroy, whatever the unhashed destroys says", async () => {
+    const { fake, client } = setup();
+    await provision(client, wanting(SHOP));
+    const plan = { ...(await planFor(client, leaving(SHOP, true))), destroys: false };
+    expect(kinds(plan)).toContain("delete-script");
+    fake.calls.length = 0;
+    const error = await rejection(applyUptime(client, plan, leaving(SHOP), plan.hash));
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(error.message).toContain("only a destroy may do");
+    expect(fake.writes()).toEqual([]);
+    expect(fake.scripts.has("opscrew-uptime")).toBe(true);
   });
 
   it("stops before any write when an entry appeared since the plan", async () => {
