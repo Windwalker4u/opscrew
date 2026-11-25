@@ -31,7 +31,6 @@ const DIR = "opscrew/environments/preview/previews";
 /** The recipe of `plan` with the fixtures' env templates (or `env`), by path under its folder. */
 function recipe(plan: DeployPlan, env?: PreviewEnvTemplates): Record<string, string> {
   const files = renderPreviewRecipe(plan, {
-    version: "0.1.0",
     repository: REPOSITORY,
     imageName: IMAGE_NAME,
     env: env ?? envFor(previewTemplatePlan(plan)),
@@ -77,7 +76,6 @@ describe("renderPreviewRecipe", () => {
   it("writes the settings, the template of a preview's folder and the command, in the environment's previews folder", () => {
     const plan = previewPlan();
     const files = renderPreviewRecipe(plan, {
-      version: "0.1.0",
       repository: REPOSITORY,
       imageName: IMAGE_NAME,
       env: envFor(previewTemplatePlan(plan)),
@@ -130,14 +128,14 @@ describe("renderPreviewRecipe", () => {
       "ghcr.io/example-org/example-app\nSEED=1",
       "ghcr.io/example-org/example-app:latest",
     ]) {
-      expect(() =>
-        renderPreviewRecipe(plan, { version: "0.1.0", repository: REPOSITORY, imageName, env }),
-      ).toThrow(OpsCrewError);
+      expect(() => renderPreviewRecipe(plan, { repository: REPOSITORY, imageName, env })).toThrow(
+        OpsCrewError,
+      );
     }
     for (const repository of ["example-org", "example-org/example-app\n# x", "a/b/c"]) {
-      expect(() =>
-        renderPreviewRecipe(plan, { version: "0.1.0", repository, imageName: IMAGE_NAME, env }),
-      ).toThrow(OpsCrewError);
+      expect(() => renderPreviewRecipe(plan, { repository, imageName: IMAGE_NAME, env })).toThrow(
+        OpsCrewError,
+      );
     }
   });
 
@@ -220,7 +218,6 @@ describe("renderPreviewRecipe", () => {
       repository: REPOSITORY,
       imageName: IMAGE_NAME,
       env: envFor(previewTemplatePlan(plan)),
-      version: "0.1.0",
     };
     /** The edge's Compose file of `files`, at `path`. */
     const edgeOf = (files: { path: string; content: string }[], path: string) =>

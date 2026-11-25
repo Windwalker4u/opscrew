@@ -157,6 +157,14 @@ describe("input tolerance", () => {
       "plan.yaml",
     );
     expect(unproxied.security.httpAllowedFrom).toBe("any");
+
+    // A plan without `deployment.generatedBy` parses (above), and one with it keeps it.
+    const recorded = parseArtifact(
+      "plan",
+      `${minimal}\ndeployment: { generatedBy: 0.2.12-dev.abc1234 }`,
+      "plan.yaml",
+    );
+    expect(recorded.deployment).toEqual({ generatedBy: "0.2.12-dev.abc1234" });
   });
 });
 

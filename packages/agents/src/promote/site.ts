@@ -57,17 +57,12 @@ import {
 import type { PromoteOptions, PromoteResult, PromoteServices } from "./types";
 
 /**
- * The deploy workflow a site's plan generates, as provision renders it with OpsCrew `version`:
- * with the branch and workflow that build a promoted environment's sites, and the repository's
- * other apps' folders.
+ * The deploy workflow a site's plan generates, as provision renders it: with the branch and
+ * workflow that build a promoted environment's sites, and the repository's other apps' folders.
  */
-export async function siteWorkflow(
-  paths: ProjectPaths,
-  plan: DeployPlan,
-  version: string,
-): Promise<string> {
+export async function siteWorkflow(paths: ProjectPaths, plan: DeployPlan): Promise<string> {
   const others = await otherAppDirs(paths);
-  const ctx = { opscrewVersion: version, ...(others.length > 0 ? { otherAppDirs: others } : {}) };
+  const ctx = others.length > 0 ? { otherAppDirs: others } : {};
   if (plan.target.provider === "github-pages") return renderGithubPagesWorkflow(plan, ctx).content;
   const builder = await builderCicd(paths, plan);
   return renderCloudflareWorkersWorkflow(
@@ -366,7 +361,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
     services: run.services,
     command,
     branch: github.defaultBranch,
-    workflow: await siteWorkflow(run.paths, plan, deps.version),
+    workflow: await siteWorkflow(run.paths, plan),
   });
 
   // 4. The approval, bound to the promotion's hash.

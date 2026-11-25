@@ -3,6 +3,7 @@ import { OpsCrewError, plural, readTextIfExists, writeFileAtomic } from "@opscre
 import { keepNewerPins, type RenderedFile } from "@opscrew/iac-templates";
 import type { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { recordGeneratedBy } from "./plan-file";
 
 export interface RenderedFileDiff {
   created: RenderedFile[];
@@ -99,10 +100,11 @@ export function describeDiff(diff: RenderedFileDiff): string {
  * Writes the rendered files that are new or changed under `root`, after a `repo-write` approval
  * that lists them, and returns them (none when everything is already as rendered). A refusal
  * stops with `APPROVAL_REFUSED` before anything is written. `what` names the files in the title
- * and `refused` is the refusal's message.
+ * and `refused` is the refusal's message. Once they are written, the plan records OpsCrew's version
+ * that wrote them ({@link recordGeneratedBy}).
  */
 export async function approveAndWriteRenderedFiles(
-  deps: Pick<PhaseDeps, "approvals" | "reporter">,
+  deps: Pick<PhaseDeps, "approvals" | "reporter" | "paths" | "clock" | "version">,
   root: string,
   files: readonly RenderedFile[],
   wording: { what?: string; refused?: string } = {},
@@ -125,6 +127,7 @@ export async function approveAndWriteRenderedFiles(
     );
   }
   await writeRenderedFiles(root, toWrite);
+  await recordGeneratedBy(deps);
   deps.reporter.success(`Wrote ${describeDiff(diff)}.`);
   return toWrite;
 }

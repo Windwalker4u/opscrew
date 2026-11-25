@@ -161,9 +161,7 @@ describe("renderWranglerConfig", () => {
 
 describe("OpsCrew's headers in _headers (the deploy step's program)", () => {
   // The exact text the deploy step runs, from the rendered workflow.
-  const workflow = parse(
-    renderCloudflareWorkersWorkflow(cloudflarePlan(), { opscrewVersion: "0.1.0" }).content,
-  ) as {
+  const workflow = parse(renderCloudflareWorkersWorkflow(cloudflarePlan(), {}).content) as {
     jobs: { deploy: { steps: { name?: string; run?: string; shell?: string }[] } };
   };
   const step = workflow.jobs.deploy.steps.find(

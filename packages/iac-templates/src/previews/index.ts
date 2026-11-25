@@ -78,8 +78,6 @@ export interface PreviewRecipeOptions {
   /** The image every preview runs, `ghcr.io/<owner>/<repo>[/<app key>]` (`ghcrImageFor`). */
   imageName: string;
   env: PreviewEnvTemplates;
-  /** OpsCrew's version, which the template's Compose file names on its first line. */
-  version: string;
   /**
    * Previews on another environment's server (`previews.server`): that environment's plan and
    * Cloudflare's IP ranges, so the recipe's edge Compose file (with Caddy's global settings) is the
@@ -250,7 +248,7 @@ export function renderPreviewRecipe(plan: DeployPlan, o: PreviewRecipeOptions): 
       : renderEdgeCompose(host.plan, usesCloudflare(host.plan) ? host.cloudflareRanges : []);
   const edgePath = `${runtime}/edge/compose.yaml`;
   const rendered = [
-    renderCompose(template, { ...seed, version: o.version }),
+    renderCompose(template, seed),
     ...renderRuntimeFiles(template).map((file) =>
       hostEdge !== undefined && file.path === edgePath
         ? { ...file, content: hostEdge.content }

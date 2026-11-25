@@ -608,10 +608,7 @@ function deployJob(
  */
 export function renderCloudflareWorkersWorkflow(
   plan: DeployPlan,
-  ctx: Pick<
-    RenderContext,
-    "builderBranch" | "builderWorkflowPath" | "otherAppDirs" | "opscrewVersion"
-  >,
+  ctx: Pick<RenderContext, "builderBranch" | "builderWorkflowPath" | "otherAppDirs">,
 ): RenderedFile {
   const target = workersTarget(plan);
   const files = siteFiles(plan);
@@ -634,7 +631,7 @@ export function renderCloudflareWorkersWorkflow(
   ];
   const dispatch = promoted(plan) ? DISPATCH_WITH_BUILD : DISPATCH_BY_HAND;
   const lines = [
-    ...workflowStart(plan, ctx.opscrewVersion, about, pushPaths(plan, reads, ctx), dispatch),
+    ...workflowStart(plan, about, pushPaths(plan, reads, ctx), dispatch),
     ...pausedJob(plan),
     "",
     ...(promoted(plan) ? [] : [...buildJob(plan, files), ""]),

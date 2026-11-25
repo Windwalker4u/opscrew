@@ -149,10 +149,7 @@ export function directPreview(
   const runtime = runtimeDir(own);
   const files: Record<string, string> = {};
   for (const file of [
-    renderCompose(own, {
-      version: "0.1.0",
-      ...(typeof previews.seed === "string" ? { seed: previews.seed } : {}),
-    }),
+    renderCompose(own, typeof previews.seed === "string" ? { seed: previews.seed } : {}),
     ...renderRuntimeFiles(own),
     ...renderEdgeSite(own, { preview: { app: plan.app.name } }),
   ]) {

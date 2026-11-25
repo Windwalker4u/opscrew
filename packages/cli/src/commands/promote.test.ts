@@ -234,7 +234,6 @@ describe("opscrew promote on Cloudflare's hosting", () => {
       ],
     });
     const workflow = renderCloudflareWorkersWorkflow(prod, {
-      opscrewVersion: "9.9.9-test",
       builderBranch: stagingPlan.cicd.branch,
       builderWorkflowPath: stagingPlan.cicd.workflowPath,
     }).content.replace(/\r\n/g, "\n");

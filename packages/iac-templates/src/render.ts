@@ -32,7 +32,7 @@ export function renderDeployment(plan: DeployPlan, ctx: RuntimeContext): Rendere
   if (plan.target.provider === "portainer") return renderPortainerDeployment(plan, ctx);
   return [
     ...renderInfra(plan, ctx),
-    renderCompose(plan, { version: ctx.opscrewVersion }),
+    renderCompose(plan),
     ...renderRuntimeFiles(plan, ctx),
     ...renderEdgeSite(plan, ctx),
     renderWorkflow(plan, ctx),

@@ -128,7 +128,6 @@ async function siteWorld(o: { staging?: { message?: string }; pages?: boolean } 
   // The default branch holds the workflow prod's plan generates (staging builds its sites).
   if (o.pages !== true) {
     const rendered = renderCloudflareWorkersWorkflow(prod, {
-      opscrewVersion: "0.0.0-test",
       builderBranch: "main",
       builderWorkflowPath: staging.cicd.workflowPath,
     });

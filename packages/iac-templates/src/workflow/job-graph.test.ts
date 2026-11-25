@@ -599,11 +599,7 @@ describe("the sites", () => {
   const workers = renderWorkflow(cloudflarePlan(), ctx).content;
   const promotedWorkers = templates.renderCloudflareWorkersWorkflow(
     ssrPlan({ promotedFrom: "staging" }),
-    {
-      opscrewVersion: "0.1.0",
-      builderBranch: "main",
-      builderWorkflowPath: ".github/workflows/opscrew-deploy-staging.yml",
-    },
+    { builderBranch: "main", builderWorkflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
   ).content;
   const pages = renderWorkflow(pagesPlan(), ctx).content;
   // The sites' test app is example-app.

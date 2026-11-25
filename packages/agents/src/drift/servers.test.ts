@@ -33,7 +33,7 @@ function serverFacts(extra: Partial<HostFacts> = {}): HostFacts {
 describe("serversDrift: every server of a split app (US2 #4)", () => {
   it("names the server of each difference: the network's steps, the Compose file, env files and containers", async () => {
     const world = await splitWorld();
-    const compose = renderServerCompose(world.plan, "data", { version: world.deps.version });
+    const compose = renderServerCompose(world.plan, "data");
     const inspected: { host: string; rootImage?: string }[] = [];
     const facts: Record<string, HostFacts> = {
       [APP_HOST]: serverFacts(),
@@ -97,7 +97,7 @@ describe("serversDrift: every server of a split app (US2 #4)", () => {
 
   it("finds nothing on an extra server whose Compose file and containers are OpsCrew's", async () => {
     const world = await splitWorld();
-    const compose = renderServerCompose(world.plan, "data", { version: world.deps.version });
+    const compose = renderServerCompose(world.plan, "data");
     const differences = await serversDrift(world.deps, world.plan, [], {
       services: { remote: world.remote },
       inspect: async (remote) =>
@@ -211,7 +211,7 @@ describe("serversDrift: every server of a split app (US2 #4)", () => {
         },
       };
     };
-    const compose = renderServerCompose(plan, "data", { version: world.deps.version });
+    const compose = renderServerCompose(plan, "data");
     const notes: string[] = [];
     const differences = await serversDrift(world.deps, plan, notes, {
       services: { remote: world.remote },

@@ -646,6 +646,21 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(renderDriftReport(report)).toContain("matches the plan");
   });
 
+  it("names the OpsCrew version that wrote the generated files as a note, never a difference", async () => {
+    const deployed = testPlan({ deployed: true });
+    const plan = {
+      ...deployed,
+      deployment: { ...deployed.deployment, generatedBy: "0.2.12-dev.abc1234" },
+    };
+    const { deps, services } = await setup({ plan });
+    const report = await runDrift(deps, { services });
+    expect(report.clean).toBe(true);
+    expect(report.notes).toEqual([
+      "The generated files were last written by OpsCrew 0.2.12-dev.abc1234, a development build between two releases.",
+    ]);
+    expect(renderDriftReport(report)).toContain("matches the plan");
+  });
+
   it("reports committed generated files whose plan isn't committed, and says what to do", async () => {
     const { deps, services, git, root } = await setup();
     // Before anything is committed there is nothing to report.

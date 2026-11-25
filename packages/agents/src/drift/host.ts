@@ -599,12 +599,7 @@ export function expectedRuntimeFiles(
   const [site] = renderEdgeSite(plan, full);
   return {
     rendered: {
-      "compose.yaml": sha256Hex(
-        keepNewerPins(
-          committedCompose,
-          renderCompose(plan, { version: ctx.opscrewVersion }).content,
-        ),
-      ),
+      "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
       ...(site !== undefined ? { site: sha256Hex(site.content) } : {}),
     },
     sitePath: `${EDGE_DIR}/sites/${plan.app.name}.${EDGE_PROXIES[edgeProxy(plan)].site}`,

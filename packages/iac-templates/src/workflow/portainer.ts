@@ -284,7 +284,7 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
  */
 export function renderPortainerWorkflow(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "builderBranch" | "otherAppDirs" | "opscrewVersion">,
+  ctx: Pick<RenderContext, "builderBranch" | "otherAppDirs">,
 ): RenderedFile {
   const target = portainerTarget(plan.target);
   const branch = portainerDeployBranch(plan);
@@ -377,7 +377,6 @@ export function renderPortainerWorkflow(
   const lines = [
     ...workflowStart(
       plan,
-      ctx.opscrewVersion,
       promoted(plan)
         ? [
             ...promotedAbout(plan, ctx),

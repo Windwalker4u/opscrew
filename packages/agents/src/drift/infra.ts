@@ -218,14 +218,25 @@ export async function uncommittedPlan(
 }
 
 /**
+ * The drift report's note on `deployment.generatedBy`, the OpsCrew version that last wrote the
+ * generated files, saying when it was a build between releases: information only, never a
+ * difference. Undefined when the plan has none.
+ */
+export function generatedByNote(version: string | undefined): string | undefined {
+  if (version === undefined) return undefined;
+  const dev = /-dev(?:\.|$)/.test(version) ? ", a development build between two releases" : "";
+  return `The generated files were last written by OpsCrew ${version}${dev}.`;
+}
+
+/**
  * The drift report from what a check found: resources by address (with their attribute names
  * sorted), files by path, foreign DNS records by name, type and content, and the plan when it
  * isn't committed ({@link uncommittedPlan}); `clean` when nothing differs anywhere; the notes
- * redacted. The check is audited by its counts.
+ * redacted, with {@link generatedByNote}'s. The check is audited by its counts.
  */
 export async function finishDriftReport(
   deps: Pick<PhaseDeps, "audit" | "clock" | "redactor" | "paths" | "runner">,
-  plan: Pick<DeployPlan, "app" | "environment" | "cicd" | "infra">,
+  plan: Pick<DeployPlan, "app" | "environment" | "cicd" | "infra" | "deployment">,
   found: Omit<DriftReport, "clean" | "checkedAt" | "notes" | "uncommittedPlan"> & {
     notes: readonly string[];
   },
@@ -257,7 +268,9 @@ export async function finishDriftReport(
     ruleDifferences === 0 &&
     siteDifferences === 0 &&
     planFile === undefined;
-  const { notes, ...rest } = found;
+  const { notes: foundNotes, ...rest } = found;
+  const generated = generatedByNote(plan.deployment.generatedBy);
+  const notes = generated === undefined ? foundNotes : [...foundNotes, generated];
   const report: DriftReport = {
     ...rest,
     drift,

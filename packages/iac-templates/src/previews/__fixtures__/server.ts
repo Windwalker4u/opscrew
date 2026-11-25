@@ -91,7 +91,7 @@ export class PreviewServer {
     this.work = mkdtempSync(join(tmpdir(), "opscrew-preview-")).replaceAll("\\", "/");
     this.app = plan.app.name;
     const dir = previewRecipeDir(plan);
-    for (const file of renderPreviewRecipe(plan, { version: "0.1.0",
+    for (const file of renderPreviewRecipe(plan, {
       repository: REPOSITORY,
       imageName: IMAGE_NAME,
       env: envFor(previewTemplatePlan(plan)),

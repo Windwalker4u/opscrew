@@ -16,7 +16,7 @@ import type { HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { OpsCrewError, readTextIfExists, sha256Hex, upperFirst } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { uncommittedPlan } from "../drift/infra";
+import { generatedByNote, uncommittedPlan } from "../drift/infra";
 import type { DriftReport, HostingDifference } from "../drift/types";
 import { commandFlags } from "../environments/choice";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
@@ -278,6 +278,8 @@ export async function hostingDrift(
   notes.push(...keys.notes);
 
   const planFile = await uncommittedPlan(deps, plan);
+  const generated = generatedByNote(plan.deployment.generatedBy);
+  if (generated !== undefined) notes.push(generated);
   const redact = (text: string) => deps.redactor.redact(text);
   await deps.audit.append({
     kind: "provider-call",

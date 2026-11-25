@@ -124,6 +124,7 @@ Commit the plan with the files that come from it: `npx opscrew drift` reports ge
 plan isn't committed. Keep the project in a folder that isn't temporary: `npx opscrew provision`
 warns when it runs from the system's temporary folder, which the system may clear.
 
-The deploy workflow and the Compose files name the OpsCrew version that wrote them on their first
-line. A build of OpsCrew between two releases names itself `<version>-dev.<commit>`, so its files
-never pass for a release's.
+The plan records which OpsCrew version last wrote the generated files (`deployment.generatedBy`),
+and `npx opscrew drift` shows it as a note. A build of OpsCrew between two releases names itself
+`<version>-dev.<commit>`, so its files never pass for a release's. The generated files themselves
+don't name the version, so upgrading OpsCrew alone changes none of them.

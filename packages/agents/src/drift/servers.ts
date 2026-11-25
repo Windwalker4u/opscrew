@@ -122,7 +122,7 @@ async function extraServerFiles(
   name: string,
   facts: HostFacts,
 ): Promise<HostDifference[]> {
-  const compose = renderServerCompose(plan, name, { version: deps.version });
+  const compose = renderServerCompose(plan, name);
   const committed = await committedText(deps.paths.root, [compose.path]);
   const expected: ExpectedRuntimeFiles = {
     rendered: { "compose.yaml": sha256Hex(keepNewerPins(committed, compose.content)) },

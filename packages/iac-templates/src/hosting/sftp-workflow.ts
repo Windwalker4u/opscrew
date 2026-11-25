@@ -377,7 +377,7 @@ function deployScript(
  */
 export function renderSftpWorkflow(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "otherAppDirs" | "opscrewVersion">,
+  ctx: Pick<RenderContext, "otherAppDirs"> = {},
 ): RenderedFile {
   const target = plan.target;
   if (
