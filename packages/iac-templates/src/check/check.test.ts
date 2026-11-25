@@ -15,6 +15,7 @@ import {
   CHECK_LABEL,
   CHECK_WORKFLOW_FILE,
   checkEnvironmentKey,
+  checkHosts,
   checkServerSecret,
   renderCheck,
 } from "./index";
@@ -593,5 +594,20 @@ describe("the check's names", () => {
       repo: PUBLIC,
     });
     expect(files.map((f) => f.path)).toContain(`.github/workflows/${CHECK_WORKFLOW_FILE}`);
+  });
+});
+
+describe("checkHosts", () => {
+  it("gives renderCheck's hostnames and health path, with / on a serverless target", () => {
+    const server = withCheck(testPlan({ domain: "example.com", www: true }));
+    expect(checkHosts(server)).toEqual([
+      { hostname: "example.com", healthPath: "/api/health" },
+      { hostname: "www.example.com", healthPath: "/api/health" },
+    ]);
+    expect(configOf(renderCheck({ plans: [server], repo: PUBLIC })).environments[0].hosts).toEqual(
+      checkHosts(server),
+    );
+    const site = ssrPlan();
+    expect(checkHosts(site)).toEqual([{ hostname: site.dns.domain, healthPath: "/" }]);
   });
 });

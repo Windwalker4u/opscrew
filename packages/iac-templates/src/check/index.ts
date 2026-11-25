@@ -94,6 +94,16 @@ export function checkEnvironmentKey(plan: DeployPlan): string {
 }
 
 /**
+ * The hostnames the check fetches for the plan, each with its health path: the plan's
+ * `healthPath`, or `/` on a serverless target. The Actions check and the Cloudflare uptime Worker
+ * check the same ones.
+ */
+export function checkHosts(plan: DeployPlan): CheckEnvironment["hosts"] {
+  const path = isServerlessTarget(plan.target) ? "/" : healthPath(plan);
+  return siteHosts(plan).map((hostname) => ({ hostname, healthPath: path }));
+}
+
+/**
  * The content of an environment's server secret ({@link CHECK_SECRETS}' `server`): a JSON list
  * with one entry per server the check reaches over SSH, each with its name in the plan as `id`
  * (`app` for the app's server, or an extra server's name).
@@ -158,7 +168,6 @@ export function renderCheck(input: {
 
   const seen = new Set<string>();
   const environments: { plan: DeployPlan; environment: CheckEnvironment }[] = plans.map((plan) => {
-    const path = isServerlessTarget(plan.target) ? "/" : healthPath(plan);
     /** `server`, unless an earlier environment checks its disk. */
     const once = (server: CheckServer | undefined) => {
       if (server === undefined || seen.has(server.id)) return undefined;
@@ -174,7 +183,7 @@ export function renderCheck(input: {
       plan,
       environment: {
         key: checkEnvironmentKey(plan),
-        hosts: siteHosts(plan).map((hostname) => ({ hostname, healthPath: path })),
+        hosts: checkHosts(plan),
         ...(server === undefined ? {} : { server }),
         ...(extraServers.length === 0 ? {} : { extraServers }),
         ...(snapshots === undefined ? {} : { snapshots }),

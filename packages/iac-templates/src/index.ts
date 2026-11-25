@@ -68,6 +68,7 @@ export { runtimeDir } from "./runtime-dir";
 export * from "./serverless";
 export * from "./tunnel";
 export * from "./types";
+export * from "./uptime";
 export * from "./workflow";
 export { migrationRecord, schemaRecordPath } from "./workflow/migrations";
 export {
