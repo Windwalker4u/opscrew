@@ -1192,10 +1192,10 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
 
   it("deletes the release's env file with PostgreSQL's two logins (047), and names it by hand without a token", async () => {
     const base = deployedPlan();
-    const plan = {
+    const plan = DeployPlanSchema.parse({
       ...base,
-      services: base.services.map((s) => ({ ...s, options: { logins: "separate" as const } })),
-    };
+      services: base.services.map((s) => ({ ...s, options: { logins: "separate" } })),
+    });
     const s = await setup({ plan });
     s.github.secrets.set(RELEASE_DB_ENV.secret, "stored");
     const result = await runDestroy(s.deps, { services: s.services });

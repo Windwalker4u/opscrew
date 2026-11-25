@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_SECRETS, RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
@@ -145,7 +146,11 @@ describe("the two logins' secrets (047)", () => {
 });
 
 /** A project whose committed plan is `committed`, with `current` in the working copy. */
-async function project(committed: DeployPlan, current: DeployPlan, answer = () => true) {
+async function project(
+  committed: DeployPlan,
+  current: DeployPlan,
+  answer: (request: ApprovalRequest) => boolean = () => true,
+) {
   const created = await createProject(committed);
   await created.git(created.root, "add", "opscrew/plan.yaml");
   await created.git(created.root, "commit", "-q", "-m", "plan");
