@@ -56,6 +56,7 @@ import {
   HostRecordSchema,
   type RunnerFacts,
   RunnerFactsSchema,
+  type UptimeReportFacts,
   type WebFilterFacts,
 } from "./facts";
 import { foreignFirewalls } from "./firewall";
@@ -115,7 +116,7 @@ import {
   splitSections,
   udpPorts,
 } from "./parse";
-import { callOptions, type RemoteCall, readAsRoot, rootCall } from "./privilege";
+import { callOptions, type RemoteCall, readAsRoot, readFailure, rootCall } from "./privilege";
 import { asDeployUser, asLogin, asRoot, buildScript } from "./shell";
 import {
   SSH_FIREWALL_FUNCTIONS,
@@ -125,6 +126,7 @@ import {
 } from "./ssh-firewall";
 import { stepScripts } from "./steps";
 import { AppNameSchema, HOST_PLAN_SCHEMA_VERSION, type HostPlan, type HostStep } from "./types";
+import { parseUptimeReport, UPTIME_REPORT_SNIPPET } from "./uptime-report";
 import {
   WEB_FILTER_DROP_IN,
   WEB_FILTER_NFT_DROP_IN,
@@ -736,6 +738,7 @@ docker_info && printf '%s\\n' "$docker_info_json" | sed -n 's/.*"FirewallBackend
   ["power", POWER_SNIPPET],
   ["dns-updaters", DNS_UPDATERS_SNIPPET],
   ["dns-updater-files", DNS_UPDATER_FILES_SNIPPET],
+  ["uptime-report", UPTIME_REPORT_SNIPPET],
 ];
 
 /** A read-only script of `sections`, each printed under its mark (a failing one never stops the rest). */
@@ -1167,6 +1170,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     power: parsePower(text("power")),
     dnsUpdaters: parseDnsUpdaters(text("dns-updaters")),
     dnsUpdaterFiles: parseDnsUpdaterFiles(text("dns-updater-files")),
+    uptimeReport: parseUptimeReport(text("uptime-report")),
   };
   const parsed = HostFactsSchema.safeParse(facts);
   if (!parsed.success) {
@@ -1304,4 +1308,39 @@ export async function readGrant(
     "OpsCrew could not read the database's logins on the server.",
   );
   return result.exitCode === 0 && /^state=in-place$/m.test(result.stdout);
+}
+
+/**
+ * Reads the uptime report on the server (feature 046) as root, the way the apply becomes root:
+ * as root, through `sudo -n`, or through Docker with `options.rootImage` (the `docker` privilege's
+ * image, as `ApplyOptions.rootImage`), on a server the user owns and on one OpsCrew created alike.
+ * Read-only; for `planUptimeReport`. Refuses plainly when the login cannot become root.
+ */
+export async function inspectUptimeReport(
+  remote: RemoteExec,
+  options: { rootImage?: string } = {},
+): Promise<UptimeReportFacts> {
+  const privilege = await probePrivilege(remote);
+  if (privilege === "sudo-password" || privilege === "none") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew cannot become root on this server, so it cannot read or set up the uptime report there.",
+      { hint: "Give the login passwordless sudo, then run the command again." },
+    );
+  }
+  const result = await readAsRoot(
+    remote,
+    privilege,
+    options.rootImage,
+    buildScript("uptime-report.inspect", {}, UPTIME_REPORT_SNIPPET, { tolerant: true }),
+    "OpsCrew could not read the uptime report on the server.",
+  );
+  if (result.exitCode !== 0) {
+    throw readFailure(
+      result,
+      "OpsCrew could not read the uptime report on the server.",
+      "Check that the server is reachable, then try again.",
+    );
+  }
+  return parseUptimeReport(result.stdout);
 }

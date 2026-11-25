@@ -36,6 +36,13 @@
  * app's A/AAAA records at the server's own address, with the token supplied at apply
  * (`ApplySecrets.dnsUpdaterToken`); a teardown removes the app's instance, and the shared files
  * with the last one.
+ * The Cloudflare uptime check's server reports (feature 046): `planUptimeReport` installs the
+ * `uptime-report` step from `inspectUptimeReport`'s facts, one instance per environment: a
+ * script and two systemd template units that check the disk, the scheduled snapshot and restore
+ * drill, the certificates and the credentials' ages with the scheduled check's rules, and send
+ * signed reports to the Worker on a change and once a day, the key supplied at apply
+ * (`ApplySecrets.uptimeReportKey`); a teardown removes the app's instances, and the shared files
+ * with the last one.
  * A second app on a server OpsCrew created for another app (feature 030): `DesiredHost.shares`
  * describes the first app, and `planHost` then plans only the app's own steps as the deploy login
  * (its deploy key's lines, every other line of authorized_keys kept as it is, its folders, drills
@@ -122,6 +129,7 @@ export {
   runnerOf,
   type StorageDevice,
   tunnelOf,
+  type UptimeReportFacts,
 } from "./facts";
 export { type GrantParams, GrantParamsSchema, MONITOR_LOGIN } from "./grant";
 export { hostPlanHash } from "./hash";
@@ -131,7 +139,13 @@ export {
   type HomeNetwork,
   HomeNetworkSchema,
 } from "./home-network";
-export { inspectHost, inspectRunners, probePrivilege, readGrant } from "./inspect";
+export {
+  inspectHost,
+  inspectRunners,
+  inspectUptimeReport,
+  probePrivilege,
+  readGrant,
+} from "./inspect";
 export { localExec } from "./local";
 export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
 export { networkFileHashes, networkFilterFileHashes, networkUfwRules } from "./network-files";
@@ -160,6 +174,7 @@ export {
   planTeardown,
   planTunnelToken,
   planUndo,
+  planUptimeReport,
 } from "./plan";
 export type { HostPrivilege } from "./privilege";
 export { type PublicSshParams, PublicSshParamsSchema } from "./public-ssh";
@@ -171,11 +186,26 @@ export {
   type DesiredHost,
   type DesiredRunner,
   type DesiredRunnerHost,
+  type DesiredUptimeReport,
   type HostPlan,
   HostPlanSchema,
   type HostStep,
   type HostStepId,
   MAX_SSH_SOURCES,
 } from "./types";
+export {
+  renderUptimeReportScript,
+  UPTIME_REPORT_CONFIG_DIR,
+  UPTIME_REPORT_KEY_REACH,
+  UPTIME_REPORT_SCRIPT,
+  UPTIME_REPORT_SERVICE_UNIT,
+  UPTIME_REPORT_STATE_DIR,
+  UPTIME_REPORT_TIMER_UNIT,
+  UPTIME_REPORT_USER_AGENT,
+  UPTIME_REPORT_VERSION,
+  uptimeReportFileHashes,
+  uptimeReportInstance,
+  uptimeReportTimer,
+} from "./uptime-report";
 export { webFilterFileHashes, webFilterTable6Hash } from "./web-filter";
 export { readWireGuard, type WireGuardPeer } from "./wireguard";

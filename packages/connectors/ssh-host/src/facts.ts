@@ -351,6 +351,34 @@ export const DnsUpdaterFilesSchema = z.object({
 });
 export type DnsUpdaterFiles = z.infer<typeof DnsUpdaterFilesSchema>;
 
+/**
+ * The uptime report on the server (feature 046), as inspection reads it as root: the script's
+ * version (its line 2, null without it), the script's and the two template units' mode, owner and
+ * SHA-256, the config folder's mode and owner (each null when absent), whether `curl` and
+ * `openssl` are there, and each instance (`<hex16>`, one per environment) by its config: the
+ * config's app line, the config's and the key file's mode, owner and SHA-256 (never the key) and
+ * its timer.
+ */
+export const UptimeReportFactsSchema = z.object({
+  version: z.number().int().positive().nullable(),
+  script: HashedFileSchema.nullable(),
+  service: HashedFileSchema.nullable(),
+  timer: HashedFileSchema.nullable(),
+  dir: FileModeSchema.nullable(),
+  tools: z.object({ curl: z.boolean(), openssl: z.boolean() }),
+  instances: z.array(
+    z.object({
+      instance: z.string().regex(/^[0-9a-f]{16}$/),
+      /** The config's `app=` line, null without a valid one. */
+      app: AppNameSchema.nullable(),
+      config: HashedFileSchema,
+      key: HashedFileSchema.nullable(),
+      timer: z.object({ enabled: z.boolean(), active: z.boolean() }),
+    }),
+  ),
+});
+export type UptimeReportFacts = z.infer<typeof UptimeReportFactsSchema>;
+
 /** Facts about the server found by `inspectHost`; read-only, zod-validated. */
 export const HostFactsSchema = z.object({
   /** The admin login OpsCrew connected as. */
@@ -674,6 +702,8 @@ export const HostFactsSchema = z.object({
   dnsUpdaters: z.array(DnsUpdaterFactSchema).optional(),
   /** The address updater's shared script, units and config folder. */
   dnsUpdaterFiles: DnsUpdaterFilesSchema.optional(),
+  /** The uptime report's script, units and instances (read as root: partial without it). */
+  uptimeReport: UptimeReportFactsSchema.optional(),
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;

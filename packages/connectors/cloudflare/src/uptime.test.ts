@@ -15,6 +15,7 @@ import {
   type UptimeEntry,
   type UptimeFacts,
   uptimeEntryKey,
+  uptimeReportKey,
   uptimeSecretName,
   uptimeStateKey,
 } from "./uptime";
@@ -88,7 +89,9 @@ function facts(ids: string[], more: Partial<UptimeFacts> = {}): UptimeFacts {
     sha256: sha256Hex(V1),
     entries: Object.fromEntries(ids.map((id) => [uptimeEntryKey(id), entryFor(id)])),
     secrets: ids.map(uptimeSecretName),
-    workersSubdomain: true,
+    accountSubdomain: "opscrew-test",
+    workersDev: true,
+    reports: [],
     denied: [],
     ...more,
   };
@@ -106,7 +109,9 @@ describe("inspectUptime", () => {
       sha256: sha256Hex(V1),
       entries: { [uptimeEntryKey(SHOP)]: entryFor(SHOP) },
       secrets: [uptimeSecretName(SHOP)],
-      workersSubdomain: true,
+      accountSubdomain: "opscrew-test",
+      workersDev: true,
+      reports: [],
       denied: [],
     });
     expect(fake.writes()).toEqual([]);
@@ -116,12 +121,13 @@ describe("inspectUptime", () => {
     const { fake, client } = setup();
     fake.subdomain = undefined;
     const read = await inspectUptime(client, ACCOUNT);
-    expect(read.workersSubdomain).toBe(false);
+    expect(read.accountSubdomain).toBeNull();
     const plan = planUptime(read, wanting(SHOP));
     expect(plan.findings).toEqual([
       {
-        code: "workers-subdomain-missing",
-        message: "Your Cloudflare account has no workers.dev subdomain yet.",
+        code: "workers-dev-missing",
+        message:
+          "Your Cloudflare account has no workers.dev subdomain yet, which the uptime Worker's trigger and the servers' reports need.",
         hint: "Open Workers & Pages in Cloudflare's dashboard once, which asks you to choose one, then run provision again.",
       },
     ]);
@@ -156,7 +162,13 @@ describe("planUptime", () => {
   it("creates the namespace, the script, the secret and the entry on an empty account, in order", async () => {
     const { client } = setup();
     const plan = await planFor(client, wanting(SHOP));
-    expect(kinds(plan)).toEqual(["create-namespace", "upload-script", "put-secret", "put-entry"]);
+    expect(kinds(plan)).toEqual([
+      "create-namespace",
+      "upload-script",
+      "set-subdomain",
+      "put-secret",
+      "put-entry",
+    ]);
     expect(plan.expect).toEqual({ others: [], sha256: null, namespaceId: null });
     expect(plan.findings).toEqual([]);
     expect(plan.destroys).toBe(false);
@@ -404,6 +416,7 @@ describe("applyUptime", () => {
         "upload-script",
         "set-schedule",
         "record-sha256",
+        "set-subdomain",
         "put-secret",
         "put-entry",
       ],
@@ -417,6 +430,7 @@ describe("applyUptime", () => {
       `PUT ${worker}`,
       `PUT ${worker}/schedules`,
       `PUT ${kv}/${id}/values/opscrew%3Aworker`,
+      `POST ${worker}/subdomain`,
       `PUT ${worker}/secrets`,
       `PUT ${kv}/${id}/values/${encodeURIComponent(uptimeEntryKey(SHOP))}`,
     ]);
@@ -426,6 +440,7 @@ describe("applyUptime", () => {
       compatibilityDate: "2026-10-01",
       bindings: [{ type: "kv_namespace", name: "UPTIME", namespace_id: id }],
       crons: ["*/5 * * * *"],
+      workersDev: { enabled: true, previewsEnabled: false },
     });
     expect(uploaded?.secrets.get(uptimeSecretName(SHOP))).toBe(webhook(SHOP));
     const values = fake.namespace("opscrew-uptime")?.values;
@@ -449,6 +464,7 @@ describe("applyUptime", () => {
         "upload-script",
         "set-schedule",
         "record-sha256",
+        "set-subdomain",
         "put-secret",
         "put-entry",
       ],
@@ -457,6 +473,7 @@ describe("applyUptime", () => {
         "upload-script",
         "set-schedule",
         "record-sha256",
+        "set-subdomain",
         "put-secret",
         "put-entry",
       ],
@@ -569,6 +586,7 @@ describe("applyUptime", () => {
       "upload-script",
       "set-schedule",
       "record-sha256",
+      "set-subdomain",
       "put-secret",
       "put-entry",
     ]);
@@ -608,6 +626,7 @@ describe("applyUptime", () => {
       "upload-script",
       "set-schedule",
       "record-sha256",
+      "set-subdomain",
     ]);
     expect(error.message).toContain("secret refused");
   });
@@ -625,5 +644,200 @@ describe("applyUptime", () => {
     });
     const error = await rejection(applyUptime(client, again, desired, again.hash));
     expect(errorText(error)).not.toContain(HOOK);
+  });
+});
+
+describe("server reports", () => {
+  const T0 = "2026-11-25T10:00:00Z";
+  const T1 = "2026-11-26T09:00:00Z";
+  /** 32 random bytes in hex, as the agents keep them: never in a plan, a hash or its words. */
+  const REPORT = sha256Hex(fakeSecret("generic-password", "report"));
+  const withReport = (id: string, report = REPORT) =>
+    JSON.stringify({ ...JSON.parse(webhook(id)), report });
+
+  function serving(id: string, servers: string[], since = T0): UptimeEntry {
+    return { ...entryFor(id), servers: servers.map((server) => ({ id: server, since })) };
+  }
+
+  function storedReports(fake: FakeUptime, keys: string[]): void {
+    const values = fake.namespace("opscrew-uptime")?.values;
+    for (const key of keys) values?.set(key, '{"version":1}');
+  }
+
+  it("names each server's report key under its entry", () => {
+    expect(uptimeReportKey(SHOP, "hetzner-shop")).toBe("report:acme/shop/shop/prod/hetzner-shop");
+  });
+
+  it("reads the account's subdomain, the Worker's workers.dev address and the report keys", async () => {
+    const { fake, client } = setup();
+    expect((await inspectUptime(client, ACCOUNT)).workersDev).toBe(false);
+    await provision(client, { ...wanting(SHOP), entry: serving(SHOP, ["hetzner-shop"]) });
+    storedReports(fake, [uptimeReportKey(SHOP, "hetzner-shop")]);
+    fake.calls.length = 0;
+    const read = await inspectUptime(client, ACCOUNT);
+    expect(read).toMatchObject({
+      accountSubdomain: "opscrew-test",
+      workersDev: true,
+      reports: [uptimeReportKey(SHOP, "hetzner-shop")],
+    });
+    expect(fake.writes()).toEqual([]);
+    // An upload of the script again keeps the address on.
+    await provision(client, { ...wanting(SHOP, { script: script(V2) }), secret: undefined });
+    expect((await inspectUptime(client, ACCOUNT)).workersDev).toBe(true);
+  });
+
+  it("turns the workers.dev address on only when it is off, and returns the report URL", () => {
+    const off = planUptime(facts([SHOP], { workersDev: false }), wanting(SHOP));
+    expect(kinds(off)).toEqual(["set-subdomain", "put-secret"]);
+    expect(off.reportUrl).toBe("https://opscrew-uptime.opscrew-test.workers.dev/report");
+    expect(describeUptimePlan(off)).toContain(
+      "Turn on the workers.dev address of the Worker opscrew-uptime, https://opscrew-uptime.opscrew-test.workers.dev, where the servers send their reports (its previews stay off).",
+    );
+    const on = planUptime(facts([SHOP]), wanting(SHOP));
+    expect(kinds(on)).toEqual(["put-secret"]);
+    expect(on.reportUrl).toBe(off.reportUrl);
+    expect(on.hash).not.toBe(off.hash);
+    const none = planUptime(facts([SHOP], { accountSubdomain: null }), wanting(SHOP));
+    expect(none.reportUrl).toBeNull();
+    expect(none.findings.map((f) => f.code)).toEqual(["workers-dev-missing"]);
+    expect(none.findings[0]?.hint).toContain("Open Workers & Pages in Cloudflare's dashboard once");
+  });
+
+  it("keeps each server's since from the stored entry, and adds a new server's", () => {
+    const read = facts([SHOP]);
+    read.entries[uptimeEntryKey(SHOP)] = serving(SHOP, ["hetzner-shop"], T0);
+    const same = planUptime(read, {
+      ...wanting(SHOP),
+      entry: serving(SHOP, ["hetzner-shop"], T1),
+      secret: undefined,
+    });
+    expect(same.changes).toEqual([]);
+    const more = planUptime(read, {
+      ...wanting(SHOP),
+      entry: serving(SHOP, ["hetzner-shop", "own-shop"], T1),
+      secret: undefined,
+    });
+    expect(more.changes).toEqual([
+      {
+        kind: "put-entry",
+        key: uptimeEntryKey(SHOP),
+        entry: {
+          ...entryFor(SHOP),
+          servers: [
+            { id: "hetzner-shop", since: T0 },
+            { id: "own-shop", since: T1 },
+          ],
+        },
+      },
+    ]);
+    expect(describeUptimePlan(more)).toContain("and take reports from hetzner-shop and own-shop");
+  });
+
+  it("deletes the report key of a server that left, after its entry, and no other's", () => {
+    const read = facts([SHOP, BLOG], {
+      reports: [
+        uptimeReportKey(BLOG, "own-shop"),
+        uptimeReportKey(SHOP, "hetzner-shop"),
+        uptimeReportKey(SHOP, "own-shop"),
+      ],
+    });
+    read.entries[uptimeEntryKey(SHOP)] = serving(SHOP, ["hetzner-shop", "own-shop"]);
+    const plan = planUptime(read, {
+      ...wanting(SHOP),
+      entry: serving(SHOP, ["hetzner-shop"]),
+      secret: undefined,
+    });
+    expect(plan.changes).toEqual([
+      { kind: "put-entry", key: uptimeEntryKey(SHOP), entry: serving(SHOP, ["hetzner-shop"]) },
+      { kind: "delete-report", key: uptimeReportKey(SHOP, "own-shop") },
+    ]);
+    expect(describeUptimePlan(plan)).toContain(
+      "Delete the last report of the server own-shop, which no longer reports for acme/shop (prod).",
+    );
+  });
+
+  it("refuses heartbeatMinutes unless the live test plans it", () => {
+    const entry = { ...serving(SHOP, ["hetzner-shop"]), heartbeatMinutes: 10 };
+    const plan = planUptime(facts([]), { ...wanting(SHOP), entry });
+    expect(plan.findings).toEqual([
+      {
+        code: "test-only-field",
+        message:
+          "The uptime entry of acme/shop (prod) sets heartbeatMinutes, which only OpsCrew's live test may set.",
+        hint: "This is a bug in OpsCrew; please report it.",
+      },
+    ]);
+    const live = planUptime(facts([]), { ...wanting(SHOP), entry }, { liveTest: true });
+    expect(live.findings).toEqual([]);
+    expect(live.changes).toContainEqual({ kind: "put-entry", key: uptimeEntryKey(SHOP), entry });
+  });
+
+  it("accepts the report key in the secret, and never hashes or shows it", () => {
+    const plan = planUptime(facts([]), { ...wanting(SHOP), secret: withReport(SHOP) });
+    expect(kinds(plan)).toContain("put-secret");
+    expect(JSON.stringify(plan)).not.toContain(REPORT);
+    expect(describeUptimePlan(plan)).not.toContain(REPORT);
+    const other = sha256Hex(fakeSecret("generic-password", "other-report"));
+    expect(planUptime(facts([]), { ...wanting(SHOP), secret: withReport(SHOP, other) }).hash).toBe(
+      plan.hash,
+    );
+    const short = withReport(SHOP, REPORT.slice(0, 40));
+    const error = (() => {
+      try {
+        planUptime(facts([]), { ...wanting(SHOP), secret: short });
+      } catch (e) {
+        return e;
+      }
+    })() as OpsCrewError;
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(errorText(error)).not.toContain(REPORT.slice(0, 40));
+  });
+
+  it("refuses an entry whose servers aren't the shape the Worker reads", () => {
+    for (const servers of [
+      [{ id: "a/b", since: T0 }],
+      [{ id: "hetzner-shop", since: "yesterday" }],
+    ]) {
+      const entry = { ...entryFor(SHOP), servers } as UptimeEntry;
+      expect(() => planUptime(facts([]), { ...wanting(SHOP), entry })).toThrow(
+        "The uptime entry of acme/shop (prod) is not what the uptime Worker reads",
+      );
+    }
+  });
+
+  it("applies the removal of a server that left, deleting its report key", async () => {
+    const { fake, client } = setup();
+    await provision(client, {
+      ...wanting(SHOP),
+      entry: serving(SHOP, ["hetzner-shop", "own-shop"]),
+    });
+    storedReports(fake, [uptimeReportKey(SHOP, "hetzner-shop"), uptimeReportKey(SHOP, "own-shop")]);
+    const result = await provision(client, {
+      ...wanting(SHOP),
+      entry: serving(SHOP, ["hetzner-shop"]),
+      secret: undefined,
+    });
+    expect(result.applied).toEqual(["put-entry", "delete-report"]);
+    const values = fake.namespace("opscrew-uptime")?.values;
+    expect(values?.has(uptimeReportKey(SHOP, "own-shop"))).toBe(false);
+    expect(values?.has(uptimeReportKey(SHOP, "hetzner-shop"))).toBe(true);
+  });
+
+  it("deletes the entry's report keys with the entry, and no other entry's", async () => {
+    const { fake, client } = setup();
+    await provision(client, { ...wanting(SHOP), entry: serving(SHOP, ["hetzner-shop"]) });
+    await provision(client, { ...wanting(BLOG), entry: serving(BLOG, ["hetzner-blog"]) });
+    storedReports(fake, [
+      uptimeReportKey(SHOP, "hetzner-shop"),
+      uptimeReportKey(BLOG, "hetzner-blog"),
+    ]);
+    // A report the Worker writes after the plan is deleted too: the apply lists them again.
+    const plan = await planFor(client, leaving(SHOP));
+    storedReports(fake, [uptimeReportKey(SHOP, "own-shop")]);
+    await applyUptime(client, plan, leaving(SHOP), plan.hash);
+    const keys = [...(fake.namespace("opscrew-uptime")?.values.keys() ?? [])].sort();
+    expect(keys).toEqual(
+      ["opscrew:worker", uptimeEntryKey(BLOG), uptimeReportKey(BLOG, "hetzner-blog")].sort(),
+    );
   });
 });
