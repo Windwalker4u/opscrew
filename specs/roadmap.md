@@ -968,6 +968,30 @@ module's first version: an app's PostgreSQL service names the extensions it need
 - **After 0.2.12,** and after the database changes of the private-deployment contribution are
   settled, since both change the same PostgreSQL service.
 
+## 046 An uptime check that doesn't use GitHub Actions
+
+The founder's decision (2026-11-25), shipping in 0.2.12 with 032 and 040. In a private
+repository the scheduled check costs Actions minutes, so a user who turns it off has no down alert
+at all. Cloudflare's standalone Health Checks need the Pro plan, but Workers' free plan has Cron
+Triggers (5 per account), with fetch time not counted as CPU.
+- **The setting:** `observability.check.runner: actions | cloudflare`, with `actions` as the
+  default and as today.
+- **What it checks:** with `cloudflare`, a Worker in the user's own Cloudflare account fetches each
+  app's health address over HTTPS every 5 minutes. A failed request counts as down, and that
+  includes an invalid certificate and the whole server being down. The disk and snapshot checks
+  stay with the Actions check or the server, since a Worker can't reach the server.
+- **Alerts:** the same Slack, Discord or ntfy webhook the Actions check uses, stored as a Worker
+  secret. One message when an app goes down and one when it recovers, with the state kept in
+  Workers KV and written only when it changes. It opens no GitHub issue: that would need a GitHub
+  token in the Worker.
+- **Several apps in one account:** the free plan allows 5 Cron Triggers per account, so one shared
+  OpsCrew Worker per account checks every app that chose it. Each app owns only its own entry. Its
+  provision adds the entry and its destroy removes it, and the last app's removal removes the
+  Worker.
+- **The safety gate:** the Worker, its trigger, its KV namespace and its secrets are changed only
+  through a plan approved by its hash, like the rest of the app's Cloudflare setup, and the plan
+  names the other apps' entries it keeps. Tests use fakes, with no live Cloudflare.
+
 ## Later, not yet placed
 
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
