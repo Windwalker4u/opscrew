@@ -109,14 +109,101 @@ run out at five apps.
    **When** `init` or provision checks it, **Then** the missing permission is named.
 4. **Given** no runner, **When** provision runs, **Then** everything behaves as today (`actions`).
 
+### User Story 4 - The server checks itself and reports to the Worker (Priority: P1)
+
+The founder, 2026-11-25: with `runner: cloudflare`, nothing may still need GitHub Actions. On each
+server of the environment, a timer installed by a host plan approved by its hash (ADR 0011) checks
+these things against the Actions check's own sources and thresholds:
+
+- every 5 minutes:
+  - the disk;
+  - the last scheduled snapshot;
+  - the last scheduled restore drill;
+  - the days left on the certificates the server serves for the app;
+- once a day, the age of each credential the Actions check dates, from the non-secret rotation
+  dates that provision writes into the timer's config.
+
+With `runner: cloudflare` on a server, nothing needs GitHub Actions any more (the founder,
+2026-11-25).
+
+It reports to the Worker's own address only when one of them fails or recovers, plus one
+heartbeat a day. The Worker posts each change through the environment's webhook, and alerts when a
+server's reports stop for more than 26 hours.
+
+**Why this priority**: without it, a user who leaves Actions loses the disk, snapshot and drill
+alerts. With it, `runner: cloudflare` is a complete alternative.
+
+**Independent Test**:
+
+- **The server's script,** run in the shell harness against fixture files:
+  - it reports on the same fixtures where `check.mjs` fails or passes;
+  - it posts only on a change, or after 24 hours;
+  - it keeps its state when the Worker refuses or can't be reached.
+- **The Worker,** with a fake KV, a fake clock and real HMAC signatures, refuses an unsigned
+  report, a stale one and a replayed one, and posts once per change.
+- **Its cron** posts "reports stopped" once, after 26 hours.
+
+**Acceptance Scenarios**:
+
+1. **Given** an environment with `runner: cloudflare` on a server that provision reaches with a host plan,
+   **When** provision runs, **Then**:
+   - its host plan shows the step `uptime-report`, which installs a script, a systemd timer, a
+     config and a key file (0600, root), with the key by name only;
+   - the Cloudflare plan turns on the Worker's workers.dev address, if it is off, and the entry
+     lists the server.
+2. **Given** a disk that crosses 85%, **When** the timer runs, **Then** it sends one signed
+   report, and the Worker posts one message with the percentage and the free space. Crossing
+   95% posts again, and falling back under 85% posts once that it recovered.
+3. **Given** a failed scheduled snapshot, its failed copy off the server, a failed restore drill or
+   a drill that is late, **When** the timer runs, **Then** one report goes out and the Worker posts
+   one message, with the texts of the Actions check's issues. The recovery posts once.
+4. **Given** nothing changed, **When** the timer runs, **Then** nothing is sent, apart from one
+   heartbeat 24 hours after the last report.
+5. **Given** a report that is unsigned, signed with another key, more than 5 minutes off the
+   Worker's clock, or not newer than the last accepted one, **When** it reaches the Worker,
+   **Then** it is refused, and nothing is read from KV or written. Any other path or method gets
+   404.
+6. **Given** a server whose last report is more than 26 hours old, **When** the cron runs,
+   **Then** one message says "reports from <app> (<env>) on <server> stopped". The first report
+   after that posts "reports resumed".
+7. **Given** a certificate served for the app with fewer than 14 days left, **When** the timer
+   runs, **Then** one report goes out and the Worker posts the Actions check's text ("expires
+   within 14 days", or "has expired"). A renewed certificate posts once that it recovered.
+8. **Given** `observability.check.credentials` on and a credential older than its
+   `credentials.maxAgeDays`, **When** the timer's daily credential check runs, **Then** one message
+   names the credential and the `npx opscrew rotate` command.
+   - After `opscrew rotate`, its host plan writes the new date into the timer's config. The
+     next check posts once that it recovered.
+9. **Given** the runner switched back to `actions`, **When** provision runs, **Then** its host
+   plan removes the timer, the script's instance, the config and the key file. A destroy removes
+   them with the app's teardown.
+
 ### Edge Cases
 
-- **v1 is Worker-only.** With `runner: cloudflare`, these checks don't run for that environment:
-  the disk, the scheduled snapshots, the restore drills, and the certificate's days left. A Worker
-  can't reach the server, and no Actions workflow runs for it.
-  - Design and provision print it when the runner is chosen: "The disk, snapshot, restore-drill
-    and certificate-days checks need `runner: actions`."
-  - The guide says the same, and `status` still shows those figures when asked.
+- **Nothing needs Actions on a server:** with `runner: cloudflare` on a server, every check of
+  the Actions check runs without it:
+  - the addresses, in the Worker;
+  - the disk, the snapshots, the restore drills, the certificates' days and the credentials'
+    age, on the server.
+- **Targets with no server checks** print, in design and provision:
+  "This target has no server OpsCrew reaches, so the Worker checks its address only: the disk, snapshot, restore-drill, certificate-days and credential-age checks need `runner: actions`."
+  An expired or invalid certificate there still shows as down ("an invalid certificate").
+- **A certificate the server doesn't serve over TLS** (a tunnel's origin served over plain HTTP)
+  is `none`, and never posts.
+- **No server checks on these targets** (the lead, 2026-11-25): a Portainer target, a site on
+  Cloudflare's hosting or GitHub Pages, and a hosting account. They have no such server checks
+  today, or are refused. The Worker checks their addresses only, and design and the guide say
+  so.
+- **A server that two environments share** gets one timer per environment, and each reports to its
+  own entry, so a full disk is reported to each environment's webhook.
+- **A server provision can't reach with a host plan** gets no timer. Design names it as not
+  checked.
+- **The workers.dev address:** the Worker gets its `fetch` handler there, at `POST /report` only.
+  An account with no workers.dev subdomain yet gets a finding before anything changes, which says
+  to open Workers & Pages in the dashboard once.
+- **A moved app:** the entry lists its servers. A report from a server that isn't listed is
+  refused, and the plan deletes the report keys of servers that left, so a server removed by a
+  retarget never raises "reports stopped".
 - **The Actions workflow:** an environment with `runner: cloudflare` is left out of `check.json`.
   When no environment uses Actions any more, the workflow and `opscrew/check/` are removed, as
   when the check is turned off.
@@ -178,14 +265,71 @@ run out at five apps.
 - **FR-012**: `status` says that the check runs in the Cloudflare Worker, and lists the hostnames
   the Worker's state has `down`, with their times. It only reads.
 - **FR-013**: When the runner is `cloudflare`, design shows no Actions minutes for that
-  environment, and both design and provision print the line of the first edge case.
+  environment, and both design and provision print the line of the edge case "What stays with
+  Actions".
 - **FR-014**: Tests use fakes only. No test calls Cloudflare.
+- **FR-015**: With `runner: cloudflare`, a host plan step `uptime-report`, approved by its hash,
+  installs one timer instance per environment on each of its servers that provision reaches
+  with a host plan. These are servers OpsCrew created and the user's own, including ones behind a
+  tunnel or at home, since the timer only connects out. The step is removed by provision when the
+  runner goes back to `actions` or the check is turned off, and by destroy with the teardown.
+- **FR-016**: Every 5 minutes, the server's script reads the disk, the last scheduled snapshot
+  and the last scheduled restore drill. It reads them from the same files as the check key's
+  command, against the same thresholds:
+  - the disk at 85% and 95%;
+  - a snapshot fails when it, or its copy off the server, failed;
+  - a certificate fails with fewer than 14 days left (`certDays`), read from what the server
+    serves for each of the app's hostnames on its own port 443;
+  - a credential fails when it was made or last rotated more than `maxAgeDays` ago. This one is
+    checked once a day, from the dates in the timer's config;
+  - a drill fails when it didn't restore, the app was unhealthy or the copy failed, or when none
+    ran within twice its schedule plus an hour.
+- **FR-017**: The script keeps its last sent state in a local file. It sends a report only when a
+  check's status changes, or 24 hours after its last report (the heartbeat). It updates the file
+  only when the Worker answers 2xx, so a failed send is retried at the next run.
+- **FR-018**: A report is `POST /report` to the Worker's workers.dev address, a JSON body of
+  fixed fields: the entry id, the server's id in the plan, the time, and each check's status with
+  its figures. It never holds an address, a log line or a secret.
+  - It is signed with HMAC-SHA256 over the time and the body, with the environment's own report
+    key.
+  - The key is 32 random bytes, kept in a 0600 root file on the server and in the entry's Worker
+    secret, beside the webhook's address.
+- **FR-019**: The Worker's `fetch` handler serves only `POST /report`. It refuses, before any KV
+  operation:
+  - a body over 4 KB;
+  - a missing or wrong signature, compared in constant time;
+  - a time more than 5 minutes from its clock;
+  - a server the entry doesn't list.
+
+  It then refuses a time that isn't newer than the last accepted report's. Everything else gets
+  404.
+- **FR-020**: For each check whose status changed, the Worker posts one message through the
+  entry's webhook, with the Actions check's texts. It then writes the server's report key, with
+  the report's time as KV metadata. A failed post answers 502 and writes nothing, so the server
+  sends again.
+- **FR-021**: On its cron, the Worker posts "reports from <app> (<env>) on <server> stopped" once
+  when a listed server's last report, or its listing when none came yet, is more than 26 hours
+  old. It posts "reports resumed" once when a report comes after that.
+- **FR-022**: KV writes happen only on an accepted report (a change or a heartbeat) and on a
+  stopped or resumed alert. Each key has one writer: `report:` keys the `fetch` handler, and
+  `state:` keys the cron.
+- **FR-024**: Provision writes the credentials' names and dates (never a value) into the timer's
+  config, with the rotation record's rule: the last rotation, else when the credential was made,
+  else the first deploy. It also writes `maxAgeDays`. `opscrew rotate` writes the new date the
+  same way, through the server's host plan approved by its hash.
+- **FR-025**: The heartbeat limit is 26 hours. An entry may carry a shorter `heartbeatMinutes`
+  only when the adapter is called with the live test's own flag. The plan refuses it for every
+  other entry, and the agents never set it.
+- **FR-023**: Server checks exist only on servers. Portainer, Cloudflare's hosting, GitHub Pages and
+  hosting accounts get the address check only, said plainly in design and the guide.
 
 ### Key Entities
 
 - **Uptime entry**: one environment's KV value (data-model.md).
 - **Uptime state**: each hostname that is `suspect` or `down`, as the Worker last wrote it.
 - **Uptime plan**: the adapter's changes, what it expected to find, and its hash.
+- **Report key**: an environment's 32-byte HMAC key, on its servers and in its Worker secret.
+- **Server report**: a server's last accepted report in KV (`report:<id>/<server>`).
 
 ## Success Criteria *(mandatory)*
 
@@ -196,6 +340,18 @@ run out at five apps.
   entry.
 - **SC-003**: The live pass (quickstart) shows both messages, with two entries sharing the Worker,
   and leaves nothing behind. Listing the Workers, the KV namespaces and the secrets proves it.
+- **SC-004**: With `runner: cloudflare` on a server, the repository runs no GitHub Actions workflow
+  for that environment. A full disk, a failed snapshot, a failed drill or a certificate close to
+  expiry still alerts within about 5 minutes of the server seeing it, and an old credential within
+  a day.
+- **SC-007**: The live pass proves the "reports stopped" alert in minutes, with a heartbeat limit
+  that only the live test's own setup may set. Production entries always use 26 hours, which unit
+  tests prove.
+- **SC-005**: A healthy server costs one KV write a day (its heartbeat), and its reports never
+  reach the free plan's limits: 1,000 KV writes and 100,000 requests a day per account (research
+  R1, R3).
+- **SC-006**: The live pass shows a disk alert and its recovery from a real server, the refusal
+  of an unsigned report, and the timer gone after the switch back to `actions`.
 
 ## Assumptions
 

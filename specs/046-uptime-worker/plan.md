@@ -12,6 +12,11 @@ KV, written only on change. OpsCrew manages the Worker through a new module of t
 shared-resources adapter (ADR 0014), not Terraform. Each app's plan is approved by its hash
 (`cloudflare-apply`), and each app writes only its own KV keys and its own secret.
 
+With the founder's extension (User Story 4), each server of such an environment checks its own
+disk, last snapshot and last restore drill with a systemd timer that a host plan installs. It
+reports to the Worker's workers.dev address, signed, only on a change and once a day, so nothing
+of that environment needs GitHub Actions (section 6).
+
 ## Technical Context
 
 - **Code:** TypeScript strict ESM, in the packages `plan-schema`, `iac-templates`,
@@ -34,22 +39,36 @@ shared-resources adapter (ADR 0014), not Terraform. Each app's plan is approved 
   - The apply re-reads before it writes, and every change is audited.
   - The Worker itself changes nothing in the account: it only fetches, writes its own state keys
     and posts to the webhook, so it is no standing approval. **Pass.**
+  - The server's timer is installed, changed and removed only by the host step `uptime-report`,
+    in a host plan approved by its hash (ADR 0011). It changes nothing: it reads files and sends
+    a report.
+  - The Worker's `fetch` handler only verifies a report, writes that server's own `report:` key
+    and posts to the webhook. **Pass.**
 - **IV. Secrets:**
   - The webhook's address is only a Worker secret. Its value is never in a plan, a hash, a log, a
     KV value or a file, and the plan names only the secret.
   - A message never carries the app's answer, its headers or an address.
-  - The Worker holds no GitHub or Cloudflare token. **Pass.**
+  - The Worker holds no GitHub or Cloudflare token.
+  - The report key exists in three places only: a 0600 root file on each server, the entry's
+    Worker secret, and the OpsCrew home. It reaches the server on standard input, and a plan
+    names it by its SHA-256.
+  - A leaked key can only send reports for that one environment, which the guide says (research
+    R9 on `openssl`'s command line). **Pass.**
 - **VII. Test first:**
   - The script's state machine is tested over several runs, with a fake KV, fetch and clock.
   - The adapter is tested with an injected `fetch` fake of the Cloudflare API.
   - The agents' wiring is tested with the existing fakes.
+  - The server's script runs in the ssh-host shell harness against fixture files, with parity
+    tests against `check.mjs`'s rules on the same fixtures.
   - Nothing live in tests. The live pass is the lead's, on the founder's account (T4692). **Pass.**
 - **X. Simplicity:**
   - No new dependency, no new approval kind, no constitution change.
   - The webhook stays the repository's setting.
   - An empty Worker stays until a destroy, so there is no extra confirmation flow.
-  - Left out of v1 (the lead's decisions of 2026-11-25): a maintenance pause, a per-entry
-    interval, and the disk, snapshot, restore-drill and certificate-days checks. **Pass.**
+  - Left out of v1 (the lead's decisions of 2026-11-25): a maintenance pause and a per-entry
+    interval. The server checks (section 6)
+    reuse the address updater's pattern: a POSIX script, systemd template units and a host step.
+    **Pass.**
 
 ## Design
 
@@ -207,8 +226,7 @@ Storage → Edit". It is exported and checked with the existing `accountPermissi
   - **Leaving the Worker:** an environment whose plan no longer chooses it (`actions`, or the check
     off) while an entry exists gets the removal plan instead, without `destroy`. Only its entry,
     state and secret go.
-  - **What it prints:** when the runner is `cloudflare`, provision says "The disk, snapshot,
-    restore-drill and certificate-days checks need `runner: actions`."
+  - **What it prints:** on a target with no server checks, provision says "This target has no server OpsCrew reaches, so the Worker checks its address only: the disk, snapshot, restore-drill, certificate-days and credential-age checks need `runner: actions`."
   - **Pausing:** none in v1. `resumeCheck` and the move and retarget pauses change nothing for a
     Cloudflare environment.
 - **Rendering:** `renderCheck` (`packages/iac-templates/src/check/index.ts`) leaves out plans with
@@ -224,8 +242,7 @@ Storage → Edit". It is exported and checked with the existing `accountPermissi
   state from KV and reports "Checked every 5 minutes by the Cloudflare Worker opscrew-uptime",
   with the hostnames down and their times. A missing entry or Worker says to run `provision`.
 - **Design** (`check/design.ts`): shows no Actions minutes for the environment, prints the same
-  line as provision ("The disk, snapshot, restore-drill and certificate-days checks need
-  `runner: actions`."), and states the 40-hostname cap.
+  line as provision on a target with no server checks, and states the 40-hostname cap.
 - **Init** (`init/checks.ts`): when a plan chooses `cloudflare`, it checks
   `CLOUDFLARE_UPTIME_PERMISSIONS` and names any that is missing.
 - **Cloudflare move** (`cloudflare-move/prepare.ts`): it refuses an app with an uptime entry, and
@@ -240,7 +257,7 @@ Storage → Edit". It is exported and checked with the existing `accountPermissi
   - what counts as down: one try per run, and two failures in a row, with the reasons;
   - the messages;
   - the free limits (5 Cron Triggers, 40 hostnames, KV shared with the user's own Workers);
-  - what it doesn't check, said plainly: "these checks need `runner: actions`";
+  - which targets have no server checks, said plainly, with design's line;
   - the first run's delay of up to 15 minutes;
   - no maintenance pause: a move or retarget may post a down and a recovered message;
   - `cloudflare-move` needs `runner: actions` first;
@@ -248,11 +265,137 @@ Storage → Edit". It is exported and checked with the existing `accountPermissi
 - **`docs/guide/security.md`:** the token list gains Workers KV Storage → Edit, marked "only with
   the Cloudflare uptime check".
 
+### 6. Server reports (User Story 4, T4606 to T4610)
+
+The lead's design (2026-11-25), from the founder's extension.
+
+**6.1 The server's script and host step (`packages/connectors/ssh-host`, T4607).** This is a new
+host step, `uptime-report`, built like `dns-updater` (`dns-updater.ts`, and its part of
+`steps.ts`).
+
+- **What it installs:** a versioned POSIX script, two systemd template units, and per instance
+  (`<hex16>`) a config and a key file, 0600 root (data-model.md). The units:
+  - run the script as the deploy user, the user the check key's command already runs as;
+  - hand it the config and the key through `LoadCredential=`;
+  - give it a `StateDirectory`;
+  - run it from a timer every 5 minutes.
+- **Packages:** the step installs `curl` and `openssl` when the server lacks them, as
+  `dns-updater` does with `curl` and `jq`.
+- **The script's checks:** it reads its own app folder's files as `CHECK_KEY_COMMAND` reads them,
+  and evaluates them against research R9's rules. Its texts are statuses only.
+  - **Certificates:** for each of the app's hostnames in its config, `openssl s_client -connect
+    127.0.0.1:443 -servername <hostname>`, then `openssl x509 -noout -enddate`, gives the days
+    left against `cert_days` (14). This reads what Caddy serves, with no root and no access to
+    its data volume, which only root can read. No TLS answer gives `none`.
+  - **Credentials:** once a day (the state file keeps when), each `credential=` line of its config
+    is compared with `max_age_days`, as `check.mjs`'s `checkCredential` does.
+- **When it sends:** when the statuses differ from its state file, or 24 hours after its last
+  report. It signs the report (research R9 on the key's handling), sends it with `curl --max-time
+  20`, and updates the state file only on a 2xx. It logs one line per run to the journal, with
+  the statuses, and never the key, the URL's answer or a log line.
+- **Its parts:**
+  - inspection reads whether the instance exists, its version, and its config's and key's
+    SHA-256;
+  - the plan adds or replaces the instance, with the key's SHA-256 in its params, never the key;
+  - removal stops and deletes the instance, and the script and units once no instance is left;
+  - verify runs the service once and reads its journal line.
+- **The key** reaches the step on standard input, like the address updater's token.
+
+**6.2 The Worker (`packages/iac-templates/uptime/worker.mjs`, T4606).**
+
+- **The `fetch` handler:** `POST /report` only, and 404 for anything else. It checks, in order:
+  - the body's size;
+  - the headers;
+  - the entry's secret, by its computed name, with no KV operation;
+  - the HMAC, with `crypto.subtle.verify`;
+  - the time's skew, within 5 minutes.
+
+  Only then does it read the entry, refusing a server it doesn't list, and the server's
+  `report:` key, refusing a time that isn't newer.
+  - For each check whose status changed (`unknown` never counts), it posts the Actions check's
+    text through the entry's webhook.
+  - It then writes the `report:` key, with metadata `{ at }`.
+  - A failed post answers 502 and writes nothing.
+  - The answers are plain: 204, 400, 401, 404, 409, 413 or 502, each with no body.
+- **The cron:**
+  - Its one list per run lists every key, with metadata, instead of only `entry:`.
+  - For each listed server whose last report, or its `since`, is over 26 hours old, it posts
+    "reports from <app> (<env>) on <server> stopped" once and records it in `state:`.
+  - When a newer report has come, it posts "reports resumed" and clears that record.
+  - The hostname checks are unchanged.
+- **The texts** come from `check.mjs`'s titles and what-lines:
+  - disk over 85% or 95% full;
+  - the scheduled snapshot failed, or its off-server copy failed;
+  - a drill failed, or none ran within twice the schedule;
+  - a certificate expires within 14 days, or has expired;
+  - a credential is older than `maxAgeDays`, with `npx opscrew rotate <name><flags>`, the flags
+    taken from the entry's `rotate`.
+- **The heartbeat limit** is `entry.heartbeatMinutes`, when that is between 5 and 1,560, and 26
+  hours otherwise. Each "recovered" text names the check and how long it lasted.
+
+**6.3 The adapter (`packages/connectors/cloudflare/src/uptime.ts`, T4608).**
+
+- **The client:** gains `getWorkersSubdomain(accountId)` and `setWorkerSubdomain(accountId,
+  name, { enabled, previewsEnabled })` (research R8).
+- **`inspectUptime`** reads the account's subdomain and whether the script's workers.dev is on.
+- **`planUptime`:**
+  - adds `set-subdomain` when it is off;
+  - carries `servers[].since` over from the existing entry;
+  - adds `delete-report` for each `report:` key of a server that left;
+  - gives the finding `workers-dev-missing` without an account subdomain;
+  - returns the report URL.
+- **`delete-entry`** deletes the entry's `report:` keys too.
+- **The secret's value** gains `report`. Its hash stays out of the plan.
+
+**6.4 The agents (`packages/agents`, T4609).**
+
+- **The report key:** `ensureReportKey(paths, plan)` keeps 32 random bytes per environment as a
+  secret file in the OpsCrew home, like the check key (`check/key.ts`), with randomness
+  injected.
+  - A new key, whose old file was lost, makes provision write the entry's secret again, with the
+    webhook's address asked as for a changed address.
+- **Provision:** with `runner: cloudflare`, where `checkKeyStep` runs today and for the same
+  servers, `provisionCheck` plans the host step `uptime-report` per server.
+  - It plans it with the report URL from the Cloudflare plan, the entry id, the server id, the
+    app folder, the drill schedule, the thresholds, the hostnames whose certificates the server
+    serves, and, with `observability.check.credentials` on, each credential's name and date and
+    `maxAgeDays`. The dates are the same ones `renderCheck`'s `credentialsOf` gives `check.json`.
+  - **After a rotation:** `opscrew rotate` writes the new date the same way, as
+    `rotate/dns-updater.ts` replaces the address updater's token: the server's host plan, with
+    the step's new config SHA-256, is approved by its hash.
+  - The step goes through the existing host-plan approval by hash.
+  - The Cloudflare plan comes first, so the Worker accepts the first report.
+  - The entry lists the servers that got the step.
+  - A server provision can't reach with a host plan is named in design's summary and gets no
+    timer.
+- **Leaving:** `runner: actions`, or the check off, plans the step's removal on each server, as
+  well as the entry's removal.
+- **Destroy:** a server the destroy keeps (the user's own) gets the step's removal in the
+  teardown's host plan, under its typed confirmation. A server the destroy deletes needs none.
+- **`status`:** for each listed server, it reads its `report:` key and shows the last report's
+  time and statuses, and "reports stopped" when it is over 26 hours old.
+- **Design:** for Portainer, Cloudflare's hosting and GitHub Pages it prints the line of 4.
+  (hosting accounts are refused already).
+
+**6.5 The guide (T4610).** In `alerts.md`'s Cloudflare section:
+
+- what the server checks and how it reports;
+- the timer, and how to see it (`systemctl list-timers 'opscrew-uptime-report@*'`);
+- the report key, and what a leaked one can do: send reports for one environment;
+- the certificates' and credentials' checks on the server, and that `opscrew rotate` updates the
+  dates there;
+- the 26-hour silence alert;
+- the targets with no server checks;
+- the workers.dev address, and the requests it can receive.
+
 ## Order
 
 - **Wave 1, in parallel:** T4601 (the schema, which the lead approves), T4602 (the script), T4603
   (the adapter).
 - **Wave 2, in parallel:** T4604 (the agents, which needs all of wave 1) and T4605 (the guide).
+- **Wave 3, in parallel:** T4606 (the Worker's report handler), T4607 (the server's host step),
+  T4608 (the adapter's additions) and T4610 (the guide's server part).
+- **Wave 4:** T4609 (the agents' server reports, which needs wave 3).
 - **The lead's wave:** a fresh review, `/simplify`, the live pass (the lead's, on the founder's
   account), and the changelog line.
 
@@ -264,3 +407,6 @@ Storage → Edit". It is exported and checked with the existing `accountPermissi
 | A KV key and a secret per entry | No read-modify-write of a shared list, so two apps never overwrite each other |
 | A cap of 40 hostnames | The free plan's 50 subrequests per run: one fetch each, plus room for posts (research R1) |
 | A `suspect` state in KV | The retry across runs needs one remembered failure (research R5b) |
+| Reports only on change, plus a daily heartbeat | KV's 1,000 free writes a day (research R8) |
+| A timer by host plan, not a container | It must work when the app's containers don't; it reuses the address updater's pattern (feature 029) |
+| One writer per KV key | The `fetch` handler and the cron run at once, and KV has no lock |

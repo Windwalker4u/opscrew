@@ -183,3 +183,82 @@ Source: <https://raw.githubusercontent.com/cloudflare/terraform-provider-cloudfl
   - The typed client (`packages/connectors/cloudflare/src/client.ts`) reads Worker versions,
     deployments, domains, logs and analytics, and has no script upload, schedules, KV or secret
     write yet.
+
+## R8. The server's reports: limits and the workers.dev address (2026-11-25)
+
+The founder's extension: with `runner: cloudflare` the server reports its own checks, so nothing
+needs Actions.
+
+- **KV writes:** 1,000 a day per account on the free plan, reset at 00:00 UTC, with 1 write per
+  second to one key. See R3 and its sources, <https://developers.cloudflare.com/kv/platform/limits/>
+  and <https://developers.cloudflare.com/kv/platform/pricing/>.
+  - A healthy server costs one write a day, its heartbeat.
+  - A change costs one write, as does a "stopped" or "resumed" alert.
+  - 40 servers (the most the 40-hostname cap allows) cost about 40 writes a day when healthy. A
+    report every 5 minutes would cost 288 writes a day per server, which is why the server
+    reports only on change.
+- **Requests:** 100,000 a day per account on the free plan, reset at 00:00 UTC
+  (<https://developers.cloudflare.com/workers/platform/limits/>).
+  - Cron runs are invocations, not requests. Reports are a few a day per server.
+  - Unsigned requests from anyone also count. The Worker refuses them before any KV operation, so
+    they cost requests and no KV.
+  - The guide names the risk: a flood would hold the user's other Workers back until 00:00 UTC.
+- **The workers.dev address:**
+  - <https://developers.cloudflare.com/workers/configuration/routing/workers-dev/>: a Worker's
+    route is `<worker>.<account subdomain>.workers.dev`, and an account "comes with" a workers.dev
+    subdomain.
+  - Each Worker can turn it on or off, in the dashboard or with Wrangler's `workers_dev`. The page
+    doesn't say what an upload through the API sets by default.
+  - It is treated as a Free website. Browser Integrity Check always applies and refuses some
+    default library User-Agents (error 1010), so the server's `curl` sends
+    `User-Agent: OpsCrew uptime report`.
+  - <https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/subdomain/methods/create/>:
+    `POST /accounts/{account_id}/workers/scripts/{script_name}/subdomain` with `{ "enabled": true,
+    "previews_enabled": false }` (Workers Scripts Write). No defaults are stated.
+  - So the adapter sets it explicitly, the way `modules/cloudflare-workers` does with
+    `cloudflare_workers_script_subdomain`.
+  - <https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/get/>:
+    `GET /accounts/{account_id}/workers/subdomain` returns `result.subdomain`. The page doesn't
+    say what an account without one gets, so a 404 or an empty value is a finding (spec,
+    edge cases).
+
+## R9. What the server reads, and the thresholds (repository)
+
+- **The sources:** `CHECK_COMMAND` in `packages/iac-templates/check/check.mjs`, copied as
+  `CHECK_KEY_COMMAND` in `@opscrew/connector-ssh-host`. It reads:
+  - `df -P -B1 /`;
+  - per app folder `/srv/apps/<app>/`, `.snapshots/scheduled.log`: when it was last written, the
+    last snapshot id line, and how many lines follow it;
+  - a `.partial` folder while `.start.lock` is held, meaning a snapshot is being taken;
+  - the last scheduled line of `.snapshots/drills.log`, with its end time and result;
+  - the times of `.drill-recipe/schedule` and of the oldest snapshot.
+- **The rules,** in `check.mjs`:
+  - **The disk:** `THRESHOLDS` `diskWarn` 85 and `diskHigh` 95, as a percentage rounded up from
+    used over used plus free.
+  - **The snapshot:** `scheduledFailed`. It failed without an id line, and only its copy failed
+    with lines after the id. It is unknown while a snapshot is being taken.
+  - **The drill:**
+    - `not-restored`, `unhealthy` and `failed` fail;
+    - it is late when none ran within twice its period (`weekly` or `daily`) plus an hour
+      (`DRILL_GRACE_MS`), counted from the last one;
+    - with none yet, it is late counted from `since`.
+  - There is no age threshold for a snapshot. A missed slot shows only through `scheduled.log`, so
+    the server applies the same rule.
+  - **The certificate:** `checkCertificate` fails under `certDays` (14), reading the days left of
+    what the hostname serves over TLS. On the server, `openssl s_client` to `127.0.0.1:443`, with
+    the hostname as SNI, reads what Caddy serves. Caddy's own files sit in its data volume, which
+    only root can read, so they aren't read.
+  - **The credential:** `checkCredential` fails when a credential was made or last rotated more
+    than `maxAgeDays` ago (default 365, `credentials.maxAgeDays`). Its date is the last
+    rotation, else when it was made, else the first deploy (`credentialsOf` in `renderCheck`).
+    Those dates are names and times only, so they may sit in the server's config.
+- **Who runs it:** the check key's command runs as the deploy user, so the timer runs as the
+  deploy user too. The key and the config reach it through systemd's `LoadCredential=` from 0600
+  root files, as the home address updater's token does (`dns-updater.ts`, feature 029).
+- **The HMAC:** with `openssl dgst -sha256 -mac HMAC -macopt hexkey:…`, the key is on `openssl`'s
+  command line for the few milliseconds the process runs. Local users with a shell could read it
+  in `/proc`, and containers can't, since they have their own PID namespace.
+  - The build checks whether the server's OpenSSL can read the key from a file or from standard
+    input instead, and uses that when it can.
+  - Otherwise the plan, the design summary and the guide say what the key can do: send reports
+    for this one environment.

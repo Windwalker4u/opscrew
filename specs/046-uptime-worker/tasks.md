@@ -3,7 +3,7 @@
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md),
 [data-model.md](data-model.md), [quickstart.md](quickstart.md).
 
-Two build waves, then the lead's. Inside a wave, no two tasks share an Owns path.
+Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 2026-11-25). Inside a wave, no two tasks share an Owns path.
 
 ## Wave 1
 
@@ -146,8 +146,8 @@ Two build waves, then the lead's. Inside a wave, no two tasks share an Owns path
       - **Leaving the Worker:** an environment that turns it off, or moves back to `actions`,
         gets the removal plan without `destroy`. Its entry, state and secret go, and the Worker,
         trigger and namespace stay, even when it was the last entry. No typed confirmation is asked.
-      - **What it prints:** with `runner: cloudflare`, "The disk, snapshot, restore-drill and
-        certificate-days checks need `runner: actions`."
+      - **What it prints:** on a target with no server checks (Portainer, Cloudflare's hosting,
+        GitHub Pages), plan.md 4.'s line. On a server, nothing is left to Actions.
       - **`--plan-only`** prints the uptime plan's hash.
     - **`renderCheck`** leaves out `runner: cloudflare` plans. With only those, no workflow is
       rendered, and its files are removed as when the check is off.
@@ -178,7 +178,7 @@ Two build waves, then the lead's. Inside a wave, no two tasks share an Owns path
     - **The section:** `alerts.md` gains "In your Cloudflare account instead of GitHub Actions",
       with everything plan.md 5. lists. It is plain English, says each fact once, and links the
       existing webhook section instead of repeating it. It says plainly:
-      - that the disk, snapshot, restore-drill and certificate-days checks need `runner: actions`;
+      - which targets have no server checks, with design's line;
       - that there is no maintenance pause, so a move or retarget may post a down and a recovered
         message;
       - that an empty Worker stays until the last app's destroy.
@@ -187,16 +187,199 @@ Two build waves, then the lead's. Inside a wave, no two tasks share an Owns path
   - **Verify:** `pnpm lint`
   - **Effort:** medium
 
+## Wave 3 (User Story 4: the server reports its own checks)
+
+- [ ] T4606 [US4] The Worker's report handler and heartbeat alert
+  - **Owns:** `packages/iac-templates/uptime/**`, `packages/iac-templates/src/uptime/**`,
+    `packages/iac-templates/src/generated/uptime.ts`.
+  - **Reads:** plan.md 6.2, data-model.md "Server reports", research R8 and R9, spec.md User
+    Story 4 and FR-018 to FR-022, `check/check.mjs` (its server checks' texts).
+  - **Depends:** T4602.
+  - **Accept:**
+    - **Tests first,** with a fake KV (counting every operation), a fixed clock, and reports
+      signed with a test key generated in the test through `crypto.subtle`:
+      - **Refused with no KV operation:** a body over 4 KB, a missing or wrong signature, a time
+        6 minutes off, an entry whose secret is missing, and any path or method other than
+        `POST /report` (404).
+      - **Refused after the reads:** a server the entry doesn't list, and a time not newer than
+        the stored report's (a replay).
+      - **Changes:** a disk going `ok` to `warn` posts one message, with the percentage and the
+        free space, and writes `report:` once, with metadata `{ at }`. `warn` to `high` posts
+        again. Back to `ok` posts once that it recovered. A percentage moving within `warn`
+        posts nothing.
+      - **The other checks:** snapshot `failed` and `copy-failed`, and drill `failed` and
+        `late`, each post the text of `check.mjs`'s issue and recover once. `unknown` never
+        posts.
+      - **Certificates and credentials:** a certificate going `warn` or `expired` and a
+        credential going `old` each post `check.mjs`'s text, the credential's with
+        `npx opscrew rotate <name>` and the entry's `rotate` flags, and each recovers once.
+      - **A heartbeat** with no change writes once and posts nothing.
+      - **A failed post** answers 502 and writes nothing.
+      - **The cron:** a listed server silent for 26 hours and one minute posts "reports …
+        stopped" once and writes `state:` once. Later runs post nothing. A newer report makes the
+        next run post "reports resumed". A server listed less than 26 hours ago with no report
+        posts nothing.
+      - **The test-only limit:** an entry with `heartbeatMinutes: 10` posts "reports … stopped"
+        after 10 minutes and one second. With values under 5, over 1,560, or absent, the limit is
+        26 hours. Production entries never carry it (T4608 refuses it).
+      - **One list per run:** the cron makes one `list` per run, and reads report times from its
+        metadata.
+      - **Nothing leaks:** no message or log line holds the report key, the webhook's address or
+        the request's body.
+    - **The script** keeps no imports, and the generated file and `UPTIME_WORKER_SHA256` follow.
+  - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
+  - **Effort:** xhigh
+
+- [ ] T4607 [US4] The host step `uptime-report`: the server's script, units and config
+  - **Owns:** `packages/connectors/ssh-host/src/uptime-report.ts` (new) and its tests (new,
+    including a `uptime-report-script.test.ts` in the shell harness);
+    `packages/connectors/ssh-host/src/{steps,facts,inspect,types,plan,index}.ts`, only for this
+    step; `packages/connectors/ssh-host/src/__fixtures__/**` (new fixtures).
+  - **Reads:** plan.md 6.1, data-model.md "The server's files", research R9, `dns-updater.ts`,
+    its part of `steps.ts`, `dns-updater-script.test.ts`, `CHECK_KEY_COMMAND`, ADR 0011.
+  - **Depends:** none.
+  - **Accept:**
+    - **The script's checks,** tests first, in the shell harness against fixture folders:
+      - **The disk:** at 84%, 85% and 95% it gives `ok`, `warn` and `high`.
+      - **The snapshot:**
+        - a log ending with an id gives `ok`;
+        - lines after the id give `copy-failed`;
+        - no id gives `failed`;
+        - a `.partial` folder under a held `.start.lock` gives `unknown`;
+        - no log gives `none`.
+      - **The drill:**
+        - `healthy` gives `ok`;
+        - `unhealthy`, `not-restored` and `failed` give `failed`;
+        - none within twice the period plus an hour gives `late`, from the last drill or from
+          `since`;
+        - no schedule gives `none`.
+      - **Certificates,** with a fake `openssl` on `PATH`: 15 days left gives `ok`, 13 gives
+        `warn`, -1 gives `expired`, and no TLS answer gives `none`. It connects to `127.0.0.1:443`
+        with each `host=` as SNI, and reads no file.
+      - **Credentials:** checked once a day, kept in the state file in between. A date older than
+        `max_age_days` gives `old`, for each of the `made`, `rotated` and `first-deploy` sources.
+      - **Parity:** the same fixtures, read through `CHECK_KEY_COMMAND`'s output and `check.mjs`'s
+        rules, fail and pass alike.
+    - **When it sends,** with a fake `curl` and `openssl` on `PATH`:
+      - It sends only on a status change, or 24 hours after its last report.
+      - On a 2xx it updates the state file. On any other answer, or none, it keeps the file, and
+        the next run sends again.
+      - The signature is `HMAC-SHA256(key, time + "\n" + body)`, checked in the test with
+        Node's `crypto`.
+      - The key never appears in the journal line or the state file. If research R9's file or
+        standard-input form works with the harness's `openssl`, the key isn't in the command
+        line either.
+      - The body has only data-model.md's fields.
+    - **The step:**
+      - **Planning:** inspection reads the instance, and the plan installs or replaces it, with
+        the key's SHA-256 in its params and never the key, which comes on standard input.
+      - **Files:** the files' modes and owners are as data-model.md says, and the units carry
+        `User=` the deploy user and `LoadCredential=`.
+      - **Packages:** `curl` and `openssl` are installed when missing.
+      - **Removal:** it removes one instance, and the script and units with the last one.
+      - **Versions:** a newer script on the server is never replaced.
+      - The rendered units and script have snapshot tests.
+  - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host && pnpm lint`
+  - **Effort:** xhigh
+
+- [ ] T4608 [US4] The adapter's additions: workers.dev, servers and report keys
+  - **Owns:** `packages/connectors/cloudflare/src/uptime.ts` and its tests,
+    `packages/connectors/cloudflare/src/client.ts` (the two subdomain methods),
+    `packages/connectors/cloudflare/src/client-uptime.test.ts`,
+    `packages/connectors/cloudflare/src/index.ts`, and `packages/connectors/cloudflare/src/testing/**`.
+  - **Reads:** plan.md 6.3, data-model.md "Server reports", research R8.
+  - **Depends:** T4603.
+  - **Accept:**
+    - **The client:**
+      - `getWorkersSubdomain` and `setWorkerSubdomain` send research R8's method, path and body,
+        each tested against an injected `fetch`;
+      - an account with no subdomain gives `undefined`, not an error.
+    - **`planUptime`:**
+      - **The address:** `set-subdomain` only when workers.dev is off, and the finding
+        `workers-dev-missing` without an account subdomain, saying to open Workers & Pages in the
+        dashboard once.
+      - **The servers:** `servers[].since` is kept from the existing entry, and `delete-report`
+        is planned for a server that left.
+      - **The report URL** is returned.
+      - **The hash** covers the new changes and never the report key.
+      - **`heartbeatMinutes`** in a desired entry gives the finding `test-only-field`, unless
+        `planUptime` is called with `{ liveTest: true }`.
+    - **`applyUptime`:** applies `set-subdomain` before `put-entry`. `delete-entry` deletes the
+      entry's `report:` keys too.
+  - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare && pnpm lint`
+  - **Effort:** high
+
+- [ ] T4610 [US4] The guide's server part
+  - **Owns:** `docs/guide/alerts.md`.
+  - **Reads:** plan.md 6.5, spec.md User Story 4 and its edge cases, research R8 and R9.
+  - **Depends:** T4605.
+  - **Accept:**
+    - **The section:** the Cloudflare section gains what plan.md 6.5 lists, in plain English.
+    - **What changes elsewhere in it:** the old line saying the disk, snapshot and drill checks
+      need `runner: actions` is gone. With `runner: cloudflare` on a server, nothing needs Actions,
+      and the section says that `opscrew rotate` updates the dates on the server.
+    - **The table:** "What it checks" says where each check runs for each runner.
+    - **"What it can't do"** names the targets with no server checks.
+  - **Verify:** `pnpm lint`
+  - **Effort:** medium
+
+## Wave 4
+
+- [ ] T4609 [US4] The agents' server reports: the key, the host step, the entry's servers, status
+  - **Owns:** `packages/agents/src/check/**`, `packages/agents/src/destroy/{common,own}.ts` and
+    their tests, `packages/agents/src/status/check-state.ts` and its test,
+    `packages/agents/src/rotate/uptime-report.ts` (new) and its test, and
+    `packages/agents/src/rotate/{record,tokens}.ts`, only for the call after a date is
+    written.
+  - **Reads:** plan.md 6.4, data-model.md "Server reports", `check/key.ts`, `check/host.ts`,
+    `check/servers.ts`, `home/` (how the address updater's step is planned and removed).
+  - **Depends:** T4604, T4606, T4607, T4608.
+  - **Accept:**
+    - **The report key:** `ensureReportKey` makes 32 bytes once per environment with injected
+      randomness, keeps them like the check key, and gives the same key on the next run. A lost
+      key gives a new one, and the plan writes the entry's secret again.
+    - **The config's dates:** with `observability.check.credentials` on, the step's config lists
+      each credential's name, date and source, the same as `credentialsOf` gives `check.json`,
+      plus `max_age_days`, the certificates' hostnames served there, and the entry's `rotate`
+      flags. It never holds a value.
+    - **`opscrew rotate`** writes the new date into the config through the server's host plan,
+      approved by its hash, as `rotate/dns-updater.ts` does. A declined plan warns that the old
+      date stays on the server.
+    - **Never `heartbeatMinutes`:** no entry the agents build carries it, and a test checks that.
+    - **Provision,** with `runner: cloudflare` on a server:
+      - **Order:** the Cloudflare plan, with the entry's `servers`, comes first. Then, for each
+        server `checkKeyStep` reaches today, a host plan with the step `uptime-report` is approved
+        by its hash and applied.
+      - **Config:** its config has the report URL, the entry id, the server id, the app folder and
+        the drill schedule.
+      - **`--plan-only`** prints its hash.
+      - **No check key, no GitHub secret.** Without a server (Portainer, Cloudflare's hosting,
+        GitHub Pages), no step, and design says "the Worker checks the address only".
+    - **Leaving:** `runner: actions`, or the check off, plans the step's removal on each server
+      with the entry's removal.
+    - **Destroy:** on the user's own server, the teardown's host plan removes the step under the
+      typed confirmation. A deleted cloud server needs none.
+    - **`status`:** it shows each listed server's last report time and statuses, and "reports
+      stopped" after 26 hours.
+    - **No secret leaks:** the report key appears in no plan text, audit entry, log or test
+      output.
+  - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - **Effort:** xhigh
+
 ## The lead's wave
 
 - [ ] T4690 (lead) A fresh review of the merged waves, by a reviewer that didn't build them:
-  safety (hashes, re-reads, `allowDestroy`), secrets, and the guide against the code.
+  safety (hashes, re-reads, `allowDestroy`, the host step), secrets (the report key), the
+  report handler's refusals, and the guide against the code.
 - [ ] T4691 (lead) `/simplify` over the feature's diff.
 - [ ] T4692 (lead) The live pass of [quickstart.md](quickstart.md).
   - **Where:** the founder's own Cloudflare account. It's free and reversible, so it needs no
     extra go-ahead.
   - **Nothing left behind:** proven by listing the Workers, the KV namespaces and the secrets
     afterwards.
+  - **The silence alert:** proven in minutes with the test-only `heartbeatMinutes`, which only
+    the live test's own setup passes (quickstart step 12).
   - **The results** go into `docs/e2e-coverage.md`.
 - [ ] T4693 (lead) The changelog line for 0.2.12: "An uptime check in your own Cloudflare account,
-  instead of GitHub Actions (`observability.check.runner: cloudflare`)."
+  instead of GitHub Actions (`observability.check.runner: cloudflare`), with the server reporting
+  its disk, snapshots and restore drills itself."
