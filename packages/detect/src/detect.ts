@@ -220,8 +220,10 @@ function detectLanguages(files: readonly string[], units: readonly Unit[]): Lang
   const languages = new Set<Language>();
   for (const file of files) {
     const name = basenameRel(file);
-    // Tool configuration (vite.config.js, .eslintrc.cjs) does not define the app's language.
+    // Tool configuration (vite.config.js, .eslintrc.cjs) does not define the app's language, nor
+    // do the scripts of tools in hidden folders (.github/, a spec tool's .specify/scripts/*.py).
     if (/\.config\.[cm]?[jt]s$/.test(name) || /^\.[\w-]+rc\.[cm]?js$/.test(name)) continue;
+    if (/(?:^|\/)\.[^/]+\//.test(file)) continue;
     const dot = name.lastIndexOf(".");
     const language = dot > 0 ? LANGUAGE_BY_EXTENSION[name.slice(dot + 1).toLowerCase()] : undefined;
     if (language) languages.add(language);

@@ -921,6 +921,25 @@ describe("Laravel apps", () => {
     expect(facts.files).toEqual({ dir: "storage/app" });
   });
 
+  it("stays a PHP app with its migrations beside its own Dockerfile and a tooling Python script", async () => {
+    const facts = await detectProject(
+      await laravel(
+        {},
+        {
+          artisan: "#!/usr/bin/env php\n<?php\n",
+          "database/migrations/0001_01_01_000000_create_users_table.php": "<?php\n",
+          Dockerfile: "FROM php:8.4-cli\nWORKDIR /app\nEXPOSE 8080\n",
+          "package.json": JSON.stringify({ private: true, scripts: { build: "vite build" } }),
+          "resources/js/app.ts": "export {};\n",
+          ".tooling/scripts/sections.py": "print('tooling')\n",
+        },
+      ),
+    );
+    expect(facts.languages).toEqual(["php", "typescript"]);
+    expect(facts.docker.dockerfile).toBe("Dockerfile");
+    expect(facts.build.releaseCommand).toBe("php artisan migrate --force");
+  });
+
   it("answers a Route::get health route of routes/*.php", async () => {
     const facts = await detectProject(
       await laravel(

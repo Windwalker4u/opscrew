@@ -988,9 +988,10 @@ function wrongImage(
  * that image may lack. Empty without a release command or for a static site (no app container).
  * The reasons name the plan of the app `key` (a further app's; the first app's by default), whose
  * `app.releaseCommand` the user sets: design calls this before the plan exists. With `build`, the
- * builder design chose: when Railpack or Buildpacks build the very language the command's tool
- * runs in, that image runs it, whatever stack OpsCrew's own Dockerfile would have picked (a Laravel
- * app's `php artisan migrate --force` in Railpack's PHP image).
+ * builder design chose: when Railpack, Buildpacks or the app's own Dockerfile build the very
+ * language the command's tool runs in, that image runs it, whatever stack OpsCrew's own Dockerfile
+ * would have picked (a Laravel app's `php artisan migrate --force` in Railpack's PHP image or in
+ * its own FrankenPHP image).
  */
 export function imageReleaseCommand(
   facts: ProjectFacts,
@@ -1034,10 +1035,14 @@ export interface ImageBuild {
   runtime?: { language: RuntimeLanguage };
 }
 
-/** True when Railpack or Buildpacks build the language `tool` runs in, so their image has it. */
+/**
+ * True when Railpack, Buildpacks or the app's own Dockerfile build the language `tool` runs in, so
+ * their image has it (the app's own image is of the language design read for the app).
+ */
 function buildsLanguageOf(build: ImageBuild | undefined, tool: ReleaseTool): boolean {
   return (
-    (build?.builder === "railpack" || build?.builder === "buildpacks") &&
+    build !== undefined &&
+    build.builder !== "generated-dockerfile" &&
     tool.language !== undefined &&
     build.runtime?.language === tool.language
   );
