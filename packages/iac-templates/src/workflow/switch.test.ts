@@ -140,7 +140,8 @@ const OLD = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
  * The fake `docker`: logs every call and refuses any argument under `/srv/`. An app project's
  * containers live in $WORK/containers-<folder>; the edge's `up` fails with EDGE_UP_FAIL, a one-off
  * container (certbot) always fails, and kamal-proxy's `deploy <service>` writes its target and
- * host to $WORK/routes/<service>, or fails with UNHEALTHY. `logs` prints a line naming the container.
+ * host to $WORK/routes/<service>, or fails with UNHEALTHY. `logs` prints LOG_LINE, or a line naming the
+ * container.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -172,7 +173,7 @@ const FAKE_DOCKER = [
   '      echo "$target $host" > "$WORK/routes/$7"',
   "    fi ;;",
   `  "inspect --format") cat "$WORK"/containers-* | awk -v id="$last" '$1 == id { print "/" $2 }' ;;`,
-  '  "logs --timestamps") echo "copy-line of $last" ;;',
+  '  "logs --timestamps") echo "${LOG_LINE:-copy-line of $last}" ;;',
   '  "rm "*) for f in "$WORK"/containers-*; do grep -v "^$last " "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; done ;;',
   "esac",
 ].join("\n");
@@ -368,6 +369,27 @@ describe.skipIf(!shWorks())(
       );
       expect(read(`${kept}/app.log`)).toBe("copy-line of c1\n");
       expect(start.output).not.toContain("copy-line");
+    });
+
+    it("names a file capability when the failed copy could not start its program", () => {
+      const plan = localhostPlan();
+      upload(plan, "shop.localhost");
+      const plain = run(switchCommands(plan, [], localFiles("shop.localhost")), { UNHEALTHY: "1" });
+      expect(plain.output).not.toContain("file capability");
+      upload(plan, "shop.localhost");
+      const start = run(switchCommands(plan, [], localFiles("shop.localhost")), {
+        UNHEALTHY: "1",
+        LOG_LINE:
+          "/usr/local/bin/docker-php-entrypoint: 9: exec: frankenphp: Operation not permitted",
+      });
+      expect(start.status).toBe(1);
+      expect(start.stdout).toContain(
+        '::error::The app container could not start its program ("operation not permitted" in its log)',
+      );
+      expect(start.stdout).toContain("cap_drop: ALL");
+      expect(start.stdout).toContain("setcap -r");
+      // The log itself stays on the server.
+      expect(start.output).not.toContain("docker-php-entrypoint");
     });
 
     it("FR-3027: at a move's marker, brings up only the image, the edge and the services, then ends", () => {

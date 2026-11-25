@@ -199,8 +199,12 @@ describe("extractPhpEnvReads", () => {
       '$g = $config->int("QUEUE_TRIES", 3);',
       "$h = $config->bool('APP_DEBUG', false);",
       "$i = $config->float('RATE', 1.5);",
+      // A fallback after the call is a default too.
+      "$j = (string) (env('ALLOWED_ORIGINS') ?: 'https://shop.example.test');",
+      "$k = env( 'TRUSTED_PROXIES' ) ?? '*';",
     ].join("\n");
     expect(defaults(text)).toEqual({
+      ALLOWED_ORIGINS: true,
       APP_DEBUG: true,
       APP_ENV: true,
       DB_DATABASE: true,
@@ -210,6 +214,7 @@ describe("extractPhpEnvReads", () => {
       MAIL_FROM: true,
       QUEUE_TRIES: true,
       RATE: true,
+      TRUSTED_PROXIES: true,
     });
   });
 
@@ -230,8 +235,10 @@ describe("extractPhpEnvReads", () => {
       "$i = env('UPPER_NULL', NULL);",
       "$j = getenv('STOPS') ?: exit;",
       "$k = $_ENV['DIES'] ?? die('missing');",
+      "$l = env('AFTER_NULL') ?? null;",
     ].join("\n");
     expect(defaults(text)).toEqual({
+      AFTER_NULL: false,
       API_TOKEN: false,
       APP_KEY: false,
       DB_PASSWORD: false,

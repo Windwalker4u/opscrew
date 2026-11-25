@@ -319,15 +319,15 @@ describe("detectStack", () => {
     expect(withRelease(expressApp, "alembic upgrade head").notRun).toContain("Node.js image");
   });
 
-  it("keeps a command when Railpack or Buildpacks build its tool's language, and only then", () => {
+  it("keeps a command when Railpack, Buildpacks or the app's own Dockerfile build its tool's language, and only then", () => {
     // A Laravel app with a package.json is a Node.js server to OpsCrew's own Dockerfile, but
-    // Railpack builds its PHP image, which runs artisan.
+    // Railpack builds its PHP image, which runs artisan, and so does the app's own PHP image.
     const laravel = {
       ...expressApp,
       build: { ...expressApp.build, releaseCommand: "php artisan migrate --force" },
     };
     const php = { language: "php" } as const;
-    for (const builder of ["railpack", "buildpacks"] as const) {
+    for (const builder of ["railpack", "buildpacks", "own-dockerfile"] as const) {
       expect(imageReleaseCommand(laravel, undefined, { builder, runtime: php }), builder).toEqual({
         command: "php artisan migrate --force",
       });

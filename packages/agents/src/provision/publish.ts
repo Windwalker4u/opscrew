@@ -30,7 +30,7 @@ import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { OWN_SERVER_BACKUPS_NOTE } from "../design/own";
 import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
-import { workflowBranch } from "../environments/branches";
+import { followsBranch, workflowBranch } from "../environments/branches";
 import { homeForwards } from "../home/forwards";
 import { hostingPullRequestBody } from "../hosting/provision-pr";
 import { planProvider, providerProfile } from "../providers";
@@ -616,6 +616,33 @@ async function requireLatestBase(
       "Run `git pull`",
     );
   }
+}
+
+/**
+ * Stops before any work (nothing reached, nothing changed) unless this clone is on the branch the
+ * plan's files live on (`cicd.branch`, as `deploy/demo` for a demo environment) or on one of the
+ * app's deploy branches: {@link chooseDeployBranch} and {@link localDeployBranch} stop on any other
+ * branch too, but only after the run reached the servers, Cloudflare and GitHub. A promoted
+ * environment's files live on GitHub's default branch, which only GitHub names: it is left to them.
+ */
+export async function requireDeployCheckout(
+  git: GitClient,
+  plan: Pick<DeployPlan, "app" | "cicd" | "environment">,
+  phase: PublishPhase,
+): Promise<void> {
+  if (!followsBranch(plan)) return;
+  const base = plan.cicd.branch;
+  const current = await git.currentBranch();
+  if (current === base || appBranchNames(DEPLOY_SETUP_BRANCH, plan.app.key).includes(current)) {
+    return;
+  }
+  const where =
+    current === "HEAD" ? "this clone is not on a branch" : `this clone is on ${current}`;
+  throw baseStop(
+    { phase, base, current },
+    `${where}, but the deployment files go on a new branch from the latest ${base}`,
+    `Run \`git checkout ${base} && git pull\``,
+  );
 }
 
 /**

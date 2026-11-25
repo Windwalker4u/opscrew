@@ -198,7 +198,7 @@ import {
 } from "./plan-apply";
 import { plannedImports } from "./plan-json";
 import { provisionPortainer } from "./portainer-flow";
-import type { RecoveryCopy } from "./publish";
+import { type RecoveryCopy, requireDeployCheckout } from "./publish";
 import {
   committedTfvars,
   deploymentFiles,
@@ -551,6 +551,10 @@ async function provisionFlow(
   await requireOwnHostnames(deps.paths, plan);
   requireOwnCopy(deps.paths, await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
   const git = await requireGitRepo(deps);
+  // A run that commits stops off the environment's branch before it reaches anything.
+  if (!options.planOnly || (options.approveHashes ?? []).length > 0) {
+    await requireDeployCheckout(git, plan, phase);
+  }
   // The Cloudflare uptime Worker's plan, read-only now: its findings stop the run before anything
   // changes, its hash is told apart from the infrastructure's `--approve` hashes, and it is applied
   // at the check's step.

@@ -34,6 +34,36 @@ async function planFor(facts: ReturnType<typeof makeFacts>) {
 }
 
 describe("release command in the plan", () => {
+  it("keeps a Laravel app's migrations in its own image, whatever Python file the repository holds", async () => {
+    const facts = makeFacts({
+      name: "shop",
+      languages: ["php", "python", "typescript"],
+      packageManager: "npm",
+      frameworks: [
+        { name: "laravel", path: "." },
+        { name: "vite", path: "." },
+      ],
+      appKind: "fullstack",
+      port: 8080,
+      build: {
+        releaseCommand: "php artisan migrate --force",
+        migrations: {
+          tool: "laravel",
+          status: "php artisan migrate:status",
+          down: "php artisan migrate:rollback --step={count} --force",
+        },
+      },
+      docker: { dockerfile: "Dockerfile" },
+      services: [{ kind: "postgres", evidence: ["env:DB_CONNECTION=pgsql"] }],
+    });
+    const plan = await planFor(facts);
+    expect(plan.app.build?.builder).toBe("own-dockerfile");
+    expect(plan.app.build?.runtime.language).toBe("php");
+    expect(plan.app.releaseCommand).toBe("php artisan migrate --force");
+    expect(plan.app.migrations?.down).toBe("php artisan migrate:rollback --step={count} --force");
+    expect(releaseCommandNote(plan, facts)?.warning).toBe(false);
+  });
+
   it("keeps a Laravel app's migrations, which Railpack's PHP image runs", async () => {
     const facts = makeFacts({
       name: "shop",

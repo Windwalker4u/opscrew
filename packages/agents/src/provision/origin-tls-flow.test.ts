@@ -301,6 +301,20 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's origin TLS
     expect(s.github.dispatches).toEqual([]);
   });
 
+  it("commits pull.pem when the app's .gitignore ignores *.pem, and no other ignored file", async () => {
+    const s = await project();
+    await writeFile(join(s.root, ".gitignore"), ".opscrew/\n.env\n*.pem\n");
+    await writeFile(join(s.root, "local.pem"), "the developer's own\n");
+    await s.git(s.root, "commit", "-q", "-am", "ignore pem files");
+
+    await runProvision(s.deps, { services: s.services });
+
+    const committed = await s.git(s.root, "show", "--name-only", "--format=", "HEAD");
+    expect(committed.split("\n")).toContain(PULL_PEM);
+    expect(committed).not.toContain("local.pem");
+    expect(await s.git(s.root, "ls-files", "--", "local.pem")).toBe("");
+  });
+
   it("--plan-only, then --approve with both hashes: the first origin TLS keeps its hash, and the approved run renders the site with it", async () => {
     const byHash: string[] = [];
     const s = await project({ byHash });

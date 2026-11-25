@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandRunner } from "@opscrew/contracts";
@@ -536,6 +536,20 @@ describe.skipIf(!git)("GitClient (real temporary repositories)", () => {
       code: "COMMAND_FAILED",
     });
     expect(await client.currentBranch()).toBe("opscrew/prepare-deploy-2");
+  });
+
+  it("adds the exact files given, even ones the app's .gitignore ignores, and nothing else", async () => {
+    const { client, dir, exec } = await repo();
+    await writeFile(join(dir, ".gitignore"), "*.pem\n");
+    await mkdir(join(dir, "tls"));
+    await writeFile(join(dir, "tls", "pull.pem"), "certificate\n");
+    await writeFile(join(dir, "tls", "local.pem"), "the developer's own\n");
+    await client.add(["tls/pull.pem"]);
+    await client.commit("chore(opscrew): the client certificate", ["tls/pull.pem"]);
+    const committed = await exec(dir, "show", "--name-only", "--format=", "HEAD");
+    expect(committed.stdout.trim()).toBe("tls/pull.pem");
+    const staged = await exec(dir, "diff", "--cached", "--name-only");
+    expect(staged.stdout.trim()).toBe("");
   });
 
   it("explains a missing git identity", async () => {
