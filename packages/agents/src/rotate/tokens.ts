@@ -14,6 +14,7 @@ import { canonicalJson, errorText, listText, OpsCrewError, sha256Hex } from "@op
 import { CHECK_SECRETS, CLOUDFLARE_DEPLOY_SECRETS, deploySecretName } from "@opscrew/iac-templates";
 import { type CloudProvider, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
+import { usesUptimeWorker } from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { type InitCheckId, type InitServices, runInitChecks } from "../init";
@@ -266,10 +267,13 @@ function initChecksOf(name: UserTokenName, plan: DeployPlan): InitCheckId[] {
     // The hosting check reads both Cloudflare tokens' Workers permission.
     case "cloudflare-deploy":
       return ["provider"];
+    // With the uptime Worker, the check of its Workers and Workers KV permissions too.
     case "cloudflare":
-      return plan.target.provider === "cloudflare-workers"
-        ? ["cloudflare", "provider"]
-        : ["cloudflare"];
+      return [
+        "cloudflare",
+        ...(plan.target.provider === "cloudflare-workers" ? ["provider" as const] : []),
+        ...(usesUptimeWorker(plan) ? ["uptime-check" as const] : []),
+      ];
     case "github":
       return ["github", "scheduled-check"];
     // The address updater's token is checked (`checkUpdaterToken`) before its host plan.
