@@ -145,6 +145,47 @@ describe("runMove", () => {
     expect(text).not.toContain(w.passwords.db);
   });
 
+  it("047: moves Postgres with two logins, loading it owned by app_owner and switching the release's settings too", async () => {
+    const w = await moveWorld({ step: "deployed", logins: true });
+    await runMove(w.deps, { plan: w.plan, services: w.services });
+
+    expect(w.servers.data.data.get("db")).toBe("rows of the shop");
+    expect(w.servers.app.env).toBe(w.env.after);
+    expect(w.github.secrets.get("OPSCREW_APP_ENV")).toBe(w.env.after);
+    // The release command's own settings follow the database, here and in GitHub.
+    expect(w.release.after).toContain(`app_owner:${w.passwords.owner}@${w.dataAddress}:5432/app`);
+    expect(w.servers.app.release).toBe(w.release.after);
+    expect(w.github.secrets.get("OPSCREW_RELEASE_DB_ENV")).toBe(w.release.after);
+    // One load in the database's container: never emptied and restored apart.
+    const data = w.servers.data.calls;
+    expect(data.filter((c) => c.includes("CREATE DATABASE app OWNER app_owner"))).toHaveLength(1);
+    expect(data.some((c) => c.includes("pg_restore -U app") || c.includes("OWNER app'"))).toBe(
+      false,
+    );
+
+    const [window] = w.handler.requests;
+    expect(window?.details).toContain(
+      "which makes the database anew owned by app_owner, restores the dump with its owners and grants (pg_restore --single-transaction) and grants again what the dump lacks",
+    );
+    expect(window?.details).toContain(
+      "and the release command's settings (/srv/apps/shop/release.db.env on the app's server, and the GitHub secret OPSCREW_RELEASE_DB_ENV).",
+    );
+    const text = `${window?.details}\n${JSON.stringify(w.deps.audit.entries)}\n${w.deps.reporter.text()}`;
+    for (const password of [w.passwords.db, w.passwords.owner, w.passwords.runtime]) {
+      expect(text).not.toContain(password);
+    }
+  });
+
+  it("047: puts the release's settings back with the app's when the window fails", async () => {
+    const w = await moveWorld({ step: "deployed", logins: true, grafana: true });
+    // Grafana Alloy's masking file can't be rewritten after the settings were switched.
+    w.servers.app.fail = /^bash -s$/;
+    await expect(runMove(w.deps, { plan: w.plan, services: w.services })).rejects.toThrow();
+    expect(w.servers.app.env?.replace(/\n+$/, "\n")).toBe(w.env.before);
+    expect(w.servers.app.release).toBe(w.release.before);
+    expect(w.github.secrets.get("OPSCREW_RELEASE_DB_ENV")).toBe(w.release.before);
+  });
+
   it("starts Valkey empty on its new server, copying nothing", async () => {
     const w = await moveWorld({ service: "cache", step: "deployed" });
     const plan = await runMove(w.deps, { plan: w.plan, services: w.services });

@@ -12,8 +12,10 @@ import {
   deploySecretName,
   edgeProxy,
   maskFileScript,
+  POSTGRES_OWNER,
+  RELEASE_DB_ENV,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, Move } from "@opscrew/plan-schema";
+import { type DeployPlan, type Move, postgresLogins } from "@opscrew/plan-schema";
 import { type CheckPauseTarget, changeCheckPause } from "../check/pause";
 import type { PhaseDeps } from "../context";
 import { failureReason } from "../destroy/deletion";
@@ -100,8 +102,14 @@ interface WindowSetup {
 async function windowSetup(run: MoveRun): Promise<WindowSetup> {
   const { deps, plan, move, services } = run;
   const github = await setupGitHub(deps, await requireGitRepo(deps), services);
+  const service = plan.services.find((each) => each.name === move.service);
   return {
-    ops: { ...serverOps(plan, deps.redactor), database: move.service, command: MOVE_COMMAND },
+    ops: {
+      ...serverOps(plan, deps.redactor),
+      database: move.service,
+      command: MOVE_COMMAND,
+      ...(service !== undefined && postgresLogins(service) ? { logins: true as const } : {}),
+    },
     github,
     target: { api: github.api, owner: github.owner, repo: github.repo },
   };
@@ -183,11 +191,11 @@ export async function moveWindow(run: MoveRun): Promise<DeployPlan> {
           );
         }
         done.envWritten = true;
-        await writeAppEnv(app, plan, env.after, deps.redactor);
+        await writeAppEnv(app, plan, env, "after", deps.redactor);
         await audited(deps, "switch the app's settings", app.name, `${move.service} on ${to.name}`);
         await writeMask(app, plan, deps.redactor);
         done.secretSet = true;
-        await storeAppEnv(deps, github, plan, env.after);
+        await storeAppEnv(deps, github, plan, env, "after");
       }
       await startOnNewCopy(sized, ops, done);
     } catch (error) {
@@ -228,7 +236,7 @@ async function rollForward(
   return withDeploysPaused(deps, github, plan, run.services, "opscrew provision", async () => {
     await changeCheckPause(deps, target, plan, "retarget", "provision", approval);
     try {
-      if (env.after !== env.before) await storeAppEnv(deps, github, plan, env.after);
+      if (env.after !== env.before) await storeAppEnv(deps, github, plan, env, "after");
       await writeMask(app, plan, deps.redactor);
       await startOnNewCopy(run, ops, { appStarted: false });
     } catch (error) {
@@ -306,7 +314,7 @@ async function switched(
     // The secret follows the server, so a deploy writes what the app runs on now.
     let secret = "";
     try {
-      await storeAppEnv(deps, setup.github, run.plan, reread.before);
+      await storeAppEnv(deps, setup.github, run.plan, reread, "before");
     } catch (error) {
       secret = ` OpsCrew could not store them in the GitHub secret ${deploySecretName(run.plan, DEPLOY_SECRETS.appEnv)} either (${failureReason(error)}), so the secret and the server may disagree.`;
     }
@@ -391,7 +399,7 @@ async function approveWindow(
               : [`${db} starts empty on ${serverWords(to.name)}: nothing is copied.`]),
             ...(env.after !== env.before
               ? [
-                  `The app's settings get ${db}'s address on ${serverWords(to.name)}: ${ops.folder}/app.env on the app's server, and the GitHub secret ${secret}.`,
+                  `The app's settings get ${db}'s address on ${serverWords(to.name)}: ${ops.folder}/app.env on the app's server, and the GitHub secret ${secret}${env.release === undefined ? "" : `; and the release command's settings (${ops.folder}/${RELEASE_DB_ENV.file} on the app's server, and the GitHub secret ${deploySecretName(plan, RELEASE_DB_ENV.secret)})`}.`,
                 ]
               : []),
           ]),
@@ -429,8 +437,14 @@ function copyCommands({ move, from, to }: MoveRun, ops: ServerOpOptions): string
     `On both servers, before anything is dropped: docker compose exec -T ${db} pg_restore --list < ${dump} > /dev/null && sha256sum ${dump}`,
     "  (the copy must be readable and match the dump it was copied from)",
     `On ${serverWords(to.name)} (the new copy), in ${ops.folder}:`,
-    `  docker compose exec -T ${db} psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
-    `  docker compose exec -T ${db} pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
+    ...(ops.logins === true
+      ? [
+          `  docker compose exec -T ${db} sh -c '…' < ${dump}, which makes the database anew owned by ${POSTGRES_OWNER}, restores the dump with its owners and grants (pg_restore --single-transaction) and grants again what the dump lacks`,
+        ]
+      : [
+          `  docker compose exec -T ${db} psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
+          `  docker compose exec -T ${db} pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
+        ]),
     `  rm -f ${dump} (on both servers)`,
   ];
 }
@@ -467,8 +481,11 @@ async function copyDatabase(run: MoveRun, ops: ServerOpOptions, size: number): P
       },
     );
   }
-  await recreateDatabase(to.remote, ops);
-  await audited(deps, "empty database", to.name);
+  // With two logins, the restore makes the database anew itself.
+  if (ops.logins !== true) {
+    await recreateDatabase(to.remote, ops);
+    await audited(deps, "empty database", to.name);
+  }
   await restoreDatabase(to.remote, size, ops);
   await audited(deps, "restore database", to.name);
   await removeDump(from.remote, ops);
@@ -516,14 +533,14 @@ async function rollBack(run: MoveRun, cause: unknown, done: WindowDone): Promise
   };
   if (done.secretSet) {
     try {
-      await storeAppEnv(deps, done.github, plan, done.env.before);
+      await storeAppEnv(deps, done.github, plan, done.env, "before");
     } catch (error) {
       return failed("the GitHub secret with the app's settings", error);
     }
   }
   if (done.envWritten) {
     try {
-      await writeAppEnv(app, plan, done.env.before, deps.redactor);
+      await writeAppEnv(app, plan, done.env, "before", deps.redactor);
     } catch (error) {
       return failed("the app's settings on its server", error);
     }

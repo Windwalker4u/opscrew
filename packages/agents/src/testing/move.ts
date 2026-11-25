@@ -672,6 +672,8 @@ function opOf(command: string): string {
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
   if (command.includes("pg_restore --list")) return "verify dump";
+  // The load of a database with two logins (047): made anew owned by app_owner, then restored.
+  if (command.includes("OWNER app_owner") && command.includes("pg_restore")) return "load";
   if (command.includes("pg_restore")) return "restore";
   if (command.includes("DROP DATABASE")) return "empty db";
   if (command.startsWith(`rm -f /srv/apps/${APP}/opscrew-move.dump`)) return "rm dump";
@@ -857,13 +859,15 @@ export class FakeHosts {
     const script = program === "sh" ? (args[1] ?? "") : "";
     const op = script.includes("pg_dump")
       ? "dump"
-      : script.includes("pg_restore --list")
-        ? "verify dump"
-        : program === "psql"
-          ? "empty db"
-          : program === "pg_restore"
-            ? "restore"
-            : undefined;
+      : script.includes("OWNER app_owner") && script.includes("pg_restore")
+        ? "load"
+        : script.includes("pg_restore --list")
+          ? "verify dump"
+          : program === "psql"
+            ? "empty db"
+            : program === "pg_restore"
+              ? "restore"
+              : undefined;
     if (op === undefined) return undefined;
     this.events.push({ type: "remote", host: ip, op });
     const failure = this.fail?.(ip, op);
@@ -893,6 +897,11 @@ export class FakeHosts {
         };
       case "empty db":
         h.db = "empty";
+        return { exitCode: 0 };
+      case "load":
+        if (file?.data === undefined) return failed("pg_restore: error: could not open input file");
+        // `DROP DATABASE … WITH (FORCE)` first: what the database held goes.
+        h.db = file.data.toString("utf8");
         return { exitCode: 0 };
       default:
         if (h.app)
@@ -1078,6 +1087,11 @@ export class FakeHosts {
               'pg_restore: error: could not execute query: ERROR:  relation "orders" already exists',
           };
         }
+        h.db = h.dump;
+        return ok();
+      case "load":
+        if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
+        // `DROP DATABASE … WITH (FORCE)` first: what the database held goes.
         h.db = h.dump;
         return ok();
       case "verify dump":
@@ -1339,6 +1353,8 @@ export interface MoveHarnessOptions {
   interactive?: boolean;
   /** The plan has `app.releaseCommand`, so the deployed compose file has a `release` service. */
   release?: boolean;
+  /** The PostgreSQL `db` has the app's two logins (`logins: separate`, 047). */
+  logins?: boolean;
 }
 
 /** The live deployment a move starts from (`opscrew/plan.yaml` after provision). */
@@ -1360,6 +1376,13 @@ export function movePlan(options: MoveHarnessOptions = {}): DeployPlan {
       ...(options.release === true ? { releaseCommand: "python manage.py migrate --noinput" } : {}),
     },
     ...(dns === "other" ? { dns: { provider: "none", domain: DOMAIN, proxied: false } } : {}),
+    ...(options.logins === true
+      ? {
+          services: base.services.map((service) =>
+            service.kind === "postgres" ? { ...service, options: { logins: "separate" } } : service,
+          ),
+        }
+      : {}),
     deployment: {
       ...base.deployment,
       ...(dns === "cloudflare" ? { url: `https://${DOMAIN}` } : {}),

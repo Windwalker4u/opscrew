@@ -443,6 +443,21 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
   });
 
+  it("047: moves a database with two logins, loading it owned by app_owner with its grants", async () => {
+    const h = await moveHarness({ logins: true, release: true });
+    const n = h.newServer.ipv4;
+    expect(await run(h)).toMatchObject({ step: "switched", done: true });
+    expect(h.hosts.host(n).db).toBe("orders before the move (migrated)");
+    // Each load, before the window and in it, is the logins' one: never emptied and restored apart.
+    expect(ops(h, n, "load")).toBe(2);
+    expect(ops(h, n, "empty db")).toBe(0);
+    expect(ops(h, n, "restore")).toBe(0);
+    const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(window?.details).toContain(
+      "recreate the database empty, owned by app_owner, and restore the dump into it (pg_restore --single-transaction), keeping its owners and grants and granting again what the dump lacks",
+    );
+  });
+
   it("T831 and FR-3027: with a release command the app starts only on copied data, the command run on it again in the window", async () => {
     const h = await moveHarness({ release: true });
     const n = h.newServer.ipv4;

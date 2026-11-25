@@ -4,11 +4,17 @@ import { Readable } from "node:stream";
 import type { DockerClient } from "@opscrew/connector-docker";
 import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import { listText, OpsCrewError, replaceNames, upperFirst, writeFileAtomic } from "@opscrew/core";
-import { checkEnvironmentKey, portainerStackName, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
+import {
+  checkEnvironmentKey,
+  POSTGRES_OWNER,
+  portainerStackName,
+  ROLLBACK_INPUTS,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
   monitoringServerName,
+  postgresLogins,
   type Retarget,
   serviceOf,
   servicesOn,
@@ -247,10 +253,16 @@ async function planWindow(session: MoveBase, old: MoveSide, fresh: MoveSide): Pr
   };
 }
 
+/** Whether the plan's PostgreSQL `service` has the app's two logins (`logins: separate`, 047). */
+function withLogins(plan: DeployPlan, service: string): boolean {
+  return plan.services.some((each) => each.name === service && postgresLogins(each));
+}
+
 /**
  * Postgres's login on one side: the app's `app` user, its generated password (registered with the
  * redactor) and the Compose project the one-off containers join (`opscrew-<app>` in Portainer,
- * `<app>` on a server).
+ * `<app>` on a server); with the app's two logins (047), `app_owner`'s password too, which the load
+ * restores the app's objects with.
  */
 async function postgresOn(
   session: MoveBase,
@@ -260,7 +272,9 @@ async function postgresOn(
   const { deps, plan } = session;
   const values = await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema);
   const password = values?.dbPassword;
-  if (password === undefined) {
+  const logins = withLogins(plan, service);
+  const owner = logins ? values?.services?.[service]?.["owner-password"] : undefined;
+  if (password === undefined || (logins && owner === undefined)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       "OpsCrew does not have the database's password on this computer, so it cannot copy the database. Nothing was changed.",
@@ -269,8 +283,15 @@ async function postgresOn(
       },
     );
   }
-  deps.redactor.addLiteral(password, "app-env");
-  return { app: plan.app.name, project: composeProject(side, plan), service, password };
+  for (const value of [password, owner])
+    if (value !== undefined) deps.redactor.addLiteral(value, "app-env");
+  return {
+    app: plan.app.name,
+    project: composeProject(side, plan),
+    service,
+    password,
+    ...(owner !== undefined ? { ownerPassword: owner } : {}),
+  };
 }
 
 /**
@@ -470,6 +491,16 @@ async function removeDumps(ctx: CopyContext, db: DumpedDatabase): Promise<void> 
 }
 
 /**
+ * What the restore of the database `service` does, in the window's words: with the app's two logins
+ * (047), the dump keeps its owners and grants.
+ */
+function restoreWords(plan: DeployPlan, service: string): string {
+  return withLogins(plan, service)
+    ? `recreate the database empty, owned by ${POSTGRES_OWNER}, and restore the dump into it (pg_restore --single-transaction), keeping its owners and grants and granting again what the dump lacks`
+    : "recreate the database empty and restore the dump into it (pg_restore --single-transaction)";
+}
+
+/**
  * The approval's list of what the window does, on both sides (never an address), after the data
  * was copied while the old side served (on a `server`, with the app started there on that copy):
  * only what changed since is copied, and the app starts again in place, with no workflow run.
@@ -523,11 +554,7 @@ function windowCommands(
       : []),
     `On ${fresh}:`,
     ...(services !== undefined ? [`  start ${services}`] : []),
-    ...(window.postgres !== undefined
-      ? [
-          "  recreate the database empty and restore the dump into it (pg_restore --single-transaction)",
-        ]
-      : []),
+    ...(window.postgres !== undefined ? [`  ${restoreWords(plan, window.postgres)}`] : []),
     ...(plan.app.releaseCommand !== undefined
       ? [
           "  run the release command (app.releaseCommand) on the final data, which migrates it to the version deployed there",

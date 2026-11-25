@@ -4,7 +4,9 @@
  * Docker API of any {@link SideDocker}. The dump is written into a move volume, which the window
  * copies like any other volume. The password reaches a one-off container only in a password file
  * (`.pgpass` format) written through the archive `PUT` before it starts, never in its environment
- * or command. The flags and users are those of `server-ops.ts`.
+ * or command. The flags and users are those of `server-ops.ts`. A database with the app's two logins
+ * (`logins: separate`, 047) loads as `loginsLoad` says: the logins checked first, never made here,
+ * and the owner's password in a file of its own, written the same way.
  */
 import {
   ContainerLeftError,
@@ -15,7 +17,13 @@ import {
   tarStream,
 } from "@opscrew/connector-docker";
 import { errorMessage, OpsCrewError } from "@opscrew/core";
-import { IMAGES } from "@opscrew/iac-templates";
+import {
+  IMAGES,
+  loginsLoad,
+  OWNER_PASSWORD_ENV,
+  POSTGRES_OWNER,
+  shellQuote,
+} from "@opscrew/iac-templates";
 import { pollUntil } from "../../shared";
 import { withoutData } from "../server-ops";
 import type { SideDocker } from "./types";
@@ -33,6 +41,12 @@ export interface MovePostgres {
   service: string;
   /** The password of the `app` user (the service's generated `password`). */
   password: string;
+  /**
+   * With the app's two logins (`logins: separate`, 047), `app_owner`'s password (the service's
+   * generated `owner-password`): the database is made owned by `app_owner`, and a dump loads as
+   * `loginsLoad` says, the app's objects and rows as the owner.
+   */
+  ownerPassword?: string;
 }
 
 /** The label on every one-off container of a dump, with its move volume as the value. */
@@ -42,6 +56,11 @@ const MOUNT = "/dump";
 const DUMP = `${MOUNT}/app.dump`;
 /** Where a one-off container that logs in finds the password file (mode 0600). */
 const PGPASS = "/tmp/opscrew.pgpass";
+/**
+ * Where a load with two logins finds the owner's password (mode 0600), as the shell assignment the
+ * database's own container has in its environment.
+ */
+const OWNER_ENV = "/tmp/opscrew.env";
 
 /** The move volume that holds the app's dump on each side: `opscrew-move-dump-<app>`. */
 export function moveDumpVolume(app: string): string {
@@ -90,17 +109,31 @@ const DATABASE_HINT =
  * Runs `cmd` in a one-off postgres container with the move volume mounted, on the Postgres
  * service's network; with `login`, the password file for the service's `app` user is written into
  * it at {@link PGPASS} through the archive API before it starts, and `PGPASSFILE` names it (the
- * path, not the password).
+ * path, not the password); with `owner`, the owner's password
+ * ({@link MovePostgres.ownerPassword}) is written at {@link OWNER_ENV} the same way.
  */
 function postgresOneOff(
   client: DockerClient,
   db: MovePostgres,
   cmd: string[],
   login: boolean,
+  owner?: string,
 ): Promise<OneOffResult> {
   const volume = moveDumpVolume(db.app);
   const pgpass = `${pgpassField(db.service)}:5432:*:app:${pgpassField(db.password)}\n`;
-  const file = { name: PGPASS.slice(1), type: "file", mode: 0o600, uid: 0, gid: 0 } as const;
+  const file = { type: "file", mode: 0o600, uid: 0, gid: 0 } as const;
+  const files = [
+    { ...file, name: PGPASS.slice(1), data: Buffer.from(pgpass) },
+    ...(owner === undefined
+      ? []
+      : [
+          {
+            ...file,
+            name: OWNER_ENV.slice(1),
+            data: Buffer.from(`${OWNER_PASSWORD_ENV}=${shellQuote(owner)}\n`),
+          },
+        ]),
+  ];
   return runOneOff(
     client,
     {
@@ -111,9 +144,7 @@ function postgresOneOff(
       mounts: [{ type: "volume", source: volume, target: MOUNT }],
       network: `${db.project}_internal`,
     },
-    login
-      ? (id) => client.putArchive(id, "/", tarStream([{ ...file, data: Buffer.from(pgpass) }]))
-      : undefined,
+    login ? (id) => client.putArchive(id, "/", tarStream(files)) : undefined,
   ).catch((error: unknown) => {
     // A container left behind may hold the database's password file: never silently.
     throw error instanceof ContainerLeftError ? leftBehind(error.cause, error.id) : error;
@@ -223,7 +254,7 @@ export async function emptyPostgres(docker: SideDocker, db: MovePostgres): Promi
       "-c",
       "DROP DATABASE IF EXISTS app WITH (FORCE)",
       "-c",
-      "CREATE DATABASE app OWNER app",
+      `CREATE DATABASE app OWNER ${db.ownerPassword !== undefined ? POSTGRES_OWNER : "app"}`,
     ],
     true,
   );
@@ -252,7 +283,9 @@ export async function checkCopiedDump(
 
 /**
  * The restore of a dump {@link checkCopiedDump} passed: once Postgres takes connections, the
- * `app` database is recreated empty and the dump restored into it in one transaction.
+ * `app` database is recreated empty and the dump restored into it in one transaction. With
+ * {@link MovePostgres.ownerPassword}, one one-off container does it as `loginsLoad` says, refusing
+ * before anything is dropped when the new side's deploy didn't make the logins.
  */
 export async function restoreCheckedDump(
   docker: SideDocker,
@@ -261,6 +294,12 @@ export async function restoreCheckedDump(
 ): Promise<void> {
   const { client } = docker;
   await waitReady(client, db, waits);
+  if (db.ownerPassword !== undefined) {
+    const script = `. ${OWNER_ENV} && ${loginsLoad({ host: db.service, file: DUMP, setup: false })}`;
+    const loaded = await postgresOneOff(client, db, ["sh", "-c", script], true, db.ownerPassword);
+    if (loaded.exitCode !== 0) throw failed("restore the database", loaded, DATABASE_HINT);
+    return;
+  }
   await emptyPostgres(docker, db);
   const restored = await postgresOneOff(
     client,
