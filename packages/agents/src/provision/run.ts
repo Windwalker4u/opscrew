@@ -52,7 +52,7 @@ import {
   resumeCheck,
 } from "../check/provision";
 import { requireCheckSettingsPlace, requireUptimeWebhook } from "../check/settings";
-import { provisionUptime } from "../check/uptime";
+import { planProvisionUptime, provisionUptime } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { setupFeeOf } from "../design/cost";
 import { resolveCatalog } from "../design/run";
@@ -107,6 +107,7 @@ import {
   continuesHint,
   createsServer,
   ensureDeployKey,
+  githubCoordinates,
   type HostPlanOutcome,
   hasDeployment,
   hidesServerAddress,
@@ -550,10 +551,21 @@ async function provisionFlow(
   await requireOwnHostnames(deps.paths, plan);
   requireOwnCopy(deps.paths, await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
   const git = await requireGitRepo(deps);
+  // The Cloudflare uptime Worker's plan, read-only now: its findings stop the run before anything
+  // changes, its hash is told apart from the infrastructure's `--approve` hashes, and it is applied
+  // at the check's step.
+  const uptime = await planProvisionUptime(deps, {
+    plan,
+    github: () => githubCoordinates(git),
+    services,
+    command: rerun,
+    ask: options.planOnly !== true,
+  });
+  const uptimeHashes = uptime === undefined ? [] : [uptime.plan.hash];
   // A server-less site needs no Dockerfile, server or deploy key.
   if (isServerlessProvider(plan.target.provider)) {
-    const saved = await savedInfrastructureHashes(deps, options, plan);
-    const input = { plan, requirements, git, saved };
+    const saved = await savedInfrastructureHashes(deps, options, plan, uptimeHashes);
+    const input = { plan, requirements, git, saved, uptime };
     return plan.target.provider === "cloudflare-workers"
       ? provisionCloudflareWorkers(deps, options, input)
       : provisionGithubPages(deps, options, input);
@@ -575,8 +587,16 @@ async function provisionFlow(
   await requireDockerfile(deps, git, plan);
   if (plan.target.provider === "portainer") {
     // The user's Portainer: no server, SSH or deploy key; stacks through Portainer's API.
-    const saved = await savedInfrastructureHashes(deps, options, plan);
-    return provisionPortainer(deps, options, { plan, requirements, git, phase, saved, extras });
+    const saved = await savedInfrastructureHashes(deps, options, plan, uptimeHashes);
+    return provisionPortainer(deps, options, {
+      plan,
+      requirements,
+      git,
+      phase,
+      saved,
+      extras,
+      uptime,
+    });
   }
   // A live service placed on another server moves only as design plans it, with its data.
   requireDesignedPlacement(plan, command);
@@ -782,7 +802,10 @@ async function provisionFlow(
     edgeNotes.push(switchNote);
   }
   // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
-  const saved = await savedInfrastructureHashes(deps, options, plan, cloudflarePlanHashes(shared));
+  const saved = await savedInfrastructureHashes(deps, options, plan, [
+    ...cloudflarePlanHashes(shared),
+    ...uptimeHashes,
+  ]);
   const approveHash = saved.apply;
   // `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
@@ -1365,7 +1388,7 @@ async function provisionFlow(
       }
     }
     // The Cloudflare uptime Worker's plan, shown with its hash (applied at the check's step).
-    await provisionUptime(deps, { plan, github, services, command, phase, planOnly: true });
+    const uptimePlanHash = await provisionUptime(deps, uptime, { command, phase, planOnly: true });
     // The environment's runner on the runner machines it leaves and on its own: their host plans,
     // shown and saved.
     const machines = await provisionRunnerMachines(deps, {
@@ -1394,6 +1417,7 @@ async function provisionFlow(
       ...leavingHashes(leavingHome),
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
       ...(checkKeyPlanHash !== undefined ? { checkKeyPlanHash } : {}),
+      ...(uptimePlanHash !== undefined ? { uptimePlanHash } : {}),
       ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
       ...(serverPlans.length > 0 ? { serverHostPlanHashes: serverPlans.map((p) => p.hash) } : {}),
       applied: false,
@@ -1737,6 +1761,7 @@ async function provisionFlow(
       : {}),
     storeSecrets: options.secrets !== false,
     services,
+    uptime,
     command,
     phase,
   });

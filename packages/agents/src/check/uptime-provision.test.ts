@@ -3,10 +3,17 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { UPTIME_RESOURCES, uptimeEntryKey, uptimeSecretName } from "@opscrew/connector-cloudflare";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { UPTIME_WORKER } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { DEPLOY_SETUP_BRANCH } from "../provision/publish";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
 import {
@@ -44,7 +51,9 @@ async function setup(plan: DeployPlan) {
   const project = await createProject(plan);
   await writeFile(join(project.root, "production.env"), "STRIPE_SECRET_KEY=sk\n");
   const github = new FakeGitHub();
-  const handler = new ScriptedApprovalHandler(() => true);
+  /** The approvals' answers: all granted until a test says otherwise. */
+  let answer: (request: ApprovalRequest) => boolean = () => true;
+  const handler = new ScriptedApprovalHandler((request) => answer(request));
   const deps = await createTestPhaseDeps({
     root: project.root,
     env: {
@@ -58,9 +67,13 @@ async function setup(plan: DeployPlan) {
     approvalHandler: handler,
   });
   const account = fakeUptimeAccount();
+  /** The infrastructure plan's changes (by default it creates the server), and its engines. */
+  const scenario: { changes?: ResourceChange[] } = {};
+  const engines: FakeEngine[] = [];
   const services: ProvisionServices = {
-    engine: async () =>
-      new FakeEngine({
+    engine: async () => {
+      const engine = new FakeEngine({
+        ...scenario,
         planJson: planJsonFor({ proxied: true }),
         outputs: {
           server_ipv4: SERVER_IPV4,
@@ -69,7 +82,10 @@ async function setup(plan: DeployPlan) {
           server_name: "shop",
           url: "https://shop.example.com",
         },
-      }),
+      });
+      engines.push(engine);
+      return engine;
+    },
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     github,
     cloudflare: fakeCloudflare(),
@@ -78,7 +94,32 @@ async function setup(plan: DeployPlan) {
     sleep: async () => undefined,
     sharedCloudflare: withUptimeAccount(fakeSharedCloudflare(new FakeZone()), account.client),
   };
-  return { ...project, deps, github, handler, services, account };
+  const answerWith = (next: (request: ApprovalRequest) => boolean) => {
+    answer = next;
+  };
+  return { ...project, deps, github, handler, answerWith, services, account, scenario, engines };
+}
+
+/** Another app's entry with `count` hostnames in the account's namespace. */
+function otherHostnames(account: ReturnType<typeof fakeUptimeAccount>, count: number): void {
+  const namespace =
+    account.uptime.namespace("opscrew-uptime") ?? account.uptime.addNamespace("opscrew-uptime");
+  const id = "acme/big/big/prod";
+  namespace.values.set(
+    uptimeEntryKey(id),
+    JSON.stringify({
+      version: 1,
+      repository: "acme/big",
+      app: "big",
+      environment: "prod",
+      hosts: Array.from({ length: count }, (_, i) => ({
+        hostname: `site${i}.example.org`,
+        healthPath: "/",
+      })),
+      webhook: "slack",
+      secret: uptimeSecretName(id),
+    }),
+  );
 }
 
 it("the connector's and the script's names and limits are the same", () => {
@@ -131,6 +172,54 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     expect(deps.reporter.text()).toContain(`\`--approve ${hash}\``);
     expect(account.uptime.writes()).toEqual([]);
     expect(handler.requests.map((r) => r.title).join("\n")).not.toContain("uptime plan");
+  });
+
+  it("applies the uptime plan from a script approving only its hash, kept apart from the infrastructure's", async () => {
+    const { deps, github, handler, answerWith, services, account, scenario } = await setup(
+      workerPlan(),
+    );
+    const plan = workerPlan();
+    // Everything else is set up already: the Actions check ran, the server exists.
+    const actions = DeployPlanSchema.parse({
+      ...plan,
+      observability: { check: { enabled: true, webhook: "slack" } },
+    });
+    await writeArtifact("plan", deps.paths.files.plan, actions);
+    await runProvision(deps, { services });
+    // Its deploy-setup pull request is still open, so the next runs add to it.
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, {
+      number: 7,
+      url: "https://github.com/acme/shop/pull/7",
+    });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...(await readArtifact("plan", deps.paths.files.plan)),
+      observability: plan.observability,
+    });
+    scenario.changes = [];
+    const shown = await runProvision(deps, { services, planOnly: true });
+    expect(shown.uptimePlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(deps.reporter.text()).toContain(`Cloudflare uptime plan ${shown.uptimePlanHash}.`);
+
+    // A script: only the uptime plan's hash, nothing else bound to a hash is approved.
+    const hash = shown.uptimePlanHash as string;
+    handler.requests.length = 0;
+    deps.interactive = false;
+    answerWith((r) => (r.planHash === undefined ? r.allowDestroy !== true : r.planHash === hash));
+    await runProvision(deps, { services, approveHashes: [hash] });
+    expect(handler.requests.find((r) => r.title.includes("uptime plan"))?.planHash).toBe(hash);
+    expect(account.uptime.namespace("opscrew-uptime")?.values.has(uptimeEntryKey(ID))).toBe(true);
+  });
+
+  it("refuses a 41st hostname in the account before any server is created", async () => {
+    const { deps, handler, services, account, engines } = await setup(workerPlan());
+    otherHostnames(account, 40);
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("at most 40 hostnames"),
+    });
+    expect(engines.flatMap((engine) => engine.applied)).toEqual([]);
+    expect(handler.requests.map((r) => r.kind)).not.toContain("iac-apply");
+    expect(account.uptime.writes()).toEqual([]);
   });
 
   it("refuses the Worker without the repository's webhook before any change", async () => {

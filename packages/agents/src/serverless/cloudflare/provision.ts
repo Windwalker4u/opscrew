@@ -8,6 +8,7 @@ import type { ProjectPaths } from "@opscrew/core";
 import { CLOUDFLARE_DEPLOY_SECRETS, type RenderContext } from "@opscrew/iac-templates";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../../check/provision";
+import { provisionUptime } from "../../check/uptime";
 import type { PhaseDeps } from "../../context";
 import { builderCicd } from "../../environments/branches";
 import { setupCloudflare, setupGitHub } from "../../provision/credentials";
@@ -192,12 +193,19 @@ export async function provisionCloudflareWorkers(
   });
   const sharedInput = { app: plan.app.name, command, phase: "provision" as const };
   if (!commits) {
-    // The Cloudflare plan is shown with its hash too; it is approved next to the IaC plan's.
+    // The Cloudflare plan is shown with its hash too; it is approved next to the IaC plan's. So is
+    // the uptime Worker's.
     const shown = await applySharedCloudflare(deps, shared, { ...sharedInput, planOnly: true });
+    const uptimePlanHash = await provisionUptime(deps, input.uptime, {
+      command,
+      phase: "provision",
+      planOnly: true,
+    });
     await writePlanIfChanged(deps, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
       ...shown.fields,
+      ...(uptimePlanHash !== undefined ? { uptimePlanHash } : {}),
       applied: false,
       outputs: {},
     };
@@ -242,6 +250,7 @@ export async function provisionCloudflareWorkers(
     github,
     storeSecrets: storesSecrets,
     services,
+    uptime: input.uptime,
     command,
     phase: "provision",
   });

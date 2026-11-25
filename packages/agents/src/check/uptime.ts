@@ -230,13 +230,19 @@ async function uptimeStep(
       );
     }
     const entry = uptimeEntry(want.plan, want.repository, kind);
+    desired = { ...desired, entry };
+    // What else blocks the plan stops it before the address is asked.
+    const first = planUptime(facts, desired);
+    if (first.findings.some((finding) => finding.code !== "secret-missing")) {
+      return { client, target, plan: first, desired, details: describeUptimePlan(first) };
+    }
     const secret = await webhookSecret(deps, {
       kind,
       name: entry.secret,
       stored: facts.secrets?.includes(entry.secret) === true,
       ask: want.ask,
     });
-    desired = { ...desired, entry, ...(secret === undefined ? {} : { secret }) };
+    if (secret !== undefined) desired = { ...desired, secret };
   }
   const plan = planUptime(facts, desired);
   return { client, target, plan, desired, details: describeUptimePlan(plan) };
@@ -337,57 +343,68 @@ async function recordAfter(paths: Pick<ProjectPaths, "stateDir">, step: UptimeSt
 // --- Provision --------------------------------------------------------------------------------
 
 /**
- * Provision's part of the uptime Worker, read-only until approved: with the Worker chosen, the
- * environment's entry and secret (the address from `OPSCREW_CHECK_WEBHOOK`, or asked when the
- * Worker has none for it) in the account of the app's zone; when the plan no longer chooses it
- * and this computer recorded an entry, that entry's removal, its state's and its secret's (the
- * Worker, its trigger and the namespace stay). The plan is shown, approved by its hash
- * (`cloudflare-apply`), applied and audited; its findings stop before anything changes. With
- * `planOnly` it is only shown, with a line naming its hash for scripts, which is returned. Nothing
- * to do reads nothing.
+ * Provision's uptime step, planned read-only before anything changes: with the Worker chosen, the
+ * environment's entry and secret in the account of the app's zone (the address from
+ * `OPSCREW_CHECK_WEBHOOK`, or with `ask`, in a terminal, asked when the Worker has none for it and
+ * nothing else blocks the plan); when the plan no longer chooses it and this computer recorded an
+ * entry, that entry's removal, its state's and its secret's (the Worker, its trigger and the
+ * namespace stay). Its findings stop the run (`PHASE_PRECONDITION`, nothing changed). `undefined`
+ * when there is nothing to plan, which reads nothing.
  */
-export async function provisionUptime(
-  deps: PhaseDeps,
+export async function planProvisionUptime(
+  deps: Pick<
+    PhaseDeps,
+    "paths" | "env" | "interactive" | "reporter" | "redactor" | "fetch" | "version"
+  >,
   input: {
     plan: DeployPlan;
-    github: { owner: string; repo: string };
+    /** The repository's GitHub coordinates (its remote), read only when there is a plan to make. */
+    github: () => Promise<{ owner: string; repo: string }>;
     services: Pick<ProvisionServices, "askCheckWebhook" | "sharedCloudflare">;
     command: string;
-    phase: PhaseName;
-    planOnly?: boolean;
+    ask: boolean;
   },
-): Promise<string | undefined> {
-  const { plan, command } = input;
+): Promise<UptimeStep | undefined> {
+  const { plan } = input;
   const wanted = usesUptimeWorker(plan);
   if (!wanted && (await readUptimeRecord(deps.paths)) === undefined) return undefined;
   if (wanted) deps.reporter.info(UPTIME_ONLY_LINE);
-  const repository = `${input.github.owner}/${input.github.repo}`;
+  const { owner, repo } = await input.github();
+  const repository = `${owner}/${repo}`;
   const client = sharedCloudflareClient(deps, input.services);
   const target = await uptimeTarget(deps.paths, plan, { client, repository });
   if (target === undefined) return undefined;
+  const ask = input.ask ? input.services.askCheckWebhook : undefined;
   const step = await uptimeStep(deps, {
     client,
     target,
-    ...(wanted
-      ? {
-          want: {
-            plan,
-            repository,
-            ask: input.planOnly === true ? undefined : input.services.askCheckWebhook,
-          },
-        }
-      : {}),
+    ...(wanted ? { want: { plan, repository, ask } } : {}),
   });
-  if (step.plan.changes.length === 0 && step.plan.findings.length === 0) {
+  requireNoFindings(deps, step, input.command);
+  return step;
+}
+
+/**
+ * Provision's part of the uptime Worker, at its step: the planned `step`
+ * ({@link planProvisionUptime}) shown, approved by its hash (`cloudflare-apply`), applied and
+ * audited; without changes only this computer's record is updated. With `planOnly` it is only
+ * shown, with a line naming its hash for scripts. Returns the hash of a plan with changes.
+ */
+export async function provisionUptime(
+  deps: PhaseDeps,
+  step: UptimeStep | undefined,
+  input: { command: string; phase: PhaseName; planOnly?: boolean },
+): Promise<string | undefined> {
+  if (step === undefined) return undefined;
+  if (step.plan.changes.length === 0) {
     deps.reporter.success(
-      wanted
+      step.desired.entry !== undefined
         ? "The Cloudflare uptime Worker is already set up for this environment; nothing in Cloudflare changes."
         : "The Cloudflare uptime Worker has no entry of this environment; nothing in Cloudflare changes.",
     );
     if (input.planOnly !== true) await recordAfter(deps.paths, step);
     return undefined;
   }
-  requireNoFindings(deps, step, command);
   deps.reporter.info(step.details);
   if (input.planOnly === true) {
     deps.reporter.info(
@@ -395,7 +412,7 @@ export async function provisionUptime(
     );
     return step.plan.hash;
   }
-  await applyStep(deps, step, { command, phase: input.phase });
+  await applyStep(deps, step, { command: input.command, phase: input.phase });
   return step.plan.hash;
 }
 

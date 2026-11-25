@@ -44,7 +44,7 @@ import {
 } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
-import { provisionUptime } from "../check/uptime";
+import { provisionUptime, type UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
@@ -173,6 +173,8 @@ export interface PortainerFlowInput {
   saved: SavedInfrastructureHashes;
   /** Notes for the infrastructure approval, and the step that saves `opscrew dns`'s plan change. */
   extras: { approvalNotes?: readonly string[]; ready?: () => Promise<void> };
+  /** The Cloudflare uptime Worker's step (`planProvisionUptime`), when there is one. */
+  uptime: UptimeStep | undefined;
 }
 
 /** The values a stack plan sends, by where they go (secrets: never printed). */
@@ -1465,13 +1467,18 @@ export async function provisionPortainer(
       if (note !== undefined) deps.reporter.info(note);
     }
     // The Cloudflare uptime Worker's plan, shown with its hash (applied at the check's step).
-    await provisionUptime(deps, { plan, github, services, command, phase, planOnly: true });
+    const uptimePlanHash = await provisionUptime(deps, input.uptime, {
+      command,
+      phase,
+      planOnly: true,
+    });
     if (learned.zoneLearned) await writePlanIfChanged(deps, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
       ...cloudflareHash,
       ...storageHash,
       ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
+      ...(uptimePlanHash !== undefined ? { uptimePlanHash } : {}),
       ...(originFollows ? { stackFollowsOriginTls: true as const } : {}),
       ...(recipientPending && !bucketPending && !backupsPending
         ? { stackFollowsRecoveryKey: true as const }
@@ -1593,6 +1600,7 @@ export async function provisionPortainer(
     github,
     storeSecrets: options.secrets !== false,
     services,
+    uptime: input.uptime,
     command,
     phase,
   });

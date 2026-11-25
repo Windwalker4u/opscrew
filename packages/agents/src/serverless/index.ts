@@ -5,6 +5,7 @@
  */
 import type { GitClient } from "@opscrew/connector-github";
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
+import type { UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import type { SavedInfrastructureHashes } from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
@@ -17,6 +18,8 @@ export interface ServerlessProvisionInput {
   git: GitClient;
   /** The saved infrastructure plans the `--approve` hashes name (applied instead of planning). */
   saved: SavedInfrastructureHashes;
+  /** The Cloudflare uptime Worker's step (`planProvisionUptime`), when there is one. */
+  uptime: UptimeStep | undefined;
 }
 
 export { provisionCloudflareWorkers } from "./cloudflare/provision";

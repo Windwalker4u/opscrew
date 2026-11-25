@@ -11,6 +11,7 @@ import { provisionCheck } from "./provision";
 import {
   applyUptimeTeardown,
   parseUptimeState,
+  planProvisionUptime,
   planUptimeTeardown,
   provisionUptime,
   readUptimeRecord,
@@ -46,14 +47,25 @@ async function setup(
       return WEBHOOK_URL;
     },
   };
-  /** provisionCheck for `plan`, as provision runs it near its end. */
-  const provision = async (plan: DeployPlan) => {
-    await writeArtifact("plan", deps.paths.files.plan, plan);
+  /** The uptime step as provision plans it before any change. */
+  const plan = (deployPlan: DeployPlan, ask = true) =>
+    planProvisionUptime(deps, {
+      plan: deployPlan,
+      github: async () => ({ owner: "acme", repo: "shop" }),
+      services,
+      command: "opscrew provision",
+      ask,
+    });
+  /** That step planned, then provisionCheck for `plan`, as provision runs it near its end. */
+  const provision = async (deployPlan: DeployPlan) => {
+    await writeArtifact("plan", deps.paths.files.plan, deployPlan);
+    const uptime = await plan(deployPlan);
     return provisionCheck(deps, {
-      plan,
+      plan: deployPlan,
       github: { api: github, owner: "acme", repo: "shop", defaultBranch: "main" },
       storeSecrets: true,
       services,
+      uptime,
       command: "opscrew provision",
       phase: "provision",
     });
@@ -61,7 +73,7 @@ async function setup(
   /** Everything a user, the audit or an approval could see. */
   const seen = () =>
     JSON.stringify([deps.reporter.lines, deps.audit.entries, handler.requests, github.secrets]);
-  return { deps, handler, uptime, client, github, services, asked, provision, seen };
+  return { deps, handler, uptime, client, github, services, asked, plan, provision, seen };
 }
 
 /** The account's namespace `opscrew-uptime`, which the tests expect to exist. */
@@ -265,10 +277,8 @@ describe("provisionUptime --plan-only", () => {
     const s = await setup();
     const plan = uptimePlan("cloudflare");
     await writeArtifact("plan", s.deps.paths.files.plan, plan);
-    const hash = await provisionUptime(s.deps, {
-      plan,
-      github: { owner: "acme", repo: "shop" },
-      services: s.services,
+    // Planned without asking: a plan-only run gives the address with OPSCREW_CHECK_WEBHOOK.
+    const hash = await provisionUptime(s.deps, await s.plan(plan, false), {
       command: "opscrew provision",
       phase: "provision",
       planOnly: true,

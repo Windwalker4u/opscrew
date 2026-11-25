@@ -11,7 +11,13 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "@opscrew/agents/testing";
-import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import { CloudflareClient } from "@opscrew/connector-cloudflare";
+import {
+  FAKE_ACCOUNT_ID,
+  FAKE_ZONE_ID,
+  FakeUptime,
+  FakeZone,
+} from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { ageRecipientOf, generateAgeIdentity, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -161,6 +167,50 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(ctx.output).toMatch(
       new RegExp(`    opscrew provision (--approve [0-9a-f]{64} )*--approve ${key}`),
     );
+  });
+
+  it("--plan-only lists the Cloudflare uptime plan in the --approve command", async () => {
+    const base = testPlan({ domain: "shop.example.com", userSecret: false });
+    project = await deployProject(
+      DeployPlanSchema.parse({
+        ...base,
+        observability: { check: { enabled: true, runner: "cloudflare", webhook: "slack" } },
+      }),
+    );
+    project.env.OPSCREW_CHECK_WEBHOOK = `https://hooks.example.net/${fakeSecret("generic-password", "cli-uptime")}`;
+    // The zone's account: OpsCrew's shared rules, and the uptime Worker's KV and Worker.
+    const zone = new FakeZone();
+    const uptime = new FakeUptime({
+      fallback: async (input, init) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith("/zones")) return zone.fetch(input, init);
+        const name = url.searchParams.get("name");
+        const result =
+          name === "example.com"
+            ? [{ id: FAKE_ZONE_ID, name, status: "active", account: { id: FAKE_ACCOUNT_ID } }]
+            : [];
+        return new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const { ctx } = context(project);
+    withServices(ctx, {
+      provision: provisionServices(new FakeEngine(), new FakeGitHub(), {
+        sharedCloudflare: new CloudflareClient({
+          token: fakeSecret("cloudflare-token", "cli-uptime"),
+          fetch: uptime.fetch,
+          sleep: async () => undefined,
+        }),
+      }),
+    });
+    expect(await run(ctx, "provision", "--plan-only", "--yes"), ctx.errors).toBe(0);
+    const hash = /Cloudflare uptime plan:\s+([0-9a-f]{64})/.exec(ctx.output)?.[1];
+    expect(hash).toBeDefined();
+    expect(ctx.output).toMatch(
+      new RegExp(`    opscrew provision (--approve [0-9a-f]{64} )*--approve ${hash}`),
+    );
+    expect(uptime.writes()).toEqual([]);
   });
 
   it("--plan-only repeats --skip-other-apps-check in the --approve command", async () => {

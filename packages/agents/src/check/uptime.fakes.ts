@@ -5,7 +5,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { createTestPhaseDeps, testPlan } from "../testing";
-import { provisionUptime } from "./uptime";
+import { planProvisionUptime, provisionUptime } from "./uptime";
 
 /** A webhook address the tests give; it must never appear in a plan, a line or the audit. */
 export const WEBHOOK_URL = `https://hooks.example.net/uptime/${fakeSecret("generic-password", "uptime-hook")}`;
@@ -130,11 +130,12 @@ export async function provisionedUptime(
     ...(deps.paths.app === undefined ? {} : { app: deps.paths.app }),
     environment: deps.paths.environment,
   });
-  await provisionUptime(own, {
+  const step = await planProvisionUptime(own, {
     plan,
-    github,
+    github: async () => github,
     services: { sharedCloudflare: client },
     command: "opscrew provision",
-    phase: "provision",
+    ask: false,
   });
+  await provisionUptime(own, step, { command: "opscrew provision", phase: "provision" });
 }

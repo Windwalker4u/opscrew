@@ -24,7 +24,7 @@ import { changeCheckPause } from "./pause";
 import { type CheckServerReach, storeCheckSecrets } from "./secrets";
 import { checkServerEntries } from "./servers";
 import { checksInActions, repositoryCheckSettings } from "./settings";
-import { provisionUptime } from "./uptime";
+import { provisionUptime, type UptimeStep } from "./uptime";
 
 /**
  * True when the check reads the disk of `plan`'s app server over SSH with the check key: a cloud or
@@ -171,8 +171,9 @@ export async function checkKeyStep(
 
 /**
  * Provision's part of the scheduled check, after the server is ready. First the Cloudflare uptime
- * Worker's (`provisionUptime`): the environment's entry when it chooses the Worker, or its removal
- * when it no longer does; such an environment gets no check key and no GitHub check secrets. Then,
+ * Worker's (`provisionUptime`, its `uptime` step planned before anything changed): the
+ * environment's entry when it chooses the Worker, or its removal when it no longer does; such an
+ * environment gets no check key and no GitHub check secrets. Then,
  * for an environment with the check on in GitHub Actions: the check key (`key`, the repository's)
  * added by the `check-key` host step when `server` lacks it, then (with `storeSecrets`) the
  * check's repository secrets, whose server secret lists
@@ -189,19 +190,15 @@ export async function provisionCheck(
     key?: CheckKey;
     server?: CheckServer;
     storeSecrets: boolean;
-    services: Pick<ProvisionServices, "askCheckWebhook" | "sharedCloudflare">;
+    services: Pick<ProvisionServices, "askCheckWebhook">;
+    /** The Cloudflare uptime Worker's step (`planProvisionUptime`), when there is one. */
+    uptime: UptimeStep | undefined;
     command: string;
     phase: PhaseName;
   },
 ): Promise<HostPlanOutcome | undefined> {
   const { plan, github, server, key } = input;
-  await provisionUptime(deps, {
-    plan,
-    github,
-    services: input.services,
-    command: input.command,
-    phase: input.phase,
-  });
+  await provisionUptime(deps, input.uptime, { command: input.command, phase: input.phase });
   if (!checksInActions(plan)) return undefined;
   const host =
     server === undefined || key === undefined
