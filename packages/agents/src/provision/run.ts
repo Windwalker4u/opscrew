@@ -196,7 +196,7 @@ import {
 } from "./plan-apply";
 import { plannedImports } from "./plan-json";
 import { provisionPortainer } from "./portainer-flow";
-import type { RecoveryCopy } from "./publish";
+import { type RecoveryCopy, requireDeployCheckout } from "./publish";
 import {
   committedTfvars,
   deploymentFiles,
@@ -547,6 +547,10 @@ async function provisionFlow(
   await requireOwnHostnames(deps.paths, plan);
   requireOwnCopy(deps.paths, await readRepositoryCopy(deps.paths), await readRecord(deps.paths));
   const git = await requireGitRepo(deps);
+  // A run that commits stops off the environment's branch before it reaches anything.
+  if (!options.planOnly || (options.approveHashes ?? []).length > 0) {
+    await requireDeployCheckout(git, plan, phase);
+  }
   // A server-less site needs no Dockerfile, server or deploy key.
   if (isServerlessProvider(plan.target.provider)) {
     const saved = await savedInfrastructureHashes(deps, options, plan);
