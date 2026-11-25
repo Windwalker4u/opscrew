@@ -10,7 +10,6 @@ import { createTestPhaseDeps, FakeGitHub, ScriptedApprovalHandler } from "../tes
 import { provisionCheck } from "./provision";
 import {
   applyUptimeTeardown,
-  parseUptimeState,
   planProvisionUptime,
   planUptimeTeardown,
   provisionUptime,
@@ -440,15 +439,6 @@ describe("uptimeStatusLines", () => {
     expect((await status(undefined, { entry: false })).slice(1)).toEqual([
       "  This environment's entry is missing from the Cloudflare account, so nothing checks the app now. Run `opscrew provision` to set it up again.",
     ]);
-  });
-});
-
-describe("parseUptimeState", () => {
-  it("reads what the Worker writes and nothing else", () => {
-    const text = '{"hosts":{"a.example.com":{"status":"down","since":"t","reason":"r"}}}';
-    expect(parseUptimeState(text)?.hosts["a.example.com"]?.status).toBe("down");
-    expect(parseUptimeState("not json")).toBeUndefined();
-    expect(parseUptimeState('{"hosts":{"a.example.com":{"status":"up"}}}')).toBeUndefined();
   });
 });
 

@@ -8,6 +8,7 @@ import {
   applyUptime,
   describeUptimePlan,
   inspectUptime,
+  parseUptimeState,
   planUptime,
   UptimeApplyError,
   type UptimeDesired,
@@ -292,10 +293,11 @@ describe("planUptime", () => {
     );
   });
 
-  it("refuses an entry that isn't the environment's", () => {
-    expect(() => planUptime(facts([]), { ...wanting(SHOP), entry: entryFor(BLOG) })).toThrowError(
-      /cannot write/,
-    );
+  it("reads the Worker's state and nothing else", () => {
+    const text = '{"hosts":{"a.example.com":{"status":"down","since":"t","reason":"r"}}}';
+    expect(parseUptimeState(text)?.hosts["a.example.com"]?.status).toBe("down");
+    expect(parseUptimeState("not json")).toBeUndefined();
+    expect(parseUptimeState('{"hosts":{"a.example.com":{"status":"up"}}}')).toBeUndefined();
   });
 });
 

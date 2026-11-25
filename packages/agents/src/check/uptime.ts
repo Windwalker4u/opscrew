@@ -14,6 +14,7 @@ import {
   cloudflareConnector,
   describeUptimePlan,
   inspectUptime,
+  parseUptimeState,
   planUptime,
   UPTIME_RESOURCES,
   UptimeApplyError,
@@ -443,7 +444,7 @@ export async function planUptimeTeardown(
   plan: DeployPlan,
   input: {
     services: Pick<ProvisionServices, "sharedCloudflare">;
-    github: { owner?: string; repo?: string };
+    github: { owner?: string | undefined; repo?: string | undefined };
     command: string;
   },
 ): Promise<UptimeStep | undefined> {
@@ -489,32 +490,6 @@ export async function applyUptimeTeardown(
 }
 
 // --- Status -----------------------------------------------------------------------------------
-
-const UptimeStateSchema = z.looseObject({
-  hosts: z.record(
-    z.string(),
-    z.looseObject({
-      status: z.enum(["suspect", "down"]),
-      since: z.string(),
-      reason: z.string(),
-    }),
-  ),
-});
-
-/** The Worker's state of an entry (`state:<id>`), what it holds of each hostname not up. */
-export type UptimeState = z.infer<typeof UptimeStateSchema>;
-
-/** The Worker's `state:` value; `undefined` for anything the Worker does not write. */
-export function parseUptimeState(text: string): UptimeState | undefined {
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  const parsed = UptimeStateSchema.safeParse(json);
-  return parsed.success ? parsed.data : undefined;
-}
 
 /**
  * The uptime check's lines in `status` for an environment the Worker checks, read from Cloudflare

@@ -23,6 +23,7 @@ import {
   type DeployPlan,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { planUptimeTeardown } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
 import {
@@ -89,7 +90,6 @@ import {
   type GitHubTarget,
   nothingDeployed,
   pauseCheckForTeardown,
-  planCheckTeardown,
   previewCloudflareRemoval,
   recordTeardown,
   removeDeploySecrets,
@@ -793,7 +793,9 @@ export async function destroyOwnServer(
   const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
   const cloudflarePlan = removalDetails(shared);
   // The environment's entry in the Cloudflare uptime Worker likewise, where the check's pause runs.
-  const uptime = removeApp ? await planCheckTeardown(deps, plan, services, github) : undefined;
+  const uptime = removeApp
+    ? await planUptimeTeardown(deps, plan, { services, github, command: COMMAND })
+    : undefined;
   let bucket: BucketDeletion | undefined;
   if (removeApp) {
     const removed = [...previewSteps, ...hostSteps].map((step) => step.title);

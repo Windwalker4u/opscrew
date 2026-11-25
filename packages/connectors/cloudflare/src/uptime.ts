@@ -42,23 +42,11 @@ const STATE_PREFIX = "state:";
 /** The KV key that records the SHA-256 of the script last uploaded. */
 const WORKER_KEY = "opscrew:worker";
 
-/** One environment's KV entry (`entry:<id>`): what the Worker checks and where it posts. */
-export interface UptimeEntry {
-  version: 1;
-  /** `owner/repo`. */
-  repository: string;
-  app: string;
-  environment: string;
-  hosts: { hostname: string; healthPath: string }[];
-  webhook: "slack" | "discord" | "ntfy";
-  /** The name of the Worker secret holding the webhook's address: {@link uptimeSecretName}. */
-  secret: string;
-}
-
 const HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
 
 const UptimeEntrySchema = z.looseObject({
   version: z.literal(1),
+  /** `owner/repo`. */
   repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
   app: z.string().min(1),
   environment: z.string().min(1),
@@ -71,8 +59,38 @@ const UptimeEntrySchema = z.looseObject({
     )
     .min(1),
   webhook: z.enum(["slack", "discord", "ntfy"]),
+  /** The name of the Worker secret holding the webhook's address: {@link uptimeSecretName}. */
   secret: z.string().regex(/^HOOK_[0-9a-f]{16}$/),
 });
+
+/** One environment's KV entry (`entry:<id>`): what the Worker checks and where it posts. */
+export type UptimeEntry = z.infer<typeof UptimeEntrySchema>;
+
+const UptimeStateSchema = z.looseObject({
+  hosts: z.record(
+    z.string(),
+    z.looseObject({
+      status: z.enum(["suspect", "down"]),
+      since: z.string(),
+      reason: z.string(),
+    }),
+  ),
+});
+
+/** The Worker's state of an entry (`state:<id>`): each hostname that isn't up. */
+export type UptimeState = z.infer<typeof UptimeStateSchema>;
+
+/** The Worker's `state:` value; `undefined` for anything the Worker does not write. */
+export function parseUptimeState(text: string): UptimeState | undefined {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const parsed = UptimeStateSchema.safeParse(json);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /** The Worker secret's value (data-model.md): the webhook's address and, for ntfy, its token. */
 const WebhookSecretSchema = z.object({ url: z.url(), token: z.string().min(1).optional() });
@@ -298,9 +316,9 @@ function secretProblem(secret: string): string | undefined {
   return parsed.success ? undefined : zodIssues(parsed.error);
 }
 
-/** The desired secret's shape, then the entry: every field, its id and its secret's name. */
+/** The desired secret's shape: the webhook's address, from the user. */
 function checkDesired(desired: UptimeDesired): void {
-  const { entry, id } = desired;
+  const { id } = desired;
   const secret = desired.secret === undefined ? undefined : secretProblem(desired.secret);
   if (secret !== undefined) {
     throw new OpsCrewError(
@@ -311,19 +329,6 @@ function checkDesired(desired: UptimeDesired): void {
       },
     );
   }
-  if (entry === undefined) return;
-  const parsed = UptimeEntrySchema.safeParse(entry);
-  const problem = !parsed.success
-    ? zodIssues(parsed.error)
-    : `${entry.repository}/${entry.app}/${entry.environment}` !== id
-      ? `it is not the entry of ${id}`
-      : entry.secret !== uptimeSecretName(id)
-        ? `its secret is not ${uptimeSecretName(id)}`
-        : undefined;
-  if (problem === undefined) return;
-  throw new OpsCrewError("INTERNAL", `OpsCrew built an uptime entry it cannot write: ${problem}.`, {
-    hint: "Report this to OpsCrew.",
-  });
 }
 
 /** Pure: the changes, blocking findings and the plan's SHA-256 (`plan.hash`). */

@@ -10,6 +10,7 @@ import type { ApprovalRecord, PlanSummary, ResourceChange } from "@opscrew/contr
 import { exists, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { pagesVerificationRootDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { planUptimeTeardown } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
 import { missing } from "../provision/credentials";
@@ -48,7 +49,6 @@ import {
   type GitHubTarget,
   nothingDeployed,
   pauseCheckForTeardown,
-  planCheckTeardown,
   recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
@@ -219,7 +219,7 @@ export async function destroyCloudflareWorkers(
   const shared = await planSharedRemoval(deps, plan, services);
   const rules = removalDetails(shared);
   // The environment's entry in the Cloudflare uptime Worker, removed where the check's pause runs.
-  const uptime = await planCheckTeardown(deps, plan, services, github);
+  const uptime = await planUptimeTeardown(deps, plan, { services, github, command: COMMAND });
   if (preview.changes.length === 0 && rules === undefined && !hasDeployment(plan)) {
     throw nothingDeployed(plan);
   }
@@ -477,7 +477,7 @@ export async function destroyGithubPages(
   // The environment's entry in the Cloudflare uptime Worker, removed where the check's pause runs.
   const uptime = verificationOnly
     ? undefined
-    : await planCheckTeardown(deps, plan, services, github);
+    : await planUptimeTeardown(deps, plan, { services, github, command: COMMAND });
   deps.reporter.info(
     [
       ...changeLines(

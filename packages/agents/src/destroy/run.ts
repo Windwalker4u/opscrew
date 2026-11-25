@@ -3,7 +3,7 @@ import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, isCloudProvider, readArtifact } from "@opscrew/plan-schema";
-import type { UptimeStep } from "../check/uptime";
+import { planUptimeTeardown, type UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { destroyHosting } from "../hosting/destroy";
 import { destroyLocalhost } from "../localhost/destroy";
@@ -65,7 +65,6 @@ import {
   type GitHubTarget,
   nothingDeployed,
   pauseCheckForTeardown,
-  planCheckTeardown,
   recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
@@ -157,7 +156,7 @@ interface DestroyContext {
   unregisterRunner?: () => Promise<void>;
   /** With extra servers, a line per server (`serverLines`) in the destroy plan's approval. */
   servers?: readonly string[];
-  /** The environment's entry leaving the Cloudflare uptime Worker (`planCheckTeardown`). */
+  /** The environment's entry leaving the Cloudflare uptime Worker (`planUptimeTeardown`). */
   uptime?: UptimeStep;
   /**
    * The app's servers (the extra ones too) whose provider cancels them at the end of their term
@@ -745,7 +744,7 @@ async function destroyDeployment(
   const cloudflarePlan = removalDetails(shared);
   // The environment's entry in the Cloudflare uptime Worker likewise (removed where the check's
   // pause runs).
-  const uptime = await planCheckTeardown(deps, plan, services, github);
+  const uptime = await planUptimeTeardown(deps, plan, { services, github, command: COMMAND });
   if (uptime !== undefined) ctx.uptime = uptime;
   // The user's own extra servers go after the infrastructure, so a run that stopped between the two
   // finishes them on the next run.

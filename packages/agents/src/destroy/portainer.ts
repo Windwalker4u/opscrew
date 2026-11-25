@@ -23,6 +23,7 @@ import {
   portainerVersionVolume,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { planUptimeTeardown } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
 import { providerBucket } from "../provision";
@@ -69,7 +70,6 @@ import {
   type GitHubTarget,
   nothingDeployed,
   pauseCheckForTeardown,
-  planCheckTeardown,
   previewCloudflareRemoval,
   recordTeardown,
   removeDeploySecrets,
@@ -573,7 +573,9 @@ export async function destroyPortainer(
   const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
   const cloudflarePlan = removalDetails(shared);
   // The environment's entry in the Cloudflare uptime Worker likewise, where the check's pause runs.
-  const uptime = removeApp ? await planCheckTeardown(deps, plan, services, github) : undefined;
+  const uptime = removeApp
+    ? await planUptimeTeardown(deps, plan, { services, github, command: COMMAND })
+    : undefined;
   deps.reporter.info(
     teardownSummary({
       resources,
