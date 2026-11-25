@@ -43,15 +43,17 @@ From OpenAI's official Responses API docs and `openai-node` (`7.64.0`):
 
 ## R3. Default models, effort, and pricing
 
-From OpenAI's official API pricing page and `openai@7.64.0`'s official model list (checked 2026-11-25):
+From OpenAI's official API pricing documentation (`https://developers.openai.com/api/docs/pricing` and `https://openai.com/api/pricing`) and `openai@7.64.0`'s official model list (verified 2026-11-25):
 
 | Model | Input ($ / 1M) | Cached input ($ / 1M) | Output ($ / 1M) | Role in OpsCrew |
 |---|---|---|---|---|
-| `gpt-6-luna` | 0.10 | 0.005 | 0.50 | Default for `analyze` (read-only Analyst, fast & low-cost within the $0.50 cap) |
+| `gpt-6-luna` | 0.10 | 0.01 | 0.50 | Default for `analyze` (read-only Analyst, fast & low-cost within the $0.50 cap) |
 | `gpt-6.2-sol` | 2.00 | 0.10 | 10.00 | Default for `adapt` (Code-change agent: current balanced coding flagship, fits well inside the $3.00 cap, unlike `gpt-6.2-astra` at $8/$40) and runtime fallback |
-| `gpt-6.2-astra` / `gpt-6-astra` | 8.00 | 0.40 | 40.00 | Pricing table entry |
+| `gpt-6.2-astra` | 8.00 | 0.40 | 40.00 | Pricing table entry |
+| `gpt-6-astra` | 10.00 | 1.00 | 50.00 | Pricing table entry |
+| `gpt-6.1-sol` / `gpt-6-sol` | 2.00 / 2.00 | 0.10 / 0.20 | 10.00 / 10.00 | Pricing table entries |
 | `gpt-6.1-terra` | 1.00 | 0.05 | 5.00 | Pricing table entry |
-| `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` | 4.00 / 1.50 / 0.20 | 0.40 / 0.15 / 0.02 | 20.00 / 7.50 / 1.20 | Pricing table entries |
+| `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` | 4.00 / 2.00 / 0.20 | 0.40 / 0.20 / 0.02 | 20.00 / 12.00 / 1.20 | Pricing table entries |
 | `gpt-5.5` / `gpt-5.5-pro` | 5.00 / 30.00 | 0.50 / 30.00 | 30.00 / 180.00 | Pricing table entries |
 | `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.4-nano` / `gpt-5.4-pro` | 2.50 / 0.75 / 0.20 / 30.00 | 0.25 / 0.075 / 0.02 / 30.00 | 15.00 / 4.50 / 1.25 / 180.00 | Pricing table entries |
 | `gpt-5.2` / `gpt-5.2-pro` | 1.75 / 21.00 | 0.175 / 21.00 | 14.00 / 168.00 | Pricing table entries |
@@ -61,7 +63,7 @@ From OpenAI's official API pricing page and `openai@7.64.0`'s official model lis
 | `o3` / `o3-pro` / `o3-mini` / `o4-mini` / `o1` / `o1-pro` | 2.00 / 20.00 / 1.10 / 1.10 / 15.00 / 150.00 | 0.50 / 20.00 / 0.55 / 0.275 / 7.50 / 150.00 | 8.00 / 80.00 / 4.40 / 4.40 / 60.00 / 600.00 | Pricing table entries |
 
 - **Token accounting & fail-closed budgets:** Responses API `usage` reports `input_tokens` (inclusive of cached tokens), `input_tokens_details.cached_tokens`, and `output_tokens` (inclusive of reasoning tokens). Models are matched by **exact normalized id** (stripping optional `openai/` prefix and `-YYYY-MM-DD` date) so Pro tiers like `gpt-5-pro` never fall through to cheaper prefixes. If a gateway (such as OpenRouter) reports a finite non-negative `usage.cost`, OpsCrew uses it. If a model has no price in the table and the gateway reports no `usage.cost`, runs with `maxBudgetUsd` **fail closed** instead of silently bypassing the budget cap.
-- **Stateless multi-turn reasoning (`store: false`):** for reasoning models, requests include `include: ["reasoning.encrypted_content"]`. Returned reasoning items with `encrypted_content` are replayed with `encrypted_content` unredacted (while redacting any `summary` text); reasoning items without `encrypted_content` are dropped so OpenAI never returns 404 (`Item with id 'rs_...' not found`).
+- **Stateless multi-turn reasoning (`store: false`):** for reasoning models, requests include `include: ["reasoning.encrypted_content"]`. Returned reasoning items with `id` and `encrypted_content` are replayed with `id` and `encrypted_content` unredacted (while redacting any `summary` text); reasoning items without `encrypted_content` are dropped so OpenAI never returns 404 (`Item with id 'rs_...' not found`).
 - **Reasoning effort:** OpsCrew's `Effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) maps 1:1 to `openai@7.64.0`'s `ReasoningEffort`, sent only for reasoning-capable models (explicitly excluding `*-chat*` models such as `gpt-5-chat-latest` and non-reasoning `gpt-4.*` models).
 - **Phase model selection (`AgentRuntime.defaultModelFor?`):** `OpenAIAgentRuntime` returns `"gpt-6-luna"` for `"analyze"` and `"gpt-6.2-sol"` for `"adapt"` (or its configured `defaultModel` when `--model` / `OPSCREW_MODEL` is set).
 
@@ -94,6 +96,6 @@ Every tool call executes inside `@opscrew/runtime-openai`:
 
 - OpenAI Node SDK (`openai` 7.64.0 on npm, Apache-2.0): https://github.com/openai/openai-node
 - OpenAI Responses API & Structured Outputs: https://platform.openai.com/docs/api-reference/responses
-- OpenAI API Pricing: https://openai.com/api/pricing
+- OpenAI API Pricing (verified 2026-11-25): https://developers.openai.com/api/docs/pricing and https://openai.com/api/pricing
 - OpenRouter Responses API: https://openrouter.ai/docs/api-reference/responses
 - OpsCrew Codex plugin research: `specs/032-codex-plugin/research.md`

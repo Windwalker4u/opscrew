@@ -1,4 +1,4 @@
-/** Date the static OpenAI list-price table below was verified from openai.com/api/pricing. */
+/** Date the static OpenAI list-price table below was verified from developers.openai.com/api/docs/pricing. */
 export const OPENAI_PRICING_DATE = "2026-11-25";
 
 export interface ModelPrice {
@@ -19,12 +19,12 @@ export const OPENAI_MODEL_PRICES: ReadonlyMap<string, ModelPrice> = new Map<stri
   ["gpt-6.2-sol", { inputPerMillion: 2.0, cachedInputPerMillion: 0.1, outputPerMillion: 10.0 }],
   ["gpt-6.1-sol", { inputPerMillion: 2.0, cachedInputPerMillion: 0.1, outputPerMillion: 10.0 }],
   ["gpt-6.1-terra", { inputPerMillion: 1.0, cachedInputPerMillion: 0.05, outputPerMillion: 5.0 }],
-  ["gpt-6-astra", { inputPerMillion: 8.0, cachedInputPerMillion: 0.4, outputPerMillion: 40.0 }],
-  ["gpt-6-sol", { inputPerMillion: 2.0, cachedInputPerMillion: 0.1, outputPerMillion: 10.0 }],
-  ["gpt-6-luna", { inputPerMillion: 0.1, cachedInputPerMillion: 0.005, outputPerMillion: 0.5 }],
+  ["gpt-6-astra", { inputPerMillion: 10.0, cachedInputPerMillion: 1.0, outputPerMillion: 50.0 }],
+  ["gpt-6-sol", { inputPerMillion: 2.0, cachedInputPerMillion: 0.2, outputPerMillion: 10.0 }],
+  ["gpt-6-luna", { inputPerMillion: 0.1, cachedInputPerMillion: 0.01, outputPerMillion: 0.5 }],
   // GPT-5.x family
   ["gpt-5.6-sol", { inputPerMillion: 4.0, cachedInputPerMillion: 0.4, outputPerMillion: 20.0 }],
-  ["gpt-5.6-terra", { inputPerMillion: 1.5, cachedInputPerMillion: 0.15, outputPerMillion: 7.5 }],
+  ["gpt-5.6-terra", { inputPerMillion: 2.0, cachedInputPerMillion: 0.2, outputPerMillion: 12.0 }],
   ["gpt-5.6-luna", { inputPerMillion: 0.2, cachedInputPerMillion: 0.02, outputPerMillion: 1.2 }],
   ["gpt-5.5-pro", { inputPerMillion: 30.0, cachedInputPerMillion: 30.0, outputPerMillion: 180.0 }],
   ["gpt-5.5", { inputPerMillion: 5.0, cachedInputPerMillion: 0.5, outputPerMillion: 30.0 }],
@@ -115,13 +115,14 @@ export function resolveModelPrice(model: string): ModelPrice | undefined {
 export function calculateUsageCost(
   model: string,
   usage: UsageLike | undefined | null,
+  lookupPrice: (model: string) => ModelPrice | undefined = resolveModelPrice,
 ): UsageCostResult {
   if (usage !== undefined && usage !== null) {
     if (typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0) {
       return { costUsd: usage.cost, priced: true };
     }
   }
-  const price = resolveModelPrice(model);
+  const price = lookupPrice(model);
   if (price === undefined) return { costUsd: 0, priced: false };
   if (usage === undefined || usage === null) return { costUsd: 0, priced: true };
   const totalInput =

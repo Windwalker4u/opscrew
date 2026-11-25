@@ -28,7 +28,12 @@ import type {
   ResponseInputItem,
 } from "openai/resources/responses/responses";
 import { z } from "zod";
-import { calculateUsageCost, resolveModelPrice, supportsReasoningEffort } from "./pricing";
+import {
+  calculateUsageCost,
+  type ModelPrice,
+  resolveModelPrice,
+  supportsReasoningEffort,
+} from "./pricing";
 import { executeBuiltinTool, toolDefinitionsFor } from "./tools";
 
 /** Default OpenAI model for the Code-change agent and general phases (`gpt-6.2-sol`). */
@@ -73,6 +78,8 @@ export interface OpenAIAgentRuntimeOptions {
   fetch?: FetchLike;
   /** Direct Responses API transport override for deterministic unit tests. */
   responsesCreate?: ResponsesCreateFn;
+  /** Pricing lookup override (defaults to the dated OpenAI list-price table). */
+  resolvePrice?: (model: string) => ModelPrice | undefined;
   /** Host platform override for `Bash` shell resolution (defaults to `process.platform`). */
   platform?: NodeJS.Platform;
   /** File-existence check override for `Bash` shell resolution (defaults to `existsSync`). */
@@ -241,11 +248,11 @@ class OpenAIPhaseRun<T> {
     }
 
     const hasGatewayBaseUrl = (this.env.OPENAI_BASE_URL ?? "").trim() !== "";
+    const lookupPrice = this.options.resolvePrice ?? resolveModelPrice;
     if (
       request.maxBudgetUsd !== undefined &&
       !hasGatewayBaseUrl &&
-      this.options.responsesCreate === undefined &&
-      resolveModelPrice(this.#model) === undefined
+      lookupPrice(this.#model) === undefined
     ) {
       return this.#finish(this.#failed(unpricedModelMessage(this.#model)));
     }
@@ -302,7 +309,7 @@ class OpenAIPhaseRun<T> {
       }
       this.#turns += 1;
 
-      const usageCost = calculateUsageCost(this.#model, response.usage);
+      const usageCost = calculateUsageCost(this.#model, response.usage, lookupPrice);
       this.#costUsd += usageCost.costUsd;
 
       if (request.maxBudgetUsd !== undefined && !usageCost.priced) {
@@ -394,14 +401,23 @@ class OpenAIPhaseRun<T> {
    */
   #forwardOutputItem(item: ValidatedOutputItem): ResponseInputItem | undefined {
     if (item.type === "reasoning") {
+      const id = "id" in item ? item.id : undefined;
       const encrypted = "encrypted_content" in item ? item.encrypted_content : undefined;
-      if (typeof encrypted !== "string" || encrypted === "") return undefined;
+      if (
+        typeof id !== "string" ||
+        id === "" ||
+        typeof encrypted !== "string" ||
+        encrypted === ""
+      ) {
+        return undefined;
+      }
       const summary =
         "summary" in item && Array.isArray(item.summary)
           ? redactDeep(item.summary, (text) => this.#redact(text))
           : [];
       return {
         type: "reasoning",
+        id,
         summary,
         encrypted_content: encrypted,
       } as ResponseInputItem;

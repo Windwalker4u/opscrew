@@ -103,6 +103,32 @@ describe("resolveBashCommand", () => {
       command: "C:\\Program Files\\Git\\bin\\bash.exe",
       args: ["-c", "ls"],
     });
+
+    // Inside a Git Bash terminal, PATH puts Git\mingw64\bin\git.exe first.
+    const existing = new Set([
+      "C:\\Program Files\\Git\\mingw64\\bin\\git.exe",
+      "C:\\Program Files\\Git\\cmd\\git.exe",
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+    ]);
+    const findOnWinPath = (name: string, env: Record<string, string | undefined>) => {
+      for (const dir of (env.PATH ?? "").split(";")) {
+        const candidate = path.win32.join(dir, `${name}.exe`);
+        if (existing.has(candidate)) return candidate;
+      }
+      return undefined;
+    };
+    const fromMingwPath = resolveBashCommand(
+      "ls",
+      { PATH: "C:\\Program Files\\Git\\mingw64\\bin;C:\\Program Files\\Git\\cmd" },
+      "win32",
+      (p) => existing.has(p),
+      findOnWinPath,
+    );
+    expect(fromMingwPath).toEqual({
+      ok: true,
+      command: "C:\\Program Files\\Git\\bin\\bash.exe",
+      args: ["-c", "ls"],
+    });
   });
 
   it("rejects System32/WindowsApps bash and never falls back to cmd.exe on Windows", () => {

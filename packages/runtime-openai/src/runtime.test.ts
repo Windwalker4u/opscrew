@@ -96,6 +96,11 @@ function makeRuntime(opts: {
   defaultModel?: string;
   runner?: CommandRunner;
   redactor?: Redactor;
+  resolvePrice?: (
+    model: string,
+  ) =>
+    | { inputPerMillion: number; cachedInputPerMillion: number; outputPerMillion: number }
+    | undefined;
 }) {
   const audit = new MemoryAudit();
   const redactor = opts.redactor ?? new Redactor();
@@ -109,6 +114,7 @@ function makeRuntime(opts: {
     ...(opts.costLedger === undefined ? {} : { costLedger: opts.costLedger }),
     ...(opts.defaultModel === undefined ? {} : { defaultModel: opts.defaultModel }),
     ...(opts.runner === undefined ? {} : { runner: opts.runner }),
+    ...(opts.resolvePrice === undefined ? {} : { resolvePrice: opts.resolvePrice }),
   });
   return { runtime, audit, redactor };
 }
@@ -229,13 +235,13 @@ describe("OpenAIAgentRuntime execution loop", () => {
     ]);
     expect(seenParams[0]?.text?.format?.type).toBe("json_schema");
 
-    // Second turn must preserve encrypted reasoning unredacted, drop unencrypted reasoning,
-    // redact reasoning summary, and include function_call + function_call_output.
+    // Second turn must preserve encrypted reasoning (with its id and unredacted encrypted_content),
+    // drop unencrypted reasoning, redact reasoning summary, and include function_call + output.
     const secondInput = seenParams[1]?.input as unknown as Array<Record<string, unknown>>;
     const reasoningItems = secondInput.filter((item) => item.type === "reasoning");
     expect(reasoningItems).toHaveLength(1);
+    expect(reasoningItems[0]?.id).toBe("rs_with_enc");
     expect(reasoningItems[0]?.encrypted_content).toBe(opaqueCiphertext);
-    expect(reasoningItems[0]?.id).toBeUndefined();
     expect(JSON.stringify(reasoningItems[0]?.summary)).not.toContain(secret);
     const toolOut = secondInput.find((item) => item.type === "function_call_output");
     expect(toolOut?.output).toContain("demo-app");
@@ -397,11 +403,37 @@ describe("OpenAIAgentRuntime execution loop", () => {
   it("fails closed under maxBudgetUsd for unpriced models unless gateway reports usage.cost", async () => {
     const root = await makeTempProject();
 
-    // Unpriced model without gateway usage.cost -> fail closed before any tool or turn 2
-    let calls = 0;
-    const { runtime: unpriced } = makeRuntime({
+    // Direct OpenAI (no OPENAI_BASE_URL) + unpriced model -> fails closed before the first call
+    let directCalls = 0;
+    const { runtime: directUnpriced } = makeRuntime({
+      resolvePrice: () => undefined,
       responsesCreate: async () => {
-        calls++;
+        directCalls++;
+        return { id: "r_never", model: "gpt-6-luna", status: "completed", output: [msg("ok")] };
+      },
+    });
+    const directDenied = await directUnpriced.runPhase({
+      phase: "analyze",
+      systemPrompt: "sys",
+      prompt: "p",
+      projectRoot: root,
+      profile: "read-only",
+      maxBudgetUsd: 0.5,
+    });
+    expect(directDenied.ok).toBe(false);
+    expect(directDenied.stopReason).toBe("error");
+    expect(directDenied.error).toContain("list price");
+    expect(directCalls).toBe(0);
+
+    // Gateway (OPENAI_BASE_URL set) + unpriced model without usage.cost -> fails closed after turn 1
+    let gatewayCalls = 0;
+    const { runtime: unpricedGateway } = makeRuntime({
+      env: {
+        OPENAI_API_KEY: fakeSecret("openai-key"),
+        OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+      },
+      responsesCreate: async () => {
+        gatewayCalls++;
         return {
           id: "r_unpriced",
           model: "custom/mystery-model",
@@ -411,7 +443,7 @@ describe("OpenAIAgentRuntime execution loop", () => {
         };
       },
     });
-    const denied = await unpriced.runPhase({
+    const denied = await unpricedGateway.runPhase({
       phase: "analyze",
       systemPrompt: "sys",
       prompt: "p",
@@ -423,10 +455,14 @@ describe("OpenAIAgentRuntime execution loop", () => {
     expect(denied.ok).toBe(false);
     expect(denied.stopReason).toBe("error");
     expect(denied.error).toContain("list price");
-    expect(calls).toBe(1);
+    expect(gatewayCalls).toBe(1);
 
-    // Same unknown model WITH gateway usage.cost succeeds and records cost
+    // Same unknown model via gateway WITH usage.cost succeeds and records cost
     const { runtime: gateway } = makeRuntime({
+      env: {
+        OPENAI_API_KEY: fakeSecret("openai-key"),
+        OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+      },
       responsesCreate: async () => ({
         id: "r_gw",
         model: "custom/mystery-model",

@@ -585,6 +585,8 @@ export function resolveGitBashWindows(
       path.win32.join(dir, "bash.exe"),
       path.win32.join(parent, "bin", "bash.exe"),
       path.win32.join(parent, "usr", "bin", "bash.exe"),
+      path.win32.join(parent, "..", "bin", "bash.exe"),
+      path.win32.join(parent, "..", "usr", "bin", "bash.exe"),
     ];
     for (const candidate of candidates) {
       if (!isForbiddenWindowsShellPath(candidate) && fileExists(candidate)) {

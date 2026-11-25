@@ -19,13 +19,28 @@ describe("OpenAI pricing", () => {
     });
     expect(resolveModelPrice("gpt-6-luna")).toEqual({
       inputPerMillion: 0.1,
-      cachedInputPerMillion: 0.005,
+      cachedInputPerMillion: 0.01,
       outputPerMillion: 0.5,
+    });
+    expect(resolveModelPrice("gpt-6-sol")).toEqual({
+      inputPerMillion: 2,
+      cachedInputPerMillion: 0.2,
+      outputPerMillion: 10,
+    });
+    expect(resolveModelPrice("gpt-6-astra")).toEqual({
+      inputPerMillion: 10,
+      cachedInputPerMillion: 1,
+      outputPerMillion: 50,
     });
     expect(resolveModelPrice("gpt-6.2-astra")).toEqual({
       inputPerMillion: 8,
       cachedInputPerMillion: 0.4,
       outputPerMillion: 40,
+    });
+    expect(resolveModelPrice("gpt-5.6-terra")).toEqual({
+      inputPerMillion: 2,
+      cachedInputPerMillion: 0.2,
+      outputPerMillion: 12,
     });
     expect(resolveModelPrice("gpt-5.4")).toEqual({
       inputPerMillion: 2.5,
@@ -71,7 +86,7 @@ describe("OpenAI pricing", () => {
       output_tokens: -10,
     });
     expect(result.priced).toBe(true);
-    expect(result.costUsd).toBeCloseTo((1000 * 0.005) / 1_000_000, 9);
+    expect(result.costUsd).toBeCloseTo((1000 * 0.01) / 1_000_000, 9);
   });
 
   it("prefers a gateway-supplied usage.cost when finite and non-negative", () => {
