@@ -228,13 +228,17 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     const mark = h.events.length;
     let listedAtName: string[] = [];
     let approvalsAtName = -1;
+    let shownAtName = "";
     const result = await finish(h, {
       confirm: async (preview) => {
         listedAtName = [...h.listed];
         approvalsAtName = since(h, mark).filter((e) => e.type === "approval").length;
+        shownAtName = h.reporter.text();
         return h.confirm(preview);
       },
     });
+    // The user sees the snapshots that stay before typing the name, not only in What remains.
+    expect(shownAtName).toContain("snapshots of shop taken earlier stay: Hetzner image 101");
     expect(result).toMatchObject({ step: "finished", snapshotId: "snap-4711" });
     // Once, before the typed name and every approval; never after the deletion.
     expect(listedAtName).toEqual([OLD_IDS.hetzner]);

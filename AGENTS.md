@@ -1,9 +1,10 @@
 # OpsCrew: a guide for AI agents, and the people running them
 
 OpsCrew is an open-source crew of AI agents that takes an app from a GitHub repo to a hardened
-production deployment on the user's own cloud (Hetzner Cloud, DigitalOcean, Contabo, a server the
-user already owns or a Portainer they already run, plus Cloudflare), with Terraform or OpenTofu,
-and keeps it secure.
+production deployment on infrastructure the user owns (a cloud server provider, a server or a
+Portainer they already run, or a hosting account they already pay for), with Terraform or
+OpenTofu, and keeps it secure. The cloud server providers it supports are listed in one place, the
+registry (`packages/providers/registry`).
 
 This file is for any AI coding agent working in this repository: Claude Code, Codex, Cursor or
 another. Claude Code also reads `CLAUDE.md`, which imports this file. Read
@@ -38,8 +39,8 @@ overrides this file.
 - `packages/iac-engine` — `tofu`/`terraform` abstraction (plan JSON, plan-hash-bound apply).
 - `packages/iac-templates` — vendored HCL modules + runtime templates (compose, Caddyfile,
   cloud-init, GitHub workflow) and the renderer.
-- `packages/providers/*` — one package per cloud server provider (`@opscrew/provider-hetzner`, `-digitalocean`,
-  `-contabo`): its definition (the contract in ADR 0029), connector and server module. `packages/providers/registry`
+- `packages/providers/*` — one package per cloud server provider (`@opscrew/provider-<id>`): its
+  definition (the contract in ADR 0029), connector and server module. `packages/providers/registry`
   (`@opscrew/providers`) lists and validates them and is the one place code reads provider facts from
   (`CLOUD_PROVIDERS`, `cloudProvider(id)`); no other code branches on a cloud provider's id. Phases reach a
   provider's API through `vpsConnector` and `providerProfile` in `packages/agents/src/providers`.

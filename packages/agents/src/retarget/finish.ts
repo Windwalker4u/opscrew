@@ -9,6 +9,7 @@ import {
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import {
+  earlierSnapshotsLine,
   forgetHostKeys,
   listEarlierSnapshots,
   readSnapshotRecord,
@@ -148,6 +149,16 @@ async function finish(
 
   // 0b. The old cloud server's snapshots taken earlier, which stay: read before every approval.
   const earlier = cloud ? await earlierSnapshots(session) : undefined;
+  // Said before the typed name, so the user approves knowing which snapshots stay and bill.
+  const earlierLine = cloud
+    ? earlierSnapshotsLine(
+        previousCloud(move).provider,
+        app,
+        earlier,
+        await takenSnapshot(session),
+      )
+    : undefined;
+  if (earlierLine !== undefined) deps.reporter.info(earlierLine);
 
   // 0c. The old app server leaves the private network of the servers that stay.
   const left = await leaveMoveNetwork(session);
