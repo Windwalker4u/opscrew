@@ -26,7 +26,10 @@ export function register(program: Command, ctx: CliContext): void {
     .command("analyze")
     .description("Analyse the app: frameworks, services and environment variables")
     .option("--no-ai", "Use only the deterministic analysis (no model, no cost)")
-    .option("--model <id>", "Model for the Analyst (default claude-haiku-5-5, or OPSCREW_MODEL)")
+    .option(
+      "--model <id>",
+      "Model for the Analyst (default claude-haiku-5-5 or gpt-5-mini, or OPSCREW_MODEL)",
+    )
     .option(
       "--dir <folder>",
       "In a repository with several apps, the folder of the app to deploy (`.` for the whole repository)",

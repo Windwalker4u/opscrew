@@ -15,7 +15,7 @@ export default defineConfig({
   // to make that explicit. The Claude Agent SDK is an optional peer that runtime-claude imports
   // only when an AI step runs, installing it once when it is missing.
   noExternal: [/^@opscrew\//],
-  external: ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk"],
+  external: ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk", "openai"],
   banner: { js: "#!/usr/bin/env node" },
   // The version the CLI reports, and generated files record: the release's own only on its tag.
   define: { __OPSCREW_VERSION__: JSON.stringify(buildVersion(version, gitAt(process.cwd()))) },

@@ -54,7 +54,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--model <id>",
-      "Model for the Code-change agent (default claude-opus-5-5, or OPSCREW_MODEL)",
+      "Model for the Code-change agent (default claude-opus-5-5 or gpt-5, or OPSCREW_MODEL)",
     );
   addAppOption(command).action(async (flags: AdaptFlags) => {
     const model = modelOption(ctx, flags.model);
