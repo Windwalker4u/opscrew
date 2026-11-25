@@ -332,6 +332,25 @@ describe("runUptime's budget of 50 subrequests", () => {
       "45 hostnames are listed, more than the 40 one run can check, so the last 5 are not checked.",
     );
   });
+
+  it("past the cap, each entry's line counts only the hostnames tried, and names the rest not checked", async () => {
+    const later = "acme/zzz/zzz/prod";
+    const world = new World(
+      [ID, entry({ hostnames: Array.from({ length: 38 }, (_, h) => `h${h}.example.com`) })],
+      [
+        later,
+        entry({
+          app: "zzz",
+          hostnames: ["a.zzz.example.com", "b.zzz.example.com", "c.zzz.example.com"],
+        }),
+      ],
+    );
+    world.answer(500, "h0.example.com");
+    await world.run();
+    expect(world.fetched).toHaveLength(40);
+    expect(logs).toContain(`${ID}: 37 up, 1 suspect, 0 down.`);
+    expect(logs).toContain(`${later}: 2 up, 0 suspect, 0 down, 1 not checked.`);
+  });
 });
 
 describe("runUptime's requests", () => {
@@ -483,6 +502,33 @@ describe("runUptime's messages", () => {
 });
 
 describe("runUptime's odd entries", () => {
+  it.each([
+    ["not JSON", "not json"],
+    ["JSON without a string url", JSON.stringify({ token: "x" })],
+  ])(
+    "an entry whose secret is %s is skipped with one log line, and the others go on",
+    async (_, value) => {
+      const other = "acme/blog/blog/prod";
+      const bad = "HOOK_1111111111111111";
+      const world = new World(
+        [ID, entry()],
+        [other, entry({ app: "blog", secret: bad, hostnames: ["blog.example.com"] })],
+      );
+      world.secrets = { ...world.secrets, [bad]: value };
+      world.answer(500, "shop.example.com", "blog.example.com");
+      await world.run();
+      await world.run();
+      expect(world.fetchesOf("blog.example.com")).toBe(0);
+      expect(world.state(other)).toBeUndefined();
+      expect(logs.filter((line) => line.startsWith(`${other}:`))).toEqual([
+        `${other}: its webhook secret ${bad} is not valid, so this run skips it.`,
+        `${other}: its webhook secret ${bad} is not valid, so this run skips it.`,
+      ]);
+      expect(logs.join("\n")).not.toContain(value);
+      expect(world.posts).toHaveLength(1);
+    },
+  );
+
   it("an entry whose secret is missing is skipped with one log line", async () => {
     const other = "acme/blog/blog/prod";
     const world = new World(

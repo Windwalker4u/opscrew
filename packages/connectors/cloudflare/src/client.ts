@@ -1053,6 +1053,15 @@ const LOGS_HINTS: FailHints = {
   auth: `Logs on Cloudflare hosting need the account permission "${OBSERVABILITY_PERMISSION}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/** `text` parsed as JSON; `undefined` when it is not JSON. */
+function jsonOrUndefined(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
 /** A tail frame's JSON (binary or text); `undefined` when it is not JSON. */
 function frameJson(data: unknown): unknown {
   const text =
@@ -1061,12 +1070,7 @@ function frameJson(data: unknown): unknown {
       : data instanceof ArrayBuffer
         ? new TextDecoder().decode(data)
         : undefined;
-  if (text === undefined) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
+  return text === undefined ? undefined : jsonOrUndefined(text);
 }
 
 /** Cloudflare's error code (with HTTP 404) for "This Worker does not exist on your account". */
@@ -2754,7 +2758,9 @@ export class CloudflareClient {
 
   /**
    * Sets one secret of the Worker (`PUT …/secrets`, type `secret_text`), which deploys it. Its
-   * value is registered with the redactor before the request, so no error can show it. Sent once.
+   * value is registered with the redactor before the request, and so is each string field of a
+   * JSON object value on its own (the uptime webhook's `url` and `token`), so no error can show
+   * them. Sent once.
    */
   async putWorkerSecret(
     accountId: string,
@@ -2762,6 +2768,10 @@ export class CloudflareClient {
     secret: { name: string; text: string },
   ): Promise<void> {
     this.#redactor.addLiteral(secret.text, secret.name);
+    const fields = z.record(z.string(), z.unknown()).safeParse(jsonOrUndefined(secret.text));
+    for (const value of Object.values(fields.data ?? {})) {
+      if (typeof value === "string") this.#redactor.addLiteral(value, secret.name);
+    }
     const what = `set the secret ${secret.name} of the Worker ${worker}`;
     const answer = await this.#send(`${workerPath(accountId, worker)}/secrets`, what, {
       method: "PUT",

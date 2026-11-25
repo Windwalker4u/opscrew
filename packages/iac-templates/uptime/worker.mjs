@@ -49,11 +49,16 @@ export async function runUptime(env, io) {
       console.log(`${id}: its webhook secret ${entry.secret} is not set, so this run skips it.`);
       continue;
     }
+    const hook = hookOf(secret);
+    if (hook === undefined) {
+      console.log(`${id}: its webhook secret ${entry.secret} is not valid, so this run skips it.`);
+      continue;
+    }
     const old = state?.hosts ?? {};
     // A hostname no longer in the entry leaves the state at its next write.
     const next = {};
     for (const { hostname } of entry.hosts) if (old[hostname]) next[hostname] = old[hostname];
-    entries.push({ id, entry, hook: JSON.parse(secret), old, next, changed: false });
+    entries.push({ id, entry, hook, old, next, changed: false, tried: new Set() });
   }
 
   const tries = entries.flatMap((e) => e.entry.hosts.map((host) => ({ e, host })));
@@ -63,6 +68,7 @@ export async function runUptime(env, io) {
     );
     tries.length = MAX_HOSTNAMES;
   }
+  for (const { e, host } of tries) e.tried.add(host.hostname);
   const reasons = await pool(tries, ({ host }) => tryHost(host, io.fetch));
 
   let budget = SUBREQUESTS - tries.length;
@@ -109,12 +115,24 @@ export async function runUptime(env, io) {
       if (Object.keys(e.next).length === 0) await kv.delete(STATE + e.id);
       else await kv.put(STATE + e.id, JSON.stringify({ hosts: e.next }));
     }
-    const states = Object.values(e.next);
+    // The counts are of the hostnames this run tried; those past the cap are not checked.
+    const states = [...e.tried].flatMap((hostname) => e.next[hostname] ?? []);
     const suspect = states.filter((s) => s.status === "suspect").length;
     const down = states.length - suspect;
+    const unchecked = e.entry.hosts.length - e.tried.size;
     console.log(
-      `${e.id}: ${e.entry.hosts.length - states.length} up, ${suspect} suspect, ${down} down.`,
+      `${e.id}: ${e.tried.size - states.length} up, ${suspect} suspect, ${down} down${unchecked === 0 ? "" : `, ${unchecked} not checked`}.`,
     );
+  }
+}
+
+/** The webhook secret's value, or `undefined` when it isn't JSON with a string `url`. */
+function hookOf(secret) {
+  try {
+    const hook = JSON.parse(secret);
+    return typeof hook?.url === "string" ? hook : undefined;
+  } catch {
+    return undefined;
   }
 }
 
