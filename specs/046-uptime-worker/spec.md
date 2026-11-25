@@ -201,5 +201,7 @@ run out at five apps.
 
 - The webhook stays the repository's (`opscrew/plan.yaml`), as today. Each entry stores its own
   copy as a secret.
-- Hosting-account and GitHub Pages environments can use the Worker when their DNS is on Cloudflare.
+- GitHub Pages environments can use the Worker when their DNS is on Cloudflare. Hosting-account
+  environments can't yet (the lead, 2026-11-25): their provision has no check step, so a plan with
+  `runner: cloudflare` on a hosting target is refused, naming `runner: actions`.
   Localhost can't, as today.
