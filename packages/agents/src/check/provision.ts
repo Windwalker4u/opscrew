@@ -3,14 +3,8 @@ import { join } from "node:path";
 import { checkKeyLine } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import type { ProjectPaths } from "@opscrew/core";
-import {
-  CHECK_SECRETS,
-  deploySecretName,
-  homeMode,
-  type RenderedFile,
-  tunnelMode,
-} from "@opscrew/iac-templates";
-import { type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
+import { CHECK_SECRETS, deploySecretName, type RenderedFile } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
@@ -23,24 +17,10 @@ import { type CheckKey, ensureCheckKey, readCheckKey } from "./key";
 import { changeCheckPause } from "./pause";
 import { type CheckServerReach, storeCheckSecrets } from "./secrets";
 import { checkServerEntries } from "./servers";
-import { checksInActions, repositoryCheckSettings } from "./settings";
+import { checkReachesOverSsh, checksInActions, repositoryCheckSettings } from "./settings";
 import { provisionUptime, type UptimeStep } from "./uptime";
 
-/**
- * True when the check reads the disk of `plan`'s app server over SSH with the check key: a cloud or
- * own server deployed from GitHub's machines or a runner machine, never through a tunnel (the
- * check's `ssh` can't pass Cloudflare Access) nor at home (SSH answers only on the home network).
- * The server's own runner reads it there, with no key.
- */
-export function checkReachesOverSsh(plan: DeployPlan): boolean {
-  return (
-    !isHostingTarget(plan.target) &&
-    plan.target.mode === "vps-compose" &&
-    plan.environment?.runner !== "server" &&
-    !tunnelMode(plan) &&
-    !homeMode(plan)
-  );
-}
+export { checkReachesOverSsh } from "./settings";
 
 /** The check's files in a repository, as `renderCheck` writes them. */
 const CHECK_FILE_PATHS = [

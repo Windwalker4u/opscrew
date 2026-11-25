@@ -18,6 +18,7 @@ import { commandFlags } from "../environments/choice";
 import { VPS_PROVIDERS } from "../providers";
 import { changeGenerated, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
+import { updateReportDates } from "./uptime-report";
 
 /** The user's own tokens that are not a cloud provider's. */
 const OTHER_TOKEN_NAMES = [
@@ -70,12 +71,14 @@ export async function readCredentialsRecord(
  * clock): each gets `rotatedAt`, one generation more (2 for one made before the record had it) and
  * keeps its `madeAt`. This computer's values (not the user's tokens, which are never its) are
  * marked with the same generations first, so a failed write of the record leaves this computer ahead of it, never behind
- * ({@link assertValuesCurrent}). Returns the record written.
+ * ({@link assertValuesCurrent}). Then the server's uptime report gets the new dates, through its
+ * host plan approved by its hash, where it dates them (`updateReportDates`). Returns the record
+ * written.
  * @throws ArtifactError `ARTIFACT_INVALID` when the record is damaged; OpsCrewError
  * `ARTIFACT_INVALID` when the generated values are ({@link changeGenerated}).
  */
 export async function recordRotation(
-  deps: Pick<PhaseDeps, "paths" | "clock">,
+  deps: PhaseDeps,
   names: readonly string[],
 ): Promise<CredentialsRecord> {
   const env = deps.paths.environment;
@@ -99,6 +102,7 @@ export async function recordRotation(
   };
   if (Object.keys(generations).length > 0) await keepValueGenerations(deps, generations);
   await writeArtifact("credentials", credentialsRecordFile(deps.paths), next);
+  await updateReportDates(deps, names);
   return next;
 }
 

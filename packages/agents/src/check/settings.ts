@@ -1,4 +1,5 @@
 import { type ProjectPaths, toPosixRelative } from "@opscrew/core";
+import { homeMode, tunnelMode } from "@opscrew/iac-templates";
 import {
   ArtifactError,
   type DeployPlan,
@@ -54,6 +55,22 @@ export function requireCheckSettingsPlace(
  */
 export function checkRunner(plan: DeployPlan): NonNullable<CheckSettings["runner"]> {
   return plan.observability?.check?.runner ?? "actions";
+}
+
+/**
+ * True when the check reads the disk of `plan`'s app server over SSH with the check key: a cloud or
+ * own server deployed from GitHub's machines or a runner machine, never through a tunnel (the
+ * check's `ssh` can't pass Cloudflare Access) nor at home (SSH answers only on the home network).
+ * The server's own runner reads it there, with no key.
+ */
+export function checkReachesOverSsh(plan: DeployPlan): boolean {
+  return (
+    !isHostingTarget(plan.target) &&
+    plan.target.mode === "vps-compose" &&
+    plan.environment?.runner !== "server" &&
+    !tunnelMode(plan) &&
+    !homeMode(plan)
+  );
 }
 
 /** True when `plan`'s environment has the check on in GitHub Actions. */

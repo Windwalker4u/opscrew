@@ -1,9 +1,11 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
+import { splitPlan } from "../network/__fixtures__/plans";
 import { ownPlan, portainerPlan, testPlan } from "../testing";
 import { sitePlan } from "../testing/serverless";
 import { checkDesignText, checkMinutes, readCheckRepository } from "./design";
+import { UPTIME_ONLY_LINE } from "./reports";
 
 /** `base` with the check on (or `enabled`). */
 function withCheck(base: DeployPlan, enabled = true): DeployPlan {
@@ -165,21 +167,51 @@ describe("readCheckRepository", () => {
 });
 
 describe("checkDesignText with the Cloudflare uptime Worker", () => {
-  it("counts no Actions minutes and says what only the Actions check does", () => {
-    const worker = DeployPlanSchema.parse({
-      ...cloud,
-      observability: { check: { enabled: true, runner: "cloudflare" } },
+  const head =
+    "Scheduled check: every 5 minutes by the Worker opscrew-uptime in the Cloudflare account of the app's zone, with no Actions minutes and at no cost. It checks each hostname's health path once a run, and posts to the Discord webhook when one fails twice in a row and when it answers again. One Cloudflare account's Worker checks at most 40 hostnames, across its OpsCrew apps.";
+  /** `base` with the check on in the Worker (`credentials`: their ages too). */
+  const worker = (base: DeployPlan, credentials = false) =>
+    DeployPlanSchema.parse({
+      ...base,
+      observability: {
+        check: { enabled: true, runner: "cloudflare", ...(credentials ? { credentials } : {}) },
+      },
     });
-    const { lines, warnings } = checkDesignText(
-      worker,
+  const text = (plan: DeployPlan) =>
+    checkDesignText(
+      plan,
       { webhook: "discord", intervalMinutes: 5 },
       { public: false, includedMinutes: 2_000, hasIssues: false },
     );
+
+  it("counts no Actions minutes, and the server reports its own checks with its timer", () => {
+    const { lines, warnings } = text(worker(cloud, true));
     expect(lines).toEqual([
-      "Scheduled check: every 5 minutes by the Worker opscrew-uptime in the Cloudflare account of the app's zone, with no Actions minutes and at no cost. It checks each hostname's health path once a run, and posts to the Discord webhook when one fails twice in a row and when it answers again. One Cloudflare account's Worker checks at most 40 hostnames, across its OpsCrew apps.",
-      "The disk, snapshot, restore-drill and certificate-days checks need `runner: actions`.",
+      head,
+      "The app's server checks its own disk, last scheduled snapshot and restore drill, the certificates it serves and the credentials' ages, with a timer a host plan installs, and reports to the Worker only on a change and once a day. The Worker posts each change, and says when a server's reports stop for 26 hours. The report key can only send reports for this one environment: anything with root on this server can read it, the deploy runner included.",
     ]);
     // Neither the interval nor the repository's issues concern it.
     expect(warnings).toEqual([]);
+  });
+
+  it("says what only the Actions check does on a target with no server OpsCrew reaches", () => {
+    for (const base of [portainerPlan(), sitePlan()]) {
+      expect(text(worker(base)).lines.slice(1)).toEqual([UPTIME_ONLY_LINE]);
+    }
+  });
+
+  it("names a server that gets no report: behind a tunnel, and an extra server", () => {
+    const tunnel = worker(ownPlan({ access: "tunnel" }));
+    expect(text(tunnel).lines.slice(1)).toEqual([
+      "No uptime report from the app's server (OpsCrew sets it up only where the scheduled check's key reaches it, not through a Cloudflare Tunnel, at home or with the server's own runner), so the Worker checks the app's address only: the disk, snapshot, restore-drill, certificate-days and credential-age checks need `runner: actions`.",
+    ]);
+    // Postgres on the extra server data, read as the plan holds it.
+    const extra = {
+      ...splitPlan(),
+      observability: { check: { enabled: true, runner: "cloudflare" } },
+    } as DeployPlan;
+    expect(text(extra).lines.slice(2)).toEqual([
+      "No uptime report from server data (OpsCrew sets it up on the app's server only): its disk and scheduled snapshot checks need `runner: actions`.",
+    ]);
   });
 });

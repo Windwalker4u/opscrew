@@ -19,7 +19,7 @@ export interface CheckRepo {
  * The check's id of a server the user owns: `own-` and its pinned host key's fingerprint
  * (base64url), which identifies the server without its address.
  */
-function ownServerId(hostKey: string): string {
+export function ownServerId(hostKey: string): string {
   return `own-${hostKey
     .replace(/^SHA256:/, "")
     .replace(/\+/g, "-")
@@ -44,14 +44,27 @@ export async function otherPlans(
 }
 
 /**
+ * The credentials the check dates for `plan`'s environment (of `deps.paths`): its inventory
+ * (`credentialInventory`, recording nothing) without the user's own tokens, whose expiry is the
+ * providers', those with nothing to rotate and the aggregate `app` (each `app:<NAME>` is its own).
+ */
+export async function checkedCredentialNames(
+  deps: Pick<PhaseDeps, "paths" | "env" | "clock">,
+  plan: DeployPlan,
+): Promise<string[]> {
+  const inventory = await credentialInventory(deps, plan);
+  return inventory
+    .filter((c) => c.kind !== "user-token" && c.rotation.mode !== "none" && c.name !== "app")
+    .map((c) => c.name);
+}
+
+/**
  * The scheduled check's files (`renderCheck`), re-rendered from every app's and environment's plan
  * in the repository, with `plan` (this run's, perhaps changed since it was read) in place of its
  * own file. Each own server's id is its pinned host key's fingerprint, from its environment's
  * record on this computer, so environments on one server are checked once. With
- * `check.credentials` on, the credentials the check dates are the environment's inventory
- * (`credentialInventory`, recording nothing) without the user's own tokens, whose expiry is the
- * providers', those with nothing to rotate and the aggregate `app` (each `app:<NAME>` is its own),
- * with the flags `opscrew rotate` needs there. None when no plan has the check on in GitHub Actions
+ * `check.credentials` on, the credentials the check dates (`checkedCredentialNames`), with the flags
+ * `opscrew rotate` needs there. None when no plan has the check on in GitHub Actions
  * (the repository's visibility is then not read).
  */
 export async function checkFiles(
@@ -77,14 +90,8 @@ export async function checkFiles(
   const credentials: Record<string, { names: string[]; flags: string }> = {};
   for (const entry of entries) {
     if (entry.plan.observability?.check?.credentials !== true) continue;
-    const inventory = await credentialInventory(
-      { paths: entry.paths, env: deps.env, clock: deps.clock },
-      entry.plan,
-    );
     credentials[checkEnvironmentKey(entry.plan)] = {
-      names: inventory
-        .filter((c) => c.kind !== "user-token" && c.rotation.mode !== "none" && c.name !== "app")
-        .map((c) => c.name),
+      names: await checkedCredentialNames({ ...deps, paths: entry.paths }, entry.plan),
       flags: await commandFlags(paths.root, entry.paths.environment, entry.plan.app.key),
     };
   }

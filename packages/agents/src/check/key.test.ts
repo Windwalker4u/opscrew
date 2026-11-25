@@ -1,8 +1,9 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { resolveProjectPaths } from "@opscrew/core";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { resolveProjectPaths, sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
-import { ensureCheckKey } from "./key";
+import { ensureCheckKey, ensureReportKey, readReportKey } from "./key";
 
 describe("ensureCheckKey", () => {
   it("generates the Ed25519 key once, at the first app's prod path, whatever environment runs", async () => {
@@ -34,5 +35,67 @@ describe("ensureCheckKey", () => {
       /The scheduled check's key .* is damaged/,
     );
     await expect(readFile(deps.paths.files.checkKey, "utf8")).resolves.toBe("not a key\n");
+  });
+});
+
+describe("ensureReportKey", () => {
+  /** Randomness that records the sizes asked and gives `byte` repeated. */
+  function random(byte: number) {
+    const sizes: number[] = [];
+    const next = (size: number) => {
+      sizes.push(size);
+      return Buffer.alloc(size, byte);
+    };
+    return { sizes, next };
+  }
+  const fileOf = (deps: { paths: { projectHomeDir: string } }) =>
+    join(deps.paths.projectHomeDir, "uptime_report_key");
+
+  it("makes 32 bytes once per environment, keeps them in OpsCrew's home and gives them again", async () => {
+    const deps = await createTestPhaseDeps();
+    const bytes = random(0xab);
+    const first = await ensureReportKey(deps.paths, deps.redactor, bytes.next);
+    const value = "ab".repeat(32);
+    expect(bytes.sizes).toEqual([32]);
+    expect(first).toEqual({ value, sha256: sha256Hex(value), created: true });
+    await expect(readFile(fileOf(deps), "utf8")).resolves.toBe(`${value}\n`);
+    if (process.platform !== "win32") expect((await stat(fileOf(deps))).mode & 0o777).toBe(0o600);
+
+    // The next run gives the same key, with no randomness; it is masked.
+    const later = random(0xcd);
+    const again = await ensureReportKey(deps.paths, deps.redactor, later.next);
+    expect(again).toEqual({ ...first, created: false });
+    expect(later.sizes).toEqual([]);
+    expect(await readReportKey(deps.paths, deps.redactor)).toEqual(again);
+    expect(deps.redactor.redact(`key ${value}`)).not.toContain(value);
+
+    // Another environment has its own.
+    const staging = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      environment: "staging",
+    });
+    expect(await readReportKey(staging.paths, staging.redactor)).toBeUndefined();
+    const own = await ensureReportKey(staging.paths, staging.redactor, random(0x01).next);
+    expect(own.value).toBe("01".repeat(32));
+  });
+
+  it("gives a new key when its file was lost", async () => {
+    const deps = await createTestPhaseDeps();
+    await ensureReportKey(deps.paths, deps.redactor, random(0xab).next);
+    await rm(fileOf(deps));
+    expect(await readReportKey(deps.paths, deps.redactor)).toBeUndefined();
+    const fresh = await ensureReportKey(deps.paths, deps.redactor, random(0x11).next);
+    expect(fresh).toMatchObject({ value: "11".repeat(32), created: true });
+  });
+
+  it("stops on a damaged key instead of making a new one", async () => {
+    const deps = await createTestPhaseDeps();
+    await ensureReportKey(deps.paths, deps.redactor, random(0xab).next);
+    await writeFile(fileOf(deps), "not a key\n");
+    await expect(ensureReportKey(deps.paths, deps.redactor)).rejects.toThrow(
+      /The uptime report key .* is damaged/,
+    );
+    await expect(readFile(fileOf(deps), "utf8")).resolves.toBe("not a key\n");
   });
 });

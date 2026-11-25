@@ -137,6 +137,7 @@ export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "tunnel-connector": "Cloudflare Tunnel connector",
   portainer: "Portainer",
   "check-key": "The scheduled check's key",
+  "uptime-report": "The uptime report (the server's checks sent to the Cloudflare uptime Worker)",
   beszel: "Beszel",
   alloy: "Grafana Alloy",
   monitoring: "OpsCrew's monitoring stack",
@@ -830,8 +831,9 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     case "public-ssh":
     case "grant":
       return [];
-    // Planned by planAddon, never in the setup plan drift compares with.
+    // Planned by planAddon and planUptimeReport, never in the setup plan drift compares with.
     case "check-key":
+    case "uptime-report":
     case "beszel":
     case "alloy":
     case "monitoring":

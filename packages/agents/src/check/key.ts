@@ -1,4 +1,6 @@
-import type { ProjectPaths, Redactor } from "@opscrew/core";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { type ProjectPaths, type Redactor, sha256Hex } from "@opscrew/core";
 import { appPaths } from "../apps/list";
 import { ensureSecretFile, readSecretFile, type SecretFile } from "../shared/secret-files";
 import { generateEd25519KeyPair } from "../shared/ssh-keys";
@@ -93,4 +95,65 @@ export async function ensureCheckKey(
     generateEd25519KeyPair(`opscrew-check@${paths.projectId}`).privateKeyOpenSsh.trim(),
   );
   return checkKeyOf(value, redactor, true);
+}
+
+/**
+ * The environment's uptime report key (feature 046, User Story 4): 32 random bytes in hex, which
+ * sign its servers' reports to the Cloudflare uptime Worker. It is in three places only: here, the
+ * entry's Worker secret and a root-only file on each server.
+ */
+export interface ReportKey {
+  /** 64 lower-case hex characters. */
+  value: string;
+  /** Its SHA-256, which a host plan names instead of the key. */
+  sha256: string;
+  /** True when this run made it. */
+  created: boolean;
+}
+
+/** The report key's file: one per environment (`uptime_report_key` in its folder of OpsCrew's home). */
+function reportKeyFile(paths: Pick<ProjectPaths, "projectHomeDir">): SecretFile {
+  const file = join(paths.projectHomeDir, "uptime_report_key");
+  return {
+    file,
+    valid: (value) => /^[0-9a-f]{64}$/.test(value),
+    damaged: {
+      message: `The uptime report key of this environment (${file}) is damaged, so OpsCrew stopped instead of making a new one. Nothing was changed.`,
+      hint: "Delete the file to have OpsCrew make a new key: the next `opscrew provision` writes it to the Cloudflare uptime Worker and the servers, and asks for the webhook's address for that. Then run the command again.",
+    },
+  };
+}
+
+/** The report key from its file's value, registered with the redactor. */
+function reportKeyOf(
+  value: string,
+  redactor: Pick<Redactor, "addLiteral">,
+  created: boolean,
+): ReportKey {
+  redactor.addLiteral(value, "uptime-report-key");
+  return { value, sha256: sha256Hex(value), created };
+}
+
+/** The environment's report key when this computer has it ({@link reportKeyFile}), else `undefined`. */
+export async function readReportKey(
+  paths: Pick<ProjectPaths, "projectHomeDir">,
+  redactor: Pick<Redactor, "addLiteral">,
+): Promise<ReportKey | undefined> {
+  const value = await readSecretFile(reportKeyFile(paths));
+  return value === undefined ? undefined : reportKeyOf(value, redactor, false);
+}
+
+/**
+ * The environment's report key, made once from 32 bytes of `random` ({@link reportKeyFile}) and
+ * reused; a lost file gives a new one. Registered with the redactor.
+ */
+export async function ensureReportKey(
+  paths: Pick<ProjectPaths, "projectHomeDir">,
+  redactor: Pick<Redactor, "addLiteral">,
+  random: (size: number) => Buffer = randomBytes,
+): Promise<ReportKey> {
+  const existing = await readReportKey(paths, redactor);
+  if (existing !== undefined) return existing;
+  const value = await ensureSecretFile(reportKeyFile(paths), () => random(32).toString("hex"));
+  return reportKeyOf(value, redactor, true);
 }

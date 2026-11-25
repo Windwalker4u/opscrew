@@ -8,6 +8,7 @@ import {
   hostPlanHash,
   planTeardown,
   snapshotScheduleTag,
+  uptimeReportInstance,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
@@ -919,6 +920,51 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(s.github.variables.get("OPSCREW_CHECK_PAUSED")).toBeUndefined();
     expect(uptime.scripts.has("opscrew-uptime")).toBe(false);
     expect(uptime.namespace("opscrew-uptime")).toBeUndefined();
+  });
+
+  it("removes the server's uptime report with the app, in the teardown under the typed name", async () => {
+    const s = await deployed();
+    // The app's report runs on the server, with another app's beside it.
+    const own = uptimeReportInstance("acme/shop/shop/prod");
+    const other = uptimeReportInstance("acme/blog/blog/prod");
+    const file = (mode: string) => ({ mode, owner: "root", sha256: "a".repeat(64) });
+    const instance = (id: string, app: string) => ({
+      instance: id,
+      app,
+      config: file("600"),
+      key: file("600"),
+      timer: { enabled: true, active: true },
+    });
+    const facts = structuredClone(s.host.facts);
+    facts.uptimeReport = {
+      version: 1,
+      script: file("755"),
+      service: file("644"),
+      timer: file("644"),
+      dir: { mode: "700", owner: "root" },
+      tools: { curl: true, openssl: true },
+      instances: [instance(own, "shop"), instance(other, "blog")],
+    };
+    s.host.facts = HostFactsSchema.parse(facts);
+    const previews: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: services(s),
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    expect(previews[0]?.hostSteps?.join("\n")).toContain(`Remove the uptime report ${own}`);
+    const host = s.handler.requests.find((request) => request.kind === "host-apply");
+    expect(host).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+    const teardown = s.host.applies.at(-1);
+    expect(teardown?.plan.purpose).toBe("teardown");
+    expect(teardown?.options.approvedHash).toBe(host?.planHash);
+    // Only this app's report goes; the script and units stay for the other app's.
+    expect(teardown?.plan.steps.find((step) => step.id === "uptime-report")).toMatchObject({
+      state: "change",
+      params: { remove: true, instances: own, shared: false },
+    });
   });
 
   it("pauses the scheduled check, and the last app's teardown removes the repository's check key", async () => {

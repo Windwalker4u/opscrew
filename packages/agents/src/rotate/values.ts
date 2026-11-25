@@ -271,7 +271,7 @@ export async function recordedGeneration(
  * @throws OpsCrewError `ARTIFACT_INVALID` when the generated values are damaged.
  */
 export async function completePendingRotation(
-  deps: Pick<PhaseDeps, "paths" | "clock">,
+  deps: PhaseDeps,
   plan: DeployPlan,
   values: RotationValues,
 ): Promise<void> {
