@@ -31,6 +31,7 @@ import { splitDatabase, sqlDatabases } from "../shared/app-env";
 import { appMemoryLimits, type MemoryLimit, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
+import { loginsUpgradeNotice, loginsVersion, newPostgresOptions } from "./postgres-logins";
 import {
   defaultStorageOffer,
   expectedStorageUse,
@@ -365,6 +366,14 @@ function freshServices(
           { options: { login: readsBrokerLogin(facts) }, variable },
         ),
       );
+    } else if (runs === "postgres") {
+      // Its own logins for the app and its migrations, from PostgreSQL 15 on (047).
+      services.push(
+        entry(runs, usesText(facts, kind, spec.title), {
+          options: newPostgresOptions(spec.defaultVersion),
+          variable,
+        }),
+      );
     } else {
       services.push(entry(runs, usesText(facts, kind, spec.title), { variable }));
     }
@@ -519,17 +528,21 @@ function keptOptions(before: PlanService, fresh: PlanService): object {
 /**
  * `memory 768 MB, turned off` for the fields of `after` that differ from `before`; options only
  * between services of one kind (a switched kind is its own edit), without Dragonfly's threads
- * and hashtag locks, which the plan gets from its server (`optionToPlan`) and the app's libraries.
+ * and hashtag locks, which the plan gets from its server (`optionToPlan`) and the app's libraries,
+ * and without PostgreSQL's `logins`, which design gives a new database only (a database from before
+ * 047 keeps its single login until the user switches it).
  */
 function serviceEdits(before: PlanService, after: PlanService): string[] {
   const settings = (service: PlanService) => {
     const {
       threads: _server,
       lockOnHashtags: _libraries,
+      logins: _logins,
       ...rest
     } = service.options as {
       threads?: number;
       lockOnHashtags?: boolean;
+      logins?: string;
     };
     return canonicalJson(rest);
   };
@@ -1197,6 +1210,9 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
     lines.push(
       `${spec.title} ${service.version} (${service.name}, ${service.memoryMb} MB): ${service.reason}`,
       ...brokerLoginLine(service),
+      ...(service.kind === "postgres" && !loginsVersion(service.version)
+        ? [loginsUpgradeNotice(service)]
+        : []),
     );
   }
   for (const worker of components.processes.workers.filter((w) => w.enabled)) {

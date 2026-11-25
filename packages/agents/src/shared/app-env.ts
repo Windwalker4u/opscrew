@@ -11,6 +11,7 @@ import {
   type PreviewSecretFormat,
   previewSecret,
   previousValueVariables,
+  serviceSecrets,
   serviceSpec,
   siteHosts,
   splitDatabaseSettings,
@@ -738,7 +739,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const secret = (service: PlanService, name: string): string => {
     const known = secrets[service.name]?.[name];
     if (known !== undefined) return known;
-    const format = serviceSpec(service.kind).secrets.find((s) => s.name === name)?.format;
+    const format = serviceSecrets(service).find((s) => s.name === name)?.format;
     let value: string;
     if (templates) {
       value = previewSecret(`${service.name}-${name}`, secretFormat(format));
@@ -757,7 +758,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     return value;
   };
   for (const service of plan.services.filter((s) => s.enabled)) {
-    for (const { name } of serviceSpec(service.kind).secrets) secret(service, name);
+    for (const { name } of serviceSecrets(service)) secret(service, name);
   }
   const postgres = serviceOf(plan, "postgres");
   const db =

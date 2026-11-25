@@ -166,6 +166,25 @@ describe("registerAppSecrets with the values this computer keeps", () => {
     expect(masked(deps.redactor, stripe)).toBe(false);
   });
 
+  it("registers PostgreSQL's two logins' passwords (047), kept like its password", async () => {
+    const base = testPlan({ userSecret: false });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: base.services.map((s) => ({ ...s, options: { logins: "separate" } })),
+    });
+    const first = await assembleAppEnv({ plan });
+    const db = first.generated.services?.db ?? {};
+    expect(Object.keys(db).sort()).toEqual(["owner-password", "runtime-password"]);
+    const deps = await createTestPhaseDeps();
+    const file = generatedValuesFile(deps);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify(first.generated)}\n`);
+    await registerAppSecrets(deps, plan);
+    for (const value of [...Object.values(db), first.generated.dbPassword as string]) {
+      expect(masked(deps.redactor, value)).toBe(true);
+    }
+  });
+
   it("registers nothing, and fails nothing, before provision kept any value", async () => {
     const deps = await createTestPhaseDeps();
     await expect(registerAppSecrets(deps, laravelPlan())).resolves.toBeUndefined();

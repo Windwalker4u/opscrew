@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { canonicalJson, readTextIfExists, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision";
 import { ScriptedApprovalHandler } from "../testing";
@@ -164,6 +164,23 @@ describe("provision on this computer", () => {
       expect.arrayContaining(["local apply started", "local apply finished"]),
     );
     expect(deps.reporter.text()).toContain("`opscrew localhost trust`");
+  });
+
+  it("writes the release's own env file with PostgreSQL's two logins (047), owner-only", async () => {
+    const base = localPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: base.services.map((s) => ({ ...s, options: { logins: "separate" } })),
+    });
+    const { deps, run } = await project(plan);
+    await run();
+    const folder = appFolder(deps.paths, plan);
+    const release = (await readTextIfExists(join(folder, "release.db.env"))) ?? "";
+    expect(release).toMatch(/^DATABASE_URL=postgresql:\/\/app_owner:[0-9a-f]{64}@db:5432\/app\n$/);
+    expect(await readFile(join(folder, "app.env"), "utf8")).toContain("app_runtime:");
+    if (process.platform !== "win32") {
+      expect((await stat(join(folder, "release.db.env"))).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("gives every script the daemon of Docker's current context (Colima's socket), at deploy and destroy", async () => {

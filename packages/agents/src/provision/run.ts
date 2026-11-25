@@ -140,6 +140,7 @@ import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { appWords, otherAppsOnServer, requireNoOtherApps, unreachableHint } from "../shares/guard";
+import { takeSnapshot } from "../snapshot/take";
 import { deployShell } from "../status/certificates";
 import { checkAdditions } from "./additions";
 import {
@@ -196,6 +197,7 @@ import {
 } from "./plan-apply";
 import { plannedImports } from "./plan-json";
 import { provisionPortainer } from "./portainer-flow";
+import { postgresLoginsStep } from "./postgres-logins";
 import type { RecoveryCopy } from "./publish";
 import {
   committedTfvars,
@@ -2044,6 +2046,43 @@ async function requireRoomForOtherApps(
   return low === undefined ? [restart] : [restart, low];
 }
 
+/**
+ * PostgreSQL's own logins before anything else of `opscrew provision` (047): the refusals, the
+ * notices and an existing database's switch, approved by its hash with its snapshot taken
+ * (`postgresLoginsStep`). Returns `options` with the switch's hash out of `--approve`'s, as it
+ * names no other plan of the run.
+ */
+async function loginsFirst(
+  deps: PhaseDeps,
+  options: ProvisionOptions,
+  extras: PhaseFlowExtras,
+): Promise<ProvisionOptions> {
+  const plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
+  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const services = options.services ?? {};
+  const { remote, localhost, portainer } = services;
+  const hash = await postgresLoginsStep(deps, plan, {
+    command: `opscrew provision${flags}`,
+    planOnly: options.planOnly,
+    snapshot:
+      services.snapshot ??
+      ((skip) =>
+        takeSnapshot(deps, {
+          skip,
+          services: {
+            ...(remote === undefined ? {} : { remote }),
+            ...(localhost === undefined ? {} : { localhost }),
+            ...(portainer === undefined ? {} : { portainer }),
+          },
+        })),
+  });
+  if (hash === undefined || options.approveHashes === undefined) return options;
+  return {
+    ...options,
+    approveHashes: options.approveHashes.filter((approved) => approved.toLowerCase() !== hash),
+  };
+}
+
 /** Runs the shared flow and records the phase outcome (`ok`, or `failed` with the reason). */
 export async function runPhaseFlow(
   deps: PhaseDeps,
@@ -2052,7 +2091,8 @@ export async function runPhaseFlow(
   extras: PhaseFlowExtras = {},
 ): Promise<ProvisionResult> {
   return runPhase(deps, phase, async () => {
-    const result = await provisionFlow(deps, options, phase, extras);
+    const flowOptions = phase === "provision" ? await loginsFirst(deps, options, extras) : options;
+    const result = await provisionFlow(deps, flowOptions, phase, extras);
     if (!(options.planOnly && (options.approveHashes ?? []).length === 0)) {
       await deps.state.markPhase(
         phase,

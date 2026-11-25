@@ -19,6 +19,8 @@ import {
   type RotationCommand,
   type RotationStep,
   type SecretRotation,
+  serviceRotation,
+  serviceSecrets,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
@@ -176,7 +178,7 @@ function servicesNamed(
   if (names.length === 0) throw refuse("No service was named to rotate.");
   return names.map((name) => {
     const service = plan.services.find((s) => s.name === name);
-    if (service === undefined || serviceSpec(service.kind).secrets.length === 0) {
+    if (service === undefined || serviceSecrets(service).length === 0) {
       throw refuse(
         `${name} is not a service of the ${deps.paths.environment} environment with generated secrets.`,
       );
@@ -197,7 +199,7 @@ function stepsOf(
     const spec = serviceSpec(service.kind);
     const ctx = rotationContext(plan, service);
     const kept = values.services[service.name] ?? {};
-    return spec.rotation.secrets.map((rotation): ServiceStep => {
+    return serviceRotation(service).secrets.map((rotation): ServiceStep => {
       const [only, ...more] = rotation.secrets;
       const pair = only === undefined ? undefined : kept[only];
       return {

@@ -11,6 +11,7 @@ import {
   renderRotateScript,
   type SecretRotation,
   type ServiceContext,
+  serviceRotation,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
@@ -96,7 +97,7 @@ export function serviceSteps(plan: DeployPlan, services: readonly PlanService[])
     .filter((service) => service.enabled)
     .flatMap((service) => {
       const ctx = rotationContext(plan, service);
-      return serviceSpec(service.kind).rotation.secrets.map((rotation) => ({
+      return serviceRotation(service).secrets.map((rotation) => ({
         service,
         server: service.server ?? APP_SERVER,
         rotation,
@@ -104,6 +105,7 @@ export function serviceSteps(plan: DeployPlan, services: readonly PlanService[])
           service: service.name,
           envFile: `${service.name}.env`,
           mode: rotation.mode,
+          secrets: rotation.secrets,
           begin: rotation.begin(ctx),
           finish: rotation.finish(ctx),
           recreate: rotation.recreate,

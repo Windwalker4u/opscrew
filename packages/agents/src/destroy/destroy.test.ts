@@ -18,7 +18,12 @@ import type {
 } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { CHECK_PAUSED_VARIABLE, cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import {
+  CHECK_PAUSED_VARIABLE,
+  cloudTarget,
+  DEPLOY_SECRETS,
+  RELEASE_DB_ENV,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -1183,6 +1188,23 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     }
     plan = await readArtifact("plan", s.deps.paths.files.plan);
     expect(plan.deployment.destroyedAt).toBe(NOW);
+  });
+
+  it("deletes the release's env file with PostgreSQL's two logins (047), and names it by hand without a token", async () => {
+    const base = deployedPlan();
+    const plan = {
+      ...base,
+      services: base.services.map((s) => ({ ...s, options: { logins: "separate" as const } })),
+    };
+    const s = await setup({ plan });
+    s.github.secrets.set(RELEASE_DB_ENV.secret, "stored");
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.secretsRemoved).toContain(RELEASE_DB_ENV.secret);
+    expect(s.github.secrets.has(RELEASE_DB_ENV.secret)).toBe(false);
+
+    const without = await setup({ plan, services: { github: null } });
+    const left = await runDestroy(without.deps, { services: without.services });
+    expect(left.remaining.join("\n")).toContain(RELEASE_DB_ENV.secret);
   });
 
   it("without a GitHub token: warns, skips the secret cleanup and lists the secrets as remaining", async () => {
