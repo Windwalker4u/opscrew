@@ -3,6 +3,7 @@ import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, isCloudProvider, readArtifact } from "@opscrew/plan-schema";
+import type { UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { destroyHosting } from "../hosting/destroy";
 import { destroyLocalhost } from "../localhost/destroy";
@@ -64,6 +65,7 @@ import {
   type GitHubTarget,
   nothingDeployed,
   pauseCheckForTeardown,
+  planCheckTeardown,
   recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
@@ -155,6 +157,8 @@ interface DestroyContext {
   unregisterRunner?: () => Promise<void>;
   /** With extra servers, a line per server (`serverLines`) in the destroy plan's approval. */
   servers?: readonly string[];
+  /** The environment's entry leaving the Cloudflare uptime Worker (`planCheckTeardown`). */
+  uptime?: UptimeStep;
   /**
    * The app's servers (the extra ones too) whose provider cancels them at the end of their term
    * instead of deleting them (`cancelledServers`): each is shut down after the destroy plan's
@@ -308,7 +312,7 @@ async function destroyInfrastructure(
               "OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel (Cloudflare deletes a tunnel only after its connector has stopped).",
             ]
           : []),
-        ...checkPauseNote(plan),
+        ...checkPauseNote(plan, ctx.uptime),
         ...(cancel ? [nothingSavedLine(cancel.servers, name)] : []),
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
@@ -739,6 +743,10 @@ async function destroyDeployment(
   // infrastructure is deleted, so a run that stopped before that continues with them).
   const shared = await planSharedRemoval(deps, plan, services);
   const cloudflarePlan = removalDetails(shared);
+  // The environment's entry in the Cloudflare uptime Worker likewise (removed where the check's
+  // pause runs).
+  const uptime = await planCheckTeardown(deps, plan, services, github);
+  if (uptime !== undefined) ctx.uptime = uptime;
   // The user's own extra servers go after the infrastructure, so a run that stopped between the two
   // finishes them on the next run.
   const ownLeft = extraOwnServers(plan).length > 0 && plan.deployment.destroyedAt === undefined;
@@ -811,7 +819,7 @@ async function destroyDeployment(
   }
   const withData = unkept.filter((s) => s.data.serverData);
   if (withData.length > 0) deps.reporter.info(dataSnapshotOffer(plan, withData, flag));
-  for (const note of checkPauseNote(plan)) deps.reporter.info(note);
+  for (const note of checkPauseNote(plan, uptime)) deps.reporter.info(note);
   const confirmation = {
     name,
     confirmPrompt: destroyConfirmPrompt(name, provider),
@@ -912,7 +920,7 @@ async function destroyDeployment(
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
-  await pauseCheckForTeardown(deps, github, plan, destroyApproval);
+  await pauseCheckForTeardown(deps, github, plan, destroyApproval, uptime);
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: "The infrastructure is deleted.",

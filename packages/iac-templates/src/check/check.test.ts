@@ -207,6 +207,24 @@ describe("renderCheck", () => {
     expect(renderCheck({ plans: [off], repo: PUBLIC })).toEqual([]);
   });
 
+  it("leaves out an environment the Cloudflare uptime Worker checks, and renders nothing with only those", () => {
+    const prod = withCheck(testPlan({ domain: "shop.example.com" }));
+    const worker = withCheck(ofApp(testPlan({ domain: "docs.example.com" }), "docs"), {
+      runner: "cloudflare",
+    });
+    expect(
+      configOf(renderCheck({ plans: [prod, worker], repo: PUBLIC })).environments.map(
+        (environment: { key: string }) => environment.key,
+      ),
+    ).toEqual(["shop/prod"]);
+    expect(renderCheck({ plans: [worker], repo: PUBLIC })).toEqual([]);
+    // The Actions runner, named or not, renders as before.
+    const actions = withCheck(testPlan({ domain: "shop.example.com" }), { runner: "actions" });
+    expect(renderCheck({ plans: [actions], repo: PUBLIC })).toEqual(
+      renderCheck({ plans: [prod], repo: PUBLIC }),
+    );
+  });
+
   it("leaves out destroyed environments", () => {
     const prod = withCheck(testPlan({ domain: "shop.example.com" }));
     const destroyed = DeployPlanSchema.parse({

@@ -1,9 +1,21 @@
 import { resolveProjectPaths } from "@opscrew/core";
-import { ArtifactError, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import {
+  ArtifactError,
+  type DeployPlan,
+  DeployPlanSchema,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
-import { testPlan } from "../testing";
-import { requireCheckSettingsPlace, withDesignedCheck } from "./settings";
+import { createTestPhaseDeps, testPlan } from "../testing";
+import {
+  checkRunner,
+  checksInActions,
+  requireCheckSettingsPlace,
+  requireUptimeWebhook,
+  usesUptimeWorker,
+  withDesignedCheck,
+} from "./settings";
 
 const ROOT = "/work/shop";
 
@@ -12,7 +24,7 @@ function plan(
   check: Record<string, unknown> | undefined,
   where: { app?: string; environment?: string } = {},
 ): DeployPlan {
-  const base = testPlan();
+  const base = testPlan({ domain: "shop.example.com" });
   const name = [where.app ?? "shop", where.environment].filter(Boolean).join("-");
   return DeployPlanSchema.parse({
     ...base,
@@ -96,5 +108,67 @@ describe("withDesignedCheck", () => {
   it("gives localhost no check", () => {
     const local = localPlan();
     expect(withDesignedCheck(local, "prod").observability).toBeUndefined();
+  });
+});
+
+describe("the check's runner", () => {
+  it("is GitHub Actions unless the plan chooses the Cloudflare uptime Worker", () => {
+    expect(checkRunner(plan({ enabled: true }))).toBe("actions");
+    expect(checksInActions(plan({ enabled: true }))).toBe(true);
+    expect(checksInActions(plan({ enabled: true, runner: "actions" }))).toBe(true);
+    const worker = plan({ enabled: true, runner: "cloudflare" });
+    expect(checkRunner(worker)).toBe("cloudflare");
+    expect(checksInActions(worker)).toBe(false);
+    expect(usesUptimeWorker(worker)).toBe(true);
+    // Off, neither runs.
+    const off = plan({ enabled: false, runner: "cloudflare" });
+    expect(usesUptimeWorker(off)).toBe(false);
+    expect(checksInActions(off)).toBe(false);
+  });
+});
+
+describe("requireUptimeWebhook", () => {
+  it("refuses the Cloudflare uptime Worker without the repository's webhook, naming opscrew/plan.yaml", async () => {
+    const deps = await createTestPhaseDeps();
+    let error: unknown;
+    try {
+      await requireUptimeWebhook(deps.paths, plan({ enabled: true, runner: "cloudflare" }));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ArtifactError);
+    const artifact = error as ArtifactError;
+    expect(artifact.code).toBe("ARTIFACT_INVALID");
+    expect(artifact.file).toBe("opscrew/plan.yaml");
+    expect(artifact.issues.map((issue) => issue.path)).toEqual(["observability.check.webhook"]);
+    expect(artifact.message).toContain("opens no GitHub issue");
+    expect(artifact.hint).toBe(
+      'Set observability.check.webhook to slack, discord or ntfy in opscrew/plan.yaml, or set observability.check.runner to "actions", then run the command again.',
+    );
+  });
+
+  it("takes another environment's webhook from opscrew/plan.yaml", async () => {
+    const deps = await createTestPhaseDeps({ environment: "staging" });
+    const staging = plan({ enabled: true, runner: "cloudflare" }, { environment: "staging" });
+    await expect(requireUptimeWebhook(deps.paths, staging)).rejects.toThrow(ArtifactError);
+    const prod = resolveProjectPaths(deps.paths.root, { env: deps.env });
+    await writeArtifact("plan", prod.files.plan, plan({ enabled: true, webhook: "slack" }));
+    await expect(requireUptimeWebhook(deps.paths, staging)).resolves.toBeUndefined();
+  });
+
+  it("asks nothing of the Actions check, nor of a check that is off", async () => {
+    const deps = await createTestPhaseDeps();
+    await expect(
+      requireUptimeWebhook(deps.paths, plan({ enabled: true })),
+    ).resolves.toBeUndefined();
+    await expect(
+      requireUptimeWebhook(deps.paths, plan({ enabled: false, runner: "cloudflare" })),
+    ).resolves.toBeUndefined();
+    await expect(
+      requireUptimeWebhook(
+        deps.paths,
+        plan({ enabled: true, runner: "cloudflare", webhook: "ntfy" }),
+      ),
+    ).resolves.toBeUndefined();
   });
 });

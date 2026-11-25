@@ -51,7 +51,8 @@ import {
   renderedCheckKeyLine,
   resumeCheck,
 } from "../check/provision";
-import { requireCheckSettingsPlace } from "../check/settings";
+import { requireCheckSettingsPlace, requireUptimeWebhook } from "../check/settings";
+import { provisionUptime } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { setupFeeOf } from "../design/cost";
 import { resolveCatalog } from "../design/run";
@@ -518,8 +519,10 @@ async function provisionFlow(
   if (isServerlessProvider(plan.target.provider) && phase !== "provision") {
     throw serverlessDnsByProvision(plan.target.provider, planFile(plan));
   }
-  // The check's interval and webhook are the repository's: only opscrew/plan.yaml sets them.
+  // The check's interval and webhook are the repository's: only opscrew/plan.yaml sets them. The
+  // Cloudflare uptime Worker opens no issue, so it needs that webhook.
   requireCheckSettingsPlace(deps.paths, plan);
+  await requireUptimeWebhook(deps.paths, plan);
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
   const flags = await commandFlags(root, deps.paths.environment, deps.paths.app);
@@ -1361,6 +1364,8 @@ async function provisionFlow(
         )?.hash;
       }
     }
+    // The Cloudflare uptime Worker's plan, shown with its hash (applied at the check's step).
+    await provisionUptime(deps, { plan, github, services, command, phase, planOnly: true });
     // The environment's runner on the runner machines it leaves and on its own: their host plans,
     // shown and saved.
     const machines = await provisionRunnerMachines(deps, {

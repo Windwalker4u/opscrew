@@ -1,9 +1,12 @@
+import { UPTIME_RESOURCES } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
 import { checkDiskVia } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { githubClientFromToken } from "../shared/github";
-import type { CheckSettings } from "./settings";
+import { WEBHOOK_NAMES } from "./secrets";
+import { type CheckSettings, usesUptimeWorker } from "./settings";
+import { UPTIME_ONLY_LINE } from "./uptime";
 
 /** What design reads of the repository for the check: GitHub's answers (a client or a fake). */
 export type CheckRepositoryApi = Pick<GitHubClient, "getRepo" | "includedMinutes">;
@@ -93,6 +96,8 @@ function noDiskReason(plan: DeployPlan): string | undefined {
  * interval (the repository's `settings`), what it checks and the Actions minutes a month against
  * the repository's plan (free in a public repository); with warnings when a set interval passes
  * 750 minutes a month on GitHub Free (or an unknown plan) and when the repository's issues are off.
+ * With the Cloudflare uptime Worker: no Actions minutes, its 40-hostname cap, and what it leaves to
+ * the Actions check ({@link UPTIME_ONLY_LINE}).
  */
 export function checkDesignText(
   plan: DeployPlan,
@@ -111,6 +116,16 @@ export function checkDesignText(
     return {
       lines: [
         "Scheduled check: off for this environment (set observability.check.enabled to true to turn it on).",
+      ],
+      warnings: [],
+    };
+  }
+  if (usesUptimeWorker(plan)) {
+    const webhook = settings?.webhook === undefined ? "" : ` ${WEBHOOK_NAMES[settings.webhook]}`;
+    return {
+      lines: [
+        `Scheduled check: every 5 minutes by the Worker ${UPTIME_RESOURCES.worker} in the Cloudflare account of the app's zone, with no Actions minutes and at no cost. It checks each hostname's health path once a run, and posts to the${webhook} webhook when one fails twice in a row and when it answers again. One Cloudflare account's Worker checks at most ${UPTIME_RESOURCES.maxHostnames} hostnames, across its OpsCrew apps.`,
+        UPTIME_ONLY_LINE,
       ],
       warnings: [],
     };

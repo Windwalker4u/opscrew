@@ -23,7 +23,8 @@ import { type CheckKey, ensureCheckKey, readCheckKey } from "./key";
 import { changeCheckPause } from "./pause";
 import { type CheckServerReach, storeCheckSecrets } from "./secrets";
 import { checkServerEntries } from "./servers";
-import { repositoryCheckSettings } from "./settings";
+import { checksInActions, repositoryCheckSettings } from "./settings";
+import { provisionUptime } from "./uptime";
 
 /**
  * True when the check reads the disk of `plan`'s app server over SSH with the check key: a cloud or
@@ -69,7 +70,7 @@ export async function deploySetupCheck(
   for (const path of removed) await rm(join(deps.paths.root, path), { force: true });
   if (removed.length > 0) {
     deps.reporter.info(
-      "No plan has the scheduled check on any more, so the pull request removes its files.",
+      "No plan has the scheduled check on in GitHub Actions any more, so the pull request removes its files.",
     );
   }
   return { files, removed };
@@ -84,20 +85,23 @@ function checkUsesKey(plan: DeployPlan): boolean {
   return checkReachesOverSsh(plan) || hasExtraServers(plan);
 }
 
-/** The check key of `plan`'s environment, when the check is on and reads a disk over SSH. */
+/**
+ * The check key of `plan`'s environment, when the check is on in GitHub Actions and reads a disk
+ * over SSH.
+ */
 export async function environmentCheckKey(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   plan: DeployPlan,
 ): Promise<CheckKey | undefined> {
-  if (plan.observability?.check?.enabled !== true || !checkUsesKey(plan)) return undefined;
+  if (!checksInActions(plan) || !checkUsesKey(plan)) return undefined;
   return ensureCheckKey(deps.paths, deps.redactor);
 }
 
 /**
  * The check key's authorized_keys line for rendering `plan`'s files, which a new cloud server
- * gets at its first boot: none without a cloud server read over SSH (the user's own servers get
- * the key from a host plan). With `create` false (a preview) a key this computer lacks is not
- * made, and there is no line.
+ * gets at its first boot: none without the check in GitHub Actions or a cloud server read over
+ * SSH (the user's own servers get the key from a host plan). With `create` false (a preview) a key
+ * this computer lacks is not made, and there is no line.
  */
 export async function renderedCheckKeyLine(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
@@ -107,7 +111,7 @@ export async function renderedCheckKeyLine(
 ): Promise<string | undefined> {
   const cloudExtras = extraCloudServers(plan).length > 0;
   const cloudApp = plan.target.provider !== "own" && checkReachesOverSsh(plan);
-  if (plan.observability?.check?.enabled !== true || !(cloudApp || cloudExtras)) return undefined;
+  if (!checksInActions(plan) || !(cloudApp || cloudExtras)) return undefined;
   const key = create
     ? await ensureCheckKey(deps.paths, deps.redactor)
     : await readCheckKey(deps.paths, deps.redactor);
@@ -166,9 +170,12 @@ export async function checkKeyStep(
 }
 
 /**
- * Provision's part of the scheduled check, for an environment with it on, after the server is
- * ready: the check key (`key`, the repository's) added by the `check-key` host step when `server`
- * lacks it, then (with `storeSecrets`) the check's repository secrets, whose server secret lists
+ * Provision's part of the scheduled check, after the server is ready. First the Cloudflare uptime
+ * Worker's (`provisionUptime`): the environment's entry when it chooses the Worker, or its removal
+ * when it no longer does; such an environment gets no check key and no GitHub check secrets. Then,
+ * for an environment with the check on in GitHub Actions: the check key (`key`, the repository's)
+ * added by the `check-key` host step when `server` lacks it, then (with `storeSecrets`) the
+ * check's repository secrets, whose server secret lists
  * every server of the environment the check reads over SSH (`checkServerEntries`: the app's
  * `server.reach` where its disk is read over SSH, and each extra server). `key` is given where the
  * check reads a disk over SSH, `server` where it is the app's ({@link checkReachesOverSsh}).
@@ -182,13 +189,20 @@ export async function provisionCheck(
     key?: CheckKey;
     server?: CheckServer;
     storeSecrets: boolean;
-    services: Pick<ProvisionServices, "askCheckWebhook">;
+    services: Pick<ProvisionServices, "askCheckWebhook" | "sharedCloudflare">;
     command: string;
     phase: PhaseName;
   },
 ): Promise<HostPlanOutcome | undefined> {
   const { plan, github, server, key } = input;
-  if (plan.observability?.check?.enabled !== true) return undefined;
+  await provisionUptime(deps, {
+    plan,
+    github,
+    services: input.services,
+    command: input.command,
+    phase: input.phase,
+  });
+  if (!checksInActions(plan)) return undefined;
   const host =
     server === undefined || key === undefined
       ? undefined
@@ -216,20 +230,18 @@ export async function provisionCheck(
 
 /**
  * The check's repository secrets a teardown of `plan`'s environment deletes, when it has the
- * check on: its servers' (`<prefix>CHECK_SERVER`, which holds the addresses) where the check
- * reads a disk over SSH, and the check key (`OPSCREW_CHECK_SSH_KEY`) when no other environment of
- * the repository still has the check on.
+ * check on in GitHub Actions: its servers' (`<prefix>CHECK_SERVER`, which holds the addresses)
+ * where the check reads a disk over SSH, and the check key (`OPSCREW_CHECK_SSH_KEY`) when no other
+ * environment of the repository still has the check on there.
  */
 export async function teardownCheckSecretNames(
   paths: Pick<ProjectPaths, "root" | "homeDir">,
   plan: DeployPlan,
 ): Promise<string[]> {
-  if (plan.observability?.check?.enabled !== true) return [];
+  if (!checksInActions(plan)) return [];
   const names = checkUsesKey(plan) ? [deploySecretName(plan, CHECK_SECRETS.server)] : [];
   const checked = (await otherPlans(paths, plan)).some(
-    (other) =>
-      other.plan.observability?.check?.enabled === true &&
-      other.plan.deployment.destroyedAt === undefined,
+    (other) => checksInActions(other.plan) && other.plan.deployment.destroyedAt === undefined,
   );
   return checked ? names : [...names, CHECK_SECRETS.sshKey];
 }

@@ -47,6 +47,51 @@ export function requireCheckSettingsPlace(
 }
 
 /**
+ * Where `plan`'s environment is checked when the check is on (`observability.check.runner`): in
+ * GitHub Actions (`actions`, also when unset) or by the uptime Worker in the Cloudflare account of
+ * the app's zone (`cloudflare`).
+ */
+export function checkRunner(plan: DeployPlan): NonNullable<CheckSettings["runner"]> {
+  return plan.observability?.check?.runner ?? "actions";
+}
+
+/** True when `plan`'s environment has the check on in GitHub Actions. */
+export function checksInActions(plan: DeployPlan): boolean {
+  return plan.observability?.check?.enabled === true && checkRunner(plan) === "actions";
+}
+
+/** True when `plan`'s environment has the check on in the Cloudflare uptime Worker. */
+export function usesUptimeWorker(plan: DeployPlan): boolean {
+  return plan.observability?.check?.enabled === true && checkRunner(plan) === "cloudflare";
+}
+
+/**
+ * Stops (`ARTIFACT_INVALID`, naming `opscrew/plan.yaml`) when `plan`'s environment chooses the
+ * Cloudflare uptime Worker and the repository's settings have no webhook: the Worker opens no
+ * GitHub issue, so without a webhook nobody would hear of a down app. Read-only.
+ */
+export async function requireUptimeWebhook(
+  paths: Pick<ProjectPaths, "root" | "homeDir">,
+  plan: DeployPlan,
+): Promise<void> {
+  if (!usesUptimeWorker(plan)) return;
+  if ((await repositoryCheckSettings(paths, plan))?.webhook !== undefined) return;
+  const file = toPosixRelative(paths.root, appPaths(paths, undefined).files.plan);
+  throw new ArtifactError({
+    code: "ARTIFACT_INVALID",
+    file,
+    issues: [
+      {
+        path: "observability.check.webhook",
+        message:
+          'is needed with observability.check.runner: "cloudflare": the Cloudflare uptime Worker opens no GitHub issue, so it tells of a down app only through the webhook',
+      },
+    ],
+    hint: `Set observability.check.webhook to slack, discord or ntfy in ${file}, or set observability.check.runner to "actions", then run the command again.`,
+  });
+}
+
+/**
  * The check's repository-wide settings: those of `plan` when it is the first app's prod plan,
  * else those of `opscrew/plan.yaml` (none while it does not exist).
  */

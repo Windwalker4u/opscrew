@@ -18,6 +18,13 @@ import { type DeployPlan, ghcrImageFor, isServerlessTarget } from "@opscrew/plan
 import { appPaths } from "../apps/list";
 import { changeCheckPause } from "../check/pause";
 import { teardownCheckSecretNames } from "../check/provision";
+import { checksInActions } from "../check/settings";
+import {
+  applyUptimeTeardown,
+  planUptimeTeardown,
+  type UptimeStep,
+  uptimeTeardownNote,
+} from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
 import {
@@ -229,32 +236,66 @@ export async function resolveGitHub(
 }
 
 /**
- * The line of the teardown's typed confirmation that says it also pauses the scheduled check
- * (the approval {@link pauseCheckForTeardown} then pauses it under); none without the check.
+ * The scheduled check's part of a teardown, planned read-only before its typed confirmation: the
+ * removal of the environment's entry from the Cloudflare uptime Worker (`planUptimeTeardown`, with
+ * the Worker and its namespace when no other entry is left). `undefined` when it has none.
  */
-export function checkPauseNote(plan: DeployPlan): string[] {
-  if (plan.observability?.check?.enabled !== true) return [];
+export function planCheckTeardown(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<DestroyServices, "sharedCloudflare">,
+  github: GitHubTarget,
+): Promise<UptimeStep | undefined> {
+  return planUptimeTeardown(deps, plan, {
+    services,
+    github: {
+      ...(github.owner === undefined ? {} : { owner: github.owner }),
+      ...(github.repo === undefined ? {} : { repo: github.repo }),
+    },
+    command: COMMAND,
+  });
+}
+
+/**
+ * The lines of the teardown's typed confirmation about the scheduled check: that it also pauses
+ * the check in GitHub Actions (the approval {@link pauseCheckForTeardown} then pauses it under),
+ * and that it also removes the environment's entry from the Cloudflare uptime Worker (`uptime`,
+ * {@link planCheckTeardown}'s plan, with its words and hash); none without either.
+ */
+export function checkPauseNote(plan: DeployPlan, uptime?: UptimeStep): string[] {
   return [
-    `This also pauses the scheduled check for ${checkEnvironmentKey(plan)} (the repository variable ${CHECK_PAUSED_VARIABLE}), so it opens no issue for the app that is gone and closes its open ones.`,
+    ...(checksInActions(plan)
+      ? [
+          `This also pauses the scheduled check for ${checkEnvironmentKey(plan)} (the repository variable ${CHECK_PAUSED_VARIABLE}), so it opens no issue for the app that is gone and closes its open ones.`,
+        ]
+      : []),
+    ...uptimeTeardownNote(uptime),
   ];
 }
 
 /**
- * 8. Once the app is deleted, before its secrets go: the scheduled check is paused for the
- * environment (`destroyed`), so it opens no issue for the app that is gone and closes its open
- * ones. `approval` is the teardown's typed confirmation whose details carry
- * {@link checkPauseNote}: the pause needs no approval of its own then (still audited); without
- * one (nothing of that kind was approved in this run) it asks its own `github-settings` approval.
- * Declined or failed, a warning says what to do; the teardown goes on. Without GitHub (the reason
- * was said) a warning says the check may open an issue.
+ * 8. Once the app is deleted, before its secrets go: the environment's entry leaves the
+ * Cloudflare uptime Worker (`uptime`, {@link planCheckTeardown}'s plan), applied with
+ * `allowDestroy` under the teardown's typed confirmation, which grants its `cloudflare-apply`
+ * approval (a failure stops the teardown, so a run again continues with it); then the check in
+ * GitHub Actions is paused for the environment (`destroyed`), so it opens no issue for the app
+ * that is gone and closes its open ones. `approval` is the teardown's typed confirmation whose
+ * details carry {@link checkPauseNote}: the pause needs no approval of its own then (still
+ * audited); without one (nothing of that kind was approved in this run) it asks its own
+ * `github-settings` approval. Declined or failed, a warning says what to do; the teardown goes on.
+ * Without GitHub (the reason was said) a warning says the check may open an issue.
  */
 export async function pauseCheckForTeardown(
   deps: PhaseDeps,
   github: GitHubTarget,
   plan: DeployPlan,
   approval: ApprovalRecord | undefined,
+  uptime?: UptimeStep,
 ): Promise<void> {
-  if (plan.observability?.check?.enabled !== true) return;
+  if (uptime !== undefined) {
+    await applyUptimeTeardown(deps, plan, uptime, { command: COMMAND, phase: "provision" });
+  }
+  if (!checksInActions(plan)) return;
   const left =
     "so it may open an issue for the app that is gone; close it, and the next deploy-setup pull request drops the environment from the check.";
   const { api, owner, repo } = github;

@@ -6,6 +6,7 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { credentialInventory } from "../rotate/inventory";
 import { readOwnServer } from "../shared/server-record";
+import { checksInActions } from "./settings";
 
 /** The repository the check runs in, and how to read its visibility (only when needed). */
 export interface CheckRepo {
@@ -50,8 +51,8 @@ export async function otherPlans(
  * `check.credentials` on, the credentials the check dates are the environment's inventory
  * (`credentialInventory`, recording nothing) without the user's own tokens, whose expiry is the
  * providers', those with nothing to rotate and the aggregate `app` (each `app:<NAME>` is its own),
- * with the flags `opscrew rotate` needs there. None when no plan has the check on (the
- * repository's visibility is then not read).
+ * with the flags `opscrew rotate` needs there. None when no plan has the check on in GitHub Actions
+ * (the repository's visibility is then not read).
  */
 export async function checkFiles(
   deps: Pick<PhaseDeps, "paths" | "env" | "clock">,
@@ -64,9 +65,7 @@ export async function checkFiles(
     ...(await otherPlans(paths, plan)),
   ];
   const checked = entries.some(
-    (entry) =>
-      entry.plan.observability?.check?.enabled === true &&
-      entry.plan.deployment.destroyedAt === undefined,
+    (entry) => checksInActions(entry.plan) && entry.plan.deployment.destroyedAt === undefined,
   );
   if (!checked) return [];
   const serverIds: Record<string, string> = {};

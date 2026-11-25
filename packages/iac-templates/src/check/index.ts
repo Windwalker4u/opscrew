@@ -117,7 +117,7 @@ export function checkServerSecret(servers: readonly ServerEntry[]): string {
 /**
  * The scheduled check's files, one set for the repository, from every app's and environment's plan
  * (`plans`) with `observability.check.enabled`; none when no plan has it on, and none for a
- * destroyed environment:
+ * destroyed environment or one the Cloudflare uptime Worker checks (`runner: cloudflare`):
  * - `.github/workflows/opscrew-check.yml`: on a schedule at minutes off the hour and by hand, the
  *   `check` job on GitHub's machines, plus one job per server whose deploys run on its own runner
  *   or a runner machine, which checks that server's disk there, and one per extra server of such
@@ -156,6 +156,7 @@ export function renderCheck(input: {
   const { repo } = input;
   const plans = input.plans
     .filter((plan) => plan.observability?.check?.enabled === true)
+    .filter((plan) => plan.observability?.check?.runner !== "cloudflare")
     .filter((plan) => plan.deployment.destroyedAt === undefined)
     .sort(byApp);
   if (plans.length === 0) return [];

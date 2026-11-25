@@ -44,6 +44,7 @@ import {
 } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
+import { provisionUptime } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
@@ -1463,6 +1464,8 @@ export async function provisionPortainer(
       );
       if (note !== undefined) deps.reporter.info(note);
     }
+    // The Cloudflare uptime Worker's plan, shown with its hash (applied at the check's step).
+    await provisionUptime(deps, { plan, github, services, command, phase, planOnly: true });
     if (learned.zoneLearned) await writePlanIfChanged(deps, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
