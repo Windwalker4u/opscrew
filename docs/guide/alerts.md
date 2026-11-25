@@ -5,11 +5,11 @@ checks that your app answers, that its certificate is valid and that its server'
 When something fails, it opens a GitHub issue, so everyone watching the repository is told, and it
 can post the same message to [Slack](https://slack.com/), [Discord](https://discord.com/) or [ntfy](https://ntfy.sh/). When the app recovers, it closes the issue and
 says how long the problem lasted. When your DNS is on Cloudflare,
-a Worker in your own Cloudflare account can check that the app answers instead, with no Actions
-minutes: see [In your Cloudflare account instead of GitHub Actions](#in-your-cloudflare-account-instead-of-github-actions).
+a Worker in your own Cloudflare account can run the check instead, with no Actions minutes: see
+[In your Cloudflare account instead of GitHub Actions](#in-your-cloudflare-account-instead-of-github-actions).
 
-Nothing runs on your server for it, apart from a disk job on a server that deploys from its own
-runner. With the default interval it costs nothing: Actions minutes are free in a public repository,
+With GitHub Actions, nothing runs on your server for it, apart from a disk job on a server that
+deploys from its own runner. With the default interval it costs nothing: Actions minutes are free in a public repository,
 and in a private one the check uses a small share of the minutes your plan includes.
 
 ## Turning it on
@@ -58,13 +58,18 @@ writing issues.
 
 ## What it checks
 
-| Check | Fails when | The issue says |
-|---|---|---|
-| Each hostname (and `www` when the app serves it) at its health path over HTTPS | No answer within 10 seconds, or a status of 400 or more, on three tries 30 seconds apart. One slow answer opens nothing | The hostname, the status code or the error (such as `ECONNREFUSED`), and when it started |
-| Each hostname's certificate | Fewer than 14 days left. Certificates are renewed 30 days before they expire, so this means the renewal is failing | The days left, and the command to see why |
-| Each server's disk | 85% full, and again at 95% | The server, its free space and what usually fills it (old images and logs) |
-| With [scheduled snapshots](snapshots.md#the-schedule) on, the last one of each app on each server with its data | The last scheduled snapshot failed, or its [copy off the server](snapshots.md#an-encrypted-copy-off-the-server) did. A snapshot being taken is checked at the next run | The server, when it failed, the snapshot's id for a failed copy, and to run `npx opscrew status` to see why |
-| With [scheduled restore drills](snapshots.md#on-a-schedule) on, the last one of each app on its server | The last scheduled drill that ran didn't restore the snapshot, or the app didn't become healthy on it, or the copy couldn't be made; or no scheduled drill ran within twice the schedule and an hour (since the last one, or with none yet, since the schedule was turned on or the oldest scheduled snapshot, whichever is later). A skipped drill never opens one | The server, when it failed and which of those it was, or since when none ran, and to run `npx opscrew status` to see why |
+| Check | Fails when | The issue says | Where it runs |
+|---|---|---|---|
+| Each hostname (and `www` when the app serves it) at its health path over HTTPS | No answer within 10 seconds, or a status of 400 or more, on three tries 30 seconds apart. One slow answer opens nothing | The hostname, the status code or the error (such as `ECONNREFUSED`), and when it started | `actions`: GitHub's runner. `cloudflare`: the Worker, with its own rules ([What counts as down](#what-counts-as-down)) |
+| Each hostname's certificate | Fewer than 14 days left. Certificates are renewed 30 days before they expire, so this means the renewal is failing | The days left, and the command to see why | `actions`: GitHub's runner. `cloudflare`: the [server itself](#the-servers-own-checks) |
+| Each server's disk | 85% full, and again at 95% | The server, its free space and what usually fills it (old images and logs) | `actions`: where the deploy job runs ([Where it runs](#where-it-runs)). `cloudflare`: the server itself |
+| With [scheduled snapshots](snapshots.md#the-schedule) on, the last one of each app on each server with its data | The last scheduled snapshot failed, or its [copy off the server](snapshots.md#an-encrypted-copy-off-the-server) did. A snapshot being taken is checked at the next run | The server, when it failed, the snapshot's id for a failed copy, and to run `npx opscrew status` to see why | `actions`: where the deploy job runs. `cloudflare`: the server itself |
+| With [scheduled restore drills](snapshots.md#on-a-schedule) on, the last one of each app on its server | The last scheduled drill that ran didn't restore the snapshot, or the app didn't become healthy on it, or the copy couldn't be made; or no scheduled drill ran within twice the schedule and an hour (since the last one, or with none yet, since the schedule was turned on or the oldest scheduled snapshot, whichever is later). A skipped drill never opens one | The server, when it failed and which of those it was, or since when none ran, and to run `npx opscrew status` to see why | `actions`: where the deploy job runs. `cloudflare`: the server itself |
+| With `observability.check.credentials` on, each [credential's age](credential-rotation.md#old-credentials) | It was made or last rotated more than `credentials.maxAgeDays` ago (365 by default) | The credential, and the `npx opscrew rotate` command that rotates it | `actions`: GitHub's runner. `cloudflare`: the server itself, once a day |
+
+With `runner: cloudflare`, a target with no server of its own (a Portainer, a site on Cloudflare's
+hosting or GitHub Pages) gets the hostname check only: see
+[Targets with no server checks](#targets-with-no-server-checks).
 
 On a hostname behind [Cloudflare](https://www.cloudflare.com/)'s proxy, the certificate the check sees is Cloudflare's.
 `npx opscrew secure` and `npx opscrew status` check the server's own.
@@ -234,8 +239,10 @@ each.
 ## In your Cloudflare account instead of GitHub Actions
 
 In a private repository the scheduled check uses Actions minutes. If you'd rather not spend them,
-a Worker in your Cloudflare account, on Cloudflare's free plan, can check that the app answers
-instead, and post down and recovered messages to your webhook.
+a Worker in your Cloudflare account, on Cloudflare's free plan, can run the check instead: it
+checks that the app answers, and posts down and recovered messages to your webhook. On a server,
+the server checks its disk, snapshots, restore drills, certificates and credentials itself and
+reports to the Worker, so nothing needs GitHub Actions any more.
 
 ### Choosing it
 
@@ -298,21 +305,114 @@ A message that can't be sent is sent again at the next run.
 `npx opscrew status` says that the Worker checks the environment, and lists the hostnames that are
 down and since when. When the Worker or the entry is gone, it says to run `npx opscrew provision`.
 
-### What it doesn't check
+### The server's own checks
 
-The Worker can't reach your server, so for an environment with `runner: cloudflare` these checks
-don't run: the disk, the [scheduled snapshots](snapshots.md#the-schedule), the
-[restore drills](snapshots.md#on-a-schedule) and the certificate's days left. **The disk,
-snapshot, restore-drill and certificate-days checks need `runner: actions`.** `npx opscrew status`
-still shows those figures when you ask.
+With `runner: cloudflare` on a server, nothing needs GitHub Actions any more. The Worker checks the
+addresses, and the server checks everything else and reports to the Worker. The environment is left
+out of `check.json`; when no environment uses Actions any more, the next deploy-setup pull request
+removes the workflow and `opscrew/check/`, as when the check is turned off.
+
+`npx opscrew provision` sets it up after its own approvals:
+
+- **The Cloudflare plan** comes first. It turns on the Worker's
+  [workers.dev address](#the-workersdev-address) when it is off, and the environment's entry lists
+  its servers.
+- **A host plan per server,** approved by its hash, shows the step `uptime-report`. It installs a
+  script, a systemd timer, a config and a key file (both readable only by root), and `curl` and
+  `openssl` when the server lacks them. The plan names the key; it never shows it.
+- **A server that provision can't reach with a host plan** gets no timer, and design names it as
+  not checked.
+
+A server that two environments share gets one timer per environment. Each reports to its own entry,
+so a full disk is reported to each environment's webhook.
+
+To see the timer on the server: `systemctl list-timers 'opscrew-uptime-report@*'`. It runs as the
+deploy user and logs one line per run to the journal, with the statuses. The line never holds the
+key or what the Worker answered.
+
+**What the server checks,** with the Actions check's thresholds and texts:
+
+- **every 5 minutes:**
+  - the disk, at 85% and again at 95% full;
+  - the last scheduled snapshot, and its copy off the server;
+  - the last scheduled restore drill, or a drill that is late;
+  - the days left on the certificates the server serves for the app: under 14 fails. It asks the
+    server's own web server, so behind Cloudflare's proxy this is the server's certificate, not
+    Cloudflare's. A hostname the server doesn't serve over HTTPS (such as a tunnel's origin served
+    over plain HTTP) isn't checked there and never posts; the Worker still checks its address;
+- **once a day,** with `observability.check.credentials` on, the age of each credential against
+  `credentials.maxAgeDays`.
+
+**When it reports:** only when a check fails or recovers, plus one heartbeat 24 hours after its last
+report. Each report is signed with the [report key](#the-report-key). The Worker posts each change
+through the environment's webhook, with the Actions check's text: the disk's percentage and free
+space, which snapshot or drill failed, the certificate that "expires within 14 days" or "has
+expired", or the credential with its `npx opscrew rotate` command. A recovery posts once, with how
+long the problem lasted. A report the Worker refuses or can't be reached for is sent again at the
+next run.
+
+`npx opscrew status` shows each server's last report, its time and its statuses.
+
+**Credential dates:** provision writes each credential's name and the date it was made or last
+rotated into the timer's config, never its value. After `npx opscrew rotate`, its host plan, approved
+by its hash, writes the new date on the server, and the next daily check posts once that it
+recovered. Rotate through OpsCrew, so the server's dates stay current.
+
+### When reports stop
+
+When a server's last report is more than 26 hours old (a day's heartbeat and two hours more), the
+Worker posts once: "reports from <app> (<env>) on <server> stopped". The server may be down, its
+timer stopped, or it can't reach Cloudflare. `npx opscrew status` says "reports stopped" too. Check
+the server, and the timer with the command above; `npx opscrew provision` installs it again when it
+is gone. The first report after that posts "reports resumed".
+
+A server that leaves the environment, such as one a [`retarget`](retarget.md) replaced, is removed
+from the entry by the next plan, and never raises "reports stopped".
+
+### The report key
+
+Each environment has one report key, 32 random bytes that OpsCrew keeps as a secret file in its
+home, like the check key, and stores beside the webhook's address in the Worker's secret. A server
+created again gets the same key, with no change to the Worker. A leaked report key can only send
+reports for that one environment.
+
+If the key's file is lost, provision makes a new one and writes the Worker's secret again. That
+needs the webhook's address, so set `OPSCREW_CHECK_WEBHOOK` or type it when asked, as when the
+address changes.
+
+### The workers.dev address
+
+The servers report to the Worker's own address, `https://opscrew-uptime.<your subdomain>.workers.dev/report`.
+It answers only a `POST` to `/report`, and anything else gets 404. It refuses a report that is
+unsigned, signed with another key or more than 5 minutes off its clock before it touches its
+storage, and one that isn't newer than the last it accepted.
+
+- **No workers.dev subdomain yet:** the plan stops before any change. Open **Workers & Pages** in
+  the Cloudflare dashboard once, then run
+  `npx opscrew provision` again.
+- **Anyone can send requests to the address.** Refused requests cost no storage, but they count
+  toward the 100,000 requests a day of Cloudflare's free plan. A flood of them could hold your other
+  Workers back until the count resets at 00:00 UTC.
+
+### Targets with no server checks
+
+A Portainer target and a site on Cloudflare's hosting or GitHub Pages have no server OpsCrew reaches,
+so the Worker checks their addresses only. Design and provision say so: "This target has no server
+OpsCrew reaches, so the Worker checks its address only: the disk, snapshot, restore-drill,
+certificate-days and credential-age checks need `runner: actions`." An expired or invalid
+certificate there still shows as down ("an invalid certificate"). For the certificates' days and
+the credentials' age there, keep `runner: actions`; Actions can't read a Portainer's disk,
+snapshots or drills either (see [What it can't do](#what-it-cant-do)). A
+[hosting account](hosting-accounts.md) can't use the Worker yet.
 
 ### Cloudflare's free limits
 
 - **40 hostnames per Cloudflare account,** across every app's entries. The plan refuses the 41st
   before anything changes; keep `runner: actions` for that app.
 - **The schedule** takes one of the 5 Cron Triggers that Cloudflare's free plan gives an account.
-- **Workers KV's daily limits** are your account's, shared with your own Workers. A healthy day
-  writes nothing, and each failure costs a few writes.
+- **Workers KV's daily limits** are your account's, shared with your own Workers: 1,000 writes a
+  day on the free plan. A healthy server costs one write a day, its heartbeat. Each change, and each
+  "stopped" or "resumed" message, costs one more, and each hostname's failure a few.
 
 ### Moves and planned work
 
@@ -324,7 +424,10 @@ still shows those figures when you ask.
 ### Switching back
 
 Set `runner: actions`, or turn the check off, and run `npx opscrew provision`. Its plan removes only
-this environment's entry, its state and its secret. The Worker, its schedule and its storage stay,
+this environment's entry, its state and its secret. On each server, its host plan removes the
+environment's timer, its config and its key file, and the script once no environment uses it
+there. `npx opscrew destroy` removes them with the app's teardown, under its typed confirmation; a
+server the destroy deletes needs nothing more. The Worker, its schedule and its storage stay,
 even when no app uses them: they cost nothing, do nothing, and the next app reuses them. They go
 only when the last app that has an entry is removed with `npx opscrew destroy`, under destroy's own
 typed confirmation.
@@ -347,6 +450,10 @@ typed confirmation.
   tunnel's [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) login.
 - **Disks on Cloudflare's hosting and [GitHub Pages](https://pages.github.com/):** there is no server of yours. Their hostnames
   and certificates are checked.
+- **Run the server checks with `runner: cloudflare` on a Portainer, Cloudflare's hosting or GitHub
+  Pages:** the Worker checks their addresses only, with no disk, snapshot, restore-drill,
+  certificate-days or credential-age check. Keep `runner: actions` for the checks Actions can run
+  there (see [Targets with no server checks](#targets-with-no-server-checks)).
 - **Watch memory and CPU:** `npx opscrew status` shows them, and [Beszel](beszel.md) can alert on
   them.
 
