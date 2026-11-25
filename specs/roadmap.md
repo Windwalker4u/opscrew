@@ -848,6 +848,17 @@ UpCloud. Vultr, Akamai Cloud and Scaleway follow in 037.
 - its regions, and its prices read live;
 - how its account's projects or data centres map to an app.
 
+**Kamatera's firewall** (the founder, 2026-11-25, issue #13). Kamatera has no cloud firewall
+OpsCrew can manage (no API route or Terraform resource), so its servers get a firewall on the
+server itself:
+- nftables, default deny, installed as the first step of the first boot;
+- `opscrew secure` and SecOps check its rules in place of a cloud firewall, and fail the server
+  until they are there;
+- the plan, design's summary and the guide say "cloud firewall: none; server firewall: on", and
+  name the few seconds after boot before the rules apply.
+
+This is the one provider where the firewall is the server's own.
+
 ### 036 Edge providers in place of Cloudflare's proxy: Bunny.net, Gcore and Fastly
 
 It opens with the contract for the DNS and edge provider, with Cloudflare moved behind it (026's
