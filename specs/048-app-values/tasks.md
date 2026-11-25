@@ -54,7 +54,8 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
   - **Effort:** high
 
 - [ ] T4804 [US1] [US2] The guide
-  - **Owns:** `docs/guide/environments.md`, the README's "After the first deploy" list.
+  - **Owns:** `docs/guide/environments.md`, `docs/guide/secrets-recovery.md` (what the copy
+    holds), the README's "After the first deploy" list.
   - **Accept:** a section on changing an app value: the commands, stdin and files, what changes,
     `--redeploy`, the refused targets and the rotation note.
   - **Verify:** `pnpm exec biome check .`

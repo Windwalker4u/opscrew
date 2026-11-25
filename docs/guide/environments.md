@@ -219,6 +219,53 @@ Give an external service the app uses, such as a hosted database or a payment pr
 connection value per environment: a staging database, a test-mode key. Then staging never touches
 prod's data or money.
 
+Provision keeps the values it stored on this computer, beside the passwords it generated, and in
+the [recovery copy](secrets-recovery.md). A later provision reuses them: a terminal doesn't ask for
+them again, and in scripts a value in the file `OPSCREW_APP_ENV_FILE` names still wins.
+
+### Changing one value
+
+To add or change a value later, you don't need a full provision:
+
+```bash
+npx opscrew values set --env staging STRIPE_SECRET_KEY            # asks for it, without showing it
+npx opscrew values set --env staging TLS_KEY < key.pem            # piped in, line ends and all
+npx opscrew values set --env staging --from-file staging.env      # every value of a dotenv file
+npx opscrew values unset --env staging OLD_API_KEY
+npx opscrew values list --env staging                             # names, secret or not, and where each comes from
+```
+
+- **Where a value comes from:** standard input or a file, never the command line. OpsCrew refuses
+  `values set NAME=value`, so a value never lands in your shell's history. A piped single line
+  loses its trailing line end; a value with line ends, such as a PEM key, is kept exactly. In a
+  `--from-file` file, write such a value in double quotes with `\n`, as in provision's values file.
+- **What changes:** only the GitHub secret that carries the environment's values
+  (`OPSCREW_<ENV>_APP_ENV`, or the build values for a `NEXT_PUBLIC_`, `VITE_` or `buildArg` value),
+  the values OpsCrew keeps on this computer and the recovery copy. No infrastructure, Cloudflare,
+  DNS or server plan runs. OpsCrew lists the secrets and the names before it stores them, as
+  provision does; `--yes` approves that in scripts.
+- **A new name** joins the plan's `app.env` as a secret value of yours (`--plain` for one that
+  isn't secret), and `unset` takes a name out. That change, and the updated recovery copy, come as
+  a pull request.
+- **When the app gets them:** `--redeploy` starts the environment's deploy workflow right away.
+  Without it, the next deploy applies them. Deploy before you
+  [rotate](credential-rotation.md) any of the app's passwords: a rotation reads the app's values
+  from its server, which holds them only after a deploy.
+- **Not every value is yours to set.** OpsCrew refuses one it generates (rotate it instead with
+  `opscrew rotate app:<NAME>`) or fills from the deployment, such as `DATABASE_URL`.
+- **When provision is still needed:**
+  - a new build-time value, because the Dockerfile names each one;
+  - a new value of a site on [Cloudflare](cloudflare-hosting.md) or
+    [GitHub Pages](github-pages.md), because its workflow names each one;
+  - any value on [Portainer](portainer-target.md), a [hosting account](hosting-accounts.md),
+    [this computer](localhost.md) or a [preview](previews.md), where the values don't live in
+    GitHub's secrets;
+  - an environment provisioned on another computer, or before OpsCrew kept its values. Run
+    provision once, or bring them over with `opscrew secrets restore`.
+
+  Changing a build-time value or a site's value that the plan already lists works with `values set`.
+  A promoted environment gets its build values from the environment it is promoted from.
+
 Keep `.env.staging` and every other `.env.*` file out of [git](https://git-scm.com/), as you do `.env`. Many `.gitignore`
 files list only `.env`, so add `.env.*` too (with `!.env.example` if you commit an example file).
 `npx opscrew scan` flags an env file that git does not ignore.
