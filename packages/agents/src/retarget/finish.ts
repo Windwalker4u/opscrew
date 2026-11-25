@@ -151,12 +151,7 @@ async function finish(
   const earlier = cloud ? await earlierSnapshots(session) : undefined;
   // Said before the typed name, so the user approves knowing which snapshots stay and bill.
   const earlierLine = cloud
-    ? earlierSnapshotsLine(
-        previousCloud(move).provider,
-        app,
-        earlier,
-        await takenSnapshot(session),
-      )
+    ? earlierSnapshotsLine(previousCloud(move).provider, app, earlier, await takenSnapshot(session))
     : undefined;
   if (earlierLine !== undefined) deps.reporter.info(earlierLine);
 
