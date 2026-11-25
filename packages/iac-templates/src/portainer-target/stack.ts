@@ -9,7 +9,14 @@ import {
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
-import { appVariables, enabledServices, renderContext, serviceSpec } from "../catalog";
+import {
+  appVariables,
+  enabledServices,
+  releaseVariables,
+  renderContext,
+  serviceSecrets,
+  serviceSpec,
+} from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
 import { isBuildValue } from "../docker";
 import { CADDY_MEMORY_MB } from "../edge";
@@ -126,7 +133,7 @@ const DB_ENV = [
 ] as const;
 
 /**
- * The stack variable that holds a service's secret, for every service but Postgres:
+ * The stack variable that holds a service's secret, for every one but Postgres's `password`:
  * `OPSCREW_SVC_<SERVICE>_<SECRET>`, upper case with `_` for `-` (`OPSCREW_SVC_MYSQL_ROOT_PASSWORD`).
  * The `SVC_` keeps a service's names apart from OpsCrew's other variables, whatever the service is
  * called (a service named `tunnel` and {@link PORTAINER_STACK_VARIABLES}' tunnel token).
@@ -144,25 +151,41 @@ export function portainerSecretVariables(
   plan: DeployPlan,
 ): { service: string; secret: string; variable: string }[] {
   return enabledServices(plan).flatMap((service) =>
-    serviceSpec(service.kind).secrets.map((secret) => ({
+    serviceSecrets(service).map((secret) => ({
       service: service.name,
       secret: secret.name,
-      variable:
-        service.kind === "postgres"
-          ? PORTAINER_STACK_VARIABLES.dbPassword
-          : portainerServiceVariable(service.name, secret.name),
+      variable: stackVariable(service, secret.name),
     })),
   );
 }
 
-/** A service's environment in the stack, with its secrets as stack variables. */
+/**
+ * The stack variable that holds `service`'s secret `secret`: Postgres's password is
+ * {@link PORTAINER_STACK_VARIABLES}' `dbPassword`, every other one {@link portainerServiceVariable}
+ * (Postgres's logins' passwords with `logins: separate` too).
+ */
+function stackVariable(service: PlanService, secret: string): string {
+  return service.kind === "postgres" && secret === "password"
+    ? PORTAINER_STACK_VARIABLES.dbPassword
+    : portainerServiceVariable(service.name, secret);
+}
+
+/** A reference to the stack variable of `service`'s secret `secret`. */
+function stackRef(service: PlanService, secret: string): string {
+  return `\${${stackVariable(service, secret)}}`;
+}
+
+/**
+ * A service's environment in the stack, with its secrets as stack variables; Postgres's user and
+ * database as {@link DB_ENV}'s.
+ */
 function stackEnvironment(plan: DeployPlan) {
   return (service: PlanService, spec: ServiceSpec): Record<string, string> => {
-    if (service.kind === "postgres") {
-      return Object.fromEntries(DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]));
-    }
-    const ref = (secret: string) => `\${${portainerServiceVariable(service.name, secret)}}`;
-    return spec.environment(renderContext(plan, service, ref));
+    const ref = (secret: string) => stackRef(service, secret);
+    const environment = spec.environment(renderContext(plan, service, ref));
+    if (service.kind !== "postgres") return environment;
+    const db = Object.fromEntries(DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]));
+    return { ...environment, ...db };
   };
 }
 
@@ -630,7 +653,12 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     // value changes (research R6, S5).
     services.release = {
       image: PORTAINER_IMAGE_PLACEHOLDER,
-      environment: { ...environment(), OPSCREW_RELEASE: PORTAINER_RELEASE_PLACEHOLDER },
+      // With a PostgreSQL's own logins, the database's variables name its owner (047).
+      environment: {
+        ...environment(),
+        ...releaseVariables(plan, stackRef),
+        OPSCREW_RELEASE: PORTAINER_RELEASE_PLACEHOLDER,
+      },
       ...appVolumes(plan),
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       ...oneOffStart(plan, `if [ "$OPSCREW_RELEASE" = skip ]; then exit 0; fi; ${release}`),

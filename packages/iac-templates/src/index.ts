@@ -9,8 +9,12 @@ export {
   hostSysctl,
   initStepsFor,
   kafkaTool,
+  POSTGRES_OWNER_SECRET,
   pinnedVersion,
+  releaseVariables,
   SERVICE_SPECS,
+  serviceRotation,
+  serviceSecrets,
   serviceSpec,
   splitDatabaseSettings,
 } from "./catalog";

@@ -5,6 +5,7 @@ import {
   type DeployPlan,
   deploySecretPrefix,
   githubEnvironmentFor,
+  postgresLogins,
   targetArch,
 } from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
@@ -53,6 +54,21 @@ export const DEPLOY_SECRETS = {
  */
 export function serviceEnvSecret(service: string): string {
   return `OPSCREW_SERVICE_${service.toUpperCase().replaceAll("-", "_")}_ENV`;
+}
+
+/**
+ * The release command's own env file with a PostgreSQL's `logins: separate` (047): the database's
+ * variables with the owner's login (the catalog's `releaseVariables`), next to `app.env` on the
+ * app's server, from its deploy secret. Only the `release` service reads it, after `app.env`.
+ */
+export const RELEASE_DB_ENV = { file: "release.db.env", secret: "OPSCREW_RELEASE_DB_ENV" } as const;
+
+/**
+ * True when an enabled PostgreSQL of the plan has `logins: separate`: the release then has its own
+ * env file, {@link RELEASE_DB_ENV}.
+ */
+export function hasReleaseDbEnv(plan: Pick<DeployPlan, "services">): boolean {
+  return plan.services.some((service) => service.enabled && postgresLogins(service));
 }
 
 /** The CPU architecture the image is built for: the target's ({@link targetArch}). */

@@ -14,14 +14,25 @@ import {
   type DeployPlan,
   DeviceNameSchema,
   type PlanService,
+  postgresLogins,
 } from "@opscrew/plan-schema";
 import { appServerOf } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
+import {
+  loginPassword,
+  loginsCheck,
+  loginsSetup,
+  OWNER_PASSWORD_ENV,
+  POSTGRES_OWNER,
+  POSTGRES_RUNTIME,
+  RUNTIME_PASSWORD_ENV,
+} from "./postgres-logins";
 import type {
   DatabaseSettings,
+  GeneratedSecret,
   RotationCommand,
   SecretRotation,
   ServiceContext,
@@ -158,19 +169,38 @@ function xmlHeader(plan: DeployPlan, ...lines: string[]): string[] {
   return header(plan, "#", ...lines).map((line) => `<!-- ${line.slice(2)} -->`);
 }
 
-/** A URL the app logs in with: `<scheme>://<user>:<password>@<service>:<port><path>`. */
-function loginUrl(ctx: ServiceContext, scheme: string, port: number, path: string): string {
-  return `${scheme}://app:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:${port}${path}`;
+/** A login to a service: its user, and the service's secret that holds its password. */
+interface Login {
+  user: string;
+  secret: string;
 }
 
-/** A SQL database's settings one by one: the user and database `app`, as its {@link loginUrl}. */
-function sqlSettings(ctx: ServiceContext, port: number): DatabaseSettings {
+/** The login the app has to every service: the user `app` with the secret `password`. */
+const APP_LOGIN: Login = { user: "app", secret: PASSWORD.name };
+
+/** A URL `login` logs in with: `<scheme>://<user>:<password>@<service>:<port><path>`. */
+function loginUrl(
+  ctx: ServiceContext,
+  scheme: string,
+  port: number,
+  path: string,
+  login: Login = APP_LOGIN,
+): string {
+  return `${scheme}://${login.user}:${ctx.secretRef(login.secret)}@${serviceHost(ctx)}:${port}${path}`;
+}
+
+/** A SQL database's settings one by one: the database `app` and `login`, as in {@link loginUrl}. */
+function sqlSettings(
+  ctx: ServiceContext,
+  port: number,
+  login: Login = APP_LOGIN,
+): DatabaseSettings {
   return {
     host: serviceHost(ctx),
     port: String(port),
     database: "app",
-    user: "app",
-    password: ctx.secretRef(PASSWORD.name),
+    user: login.user,
+    password: ctx.secretRef(login.secret),
   };
 }
 
@@ -206,6 +236,72 @@ function redisMaxmemoryMb(service: PlanService): number {
   return Math.floor(service.memoryMb * 0.75);
 }
 
+/**
+ * PostgreSQL's two logins with `logins: separate` (047, ADR 0037): the owner's, which only the
+ * release command uses, and the runtime's, which the app, its workers and cron use. The superuser
+ * `app` stays OpsCrew's own.
+ */
+const OWNER_LOGIN = { user: POSTGRES_OWNER, secret: "owner-password" } as const;
+/** The secret of PostgreSQL's owner's login, which the release's own env file holds. */
+export const POSTGRES_OWNER_SECRET = OWNER_LOGIN.secret;
+const RUNTIME_LOGIN = { user: POSTGRES_RUNTIME, secret: "runtime-password" } as const;
+
+/** The login of the app's own containers: the runtime's with `logins: separate`, else `app`. */
+function postgresAppLogin(service: PlanService): Login {
+  return postgresLogins(service) ? RUNTIME_LOGIN : APP_LOGIN;
+}
+
+/** PostgreSQL's address for `login`: the database `app` on the service's host. */
+function postgresUrl(ctx: ServiceContext, login: Login): string {
+  // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
+  // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
+  return loginUrl(ctx, "postgresql", 5432, "/app", login);
+}
+
+/**
+ * What PostgreSQL's release command logs in with under `logins: separate` (047): the address and
+ * the split settings of the owner's login, `app_owner`, which owns the app's schema.
+ */
+export function postgresOwner(ctx: ServiceContext): {
+  address: string;
+  settings: DatabaseSettings;
+} {
+  return { address: postgresUrl(ctx, OWNER_LOGIN), settings: sqlSettings(ctx, 5432, OWNER_LOGIN) };
+}
+
+/**
+ * What `logins: separate` adds to PostgreSQL's entry (047): the two logins' passwords, generated
+ * like `password`, and their rotations, each a swap in the container that sets the login's
+ * password over its socket (`loginPassword`), so the database never restarts.
+ */
+export const POSTGRES_LOGINS: { secrets: GeneratedSecret[]; rotation: SecretRotation[] } = {
+  secrets: [OWNER_LOGIN, RUNTIME_LOGIN].map(({ secret }) => ({ name: secret, format: "hex32" })),
+  rotation: [OWNER_LOGIN, RUNTIME_LOGIN].map(({ user, secret }) =>
+    swap(secret, 1, () => [sh(loginPassword(user))]),
+  ),
+};
+
+/** Where a Portainer stack's setup container reaches its service: the address the image trusts. */
+const LOOPBACK = "127.0.0.1";
+
+/**
+ * PostgreSQL's one-time setup with `logins: separate` (047): the two logins, the owners and the
+ * grants in one transaction (`loginsSetup`), unless its check finds them in place. As the superuser
+ * over the container's socket; in a Portainer stack's `<service>-init` container, which shares
+ * only the service's network, over {@link LOOPBACK}.
+ */
+function postgresInit(ctx: ServiceContext): ServiceInitStep[] {
+  if (!postgresLogins(ctx.service)) return [];
+  const portainer = ctx.plan.target.provider === "portainer";
+  return [
+    {
+      service: ctx.service.name,
+      check: sh(loginsCheck(portainer ? LOOPBACK : undefined)),
+      run: sh(`${portainer ? `export PGHOST=${LOOPBACK}; ` : ""}${loginsSetup(ctx.service.name)}`),
+    },
+  ];
+}
+
 const POSTGRES: ServiceSpec = {
   kind: "postgres",
   title: "PostgreSQL",
@@ -217,21 +313,30 @@ const POSTGRES: ServiceSpec = {
   memory: { defaultMb: 512, minimumMb: 256, smallestServerMb: 1024 },
   port: 5432,
   dataDir: "/var/lib/postgresql/data",
+  // With `logins: separate`, the two logins' passwords too: the setup reads them only to make a
+  // missing login.
   environment: (ctx) => ({
     POSTGRES_USER: "app",
     POSTGRES_DB: "app",
     POSTGRES_PASSWORD: ctx.secretRef(PASSWORD.name),
+    ...(postgresLogins(ctx.service)
+      ? {
+          [OWNER_PASSWORD_ENV]: ctx.secretRef(OWNER_LOGIN.secret),
+          [RUNTIME_PASSWORD_ENV]: ctx.secretRef(RUNTIME_LOGIN.secret),
+        }
+      : {}),
   }),
   healthcheck: () => ({ test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"] }),
+  init: postgresInit,
+  // `logins: separate` adds POSTGRES_LOGINS' secrets (the catalog's `serviceSecrets`).
   secrets: [PASSWORD],
-  // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
-  // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
-  address: (ctx) => loginUrl(ctx, "postgresql", 5432, "/app"),
+  address: (ctx) => postgresUrl(ctx, postgresAppLogin(ctx.service)),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
-  databaseSettings: (ctx) => sqlSettings(ctx, 5432),
+  databaseSettings: (ctx) => sqlSettings(ctx, 5432, postgresAppLogin(ctx.service)),
   targets: BOTH_TARGETS,
   // `app` is the image's superuser, which the container's socket lets in without a password; the
-  // image reads POSTGRES_PASSWORD on its first start only.
+  // image reads POSTGRES_PASSWORD on its first start only. `logins: separate` adds POSTGRES_LOGINS'
+  // rotations (the catalog's `serviceRotation`).
   rotation: {
     secrets: [
       swap(PASSWORD.name, 1, () => [
