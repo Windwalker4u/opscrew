@@ -134,6 +134,12 @@ Cloudflare's hosting also needs a second token for the deploy workflow,
 `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`, with only Account → Workers Scripts → Edit.
 `npx opscrew provision` stores it as a GitHub secret; it never stores `CLOUDFLARE_API_TOKEN` there.
 
+For the [uptime check in your Cloudflare account](alerts.md#in-your-cloudflare-account-instead-of-github-actions)
+(`observability.check.runner: cloudflare`), also add:
+
+- Account → Workers Scripts → Edit (the uptime Worker, its schedule and its secrets)
+- Account → Workers KV Storage → Edit, only for this check (the Worker's storage)
+
 [Tunnels](https://www.cloudflare.com/products/tunnel/), [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) and [R2](https://developers.cloudflare.com/r2/) need a few more; see
 [Cloudflare token permissions](cloudflare.md#cloudflare-token-permissions).
 
