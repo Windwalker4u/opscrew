@@ -28,7 +28,7 @@ can need a data migration, so that choice is yours.
 
 | Database | Variables | Address |
 |---|---|---|
-| PostgreSQL | `DATABASE_URL` | `postgresql://app:<password>@db:5432/app` |
+| PostgreSQL | `DATABASE_URL` | `postgresql://app_runtime:<password>@db:5432/app` |
 | MySQL | `DATABASE_URL` | `mysql://app:<password>@mysql:3306/app` |
 | MariaDB | `DATABASE_URL` | `mysql://app:<password>@mariadb:3306/app` |
 | MongoDB | `MONGODB_URI`, `DATABASE_URL` | `mongodb://app:<password>@mongodb:27017/app?authSource=admin` |
@@ -38,6 +38,11 @@ address too. OpsCrew generates each password, keeps it on the computer that ran
 `npx opscrew provision` (never in your repository) and hands it to the server through your
 repository's encrypted deploy secrets. The database listens only on the app's own network: no
 port is open to the internet, or to other apps on the server.
+
+PostgreSQL's address names `app_runtime`, a login that can only read and write data, and the
+release command gets the same variables with `app_owner` (see [Two logins](#two-logins)). A
+PostgreSQL made before OpsCrew 0.2.12 shows `app` here and in the split settings until it is
+switched, and one older than version 15 until it is upgraded.
 
 ### The split settings
 
@@ -50,7 +55,7 @@ the names it reads. OpsCrew derives them and never asks for them:
 | Host | `DB_HOST` | `db` | `mysql` | `mariadb` |
 | Port | `DB_PORT` | `5432` | `3306` | `3306` |
 | Database | `DB_DATABASE` or `DB_NAME` | `app` | `app` | `app` |
-| User | `DB_USERNAME` or `DB_USER` | `app` | `app` | `app` |
+| User | `DB_USERNAME` or `DB_USER` | `app_runtime` | `app` | `app` |
 | Password | `DB_PASSWORD` or `DB_PASS` | generated | generated | generated |
 
 For a database on [a server of its own](split-placement.md), the host is its private address.
@@ -65,6 +70,131 @@ Dragonfly it uses. A value of its `.env.example` that chose a service, such as
 `DB_CONNECTION=pgsql` or `QUEUE_CONNECTION=redis`, is given with that value, so the app uses the
 service OpsCrew runs. The PHP driver of each service is in the image (see
 [A plain PHP app](builders.md#a-plain-php-app)).
+
+## Two logins
+
+Your app never logs in to PostgreSQL as its superuser. A bug or an injection in the app can then
+read and write the app's data, but it can't change the schema, create logins, read password
+hashes or reach the server through the database. Each PostgreSQL 15 or later has three logins:
+
+| Login | Used by | What it may do |
+|---|---|---|
+| `app_runtime` | The web, the workers, cron and a preview's seed | Read, add, change and delete rows (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) and use sequences. Nothing else. |
+| `app_owner` | The release command, which runs your migrations | Owns the database, its schemas and everything your migrations create, so it can change the schema. |
+| `app` | OpsCrew only: the setup, snapshots, restores, moves and rotation | The superuser. No container of your app gets its password. |
+
+Design writes `logins: separate` under the database's options in `opscrew/plan.yaml`, and the first
+deploy makes `app_owner` and `app_runtime` before the release command runs. The release command
+reads the owner's login from its own file, `release.db.env`, beside `app.env`, so no other
+container of your app has it.
+
+- **Nothing at runtime may change the schema.** `CREATE TABLE`, `ALTER TABLE`, `CREATE TEMP TABLE`
+  and `TRUNCATE` from the web, a worker or cron are refused. Put every schema change in a
+  migration, which the release command runs as `app_owner`.
+- **Row-level security applies to your app.** `app_runtime` doesn't own the tables, so a policy on
+  a table limits the rows it sees, as it never did for the superuser.
+- **Other logins see nothing of the app's data unless granted.** OpsCrew takes away the rights
+  every login gets by default on the app's schemas and on temporary tables. The logins of
+  [your devices](private-network.md) and of the [monitoring](monitoring.md) keep working.
+
+Snapshots, restores, rollbacks, the restore drill and [moves](retarget.md) keep the owners and
+the grants, so `app_runtime` works after each of them as before.
+
+### Tables your migrations create
+
+Every table and sequence `app_owner` creates is usable by `app_runtime` at once, with no grant
+from you: PostgreSQL's default privileges give it the same rights as on the tables that exist,
+`serial` and `IDENTITY` ids included. A schema `app_owner` creates later gets `USAGE` for
+`app_runtime` the same way.
+
+Default privileges cover only what `app_owner` creates. A table made by another login, for
+example by hand as the superuser, needs its own grant.
+
+### Granting anything else
+
+Anything beyond reading and writing rows is yours to grant, in a migration, which runs as the
+owner. Guard the grant, so the same migration also runs on a database on your computer that has
+no `app_runtime`:
+
+```sql
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_runtime') THEN
+    GRANT TRUNCATE ON TABLE cache TO app_runtime;
+    GRANT TEMPORARY ON DATABASE app TO app_runtime;
+  END IF;
+END $$;
+```
+
+The first grant lets the app empty the table `cache`; the second lets it create temporary tables.
+Grant only what your app uses.
+
+Extensions your app created as the superuser before the switch stay the superuser's, and their
+functions keep working for both logins.
+
+### A library that makes its own schema
+
+Some libraries create their schema or tables when the app starts, such as
+[pg-boss](https://github.com/timgit/pg-boss) for job queues. As `app_runtime`, that is refused.
+Create the schema in a migration instead, and let the runtime login create objects in it:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS pgboss;
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_runtime') THEN
+    GRANT USAGE, CREATE ON SCHEMA pgboss TO app_runtime;
+  END IF;
+END $$;
+```
+
+Then start pg-boss with `createSchema: false`, so it doesn't try to create the schema itself. The
+tables it makes there are `app_runtime`'s own. The same works for any library that creates its own
+schema when the app starts.
+
+### PostgreSQL 15 or later
+
+Separate logins need PostgreSQL 15 or later; OpsCrew runs 17. A database that pins an older
+version keeps a single login, `app`, the superuser, and design and `npx opscrew provision` say
+so. Nothing refuses the older version, but adding `logins: separate` to it by hand is refused.
+To get separate logins, upgrade the database to 15 or later first (a new major version can need a
+data migration), then add `logins: separate`.
+
+### Switching an existing database
+
+A PostgreSQL made before OpsCrew 0.2.12 keeps its single login, and upgrading OpsCrew changes
+nothing on the server. Each `npx opscrew provision` then says how to switch. Before you do, make
+sure nothing in your app changes the schema outside its migrations (see above).
+
+1. Add `logins: separate` under the database's options in `opscrew/plan.yaml`:
+
+   ```yaml
+   services:
+     - name: db
+       kind: postgres
+       version: "17"
+       options:
+         logins: separate
+   ```
+
+2. Run `npx opscrew provision`. It shows the switch as a plan you approve by its hash:
+   - a snapshot of the database is taken first, and provision stops if it fails;
+   - the database restarts once, for a few seconds, with two new passwords;
+   - the next deploy makes `app_owner` and `app_runtime` and gives `app_owner` the database, its
+     schemas and the app's tables, in one transaction;
+   - from that deploy, the release command logs in as `app_owner`, and the app, workers and cron
+     as `app_runtime`.
+3. Deploy. If the setup fails, nothing changes: the deploy stops before the release command, and
+   the running version keeps its old login. When a login called `app_owner` or `app_runtime`
+   already exists with other rights, the setup says so: drop or rename it, then deploy again.
+
+There is no going back: once a plan has `logins: separate`, provision refuses to remove it, since
+that would give the app the superuser again.
+
+### Rotating the passwords
+
+`npx opscrew rotate db` changes the passwords of all three logins, and none of them restarts the
+database. See [Rotating your app's credentials](credential-rotation.md#services).
 
 ## Settings for small servers
 
