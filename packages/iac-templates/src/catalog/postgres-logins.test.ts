@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -30,8 +30,8 @@ const PASSWORDS = {
 };
 
 /**
- * A fake program that records its arguments (one per `[…]`) and its stdin, prints `$<NAME>_PRINTS`
- * and exits with `$<NAME>_EXIT` (`PSQL_…`, `PG_RESTORE_…`).
+ * A fake program that records its arguments (one per `[…]`), its stdin and the list file after
+ * `-L`, prints `$<NAME>_PRINTS` and exits with `$<NAME>_EXIT` (`PSQL_…`, `PG_RESTORE_…`).
  */
 function recorder(name: string): string {
   const prefix = name.toUpperCase();
@@ -40,21 +40,33 @@ function recorder(name: string): string {
     `printf '${name}' >> "$WORK/calls"`,
     'for a in "$@"; do printf \' [%s]\' "$a" >> "$WORK/calls"; done',
     'echo >> "$WORK/calls"',
+    'prev=; for a in "$@"; do [ "$prev" != -L ] || { cat "$a"; echo ==; } >> "$WORK/lists"; prev="$a"; done',
     `cat >> "$WORK/stdin-${name}"`,
     `[ -z "\${${prefix}_PRINTS:-}" ] || echo "$${prefix}_PRINTS"`,
     `exit "\${${prefix}_EXIT:-0}"`,
   ].join("\n");
 }
 
+/**
+ * `script` in a file of a new folder: Git Bash's sh, started from Node on Windows, cuts an argument
+ * after about 8,190 characters, which these scripts pass.
+ */
+function scriptFile(script: string): string {
+  const file = join(mkdtempSync(join(root, "script-")), "script.sh");
+  writeFileSync(file, script);
+  return file.replaceAll("\\", "/");
+}
+
 /** Runs `script` with sh, fake `psql` and `pg_restore` first on PATH and the passwords in its env. */
 function run(script: string, env: Record<string, string> = {}) {
   const work = mkdtempSync(join(root, "run-")).replaceAll("\\", "/");
   fakeBin(work, { psql: recorder("psql"), pg_restore: recorder("pg_restore") });
-  const result = spawnSync(
-    "sh",
-    ["-c", `PATH="$(cd "$WORK/bin" && pwd):$PATH"; export PATH; ${script}`],
-    { input: "", env: { ...process.env, ...PASSWORDS, WORK: work, ...env }, encoding: "utf8" },
-  );
+  const file = scriptFile(`PATH="$(cd "$WORK/bin" && pwd):$PATH"; export PATH; ${script}`);
+  const result = spawnSync("sh", [file], {
+    input: "",
+    env: { ...process.env, ...PASSWORDS, WORK: work, ...env },
+    encoding: "utf8",
+  });
   const read = (file: string) =>
     existsSync(join(work, file)) ? readFileSync(join(work, file), "utf8") : "";
   return {
@@ -62,6 +74,8 @@ function run(script: string, env: Record<string, string> = {}) {
     output: `${result.stdout}${result.stderr}`,
     calls: read("calls").split("\n").filter(Boolean),
     psqlStdin: read("stdin-psql"),
+    /** The list files given to `pg_restore -L`, in order. */
+    lists: read("lists").split("==\n").slice(0, -1),
   };
 }
 
@@ -90,7 +104,7 @@ describe("the logins' names", () => {
 
 describe.skipIf(!shWorks())("the logins' scripts", () => {
   it.each(Object.entries(SCRIPTS))("%s is sh", (_name, script) => {
-    const parsed = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
+    const parsed = spawnSync("sh", ["-n", scriptFile(script)], { encoding: "utf8" });
     expect(parsed.stderr).toBe("");
     expect(parsed.status).toBe(0);
   });
@@ -105,11 +119,12 @@ describe.skipIf(!shWorks())("the logins' scripts", () => {
     expect(ran.calls.length).toBeGreaterThan(0);
   });
 
-  it("names the service only in the setup's refusal", () => {
+  it("names the service only in the setup's refusals", () => {
     const [db, other] = [loginsSetup("db"), loginsSetup("cache")];
     const lines = (text: string) => text.split("\n");
     const differ = lines(db).filter((line, i) => line !== lines(other)[i]);
     expect(differ).toEqual([
+      expect.stringContaining("PostgreSQL db has event triggers"),
       expect.stringContaining(
         "already exists in db with other rights than OpsCrew gives it. Drop or rename it, then deploy again.",
       ),
@@ -176,18 +191,55 @@ describe.skipIf(!shWorks())("the setup", () => {
     expect(grants.psqlStdin).not.toMatch(/REASSIGN OWNED/);
   });
 
-  it("gives the runtime login its rights only on what it moves from the superuser", () => {
-    const grants = run(loginsGrants()).psqlStdin;
+  it("gives the runtime login its rights on what exists only before the owner's default privileges", () => {
+    const grants = run(loginsGrants()).psqlStdin.split("\n");
     // Granting on everything again would undo a migration's narrowing.
-    expect(grants).not.toMatch(/ON ALL (TABLES|SEQUENCES) IN SCHEMA/);
+    expect(grants.join("\n")).not.toMatch(/ON ALL (TABLES|SEQUENCES) IN SCHEMA/);
+    const first = grants.indexOf("\\if :first_grants");
+    const end = grants.indexOf("\\endif", first);
+    expect(grants[first - 1]).toContain("NOT EXISTS (SELECT FROM pg_default_acl");
+    const inside = grants.slice(first, end).join("\n");
     for (const grant of [
       "GRANT USAGE ON SCHEMA %I TO app_runtime",
       "GRANT SELECT, INSERT, UPDATE, DELETE ON %s TO app_runtime",
       "GRANT USAGE, SELECT ON SEQUENCE %s TO app_runtime",
       "GRANT SELECT, UPDATE ON LARGE OBJECT %s TO app_runtime",
     ]) {
-      expect(grants).toContain(grant);
+      expect(inside).toContain(grant);
     }
+    expect(grants.findIndex((line) => line.startsWith("ALTER DEFAULT PRIVILEGES"))).toBeGreaterThan(
+      end,
+    );
+  });
+
+  it("refuses a database with event triggers before anything else", () => {
+    const refusal = sql.findIndex((line) => line.includes("pg_event_trigger"));
+    expect(refusal).toBeGreaterThan(0);
+    expect(refusal).toBeLessThan(sql.findIndex((line) => line.startsWith("\\getenv")));
+    expect(ran.psqlStdin).toContain(
+      "PostgreSQL db has event triggers, and separate logins cannot run safely with them",
+    );
+  });
+
+  it("moves the owner of every kind of object the superuser may own", () => {
+    for (const statement of [
+      "ALTER SCHEMA",
+      "ALTER %s %s OWNER",
+      "ALTER ROUTINE",
+      "ALTER TYPE",
+      "ALTER COLLATION",
+      "ALTER STATISTICS",
+      "ALTER TEXT SEARCH CONFIGURATION",
+      "ALTER TEXT SEARCH DICTIONARY",
+      "ALTER OPERATOR %s",
+      "ALTER OPERATOR CLASS",
+      "ALTER OPERATOR FAMILY",
+      "ALTER LARGE OBJECT",
+    ]) {
+      expect(ran.psqlStdin).toContain(`format('${statement}`);
+    }
+    // Every object of an extension stays its own, its schema too.
+    expect(ran.psqlStdin).toContain("d.classid = 'pg_namespace'::regclass");
   });
 });
 
@@ -234,36 +286,81 @@ describe.skipIf(!shWorks())("a password's rotation", () => {
 
 describe.skipIf(!shWorks())("the load of a dump", () => {
   const file = "/backup/app.dump";
+  /** A dump's table of contents, as `pg_restore -l` prints it. */
+  const TOC = [
+    ";",
+    "; Selected TOC Entries:",
+    ";",
+    "6; 2615 2200 SCHEMA - public app_owner",
+    "3466; 0 0 ACL - SCHEMA public app_owner",
+    "7; 2615 16439 SCHEMA - shop app_owner",
+    "2; 3079 16402 EXTENSION - pgcrypto ",
+    "3468; 0 0 COMMENT - EXTENSION pgcrypto ",
+    "255; 1255 16449 FUNCTION public ok(integer) app_owner",
+    "218; 1259 16441 TABLE shop t app_owner",
+    "3469; 0 0 ACL shop TABLE t app_owner",
+    "3457; 0 16441 TABLE DATA shop t app_owner",
+    "3366; 0 16458 TABLE DATA ext settings app",
+    "3504; 2613 16447 BLOB METADATA - 16447 app_owner",
+    "2090; 826 16448 DEFAULT ACL - DEFAULT PRIVILEGES FOR TABLES app_owner",
+  ];
+  /** The fakes' output: the TOC from `pg_restore -l`, an extension's table from the config query. */
+  const DUMP = { PG_RESTORE_PRINTS: TOC.join("\n"), PSQL_PRINTS: " TABLE DATA ext settings " };
+  const entries = (list: string | undefined) =>
+    (list ?? "").split("\n").filter((line) => /^\d+;/.test(line));
 
-  it("makes the logins, then the database, restores with the owners and gives the grants", () => {
-    const ran = run(loginsLoad({ host: "db", file, setup: true }));
+  it("restores as the owner login, with only the extensions and ACLs as the superuser", () => {
+    const ran = run(loginsLoad({ host: "db", file, setup: true }), DUMP);
     expect(ran.status).toBe(0);
-    expect(ran.calls).toHaveLength(4);
-    const [roles, database, restore, grants] = ran.calls;
+    const [toc, roles, database, superuser, moves, config, owner, later, grants] = ran.calls;
+    expect(ran.calls).toHaveLength(9);
+    expect(toc).toBe(`pg_restore [-l] [${file}]`);
     expect(roles).toContain("[-h] [db] [-U] [app] [-d] [postgres]");
     expect(database).toContain(
       "[-c] [DROP DATABASE IF EXISTS app WITH (FORCE)] [-c] [CREATE DATABASE app OWNER app_owner]",
     );
-    expect(restore).toBe(
-      `pg_restore [-h] [db] [-U] [app] [-d] [app] [--single-transaction] [${file}]`,
+    expect(superuser).toMatch(/^pg_restore \[-h\] \[db\] \[-U\] \[app\] .*\[--no-owner\] .*\[-L\]/);
+    expect(moves).toContain("[-U] [app] [-d] [app]");
+    expect(config).toContain("[-At]");
+    // The owner logs in itself: under the superuser's login, `SET ROLE` (`--role`) can be reset.
+    expect(owner).toMatch(
+      /^pg_restore \[-h\] \[db\] \[-U\] \[app_owner\] .*\[--no-owner\] .*\[-L\]/,
     );
+    expect(owner).not.toContain("--role");
+    expect(later).toMatch(/^pg_restore \[-h\] \[db\] \[-U\] \[app\] .*\[-L\]/);
+    expect(later).not.toContain("--no-owner");
     expect(grants).toContain("[-h] [db] [-U] [app] [-d] [app]");
-    expect(ran.psqlStdin).toContain(`\\getenv owner_password ${OWNER_PASSWORD_ENV}`);
+    expect(ran.lists.map(entries)).toEqual([
+      [TOC[3], TOC[5], TOC[6], TOC[7]],
+      [TOC[8], TOC[9], TOC[11], TOC[13]],
+      [TOC[4], TOC[10], TOC[14], TOC[12]],
+    ]);
+    expect(ran.psqlStdin).toContain(`getenv owner_password ${OWNER_PASSWORD_ENV}`);
+  });
+
+  it("refuses a dump with event triggers before anything changes", () => {
+    const toc = [...TOC, "3311; 3466 16450 EVENT TRIGGER - et app"].join("\n");
+    const ran = run(loginsLoad({ host: "db", file, setup: true }), { PG_RESTORE_PRINTS: toc });
+    expect(ran.status).not.toBe(0);
+    expect(ran.calls).toEqual([`pg_restore [-l] [${file}]`]);
+    expect(ran.output).toContain(
+      "PostgreSQL db has event triggers, and separate logins cannot run safely with them",
+    );
   });
 
   it("without the setup, checks that both logins exist first", () => {
-    const ran = run(loginsLoad({ host: "db", file, setup: false }), { PSQL_PRINTS: "2" });
+    const ran = run(loginsLoad({ host: "db", file, setup: false }), { ...DUMP, PSQL_PRINTS: "2" });
     expect(ran.status).toBe(0);
-    expect(ran.calls).toHaveLength(4);
-    expect(ran.calls[0]).toContain("[-d] [postgres]");
-    expect(ran.calls[0]).toContain("app_owner");
+    expect(ran.calls).toHaveLength(9);
+    expect(ran.calls[1]).toContain("[-d] [postgres]");
+    expect(ran.calls[1]).toContain("app_owner");
     expect(ran.psqlStdin).not.toContain("getenv");
   });
 
   it("without the setup or the logins, refuses with a plain message and drops nothing", () => {
     const ran = run(loginsLoad({ host: "db", file, setup: false }), { PSQL_PRINTS: "0" });
     expect(ran.status).not.toBe(0);
-    expect(ran.calls).toHaveLength(1);
+    expect(ran.calls).toHaveLength(2);
     expect(ran.output).toContain(
       "PostgreSQL db has no logins app_owner and app_runtime, so OpsCrew loaded nothing into it.",
     );
@@ -272,6 +369,6 @@ describe.skipIf(!shWorks())("the load of a dump", () => {
   it("stops at the first step that fails", () => {
     const ran = run(loginsLoad({ host: "db", file, setup: true }), { PSQL_EXIT: "3" });
     expect(ran.status).not.toBe(0);
-    expect(ran.calls).toHaveLength(1);
+    expect(ran.calls).toHaveLength(2);
   });
 });
