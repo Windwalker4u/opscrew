@@ -11,8 +11,10 @@ account](028-cloudflare-account-move/) as 0.2.10. [029 hosting at home](029-home
 several apps on a server OpsCrew created](030-shared-created-server/) and [031 a move's maintenance
 window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 2026-11-21.
 **Next:**
-- **The release after 0.2.11:** [032 a Codex plugin](032-codex-plugin/) (built) and 040 an agent on
-  the server, the founder's decisions of 2026-11-21.
+- **0.2.12, first** (the founder, 2026-11-25): 046 an uptime check that doesn't use GitHub Actions,
+  the agent tool policy's security fixes (#16 to #24) and the fixes in #26.
+- **0.2.13:** [032 a Codex plugin](032-codex-plugin/) (built) and 040 an agent on the server, the
+  founder's decisions of 2026-11-21, released together.
 - **Beside them:** 035's first providers, started by a second contributor.
 - **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
@@ -637,7 +639,7 @@ The founder's go-ahead of 2026-11-21, for after 032 and 040: a user who builds t
 - **The spec goes to the dashboard's lead** as soon as it is committed (agreed 2026-11-22): each
   op's flags, the versioned `report.json` schema and where the core exports it, the `secrets[]`
   entry, and the `operate` job's inputs. The dashboard builds nothing on 041 before then. It is
-  written during 040's build, so it is ready when 0.2.12 ships.
+  written during 040's build, so it is ready when 0.2.13 ships.
 - **The run's AI cost goes into `report.json`** (the dashboard's lead, 2026-11-25): the cost
   ledger's entries for the run, totalled per model, so the dashboard shows AI spent on the user's
   own keys without reading a second artifact.
@@ -965,12 +967,12 @@ module's first version: an app's PostgreSQL service names the extensions it need
   role that may create them, so the app's own role needs no more rights.
 - **The lifecycle:** snapshots, restores, restore drills and moves keep the extensions, and
   switching an existing database's image is shown in the plan with its restart.
-- **After 0.2.12,** and after the database changes of the private-deployment contribution are
+- **After 0.2.13,** and after the database changes of the private-deployment contribution are
   settled, since both change the same PostgreSQL service.
 
 ## 046 An uptime check that doesn't use GitHub Actions
 
-The founder's decision (2026-11-25), shipping in 0.2.12 with 032 and 040. In a private
+The founder's decision (2026-11-25): built first and released as 0.2.12, before 032 and 040. In a private
 repository the scheduled check costs Actions minutes, so a user who turns it off has no down alert
 at all. Cloudflare's standalone Health Checks need the Pro plan, but Workers' free plan has Cron
 Triggers (5 per account), with fetch time not counted as CPU.
