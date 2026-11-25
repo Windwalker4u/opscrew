@@ -420,6 +420,17 @@ describe.skipIf(reason !== undefined).each(VERSIONS)(
           ).output,
         ).toBe("t|4|1000|1000\n");
         for (const table of ["items", "shop.orders", "shop.lines"]) dataWork(db, table);
+        // The large object made before the switch: the runtime login reads and writes it.
+        const largeObject = "(SELECT oid FROM pg_largeobject_metadata)";
+        expect(
+          db.runtime(
+            [
+              `SELECT convert_from(lo_get(${largeObject}), 'UTF8');`,
+              `SELECT count(*) FROM (SELECT lo_put(${largeObject}, 0, 'A')) AS put;`,
+              `SELECT convert_from(lo_get(${largeObject}), 'UTF8');`,
+            ].join("\n"),
+          ).output,
+        ).toBe("a large object\n1\nA large object\n");
         switched = objects(db);
       });
 
@@ -432,10 +443,25 @@ describe.skipIf(reason !== undefined).each(VERSIONS)(
         expect(db.checks()).toBe(true);
       });
 
+      const deleteOnLines = "SELECT has_table_privilege('app_runtime', 'shop.lines', 'DELETE');";
+
+      it("keeps a migration's narrowing of the runtime login through the setup", () => {
+        expect(db.owner("REVOKE DELETE ON shop.lines FROM app_runtime;").output).toBe("");
+        expect(db.checks()).toBe(true);
+        const again = db.sh(loginsSetup("db"));
+        expect(again.status).toBe(0);
+        expect(db.sql(deleteOnLines)).toBe("f");
+        const refused = db.runtime("DELETE FROM shop.lines WHERE id < 0;");
+        expect(refused.output).toContain("permission denied for table lines");
+        // Every load below must keep it.
+        switched = objects(db);
+      });
+
       /** The checks after a load into `target`: the source's owners and grants, and a new table. */
       function loaded(target: Database): void {
         expect(target.sql(ROW_COUNTS)).toBe("1000|1000|1000");
         expect(objects(target)).toBe(switched);
+        expect(target.sql(deleteOnLines)).toBe("f");
         expect(target.checks()).toBe(true);
         expect(target.owner("CREATE TABLE after_load (id serial, v text);").output).toBe("");
         dataWork(target, "after_load");

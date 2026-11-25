@@ -175,12 +175,33 @@ describe.skipIf(!shWorks())("the setup", () => {
     expect(grants.psqlStdin).not.toMatch(/REVOKE CONNECT/);
     expect(grants.psqlStdin).not.toMatch(/REASSIGN OWNED/);
   });
+
+  it("gives the runtime login its rights only on what it moves from the superuser", () => {
+    const grants = run(loginsGrants()).psqlStdin;
+    // Granting on everything again would undo a migration's narrowing.
+    expect(grants).not.toMatch(/ON ALL (TABLES|SEQUENCES) IN SCHEMA/);
+    for (const grant of [
+      "GRANT USAGE ON SCHEMA %I TO app_runtime",
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON %s TO app_runtime",
+      "GRANT USAGE, SELECT ON SEQUENCE %s TO app_runtime",
+      "GRANT SELECT, UPDATE ON LARGE OBJECT %s TO app_runtime",
+    ]) {
+      expect(grants).toContain(grant);
+    }
+  });
 });
 
 describe.skipIf(!shWorks())("the check", () => {
   it("exits 0 only when the query prints t", () => {
     expect(run(loginsCheck(), { PSQL_PRINTS: "t" }).status).toBe(0);
     expect(run(loginsCheck(), { PSQL_PRINTS: "f" }).status).not.toBe(0);
+  });
+
+  it("leaves the runtime login's rights on tables and schemas to the app", () => {
+    const sql = run(loginsCheck(), { PSQL_PRINTS: "t" }).psqlStdin;
+    expect(sql).not.toMatch(/has_(table|sequence)_privilege/);
+    expect(sql).not.toContain("has_schema_privilege(to_regrole('app_runtime')");
+    expect(sql).toContain("pg_default_acl");
   });
 
   it("logs in over TCP to the host it is given", () => {
