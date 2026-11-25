@@ -148,7 +148,7 @@ describe("renderPreviewRecipe", () => {
       );
     }
     const services = parse(recipe(previewPlan())["template/compose.yaml"] ?? "").services;
-    expect(services.seed.command).toEqual(["sh", "-c", "npm run seed"]);
+    expect(services.seed.command).toEqual(["npm", "run", "seed"]);
     expect(services.seed.profiles).toEqual(["seed"]);
   });
 

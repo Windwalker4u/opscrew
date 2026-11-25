@@ -466,12 +466,26 @@ export function crontab(plan: DeployPlan): string {
 
 /**
  * How a worker's command starts per builder ({@link oneOffStart}), as PID 1 so it gets SIGTERM
- * (contracts/components.md "Process start forms"): the command starts with `exec`. Under
- * Buildpacks it runs through the launcher, also for a Procfile worker, whose name need not be its
- * Procfile type.
+ * (contracts/components.md "Process start forms"): in exec form, or through a shell that starts it
+ * with `exec`. Under Buildpacks it runs through the launcher, also for a Procfile worker, whose
+ * name need not be its Procfile type.
  */
 function workerStart(plan: DeployPlan, worker: DeployPlan["processes"]["workers"][number]): object {
-  return oneOffStart(plan, `exec ${worker.command}`);
+  return oneOffStart(plan, worker.command, { exec: true });
+}
+
+/** A word that means nothing to a POSIX shell: no quotes, variables, globs, `~` or operators. */
+const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/**
+ * `command`'s words when it needs no shell: plain words ({@link PLAIN_WORD}) on one line, the
+ * first no `VAR=value` assignment; undefined otherwise (`&&`, `|`, `;`, redirections, `$`,
+ * backticks, quotes, globs, `~`, a line break, a leading assignment).
+ */
+function plainWords(command: string): string[] | undefined {
+  const words = command.trim().split(/[ \t]+/);
+  if (!words.every((word) => PLAIN_WORD.test(word))) return undefined;
+  return words[0]?.includes("=") ? undefined : words;
 }
 
 /**
@@ -487,15 +501,20 @@ export function oneOffShell(plan: DeployPlan): readonly string[] {
 }
 
 /**
- * How a one-off container of the app's image (the release command, a preview's seed) runs `script`
- * per builder ({@link oneOffShell}), as {@link workerStart} does but without `exec`, since the
- * script may chain commands; Buildpacks' through its launcher.
+ * How a container of the app's image runs `script` (a worker's command, the release command, a
+ * preview's seed) per builder ({@link oneOffShell}): with `sh -c`, plain words ({@link plainWords})
+ * run in exec form instead, so the image's own `ENTRYPOINT` gets the command itself; otherwise the
+ * shell runs it, after `exec` with `o.exec` (a worker's, which must be PID 1), and without it for
+ * a one-off, whose script may chain commands. Buildpacks' runs through its launcher.
  */
 export function oneOffStart(
   plan: DeployPlan,
   script: string,
+  o: { exec?: boolean } = {},
 ): { entrypoint?: string[]; command: string[] } {
-  const command = [...oneOffShell(plan), composeLiteral(script)];
+  const shell = oneOffShell(plan);
+  const words = shell.length > 0 ? plainWords(script) : undefined;
+  const command = words ?? [...shell, composeLiteral(o.exec === true ? `exec ${script}` : script)];
   return plan.app.build?.builder === "buildpacks"
     ? { entrypoint: ["/cnb/lifecycle/launcher"], command }
     : { command };

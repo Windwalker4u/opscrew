@@ -479,6 +479,39 @@ describe("the workers", () => {
     expect(dollar.worker?.command).toEqual(["sh", "-c", "exec rq worker $$QUEUES"]);
   });
 
+  it("start in exec form without a shell when the command is plain words, so the image's ENTRYPOINT gets it", () => {
+    const plain = services(
+      withApp(withServices([]), {
+        builder: "own-dockerfile",
+        workers: [{ name: "queue", command: "php artisan queue:work --tries=3", source: "user" }],
+      }),
+    );
+    expect(plain.queue?.command).toEqual(["php", "artisan", "queue:work", "--tries=3"]);
+    const shells = [
+      "node a.js && node b.js",
+      "node a.js || true",
+      "node a.js; node b.js",
+      "node a.js | tee out",
+      "node a.js > out",
+      "node a.js < in",
+      "node `which a`",
+      "node 'a b.js'",
+      'node "a b.js"',
+      "node *.js",
+      "node ~/a.js",
+      "NODE_ENV=production node a.js",
+    ];
+    for (const command of shells) {
+      const rendered = services(
+        withApp(withServices([]), {
+          builder: "own-dockerfile",
+          workers: [{ name: "worker", command, source: "user" }],
+        }),
+      );
+      expect(rendered.worker?.command).toEqual(["sh", "-c", `exec ${command}`]);
+    }
+  });
+
   it("start the way each builder's image needs (snapshot)", () => {
     const forms = Object.fromEntries(
       (["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"] as const).map(
@@ -522,7 +555,8 @@ describe("the workers", () => {
       command: ["exec node queue.js"],
     });
     expect(forms.railpack?.cron.command).toEqual(["exec supercronic /etc/opscrew/crontab"]);
-    expect(forms["own-dockerfile"]?.worker.command).toEqual(["sh", "-c", "exec node worker.js"]);
+    expect(forms["own-dockerfile"]?.worker.command).toEqual(["node", "worker.js"]);
+    expect(forms["generated-dockerfile"]?.worker.command).toEqual(["node", "worker.js"]);
     expect(forms).toMatchSnapshot();
   });
 });

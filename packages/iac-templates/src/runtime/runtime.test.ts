@@ -167,6 +167,26 @@ describe("renderCompose", () => {
     ]);
   });
 
+  it("runs a release command of plain words in exec form, so the image's ENTRYPOINT gets it, but one string for Railpack and Buildpacks", () => {
+    const command = "php artisan migrate --force";
+    const release = (
+      builder: "railpack" | "buildpacks" | "generated-dockerfile" | "own-dockerfile",
+    ) =>
+      parse(
+        renderCompose(plan({ release: command, build: { builder, language: "php", probe: "php" } }))
+          .content,
+      ).services.release;
+    expect(release("own-dockerfile").command).toEqual(["php", "artisan", "migrate", "--force"]);
+    expect(release("generated-dockerfile").command).toEqual([
+      "php",
+      "artisan",
+      "migrate",
+      "--force",
+    ]);
+    expect(release("railpack").command).toEqual([command]);
+    expect(release("buildpacks").command).toEqual([command]);
+  });
+
   it("runs a preview's seed command as a one-off service like the release command's, never started by up", () => {
     const p = plan({ redis: true, release: "npm run migrate" });
     const seed = "npm run seed -- --name $USER";
