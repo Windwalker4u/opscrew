@@ -162,9 +162,12 @@ A dependency to add goes through an issue too. If no one answers within a day an
 small and additive (a new optional field, a new enum value), make it and link the issue.
 
 **To be woken by an answer** instead of checking by hand, run
-`node scripts/watch-github.mjs --wake-on softzer0 --title "[NNN]"` as a background task. It ends
+`node scripts/watch-github.mjs --wake-on softzer0 --title "NNN"` as a background task. It ends
 within seconds of the core lead's comment, issue, review or pull request activity, which wakes
 your session; start it again after each wake.
+- **The number alone** (`--title "044"`, not `"[044]"`) matches both your `[044] …` issues and
+  your pull request, whose title should name it too (`feat(044): …`). With the brackets, a review
+  on your pull request never wakes you.
 - **Instant wakes** come through `gh webhook forward`. That needs the `admin:repo_hook` scope and
   admin rights on the repository.
 - **Without them,** it checks every 5 minutes instead. Its header comment says the rest.
