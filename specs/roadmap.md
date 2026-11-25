@@ -1017,6 +1017,24 @@ Triggers (5 per account), with fetch time not counted as CPU.
   - **The Worker alerts** through the same webhook, and also when a server's heartbeat is more
     than a day late. Together with the 5-minute address check, that covers a server that's down.
 
+## 047 An app's PostgreSQL never runs as the superuser
+
+The dashboard's lead (2026-11-25), for DevMem's row-level security, which a superuser ignores even
+when forced. Today an app connects as the image's `POSTGRES_USER`, a superuser, so a bug or an
+injection in the app has every right.
+- **Two logins:** an owner used only by the release command (migrations), and a runtime login for
+  the web, worker and cron processes, which is `NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+  NOREPLICATION NOBYPASSRLS`, with `PUBLIC` revoked and default privileges, so new tables just
+  work. The bootstrap superuser stays with database administration only.
+- **The default** for new databases. An existing database gets a guided switch, in place, through
+  a plan approved by its hash, and a failed switch changes nothing.
+- **The starting point:** the PostgreSQL part of an outside contribution reviewed on 2026-11-25
+  (separate logins, the grants replayed after each release, restore and moves keeping the roles).
+  That part reviewed as sound; its rotation must not restart the database.
+- **Research:** a library that creates its own schema at runtime (pg-boss) needs that schema made
+  by the owner first, or `CREATE` on it.
+- **After 0.2.13,** beside 045, which changes the same PostgreSQL service.
+
 ## Later, not yet placed
 
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
