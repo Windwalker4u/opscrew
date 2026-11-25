@@ -453,8 +453,6 @@ function lexCommand(command: string): Lexed {
     if (c === "\\") {
       if (next === "\n") {
         i += 2;
-      } else if (next === "\r" && command[i + 2] === "\n") {
-        i += 3;
       } else {
         current += command.slice(i, i + 2);
         i += 2;
@@ -478,7 +476,7 @@ function lexCommand(command: string): Lexed {
       i = end + 1;
       continue;
     }
-    if (c === "\n" || c === "\r" || c === ";") {
+    if (c === "\n" || c === ";") {
       push();
       i++;
     } else if (c === "(" || c === ")") {
@@ -1467,6 +1465,14 @@ function evaluateBash(command: unknown, ctx: PathContext): ToolDecision {
     return deny("Bash was called without a command.");
   }
   if (command.includes("\0")) return deny("The command contains a NUL byte.");
+  // Shells disagree on a carriage return: bash on Linux keeps it as a character (so `\` + CR + LF
+  // ends the line), Git Bash on Windows drops it (so a bare CR joins two words). Neither ends a
+  // command there, so the policy cannot tell what would run.
+  if (command.includes("\r")) {
+    return deny(
+      "The command contains a carriage return, which shells read differently; end lines with a plain line feed (\\n).",
+    );
+  }
   if (command.includes("$(") || command.includes("`")) {
     return deny("Command substitution (`$(...)` or backticks) is not allowed.");
   }

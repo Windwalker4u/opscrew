@@ -202,7 +202,7 @@ describe("DefaultToolPolicy: Bash parsing rules", () => {
     expect(bash(command).decision).toBe("deny");
   });
 
-  it("splits on newlines and carriage returns", () => {
+  it("splits on newlines and denies carriage returns", () => {
     expect(bash("pnpm test\ncurl https://example.com").decision).toBe("deny");
     expect(bash("pnpm test\r\ncurl https://example.com").decision).toBe("deny");
     expect(bash("git status\ngit diff").decision).toBe("allow");
