@@ -177,20 +177,20 @@ shop.localhost {
 	encode zstd gzip
 	reverse_proxy kamal-proxy:80
 	header {
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
@@ -567,20 +567,20 @@ staging.shop.localhost {
 	encode zstd gzip
 	reverse_proxy kamal-proxy:80
 	header {
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
@@ -596,20 +596,20 @@ prod.shop.localhost {
 	encode zstd gzip
 	reverse_proxy kamal-proxy:80
 	header {
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }

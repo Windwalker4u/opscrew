@@ -332,16 +332,17 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
   }
   // No HSTS on this computer: it would hold the hostname to HTTPS on every port for a year.
   const hsts = hosts.length > 0 && site.local === undefined;
-  // HSTS is always OpsCrew's; each other default only when the app sent none (`?`), so an app's
-  // own value wins. The server's name and the app's framework (`X-Powered-By`) are removed.
+  // HSTS is always OpsCrew's; the server's name and the app's framework (`X-Powered-By`) are
+  // removed. Each other default only when the app sent none (`?`), so an app's own value wins: one
+  // directive each, since Caddy skips a whole directive once any of its `?` headers is set.
   const header = [
     "\theader {",
     ...(hsts ? [`\t\tStrict-Transport-Security "${HSTS}"`] : []),
-    ...BASELINE_HEADERS.map(([name, value]) => `\t\t?${name} "${value}"`),
     ...(site.noindex ? ['\t\tX-Robots-Tag "noindex"'] : []),
     "\t\t-Server",
     "\t\t-X-Powered-By",
     "\t}",
+    ...BASELINE_HEADERS.map(([name, value]) => `\theader ?${name} "${value}"`),
   ];
   const proxy = [
     ...(site.realIp ? ["\t\theader_up X-Forwarded-For {client_ip}"] : []),

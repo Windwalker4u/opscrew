@@ -380,12 +380,13 @@ describe("the app's site file", () => {
     const header = [
       "\theader {",
       '\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"',
-      '\t\t?X-Content-Type-Options "nosniff"',
-      '\t\t?X-Frame-Options "SAMEORIGIN"',
-      '\t\t?Referrer-Policy "strict-origin-when-cross-origin"',
       "\t\t-Server",
       "\t\t-X-Powered-By",
       "\t}",
+      // One directive each: Caddy skips a whole directive once any of its `?` headers is set.
+      '\theader ?X-Content-Type-Options "nosniff"',
+      '\theader ?X-Frame-Options "SAMEORIGIN"',
+      '\theader ?Referrer-Policy "strict-origin-when-cross-origin"',
     ];
     for (const content of sites) {
       // Every block that serves the app; www's only redirects.

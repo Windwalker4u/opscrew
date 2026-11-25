@@ -255,10 +255,10 @@ describe("the app's site on this computer", () => {
     expect(caddy).toContain(
       [
         "\theader {",
-        ...baseline.map(([n, v]) => `\t\t?${n} "${v}"`),
         "\t\t-Server",
         "\t\t-X-Powered-By",
         "\t}",
+        ...baseline.map(([n, v]) => `\theader ?${n} "${v}"`),
       ].join("\n"),
     );
     for (const [name, value] of baseline) {

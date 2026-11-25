@@ -9,21 +9,21 @@ blog.example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
@@ -48,21 +48,21 @@ example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 	# Your own additions (opscrew/proxy/additions.caddy).
@@ -251,21 +251,21 @@ http://shop.example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
@@ -443,21 +443,21 @@ example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
@@ -583,21 +583,21 @@ blog.example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
@@ -610,21 +610,21 @@ example.com {
 	reverse_proxy kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		?X-Content-Type-Options "nosniff"
-		?X-Frame-Options "SAMEORIGIN"
-		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
+	header ?X-Content-Type-Options "nosniff"
+	header ?X-Frame-Options "SAMEORIGIN"
+	header ?Referrer-Policy "strict-origin-when-cross-origin"
 	handle_errors {
 		header {
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
-			?X-Content-Type-Options "nosniff"
-			?X-Frame-Options "SAMEORIGIN"
-			?Referrer-Policy "strict-origin-when-cross-origin"
 			-Server
 			-X-Powered-By
 		}
+		header ?X-Content-Type-Options "nosniff"
+		header ?X-Frame-Options "SAMEORIGIN"
+		header ?Referrer-Policy "strict-origin-when-cross-origin"
 		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
