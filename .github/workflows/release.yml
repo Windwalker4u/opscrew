@@ -43,8 +43,15 @@ jobs:
           fi
       - run: pnpm turbo run typecheck --filter=opscrew
       - run: pnpm --filter opscrew build
-      - name: The bundle runs
-        run: node packages/cli/dist/opscrew.js --version
+      # A build off the release tag reports `<version>-dev.<sha>`, so the bundle must report the
+      # tag's version exactly, or a dev-stamped CLI would reach npm.
+      - name: The bundle runs and reports the release's version
+        run: |
+          built="$(node packages/cli/dist/opscrew.js --version)"
+          if [ "$built" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::The bundle reports ${built}, not ${GITHUB_REF_NAME#v}: the build didn't see the release tag."
+            exit 1
+          fi
       # The tarball is packed once, staged, and kept as the run's artifact, so the plugin's lockfile
       # can take its integrity before a maintainer approves the version (scripts/plugin-lock.mjs).
       - name: Pack the CLI
