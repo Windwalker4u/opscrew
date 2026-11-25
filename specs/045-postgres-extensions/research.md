@@ -80,8 +80,12 @@ relocatable = true
 - **Moves (`retarget` / `move`):** the destination database container renders from the same plan (`extensions: [vector]`), so it starts with the `pgvector/pgvector` image; the move's one-off load step runs as superuser `app`, creating the extension cleanly during `pg_restore` (or before restore via the setup step).
 - **Pin carryover (`pins-carry`):** when a plan switches from `postgres:17-alpine` to `pgvector/pgvector:0.8.7-pg17-trixie`, existing pin carryover logic must carry pins only when the image repository matches (not keep `postgres:17-alpine` over `pgvector/pgvector`).
 
-## R6. Questions to confirm once 047 lands
+## R6. Core lead decisions (2026-11-25, issue `#28`)
 
-1. **Plan schema location:** confirm `service.options.extensions` (alongside 047's `service.options.logins`, e.g. `options: { logins: "separate", extensions: ["vector"] }`) vs top-level `service.extensions`.
-2. **Supported extension list:** confirm starting with `vector` (via `pgvector/pgvector`) plus the curated list of standard PostgreSQL `contrib` extensions that need no `shared_preload_libraries` (`pgcrypto`, `uuid-ossp`, `pg_trgm`, `citext`, `hstore`, `unaccent`, `fuzzystrmatch`, `btree_gin`, `btree_gist`, `ltree`, `intarray`, `cube`, `earthdistance`, `tablefunc`, `isn`, `lo`, `bloom`), and refusing `pg_stat_statements` / `postgis` / unknown names with clear next steps.
-3. **Existing-database Alpine → Debian switch:** confirm snapshot-first + container image switch + `REINDEX DATABASE app` + `ALTER DATABASE app REFRESH COLLATION VERSION` (tested in Docker from a populated `postgres:17-alpine` volume).
+All three recommendations were approved by the core's lead (`softzer0`) on 2026-11-25:
+
+1. **Plan field:** `service.options.extensions: string[]`, beside 047's `service.options.logins` (approved as an optional, additive field in `packages/plan-schema`).
+2. **Supported list:** `vector` (switches the pinned image to `pgvector/pgvector` by digest) plus the curated list of standard PostgreSQL `contrib` extensions that need no `shared_preload_libraries` (`pgcrypto`, `uuid-ossp`, `pg_trgm`, `citext`, `hstore`, `unaccent`, `fuzzystrmatch`, `btree_gin`, `btree_gist`, `ltree`, `intarray`, `cube`, `earthdistance`, `tablefunc`, `isn`, `lo`, `bloom`), staying on `postgres:*-alpine`. Refuse `postgis` and any unknown name before anything changes, listing the supported extensions; the guide says PostGIS comes later if users ask.
+3. **Switching an existing database's image (musl -> glibc):** a snapshot first, the image switch approved by its hash, then `REINDEX DATABASE` and `ALTER DATABASE ... REFRESH COLLATION VERSION` in the setup step. The plan states plainly that it restarts the database and that reindexing can take a while on a large database. Proven in the `OPSCREW_DOCKER_TESTS=1` Docker test starting from a populated `postgres:17-alpine` volume with a text index.
+4. **Privileges:** `vector` is untrusted, so `CREATE EXTENSION IF NOT EXISTS` runs inside 047's superuser setup step before migrations, requiring no extra privileges on `app_owner` or `app_runtime`.
+
