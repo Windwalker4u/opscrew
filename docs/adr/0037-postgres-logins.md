@@ -61,16 +61,33 @@ object. Its PostgreSQL design reviewed as sound, but:
     plan, approved by hash: a snapshot first, one database restart (the env gains the two
     passwords), then the deploy's setup step.
   - **The setup step:** it makes the logins and moves ownership from `app` to `app_owner` object
-    by object, since `REASSIGN OWNED` can't take objects from a bootstrap superuser.
+    by object, since `REASSIGN OWNED` can't take objects from a bootstrap superuser. Extensions'
+    objects, their own schemas too, stay the superuser's.
+  - **Event triggers:** the setup and every load refuse a database that has them, before anything
+    changes. Their functions run as whoever changes the database, so the superuser's setup would
+    run code the owner may change.
   - **A failure:** it changes nothing.
-- **D5. Loads run as the superuser and keep the dump's owners.**
+- **D5. Loads restore the app's objects as `app_owner`, never as the superuser.**
   - **Which loads:** every restore, rollback, drill and move.
-  - **How:** create `app` owned by `app_owner`, run `pg_restore` without `--no-owner`, then
-    reapply the database-level grants, which a dump without `--create` doesn't carry.
-  - **Why the superuser:** a snapshot is OpsCrew's own dump, loaded as the superuser today, and a
-    load as the owner fails on objects only a superuser can own (extensions).
+  - **Why:** a CHECK, a domain or a trigger can call a function `app_owner` owns while the rows are
+    restored, and run as the superuser it could make `app_owner` a superuser (the outside review
+    of 2026-11-25 showed it). So `pg_restore` logs in as `app_owner` itself. `--role=app_owner`
+    under the superuser's login isn't enough: the function can `RESET ROLE` back to the superuser.
+  - **How:**
+    - create `app` owned by `app_owner`;
+    - as the superuser, the dump's schemas and extensions (extensions need a superuser), then the
+      schemas moved to `app_owner`;
+    - as `app_owner`, everything else with `--no-owner`, so every object is `app_owner`'s, also
+      from a dump made before the switch;
+    - as the superuser, the rows of the extensions' own tables (`pg_extension_config_dump`, such as
+      PostGIS's `spatial_ref_sys`), whose constraints are the extension's, and the dump's rights,
+      which run no code;
+    - then the setup's grants part.
   - **The drill** uses placeholder passwords.
   - **Moves** work with both logins.
+  - **What can't load:** a dump with objects only a superuser may create (operator classes and
+    families) fails with PostgreSQL's own error. The switch still moves such objects to
+    `app_owner`.
 - **D6. Rotation restarts nothing.**
   - **Each password** rotates as a `swap` over the container's socket (`ALTER ROLE … PASSWORD`
     bound with `\getenv`, with statement logging off).
@@ -105,5 +122,8 @@ object. Its PostgreSQL design reviewed as sound, but:
   owner.
 - An existing database pays one restart of a few seconds when it switches, and keeps working
   unchanged until then.
-- Every load of a dump depends on the roles existing. The setup step makes them wherever the
-  database's container runs. A move's one-off containers refuse with a plain message without them.
+- Every load of a dump depends on the roles existing, and on `app_owner`'s password in the
+  container's env. The setup step makes the roles wherever the database's container runs. A move's
+  one-off containers refuse with a plain message without them.
+- The superuser never runs the app's code: the setup only reads the catalogs and changes owners
+  and rights, and loads restore the app's objects and rows as `app_owner`.
