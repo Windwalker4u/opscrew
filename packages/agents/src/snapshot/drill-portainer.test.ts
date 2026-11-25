@@ -31,12 +31,15 @@ const STACK = "opscrew-shop-staging";
 const DRILL = `${STACK}-drill`;
 const LABEL = "com.docker.compose.project";
 
-/** `shop` in staging in the user's Portainer: PostgreSQL `db`, the stop-only Kafka and SQLite. */
-function plan(): DeployPlan {
+/**
+ * `shop` in staging in the user's Portainer: PostgreSQL `db` (with its two logins for `logins`),
+ * the stop-only Kafka and SQLite.
+ */
+function plan(logins = false): DeployPlan {
   const base = portainerPlan({ deployed: true });
   return stagingPlan(
     [
-      { kind: "postgres", name: "db" },
+      { kind: "postgres", name: "db", ...(logins ? { options: { logins: "separate" } } : {}) },
       { kind: "kafka", name: "kafka" },
     ],
     {
@@ -107,9 +110,13 @@ interface DrillWorld extends PortainerWorld {
  * beside it, as a Git stack with its volumes.
  */
 async function drillWorld(
-  o: { stacks?: Parameters<typeof fakePortainer>[0]["stacks"]; approve?: boolean } = {},
+  o: {
+    stacks?: Parameters<typeof fakePortainer>[0]["stacks"];
+    approve?: boolean;
+    logins?: boolean;
+  } = {},
 ) {
-  const base = await portainerWorld(plan(), { answer: () => o.approve ?? true });
+  const base = await portainerWorld(plan(o.logins), { answer: () => o.approve ?? true });
   base.store(ID, record());
   const portainer = fakePortainer({
     token: PORTAINER_TOKEN,
@@ -422,6 +429,34 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --drill in the user's Portainer"
     for (const secret of [DB_SECRET, CACHE_SECRET, PORTAINER_TOKEN, password]) {
       expect(shown).not.toContain(secret);
     }
+  });
+
+  it("gives a database with two logins new passwords of the copy's own, and loads it keeping its owners", async () => {
+    const world = await drillWorld({ logins: true });
+    const report = await drillSnapshot(world.deps, ID, { services: world.services });
+    expect(report).toMatchObject({ outcome: "healthy", removal: "removed" });
+    const created = world.portainer.bodies.find((entry) =>
+      entry.call.startsWith("POST /api/stacks/create/standalone/string"),
+    )?.body as { Env: { name: string; value: string }[] };
+    const value = (name: string) => created.Env.find((pair) => pair.name === name)?.value ?? "";
+    const passwords = [
+      value("OPSCREW_DB_PASSWORD"),
+      value("OPSCREW_SVC_DB_OWNER_PASSWORD"),
+      value("OPSCREW_SVC_DB_RUNTIME_PASSWORD"),
+    ];
+    for (const password of passwords) expect(password.length).toBeGreaterThanOrEqual(16);
+    expect(new Set(passwords).size).toBe(3);
+    expect(JSON.stringify(world.portainer.bodies)).not.toContain(DB_SECRET);
+    // The load makes the logins with the copy's passwords, then makes the database anew owned by app_owner.
+    const [load] = ranWith(world, "pg_restore");
+    expect(load?.cmd[2]).toContain("CREATE DATABASE app OWNER app_owner");
+    const secrets = world.puts
+      .flat()
+      .map((entry) => entry.data?.toString() ?? "")
+      .join("\n");
+    for (const password of passwords.slice(1)) expect(secrets).toContain(password);
+    const shown = everythingShown(world);
+    for (const password of passwords) expect(shown).not.toContain(password);
   });
 
   it("removes the stack at once when its network isn't cut off, before any data goes in", async () => {

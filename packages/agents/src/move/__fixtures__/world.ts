@@ -36,6 +36,8 @@ export class FakeServer implements RemoteExec {
   readonly running = new Set<string>();
   /** `app.env` (the app's server). */
   env: string | undefined;
+  /** `release.db.env`, the release command's settings with two PostgreSQL logins (047). */
+  release: string | undefined;
   /** What each database service holds, by its name. */
   readonly data = new Map<string, string>();
   /** The move's dump file. */
@@ -63,6 +65,13 @@ export class FakeServer implements RemoteExec {
       this.env = options.input;
       return ok();
     }
+    if (command === "cat /srv/apps/shop/release.db.env") {
+      return this.release === undefined ? broken("No such file or directory") : ok(this.release);
+    }
+    if (command.includes("cat > /srv/apps/shop/release.db.env.opscrew")) {
+      this.release = options.input;
+      return ok();
+    }
     if (command === "bash -s" && options.input?.includes("/srv/apps/shop/mask.re")) {
       this.masks.push(this.env);
       return ok();
@@ -75,6 +84,13 @@ export class FakeServer implements RemoteExec {
     const started = match(/docker compose up -d (.+)$/);
     if (started !== undefined) {
       for (const name of started.split(" ")) this.running.add(name);
+      return ok();
+    }
+    // The load of a database with two logins (047): made anew owned by app_owner, then restored.
+    const loaded = match(/exec -T (\S+) sh -c .*CREATE DATABASE app OWNER app_owner/s);
+    if (loaded !== undefined) {
+      if (this.dump === undefined) return broken("pg_restore: error: could not open input file");
+      this.data.set(loaded, this.dump);
       return ok();
     }
     const measured = match(/exec -T (\S+) psql .*pg_database_size/);
@@ -125,6 +141,8 @@ export interface MoveWorldOptions {
   dataPort?: number;
   /** Grafana Cloud is on (Grafana Alloy masks the app's settings in its logs). */
   grafana?: boolean;
+  /** Postgres `db` has the app's two logins (`logins: separate`, 047). */
+  logins?: boolean;
 }
 
 /**
@@ -142,9 +160,11 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
   const split = splitPlan({ data: own ? "own" : "cloud" });
   const base = {
     ...split,
-    services: selfHostedServices({ postgres: true, redis: service === "cache" }).map((s) =>
-      s.name === service ? { ...s, server: "data" } : s,
-    ),
+    services: selfHostedServices({ postgres: true, redis: service === "cache" })
+      .map((s) => (s.name === service ? { ...s, server: "data" } : s))
+      .map((s) =>
+        o.logins === true && s.kind === "postgres" ? { ...s, options: { logins: "separate" as const } } : s,
+      ),
   };
   const facts: Record<string, NetworkHostFacts> = own
     ? { data: { udpPortsInUse: [], wireguardInterfaces: [] } }
@@ -210,35 +230,56 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
       ? { ownServers: { data: { host: DATA_HOST, port: o.dataPort, user: "admin", agent: true } } }
       : { servers: { data: { ipv4: DATA_HOST } } }),
   }));
-  const passwords = { db: randomBytes(16).toString("hex"), cache: randomBytes(16).toString("hex") };
+  const passwords = {
+    db: randomBytes(16).toString("hex"),
+    cache: randomBytes(16).toString("hex"),
+    owner: randomBytes(16).toString("hex"),
+    runtime: randomBytes(16).toString("hex"),
+  };
   const file = generatedValuesFile(deps);
   await mkdir(dirname(file), { recursive: true });
   await writeFile(
     file,
-    JSON.stringify({ dbPassword: passwords.db, services: { cache: { password: passwords.cache } } }),
+    JSON.stringify({
+      dbPassword: passwords.db,
+      services: {
+        cache: { password: passwords.cache },
+        ...(o.logins === true
+          ? { db: { "owner-password": passwords.owner, "runtime-password": passwords.runtime } }
+          : {}),
+      },
+    }),
   );
 
   const dataAddress = plan.network?.members.find((m) => m.name === "data")?.address ?? "";
+  const dbHost = (host: string) => (service === "db" ? host : "db");
+  const appLogin = o.logins === true ? `app_runtime:${passwords.runtime}` : `app:${passwords.db}`;
   const settings = (host: string) =>
     `${[
-      dotenvLine("DATABASE_URL", `postgresql://app:${passwords.db}@${service === "db" ? host : "db"}:5432/app`),
+      dotenvLine("DATABASE_URL", `postgresql://${appLogin}@${dbHost(host)}:5432/app`),
       ...(service === "cache"
         ? [dotenvLine("REDIS_URL", `redis://:${passwords.cache}@${host}:6379`)]
         : []),
       dotenvLine("SESSION_SECRET", "kept-as-it-is"),
     ].join("\n")}\n`;
   const env = { before: settings(service), after: settings(dataAddress) };
+  /** The release command's settings with two logins: the owner's address. */
+  const releaseSettings = (host: string) =>
+    `${dotenvLine("DATABASE_URL", `postgresql://app_owner:${passwords.owner}@${dbHost(host)}:5432/app`)}\n`;
+  const release = { before: releaseSettings(service), after: releaseSettings(dataAddress) };
 
   servers.app.running.add("app").add("db");
   if (service === "cache") servers.app.running.add("cache");
   servers.app.data.set("db", "rows of the shop");
   // The deploy writes app.env from the secret with a final newline of its own.
   servers.app.env = `${env.before}\n`;
+  if (o.logins === true) servers.app.release = release.before;
   if (step !== "started") servers.data.running.add(service);
   servers.data.data.set(service, "");
 
   const github = new FakeGitHub();
   github.secrets.set("OPSCREW_APP_ENV", env.before);
+  if (o.logins === true) github.secrets.set("OPSCREW_RELEASE_DB_ENV", release.before);
   let clock = 0;
   const services: ProvisionServices = {
     github,
@@ -264,6 +305,7 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
     answers,
     services,
     env,
+    release,
     passwords,
     dataAddress,
   };

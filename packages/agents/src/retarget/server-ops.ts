@@ -5,10 +5,12 @@ import {
   EDGE_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
+  loginsLoad,
   MOVE_COPIED,
   MOVE_WAITING,
   OPENLITESPEED_COMMAND,
   processServices,
+  shellQuote,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
@@ -47,6 +49,11 @@ export interface ServerOpOptions {
   processes?: readonly string[];
   /** The Postgres service's Compose name (default `db`), such as a moving service's own. */
   database?: string;
+  /**
+   * The Postgres service has the app's two logins (`logins: separate`, 047): a restore loads the
+   * dump as `loginsLoad` says.
+   */
+  logins?: true;
   /** The command the hints say to run again after a fix (default `opscrew retarget`). */
   command?: string;
   /**
@@ -447,8 +454,11 @@ export async function recreateDatabase(
 
 /**
  * Restores {@link dumpPath} into the `app` database in one transaction. The database must be
- * empty ({@link recreateDatabase}); nothing is dropped first. Timeout scaled by
- * {@link moveTimeoutMs}.
+ * empty ({@link recreateDatabase}); nothing is dropped first. With {@link ServerOpOptions.logins},
+ * the service's own container loads it as `loginsLoad` says instead: the logins made when missing
+ * (with the passwords of its environment), the database made anew owned by `app_owner`, the dump
+ * restored with its owners and grants, then the grants part; the superuser's password comes from
+ * that environment too, never an argument. Timeout scaled by {@link moveTimeoutMs}.
  */
 export async function restoreDatabase(
   remote: RemoteExec,
@@ -457,9 +467,14 @@ export async function restoreDatabase(
 ): Promise<void> {
   const { folder } = options;
   const dump = dumpPath(folder);
+  const db = databaseOf(options);
+  const load =
+    options.logins === true
+      ? `sh -c ${shellQuote(`export PGPASSWORD="$POSTGRES_PASSWORD" && ${loginsLoad({ host: db, file: "/dev/stdin", setup: true })}`)}`
+      : "pg_restore -U app -d app --no-owner --single-transaction";
   await runStep(
     remote,
-    `cd ${folder} && chmod 600 ${dump} && docker compose exec -T ${databaseOf(options)} pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
+    `cd ${folder} && chmod 600 ${dump} && docker compose exec -T ${db} ${load} < ${dump}`,
     moveTimeoutMs(sizeBytes),
     { what: "restore the database", hint: dbHint(remote.host, options), filter: withoutData },
     options.redact,

@@ -10,11 +10,12 @@ import {
 import type { DockerTransport } from "@opscrew/contracts";
 import { errorMessage } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { IMAGES } from "@opscrew/iac-templates";
+import { IMAGES, loginsLoad } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import {
   checkCopiedDump,
   dumpPostgres,
+  emptyPostgres,
   ensureDumpVolume,
   type MovePostgres,
   moveDumpVolume,
@@ -25,6 +26,7 @@ import type { SideDocker } from "./types";
 
 const APP = "example-app";
 const PASSWORD = fakeSecret("generic-password", "move-db");
+const OWNER = fakeSecret("generic-password", "move-db-owner");
 const VOLUME = moveDumpVolume(APP);
 
 async function bytes(body: Readable): Promise<Buffer> {
@@ -51,7 +53,16 @@ function fakeSide(project: string) {
   const ran: FakeContainer[] = [];
   const restored: Buffer[] = [];
   /** What each tool prints to stderr when it fails (empty: it succeeds). */
-  const database = { dropped: 0, stderr: "", psql: "", restore: "", checks: 0, startingChecks: 0 };
+  const database = {
+    dropped: 0,
+    stderr: "",
+    psql: "",
+    restore: "",
+    checks: 0,
+    startingChecks: 0,
+    /** Whether the deploy made the two logins (047): a logins' load refuses without them. */
+    roles: true,
+  };
   const transport: DockerTransport = {
     async request(request) {
       const archive = /^\/containers\/([^/]+)\/archive/.exec(request.path);
@@ -112,6 +123,18 @@ function fakeSide(project: string) {
       }
       const digest = createHash("sha256").update(file.data).digest("hex");
       return { exitCode: 0, stdout: `${digest}  /dump/app.dump\n` };
+    }
+    // The logins' load (047): the roles checked, the database made anew, the dump restored.
+    if (script.includes("CREATE DATABASE app OWNER app_owner") && container.cmd[0] === "sh") {
+      if (!loggedIn(container) || file?.data === undefined) return refused;
+      if (!database.roles) {
+        const said = /echo '(PostgreSQL db has no logins [^']+)' >&2/.exec(script)?.[1] ?? "";
+        return { exitCode: 1, stderr: `${said}\n` };
+      }
+      database.dropped += 1;
+      if (database.restore !== "") return { exitCode: 1, stderr: database.restore };
+      restored.push(file.data);
+      return { exitCode: 0 };
     }
     if (container.cmd[0] === "psql") {
       if (!loggedIn(container)) return refused;
@@ -424,6 +447,74 @@ describe("Postgres in a move", () => {
       expect(next.fake.containers.size).toBe(0);
       expect(next.restored).toEqual([]);
     }
+  });
+
+  it("with two logins, loads the dump owned by app_owner, keeping its owners and grants", async () => {
+    const old = fakeSide("example-app");
+    const next = fakeSide("opscrew-example-app");
+    const fresh = { ...next.db, ownerPassword: OWNER };
+    const digest = await dumpPostgres(old.docker, { ...old.db, ownerPassword: OWNER });
+    await copyDump(old, next);
+    await checkCopiedDump(next.docker, fresh, digest);
+    await restoreCheckedDump(next.docker, fresh);
+    expect(next.restored.map(String)).toEqual(["PGDMP rows of example-app"]);
+
+    const commands = next.ran
+      .filter((container) => container.image === IMAGES.postgres.ref)
+      .map((container) => container.cmd);
+    expect(commands.slice(0, 2)).toEqual([
+      ["sh", "-c", "pg_restore --list /dump/app.dump > /dev/null && sha256sum /dump/app.dump"],
+      ["pg_isready", "-h", "db", "-U", "app", "-d", "postgres"],
+    ]);
+    // One one-off: the roles checked (never made here), then the load, then the grants part, the
+    // owner's password read from a file written before it started.
+    const load = loginsLoad({ host: "db", file: "/dump/app.dump", setup: false });
+    expect(commands.slice(2)).toEqual([["sh", "-c", `. /tmp/opscrew.env && ${load}`]]);
+    const [loader] = next.ran.slice(-1);
+    expect(
+      next.uploads
+        .get(loader?.id ?? "")
+        ?.flatMap((upload) => upload.entries)
+        .map(({ name, mode, data }) => [name, mode, data?.toString("utf8")]),
+    ).toEqual([
+      ["tmp/opscrew.pgpass", 0o600, `db:5432:*:app:${PASSWORD}\n`],
+      ["tmp/opscrew.env", 0o600, `OPSCREW_OWNER_PASSWORD='${OWNER}'\n`],
+    ]);
+    expect(containerText(next)).not.toContain(PASSWORD);
+    expect(containerText(next)).not.toContain(OWNER);
+    // Only the load gets the owner's password.
+    const ownerFiles = (s: ReturnType<typeof fakeSide>) =>
+      [...s.uploads.values()]
+        .flat()
+        .flatMap((upload) => upload.entries)
+        .filter((entry) => entry.name === "tmp/opscrew.env");
+    expect(ownerFiles(old)).toEqual([]);
+    expect(ownerFiles(next)).toHaveLength(1);
+    expect(next.fake.containers.size).toBe(0);
+  });
+
+  it("with two logins, refuses plainly before anything is dropped when the new side lacks them", async () => {
+    const old = fakeSide("example-app");
+    const next = fakeSide("opscrew-example-app");
+    next.database.roles = false;
+    const fresh = { ...next.db, ownerPassword: OWNER };
+    const digest = await dumpPostgres(old.docker, old.db);
+    await copyDump(old, next);
+    await checkCopiedDump(next.docker, fresh, digest);
+    const error = await restoreCheckedDump(next.docker, fresh).catch((caught: unknown) => caught);
+    expect(errorMessage(error)).toBe(
+      "Could not restore the database (exit code 1: PostgreSQL db has no logins app_owner and app_runtime, so OpsCrew loaded nothing into it. Deploy the app there first, which creates them, then try again.).",
+    );
+    expect(next.database.dropped).toBe(0);
+    expect(next.restored).toEqual([]);
+  });
+
+  it("with two logins, empties the database owned by app_owner", async () => {
+    const next = fakeSide("opscrew-example-app");
+    await emptyPostgres(next.docker, { ...next.db, ownerPassword: OWNER });
+    expect(next.ran.map((container) => container.cmd.at(-1))).toEqual([
+      "CREATE DATABASE app OWNER app_owner",
+    ]);
   });
 
   it("pulls the pinned postgres image when the server lacks it", async () => {

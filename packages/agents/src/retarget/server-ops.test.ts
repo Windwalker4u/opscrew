@@ -1,6 +1,7 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { loginsLoad, shellQuote } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { sshArgs } from "../shared";
 import { ScriptedRunner } from "../testing";
@@ -354,6 +355,19 @@ describe("database", () => {
         timeoutMs: 5 * MIN,
       },
     ]);
+  });
+
+  it("with two logins, loads the dump in the database's container, owned by app_owner with its grants", async () => {
+    const remote = new FakeRemote("h");
+    await restoreDatabase(remote, 0, { redact: identity, folder: FOLDER, logins: true });
+    const load = `export PGPASSWORD="$POSTGRES_PASSWORD" && ${loginsLoad({ host: "db", file: "/dev/stdin", setup: true })}`;
+    expect(remote.calls).toEqual([
+      {
+        command: `cd /srv/apps/shop && chmod 600 /srv/apps/shop/opscrew-move.dump && docker compose exec -T db sh -c ${shellQuote(load)} < /srv/apps/shop/opscrew-move.dump`,
+        timeoutMs: 5 * MIN,
+      },
+    ]);
+    expect(load).toContain("CREATE DATABASE app OWNER app_owner");
   });
 
   it("recreates the app database empty from the maintenance database, ending stray sessions", async () => {
