@@ -953,6 +953,21 @@ Anthropic-compatible gateway such as OpenRouter's.
   (the Responses API, the Agents SDK, and whether 032's Codex work helps), the default model and
   effort, structured output validated with zod, and pricing for the ledger.
 
+## 045 Postgres extensions for an app's database
+
+The dashboard's lead (2026-11-25), for a module that keeps vectors in pgvector, before that
+module's first version: an app's PostgreSQL service names the extensions it needs, for example
+`extensions: [vector]`.
+- **The image:** OpsCrew picks a pinned image that has every named extension (the official
+  `pgvector/pgvector` image for `vector`), and refuses an extension it has no image for, before
+  anything changes, with the list it supports.
+- **The database:** `CREATE EXTENSION IF NOT EXISTS` runs before the app's migrations, as the
+  role that may create them, so the app's own role needs no more rights.
+- **The lifecycle:** snapshots, restores, restore drills and moves keep the extensions, and
+  switching an existing database's image is shown in the plan with its restart.
+- **After 0.2.12,** and after the database changes of the private-deployment contribution are
+  settled, since both change the same PostgreSQL service.
+
 ## Later, not yet placed
 
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
