@@ -229,6 +229,7 @@ export function deploymentFiles(
         repository,
         imageName: ghcrImageFor(repository, plan.app.key),
         env: previews.templates,
+        version: ctx.opscrewVersion,
         ...(host === undefined
           ? {}
           : {
@@ -244,7 +245,9 @@ export function deploymentFiles(
   }
   const files = [
     ...renderDeployment(plan, ctx),
-    ...(plan.servers ?? []).map((server) => renderServerCompose(plan, server.name)),
+    ...(plan.servers ?? []).map((server) =>
+      renderServerCompose(plan, server.name, { version: ctx.opscrewVersion }),
+    ),
     ...renderStorage(plan, ctx),
     ...renderBackups(plan, ctx),
   ];

@@ -3,12 +3,13 @@ import type { RenderContext } from "../../types";
 
 /**
  * The render context of an environment promoted from staging, which follows `main` and builds the
- * sites: what agents resolve for a promoted environment.
+ * sites: what agents resolve for a promoted environment, with the tests' OpsCrew version.
  */
 export const FROM_STAGING = {
+  opscrewVersion: "0.1.0",
   builderBranch: "main",
   builderWorkflowPath: ".github/workflows/opscrew-deploy-staging.yml",
-} as const satisfies Pick<RenderContext, "builderBranch" | "builderWorkflowPath">;
+} as const satisfies Pick<RenderContext, "opscrewVersion" | "builderBranch" | "builderWorkflowPath">;
 
 /** A Vite single-page app built with npm. */
 export const NPM_SITE = {

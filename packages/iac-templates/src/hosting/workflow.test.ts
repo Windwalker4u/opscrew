@@ -74,7 +74,7 @@ function planFor(target: Target, environment: Environment = STAGING_ENV): Deploy
 }
 
 const render = (target: Target, environment?: Environment) =>
-  renderHostingWorkflow(planFor(target, environment));
+  renderHostingWorkflow(planFor(target, environment), { opscrewVersion: "0.1.0" });
 const doc = (target: Target, environment?: Environment) =>
   parse(render(target, environment).content) as Workflow;
 
@@ -184,7 +184,7 @@ describe("renderHostingWorkflow", () => {
     expect(() =>
       render({ ...PHP, panel: "sftp", php: { version: "8.3", via: "account" } }),
     ).toThrow("only applies to an app on a hosting account with a panel");
-    expect(() => renderHostingWorkflow(serverPlan())).toThrow(
+    expect(() => renderHostingWorkflow(serverPlan(), { opscrewVersion: "0.1.0" })).toThrow(
       "only applies to an app on a hosting account with a panel",
     );
   });
@@ -203,7 +203,9 @@ describe("renderHostingWorkflow", () => {
     const docs = ofApp(planFor(PHP), "docs");
     expect(releaseBranch(docs)).toBe("opscrew/release/docs-staging");
     expect(releaseBranch(ofApp(serverPlan(), "docs"))).toBe("opscrew/release/docs-prod");
-    const publish = (parse(renderHostingWorkflow(docs).content) as Workflow).jobs.publish;
+    const publish = (
+      parse(renderHostingWorkflow(docs, { opscrewVersion: "0.1.0" }).content) as Workflow
+    ).jobs.publish;
     expect(publish?.name).toBe("Publish the release on opscrew/release/docs-staging");
     expect(step(publish, "Sign the release and push it").env?.BRANCH).toBe(
       "opscrew/release/docs-staging",

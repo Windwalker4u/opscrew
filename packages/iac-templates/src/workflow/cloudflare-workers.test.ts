@@ -465,13 +465,17 @@ describe("renderCloudflareWorkersWorkflow", () => {
 
   it("refuses to render a promoted environment without the workflow that builds its sites", () => {
     const plan = ssrPlan({ promotedFrom: "staging" });
-    for (const ctx of [{}, { builderBranch: "main" }]) {
+    for (const ctx of [{}, { builderBranch: "main" }].map((c) => ({
+      ...c,
+      opscrewVersion: "0.1.0",
+    }))) {
       expect(() => renderCloudflareWorkersWorkflow(plan, ctx)).toThrow(
         expect.objectContaining({ code: "INTERNAL" }),
       );
     }
     expect(() =>
       renderCloudflareWorkersWorkflow(plan, {
+        opscrewVersion: "0.1.0",
         builderWorkflowPath: ".github/workflows/opscrew-deploy-staging.yml",
       }),
     ).toThrow(expect.objectContaining({ code: "INTERNAL" }));
@@ -756,6 +760,7 @@ describe.skipIf(!bash)("the promoted environment's check of the build's run (nee
   // dev follows develop and builds the sites; staging is promoted from dev, prod from staging. The
   // version prod is promoted with names dev's run, which staging's deploy kept in its message.
   const fromDev = {
+    opscrewVersion: "0.1.0",
     builderBranch: "develop",
     builderWorkflowPath: ".github/workflows/opscrew-deploy-dev.yml",
   };

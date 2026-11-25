@@ -62,7 +62,12 @@ async function installOn(deps: TestPhaseDeps, plan: DeployPlan, root: string, fa
   const { server, applies } = serverWith(facts);
   const outcome = await applyPreviewsHostPlan(deps, plan, {
     server,
-    recipe: renderPreviewRecipe(plan, { repository, imageName, env: env.templates }),
+    recipe: renderPreviewRecipe(plan, {
+      repository,
+      imageName,
+      env: env.templates,
+      version: deps.version,
+    }),
     env,
     key: await ensurePreviewKey(deps.paths, deps.redactor),
     repository,

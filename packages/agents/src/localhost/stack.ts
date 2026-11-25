@@ -71,7 +71,7 @@ export async function localRenderContext(
 export function localStackFiles(plan: DeployPlan, ctx: RuntimeContext): RenderedFile[] {
   const script = snapshotScript(plan);
   return [
-    renderCompose(plan),
+    renderCompose(plan, { version: ctx.opscrewVersion }),
     ...renderRuntimeFiles(plan, ctx),
     ...(script.length === 0
       ? []

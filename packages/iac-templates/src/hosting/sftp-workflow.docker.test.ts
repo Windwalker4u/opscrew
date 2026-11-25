@@ -147,7 +147,7 @@ describe.skipIf(reason !== undefined)("the SFTP deploy script on an OpenSSH SFTP
       dns: { provider: "none", domain: "shop.example.com", proxied: false, www: false },
       security: { ...base.security, httpAllowedFrom: "any" },
     });
-    const flow = parse(renderSftpWorkflow(plan).content) as {
+    const flow = parse(renderSftpWorkflow(plan, { opscrewVersion: "0.1.0" }).content) as {
       jobs: { deploy: { steps: { name?: string; run?: string }[] } };
     };
     const deploy = flow.jobs.deploy.steps.find(

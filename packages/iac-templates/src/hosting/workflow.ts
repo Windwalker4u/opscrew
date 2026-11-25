@@ -294,13 +294,13 @@ export function hostingDomain(plan: DeployPlan, where: string): string {
  */
 export function hostingWorkflowFile(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "otherAppDirs">,
+  ctx: Pick<RenderContext, "otherAppDirs" | "opscrewVersion">,
   header: readonly string[],
   target: HostingDeployTarget,
   jobs: readonly (readonly string[])[],
 ): RenderedFile {
   const lines = [
-    ...workflowStart(plan, header, pushPaths(plan, [], ctx), DISPATCH_BY_HAND),
+    ...workflowStart(plan, ctx.opscrewVersion, header, pushPaths(plan, [], ctx), DISPATCH_BY_HAND),
     ...pausedJob(plan),
     "",
     ...releaseBuildJob(plan, target),
@@ -399,7 +399,7 @@ function waitScript(plan: DeployPlan): string[] {
  */
 export function renderHostingWorkflow(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "otherAppDirs"> = {},
+  ctx: Pick<RenderContext, "otherAppDirs" | "opscrewVersion">,
 ): RenderedFile {
   const target = plan.target;
   if (!isHostingTarget(target) || target.panel === "sftp") {

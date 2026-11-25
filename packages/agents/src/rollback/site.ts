@@ -84,7 +84,7 @@ async function requireDeployable(run: RollbackRun, github: RollbackRepository): 
     services,
     command,
     branch: workflowBranch(plan, github.defaultBranch),
-    workflow: await siteWorkflow(deps.paths, plan),
+    workflow: await siteWorkflow(deps.paths, plan, deps.version),
     what: "rollback",
   });
   await requireNoDeployRunning(run, github);

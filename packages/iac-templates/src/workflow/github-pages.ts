@@ -41,7 +41,7 @@ const PAGES_SITE_BYTES = 1024 ** 3;
  */
 export function renderGithubPagesWorkflow(
   plan: DeployPlan,
-  ctx: Pick<RenderContext, "otherAppDirs"> = {},
+  ctx: Pick<RenderContext, "otherAppDirs" | "opscrewVersion">,
 ): RenderedFile {
   if (plan.target.provider !== "github-pages") {
     throw wrongTarget("This step only applies to a site on GitHub Pages.");
@@ -107,6 +107,7 @@ export function renderGithubPagesWorkflow(
   const lines = [
     ...workflowStart(
       plan,
+      ctx.opscrewVersion,
       [
         "# Builds the site and publishes it on GitHub Pages. Secrets are set by `opscrew provision`; their",
         "# values never appear in this file, but whatever the build puts into the site is public.",

@@ -57,7 +57,7 @@ function planFor(target: Record<string, unknown>, panel = "sftp"): DeployPlan {
 }
 
 const doc = (target: Record<string, unknown>) =>
-  parse(renderSftpWorkflow(planFor(target)).content) as Workflow;
+  parse(renderSftpWorkflow(planFor(target), { opscrewVersion: "0.1.0" }).content) as Workflow;
 
 function deployStep(flow: Workflow): Step {
   const found = flow.jobs.deploy?.steps.find(
@@ -69,13 +69,17 @@ function deployStep(flow: Workflow): Step {
 
 describe("renderSftpWorkflow", () => {
   it("renders the environment's deploy workflow for a PHP app and a static site", () => {
-    const php = renderSftpWorkflow(planFor(PHP));
+    const php = renderSftpWorkflow(planFor(PHP), { opscrewVersion: "0.1.0" });
     expect(php.path).toBe(".github/workflows/opscrew-deploy-staging.yml");
     expect(php.kind).toBe("workflow");
     expect(php.content).toMatchSnapshot("php");
-    expect(renderSftpWorkflow(planFor(STATIC)).content).toMatchSnapshot("static");
+    expect(
+      renderSftpWorkflow(planFor(STATIC), { opscrewVersion: "0.1.0" }).content,
+    ).toMatchSnapshot("static");
     // renderWorkflow sends an SFTP host's plan here.
-    expect(renderWorkflow(planFor(PHP), {} as never).content).toBe(php.content);
+    expect(renderWorkflow(planFor(PHP), { opscrewVersion: "0.1.0" } as never).content).toBe(
+      php.content,
+    );
   });
 
   it("builds as a panel account does, then deploys unless paused, in the deploy environment", () => {
@@ -265,7 +269,9 @@ describe("renderSftpWorkflow", () => {
     expect(
       hostingKeptFolders({ storage: { files: { dir: "uploads" }, sqlite: { dir: "var/db" } } }),
     ).toEqual(["uploads", "var/db"]);
-    const script = deployStep(parse(renderSftpWorkflow(kept).content) as Workflow).run ?? "";
+    const script =
+      deployStep(parse(renderSftpWorkflow(kept, { opscrewVersion: "0.1.0" }).content) as Workflow)
+        .run ?? "";
     expect(script).toContain("kept=('storage')");
     const upload = script.indexOf("@put -r");
     expect(script.indexOf('for dir in "${kept[@]}"; do')).toBeLessThan(upload);
@@ -284,7 +290,9 @@ describe("renderSftpWorkflow", () => {
    * `curl` failing; the release is `files`. Returns the batch lines it ran.
    */
   function deployTo(plan: DeployPlan, host: string, run: number, files: Record<string, string>) {
-    const script = deployStep(parse(renderSftpWorkflow(plan).content) as Workflow).run ?? "";
+    const script =
+      deployStep(parse(renderSftpWorkflow(plan, { opscrewVersion: "0.1.0" }).content) as Workflow)
+        .run ?? "";
     const temp = mkdtempSync(join(tmpdir(), "opscrew-sftp-run-")).replaceAll("\\", "/");
     try {
       const src = `${temp}/src`;
@@ -452,9 +460,11 @@ sftp() {
 
   it("refuses a panel account, a Node.js app, a promoted environment and any other target", () => {
     expect(() =>
-      renderSftpWorkflow(planFor({ ...PHP, php: { version: "8.3", via: "multiphp" } }, "cpanel")),
+      renderSftpWorkflow(planFor({ ...PHP, php: { version: "8.3", via: "multiphp" } }, "cpanel"), {
+        opscrewVersion: "0.1.0",
+      }),
     ).toThrow("only applies to a static site or a PHP app on an SFTP-only host");
-    expect(() => renderSftpWorkflow(serverPlan())).toThrow(
+    expect(() => renderSftpWorkflow(serverPlan(), { opscrewVersion: "0.1.0" })).toThrow(
       "only applies to a static site or a PHP app",
     );
     expect(() =>
@@ -463,6 +473,7 @@ sftp() {
           name: "prod2",
           deploySource: { from: "promote", source: "staging" },
         }),
+        { opscrewVersion: "0.1.0" },
       ),
     ).toThrow("cannot be promoted");
   });

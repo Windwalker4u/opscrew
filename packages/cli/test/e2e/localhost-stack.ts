@@ -76,7 +76,7 @@ export function serverStack(plan: DeployPlan, opscrewVersion: string): Map<strin
   // The deploy uploads snapshot.sh beside the runtime files; this computer keeps it among them.
   const snapshot = snapshotScript(plan);
   const files = [
-    renderCompose(plan),
+    renderCompose(plan, { version: opscrewVersion }),
     ...renderRuntimeFiles(plan, ctx),
     ...(snapshot.length === 0
       ? []

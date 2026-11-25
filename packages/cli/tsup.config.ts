@@ -1,4 +1,6 @@
 import { defineConfig } from "tsup";
+import { version } from "./package.json";
+import { buildVersion, gitAt } from "./scripts/build-version.mjs";
 
 export default defineConfig({
   entry: { opscrew: "src/bin.ts" },
@@ -15,4 +17,6 @@ export default defineConfig({
   noExternal: [/^@opscrew\//],
   external: ["@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk"],
   banner: { js: "#!/usr/bin/env node" },
+  // The version the CLI reports, and generated files record: the release's own only on its tag.
+  define: { __OPSCREW_VERSION__: JSON.stringify(buildVersion(version, gitAt(process.cwd()))) },
 });

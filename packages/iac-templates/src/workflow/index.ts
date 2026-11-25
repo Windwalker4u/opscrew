@@ -1780,6 +1780,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   const lines = [
     ...workflowStart(
       plan,
+      ctx.opscrewVersion,
       promoted(plan)
         ? [
             ...promotedAbout(plan, ctx),

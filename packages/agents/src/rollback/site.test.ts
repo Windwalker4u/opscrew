@@ -89,7 +89,10 @@ async function siteWorld(
     { runId: 700, attempt: 1, startedAt: "2026-10-21T10:00:00Z", headSha: "d".repeat(40) },
   ]);
   // The default branch holds the workflow the plan generates.
-  github.onMain.set(plan.cicd.workflowPath, blobOf(await siteWorkflow(deps.paths, plan)));
+  github.onMain.set(
+    plan.cicd.workflowPath,
+    blobOf(await siteWorkflow(deps.paths, plan, deps.version)),
+  );
   const inProgress = () =>
     github.runs.set(990, {
       repository: "acme/shop",

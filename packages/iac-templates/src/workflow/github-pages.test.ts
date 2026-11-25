@@ -45,8 +45,12 @@ type Workflow = {
   jobs: { build: Job; deploy: Job };
 };
 
-const flow = renderGithubPagesWorkflow(pagesPlan({ env: ["PUBLIC_API_URL"] }));
-const hugoFlow = renderGithubPagesWorkflow(pagesPlan({ site: HUGO_SITE }));
+const flow = renderGithubPagesWorkflow(pagesPlan({ env: ["PUBLIC_API_URL"] }), {
+  opscrewVersion: "0.1.0",
+});
+const hugoFlow = renderGithubPagesWorkflow(pagesPlan({ site: HUGO_SITE }), {
+  opscrewVersion: "0.1.0",
+});
 const workflow = parse(flow.content) as Workflow;
 const label = (s: Step) => s.id ?? s.name ?? s.uses?.split("@")[0];
 
@@ -133,13 +137,17 @@ describe("renderGithubPagesWorkflow", () => {
   });
 
   it("refuses a promoted environment: each environment builds its own site", () => {
-    expect(() => renderGithubPagesWorkflow(pagesPlan({ promotedFrom: "staging" }))).toThrow(
+    expect(() =>
+      renderGithubPagesWorkflow(pagesPlan({ promotedFrom: "staging" }), {
+        opscrewVersion: "0.1.0",
+      }),
+    ).toThrow(
       expect.objectContaining({
         code: "INVALID_INPUT",
         message: expect.stringContaining("GitHub Pages publishes from a build"),
       }),
     );
-    expect(() => renderGithubPagesWorkflow(cloudflarePlan())).toThrow(
+    expect(() => renderGithubPagesWorkflow(cloudflarePlan(), { opscrewVersion: "0.1.0" })).toThrow(
       expect.objectContaining({ code: "PHASE_PRECONDITION" }),
     );
   });
@@ -154,7 +162,9 @@ describe("renderGithubPagesWorkflow", () => {
   it("matches the snapshots", () => {
     expect(flow.content).toMatchSnapshot("npm");
     expect(hugoFlow.content).toMatchSnapshot("Hugo");
-    const pnpm = renderGithubPagesWorkflow(pagesPlan({ site: PNPM_SITE })).content;
+    const pnpm = renderGithubPagesWorkflow(pagesPlan({ site: PNPM_SITE }), {
+      opscrewVersion: "0.1.0",
+    }).content;
     expect(jobYaml(pnpm, "build")).toMatchSnapshot("build job, pnpm");
   });
 });
@@ -168,14 +178,16 @@ describe.skipIf(!actionlint)("actionlint on the server-less workflows (when inst
     try {
       await mkdir(join(dir, ".github", "workflows"), { recursive: true });
       const flows = {
-        "static.yml": renderCloudflareWorkersWorkflow(cloudflarePlan(), {}),
+        "static.yml": renderCloudflareWorkersWorkflow(cloudflarePlan(), {
+          opscrewVersion: "0.1.0",
+        }),
         "ssr.yml": renderCloudflareWorkersWorkflow(
           ssrPlan({ site: NUXT_SSR, env: ["API_KEY"], buildContext: "apps/web" }),
-          {},
+          { opscrewVersion: "0.1.0" },
         ),
         "bun.yml": renderCloudflareWorkersWorkflow(
           cloudflarePlan({ site: { ...NUXT_SSR, packageManager: "bun" }, render: "ssr" }),
-          {},
+          { opscrewVersion: "0.1.0" },
         ),
         "promoted.yml": renderCloudflareWorkersWorkflow(
           ssrPlan({ promotedFrom: "staging", env: ["API_KEY"] }),
