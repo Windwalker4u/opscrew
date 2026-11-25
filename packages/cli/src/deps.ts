@@ -49,6 +49,7 @@ import {
 } from "@opscrew/core";
 import { ClaudeAgentRuntime } from "@opscrew/runtime-claude";
 import { createApprovalHandler } from "./approval";
+import type { ValueInput } from "./commands/values";
 import type { CliContext } from "./context";
 import { clackPrompts, type UiPrompts } from "./ui/prompts";
 
@@ -149,6 +150,8 @@ export interface CliServices {
   onStop?: (stop: () => void) => () => void;
   /** Ends the process after `logs --follow` (default: once stdout and stderr have flushed). */
   endProcess?: () => void;
+  /** Standard input for `values set` (default: the process's). */
+  valueInput?: ValueInput;
 }
 
 const services = new WeakMap<CliContext, CliServices>();
