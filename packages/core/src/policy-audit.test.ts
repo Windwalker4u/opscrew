@@ -2,9 +2,12 @@
  * Regression tests for the tool-policy bypasses an outside security audit reported (#16, #17-#24).
  * Each block reproduces the issue's payload and its nearest variants on POSIX and Windows paths.
  */
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ToolProfile } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
-import { DefaultToolPolicy } from "./policy";
+import { DefaultToolPolicy, nodeRealpath } from "./policy";
+import { tempDir } from "./testing";
 
 interface Host {
   platform: "linux" | "win32";
@@ -114,4 +117,191 @@ describe("#17: a carriage return never hides a second command", () => {
       expect(bash("cat package.json").decision).toBe("allow");
     });
   }
+});
+
+describe("#18: the Bash allow-list checks where a path really leads", () => {
+  for (const host of HOSTS) {
+    const { bash, tool } = hostPolicy(host, true);
+
+    it(`denies reading a secret through an in-repo link (${host.platform})`, () => {
+      for (const command of [
+        "cat docs/env-link",
+        "grep SECRET docs/env-link",
+        "head -n 5 docs/env-link",
+        "tail docs/env-link",
+        "wc -c docs/env-link",
+        "cat docs/git-link",
+        "cat docs/pem-link",
+        "cat docs/sshdir/config",
+        "git diff --no-index docs/env-link README.md",
+        "cat --file=docs/env-link",
+      ]) {
+        expect(bash(command).decision, command).toBe("deny");
+      }
+    });
+
+    it(`asks for a wildcard argument, which could match such a link (${host.platform})`, () => {
+      expect(bash("cat docs/env-lin*").decision).toBe("ask");
+      expect(bash("cat docs/*").decision).toBe("ask");
+      expect(bash("ls src/*.ts").decision).toBe("ask");
+    });
+
+    it(`keeps ordinary reads allowed and the existing controls (${host.platform})`, () => {
+      expect(bash("cat README.md").decision).toBe("allow");
+      expect(bash("cat package.json").decision).toBe("allow");
+      expect(bash("ls src").decision).toBe("allow");
+      expect(bash("grep -n TODO src/index.ts").decision).toBe("allow");
+      expect(bash("cat .env.example").decision).toBe("allow");
+      expect(bash("cat .env").decision).toBe("deny");
+      expect(bash("cat docs/aws").decision).toBe("ask");
+      expect(tool("Read", { file_path: "docs/env-link" }).decision).toBe("deny");
+    });
+  }
+
+  it("resolves a quoted Windows path with backslashes the same way", () => {
+    const { bash } = hostPolicy(WIN, true);
+    expect(bash(String.raw`cat 'docs\env-link'`).decision).toBe("deny");
+    expect(bash(String.raw`cat 'C:\Users\dev\app\docs\sshdir\config'`).decision).toBe("deny");
+    expect(bash(String.raw`cat 'docs\..\README.md'`).decision).toBe("allow");
+  });
+
+  it("keeps wildcards allowed when paths are checked as written (no realpath)", () => {
+    const { bash } = hostPolicy(POSIX, false);
+    expect(bash("ls src/*.ts").decision).toBe("allow");
+  });
+});
+
+describe("#19: redirect writes check where the target really leads", () => {
+  for (const host of HOSTS) {
+    const { bash } = hostPolicy(host, true);
+
+    it(`denies overwriting a secret through an in-repo link (${host.platform})`, () => {
+      for (const command of [
+        "cat README.md > docs/env-link",
+        "cat README.md >> docs/env-link",
+        "git status &> docs/env-link",
+        "git diff 2> docs/env-link",
+        "ls >| docs/pem-link",
+        "cat README.md <> docs/env-link",
+        "cat README.md > docs/sshdir/config",
+        "mkdir -p docs/sshdir/new",
+        "cat README.md > docs/git-link",
+      ]) {
+        expect(bash(command).decision, command).toBe("deny");
+      }
+    });
+
+    it(`keeps ordinary redirect writes allowed (${host.platform})`, () => {
+      expect(bash("ls > docs/listing.txt").decision).toBe("allow");
+      expect(bash("git status > test-output.txt").decision).toBe("allow");
+      expect(bash("ls > .env").decision).toBe("deny");
+    });
+  }
+});
+
+describe("#20: input redirection gets the same secret checks as arguments", () => {
+  for (const host of HOSTS) {
+    for (const withLinks of [false, true]) {
+      const { bash } = hostPolicy(host, withLinks);
+      const mode = `${host.platform}, ${withLinks ? "with" : "without"} realpath`;
+
+      it(`does not allow a wildcard read target, which bash expands (${mode})`, () => {
+        for (const command of [
+          "cat < .en[v]",
+          "cat 0< .en[v]",
+          "head < .en[v]",
+          "wc < .en[v]",
+          "grep X < .en[v]",
+          "cat < .env*",
+          "cat < src/*.ts",
+          "cat < .en{v}",
+        ]) {
+          expect(bash(command).decision, command).not.toBe("allow");
+        }
+      });
+
+      it(`keeps the read-redirect controls (${mode})`, () => {
+        expect(bash("cat < .env").decision).toBe("deny");
+        expect(bash("cat < .env.example").decision).toBe("allow");
+        expect(bash("wc -l < src/index.ts").decision).toBe("allow");
+      });
+    }
+
+    it(`denies reading a secret through an in-repo link on stdin (${host.platform})`, () => {
+      const { bash } = hostPolicy(host, true);
+      expect(bash("cat < docs/env-link").decision).toBe("deny");
+      expect(bash("cat 0< docs/sshdir/config").decision).toBe("deny");
+      expect(bash("cat <& docs/pem-link").decision).not.toBe("allow");
+      expect(bash("cat < docs/aws").decision).toBe("ask");
+    });
+  }
+});
+
+describe("#23: a dangling link is never treated as a new file inside the project", () => {
+  for (const host of HOSTS) {
+    const { bash, tool } = hostPolicy(host, true);
+
+    it(`denies writes through a link whose target does not exist (${host.platform})`, () => {
+      expect(tool("Write", { file_path: "docs/out", content: "x" }).decision).toBe("deny");
+      expect(
+        tool("Edit", { file_path: "docs/out", old_string: "a", new_string: "b" }).decision,
+      ).toBe("deny");
+      expect(tool("Write", { file_path: "docs/out/authorized_keys", content: "x" }).decision).toBe(
+        "deny",
+      );
+      expect(bash("cat key.txt > docs/out").decision).toBe("deny");
+      expect(bash("mkdir -p docs/out/x").decision).toBe("deny");
+      expect(tool("Read", { file_path: "docs/out" }).decision).toBe("deny");
+      expect(bash("cat docs/out").decision).not.toBe("allow");
+    });
+
+    it(`keeps writing a new plain file allowed (${host.platform})`, () => {
+      expect(tool("Write", { file_path: "docs/new.md", content: "x" }).decision).toBe("allow");
+      expect(bash("ls > docs/new.txt").decision).toBe("allow");
+    });
+  }
+
+  it("nodeRealpath fails closed on a real dangling link", async () => {
+    const base = await tempDir("policy-dangling-");
+    const root = join(base, "app");
+    mkdirSync(join(root, "docs"), { recursive: true });
+    writeFileSync(join(root, "key.txt"), "not a key\n");
+    // A junction on Windows (no privilege needed), a symbolic link elsewhere; its target is missing.
+    symlinkSync(join(base, "outside", "ssh"), join(root, "docs", "out"), "junction");
+    const policy = new DefaultToolPolicy({ realpath: nodeRealpath });
+    const decide = (tool: string, input: Record<string, unknown>) =>
+      policy.evaluate({ tool, input, profile: "edit-repo", projectRoot: root, phase: "adapt" })
+        .decision;
+
+    expect(() => nodeRealpath(join(root, "docs", "out"))).toThrow();
+    expect(nodeRealpath(join(root, "docs", "missing.md"))).toBeUndefined();
+    expect(decide("Write", { file_path: "docs/out", content: "x" })).toBe("deny");
+    expect(decide("Write", { file_path: "docs/out/authorized_keys", content: "x" })).toBe("deny");
+    expect(decide("Bash", { command: "cat key.txt > docs/out" })).toBe("deny");
+    expect(decide("Write", { file_path: "docs/new.md", content: "x" })).toBe("allow");
+  });
+
+  it("nodeRealpath lets the policy see a real link to a secret folder (#18, #19)", async () => {
+    const base = await tempDir("policy-link-");
+    const root = join(base, "app");
+    mkdirSync(join(root, "docs"), { recursive: true });
+    mkdirSync(join(root, ".ssh"));
+    writeFileSync(join(root, ".ssh", "config"), "Host example\n");
+    writeFileSync(join(root, "README.md"), "# app\n");
+    symlinkSync(join(root, ".ssh"), join(root, "docs", "sshdir"), "junction");
+    const policy = new DefaultToolPolicy({ realpath: nodeRealpath });
+    const bash = (command: string) =>
+      policy.evaluate({
+        tool: "Bash",
+        input: { command },
+        profile: "edit-repo",
+        projectRoot: root,
+        phase: "adapt",
+      }).decision;
+
+    expect(bash("cat docs/sshdir/config")).toBe("deny");
+    expect(bash("cat < docs/sshdir/config")).toBe("deny");
+    expect(bash("cat README.md > docs/sshdir/config")).toBe("deny");
+    expect(bash("cat README.md")).toBe("allow");
+  });
 });

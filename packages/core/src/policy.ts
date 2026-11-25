@@ -6,7 +6,7 @@
  * denied (or, for Bash commands that are not clearly dangerous, sent to a human as `ask`).
  * It is pure and synchronous; the host platform only decides how paths are compared.
  */
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   BUILTIN_TOOLS,
@@ -308,8 +308,13 @@ interface PathContext {
   realRoot?: string;
 }
 
+/**
+ * Where a path leads. `secret` is a location inside the root that may hold secrets, kept apart
+ * from `inside` so that a caller checking only for `inside` can never let one through.
+ */
 type Resolution =
   | { status: "inside"; rel: string }
+  | { status: "secret" }
   | { status: "outside" }
   | { status: "unknown"; why: string };
 
@@ -362,7 +367,17 @@ function locate(ctx: PathContext, absolute: string): Resolution {
   return { status: "inside", rel: ctx.api.relative(ctx.root, absolute) };
 }
 
-/** Resolves a path string against the project root without touching the filesystem. */
+function withSecrets(location: Resolution): Resolution {
+  return location.status === "inside" && isSecretPath(location.rel)
+    ? { status: "secret" }
+    : location;
+}
+
+/**
+ * Resolves a path string against the project root, through links when `realpath` is set. Every
+ * tool's path checks start here, so a secret file is reported as `secret` wherever it is reached
+ * from, a link committed to the repository included.
+ */
 function resolvePath(ctx: PathContext, raw: string): Resolution {
   if (raw.includes("\0")) return { status: "unknown", why: "contains a NUL byte" };
   if (raw.startsWith("~")) return { status: "unknown", why: "is relative to a home directory" };
@@ -372,16 +387,26 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
   }
   const absolute = ctx.api.resolve(ctx.root, raw);
   const lexical = locate(ctx, absolute);
-  if (lexical.status !== "inside" || ctx.realpath === undefined) return lexical;
+  if (lexical.status !== "inside" || ctx.realpath === undefined) return withSecrets(lexical);
   // A link inside the project may lead anywhere (a cloned repository can commit one pointing at
   // ~/.aws/credentials), so the checks apply to where the path really leads.
-  const real = realPathOf(ctx, absolute);
-  if (real === undefined) return lexical;
+  let real: string | undefined;
+  try {
+    real = realPathOf(ctx, absolute);
+  } catch {
+    // `realpath` throws for an entry that exists but does not resolve: a link whose target is
+    // missing would be followed by the write that creates it, wherever it points.
+    return {
+      status: "unknown",
+      why: "is a link whose target does not exist or cannot be resolved",
+    };
+  }
+  if (real === undefined) return withSecrets(lexical);
   const resolved = locate({ ...ctx, root: ctx.realRoot ?? ctx.root }, real);
   if (resolved.status === "outside") {
     return { status: "unknown", why: "is a link that leads outside the project" };
   }
-  return resolved;
+  return withSecrets(resolved);
 }
 
 /**
@@ -1280,6 +1305,9 @@ function writeVerdict(ctx: PathContext, word: Word, raw: string, what: string): 
   if (location.status === "outside") {
     return { kind: "deny", reason: `${what} \`${raw}\` is outside the project root.` };
   }
+  if (location.status === "secret") {
+    return { kind: "deny", reason: `${what} \`${raw}\` leads to a file that may contain secrets.` };
+  }
   const protectedReason = protectedWriteReason(location.rel);
   if (protectedReason !== undefined) {
     return { kind: "deny", reason: `${what} \`${raw}\` is protected: ${protectedReason}.` };
@@ -1292,17 +1320,22 @@ function redirectVerdict(ctx: PathContext, redirect: Redirect): Verdict {
   const value = target.value;
   if ((op === ">&" || op === "<&") && /^(\d+|-)$/.test(value)) return { kind: "allow" };
   if (value === "/dev/null" && !target.dynamic) return { kind: "allow" };
-  if (op === "<" || op === "<&") {
-    const location = wordResolution(ctx, target, value);
-    if (location.status !== "inside") {
-      return { kind: "ask", reason: `it reads \`${value}\`, which is outside the project root` };
-    }
-    return { kind: "allow" };
-  }
+  const reads = op === "<" || op === "<&";
+  // bash expands a wildcard in a redirection target (`cat < .en[v]` reads `.env`).
   if (target.glob || target.brace) {
-    return { kind: "deny", reason: `The redirection target \`${value}\` cannot be verified.` };
+    return reads
+      ? { kind: "ask", reason: `it reads \`${value}\`, a wildcard that cannot be checked` }
+      : { kind: "deny", reason: `The redirection target \`${value}\` cannot be verified.` };
   }
-  return writeVerdict(ctx, target, value, "The redirection target");
+  if (!reads) return writeVerdict(ctx, target, value, "The redirection target");
+  const location = wordResolution(ctx, target, value);
+  if (location.status === "secret") {
+    return { kind: "deny", reason: `The command reads \`${value}\`, which may contain secrets.` };
+  }
+  if (location.status !== "inside") {
+    return { kind: "ask", reason: `it reads \`${value}\`, which is outside the project root` };
+  }
+  return { kind: "allow" };
 }
 
 function rmVerdict(ctx: PathContext, args: Word[]): Verdict | undefined {
@@ -1444,12 +1477,24 @@ function evaluateSegment(segment: string, ctx: PathContext): Verdict {
     if (word.glob && globRisk(word.value, true).mayMatchSecret) {
       return { kind: "ask", reason: `the wildcard \`${word.value}\` could match secret files` };
     }
+    if (word.glob && ctx.realpath !== undefined) {
+      return {
+        kind: "ask",
+        reason: `the wildcard \`${word.value}\` could match a link, and where it leads cannot be checked`,
+      };
+    }
     const part = pathPart(word.value);
     if (part === undefined) continue;
     if (ctx.win && name !== "git" && WIN_SHORT_NAME.test(part)) {
       return { kind: "ask", reason: `\`${part}\` may be a Windows short file name` };
     }
     const location = wordResolution(ctx, word, part);
+    if (location.status === "secret") {
+      return {
+        kind: "deny",
+        reason: `The command references \`${part}\`, which leads to a file that may contain secrets.`,
+      };
+    }
     if (location.status !== "inside") {
       return {
         kind: "ask",
@@ -1527,7 +1572,7 @@ function evaluateFilePath(ctx: PathContext, raw: unknown, mode: FileMode, field:
   if (location.status === "unknown")
     return deny(`\`${raw}\` ${location.why}, which is not allowed.`);
   if (location.status === "outside") return deny(`\`${raw}\` is outside the project root.`);
-  if (isSecretPath(location.rel)) {
+  if (location.status === "secret") {
     return deny(`\`${raw}\` may contain secrets, so agents cannot access it.`);
   }
   if (mode === "write") {
@@ -1603,18 +1648,28 @@ export interface DefaultToolPolicyOptions {
   platform?: NodeJS.Platform;
   /**
    * Resolves symbolic links and junctions on the real filesystem, returning `undefined` for a path
-   * that does not exist (see {@link nodeRealpath}). When set, every path is also checked where it
-   * really leads; without it, paths are checked as written.
+   * that does not exist and throwing for one that exists but does not resolve, such as a link
+   * whose target is missing (see {@link nodeRealpath}). When set, every path is also checked where
+   * it really leads, and such a link is refused; without it, paths are checked as written.
    */
   realpath?: (absolute: string) => string | undefined;
 }
 
-/** `fs.realpathSync.native`, or `undefined` when the path does not exist. */
+/**
+ * `fs.realpathSync.native`: `undefined` when nothing is at the path, and the error when something
+ * is there but does not resolve (a link whose target is missing, or a loop), so the policy never
+ * takes such a link for a new file.
+ */
 export function nodeRealpath(absolute: string): string | undefined {
   try {
     return realpathSync.native(absolute);
-  } catch {
-    return undefined;
+  } catch (error) {
+    try {
+      lstatSync(absolute);
+    } catch {
+      return undefined;
+    }
+    throw error;
   }
 }
 
