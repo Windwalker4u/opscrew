@@ -1244,7 +1244,8 @@ function isAllowListed(name: string, args: string[]): boolean {
     case "find":
       return true;
     case "tree":
-      return !args.some((t) => t === "-o");
+      // `-o <file>` writes the listing to a file, inside an option cluster too (`-ao <file>`).
+      return !args.some((t) => /^-[^-]/.test(t) && t.includes("o"));
     case "grep":
       return !args.some(
         (t, i) =>

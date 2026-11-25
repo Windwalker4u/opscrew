@@ -436,3 +436,24 @@ describe("#24: writing a GitHub Actions workflow needs the user's approval", () 
     ).toBe("ask");
   });
 });
+
+describe("tree's output option, in any spelling, is not pre-approved", () => {
+  for (const host of HOSTS) {
+    const { bash } = hostPolicy(host, false);
+
+    it(`asks for -o inside an option cluster (${host.platform})`, () => {
+      for (const command of [
+        "tree -o out.txt",
+        "tree -ao opscrew/plan.yaml",
+        "tree -oa .github/workflows/opscrew-deploy.yml",
+        "tree -aoutfile",
+        "tree -o/tmp/x README.md",
+      ]) {
+        expect(bash(command).decision, command).not.toBe("allow");
+      }
+      expect(bash("tree -L 2 src").decision).toBe("allow");
+      expect(bash("tree -a src").decision).toBe("allow");
+      expect(bash("tree --noreport src").decision).toBe("allow");
+    });
+  }
+});
