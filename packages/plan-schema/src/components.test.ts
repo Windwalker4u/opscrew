@@ -7,6 +7,7 @@ import {
   type PlanService,
   ProjectFactsSchema,
   parseArtifact,
+  postgresLogins,
   serviceOf,
 } from "./index";
 
@@ -162,6 +163,16 @@ describe("DeployPlan components", () => {
       "services.0.options.mode",
     ]);
     expect(pathsOf(parse({ ...postgres, options: { mode: "cache" } }))).toEqual([
+      "services.0.options",
+    ]);
+    // PostgreSQL takes its separate logins, and only `separate`.
+    expect(
+      parse({ ...postgres, options: { logins: "separate" } }).data?.services[0]?.options,
+    ).toEqual({ logins: "separate" });
+    const shared = parse({ ...postgres, options: { logins: "shared" } });
+    expect(pathsOf(shared)).toEqual(["services.0.options.logins"]);
+    expect(shared.error?.issues[0]?.message).toBe('must be "separate"');
+    expect(pathsOf(parse({ ...mongodb, options: { logins: "separate" } }))).toEqual([
       "services.0.options",
     ]);
     expect(pathsOf(parse({ ...postgres, kind: "keydb" }))).toEqual(["services.0.kind"]);
@@ -360,6 +371,21 @@ describe("serviceOf", () => {
     expectTypeOf<NonNullable<typeof queue>["options"]>().toEqualTypeOf<{
       mode: "cache" | "queue";
     }>();
+  });
+});
+
+describe("postgresLogins", () => {
+  it("is true only for a PostgreSQL with separate logins", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...(await validPlan()),
+      externalServices: [],
+      services: [
+        { ...postgres, options: { logins: "separate" } },
+        { ...postgres, name: "old" },
+        valkey("queue"),
+      ],
+    });
+    expect(plan.services.map(postgresLogins)).toEqual([true, false, false]);
   });
 });
 
