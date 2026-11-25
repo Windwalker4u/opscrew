@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   uptimeEntryKey,
@@ -370,6 +370,37 @@ describe("provisionCheck with the Cloudflare uptime Worker", () => {
     expect(s.requests("cloudflare-apply")[0]?.details).toContain(`Set the Worker secret ${SECRET}`);
     const secret = JSON.parse(s.uptime.scripts.get("opscrew-uptime")?.secrets.get(SECRET) ?? "");
     expect(secret.report).toBe(kept?.value);
+  });
+
+  it("writes the secret again when the record holds no report key and the first plan was declined", async () => {
+    let approve = true;
+    const s = await setup({ env: {}, interactive: true, answer: () => approve });
+    await s.provision(uptimePlan("cloudflare"));
+    // The Worker holds a secret, and this computer's record names no report key (as before the
+    // servers reported, or after a run on another computer); the key file is gone.
+    await writeFile(
+      join(s.deps.paths.stateDir, "uptime.json"),
+      `${JSON.stringify({ accountId: FAKE_ACCOUNT_ID, id: ID })}\n`,
+    );
+    await rm(join(s.deps.paths.projectHomeDir, "uptime_report_key"));
+    // The first run makes and keeps a key, but its plan is declined.
+    approve = false;
+    await expect(s.provision(uptimePlan("cloudflare"))).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+    const kept = await readReportKey(s.deps.paths, s.deps.redactor);
+    expect(kept).toBeDefined();
+    expect((await readUptimeRecord(s.deps.paths))?.reportKey).toBeUndefined();
+    // The next run, with no address given, asks for it and writes the secret with that key.
+    approve = true;
+    const asked = s.asked.length;
+    s.handler.requests.length = 0;
+    await s.provision(uptimePlan("cloudflare"));
+    expect(s.asked).toHaveLength(asked + 1);
+    expect(s.requests("cloudflare-apply")[0]?.details).toContain(`Set the Worker secret ${SECRET}`);
+    const secret = JSON.parse(s.uptime.scripts.get("opscrew-uptime")?.secrets.get(SECRET) ?? "");
+    expect(secret.report).toBe(kept?.value);
+    expect((await readUptimeRecord(s.deps.paths))?.reportKey).toBe(kept?.sha256);
   });
 
   it("stops before any change when no address is given or stored", async () => {

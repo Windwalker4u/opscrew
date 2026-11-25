@@ -254,8 +254,9 @@ function reportKeyNeedsAddress(name: string): OpsCrewError {
  * For provision with the Worker chosen: the entry with the servers that report
  * (`reportServers`, and the `rotate` flags with the credentials' ages on), and the webhook's
  * secret (`{ url, token?, report? }` as JSON, registered with the redactor) when it is written: when
- * an address is given, when the Worker has none, and when its report key is not the one this
- * computer keeps (a lost key file gives a new key, and the address is asked as for a new secret).
+ * an address is given, when the Worker has none, and when this computer's record doesn't say the
+ * Worker holds the key it keeps (a lost key file gives a new key, and a plan declined or shown
+ * only leaves it unwritten): the address is then asked as for a new secret.
  * A new key is made only once the address is known, so the secret always gets it.
  */
 async function entryWithReports(
@@ -288,9 +289,9 @@ async function entryWithReports(
   const existing =
     server === undefined ? undefined : await readReportKey(deps.paths, deps.redactor);
   const recorded = (await readUptimeRecord(deps.paths))?.reportKey;
-  const stale =
-    server !== undefined &&
-    (existing === undefined || (recorded !== undefined && recorded !== existing.sha256));
+  // The Worker holds this computer's key only once a written secret recorded it here (or the
+  // recovery copy brought that record back).
+  const stale = server !== undefined && (existing === undefined || recorded !== existing.sha256);
   const address = await webhookAddress(deps, {
     kind: entry.webhook,
     name: entry.secret,
