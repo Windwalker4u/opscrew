@@ -8,7 +8,7 @@ import {
 } from "@opscrew/connector-portainer";
 import { OpsCrewError } from "@opscrew/core";
 import type { DrillRecord } from "@opscrew/iac-templates";
-import { IMAGES } from "@opscrew/iac-templates";
+import { IMAGES, loginsLoad } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -447,9 +447,10 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --drill in the user's Portainer"
     for (const password of passwords) expect(password.length).toBeGreaterThanOrEqual(16);
     expect(new Set(passwords).size).toBe(3);
     expect(JSON.stringify(world.portainer.bodies)).not.toContain(DB_SECRET);
-    // The load makes the logins with the copy's passwords, then makes the database anew owned by app_owner.
+    // The load makes the logins with the copy's passwords, then the database anew, as loginsLoad says.
     const [load] = ranWith(world, "pg_restore");
-    expect(load?.cmd[2]).toContain("CREATE DATABASE app OWNER app_owner");
+    const file = `/snapshots/${ID}/db.dump`;
+    expect(load?.cmd[2]).toContain(loginsLoad({ host: "db", file, setup: true }));
     const secrets = world.puts
       .flat()
       .map((entry) => entry.data?.toString() ?? "")

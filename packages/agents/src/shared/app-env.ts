@@ -11,9 +11,12 @@ import {
   type PreviewSecretFormat,
   previewSecret,
   previousValueVariables,
+  type ServiceUrlKind,
   serviceSecrets,
   serviceSpec,
+  serviceUrlKind,
   siteHosts,
+  splitDatabase,
   splitDatabaseSettings,
 } from "@opscrew/iac-templates";
 import {
@@ -165,9 +168,6 @@ export function fixedProductionValue(name: string): string | undefined {
   return FIXED_VALUES.get(name);
 }
 
-/** A service OpsCrew runs next to the app, whose connection URL a variable can hold. */
-export type ServiceUrlKind = "postgres" | "redis";
-
 /** The services OpsCrew runs for each kind of URL: Postgres, and Valkey, Redis 8 or Dragonfly. */
 const URL_SERVICE_KINDS: Readonly<Record<ServiceUrlKind, readonly SelfHostedServiceKind[]>> = {
   postgres: ["postgres"],
@@ -187,69 +187,6 @@ export function urlService(
     (s) => s.enabled && URL_SERVICE_KINDS[kind].includes(s.kind),
   );
   return running.find((s) => "mode" in s.options && s.options.mode === "queue") ?? running[0];
-}
-
-const POSTGRES_URL_NAME =
-  /^(?:DATABASE_URL|DATABASE_URI|SQLALCHEMY_DATABASE_URI|POSTGRES_UR[LI]|DB_UR[LI])$/;
-const REDIS_URL_NAME = /^(?:REDIS_UR[LI]|CELERY_BROKER_UR[LI]|BROKER_URL|CELERY_RESULT_BACKEND)$/;
-/** `<prefix>_DATABASE_URL`/`_URI` and `<prefix>_REDIS_URL`/`_URI`; the capture is the prefix. */
-const PREFIXED_URL_NAME = /^(\w+?)_(DATABASE|REDIS)_UR[LI]$/;
-/**
- * Prefix segments that mark another database engine or a database that is not production's
- * (tests, Prisma's shadow database, local development): such names are never derived.
- */
-const OTHER_DATABASE_SEGMENTS = new Set([
-  "MONGO",
-  "MONGODB",
-  "MYSQL",
-  "MARIADB",
-  "SQLITE",
-  "CLICKHOUSE",
-  "MSSQL",
-  "SQLSERVER",
-  "ORACLE",
-  "COCKROACH",
-  "COCKROACHDB",
-  "TIMESCALE",
-  "NEO4J",
-  "CASSANDRA",
-  "LIBSQL",
-  "TURSO",
-  "PLANETSCALE",
-  "REDIS",
-  "ELASTIC",
-  "ELASTICSEARCH",
-  "TEST",
-  "TESTS",
-  "TESTING",
-  "SHADOW",
-  "DEV",
-  "DEVELOPMENT",
-  "LOCAL",
-  "E2E",
-  "CI",
-  "STAGING",
-]);
-
-/**
- * The service whose connection URL a variable holds, from its name, for the aliases an app reads
- * besides the names the catalog gives (`DATABASE_URL`, `REDIS_URL`) and the variable detection
- * found (`services[].variable`): `DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`, `POSTGRES_URL`,
- * `DB_URL` and `*_DATABASE_URL`/`_URI` hold Postgres; `REDIS_URI`, `*_REDIS_URL`/`_URI`, Celery's
- * broker and result backend hold Redis. Undefined for any other name, for names bundlers expose to
- * browsers (`NEXT_PUBLIC_DATABASE_URL`) and for prefixes naming another engine or a non-production
- * database (`MONGO_DATABASE_URL`, `TEST_DATABASE_URL`). `design` plans these as `derived` when the
- * service runs on the server, and {@link assembleAppEnv} fills them in.
- */
-export function serviceUrlKind(name: string): ServiceUrlKind | undefined {
-  if (isClientExposedEnvName(name)) return undefined;
-  if (POSTGRES_URL_NAME.test(name)) return "postgres";
-  if (REDIS_URL_NAME.test(name)) return "redis";
-  const prefixed = PREFIXED_URL_NAME.exec(name);
-  if (!prefixed) return undefined;
-  const segments = (prefixed[1] ?? "").split("_");
-  if (segments.some((segment) => OTHER_DATABASE_SEGMENTS.has(segment))) return undefined;
-  return prefixed[2] === "DATABASE" ? "postgres" : "redis";
 }
 
 /**
@@ -274,24 +211,6 @@ const SPLIT_SETTINGS: Readonly<Record<string, keyof DatabaseSettings>> = {
 export function publicSplitSetting(name: string): boolean {
   const setting = SPLIT_SETTINGS[name];
   return (setting !== undefined && setting !== "password") || /^REDIS_(?:HOST|PORT)$/.test(name);
-}
-
-/** The running SQL databases (PostgreSQL, MySQL, MariaDB) of `owner`, a plan or components. */
-export function sqlDatabases(owner: { readonly services: readonly PlanService[] }): PlanService[] {
-  return owner.services.filter(
-    (s) => s.enabled && serviceSpec(s.kind).databaseSettings !== undefined,
-  );
-}
-
-/**
- * The running SQL database whose settings an app reading `DB_HOST` receives: the one that has
- * `DATABASE_URL` as its variable, else the first ({@link sqlDatabases}).
- */
-export function splitDatabase(owner: {
-  readonly services: readonly PlanService[];
-}): PlanService | undefined {
-  const sql = sqlDatabases(owner);
-  return sql.find((s) => s.variable === "DATABASE_URL") ?? sql[0];
 }
 
 /** Laravel's `DB_CONNECTION` for each SQL database. */

@@ -185,11 +185,14 @@ const SPLIT_LOGIN: Readonly<Record<string, keyof DatabaseSettings>> = {
   DB_PASS: "password",
 };
 
-/** A PostgreSQL's URL's names an app reads besides the catalog's, as agents' `serviceUrlKind`. */
-const POSTGRES_ALIAS =
+/** The kind of service whose connection URL a variable holds: PostgreSQL, or Valkey/Redis 8/Dragonfly. */
+export type ServiceUrlKind = "postgres" | "redis";
+
+const POSTGRES_URL_NAME =
   /^(?:DATABASE_URL|DATABASE_URI|SQLALCHEMY_DATABASE_URI|POSTGRES_UR[LI]|DB_UR[LI])$/;
-/** `<prefix>_DATABASE_URL`/`_URI`; the capture is the prefix. */
-const PREFIXED_ALIAS = /^(\w+?)_DATABASE_UR[LI]$/;
+const REDIS_URL_NAME = /^(?:REDIS_UR[LI]|CELERY_BROKER_UR[LI]|BROKER_URL|CELERY_RESULT_BACKEND)$/;
+/** `<prefix>_DATABASE_URL`/`_URI` and `<prefix>_REDIS_URL`/`_URI`; the capture is the prefix. */
+const PREFIXED_URL_NAME = /^(\w+?)_(DATABASE|REDIS)_UR[LI]$/;
 /**
  * Prefix segments that mark another database engine or a database that is not production's
  * (tests, Prisma's shadow database, local development): such names are never derived.
@@ -228,18 +231,42 @@ const OTHER_DATABASE_SEGMENTS = new Set([
 ]);
 
 /**
- * True for a name agents derive from the app's PostgreSQL's address (`design` plans it as
- * `derived`, `assembleAppEnv` fills it): `DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`,
- * `POSTGRES_URL`, `DB_URL` and `*_DATABASE_URL`/`_URI`, but not a name bundlers expose to browsers
- * nor a prefix naming another engine or a non-production database (`TEST_DATABASE_URL`).
+ * The service whose connection URL a variable holds, from its name, for the aliases an app reads
+ * besides the names the catalog gives (`DATABASE_URL`, `REDIS_URL`) and the variable detection
+ * found (`services[].variable`): `DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`, `POSTGRES_URL`,
+ * `DB_URL` and `*_DATABASE_URL`/`_URI` hold Postgres; `REDIS_URI`, `*_REDIS_URL`/`_URI`, Celery's
+ * broker and result backend hold Redis. Undefined for any other name, for names bundlers expose to
+ * browsers (`NEXT_PUBLIC_DATABASE_URL`) and for prefixes naming another engine or a non-production
+ * database (`MONGO_DATABASE_URL`, `TEST_DATABASE_URL`). Agents' `design` plans these as `derived` when
+ * the service runs on the server, and agents fill them in (and {@link releaseVariables}).
  */
-function postgresAlias(name: string): boolean {
-  if (isClientExposedEnvName(name)) return false;
-  if (POSTGRES_ALIAS.test(name)) return true;
-  const prefix = PREFIXED_ALIAS.exec(name)?.[1];
-  return (
-    prefix !== undefined && !prefix.split("_").some((part) => OTHER_DATABASE_SEGMENTS.has(part))
+export function serviceUrlKind(name: string): ServiceUrlKind | undefined {
+  if (isClientExposedEnvName(name)) return undefined;
+  if (POSTGRES_URL_NAME.test(name)) return "postgres";
+  if (REDIS_URL_NAME.test(name)) return "redis";
+  const prefixed = PREFIXED_URL_NAME.exec(name);
+  if (!prefixed) return undefined;
+  const segments = (prefixed[1] ?? "").split("_");
+  if (segments.some((segment) => OTHER_DATABASE_SEGMENTS.has(segment))) return undefined;
+  return prefixed[2] === "DATABASE" ? "postgres" : "redis";
+}
+
+/** The running SQL databases (PostgreSQL, MySQL, MariaDB) of `owner`, a plan or components. */
+export function sqlDatabases(owner: { readonly services: readonly PlanService[] }): PlanService[] {
+  return owner.services.filter(
+    (s) => s.enabled && serviceSpec(s.kind).databaseSettings !== undefined,
   );
+}
+
+/**
+ * The running SQL database whose settings an app reading `DB_HOST` receives: the one that has
+ * `DATABASE_URL` as its variable, else the first ({@link sqlDatabases}).
+ */
+export function splitDatabase(owner: {
+  readonly services: readonly PlanService[];
+}): PlanService | undefined {
+  const sql = sqlDatabases(owner);
+  return sql.find((s) => s.variable === "DATABASE_URL") ?? sql[0];
 }
 
 /**
@@ -252,7 +279,7 @@ function postgresAlias(name: string): boolean {
  * - when the app reads `DB_HOST` and the database is the one whose split settings `app.env` holds
  *   (the SQL database whose variable is `DATABASE_URL`, else the first), the user's and the
  *   password's split names the app reads;
- * - the app's other derived names for the first PostgreSQL's address ({@link postgresAlias}).
+ * - the app's other derived names for the first PostgreSQL's address ({@link serviceUrlKind}).
  *
  * `release.db.env` holds them, which the release reads after `app.env`. Empty without such a
  * PostgreSQL.
@@ -286,10 +313,7 @@ export function releaseVariables(
     for (const name of mine) release[name] = address;
   }
   const reads = new Set(plan.app.env.map((variable) => variable.name));
-  const sql = running.filter((s) => serviceSpec(s.kind).databaseSettings !== undefined);
-  const split = reads.has("DB_HOST")
-    ? (sql.find((s) => s.variable === "DATABASE_URL") ?? sql[0])
-    : undefined;
+  const split = reads.has("DB_HOST") ? splitDatabase(plan) : undefined;
   if (split !== undefined && postgresLogins(split)) {
     const { settings } = owner(split);
     for (const [name, setting] of Object.entries(SPLIT_LOGIN)) {
@@ -299,7 +323,7 @@ export function releaseVariables(
   const first = running.find((s) => s.kind === "postgres");
   if (first !== undefined && postgresLogins(first)) {
     for (const { name, source } of plan.app.env) {
-      if (source === "derived" && !given.has(name) && postgresAlias(name)) {
+      if (source === "derived" && !given.has(name) && serviceUrlKind(name) === "postgres") {
         release[name] = owner(first).address;
       }
     }

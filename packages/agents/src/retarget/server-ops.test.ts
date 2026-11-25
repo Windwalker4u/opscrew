@@ -367,7 +367,6 @@ describe("database", () => {
         timeoutMs: 5 * MIN,
       },
     ]);
-    expect(load).toContain("CREATE DATABASE app OWNER app_owner");
   });
 
   it("recreates the app database empty from the maintenance database, ending stray sessions", async () => {

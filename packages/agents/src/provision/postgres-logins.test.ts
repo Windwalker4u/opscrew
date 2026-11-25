@@ -1,13 +1,13 @@
-import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_SECRETS, RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { parseDotenv } from "../shared/app-env";
 import { generatedValuesFile } from "../shared/app-secrets";
 import {
   createProject,
@@ -21,7 +21,7 @@ import {
   testPlan,
 } from "../testing";
 import { noOtherApps } from "../testing/other-apps";
-import { loginsNotices, loginsSwitch, requireLogins } from "./postgres-logins";
+import { type KeptLogins, loginsNotices, loginsSwitch, requireLogins } from "./postgres-logins";
 import { runProvision } from "./run";
 import { buildAppEnvironment, deploySecretNames, deploySecrets } from "./secrets";
 import type { ProvisionServices } from "./types";
@@ -46,6 +46,18 @@ function planWith(
 const SEPARATE = { options: { logins: "separate" } };
 const SINGLE = { options: {} };
 const COMMAND = "opscrew provision";
+/** This environment's generated values for a database made before 047: the superuser's password. */
+const BEFORE_047 = { dbPassword: fakeSecret("generic-password", "superuser") };
+/** The generated values of a database with its two logins. */
+const WITH_LOGINS = {
+  ...BEFORE_047,
+  services: {
+    db: {
+      "owner-password": fakeSecret("generic-password", "owner"),
+      "runtime-password": fakeSecret("generic-password", "runtime"),
+    },
+  },
+};
 
 describe("provision's texts for PostgreSQL's two logins (047)", () => {
   it("tells a deployed environment without logins how to switch, every run", () => {
@@ -59,7 +71,7 @@ describe("provision's texts for PostgreSQL's two logins (047)", () => {
     expect(loginsNotices(plan, COMMAND)).toEqual([
       "db runs PostgreSQL 14, so your app logs in as its superuser. Separate logins for the app and its migrations come with an upgrade to PostgreSQL 15 or later.",
     ]);
-    expect(() => requireLogins(plan, new Map([["db", false]]), COMMAND)).not.toThrow();
+    expect(() => requireLogins(plan, BEFORE_047, COMMAND)).not.toThrow();
   });
 
   it("says nothing before the first deploy, nor with logins", () => {
@@ -69,39 +81,37 @@ describe("provision's texts for PostgreSQL's two logins (047)", () => {
 
   it("refuses a hand-written logins: separate below 15", () => {
     const plan = planWith({ version: "14", ...SEPARATE }, false);
-    expect(() => requireLogins(plan, undefined, COMMAND)).toThrow(
+    expect(() => requireLogins(plan, {}, COMMAND)).toThrow(
       "PostgreSQL 14 can't use separate logins (OpsCrew's setup needs psql 15 or later). Upgrade db to 17 first, then add `logins: separate`.",
     );
   });
 
-  it("refuses removing logins from a deployed database whose committed plan has them", () => {
-    const committed = new Map([["db", true]]);
-    expect(() => requireLogins(planWith(SINGLE), committed, COMMAND)).toThrow(
+  it("refuses removing logins from a database whose owner password this environment keeps", () => {
+    expect(() => requireLogins(planWith(SINGLE), WITH_LOGINS, COMMAND)).toThrow(
       "The database db already has separate logins for the app and its migrations, and OpsCrew can't give the app the superuser again. Put `logins: separate` back under its options in opscrew/plan.yaml.",
     );
-    expect(() => requireLogins(planWith(SEPARATE), committed, COMMAND)).not.toThrow();
+    expect(() => requireLogins(planWith(SEPARATE), WITH_LOGINS, COMMAND)).not.toThrow();
+    expect(() => requireLogins(planWith(SINGLE), BEFORE_047, COMMAND)).not.toThrow();
   });
 
-  it("switches a deployed database whose committed plan has no logins, with data-model.md's lines", () => {
-    const change = loginsSwitch(planWith(SEPARATE), new Map([["db", false]]), "prod");
+  it("switches a deployed database that keeps its superuser's password but no owner's, with data-model.md's lines", () => {
+    const change = loginsSwitch(planWith(SEPARATE), BEFORE_047, "prod");
     expect(change?.services).toEqual(["db"]);
     expect(change?.lines).toEqual([
       "Take a snapshot of db now.",
       "db restarts once (a few seconds) with two new passwords.",
       "The next deploy creates app_owner and app_runtime and gives app_owner the app's tables, in one transaction. If it fails, nothing changes and the app keeps its current login.",
+      "A database with event triggers is refused: remove them with DROP EVENT TRIGGER first.",
       "From that deploy, the release command logs in as app_owner, and the app, workers and cron as app_runtime.",
     ]);
     expect(change?.hash).toMatch(/^[0-9a-f]{64}$/);
     // Another environment's switch is another plan.
-    expect(loginsSwitch(planWith(SEPARATE), new Map([["db", false]]), "staging")?.hash).not.toBe(
-      change?.hash,
-    );
-    // Nothing switches before the first deploy, for a new database, or once committed.
-    expect(
-      loginsSwitch(planWith(SEPARATE, false), new Map([["db", false]]), "prod"),
-    ).toBeUndefined();
-    expect(loginsSwitch(planWith(SEPARATE), new Map(), "prod")).toBeUndefined();
-    expect(loginsSwitch(planWith(SEPARATE), new Map([["db", true]]), "prod")).toBeUndefined();
+    expect(loginsSwitch(planWith(SEPARATE), BEFORE_047, "staging")?.hash).not.toBe(change?.hash);
+    // Nothing switches before the first deploy, without the superuser's password (a new database),
+    // or once the owner's password is kept.
+    expect(loginsSwitch(planWith(SEPARATE, false), BEFORE_047, "prod")).toBeUndefined();
+    expect(loginsSwitch(planWith(SEPARATE), {}, "prod")).toBeUndefined();
+    expect(loginsSwitch(planWith(SEPARATE), WITH_LOGINS, "prod")).toBeUndefined();
   });
 });
 
@@ -139,22 +149,66 @@ describe("the two logins' secrets (047)", () => {
     }
   });
 
+  it("the release overrides exactly the names that give the app the runtime login", async () => {
+    const deps = await createTestPhaseDeps();
+    const base = testPlan({ userSecret: false });
+    const names = [
+      "SQLALCHEMY_DATABASE_URI",
+      "APP_DATABASE_URL",
+      "TEST_DATABASE_URL",
+      "NEXT_PUBLIC_DATABASE_URL",
+      "DB_HOST",
+      "DB_USER",
+      "DB_PASS",
+    ];
+    const env = [
+      ...base.app.env,
+      // Neither is filled with a connection URL, so the app may go without them.
+      ...names.map((name) => ({
+        name,
+        secret: false,
+        source: "derived" as const,
+        optional: name === "TEST_DATABASE_URL" || name === "NEXT_PUBLIC_DATABASE_URL",
+      })),
+    ];
+    const plan = planWith(SEPARATE, false, { ...base, app: { ...base.app, env } });
+    const environment = await buildAppEnvironment(deps, plan, {});
+    const runtime = environment.values.services.db?.["runtime-password"] as string;
+    const runtimeNames = [...parseDotenv(environment.appEnv)]
+      .filter(([, value]) => value.includes("app_runtime") || value.includes(runtime))
+      .map(([name]) => name);
+    const release = deploySecrets({
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment,
+    })[RELEASE_DB_ENV.secret];
+    const overridden = [...parseDotenv(release ?? "").keys()];
+    expect(overridden.sort()).toEqual(runtimeNames.sort());
+    expect(overridden).toEqual(
+      expect.arrayContaining(["SQLALCHEMY_DATABASE_URI", "APP_DATABASE_URL", "DB_USER", "DB_PASS"]),
+    );
+  });
+
   it("destroy deletes the release's env file with the other deploy secrets", () => {
     expect(deploySecretNames(planWith(SEPARATE))).toContain(RELEASE_DB_ENV.secret);
     expect(deploySecretNames(planWith(SINGLE))).not.toContain(RELEASE_DB_ENV.secret);
   });
 });
 
-/** A project whose committed plan is `committed`, with `current` in the working copy. */
+/**
+ * A project whose plan `plan` is committed (a hand edit committed first), with this environment's
+ * generated values `kept`.
+ */
 async function project(
-  committed: DeployPlan,
-  current: DeployPlan,
+  plan: DeployPlan,
+  kept: KeptLogins,
   answer: (request: ApprovalRequest) => boolean = () => true,
 ) {
-  const created = await createProject(committed);
+  const created = await createProject(plan);
   await created.git(created.root, "add", "opscrew/plan.yaml");
   await created.git(created.root, "commit", "-q", "-m", "plan");
-  await writeArtifact("plan", join(created.root, "opscrew", "plan.yaml"), current);
   await writeFile(join(created.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
   const handler = new ScriptedApprovalHandler(answer);
   const deps = await createTestPhaseDeps({
@@ -168,6 +222,9 @@ async function project(
     runner: projectRunner(),
     approvalHandler: handler,
   });
+  const keptText = `${JSON.stringify(kept)}\n`;
+  await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+  await writeFile(generatedValuesFile(deps), keptText);
   const github = new FakeGitHub();
   /** What had been written when the snapshot was taken. */
   const atSnapshot: { requests: string[]; generated: boolean; secrets: number; skip: string[] }[] =
@@ -175,7 +232,7 @@ async function project(
   const snapshot: NonNullable<ProvisionServices["snapshot"]> = async (skip) => {
     atSnapshot.push({
       requests: handler.requests.map((r) => r.kind),
-      generated: existsSync(generatedValuesFile(deps)),
+      generated: (await readFile(generatedValuesFile(deps), "utf8")) !== keptText,
       secrets: github.secrets.size,
       skip: [...skip],
     });
@@ -191,23 +248,23 @@ async function project(
     sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
     snapshot,
   };
-  return { ...created, deps, handler, github, services, atSnapshot };
+  return { ...created, deps, handler, github, services, atSnapshot, keptText };
 }
 
 /** Nothing of the run's changes was made: no value generated, no secret stored, no file written. */
-function expectNothingWritten(s: Awaited<ReturnType<typeof project>>) {
-  expect(existsSync(generatedValuesFile(s.deps))).toBe(false);
+async function expectNothingWritten(s: Awaited<ReturnType<typeof project>>) {
+  expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
   expect(s.github.secrets.size).toBe(0);
   expect(s.handler.requests.map((r) => r.kind)).not.toContain("repo-write");
 }
 
 describe.skipIf(!findExecutable("git"))("provision's switch of an existing database (047)", () => {
-  it("shows the switch in a plan approved by its hash, and takes the snapshot before anything is written", async () => {
-    const s = await project(planWith(SINGLE), planWith(SEPARATE));
+  it("shows the switch of a hand-committed edit in a plan approved by its hash, and takes the snapshot before anything is written", async () => {
+    const s = await project(planWith(SEPARATE), BEFORE_047);
     await runProvision(s.deps, { services: s.services });
 
     const [first] = s.handler.requests;
-    const change = loginsSwitch(planWith(SEPARATE), new Map([["db", false]]), "prod");
+    const change = loginsSwitch(planWith(SEPARATE), BEFORE_047, "prod");
     expect(first).toMatchObject({ kind: "iac-apply", planHash: change?.hash });
     for (const line of change?.lines ?? []) expect(first?.details).toContain(line);
     expect(first?.details).toContain(`Switch hash: ${change?.hash}`);
@@ -228,7 +285,7 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
   });
 
   it("a failed snapshot stops provision with nothing written, saying what to do next", async () => {
-    const s = await project(planWith(SINGLE), planWith(SEPARATE));
+    const s = await project(planWith(SEPARATE), BEFORE_047);
     s.services.snapshot = async () => {
       throw new OpsCrewError("COMMAND_FAILED", "The app's server has too little free disk.");
     };
@@ -240,12 +297,12 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
       "The snapshot of db before the switch to separate logins failed: The app's server has too little free disk. Nothing was changed.",
     );
     expect(error.hint).toContain("then run `opscrew provision` again");
-    expectNothingWritten(s);
+    await expectNothingWritten(s);
   });
 
   it("--approve with another hash changes nothing", async () => {
     const wrong = "a".repeat(64);
-    const s = await project(planWith(SINGLE), planWith(SEPARATE), (request) =>
+    const s = await project(planWith(SEPARATE), BEFORE_047, (request) =>
       request.planHash === undefined ? true : request.planHash === wrong,
     );
     const error = (await runProvision(s.deps, {
@@ -254,22 +311,22 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     }).catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("APPROVAL_REFUSED");
     expect(s.atSnapshot).toEqual([]);
-    expectNothingWritten(s);
+    await expectNothingWritten(s);
   });
 
-  it("refuses removing the logins before any change", async () => {
-    const s = await project(planWith(SEPARATE), planWith(SINGLE));
+  it("refuses a hand-committed removal of the logins before any change", async () => {
+    const s = await project(planWith(SINGLE), WITH_LOGINS);
     const error = (await runProvision(s.deps, { services: s.services }).catch(
       (e: unknown) => e,
     )) as OpsCrewError;
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toContain("can't give the app the superuser again");
     expect(s.handler.requests).toEqual([]);
-    expectNothingWritten(s);
+    await expectNothingWritten(s);
   });
 
   it("only says how to switch for a deployed database without logins, and changes nothing for it", async () => {
-    const s = await project(planWith(SINGLE), planWith(SINGLE));
+    const s = await project(planWith(SINGLE), BEFORE_047);
     await runProvision(s.deps, { services: s.services });
     expect(s.deps.reporter.text()).toContain(
       "Your app logs in to PostgreSQL (db) as its superuser.",

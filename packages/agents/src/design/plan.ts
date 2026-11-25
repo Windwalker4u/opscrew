@@ -5,6 +5,7 @@ import {
   detectStack,
   hasLogin,
   releaseCommandInImage,
+  serviceUrlKind,
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -26,7 +27,6 @@ import {
   FRAMEWORK_ENV,
   STORAGE_VARIABLES,
   serviceAppVariables,
-  serviceUrlKind,
   storageVariableKind,
   urlService,
 } from "../shared";

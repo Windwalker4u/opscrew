@@ -242,8 +242,10 @@ The lead's list, which a real Laravel app on 047 needs:
 
 - **How it starts:** the user adds `logins: separate` (provision's notice gives the exact line),
   then runs `npx opscrew provision`. Provision sees the switch when the environment has been
-  deployed (`deployment.firstDeployAt`) and the plan committed at `HEAD` has the service without
-  `logins`.
+  deployed (`deployment.firstDeployAt`) and this environment's generated values keep the
+  database's `dbPassword` but no `owner-password` for it. They decide, not the plan at git's
+  `HEAD`: only provision writes them, so a hand-committed `logins: separate` still gets the
+  approval and the snapshot, and a hand-committed removal is still refused.
 - **The plan,** shown before anything changes and approved by its hash with provision's own
   approval, says:
   - a snapshot of the database is taken first;
@@ -251,7 +253,8 @@ The lead's list, which a real Laravel app on 047 needs:
   - the next deploy makes the two logins and moves ownership in one transaction;
   - the app, workers and cron move to `app_runtime` at their switch, and the release logs in as
     `app_owner`;
-  - a failure changes nothing, and the running version keeps its current login.
+  - a failure changes nothing, and the running version keeps its current login;
+  - a database with event triggers is refused: remove them with DROP EVENT TRIGGER first.
 - **The snapshot first:** provision takes it through the existing on-demand snapshot path before it
   writes the new secrets and files. When it fails, provision stops.
 - **Until the switch,** the database works unchanged.

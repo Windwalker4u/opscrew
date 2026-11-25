@@ -11,6 +11,8 @@ import {
   renderRuntimeFiles,
   STORAGE_NAMES,
   serviceSpec,
+  splitDatabase,
+  sqlDatabases,
 } from "@opscrew/iac-templates";
 import {
   ComponentNameSchema,
@@ -27,7 +29,6 @@ import {
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
 import { localhostHostSettingProblem } from "../localhost/preflight";
-import { splitDatabase, sqlDatabases } from "../shared/app-env";
 import { appMemoryLimits, type MemoryLimit, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";

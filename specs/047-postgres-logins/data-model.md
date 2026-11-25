@@ -14,9 +14,10 @@ services:
 - **`options.logins`:** optional, and `"separate"` is its only value. Any other value is refused
   with `must be "separate"`. Without it, PostgreSQL's options stay `{}` and parse exactly as before.
 - **Provision's refusals:**
-  - removed from a plan whose committed version (`HEAD`) has it: "The database db already has
-    separate logins for the app and its migrations, and OpsCrew can't give the app the superuser
-    again. Put `logins: separate` back under its options in opscrew/plan.yaml.";
+  - removed from a plan whose service this environment's generated values (which only provision
+    writes) keep an `owner-password` for: "The database db already has separate logins for the
+    app and its migrations, and OpsCrew can't give the app the superuser again. Put
+    `logins: separate` back under its options in opscrew/plan.yaml.";
   - a hand-written `logins: separate` below version 15: "PostgreSQL 14 can't use separate logins
     (OpsCrew's setup needs psql 15 or later). Upgrade db to 17 first, then add
     `logins: separate`." An older version without the field is never refused.
@@ -124,5 +125,6 @@ No step runs the app's code as the superuser: a CHECK, a domain or a trigger can
   - "db restarts once (a few seconds) with two new passwords.";
   - "The next deploy creates app_owner and app_runtime and gives app_owner the app's tables, in
     one transaction. If it fails, nothing changes and the app keeps its current login.";
+  - "A database with event triggers is refused: remove them with DROP EVENT TRIGGER first.";
   - "From that deploy, the release command logs in as app_owner, and the app, workers and cron as
     app_runtime."

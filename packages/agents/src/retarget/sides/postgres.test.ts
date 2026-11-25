@@ -125,7 +125,7 @@ function fakeSide(project: string) {
       return { exitCode: 0, stdout: `${digest}  /dump/app.dump\n` };
     }
     // The logins' load (047): the roles checked, the database made anew, the dump restored.
-    if (script.includes("CREATE DATABASE app OWNER app_owner") && container.cmd[0] === "sh") {
+    if (/pg_restore -h \S+ -U app_owner /.test(script) && container.cmd[0] === "sh") {
       if (!loggedIn(container) || file?.data === undefined) return refused;
       if (!database.roles) {
         const said = /echo '(PostgreSQL db has no logins [^']+)' >&2/.exec(script)?.[1] ?? "";
@@ -509,12 +509,13 @@ describe("Postgres in a move", () => {
     expect(next.restored).toEqual([]);
   });
 
-  it("with two logins, empties the database owned by app_owner", async () => {
+  it("with two logins, empties the database as the logins' load makes it, the owner's set later", async () => {
     const next = fakeSide("opscrew-example-app");
     await emptyPostgres(next.docker, { ...next.db, ownerPassword: OWNER });
-    expect(next.ran.map((container) => container.cmd.at(-1))).toEqual([
-      "CREATE DATABASE app OWNER app_owner",
-    ]);
+    expect(next.ran.map((container) => container.cmd.at(-1))).toEqual(["CREATE DATABASE app"]);
+    expect(loginsLoad({ host: "db", file: "/dump/app.dump", setup: false })).toContain(
+      '-c "CREATE DATABASE app" ',
+    );
   });
 
   it("pulls the pinned postgres image when the server lacks it", async () => {

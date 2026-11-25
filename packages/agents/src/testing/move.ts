@@ -672,8 +672,8 @@ function opOf(command: string): string {
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
   if (command.includes("pg_restore --list")) return "verify dump";
-  // The load of a database with two logins (047): made anew owned by app_owner, then restored.
-  if (command.includes("OWNER app_owner") && command.includes("pg_restore")) return "load";
+  // The load of a database with two logins (047): the app's objects restored as app_owner.
+  if (/pg_restore -h \S+ -U app_owner /.test(command)) return "load";
   if (command.includes("pg_restore")) return "restore";
   if (command.includes("DROP DATABASE")) return "empty db";
   if (command.startsWith(`rm -f /srv/apps/${APP}/opscrew-move.dump`)) return "rm dump";
@@ -859,7 +859,7 @@ export class FakeHosts {
     const script = program === "sh" ? (args[1] ?? "") : "";
     const op = script.includes("pg_dump")
       ? "dump"
-      : script.includes("OWNER app_owner") && script.includes("pg_restore")
+      : /pg_restore -h \S+ -U app_owner /.test(script)
         ? "load"
         : script.includes("pg_restore --list")
           ? "verify dump"

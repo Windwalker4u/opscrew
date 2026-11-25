@@ -17,13 +17,7 @@ import {
   tarStream,
 } from "@opscrew/connector-docker";
 import { errorMessage, OpsCrewError } from "@opscrew/core";
-import {
-  IMAGES,
-  loginsLoad,
-  OWNER_PASSWORD_ENV,
-  POSTGRES_OWNER,
-  shellQuote,
-} from "@opscrew/iac-templates";
+import { IMAGES, loginsLoad, OWNER_PASSWORD_ENV, shellQuote } from "@opscrew/iac-templates";
 import { pollUntil } from "../../shared";
 import { withoutData } from "../server-ops";
 import type { SideDocker } from "./types";
@@ -234,7 +228,8 @@ export interface Waits {
 
 /**
  * Drops the `app` database and creates it again empty (owner `app`, from the `postgres` database,
- * `WITH (FORCE)`, which ends any session still connected): a restore afterwards holds exactly the
+ * `WITH (FORCE)`, which ends any session still connected; with two logins as `loginsLoad` makes it,
+ * the deploy's setup or the load moving it to the owner): a restore afterwards holds exactly the
  * dump, and a rolled-back window leaves no part of a copy.
  */
 export async function emptyPostgres(docker: SideDocker, db: MovePostgres): Promise<void> {
@@ -254,7 +249,7 @@ export async function emptyPostgres(docker: SideDocker, db: MovePostgres): Promi
       "-c",
       "DROP DATABASE IF EXISTS app WITH (FORCE)",
       "-c",
-      `CREATE DATABASE app OWNER ${db.ownerPassword !== undefined ? POSTGRES_OWNER : "app"}`,
+      db.ownerPassword !== undefined ? "CREATE DATABASE app" : "CREATE DATABASE app OWNER app",
     ],
     true,
   );

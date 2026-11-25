@@ -13,10 +13,14 @@ export {
   pinnedVersion,
   releaseVariables,
   SERVICE_SPECS,
+  type ServiceUrlKind,
   serviceRotation,
   serviceSecrets,
   serviceSpec,
+  serviceUrlKind,
+  splitDatabase,
   splitDatabaseSettings,
+  sqlDatabases,
 } from "./catalog";
 export * from "./catalog/postgres-logins";
 export type {

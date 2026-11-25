@@ -186,15 +186,17 @@ sure nothing in your app changes the schema outside its migrations (see above).
      as `app_runtime`.
 3. Deploy. If the setup fails, nothing changes: the deploy stops before the release command, and
    the running version keeps its old login. When a login called `app_owner` or `app_runtime`
-   already exists with other rights, the setup says so: drop or rename it, then deploy again.
+   already exists with other rights, the setup says so: drop or rename it, then deploy again. A
+   database with event triggers is refused: remove them with DROP EVENT TRIGGER first.
 
 There is no going back: once a plan has `logins: separate`, provision refuses to remove it, since
 that would give the app the superuser again.
 
 ### Rotating the passwords
 
-`npx opscrew rotate db` changes the passwords of all three logins, and none of them restarts the
-database. See [Rotating your app's credentials](credential-rotation.md#services).
+`npx opscrew rotate db` changes the passwords of all three logins. On a server, none of them
+restarts the database (in your Portainer, see the credential rotation page). See
+[Rotating your app's credentials](credential-rotation.md#services).
 
 ## Settings for small servers
 

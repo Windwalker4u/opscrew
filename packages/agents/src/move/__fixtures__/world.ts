@@ -86,8 +86,8 @@ export class FakeServer implements RemoteExec {
       for (const name of started.split(" ")) this.running.add(name);
       return ok();
     }
-    // The load of a database with two logins (047): made anew owned by app_owner, then restored.
-    const loaded = match(/exec -T (\S+) sh -c .*CREATE DATABASE app OWNER app_owner/s);
+    // The load of a database with two logins (047): the app's objects restored as app_owner.
+    const loaded = match(/exec -T (\S+) sh -c .*pg_restore -h \S+ -U app_owner /s);
     if (loaded !== undefined) {
       if (this.dump === undefined) return broken("pg_restore: error: could not open input file");
       this.data.set(loaded, this.dump);

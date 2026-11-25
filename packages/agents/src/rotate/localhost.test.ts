@@ -1,11 +1,11 @@
 // Feature 025 (T2507): services' secrets rotated on this computer, through its Docker, with the
 // app held meanwhile; and a deploy here that finds a rotation's hold.
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CommandOptions, CommandResult } from "@opscrew/contracts";
 import { exists, OpsCrewError, writeFileAtomic } from "@opscrew/core";
-import { serviceSpec } from "@opscrew/iac-templates";
+import { RELEASE_DB_ENV, serviceSecrets, serviceSpec } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { heldByRotation } from "../localhost/apply";
 import { appFolder } from "../localhost/services";
+import { releaseDbEnvFile } from "../provision/secrets";
 import { dotenvLine, serviceAppVariables } from "../shared/app-env";
 import { generatedValuesFile } from "../shared/app-secrets";
 import {
@@ -236,11 +237,13 @@ async function world(
   const old = new Map<string, string>();
   const services: Record<string, Record<string, string>> = {};
   for (const s of p.services) {
-    for (const secret of serviceSpec(s.kind).secrets) {
+    for (const secret of serviceSecrets(s)) {
       const hex = randomBytes(32).toString("hex");
       const value = secret.format === "garage-key-id" ? `GK${hex.slice(0, 24)}` : hex;
       old.set(`${s.name}/${secret.name}`, value);
-      if (s.kind !== "postgres") services[s.name] = { ...services[s.name], [secret.name]: value };
+      if (!dbPassword(s.name, secret.name)) {
+        services[s.name] = { ...services[s.name], [secret.name]: value };
+      }
     }
   }
   const v = (key: string) => old.get(key) as string;
@@ -270,9 +273,15 @@ async function world(
   };
 }
 
+/** True for the secret this computer keeps as `dbPassword`: PostgreSQL's `password`. */
+function dbPassword(service: string, secret: string): boolean {
+  return service === "db" && secret === "password";
+}
+
 /**
  * The env files provision writes with `values` (by `<service>/<secret>`): each service's
- * `<service>.env`, and `app.env` with the app's settings of the services.
+ * `<service>.env`, `app.env` with the app's settings of the services, and with PostgreSQL's two
+ * logins the release's `release.db.env`.
  */
 function envFilesOf(p: DeployPlan, values: Map<string, string>): Record<string, string> {
   const services: Record<string, Record<string, string>> = {};
@@ -281,9 +290,11 @@ function envFilesOf(p: DeployPlan, values: Map<string, string>): Record<string, 
     services[name] = { ...services[name], [secret]: value };
   }
   const app = serviceAppVariables(p, (s, name) => services[s.name]?.[name] as string);
+  const release = releaseDbEnvFile(p, services);
   return {
     ...serviceEnvTexts(p, services),
     "app.env": `${[...app].map(([name, value]) => dotenvLine(name, value)).join("\n")}\n`,
+    ...(release === undefined ? {} : { [RELEASE_DB_ENV.file]: release }),
   };
 }
 
@@ -312,7 +323,10 @@ async function current(w: World): Promise<Map<string, string>> {
   const now = new Map<string, string>();
   for (const key of w.old.keys()) {
     const [name, secret] = key.split("/") as [string, string];
-    now.set(key, name === "db" ? values.dbPassword : (values.services[name]?.[secret] as string));
+    now.set(
+      key,
+      dbPassword(name, secret) ? values.dbPassword : (values.services[name]?.[secret] as string),
+    );
   }
   return now;
 }
@@ -531,5 +545,37 @@ describe("rotateLocalServices", () => {
       expect((w.deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
       expect(await exists(pendingRotationFile(w.deps))).toBe(false);
     }
+  });
+});
+
+describe("rotateLocalServices with PostgreSQL's two logins (047)", () => {
+  it("writes the new owner password to release.db.env, and an undo writes the old one back", async () => {
+    const base = plan();
+    const w = await world({
+      plan: DeployPlanSchema.parse({
+        ...base,
+        services: base.services.map((s) =>
+          s.name === "db" ? { ...s, options: { logins: "separate" } } : s,
+        ),
+      }),
+    });
+    const releaseFile = join(w.folder, RELEASE_DB_ENV.file);
+    const owner = (values: Map<string, string>) =>
+      `DATABASE_URL=postgresql://app_owner:${values.get("db/owner-password")}@db:5432/app\n`;
+    expect(await envFile(w, RELEASE_DB_ENV.file)).toBe(owner(w.old));
+    w.docker.failCompose.add("app");
+    await failure(w.rotate(["db"]));
+    const next = await pendingNew(w);
+    expect(next.get("db/owner-password")).not.toBe(w.old.get("db/owner-password"));
+    expect(await envFile(w, RELEASE_DB_ENV.file)).toBe(owner(next));
+    if (process.platform !== "win32") expect((await stat(releaseFile)).mode & 0o777).toBe(0o600);
+    // The database keeps running: only the app is created again for the new values.
+    expect(w.docker.composes.flatMap((c) => c.services)).toEqual(["app"]);
+
+    w.docker.failCompose.clear();
+    expect(await w.rotate(["db"], true)).toMatchObject({ undone: true });
+    expect(await envFile(w, RELEASE_DB_ENV.file)).toBe(owner(w.old));
+    if (process.platform !== "win32") expect((await stat(releaseFile)).mode & 0o777).toBe(0o600);
+    expectNoValue(w, [...w.old.values(), ...next.values()]);
   });
 });

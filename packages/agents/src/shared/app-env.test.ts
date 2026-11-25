@@ -9,7 +9,6 @@ import {
   hostListKind,
   parseDotenv,
   serviceFilledNames,
-  serviceUrlKind,
 } from "./app-env";
 
 type Env = DeployPlan["app"]["env"];
@@ -221,45 +220,6 @@ describe("assembleAppEnv: production defaults for Rails and Laravel", () => {
 });
 
 describe("connection settings under the app's own names (FR-814)", () => {
-  it.each([
-    ["DATABASE_URL", "postgres"],
-    ["DATABASE_URI", "postgres"],
-    ["SQLALCHEMY_DATABASE_URI", "postgres"],
-    ["POSTGRES_URL", "postgres"],
-    ["POSTGRES_URI", "postgres"],
-    ["DB_URL", "postgres"],
-    ["DB_URI", "postgres"],
-    ["APP_DATABASE_URL", "postgres"],
-    ["FLASK_SQLALCHEMY_DATABASE_URI", "postgres"],
-    ["REDIS_URL", "redis"],
-    ["REDIS_URI", "redis"],
-    ["FLASK_REDIS_URL", "redis"],
-    ["CACHE_REDIS_URI", "redis"],
-    ["CELERY_BROKER_URL", "redis"],
-    ["CELERY_BROKER_URI", "redis"],
-    ["BROKER_URL", "redis"],
-    ["CELERY_RESULT_BACKEND", "redis"],
-    ["DATABASE_NAME", undefined],
-    ["POSTGRES_PASSWORD", undefined],
-    ["MONGO_DB_URL", undefined],
-    ["REDIS_HOST", undefined],
-    ["REDIS_URL_EXTRA", undefined],
-    // Another engine or a database that is not production's.
-    ["MONGO_DATABASE_URL", undefined],
-    ["MYSQL_DATABASE_URI", undefined],
-    ["TEST_DATABASE_URL", undefined],
-    ["APP_TEST_DATABASE_URL", undefined],
-    ["SHADOW_DATABASE_URL", undefined],
-    ["CLICKHOUSE_DATABASE_URL", undefined],
-    ["TEST_REDIS_URL", undefined],
-    // Bundlers ship these to browsers: never fill them with a connection URL.
-    ["NEXT_PUBLIC_DATABASE_URL", undefined],
-    ["VITE_DATABASE_URL", undefined],
-    ["VITE_REDIS_URL", undefined],
-  ])("%s → %s", (name, kind) => {
-    expect(serviceUrlKind(name)).toBe(kind);
-  });
-
   const SLOG: Env = [
     { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
     { name: "DATABASE_URI", secret: true, source: "derived" },

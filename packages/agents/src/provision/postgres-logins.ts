@@ -3,57 +3,37 @@
  * database without them, the refusals, and the switch of an existing database, which provision
  * shows in a plan approved by its hash and goes on with only after a snapshot of the database.
  */
-import { canonicalJson, errorText, OpsCrewError, sha256Hex, toPosixRelative } from "@opscrew/core";
-import { type SnapshotPart, snapshotParts } from "@opscrew/iac-templates";
+import { canonicalJson, errorText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { POSTGRES_OWNER_SECRET, type SnapshotPart, snapshotParts } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
   type PlanService,
   postgresLogins,
 } from "@opscrew/plan-schema";
-import { parse } from "yaml";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { loginsUpgradeNotice, loginsVersion } from "../design/postgres-logins";
+import { readStrict } from "../rotate/values-pending";
 import { planFile } from "../runners/words";
+import type { GeneratedValues } from "../shared/app-env";
+import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { requestApproval } from "../shared/approvals";
 
-/** The PostgreSQLs of a plan file as the switch reads them: their names and whether they have logins. */
-const CommittedSchema = z.looseObject({
-  services: z
-    .array(
-      z.looseObject({
-        name: z.string(),
-        kind: z.string(),
-        options: z.looseObject({ logins: z.unknown().optional() }).optional(),
-      }),
-    )
-    .optional(),
-});
+/** This environment's generated values as the switch reads them (only provision writes them). */
+export type KeptLogins = Pick<GeneratedValues, "dbPassword" | "services">;
 
 /**
- * The PostgreSQLs of the plan committed at `HEAD`, by name, each with whether it has
- * `logins: separate`; `undefined` when `HEAD` has no plan file (or none OpsCrew can read).
+ * This environment's generated values (none without the file), which tell a switch and a removal
+ * apart from a database made with its logins whatever the plan's history in git says.
+ * @throws OpsCrewError `ARTIFACT_INVALID` when they are damaged.
  */
-export async function committedLogins(
-  deps: Pick<PhaseDeps, "paths" | "runner">,
-): Promise<Map<string, boolean> | undefined> {
-  const file = toPosixRelative(deps.paths.root, deps.paths.files.plan);
-  const shown = await deps.runner.run("git", ["-C", deps.paths.root, "show", `HEAD:${file}`]);
-  if (shown.exitCode !== 0) return undefined;
-  let text: unknown;
-  try {
-    text = parse(shown.stdout);
-  } catch {
-    return undefined;
-  }
-  const committed = CommittedSchema.safeParse(text);
-  if (!committed.success) return undefined;
-  return new Map(
-    (committed.data.services ?? [])
-      .filter((service) => service.kind === "postgres")
-      .map((service) => [service.name, service.options?.logins === "separate"]),
-  );
+async function keptLogins(deps: Pick<PhaseDeps, "paths">): Promise<KeptLogins> {
+  return (await readStrict(generatedValuesFile(deps), GeneratedValuesSchema)) ?? {};
+}
+
+/** True when this environment keeps `service`'s owner password: its database has the two logins. */
+function ownerKept(kept: KeptLogins, service: PlanService): boolean {
+  return kept.services?.[service.name]?.[POSTGRES_OWNER_SECRET] !== undefined;
 }
 
 /** The enabled PostgreSQLs of `plan`. */
@@ -68,14 +48,10 @@ function deployed(plan: DeployPlan): boolean {
 
 /**
  * Stops (`INVALID_INPUT`, before any change) when a PostgreSQL below 15 has `logins: separate`, or
- * a deployed one whose committed plan (`committed`, {@link committedLogins}) has it lost it, with
+ * one whose owner password this environment keeps (`kept`, {@link keptLogins}) lost it, with
  * data-model.md's messages. A PostgreSQL below 15 without the field is never refused.
  */
-export function requireLogins(
-  plan: DeployPlan,
-  committed: ReadonlyMap<string, boolean> | undefined,
-  command: string,
-): void {
+export function requireLogins(plan: DeployPlan, kept: KeptLogins, command: string): void {
   const again = { hint: `Then run \`${command}\` again.` };
   for (const service of plan.services.filter((s) => s.kind === "postgres")) {
     if (postgresLogins(service) && !loginsVersion(service.version)) {
@@ -85,7 +61,7 @@ export function requireLogins(
         again,
       );
     }
-    if (deployed(plan) && committed?.get(service.name) === true && !postgresLogins(service)) {
+    if (ownerKept(kept, service) && !postgresLogins(service)) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         `The database ${service.name} already has separate logins for the app and its migrations, and OpsCrew can't give the app the superuser again. Put \`logins: separate\` back under its options in ${planFile(plan)}. Nothing was changed.`,
@@ -120,23 +96,25 @@ export interface LoginsSwitch {
 
 /**
  * The switch provision shows for a deployed environment (research R11): the PostgreSQLs that have
- * `logins: separate` while the plan committed at `HEAD` has them without it, each with
- * data-model.md's four lines, and the hash that binds them; none when nothing switches.
+ * `logins: separate` while this environment keeps (`kept`, {@link keptLogins}) their superuser's
+ * password but not their owner's, each with data-model.md's five lines, and the hash that binds
+ * them; none when nothing switches.
  */
 export function loginsSwitch(
   plan: DeployPlan,
-  committed: ReadonlyMap<string, boolean> | undefined,
+  kept: KeptLogins,
   environment: string,
 ): LoginsSwitch | undefined {
-  if (!deployed(plan) || committed === undefined) return undefined;
+  if (!deployed(plan) || kept.dbPassword === undefined) return undefined;
   const services = postgresOf(plan)
-    .filter((service) => postgresLogins(service) && committed.get(service.name) === false)
+    .filter((service) => postgresLogins(service) && !ownerKept(kept, service))
     .map((service) => service.name);
   if (services.length === 0) return undefined;
   const lines = services.flatMap((name) => [
     `Take a snapshot of ${name} now.`,
     `${name} restarts once (a few seconds) with two new passwords.`,
     "The next deploy creates app_owner and app_runtime and gives app_owner the app's tables, in one transaction. If it fails, nothing changes and the app keeps its current login.",
+    "A database with event triggers is refused: remove them with DROP EVENT TRIGGER first.",
     "From that deploy, the release command logs in as app_owner, and the app, workers and cron as app_runtime.",
   ]);
   const hash = sha256Hex(
@@ -159,15 +137,15 @@ export type LoginsSnapshot = (skip: readonly string[]) => Promise<unknown>;
  * approved, `COMMAND_FAILED` when the snapshot fails, each with nothing changed.
  */
 export async function postgresLoginsStep(
-  deps: Pick<PhaseDeps, "paths" | "runner" | "reporter" | "approvals">,
+  deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals">,
   plan: DeployPlan,
   o: { command: string; planOnly?: boolean | undefined; snapshot: LoginsSnapshot },
 ): Promise<string | undefined> {
   if (!plan.services.some((service) => service.kind === "postgres")) return undefined;
-  const committed = await committedLogins(deps);
-  requireLogins(plan, committed, o.command);
+  const kept = await keptLogins(deps);
+  requireLogins(plan, kept, o.command);
   for (const notice of loginsNotices(plan, o.command)) deps.reporter.info(notice);
-  const change = loginsSwitch(plan, committed, deps.paths.environment);
+  const change = loginsSwitch(plan, kept, deps.paths.environment);
   if (change === undefined) return undefined;
   const title = `Switch ${change.services.join(" and ")} to separate logins for the app and its migrations`;
   const details = [...change.lines, `Switch hash: ${change.hash}`].join("\n");

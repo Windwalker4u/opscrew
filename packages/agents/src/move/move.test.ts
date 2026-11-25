@@ -158,7 +158,7 @@ describe("runMove", () => {
     expect(w.github.secrets.get("OPSCREW_RELEASE_DB_ENV")).toBe(w.release.after);
     // One load in the database's container: never emptied and restored apart.
     const data = w.servers.data.calls;
-    expect(data.filter((c) => c.includes("CREATE DATABASE app OWNER app_owner"))).toHaveLength(1);
+    expect(data.filter((c) => /pg_restore -h db -U app_owner /.test(c))).toHaveLength(1);
     expect(data.some((c) => c.includes("pg_restore -U app") || c.includes("OWNER app'"))).toBe(
       false,
     );

@@ -125,8 +125,10 @@ The test list is in tasks.md, T4702.
 - **Provision:**
   - **The notice:** for a deployed environment (`deployment.firstDeployAt`) whose PostgreSQL lacks
     `logins`, it prints data-model.md's notice, or the one below 15, every run.
-  - **The switch:** when the plan has `logins: separate` and the plan at `HEAD` has the service
-    without it on a deployed environment, it adds data-model.md's switch lines to the plan it shows.
+  - **The switch:** when the plan has `logins: separate` on a deployed environment whose generated
+    values (which only provision writes, never git) keep the database's `dbPassword` but no
+    `owner-password` for it, it adds data-model.md's switch lines to the plan it shows. A
+    hand-committed edit gets the same approval and snapshot.
     Once that is approved by hash, it takes the snapshot through the existing on-demand snapshot
     path before it writes any secret or file, and stops on a failure.
   - **The refusals:** data-model.md's two refusals, before any change. A pinned older version
