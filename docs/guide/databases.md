@@ -200,6 +200,72 @@ that would give the app the superuser again.
 restarts the database (in your Portainer, see the credential rotation page). See
 [Rotating your app's credentials](credential-rotation.md#services).
 
+## A connection pooler for PHP apps
+
+A PHP app opens a new connection to PostgreSQL on every request, and PostgreSQL starts a new
+process for each one, which can add more than a tenth of a second to every page that reads the
+database on a small server. [PgBouncer](https://www.pgbouncer.org/) sits between the app and
+PostgreSQL, keeps a few of PostgreSQL's connections open and hands them to each request in turn,
+so pages get faster without a change to your code.
+
+### Turning it on
+
+The pooler needs [separate logins](#two-logins). Add `pooler: pgbouncer` next to
+`logins: separate` under the database's options in `opscrew/plan.yaml`:
+
+```yaml
+services:
+  - name: db
+    kind: postgres
+    version: "17"
+    options:
+      logins: separate
+      pooler: pgbouncer
+```
+
+Then run `npx opscrew provision` and deploy. Without `logins: separate`, provision refuses the
+pooler before it changes anything. For a new PHP app with PostgreSQL 15 or later, design writes
+`pooler: pgbouncer` for you; for a PHP app already deployed without it, each
+`npx opscrew provision` prints a line on how to add it, and changes nothing because of it.
+
+The deploy then runs a service called `<db>-pooler` (`db-pooler` for `db`) next to the database,
+with a memory limit of 32 MB and no port open outside the app's network. The app's web, workers
+and cron reach the database through it: `DATABASE_URL` and the split settings name
+`db-pooler` and port `6432` instead of `db` and `5432`, with the `app_runtime` login. For a
+database on [a server of its own](split-placement.md), the pooler runs on that server, at its
+private address. The pooler holds no data, so snapshots, restores and moves work as without it.
+A worker or service of your app can't be called `<db>-pooler`.
+
+### Migrations connect directly
+
+The release command, which runs your migrations as `app_owner`, never goes through the pooler: its
+`release.db.env` keeps PostgreSQL's own address, `db` and port `5432`. Migration tools often use features the pooler doesn't
+carry over, such as a lock held for the whole migration.
+
+### What doesn't work through it
+
+The pooler runs in transaction mode: each transaction may run on a different PostgreSQL
+connection, so anything that stays on a connection after its transaction ends is lost or reaches
+another request. Through the pooler, these don't work:
+
+- `SET` or `RESET` outside a transaction (use `SET LOCAL` inside one);
+- `LISTEN` (a `NOTIFY` is sent, but nothing listens for it);
+- session advisory locks (`pg_advisory_lock`; the transaction ones, `pg_advisory_xact_lock`,
+  work);
+- cursors declared `WITH HOLD`;
+- `PREPARE`, `EXECUTE` and `DEALLOCATE` written in SQL;
+- temporary tables kept across transactions.
+
+Prepared statements made through the driver, as PHP's PDO makes them, work. If your app's web,
+workers or cron use any of the features above, leave the pooler off.
+
+### Apps in other languages
+
+Apps in Node.js, Python, Ruby, Go and most other languages keep their own pool of connections
+inside the app, so a pooler rarely helps them, and design doesn't write it for them. It can help
+when many processes of your app together come near PostgreSQL's limit of 100 connections; you can
+add `pooler: pgbouncer` yourself then.
+
 ## Settings for small servers
 
 - **MySQL** gets a buffer pool of its memory limit minus about 400 MB for everything else (at least
