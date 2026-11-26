@@ -68,3 +68,14 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
     `--redeploy`, the refused targets and the rotation note.
   - **Verify:** `pnpm exec biome check .`
   - **Effort:** medium
+
+## After 0.2.12 (found live on 0.2.12, 2026-11-26)
+
+- [ ] T4890 (lead) A values-only push deploys. `values set` says the next push to the deploy branch
+  applies the values, but the deploy workflow's path filter leaves out `opscrew/**` (beyond
+  `runtime/compose.yaml` and `edge/`), so merging a pull request that changes only
+  `opscrew/environments/<env>/secrets.sops.json` starts no deploy. Add the environment's
+  `secrets.sops.json` to the filter (snapshots change for every server workflow), with a test.
+- [ ] T4891 (lead) `provision --plan-only` exits 2 after a successful plan, with a closing "Nothing was
+  written... add --yes" line; a script reads that as a failure. Decide: exit 0 for a plan shown
+  as asked, and keep 2 for a refusal.
