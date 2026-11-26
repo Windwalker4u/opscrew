@@ -20,8 +20,11 @@ export const SITE_HEADERS: readonly (readonly [name: string, value: string])[] =
  * plain JavaScript in the committed workflow, so the user can read it; the tests run this exact
  * text. Cloudflare keeps only the last of two rules for every path (`/*`), so OpsCrew's headers go
  * into the site's own `/*` rule, after its path line, when it has one; a header that rule already
- * sets, or removes (`! Name`), stays the site's. Without one, OpsCrew's rule comes first. The
- * site's other lines are kept as they are.
+ * sets, or removes (`! Name`), stays the site's. Without one, OpsCrew's rule comes first.
+ * Cloudflare applies every rule a path matches and joins a header's values with a comma, so a
+ * site's value is never weakened: each later rule of the site's that sets one of OpsCrew's headers
+ * gets `! Name` first, which drops OpsCrew's value there, and a header a rule before the site's
+ * `/*` rule sets is left out (the step says so). The site's other lines are kept as they are.
  */
 export function headersProgram(plan: DeployPlan): string {
   const headers = SITE_HEADERS.map((header) => `  ${JSON.stringify(header)},`).join("\n");
@@ -31,42 +34,79 @@ const HEADERS = [
 ${headers}
 ];
 
-/** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+/**
+ * The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*",
+ * and the names of those OpsCrew left out (see below).
+ */
 function withHeaders(text) {
   const lines = text ? text.split("\n") : [];
   // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
   const isPath = (line) => /^(\/|[^\s]+:\/\/)/.test(line.trim());
-  const start = lines.map((line) => line.trim()).lastIndexOf("/*");
-  if (start < 0) {
-    const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
-    return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\n");
-  }
-  let end = start + 1;
-  while (end < lines.length && !isPath(lines[end])) end++;
-  const own = new Set();
-  for (const line of lines.slice(start + 1, end)) {
-    const header = line.trim();
-    if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
-    else if (!header.startsWith("#") && header.includes(":")) {
-      own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+  // Each rule: its path line, the lines up to the next one, and the headers it sets and detaches.
+  const rules = [];
+  lines.forEach((line, at) => {
+    if (isPath(line)) rules.push({ at, path: line.trim(), sets: new Set(), detaches: new Set() });
+    else if (rules.length > 0) {
+      const header = line.trim();
+      const rule = rules[rules.length - 1];
+      if (header.startsWith("!")) rule.detaches.add(header.slice(1).trim().toLowerCase());
+      else if (!header.startsWith("#") && header.includes(":")) {
+        rule.sets.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+      }
     }
+  });
+  const all = rules.map((rule) => rule.path).lastIndexOf("/*");
+  const everyPath = rules[all];
+  // Cloudflare applies every rule that matches, in order, and joins a header's values with a
+  // comma ("DENY, SAMEORIGIN", which browsers ignore). So a header the site's own rule for "/*"
+  // sets or detaches stays the site's, and a header a rule before that rule sets is left out: only
+  // a detach ("! Name") in a later rule drops what an earlier one added.
+  const left = [];
+  const added = HEADERS.filter(([name]) => {
+    const key = name.toLowerCase();
+    if (everyPath && (everyPath.sets.has(key) || everyPath.detaches.has(key))) return false;
+    if (rules.slice(0, Math.max(all, 0)).some((rule) => rule.sets.has(key))) {
+      left.push(name);
+      return false;
+    }
+    return true;
+  });
+  // In each later rule that sets one of them, OpsCrew's value is detached first, so the site's
+  // value is the only one there.
+  const detach = new Map();
+  for (const rule of rules) {
+    if (rule === everyPath || (everyPath && rule.at < everyPath.at)) continue;
+    const own = added.filter(([name]) => {
+      const key = name.toLowerCase();
+      return rule.sets.has(key) && !rule.detaches.has(key);
+    });
+    if (own.length > 0) detach.set(rule.at, own.map(([name]) => "  ! " + name));
   }
-  const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
-    ([name, value]) => "  " + name + ": " + value,
-  );
-  return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\n");
+  const ours = added.map(([name, value]) => "  " + name + ": " + value);
+  if (everyPath) detach.set(everyPath.at, ours);
+  const merged = lines.flatMap((line, at) => [line, ...(detach.get(at) || [])]);
+  const out = everyPath
+    ? merged
+    : ["/*", ...ours, ...(lines.length > 0 ? ["", ...merged] : [""])];
+  return { text: out.join("\n"), left };
 }
 
 function main() {
   const fs = require("node:fs");
   const file = require("node:path").join(process.env.SITE, "_headers");
   const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
-  fs.writeFileSync(file, withHeaders(own));
+  const { text, left } = withHeaders(own);
+  fs.writeFileSync(file, text);
   console.log(
     own === undefined
       ? "Wrote " + file + " with OpsCrew's security headers."
       : "Added OpsCrew's security headers to " + file + ", the site's own.",
   );
+  if (left.length > 0) {
+    console.log(
+      "Left out " + left.join(", ") + ": a rule of the site's before its rule for /* sets it, and Cloudflare would join the two values. Move that rule after the one for /* to get OpsCrew's value on every other path.",
+    );
+  }
 }`;
 }
 

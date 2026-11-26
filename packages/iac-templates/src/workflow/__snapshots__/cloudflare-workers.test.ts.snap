@@ -3,6 +3,7 @@
 exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, Hugo 1`] = `
 "  build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,6 +64,7 @@ exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, Hu
 exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, pnpm 1`] = `
 "  build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -152,6 +154,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        run: |
+          echo "::error::This workflow deploys prod only from the repository's default branch, and this run is on $GITHUB_REF_NAME, so nothing was deployed. Start it with \\\`opscrew promote --to prod\\\`, which runs it there."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -181,7 +194,7 @@ jobs:
 
   deploy:
     name: Deploy to Cloudflare
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -268,42 +281,79 @@ jobs:
             ["Referrer-Policy","strict-origin-when-cross-origin"],
           ];
 
-          /** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+          /**
+           * The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*",
+           * and the names of those OpsCrew left out (see below).
+           */
           function withHeaders(text) {
             const lines = text ? text.split("\\n") : [];
             // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
             const isPath = (line) => /^(\\/|[^\\s]+:\\/\\/)/.test(line.trim());
-            const start = lines.map((line) => line.trim()).lastIndexOf("/*");
-            if (start < 0) {
-              const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
-              return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\\n");
-            }
-            let end = start + 1;
-            while (end < lines.length && !isPath(lines[end])) end++;
-            const own = new Set();
-            for (const line of lines.slice(start + 1, end)) {
-              const header = line.trim();
-              if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
-              else if (!header.startsWith("#") && header.includes(":")) {
-                own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+            // Each rule: its path line, the lines up to the next one, and the headers it sets and detaches.
+            const rules = [];
+            lines.forEach((line, at) => {
+              if (isPath(line)) rules.push({ at, path: line.trim(), sets: new Set(), detaches: new Set() });
+              else if (rules.length > 0) {
+                const header = line.trim();
+                const rule = rules[rules.length - 1];
+                if (header.startsWith("!")) rule.detaches.add(header.slice(1).trim().toLowerCase());
+                else if (!header.startsWith("#") && header.includes(":")) {
+                  rule.sets.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+                }
               }
+            });
+            const all = rules.map((rule) => rule.path).lastIndexOf("/*");
+            const everyPath = rules[all];
+            // Cloudflare applies every rule that matches, in order, and joins a header's values with a
+            // comma ("DENY, SAMEORIGIN", which browsers ignore). So a header the site's own rule for "/*"
+            // sets or detaches stays the site's, and a header a rule before that rule sets is left out: only
+            // a detach ("! Name") in a later rule drops what an earlier one added.
+            const left = [];
+            const added = HEADERS.filter(([name]) => {
+              const key = name.toLowerCase();
+              if (everyPath && (everyPath.sets.has(key) || everyPath.detaches.has(key))) return false;
+              if (rules.slice(0, Math.max(all, 0)).some((rule) => rule.sets.has(key))) {
+                left.push(name);
+                return false;
+              }
+              return true;
+            });
+            // In each later rule that sets one of them, OpsCrew's value is detached first, so the site's
+            // value is the only one there.
+            const detach = new Map();
+            for (const rule of rules) {
+              if (rule === everyPath || (everyPath && rule.at < everyPath.at)) continue;
+              const own = added.filter(([name]) => {
+                const key = name.toLowerCase();
+                return rule.sets.has(key) && !rule.detaches.has(key);
+              });
+              if (own.length > 0) detach.set(rule.at, own.map(([name]) => "  ! " + name));
             }
-            const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
-              ([name, value]) => "  " + name + ": " + value,
-            );
-            return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\\n");
+            const ours = added.map(([name, value]) => "  " + name + ": " + value);
+            if (everyPath) detach.set(everyPath.at, ours);
+            const merged = lines.flatMap((line, at) => [line, ...(detach.get(at) || [])]);
+            const out = everyPath
+              ? merged
+              : ["/*", ...ours, ...(lines.length > 0 ? ["", ...merged] : [""])];
+            return { text: out.join("\\n"), left };
           }
 
           function main() {
             const fs = require("node:fs");
             const file = require("node:path").join(process.env.SITE, "_headers");
             const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
-            fs.writeFileSync(file, withHeaders(own));
+            const { text, left } = withHeaders(own);
+            fs.writeFileSync(file, text);
             console.log(
               own === undefined
                 ? "Wrote " + file + " with OpsCrew's security headers."
                 : "Added OpsCrew's security headers to " + file + ", the site's own.",
             );
+            if (left.length > 0) {
+              console.log(
+                "Left out " + left.join(", ") + ": a rule of the site's before its rule for /* sets it, and Cloudflare would join the two values. Move that rule after the one for /* to get OpsCrew's value on every other path.",
+              );
+            }
           }
           main();
       - name: Prepare Wrangler
@@ -335,6 +385,11 @@ jobs:
             exit 1
           fi
           previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          # The id goes into this job's outputs and Wrangler's arguments: only a version id passes.
+          if [[ -n "$previous" && ! "$previous" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again."
+            exit 1
+          fi
           echo "id=$previous" >> "$GITHUB_OUTPUT"
       - id: upload
         name: Upload the new version
@@ -432,13 +487,18 @@ jobs:
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::The version that ran before has no version id, so OpsCrew did not activate it again."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/wrangler"
+          npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'
       - name: Report the failed deploy
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
         env:
@@ -486,6 +546,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -515,6 +588,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -602,7 +676,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -645,42 +719,79 @@ jobs:
             ["Referrer-Policy","strict-origin-when-cross-origin"],
           ];
 
-          /** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+          /**
+           * The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*",
+           * and the names of those OpsCrew left out (see below).
+           */
           function withHeaders(text) {
             const lines = text ? text.split("\\n") : [];
             // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
             const isPath = (line) => /^(\\/|[^\\s]+:\\/\\/)/.test(line.trim());
-            const start = lines.map((line) => line.trim()).lastIndexOf("/*");
-            if (start < 0) {
-              const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
-              return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\\n");
-            }
-            let end = start + 1;
-            while (end < lines.length && !isPath(lines[end])) end++;
-            const own = new Set();
-            for (const line of lines.slice(start + 1, end)) {
-              const header = line.trim();
-              if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
-              else if (!header.startsWith("#") && header.includes(":")) {
-                own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+            // Each rule: its path line, the lines up to the next one, and the headers it sets and detaches.
+            const rules = [];
+            lines.forEach((line, at) => {
+              if (isPath(line)) rules.push({ at, path: line.trim(), sets: new Set(), detaches: new Set() });
+              else if (rules.length > 0) {
+                const header = line.trim();
+                const rule = rules[rules.length - 1];
+                if (header.startsWith("!")) rule.detaches.add(header.slice(1).trim().toLowerCase());
+                else if (!header.startsWith("#") && header.includes(":")) {
+                  rule.sets.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+                }
               }
+            });
+            const all = rules.map((rule) => rule.path).lastIndexOf("/*");
+            const everyPath = rules[all];
+            // Cloudflare applies every rule that matches, in order, and joins a header's values with a
+            // comma ("DENY, SAMEORIGIN", which browsers ignore). So a header the site's own rule for "/*"
+            // sets or detaches stays the site's, and a header a rule before that rule sets is left out: only
+            // a detach ("! Name") in a later rule drops what an earlier one added.
+            const left = [];
+            const added = HEADERS.filter(([name]) => {
+              const key = name.toLowerCase();
+              if (everyPath && (everyPath.sets.has(key) || everyPath.detaches.has(key))) return false;
+              if (rules.slice(0, Math.max(all, 0)).some((rule) => rule.sets.has(key))) {
+                left.push(name);
+                return false;
+              }
+              return true;
+            });
+            // In each later rule that sets one of them, OpsCrew's value is detached first, so the site's
+            // value is the only one there.
+            const detach = new Map();
+            for (const rule of rules) {
+              if (rule === everyPath || (everyPath && rule.at < everyPath.at)) continue;
+              const own = added.filter(([name]) => {
+                const key = name.toLowerCase();
+                return rule.sets.has(key) && !rule.detaches.has(key);
+              });
+              if (own.length > 0) detach.set(rule.at, own.map(([name]) => "  ! " + name));
             }
-            const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
-              ([name, value]) => "  " + name + ": " + value,
-            );
-            return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\\n");
+            const ours = added.map(([name, value]) => "  " + name + ": " + value);
+            if (everyPath) detach.set(everyPath.at, ours);
+            const merged = lines.flatMap((line, at) => [line, ...(detach.get(at) || [])]);
+            const out = everyPath
+              ? merged
+              : ["/*", ...ours, ...(lines.length > 0 ? ["", ...merged] : [""])];
+            return { text: out.join("\\n"), left };
           }
 
           function main() {
             const fs = require("node:fs");
             const file = require("node:path").join(process.env.SITE, "_headers");
             const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
-            fs.writeFileSync(file, withHeaders(own));
+            const { text, left } = withHeaders(own);
+            fs.writeFileSync(file, text);
             console.log(
               own === undefined
                 ? "Wrote " + file + " with OpsCrew's security headers."
                 : "Added OpsCrew's security headers to " + file + ", the site's own.",
             );
+            if (left.length > 0) {
+              console.log(
+                "Left out " + left.join(", ") + ": a rule of the site's before its rule for /* sets it, and Cloudflare would join the two values. Move that rule after the one for /* to get OpsCrew's value on every other path.",
+              );
+            }
           }
           main();
       - name: Prepare Wrangler
@@ -713,6 +824,11 @@ jobs:
             exit 1
           fi
           previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          # The id goes into this job's outputs and Wrangler's arguments: only a version id passes.
+          if [[ -n "$previous" && ! "$previous" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again."
+            exit 1
+          fi
           echo "id=$previous" >> "$GITHUB_OUTPUT"
       - id: upload
         name: Upload the new version
@@ -811,13 +927,18 @@ jobs:
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::The version that ran before has no version id, so OpsCrew did not activate it again."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/wrangler"
+          npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'
       - name: Report the failed deploy
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
         env:
@@ -864,6 +985,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -893,6 +1027,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -951,7 +1086,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -994,42 +1129,79 @@ jobs:
             ["Referrer-Policy","strict-origin-when-cross-origin"],
           ];
 
-          /** The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*". */
+          /**
+           * The site's _headers text (undefined without one) with OpsCrew's headers in its rule for "/*",
+           * and the names of those OpsCrew left out (see below).
+           */
           function withHeaders(text) {
             const lines = text ? text.split("\\n") : [];
             // Cloudflare reads a line that starts with "/" or "<scheme>://" as the path of a new rule.
             const isPath = (line) => /^(\\/|[^\\s]+:\\/\\/)/.test(line.trim());
-            const start = lines.map((line) => line.trim()).lastIndexOf("/*");
-            if (start < 0) {
-              const rule = ["/*", ...HEADERS.map(([name, value]) => "  " + name + ": " + value)];
-              return [...rule, ...(lines.length > 0 ? ["", ...lines] : [""])].join("\\n");
-            }
-            let end = start + 1;
-            while (end < lines.length && !isPath(lines[end])) end++;
-            const own = new Set();
-            for (const line of lines.slice(start + 1, end)) {
-              const header = line.trim();
-              if (header.startsWith("!")) own.add(header.slice(1).trim().toLowerCase());
-              else if (!header.startsWith("#") && header.includes(":")) {
-                own.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+            // Each rule: its path line, the lines up to the next one, and the headers it sets and detaches.
+            const rules = [];
+            lines.forEach((line, at) => {
+              if (isPath(line)) rules.push({ at, path: line.trim(), sets: new Set(), detaches: new Set() });
+              else if (rules.length > 0) {
+                const header = line.trim();
+                const rule = rules[rules.length - 1];
+                if (header.startsWith("!")) rule.detaches.add(header.slice(1).trim().toLowerCase());
+                else if (!header.startsWith("#") && header.includes(":")) {
+                  rule.sets.add(header.slice(0, header.indexOf(":")).trim().toLowerCase());
+                }
               }
+            });
+            const all = rules.map((rule) => rule.path).lastIndexOf("/*");
+            const everyPath = rules[all];
+            // Cloudflare applies every rule that matches, in order, and joins a header's values with a
+            // comma ("DENY, SAMEORIGIN", which browsers ignore). So a header the site's own rule for "/*"
+            // sets or detaches stays the site's, and a header a rule before that rule sets is left out: only
+            // a detach ("! Name") in a later rule drops what an earlier one added.
+            const left = [];
+            const added = HEADERS.filter(([name]) => {
+              const key = name.toLowerCase();
+              if (everyPath && (everyPath.sets.has(key) || everyPath.detaches.has(key))) return false;
+              if (rules.slice(0, Math.max(all, 0)).some((rule) => rule.sets.has(key))) {
+                left.push(name);
+                return false;
+              }
+              return true;
+            });
+            // In each later rule that sets one of them, OpsCrew's value is detached first, so the site's
+            // value is the only one there.
+            const detach = new Map();
+            for (const rule of rules) {
+              if (rule === everyPath || (everyPath && rule.at < everyPath.at)) continue;
+              const own = added.filter(([name]) => {
+                const key = name.toLowerCase();
+                return rule.sets.has(key) && !rule.detaches.has(key);
+              });
+              if (own.length > 0) detach.set(rule.at, own.map(([name]) => "  ! " + name));
             }
-            const added = HEADERS.filter(([name]) => !own.has(name.toLowerCase())).map(
-              ([name, value]) => "  " + name + ": " + value,
-            );
-            return [...lines.slice(0, start + 1), ...added, ...lines.slice(start + 1)].join("\\n");
+            const ours = added.map(([name, value]) => "  " + name + ": " + value);
+            if (everyPath) detach.set(everyPath.at, ours);
+            const merged = lines.flatMap((line, at) => [line, ...(detach.get(at) || [])]);
+            const out = everyPath
+              ? merged
+              : ["/*", ...ours, ...(lines.length > 0 ? ["", ...merged] : [""])];
+            return { text: out.join("\\n"), left };
           }
 
           function main() {
             const fs = require("node:fs");
             const file = require("node:path").join(process.env.SITE, "_headers");
             const own = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
-            fs.writeFileSync(file, withHeaders(own));
+            const { text, left } = withHeaders(own);
+            fs.writeFileSync(file, text);
             console.log(
               own === undefined
                 ? "Wrote " + file + " with OpsCrew's security headers."
                 : "Added OpsCrew's security headers to " + file + ", the site's own.",
             );
+            if (left.length > 0) {
+              console.log(
+                "Left out " + left.join(", ") + ": a rule of the site's before its rule for /* sets it, and Cloudflare would join the two values. Move that rule after the one for /* to get OpsCrew's value on every other path.",
+              );
+            }
           }
           main();
       - name: Prepare Wrangler
@@ -1057,6 +1229,11 @@ jobs:
             exit 1
           fi
           previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          # The id goes into this job's outputs and Wrangler's arguments: only a version id passes.
+          if [[ -n "$previous" && ! "$previous" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again."
+            exit 1
+          fi
           echo "id=$previous" >> "$GITHUB_OUTPUT"
       - id: upload
         name: Upload the new version
@@ -1147,13 +1324,18 @@ jobs:
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::The version that ran before has no version id, so OpsCrew did not activate it again."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/wrangler"
+          npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'
       - name: Report the failed deploy
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
         env:

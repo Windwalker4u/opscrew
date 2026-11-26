@@ -99,6 +99,7 @@ describe("renderWorkflow", () => {
     expect(doc.on.push.branches).toEqual(["main"]);
     expect(doc.permissions).toEqual({ contents: "read" });
     expect(Object.keys(doc.jobs)).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -106,6 +107,7 @@ describe("renderWorkflow", () => {
       "prune",
       "label",
     ]);
+    expect(doc.jobs.branch.permissions).toEqual({});
     expect(doc.jobs.build.permissions).toEqual({ contents: "read", packages: "write" });
     expect(doc.jobs.deploy.permissions).toEqual({ contents: "read", packages: "read" });
     expect(doc.jobs.deploy.needs).toEqual(["build", "verify"]);

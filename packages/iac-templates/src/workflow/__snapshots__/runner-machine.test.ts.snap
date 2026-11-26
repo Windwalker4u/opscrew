@@ -3,7 +3,7 @@
 exports[`the build job on the environment's runner (build: runner) > runs on the environment's label with the steps GitHub's machines run 1`] = `
 "  build:
     name: Build the image
-    if: \${{ !(inputs.rollback || inputs.digest) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!(inputs.rollback || inputs.digest)) }}
     runs-on: [self-hosted, opscrew-shop-staging]
     defaults:
       run:
@@ -96,7 +96,7 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"'))) }}
     runs-on: [self-hosted, opscrew-shop-staging]
     defaults:
       run:

@@ -4,7 +4,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:

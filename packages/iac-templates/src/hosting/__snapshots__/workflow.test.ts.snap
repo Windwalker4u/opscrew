@@ -27,6 +27,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys staging only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
@@ -56,6 +69,7 @@ jobs:
 
   build:
     name: Build the release
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -106,7 +120,7 @@ jobs:
   publish:
     name: Publish the release on opscrew/release/staging
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -225,6 +239,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys staging only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
@@ -254,6 +281,7 @@ jobs:
 
   build:
     name: Build the release
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -322,7 +350,7 @@ jobs:
   publish:
     name: Publish the release on opscrew/release/staging
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -441,6 +469,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys staging only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
@@ -470,6 +511,7 @@ jobs:
 
   build:
     name: Build the release
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -511,7 +553,7 @@ jobs:
   publish:
     name: Publish the release on opscrew/release/staging
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:

@@ -367,13 +367,21 @@ describe("renderCloudflareWorkersWorkflow", () => {
     expect(previous).toContain(
       "'[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty'",
     );
-    expect(step(deploy, "rollback")).toMatchObject({
+    // The id reaches Wrangler through the step's environment, never inside its command's text.
+    const rollback = step(deploy, "rollback");
+    expect(rollback).toMatchObject({
       if: "failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''",
-      with: {
-        command:
-          "versions deploy ${{ steps.previous.outputs.id }}@100 -y --config ${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc",
+      env: {
+        CLOUDFLARE_API_TOKEN: `\${{ secrets.${CLOUDFLARE_DEPLOY_SECRETS.apiToken} }}`,
+        CLOUDFLARE_ACCOUNT_ID: `\${{ secrets.${CLOUDFLARE_DEPLOY_SECRETS.accountId} }}`,
+        PREVIOUS: "${{ steps.previous.outputs.id }}",
       },
     });
+    expect(rollback.uses).toBeUndefined();
+    expect(rollback.run).toContain(
+      `npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'`,
+    );
+    expect(rollback.run).not.toContain("${{");
     const report = step(deploy, "Report the failed deploy");
     expect(report.if).toBe(
       "failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')",
@@ -624,6 +632,62 @@ describe("renderCloudflareWorkersWorkflow", () => {
       "::error::Cloudflare did not find the new version 1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b within 2 minutes",
     );
   }, 180_000);
+
+  it("passes on only a version id as the version that ran before, and activates it again from the environment", async () => {
+    if (!bash) {
+      console.warn("Skipped the bash run of the previous version's scripts: no bash.");
+      return;
+    }
+    const deploy = staticDoc.jobs.deploy;
+    const id = "1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b";
+    // Cloudflare's answer is faked; jq gives the version id the test names.
+    const fakes = [
+      "curl() { echo '{}'; }",
+      'jq() { printf "%s\\n" "$LISTED"; }',
+      'npx() { printf \'%s|%s\\n\' "${PWD##*/}" "$*" >> "$CALLS"; }',
+    ].join("\n");
+    const dir = await tree({ "wrangler/package.json": "{}" });
+    const env = {
+      RUNNER_TEMP: slashed(dir),
+      GITHUB_WORKSPACE: "/work",
+      CALLS: slashed(join(dir, "calls")),
+      CLOUDFLARE_API_TOKEN: "not-a-token",
+      CLOUDFLARE_ACCOUNT_ID: "not-an-account",
+    };
+    const previous = (listed: string) =>
+      runScript(`${fakes}\n${step(deploy, "previous").run ?? ""}`, dir, { ...env, LISTED: listed });
+    const found = await previous(id);
+    expect(found.status, found.stdout).toBe(0);
+    expect(found.outputs).toBe(`id=${id}\n`);
+    const none = await previous("");
+    expect(none.status).toBe(0);
+    expect(none.outputs).toBe("id=\n");
+    // A second output line, or anything else that is not a version id, stops the job.
+    for (const listed of [`${id}\nother=1`, `${id} --name other`, "$(id)"]) {
+      const refused = await previous(listed);
+      expect(refused.status, listed).toBe(1);
+      expect(refused.outputs).toBe("");
+      expect(refused.stdout).toContain(
+        "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id",
+      );
+    }
+
+    const rollback = (value: string) =>
+      runScript(`${fakes}\n${step(deploy, "rollback").run ?? ""}`, dir, {
+        ...env,
+        PREVIOUS: value,
+      });
+    const activated = await rollback(id);
+    expect(activated.status, activated.stdout).toBe(0);
+    expect((await readFile(join(dir, "calls"), "utf8")).split("\n")).toEqual([
+      `wrangler|--no-install wrangler versions deploy ${id}@100 -y --config /work/opscrew/cloudflare/wrangler.jsonc`,
+      "",
+    ]);
+    const odd = await rollback(`${id} --dry-run`);
+    expect(odd.status).toBe(1);
+    expect(odd.stdout).toContain("::error::The version that ran before has no version id");
+    expect((await readFile(join(dir, "calls"), "utf8")).split("\n")).toHaveLength(2);
+  });
 
   it("deploys the same version to a new Cloudflare account too, once it answers, while a move sets its token", () => {
     const deploy = ssrDoc.jobs.deploy;

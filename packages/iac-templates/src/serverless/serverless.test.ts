@@ -229,6 +229,67 @@ describe("OpsCrew's headers in _headers (the deploy step's program)", () => {
     );
   });
 
+  it("never joins OpsCrew's value to one a narrower rule of the site sets: it detaches its own there", async () => {
+    // Cloudflare applies every matching rule in order and joins a header's values with a comma, so
+    // DENY would become "DENY, SAMEORIGIN", which browsers ignore; "! Name" drops the earlier one.
+    const own = [
+      "/admin/*",
+      "  X-Frame-Options: DENY",
+      "  Content-Security-Policy: frame-ancestors 'none'",
+      "/embed/*",
+      "  ! X-Frame-Options",
+      "/legal",
+      "  referrer-policy: no-referrer",
+      "",
+    ].join("\n");
+    expect(await headersAfter(own)).toBe(
+      [
+        "/*",
+        ...ours,
+        "",
+        "/admin/*",
+        "  ! X-Frame-Options",
+        "  X-Frame-Options: DENY",
+        "  Content-Security-Policy: frame-ancestors 'none'",
+        "/embed/*",
+        "  ! X-Frame-Options",
+        "/legal",
+        "  ! Referrer-Policy",
+        "  referrer-policy: no-referrer",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("detaches its own in the site's narrower rules after its /* rule too", async () => {
+    const own = "/*\n  Cache-Control: no-cache\n/admin/*\n  X-Frame-Options: DENY\n";
+    expect(await headersAfter(own)).toBe(
+      [
+        "/*",
+        ...ours,
+        "  Cache-Control: no-cache",
+        "/admin/*",
+        "  ! X-Frame-Options",
+        "  X-Frame-Options: DENY",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("leaves out a header a rule before the site's /* sets, which no detach can keep alone", async () => {
+    const own = "/admin/*\n  X-Frame-Options: DENY\n/*\n  Cache-Control: no-cache\n";
+    expect(await headersAfter(own)).toBe(
+      [
+        "/admin/*",
+        "  X-Frame-Options: DENY",
+        "/*",
+        ...ours.filter((line) => !line.includes("X-Frame-Options")),
+        "  Cache-Control: no-cache",
+        "",
+      ].join("\n"),
+    );
+  });
+
   it("merges into the last /* rule, the one Cloudflare keeps", async () => {
     const own = "/*\n  X-Robots-Tag: noindex\n/*\n  Content-Security-Policy: default-src 'self'\n";
     expect(await headersAfter(own)).toBe(

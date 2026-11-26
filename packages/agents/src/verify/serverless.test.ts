@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -10,6 +10,7 @@ import {
   CLOUDFLARE_RANGES,
   createTestPhaseDeps,
   ScriptedRunner,
+  staticSpaFacts,
 } from "../testing";
 import { type FakePagesOptions, fakeGithubPages, pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
@@ -190,6 +191,109 @@ describe("opscrew verify on Cloudflare's hosting", () => {
     expect(answer?.remediation).toBe(
       "Look at the latest deploy run in GitHub → Actions, and the Worker's logs (`opscrew logs`).",
     );
+  });
+
+  describe("the headers the site's own _headers sets", () => {
+    const OWN = [
+      "/*",
+      "  Content-Security-Policy: default-src 'self'",
+      "  Cache-Control: no-cache",
+      "/app/*",
+      "  cross-origin-opener-policy: same-origin",
+      "# A rule with a placeholder names no one page to ask for.",
+      "/:lang/*",
+      "  Content-Security-Policy: default-src 'none'",
+      "",
+    ].join("\n");
+
+    /** The site analysed as a Vite app whose `public/_headers` is `own`. */
+    async function siteWith(own: string) {
+      const ctx = await setup(sitePlan({ deployed: true }));
+      const { root } = ctx.deps.paths;
+      const pkg = {
+        name: "docs",
+        scripts: { build: "vite build" },
+        devDependencies: { vite: "7" },
+      };
+      await writeFile(join(root, "package.json"), JSON.stringify(pkg));
+      await mkdir(join(root, "public"), { recursive: true });
+      await writeFile(join(root, "public", "_headers"), own);
+      await writeArtifact("architecture", ctx.deps.paths.files.architecture, {
+        schemaVersion: 1,
+        generatedAt: "2026-10-23T10:00:00.000Z",
+        generator: { tool: "opscrew", version: "0.0.0-test" },
+        facts: staticSpaFacts(),
+        summary: "A site.",
+        risks: [],
+        aiEnriched: false,
+      });
+      return ctx;
+    }
+
+    /** The site, answering each path with OpsCrew's headers and `byPath`'s; GETs recorded. */
+    function served(byPath: Record<string, Record<string, string>>) {
+      const paths: string[] = [];
+      const fetch: FetchLike = async (input) => {
+        const url = new URL(String(input));
+        paths.push(url.pathname);
+        return new Response("<p>docs</p>", { headers: { ...HEADERS, ...byPath[url.pathname] } });
+      };
+      return { fetch, paths };
+    }
+
+    const verifyWith = (deps: Awaited<ReturnType<typeof setup>>["deps"], fetch: FetchLike) =>
+      runVerify(deps, {
+        resolver: CLOUDFLARE_DNS,
+        fetch,
+        tlsConnect: certificate(),
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+
+    it("passes when the deployed site serves them on the paths its rules name", async () => {
+      const { deps } = await siteWith(OWN);
+      const site = served({
+        // Cloudflare joins the values of every rule a path matches: the site's is in there.
+        "/": { "content-security-policy": "default-src  'self'" },
+        "/app/": {
+          "content-security-policy": "default-src 'self'",
+          "cross-origin-opener-policy": "same-origin",
+        },
+      });
+      const result = await verifyWith(deps, site.fetch);
+      expect(result.checks.at(-1)).toEqual({
+        id: "site-own-headers",
+        title: "The site serves the headers its public/_headers sets",
+        severity: "medium",
+        status: "pass",
+        message:
+          "The site serves the Content-Security-Policy, Cross-Origin-Opener-Policy public/_headers sets.",
+        target: "https://docs.example.com/",
+      });
+      expect(result.passed).toBe(true);
+      expect(new Set(site.paths)).toEqual(new Set(["/", "/app/"]));
+    });
+
+    it("says which page lost which header, and what to do", async () => {
+      const { deps } = await siteWith(OWN);
+      const site = served({ "/app/": { "cross-origin-opener-policy": "unsafe-none" } });
+      const result = await verifyWith(deps, site.fetch);
+      const own = result.checks.at(-1);
+      expect(own).toMatchObject({ id: "site-own-headers", status: "fail" });
+      expect(own?.message).toBe(
+        'https://docs.example.com/ serves no Content-Security-Policy, which public/_headers sets for /*. https://docs.example.com/app/ serves a Cross-Origin-Opener-Policy other than the one public/_headers sets for /app/* (it serves "unsafe-none").',
+      );
+      expect(own?.remediation).toBe(
+        "The deploy job keeps the site's own _headers and only adds OpsCrew's headers to it. Check that the build copies public/_headers into dist as it is, that no later rule in it removes the header (`! Content-Security-Policy`, `! Cross-Origin-Opener-Policy`), and that no Transform Rule in the Cloudflare dashboard changes it; then push to main to deploy again and run `opscrew verify`.",
+      );
+      expect(result.passed).toBe(false);
+      expect(deps.reporter.text()).toContain("Verification found problems");
+    });
+
+    it("adds no check when the site's _headers sets none of them", async () => {
+      const { deps } = await siteWith("/*\n  Cache-Control: no-cache\n");
+      const result = await verifyWith(deps, served({}).fetch);
+      expect(result.checks.map((check) => check.id)).not.toContain("site-own-headers");
+    });
   });
 
   it("says when the Worker still answers with the placeholder, and when DNS leaves Cloudflare", async () => {

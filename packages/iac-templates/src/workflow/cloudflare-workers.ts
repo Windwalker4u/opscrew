@@ -27,6 +27,7 @@ import {
   block,
   builderBranchOf,
   DISPATCH_BY_HAND,
+  deployBranchIf,
   deploySecretName,
   environmentName,
   githubEnvironment,
@@ -90,13 +91,12 @@ const MANIFEST =
  */
 function wranglerStep(
   plan: DeployPlan,
-  step: { id: string; name: string; command: string; if?: string },
+  step: { id: string; name: string; command: string },
   credentials: boolean,
 ): string[] {
   return [
     `- id: ${step.id}`,
     `  name: ${step.name}`,
-    ...(step.if === undefined ? [] : [`  if: ${step.if}`]),
     `  uses: ${ACTIONS.wranglerAction}`,
     "  with:",
     ...(credentials
@@ -145,6 +145,7 @@ function buildJob(plan: DeployPlan, files: SiteFiles): string[] {
   return job({
     id: "build",
     name: "Build the site",
+    if: deployBranchIf(plan),
     permissions: ["contents: read"],
     outputs: ["sha256: ${{ steps.manifest.outputs.sha256 }}"],
     steps: [
@@ -220,6 +221,9 @@ function apiFunction(worker: string): string[] {
     "}",
   ];
 }
+
+/** A Worker version's id, as Wrangler and Cloudflare's API give it (an extended regex). */
+const VERSION_ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 /** How many times, 5 s apart, the activation tries while Cloudflare answers 100146 (2 minutes). */
 const ACTIVATE_ATTEMPTS = 24;
@@ -408,12 +412,15 @@ function buildRunCheck(
  * 5. `wrangler versions deploy <id>@100`, tried again for up to 2 minutes while Cloudflare does not
  *    find the version it just created ({@link activateStep}), then a check of the answer on the domain
  *    ({@link answerCheck}). When the activation or the check fails, the version that ran before
- *    (the latest deployment's, read before the upload) is activated again and the job fails;
+ *    (the latest deployment's, read before the upload, refused unless it is a version id
+ *    {@link VERSION_ID}) is activated again, its id passed to Wrangler through the step's
+ *    environment, and the job fails;
  * 6. while the app moves to another Cloudflare account, the same version deployed there too
  *    ({@link moveDeployStep}).
  *
- * It is skipped while the environment's deploys are paused ({@link unpaused}): `opscrew
- * rollback` activates an earlier version itself, with no run.
+ * It runs only on the environment's branch ({@link deployBranchIf}), and is skipped while the
+ * environment's deploys are paused ({@link unpaused}): `opscrew rollback` activates an earlier
+ * version itself, with no run.
  */
 function deployJob(
   plan: DeployPlan,
@@ -431,12 +438,6 @@ function deployJob(
     `    CLOUDFLARE_API_TOKEN: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS.apiToken)}`,
     `    CLOUDFLARE_ACCOUNT_ID: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS.accountId)}`,
   ];
-  const wrangler = (id: string, name: string, command: string, condition?: string) =>
-    wranglerStep(
-      plan,
-      { id, name, command, ...(condition === undefined ? {} : { if: condition }) },
-      true,
-    );
   const stored = (name: string) => deploySecretName(plan, siteEnvSecret(name));
   // The previous values a rotation keeps, always written and empty while their secret is unset or
   // empty: `--secrets-file` adds to the secrets the last version had, so a value left out (or
@@ -511,18 +512,27 @@ function deployJob(
       "  exit 1",
       "fi",
       'previous="$(jq -r \'[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty\' <<< "$answer")"',
+      "# The id goes into this job's outputs and Wrangler's arguments: only a version id passes.",
+      ...refuse(
+        `[[ -n "$previous" && ! "$previous" =~ ^${VERSION_ID}$ ]]`,
+        `Cloudflare listed a running version of the Worker ${target.worker} whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again.`,
+      ),
       'echo "id=$previous" >> "$GITHUB_OUTPUT"',
     ]),
-    ...wrangler(
-      "upload",
-      "Upload the new version",
-      [
-        "versions upload",
-        // The build job's bundle, as it is: the SHA-256 covers it.
-        ...(ssr ? [`${SITE_DIR_INPUT}/${WORKER_BUNDLE} --no-bundle`] : []),
-        `--message "opscrew ${builtBy} ${want}"`,
-        ...(secrets.length === 0 ? [] : [`--secrets-file ${SECRETS_FILE_INPUT}`]),
-      ].join(" "),
+    ...wranglerStep(
+      plan,
+      {
+        id: "upload",
+        name: "Upload the new version",
+        command: [
+          "versions upload",
+          // The build job's bundle, as it is: the SHA-256 covers it.
+          ...(ssr ? [`${SITE_DIR_INPUT}/${WORKER_BUNDLE} --no-bundle`] : []),
+          `--message "opscrew ${builtBy} ${want}"`,
+          ...(secrets.length === 0 ? [] : [`--secrets-file ${SECRETS_FILE_INPUT}`]),
+        ].join(" "),
+      },
+      true,
     ),
     ...(secrets.length === 0
       ? []
@@ -533,7 +543,7 @@ function deployJob(
     "    OUTPUT: ${{ steps.upload.outputs.command-output }}",
     ...run([
       "set -euo pipefail",
-      "id=\"$(grep -oE 'Version ID: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<< \"$OUTPUT\" | head -n 1 | cut -d ' ' -f 3 || true)\"",
+      `id="$(grep -oE 'Version ID: ${VERSION_ID}' <<< "$OUTPUT" | head -n 1 | cut -d ' ' -f 3 || true)"`,
       'if [[ -z "$id" ]]; then',
       `  echo "::error::Wrangler did not report the new version's id; its output above says why. Run the workflow again."`,
       "  exit 1",
@@ -557,12 +567,20 @@ function deployJob(
       secrets: secrets.length > 0,
       ssr,
     }),
-    ...wrangler(
-      "rollback",
-      "Activate the version that ran before again",
-      "versions deploy ${{ steps.previous.outputs.id }}@100 -y",
-      `${failed} && steps.previous.outputs.id != ''`,
-    ),
+    "- id: rollback",
+    "  name: Activate the version that ran before again",
+    `  if: ${failed} && steps.previous.outputs.id != ''`,
+    ...apiEnv,
+    "    PREVIOUS: ${{ steps.previous.outputs.id }}",
+    ...run([
+      "set -euo pipefail",
+      ...refuse(
+        `[[ ! "$PREVIOUS" =~ ^${VERSION_ID}$ ]]`,
+        "The version that ran before has no version id, so OpsCrew did not activate it again.",
+      ),
+      `cd "${WRANGLER_DIR}"`,
+      `npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/${shellQuote(wranglerConfigPath(plan))}`,
+    ]),
     "- name: Report the failed deploy",
     `  if: ${failed}`,
     "  env:",
@@ -585,7 +603,7 @@ function deployJob(
     id: "deploy",
     name: "Deploy to Cloudflare",
     needs: fromRun ? undefined : "build",
-    if: `\${{ ${unpaused(plan)} }}`,
+    if: deployBranchIf(plan, unpaused(plan)),
     environment: githubEnvironment(plan),
     permissions: fromRun ? ["actions: read", "contents: read"] : ["contents: read"],
     steps,
