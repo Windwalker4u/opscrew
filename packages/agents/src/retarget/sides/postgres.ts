@@ -41,6 +41,8 @@ export interface MovePostgres {
    * `loginsLoad` says, the app's objects and rows as the owner.
    */
   ownerPassword?: string;
+  /** Pinned PostgreSQL image for one-off containers (defaults to `IMAGES.postgres.ref`). */
+  image?: string;
 }
 
 /** The label on every one-off container of a dump, with its move volume as the value. */
@@ -131,7 +133,7 @@ function postgresOneOff(
   return runOneOff(
     client,
     {
-      image: IMAGES.postgres.ref,
+      image: db.image ?? IMAGES.postgres.ref,
       cmd,
       ...(login ? { env: { PGPASSFILE: PGPASS } } : {}),
       labels: { [ONE_OFF_LABEL]: volume },

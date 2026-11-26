@@ -17,6 +17,7 @@ import type { MemoryLimit } from "../shared/memory";
 import { connectExtraServer, ownServerFacts, ownServerPublicAddress } from "../shared/own-server";
 import { readServerAddresses, type SshLogin, updateServerAddresses } from "../shared/server-record";
 import { distinctAmounts } from "./own";
+import { requirePostgisArch } from "./postgres-extensions";
 import type { DesignedServer } from "./servers";
 import { ownServerFreeDiskGb, ownServerMemory, smallServerWarnings } from "./sizing";
 
@@ -103,6 +104,10 @@ export async function designOwnServer(
     phase: "design",
   });
   const server = ownServerFacts(facts);
+  requirePostgisArch(services, server.arch, `server ${name}`, {
+    unchanged: "plan.yaml was not changed.",
+    command: "opscrew design",
+  });
   const address = ownServerPublicAddress({ host: login.host }, facts);
   if (address === undefined) {
     const placed = listText([...services, ...addons].map((limit) => limit.name));

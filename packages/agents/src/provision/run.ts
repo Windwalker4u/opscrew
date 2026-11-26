@@ -200,6 +200,7 @@ import {
 } from "./plan-apply";
 import { plannedImports } from "./plan-json";
 import { provisionPortainer } from "./portainer-flow";
+import { postgresExtensionsStep } from "./postgres-extensions";
 import { forgetSwitchPasswords, postgresLoginsStep } from "./postgres-logins";
 import { type RecoveryCopy, requireDeployCheckout } from "./publish";
 import {
@@ -2101,15 +2102,27 @@ async function loginsFirst(
     ...(localhost === undefined ? {} : { localhost }),
     ...(portainer === undefined ? {} : { portainer }),
   };
+  const snapshot = services.snapshot ?? {
+    neverRan: (names: readonly string[]) => neverRan(deps, names, snapshotServices),
+    take: (skip: readonly string[]) => takeSnapshot(deps, { skip, services: snapshotServices }),
+  };
+  const command = `opscrew provision${flags}`;
   const change = await postgresLoginsStep(deps, plan, {
-    command: `opscrew provision${flags}`,
+    command,
     planOnly: options.planOnly,
-    snapshot: services.snapshot ?? {
-      neverRan: (names) => neverRan(deps, names, snapshotServices),
-      take: (skip) => takeSnapshot(deps, { skip, services: snapshotServices }),
-    },
+    snapshot,
   });
-  if (change === undefined) return { options };
+  const extChange = await postgresExtensionsStep(deps, plan, {
+    command,
+    planOnly: options.planOnly,
+    snapshot,
+    ...(change === undefined ? {} : { alreadySnapshotted: new Set(change.services) }),
+  });
+  const usedHashes = new Set<string>([
+    ...(change === undefined ? [] : [change.hash]),
+    ...(extChange === undefined ? [] : [extChange.hash]),
+  ]);
+  if (usedHashes.size === 0) return { options };
   const { approveHashes } = options;
   return {
     options:
@@ -2117,9 +2130,9 @@ async function loginsFirst(
         ? options
         : {
             ...options,
-            approveHashes: approveHashes.filter((hash) => hash.toLowerCase() !== change.hash),
+            approveHashes: approveHashes.filter((hash) => !usedHashes.has(hash.toLowerCase())),
           },
-    switching: change.services,
+    ...(change === undefined ? {} : { switching: change.services }),
   };
 }
 

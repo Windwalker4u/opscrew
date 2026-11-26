@@ -9,6 +9,7 @@ import {
   POSTGRES_OWNER,
   portainerStackName,
   ROLLBACK_INPUTS,
+  serviceImageRef,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -285,12 +286,14 @@ async function postgresOn(
   }
   for (const value of [password, owner])
     if (value !== undefined) deps.redactor.addLiteral(value, "app-env");
+  const dbService = plan.services.find((each) => each.name === service);
   return {
     app: plan.app.name,
     project: composeProject(side, plan),
     service,
     password,
     ...(owner !== undefined ? { ownerPassword: owner } : {}),
+    ...(dbService !== undefined ? { image: serviceImageRef(dbService) } : {}),
   };
 }
 

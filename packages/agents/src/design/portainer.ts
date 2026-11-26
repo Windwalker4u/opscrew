@@ -12,6 +12,7 @@ import {
 import type { PortainerConnection } from "../shared";
 import { type Components, designComponents } from "./components";
 import { hasCloudflareDomain, noServerCost, OWN_SERVER_LOCATION } from "./own";
+import { requirePostgisArch } from "./postgres-extensions";
 import { containersText, sizeFor } from "./sizing";
 
 /** What design needs from the interview's Portainer answers (`.opscrew/server.json`). */
@@ -169,6 +170,10 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
   const { facts, requirements, choice } = input;
   const components = designComponents({ facts, requirements }).components;
   const sizing = sizeFor(facts, requirements, components);
+  requirePostgisArch(sizing.services, choice.arch, "your Portainer host", {
+    unchanged: "plan.yaml was not changed.",
+    command: "opscrew design",
+  });
   const backups = portainerBackupsNote(componentsKeepData(components));
   const cost = noServerCost(
     "Your Portainer (you already run it)",

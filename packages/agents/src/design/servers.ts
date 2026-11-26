@@ -26,6 +26,7 @@ import {
   roundCents,
 } from "./cost";
 import type { EditedServer } from "./placement-edits";
+import { requirePostgisArch } from "./postgres-extensions";
 import {
   keptTypeText,
   noResizeText,
@@ -245,6 +246,12 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       ? current
       : undefined;
   const offer = kept ?? planned;
+  if (offer.architecture === "arm") {
+    requirePostgisArch(services, "arm64", `server ${name} (${offer.id})`, {
+      unchanged: "plan.yaml was not changed.",
+      command: "opscrew design",
+    });
+  }
   // The smallest type that holds them, when it is another.
   const instead = sized === undefined || sized.id === offer.id ? "" : `, such as ${sized.id},`;
   if (offer.memoryGb * 1024 < need.memoryMb || offer.vcpus < need.vcpus) {
