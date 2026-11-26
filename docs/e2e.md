@@ -4407,6 +4407,160 @@ OPSCREW_E2E_SHARED_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO
 Measured: 27 minutes (run 7, 2026-11-19), with one CX23 for that time (a few cents), five deploy
 runs and one run of the check.
 
+## The uptime Worker's server reports
+
+`packages/cli/test/live/uptime-server.test.ts`, with `OPSCREW_E2E_UPTIME_SERVER=1`, runs the server
+part of feature 046's live pass (its quickstart's steps 9 to 12a, the timer's removal in 13 and 14,
+then 15; [the guide](guide/alerts.md#the-servers-own-checks)). A throwaway Hetzner server set up as
+the user's own carries `examples/flask-sqlite`, DNS only, through `opscrew provision` and its first
+deploy. Its timer reports to the shared Worker `opscrew-uptime` in the Cloudflare account of
+`OPSCREW_CLOUDFLARE_TOKEN_B`, which posts to the ntfy topic `OPSCREW_E2E_NTFY_TOPIC` (A) and to a
+random one (B).
+
+The Worker runs in another account than the app's zone, so the Worker's plans go through the
+Cloudflare adapter (`planUptime`, `applyUptime`) and the timer's through the host adapter
+(`planUptimeReport`, `applyHostPlan`), each applied by its hash. The settings are the ones the agents
+make: the entry's hostnames and server id, the scheduled check's thresholds, and the credentials'
+names and dates from `opscrew rotate --json`. Provision's own wiring of both plans, `status` and
+`rotate` with `runner: cloudflare` need the Worker in the zone's account:
+[the next pass](#the-uptime-worker-through-provision) runs them. The test itself only fills the disk
+(`fallocate`), stops and starts the timer (`systemctl`), reads files (`stat`, `cat`) and sends
+requests to the Worker's address. A tail session on the Worker (read-only) logs each request's
+answer and the Worker's own log lines after each step, and a wait that gives up logs the timers'
+last journal lines too: statuses, names and ids, never a key or an address.
+
+The steps:
+
+1. **The server:** a throwaway Hetzner server with its own SSH key, outside OpsCrew.
+2. **The app:** `init`, `analyze`, the interview (your own server, DNS only), design, adapt,
+   provision and the first deploy, with the off-server copy of snapshots off.
+9. **The Worker and the timer:** the Worker's account must have no `opscrew-uptime` Worker or
+   namespace. An account without a workers.dev subdomain stops the plan before any change; the pass
+   then makes a throwaway one, and deletes it in step 15. A's plan uploads the script (with its plain
+   exports), turns on workers.dev and writes A's entry with the server; B's (a second environment
+   of the app on the same server) adds only its entry and secret. Each host plan's step
+   `uptime-report` is approved by its hash. Then one timer per entry, the config and key files
+   `600 root`, the config with names and dates only, the first reports in KV, and one message that
+   the credential the pass dated 400 days back is due for rotation.
+10. **A disk alert:** a file fills the disk to 88% (`fallocate`). One message to each topic within
+    about 5 minutes, one when the file is gone, nothing at the next run, and one KV write of A's
+    report per change.
+11. **The refusals:** an unsigned report, one signed with B's key and one ten minutes old get 401
+    with no KV write, and the Worker logs nothing for them (it logs a report only after reading KV);
+    `GET /` and `GET /report` 404; a signed heartbeat 204, and the same one sent again 409.
+12. **Silence:** A's entry with `heartbeatMinutes: 10`, which an ordinary plan refuses, through the
+    adapter's `{ liveTest: true }`. A's timer stopped: one "reports … stopped", noted in `state:`, and
+    nothing more at the next run; B posts nothing. Started again with no change, the timer sends
+    nothing: its own heartbeat is daily.
+12a. **The dates:** A's host plan writes the credential's new date, as a rotation's does. The config
+    shows it, the timer runs again, one message says the credential recovered and one "reports
+    resumed" follows. The last report holds the certificates' days and the credentials' ages, as
+    `status` shows them. A's entry written again without `heartbeatMinutes` no longer has it.
+13. **B leaves:** its Cloudflare plan deletes only its entry, report and secret, and its host plan
+    only its timer, config and key; A's timer, the script and the Worker stay.
+14. **Destroy A:** its Cloudflare plan with `destroy` deletes the Worker, its trigger and the
+    namespace; `opscrew destroy --confirm <app> --undo-host` removes the timer, the script, the
+    units and the config folder with the app.
+15. **Nothing left:** the Worker's account lists no `opscrew-uptime` Worker, namespace or secret
+    (and no workers.dev subdomain the pass made); the zone no record on the run's hostnames; GitHub
+    none of the run's secrets; and no token, key, topic or generated value is in any output, commit,
+    pull request, audit entry, plan or state file.
+
+**Cleanup** runs after every run: `opscrew destroy` when step 14 didn't finish, the Worker and the
+namespace by their exact names when step 9 found the account clean, the throwaway workers.dev
+subdomain, the server, its SSH key and firewall (labelled `managed-by=opscrew-e2e` and
+`run=<run id>`), the run's records in the zone and the repository's reset. **If a run was
+interrupted**, delete by hand only the run's own: in the Worker's account, the Worker and the KV
+namespace `opscrew-uptime` (only when no app of yours uses them) and a workers.dev subdomain named
+`opscrew-live-…`; at Hetzner, `opscrew-e2e-uptime-<run id>` with its key; in the zone, the records
+holding `e2e-<run id>`; then reset the repository.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_UPTIME_SERVER` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [your own server](#your-own-server); the Cloudflare token is the one of the account that holds the zone. |
+| `OPSCREW_CLOUDFLARE_TOKEN_B` | The Worker's account: a token with Workers Scripts Edit and Workers KV Storage Edit on an account with no `opscrew-uptime` Worker or namespace, as for the Worker's own pass (`uptime-worker.test.ts`). |
+| `OPSCREW_E2E_NTFY_TOPIC` | A's topic, as for [observability](#variables-and-running-it). |
+| `OPSCREW_E2E_UPTIME_SERVER_TYPE`, `OPSCREW_E2E_REGION` | Optional: another server type than the cheapest, and the region. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_UPTIME_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  OPSCREW_CLOUDFLARE_TOKEN_B=… OPSCREW_E2E_NTFY_TOPIC=opscrew-e2e-… \
+  OPSCREW_TEST_TMP=D:/opscrew-test-tmp PATH="$PWD/../../.tools/bin:$PATH" \
+  npx vitest run test/live/uptime-server.test.ts
+```
+
+Measured: 74 minutes (run 9, 2026-11-26), with one CX23 for that time (a few cents) and one deploy
+run. ntfy.sh refuses some of the Worker's posts for a while (HTTP 429, see
+[the guide](guide/alerts.md#ntfysh-and-the-worker)), so a wait for a server's message takes up to six
+runs of its timer, and a run can take longer.
+
+## The uptime Worker through provision
+
+`packages/cli/test/live/uptime-provision.test.ts`, with `OPSCREW_E2E_UPTIME_PROVISION=1`, runs what
+[the pass above](#the-uptime-workers-server-reports) can't: OpsCrew's own commands with the Worker in
+the Cloudflare account of the app's zone. A throwaway Hetzner server set up as the user's own
+carries `examples/flask-sqlite`, DNS only. Its `opscrew/plan.yaml` gets `observability.check.runner:
+cloudflare`, `webhook: ntfy` and `credentials: true`, as a user writes them, with
+`OPSCREW_CHECK_WEBHOOK` set to the topic `OPSCREW_E2E_NTFY_TOPIC`. Every plan is approved by the hash
+a run printed. The test itself only reads the server (`systemctl`, `stat`, `cat`) and Cloudflare's
+API.
+
+The steps:
+
+1. **The server:** a throwaway Hetzner server with its own SSH key, outside OpsCrew.
+2. **Provision with the Worker:** the zone's account must have no `opscrew-uptime` Worker or
+   namespace. Provision's output must hold the Cloudflare uptime plan, with workers.dev turned on,
+   and the host step `uptime-report`, and no line that leaves a check to Actions. Then the first
+   deploy and `verify`.
+9. **Provision again:** with the first deploy recorded, the config dates the credentials. One timer,
+   its config and key `600 root`, the config with the entry, the server's id, the hostnames and the
+   credentials' names and dates; the first report in KV.
+12a. **Status and rotate:** `opscrew status` shows the server's last report, with the
+    certificate's days left and "credentials ok". `opscrew rotate state-passphrase` runs as a script
+    runs it. A script can't approve the date's host plan before the rotation dates it, so rotate says
+    so and names the `provision --approve <hash>` that writes it. The pass runs that provision, and
+    the config then holds the new date, `rotated`.
+13. **Leaving:** `runner: actions` in `plan.yaml` and provision. The entry and its secret go, and
+    the server's timer, config and key; the Worker stays.
+14. **Back, then destroy:** `runner: cloudflare` and provision put the timer back. Then
+    `opscrew destroy --confirm <app>`, under its typed confirmation, removes the Worker, its trigger
+    and the namespace with the last entry, and the timer, the script, the units and the config
+    folder with the app. Nothing of the app is left in Cloudflare or at GitHub.
+15. **Nothing left:** the zone's account lists no `opscrew-uptime` Worker, namespace or secret, and
+    nothing leaked into any output, commit, pull request, audit entry, plan or state file.
+
+**Cleanup** runs after every run: `opscrew destroy` when step 14 didn't finish, the Worker and the
+namespace by their exact names when step 2 found the account without them, then the server, the
+run's records and the repository's reset, each listed afterwards. **If a run was interrupted**,
+delete by hand only the run's own: in the zone's account, the Worker and the KV namespace
+`opscrew-uptime` (only when no app of yours uses them); at Hetzner, `opscrew-e2e-upprov-<run id>`
+with its key; in the zone, the records holding `e2e-<run id>`; then reset the repository.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_UPTIME_PROVISION` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [your own server](#your-own-server). |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | The token of the account that holds the zone, with the permissions of your own server plus Workers Scripts Edit and Workers KV Storage Edit ([the guide](guide/security.md#the-cloudflare-token)). |
+| `OPSCREW_E2E_NTFY_TOPIC` | The webhook's topic, as for [observability](#variables-and-running-it). |
+| `OPSCREW_E2E_UPTIME_SERVER_TYPE`, `OPSCREW_E2E_REGION` | Optional, as above. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_UPTIME_PROVISION=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  OPSCREW_E2E_NTFY_TOPIC=opscrew-e2e-… \
+  OPSCREW_TEST_TMP=D:/opscrew-test-tmp PATH="$PWD/../../.tools/bin:$PATH" \
+  npx vitest run test/live/uptime-provision.test.ts
+```
+
+Measured: 25 minutes (run 1, 2026-11-26), with one CX23 for that time (a few cents) and one deploy
+run.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
