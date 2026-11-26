@@ -1,5 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { APP_SERVER, type DeployPlan, type ImageBuilder, servicesOn } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type ImageBuilder,
+  postgresPooler,
+  servicesOn,
+} from "@opscrew/plan-schema";
+import { poolerName } from "../catalog/pooler";
 import {
   APPS_DIR,
   additionsPath,
@@ -297,12 +304,14 @@ function builderHint(plan: DeployPlan): string {
  * The services a deploy starts when they are not running, and never restarts unless their own
  * configuration changed: the plan's enabled services on the app's server by name, after the
  * one-shot containers that set their host kernel settings (named here, since `--no-deps` starts no
- * dependency).
+ * dependency), then each PostgreSQL's pooler (050).
  */
 function steadyServices(plan: DeployPlan): string[] {
+  const services = servicesOn(plan, APP_SERVER);
   return [
     ...hostSettingsServices(plan),
-    ...servicesOn(plan, APP_SERVER).map((service) => service.name),
+    ...services.map((service) => service.name),
+    ...services.filter(postgresPooler).map(poolerName),
   ];
 }
 

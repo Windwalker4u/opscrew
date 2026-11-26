@@ -419,6 +419,33 @@ describe("postgresPooler", () => {
     });
     expect(plan.services.map(postgresPooler)).toEqual([true, false, false]);
   });
+
+  it("refuses a worker or service named like a running pooler", async () => {
+    const plan = await validPlan();
+    const pooled = { ...postgres, options: { logins: "separate", pooler: "pgbouncer" } };
+    const parse = (fields: object) =>
+      DeployPlanSchema.safeParse({ ...plan, externalServices: [], ...fields });
+    const message =
+      '"db-pooler" is the name of the pooler beside the service db (pooler: pgbouncer); give this worker or service another name';
+    const worker = { name: "db-pooler", command: "node jobs.js", source: "library" };
+    const asWorker = parse({ services: [pooled], processes: { workers: [worker] } });
+    expect(pathsOf(asWorker)).toEqual(["processes.workers.0.name"]);
+    expect(asWorker.error?.issues[0]?.message).toBe(message);
+    const asService = parse({ services: [pooled, { ...valkey("cache"), name: "db-pooler" }] });
+    expect(pathsOf(asService)).toEqual(["services.1.name"]);
+    expect(asService.error?.issues[0]?.message).toBe(message);
+    // A database that doesn't run has no pooler, and one without the option none either.
+    expect(
+      parse({ services: [{ ...pooled, enabled: false }], processes: { workers: [worker] } })
+        .success,
+    ).toBe(true);
+    expect(
+      parse({
+        services: [{ ...pooled, options: { logins: "separate" } }],
+        processes: { workers: [worker] },
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("ProjectFacts components", () => {

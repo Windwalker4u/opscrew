@@ -31,8 +31,8 @@ export function poolerName(service: PlanService): string {
  * PgBouncer's settings (research 6): the database `app` of `service`, on its own Compose name,
  * in transaction mode; SCRAM with the client and the server from the runtime login's password in
  * {@link USERLIST} (research 3); protocol-level prepared statements tracked (PDO's); the
- * `extra_float_digits` drivers send ignored. No admin login, and the runtime login may read its
- * statistics (`SHOW POOLS`).
+ * `extra_float_digits` drivers send ignored; no log line for each connection, which a PHP app opens on
+ * every request. No admin login, and the runtime login may read its statistics (`SHOW POOLS`).
  */
 function settings(service: PlanService): string[] {
   return [
@@ -48,6 +48,8 @@ function settings(service: PlanService): string[] {
     "max_client_conn = 100",
     "max_prepared_statements = 200",
     "ignore_startup_parameters = extra_float_digits",
+    "log_connections = 0",
+    "log_disconnections = 0",
     "admin_users =",
     `stats_users = ${POSTGRES_RUNTIME}`,
   ];

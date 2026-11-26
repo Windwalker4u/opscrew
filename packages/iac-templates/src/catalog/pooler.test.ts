@@ -131,6 +131,8 @@ describe("PgBouncer beside PostgreSQL (050)", () => {
       "max_client_conn = 100",
       "max_prepared_statements = 200",
       "ignore_startup_parameters = extra_float_digits",
+      "log_connections = 0",
+      "log_disconnections = 0",
       "admin_users =",
       "stats_users = app_runtime",
     ]) {
