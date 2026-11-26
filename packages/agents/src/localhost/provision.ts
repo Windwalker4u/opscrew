@@ -111,6 +111,7 @@ export async function provisionLocalhost(
   deps: PhaseDeps,
   requested: DeployPlan,
   options: ProvisionOptions,
+  beforeSwitch?: () => Promise<void>,
 ): Promise<ProvisionResult> {
   const services = options.services ?? {};
   const local = services.localhost;
@@ -165,6 +166,8 @@ export async function provisionLocalhost(
   await approveAndWriteRenderedFiles(deps, deps.paths.root, files, {
     what: "the local stack's files",
   });
+  // A switch to PostgreSQL's own logins takes its snapshot before its new passwords (047).
+  await beforeSwitch?.();
   const environment = await buildAppEnvironment(deps, plan, services, site.hostname);
   const deploy: LocalDeploy = {
     plan,

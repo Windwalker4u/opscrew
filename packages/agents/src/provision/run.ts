@@ -201,7 +201,7 @@ import {
 import { plannedImports } from "./plan-json";
 import { provisionPortainer } from "./portainer-flow";
 import { postgresExtensionsStep } from "./postgres-extensions";
-import { forgetSwitchPasswords, postgresLoginsStep } from "./postgres-logins";
+import { forgetSwitchPasswords, postgresLoginsStep, switchSnapshot } from "./postgres-logins";
 import { type RecoveryCopy, requireDeployCheckout } from "./publish";
 import {
   committedTfvars,
@@ -378,6 +378,11 @@ export interface PhaseFlowExtras {
    */
   ready?: () => Promise<void>;
   /**
+   * The snapshot a switch to PostgreSQL's own logins takes (047, {@link switchSnapshot}), run right
+   * before the switch's first write: its new passwords, made with the app's environment.
+   */
+  beforeSwitch?: () => Promise<void>;
+  /**
    * Whether the server's address was public before this run (the deployment was served without
    * Cloudflare's proxy). Default: judged from the committed `terraform.tfvars.json`.
    */
@@ -518,7 +523,7 @@ async function provisionFlow(
   const command = `opscrew ${phase}`;
   if (plan.target.provider === "localhost") {
     if (phase !== "provision") throw localhostNotSupported(`\`${command}\``);
-    return provisionLocalhost(deps, plan, options);
+    return provisionLocalhost(deps, plan, options, extras.beforeSwitch);
   }
   // `opscrew dns` stays refused for the server-less targets: provision manages their DNS.
   if (isServerlessProvider(plan.target.provider) && phase !== "provision") {
@@ -1685,6 +1690,8 @@ async function provisionFlow(
               command,
               already: `The bucket ${bucket.bucket} exists; the deploy secrets are not stored yet.`,
             })));
+      // A switch's snapshot, now that every plan applied before it is approved (047).
+      await extras.beforeSwitch?.();
       // Without a domain, host lists (`ALLOWED_HOSTS`) hold the address recorded in local state.
       const environment = await buildAppEnvironment(
         deps,
@@ -2085,15 +2092,20 @@ async function requireRoomForOtherApps(
 /**
  * PostgreSQL's extensions (045) and own logins (047) before anything else of `opscrew provision`
  * or `opscrew dns`: the refusals, the notices and an existing database's switch, approved by its
- * hash with its snapshot taken (`postgresLoginsStep`). Returns `options` with the switch's hash
- * out of `--approve`'s, as it names no other plan of the run, and the databases that switch.
+ * hash (`postgresLoginsStep`). Returns `options` with the switch's hash out of `--approve`'s, as
+ * it names no other plan of the run, the databases that switch, and the switch's snapshot, which
+ * the flow takes right before the switch's first write ({@link PhaseFlowExtras.beforeSwitch}).
  */
 async function loginsFirst(
   deps: PhaseDeps,
   phase: ProvisionPhase,
   options: ProvisionOptions,
   extras: PhaseFlowExtras,
-): Promise<{ options: ProvisionOptions; switching?: readonly string[] }> {
+): Promise<{
+  options: ProvisionOptions;
+  switching?: readonly string[];
+  beforeSwitch?: () => Promise<void>;
+}> {
   const plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const services = options.services ?? {};
@@ -2109,11 +2121,7 @@ async function loginsFirst(
   };
   const command = `opscrew ${phase}${flags}`;
   await postgresExtensionsStep(deps, plan, { command, snapshot });
-  const change = await postgresLoginsStep(deps, plan, {
-    command,
-    planOnly: options.planOnly,
-    snapshot,
-  });
+  const change = await postgresLoginsStep(deps, plan, { command, planOnly: options.planOnly });
   if (change === undefined) return { options };
   const { approveHashes } = options;
   return {
@@ -2125,6 +2133,9 @@ async function loginsFirst(
             approveHashes: approveHashes.filter((hash) => hash.toLowerCase() !== change.hash),
           },
     switching: change.services,
+    ...(options.planOnly === true
+      ? {}
+      : { beforeSwitch: () => switchSnapshot(deps, plan, change, { command, snapshot }) }),
   };
 }
 
@@ -2138,7 +2149,13 @@ export async function runPhaseFlow(
   return runPhase(deps, phase, async () => {
     const logins = await loginsFirst(deps, phase, options, extras);
     try {
-      const result = await provisionFlow(deps, logins.options, phase, extras);
+      const { beforeSwitch } = logins;
+      const result = await provisionFlow(
+        deps,
+        logins.options,
+        phase,
+        beforeSwitch === undefined ? extras : { ...extras, beforeSwitch },
+      );
       if (!(options.planOnly && (options.approveHashes ?? []).length === 0)) {
         await deps.state.markPhase(
           phase,

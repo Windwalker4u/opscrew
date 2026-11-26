@@ -367,15 +367,20 @@ async function project(
   return { ...created, deps, handler, github, services, atSnapshot, keptText, empty, snapshot };
 }
 
-/** Nothing of the run's changes was made: no value generated, no secret stored, no file written. */
-async function expectNothingWritten(s: Awaited<ReturnType<typeof project>>) {
+/** Nothing of the switch was made: no new password generated, no secret stored. */
+async function expectSwitchUnwritten(s: Awaited<ReturnType<typeof project>>) {
   expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
   expect(s.github.secrets.size).toBe(0);
+}
+
+/** Nothing of the run's changes was made: no value generated, no secret stored, no file written. */
+async function expectNothingWritten(s: Awaited<ReturnType<typeof project>>) {
+  await expectSwitchUnwritten(s);
   expect(s.handler.requests.map((r) => r.kind)).not.toContain("repo-write");
 }
 
 describe.skipIf(!findExecutable("git"))("provision's switch of an existing database (047)", () => {
-  it("shows the switch of a hand-committed edit in a plan approved by its hash, and takes the snapshot before anything is written", async () => {
+  it("shows the switch of a hand-committed edit in a plan approved by its hash, and takes the snapshot once every plan is approved, before the switch's first write", async () => {
     const s = await project(planWith(SEPARATE), BEFORE_047);
     await runProvision(s.deps, { services: s.services });
 
@@ -385,7 +390,12 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     for (const line of change?.lines ?? []) expect(first?.details).toContain(line);
     expect(first?.details).toContain(`Switch hash: ${change?.hash}`);
     expect(s.atSnapshot).toEqual([
-      { requests: ["iac-apply"], generated: false, secrets: 0, skip: [] },
+      {
+        requests: ["iac-apply", "repo-write", "iac-apply"],
+        generated: false,
+        secrets: 0,
+        skip: [],
+      },
     ]);
 
     // Then provision goes on: the release's env file reaches GitHub with the owner's login.
@@ -408,12 +418,17 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     expect(change).toBeDefined();
     expect(s.handler.requests[0]).toMatchObject({ kind: "iac-apply", planHash: change?.hash });
     expect(s.atSnapshot).toEqual([
-      { requests: ["iac-apply"], generated: false, secrets: 0, skip: [] },
+      {
+        requests: ["iac-apply", "repo-write", "iac-apply"],
+        generated: false,
+        secrets: 0,
+        skip: [],
+      },
     ]);
     expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
   });
 
-  it("on a cloud server never applied, says the database has no data yet without reaching any server, and goes on", async () => {
+  it("on a cloud server never applied, says the database has no data yet on the new server, and goes on", async () => {
     // Generated values from a `--plan-only` run: no apply recorded, so no server exists yet.
     const plan = planWith(SEPARATE, false);
     expect(plan.deployment.lastApplyAt).toBeUndefined();
@@ -432,7 +447,6 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     };
     await runProvision(s.deps, { services: { ...services, remote } });
     expect(s.deps.reporter.text()).toContain("db has no data yet, so there's nothing to snapshot.");
-    expect(reached.filter((command) => command.includes("docker volume ls"))).toEqual([]);
     expect(reached.filter((command) => command.includes("snapshot.sh"))).toEqual([]);
     expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
   });
@@ -455,7 +469,7 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
   });
 
-  it("a failed look for the database's data stops provision with nothing written", async () => {
+  it("a failed look for the database's data stops provision with nothing of the switch written", async () => {
     const s = await project(planWith(SEPARATE, false), BEFORE_047);
     s.services.snapshot = {
       ...s.snapshot,
@@ -468,9 +482,9 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     )) as OpsCrewError;
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toBe(
-      "The snapshot of db before the switch to separate logins failed: The app's server did not answer over SSH. Nothing was changed.",
+      "The snapshot of db before the switch to separate logins failed: The app's server did not answer over SSH. The database was not changed.",
     );
-    await expectNothingWritten(s);
+    await expectSwitchUnwritten(s);
   });
 
   it("--plan-only shows the switch and keeps no new login's password, so the run that approves it still takes the snapshot first", async () => {
@@ -491,7 +505,7 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
   });
 
-  it("a failed snapshot stops provision with nothing written, saying what to do next", async () => {
+  it("a failed snapshot stops provision with nothing of the switch written, saying what to do next", async () => {
     const s = await project(planWith(SEPARATE), BEFORE_047);
     s.services.snapshot = {
       ...s.snapshot,
@@ -504,10 +518,37 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     )) as OpsCrewError;
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toBe(
-      "The snapshot of db before the switch to separate logins failed: The app's server has too little free disk. Nothing was changed.",
+      "The snapshot of db before the switch to separate logins failed: The app's server has too little free disk. The database was not changed.",
     );
     expect(error.hint).toContain("then run `opscrew provision` again");
-    await expectNothingWritten(s);
+    await expectSwitchUnwritten(s);
+  });
+
+  it("a run whose next plan isn't approved yet takes no snapshot and writes nothing of the switch; the rerun with both hashes takes exactly one", async () => {
+    const change = loginsSwitch(planWith(SEPARATE), BEFORE_047, "prod");
+    let approved = [change?.hash];
+    const s = await project(planWith(SEPARATE), BEFORE_047, (request) =>
+      request.planHash === undefined ? true : approved.includes(request.planHash),
+    );
+    const error = (await runProvision(s.deps, {
+      services: s.services,
+      approveHashes: [change?.hash ?? ""],
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    const infra = s.handler.requests.at(-1);
+    expect(infra).toMatchObject({ kind: "iac-apply" });
+    expect(infra?.planHash).not.toBe(change?.hash);
+    expect(s.atSnapshot).toEqual([]);
+    await expectSwitchUnwritten(s);
+
+    approved = [change?.hash, infra?.planHash];
+    await runProvision(s.deps, {
+      services: s.services,
+      approveHashes: [change?.hash ?? "", infra?.planHash ?? ""],
+    });
+    expect(s.atSnapshot).toHaveLength(1);
+    expect(s.atSnapshot[0]).toMatchObject({ generated: false, secrets: 0 });
+    expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
   });
 
   it("--approve with another hash changes nothing", async () => {
@@ -599,7 +640,7 @@ describe.skipIf(!SH_AVAILABLE)("the switch's snapshot on this computer (047)", (
     const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toMatch(
-      /^The snapshot of db before the switch to separate logins failed: .+ Nothing was changed\.$/,
+      /^The snapshot of db before the switch to separate logins failed: .+ The database was not changed\.$/,
     );
     expect(s.deps.reporter.text()).toContain("Taking a snapshot of db before the switch");
     expect(s.deps.reporter.text()).not.toContain("no data yet");

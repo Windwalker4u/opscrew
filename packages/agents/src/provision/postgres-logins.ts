@@ -187,17 +187,15 @@ export interface LoginsSnapshot {
  * Provision's step for PostgreSQL's two logins, before anything else changes: the refusals
  * ({@link requireLogins}), the notices ({@link loginsNotices}, {@link poolerNotices}), then a switch's plan
  * ({@link loginsSwitch}). With `planOnly` that plan is shown with its hash and nothing more;
- * otherwise it is approved by its hash (`iac-apply`; `--approve <hash>` in a script), then the
- * switching databases' snapshot is taken (`snapshot`, their parts alone), each that never ran left
- * out with a line that it has no data yet. Returns the switch, whose hash no other plan of the run
- * is.
+ * otherwise it is approved by its hash (`iac-apply`; `--approve <hash>` in a script). Returns the
+ * switch, whose hash no other plan of the run is; its snapshot comes later ({@link switchSnapshot}).
  * @throws OpsCrewError `INVALID_INPUT` for a refusal, `APPROVAL_REFUSED` when the switch is not
- * approved, `COMMAND_FAILED` when the snapshot fails, each with nothing changed.
+ * approved, each with nothing changed.
  */
 export async function postgresLoginsStep(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals">,
   plan: DeployPlan,
-  o: { command: string; planOnly?: boolean | undefined; snapshot: LoginsSnapshot },
+  o: { command: string; planOnly?: boolean | undefined },
 ): Promise<LoginsSwitch | undefined> {
   if (!plan.services.some((service) => service.kind === "postgres")) return undefined;
   const kept = await keptLogins(deps);
@@ -227,6 +225,22 @@ export async function postgresLoginsStep(
     },
   });
   await deps.approvals.assertApprovedPlan(change.hash);
+  return change;
+}
+
+/**
+ * The switch's snapshot (`snapshot`, the switching databases' parts alone), each that never ran
+ * left out with a line that it has no data yet. Provision takes it once every plan the run applies
+ * before the switch is approved, right before the switch's first write (its new passwords), so a
+ * run that stops at another plan's approval takes none and the rerun takes exactly one.
+ * @throws OpsCrewError `COMMAND_FAILED` when it fails, with the database unchanged.
+ */
+export async function switchSnapshot(
+  deps: Pick<PhaseDeps, "reporter">,
+  plan: DeployPlan,
+  change: LoginsSwitch,
+  o: { command: string; snapshot: LoginsSnapshot },
+): Promise<void> {
   try {
     const empty = new Set(await o.snapshot.neverRan(change.services));
     for (const name of empty) {
@@ -243,14 +257,13 @@ export async function postgresLoginsStep(
   } catch (error) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `The snapshot of ${change.services.join(" and ")} before the switch to separate logins failed: ${errorText(error)} Nothing was changed.`,
+      `The snapshot of ${change.services.join(" and ")} before the switch to separate logins failed: ${errorText(error)} The database was not changed.`,
       {
         hint: `Fix what it names (\`opscrew snapshot\` takes one on its own), then run \`${o.command}\` again; it asks for the switch again.`,
         cause: error,
       },
     );
   }
-  return change;
 }
 
 /** Every part a snapshot of `plan`'s data has, on each of its servers. */
