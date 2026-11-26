@@ -94,12 +94,11 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 }
 
 describe("the price table", () => {
-  it("holds the five plans with the 2026-11-21 prices", () => {
+  it("holds the four plans with the 2026-11-21 prices, without d2-2, which design could never pick", () => {
     expect(STATIC_PRICES_AS_OF).toBe("2026-11-21T00:00:00.000Z");
     expect(
       STATIC_FLAVORS.map((f) => [f.name, f.vcpus, f.memoryGb, f.diskGb, f.cpuType, f.hourly]),
     ).toEqual([
-      ["d2-2", 1, 2, 25, "shared", 0.0104],
       ["d2-4", 2, 4, 50, "shared", 0.0206],
       ["d2-8", 4, 8, 50, "shared", 0.0372],
       ["b3-8", 2, 8, 50, "dedicated", 0.0512],
@@ -118,7 +117,7 @@ describe("StaticOvhcloudCatalog", () => {
     expect(catalog.provider).toBe("ovhcloud");
     expect(catalog.asOf).toBe(STATIC_PRICES_AS_OF);
     const offers = await catalog.listOffers();
-    expect(offers).toHaveLength(35);
+    expect(offers).toHaveLength(28);
     expect([...new Set(offers.map((o) => o.location))]).toEqual([...OVHCLOUD_LOCATIONS]);
     for (const offer of offers) {
       const plan = STATIC_FLAVORS.find((f) => f.name === offer.id);
@@ -148,8 +147,8 @@ describe("StaticOvhcloudCatalog", () => {
   it("filters by location, and offers nothing in a location it doesn't map", async () => {
     const catalog = new StaticOvhcloudCatalog();
     const offers = await catalog.listOffers("GRA11");
-    expect(offers.map((o) => o.id)).toEqual(["d2-2", "d2-4", "d2-8", "b3-8", "b3-16"]);
-    expect(offers.find((o) => o.id === "d2-2")?.monthly.amount).toBeCloseTo(7.592, 10);
+    expect(offers.map((o) => o.id)).toEqual(["d2-4", "d2-8", "b3-8", "b3-16"]);
+    expect(offers.find((o) => o.id === "d2-4")?.monthly.amount).toBeCloseTo(15.038, 10);
     expect(await catalog.listOffers("UK1")).toEqual([]);
   });
 
@@ -173,12 +172,11 @@ describe("StaticOvhcloudCatalog", () => {
 });
 
 describe("OvhcloudCatalog (live)", () => {
-  it("prices the five plans from the public catalogue (1e-8 EUR, `<flavor>.consumption`)", async () => {
+  it("prices the four plans from the public catalogue (1e-8 EUR, `<flavor>.consumption`)", async () => {
     const { catalog } = setup();
     expect(catalog.provider).toBe("ovhcloud");
     const offers = await catalog.listOffers("DE1");
     expect(offers.map((o) => [o.id, o.vcpus, o.memoryGb, o.diskGb, o.hourly?.amount])).toEqual([
-      ["d2-2", 1, 2, 25, 0.0104],
       ["d2-4", 2, 4, 50, 0.0206],
       ["d2-8", 4, 8, 50, 0.0372],
       ["b3-8", 2, 8, 50, 0.0512],
@@ -209,7 +207,7 @@ describe("OvhcloudCatalog (live)", () => {
     const { catalog } = setup({
       [PUBLIC]: {
         body: publicCatalogue((c) => {
-          const d2 = addon(c, "d2-2.consumption");
+          const d2 = addon(c, "d2-4.consumption");
           setPrice(d2, 1234567);
           const technical = d2.blobs.technical as unknown as Record<string, unknown>;
           technical.cpu = { cores: 3 };
@@ -218,7 +216,7 @@ describe("OvhcloudCatalog (live)", () => {
         }),
       },
     });
-    const d2 = (await catalog.listOffers("GRA11")).find((o) => o.id === "d2-2");
+    const d2 = (await catalog.listOffers("GRA11")).find((o) => o.id === "d2-4");
     expect(d2).toMatchObject({
       vcpus: 3,
       memoryGb: 6,
@@ -230,7 +228,7 @@ describe("OvhcloudCatalog (live)", () => {
   it("offers each plan in every mapped location and nowhere else", async () => {
     const { catalog } = setup();
     const offers = await catalog.listOffers();
-    expect(offers).toHaveLength(35);
+    expect(offers).toHaveLength(28);
     expect([...new Set(offers.map((o) => o.location))]).toEqual([...OVHCLOUD_LOCATIONS]);
     // c3-4 and UK1 are in the availability answer, but OpsCrew offers neither.
     expect(offers.some((o) => o.id === "c3-4" || o.location === "UK1")).toBe(false);
@@ -247,7 +245,6 @@ describe("OvhcloudCatalog (live)", () => {
       // The quota can't hold it.
       "d2-8@GRA11",
       // WAW1 isn't activated on the project.
-      "d2-2@WAW1",
       "d2-4@WAW1",
       "d2-8@WAW1",
       "b3-8@WAW1",
@@ -263,16 +260,11 @@ describe("OvhcloudCatalog (live)", () => {
     const { catalog } = setup({
       [PUBLIC]: {
         body: publicCatalogue((c) => {
-          c.addons = c.addons.filter((a) => a.planCode !== "d2-4.consumption");
+          c.addons = c.addons.filter((a) => a.planCode !== "d2-8.consumption");
         }),
       },
     });
-    expect((await catalog.listOffers("GRA11")).map((o) => o.id)).toEqual([
-      "d2-2",
-      "d2-8",
-      "b3-8",
-      "b3-16",
-    ]);
+    expect((await catalog.listOffers("GRA11")).map((o) => o.id)).toEqual(["d2-4", "b3-8", "b3-16"]);
   });
 
   it("reads the public catalogue without a token, and the availability with one", async () => {
@@ -406,7 +398,7 @@ describe("OvhcloudCatalog when the live read fails", () => {
       [PUBLIC]: [{ status: 502, text: "bad gateway" }, { body: publicCatalogue() }],
     });
     await failure(catalog.listOffers());
-    expect(await catalog.listOffers("GRA11")).toHaveLength(5);
+    expect(await catalog.listOffers("GRA11")).toHaveLength(4);
     expect(publicCalls(calls)).toHaveLength(2);
   });
 });

@@ -32,7 +32,7 @@ export const STATIC_SNAPSHOT_PER_GB_MONTH_EUR = 0.011;
 export const STATIC_SNAPSHOT_PER_GB_HOUR_EUR = 0.000015;
 
 export interface StaticFlavor {
-  /** OVHcloud's flavor name, for example `d2-2`. */
+  /** OVHcloud's flavor name, for example `d2-4`. */
   name: string;
   vcpus: number;
   memoryGb: number;
@@ -46,7 +46,7 @@ export interface StaticFlavor {
 
 /** The plans OpsCrew offers (research R2.3). */
 export const STATIC_FLAVORS: readonly StaticFlavor[] = [
-  { name: "d2-2", vcpus: 1, memoryGb: 2, diskGb: 25, cpuType: "shared", hourly: 0.0104 },
+  // No d2-2 (25 GB): design sizes every app at 40 GB of disk or more, so it could never be picked.
   { name: "d2-4", vcpus: 2, memoryGb: 4, diskGb: 50, cpuType: "shared", hourly: 0.0206 },
   { name: "d2-8", vcpus: 4, memoryGb: 8, diskGb: 50, cpuType: "shared", hourly: 0.0372 },
   { name: "b3-8", vcpus: 2, memoryGb: 8, diskGb: 50, cpuType: "dedicated", hourly: 0.0512 },

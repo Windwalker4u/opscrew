@@ -14,7 +14,7 @@ variable "location" {
 }
 
 variable "server_type" {
-  description = "OVHcloud model (flavor name) of the server, for example d2-2; its id is looked up in the region."
+  description = "OVHcloud model (flavor name) of the server, for example d2-4; its id is looked up in the region."
   type        = string
 }
 

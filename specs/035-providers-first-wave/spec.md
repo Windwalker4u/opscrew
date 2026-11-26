@@ -42,7 +42,7 @@ go-ahead, the same flow runs against fakes of OVHcloud's API and the engine.
    `OVH_CLIENT_SECRET` and `OVH_CLOUD_PROJECT_SERVICE`, the project's id), **When** the user runs
    `opscrew interview`, **Then** OpsCrew offers OVHcloud next to the other cloud providers, with
    the regions it serves. When only OVHcloud's values are set, it chooses OVHcloud without asking.
-2. **When** the user runs `opscrew design`, **Then** the options show OVHcloud's plans (`d2-2`,
+2. **When** the user runs `opscrew design`, **Then** the options show OVHcloud's plans (
    `d2-4` and `d2-8`, shared; `b3-8` and `b3-16`, guaranteed) with:
    - the hourly price and the monthly figure for 730 hours, before VAT;
    - the price table's date, or "live" when the prices come from OVHcloud's public catalogue;

@@ -126,22 +126,16 @@ describe("the provider catalogue", () => {
     expect(cx23).toBeDefined();
     expect(cx23?.setupFee).toBeUndefined();
     // OVHcloud bills by the hour, with no setup fee, at one price in every location.
-    expect(sizes("ovhcloud").map((size) => size.id)).toEqual([
-      "d2-2",
-      "d2-4",
-      "d2-8",
-      "b3-8",
-      "b3-16",
-    ]);
-    const d22 = sizes("ovhcloud").find((size) => size.id === "d2-2");
-    expect(d22).toMatchObject({
-      vcpu: 1,
-      memoryMb: 2048,
-      diskGb: 25,
-      hourly: 0.0104,
+    expect(sizes("ovhcloud").map((size) => size.id)).toEqual(["d2-4", "d2-8", "b3-8", "b3-16"]);
+    const d24 = sizes("ovhcloud").find((size) => size.id === "d2-4");
+    expect(d24).toMatchObject({
+      vcpu: 2,
+      memoryMb: 4096,
+      diskGb: 50,
+      hourly: 0.0206,
       locations: ["DE1", "SBG5", "GRA11", "WAW1", "BHS5", "SGP1", "SYD1"],
     });
-    expect(d22?.monthly).toBeCloseTo(7.59, 2);
+    expect(d24?.monthly).toBeCloseTo(15.04, 2);
     expect(sizes("ovhcloud").every((size) => size.setupFee === undefined)).toBe(true);
   });
 
