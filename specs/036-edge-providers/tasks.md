@@ -5,11 +5,11 @@
 ## PR 1 — Edge provider contract with Cloudflare behind it
 
 - [x] **T3601 — Research, ADR 0038 & specs**: Complete official-source research (`research.md` R1–R7), record core lead decisions from `#29`, write `docs/adr/0038-edge-provider-contract.md`, `spec.md`, `plan.md`, and `tasks.md`.
-- [x] **T3602 — Edge provider contract (`@opscrew/contracts`)**: Add `packages/contracts/src/edge-provider.ts` (`EDGE_PROVIDER_CONTRACT_VERSION = 1`, `EdgeProviderDefinition`, capability/auth/IP-filtering/connector/terraform/pricing/texts types) and export from `packages/contracts/src/index.ts`.
+- [x] **T3602 — Edge provider contract (`@opscrew/contracts`)**: Add `packages/contracts/src/edge-provider.ts` (`EDGE_PROVIDER_CONTRACT_VERSION = 1`, `EdgeProviderDefinition`, capability/auth/IP-filtering/terraform/texts types) and export from `packages/contracts/src/index.ts`.
 - [x] **T3603 — Cloudflare edge provider & registry (`packages/edge-providers/`)**:
   - Add `"packages/edge-providers/*"` to `pnpm-workspace.yaml`.
-  - Implement `packages/edge-providers/cloudflare` (`@opscrew/edge-provider-cloudflare`) wrapping `@opscrew/connector-cloudflare`.
-  - Implement `packages/edge-providers/registry` (`@opscrew/edge-providers`) with `validateEdgeProvider`, `EDGE_PROVIDERS`, `DNS_PROVIDERS`, `EDGE_CREDENTIALS`, `edgeProvider`, `dnsProvider`, and conformance/validation tests.
+  - Implement `packages/edge-providers/cloudflare` (`@opscrew/edge-provider-cloudflare`) exporting Cloudflare's `EdgeProviderDefinition`.
+  - Implement `packages/edge-providers/registry` (`@opscrew/edge-providers`) with `validateEdgeProvider`, `EDGE_PROVIDERS`, `edgeProvider`, and conformance/validation tests.
 - [x] **T3604 — Rename `security.httpAllowedFrom` to `"edge"` (`@opscrew/plan-schema`)**:
   - Change `security.httpAllowedFrom` from `"any" | "cloudflare"` to `"any" | "edge"` with explicit refusal message for `"cloudflare"` (`set security.httpAllowedFrom to "edge"`).
   - Update defaults, preview check, own-server check, `schemas/plan.schema.json`, and unit tests.

@@ -64,8 +64,8 @@ their first reader.
 ### 5. Consumers (`iac-templates`, `secops`, `agents`, `mcp-server`, `cli`)
 - `@opscrew/iac-templates`:
   - Depend on `@opscrew/edge-providers`.
-  - `src/predicates.ts`: `webOnlyFromEdge(plan)` (and keep `webOnlyFromCloudflare(plan)` delegating
-    to it for Cloudflare plans) checking `plan.security.httpAllowedFrom === "edge"`.
+  - `src/predicates.ts`: keep `webOnlyFromCloudflare(plan)` checking
+    `plan.security.httpAllowedFrom === "edge"`.
   - `src/edge/index.ts`, `src/edge/nginx.ts`, `src/edge/openlitespeed.ts`: resolve real-IP header
     and edge display name from `edgeProvider("cloudflare")` in PR 1 (byte-identical output:
     `CF-Connecting-IP` and `Cloudflare`). **PR 2 threads the app's active edge provider through

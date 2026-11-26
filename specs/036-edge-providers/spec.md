@@ -46,15 +46,14 @@ Feature 036 ships as four pull requests:
   `EDGE_PROVIDER_CONTRACT_VERSION = 1` and `EdgeProviderDefinition` using only plain data,
   regular expressions, and functions (no zod schemas or class instances).
 - **FR-3602 (Cloudflare package):** `packages/edge-providers/cloudflare`
-  (`@opscrew/edge-provider-cloudflare`) exports `definition: EdgeProviderDefinition` wrapping
-  `@opscrew/connector-cloudflare`, declaring `dns: true`, `edge: true`,
-  `originAuth: "cloudflare-aop"`, `originIpFiltering: "compact-cidrs"`,
-  `realIpHeader: "CF-Connecting-IP"`, `cloudflareOnlyFeatures: true`.
+  (`@opscrew/edge-provider-cloudflare`) exports `definition: EdgeProviderDefinition` declaring
+  `id: "cloudflare"`, `displayName: "Cloudflare"`, `originAuth: "cloudflare-aop"`,
+  `originIpFiltering: "compact-cidrs"`, `realIpHeader: "CF-Connecting-IP"`,
+  `terraform.dnsRecordResourceType: "cloudflare_dns_record"`, and `texts.secops.*`.
 - **FR-3603 (Registry):** `packages/edge-providers/registry` (`@opscrew/edge-providers`) exports
-  `EDGE_PROVIDERS`, `DNS_PROVIDERS`, `EDGE_CREDENTIALS`, `edgeProvider(id)`, `dnsProvider(id)`,
-  and `validateEdgeProvider(candidate)`. Validation runs at load time and fails fast with an
-  `INTERNAL` `OpsCrewError` on invalid definitions; unknown provider lookups throw `INVALID_INPUT`
-  naming the known providers.
+  `EDGE_PROVIDERS`, `edgeProvider(id)`, and `validateEdgeProvider(candidate)`. Validation runs at
+  load time and fails fast with an `INTERNAL` `OpsCrewError` on invalid definitions; unknown
+  provider lookups throw `INVALID_INPUT` naming the known providers.
 - **FR-3604 (`httpAllowedFrom: "edge"`):** `plan.security.httpAllowedFrom` accepts `"any" | "edge"`,
   defaulting to `"edge"` when `dns.proxied` is true and `"any"` otherwise. Passing `"cloudflare"`
   fails validation with a plain one-line message telling the user to set
