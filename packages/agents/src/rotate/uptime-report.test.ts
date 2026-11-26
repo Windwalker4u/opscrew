@@ -40,7 +40,9 @@ function plan(credentials = true): DeployPlan {
 }
 
 /** The environment provisioned with the Worker: its entry, and the server's report running. */
-async function provisioned(options: { answer?: () => boolean; credentials?: boolean } = {}) {
+async function provisioned(
+  options: { answer?: () => boolean; credentials?: boolean; interactive?: boolean } = {},
+) {
   const handler = new ScriptedApprovalHandler(options.answer ?? (() => true));
   const deps = await createTestPhaseDeps({
     approvalHandler: handler,
@@ -63,6 +65,8 @@ async function provisioned(options: { answer?: () => boolean; credentials?: bool
   });
   await provisionUptime(deps, step, { command: "opscrew provision", phase: "provision" });
   handler.requests.length = 0;
+  // A terminal by default, where the prompt asks; `interactive: false` is a script.
+  deps.interactive = options.interactive ?? true;
   return { deps, handler, server, services };
 }
 
@@ -112,6 +116,22 @@ describe("updateReportDates", () => {
       "The uptime report on the server keeps the old date of deploy-key, so its daily check may still say it is old.",
     );
     expect(s.deps.reporter.text()).toContain("opscrew provision --approve ");
+  });
+
+  it("in a script, saves the host plan and names its own --approve, never asking with the rotation's hash", async () => {
+    const s = await provisioned({ interactive: false });
+    await rotatedAt(s.deps, NOW.toISOString());
+    await updateReportDates(s.deps, ["deploy-key"], s.services);
+    // No approval is asked, so no --approve the user gave for the rotation meets this plan.
+    expect(s.handler.requests).toEqual([]);
+    expect(s.server.applies).toHaveLength(1);
+    const text = s.deps.reporter.text();
+    const hash = /Saved the host plan \(hash ([0-9a-f]{64})\)/.exec(text)?.[1];
+    expect(hash).toBeDefined();
+    expect(text).toContain(
+      `The uptime report on the server keeps the old date of deploy-key, so its daily check may still say it is old. Run \`opscrew provision --approve ${hash}\` to put the new date there.`,
+    );
+    expect(text).not.toContain("approve it too");
   });
 
   it("reads no server for a credential the report doesn't date, or with the credentials' ages off", async () => {

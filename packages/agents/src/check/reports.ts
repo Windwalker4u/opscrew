@@ -272,7 +272,7 @@ function reportAdapter(fake: ProvisionServices["serverHost"]): ReportAdapter {
  * step that sets it up (its key supplied at apply only), else its removal. Reached with the app
  * server's login (`loginShell`: the admin login of a server the user owns, deploy on one OpsCrew
  * created) and inspected as root; shown, approved by its hash (`host-apply`) and applied, or with
- * `planOnly` only shown, with a line naming its hash. With `planOnly` and no server yet (OpsCrew
+ * `planOnly` only shown and saved. With `planOnly` and no server yet (OpsCrew
  * creates it), it says the plan comes once the server exists. Returns the plan's outcome.
  * @throws PlanRefusedError when it is not approved (nothing on the server changed).
  */
@@ -316,7 +316,7 @@ export async function reportHostPlan(
     facts,
     ...(report === undefined ? { disable: { entry: input.entry } } : { enable: report.settings }),
   });
-  const outcome = await approveAndApplyHostPlan(deps, {
+  return approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote,
     apply: adapter.apply,
@@ -341,10 +341,4 @@ export async function reportHostPlan(
         : `Setting up the uptime report on ${server}`,
     ...(planOnly === true ? { planOnly: true } : {}),
   });
-  if (planOnly === true && hostPlan.steps.some((step) => step.state === "change")) {
-    deps.reporter.info(
-      `The uptime report has a host plan of its own: uptime-report plan ${outcome.hash}. In a script, approve it too (\`--approve ${outcome.hash}\`).`,
-    );
-  }
-  return outcome;
 }
