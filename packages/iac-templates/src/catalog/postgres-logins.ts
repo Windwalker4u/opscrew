@@ -90,7 +90,7 @@ const MOVES = [
   `SELECT format('ALTER SCHEMA %I OWNER TO ${OWNER}', n.nspname) FROM pg_namespace n`,
   `  WHERE n.nspowner IN ('${SUPERUSER}'::regrole, 'pg_database_owner'::regrole) AND ${APP_SCHEMA}`,
   `  AND ${notInExtension("pg_namespace", "n.oid")}`,
-  "  AND (n.nspname = 'public' OR NOT EXISTS (SELECT FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid))",
+  "  AND (n.nspname = 'public' OR NOT EXISTS (SELECT FROM pg_extension e JOIN pg_available_extension_versions v ON v.name = e.extname AND v.version = e.extversion WHERE e.extnamespace = n.oid AND v.schema = n.nspname))",
   "UNION ALL",
   `SELECT format('ALTER %s %s OWNER TO ${OWNER}', CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, c.oid::regclass)`,
   "  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace",

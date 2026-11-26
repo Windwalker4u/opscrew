@@ -2083,13 +2083,14 @@ async function requireRoomForOtherApps(
 }
 
 /**
- * PostgreSQL's own logins before anything else of `opscrew provision` (047): the refusals, the
- * notices and an existing database's switch, approved by its hash with its snapshot taken
- * (`postgresLoginsStep`). Returns `options` with the switch's hash out of `--approve`'s, as it
- * names no other plan of the run, and the databases that switch.
+ * PostgreSQL's extensions (045) and own logins (047) before anything else of `opscrew provision`
+ * or `opscrew dns`: the refusals, the notices and an existing database's switch, approved by its
+ * hash with its snapshot taken (`postgresLoginsStep`). Returns `options` with the switch's hash
+ * out of `--approve`'s, as it names no other plan of the run, and the databases that switch.
  */
 async function loginsFirst(
   deps: PhaseDeps,
+  phase: ProvisionPhase,
   options: ProvisionOptions,
   extras: PhaseFlowExtras,
 ): Promise<{ options: ProvisionOptions; switching?: readonly string[] }> {
@@ -2106,7 +2107,7 @@ async function loginsFirst(
     neverRan: (names: readonly string[]) => neverRan(deps, names, snapshotServices),
     take: (skip: readonly string[]) => takeSnapshot(deps, { skip, services: snapshotServices }),
   };
-  const command = `opscrew provision${flags}`;
+  const command = `opscrew ${phase}${flags}`;
   await postgresExtensionsStep(deps, plan, { command, snapshot });
   const change = await postgresLoginsStep(deps, plan, {
     command,
@@ -2135,7 +2136,7 @@ export async function runPhaseFlow(
   extras: PhaseFlowExtras = {},
 ): Promise<ProvisionResult> {
   return runPhase(deps, phase, async () => {
-    const logins = phase === "provision" ? await loginsFirst(deps, options, extras) : { options };
+    const logins = await loginsFirst(deps, phase, options, extras);
     try {
       const result = await provisionFlow(deps, logins.options, phase, extras);
       if (!(options.planOnly && (options.approveHashes ?? []).length === 0)) {

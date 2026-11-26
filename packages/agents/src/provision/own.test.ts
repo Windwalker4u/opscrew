@@ -17,6 +17,8 @@ import { IMAGES, renderTunnelConnectorCompose } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
+import { allocateNetwork } from "../network";
+import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
 import type { PortainerServices } from "../portainer";
 import { type OwnHostPlanInput, rotateSshKey } from "../rotate/keys";
 import { planAndCopyFiles } from "../secrets/__fixtures__/world";
@@ -27,6 +29,7 @@ import {
   readServerAddresses,
   recordOwnServer,
   recordServerAddress,
+  updateServerAddresses,
 } from "../shared";
 import { ensureDeployKey } from "../shared/ssh-keys";
 import {
@@ -52,11 +55,12 @@ import {
   ScriptedApprovalHandler,
   TUNNEL_CHANGES,
   TUNNEL_ID,
+  testKeyMaker,
   tunnelOutputs,
   withOtherApp,
   writeArchitecture,
 } from "../testing";
-import { applyOwnHostPlan, prepareOwnServer } from "./own";
+import { applyOwnHostPlan, prepareExtraOwnServer, prepareOwnServer } from "./own";
 import { runProvision } from "./run";
 import { zeroTrustAuthDomain } from "./shared-cloudflare";
 import type { ProvisionOptions } from "./types";
@@ -607,6 +611,143 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
           services: s.services,
           deployPublicKey: OTHER_DEPLOY_KEY,
           deployKeyFile: s.deps.paths.files.deployKey,
+          phase: "provision",
+          command: "opscrew provision",
+        });
+        expect(run.facts.arch).toBe(arch);
+      }
+    });
+  });
+
+  describe("PostGIS on an arm64 server (045)", () => {
+    const postgisPlan = (
+      arch: "amd64" | "arm64",
+      extensions: readonly ("postgis" | "vector")[] = ["postgis"],
+    ) => {
+      const plan = ownPlan({ arch });
+      return DeployPlanSchema.parse({
+        ...plan,
+        services: plan.services.map((service) =>
+          service.kind === "postgres"
+            ? { ...service, options: { extensions: [...extensions] } }
+            : service,
+        ),
+      });
+    };
+
+    it("refuses PostGIS in prepareOwnServer when inspected facts report arm64, while allowing amd64 and vector on arm64", async () => {
+      const armPlan = postgisPlan("arm64", ["postgis"]);
+      const s = await setup({ plan: armPlan, facts: freshFacts({ arch: "arm64" }) });
+      await expect(
+        prepareOwnServer(s.deps, {
+          plan: armPlan,
+          options: { hostKey: ED25519_FINGERPRINT },
+          services: s.services,
+          deployPublicKey: OTHER_DEPLOY_KEY,
+          deployKeyFile: s.deps.paths.files.deployKey,
+          phase: "provision",
+          command: "opscrew provision",
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        message: expect.stringMatching(/postgis\/postgis.*your server is arm64/i),
+      });
+      expect(s.host.applies).toHaveLength(0);
+
+      for (const [arch, extensions] of [
+        ["amd64", ["postgis"]],
+        ["arm64", ["vector"]],
+      ] as const) {
+        const okPlan = postgisPlan(arch, extensions);
+        const ok = await setup({ plan: okPlan, facts: freshFacts({ arch }) });
+        const run = await prepareOwnServer(ok.deps, {
+          plan: okPlan,
+          options: { hostKey: ED25519_FINGERPRINT },
+          services: ok.services,
+          deployPublicKey: OTHER_DEPLOY_KEY,
+          deployKeyFile: ok.deps.paths.files.deployKey,
+          phase: "provision",
+          command: "opscrew provision",
+        });
+        expect(run.facts.arch).toBe(arch);
+      }
+    });
+
+    it("refuses PostGIS in prepareExtraOwnServer when inspected facts report arm64, while allowing amd64 and vector on arm64", async () => {
+      const extraPlan = (
+        arch: "amd64" | "arm64",
+        extensions: readonly ("postgis" | "vector")[] = ["postgis"],
+      ) => {
+        const split = splitPlan({ data: "own" });
+        const { network } = allocateNetwork(
+          split,
+          { data: { udpPortsInUse: [], wireguardInterfaces: [] } },
+          testKeyMaker("own"),
+        );
+        const base = withNetwork(split, network);
+        return DeployPlanSchema.parse({
+          ...base,
+          servers: (base.servers ?? []).map((server) =>
+            server.name === "data" && server.target.provider === "own"
+              ? { ...server, target: { ...server.target, arch } }
+              : server,
+          ),
+          services: base.services.map((service) =>
+            service.kind === "postgres"
+              ? { ...service, server: "data", options: { extensions: [...extensions] } }
+              : service,
+          ),
+        });
+      };
+
+      const recordExtraLogin = async (deps: Setup["deps"]) => {
+        await updateServerAddresses(deps.paths, (current) => ({
+          ...current,
+          ownServers: {
+            ...current.ownServers,
+            data: {
+              host: "203.0.113.20",
+              port: 22,
+              user: "root",
+              agent: true,
+              hostKey: ED25519_FINGERPRINT,
+            },
+          },
+        }));
+      };
+
+      const armPlan = extraPlan("arm64", ["postgis"]);
+      const s = await setup({ plan: armPlan, facts: freshFacts({ arch: "arm64" }) });
+      await recordExtraLogin(s.deps);
+      await expect(
+        prepareExtraOwnServer(s.deps, {
+          plan: armPlan,
+          name: "data",
+          services: s.services,
+          deployPublicKey: OTHER_DEPLOY_KEY,
+          deployKeyFile: s.deps.paths.files.deployKey,
+          phase: "provision",
+          command: "opscrew provision",
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        message: expect.stringMatching(/postgis\/postgis.*server data is arm64/i),
+      });
+      expect(s.host.applies).toHaveLength(0);
+
+      for (const [arch, extensions] of [
+        ["amd64", ["postgis"]],
+        ["arm64", ["vector"]],
+      ] as const) {
+        const okPlan = extraPlan(arch, extensions);
+        const ok = await setup({ plan: okPlan, facts: freshFacts({ arch }) });
+        await recordExtraLogin(ok.deps);
+        const run = await prepareExtraOwnServer(ok.deps, {
+          plan: okPlan,
+          name: "data",
+          services: ok.services,
+          deployPublicKey: OTHER_DEPLOY_KEY,
+          deployKeyFile: ok.deps.paths.files.deployKey,
           phase: "provision",
           command: "opscrew provision",
         });

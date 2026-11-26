@@ -267,10 +267,16 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
       expect(db.sh(extensionsCheck(["postgis", "postgis_raster"])).status).toBe(0);
       expect(db.sh(loginsCheck()).status).toBe(0);
 
-      // spatial_ref_sys stays owned by superuser app
+      // spatial_ref_sys and PostGIS's built-in topology schema stay owned by superuser app
       expect(
         db.sql("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'spatial_ref_sys'"),
       ).toBe("app");
+      expect(
+        db.sql("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'topology'"),
+      ).toBe("app");
+      expect(
+        db.sql("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public'"),
+      ).toBe("app_owner");
       const sridCountBefore = Number(db.sql("SELECT count(*) FROM spatial_ref_sys"));
       expect(sridCountBefore).toBeGreaterThan(1000);
 
@@ -335,11 +341,12 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
         ).stdout,
       ).toBe("Paris");
 
-      // 4. Verify S1 fix: an extension-created schema (deptype = 'n', e.g. postgis_topology's
-      //    `topology` schema) stays owned by superuser `app` after loginsSetup.
+      // 4. Verify S1 fix: on a fresh PostGIS database, `postgis_topology`'s fixed schema
+      //    `topology` stays owned by superuser `app` after loginsSetup, while `public` moves to
+      //    `app_owner`.
       const extSchema = new ExtDatabase(IMAGES.postgis.ref, "postgis-ext-schema");
       await extSchema.start();
-      extSchema.sql('CREATE EXTENSION "postgis_topology" CASCADE;');
+      extSchema.sql('CREATE EXTENSION IF NOT EXISTS "postgis_topology" CASCADE;');
       expect(extSchema.sh(loginsSetup("db")).status).toBe(0);
       expect(extSchema.sh(loginsCheck()).status).toBe(0);
       expect(

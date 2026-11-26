@@ -7,13 +7,16 @@ import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, type PostgresExtension } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { runDns } from "../dns";
 import { generatedValuesFile } from "../shared/app-secrets";
 import {
   createProject,
   createTestPhaseDeps,
   FakeEngine,
   FakeGitHub,
+  fakeCloudflare,
   fakeSharedCloudflare,
+  planJsonFor,
   projectRunner,
   readyRemote,
   ScriptedApprovalHandler,
@@ -48,9 +51,10 @@ function makePlan(
     arch?: "amd64" | "arm64";
     provider?: "hetzner" | "own" | "portainer" | "localhost";
     serverType?: string;
+    deployed?: boolean;
   } = {},
 ): DeployPlan {
-  const base = testPlan();
+  const base = testPlan({ deployed: opts.deployed ?? false });
   const target =
     opts.provider === "own"
       ? {
@@ -114,12 +118,13 @@ async function provisionProject(
   plan: DeployPlan,
   kept?: Record<string, unknown>,
   empty: string[] = [],
+  answer: (request: ApprovalRequest) => boolean = () => true,
 ) {
   const created = await createProject(plan);
   await created.git(created.root, "add", "opscrew/plan.yaml");
   await created.git(created.root, "commit", "-q", "-m", "plan");
   await writeFile(join(created.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
-  const handler = new ScriptedApprovalHandler(() => true);
+  const handler = new ScriptedApprovalHandler(answer);
   const deps = await createTestPhaseDeps({
     root: created.root,
     env: {
@@ -140,8 +145,9 @@ async function provisionProject(
   let snapshotsTaken = 0;
   const services: ProvisionServices = {
     otherApps: { inspect: noOtherApps },
-    engine: async () => new FakeEngine(),
+    engine: async () => new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    cloudflare: fakeCloudflare(),
     github,
     tcpConnect: async () => true,
     remote: readyRemote,
@@ -209,6 +215,64 @@ describe("provision PostgreSQL extensions (045)", () => {
         "opscrew provision",
       ),
     ).resolves.toBeUndefined();
+
+    // Unknown cloud serverType fails closed for PostGIS while allowing vector
+    await expect(
+      requireExtensionsArch(
+        makePlan({ provider: "hetzner", serverType: "unknown-99", extensions: ["postgis"] }),
+        "opscrew provision",
+      ),
+    ).rejects.toThrow(/postgis\/postgis.*amd64-only.*unknown-99/i);
+
+    await expect(
+      requireExtensionsArch(
+        makePlan({ provider: "hetzner", serverType: "unknown-99", extensions: ["vector"] }),
+        "opscrew provision",
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("refuses extensions on a deployed database when generated_values.json is missing unless neverRan reports it empty", async () => {
+    const root = await makeTempRoot();
+    const deps = await makeDeps(root);
+    let checked: readonly string[] = [];
+
+    // Deployed plan, missing generated_values.json, extensions requested, DB has data -> refused
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ deployed: true, extensions: ["vector"] }), {
+        command: "opscrew provision",
+        snapshot: {
+          neverRan: async (names) => {
+            checked = names;
+            return [];
+          },
+        },
+      }),
+    ).rejects.toThrow(/db already has data.*local generated values are missing/i);
+    expect(checked).toEqual(["db"]);
+
+    // Same, but DB never ran -> allowed
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ deployed: true, extensions: ["vector"] }), {
+        command: "opscrew provision",
+        snapshot: { neverRan: async () => ["db"] },
+      }),
+    ).resolves.toBeUndefined();
+
+    // Deployed plan, missing generated_values.json, no extensions -> allowed without calling neverRan
+    let called = false;
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ deployed: true, extensions: [] }), {
+        command: "opscrew provision",
+        snapshot: {
+          neverRan: async () => {
+            called = true;
+            return [];
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(called).toBe(false);
   });
 
   it("refuses adding or removing extensions on an existing database with data, while allowing new, unchanged, or never-ran databases", async () => {
@@ -348,5 +412,62 @@ describe.skipIf(!findExecutable("git"))("runProvision with PostgreSQL extensions
     expect(s.github.secrets.size).toBe(0);
     expect(s.handler.requests.map((r: ApprovalRequest) => r.kind)).toEqual([]);
     expect(s.snapshotsTaken()).toBe(0);
+  });
+
+  it("refuses adding extensions during runDns before writing plan.yaml or changing anything", async () => {
+    const kept = { dbPassword: fakeSecret("generic-password", "db") };
+    const s = await provisionProject(makePlan({ deployed: true, extensions: ["vector"] }), kept);
+    const planBefore = await readFile(s.deps.paths.files.plan, "utf8");
+
+    await expect(
+      runDns(s.deps, { domain: "shop.example.com", services: s.services }),
+    ).rejects.toThrow(/db already has data.*can't add or remove extensions/i);
+
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(planBefore);
+    expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
+    expect(s.github.secrets.size).toBe(0);
+    expect(s.handler.requests.map((r: ApprovalRequest) => r.kind)).toEqual([]);
+    expect(s.snapshotsTaken()).toBe(0);
+  });
+
+  it("runs 047's logins switch gate during runDns before changing anything", async () => {
+    const kept = { dbPassword: fakeSecret("generic-password", "db") };
+    // Adding `logins: separate` on an existing DB asks for 047's switch approval; refusing stops runDns.
+    const s = await provisionProject(
+      makePlan({ deployed: true, logins: "separate" }),
+      kept,
+      [],
+      () => false,
+    );
+    const planBefore = await readFile(s.deps.paths.files.plan, "utf8");
+
+    await expect(
+      runDns(s.deps, { domain: "shop.example.com", services: s.services }),
+    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+
+    expect(s.handler.requests.map((r: ApprovalRequest) => r.title)).toEqual([
+      "Switch db to separate logins for the app and its migrations",
+    ]);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(planBefore);
+    expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
+    expect(s.github.secrets.size).toBe(0);
+    expect(s.snapshotsTaken()).toBe(0);
+
+    // Removing `logins: separate` when owner-password is kept is refused by runDns before any approval.
+    const s2 = await provisionProject(makePlan({ deployed: true }), {
+      ...kept,
+      services: {
+        db: {
+          "owner-password": fakeSecret("generic-password", "owner"),
+          "runtime-password": fakeSecret("generic-password", "runtime"),
+        },
+      },
+    });
+    const plan2Before = await readFile(s2.deps.paths.files.plan, "utf8");
+    await expect(
+      runDns(s2.deps, { domain: "shop.example.com", services: s2.services }),
+    ).rejects.toThrow(/already has separate logins/i);
+    expect(await readFile(s2.deps.paths.files.plan, "utf8")).toBe(plan2Before);
+    expect(s2.handler.requests).toEqual([]);
   });
 });

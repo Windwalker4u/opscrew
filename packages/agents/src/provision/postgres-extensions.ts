@@ -22,25 +22,27 @@ import { requirePostgisArch } from "../design/postgres-extensions";
 import { readStrict } from "../rotate/values-pending";
 import { planFile } from "../runners/words";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
+import { hasDeployment } from "../shared/server-address";
 import type { LoginsSnapshot } from "./postgres-logins";
 
 /** Checks a cloud server target's `serverType` architecture against its provider's static catalogue. */
 async function cloudTargetArch(
   target: Pick<CloudDeployTarget, "provider" | "location" | "serverType">,
-): Promise<"amd64" | "arm64"> {
+): Promise<"amd64" | "arm64" | "unknown"> {
   const catalog = cloudProvider(target.provider).connector({ env: {} }).catalog();
   const inLocation = await catalog.listOffers(target.location);
   const found =
     inLocation.find((offer) => offer.id === target.serverType) ??
     (await catalog.listOffers()).find((offer) => offer.id === target.serverType);
-  return found?.architecture === "arm" ? "arm64" : "amd64";
+  if (found === undefined) return "unknown";
+  return found.architecture === "arm" ? "arm64" : "amd64";
 }
 
 /** Architecture and readable host description for the server `service` runs on according to `plan`. */
 async function serverArchFor(
   plan: DeployPlan,
   service: PlanService,
-): Promise<{ arch: "amd64" | "arm64"; where: string }> {
+): Promise<{ arch: "amd64" | "arm64" | "unknown"; where: string }> {
   if (service.server === undefined) {
     if (isCloudTarget(plan.target)) {
       const arch = await cloudTargetArch(plan.target);
@@ -64,8 +66,9 @@ async function serverArchFor(
 }
 
 /**
- * Refuses any enabled PostgreSQL service requesting PostGIS on an `arm64` host before anything
- * changes (including hand-edited ARM cloud `serverType`s such as `cax11`).
+ * Refuses any enabled PostgreSQL service requesting PostGIS on an `arm64` host or an unrecognised
+ * cloud `serverType` before anything changes (including hand-edited ARM cloud `serverType`s such
+ * as `cax11`).
  */
 export async function requireExtensionsArch(plan: DeployPlan, command: string): Promise<void> {
   const file = planFile(plan);
@@ -73,6 +76,15 @@ export async function requireExtensionsArch(plan: DeployPlan, command: string): 
     if (!service.enabled || service.kind !== "postgres") continue;
     if (postgresPostgisExtensions(service).length === 0) continue;
     const { arch, where } = await serverArchFor(plan, service);
+    if (arch === "unknown") {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `PostGIS runs from the official postgis/postgis image, which is amd64-only, and OpsCrew can't verify the architecture of ${where} in ${file}. Nothing was changed.`,
+        {
+          hint: `Pick an amd64 server type listed in your provider's catalogue or remove the PostGIS extensions from ${service.name} in ${file}, then run \`${command}\` again.`,
+        },
+      );
+    }
     requirePostgisArch([service], arch, where, {
       planFile: file,
       command,
@@ -117,7 +129,38 @@ export async function postgresExtensionsStep(
   await requireExtensionsArch(plan, o.command);
 
   const kept = (await readStrict(generatedValuesFile(deps), GeneratedValuesSchema)) ?? {};
-  if (kept.dbPassword === undefined) return;
+  const file = planFile(plan);
+  if (kept.dbPassword === undefined) {
+    if (!hasDeployment(plan)) return;
+    const withExtensions = plan.services.filter(
+      (service) =>
+        service.enabled && service.kind === "postgres" && postgresExtensions(service).length > 0,
+    );
+    if (withExtensions.length === 0) return;
+    const empty = new Set(await o.snapshot.neverRan(withExtensions.map((service) => service.name)));
+    const blocked = withExtensions.filter((service) => !empty.has(service.name));
+    if (blocked.length === 0) return;
+    if (blocked.length === 1) {
+      const [only] = blocked;
+      if (only !== undefined) {
+        throw new OpsCrewError(
+          "INVALID_INPUT",
+          `${only.name} already has data, and this machine has no record of which extensions it was created with (local generated values are missing). OpsCrew can't add or remove extensions on an existing database yet. Nothing was changed.`,
+          {
+            hint: `Run \`${o.command}\` from the machine that provisioned this environment, or remove \`extensions\` from ${only.name} in ${file} if it wasn't created with them, then run \`${o.command}\` again.`,
+          },
+        );
+      }
+    }
+    const names = listText(blocked.map((service) => service.name));
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${names} already have data, and this machine has no record of which extensions they were created with (local generated values are missing). OpsCrew can't add or remove extensions on an existing database yet. Nothing was changed.`,
+      {
+        hint: `Run \`${o.command}\` from the machine that provisioned this environment, or remove \`extensions\` in ${file} if they weren't created with them, then run \`${o.command}\` again.`,
+      },
+    );
+  }
 
   const changed: { name: string; recorded: string[]; planned: string[] }[] = [];
   for (const service of plan.services) {
@@ -134,7 +177,6 @@ export async function postgresExtensionsStep(
   const blocked = changed.filter((entry) => !empty.has(entry.name));
   if (blocked.length === 0) return;
 
-  const file = planFile(plan);
   if (blocked.length === 1) {
     const [only] = blocked;
     if (only !== undefined) {
