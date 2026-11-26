@@ -24,8 +24,8 @@
  * that nothing of the run is left.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -195,7 +195,23 @@ function runtimeUrl(): string {
   return url;
 }
 
-/** Writes `compose.yaml` (the rendered `db` and its pooler), `db.env` and `app.env`. */
+/**
+ * `worker.db.env` from {@link values}, as the deploy writes it beside the pooler: the workers'
+ * direct address with the runtime login, for `on` (this computer's app, or the server's).
+ */
+function workerEnv(on: typeof plan = plan): string {
+  return envFile(workerVariables(on, (_service, name) => values[name] ?? ""));
+}
+
+/** The SHA-256 of `text`, to compare env files holding passwords without printing them. */
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/**
+ * Writes `compose.yaml` (the rendered `db` and its pooler), `db.env`, `app.env` and
+ * `worker.db.env`.
+ */
 function writeProject(): void {
   const rendered = parse(renderCompose(plan).content) as {
     services: Record<string, Record<string, unknown>>;
@@ -223,6 +239,7 @@ function writeProject(): void {
   );
   writeFileSync(join(root, `${db.name}.env`), dbEnv());
   writeFileSync(join(root, "app.env"), envFile({ DATABASE_URL: runtimeUrl() }));
+  writeFileSync(join(root, "worker.db.env"), workerEnv());
 }
 
 /** The running container of the project's `service`. */
@@ -552,6 +569,7 @@ describe.skipIf(reason !== undefined)("PgBouncer beside PostgreSQL on Docker (05
       secrets: rotation.secrets,
     };
     const old = runtimeUrl();
+    const oldWorkers = sha256(workerEnv(serverPlan));
     const next = fakeSecret("generic-password", `${PROJECT}-runtime-next`);
     values["runtime-password"] = next;
     expect(rotateEnvFiles(serverPlan, [step])).toEqual([
@@ -562,9 +580,7 @@ describe.skipIf(reason !== undefined)("PgBouncer beside PostgreSQL on Docker (05
     const input = rotateInput(serverPlan, [step], {
       envFiles: {
         "app.env": envFile({ DATABASE_URL: runtimeUrl() }),
-        "worker.db.env": envFile(
-          workerVariables(serverPlan, (_service, name) => values[name] ?? ""),
-        ),
+        "worker.db.env": workerEnv(serverPlan),
         [`${db.name}.env`]: dbEnv(),
       },
       values: [{ old: firstRuntime, new: next }],
@@ -573,6 +589,10 @@ describe.skipIf(reason !== undefined)("PgBouncer beside PostgreSQL on Docker (05
     const units = runUnits(renderRotateScript(serverPlan, [step]), input);
     expect(units.status, units.output).toBe(0);
     expect(units.output).toBe("");
+    // The workers' env file now holds the new runtime password, compared by hash only.
+    const workers = readFileSync(join(root, "worker.db.env"), "utf8");
+    expect(sha256(workers)).toBe(sha256(workerEnv(serverPlan)));
+    expect(sha256(workers)).not.toBe(oldWorkers);
     // The pooler is a new container, started from the new env file.
     expect(container(pooler)).not.toBe(recreated);
     const run = await load(PGDG, runtimeUrl(), WORKERS, 10);
