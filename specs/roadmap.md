@@ -944,6 +944,11 @@ registry's tokens; and which of these the Free tier has, such as protected envir
 
 ## 043 Forgejo and Gitea
 
+**Built by a contributor** (#41, PR #43). **Asked for next (the founder, 2026-11-27):** OpsCrew also
+provisions a self-hosted Gitea for the user, and says how an app connects to it (an API token and
+webhooks), so an app that shows repositories, pull requests and activity can plug Gitea in the same
+way as GitHub. To be planned after 043 merges.
+
 **How they come in:** after 042, through its contract. Forgejo (a fork of Gitea, which Codeberg
 runs) and Gitea, hosted or on the user's own server.
 
