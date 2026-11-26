@@ -6,8 +6,14 @@
  * with no internet, no published port, no hostname or proxy site, and none of the production
  * `.env`'s values. `snapshot.sh drill` (`./script`) runs it; `./record` is its approval and log.
  */
-import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isHostingTarget,
+  isServerlessTarget,
+  postgresPooler,
+} from "@opscrew/plan-schema";
 import { parse, Scalar, stringify } from "yaml";
+import { poolerName } from "../catalog/pooler";
 import type { PreviewEnvTemplates } from "../previews";
 import { wrongTarget } from "../providers";
 import { noStartMigrations } from "../railpack-laravel";
@@ -143,6 +149,16 @@ export function drillPlan(plan: DeployPlan, snapshot: DrillSnapshot): DeployPlan
   };
 }
 
+/**
+ * The Compose services of a drill's copy besides the app, from {@link drillPlan}'s: each service,
+ * then a PostgreSQL's pooler (050), which the restored app reaches its database through.
+ */
+export function drillServices(drill: DeployPlan): string[] {
+  return drill.services.flatMap((service) =>
+    postgresPooler(service) ? [service.name, poolerName(service)] : [service.name],
+  );
+}
+
 /** A service of a rendered Compose file. */
 type ComposeService = Record<string, unknown> & { depends_on?: Record<string, unknown> };
 
@@ -151,9 +167,9 @@ type ComposeService = Record<string, unknown> & { depends_on?: Record<string, un
  * folder ({@link drillDir}), rendered as the preview recipe's are (`renderCompose` and the
  * services' files) from {@link drillPlan}:
  * - `compose.yaml`, the project `<app>-drill`: the app at `o.image`, with its health check and
- *   memory limit, and the snapshot's services with their pinned images, health checks and limits,
- *   their data in `/srv/data/<app>-drill/` (on this computer in the project's own volumes); no
- *   workers, cron, release command or host-settings container; one network, `internal: true` (no
+ *   memory limit, and the snapshot's services with their pinned images, health checks and limits
+ *   (a PostgreSQL's pooler with its database, {@link drillServices}), their data in
+ *   `/srv/data/<app>-drill/` (on this computer in the project's own volumes); no workers, cron, release command or host-settings container; one network, `internal: true` (no
  *   internet), and no published port or site; every container `restart: "no"`, so a kept copy
  *   never comes back after a reboot, and a local build's image is never pulled. The app reads
  *   `app.env` (after {@link DRILL_VALUES_FILE} with `o.previewValues`), never the app's `.env`,
@@ -184,7 +200,7 @@ export function renderDrill(
     services: Record<string, ComposeService>;
     volumes?: Record<string, unknown>;
   };
-  const kept = ["app", ...drill.services.map((service) => service.name)];
+  const kept = ["app", ...drillServices(drill)];
   const services = Object.fromEntries(
     kept.map((name) => {
       const {

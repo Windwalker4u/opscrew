@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
-import { POSTGRES_OWNER_SECRET } from "../catalog";
+import { APP_SERVER, type DeployPlan, postgresPooler } from "@opscrew/plan-schema";
+import { POSTGRES_OWNER_SECRET, POSTGRES_RUNTIME_SECRET, poolerName } from "../catalog";
 import type { RotationCommand, RotationMode, RotationStep } from "../catalog/types";
 import { shellQuote } from "../runtime/services";
 import { maskFileScript } from "./index";
@@ -241,6 +241,26 @@ function recreated(steps: readonly RotateStep[]): string[] {
   ];
 }
 
+/**
+ * The poolers a rotation creates again, once each (050): that of each PostgreSQL with
+ * `pooler: pgbouncer` whose runtime login's password a step changes, which the pooler reads from
+ * the database's env file at its start only.
+ */
+function poolers(plan: DeployPlan, steps: readonly RotateStep[]): string[] {
+  return [
+    ...new Set(
+      steps.flatMap((step) => {
+        const service = plan.services.find((s) => s.name === step.service);
+        return service !== undefined &&
+          postgresPooler(service) &&
+          step.secrets?.includes(POSTGRES_RUNTIME_SECRET)
+          ? [poolerName(service)]
+          : [];
+      }),
+    ),
+  ];
+}
+
 /** `lines` indented by `pad`. */
 function indent(pad: string, lines: readonly string[]): string[] {
   return lines.map((line) => `${pad}${line}`);
@@ -263,7 +283,8 @@ function indent(pad: string, lines: readonly string[]): string[] {
  * 3. per step, `begin` in the service's container; a `restart` step's env file written and its
  *    service created again instead;
  * 4. the env files written (owner-only), Grafana Alloy's masking file rewritten from them where it
- *    runs ({@link maskRewrite}); the services of steps with `recreate` created again;
+ *    runs ({@link maskRewrite}); the services of steps with `recreate` created again, then the
+ *    pooler of each PostgreSQL whose runtime login's password changes ({@link poolers});
  * 5. on the app's server, the app's switch with the image that runs ({@link appSwitch}), and its
  *    workers and cron;
  * 6. per step, `finish`; the hold released (only this rotation's), the `.previous` files removed.
@@ -272,8 +293,8 @@ function indent(pad: string, lines: readonly string[]): string[] {
  * stops it there with the step and how to go on or, before step 6 began, undo it; deploys stay
  * held. `--undo`, before step 6 began, puts the `.previous` env files back (the masking file too),
  * creates the recreated services again, runs each `begin` command that ran again with the values
- * swapped, switches the app back if its switch began, then runs each begun step's `finish` swapped,
- * or its own `undo`, and releases the hold; it goes on after its own last unit too. The commands'
+ * swapped, creates the poolers again if step 4 began, switches the app back if its switch began,
+ * then runs each begun step's `finish` swapped, or its own `undo`, and releases the hold; it goes on after its own last unit too. The commands'
  * output stays in {@link ROTATE_LOG}; nothing it prints holds a value, and no value is ever on a
  * command line.
  */
@@ -292,6 +313,8 @@ export function renderRotateScript(
   ];
   const previous = (file: string) => `${ROTATE_DIR}/${file}.previous`;
   const services = recreated(steps);
+  const pooled = poolers(plan, steps);
+  const restarts = [...services, ...pooled];
   const mask = maskRewrite(plan, server);
 
   const units: Unit[] = [
@@ -351,11 +374,12 @@ export function renderRotateScript(
   });
   units.push({
     step: 4,
-    what: `writing the new env files${services.length === 0 ? "" : ` and restarting ${services.join(", ")} with them`}`,
+    what: `writing the new env files${restarts.length === 0 ? "" : ` and restarting ${restarts.join(", ")} with them`}`,
     lines: [
       ...files.flatMap(write),
       ...mask,
       ...(services.length === 0 ? [] : [recreate(services)]),
+      ...(pooled.length === 0 ? [] : [recreate(pooled, true)]),
     ],
   });
   /** The last unit of `begin` on an extra server. */
@@ -471,6 +495,15 @@ export function renderRotateScript(
           },
         ]),
     ...swappedBegins,
+    ...(pooled.length === 0
+      ? []
+      : [
+          {
+            what: `restarting ${pooled.join(", ")} with the old values`,
+            when: `[ "$rot_done" -ge ${envUnit - 1} ]`,
+            lines: [recreate(pooled, true)],
+          },
+        ]),
     ...(app
       ? [
           {

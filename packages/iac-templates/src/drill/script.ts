@@ -4,7 +4,14 @@
  * this computer's, restore drill by hand, and on a server the scheduled one, which keep their
  * bounds themselves, whatever asks them.
  */
-import { APP_SERVER, type DeployPlan, servicesOn, snapshotScheduleOf } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  postgresPooler,
+  servicesOn,
+  snapshotScheduleOf,
+} from "@opscrew/plan-schema";
+import { POOLER_MEMORY_MB, poolerName } from "../catalog/pooler";
 import { IMAGES } from "../pins";
 import type { PreviewEnvTemplates } from "../previews";
 import { PREVIEW_SECRET_PLACEHOLDER, previewGenerate, previewSecretFill } from "../previews/script";
@@ -176,13 +183,13 @@ export function drillWatchdog(prefix: string, timedOut: string, kill: string): s
  *    stops another drill until `--remove`;
  * 6. the app folder's start lock, taken without waiting: held, the drill is skipped;
  * 7. free disk for the snapshot's size and the snapshot rule (1 GiB and 10%), and free memory for
- *    the app's and the restored services' limits, else skipped;
+ *    the app's and the restored services' limits (a pooler's with its database's), else skipped;
  * 8. at most {@link DRILL_LIMIT_SECONDS}: then its containers are killed and it is removed.
  * It needs its one-time approval ({@link DRILL_APPROVAL_FILE}), read and removed first. The
  * copy's generated values are filled in on the machine with the preview server's own fill, the app
- * starts after the parts are restored, its health is read (its health check until healthy or 5
- * minutes; without one, still running after 60 seconds), then each restored database's tables
- * are counted. One line per run goes to {@link DRILLS_LOG} and stdout ({@link DRILL_RECORD_PREFIX});
+ * starts after the parts are restored and a restored PostgreSQL's pooler started, its health is
+ * read (its health check until healthy or 5 minutes; without one, still running after 60 seconds),
+ * then each restored database's tables are counted. One line per run goes to {@link DRILLS_LOG} and stdout ({@link DRILL_RECORD_PREFIX});
  * it exits 0 when healthy (or removed), 1 for a refusal (nothing changed), 2 when the drill failed
  * and 3 when it was skipped. Stop-only services start without waiting for their health checks
  * once restored: their data keeps production's logins.
@@ -218,8 +225,15 @@ export function drillCommand(plan: DeployPlan): string[] {
     const count = databaseCount(part);
     return count === undefined ? [] : [{ name: part.name, count }];
   });
-  const memory = (part: string) =>
-    servicesOn(plan, APP_SERVER).find((service) => service.name === part)?.memoryMb ?? 0;
+  // The PostgreSQL parts with a pooler (050), which the copy's app reaches them through.
+  const pooled = servicesOn(plan, APP_SERVER).filter(
+    (service) => postgresPooler(service) && serviceParts.some((part) => part.name === service.name),
+  );
+  const memory = (part: string) => {
+    const service = servicesOn(plan, APP_SERVER).find((s) => s.name === part);
+    if (service === undefined) return 0;
+    return service.memoryMb + (postgresPooler(service) ? POOLER_MEMORY_MB : 0);
+  };
   const folder = appFolder(plan);
   const fill = `${DRILL_DIR}/.fill.sed`;
   const secrets = `${DRILL_DIR}/.secrets.env`;
@@ -524,6 +538,21 @@ export function drillCommand(plan: DeployPlan): string[] {
     `    _drill_bytes="$(wc -c < ${SNAPSHOTS_DIR}/"$_drill_id"/"$(part_file "$_drill_p")" | tr -d ' ')"`,
     '    _drill_parts="${_drill_parts:+$_drill_parts,}$_drill_p:$_drill_bytes:$(( $(date +%s) - _drill_t ))"',
     "  done",
+    // The restored PostgreSQL parts' poolers, before the app that reaches its data through them.
+    ...(pooled.length === 0
+      ? []
+      : [
+          '  _drill_poolers=""',
+          "  for _drill_p in $_drill_up; do",
+          '    case "$_drill_p" in',
+          ...pooled.map(
+            (service) =>
+              `      ${service.name}) _drill_poolers="$_drill_poolers ${poolerName(service)}" ;;`,
+          ),
+          "    esac",
+          "  done",
+          `  if [ -n "$_drill_poolers" ]; then ${compose} up -d --no-deps --wait $_drill_poolers >> ${log} 2>&1 || drill_finish failed start; fi`,
+        ]),
     // The app on the restored data, and its health.
     '  _drill_t="$(date +%s)"',
     "  _drill_state=stopped",
