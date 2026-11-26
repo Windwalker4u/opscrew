@@ -15,7 +15,8 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
   agent tool policy's security fixes (#16 to #24), the fixes in #26, [032 a Codex
   plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left), and 047 an app's
   PostgreSQL never running as the superuser, and 048 changing an app's values without a full
-  provision (the founder, 2026-11-25).
+  provision (the founder, 2026-11-25), and 050 a connection pooler for an app's PostgreSQL (the
+  founder, 2026-11-26).
 - **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
   would hold 046 back. With it, 049 each app's own network on a shared server (the lead's
@@ -1084,17 +1085,21 @@ it should, for the real path: Cloudflare, Caddy, kamal-proxy) then takes that co
   its hash.
 - **In 0.2.13**, beside 040. It changes the edge, the deploy's switch step and the host plans.
 
+## 050 A connection pooler for an app's PostgreSQL
+
+From a profile of a deployed PHP app (2026-11-26), built now at the founder's word (2026-11-26):
+[050-postgres-pooler](050-postgres-pooler/). A PHP app opens a new PostgreSQL connection on every
+request; on a small VPS a fresh backend cost about 160 ms per page, against about 26 ms on a kept
+connection (TLS plays no part: OpsCrew's PostgreSQL runs without SSL on the app's own network).
+- **What:** an opt-in `pooler: pgbouncer` on a PostgreSQL with `logins: separate`: PgBouncer in
+  transaction mode beside the database. The app's processes reach it; migrations keep the direct
+  address. It works for any language; design writes it for PHP apps, whose runtimes don't keep a
+  pool of their own.
+- **In 0.2.12** (the founder, 2026-11-26). The demo app that showed the cost moves to it after the
+  release.
+
 ## Later, not yet placed
 
-- **A connection pooler for an app's PostgreSQL** (from a profile of a deployed PHP app,
-  2026-11-26): a PHP app opens a new PostgreSQL connection on every request. On a small VPS a fresh
-  backend measured about 160 ms per page (the connection itself 28–35 ms, the rest the new
-  backend warming its caches), against about 26 ms on a kept connection. TLS isn't part of it:
-  OpsCrew's PostgreSQL runs without SSL on the app's own network, so `sslmode=prefer` falls back
-  after one packet. An optional PgBouncer in transaction mode between the app and its database
-  would give every such app kept backends without a code change (prepared statements need
-  PgBouncer 1.21 or later, or emulated prepares). Apps that can change their code can use
-  persistent connections or a worker mode (FrankenPHP's, Octane) instead.
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
   module that writes end-to-end tests and runs them in the user's Actions): `promote` reads a named
   check's result for the preview's commit and refuses a failed one unless the user overrides it,
