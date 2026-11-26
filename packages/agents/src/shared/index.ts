@@ -7,7 +7,6 @@ export * from "./deep-domain";
 export * from "./design-option";
 export * from "./engine";
 export * from "./files";
-export * from "./git-platform";
 export * from "./github";
 export * from "./host-plan";
 export * from "./ipv6-probe";

@@ -1,6 +1,6 @@
 /**
- * The built-in git hosting & CI/CD platforms (Feature 042, mirroring ADR 0029): the one place
- * OpsCrew reads git platform facts from. Every definition is validated when this module loads.
+ * The built-in git hosting & CI/CD platforms (ADR 0039): the one place OpsCrew reads git platform
+ * facts from. Every definition is validated when this module loads.
  */
 import type { GitPlatformDefinition, GitPlatformRemote } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
@@ -21,46 +21,16 @@ export function gitPlatform(id: string): GitPlatformDefinition {
   });
 }
 
-/** Looks up the git platform owning a `cicd.provider` value (e.g. `"github-actions"` -> `github`). */
-export function gitPlatformByCicdProvider(cicdProvider: string): GitPlatformDefinition {
-  const found = GIT_PLATFORMS.find((platform) => platform.cicdProvider === cicdProvider);
-  if (found !== undefined) return found;
-  throw new OpsCrewError(
-    "INVALID_INPUT",
-    `OpsCrew does not recognise the CI/CD provider "${cicdProvider}".`,
-    {
-      hint: `Choose one of: ${listText(GIT_PLATFORMS.map((p) => p.cicdProvider))}.`,
-    },
-  );
-}
-
 /**
- * Parses `remoteUrl` across all registered git platforms, honoring `OPSCREW_GIT_PLATFORM` when set.
+ * Parses `remoteUrl` across all registered git platforms.
  * Returns both the matching platform definition and parsed remote coordinates, or `undefined`.
  */
 export function detectGitPlatform(
   remoteUrl: string,
-  env?: Record<string, string | undefined>,
 ): { platform: GitPlatformDefinition; remote: GitPlatformRemote } | undefined {
-  const override = env?.OPSCREW_GIT_PLATFORM?.trim().toLowerCase();
-  if (override) {
-    const preferred = GIT_PLATFORMS.find((p) => p.id === override);
-    if (preferred) {
-      const remote = preferred.parseRemote(remoteUrl, env);
-      if (remote) return { platform: preferred, remote };
-    }
-  }
   for (const platform of GIT_PLATFORMS) {
-    const remote = platform.parseRemote(remoteUrl, env);
+    const remote = platform.parseRemote(remoteUrl);
     if (remote) return { platform, remote };
   }
   return undefined;
-}
-
-/** Parses `remoteUrl` into a {@link GitPlatformRemote} using {@link detectGitPlatform}. */
-export function parseGitRemote(
-  remoteUrl: string,
-  env?: Record<string, string | undefined>,
-): GitPlatformRemote | undefined {
-  return detectGitPlatform(remoteUrl, env)?.remote;
 }

@@ -16,7 +16,6 @@
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/git-github": "workspace:*",
-    "@opscrew/plan-schema": "workspace:*",
     "zod": "^4.6.5"
   }
 }
