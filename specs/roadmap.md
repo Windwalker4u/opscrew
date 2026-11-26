@@ -1102,6 +1102,11 @@ connection (TLS plays no part: OpsCrew's PostgreSQL runs without SSL on the app'
 
 ## Later, not yet placed
 
+- **Anthropic without a stored key in Actions** (the founder, 2026-11-26): Anthropic's Console offers
+  identity federation, where a GitHub Actions run authenticates with its own short-lived OIDC token.
+  It could replace the `ANTHROPIC_API_KEY` secret for OpsCrew's runs in the user's Actions (041), if
+  the trust can be scoped to the user's repository. Research first; the dashboard tracks the same
+  idea for its managed runs.
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
   module that writes end-to-end tests and runs them in the user's Actions): `promote` reads a named
   check's result for the preview's commit and refuses a failed one unless the user overrides it,
