@@ -145,7 +145,7 @@ amounts equals `monthly.amount` (rounded to 2 decimals); all currencies equal.
 | `cicd.registry` | literal `ghcr` | |
 | `cicd.branch` | string, default `main` | deploys run on pushes to this branch |
 | `security.sshAllowedCidrs` | string[] (valid CIDRs), default `["0.0.0.0/0", "::/0"]` | |
-| `security.httpAllowedFrom` | `any` \| `cloudflare`, default `cloudflare` when proxied else `any` | |
+| `security.httpAllowedFrom` | `any` \| `edge` (only the app's edge), default `edge` when proxied else `any` | |
 | `security.wafCustomRules` | boolean, default `true` | |
 | `security.imageScan` | boolean, default `true` | |
 | `approvals` | `{ planHash: string (64 hex); approver: string; at: datetime; kind: string }[]`, default `[]` | informational copy |

@@ -44,6 +44,9 @@ overrides this file.
   (`@opscrew/providers`) lists and validates them and is the one place code reads provider facts from
   (`CLOUD_PROVIDERS`, `cloudProvider(id)`); no other code branches on a cloud provider's id. Phases reach a
   provider's API through `vpsConnector` and `providerProfile` in `packages/agents/src/providers`.
+- `packages/edge-providers/*` — one package per edge provider in front of an app
+  (`@opscrew/edge-provider-<id>`, the contract in ADR 0038); `packages/edge-providers/registry`
+  (`@opscrew/edge-providers`) lists them and is the one place code reads edge facts from.
 - `packages/connectors/*` — `github`, `cloudflare`, the registrars and `docker` typed adapters (`@opscrew/connector-*`).
   `ssh-host` changes servers the user already owns, through host plans approved by hash (ADR 0011);
   `portainer` changes a Portainer the user already runs, through stack plans approved by hash (ADR 0012).
