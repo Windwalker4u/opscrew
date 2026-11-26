@@ -1085,6 +1085,7 @@ it should, for the real path: Cloudflare, Caddy, kamal-proxy) then takes that co
   existing server switches over at the next deploy of each app, under the host plan approved by
   its hash.
 - **In 0.2.13**, beside 040. It changes the edge, the deploy's switch step and the host plans.
+- **Built by a contributor** (the founder, 2026-11-26): issue `[049]` (#35).
 
 ## 050 A connection pooler for an app's PostgreSQL
 
