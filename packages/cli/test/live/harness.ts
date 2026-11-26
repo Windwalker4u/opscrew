@@ -959,9 +959,13 @@ export class LiveRun {
    * edge certificate covers only `*.<zone>`), and a snapshot of what OpsCrew may create there for
    * the app on `hostnames`: the cleanup never deletes what was there before the run. The first app
    * also keeps the zone's two entrypoint rulesets and the account's Zero Trust pieces as they were
-   * before the run.
+   * before the run; with `zeroTrust` false (a pass that never checks them, whose token may not read
+   * them), not the Zero Trust pieces.
    */
-  async snapshotCloudflare(hostnames: (zone: CloudflareZone) => string[]): Promise<CloudflareZone> {
+  async snapshotCloudflare(
+    hostnames: (zone: CloudflareZone) => string[],
+    options: { zeroTrust?: boolean } = {},
+  ): Promise<CloudflareZone> {
     const zone = await this.cloudflare.zoneOf(this.appHost);
     if (this.appHost !== `${this.appHost.split(".")[0]}.${zone.name}`) {
       throw new Error(
@@ -980,7 +984,9 @@ export class LiveRun {
     this.tlsBefore = await this.cloudflare.zoneTls(zone, this.hostnames);
     if (this.parent === undefined) {
       this.sharedBefore = await this.cloudflare.sharedEntrypoints(zone);
-      this.noteZeroTrust(await this.cloudflare.zeroTrust(zone.accountId));
+      if (options.zeroTrust !== false) {
+        this.noteZeroTrust(await this.cloudflare.zeroTrust(zone.accountId));
+      }
     }
     return zone;
   }

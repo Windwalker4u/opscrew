@@ -3068,20 +3068,31 @@ apt_get install --no-install-recommends $PACKAGES || fail "Installing $PACKAGES 
     doing: "setting up the uptime report",
     timeoutMs: 5 * MINUTE,
   });
-  // The verify runs the service once and reads the run's journal line: a report the Worker took,
-  // or no change since the last one it took.
+  // The verify runs the service and reads the run's journal line: a report the Worker took, or no
+  // change since the last one it took. The Worker answers 502 only once it checked the report and
+  // its server, when a webhook refused a message (ntfy.sh does now and then), so the run goes
+  // again, twice at most, and then names the webhook.
+  const unposted = "*'(HTTP 502), so the next run sends again'";
   const verify = buildScript(
     "uptime-report.verify",
     { ...files, VERIFY_FAILED: failed },
     `${APT_FUNCTIONS}
 ${UPTIME_REPORT_HELPERS}
 { shared_ok && instance_ok; } || fail "$VERIFY_FAILED" 5
-since=$(date +%s)
-systemctl start "$SERVICE" >/dev/null 2>&1 || true
-line=$(journalctl -u "$SERVICE" --since "@$since" -o cat --no-pager 2>/dev/null | grep '^uptime report: ' | tail -n 1) || line=''
+tries=0
+while :; do
+  since=$(date +%s)
+  systemctl start "$SERVICE" >/dev/null 2>&1 || true
+  line=$(journalctl -u "$SERVICE" --since "@$since" -o cat --no-pager 2>/dev/null | grep '^uptime report: ' | tail -n 1) || line=''
+  case "$line" in ${unposted}) ;; *) break ;; esac
+  tries=$((tries + 1))
+  [ "$tries" -lt 3 ] || break
+  sleep 10
+done
 case "$line" in
   *'; sent a '*' report' | *'; no change') exit 0 ;;
   '') fail "The uptime report's first run wrote no line to the journal. See journalctl -u $SERVICE on the server, then run the command again." 5 ;;
+  ${unposted}) fail "The uptime report's first run reached the Worker, but the Worker could not post its message to the webhook (\${line#uptime report: }). The timer sends it again every 5 minutes. Check the webhook's address (set OPSCREW_CHECK_WEBHOOK to it if it changed), then run the command again." 5 ;;
   *) fail "The uptime report's first run did not reach the Worker (\${line#uptime report: }). Check that this environment's Cloudflare plan was applied, then run the command again." 5 ;;
 esac`,
   );
