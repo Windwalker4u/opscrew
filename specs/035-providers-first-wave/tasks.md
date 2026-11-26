@@ -375,14 +375,14 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ## Phase 6: Kamatera
 
-- [ ] T3519 (lead) The package's skeleton
+- [x] T3519 (lead) The package's skeleton
   - Accept: `packages/providers/kamatera` with `package.json` (`@opscrew/provider-kamatera`, the
     same dependencies, scripts and `exports` as `@opscrew/provider-contabo`), `tsconfig.json`,
     `vitest.config.ts`, an empty `module/` folder, `src/index.ts` exporting nothing yet, and the
     lockfile regenerated. `pnpm check` is as green as before.
   - Effort: lead
 
-- [ ] T3520 (lead; the contract question of [issue #13](https://github.com/opscrew-hub/opscrew/issues/13))
+- [x] T3520 (lead; the contract question of [issue #13](https://github.com/opscrew-hub/opscrew/issues/13))
   The contract's `firstBoot`
   - Accept:
     - `ProviderTerraform.firstBoot?: "cloud-init" | "script"` exactly as plan 7., exported from
@@ -392,7 +392,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - The typecheck is green, and no other provider's file changes.
   - Effort: lead
 
-- [ ] T3521 [P] [US6] iac-templates renders the first-boot script
+- [x] T3521 [P] [US6] iac-templates renders the first-boot script (built 2026-11-24; reviewed with the whole branch in T3532)
   - Owns: `packages/iac-templates/src/infra/**` (and its tests and snapshots)
   - Reads: plan 7.; `infra/cloud-init.ts` (the context and the template), `infra/servers.ts`
     (where `cloud-init.yaml.tftpl` is added), `infra/index.ts`
@@ -511,15 +511,22 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && OPSCREW_IT=1 npx vitest run --root packages/providers/kamatera && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3526 (lead; waits for the founder's answer in
-  [issue #13](https://github.com/opscrew-hub/opscrew/issues/13)) The server firewall and SecOps's
-  check of it
+- [ ] T3526 (lead; the founder chose option A on
+  [issue #13](https://github.com/opscrew-hub/opscrew/issues/13), 2026-11-25) The server firewall
+  and SecOps's check of it
   - Owns: `packages/contracts/src/provider.ts` (`ProviderSecOps.firewallCheck`),
     `packages/secops/src/policies/**` and its tests, `packages/agents/src/**` (the post-boot
     check), `packages/providers/kamatera/src/definition.ts` and `module/first-boot` (the rules)
   - Reads: the issue's option A; plan 8.; ADR 0029 D8 and D11; how `secure` runs its checks today
   - Depends: T3525
-  - Accept:
+  - Accept (the founder's conditions on #13):
+    - **First:** the firewall is the first step of the first boot, before anything else runs:
+      nftables for IPv4 and IPv6, default deny inbound, loopback and established/related allowed,
+      22 only from `security.sshAllowedCidrs`, 80/443 as `security.httpAllowedFrom` says
+      (Cloudflare's ranges when proxied), WireGuard's port only where the plan uses it.
+    - **Kept across reboots:** the rules are persisted (the live pass checks it).
+    - **Key-only from the same step:** if the image comes with a root password or password SSH,
+      the same step turns password logins off.
     - `ProviderSecOps.firewallCheck?: "cloud" | "server"`, default `"cloud"`; the other four
       providers are unchanged.
     - With `"server"`, `firewall-attached` passes only when the planned server's
@@ -534,7 +541,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Effort: xhigh
 
 - [ ] T3527 (lead; [issue #15](https://github.com/opscrew-hub/opscrew/issues/15)) `kamatera` joins
-  the lists and the registry
+  the lists and the registry (`ProviderId` first, done 2026-11-26, so T3523 and T3524 typecheck)
   - Accept:
     - `kamatera` in `ProviderId`, `VpsProviderId`, `VpsProviderSchema` and `DEFAULT_IMAGES`
       (`"Ubuntu 24.04"`).
@@ -547,7 +554,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - `pnpm check` passes, or the failures are only the environment's, named in the PR.
   - Effort: lead
 
-- [ ] T3528 [P] [US6] The agent's environment leaves out Kamatera's variables
+- [x] T3528 [P] [US6] The agent's environment leaves out Kamatera's variables
   - Owns: `packages/core/src/env.ts`, `env.test.ts`
   - Reads: commit 59e65a49 (the same change for `OVH_`), the issue beside it
   - Accept: `KAMATERA_` and `CLOUDCLI_` join the prefixes the agent's environment never gets, with

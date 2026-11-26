@@ -9,6 +9,8 @@ export type ProviderId =
   | "contabo"
   /** OVHcloud's Public Cloud (035): a cloud server provider billed by the hour, in a project. */
   | "ovhcloud"
+  /** Kamatera (035): a cloud server provider with no cloud firewall; OpsCrew sets one on the server. */
+  | "kamatera"
   /** A server the user already owns, reached over SSH (no provider API). */
   | "own"
   /**
