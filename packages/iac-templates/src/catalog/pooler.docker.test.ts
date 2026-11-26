@@ -9,11 +9,11 @@
  * - the release's address (`db:5432`, `app_owner`) migrates;
  * - PDO with native prepared statements (no emulation) runs a few thousand queries through
  *   `db-pooler:6432` in short connections, as PHP opens one per request, with statements freed
- *   inside transactions as Laravel's query builder frees them: with libpq 17 or later every one
- *   succeeds, and PostgreSQL never has more than `default_pool_size` backends for `app_runtime`;
- *   with libpq 15, which frees a statement by sending `DEALLOCATE <name>` (PgBouncer renames the
- *   statements it tracks, so PostgreSQL knows no such name), a transaction that frees one fails
- *   (research 2.);
+ *   inside transactions as Laravel's query builder frees them, more processes at once than the
+ *   pool has backends. In session mode every one succeeds with both libpqs (libpq 15 frees a
+ *   statement with SQL `DEALLOCATE <name>`, which transaction mode broke, research 2.), PostgreSQL
+ *   never has more than `default_pool_size` backends for `app_runtime`, and a second round of
+ *   requests gets the first round's backends, kept warm: none started since;
  * - the runtime login's password rotates through a server's rendered `rotate.sh` units up to its
  *   env files (steps 1 to 4, which create the pooler again), after which the queries succeed on
  *   the new password and the old one is refused;
@@ -69,14 +69,12 @@ const PHP_IMAGE = "php:8.5-cli-bookworm";
 const HOOK_MS = 600_000;
 
 /** The pooler's `default_pool_size` (pooler.ts's settings). */
-const POOL_SIZE = 10;
+const POOL_SIZE = 20;
 /** The app's processes at once, more than the pool, and the short connections each opens. */
-const WORKERS = 16;
-const REQUESTS = 60;
-/** Each request's queries: a read, then a transaction (begin, a write, a read, commit). */
-const QUERIES = 5;
-/** Each request's statements prepared by the protocol (the reads and the write). */
-const PREPARED = 3;
+const WORKERS = 24;
+const REQUESTS = 40;
+/** Each request's queries: a read, then a transaction (begin, a write, two reads, commit). */
+const QUERIES = 6;
 
 /** A PHP container with `pdo_pgsql`, and how it gets the libpq `pdo_pgsql` is built against. */
 interface Client {
@@ -84,7 +82,10 @@ interface Client {
   libpq: string;
 }
 
-/** `pdo_pgsql` against Debian 12's libpq 15, which frees a statement with SQL `DEALLOCATE`. */
+/**
+ * `pdo_pgsql` against Debian 12's libpq 15, which frees a statement with SQL `DEALLOCATE` (which
+ * transaction pooling broke, research 2.).
+ */
 const DEBIAN: Client = {
   container: `${PROJECT}-php-libpq15`,
   libpq: "apt-get install -y -qq libpq-dev",
@@ -193,11 +194,6 @@ function runtimeUrl(): string {
   return url;
 }
 
-/** The runtime login's address on PostgreSQL itself, without the pooler. */
-function directRuntimeUrl(): string {
-  return runtimeUrl().replace(`@${pooler}:${POOLER_PORT}/`, `@${db.name}:5432/`);
-}
-
 /** Writes `compose.yaml` (the rendered `db` and its pooler), `db.env` and `app.env`. */
 function writeProject(): void {
   const rendered = parse(renderCompose(plan).content) as {
@@ -245,24 +241,10 @@ function runtimeBackends(id: string): number {
   return Number(ok(["exec", id, "psql", "-X", "-q", "-At", "-U", "app", "-d", "app", "-c", sql]));
 }
 
-/**
- * PgBouncer's `SHOW STATS` row for the database `app`, by column, read as the runtime login (its
- * `stats_users`) from the database's container over the project's network.
- */
-function poolerStats(password: string): Record<string, string> {
-  const psql = ["psql", "-X", "-A", "-F", "|", "-h", pooler, "-p", `${POOLER_PORT}`];
-  const output = ok(
-    [
-      ...["compose", "exec", "-T", "-e", "PGPASSWORD", db.name, ...psql],
-      ...["-U", POSTGRES_RUNTIME, "-d", "pgbouncer"],
-    ],
-    { PGPASSWORD: password },
-    "SHOW STATS;",
-  );
-  const [header = "", ...rows] = output.split("\n");
-  const columns = header.split("|");
-  const row = rows.map((line) => line.split("|")).find((cells) => cells[0] === "app") ?? [];
-  return Object.fromEntries(columns.map((column, i) => [column, row[i] ?? ""]));
+/** The runtime login's backends now, each as its process id and start time. */
+function backendStarts(): string[] {
+  const sql = `SELECT pid || ' ' || backend_start FROM pg_stat_activity WHERE usename = '${POSTGRES_RUNTIME}' ORDER BY pid;`;
+  return superuser(sql).split("\n").filter(Boolean);
 }
 
 /** The pooler's memory use and limit in MiB, as `docker stats --no-stream` reports them. */
@@ -288,7 +270,7 @@ $connect = fn () => new PDO($dsn, urldecode($url['user']), urldecode($url['pass'
 
 /**
  * A migration, as a release runs it, with a session-level advisory lock as migration tools take
- * one (which transaction pooling breaks): the app's tables, made by the owner login.
+ * one: the app's tables, made by the owner login.
  */
 const MIGRATE = `<?php
 ${CONNECT}
@@ -304,8 +286,10 @@ echo $pdo->query('SELECT current_user')->fetchColumn(), "\\n";
 /**
  * The app's requests: each a new connection, as PHP opens one per request; a read whose statement
  * is freed outside a transaction, then a transaction with a write and a read whose statements are
- * freed inside it (Laravel's \`select\` and \`insert\` free theirs when they return), and its commit.
- * It prints how many succeeded and failed, and the distinct errors, in one write, since the
+ * freed inside it (Laravel's \`select\` and \`insert\` free theirs when they return), a read of
+ * PostgreSQL's prepared statements that must list its own (PDO's, not emulated), and its commit.
+ * A backend kept from an earlier request has none of that request's, which `DISCARD ALL` dropped
+ * (each connection's PDO names its statements from `pdo_stmt_00000001` again). It prints how many succeeded and failed, and the distinct errors, in one write, since the
  * workers share their output.
  */
 const WORK = `<?php
@@ -332,6 +316,9 @@ for ($i = 0; $i < (int) $requests; $i++) {
     change($pdo, 'INSERT INTO hits (worker, item) VALUES (?, ?)', [(int) $worker, $item]);
     $mine = rows($pdo, 'SELECT count(*) FROM hits WHERE worker = ? AND item = ?', [(int) $worker, $item]);
     if ((int) $mine[0] < 1) throw new RuntimeException('the transaction did not see its own row');
+    // This read's own statement is PDO's, prepared by the protocol: PostgreSQL lists it.
+    $native = rows($pdo, "SELECT count(*) FROM pg_prepared_statements WHERE name LIKE 'pdo_stmt%' AND NOT from_sql", []);
+    if ((int) $native[0] < 1) throw new RuntimeException('PDO emulated its prepared statements');
     $pdo->commit();
     $ok++;
   } catch (Throwable $e) {
@@ -500,52 +487,43 @@ describe.skipIf(reason !== undefined)("PgBouncer beside PostgreSQL on Docker (05
     ).toBe("app_owner\napp_owner");
   });
 
-  it("runs every request's native prepared statements through the pooler on few backends (libpq 17 or later)", {
-    timeout: HOOK_MS,
-  }, async () => {
-    const url = runtimeUrl();
-    expect(url.startsWith(`postgresql://${POSTGRES_RUNTIME}:`)).toBe(true);
-    expect(url.endsWith(`@${pooler}:${POOLER_PORT}/app`)).toBe(true);
-    const hits = Number(superuser("SELECT count(*) FROM hits;"));
-    const statsBefore = poolerStats(firstRuntime);
-    const run = await load(PGDG, url, WORKERS, REQUESTS);
-    expect(run.errors).toEqual([]);
-    expect(run.ok).toBe(WORKERS * REQUESTS);
-    expect(Number(superuser("SELECT count(*) FROM hits;")) - hits).toBe(WORKERS * REQUESTS);
-    expect(run.backends).toBeGreaterThan(0);
-    expect(run.backends).toBeLessThanOrEqual(POOL_SIZE);
-    const stats = poolerStats(firstRuntime);
-    const grew = (column: string) => Number(stats[column]) - Number(statsBefore[column]);
-    // Each statement reached PgBouncer as the protocol's Parse (no emulation), and PgBouncer
-    // prepared it on each backend once.
-    expect(grew("total_client_parse_count")).toBe(PREPARED * WORKERS * REQUESTS);
-    expect(grew("total_server_parse_count")).toBeLessThanOrEqual(PREPARED * POOL_SIZE);
-    expect(run.memory).toBeLessThan(POOLER_MEMORY_MB);
-    measured.pgdg = {
-      requests: run.ok,
-      queries: QUERIES * run.ok,
-      seconds: run.seconds,
-      mostBackends: run.backends,
-      clientParses: grew("total_client_parse_count"),
-      serverParses: grew("total_server_parse_count"),
-      poolerMemoryUnderLoadMiB: run.memory,
-    };
-  });
-
-  it("fails a transaction that frees a native prepared statement through the pooler (libpq 15), which PostgreSQL alone doesn't", {
-    timeout: HOOK_MS,
-  }, async () => {
-    const pooled = await load(DEBIAN, runtimeUrl(), 2, 20);
-    expect(pooled.ok).toBe(0);
-    expect(pooled.failed).toBe(40);
-    expect(pooled.errors).toEqual([
-      "SQLSTATE[25P02]: In failed sql transaction: 7 ERROR:  current transaction is aborted, commands ignored until end of transaction block",
-    ]);
-    const direct = await load(DEBIAN, directRuntimeUrl(), 2, 20);
-    expect(direct.errors).toEqual([]);
-    expect(direct.ok).toBe(40);
-    measured.debian = { pooled: pooled.failed, direct: direct.ok, error: "25P02" };
-  });
+  it.each([
+    ["Debian 12's libpq 15", "debian", DEBIAN],
+    ["libpq 17 or later", "pgdg", PGDG],
+  ] as const)(
+    "runs every request's native prepared statements through the pool's kept backends (%s)",
+    async (_libpq, key, client) => {
+      const url = runtimeUrl();
+      expect(url.startsWith(`postgresql://${POSTGRES_RUNTIME}:`)).toBe(true);
+      expect(url.endsWith(`@${pooler}:${POOLER_PORT}/app`)).toBe(true);
+      const hits = Number(superuser("SELECT count(*) FROM hits;"));
+      // Two rounds of short connections, more at once than the pool has backends.
+      const first = await load(client, url, WORKERS, REQUESTS);
+      const kept = backendStarts();
+      const second = await load(client, url, WORKERS, REQUESTS);
+      for (const run of [first, second]) {
+        expect(run.errors).toEqual([]);
+        expect(run.ok).toBe(WORKERS * REQUESTS);
+        expect(run.backends).toBeGreaterThan(0);
+        expect(run.backends).toBeLessThanOrEqual(POOL_SIZE);
+        expect(run.memory).toBeLessThan(POOLER_MEMORY_MB);
+      }
+      expect(Number(superuser("SELECT count(*) FROM hits;")) - hits).toBe(2 * WORKERS * REQUESTS);
+      // The second round's requests got the first round's backends: none started since.
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThanOrEqual(POOL_SIZE);
+      expect(backendStarts()).toEqual(kept);
+      measured[key] = {
+        requests: first.ok + second.ok,
+        queries: QUERIES * (first.ok + second.ok),
+        seconds: first.seconds + second.seconds,
+        mostBackends: Math.max(first.backends, second.backends),
+        keptBackends: kept.length,
+        poolerMemoryUnderLoadMiB: Math.max(first.memory, second.memory),
+      };
+    },
+    HOOK_MS,
+  );
 
   it("keeps the pooler's memory under its limit", () => {
     const { used, limit } = poolerMemory();

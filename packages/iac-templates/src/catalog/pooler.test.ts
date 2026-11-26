@@ -116,7 +116,7 @@ describe("PgBouncer beside PostgreSQL (050)", () => {
     });
   });
 
-  it("reaches the database it sits beside in transaction mode, as the runtime login", () => {
+  it("reaches the database it sits beside in session mode, as the runtime login", () => {
     const text = script(db);
     for (const line of [
       "[databases]",
@@ -126,10 +126,10 @@ describe("PgBouncer beside PostgreSQL (050)", () => {
       "listen_port = 6432",
       "auth_type = scram-sha-256",
       "auth_file = /tmp/userlist.txt",
-      "pool_mode = transaction",
-      "default_pool_size = 10",
+      "pool_mode = session",
+      "server_reset_query = DISCARD ALL",
+      "default_pool_size = 20",
       "max_client_conn = 100",
-      "max_prepared_statements = 200",
       "ignore_startup_parameters = extra_float_digits",
       "log_connections = 0",
       "log_disconnections = 0",
@@ -138,6 +138,9 @@ describe("PgBouncer beside PostgreSQL (050)", () => {
     ]) {
       expect(text, line).toContain(`'${line}'`);
     }
+    // Session mode keeps the statements a client prepares itself: no tracking of them.
+    expect(text).not.toContain("max_prepared_statements");
+    expect(text).not.toContain("transaction");
     expect(text).toContain("> /tmp/pgbouncer.ini");
     expect(text.endsWith("exec pgbouncer /tmp/pgbouncer.ini")).toBe(true);
   });
