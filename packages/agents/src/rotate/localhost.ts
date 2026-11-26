@@ -4,7 +4,8 @@
  * exec -e OPSCREW_OLD -e OPSCREW_NEW` with the values only in the child's environment, the env
  * files in the app's folder rewritten as provision writes them (the rotated services' own, and the
  * app's `app.env` with its values swapped as on a server, `swapAppEnv`), and the app's containers
- * created again from them by Compose. The app is held meanwhile (`.snapshots/.held` saying
+ * created again from them by Compose, after a PostgreSQL's pooler whose runtime password changes
+ * (050), as `rotate.sh` does on a server. The app is held meanwhile (`.snapshots/.held` saying
  * `rotation <hash>`, as `rotate.sh` holds a server), so a deploy here refuses until the rotation
  * finished or was undone. GitHub's deploy pause does not apply: no GitHub run deploys here (the
  * local runner is refused), and the local lock keeps provision out meanwhile.
@@ -14,6 +15,8 @@ import { dirname, join } from "node:path";
 import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   localComposeProject,
+  POSTGRES_RUNTIME_SECRET,
+  poolerName,
   processServices,
   RELEASE_DB_ENV,
   RESTORE_HELD,
@@ -21,7 +24,7 @@ import {
   SNAPSHOT_GENERATIONS,
   serviceRotation,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, postgresPooler } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { projectObjects } from "../localhost/docker";
@@ -94,12 +97,23 @@ export async function rotateLocalServices(
       (c) => c.service === service && c.running,
     );
 
-  /** `docker compose up` of `services` in the app's folder, which recreates the changed ones. */
-  const compose = async (services: readonly string[]) => {
+  /**
+   * `docker compose up` of `services` in the app's folder, which recreates the changed ones, or
+   * with `force` each of them.
+   */
+  const compose = async (services: readonly string[], force = false) => {
     if (services.length === 0) return;
     const result = await deps.runner.run(
       "docker",
-      ["compose", "up", "-d", "--no-deps", "--wait", ...services],
+      [
+        "compose",
+        "up",
+        "-d",
+        "--no-deps",
+        "--wait",
+        ...(force ? ["--force-recreate"] : []),
+        ...services,
+      ],
       { cwd: folder, env: deps.env, timeoutMs: COMPOSE_TIMEOUT_MS },
     );
     if (result.exitCode === 0) return;
@@ -150,6 +164,20 @@ export async function rotateLocalServices(
           serviceRotation(s).secrets.some((r) => r.recreate),
       )
       .map((s) => s.name);
+  /**
+   * The poolers (050) of the rotated PostgreSQLs whose runtime login's password changes: each reads
+   * it from its database's env file at its start, so it is created again once that file holds the
+   * value the database has, before the app switches to it.
+   */
+  const poolers = plan.services
+    .filter(
+      (s) =>
+        s.enabled &&
+        names.includes(s.name) &&
+        postgresPooler(s) &&
+        serviceRotation(s).secrets.some((r) => r.secrets.includes(POSTGRES_RUNTIME_SECRET)),
+    )
+    .map(poolerName);
 
   return rotateThroughDocker(
     deps,
@@ -282,7 +310,9 @@ export async function rotateLocalServices(
         await mkdir(dirname(file), { recursive: true });
         await writeFileAtomic(file, `${[...others, `${service} ${generation}`].join("\n")}\n`);
       },
+      // The switch, and its undo's, once the databases and the env files have the values.
       async switchApp() {
+        await compose(poolers, true);
         await compose(["app", ...processServices(plan)]);
       },
     },

@@ -44,6 +44,15 @@ describe("an extra server's size", () => {
     expect(extraServerNeed([dragonfly])).toEqual({ memoryMb: 2048, vcpus: 2 });
   });
 
+  it("counts a PostgreSQL's pooler's 32 MB beside its database (050)", () => {
+    const pooled = PlanServiceSchema.parse({
+      ...db,
+      memoryMb: 2048,
+      options: { logins: "separate", pooler: "pgbouncer" },
+    });
+    expect(extraServerNeed([pooled])).toEqual({ memoryMb: 2048 + 32 + 384, vcpus: 1 });
+  });
+
   it("is the cheapest available x86 type there that holds them", async () => {
     // fsn1: the deprecated, ARM and unavailable traps are skipped; cx13 is the cheapest left.
     expect((await sizeExtraServer(euCatalog(), "fsn1", [db]))?.id).toBe("cx13");

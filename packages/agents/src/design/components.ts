@@ -22,6 +22,7 @@ import {
   type PlanService,
   PlanServiceSchema,
   type ProjectFacts,
+  postgresPooler,
   REDIS_PROTOCOL_KINDS,
   type Requirements,
   type SelfHostedServiceKind,
@@ -31,8 +32,14 @@ import {
 import { localhostHostSettingProblem } from "../localhost/preflight";
 import { appMemoryLimits, type MemoryLimit, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
+import { runtimeLanguageOf } from "./builder";
 import { convertMoney } from "./cost";
-import { loginsUpgradeNotice, loginsVersion, newPostgresOptions } from "./postgres-logins";
+import {
+  loginsUpgradeNotice,
+  loginsVersion,
+  newPostgresOptions,
+  poolerLine,
+} from "./postgres-logins";
 import {
   defaultStorageOffer,
   expectedStorageUse,
@@ -368,10 +375,11 @@ function freshServices(
         ),
       );
     } else if (runs === "postgres") {
-      // Its own logins for the app and its migrations, from PostgreSQL 15 on (047).
+      // Its own logins for the app and its migrations, from PostgreSQL 15 on (047), and for a
+      // PHP app the pooler (050).
       services.push(
         entry(runs, usesText(facts, kind, spec.title), {
-          options: newPostgresOptions(spec.defaultVersion),
+          options: newPostgresOptions(spec.defaultVersion, runtimeLanguageOf(facts)),
           variable,
         }),
       );
@@ -530,8 +538,9 @@ function keptOptions(before: PlanService, fresh: PlanService): object {
  * `memory 768 MB, turned off` for the fields of `after` that differ from `before`; options only
  * between services of one kind (a switched kind is its own edit), without Dragonfly's threads
  * and hashtag locks, which the plan gets from its server (`optionToPlan`) and the app's libraries,
- * and without PostgreSQL's `logins`, which design gives a new database only (a database from before
- * 047 keeps its single login until the user switches it).
+ * and without PostgreSQL's `logins` and `pooler`, which design gives a new database only (a database
+ * from before 047 keeps its single login until the user switches it, one from before 050 its direct
+ * connections).
  */
 function serviceEdits(before: PlanService, after: PlanService): string[] {
   const settings = (service: PlanService) => {
@@ -539,11 +548,13 @@ function serviceEdits(before: PlanService, after: PlanService): string[] {
       threads: _server,
       lockOnHashtags: _libraries,
       logins: _logins,
+      pooler: _pooler,
       ...rest
     } = service.options as {
       threads?: number;
       lockOnHashtags?: boolean;
       logins?: string;
+      pooler?: string;
     };
     return canonicalJson(rest);
   };
@@ -1214,6 +1225,7 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
       ...(service.kind === "postgres" && !loginsVersion(service.version)
         ? [loginsUpgradeNotice(service)]
         : []),
+      ...(postgresPooler(service) ? [poolerLine(service)] : []),
     );
   }
   for (const worker of components.processes.workers.filter((w) => w.enabled)) {

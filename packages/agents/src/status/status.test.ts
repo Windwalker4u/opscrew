@@ -5,9 +5,10 @@ import type { PortainerClient } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, type PlanService, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ED25519_FINGERPRINT, ownProject, provisionOwn } from "../drift/__fixtures__/own-project";
+import { networked, splitPlan } from "../network/__fixtures__/plans";
 import { recordPortainerConnection, recordServerAddress } from "../shared";
 import {
   createTestPhaseDeps,
@@ -20,6 +21,7 @@ import {
   testPlan,
 } from "../testing";
 import {
+  componentServer,
   componentStatus,
   componentStatusLines,
   plannedComponents,
@@ -134,6 +136,40 @@ describe("componentStatus", () => {
       "  The web process (app): running (2 copies)",
       "  OpenSearch (opensearch): running",
     ]);
+  });
+
+  it("lists a PostgreSQL's pooler beside its database, on the database's server (050)", () => {
+    const pooled = { logins: "separate", pooler: "pgbouncer" };
+    const base = componentPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: base.services.map((s) => (s.name === "db" ? { ...s, options: pooled } : s)),
+    });
+    const status = componentStatus(
+      plan,
+      serviceContainers("shop", [
+        { name: "shop-db-1", running: true },
+        { name: "shop-db-pooler-1", running: true },
+      ]),
+    );
+    expect(status.others).toEqual([]);
+    expect(componentStatusLines(plan, status)).toEqual([
+      "Components:",
+      "  The web process (app): no container",
+      "  The worker (worker): no container",
+      "  The cron jobs (cron): no container",
+      "  PostgreSQL (db): running",
+      "  PgBouncer (db-pooler): running",
+      "  MySQL (mysql): no container",
+    ]);
+    const split = splitPlan();
+    const { plan: placed } = networked({
+      ...split,
+      services: split.services.map((s) =>
+        s.name === "db" ? ({ ...s, options: pooled } as PlanService) : s,
+      ),
+    });
+    expect(componentServer(placed, "db-pooler")).toBe("data");
   });
 
   it("without a reading, lists the plan's components", () => {
