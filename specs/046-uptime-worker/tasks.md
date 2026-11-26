@@ -383,6 +383,6 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
 - [x] T4694 (lead) The live pass's server part (quickstart steps 9–12a, and the timer's removal in
   13 and 14), on a throwaway server the pass creates and destroys, after a fresh review of
   T4606–T4610. The results go into `docs/e2e-coverage.md`.
-- [ ] T4693 (lead) The changelog line for 0.2.12: "An uptime check in your own Cloudflare account,
+- [x] T4693 (lead) The changelog line for 0.2.12: "An uptime check in your own Cloudflare account,
   instead of GitHub Actions (`observability.check.runner: cloudflare`), with the server reporting
   its disk, snapshots and restore drills itself."

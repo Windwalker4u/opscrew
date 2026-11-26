@@ -4,6 +4,120 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.12] - 2026-11-26
+
+Every deploy workflow changes: its deploy jobs now run only on their environment's own branch, and
+the workflow no longer names the OpsCrew version. Run `npx opscrew provision` for each environment
+and merge its pull request. An existing app's PostgreSQL keeps its one login until you switch it
+(see below), and nothing else needs redoing.
+
+### Added
+
+- **An uptime check in your own Cloudflare account.** Set `observability.check.runner: cloudflare`
+  and the check runs as a Worker in your Cloudflare account, with no GitHub Actions minutes. The
+  server reports its own checks to the Worker as well: its disk, its snapshots, its restore drills,
+  its certificates and the age of its credentials. The Worker posts to your alert webhook when a check
+  fails, and when a server's report stops arriving for 26 hours. The Cloudflare token needs two more
+  permissions, which design and provision check for. It isn't for hosting accounts yet. See
+  [Alerts](docs/guide/alerts.md#in-your-cloudflare-account-instead-of-github-actions).
+- **Two logins for an app's PostgreSQL.** The release command migrates as the schema's owner, and
+  the app, its workers and its cron run as a login that can only read and write data, with no
+  right to change the schema. New databases get both by default. An existing database switches
+  with `logins: separate` and `npx opscrew provision`: the switch is an approved plan, with a
+  snapshot taken first. Moves, restores, restore drills, rotation and `destroy` know both logins.
+  See [Databases](docs/guide/databases.md#two-logins).
+- **`npx opscrew values set|unset|list`.** Change one app value of an environment without a full
+  provision, and list what is set. OpsCrew keeps the values you set in its own home folder, and a
+  terminal's `provision` offers to reuse them. See
+  [Environments](docs/guide/environments.md).
+- **PostgreSQL extensions on a new database.** Name them in the plan, such as `extensions: [vector]`
+  for pgvector; PostGIS is available on amd64 servers, and PostgreSQL's built-in contrib
+  extensions work too. OpsCrew pins the images and creates the extensions as the database's
+  superuser, once, so the app never runs as one. Changing the extensions of an existing database
+  is refused for now. See [Databases](docs/guide/databases.md#postgresql-extensions).
+- **An optional connection pooler for PostgreSQL.** Set `pooler: pgbouncer` and PgBouncer runs in
+  session mode beside the database. `npx opscrew design` turns it on for new PHP apps. The web
+  process and cron go through the pooler; workers and the release command's migrations connect to
+  PostgreSQL directly. Rotating the app's password, a restore drill and a move bring the pooler
+  along. See [Databases](docs/guide/databases.md#a-connection-pooler-for-php-apps).
+- **OpenAI API keys beside Anthropic's.** Set `OPENAI_API_KEY` (and `OPENAI_BASE_URL` for a
+  compatible endpoint) and OpsCrew's AI steps run on OpenAI. `OPSCREW_RUNTIME` picks one when both
+  keys are set. The same policy and budget limits apply as with Claude. See
+  [AI models](docs/guide/ai-models.md).
+- **A Codex plugin.** OpsCrew's skills and its MCP server install in Codex as they do in Claude
+  Code. See [The Codex plugin](docs/guide/codex-plugin.md).
+- **OVHcloud as a server provider.** `opscrew interview`, design, provision, snapshots and the
+  restore drills work with OVHcloud servers, with the provider's own price table. A move's finish
+  and `destroy` name the snapshots that outlive the server before you type its name. See
+  [Deploy to OVHcloud](docs/guide/ovhcloud.md).
+
+### Changed
+
+- **`opscrew scan` leaves out a guessed secret in test code and in ignored paths**, and counts
+  it. A secret in a provider's own format, a private key and a committed `.env` with values still
+  keep their severity anywhere. See [Security](docs/guide/security.md).
+- **Generated files no longer name the OpsCrew version.** The version is recorded in
+  `opscrew/plan.yaml`, so an upgrade changes the files only when their content changes. A build
+  between releases names its commit.
+- **Caddy keeps your app's own `X-Content-Type-Options`, `X-Frame-Options` and
+  `Referrer-Policy`**, and adds OpsCrew's only to answers that have none. It removes `Server` and
+  `X-Powered-By` from every answer. See
+  [your app's own headers](docs/guide/reverse-proxy.md#your-apps-own-headers).
+- **`SECURITY_REPORT.md` and `ARCHITECTURE.md` no longer name the OpsCrew version.**
+- **The MCP server's tool list is about a third of its size** (39,193 characters instead of
+  108,213), so it takes less of your AI's context.
+- **Workers, the release command and seed commands run without a shell** when they need none.
+- **Removing a container removes its anonymous volumes too**, so none are left behind.
+
+### Fixed
+
+- **A Laravel app's database gets `DB_URL`** when its `.env.example` comments out `DB_HOST`. Laravel's
+  own config defaults make a variable optional, and a Laravel app with its own Dockerfile keeps its
+  release command.
+- **A restore with the two logins works.** A restore loads as the schema's owner, the superuser
+  restores a schema's comments first (so PostGIS's topology loads), and a whole-server restore sets
+  both logins again. A dump with event triggers is refused with the reason.
+- **A database on a cloud server never applied has no data to protect**, so the logins' switch
+  doesn't take a snapshot of it or wait for one.
+- **A rotation in a script no longer asks for the uptime host plan** with the rotation's hash.
+- **`opscrew provision` stops before any work when you are off the environment's branch.**
+- **OpsCrew's own files that your `.gitignore` ignores are still committed** to the pull request.
+- **A base image whose binary has a file capability** (such as `ping`) is warned about at design,
+  and the deploy names a refused binary only when the image logs it.
+- **`drift` reports an uncommitted plan** and `provision` warns, in the temp folder, instead of
+  failing.
+- **`opscrew mcp install` from a build between releases** sets up its own release.
+- **The report-only image scan never fails the deploy.**
+- **A whole-server snapshot's ID can be a UUID**, as OVHcloud's are, and the agent's environment
+  leaves out OVHcloud's `OVH_` variables.
+- **A move's finish reads the earlier snapshots before every approval.**
+- **Design offers a dedicated server type when no shared one holds the app.**
+- **The uptime Worker** drops a hostname that left its entry from the state at once, refuses
+  an account with no workers.dev subdomain before anything changes, and fails an apply whose
+  secret another app's upload dropped. A destroy that can't find the uptime entry stops instead
+  of skipping it.
+- **OpenTofu runs without the home address updater's tokens** in its environment.
+- **A credential name over 128 characters no longer stops provision**: it is left out of the
+  uptime report, with a line saying so.
+
+### Security
+
+- **The agent's tool policy closes a set of bypasses.** Bash commands that contain a carriage
+  return are denied. Every path and redirect in a Bash command is checked for where it really
+  leads, a `..` after a link is refused, and only commands named without a path are pre-approved.
+  A `Grep` that shows lines needs a glob that keeps secret files out, `tree -R` and `tree -o` are
+  no longer pre-approved, and a `]` right after `[` in a glob is a member of the class. A write
+  to a GitHub Actions workflow or action asks first, and shows what it says.
+- **A directory named like a secret file counts as secret.** Anything inside a folder named
+  `.env` is kept out of the agent's reach, as a `.env` file is.
+- **Generated deploy workflows run deploy jobs only on their environment's own branch**, so a
+  workflow started from another branch never deploys with your production secrets.
+- **The Cloudflare Worker rollback checks its version ID** before it passes it on, and passes it
+  through an environment variable, never into the command line.
+- **A site's own security headers are never weakened.** A header your `_headers` file sets is
+  kept as you wrote it, and `npx opscrew verify` checks the Content-Security-Policy,
+  Cross-Origin-Opener-Policy and Cross-Origin-Resource-Policy that file sets.
+
 ## [0.2.11] - 2026-11-21
 
 Every deploy workflow of an app on a server or in your Portainer changes. Run `npx opscrew
@@ -1069,6 +1183,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.12]: https://github.com/opscrew-hub/opscrew/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/opscrew-hub/opscrew/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/opscrew-hub/opscrew/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/opscrew-hub/opscrew/compare/v0.2.8...v0.2.9

@@ -86,10 +86,13 @@
 
 ## The lead's wave
 
-- [ ] T5090 (lead) A fresh review of the merged waves.
+- [x] T5090 (lead) A fresh review of the merged waves.
 - [ ] T5091 (lead) `/simplify` over the feature's diff.
 - [ ] T5092 (lead) The live pass on the localhost target with `examples/laravel-app`: SC-5001's flat
   backend count over 100 signed-in requests, and nothing left behind. The results go into
   `docs/e2e-coverage.md`.
-- [ ] T5093 (lead) The changelog line for 0.2.12: "An optional PgBouncer in front of an app's
+  - **Moved (the founder's weekly limit, 2026-11-26):** 0.2.12 ships with the Docker test's proof; the
+    live pass is the inventory demo's move to the pooler on 0.2.12, and the `/simplify` pass (T5091)
+    follows on 2026-12-02.
+- [x] T5093 (lead) The changelog line for 0.2.12: "An optional PgBouncer in front of an app's
   PostgreSQL (`pooler: pgbouncer`), which design turns on for PHP apps."

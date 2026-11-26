@@ -181,6 +181,7 @@ describe("own-server texts", () => {
       buildEnv: "",
       names: ["A"],
       generated: {},
+      values: { services: {} },
       defaulted: [],
       unresolved: [],
     } as unknown as Parameters<typeof deploySecrets>[0]["environment"];

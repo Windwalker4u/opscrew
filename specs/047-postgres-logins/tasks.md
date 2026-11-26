@@ -236,7 +236,7 @@ Secret-shaped values in tests come from `fakeSecret`.
   - **Nothing left behind:** proven by listing the containers, volumes, images and deploy secrets
     afterwards.
   - **The results** go into `docs/e2e-coverage.md`.
-- [ ] T4793 (lead) The changelog line for 0.2.12: "An app's PostgreSQL has two logins: the release
+- [x] T4793 (lead) The changelog line for 0.2.12: "An app's PostgreSQL has two logins: the release
   command migrates as the schema's owner, and the app, workers and cron run as a login that can
   only read and write data. New databases get them by default; an existing one switches with
   `logins: separate` and `opscrew provision`."

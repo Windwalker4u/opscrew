@@ -4,7 +4,7 @@
 
 One agent builds them in order, test first. Secret-shaped values in tests come from `fakeSecret`.
 
-- [ ] T4801 [US1] The record of the app's values in OpsCrew's home
+- [x] T4801 [US1] The record of the app's values in OpsCrew's home
   - **Owns:** `packages/agents/src/values/record.ts` (new) and its test,
     `packages/agents/src/shared/app-env.ts`, `packages/agents/src/shared/app-secrets.ts`,
     `packages/agents/src/provision/secrets.ts`, `packages/agents/src/secrets/files.ts`,
@@ -27,7 +27,7 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - **Effort:** high
 
-- [ ] T4802 [US1] [US2] [US3] Setting, removing and listing the values
+- [x] T4802 [US1] [US2] [US3] Setting, removing and listing the values
   - **Owns:** `packages/agents/src/values/**`, the export lines in `packages/agents/src/index.ts`.
   - **Reads:** plan.md, `setSecretAt`, `deploySecretPlace`, `deploySecretNamesFor`,
     `rotate/app-site.ts`, `shared/deploy-run.ts`.
@@ -47,7 +47,7 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - **Effort:** high
 
-- [ ] T4803 [US1] [US2] [US3] `opscrew values set|unset|list`
+- [x] T4803 [US1] [US2] [US3] `opscrew values set|unset|list`
   - **Owns:** `packages/cli/src/commands/values.ts` (new) and its test,
     `packages/cli/src/commands/index.ts`, `packages/cli/src/program.test.ts` (the command
     count), `packages/cli/src/deps.ts` (the stdin service).
@@ -61,7 +61,7 @@ One agent builds them in order, test first. Secret-shaped values in tests come f
   - **Verify:** `pnpm turbo run typecheck test --filter=opscrew`
   - **Effort:** high
 
-- [ ] T4804 [US1] [US2] The guide
+- [x] T4804 [US1] [US2] The guide
   - **Owns:** `docs/guide/environments.md`, `docs/guide/secrets-recovery.md` (what the copy
     holds), the README's "After the first deploy" list.
   - **Accept:** a section on changing an app value: the commands, stdin and files, what changes,
