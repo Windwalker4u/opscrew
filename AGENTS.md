@@ -119,7 +119,12 @@ It reviews every pull request and merges it; nothing reaches `main` any other wa
 1. **Read the guides:** the constitution, this file, and `specs/roadmap.md`.
 2. **Pick something to build:** a feature the roadmap lists, or an open issue.
 3. **Say what you're taking:** open an issue titled `[NNN] <feature>: starting`, so two people
-   never build the same thing. `NNN` is the roadmap's feature number.
+   never build the same thing. `NNN` is the roadmap's feature number. If the core's lead already
+   opened an issue for that work, take that one instead of opening another.
+   - **Assign yourself** to the issue the moment you take it (`gh issue edit <n> --add-assignee
+     @me`), and to each issue you take later, so the lead sees who works on what without guessing.
+   - **If GitHub refuses** (your access may not allow assigning), say so in the issue's first
+     comment ("taking this"); the lead assigns you.
 4. **Read the closest feature folder** in `specs/` as the template for your own. For a new server
    provider, that's `specs/026-contabo-provider-plugins/`, with `packages/providers/contabo/`.
 
