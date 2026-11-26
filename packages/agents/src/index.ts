@@ -147,5 +147,15 @@ export * from "./shared/scan-phase";
 export * from "./shared/unpriced";
 export * from "./snapshot";
 export * from "./status";
+// `opscrew values` (048).
+export {
+  type AppValueRow,
+  appValueRows,
+  type ChangedValues,
+  type CheckedChange,
+  changeAppValues,
+  checkValueChange,
+  type ValueNames,
+} from "./values";
 export * from "./verify";
 export * from "./vpn";

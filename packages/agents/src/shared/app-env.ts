@@ -65,7 +65,45 @@ export function dotenvLine(name: string, value: string): string {
   return `${name}="${escaped}"`;
 }
 
-export type EnvAnswer = { useLocal: true } | { value: string } | { skip: true };
+/**
+ * The name and value of one line {@link dotenvLine} wrote (plain, single-quoted, or double-quoted
+ * with `\\`, `\"`, `\n` and `$$`); `undefined` for a line that holds no variable.
+ */
+export function readDotenvLine(line: string): [string, string] | undefined {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+  if (match === null) return undefined;
+  const name = match[1] as string;
+  const raw = match[2] as string;
+  const quoted = (quote: string) => raw.length >= 2 && raw.startsWith(quote) && raw.endsWith(quote);
+  if (quoted("'")) return [name, raw.slice(1, -1)];
+  if (!quoted('"')) return [name, raw];
+  const value = raw
+    .slice(1, -1)
+    .replace(/\\([\\"n])|\$\$/g, (_all, escaped: string | undefined) =>
+      escaped === undefined ? "$" : escaped === "n" ? "\n" : escaped,
+    );
+  return [name, value];
+}
+
+/** The app's env file (`OPSCREW_APP_ENV`): a {@link dotenvLine} per value, sorted by name. */
+export function appEnvText(values: Readonly<Record<string, string>>): string {
+  return `${sortedEntries(values)
+    .map(([name, value]) => dotenvLine(name, value))
+    .join("\n")}\n`;
+}
+
+/** The build values' lines (`OPSCREW_BUILD_ENV`, `OPSCREW_BUILD_SECRETS`): `NAME=value`, sorted. */
+export function buildLinesText(values: Readonly<Record<string, string>>): string {
+  return `${sortedEntries(values)
+    .map(([name, value]) => `${name}=${value}`)
+    .join("\n")}\n`;
+}
+
+function sortedEntries(values: Readonly<Record<string, string>>): [string, string][] {
+  return Object.entries(values).sort(([a], [b]) => a.localeCompare(b));
+}
+
+export type EnvAnswer = { useLocal: true } | { keep: true } | { value: string } | { skip: true };
 
 export interface EnvQuestion {
   name: string;
@@ -76,6 +114,11 @@ export interface EnvQuestion {
   localFile: string;
   /** True when {@link localFile} has a value the user may reuse for the environment. */
   localValueAvailable: boolean;
+  /**
+   * True when OpsCrew keeps a value of the variable from an earlier run (`app_values.json`) and the
+   * local file has none, so the user may keep it (`{ keep: true }`); absent otherwise.
+   */
+  keptValueAvailable?: true;
   /**
    * True when the app's code has a default for the variable: leaving it unset (an empty answer)
    * keeps that default. Always set by {@link assembleAppEnv}.
@@ -555,6 +598,12 @@ export interface AssembleAppEnvOptions {
   /** The user's key for the plan's provider bucket, and R2's endpoint (see {@link StorageLogin}). */
   storage?: StorageLogin;
   /**
+   * The app's values OpsCrew recorded at its last run (`app_values.json`), by name: `ask` offers
+   * to keep one the local file has no value of (`keptValueAvailable`), and a variable read from
+   * `dotenvText` takes it when the file has none. Never for a generated, derived or fixed value.
+   */
+  kept?: Readonly<Record<string, string>>;
+  /**
    * A preview environment's env templates instead of values (ADR 0026): each value OpsCrew would
    * generate is the preview server's placeholder in the format it needs (`previewSecret`: a
    * service's secret as `<service>-<secret>`, an app variable by its name), never recorded in
@@ -735,18 +784,25 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       value = userValue ?? options.previous?.env?.[variable.name] ?? generate();
       if (userValue === undefined) generatedEnv[variable.name] = value;
     } else if (options.ask) {
+      const keptValue = options.kept?.[variable.name];
       const answer = await options.ask({
         name: variable.name,
         secret: variable.secret,
         environment: options.local?.environment ?? "prod",
         localFile: options.local?.file ?? ".env",
         localValueAvailable: local.has(variable.name),
+        // A local value the user may have changed is offered as before 048.
+        ...(keptValue === undefined || local.has(variable.name)
+          ? {}
+          : { keptValueAvailable: true as const }),
         optional,
       });
       if ("useLocal" in answer) value = local.get(variable.name);
+      else if ("keep" in answer) value = keptValue;
       else if ("value" in answer) value = answer.value;
     } else {
-      value = local.get(variable.name);
+      // The values file wins; a value it lacks comes from the earlier run's.
+      value = local.get(variable.name) ?? options.kept?.[variable.name];
       users = true;
     }
     if (value === undefined) {
@@ -788,17 +844,13 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     );
   }
 
-  const sortedLines = (values: Map<string, string>, format: (n: string, v: string) => string) =>
-    [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([n, v]) => format(n, v));
-  const buildLines = (values: Map<string, string>) =>
-    `${sortedLines(values, (n, v) => `${n}=${v}`).join("\n")}\n`;
   const sorted = (entries: Iterable<[string, string]>) =>
     Object.fromEntries([...entries].sort(([a], [b]) => a.localeCompare(b)));
   const allBuild = [...build.entries(), ...buildSecrets.entries()];
   return {
-    appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
-    buildEnv: buildLines(build),
-    buildSecrets: buildLines(buildSecrets),
+    appEnv: appEnvText(Object.fromEntries(app)),
+    buildEnv: buildLinesText(Object.fromEntries(build)),
+    buildSecrets: buildLinesText(Object.fromEntries(buildSecrets)),
     names: [...new Set([...app.keys(), ...own.keys(), ...allBuild.map(([name]) => name)])].sort(),
     defaulted,
     unresolved,

@@ -50,6 +50,7 @@ import { knownRecipients } from "../secrets/store";
 import { r2Endpoint, readValidJson, requestApproval, type StorageLogin } from "../shared";
 import { dotenvLine, parseDotenv, storageLoginValue, storageVariableKind } from "../shared/app-env";
 import { reasonOf } from "../shared/errors";
+import { recordAppEnvText } from "../values/record";
 import { bucketKey, lastBackupsCopy, moveBuckets, type PointAtB } from "./buckets";
 import { serverWords } from "./connector";
 import { SEALED, type StoredSecret, secretPlace, storeSecrets } from "./deploy-secrets";
@@ -370,6 +371,7 @@ async function serverPointAtB(
         );
       }
       await storeSecrets(session, now.set);
+      await recordStoredAppEnv(session, environment, now.set);
       await writeApplied(environment, { sha256: hash });
       deps.reporter.success(
         `The deploy secrets of ${name} hold their values for ${accountWords(session.accounts.b)}.`,
@@ -511,7 +513,20 @@ export async function backToA(session: MoveSession, environment: MoveEnvironment
   const hash = changeHash(session, environment, set);
   if (set.length === 0 || (await readApplied(environment))?.sha256 === hash) return;
   await storeSecrets(session, set);
+  await recordStoredAppEnv(session, environment, set);
   await writeApplied(environment, { sha256: hash });
+}
+
+/** The app's settings among `set`, when it holds them, into OpsCrew's record of its values (048). */
+async function recordStoredAppEnv(
+  session: MoveSession,
+  environment: MoveEnvironment,
+  set: readonly StoredSecret[],
+): Promise<void> {
+  const { name } = deploySecretPlace(environment.plan, DEPLOY_SECRETS.appEnv);
+  const appEnv = set.find((stored) => stored.name === name)?.value;
+  if (appEnv !== undefined)
+    await recordAppEnvText(environmentDeps(session, environment), environment.plan, appEnv);
 }
 
 /**

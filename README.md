@@ -83,6 +83,7 @@ To add OpsCrew to Claude Code, Claude Desktop, Codex, Cursor and VS Code at once
 
 - `npx opscrew logs` shows the app's log lines (`--follow` for new ones), and `npx opscrew status` what runs with its CPU, memory and disk. See [Your app's logs and resource figures](docs/guide/logs-and-status.md).
 - `npx opscrew advise` says whether the app's servers are the right size, what could cost less and what needs attention soon, and how to apply each change. See [Advice on size, cost and upkeep](docs/guide/advise.md).
+- `npx opscrew values set --env <env> NAME` adds or changes one of the app's values from standard input, without a full provision. See [Changing one value](docs/guide/environments.md#changing-one-value).
 - A deploy or a provision failed? See [When a deploy fails, and how to recover](docs/guide/when-a-deploy-fails.md): what your visitors get, what OpsCrew already put back and what to do next.
 - `npx opscrew destroy` deletes the deployment's infrastructure. It asks you to type the server name first and can take a snapshot.
 - `npx opscrew retarget --to <provider>` moves a live app to another cloud provider with its data (not yet to or from your own server or a Portainer). It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`. See [Moving your app to another cloud provider](docs/guide/retarget.md).

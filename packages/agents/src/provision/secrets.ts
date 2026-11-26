@@ -70,6 +70,7 @@ import {
   registerAppSecrets,
 } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
+import { readAppValues, recordStoredValues } from "../values/record";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -176,7 +177,9 @@ export async function monitoringPassword(
  * stops when another computer rotated a value this computer keeps an older one of
  * (`assertValuesCurrent`) and while a rotation of the environment is unfinished (naming how to
  * finish or undo it), then records when this computer first saw each of the user's tokens the
- * environment uses (`tokenFirstSeen`, by fingerprint).
+ * environment uses (`tokenFirstSeen`, by fingerprint). A value OpsCrew recorded when it last stored
+ * the app's settings (`app_values.json`, 048: {@link setDeploySecrets}) is offered to keep in a
+ * terminal (unless the local file has one) and fills one the values file of a script lacks.
  * @throws OpsCrewError `PHASE_PRECONDITION` for either stop.
  */
 export async function buildAppEnvironment(
@@ -241,6 +244,8 @@ export async function buildAppEnvironment(
   const previous = (await readGenerated(deps)) as
     | (GeneratedValues & Partial<Record<(typeof KEPT_VALUES)[number], unknown>>)
     | undefined;
+  // The values recorded at the last run (`opscrew values set` changes them there).
+  const recorded = await readAppValues(deps);
   const environment = await assembleAppEnv({
     plan,
     ...(dotenvText !== undefined ? { dotenvText } : {}),
@@ -248,6 +253,7 @@ export async function buildAppEnvironment(
     ...(serverHost !== undefined ? { serverHost } : {}),
     ...(previous ? { previous } : {}),
     ...(options.storage !== undefined ? { storage: options.storage } : {}),
+    ...(recorded !== undefined ? { kept: { ...recorded.app, ...recorded.build } } : {}),
   });
   // The origin TLS values stay as provision's Cloudflare step left them, and the network's keys
   // and the device logins' passwords as design and `vpn` made them.
@@ -1330,6 +1336,20 @@ export async function setDeploySecrets(
       ...(previous?.reviewersDeclined === true ? { reviewersDeclined: true } : {}),
     })}\n`,
   );
+  // Once GitHub holds them: the record `opscrew values` renders the app's settings from (048).
+  const appEnv = placed.get(deploySecretName(plan, DEPLOY_SECRETS.appEnv))?.value;
+  if (appEnv !== undefined) {
+    const build = (name: string) => placed.get(deploySecretName(plan, name))?.value;
+    await recordStoredValues(deps, plan, {
+      appEnv,
+      ...(build(DEPLOY_SECRETS.buildEnv) === undefined
+        ? {}
+        : { buildEnv: build(DEPLOY_SECRETS.buildEnv) as string }),
+      ...(build(DEPLOY_SECRETS.buildSecrets) === undefined
+        ? {}
+        : { buildSecrets: build(DEPLOY_SECRETS.buildSecrets) as string }),
+    });
+  }
   deps.reporter.success(
     environment === undefined
       ? `Stored ${names.length} deploy secrets in GitHub Actions.`

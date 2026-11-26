@@ -2,9 +2,11 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { hostingRecordFile, updateHostingRecord } from "../hosting/record";
 import { createTestPhaseDeps } from "../testing";
+import { appValuesFile, writeAppValues } from "../values/record";
 import { fileMode, isCopyPath, localPath, readLocalFiles, registerGeneratedValues } from "./files";
 
 describe("the recovery copy's files", () => {
@@ -47,5 +49,28 @@ describe("the recovery copy's files", () => {
     for (const value of [earlier, current, ...Object.values(env)]) {
       expect(deps.redactor.redact(`x ${value} y`)).not.toContain(value);
     }
+  });
+
+  it("hold the app's recorded values (048), registered but for the app's address", async () => {
+    const deps = await createTestPhaseDeps();
+    expect(isCopyPath("home/app_values.json")).toBe(true);
+    expect(localPath(deps.paths, "home/app_values.json")).toBe(appValuesFile(deps));
+    expect(fileMode("home/app_values.json")).toBe(0o600);
+    const key = fakeSecret("stripe-live-key", "copy");
+    const build = fakeSecret("generic-password", "copy-build");
+    await writeAppValues(
+      deps,
+      { app: { env: [] } },
+      {
+        app: { STRIPE_SECRET_KEY: key, APP_URL: "https://shop.example.com" },
+        build: { NEXT_PUBLIC_KEY: build },
+      },
+    );
+    const files = await readLocalFiles(deps.paths, deps.redactor);
+    expect(Object.keys(files)).toEqual(["home/app_values.json"]);
+    for (const value of [key, build]) {
+      expect(deps.redactor.redact(`x ${value} y`)).not.toContain(value);
+    }
+    expect(deps.redactor.redact("https://shop.example.com")).toBe("https://shop.example.com");
   });
 });

@@ -2,6 +2,7 @@ import type { EnvAnswer, EnvQuestion } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { UiPrompts } from "./prompts";
 
+const KEEP = "keep";
 const USE_LOCAL = "use-local";
 const TYPE = "type";
 const SKIP = "skip";
@@ -18,9 +19,10 @@ function cancelledEnv(environment: string, flag: string): OpsCrewError {
 }
 
 /**
- * The interactive question `provision` asks for each value of the environment's app: reuse the
- * value in its local file (`.env` for prod, `.env.<env>` for another; only when there is one and
- * the user picks it), type a value (always masked for a secret) or leave it unset. Prod's values
+ * The interactive question `provision` asks for each value of the environment's app: keep the
+ * value OpsCrew stored at an earlier run (first, when it has one), reuse the value in its local
+ * file (`.env` for prod, `.env.<env>` for another; only when there is one and the user picks
+ * it), type a value (always masked for a secret) or leave it unset. Prod's values
  * are called production values, another environment's are named for it. Values are returned to
  * the phase and never printed. `flag` is the run's `--app` and `--env` (`ChosenEnvironment.flag`),
  * for the command a cancelled prompt names.
@@ -34,11 +36,17 @@ export function createEnvPrompt(
     const valueFor = prod
       ? `Production value for ${question.name}`
       : `Value for ${question.name} in the ${question.environment} environment`;
-    if (question.localValueAvailable) {
+    const kept = question.keptValueAvailable === true;
+    if (kept || question.localValueAvailable) {
       const choice = await prompts.select({
         message: `${valueFor}${question.optional ? " (optional)" : ""}`,
         options: [
-          { value: USE_LOCAL, label: `Use the value from your local ${question.localFile}` },
+          ...(kept
+            ? [{ value: KEEP, label: "Keep the value OpsCrew stored at an earlier run" }]
+            : []),
+          ...(question.localValueAvailable
+            ? [{ value: USE_LOCAL, label: `Use the value from your local ${question.localFile}` }]
+            : []),
           {
             value: TYPE,
             label: prod
@@ -52,9 +60,10 @@ export function createEnvPrompt(
               : "Leave it unset",
           },
         ],
-        initialValue: USE_LOCAL,
+        initialValue: kept ? KEEP : USE_LOCAL,
       });
       if (prompts.isCancel(choice)) throw cancelledEnv(question.environment, flag);
+      if (choice === KEEP) return { keep: true };
       if (choice === USE_LOCAL) return { useLocal: true };
       if (choice === SKIP) return { skip: true };
     }

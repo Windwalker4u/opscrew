@@ -47,6 +47,7 @@ import { serverWords } from "../shared/server-address";
 import { READ_TIMEOUT_MS, scriptSaid } from "../snapshot/hosts";
 import { requireNoDeployOrMove } from "../snapshot/run";
 import { serverShell } from "../status/servers";
+import { recordAppEnvText } from "../values/record";
 import { passwordKey } from "../vpn/grants";
 import { appSecretNames, appSuccessNote, isAppName, newAppValues, withAppEnv } from "./app-values";
 import {
@@ -392,7 +393,10 @@ function rotatedSecrets(services: readonly PlanService[]): string[] {
   ];
 }
 
-/** Sets each of `secrets` (unprefixed name → value) where GitHub holds it; audited by name. */
+/**
+ * Sets each of `secrets` (unprefixed name → value) where GitHub holds it; audited by name. The
+ * app's settings also go into OpsCrew's record of the app's values (048).
+ */
 async function replaceSecrets(
   deps: PhaseDeps,
   github: RotateServicesOptions["github"],
@@ -402,6 +406,8 @@ async function replaceSecrets(
   for (const [name, value] of Object.entries(secrets)) {
     await setSecretAt(deps, github, deploySecretPlace(plan, name), value);
   }
+  const appEnv = secrets[DEPLOY_SECRETS.appEnv];
+  if (appEnv !== undefined) await recordAppEnvText(deps, plan, appEnv);
 }
 
 /** One rotation's facts the runs on the servers need. */

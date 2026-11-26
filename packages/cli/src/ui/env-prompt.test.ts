@@ -13,6 +13,25 @@ const question = (localValueAvailable: boolean, secret = true) => ({
 });
 
 describe("createEnvPrompt", () => {
+  it("offers to keep the value OpsCrew has from an earlier run first (048)", async () => {
+    const prompts = new ScriptedPrompts(["keep", "keep"]);
+    const ask = createEnvPrompt(prompts, "");
+    expect(await ask({ ...question(false), keptValueAvailable: true })).toEqual({ keep: true });
+    expect(prompts.calls[0]?.options?.map((o) => o.label)).toEqual([
+      "Keep the value OpsCrew stored at an earlier run",
+      "Type a different value for production",
+      "Leave it unset",
+    ]);
+    expect(prompts.calls[0]?.initial).toBe("keep");
+    expect(await ask({ ...question(true), keptValueAvailable: true })).toEqual({ keep: true });
+    expect(prompts.calls[1]?.options?.map((o) => o.value)).toEqual([
+      "keep",
+      "use-local",
+      "type",
+      "skip",
+    ]);
+  });
+
   it("offers the local .env value and returns the choice", async () => {
     const prompts = new ScriptedPrompts(["use-local", "skip"]);
     const ask = createEnvPrompt(prompts, "");

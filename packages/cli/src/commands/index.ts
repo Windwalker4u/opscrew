@@ -32,6 +32,7 @@ import * as secrets from "./secrets";
 import * as secure from "./secure";
 import * as snapshot from "./snapshot";
 import * as status from "./status";
+import * as values from "./values";
 import * as verify from "./verify";
 import * as vpn from "./vpn";
 
@@ -49,6 +50,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   interview,
   design,
   env,
+  values,
   adapt,
   provision,
   promote,
