@@ -17,7 +17,7 @@
 
 ### Inputs & payload limits
 - **Maximum top-level inputs:** **25** input properties per `workflow_dispatch` trigger (expanded from GitHub's older limit of 10).
-- **Input payload size limit:** **~65,535 characters** total JSON payload (`inputs` values are strings/booleans/numbers/choices; never pass plaintext secrets in `inputs` because dispatch inputs are recorded in run metadata and visible in the Actions UI/API!).
+- **Input payload size limit:** reported `~65,535 characters` total JSON payload (**unverified** on the cited REST API page; `inputs` values are strings/booleans/numbers/choices — never pass plaintext secrets in `inputs` because dispatch inputs are recorded in run metadata and visible in the Actions UI/API!).
 
 ### Learning the run ID immediately (`return_run_details`)
 - GitHub's `POST .../dispatches` endpoint supports `"return_run_details": true` in the request body:
@@ -101,29 +101,30 @@ GitHub's runner automatically registers secret values (and dynamic `::add-mask::
 ### 1. Anthropic Console Workload Identity Federation (OIDC for GitHub Actions)
 - **Status:** **Supported natively** on the Claude Platform (Console) — eliminates storing static `ANTHROPIC_API_KEY` secrets in GitHub Actions!
 - **How it works:**
-  1. In Claude Console (`Settings -> Workload identity`), the user creates an OIDC identity provider for `https://token.actions.githubusercontent.com`, binds a **Service Account** (scoped to a specific workspace), and defines a **Federation Rule** with a **Subject Prefix** filter.
+  1. In Claude Console (`Settings -> Workload identity`), the user creates an OIDC identity provider for `https://token.actions.githubusercontent.com`, binds a **Service Account** (scoped to a specific workspace), and defines a **Federation Rule** matching incoming JWTs via **`subject_prefix`**, **`claims`**, and/or **CEL** expressions.
   2. The GitHub Actions job requests `permissions: { id-token: write, contents: read }` and reads three non-secret IDs from Actions `vars`: `anthropic_organization_id`, `anthropic_service_account_id`, and `anthropic_federation_rule_id`.
   3. At runtime, the workflow (or OpsCrew's runtime / `anthropics/claude-code-action`) exchanges GitHub's OIDC JWT via an OAuth 2.0 JWT-bearer grant (`POST /v1/oauth/token`) for a short-lived Anthropic access token (`sk-ant-oat01-...`).
-- **Scoping to one repository and environment:** **Yes!** The Federation Rule's **Subject Prefix** filters GitHub's OIDC `sub` claim:
+- **Scoping to one repository and environment:** **Yes!** The Federation Rule supports **`subject_prefix`**, exact **`claims`** matching, and **CEL** expressions against GitHub's OIDC JWT:
   - Repository + environment: `repo:<owner>/<repo>:environment:<env>` (or `repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:<env>` for repos created on/after 2026-07-15 with immutable subject claims);
   - Repository + branch (for GitHub Free private repos): `repo:<owner>/<repo>:ref:refs/heads/<branch>`.
   - Fork pull requests cannot mint tokens matching these subjects.
-- **Token lifetime:** Configurable from **60 seconds up to 86,400 seconds (24 hours)**, defaulting to **1 hour** (auto-refreshed by SDKs/actions before expiry).
-- **Cost:** **$0 surcharge / no gated paywall.** WIF is included on standard Claude Platform access; usage is billed solely at normal Claude API token rates attributed to the workspace/service account.
+- **Token lifetime:** The minted Anthropic access token's effective lifetime is the **lesser of** the Federation Rule's configured lifetime (`60 s` to `86,400 s` / 24 hours, default 1 hour) and **twice the GitHub OIDC token's remaining life**.
+- **One exchange per GitHub token:** Each GitHub OIDC JWT can be exchanged **only once** (`jti` reuse is rejected), so a refresh or subsequent step must request a fresh GitHub OIDC JWT before calling `/v1/oauth/token` again.
+- **Cost:** API token usage bills to the bound workspace/service account; Anthropic's WIF documentation does not state a separate federation surcharge (whether `$0` surcharge / all plan tiers apply is **unverified**).
 - **Critical precedence gotcha:** If a static `ANTHROPIC_API_KEY` environment variable is also present in the job, **the static key silently takes precedence over WIF**. Workflows using WIF must unset / omit `ANTHROPIC_API_KEY`.
 - **Note for OpsCrew 041:** Because OpsCrew 041 also supports routing through the dashboard's gateway (`ANTHROPIC_BASE_URL`), Anthropic WIF is ideal for **direct user-owned Actions runs** (no static key stored in the repo) AND for **managed dashboard runs** where the user wants billing directly in their own Anthropic workspace.
 
 ### 2. Does OpenAI offer the same?
 - **Yes — OpenAI also supports Workload Identity Federation (WIF)!**
-  - **Setup:** Configured in OpenAI `Organization Settings > Security > Workload Identity Provider` (or via OpenAI Admin APIs), registering `https://token.actions.githubusercontent.com` with claim mappings & trust rules scoped by repository, branch, or environment.
-  - **Exchange flow:** The job (`id-token: write`) fetches a GitHub OIDC token (e.g. audience `https://api.openai.com/v1`) and exchanges it at `https://auth.openai.com/oauth/token` for a short-lived OpenAI access token mapped to a project service account.
-  - **Token lifetime:** Configurable from **60 seconds up to 3,600 seconds (1 hour maximum)**, defaulting to **1 hour** (capped by the upstream OIDC token `exp`).
-  - **Cost & plan availability:** **$0 federation surcharge** (standard API inference token billing). **Unverified:** whether self-serve WIF configuration in OpenAI Admin Portal is enabled on every basic pay-as-you-go organization or gated to Enterprise / specific usage tiers — verify on a standard developer org before exposing as default for solo users.
+  - **Setup:** Registering `https://token.actions.githubusercontent.com` with claim mappings & trust rules scoped by repository, branch, or environment (the exact console path `Organization Settings > Security > Workload Identity Provider` is **unverified**).
+  - **Exchange flow:** The job (`id-token: write`) fetches a GitHub OIDC token and exchanges it for a short-lived OpenAI access token mapped to a project service account (the exact exchange endpoint `https://auth.openai.com/oauth/token` and audience `https://api.openai.com/v1` are **unverified**).
+  - **Token lifetime:** Reported `60–3,600 seconds` (1 hour maximum) is **unverified**.
+  - **Cost & plan availability:** Any `$0` federation surcharge claim and whether self-serve WIF configuration is enabled on every basic pay-as-you-go organization or gated to Enterprise / specific usage tiers are **unverified** — verify on a standard developer org before exposing as default for solo users.
   - *(Fallback keyless paths also exist via cloud OIDC: AWS Bedrock / GCP Vertex AI for Claude, and Azure OpenAI via Entra WIF for OpenAI.)*
 
 ### Citations (R4)
-- Anthropic Platform Docs — Workload Identity Federation: https://docs.anthropic.com/ (and `platform.claude.com` Workload Identity docs; `anthropics/claude-code-action` WIF inputs, checked 2026-11-26)
-- OpenAI Platform Docs — Workload Identity Federation (`access_token_lifetime_seconds` 60–3,600 s, `https://auth.openai.com/oauth/token`): https://platform.openai.com/ (checked 2026-11-26)
+- Anthropic Platform Docs — Workload Identity Federation: https://platform.claude.com/docs/en/manage-claude/workload-identity-federation (checked 2026-11-26)
+- OpenAI Developer Docs — Workload Identity Federation: https://developers.openai.com/api/docs/guides/workload-identity-federation (checked 2026-11-26)
 
 ---
 
@@ -133,8 +134,8 @@ GitHub's runner automatically registers secret values (and dynamic `::add-mask::
 
 | Criterion | **GitHub Actions Artifact** (`actions/upload-artifact` v4) | **Outbound HTTPS Callback** (job `POST`s `report.json` to dashboard) |
 |---|---|---|
-| **Size limits** | Individual artifact upload up to ~10 GB (**unverified** exact per-file cap; total account storage: **500 MB Free**, **2 GB Team**, **50 GB Enterprise Cloud**, shared with Packages — exact Pro storage allowance **unverified**, historically 1 GB). A `report.json` is ~5–50 KB (negligible). | Dashboard-controlled (typically 1–10 MB JSON limit). |
-| **Retention limits** | Configurable **1–90 days** (public repos) / **1–400 days** (private repos) via `retention-days:` input (set `retention-days: 7` or `1` to keep Free-plan 500 MB storage near zero). | Stored directly in dashboard DB. |
+| **Size limits** | Individual artifact upload up to ~10 GB (**unverified** exact per-file cap; total account storage per GitHub's billing page: **500 MB Free**, **1 GB Pro**, **2 GB Team**, **50 GB Enterprise Cloud**, shared with Packages). A `report.json` is ~5–50 KB (negligible). | Dashboard-controlled (typically 1–10 MB JSON limit). |
+| **Retention limits** | Configurable **1–90 days** (public repos) via `retention-days:` input (reported up to **400 days** on private repos is **unverified**; set `retention-days: 7` or `1` to keep Free-plan 500 MB storage near zero). | Stored directly in dashboard DB. |
 | **Authentication** | Zero callback credentials needed on the runner; dashboard's GitHub App fetches the ZIP via `GET /actions/runs/{run_id}/artifacts` (`Actions: read`) after `workflow_run.completed`. | **Use the job's GitHub OIDC JWT** (`id-token: write`, `audience: https://<dashboard-host>`) verified by the dashboard against GitHub's JWKS for exact `repository` + `run_id`! Never pass a static callback secret in `workflow_dispatch` inputs (inputs are visible in plaintext). |
 | **Latency & reliability** | Slight delay (artifact upload + `workflow_run.completed` webhook + ZIP download); **100% durable** even if the dashboard briefly restarts during the run! | **Sub-second** delivery upon step completion (and can send live step progress), but requires retry logic if the dashboard is temporarily unreachable. |
 | **Public repository visibility** | **CRITICAL:** On **public repos**, anyone signed into GitHub can download Actions artifacts! `report.json` MUST contain zero plaintext secrets, private IPs, or personal emails (roadmap 041's sealed-box ciphertext is safe to expose publicly because only GitHub's private key can decrypt it). | Private between runner and dashboard over HTTPS even on public repos. |
@@ -144,7 +145,8 @@ GitHub's runner automatically registers secret values (and dynamic `::add-mask::
 - **Optional fast path:** If the dashboard wants sub-second completion updates without waiting for the `workflow_run` webhook, let the workflow optionally `POST report.json` authenticated with the job's **GitHub OIDC JWT** (`id-token: write`, verifying `repository` + `run_id` server-side), falling back to the artifact on any network error.
 
 ### Citations (R5)
-- GitHub Docs — Storing and sharing data from a workflow (Artifacts, storage quotas, 90/400-day retention): https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/storing-and-sharing-data-from-a-workflow (checked 2026-11-26)
+- GitHub Docs — Storing and sharing data from a workflow (Artifacts): https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/storing-and-sharing-data-from-a-workflow (checked 2026-11-26)
+- GitHub Docs — Billing for GitHub Actions (artifact storage quotas: 500 MB Free, 1 GB Pro, 2 GB Team, 50 GB Enterprise): https://docs.github.com/en/billing/managing-billing-for-products/managing-billing-for-github-actions/about-billing-for-github-actions (checked 2026-11-26)
 - GitHub REST API — List & download workflow run artifacts: https://docs.github.com/en/rest/actions/artifacts (checked 2026-11-26)
 
 ---
@@ -155,11 +157,11 @@ GitHub's runner automatically registers secret values (and dynamic `::add-mask::
 - **Public repositories:** Standard GitHub-hosted runners are **free and unmetered**.
 - **Private repositories (included monthly compute pool, standard 2-core Linux rate = `$0.006/min`):**
   - **GitHub Free:** `$12/mo` included (~**2,000** standard Linux minutes) + **500 MB** artifact/package storage.
-  - **GitHub Pro:** `$18/mo` included (~**3,000** standard Linux minutes).
+  - **GitHub Pro:** `$18/mo` included (~**3,000** standard Linux minutes) + **1 GB** storage.
   - **GitHub Team:** `$18/mo` included (~**3,000** standard Linux minutes) + **2 GB** storage.
   - **GitHub Enterprise Cloud:** `$300/mo` included (~**50,000** standard Linux minutes) + **50 GB** storage.
   - *(Windows, macOS, and larger Linux runners draw from the same monthly dollar/compute allowance at higher per-minute rates.)*
-- **Self-hosted runners:** **$0/min** from GitHub (a previously proposed self-hosted runner platform fee remains postponed/suspended as of 2026-11). Running post-setup OpsCrew operations on the user's server runner (per roadmap 041) keeps private-repo Actions bills at **$0** for routine operations!
+- **Self-hosted runners:** **$0/min** from GitHub (note: the status of any previously proposed/postponed self-hosted runner platform fee is **unverified** on the cited billing page). Running post-setup OpsCrew operations on the user's server runner (per roadmap 041) keeps private-repo Actions bills at **$0** for routine operations!
 
 ### Execution time & concurrency limits
 
