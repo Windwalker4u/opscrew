@@ -416,7 +416,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates && pnpm lint`
   - Effort: high
 
-- [ ] T3522 [P] [US6] Kamatera's API client
+- [x] T3522 [P] [US6] Kamatera's API client
   - Owns: `packages/providers/kamatera/src/client.ts`, `client.test.ts`, `src/__fixtures__/**`
   - Reads: plan 8.; research R4 §1 and §10; plan decision 1; `packages/providers/contabo/src/client.ts`
     and `packages/providers/ovhcloud/src/client.ts` (the templates); the public CLI schema
