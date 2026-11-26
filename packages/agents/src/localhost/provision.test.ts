@@ -7,6 +7,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { ScriptedApprovalHandler } from "../testing";
 import { DIGEST, FakeComputer, localPlan, localProject } from "./__fixtures__/computer";
 import { applyLocal } from "./apply";
@@ -596,5 +597,55 @@ describe("the local deploy lock", () => {
       code: "PHASE_PRECONDITION",
       hint: expect.stringContaining("deploy.lock"),
     });
+  });
+});
+
+describe("the switch of a database made before 047 on this computer", () => {
+  /** A deployed plan whose PostgreSQL has `logins: separate`, kept with the superuser's password only. */
+  async function before047() {
+    const base = localPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: base.services.map((service) =>
+        service.kind === "postgres" ? { ...service, options: { logins: "separate" } } : service,
+      ),
+      deployment: { ...base.deployment, firstDeployAt: "2026-10-20T08:00:00.000Z" },
+    });
+    const s = await project(plan);
+    const values = generatedValuesFile(s.deps);
+    await mkdir(dirname(values), { recursive: true });
+    await writeFile(values, `${JSON.stringify({ dbPassword: fakeSecret("generic-password") })}\n`);
+    const snapshots: string[][] = [];
+    const run = (options: Parameters<typeof runProvision>[1] = {}) =>
+      runProvision(s.deps, {
+        ...options,
+        services: {
+          localhost: s.computer.services(),
+          snapshot: async (skip) => {
+            snapshots.push([...skip]);
+          },
+        },
+      });
+    return { ...s, run, values, snapshots };
+  }
+
+  it("--plan-only shows the switch and keeps no new login's password, so the run that approves it takes the snapshot first (047)", async () => {
+    const s = await before047();
+    await s.run({ planOnly: true });
+    expect(s.deps.reporter.text()).toMatch(/Switch hash: [0-9a-f]{64}/);
+    const kept = JSON.parse(await readFile(s.values, "utf8")) as {
+      services?: Record<string, Record<string, string>>;
+    };
+    expect(Object.keys(kept.services?.db ?? {})).toEqual([]);
+    expect(s.snapshots).toEqual([]);
+
+    await s.run();
+    expect(s.approve.requests.map((r) => r.kind)).toContain("iac-apply");
+    expect(s.snapshots).toEqual([[]]);
+    const after = JSON.parse(await readFile(s.values, "utf8")) as typeof kept;
+    expect(Object.keys(after.services?.db ?? {}).sort()).toEqual([
+      "owner-password",
+      "runtime-password",
+    ]);
   });
 });

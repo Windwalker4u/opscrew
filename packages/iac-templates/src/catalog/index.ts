@@ -35,6 +35,7 @@ export {
   grantHashSecret,
   hasLogin,
   kafkaTool,
+  POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
   SERVICE_SPECS,
 };

@@ -284,6 +284,24 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     }
   });
 
+  it("--plan-only shows the switch and keeps no new login's password, so the run that approves it still takes the snapshot first", async () => {
+    const s = await project(planWith(SEPARATE), BEFORE_047);
+    const change = loginsSwitch(planWith(SEPARATE), BEFORE_047, "prod");
+    await runProvision(s.deps, { services: s.services, planOnly: true });
+    expect(s.deps.reporter.text()).toContain(`approve it with --approve ${change?.hash}.`);
+    expect(s.atSnapshot).toEqual([]);
+    const kept = JSON.parse(await readFile(generatedValuesFile(s.deps), "utf8")) as KeptLogins;
+    expect(kept.services?.db ?? {}).toEqual({});
+    expect(s.github.secrets.size).toBe(0);
+
+    const before = s.handler.requests.length;
+    await runProvision(s.deps, { services: s.services, approveHashes: [change?.hash ?? ""] });
+    expect(s.handler.requests[before]).toMatchObject({ kind: "iac-apply", planHash: change?.hash });
+    expect(s.atSnapshot).toHaveLength(1);
+    expect(s.atSnapshot[0]).toMatchObject({ generated: false, secrets: 0 });
+    expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
+  });
+
   it("a failed snapshot stops provision with nothing written, saying what to do next", async () => {
     const s = await project(planWith(SEPARATE), BEFORE_047);
     s.services.snapshot = async () => {
