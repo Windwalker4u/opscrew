@@ -18,7 +18,7 @@ import { noStartMigrations } from "../railpack-laravel";
 import type { RuntimeContext } from "../runtime";
 import { appHealthcheck } from "../runtime/healthcheck";
 import { planFilePath } from "../workflow/shared";
-import { type DrillSnapshot, drillImageOk, drillPlan } from "./index";
+import { type DrillSnapshot, drillImageOk, drillPlan, drillServices } from "./index";
 
 /** Each restored database's table count, which a Portainer drill runs in a one-off of its image. */
 export { databaseCount } from "../workflow/snapshots";
@@ -58,7 +58,8 @@ const NO_CONTEXT: RuntimeContext = {
 /**
  * The drill's stack of the snapshot in the user's Portainer, rendered like the app's stack
  * (`renderPortainerStack`) from {@link drillPlan} with the app at `o.image`: the app and the
- * snapshot's services with their one-time setup (MongoDB's replica set), their health checks (the
+ * snapshot's services ({@link drillServices}: a PostgreSQL's pooler too) with their one-time setup
+ * (MongoDB's replica set), their health checks (the
  * app the one a server's Compose file gives it, which the app's stack has none of),
  * memory limits, secrets as the stack's variables and settings inline; no release command,
  * workers, cron, Caddy, tunnel, stamp or snapshot service; one network `internal` with
@@ -90,7 +91,7 @@ export function renderPortainerDrill(
     volumes?: Record<string, unknown>;
     configs?: Record<string, unknown>;
   };
-  const backing = drill.services.map((service) => service.name);
+  const backing = drillServices(drill);
   const kept = Object.keys(rendered.services).filter(
     (key) =>
       key === "app" ||
