@@ -20,7 +20,9 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
   would hold 046 back. With it, 049 each app's own network on a shared server (the lead's
   hardening call, 2026-11-25).
-- **Beside them:** 035's first providers, started by a second contributor.
+- **Beside them:** 035's first providers, started by a second contributor, whose agent builds the
+  dashboard's DevMem module first (the founder, 2026-11-26), then 035's Kamatera, IONOS Cloud and
+  UpCloud.
 - **After them:** 041 OpsCrew in the user's GitHub Actions, approved from the dashboard.
 - **Then:** 033 scaling across servers (his choice on 2026-11-15, before AWS), then 034 AWS, then
   more providers in phases (035–039), then 042 GitLab and 043 Forgejo and Gitea, each once the
