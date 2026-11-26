@@ -8,6 +8,7 @@ import { RELEASE_DB_ENV, serviceSecrets, serviceSpec } from "@opscrew/iac-templa
 import {
   APP_SERVER,
   type DeployPlan,
+  DeployPlanSchema,
   type PlanService,
   readArtifact,
   writeArtifact,
@@ -540,6 +541,50 @@ describe("rotateServices with PostgreSQL's two logins (047)", () => {
     expect(input.files[RELEASE_DB_ENV.file]).toBe(release);
     expect(input.files["app.env"]).toContain(`app_runtime:${runtime}@db:5432/app`);
     expectNoValue(w, [owner, runtime, ...Object.values(old)]);
+  });
+});
+
+describe("rotateServices with PostgreSQL's pooler (050)", () => {
+  /** `plan` with db's two logins and its pooler. */
+  const pooled = (plan: DeployPlan) =>
+    DeployPlanSchema.parse({
+      ...plan,
+      services: plan.services.map((s) =>
+        s.name === "db" ? { ...s, options: { logins: "separate", pooler: "pgbouncer" } } : s,
+      ),
+    });
+
+  it("rewrites the workers' env file, on the server and in GitHub, with the runtime login's new password on PostgreSQL itself", async () => {
+    const w = await world(pooled(stagingPlan([{ kind: "postgres", name: "db" }])));
+    await w.run(["db"]);
+    const runtime = (await generated(w)).services.db?.["runtime-password"] as string;
+    const workers = `DATABASE_URL=postgresql://app_runtime:${runtime}@db:5432/app\n`;
+    expect(secret(w, "WORKER_DB_ENV")).toBe(workers);
+    const files = ["app.env", RELEASE_DB_ENV.file, "worker.db.env", "db.env"];
+    const input = readInput(w.servers.app.runs[0] as ScriptRun, files);
+    expect(input.files["worker.db.env"]).toBe(workers);
+    expect(input.files["app.env"]).toContain(`app_runtime:${runtime}@db-pooler:6432/app`);
+    expectNoValue(w, [runtime, ...Object.values(w.old.services.db ?? {})]);
+  });
+
+  it("rewrites it on the app's server when the database runs on an extra server", async () => {
+    const w = await world(pooled(splitStagingPlan()));
+    await w.run(["db"]);
+    const runtime = (await generated(w)).services.db?.["runtime-password"] as string;
+    const data = w.plan.network?.members.find((member) => member.name === "data")?.address;
+    expect(data).toMatch(/^10\./);
+    const workers = `DATABASE_URL=postgresql://app_runtime:${runtime}@${data}:5432/app\n`;
+    expect(secret(w, "WORKER_DB_ENV")).toBe(workers);
+    const app = readInput(w.servers.app.runs[0] as ScriptRun, ["app.env", "worker.db.env"]);
+    expect(app.files["worker.db.env"]).toBe(workers);
+    expect(app.values).toEqual([]);
+  });
+
+  it("leaves the workers' env file alone without the pooler", async () => {
+    const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
+    await w.run(["db"]);
+    expect(secret(w, "WORKER_DB_ENV")).toBeUndefined();
+    expect(w.servers.app.runs[0]?.script).not.toContain("worker.db.env");
   });
 });
 

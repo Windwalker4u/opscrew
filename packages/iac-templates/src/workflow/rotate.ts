@@ -1,10 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
-import { POSTGRES_OWNER_SECRET } from "../catalog";
+import { APP_SERVER, type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
+import { POSTGRES_OWNER_SECRET, POSTGRES_RUNTIME_SECRET } from "../catalog";
 import type { RotationCommand, RotationMode, RotationStep } from "../catalog/types";
 import { shellQuote } from "../runtime/services";
 import { maskFileScript } from "./index";
-import { opscrew, RELEASE_DB_ENV, said } from "./shared";
+import { hasWorkerDbEnv, opscrew, RELEASE_DB_ENV, said, WORKER_DB_ENV } from "./shared";
 import { SNAPSHOT_GENERATIONS, SNAPSHOTS_DIR } from "./snapshots";
 import {
   appFolder,
@@ -104,18 +104,22 @@ export interface RotateStep {
 
 /**
  * The env files `rotate.sh` on `server` reads from its input, in order: on the app's server the
- * app's first, then the release's when a step there changes its login, then each step's once.
+ * app's first, then the release's when a step there changes its login, then beside a PostgreSQL's
+ * pooler the workers' ({@link WORKER_DB_ENV}, 050), which hold the runtime login's password as
+ * `app.env` does, wherever the database runs; then each step's once.
  */
 export function rotateEnvFiles(
+  plan: Pick<DeployPlan, "services">,
   steps: readonly RotateStep[],
   server: string = APP_SERVER,
 ): string[] {
-  const release =
-    server === APP_SERVER && steps.some((step) => step.secrets?.includes(POSTGRES_OWNER_SECRET));
+  const app = server === APP_SERVER;
+  const release = app && steps.some((step) => step.secrets?.includes(POSTGRES_OWNER_SECRET));
   return [
     ...new Set([
-      ...(server === APP_SERVER ? [APP_ENV] : []),
+      ...(app ? [APP_ENV] : []),
       ...(release ? [RELEASE_DB_ENV.file] : []),
+      ...(app && hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.file] : []),
       ...steps.map((s) => s.envFile),
     ]),
   ];
@@ -128,6 +132,7 @@ export function rotateEnvFiles(
  * uses none).
  */
 export function rotateInput(
+  plan: Pick<DeployPlan, "services">,
   steps: readonly RotateStep[],
   input: {
     envFiles: Readonly<Record<string, string>>;
@@ -138,7 +143,7 @@ export function rotateInput(
   if (input.values.length !== steps.length) {
     throw new Error("rotate.sh's input needs the old and the new value of each step.");
   }
-  const lines = rotateEnvFiles(steps, server).map((file) => {
+  const lines = rotateEnvFiles(plan, steps, server).map((file) => {
     const content = input.envFiles[file];
     if (content === undefined) throw new Error(`rotate.sh's input has no new ${file}.`);
     return Buffer.from(content, "utf8").toString("base64");
@@ -241,6 +246,26 @@ function recreated(steps: readonly RotateStep[]): string[] {
   ];
 }
 
+/**
+ * The poolers a rotation creates again, once each (050): that of each PostgreSQL with
+ * `pooler: pgbouncer` whose runtime login's password a step changes, which the pooler reads from
+ * the database's env file at its start only.
+ */
+function poolers(plan: DeployPlan, steps: readonly RotateStep[]): string[] {
+  return [
+    ...new Set(
+      steps.flatMap((step) => {
+        const service = plan.services.find((s) => s.name === step.service);
+        return service !== undefined &&
+          postgresPooler(service) &&
+          step.secrets?.includes(POSTGRES_RUNTIME_SECRET)
+          ? [poolerName(service)]
+          : [];
+      }),
+    ),
+  ];
+}
+
 /** `lines` indented by `pad`. */
 function indent(pad: string, lines: readonly string[]): string[] {
   return lines.map((line) => `${pad}${line}`);
@@ -263,7 +288,8 @@ function indent(pad: string, lines: readonly string[]): string[] {
  * 3. per step, `begin` in the service's container; a `restart` step's env file written and its
  *    service created again instead;
  * 4. the env files written (owner-only), Grafana Alloy's masking file rewritten from them where it
- *    runs ({@link maskRewrite}); the services of steps with `recreate` created again;
+ *    runs ({@link maskRewrite}); the services of steps with `recreate` created again, then the
+ *    pooler of each PostgreSQL whose runtime login's password changes ({@link poolers});
  * 5. on the app's server, the app's switch with the image that runs ({@link appSwitch}), and its
  *    workers and cron;
  * 6. per step, `finish`; the hold released (only this rotation's), the `.previous` files removed.
@@ -272,8 +298,8 @@ function indent(pad: string, lines: readonly string[]): string[] {
  * stops it there with the step and how to go on or, before step 6 began, undo it; deploys stay
  * held. `--undo`, before step 6 began, puts the `.previous` env files back (the masking file too),
  * creates the recreated services again, runs each `begin` command that ran again with the values
- * swapped, switches the app back if its switch began, then runs each begun step's `finish` swapped,
- * or its own `undo`, and releases the hold; it goes on after its own last unit too. The commands'
+ * swapped, creates the poolers again if step 4 began, switches the app back if its switch began,
+ * then runs each begun step's `finish` swapped, or its own `undo`, and releases the hold; it goes on after its own last unit too. The commands'
  * output stays in {@link ROTATE_LOG}; nothing it prints holds a value, and no value is ever on a
  * command line.
  */
@@ -284,7 +310,7 @@ export function renderRotateScript(
 ): string[] {
   const app = server === APP_SERVER;
   const folder = appFolder(plan);
-  const files = rotateEnvFiles(steps, server);
+  const files = rotateEnvFiles(plan, steps, server);
   const number = new Map(files.map((file, i) => [file, i + 1]));
   const write = (file: string) => [
     `printf '%s' "$rot_env_${number.get(file)}" | base64 -d > ${file}.new`,
@@ -292,6 +318,8 @@ export function renderRotateScript(
   ];
   const previous = (file: string) => `${ROTATE_DIR}/${file}.previous`;
   const services = recreated(steps);
+  const pooled = poolers(plan, steps);
+  const restarts = [...services, ...pooled];
   const mask = maskRewrite(plan, server);
 
   const units: Unit[] = [
@@ -351,11 +379,12 @@ export function renderRotateScript(
   });
   units.push({
     step: 4,
-    what: `writing the new env files${services.length === 0 ? "" : ` and restarting ${services.join(", ")} with them`}`,
+    what: `writing the new env files${restarts.length === 0 ? "" : ` and restarting ${restarts.join(", ")} with them`}`,
     lines: [
       ...files.flatMap(write),
       ...mask,
       ...(services.length === 0 ? [] : [recreate(services)]),
+      ...(pooled.length === 0 ? [] : [recreate(pooled, true)]),
     ],
   });
   /** The last unit of `begin` on an extra server. */
@@ -471,6 +500,15 @@ export function renderRotateScript(
           },
         ]),
     ...swappedBegins,
+    ...(pooled.length === 0
+      ? []
+      : [
+          {
+            what: `restarting ${pooled.join(", ")} with the old values`,
+            when: `[ "$rot_done" -ge ${envUnit - 1} ]`,
+            lines: [recreate(pooled, true)],
+          },
+        ]),
     ...(app
       ? [
           {

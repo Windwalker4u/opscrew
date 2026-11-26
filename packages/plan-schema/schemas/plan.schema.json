@@ -1292,6 +1292,10 @@
                         "bloom"
                       ]
                     }
+                  },
+                  "pooler": {
+                    "type": "string",
+                    "const": "pgbouncer"
                   }
                 },
                 "additionalProperties": false

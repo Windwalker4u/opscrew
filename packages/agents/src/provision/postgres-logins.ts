@@ -25,6 +25,7 @@ import {
   type DeployPlan,
   type PlanService,
   postgresLogins,
+  postgresPooler,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { loginsUpgradeNotice, loginsVersion } from "../design/postgres-logins";
@@ -120,6 +121,21 @@ export function loginsNotices(plan: DeployPlan, kept: KeptLogins, command: strin
     );
 }
 
+/**
+ * Provision's line for each existing PostgreSQL of a PHP app with its own logins but no pooler
+ * (050, plan 4.), one whose superuser's password this environment keeps (`kept`): how to add it.
+ * It changes nothing.
+ */
+export function poolerNotices(plan: DeployPlan, kept: KeptLogins): string[] {
+  if (kept.dbPassword === undefined || plan.app.build?.runtime.language !== "php") return [];
+  return postgresOf(plan)
+    .filter((service) => postgresLogins(service) && !postgresPooler(service))
+    .map(
+      (service) =>
+        `Your PHP app opens a new database connection on every request. Add \`pooler: pgbouncer\` under ${service.name}'s options in ${planFile(plan)} to keep them open.`,
+    );
+}
+
 /** The switch of existing databases to their own logins: which, its plan's lines and its hash. */
 export interface LoginsSwitch {
   /** The PostgreSQLs that switch, by name. */
@@ -169,7 +185,7 @@ export interface LoginsSnapshot {
 
 /**
  * Provision's step for PostgreSQL's two logins, before anything else changes: the refusals
- * ({@link requireLogins}), the notices ({@link loginsNotices}), then a switch's plan
+ * ({@link requireLogins}), the notices ({@link loginsNotices}, {@link poolerNotices}), then a switch's plan
  * ({@link loginsSwitch}). With `planOnly` that plan is shown with its hash and nothing more;
  * otherwise it is approved by its hash (`iac-apply`; `--approve <hash>` in a script), then the
  * switching databases' snapshot is taken (`snapshot`, their parts alone), each that never ran left
@@ -186,7 +202,9 @@ export async function postgresLoginsStep(
   if (!plan.services.some((service) => service.kind === "postgres")) return undefined;
   const kept = await keptLogins(deps);
   requireLogins(plan, kept, o.command);
-  for (const notice of loginsNotices(plan, kept, o.command)) deps.reporter.info(notice);
+  for (const notice of [...loginsNotices(plan, kept, o.command), ...poolerNotices(plan, kept)]) {
+    deps.reporter.info(notice);
+  }
   const change = loginsSwitch(plan, kept, deps.paths.environment);
   if (change === undefined) return undefined;
   const title = `Switch ${change.services.join(" and ")} to separate logins for the app and its migrations`;

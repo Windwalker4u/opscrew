@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { sha256Hex } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { withServices } from "../catalog/__fixtures__/plans";
+import { withPooler, withServices } from "../catalog/__fixtures__/plans";
 import { splitPlan, withMonitoring, withProcesses, withSqlite } from "./__fixtures__/plans";
 import { fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import {
@@ -120,7 +120,7 @@ const IMAGE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
  * - `compose ps -q <service>` prints `c-<service>` while $WORK/running/<service> exists; `ps -aq app`
  *   the app's containers ($WORK/apps/list); `ps -aq <worker>` `p-<worker>` for those in PROCESSES.
  * - `compose up` of services or workers creates again each whose env file (the app's for those in
- *   PROCESSES) differs from the one it was created with ($WORK/created/<service>), or every one with
+ *   PROCESSES, its database's for a pooler `<service>-pooler`) differs from the one it was created with ($WORK/created/<service>), or every one with
  *   `--force-recreate`, logging it to $WORK/recreated.log; it fails for the service UP_FAIL names.
  *   `--scale app=<n>` starts app containers `a<k>` up to n, each keeping the `app.env` it started
  *   with ($WORK/apps/a<k>.env); `up … app` alone replaces them with one.
@@ -187,7 +187,7 @@ const FAKE_DOCKER = [
   '      for arg in "${@:3}"; do',
   '        [[ "$arg" != -* ]] || continue',
   '        if [[ "${UP_FAIL:-}" == "$arg" ]]; then echo "container $arg is unhealthy" >&2; exit 1; fi',
-  '        env="$arg.env"; [[ " ${PROCESSES:-} " != *" $arg "* ]] || env=app.env',
+  '        env="$arg.env"; [[ " ${PROCESSES:-} " != *" $arg "* ]] || env=app.env; [[ "$arg" != *-pooler ]] || env="${arg%-pooler}.env"',
   '        slurp "$env"; now="$text"; slurp "$WORK/created/$arg"',
   '        if [[ " $* " == *" --force-recreate "* || "$now" != "$text" ]]; then',
   '          printf "%s" "$now" > "$WORK/created/$arg"; echo "$arg" >> "$WORK/recreated.log"',
@@ -254,10 +254,14 @@ const NAMES = [...SERVICES, "docs"];
 let values: { old: string; new: string }[] = [];
 const value = (service: string) => values[NAMES.indexOf(service)] ?? { old: "", new: "" };
 
-/** The env files with the old or the new values: the app's, and `<service>.env` of each. */
+/**
+ * The env files with the old or the new values: the app's, the workers' beside a pooler (050),
+ * which only a plan with one reads, and `<service>.env` of each.
+ */
 function envFiles(which: "old" | "new"): Record<string, string> {
   const pick = (service: string) => value(service)[which];
   return {
+    "worker.db.env": `DB_SECRET=${pick("db")}\n`,
     "app.env": `${NAMES.map((service) => `${service.toUpperCase()}_SECRET=${pick(service)}`).join("\n")}\nPORT=3000\n`,
     ...Object.fromEntries(NAMES.map((service) => [`${service}.env`, `SECRET=${pick(service)}\n`])),
   };
@@ -313,6 +317,7 @@ function run(
   const input =
     o.input ??
     rotateInput(
+      o.plan ?? PLAN,
       steps,
       { envFiles: envFiles("new"), values: steps.map((s) => value(s.service)) },
       o.server,
@@ -358,7 +363,7 @@ const held = () => existsSync(at(".snapshots/.held"));
 /** The server holds the new values everywhere and the old ones nowhere: the rotation is done. */
 function expectRotated(): void {
   const fresh = envFiles("new");
-  for (const file of rotateEnvFiles(STEPS)) expect(read(at(file)), file).toBe(fresh[file]);
+  for (const file of rotateEnvFiles(PLAN, STEPS)) expect(read(at(file)), file).toBe(fresh[file]);
   expect(valid("db")).toEqual([value("db").new]);
   expect(valid("cache")).toEqual([value("cache").new]);
   expect(valid("jobs")).toEqual([value("jobs").new]);
@@ -369,7 +374,7 @@ function expectRotated(): void {
   expect(routedEnv()).toBe(fresh["app.env"]);
   expect(lines(`${work}/apps/list`)).toHaveLength(1);
   expect(held()).toBe(false);
-  for (const file of rotateEnvFiles(STEPS)) {
+  for (const file of rotateEnvFiles(PLAN, STEPS)) {
     expect(existsSync(at(`.rotate/${file}.previous`)), file).toBe(false);
   }
   expect(existsSync(at(".rotate/state"))).toBe(false);
@@ -384,7 +389,7 @@ function expectUndone(): void {
   }
   expect(held()).toBe(false);
   expect(existsSync(at(".rotate/state"))).toBe(false);
-  for (const file of rotateEnvFiles(STEPS)) {
+  for (const file of rotateEnvFiles(PLAN, STEPS)) {
     expect(existsSync(at(`.rotate/${file}.previous`)), file).toBe(false);
   }
 }
@@ -403,12 +408,12 @@ function expectUnchanged(): void {
 describe("rotateInput and rotateEnvFiles", () => {
   it("lists the app's env file first, then each step's once", () => {
     const [db, cache] = STEPS as [RotateStep, RotateStep];
-    expect(rotateEnvFiles([cache, cache, db])).toEqual(["app.env", "cache.env", "db.env"]);
+    expect(rotateEnvFiles(PLAN, [cache, cache, db])).toEqual(["app.env", "cache.env", "db.env"]);
   });
 
   it("puts each env file in base64 on a line, then each step's two values", () => {
     const steps = [STEPS[0] as RotateStep];
-    const input = rotateInput(steps, {
+    const input = rotateInput(PLAN, steps, {
       envFiles: { "app.env": "A=1\n", "db.env": "B=two words\n" },
       values: [{ old: "first", new: "second" }],
     });
@@ -421,14 +426,14 @@ describe("rotateInput and rotateEnvFiles", () => {
   it("refuses an input without an env file, a value per step, or with a line break in a value", () => {
     const steps = [STEPS[0] as RotateStep];
     const pair = { old: "first", new: "second" };
-    expect(() => rotateInput(steps, { envFiles: { "app.env": "" }, values: [pair] })).toThrow(
+    expect(() => rotateInput(PLAN, steps, { envFiles: { "app.env": "" }, values: [pair] })).toThrow(
       "no new db.env",
     );
     expect(() =>
-      rotateInput(steps, { envFiles: { "app.env": "", "db.env": "" }, values: [] }),
+      rotateInput(PLAN, steps, { envFiles: { "app.env": "", "db.env": "" }, values: [] }),
     ).toThrow("each step");
     expect(() =>
-      rotateInput(steps, {
+      rotateInput(PLAN, steps, {
         envFiles: { "app.env": "", "db.env": "" },
         values: [{ old: "a\nb", new: "c" }],
       }),
@@ -515,13 +520,64 @@ describe.skipIf(!shWorks())("rotate.sh", { timeout: 180_000 }, () => {
     expect(existsSync(at(ROTATE_APPROVAL_FILE))).toBe(false);
     expect(read(at(ROTATE_LOG))).toContain(value("db").new);
     if (!windows) {
-      for (const file of [...rotateEnvFiles(STEPS), ROTATE_LOG]) expect(mode(at(file))).toBe("600");
+      for (const file of [...rotateEnvFiles(PLAN, STEPS), ROTATE_LOG])
+        expect(mode(at(file))).toBe("600");
     }
     // The approval was used: a run needs a new one.
     const again = run();
     expect(again.status).toBe(1);
     expect(again.stderr).toContain("A rotation needs its one-time approval");
     expect(ran("db change")).toBe(1);
+  });
+
+  describe("with PgBouncer beside db (050)", () => {
+    const plan = withPooler(PLAN);
+    /** {@link STEPS} with db's step the rotation of `secret`. */
+    const rotating = (secret: string) =>
+      STEPS.map((step) => (step.service === "db" ? { ...step, secrets: [secret] } : step));
+    const calls = () => lines(`${work}/docker.log`);
+    const callAt = (text: string) => calls().findIndex((call) => call.includes(text));
+    const pooler = "--force-recreate db-pooler";
+
+    it("creates db-pooler again from the new db.env once db has the runtime login's new password, before the app's switch", () => {
+      approve();
+      const steps = rotating("runtime-password");
+      const result = run([HASH], {}, { plan, steps });
+      expect(result.status, result.output).toBe(0);
+      expectRotated();
+      expect(read(`${work}/created/db-pooler`)).toBe(envFiles("new")["db.env"]);
+      // The workers' own env file holds the runtime login's new password before they restart.
+      expect(read(at("worker.db.env"))).toBe(envFiles("new")["worker.db.env"]);
+      if (!windows) expect(mode(at("worker.db.env"))).toBe("600");
+      expect(recreatedList().filter((name) => name === "db-pooler")).toHaveLength(1);
+      expect(callAt(pooler)).toBeGreaterThan(callAt("c-db sh -c change"));
+      expect(callAt(pooler)).toBeGreaterThan(callAt("--wait stream"));
+      expect(callAt(pooler)).toBeLessThan(callAt("--scale app=2 app"));
+    });
+
+    it("creates it again from the old db.env on an undo, once db has the old password, before the app's switch back", () => {
+      approve();
+      const steps = rotating("runtime-password");
+      expect(run([HASH], { HEALTH_FAIL: "1" }, { plan, steps }).status).toBe(1);
+      expect(read(`${work}/created/db-pooler`)).toBe(envFiles("new")["db.env"]);
+      write(`${work}/docker.log`, "");
+      approve("undo");
+      const undone = run(["--undo", HASH], {}, { plan, steps });
+      expect(undone.status, undone.output).toBe(0);
+      expectUndone();
+      expect(read(`${work}/created/db-pooler`)).toBe(envFiles("old")["db.env"]);
+      expect(read(at("worker.db.env"))).toBe(envFiles("old")["worker.db.env"]);
+      expect(callAt(pooler)).toBeGreaterThan(callAt("c-db sh -c change"));
+      expect(callAt(pooler)).toBeLessThan(callAt("kamal-proxy deploy shop"));
+    });
+
+    it("leaves it alone when another of db's passwords rotates", () => {
+      approve();
+      const result = run([HASH], {}, { plan, steps: rotating("password") });
+      expect(result.status, result.output).toBe(0);
+      expect(recreatedList()).not.toContain("db-pooler");
+      expect(read(`${work}/docker.log`)).not.toContain("db-pooler");
+    });
   });
 
   describe("refuses before any change", () => {
@@ -601,7 +657,7 @@ describe.skipIf(!shWorks())("rotate.sh", { timeout: 180_000 }, () => {
 
     it("with an incomplete or unreadable input", () => {
       approve();
-      const input = rotateInput(STEPS, {
+      const input = rotateInput(PLAN, STEPS, {
         envFiles: envFiles("new"),
         values: STEPS.map((s) => value(s.service)),
       });
@@ -1269,7 +1325,7 @@ describe.skipIf(!shWorks())("rotate.sh", { timeout: 180_000 }, () => {
     /** `sh rotate.sh <args>` on the split plan's server `data`, for its services. */
     const onData = (args: readonly string[], env: Record<string, string> = {}, plan = SPLIT) =>
       run(args, env, { plan, steps: EXTRA, server: "data" });
-    const files = rotateEnvFiles(EXTRA, "data");
+    const files = rotateEnvFiles(SPLIT, EXTRA, "data");
 
     it("reads only its services' env files", () => {
       expect(files).toEqual(["db.env", "docs.env"]);

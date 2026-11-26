@@ -153,3 +153,31 @@ describe("provision's memory check on a server other apps share", () => {
     await expectNoLeak(s);
   });
 });
+
+describe("provision's memory check and PostgreSQL's pooler (050)", () => {
+  it("counts the pooler's 32 MB beside its database", async () => {
+    const s = await forum(512);
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    const pooled = DeployPlanSchema.parse({
+      ...plan,
+      services: [
+        {
+          name: "db",
+          kind: "postgres",
+          version: "17",
+          memoryMb: 512,
+          enabled: true,
+          options: { logins: "separate", pooler: "pgbouncer" },
+          reason: "The app uses PostgreSQL.",
+          licence: "PostgreSQL",
+        },
+      ],
+    });
+    expect(appMemoryMb(pooled)).toBe(512 * 2 + 512 + 32);
+    await writeArtifact("plan", s.deps.paths.files.plan, pooled);
+    await runProvision(s.deps, { services: s.services, planOnly: true });
+
+    expect(warnings(s).join("\n")).toContain("the memory limits of this app (1568 MB)");
+    await expectNoLeak(s);
+  });
+});

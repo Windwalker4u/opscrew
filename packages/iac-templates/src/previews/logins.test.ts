@@ -1,6 +1,8 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { withPooler } from "../catalog/__fixtures__/plans";
+import { withProcesses } from "../workflow/__fixtures__/plans";
 import { envFor, IMAGE_NAME, previewPlan, REPOSITORY } from "./__fixtures__/plans";
 import { previewSecret, previewTemplatePlan, renderPreviewRecipe } from "./index";
 
@@ -42,5 +44,26 @@ describe("a preview's release with PostgreSQL's two logins (047)", () => {
         env: { ...envFor(previewTemplatePlan(plan)), release: "DATABASE_URL=@SECRET:bad@\n" },
       }),
     ).toThrow("The preview env template release.db.env holds an @SECRET: placeholder");
+  });
+});
+
+describe("a preview's workers beside PostgreSQL's pooler (050)", () => {
+  it("get their worker.db.env from the env templates, which they read after app.env", () => {
+    const plan = withProcesses(withPooler(previewPlan()), {
+      workers: [{ name: "jobs", command: "php artisan queue:work" }],
+    });
+    const workers = `DATABASE_URL=postgresql://app_runtime:${previewSecret("db-runtime-password", "hex32")}@db:5432/app\n`;
+    const files = renderPreviewRecipe(plan, {
+      repository: REPOSITORY,
+      imageName: IMAGE_NAME,
+      env: { ...envFor(previewTemplatePlan(plan)), workers },
+    });
+    const byPath = Object.fromEntries(
+      files.map((file) => [file.path.slice(DIR.length + 1), file.content]),
+    );
+    expect(byPath["template/env/worker.db.env"]).toBe(workers);
+    const compose = parse(byPath["template/compose.yaml"] as string);
+    expect(compose.services.jobs.env_file).toEqual(["app.env", "worker.db.env"]);
+    expect(compose.services.app.env_file).toEqual(["app.env"]);
   });
 });

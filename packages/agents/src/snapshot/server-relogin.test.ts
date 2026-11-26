@@ -33,11 +33,24 @@ const SQL = {
   root2: pw("sql-root-2"),
 };
 const CACHE = pw("cache-now");
+/** PostgreSQL's two logins' passwords of then and now (047). */
+const LOGINS = {
+  owner1: pw("owner-1"),
+  runtime1: pw("runtime-1"),
+  owner2: pw("owner-2"),
+  runtime2: pw("runtime-2"),
+};
 /** The user's own value in the app's settings. */
 const DOTENV = `STRIPE_SECRET_KEY=${pw("stripe")}\n`;
 /** The app's own generated secret, the same before and after. */
 const ENV = { SESSION_SECRET: pw("session") };
-const VALUES = [...Object.values(DB), ...Object.values(SQL), CACHE, ENV.SESSION_SECRET];
+const VALUES = [
+  ...Object.values(DB),
+  ...Object.values(SQL),
+  ...Object.values(LOGINS),
+  CACHE,
+  ENV.SESSION_SECRET,
+];
 
 /** The whole-server snapshots at the provider, taken before the rotations of 2026-11-07. */
 const SNAPSHOT = { id: "770011", createdAt: "2026-11-05T08:00:00Z", sizeGb: 2 };
@@ -390,6 +403,65 @@ describe("opscrew restore --server after a rotation", () => {
     expect(request?.details).toContain("OPSCREW_DEPLOY_PAUSED");
     expect(run?.args).toBe(request?.planHash);
     expect(w.deps.reporter.text()).toContain("gave db its current values again");
+    expectNoValue(w);
+  });
+
+  it("sets each of a PostgreSQL's logins again, then creates its pooler again before the app's switch (047, 050)", async () => {
+    const base = stagingPlan([{ kind: "postgres", name: "db" }]);
+    const plan = stagingPlan([{ kind: "postgres", name: "db" }], {
+      fields: {
+        services: base.services.map((s) => ({
+          ...s,
+          options: { logins: "separate", pooler: "pgbouncer" },
+        })),
+      },
+    });
+    const then = {
+      password: DB.g1,
+      "owner-password": LOGINS.owner1,
+      "runtime-password": LOGINS.runtime1,
+    };
+    const w = await world(plan, {
+      rotated: { db: 2 },
+      generated: {
+        dbPassword: DB.g2,
+        services: {
+          db: { "owner-password": LOGINS.owner2, "runtime-password": LOGINS.runtime2 },
+        },
+        generations: { db: 2 },
+        history: { db: { "1": then } },
+      },
+      appEnv: {
+        dbPassword: DB.g1,
+        services: {
+          db: { "owner-password": LOGINS.owner1, "runtime-password": LOGINS.runtime1 },
+        },
+      },
+      // app.env, release.db.env, worker.db.env (050) and db.env.
+      files: 4,
+    });
+    for (const value of Object.values(then)) w.app.accepts.add(value);
+    await w.restore();
+
+    const [run] = w.app.runs;
+    // The workers' env file gets the runtime login's current password, on PostgreSQL itself.
+    expect(readInput(run, 4).files[2]).toBe(
+      `DATABASE_URL=postgresql://app_runtime:${LOGINS.runtime2}@db:5432/app\n`,
+    );
+    expect(readInput(run, 4).values).toEqual([
+      DB.g1,
+      DB.g2,
+      LOGINS.owner1,
+      LOGINS.owner2,
+      LOGINS.runtime1,
+      LOGINS.runtime2,
+    ]);
+    expect([...w.app.accepts].sort()).toEqual([DB.g2, LOGINS.owner2, LOGINS.runtime2].sort());
+    // rotate.sh creates the pooler again from the current env files, before the app's switch.
+    const script = run?.script ?? "";
+    const pooler = script.indexOf("--force-recreate db-pooler");
+    expect(pooler).toBeGreaterThan(0);
+    expect(pooler).toBeLessThan(script.indexOf("switching the app to the new values"));
     expectNoValue(w);
   });
 

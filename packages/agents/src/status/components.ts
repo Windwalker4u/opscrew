@@ -1,20 +1,21 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
 import { hostSettingsServices, serviceSpec } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
 import { hasExtraServers } from "../shared/servers";
 
 /** A component of the plan that runs as containers: its Compose service and what it is. */
 export interface PlannedComponent {
   /** The Compose service: `app`, a worker's name, `cron`, a service's name. */
   service: string;
-  /** In words: `the web process`, `the worker`, `the cron jobs`, `MySQL`. */
+  /** In words: `the web process`, `the worker`, `the cron jobs`, `MySQL`, `PgBouncer`. */
   what: string;
 }
 
 /**
  * The plan's components that run as containers of the app's Compose project (FR-1331): the web
- * process, every enabled worker, the cron jobs when one is enabled, and every enabled service.
+ * process, every enabled worker, the cron jobs when one is enabled, and every enabled service, a
+ * PostgreSQL's pooler (`<db>-pooler`, 050) after its database.
  */
 export function plannedComponents(plan: DeployPlan): PlannedComponent[] {
   return [
@@ -27,16 +28,23 @@ export function plannedComponents(plan: DeployPlan): PlannedComponent[] {
       : []),
     ...plan.services
       .filter((service) => service.enabled)
-      .map((service) => ({ service: service.name, what: serviceSpec(service.kind).title })),
+      .flatMap((service) => [
+        { service: service.name, what: serviceSpec(service.kind).title },
+        ...(postgresPooler(service) ? [{ service: poolerName(service), what: "PgBouncer" }] : []),
+      ]),
   ];
 }
 
 /**
- * The server a component runs on: a service's `server`, else the app's server (the web process,
- * workers and cron jobs always run there).
+ * The server a component runs on: a service's `server` (a pooler's, its database's), else the
+ * app's server (the web process, workers and cron jobs always run there).
  */
 export function componentServer(plan: DeployPlan, service: string): string {
-  return plan.services.find((s) => s.name === service)?.server ?? APP_SERVER;
+  return (
+    plan.services.find(
+      (s) => s.name === service || (postgresPooler(s) && poolerName(s) === service),
+    )?.server ?? APP_SERVER
+  );
 }
 
 /** The planned components on `server`. */

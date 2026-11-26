@@ -102,16 +102,16 @@ describe("rotating the two logins' passwords (047)", () => {
   }
 
   it("rewrites db.env and release.db.env for the owner's, db.env and app.env for the runtime's", () => {
-    expect(rotateEnvFiles([owner])).toEqual(["app.env", "release.db.env", "db.env"]);
-    expect(rotateEnvFiles([runtime])).toEqual(["app.env", "db.env"]);
-    expect(rotateEnvFiles([password])).toEqual(["app.env", "db.env"]);
-    expect(rotateEnvFiles([password, owner, runtime])).toEqual([
+    expect(rotateEnvFiles(plan, [owner])).toEqual(["app.env", "release.db.env", "db.env"]);
+    expect(rotateEnvFiles(plan, [runtime])).toEqual(["app.env", "db.env"]);
+    expect(rotateEnvFiles(plan, [password])).toEqual(["app.env", "db.env"]);
+    expect(rotateEnvFiles(plan, [password, owner, runtime])).toEqual([
       "app.env",
       "release.db.env",
       "db.env",
     ]);
     // On an extra server, only the database's own: the release runs on the app's server.
-    expect(rotateEnvFiles([owner], "data")).toEqual(["db.env"]);
+    expect(rotateEnvFiles(plan, [owner], "data")).toEqual(["db.env"]);
   });
 
   it("never creates the database again", () => {

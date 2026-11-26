@@ -176,4 +176,37 @@ describe("the rotation's hash and approval", () => {
     expect(details).toContain("`opscrew rotate db events search --undo` puts the old values back");
     expect(details).not.toContain("-old");
   });
+
+  it("adds the pooler's restart to the runtime password's window, and only to it (050)", async () => {
+    const deps = await createTestPhaseDeps({ environment: "staging" });
+    const base = stagingPlan([{ kind: "postgres", name: "db" }]);
+    const plan = stagingPlan([{ kind: "postgres", name: "db" }], {
+      fields: {
+        services: base.services.map((s) => ({
+          ...s,
+          options: { logins: "separate", pooler: "pgbouncer" },
+        })),
+      },
+    });
+    const rotation: RotationPlan = {
+      services: plan.services,
+      values: pendingOf(plan, "one"),
+      runs: serverRuns(plan, serviceSteps(plan, plan.services)),
+      secrets: [{ name: "OPSCREW_STAGING_APP_ENV" }],
+    };
+    await approveRotation(
+      deps,
+      plan,
+      rotation,
+      rotationHash(deps, plan, rotation),
+      "opscrew rotate db",
+    );
+    const details = (deps.approvalHandler as ScriptedApprovalHandler).requests[0]?.details ?? "";
+    expect(details).toContain(
+      "db (PostgreSQL), its runtime-password: a short swap: new connections the running app opens to PostgreSQL fail for about 36 seconds, from the change until the app's switch; its pooler db-pooler is created again with the new value in between (about 5 seconds), which closes the app's connections through it.",
+    );
+    expect(details).toContain(
+      "db (PostgreSQL), its owner-password: a short swap: new connections the running app opens to PostgreSQL fail for about 31 seconds, from the change until the app's switch; open connections stay.",
+    );
+  });
 });

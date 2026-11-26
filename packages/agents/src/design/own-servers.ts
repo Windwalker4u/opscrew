@@ -13,7 +13,7 @@ import {
 import type { NetworkHostFacts } from "../network";
 import { VPS_PROVIDERS } from "../providers";
 import type { OwnServerServices } from "../provision/types";
-import type { MemoryLimit } from "../shared/memory";
+import { type MemoryLimit, serviceMemoryLimits } from "../shared/memory";
 import { connectExtraServer, ownServerFacts, ownServerPublicAddress } from "../shared/own-server";
 import { readServerAddresses, type SshLogin, updateServerAddresses } from "../shared/server-record";
 import { distinctAmounts } from "./own";
@@ -129,7 +129,10 @@ export async function designOwnServer(
     memoryMb: app.memoryMb,
     tunnel: tunnelOf(facts, app.app).installed,
   }));
-  const servicesMb = [...services, ...addons].reduce((sum, limit) => sum + limit.memoryMb, 0);
+  const servicesMb = [...serviceMemoryLimits(services), ...addons].reduce(
+    (sum, limit) => sum + limit.memoryMb,
+    0,
+  );
   const memory = ownServerMemory(serverMb, servicesMb, others, 0, name);
   if (memory?.refused !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", memory.refused.message, {

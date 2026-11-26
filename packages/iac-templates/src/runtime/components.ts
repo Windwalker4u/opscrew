@@ -4,7 +4,13 @@
  * catalog's services, the workers and the `cron` service with its crontab (contracts/components.md).
  */
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type PlanService,
+  poolerName,
+  postgresPooler,
+} from "@opscrew/plan-schema";
 import {
   checkServiceVersion,
   dataDirs,
@@ -13,6 +19,8 @@ import {
   serviceImageRef,
   serviceSpec,
 } from "../catalog";
+import { POOLER_HEALTHCHECK, POOLER_MEMORY_MB, POOLER_PORT, poolerStart } from "../catalog/pooler";
+import { RUNTIME_PASSWORD_ENV } from "../catalog/postgres-logins";
 import type { ServiceHealthcheck, ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
@@ -289,6 +297,11 @@ export function renderServices(
         : {}),
     };
     rendered.dependsOn[service.name] = { condition: "service_healthy" };
+    if (postgresPooler(service)) {
+      const name = poolerName(service);
+      rendered.services[name] = poolerService(plan, service, spec, target);
+      rendered.dependsOn[name] = { condition: "service_healthy" };
+    }
   }
   // Named from the plan alone, so destroy can list them even when the plan cannot be rendered.
   if (server === APP_SERVER) {
@@ -296,6 +309,47 @@ export function renderServices(
     if (plan.storage?.files !== undefined) rendered.volumes.push(FILES_VOLUME);
   }
   return rendered;
+}
+
+/**
+ * The private address `service`'s pooler is published on: its extra server's, where the app's
+ * server reaches it; none on the app's server, where the app reaches it on the internal network.
+ */
+function poolerAddress(plan: DeployPlan, service: PlanService): string | undefined {
+  return service.server === undefined ? undefined : publishedAddress(plan, service);
+}
+
+/**
+ * The PostgreSQL `service`'s pooler (`pooler: pgbouncer`, 050, plan 2.): the pinned PgBouncer
+ * beside it, started once the database is healthy, with the database's restart policy, its own
+ * start command and health check ({@link poolerStart}), a memory limit and no capabilities. On a
+ * server it reads the database's env file; in a Portainer stack it gets the runtime login's
+ * password alone.
+ */
+function poolerService(
+  plan: DeployPlan,
+  service: PlanService,
+  spec: ServiceSpec,
+  target: ComponentTarget,
+): object {
+  const address = poolerAddress(plan, service);
+  return {
+    image: IMAGES.pgbouncer.ref,
+    restart: "unless-stopped",
+    entrypoint: poolerStart(service).map(composeLiteral),
+    ...(target.kind === "server"
+      ? { env_file: [`${service.name}.env`] }
+      : {
+          environment: {
+            [RUNTIME_PASSWORD_ENV]: target.environment(service, spec)[RUNTIME_PASSWORD_ENV],
+          },
+        }),
+    depends_on: { [service.name]: { condition: "service_healthy" } },
+    ...(address === undefined ? {} : { ports: [`${address}:${POOLER_PORT}:${POOLER_PORT}`] }),
+    healthcheck: healthcheck(POOLER_HEALTHCHECK),
+    ...memoryLimit(POOLER_MEMORY_MB),
+    ...hardened({ noCapabilities: true, internal: true }),
+  };
 }
 
 /** Refuses `services`, both listening on `port`, published at `address` on `server`. */
@@ -325,6 +379,7 @@ function portTaken(
  * - the app's services in its Compose project there ({@link servicesRunningOn}, so a moving
  *   service's old copy too): on an extra server every one, on the app's server
  *   ({@link APP_SERVER}) those a device was granted;
+ * - on an extra server, each PostgreSQL's pooler ({@link poolerAddress}) after its database;
  * - then on the app's server, with `options.dashboardsOnNetwork`, the dashboards
  *   (`dashboard: true`, `service` the add-on's name), which every device may reach: Beszel's hub
  *   (`beszel`, in hub mode) and Portainer's web UI (`portainer`), each a Compose project of its
@@ -337,9 +392,15 @@ export function publishedOnNetwork(
 ): { service: string; port: number; address: string; dashboard?: true }[] {
   const services = servicesRunningOn(plan, server).flatMap((service) => {
     const address = publishedAddress(plan, service);
-    return address === undefined
-      ? []
-      : [{ service: service.name, port: serviceSpec(service.kind).port, address }];
+    const pooler = postgresPooler(service) ? poolerAddress(plan, service) : undefined;
+    return [
+      ...(address === undefined
+        ? []
+        : [{ service: service.name, port: serviceSpec(service.kind).port, address }]),
+      ...(pooler === undefined
+        ? []
+        : [{ service: poolerName(service), port: POOLER_PORT, address: pooler }]),
+    ];
   });
   const address = server === APP_SERVER ? dashboardAddress(plan, options) : undefined;
   if (address === undefined) return services;
@@ -580,8 +641,11 @@ export interface ProcessBase {
   image: string;
   /** The app service's `pull_policy`, when it has one (an image built on this computer). */
   pull?: { pull_policy?: string };
-  /** The app's `env_file` and `environment`, a new object each time (no YAML aliases). */
-  environment: () => object;
+  /**
+   * The `env_file` and `environment` of a worker or of cron: the app's, and a worker's own database
+   * variables beside a PostgreSQL's pooler (050); a new object each time (no YAML aliases).
+   */
+  environment: (process: "worker" | "cron") => object;
   dependsOn: Record<string, { condition: string }>;
   /** How the crontab reaches the cron service: a mounted file, or a config. */
   crontab: { volumes: string[] } | { configs: { source: string; target: string }[] };
@@ -609,7 +673,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       image: base.image,
       ...base.pull,
       restart: "unless-stopped",
-      ...base.environment(),
+      ...base.environment("worker"),
       ...workerStart(plan, worker),
       ...appVolumes(plan),
       stop_grace_period: `${worker.stopGraceSeconds}s`,
@@ -623,7 +687,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       image: base.image,
       ...base.pull,
       restart: "unless-stopped",
-      ...base.environment(),
+      ...base.environment("cron"),
       ...cronStart(plan),
       ...base.crontab,
       ...appVolumes(plan, "volumes" in base.crontab ? base.crontab.volumes : []),

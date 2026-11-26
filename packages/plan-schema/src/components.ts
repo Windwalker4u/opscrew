@@ -268,6 +268,21 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
          * (`amd64` only), and standard `contrib` extensions stay on `postgres:*-alpine`.
          */
         extensions: PostgresExtensionsSchema.optional(),
+        /**
+         * `pgbouncer`: a PgBouncer in session mode beside it, which the app's web, workers and
+         * cron reach it through; the release keeps its direct address (050). Needs `logins`.
+         */
+        pooler: z.literal("pgbouncer", { message: 'must be "pgbouncer"' }).optional(),
+      })
+      .superRefine((options, ctx) => {
+        if (options.pooler !== undefined && options.logins !== "separate") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["pooler"],
+            message:
+              "`pooler: pgbouncer` needs `logins: separate` under the same options: migrations must reach PostgreSQL directly, and only separate logins give the release its own address.",
+          });
+        }
       })
       .prefault({}),
   ),
@@ -352,6 +367,16 @@ export function postgresImageVariant(service: PlanService): PostgresImageVariant
   if (postgresUsesVector(service)) return "pgvector";
   if (postgresUsesPostgis(service)) return "postgis";
   return "postgres";
+}
+
+/** Whether a service is a PostgreSQL with PgBouncer beside it (`pooler: pgbouncer`, 050). */
+export function postgresPooler(service: PlanService): boolean {
+  return service.kind === "postgres" && service.options.pooler === "pgbouncer";
+}
+
+/** The Compose name of `service`'s pooler (050): `db-pooler` for `db`. */
+export function poolerName(service: Pick<PlanService, "name">): string {
+  return `${service.name}-pooler`;
 }
 
 /**

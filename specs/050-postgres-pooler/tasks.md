@@ -15,7 +15,7 @@
 
 ## Wave 1
 
-- [ ] T5001 [US1] The field and the pooler's service
+- [x] T5001 [US1] The field and the pooler's service
   - **Owns:** `packages/plan-schema/src/components.ts` and its tests (the lead approves: shared);
     `packages/iac-templates/src/pins.ts` (`IMAGES.pgbouncer`); the catalog
     (`packages/iac-templates/src/catalog/**`) and the runtime's service rendering
@@ -27,7 +27,8 @@
       it with plan 1.'s message; `postgresPooler(service)` is exported.
     - The rendered Compose has `<db>-pooler` as plan 2. says, and the pooler's env file holds the
       runtime login's name and password; a leak check shows the password in no other rendered file.
-    - The app's database variables name `<db>-pooler:6432` for web, workers and cron;
+    - The app's database variables name `<db>-pooler:6432` for web and cron (workers direct, after
+      the review);
       `release.db.env` keeps `<db>:5432` with the owner's login. A split plan puts the pooler on
       the database's server.
     - A Portainer stack renders the same service.
@@ -37,7 +38,7 @@
 
 ## Wave 2 (after T5001, in parallel)
 
-- [ ] T5002 [US2] Rotation recreates the pooler
+- [x] T5002 [US2] Rotation recreates the pooler
   - **Owns:** the catalog's rotation for PostgreSQL's `runtime-password`, and
     `packages/iac-templates/src/workflow/rotate.ts`, and their tests.
   - **Reads:** plan 3.; 047's rotation (`POSTGRES_LOGINS.rotation`, `swap`).
@@ -48,7 +49,7 @@
   - **Verify:** `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/catalog src/workflow && pnpm lint`
   - **Effort:** high
 
-- [ ] T5003 [US3] Design, provision's line, server-fit and status
+- [x] T5003 [US3] Design, provision's line, server-fit and status
   - **Owns:** `packages/agents/src/design/**`, provision's notice (beside 047's in
     `packages/agents/src/provision/postgres-logins.ts`), `packages/agents/src/provision/server-fit.ts`,
     and their tests.
@@ -59,7 +60,7 @@
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - **Effort:** medium
 
-- [ ] T5004 [US1] [US2] The Docker test
+- [x] T5004 [US1] [US2] The Docker test
   - **Owns:** `packages/iac-templates/src/catalog/pooler.docker.test.ts` (new).
   - **Reads:** plan 2.; 047's `postgres-logins.docker.test.ts` as the pattern.
   - **Accept:** gated by `OPSCREW_DOCKER_TESTS=1`. From the rendered files:
@@ -75,10 +76,10 @@
   - **Verify:** `OPSCREW_DOCKER_TESTS=1 OPSCREW_TEST_TMP=D:/opscrew-test-tmp npx vitest run --root packages/iac-templates src/catalog/pooler.docker.test.ts && pnpm lint`
   - **Effort:** high
 
-- [ ] T5005 [US1] The guide
+- [x] T5005 [US1] The guide
   - **Owns:** `docs/guide/databases.md` (a section).
   - **Accept:** what it does and why, how to turn it on, that migrations bypass it, the session
-    features that break in transaction mode (research 4), its memory, and that it needs separate
+    connections it holds at once (session mode, research 9), its memory, and that it needs separate
     logins. Names match the code.
   - **Verify:** `pnpm lint`
   - **Effort:** medium

@@ -4,8 +4,13 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_SECRETS, RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import {
+  DEPLOY_SECRETS,
+  RELEASE_DB_ENV,
+  serviceEnvSecret,
+  WORKER_DB_ENV,
+} from "@opscrew/iac-templates";
+import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan, localProject } from "../localhost/__fixtures__/computer";
 import { parseDotenv } from "../shared/app-env";
@@ -23,7 +28,13 @@ import {
   testPlan,
 } from "../testing";
 import { noOtherApps } from "../testing/other-apps";
-import { type KeptLogins, loginsNotices, loginsSwitch, requireLogins } from "./postgres-logins";
+import {
+  type KeptLogins,
+  loginsNotices,
+  loginsSwitch,
+  poolerNotices,
+  requireLogins,
+} from "./postgres-logins";
 import { runProvision } from "./run";
 import { buildAppEnvironment, deploySecretNames, deploySecrets } from "./secrets";
 import type { ProvisionServices } from "./types";
@@ -60,6 +71,23 @@ const WITH_LOGINS = {
     },
   },
 };
+
+/** `plan` built as a PHP app. */
+const php = (plan: DeployPlan): DeployPlan =>
+  DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      build: {
+        builder: "railpack",
+        chosen: "auto",
+        reason: "The app is a Laravel app.",
+        runtime: { language: "php", version: "8.4" },
+        probe: "php",
+      },
+    },
+  });
+const POOLED = { options: { logins: "separate", pooler: "pgbouncer" } };
 
 describe("provision's texts for PostgreSQL's two logins (047)", () => {
   it("tells an environment whose superuser's password is kept, without logins, how to switch, every run, deployed or not", () => {
@@ -118,6 +146,21 @@ describe("provision's texts for PostgreSQL's two logins (047)", () => {
     // password is kept.
     expect(loginsSwitch(planWith(SEPARATE), {}, "prod")).toBeUndefined();
     expect(loginsSwitch(planWith(SEPARATE), WITH_LOGINS, "prod")).toBeUndefined();
+  });
+});
+
+describe("provision's line on the pooler for a PHP app (050)", () => {
+  it("says how to add the pooler to a deployed PHP app with logins and no pooler", () => {
+    expect(poolerNotices(php(planWith(SEPARATE)), WITH_LOGINS)).toEqual([
+      "Your PHP app opens a new database connection on every request. Add `pooler: pgbouncer` under db's options in opscrew/plan.yaml to keep them open.",
+    ]);
+  });
+
+  it("says nothing with the pooler, without logins, for a new database, or for another language", () => {
+    expect(poolerNotices(php(planWith(POOLED)), WITH_LOGINS)).toEqual([]);
+    expect(poolerNotices(php(planWith(SINGLE)), BEFORE_047)).toEqual([]);
+    expect(poolerNotices(php(planWith(SEPARATE)), {})).toEqual([]);
+    expect(poolerNotices(planWith(SEPARATE), WITH_LOGINS)).toEqual([]);
   });
 });
 
@@ -200,6 +243,68 @@ describe("the two logins' secrets (047)", () => {
   it("destroy deletes the release's env file with the other deploy secrets", () => {
     expect(deploySecretNames(planWith(SEPARATE))).toContain(RELEASE_DB_ENV.secret);
     expect(deploySecretNames(planWith(SINGLE))).not.toContain(RELEASE_DB_ENV.secret);
+  });
+});
+
+describe("the workers' env file beside the pooler (050)", () => {
+  it("gives the workers PostgreSQL itself with the runtime login, by every name the app reads it by", async () => {
+    const deps = await createTestPhaseDeps();
+    const base = testPlan({ userSecret: false });
+    const env = [
+      ...base.app.env,
+      ...["DB_HOST", "DB_PORT", "DB_USERNAME", "DB_PASSWORD"].map((name) => ({
+        name,
+        secret: name === "DB_PASSWORD",
+        source: "derived" as const,
+      })),
+    ];
+    const plan = planWith(POOLED, false, { ...base, app: { ...base.app, env } });
+    const environment = await buildAppEnvironment(deps, plan, {});
+    const runtime = environment.values.services.db?.["runtime-password"] as string;
+    const owner = environment.values.services.db?.["owner-password"] as string;
+    // The web process and cron reach the pooler.
+    const app = parseDotenv(environment.appEnv);
+    expect(app.get("DATABASE_URL")).toBe(`postgresql://app_runtime:${runtime}@db-pooler:6432/app`);
+    expect([app.get("DB_HOST"), app.get("DB_PORT")]).toEqual(["db-pooler", "6432"]);
+    const secrets = deploySecrets({
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment,
+    });
+    const workers = parseDotenv(secrets[WORKER_DB_ENV.secret] ?? "");
+    expect(Object.fromEntries(workers)).toEqual({
+      DATABASE_URL: `postgresql://app_runtime:${runtime}@db:5432/app`,
+      DB_HOST: "db",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_runtime",
+      DB_PASSWORD: runtime,
+    });
+    // The release migrates on PostgreSQL itself, as its owner, by the split names too.
+    const release = parseDotenv(secrets[RELEASE_DB_ENV.secret] ?? "");
+    expect(Object.fromEntries(release)).toEqual({
+      DATABASE_URL: `postgresql://app_owner:${owner}@db:5432/app`,
+      DB_HOST: "db",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_owner",
+      DB_PASSWORD: owner,
+    });
+  });
+
+  it("is a deploy secret, which destroy deletes, beside the pooler only", async () => {
+    expect(deploySecretNames(planWith(POOLED))).toContain(WORKER_DB_ENV.secret);
+    expect(deploySecretNames(planWith(SEPARATE))).not.toContain(WORKER_DB_ENV.secret);
+    const deps = await createTestPhaseDeps();
+    const plan = planWith(SEPARATE, false, testPlan({ userSecret: false }));
+    const secrets = deploySecrets({
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment: await buildAppEnvironment(deps, plan, {}),
+    });
+    expect(Object.keys(secrets)).not.toContain(WORKER_DB_ENV.secret);
   });
 });
 
@@ -438,6 +543,21 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     );
     expect(s.atSnapshot).toEqual([]);
     expect(s.github.secrets.has(RELEASE_DB_ENV.secret)).toBe(false);
+  });
+
+  it("says how to add the pooler to a deployed PHP app, and changes nothing for it (050)", async () => {
+    const plan = php(planWith(SEPARATE));
+    const s = await project(plan, WITH_LOGINS);
+    await runProvision(s.deps, { services: s.services });
+    expect(s.deps.reporter.text()).toContain(
+      "Your PHP app opens a new database connection on every request. Add `pooler: pgbouncer` under db's options in opscrew/plan.yaml to keep them open.",
+    );
+    const services = (await readArtifact("plan", s.deps.paths.files.plan)).services;
+    expect(services.find((service) => service.name === "db")?.options).toEqual({
+      logins: "separate",
+    });
+    const files = await s.git(s.root, "show", "opscrew/deploy-setup", "--name-only", "--format=");
+    expect(files).not.toContain("pooler");
   });
 });
 

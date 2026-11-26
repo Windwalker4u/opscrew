@@ -182,6 +182,29 @@ describe("provision on this computer", () => {
     if (process.platform !== "win32") {
       expect((await stat(join(folder, "release.db.env"))).mode & 0o777).toBe(0o600);
     }
+    expect(await readTextIfExists(join(folder, "worker.db.env"))).toBeUndefined();
+  });
+
+  it("writes the workers' own env file beside PostgreSQL's pooler (050), owner-only", async () => {
+    const base = localPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: base.services.map((s) => ({
+        ...s,
+        options: { logins: "separate", pooler: "pgbouncer" },
+      })),
+    });
+    const { deps, run } = await project(plan);
+    await run();
+    const folder = appFolder(deps.paths, plan);
+    const workers = (await readTextIfExists(join(folder, "worker.db.env"))) ?? "";
+    expect(workers).toMatch(
+      /^DATABASE_URL=postgresql:\/\/app_runtime:[0-9a-f]{64}@db:5432\/app\n$/,
+    );
+    expect(await readFile(join(folder, "app.env"), "utf8")).toContain("@db-pooler:6432/app");
+    if (process.platform !== "win32") {
+      expect((await stat(join(folder, "worker.db.env"))).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("gives every script the daemon of Docker's current context (Colima's socket), at deploy and destroy", async () => {

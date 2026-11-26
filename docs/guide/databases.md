@@ -243,6 +243,74 @@ when `npx opscrew provision` creates it:
 - If a database has never started yet (has no data), you can still adjust `options.extensions`
   before the first deploy.
 
+## A connection pooler for PHP apps
+
+A PHP app opens a new connection to PostgreSQL on every request, and PostgreSQL starts a new
+process for each one, which can add more than a tenth of a second to every page that reads the
+database on a small server. [PgBouncer](https://www.pgbouncer.org/) sits between the app and
+PostgreSQL, keeps a few of PostgreSQL's connections open and hands them to each request in turn,
+so pages get faster without a change to your code.
+
+### Turning it on
+
+The pooler needs [separate logins](#two-logins). Add `pooler: pgbouncer` next to
+`logins: separate` under the database's options in `opscrew/plan.yaml`:
+
+```yaml
+services:
+  - name: db
+    kind: postgres
+    version: "17"
+    options:
+      logins: separate
+      pooler: pgbouncer
+```
+
+Then run `npx opscrew provision` and deploy. Without `logins: separate`, provision refuses the
+pooler before it changes anything. For a new PHP app with PostgreSQL 15 or later, design writes
+`pooler: pgbouncer` for you; for a PHP app already deployed without it, each
+`npx opscrew provision` prints a line on how to add it, and changes nothing because of it.
+
+The deploy then runs a service called `<db>-pooler` (`db-pooler` for `db`) next to the database,
+with a memory limit of 32 MB and no port open outside the app's network. Only the app's web
+process and cron reach the database through it: in `app.env`, `DATABASE_URL` and the split
+settings name `db-pooler` and port `6432` instead of `db` and `5432`, with the `app_runtime` login.
+For a database on [a server of its own](split-placement.md), the pooler runs on that server, at its
+private address. The pooler holds no data, so snapshots, restores and moves work as without it.
+A worker or service of your app can't be called `<db>-pooler`.
+
+### Migrations and workers connect directly
+
+The release command, which runs your migrations as `app_owner`, never goes through the pooler: its
+`release.db.env` keeps PostgreSQL's own address, `db` and port `5432`, by every name `app.env` gives
+the database under, `DB_HOST` and `DB_PORT` too.
+
+Your workers (`queue:work`, Horizon and the like) don't go through it either. A worker keeps its
+connection open for as long as it runs, so through the pooler it would hold one of the pooler's
+connections all that time, and a few workers would leave web requests waiting. The workers read
+`worker.db.env` after `app.env`: PostgreSQL's own address with the `app_runtime` login. The deploy
+writes it next to `app.env`, readable only by its owner, and a credential rotation and a move
+rewrite it with `app.env`.
+
+### How it hands out connections
+
+The pooler gives each connection of your app a PostgreSQL connection of its own for as long as it
+stays open, which for PHP is one request. When the request ends, the connection goes back to the
+pooler, which resets it (`DISCARD ALL`) and hands it to the next request, already warm.
+
+- **Everything works through it:** prepared statements, `SET`, locks, `LISTEN` and temporary
+  tables all behave as they do on a direct connection, for as long as that connection stays open.
+- **Up to 20 at a time:** at most 20 of your app's connections are open at once. A request beyond
+  that waits until one is free, which for PHP's short requests is a matter of milliseconds.
+- **At most 100 waiting or open:** past 100 connections to the pooler at once, it refuses new ones.
+
+### Apps in other languages
+
+Apps in Node.js, Python, Ruby, Go and most other languages keep their own pool of connections
+inside the app, open for as long as the app runs. Through the pooler, each of those would hold one
+of its connections all that time, so they gain nothing from it, and design doesn't write it for
+them.
+
 ## Settings for small servers
 
 - **MySQL** gets a buffer pool of its memory limit minus about 400 MB for everything else (at least

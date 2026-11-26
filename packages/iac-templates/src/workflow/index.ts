@@ -59,6 +59,7 @@ import {
   deploySecretName,
   deploysInPlace,
   hasReleaseDbEnv,
+  hasWorkerDbEnv,
   healthPath,
   imageOutput,
   MODE_ENV,
@@ -77,6 +78,7 @@ import {
   secret,
   selfHosted,
   serviceEnvSecret,
+  WORKER_DB_ENV,
   workflowStart,
 } from "./shared";
 import { OFFSITE_ENV_FILE, OFFSITE_ENV_SECRET, snapshotScript } from "./snapshot-script";
@@ -130,6 +132,7 @@ export {
   filesFolder,
   githubEnvironment,
   hasReleaseDbEnv,
+  hasWorkerDbEnv,
   healthPath,
   RELEASE_DB_ENV,
   ROLLBACK_INPUTS,
@@ -137,6 +140,7 @@ export {
   serviceEnvSecret,
   sqliteFolder,
   supercronicArch,
+  WORKER_DB_ENV,
 } from "./shared";
 export {
   RESTORE_APPROVAL_FILE,
@@ -563,11 +567,16 @@ const HOST_LIST_NAMES =
 const APP_ENV_FILE: EnvFile = { file: "app.env", secret: DEPLOY_SECRETS.appEnv };
 
 /**
- * The app's env files on the app's server: `app.env`, and with a PostgreSQL's own logins the
- * release's {@link RELEASE_DB_ENV} (047), each from its deploy secret.
+ * The app's env files on the app's server: `app.env`, with a PostgreSQL's own logins the
+ * release's {@link RELEASE_DB_ENV} (047), and beside its pooler the workers'
+ * {@link WORKER_DB_ENV} (050), each from its deploy secret.
  */
 function appEnvFiles(plan: DeployPlan): EnvFile[] {
-  return [APP_ENV_FILE, ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV] : [])];
+  return [
+    APP_ENV_FILE,
+    ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV] : []),
+    ...(hasWorkerDbEnv(plan) ? [WORKER_DB_ENV] : []),
+  ];
 }
 
 /**
@@ -1576,7 +1585,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
  * workflow can read, which `opscrew provision` sets: the build values (none for a promoted
  * environment, which builds nothing); for a Portainer target, in redeploy mode `cloudflare`, the
  * webhook's; for a server, the app's env file (and with a PostgreSQL's own logins the release's,
- * {@link RELEASE_DB_ENV}), one per service with secrets and the origin certificate (not behind a
+ * {@link RELEASE_DB_ENV}, and beside its pooler the workers', {@link WORKER_DB_ENV}), one per service with secrets and the origin certificate (not behind a
  * tunnel), plus, when the deploy runs over SSH (on GitHub's machines or
  * a runner machine), the connection: the host, the SSH key, the known hosts and in tunnel mode the
  * Access service token. The server's and the local runner deploy on their own machine, so they
@@ -1641,6 +1650,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     ...extra,
     DEPLOY_SECRETS.appEnv,
     ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV.secret] : []),
+    ...(hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.secret] : []),
     ...enabledServices(plan).map(({ name }) => serviceEnvSecret(name)),
     ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),

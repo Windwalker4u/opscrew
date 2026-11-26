@@ -1,5 +1,6 @@
 import type { PlanService, ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { appMemoryLimits } from "../shared/memory";
 import { makeFacts, makeRequirements, testPlan } from "../testing";
 import { designComponents } from "./components";
 
@@ -45,5 +46,64 @@ describe("design and PostgreSQL's two logins (047)", () => {
     const { components, keptChanges } = over({ options: { logins: "separate" } });
     expect(components.services[0]?.options).toEqual({ logins: "separate" });
     expect(keptChanges).toEqual([]);
+  });
+});
+
+describe("design and the pooler for PHP apps (050)", () => {
+  const php = makeFacts({
+    languages: ["php"],
+    frameworks: [{ name: "laravel", path: "." }],
+    services: [PG],
+  });
+
+  it("writes pooler: pgbouncer beside logins: separate for a new PHP app, with one line on why", () => {
+    const { components, lines } = designComponents({
+      facts: php,
+      requirements: makeRequirements(),
+    });
+    expect(components.services).toEqual([
+      expect.objectContaining({
+        kind: "postgres",
+        version: "17",
+        options: { logins: "separate", pooler: "pgbouncer" },
+      }),
+    ]);
+    // Sized with the server: its limit counts beside the database's.
+    expect(appMemoryLimits(components)).toContainEqual({ name: "db-pooler", memoryMb: 32 });
+    expect(lines).toContain(
+      "PgBouncer (db-pooler, 32 MB) keeps a few connections to db open and hands them to each request in turn, where a PHP app would open a new one on every request. Migrations connect to db directly.",
+    );
+  });
+
+  it("writes no pooler for an app in another language", () => {
+    const { components, lines } = designComponents({ facts, requirements: makeRequirements() });
+    expect(components.services[0]?.options).toEqual({ logins: "separate" });
+    expect(lines.join("\n")).not.toContain("PgBouncer");
+  });
+
+  it("adds no pooler to a PHP app's database designed before, and keeps one there", () => {
+    const plan = testPlan();
+    const previous = (options: PlanService["options"]) => ({
+      ...plan,
+      services: plan.services.map((s) =>
+        s.name === "db" ? ({ ...s, options } as PlanService) : s,
+      ),
+    });
+    const without = designComponents({
+      facts: php,
+      requirements: makeRequirements(),
+      previous: previous({ logins: "separate" }),
+    });
+    expect(without.components.services[0]?.options).toEqual({ logins: "separate" });
+    const kept = designComponents({
+      facts: php,
+      requirements: makeRequirements(),
+      previous: previous({ logins: "separate", pooler: "pgbouncer" }),
+    });
+    expect(kept.components.services[0]?.options).toEqual({
+      logins: "separate",
+      pooler: "pgbouncer",
+    });
+    expect(kept.keptChanges).toEqual([]);
   });
 });

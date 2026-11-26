@@ -11,6 +11,7 @@ export {
   kafkaTool,
   POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
+  POSTGRES_RUNTIME_SECRET,
   pinnedVersion,
   releaseVariables,
   SERVICE_SPECS,
@@ -24,7 +25,9 @@ export {
   splitDatabase,
   splitDatabaseSettings,
   sqlDatabases,
+  workerVariables,
 } from "./catalog";
+export { POOLER_MEMORY_MB } from "./catalog/pooler";
 export * from "./catalog/postgres-extensions";
 export * from "./catalog/postgres-logins";
 export type {

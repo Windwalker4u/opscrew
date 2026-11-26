@@ -7,6 +7,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { canonicalJson, listText, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
+  POSTGRES_RUNTIME_SECRET,
   type RotateStep,
   renderRotateScript,
   type SecretRotation,
@@ -14,7 +15,13 @@ import {
   serviceRotation,
   serviceSpec,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type PlanService,
+  poolerName,
+  postgresPooler,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { SecretPlace } from "../provision/secrets";
 import { APPROVAL_SECONDS, requestApproval } from "../shared/approvals";
@@ -37,6 +44,13 @@ import type { RotationValues, ValuePair } from "./values-pending";
  * adds to the service's own seconds (plan, Decisions 2).
  */
 export const SWITCH_SECONDS = 30;
+
+/**
+ * About how long a PostgreSQL's pooler (050) takes to be created again and pass its health check,
+ * which the runtime password's window adds: `rotate.sh` creates it again between the change and the
+ * app's switch.
+ */
+const POOLER_SECONDS = 5;
 
 /** One secret's rotation on its server: the catalog's recipe as `rotate.sh` runs it. */
 export interface ServiceStep {
@@ -246,14 +260,16 @@ export function undoHash(hash: string): string {
 function costText(step: ServiceStep): string {
   const { title } = serviceSpec(step.service.kind);
   const { mode, seconds = 0, recreate, closesConnections } = step.rotation;
-  const window = seconds + SWITCH_SECONDS;
+  const pooled =
+    postgresPooler(step.service) && step.rotation.secrets.includes(POSTGRES_RUNTIME_SECRET);
+  const window = seconds + SWITCH_SECONDS + (pooled ? POOLER_SECONDS : 0);
   switch (mode) {
     case "dual":
       return recreate
         ? `seamless for the app: ${title} restarts with the new value beside the old one (about ${seconds} seconds, answering no one meanwhile), and the old one works until the app runs on the new.`
         : `seamless: ${title} accepts the old and the new value until the app runs on the new one, then only the new one.`;
     case "swap":
-      return `a short swap: new connections the running app opens to ${title} fail for about ${window} seconds, from the change until the app's switch; ${closesConnections === true ? `its open connections are closed too, and the app's clients reconnect with the new value after the switch` : "open connections stay"}.`;
+      return `a short swap: new connections the running app opens to ${title} fail for about ${window} seconds, from the change until the app's switch; ${pooled ? `its pooler ${poolerName(step.service)} is created again with the new value in between (about ${POOLER_SECONDS} seconds), which closes the app's connections through it` : closesConnections === true ? `its open connections are closed too, and the app's clients reconnect with the new value after the switch` : "open connections stay"}.`;
     case "restart":
       return `a restart: ${title} restarts with the new value (about ${seconds} seconds, answering no one meanwhile), and new connections the running app opens to it fail until its switch, about ${window} seconds in all.`;
   }

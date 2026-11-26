@@ -3,7 +3,8 @@
  * the deploy writes from the GitHub secret `OPSCREW_APP_ENV`. The switch changes only the moving
  * service's address in them. With a PostgreSQL's two logins (`logins: separate`, 047), the release
  * command's `release.db.env` (from `OPSCREW_RELEASE_DB_ENV`) holds the owner's address and follows
- * too. Their text holds secrets: it is never logged, shown or audited.
+ * too, and beside its pooler (050) the workers' `worker.db.env` (from `OPSCREW_WORKER_DB_ENV`)
+ * the database's own address. Their text holds secrets: it is never logged, shown or audited.
  */
 import type { CommandResult } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
@@ -14,8 +15,16 @@ import {
   RELEASE_DB_ENV,
   releaseVariables,
   serviceSpec,
+  WORKER_DB_ENV,
+  workerVariables,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, type Move, type PlanService, postgresLogins } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type Move,
+  type PlanService,
+  postgresLogins,
+  postgresPooler,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
 import { deploySecretPlace, setSecretAt } from "../provision/secrets";
@@ -29,9 +38,32 @@ function appEnvFile(plan: DeployPlan): string {
   return `${appDir(plan)}/app.env`;
 }
 
-/** The release command's settings file on the app's server (047). */
-export function releaseEnvFile(plan: DeployPlan): string {
-  return `${appDir(plan)}/${RELEASE_DB_ENV.file}`;
+/**
+ * The env files beside `app.env` on the app's server that hold a moving PostgreSQL's address too:
+ * the release command's with its two logins (047), and the workers' beside its pooler (050).
+ */
+const DB_ENV_FILES = [
+  {
+    ...RELEASE_DB_ENV,
+    what: "the release command's settings",
+    has: postgresLogins,
+    variables: releaseVariables,
+  },
+  {
+    ...WORKER_DB_ENV,
+    what: "the workers' settings",
+    has: postgresPooler,
+    variables: workerVariables,
+  },
+] as const;
+
+/** One of {@link DB_ENV_FILES} before and after a switch. */
+export interface SwitchedDbEnv {
+  file: string;
+  secret: string;
+  what: string;
+  before: string;
+  after: string;
 }
 
 /** The app's settings before and after a move's switch, in the GitHub secret's form. */
@@ -43,10 +75,10 @@ export interface SwitchedEnv {
   /** True when the app's server holds `after` already: an earlier window switched them. */
   switched: boolean;
   /**
-   * The release command's `release.db.env` before and after the switch, when the moving service
-   * is a PostgreSQL with two logins (047).
+   * The env files beside `app.env` that follow the switch ({@link DB_ENV_FILES}), when the moving
+   * service is a PostgreSQL with two logins (047) or a pooler (050); none otherwise.
    */
-  release?: { before: string; after: string };
+  dbFiles: SwitchedDbEnv[];
 }
 
 /** One side of a switch: the settings before it, or after it. */
@@ -124,25 +156,28 @@ export async function switchedEnv(
   const now = swapped(text, () => undefined);
   const before = swapped(text, () => [to, from]);
   const after = swapped(text, () => [from, to]);
-  const env: SwitchedEnv = { before, after, switched: now === after && now !== before };
-  if (!postgresLogins(service)) return env;
-  // The release's variables, with the owner's address on each server.
-  const old = releaseVariables(at("deployed"), secretOf);
-  const moved = releaseVariables(at("switched"), secretOf);
   const pair =
     (a: Record<string, string>, b: Record<string, string>) =>
     (name: string): [string, string] | undefined => {
       const [x, y] = [a[name], b[name]];
       return x === undefined || y === undefined ? undefined : [x, y];
     };
-  const release = await readSettings(app, releaseEnvFile(plan), "the release command's settings");
-  return {
-    ...env,
-    release: {
-      before: swapped(release, pair(moved, old)),
-      after: swapped(release, pair(old, moved)),
-    },
-  };
+  const dbFiles: SwitchedDbEnv[] = [];
+  for (const { file, secret, what, has, variables } of DB_ENV_FILES) {
+    if (!has(service)) continue;
+    // The file's variables, with the database's direct address on each server.
+    const old = variables(at("deployed"), secretOf);
+    const moved = variables(at("switched"), secretOf);
+    const text = await readSettings(app, `${appDir(plan)}/${file}`, what);
+    dbFiles.push({
+      file,
+      secret,
+      what,
+      before: swapped(text, pair(moved, old)),
+      after: swapped(text, pair(old, moved)),
+    });
+  }
+  return { before, after, switched: now === after && now !== before, dbFiles };
 }
 
 /**
@@ -159,8 +194,8 @@ export function failureDetail(
 
 /**
  * Writes `env`'s `side` as the app's settings on its server (`app`), owner-only, each file
- * replaced in one step: the release command's first (with two logins, 047), then `app.env`, which
- * tells whether the switch was made.
+ * replaced in one step: the database env files first (the release command's with two logins, 047;
+ * the workers' beside a pooler, 050), then `app.env`, which tells whether the switch was made.
  * @throws OpsCrewError `COMMAND_FAILED` with the server's words, never the settings.
  */
 export async function writeAppEnv(
@@ -182,9 +217,7 @@ export async function writeAppEnv(
       { hint: "Check the free disk space on the app's server (`df -h /srv`)." },
     );
   };
-  if (env.release !== undefined) {
-    await write(releaseEnvFile(plan), env.release[side], "the release command's settings");
-  }
+  for (const db of env.dbFiles) await write(`${appDir(plan)}/${db.file}`, db[side], db.what);
   await write(appEnvFile(plan), env[side], "the app's settings (app.env)");
 }
 
@@ -213,8 +246,9 @@ export async function writeMask(
 
 /**
  * Stores `env`'s `side` as the GitHub secret `OPSCREW_APP_ENV` of the plan's environment (where its
- * deploy secrets live), after the release command's `OPSCREW_RELEASE_DB_ENV` with two logins
- * (047), so the next deploy writes the same settings, and in OpsCrew's record of the app's values
+ * deploy secrets live), after the database env files' secrets (`OPSCREW_RELEASE_DB_ENV` with two
+ * logins, 047; `OPSCREW_WORKER_DB_ENV` beside a pooler, 050), so the next deploy writes the same
+ * settings, and in OpsCrew's record of the app's values
  * (048). Audited by name only.
  */
 export async function storeAppEnv(
@@ -224,9 +258,8 @@ export async function storeAppEnv(
   env: SwitchedEnv,
   side: EnvSide,
 ): Promise<void> {
-  if (env.release !== undefined) {
-    const place = deploySecretPlace(plan, RELEASE_DB_ENV.secret);
-    await setSecretAt(deps, github, place, env.release[side], "provision");
+  for (const db of env.dbFiles) {
+    await setSecretAt(deps, github, deploySecretPlace(plan, db.secret), db[side], "provision");
   }
   await setSecretAt(
     deps,

@@ -6,6 +6,8 @@ import {
   ComponentNameSchema,
   PlanServiceSchema,
   ProcessesSchema,
+  poolerName,
+  postgresPooler,
   REDIS_PROTOCOL_KINDS,
   ServerNameSchema,
   StorageSchema,
@@ -2723,13 +2725,27 @@ function checkDrills(
 }
 
 /**
- * Worker and service names are unique within the app (each is a Compose service), a self-hosted
+ * Worker and service names are unique within the app (each is a Compose service), and none is a
+ * running PostgreSQL's pooler's (`<db>-pooler`, 050), a self-hosted
  * Postgres excludes an external one, an app on SQLite stops its old copy before starting the
  * new one, and the kept folder is neither the app's folder nor SQLite's, inside it or around it.
  */
 function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const names = new Set<string>();
+  const poolers = new Map(
+    plan.services
+      .filter((service) => service.enabled && postgresPooler(service))
+      .map((service) => [poolerName(service), service.name]),
+  );
   const unique = (name: string, path: (string | number)[]) => {
+    const database = poolers.get(name);
+    if (database !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path,
+        message: `"${name}" is the name of the pooler beside the service ${database} (pooler: pgbouncer); give this worker or service another name`,
+      });
+    }
     if (names.has(name)) {
       ctx.addIssue({
         code: "custom",

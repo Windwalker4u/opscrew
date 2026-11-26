@@ -4,6 +4,9 @@ import {
   APP_SERVER,
   type DeployPlan,
   DeployPlanSchema,
+  type PlanService,
+  poolerName,
+  postgresPooler,
   readArtifact,
   servicesOn,
 } from "@opscrew/plan-schema";
@@ -17,16 +20,23 @@ import { FINISH_COMMAND, MOVE_COMMAND } from "./window";
 
 /**
  * The fixed command that deletes the old copy of `service` on its server, as `deploy`: its
- * container when one is left, then its data folder `/srv/data/<app>/<service>`, as root in a
+ * container when one is left (and its pooler's, `<db>-pooler`, beside a PostgreSQL with
+ * `pooler: pgbouncer`, 050), then its data folder `/srv/data/<app>/<service>`, as root in a
  * throwaway container of the pinned Caddy image with no network (the folder belongs to the
  * service's own user, and deploy has no sudo).
  */
-function deleteOldCopy(plan: DeployPlan, service: string): string {
+function deleteOldCopy(plan: DeployPlan, service: PlanService): string {
   const app = plan.app.name;
+  const containers = postgresPooler(service) ? [service.name, poolerName(service)] : [service.name];
+  // One lookup each: Docker matches a container only when it has every label filter given.
+  const lookups = containers.map(
+    (name) =>
+      `docker ps -aq --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.service=${name}`,
+  );
   return [
-    `ids=$(docker ps -aq --filter label=com.docker.compose.project=${app} --filter label=com.docker.compose.service=${service})`,
+    `ids=$(${lookups.join("; ")})`,
     `{ [ -z "$ids" ] || docker rm -f $ids > /dev/null; }`,
-    `docker run --rm --network none --user 0:0 --entrypoint rm -v /srv/data/${app}:/d ${IMAGES.caddy.ref} -rf /d/${service}`,
+    `docker run --rm --network none --user 0:0 --entrypoint rm -v /srv/data/${app}:/d ${IMAGES.caddy.ref} -rf /d/${service.name}`,
   ].join(" && ");
 }
 
@@ -105,12 +115,14 @@ export async function finishMove(
   }
   const leaves = move.from !== APP_SERVER && servicesOn(plan, move.from).length === 0;
   const next = finished(plan, move.from, leaves);
-  const command = deleteOldCopy(plan, service);
+  const entry = plan.services.find((s) => s.name === service);
+  if (entry === undefined) throw new Error(`The plan has no service ${service}.`);
+  const command = deleteOldCopy(plan, entry);
   const approval = await deps.approvals.request({
     kind: "remote-exec",
     title: `Delete the old copy of ${service} and its data on ${from}`,
     details: [
-      `${service} runs on ${to} now. Its old copy on ${from} is deleted for good: its container, if one is left, and its data folder /srv/data/${plan.app.name}/${service}.`,
+      `${service} runs on ${to} now. Its old copy on ${from} is deleted for good: its container${postgresPooler(entry) ? ` and its pooler's (${poolerName(entry)})` : ""}, if one is left, and its data folder /srv/data/${plan.app.name}/${service}.`,
       `On ${from}, as deploy:`,
       `  ${command}`,
       `In opscrew/plan.yaml, move is cleared and deployment.placement records ${service} on ${move.to}.`,

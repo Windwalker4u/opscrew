@@ -9,9 +9,11 @@ import {
   POSTGRES_EXTENSIONS,
   ProjectFactsSchema,
   parseArtifact,
+  poolerName,
   postgresExtensions,
   postgresImageVariant,
   postgresLogins,
+  postgresPooler,
   postgresUsesPostgis,
   postgresUsesVector,
   serviceOf,
@@ -179,6 +181,22 @@ describe("DeployPlan components", () => {
     expect(pathsOf(shared)).toEqual(["services.0.options.logins"]);
     expect(shared.error?.issues[0]?.message).toBe('must be "separate"');
     expect(pathsOf(parse({ ...mongodb, options: { logins: "separate" } }))).toEqual([
+      "services.0.options",
+    ]);
+    // PgBouncer beside it (050), only with separate logins: the release must reach it directly.
+    expect(
+      parse({ ...postgres, options: { logins: "separate", pooler: "pgbouncer" } }).data?.services[0]
+        ?.options,
+    ).toEqual({ logins: "separate", pooler: "pgbouncer" });
+    const alone = parse({ ...postgres, options: { pooler: "pgbouncer" } });
+    expect(pathsOf(alone)).toEqual(["services.0.options.pooler"]);
+    expect(alone.error?.issues[0]?.message).toBe(
+      "`pooler: pgbouncer` needs `logins: separate` under the same options: migrations must reach PostgreSQL directly, and only separate logins give the release its own address.",
+    );
+    expect(
+      pathsOf(parse({ ...postgres, options: { logins: "separate", pooler: "pgcat" } })),
+    ).toEqual(["services.0.options.pooler"]);
+    expect(pathsOf(parse({ ...mongodb, options: { pooler: "pgbouncer" } }))).toEqual([
       "services.0.options",
     ]);
     expect(pathsOf(parse({ ...postgres, kind: "keydb" }))).toEqual(["services.0.kind"]);
@@ -468,6 +486,49 @@ describe("postgresExtensions", () => {
       options: { mode: "cache", extensions: ["vector"] },
     });
     expect(onValkey.success).toBe(false);
+  });
+});
+
+describe("postgresPooler", () => {
+  it("is true only for a PostgreSQL with PgBouncer beside it", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...(await validPlan()),
+      externalServices: [],
+      services: [
+        { ...postgres, options: { logins: "separate", pooler: "pgbouncer" } },
+        { ...postgres, name: "plain", options: { logins: "separate" } },
+        valkey("queue"),
+      ],
+    });
+    expect(plan.services.map(postgresPooler)).toEqual([true, false, false]);
+    expect(plan.services.map(poolerName)).toEqual(["db-pooler", "plain-pooler", "queue-pooler"]);
+  });
+
+  it("refuses a worker or service named like a running pooler", async () => {
+    const plan = await validPlan();
+    const pooled = { ...postgres, options: { logins: "separate", pooler: "pgbouncer" } };
+    const parse = (fields: object) =>
+      DeployPlanSchema.safeParse({ ...plan, externalServices: [], ...fields });
+    const message =
+      '"db-pooler" is the name of the pooler beside the service db (pooler: pgbouncer); give this worker or service another name';
+    const worker = { name: "db-pooler", command: "node jobs.js", source: "library" };
+    const asWorker = parse({ services: [pooled], processes: { workers: [worker] } });
+    expect(pathsOf(asWorker)).toEqual(["processes.workers.0.name"]);
+    expect(asWorker.error?.issues[0]?.message).toBe(message);
+    const asService = parse({ services: [pooled, { ...valkey("cache"), name: "db-pooler" }] });
+    expect(pathsOf(asService)).toEqual(["services.1.name"]);
+    expect(asService.error?.issues[0]?.message).toBe(message);
+    // A database that doesn't run has no pooler, and one without the option none either.
+    expect(
+      parse({ services: [{ ...pooled, enabled: false }], processes: { workers: [worker] } })
+        .success,
+    ).toBe(true);
+    expect(
+      parse({
+        services: [{ ...pooled, options: { logins: "separate" } }],
+        processes: { workers: [worker] },
+      }).success,
+    ).toBe(true);
   });
 });
 

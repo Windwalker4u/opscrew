@@ -25,6 +25,7 @@ import {
   renderServerCompose,
   runtimeDir,
   SNAPSHOT_GENERATIONS,
+  serviceSecrets,
   serviceSpec,
   shellQuote,
 } from "@opscrew/iac-templates";
@@ -504,7 +505,8 @@ export async function reloginRestoredServer(
   for (const { service, from } of stale) {
     const then = history[service.name]?.[String(from)];
     const secrets: RotationValues["services"][string] = {};
-    for (const { name } of serviceSpec(service.kind).secrets) {
+    // Each of its secrets, a PostgreSQL's two logins' too (047), as its steps rotate them.
+    for (const { name } of serviceSecrets(service)) {
       const old = then?.[name];
       const now = current[service.name]?.[name];
       if (old === undefined || now === undefined) {
