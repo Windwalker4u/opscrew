@@ -15,8 +15,8 @@ window of about a minute](031-short-move-window/) shipped together as 0.2.11 on 
   agent tool policy's security fixes (#16 to #24), the fixes in #26, [032 a Codex
   plugin](032-codex-plugin/) (built; its live pass in the Codex CLI is left), and 047 an app's
   PostgreSQL never running as the superuser, and 048 changing an app's values without a full
-  provision (the founder, 2026-11-25), and 050 a connection pooler for an app's PostgreSQL (the
-  founder, 2026-11-26).
+  provision (the founder, 2026-11-25), and 050 a connection pooler for an app's PostgreSQL, and 045
+  Postgres extensions, built by a contributor (the founder, 2026-11-26).
 - **0.2.13:** 040 an agent on the server, which he wanted in 0.2.12 if there was room. Its live
   pass needs the dashboard's side merged behind an operator-only switch a few days before, which
   would hold 046 back. With it, 049 each app's own network on a shared server (the lead's
@@ -993,7 +993,8 @@ module's first version: an app's PostgreSQL service names the extensions it need
 - **The lifecycle:** snapshots, restores, restore drills and moves keep the extensions, and
   switching an existing database's image is shown in the plan with its restart.
 - **Built by a contributor** (the founder, 2026-11-25), once 047 is on `main`, since both change
-  the same PostgreSQL service. Issue `[045]`.
+  the same PostgreSQL service. Issue `[045]`, pull request #30.
+- **In 0.2.12** (the founder, 2026-11-26), once its review passes.
 
 ## 046 An uptime check that doesn't use GitHub Actions
 
