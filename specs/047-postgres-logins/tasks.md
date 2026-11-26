@@ -246,3 +246,7 @@ Secret-shaped values in tests come from `fakeSecret`.
 - [ ] T4794 (lead) One snapshot per switch. Approving only the switch's hash takes the snapshot, then stops
   at the next plan's approval (the host plan), so each rerun takes another one (three on the inventory
   demo). Take the switch's snapshot only once every plan of the run is approved, with a test.
+  - **Decided (the lead, 2026-11-27):** the snapshot runs right before the switch's first write
+    (`buildAppEnvironment`), once every plan before it is approved. A failed snapshot then writes none
+    of the switch and leaves the database unchanged; the run's other changes, each approved by its
+    own hash, may already be made. Fixed on `fix/047-one-snapshot`; merges after a full check.
