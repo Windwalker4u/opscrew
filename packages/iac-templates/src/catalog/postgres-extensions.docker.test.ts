@@ -1,18 +1,15 @@
 /**
  * Real Docker tests for PostgreSQL extensions (feature 045):
  * 1. Fresh `pgvector/pgvector:0.8.7-pg17-trixie` with `logins: separate` + `vector` & `pg_trgm`:
- *    superuser setup before migrations, `app_owner` creates vector(3) table + HNSW/trgm indexes,
- *    `app_runtime` inserts & queries `<->`, and `pg_dump` + `loginsLoad` restores cleanly while
- *    `app_owner` stays non-superuser.
- * 2. Switching an existing populated `postgres:17-alpine` (musl) volume with `logins: separate`
- *    and indexed UTF-8 text rows to `pgvector/pgvector:0.8.7-pg17-trixie` (Debian glibc):
- *    `extensionsCheck` detects the collation mismatch + missing extension, `extensionsSetup` runs
- *    `REINDEX DATABASE app`, `ALTER DATABASE app REFRESH COLLATION VERSION`, and `CREATE EXTENSION`,
- *    and both existing indexed UTF-8 rows and new `vector` columns work cleanly.
- * 3. `postgis/postgis:17-3.7-alpine` with `logins: separate` + `postgis` & `postgis_topology`:
- *    geometry data, `spatial_ref_sys`, and `topology` schema (owned by superuser `app`) are
- *    preserved across in-place restore, drill (`setup: true`), and move (`setup: false`), while
- *    `app_owner` remains non-superuser and `app_runtime` queries geometry & `spatial_ref_sys`.
+ *    superuser setup before `loginsSetup` and migrations, `app_owner` creates vector(3) table +
+ *    HNSW/trgm indexes, `app_runtime` inserts & queries `<->`, and `pg_dump` + `loginsLoad`
+ *    restores cleanly while `app_owner` stays non-superuser.
+ * 2. `postgis/postgis:17-3.7-alpine` with `logins: separate` + `postgis` & `postgis_raster`:
+ *    geometry data and `spatial_ref_sys` are preserved across in-place restore, drill
+ *    (`setup: true`), and move (`setup: false`), while `app_owner` remains non-superuser and
+ *    `app_runtime` queries geometry & `spatial_ref_sys`. Also verifies that 047's `loginsSetup`
+ *    keeps superuser ownership on an extension-created schema (e.g. `topology` from
+ *    `postgis_topology`, whose `pg_depend` entry has `deptype = 'n'`).
  *
  * Runs only with OPSCREW_DOCKER_TESTS=1. Removes every container and volume it creates in afterAll.
  */
@@ -40,12 +37,10 @@ if (reason) console.warn(`[iac-templates] skipping PostgreSQL extensions on Dock
 
 const RUN = randomBytes(3).toString("hex");
 const started: string[] = [];
-const volumes: string[] = [];
 const HOOK_MS = 300_000;
 
 afterAll(() => {
   for (const name of started) spawnSync("docker", ["rm", "-fv", name], { stdio: "ignore" });
-  for (const vol of volumes) spawnSync("docker", ["volume", "rm", "-f", vol], { stdio: "ignore" });
 }, HOOK_MS);
 
 function dockerEnv(env: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -86,7 +81,7 @@ class ExtDatabase {
     };
   }
 
-  async start(volume?: string): Promise<void> {
+  async start(): Promise<void> {
     const env = {
       POSTGRES_USER: "app",
       POSTGRES_DB: "app",
@@ -95,20 +90,9 @@ class ExtDatabase {
       [RUNTIME_PASSWORD_ENV]: this.passwords.runtime,
     };
     started.push(this.name);
-    docker(
-      [
-        "run",
-        "-d",
-        "--name",
-        this.name,
-        "--hostname",
-        "db",
-        ...(volume === undefined ? [] : ["-v", `${volume}:/var/lib/postgresql/data`]),
-        ...envFlags(env),
-        this.image,
-      ],
-      { env: dockerEnv(env) },
-    );
+    docker(["run", "-d", "--name", this.name, "--hostname", "db", ...envFlags(env), this.image], {
+      env: dockerEnv(env),
+    });
     const deadline = Date.now() + 180_000;
     const ready = [
       "exec",
@@ -126,11 +110,6 @@ class ExtDatabase {
       if (Date.now() > deadline) throw new Error(`${this.name} (${this.image}) did not start.`);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-  }
-
-  stopAndRemove(): void {
-    docker(["stop", "-t", "30", this.name]);
-    docker(["rm", "-f", this.name]);
   }
 
   sh(script: string, env: Record<string, string> = {}): Result {
@@ -274,100 +253,21 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
   );
 
   it(
-    "switches a populated postgres:17-alpine volume (UTF-8 text index + separate logins) to pgvector/pgvector with reindex and collation refresh",
-    async () => {
-      const vol = `opscrew-ext-vol-${RUN}`;
-      volumes.push(vol);
-      docker(["volume", "create", vol]);
-
-      const passwords = {
-        superuser: fakeSecret("generic-password", `${vol}-super`),
-        owner: fakeSecret("generic-password", `${vol}-owner`),
-        runtime: fakeSecret("generic-password", `${vol}-runtime`),
-      };
-
-      // 1. Populate on postgres:17-alpine (musl) with separate logins and UTF-8 indexed text
-      const alpine = new ExtDatabase(IMAGES.postgres.ref, "switch-alpine", passwords);
-      await alpine.start(vol);
-      expect(alpine.sh(loginsSetup("db")).status).toBe(0);
-      expect(
-        alpine.as(
-          POSTGRES_OWNER,
-          "CREATE TABLE articles (id serial PRIMARY KEY, title text UNIQUE NOT NULL);",
-        ).status,
-      ).toBe(0);
-      expect(
-        alpine.as(
-          POSTGRES_RUNTIME,
-          "INSERT INTO articles (title) VALUES ('Café'), ('naïve'), ('über'), ('Zebra'), ('alpha');",
-        ).status,
-      ).toBe(0);
-      alpine.stopAndRemove();
-
-      // 2. Restart the EXACT same PGDATA volume on pgvector/pgvector:0.8.7-pg17-trixie (Debian glibc)
-      const switched = new ExtDatabase(IMAGES.pgvector.ref, "switch-pgvector", passwords);
-      await switched.start(vol);
-
-      // Before setup: collation version differs (musl NULL vs Debian glibc) and vector is absent
-      expect(
-        switched.sql(
-          "SELECT datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid) FROM pg_database WHERE datname = 'app'",
-        ),
-      ).toBe("t");
-      expect(switched.sh(extensionsCheck(["vector"])).status).not.toBe(0);
-
-      // Setup reindexes, refreshes collation version, and creates vector
-      const setup = switched.sh(extensionsSetup("db", ["vector"], { guardEventTriggers: true }));
-      expect(setup.status, setup.output).toBe(0);
-
-      // Collation now matches, checks pass
-      expect(
-        switched.sql(
-          "SELECT datcollversion IS NOT DISTINCT FROM pg_database_collation_actual_version(oid) FROM pg_database WHERE datname = 'app'",
-        ),
-      ).toBe("t");
-      expect(switched.sh(extensionsCheck(["vector"])).status).toBe(0);
-      expect(switched.sh(loginsCheck()).status).toBe(0);
-
-      // Existing indexed UTF-8 rows and new vector columns both work cleanly
-      const textLookup = switched.as(
-        POSTGRES_RUNTIME,
-        "SELECT count(*) FROM articles WHERE title IN ('Café', 'naïve', 'über');",
-      );
-      expect(textLookup.status, textLookup.output).toBe(0);
-      expect(textLookup.stdout).toBe("3");
-
-      const addVec = switched.as(POSTGRES_OWNER, "ALTER TABLE articles ADD COLUMN emb vector(3);");
-      expect(addVec.status, addVec.output).toBe(0);
-      const upd = switched.as(
-        POSTGRES_RUNTIME,
-        "UPDATE articles SET emb = '[1,0,0]' WHERE title = 'Café'; SELECT title FROM articles WHERE emb IS NOT NULL ORDER BY emb <-> '[0.9,0,0]' LIMIT 1;",
-      );
-      expect(upd.status, upd.output).toBe(0);
-      expect(upd.stdout).toBe("Café");
-    },
-    HOOK_MS,
-  );
-
-  it(
-    "preserves PostGIS geometry data, spatial_ref_sys, and topology across in-place restore, drill, and move while keeping app_owner non-superuser",
+    "preserves PostGIS geometry data and spatial_ref_sys across in-place restore, drill, and move while keeping app_owner non-superuser and extension schemas superuser-owned",
     async () => {
       const db = new ExtDatabase(IMAGES.postgis.ref, "postgis");
       await db.start();
 
       const extRes = db.sh(
-        extensionsSetup("db", ["postgis", "postgis_topology"], { guardEventTriggers: true }),
+        extensionsSetup("db", ["postgis", "postgis_raster"], { guardEventTriggers: true }),
       );
       expect(extRes.status, extRes.output).toBe(0);
       const loginRes = db.sh(loginsSetup("db"));
       expect(loginRes.status, loginRes.output).toBe(0);
-      expect(db.sh(extensionsCheck(["postgis", "postgis_topology"])).status).toBe(0);
+      expect(db.sh(extensionsCheck(["postgis", "postgis_raster"])).status).toBe(0);
       expect(db.sh(loginsCheck()).status).toBe(0);
 
-      // topology schema and spatial_ref_sys stay owned by superuser app
-      expect(
-        db.sql("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'topology'"),
-      ).toBe("app");
+      // spatial_ref_sys stays owned by superuser app
       expect(
         db.sql("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'spatial_ref_sys'"),
       ).toBe("app");
@@ -396,9 +296,6 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
       const inPlace = db.load(loginsLoad({ host: "db", file: "/tmp/geo.dump", setup: true }));
       expect(inPlace.status, inPlace.output).toBe(0);
       expect(db.sql("SELECT rolsuper FROM pg_roles WHERE rolname = 'app_owner'")).toBe("f");
-      expect(
-        db.sql("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'topology'"),
-      ).toBe("app");
       expect(Number(db.sql("SELECT count(*) FROM spatial_ref_sys"))).toBe(sridCountBefore);
       expect(
         db.as(
@@ -413,7 +310,7 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
       drill.writeDumpFromBase64(dump, "/tmp/geo.dump");
       const drillRes = drill.load(loginsLoad({ host: "db", file: "/tmp/geo.dump", setup: true }));
       expect(drillRes.status, drillRes.output).toBe(0);
-      expect(drill.sh(extensionsCheck(["postgis", "postgis_topology"])).status).toBe(0);
+      expect(drill.sh(extensionsCheck(["postgis", "postgis_raster"])).status).toBe(0);
       expect(drill.sh(loginsCheck()).status).toBe(0);
       expect(drill.sql("SELECT rolsuper FROM pg_roles WHERE rolname = 'app_owner'")).toBe("f");
       expect(Number(drill.sql("SELECT count(*) FROM spatial_ref_sys"))).toBe(sridCountBefore);
@@ -422,18 +319,14 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
       const moved = new ExtDatabase(IMAGES.postgis.ref, "postgis-move");
       await moved.start();
       expect(
-        moved.sh(
-          extensionsSetup("db", ["postgis", "postgis_topology"], { guardEventTriggers: true }),
-        ).status,
+        moved.sh(extensionsSetup("db", ["postgis", "postgis_raster"], { guardEventTriggers: true }))
+          .status,
       ).toBe(0);
       expect(moved.sh(loginsSetup("db")).status).toBe(0);
       moved.writeDumpFromBase64(dump, "/tmp/geo.dump");
       const moveRes = moved.load(loginsLoad({ host: "db", file: "/tmp/geo.dump", setup: false }));
       expect(moveRes.status, moveRes.output).toBe(0);
       expect(moved.sql("SELECT rolsuper FROM pg_roles WHERE rolname = 'app_owner'")).toBe("f");
-      expect(
-        moved.sql("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'topology'"),
-      ).toBe("app");
       expect(Number(moved.sql("SELECT count(*) FROM spatial_ref_sys"))).toBe(sridCountBefore);
       expect(
         moved.as(
@@ -441,6 +334,24 @@ describe.skipIf(reason !== undefined)("PostgreSQL extensions on Docker (045)", (
           "SELECT name FROM places ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint(2.35, 48.85), 4326)) LIMIT 1;",
         ).stdout,
       ).toBe("Paris");
+
+      // 4. Verify S1 fix: an extension-created schema (deptype = 'n', e.g. postgis_topology's
+      //    `topology` schema) stays owned by superuser `app` after loginsSetup.
+      const extSchema = new ExtDatabase(IMAGES.postgis.ref, "postgis-ext-schema");
+      await extSchema.start();
+      extSchema.sql('CREATE EXTENSION "postgis_topology" CASCADE;');
+      expect(extSchema.sh(loginsSetup("db")).status).toBe(0);
+      expect(extSchema.sh(loginsCheck()).status).toBe(0);
+      expect(
+        extSchema.sql(
+          "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'topology'",
+        ),
+      ).toBe("app");
+      expect(
+        extSchema.sql(
+          "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public'",
+        ),
+      ).toBe("app_owner");
     },
     HOOK_MS,
   );

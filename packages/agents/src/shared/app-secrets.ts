@@ -56,6 +56,8 @@ export const GeneratedValuesSchema = z.object({
   grants: z.record(z.string(), z.string().min(1)).optional(),
   /** The self-hosted monitoring's values; damaged ones read as none (writing them stops). */
   monitoring: MonitoringValuesSchema.optional().catch(undefined),
+  /** PostgreSQL extensions recorded per service when provision creates the database (045). */
+  postgresExtensions: z.record(z.string(), z.array(z.string())).optional(),
 });
 
 /**

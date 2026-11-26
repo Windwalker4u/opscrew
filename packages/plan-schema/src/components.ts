@@ -168,12 +168,7 @@ const BrokerLoginSchema = z.boolean().default(false);
 export const POSTGRES_VECTOR_EXTENSION = "vector" as const;
 
 /** PostGIS extensions (`postgis/postgis` pinned image, Alpine, amd64 only). */
-export const POSTGRES_POSTGIS_EXTENSIONS = [
-  "postgis",
-  "postgis_topology",
-  "postgis_raster",
-  "postgis_sfcgal",
-] as const;
+export const POSTGRES_POSTGIS_EXTENSIONS = ["postgis", "postgis_raster", "postgis_sfcgal"] as const;
 
 /** Standard PostgreSQL `contrib` extensions needing no `shared_preload_libraries` (`postgres:*-alpine`). */
 export const POSTGRES_CONTRIB_EXTENSIONS = [
@@ -342,9 +337,14 @@ export function postgresUsesVector(service: PlanService): boolean {
   return postgresExtensions(service).includes(POSTGRES_VECTOR_EXTENSION);
 }
 
+/** The PostGIS extensions requested on `service` (empty when none or not PostgreSQL). */
+export function postgresPostgisExtensions(service: PlanService): PostgresExtension[] {
+  return postgresExtensions(service).filter((name) => POSTGIS_EXTENSION_SET.has(name));
+}
+
 /** True when `service` is a PostgreSQL requesting any PostGIS extension (`postgis/postgis`, `amd64` only). */
 export function postgresUsesPostgis(service: PlanService): boolean {
-  return postgresExtensions(service).some((name) => POSTGIS_EXTENSION_SET.has(name));
+  return postgresPostgisExtensions(service).length > 0;
 }
 
 /** Which pinned PostgreSQL image family `service` requires (`postgres`, `pgvector`, or `postgis`). */

@@ -2107,22 +2107,13 @@ async function loginsFirst(
     take: (skip: readonly string[]) => takeSnapshot(deps, { skip, services: snapshotServices }),
   };
   const command = `opscrew provision${flags}`;
+  await postgresExtensionsStep(deps, plan, { command, snapshot });
   const change = await postgresLoginsStep(deps, plan, {
     command,
     planOnly: options.planOnly,
     snapshot,
   });
-  const extChange = await postgresExtensionsStep(deps, plan, {
-    command,
-    planOnly: options.planOnly,
-    snapshot,
-    ...(change === undefined ? {} : { alreadySnapshotted: new Set(change.services) }),
-  });
-  const usedHashes = new Set<string>([
-    ...(change === undefined ? [] : [change.hash]),
-    ...(extChange === undefined ? [] : [extChange.hash]),
-  ]);
-  if (usedHashes.size === 0) return { options };
+  if (change === undefined) return { options };
   const { approveHashes } = options;
   return {
     options:
@@ -2130,9 +2121,9 @@ async function loginsFirst(
         ? options
         : {
             ...options,
-            approveHashes: approveHashes.filter((hash) => !usedHashes.has(hash.toLowerCase())),
+            approveHashes: approveHashes.filter((hash) => hash.toLowerCase() !== change.hash),
           },
-    ...(change === undefined ? {} : { switching: change.services }),
+    switching: change.services,
   };
 }
 

@@ -106,3 +106,19 @@ All three recommendations were approved by the core's lead (`softzer0`) on 2026-
 3. **Switching an existing database's image (musl -> glibc):** a snapshot first, the image switch approved by its hash, then `REINDEX DATABASE` and `ALTER DATABASE ... REFRESH COLLATION VERSION` in the setup step. The plan states plainly that it restarts the database and that reindexing can take a while on a large database. Proven in the `OPSCREW_DOCKER_TESTS=1` Docker test starting from a populated `postgres:17-alpine` volume with a text index.
 4. **Privileges:** `vector` is untrusted, so `CREATE EXTENSION IF NOT EXISTS` runs inside 047's superuser setup step before migrations, requiring no extra privileges on `app_owner` or `app_runtime`.
 
+
+---
+
+## R7 — PR #30 real-Docker findings and 0.2.12 decisions (core lead, 2026-11-26)
+
+Running `OPSCREW_DOCKER_TESTS=1` on PR #30 surfaced two PostgreSQL realities and one security constraint:
+
+1. **Alpine (musl) → Debian (glibc) `REFRESH COLLATION VERSION` fails from NULL:** `postgres:17-alpine` stores `pg_database.datcollversion` as `NULL` (musl has no collation versions), and PostgreSQL refuses `ALTER DATABASE app REFRESH COLLATION VERSION` from `NULL` with `ERROR: invalid collation version change`.
+2. **Superuser `CREATE EXTENSION` on an existing `logins: separate` database:** once `loginsSetup` has transferred `public` to `app_owner`, running third-party extension DDL as superuser inside an `app_owner`-controlled schema carries the privilege-escalation risk ADR 0037 closes.
+3. **Extension-created schemas (`deptype = 'n'`):** PostGIS's `topology` schema is recorded in `pg_depend` as a normal (`'n'`) dependency on the extension rather than a member (`'e'`), so 047's `OWNERS` query moved `topology` to `app_owner`. Fixed in `postgres-logins.ts` by excluding any non-`public` schema that depends on `pg_extension`.
+
+**Decisions for `0.2.12`:**
+- Extensions are set up **at database creation only** (`CREATE EXTENSION` runs as superuser before `loginsSetup` moves ownership to `app_owner`, with no in-place image switch and no `REINDEX`/`REFRESH COLLATION VERSION`).
+- `provision` records each PostgreSQL service's extensions in `generated_values.json` next to `dbPassword` and refuses adding or removing extensions on any database that already has data (`neverRan`), before anything changes. Rebuilding an existing database via snapshot into a fresh volume is tracked as a post-`0.2.12` task (`T4508`).
+- `postgis_topology` is removed from `0.2.12` (`postgis`, `postgis_raster`, `postgis_sfcgal` remain) until safe runtime grants for `topology.CreateTopology()` are designed (`T4509`).
+- Dependabot locks `pgvector/pgvector` / `postgis/postgis` major versions only when a plan uses those images, keeping every other project's `.github/dependabot.yml` unchanged.

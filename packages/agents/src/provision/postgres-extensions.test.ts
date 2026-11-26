@@ -1,19 +1,31 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import type { ApprovalRequest } from "@opscrew/contracts";
+import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { IMAGES, renderCompose } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, type PostgresExtension } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { generatedValuesFile } from "../shared/app-secrets";
-import { createTestPhaseDeps, ScriptedApprovalHandler, testPlan } from "../testing";
 import {
-  extensionsSwitch,
-  postgresExtensionsStep,
-  readCommittedPostgresImages,
-  requireExtensionsArch,
-} from "./postgres-extensions";
+  createProject,
+  createTestPhaseDeps,
+  FakeEngine,
+  FakeGitHub,
+  fakeSharedCloudflare,
+  projectRunner,
+  readyRemote,
+  ScriptedApprovalHandler,
+  testPlan,
+} from "../testing";
+import { noOtherApps } from "../testing/other-apps";
+import { postgresExtensionsStep, requireExtensionsArch } from "./postgres-extensions";
+import { runProvision } from "./run";
+import type { ProvisionServices } from "./types";
 
+const HCLOUD = fakeSecret("hcloud-token");
+const STRIPE = fakeSecret("stripe-live-key");
 const tempDirs: string[] = [];
 
 async function makeTempRoot(): Promise<string> {
@@ -32,8 +44,10 @@ afterEach(async () => {
 function makePlan(
   opts: {
     extensions?: readonly PostgresExtension[];
+    logins?: "separate" | undefined;
     arch?: "amd64" | "arm64";
-    provider?: "hetzner" | "own" | "portainer";
+    provider?: "hetzner" | "own" | "portainer" | "localhost";
+    serverType?: string;
   } = {},
 ): DeployPlan {
   const base = testPlan();
@@ -54,20 +68,33 @@ function makePlan(
             redeploy: "updater" as const,
             web: { mode: "tunnel" as const },
           }
-        : base.target;
+        : opts.provider === "localhost"
+          ? {
+              provider: "localhost" as const,
+              mode: "local-compose" as const,
+              arch: opts.arch ?? "amd64",
+              ports: { http: 80, https: 443 },
+              image: "local-build" as const,
+              edge: "caddy" as const,
+            }
+          : {
+              ...base.target,
+              ...(opts.serverType === undefined ? {} : { serverType: opts.serverType }),
+            };
   return DeployPlanSchema.parse({
     ...base,
     target,
     ...(opts.provider === "portainer"
       ? { dns: { ...base.dns, provider: "cloudflare", domain: "shop.example.com" } }
-      : {}),
+      : opts.provider === "localhost"
+        ? { dns: { provider: "none" } }
+        : {}),
     services: base.services.map((service) =>
       service.kind === "postgres"
         ? {
             ...service,
             options: {
-              ...service.options,
-              logins: "separate",
+              ...(opts.logins === undefined ? {} : { logins: opts.logins }),
               ...(opts.extensions === undefined ? {} : { extensions: [...opts.extensions] }),
             },
           }
@@ -76,182 +103,250 @@ function makePlan(
   });
 }
 
-async function makeDeps(root: string, approved: boolean) {
-  const handler = new ScriptedApprovalHandler(() => approved);
-  const deps = await createTestPhaseDeps({
+async function makeDeps(root: string) {
+  return createTestPhaseDeps({
     root,
+    env: { ...process.env, OPSCREW_HOME: join(root, ".home") },
+  });
+}
+
+async function provisionProject(
+  plan: DeployPlan,
+  kept?: Record<string, unknown>,
+  empty: string[] = [],
+) {
+  const created = await createProject(plan);
+  await created.git(created.root, "add", "opscrew/plan.yaml");
+  await created.git(created.root, "commit", "-q", "-m", "plan");
+  await writeFile(join(created.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
+  const handler = new ScriptedApprovalHandler(() => true);
+  const deps = await createTestPhaseDeps({
+    root: created.root,
     env: {
       ...process.env,
-      OPSCREW_HOME: join(root, ".home"),
+      OPSCREW_HOME: join(created.root, ".home-opscrew"),
+      HCLOUD_TOKEN: HCLOUD,
+      OPSCREW_APP_ENV_FILE: "production.env",
     },
+    runner: projectRunner(),
     approvalHandler: handler,
   });
-  return { deps, handler };
+  const keptText = kept === undefined ? undefined : `${JSON.stringify(kept)}\n`;
+  if (keptText !== undefined) {
+    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+    await writeFile(generatedValuesFile(deps), keptText);
+  }
+  const github = new FakeGitHub();
+  let snapshotsTaken = 0;
+  const services: ProvisionServices = {
+    otherApps: { inspect: noOtherApps },
+    engine: async () => new FakeEngine(),
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    github,
+    tcpConnect: async () => true,
+    remote: readyRemote,
+    sleep: async () => undefined,
+    sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
+    snapshot: {
+      neverRan: async (names) => names.filter((name) => empty.includes(name)),
+      take: async () => {
+        snapshotsTaken++;
+      },
+    },
+  };
+  return {
+    ...created,
+    deps,
+    handler,
+    github,
+    services,
+    keptText,
+    snapshotsTaken: () => snapshotsTaken,
+  };
 }
 
 describe("provision PostgreSQL extensions (045)", () => {
-  it("refuses PostGIS on arm64 own servers and Portainer hosts, while allowing vector on arm64", () => {
-    expect(() =>
+  it("refuses PostGIS on arm64 own, Portainer, localhost, and hand-edited ARM cloud server types (cax11), while allowing vector", async () => {
+    await expect(
       requireExtensionsArch(
         makePlan({ provider: "own", arch: "arm64", extensions: ["postgis"] }),
         "opscrew provision",
       ),
-    ).toThrow(/postgis\/postgis.*amd64.*arm64/i);
+    ).rejects.toThrow(/postgis\/postgis.*amd64.*arm64/i);
 
-    expect(() =>
+    await expect(
       requireExtensionsArch(
-        makePlan({ provider: "portainer", arch: "arm64", extensions: ["postgis_topology"] }),
+        makePlan({ provider: "portainer", arch: "arm64", extensions: ["postgis_raster"] }),
         "opscrew provision",
       ),
-    ).toThrow(/Portainer host is arm64/i);
+    ).rejects.toThrow(/Portainer host is arm64/i);
 
-    expect(() =>
+    await expect(
       requireExtensionsArch(
-        makePlan({ provider: "own", arch: "arm64", extensions: ["vector"] }),
+        makePlan({ provider: "localhost", arch: "arm64", extensions: ["postgis"] }),
         "opscrew provision",
       ),
-    ).not.toThrow();
-  });
+    ).rejects.toThrow(/this computer is arm64/i);
 
-  it("detects Alpine -> pgvector switch (with reindex note), Alpine -> PostGIS switch (no reindex), and ignores contrib-only or new DBs", () => {
-    const kept = { dbPassword: fakeSecret("generic-password", "db") };
-    const committedPg = { db: IMAGES.postgres.ref };
-
-    // New DB (no dbPassword) -> no switch
-    expect(
-      extensionsSwitch(makePlan({ extensions: ["vector"] }), {}, committedPg, "prod"),
-    ).toBeUndefined();
-
-    // Contrib-only on postgres:17-alpine -> same repo, no switch
-    expect(
-      extensionsSwitch(
-        makePlan({ extensions: ["pgcrypto", "pg_trgm"] }),
-        kept,
-        committedPg,
-        "prod",
+    // Hand-edited Hetzner ARM serverType (cax11) checked against the provider catalogue
+    await expect(
+      requireExtensionsArch(
+        makePlan({ provider: "hetzner", serverType: "cax11", extensions: ["postgis"] }),
+        "opscrew provision",
       ),
-    ).toBeUndefined();
+    ).rejects.toThrow(/cax11.*arm64/i);
 
-    // Alpine -> pgvector (musl -> glibc)
-    const vec = extensionsSwitch(makePlan({ extensions: ["vector"] }), kept, committedPg, "prod");
-    expect(vec).toBeDefined();
-    expect(vec?.services).toEqual(["db"]);
-    expect(vec?.changes[0]?.reindexes).toBe(true);
-    expect(vec?.lines.join("\n")).toContain("Take a snapshot of db now.");
-    expect(vec?.lines.join("\n")).toContain("pgvector/pgvector:0.8.7-pg17-trixie");
-    expect(vec?.lines.join("\n")).toContain("reindexes db and refreshes its collation version");
-    expect(vec?.lines.join("\n")).toContain("can take a while on a large database");
-    expect(vec?.hash).toMatch(/^[0-9a-f]{64}$/);
+    await expect(
+      requireExtensionsArch(
+        makePlan({ provider: "hetzner", serverType: "cx23", extensions: ["postgis"] }),
+        "opscrew provision",
+      ),
+    ).resolves.toBeUndefined();
 
-    // Alpine -> PostGIS (Alpine -> Alpine, no reindex)
-    const geo = extensionsSwitch(
-      makePlan({ extensions: ["postgis", "postgis_topology"] }),
-      kept,
-      committedPg,
-      "prod",
-    );
-    expect(geo).toBeDefined();
-    expect(geo?.changes[0]?.reindexes).toBe(false);
-    expect(geo?.lines.join("\n")).toContain("postgis/postgis:17-3.7-alpine");
-    expect(geo?.lines.join("\n")).not.toContain("reindexes");
-
-    // Switching away from pgvector -> warns never DROP EXTENSION automatically
-    const back = extensionsSwitch(makePlan(), kept, { db: IMAGES.pgvector.ref }, "prod");
-    expect(back?.changes[0]?.reindexes).toBe(true);
-    expect(back?.lines.join("\n")).toContain("never runs DROP EXTENSION automatically");
+    await expect(
+      requireExtensionsArch(
+        makePlan({ provider: "hetzner", serverType: "cax11", extensions: ["vector"] }),
+        "opscrew provision",
+      ),
+    ).resolves.toBeUndefined();
   });
 
-  it("shows switch plan on --plan-only, approves by hash, snapshots first, skips neverRan, and aborts on snapshot failure", async () => {
+  it("refuses adding or removing extensions on an existing database with data, while allowing new, unchanged, or never-ran databases", async () => {
     const root = await makeTempRoot();
-    const oldPlan = makePlan();
-    const newPlan = makePlan({ extensions: ["vector"] });
-    const compose = renderCompose(oldPlan);
-    await mkdir(join(root, "opscrew/runtime"), { recursive: true });
-    await writeFile(join(root, compose.path), compose.content);
-
-    expect(await readCommittedPostgresImages(root, newPlan)).toEqual({ db: IMAGES.postgres.ref });
-
-    const { deps, handler } = await makeDeps(root, true);
+    const deps = await makeDeps(root);
     const valuesPath = generatedValuesFile(deps);
+
+    // 1. Brand-new database (no generated_values.json yet) -> allowed
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ extensions: ["vector"] }), {
+        command: "opscrew provision",
+        snapshot: { neverRan: async () => [] },
+      }),
+    ).resolves.toBeUndefined();
+
+    // 2. Existing pre-045 database (dbPassword kept, no postgresExtensions) with data -> adding vector refused
     await mkdir(dirname(valuesPath), { recursive: true });
     await writeFile(
       valuesPath,
       JSON.stringify({ dbPassword: fakeSecret("generic-password", "db") }),
     );
-
-    // 1. --plan-only reports hash and takes no snapshot
-    let took = 0;
-    const planned = await postgresExtensionsStep(deps, newPlan, {
-      command: "opscrew provision",
-      planOnly: true,
-      snapshot: {
-        neverRan: async () => [],
-        take: async () => {
-          took++;
-        },
-      },
-    });
-    expect(planned?.services).toEqual(["db"]);
-    expect(took).toBe(0);
-    expect(handler.requests).toHaveLength(0);
-    expect(deps.reporter.text()).toContain(`--approve ${planned?.hash}`);
-
-    // 2. Approved run takes snapshot of db first
-    const skipped: (readonly string[])[] = [];
-    await postgresExtensionsStep(deps, newPlan, {
-      command: "opscrew provision",
-      snapshot: {
-        neverRan: async () => [],
-        take: async (skip) => {
-          took++;
-          skipped.push(skip);
-        },
-      },
-    });
-    expect(handler.requests).toHaveLength(1);
-    expect(handler.requests[0]?.planHash).toBe(planned?.hash);
-    expect(took).toBe(1);
-    expect(skipped).toEqual([[]]);
-
-    // 3. neverRan skips snapshot cleanly
-    await postgresExtensionsStep(deps, newPlan, {
-      command: "opscrew provision",
-      snapshot: {
-        neverRan: async () => ["db"],
-        take: async () => {
-          took++;
-        },
-      },
-    });
-    expect(took).toBe(1);
-    expect(deps.reporter.text()).toContain("db has no data yet");
-
-    // 4. Snapshot failure aborts with nothing changed
     await expect(
-      postgresExtensionsStep(deps, newPlan, {
+      postgresExtensionsStep(deps, makePlan({ extensions: ["vector"] }), {
         command: "opscrew provision",
-        snapshot: {
-          neverRan: async () => [],
-          take: async () => {
-            throw new Error("disk full");
-          },
-        },
+        snapshot: { neverRan: async () => [] },
       }),
-    ).rejects.toThrow(/snapshot of db.*failed.*disk full.*Nothing was changed/i);
+    ).rejects.toThrow(
+      /db already has data.*can't add or remove extensions.*keep `extensions` as it was \(none\)/i,
+    );
 
-    // 5. Refused approval aborts without taking snapshot
-    const denied = await makeDeps(root, false);
-    await expect(
-      postgresExtensionsStep(denied.deps, newPlan, {
-        command: "opscrew provision",
-        snapshot: {
-          neverRan: async () => [],
-          take: async () => {
-            took++;
-          },
-        },
+    // 3. Existing database created with ["vector"]: unchanged passes, adding or removing refused
+    await writeFile(
+      valuesPath,
+      JSON.stringify({
+        dbPassword: fakeSecret("generic-password", "db"),
+        postgresExtensions: { db: ["vector"] },
       }),
-    ).rejects.toThrow(/Nothing was changed/);
-    expect(took).toBe(1);
+    );
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ extensions: ["vector"] }), {
+        command: "opscrew provision",
+        snapshot: { neverRan: async () => [] },
+      }),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ extensions: ["vector", "pg_trgm"] }), {
+        command: "opscrew provision",
+        snapshot: { neverRan: async () => [] },
+      }),
+    ).rejects.toThrow(/db already has data.*keep `extensions` as it was \(vector\)/i);
+
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ extensions: [] }), {
+        command: "opscrew provision",
+        snapshot: { neverRan: async () => [] },
+      }),
+    ).rejects.toThrow(/db already has data.*keep `extensions` as it was \(vector\)/i);
+
+    // 4. Never-ran database -> change allowed
+    await expect(
+      postgresExtensionsStep(deps, makePlan({ extensions: ["vector", "pg_trgm"] }), {
+        command: "opscrew provision",
+        snapshot: { neverRan: async () => ["db"] },
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision with PostgreSQL extensions (045)", () => {
+  it("creates a new database with extensions and records them in generated_values.json", async () => {
+    const s = await provisionProject(
+      makePlan({ logins: "separate", extensions: ["vector", "pg_trgm"] }),
+    );
+    await runProvision(s.deps, { services: s.services });
+
+    const written = JSON.parse(await readFile(generatedValuesFile(s.deps), "utf8")) as {
+      dbPassword?: string;
+      postgresExtensions?: Record<string, string[]>;
+    };
+    expect(written.dbPassword).toBeTruthy();
+    expect(written.postgresExtensions).toEqual({ db: ["pg_trgm", "vector"] });
+  });
+
+  it("lets an unchanged existing database with extensions pass through runProvision", async () => {
+    const s = await provisionProject(makePlan({ logins: "separate", extensions: ["vector"] }), {
+      dbPassword: fakeSecret("generic-password", "db"),
+      services: {
+        db: {
+          "owner-password": fakeSecret("generic-password", "owner"),
+          "runtime-password": fakeSecret("generic-password", "runtime"),
+        },
+      },
+      postgresExtensions: { db: ["vector"] },
+    });
+    await runProvision(s.deps, { services: s.services });
+
+    const written = JSON.parse(await readFile(generatedValuesFile(s.deps), "utf8")) as {
+      postgresExtensions?: Record<string, string[]>;
+    };
+    expect(written.postgresExtensions).toEqual({ db: ["vector"] });
+  });
+
+  it("refuses adding extensions to an existing database before anything is written or 047 switches", async () => {
+    const kept = { dbPassword: fakeSecret("generic-password", "db") };
+    // Also enables logins: separate so we verify 045 refuses BEFORE 047's switch approval/snapshot.
+    const s = await provisionProject(
+      makePlan({ logins: "separate", extensions: ["vector"] }),
+      kept,
+    );
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(
+      /db already has data.*can't add or remove extensions/i,
+    );
+
+    expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
+    expect(s.github.secrets.size).toBe(0);
+    expect(s.handler.requests.map((r: ApprovalRequest) => r.kind)).toEqual([]);
+    expect(s.snapshotsTaken()).toBe(0);
+  });
+
+  it("refuses PostGIS on a hand-edited ARM serverType (cax11) before anything is written or 047 switches", async () => {
+    const kept = { dbPassword: fakeSecret("generic-password", "db") };
+    const s = await provisionProject(
+      makePlan({
+        provider: "hetzner",
+        serverType: "cax11",
+        logins: "separate",
+        extensions: ["postgis"],
+      }),
+      kept,
+    );
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(
+      /postgis\/postgis.*cax11.*arm64/i,
+    );
+
+    expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
+    expect(s.github.secrets.size).toBe(0);
+    expect(s.handler.requests.map((r: ApprovalRequest) => r.kind)).toEqual([]);
+    expect(s.snapshotsTaken()).toBe(0);
   });
 });

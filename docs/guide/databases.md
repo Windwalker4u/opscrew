@@ -225,20 +225,23 @@ services:
 |---|---|---|
 | `pgcrypto`, `uuid-ossp`, `pg_trgm`, `citext`, `hstore`, `unaccent`, `fuzzystrmatch`, `btree_gin`, `btree_gist`, `ltree`, `intarray`, `cube`, `earthdistance`, `tablefunc`, `isn`, `lo`, `bloom` | `postgres:17-alpine` (no image change) | `amd64`, `arm64` |
 | `vector` (plus any of the `contrib` extensions above) | `pgvector/pgvector:0.8.7-pg17-trixie` (pinned by digest) | `amd64`, `arm64` |
-| `postgis`, `postgis_topology`, `postgis_raster`, `postgis_sfcgal` (plus any of the `contrib` extensions above) | `postgis/postgis:17-3.7-alpine` (pinned by digest) | `amd64` only |
+| `postgis`, `postgis_raster`, `postgis_sfcgal` (plus any of the `contrib` extensions above) | `postgis/postgis:17-3.7-alpine` (pinned by digest) | `amd64` only |
 
-- **PostGIS needs an `amd64` server:** the official `postgis/postgis` image publishes only `linux/amd64` manifests, so design and `npx opscrew provision` refuse placing a PostGIS database on an `arm64` server.
+- **PostGIS needs an `amd64` server:** the official `postgis/postgis` image publishes only `linux/amd64` manifests, so design and `npx opscrew provision` refuse placing a PostGIS database on an `arm64` host (your own server, a Portainer host, this computer, or an ARM cloud server type).
 - **`vector` and PostGIS cannot be combined in one database:** no single official image ships both, so OpsCrew refuses combining them in the same PostgreSQL service before anything changes. Any unsupported extension name is refused the same way, listing the supported names above.
-- **Snapshots, restores, restore drills, and moves** run with the database's extension image and preserve `vector` indexes, PostGIS geometry data, `spatial_ref_sys`, and the `topology` schema under [Two logins](#two-logins) (keeping `app_owner` non-superuser).
+- **Snapshots, restores, restore drills, and moves** run with the database's extension image and preserve `vector` indexes, PostGIS geometry data, and `spatial_ref_sys` under [Two logins](#two-logins) (keeping `app_owner` non-superuser).
 
-### Adding extensions to an existing database
+### New databases only (in 0.2.12)
 
-- **Built-in `contrib` extensions only:** the database stays on `postgres:17-alpine` and does not restart; the next deploy runs `CREATE EXTENSION IF NOT EXISTS` before migrations.
-- **Switching images (`vector` or PostGIS):** run `npx opscrew provision`. OpsCrew shows the image switch as a plan you approve by its hash before anything changes:
-  - a snapshot of the database is taken first, and provision stops if it fails (a database that never ran has nothing to snapshot);
-  - the database container restarts once on the new pinned image;
-  - when switching between Alpine (`postgres:17-alpine`) and Debian (`pgvector/pgvector:0.8.7-pg17-trixie`), the next deploy's setup step runs `REINDEX DATABASE app` and `ALTER DATABASE app REFRESH COLLATION VERSION` (which can take a while on a large database) so text indexes match the new OS collation, then creates the extensions.
-- **Removing an extension from `plan.yaml`:** OpsCrew never runs `DROP EXTENSION ... CASCADE` automatically (which would drop tables or columns). Drop or migrate any objects depending on an extension yourself before switching back to an image that does not carry it.
+Extensions are set up when the database is created, before [Two logins](#two-logins) hands schema
+ownership to `app_owner`. OpsCrew records the database's extension set in its local generated values
+when `npx opscrew provision` creates it:
+
+- If a database already has data, `npx opscrew provision` refuses adding or removing extensions in
+  `opscrew/plan.yaml` before anything changes. Keep `extensions` as it was when the database was
+  created (or create a new database with the extensions you need).
+- If a database has never started yet (has no data), you can still adjust `options.extensions`
+  before the first deploy.
 
 ## Settings for small servers
 

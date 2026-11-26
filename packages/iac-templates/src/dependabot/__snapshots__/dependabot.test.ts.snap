@@ -73,12 +73,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -184,12 +178,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -292,12 +280,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -369,12 +351,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -479,12 +455,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -556,12 +526,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -667,12 +631,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -791,12 +749,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -899,12 +851,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -976,12 +922,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -1086,12 +1026,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1163,12 +1097,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -1287,12 +1215,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1395,12 +1317,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1472,12 +1388,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -1572,12 +1482,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -1682,12 +1586,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1759,12 +1657,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres
@@ -1869,12 +1761,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -1956,12 +1842,6 @@ updates:
       - dependency-name: opensearchproject/opensearch
         update-types:
           - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
-        update-types:
-          - version-update:semver-major
       - dependency-name: postgres
         update-types:
           - version-update:semver-major
@@ -2039,12 +1919,6 @@ updates:
         update-types:
           - version-update:semver-major
       - dependency-name: opensearchproject/opensearch
-        update-types:
-          - version-update:semver-major
-      - dependency-name: pgvector/pgvector
-        update-types:
-          - version-update:semver-major
-      - dependency-name: postgis/postgis
         update-types:
           - version-update:semver-major
       - dependency-name: postgres

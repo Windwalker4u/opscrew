@@ -104,10 +104,7 @@ export async function designOwnServer(
     phase: "design",
   });
   const server = ownServerFacts(facts);
-  requirePostgisArch(services, server.arch, `server ${name}`, {
-    unchanged: "plan.yaml was not changed.",
-    command: "opscrew design",
-  });
+  requirePostgisArch(services, server.arch, `server ${name}`);
   const address = ownServerPublicAddress({ host: login.host }, facts);
   if (address === undefined) {
     const placed = listText([...services, ...addons].map((limit) => limit.name));

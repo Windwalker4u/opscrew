@@ -4,6 +4,8 @@ import {
   isServerlessTarget,
   type PackageManager,
   type ProjectFacts,
+  postgresUsesPostgis,
+  postgresUsesVector,
   type RuntimeLanguage,
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
@@ -45,11 +47,28 @@ const RUNTIME_ECOSYSTEM: Partial<Record<RuntimeLanguage, string>> = {
 export const NO_MAJOR_UPDATES: readonly string[] = [
   "caddy",
   "node",
-  "pgvector/pgvector",
-  "postgis/postgis",
   "python",
   ...SERVICE_SPECS.filter((spec) => spec.majorLocked).map(imageName),
 ].sort();
+
+/** PostgreSQL extension images whose major version is also locked when a plan uses them (045). */
+export const EXTENSION_NO_MAJOR_UPDATES: readonly string[] = [
+  "pgvector/pgvector",
+  "postgis/postgis",
+];
+
+/** Extension images any app in `apps` uses, sorted, to add to Dependabot's `docker-compose` ignore. */
+function usedExtensionImages(apps: readonly DependabotApp[]): string[] {
+  const used = new Set<string>();
+  for (const app of apps) {
+    for (const service of app.plan.services) {
+      if (!service.enabled || service.kind !== "postgres") continue;
+      if (postgresUsesVector(service)) used.add("pgvector/pgvector");
+      if (postgresUsesPostgis(service)) used.add("postgis/postgis");
+    }
+  }
+  return [...used].sort();
+}
 
 /**
  * Images of {@link NO_MAJOR_UPDATES} whose minor versions are the user's too: a new Meilisearch
@@ -76,8 +95,14 @@ function runtimeFolders(plan: DeployPlan, environments: readonly string[]): stri
 function update(
   ecosystem: string,
   where: { directory: string } | { directories: string[] },
-  ignoreMajors = false,
+  ignoreMajors: boolean | readonly string[] = false,
 ): Record<string, unknown> {
+  const locked =
+    ignoreMajors === false
+      ? undefined
+      : ignoreMajors === true
+        ? NO_MAJOR_UPDATES
+        : [...new Set([...NO_MAJOR_UPDATES, ...ignoreMajors])].sort();
   return {
     "package-ecosystem": ecosystem,
     ...where,
@@ -85,9 +110,9 @@ function update(
     groups: {
       [`${ecosystem}-minor-and-patch`]: { patterns: ["*"], "update-types": ["minor", "patch"] },
     },
-    ...(ignoreMajors
+    ...(locked !== undefined
       ? {
-          ignore: NO_MAJOR_UPDATES.map((name) => ({
+          ignore: locked.map((name) => ({
             "dependency-name": name,
             "update-types": [
               "version-update:semver-major",
@@ -175,7 +200,10 @@ export function renderDependabot(
     .filter((app) => !isServerlessTarget(app.plan.target))
     .flatMap((app) => runtimeFolders(app.plan, app.environments));
   if (compose.length > 0) {
-    entries.push(update("docker-compose", { directories: compose }, true));
+    const extras = usedExtensionImages(apps);
+    entries.push(
+      update("docker-compose", { directories: compose }, extras.length > 0 ? extras : true),
+    );
   }
   entries.push(update("github-actions", { directory: "/" }));
 

@@ -1271,7 +1271,6 @@
                       "enum": [
                         "vector",
                         "postgis",
-                        "postgis_topology",
                         "postgis_raster",
                         "postgis_sfcgal",
                         "pgcrypto",

@@ -58,12 +58,10 @@ export function serviceSpec(kind: SelfHostedServiceKind): ServiceSpec {
  * requesting those extensions (feature 045), otherwise the catalog entry's default `spec.image`.
  */
 export function serviceImageKey(service: PlanService): ImagePinKey {
-  if (service.kind === "postgres") {
-    const variant = postgresImageVariant(service);
-    if (variant === "pgvector") return "pgvector";
-    if (variant === "postgis") return "postgis";
-  }
-  return serviceSpec(service.kind).image;
+  const spec = serviceSpec(service.kind);
+  if (service.kind !== "postgres") return spec.image;
+  const variant = postgresImageVariant(service);
+  return variant === "postgres" ? spec.image : variant;
 }
 
 /** The pinned image ref (`repo:tag@sha256:…`) for `service`. */

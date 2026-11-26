@@ -412,7 +412,7 @@ describe("postgresExtensions", () => {
           name: "vec",
           options: { logins: "separate", extensions: ["vector", "uuid-ossp"] },
         },
-        { ...postgres, name: "geo", options: { extensions: ["postgis", "postgis_topology"] } },
+        { ...postgres, name: "geo", options: { extensions: ["postgis", "postgis_raster"] } },
         valkey("queue"),
       ],
     });
@@ -420,7 +420,7 @@ describe("postgresExtensions", () => {
       [],
       ["pgcrypto", "pg_trgm"],
       ["vector", "uuid-ossp"],
-      ["postgis", "postgis_topology"],
+      ["postgis", "postgis_raster"],
       [],
     ]);
     expect(plan.services.map(postgresUsesVector)).toEqual([false, false, true, false, false]);

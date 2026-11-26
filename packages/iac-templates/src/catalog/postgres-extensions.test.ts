@@ -39,7 +39,7 @@ describe("PostgreSQL extensions (045)", () => {
     const plain = testPlan();
     const contrib = withExtensions(plain, ["pgcrypto", "pg_trgm"]);
     const vec = withExtensions(plain, ["vector", "pg_trgm"]);
-    const geo = withExtensions(plain, ["postgis", "postgis_topology"]);
+    const geo = withExtensions(plain, ["postgis", "postgis_raster"]);
 
     expect(serviceImageKey(dbOf(plain))).toBe("postgres");
     expect(serviceImageRef(dbOf(plain))).toBe(IMAGES.postgres.ref);
@@ -57,7 +57,7 @@ describe("PostgreSQL extensions (045)", () => {
   it("renders Compose, snapshot parts, and server restore drills with the resolved extension image", () => {
     for (const [extensions, expectedRef] of [
       [["vector"], IMAGES.pgvector.ref],
-      [["postgis", "postgis_topology"], IMAGES.postgis.ref],
+      [["postgis", "postgis_raster"], IMAGES.postgis.ref],
       [["pgcrypto"], IMAGES.postgres.ref],
     ] as const) {
       const plan = withExtensions(withLogins(testPlan()), extensions);
@@ -99,7 +99,7 @@ describe("PostgreSQL extensions (045)", () => {
       expect(stack.services["db-init"]?.image).toBe(expectedRef);
       const initScript = stack.services["db-init"]?.entrypoint?.[2] ?? "";
       expect(initScript).toContain("CREATE EXTENSION IF NOT EXISTS");
-      expect(initScript).toContain("REFRESH COLLATION VERSION");
+      expect(initScript).not.toContain("REFRESH COLLATION VERSION");
 
       const parts = portainerSnapshotParts(plan);
       expect(parts.find((part) => part.name === "db")?.image).toBe(expectedRef);
@@ -143,21 +143,20 @@ describe("PostgreSQL extensions (045)", () => {
       },
     ]);
 
-    // Check script verifies both pg_extension and collation version match
+    // Check script verifies pg_extension count only
     const check = extensionsCheck(["vector", "uuid-ossp"]);
     expect(check).toContain("pg_extension");
     expect(check).toContain("vector");
     expect(check).toContain("uuid-ossp");
-    expect(check).toContain("pg_database_collation_actual_version");
+    expect(check).not.toContain("pg_database_collation_actual_version");
 
-    // Setup script runs REINDEX + REFRESH COLLATION VERSION outside a transaction, then CREATE EXTENSION
+    // Setup script guards event triggers when requested and creates extensions cleanly
     const setup = extensionsSetup("db", ["vector", "uuid-ossp"], { guardEventTriggers: true });
     expect(setup).toContain("pg_event_trigger");
-    expect(setup).toContain("REINDEX DATABASE app;");
-    expect(setup).toContain("ALTER DATABASE app REFRESH COLLATION VERSION;");
+    expect(setup).not.toContain("REINDEX DATABASE");
+    expect(setup).not.toContain("REFRESH COLLATION VERSION");
     expect(setup).toContain('CREATE EXTENSION IF NOT EXISTS "vector" CASCADE;');
     expect(setup).toContain('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" CASCADE;');
-    expect(setup).not.toContain("BEGIN;\nSET LOCAL");
   });
 
   it("produces byte-for-byte identical Compose output when extensions is unset", () => {

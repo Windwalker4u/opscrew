@@ -1,10 +1,8 @@
 /**
  * PostgreSQL extensions setup (feature 045): installs configured extensions as the bootstrap
- * superuser `app` before migrations run, so neither `app_owner` nor `app_runtime` (047, ADR 0037)
- * needs superuser rights. Also detects OS collation version mismatches (for example when an
- * existing `postgres:17-alpine` musl volume switches to `pgvector/pgvector:0.8.7-pg17-trixie`
- * Debian glibc) and runs `REINDEX DATABASE app` + `ALTER DATABASE app REFRESH COLLATION VERSION`
- * outside a transaction before creating extensions.
+ * superuser `app` when the database is created, before `loginsSetup` moves owners to `app_owner`
+ * (047, ADR 0037) and before migrations run, so neither `app_owner` nor `app_runtime` needs
+ * superuser rights and superuser DDL never runs inside a schema `app_owner` already controls.
  *
  * Each script is POSIX sh for the database's own image; no secret is ever in an argument.
  */
@@ -66,9 +64,7 @@ function eventTriggersGuard(service: string): string[] {
 
 /**
  * Check script for PostgreSQL extensions: exits 0 only when every extension in `extensions` is
- * installed in `pg_extension` AND database `app`'s stored collation version matches the OS's
- * current collation version (catching an Alpine musl -> Debian glibc image switch or glibc update).
- * Over TCP to `host`, or the container's socket without it.
+ * installed in `pg_extension`. Over TCP to `host`, or the container's socket without it.
  */
 export function extensionsCheck(extensions: readonly PostgresExtension[], host?: string): string {
   const names = validatedExtensions(extensions);
@@ -76,10 +72,7 @@ export function extensionsCheck(extensions: readonly PostgresExtension[], host?:
   const list = names.map(sqlString).join(", ");
   const sql = [
     "SET search_path = pg_catalog;",
-    "SELECT (",
-    `  (SELECT count(*) FROM pg_extension WHERE extname IN (${list})) = ${names.length}`,
-    `  AND (SELECT d.datcollversion IS NOT DISTINCT FROM pg_database_collation_actual_version(d.oid) FROM pg_database d WHERE d.datname = '${DATABASE}')`,
-    ") IS TRUE;",
+    `SELECT (SELECT count(*) FROM pg_extension WHERE extname IN (${list})) = ${names.length} IS TRUE;`,
   ];
   return `[ "$(${piped(sql, host, " -At")})" = t ]`;
 }
@@ -88,19 +81,12 @@ export function extensionsCheck(extensions: readonly PostgresExtension[], host?:
 export interface ExtensionsSetupOptions {
   /** Refuse a database with event triggers first (set when `logins: separate` is enabled). */
   guardEventTriggers?: boolean;
-  /** Connect over TCP to `host` instead of the local socket. */
-  host?: string;
 }
 
 /**
- * Setup script for PostgreSQL extensions (as superuser `app`):
+ * Setup script for PostgreSQL extensions (as superuser `app` over the container socket):
  * 1. When `guardEventTriggers` is true, refuses a database with event triggers before any DDL.
- * 2. When `datcollversion` differs from `pg_database_collation_actual_version(oid)` (e.g. Alpine
- *    musl -> Debian glibc switch), runs `REINDEX DATABASE app;` and
- *    `ALTER DATABASE app REFRESH COLLATION VERSION;` outside a transaction block.
- * 3. Runs `CREATE EXTENSION IF NOT EXISTS "<name>" CASCADE;` for each configured extension (with
- *    `search_path = public, pg_catalog` so relocatable extensions install into `public` while
- *    non-relocatable extensions like `postgis_topology` use their control-file schema).
+ * 2. Runs `CREATE EXTENSION IF NOT EXISTS "<name>" CASCADE;` for each configured extension.
  *
  * Idempotent: running again changes nothing.
  */
@@ -113,13 +99,8 @@ export function extensionsSetup(
   if (names.length === 0) return "true";
   const sql = [
     ...(options.guardEventTriggers === true ? eventTriggersGuard(service) : []),
-    `SELECT d.datcollversion IS DISTINCT FROM pg_catalog.pg_database_collation_actual_version(d.oid) AS reindex FROM pg_catalog.pg_database d WHERE d.datname = '${DATABASE}' \\gset`,
-    "\\if :reindex",
-    `REINDEX DATABASE ${DATABASE};`,
-    `ALTER DATABASE ${DATABASE} REFRESH COLLATION VERSION;`,
-    "\\endif",
     "SET search_path = public, pg_catalog;",
     ...names.map((name) => `CREATE EXTENSION IF NOT EXISTS ${sqlIdent(name)} CASCADE;`),
   ];
-  return piped(sql, options.host);
+  return piped(sql);
 }

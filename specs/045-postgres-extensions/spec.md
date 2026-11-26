@@ -1,75 +1,47 @@
 # Feature Specification: Postgres extensions for an app's database
 
 **Feature Branch**: `045-postgres-extensions` (feature directory `specs/045-postgres-extensions`)
-**Created**: 2026-11-25
-**Status**: Ready (047 landed on `main`; implementing step 1 `vector` + `contrib` and step 2 PostGIS on `amd64` servers)
-**Input**: Roadmap entry `045 Postgres extensions for an app's database`, issue `#28`, and [research.md](research.md) (R1–R6, including the core lead's decisions of 2026-11-25).
+**Created**: 2026-11-25 | **Updated**: 2026-11-26 (PR #30 review decisions for 0.2.12)
+**Status**: Ready (`0.2.12`)
+**Input**: Roadmap entry `045 Postgres extensions for an app's database`, issue `#28`, PR `#30` review, and [research.md](research.md).
 
 ## Why
 
-Apps that store embeddings or use PostgreSQL extensions (starting with a hosted dashboard module using `pgvector`) need extensions installed in their PostgreSQL database. Under 047 (ADR 0037), neither the migration login (`app_owner`) nor the app login (`app_runtime`) is a superuser, and untrusted extensions such as `vector` cannot be installed by a non-superuser (`vector.control` omits `trusted = true`). Furthermore, OpsCrew's default `postgres:17-alpine` image does not ship `pgvector`.
+Apps that store embeddings (`pgvector`), geospatial data (`postgis`), or use PostgreSQL `contrib` extensions need them installed in their PostgreSQL database. Under 047 (ADR 0037), neither the migration login (`app_owner`) nor the app login (`app_runtime`) is a superuser, and untrusted extensions such as `vector` cannot be installed by a non-superuser (`vector.control` omits `trusted = true`). Furthermore, OpsCrew's default `postgres:17-alpine` image does not ship `pgvector` or PostGIS.
 
-Adding `options.extensions` on a PostgreSQL service lets an app declare the extensions it needs, picks the pinned official image that carries them (`pgvector/pgvector` by digest for `vector`, staying on `postgres:*-alpine` for built-in `contrib` extensions), creates them as superuser before migrations, and preserves them safely across image switches, snapshots, restores, restore drills, and moves.
+Adding `options.extensions` on a PostgreSQL service lets an app declare the extensions it needs when the database is created, picks the pinned official image that carries them (`pgvector/pgvector` by digest for `vector`, `postgis/postgis` on `amd64` for PostGIS, staying on `postgres:*-alpine` for built-in `contrib` extensions), creates them as superuser before `loginsSetup` moves schema ownership and before migrations run, and preserves them across snapshots, restores, restore drills, and moves.
+
+## Scope for 0.2.12
+
+In `0.2.12`, extensions are set up **at database creation only** (no in-place image switch):
+- `CREATE EXTENSION` runs as superuser before `loginsSetup` transfers schema ownership to `app_owner`, avoiding running third-party extension DDL inside an `app_owner`-controlled schema (ADR 0037) and avoiding PostgreSQL's `ERROR: invalid collation version change` when changing from Alpine musl (`datcollversion IS NULL`) to Debian glibc.
+- `provision` records each database's extension set in `generated_values.json`. Any attempt to add or remove extensions on a database that already has data (`neverRan`) is refused before anything changes.
+- `postgis_topology` is deferred past `0.2.12` (until `topology.CreateTopology()` grants are designed). Supported PostGIS extensions in `0.2.12`: `postgis`, `postgis_raster`, `postgis_sfcgal`.
+- Rebuilding an existing database via snapshot into a fresh volume on a new image is tracked as a follow-up task in `tasks.md`, outside `0.2.12`.
 
 ## User Scenarios & Testing
 
 ### User Story 1 - Declare PostgreSQL extensions on a new database (Priority: P1)
 
-**Independent Test**: Against fakes and in a real Docker test (`OPSCREW_DOCKER_TESTS=1`), a PostgreSQL service with `options.extensions: ["vector"]` renders the pinned `pgvector/pgvector` image, runs `CREATE EXTENSION IF NOT EXISTS vector` as superuser before migrations, lets `app_owner` create a table with a `vector(3)` column and index, and lets `app_runtime` insert and query nearest neighbors.
+1. `options: { logins: "separate", extensions: ["vector"] }` renders the pinned `pgvector/pgvector:0.8.7-pg17-trixie@sha256:...` image, runs `CREATE EXTENSION IF NOT EXISTS "vector" CASCADE;` as superuser before `loginsSetup` and migrations, lets `app_owner` create tables with `vector(3)` columns and indexes, and lets `app_runtime` insert and query them.
+2. `options.extensions: ["pgcrypto", "pg_trgm"]` (built-in `contrib` only) stays on `postgres:17-alpine@sha256:...`.
+3. `options.extensions` unset/empty renders every Compose file and `.github/dependabot.yml` byte-for-byte identically to before.
+4. Unknown extension names, duplicates, combining `vector` with PostGIS, or setting `extensions` on a non-PostgreSQL service are refused at schema validation with a plain-English message listing the supported extensions.
+5. PostGIS (`postgis`, `postgis_raster`, `postgis_sfcgal`) selects the pinned `postgis/postgis:17-3.7-alpine@sha256:...` image (`amd64` only). Design and provision refuse PostGIS on any `arm64` host (own server, extra server, Portainer host, this computer, or a hand-edited ARM cloud `serverType` such as `cax11`) before anything changes.
 
-**Acceptance Scenarios**:
+### User Story 2 - Refuse changing extensions on an existing database with data (Priority: P1)
 
-1. **Given** a plan with a `postgres` service and `options: { logins: "separate", extensions: ["vector"] }`, **When** OpsCrew renders Compose / Portainer stack files, **Then** the database uses the pinned `pgvector/pgvector` digest for that PostgreSQL major version (default 17: `pgvector/pgvector:0.8.7-pg17-trixie@sha256:...`), and no unrelated service changes.
-2. **Given** `options.extensions: ["pgcrypto", "pg_trgm"]` (standard `contrib` extensions only), **When** OpsCrew renders the database service, **Then** it stays on the pinned `postgres:*-alpine` image and creates each extension before migrations.
-3. **Given** `options.extensions` omits `vector` and is unset/empty, **When** OpsCrew renders existing plans, **Then** every generated file is byte-for-byte identical to before.
-4. **Given** an unsupported extension (or combining `vector` and `postgis` in one database, since no single official image carries both), **When** the plan is validated or provisioned, **Then** OpsCrew refuses before changing anything, naming the problem and listing the supported extensions.
-5. **Given** `options.extensions` includes a PostGIS extension (`postgis`, `postgis_topology`, `postgis_raster`, `postgis_sfcgal`), **When** the user runs `opscrew design` or `opscrew provision`, **Then** OpsCrew selects the pinned official `postgis/postgis` image (`amd64` only), offers only `amd64` server types in design, and refuses an `arm64` server with a plain-English explanation.
-6. **Given** `options.extensions` is set on a non-PostgreSQL service or contains duplicates/empty strings, **Then** `plan-schema` refuses it with a clear message.
-
----
-
-### User Story 2 - Switch an existing database safely to an extension image (Priority: P1)
-
-**Independent Test**: In a real Docker test (`OPSCREW_DOCKER_TESTS=1`), populate a `postgres:17-alpine` volume (with `logins: separate` and an indexed UTF-8 text column), switch the container to `pgvector/pgvector:0.8.7-pg17-trixie`, run the setup step (`REINDEX DATABASE app`, `ALTER DATABASE app REFRESH COLLATION VERSION`, `CREATE EXTENSION IF NOT EXISTS vector`), and verify both the existing indexed text rows and new `vector` columns work cleanly.
-
-**Acceptance Scenarios**:
-
-1. **Given** a deployed PostgreSQL service on `postgres:17-alpine` whose plan gains `extensions: ["vector"]` against `HEAD`, **When** the user runs `opscrew provision`, **Then** the plan shown (and covered by the approval hash) states plainly:
-   - the image switches from `postgres:17-alpine` to `pgvector/pgvector:0.8.7-pg17-trixie`;
-   - a snapshot is taken before any change;
-   - the database container restarts once;
-   - the setup step reindexes the database and refreshes its collation version (noting that reindexing can take a while on a large database), then creates the extension.
-2. **Given** the snapshot fails before the switch, **Then** provision stops with nothing changed.
-3. **Given** the user approves the plan by hash, **Then** the snapshot runs first, the new image starts, the setup step reindexes and refreshes collation version and creates `vector`, and migrations run afterwards.
-4. **Given** an extension is later removed from `options.extensions`, **Then** OpsCrew never runs `DROP EXTENSION ... CASCADE` automatically (no silent data loss).
-
----
+1. When `provision` creates a PostgreSQL database, it records its extension set in `generated_values.json`.
+2. Re-provisioning an existing database whose `extensions` are unchanged passes cleanly.
+3. Adding or removing extensions on a database that already has data (`neverRan` does not report it empty) is refused before anything is written and before 047's switch approval/snapshot.
+4. A database that never ran yet (`neverRan` reports it empty) may still change its `extensions` before creation.
 
 ### User Story 3 - Snapshots, restores, restore drills, and moves preserve extensions (Priority: P1)
 
-**Independent Test**: In real Docker tests (`OPSCREW_DOCKER_TESTS=1`), dump and restore (in place, into a throwaway drill container, and in a move): (a) a database with `vector` rows and an index, and (b) a database with PostGIS geometry data, `spatial_ref_sys` rows, and a `topology` schema — verifying extensions, data, `spatial_ref_sys`, and `topology` are preserved while `app_owner` remains non-superuser and `app_runtime` can query them.
-
-**Acceptance Scenarios**:
-
-1. **Snapshots & restores:** `pg_dump -Fc` and `pg_restore` run as superuser `app` on the extension-capable image, keeping `vector` and all extension objects intact.
-2. **Restore drills:** the throwaway drill container uses the plan's resolved extension image (`pgvector/pgvector` when `vector` is requested), so `pg_restore` never fails with `extension "vector" is not available`.
-3. **Moves (`retarget` / `move`):** the destination database uses the plan's resolved extension image, creates/restores extensions as superuser, and verifies `app_runtime` reads and writes.
-4. **Pin carryover:** `pins-carry` never pins an older `postgres:17-alpine` digest over a newly requested `pgvector/pgvector` image (and vice versa).
-
----
+1. Snapshots, in-place restores, restore drills, and moves (`retarget` / `move`) use the service's resolved extension image and preserve `vector`, `contrib`, and PostGIS (`spatial_ref_sys`, geometry data) under 047's `loginsLoad` rules, keeping `app_owner` non-superuser.
+2. Extension-created schemas (including `deptype = 'n'` dependencies other than `public`) stay superuser-owned under `loginsSetup`, and extension-owned `SEQUENCE SET` entries restore as superuser under `loginsLoad`.
+3. Dependabot locks major updates for `pgvector/pgvector` / `postgis/postgis` only when a plan uses those images, and `pins-carry` keeps their committed major versions.
 
 ### User Story 4 - Guide documentation (Priority: P2)
 
-**Acceptance Scenarios**:
-
-1. `docs/guide/databases.md` documents `options.extensions` with examples (`extensions: [vector]` and `extensions: [postgis]`), the supported extensions list, that `vector` switches to `pgvector/pgvector` (snapshot + restart + reindex on existing databases), and that `postgis` uses `postgis/postgis` on `amd64` servers only (and cannot be combined with `vector` in one service).
-
-## Functional Requirements
-
-- **FR-001**: `packages/plan-schema` adds optional `options.extensions: string[]` on `postgres` services (unique, validated against the supported extension set, refused on other service kinds or unknown extension names with the supported list).
-- **FR-002**: `packages/iac-templates` pins official `pgvector/pgvector` multi-arch digests (`pg17-trixie`, `pg16-trixie`, `pg15-trixie`), selects `pgvector/pgvector` when `vector` is in `options.extensions` and keeps `postgres:*-alpine` otherwise, and updates `pins-carry` to match repository + major version.
-- **FR-003**: PostgreSQL's superuser setup step (`serviceInit` and Portainer `<service>-init`) runs `CREATE EXTENSION IF NOT EXISTS "<name>";` for every configured extension before migrations, and runs `REINDEX DATABASE app; ALTER DATABASE app REFRESH COLLATION VERSION;` when switching from musl to glibc / on collation version mismatch.
-- **FR-004**: `provision` detects an image switch against `HEAD`, includes the switch/restart/reindex/snapshot-first lines in the plan and its SHA-256 hash, takes a snapshot before writing on approval, and aborts cleanly if the snapshot fails.
-- **FR-005**: Snapshots, restores, restore drills, and moves (`retarget` / `move`) use the service's resolved extension image and preserve extensions.
-- **FR-006**: Unit tests with fakes plus real Docker tests (`OPSCREW_DOCKER_TESTS=1`) verifying `vector` creation/query/restore and Alpine-to-pgvector collation switch, removing all created containers/volumes/networks (`docker rm -fv`).
-- **FR-007**: `docs/guide/databases.md` updated with extensions documentation.
+`docs/guide/databases.md` documents `options.extensions`, the exact supported list, image/architecture rules (`amd64` only for PostGIS, no `vector` + PostGIS combined), and that extensions apply at database creation (refused on existing databases with data in `0.2.12`).

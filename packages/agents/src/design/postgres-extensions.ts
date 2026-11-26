@@ -1,28 +1,17 @@
 /**
  * PostgreSQL extensions checks in design (feature 045): PostGIS's official image (`postgis/postgis`)
  * publishes only `linux/amd64` manifests, so design refuses placing a PostGIS database on an
- * `arm64` server (an own server, an extra server, a Portainer host, or a hand-edited ARM cloud
- * server type) before writing `opscrew/plan.yaml`.
+ * `arm64` server (an own server, an extra server, a Portainer host, this computer, or a hand-edited
+ * ARM cloud server type) before writing `opscrew/plan.yaml`.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
-import {
-  type PlanService,
-  POSTGRES_POSTGIS_EXTENSIONS,
-  type PostgresExtension,
-  postgresExtensions,
-} from "@opscrew/plan-schema";
-
-const POSTGIS_SET: ReadonlySet<string> = new Set(POSTGRES_POSTGIS_EXTENSIONS);
-
-/** The PostGIS extensions requested on `service` (empty when none or not PostgreSQL). */
-export function postgisExtensionsOf(service: PlanService): PostgresExtension[] {
-  return postgresExtensions(service).filter((name) => POSTGIS_SET.has(name));
-}
+import { type PlanService, postgresPostgisExtensions } from "@opscrew/plan-schema";
 
 /**
  * Refuses any enabled PostgreSQL service requesting PostGIS on an `arm64` host before anything
  * changes. Cloud servers offered by design are already `amd64` (`usableOffer`), so this catches
- * `arm64` own servers, extra servers, Portainer hosts, and hand-edited ARM cloud server types.
+ * `arm64` own servers, extra servers, Portainer hosts, this computer, and hand-edited ARM cloud
+ * server types.
  * @throws OpsCrewError `INVALID_INPUT` naming the service, extensions, and host.
  */
 export function requirePostgisArch(
@@ -38,7 +27,7 @@ export function requirePostgisArch(
   if (arch !== "arm64") return;
   for (const service of services) {
     if (!service.enabled || service.kind !== "postgres") continue;
-    const postgis = postgisExtensionsOf(service);
+    const postgis = postgresPostgisExtensions(service);
     if (postgis.length === 0) continue;
     const file = options.planFile ?? "opscrew/plan.yaml";
     const command = options.command ?? "opscrew design";

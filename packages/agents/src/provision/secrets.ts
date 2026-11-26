@@ -39,6 +39,7 @@ import {
   environmentsOf,
   isHostingTarget,
   isServerlessProvider,
+  postgresExtensions,
   postgresLogins,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
@@ -87,6 +88,7 @@ const KEPT_VALUES = [
   "network",
   "grants",
   "monitoring",
+  "postgresExtensions",
   "generations",
   "history",
 ] as const;
@@ -260,6 +262,18 @@ export async function buildAppEnvironment(
   const kept = Object.fromEntries(
     KEPT_VALUES.flatMap((name) => (previous?.[name] === undefined ? [] : [[name, previous[name]]])),
   );
+  const previousExt =
+    GeneratedValuesSchema.shape.postgresExtensions.safeParse(previous?.postgresExtensions).data ??
+    {};
+  const nextExt: Record<string, string[]> = { ...previousExt };
+  for (const service of plan.services) {
+    if (!service.enabled || service.kind !== "postgres") continue;
+    const sorted = [...new Set(postgresExtensions(service))].sort();
+    if (sorted.length > 0) nextExt[service.name] = sorted;
+    else delete nextExt[service.name];
+  }
+  if (Object.keys(nextExt).length > 0) kept.postgresExtensions = nextExt;
+  else delete kept.postgresExtensions;
   environment.values.services = withGrantHashes(
     plan,
     environment.values.services,

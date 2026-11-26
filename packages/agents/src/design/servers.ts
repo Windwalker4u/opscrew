@@ -247,10 +247,7 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       : undefined;
   const offer = kept ?? planned;
   if (offer.architecture === "arm") {
-    requirePostgisArch(services, "arm64", `server ${name} (${offer.id})`, {
-      unchanged: "plan.yaml was not changed.",
-      command: "opscrew design",
-    });
+    requirePostgisArch(services, "arm64", `server ${name} (${offer.id})`);
   }
   // The smallest type that holds them, when it is another.
   const instead = sized === undefined || sized.id === offer.id ? "" : `, such as ${sized.id},`;
