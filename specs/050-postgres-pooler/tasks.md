@@ -15,7 +15,7 @@
 
 ## Wave 1
 
-- [ ] T5001 [US1] The field and the pooler's service
+- [x] T5001 [US1] The field and the pooler's service
   - **Owns:** `packages/plan-schema/src/components.ts` and its tests (the lead approves: shared);
     `packages/iac-templates/src/pins.ts` (`IMAGES.pgbouncer`); the catalog
     (`packages/iac-templates/src/catalog/**`) and the runtime's service rendering
