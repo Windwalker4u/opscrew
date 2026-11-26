@@ -113,13 +113,16 @@ No step runs the app's code as the superuser: a CHECK, a domain or a trigger can
 
 ## Provision's texts
 
-- **The notice,** for a deployed environment without `logins`: "Your app logs in to PostgreSQL
+- **The notice,** for an environment whose generated values keep the database's superuser
+  password, without `logins`: "Your app logs in to PostgreSQL
   (db) as its superuser. To give it a login that can only read and write data, add
   `logins: separate` under db's options in opscrew/plan.yaml and run `npx opscrew provision`: it
   shows the switch before anything changes."
 - **The notice below 15:** "db runs PostgreSQL 14, so your app logs in as its superuser. Separate
   logins for the app and its migrations come with an upgrade to PostgreSQL 15 or later." Design's
   summary says the same.
+- **No data to snapshot:** "db has no data yet, so there's nothing to snapshot.", when the
+  database never ran (no container and no data volume, or a server never created).
 - **The switch's plan lines:**
   - "Take a snapshot of db now.";
   - "db restarts once (a few seconds) with two new passwords.";

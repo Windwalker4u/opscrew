@@ -770,8 +770,8 @@ describe.skipIf(MISSING.length > 0)(
         await envsB.remember("prod");
         await envsB.rememberLocalCa();
         await waitForSite(second, appB());
-        // As provision's next step says: verify records the first deploy, which the notice and the
-        // switch need (`deployment.firstDeployAt`).
+        // As provision's next step says: verify records the first deploy. The notice and the switch
+        // don't need it: they read the generated values.
         await second.opscrewOk("verify");
         planB = await second.readPlan();
         expect(dbOf(appB()).options, "B's PostgreSQL options").toEqual({});

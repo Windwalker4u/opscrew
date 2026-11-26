@@ -54,7 +54,7 @@
     version.
   - **Absent** means a database created before 047: the app keeps logging in as `app`, and nothing
     in its generated files changes.
-  - **Provision** says on each run, for a deployed environment without it, how to switch (R11).
+  - **Provision** says on each run, for an environment without it, how to switch (R11).
 - **Why a field:** the generated files must follow from the plan alone, and an upgrade must leave an
   existing database's files byte for byte as they were. A probe of the server can't decide what
   a file holds.
@@ -241,8 +241,8 @@ The lead's list, which a real Laravel app on 047 needs:
 ### R11 The switch of an existing database
 
 - **How it starts:** the user adds `logins: separate` (provision's notice gives the exact line),
-  then runs `npx opscrew provision`. Provision sees the switch when the environment has been
-  deployed (`deployment.firstDeployAt`) and this environment's generated values keep the
+  then runs `npx opscrew provision`. Provision sees the switch when this environment's
+  generated values keep the
   database's `dbPassword` but no `owner-password` for it. They decide, not the plan at git's
   `HEAD`: only provision writes them, so a hand-committed `logins: separate` still gets the
   approval and the snapshot, and a hand-committed removal is still refused.

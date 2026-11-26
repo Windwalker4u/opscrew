@@ -123,14 +123,17 @@ The test list is in tasks.md, T4702.
   `options: { logins: "separate" }` for version 15 and later. For an older one it writes nothing,
   and its summary gives data-model.md's notice below 15.
 - **Provision:**
-  - **The notice:** for a deployed environment (`deployment.firstDeployAt`) whose PostgreSQL lacks
+  - **The notice:** for an environment whose generated values keep the database's `dbPassword`
+    and whose PostgreSQL lacks
     `logins`, it prints data-model.md's notice, or the one below 15, every run.
-  - **The switch:** when the plan has `logins: separate` on a deployed environment whose generated
+  - **The switch:** when the plan has `logins: separate` on an environment whose generated
     values (which only provision writes, never git) keep the database's `dbPassword` but no
     `owner-password` for it, it adds data-model.md's switch lines to the plan it shows. A
     hand-committed edit gets the same approval and snapshot.
     Once that is approved by hash, it takes the snapshot through the existing on-demand snapshot
-    path before it writes any secret or file, and stops on a failure.
+    path before it writes any secret or file, and stops on a failure. A database with no container
+    and no data volume, or on a server whose infrastructure was never applied, has no data: provision
+    says "<db> has no data yet, so there's nothing to snapshot." and goes on.
   - **The refusals:** data-model.md's two refusals, before any change. A pinned older version
     without the field is never refused.
   - **The secrets:** it generates the two new secrets like `password`, and writes

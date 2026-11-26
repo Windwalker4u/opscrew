@@ -174,11 +174,11 @@ Secret-shaped values in tests come from `fakeSecret`.
     - **Tests first, with fakes.**
     - **Design:** every plan it writes with PostgreSQL 15 or later has `logins: separate`. On 14
       it has none, and design's summary gives data-model.md's notice below 15.
-    - **The notice:** provision prints data-model.md's notice for a deployed environment whose
+    - **The notice:** provision prints data-model.md's notice for an environment whose
       PostgreSQL lacks `logins` (the one below 15 on an older version), and changes nothing
       because of it. A pinned older version is never refused.
     - **The switch:**
-      - with `logins` new on a deployed environment whose generated values keep the superuser's
+      - with `logins` new on an environment whose generated values keep the superuser's
         password but no `owner-password`, the plan shown holds data-model.md's switch lines, and
         its hash covers them;
       - after approval, the snapshot is taken before any secret or file is written;

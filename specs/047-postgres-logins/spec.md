@@ -186,11 +186,13 @@ data with the same owners and grants, so the runtime login works after them as b
 - **FR-4707**: Every load of a dump (a snapshot's restore, a rollback's, the drill's, each move's)
   MUST, with `logins: separate`, keep the dump's owners and grants and reapply the database-level
   grants. Without `logins`, it MUST be as before.
-- **FR-4708**: For a deployed environment, provision MUST:
+- **FR-4708**: For an environment whose generated values keep the database's superuser password
+  (one provision has run), provision MUST:
   - without `logins`, say how to switch on every run, or for PostgreSQL below 15 that separate
     logins come with an upgrade to 15 or later;
   - when `logins: separate` is new, show the switch's steps in a plan approved by its hash, and
-    take a snapshot of the database before it writes anything;
+    take a snapshot of the database before it writes anything (a database that never ran has no
+    data, so provision says so and goes on);
   - refuse removing `logins` from a plan that has it;
   - refuse a hand-written `logins: separate` on PostgreSQL below 15, and nothing else about an
     older version.
