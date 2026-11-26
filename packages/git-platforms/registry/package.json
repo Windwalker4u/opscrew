@@ -1,0 +1,22 @@
+{
+  "name": "@opscrew/git-platforms",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The built-in git hosting and CI/CD platforms: their definitions, validated, and the one place OpsCrew reads git platform facts from (Feature 042).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "@opscrew/git-github": "workspace:*",
+    "@opscrew/plan-schema": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

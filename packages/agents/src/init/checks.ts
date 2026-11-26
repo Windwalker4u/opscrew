@@ -12,12 +12,14 @@ import {
   planShared,
   type SharedFinding,
 } from "@opscrew/connector-cloudflare";
-import {
-  GITHUB_TOKEN_PERMISSIONS,
-  type GitHubClient,
-  parseGitHubRepo,
-} from "@opscrew/connector-github";
-import type { CredentialCheck, RegistrarAccountCheck, VpsProviderId } from "@opscrew/contracts";
+import { GITHUB_TOKEN_PERMISSIONS, type GitHubClient } from "@opscrew/connector-github";
+import type {
+  CredentialCheck,
+  GitPlatformDefinition,
+  GitPlatformRemote,
+  RegistrarAccountCheck,
+  VpsProviderId,
+} from "@opscrew/contracts";
 import {
   errorMessage,
   errorText,
@@ -27,6 +29,7 @@ import {
   lowerFirst,
   orText,
 } from "@opscrew/core";
+import { detectGitPlatform, GIT_PLATFORMS } from "@opscrew/git-platforms";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { addressUpdaterName, CHECK_PAUSED_VARIABLE, usesTunnel } from "@opscrew/iac-templates";
 import {
@@ -250,6 +253,7 @@ interface RepoInfo {
   git?: string;
   isRepo: boolean;
   coordinates?: { owner: string; repo: string };
+  detected?: { platform: GitPlatformDefinition; remote: GitPlatformRemote };
 }
 
 /**
@@ -276,12 +280,12 @@ export async function runInitChecks(
   const registrarSecrets = OTHER_REGISTRAR_IDS.flatMap((id) => REGISTRAR_ENV[id]).filter(
     (name) => name !== "NAMECHEAP_API_USER",
   );
+  const gitPlatformTokens = GIT_PLATFORMS.flatMap((platform) => platform.credentials.envVars);
   for (const name of [
     ...providerTokens,
     "CLOUDFLARE_API_TOKEN",
     CLOUDFLARE_HOSTING.deployTokenVar,
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
+    ...gitPlatformTokens,
     PORTAINER_TOKEN_VAR,
     HOSTING_TOKEN_VAR,
     REGISTRY_TOKEN_VAR,
@@ -517,8 +521,17 @@ async function inspectRepository(
   const client = gitClient(deps, git);
   if (!(await client.isRepo())) return { git, isRepo: false };
   const remote = await client.remoteUrl("origin");
-  const coordinates = remote ? parseGitHubRepo(remote) : undefined;
-  return { git, isRepo: true, ...(coordinates ? { coordinates } : {}) };
+  const detected = remote ? detectGitPlatform(remote, deps.env) : undefined;
+  const coordinates =
+    detected?.platform.id === "github"
+      ? { owner: detected.remote.owner, repo: detected.remote.repo }
+      : undefined;
+  return {
+    git,
+    isRepo: true,
+    ...(coordinates ? { coordinates } : {}),
+    ...(detected ? { detected } : {}),
+  };
 }
 
 function checkGit(git: string | undefined): CheckResult {
@@ -541,16 +554,21 @@ function checkRepository(info: RepoInfo): CheckResult {
       fix: `Run \`git init\` and commit your code. ${REMOTE_FIX}`,
     };
   }
-  if (!info.coordinates) {
+  if (!info.detected) {
+    const names = orText(GIT_PLATFORMS.map((platform) => platform.displayName));
+    const fix =
+      GIT_PLATFORMS.length === 1
+        ? REMOTE_FIX
+        : GIT_PLATFORMS.map((platform) => platform.texts.remoteFixHint).join(" ");
     return {
       status: "fail",
-      message: "This repository has no GitHub remote named origin.",
-      fix: REMOTE_FIX,
+      message: `This repository has no ${names} remote named origin.`,
+      fix,
     };
   }
   return {
     status: "pass",
-    message: `origin is github.com/${info.coordinates.owner}/${info.coordinates.repo}.`,
+    message: `origin is ${info.detected.remote.host}/${info.detected.remote.fullPath}.`,
   };
 }
 

@@ -1,5 +1,6 @@
 import type { Finding, ScanContext, Scanner, Severity } from "@opscrew/contracts";
 import { maskSecret, shannonEntropy, TOKEN_PATTERNS } from "@opscrew/core";
+import { GIT_PLATFORMS } from "@opscrew/git-platforms";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { createFinding } from "../scan/finding";
 import {
@@ -54,17 +55,8 @@ const DEV_PASSWORDS = new Set([
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
 
 const TOKEN_RULES: readonly TokenRule[] = [
-  {
-    id: "github-token",
-    title: "GitHub token",
-    severity: "critical",
-    pattern: new RegExp(
-      `${TOKEN_PATTERNS["github-token"].source}|${TOKEN_PATTERNS["github-pat"].source}`,
-      "g",
-    ),
-    description:
-      "A GitHub access token is written in this file. Anyone who can read it can act as its owner on GitHub.",
-  },
+  // The git platforms' token formats, from their definitions (Feature 042).
+  ...GIT_PLATFORMS.flatMap((platform) => platform.credentials.tokenRules),
   {
     id: "anthropic-api-key",
     title: "Anthropic API key",

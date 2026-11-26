@@ -3,6 +3,7 @@
  * ignores. A secret the scan recognises is never left out; a guessed one is, like any finding.
  */
 import type { Finding, IgnoredFindings } from "@opscrew/contracts";
+import { GIT_PLATFORMS } from "@opscrew/git-platforms";
 import {
   ArtifactError,
   readScanConfig,
@@ -35,7 +36,9 @@ export const BUILTIN_RULE_IDS: readonly string[] = [
   "secrets/committed-env",
   "secrets/env-not-ignored",
   "secrets/generic-high-entropy",
-  "secrets/github-token",
+  ...GIT_PLATFORMS.flatMap((platform) =>
+    platform.credentials.tokenRules.map((rule) => `secrets/${rule.id}`),
+  ),
   "secrets/google-api-key",
   "secrets/openai-api-key",
   "secrets/private-key",

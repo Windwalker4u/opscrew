@@ -8,23 +8,23 @@
   - Owns: `specs/042-gitlab/{research.md,spec.md,plan.md,tasks.md}`
   - Accept: Official `docs.gitlab.com` sources only; all shared-file changes recorded in `plan.md`.
 
-- [ ] **T4202 — Git platform contract in `@opscrew/contracts`**
+- [x] **T4202 — Git platform contract in `@opscrew/contracts`**
   - Owns: `packages/contracts/src/git-platform.ts`, `packages/contracts/src/index.ts`
   - Accept: FR-4201 (`GIT_PLATFORM_CONTRACT_VERSION = 1`, plain-data + function interfaces, no zod/class instances).
 
-- [ ] **T4203 — `@opscrew/git-github` definition & adapter**
+- [x] **T4203 — `@opscrew/git-github` definition & adapter**
   - Owns: `packages/git-platforms/github/**`
   - Accept: FR-4203 (`definition: GitPlatformDefinition`, `GitHubPlatformClient` adapting `GitHubClient` to `GitPlatformClient`, unit tests).
 
-- [ ] **T4204 — `@opscrew/git-platforms` registry, validator & conformance tests**
+- [x] **T4204 — `@opscrew/git-platforms` registry, validator & conformance tests**
   - Owns: `packages/git-platforms/registry/**`, `pnpm-workspace.yaml`
   - Accept: FR-4202 (`GIT_PLATFORMS`, `gitPlatform`, `detectGitPlatform`, `parseGitRemote`, `validateGitPlatform`, conformance tests).
 
-- [ ] **T4205 — Wire `@opscrew/git-platforms` into `@opscrew/agents` and `@opscrew/secops` (zero regression)**
+- [x] **T4205 — Wire `@opscrew/git-platforms` into `@opscrew/agents` and `@opscrew/secops` (zero regression)**
   - Owns: `packages/agents/src/shared/git-platform.ts`, `packages/agents/src/init/checks.ts`, `packages/secops/src/**`
   - Accept: FR-4203, FR-4204; all existing GitHub tests and snapshots pass unchanged.
 
-- [ ] **T4206 — Verify, commit, push, and open PR 1**
+- [x] **T4206 — Verify, commit, push, and open PR 1**
   - Accept: `pnpm format`, `pnpm lint`, `pnpm typecheck`, affected tests, and CLI build pass; PR 1 opened into `main`.
 
 ## Wave 2 — PR 2 (`042-gitlab`, stacked on PR 1): GitLab platform
