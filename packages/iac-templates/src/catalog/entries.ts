@@ -14,6 +14,7 @@ import {
   type DeployPlan,
   DeviceNameSchema,
   type PlanService,
+  postgresExtensions,
   postgresLogins,
 } from "@opscrew/plan-schema";
 import { appServerOf } from "../runtime/move";
@@ -21,6 +22,7 @@ import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
+import { extensionsCheck, extensionsSetup } from "./postgres-extensions";
 import {
   loginPassword,
   loginsCheck,
@@ -285,21 +287,40 @@ export const POSTGRES_LOGINS: { secrets: GeneratedSecret[]; rotation: SecretRota
 const LOOPBACK = "127.0.0.1";
 
 /**
- * PostgreSQL's one-time setup with `logins: separate` (047): the two logins, the owners and the
- * grants in one transaction (`loginsSetup`), unless its check finds them in place. As the superuser
- * over the container's socket; in a Portainer stack's `<service>-init` container, which shares
- * only the service's network, over {@link LOOPBACK}.
+ * PostgreSQL's one-time setup (045 extensions + 047 separate logins):
+ * - With `options.extensions`: checks collation version & installed extensions, reindexing and
+ *   refreshing collation when switching libc (Alpine -> Debian) and creating each extension as the
+ *   superuser before migrations.
+ * - With `logins: separate`: creates the two logins, moves owners and grants rights in one
+ *   transaction (`loginsSetup`), unless its check finds them in place.
+ * Runs over the container's socket on servers/localhost, or over {@link LOOPBACK} in a Portainer
+ * stack's `<service>-init` container.
  */
 function postgresInit(ctx: ServiceContext): ServiceInitStep[] {
-  if (!postgresLogins(ctx.service)) return [];
+  const extensions = postgresExtensions(ctx.service);
+  const logins = postgresLogins(ctx.service);
+  if (!logins && extensions.length === 0) return [];
   const portainer = ctx.plan.target.provider === "portainer";
-  return [
-    {
+  const host = portainer ? LOOPBACK : undefined;
+  const prefix = portainer ? `export PGHOST=${LOOPBACK}; ` : "";
+  const steps: ServiceInitStep[] = [];
+  if (extensions.length > 0) {
+    steps.push({
       service: ctx.service.name,
-      check: sh(loginsCheck(portainer ? LOOPBACK : undefined)),
-      run: sh(`${portainer ? `export PGHOST=${LOOPBACK}; ` : ""}${loginsSetup(ctx.service.name)}`),
-    },
-  ];
+      check: sh(extensionsCheck(extensions, host)),
+      run: sh(
+        `${prefix}${extensionsSetup(ctx.service.name, extensions, { guardEventTriggers: logins })}`,
+      ),
+    });
+  }
+  if (logins) {
+    steps.push({
+      service: ctx.service.name,
+      check: sh(loginsCheck(host)),
+      run: sh(`${prefix}${loginsSetup(ctx.service.name)}`),
+    });
+  }
+  return steps;
 }
 
 const POSTGRES: ServiceSpec = {

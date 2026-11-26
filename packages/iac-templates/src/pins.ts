@@ -52,6 +52,14 @@ export const IMAGES = {
   postgres: {
     ref: "postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb",
   },
+  /** Official pgvector image for PostgreSQL 17 (Debian Trixie, multi-arch amd64 + arm64). */
+  pgvector: {
+    ref: "pgvector/pgvector:0.8.7-pg17-trixie@sha256:89947206f52eac3a9df9b663df7e76987cbdc623be6576b3a524953d568700d7",
+  },
+  /** Official PostGIS image for PostgreSQL 17 (Alpine, amd64 only). */
+  postgis: {
+    ref: "postgis/postgis:17-3.7-alpine@sha256:357cbb8c459016596cd49539037c099128ff5bb07e382df283c5acb026c63d5a",
+  },
   valkey: {
     ref: "valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507",
   },

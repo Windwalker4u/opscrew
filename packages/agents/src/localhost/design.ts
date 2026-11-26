@@ -14,7 +14,9 @@ import {
   type Requirements,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import type { Components } from "../design/components";
 import { noServerCost } from "../design/own";
+import { requirePostgisArch } from "../design/postgres-extensions";
 import { containersText, sizeFor } from "../design/sizing";
 import { providerProfile } from "../providers";
 import { publishedPorts } from "./docker";
@@ -182,10 +184,12 @@ export function buildLocalhostOption(input: {
   facts: ProjectFacts;
   requirements: Requirements;
   arch: LocalhostDeployTarget["arch"];
+  components?: Components;
   now: Date;
 }): DesignOption {
   const { facts, requirements } = input;
-  const sizing = sizeFor(facts, requirements);
+  const sizing = sizeFor(facts, requirements, input.components);
+  requirePostgisArch(sizing.services, input.arch, "this computer");
   return DesignOptionSchema.parse({
     id: LOCALHOST_OPTION_ID,
     title: providerProfile("localhost").displayName,

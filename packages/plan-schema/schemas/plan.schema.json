@@ -1263,6 +1263,35 @@
                   "logins": {
                     "type": "string",
                     "const": "separate"
+                  },
+                  "extensions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "vector",
+                        "postgis",
+                        "postgis_raster",
+                        "postgis_sfcgal",
+                        "pgcrypto",
+                        "uuid-ossp",
+                        "pg_trgm",
+                        "citext",
+                        "hstore",
+                        "unaccent",
+                        "fuzzystrmatch",
+                        "btree_gin",
+                        "btree_gist",
+                        "ltree",
+                        "intarray",
+                        "cube",
+                        "earthdistance",
+                        "tablefunc",
+                        "isn",
+                        "lo",
+                        "bloom"
+                      ]
+                    }
                   }
                 },
                 "additionalProperties": false

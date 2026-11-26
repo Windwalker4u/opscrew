@@ -19,6 +19,7 @@ import { refusedBeforeChange } from "../previews/host";
 import { deepDomainProblem } from "../shared/deep-domain";
 import type { MemoryLimit } from "../shared/memory";
 import { type Components, memoryText } from "./components";
+import { requirePostgisArch } from "./postgres-extensions";
 import { type PreviewHost, previewMemoryText } from "./previews";
 import {
   containersText,
@@ -348,6 +349,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   const sizing = sizeFor(facts, requirements, input.components, input.edge);
   const containers = containersText(sizing);
   const arch = server.architecture === "arm" ? "arm64" : "amd64";
+  requirePostgisArch(sizing.services, arch, "your server");
 
   // One warning per shortfall: a service's own smallest server, else the server's size overall.
   const warnings = smallServerWarnings(sizing.services, server.memoryGb * 1024);

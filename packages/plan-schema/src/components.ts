@@ -164,6 +164,75 @@ const RedisModeSchema = z.enum(["cache", "queue"]);
  */
 const BrokerLoginSchema = z.boolean().default(false);
 
+/** The pgvector extension (`pgvector/pgvector` pinned image, Debian Trixie, multi-arch). */
+export const POSTGRES_VECTOR_EXTENSION = "vector" as const;
+
+/** PostGIS extensions (`postgis/postgis` pinned image, Alpine, amd64 only). */
+export const POSTGRES_POSTGIS_EXTENSIONS = ["postgis", "postgis_raster", "postgis_sfcgal"] as const;
+
+/** Standard PostgreSQL `contrib` extensions needing no `shared_preload_libraries` (`postgres:*-alpine`). */
+export const POSTGRES_CONTRIB_EXTENSIONS = [
+  "pgcrypto",
+  "uuid-ossp",
+  "pg_trgm",
+  "citext",
+  "hstore",
+  "unaccent",
+  "fuzzystrmatch",
+  "btree_gin",
+  "btree_gist",
+  "ltree",
+  "intarray",
+  "cube",
+  "earthdistance",
+  "tablefunc",
+  "isn",
+  "lo",
+  "bloom",
+] as const;
+
+/** Every PostgreSQL extension OpsCrew supports in `services[].options.extensions` (feature 045). */
+export const POSTGRES_EXTENSIONS = [
+  POSTGRES_VECTOR_EXTENSION,
+  ...POSTGRES_POSTGIS_EXTENSIONS,
+  ...POSTGRES_CONTRIB_EXTENSIONS,
+] as const;
+
+/** One supported PostgreSQL extension name. */
+export type PostgresExtension = (typeof POSTGRES_EXTENSIONS)[number];
+
+/** Which pinned PostgreSQL image family a service runs. */
+export type PostgresImageVariant = "postgres" | "pgvector" | "postgis";
+
+const POSTGIS_EXTENSION_SET: ReadonlySet<string> = new Set(POSTGRES_POSTGIS_EXTENSIONS);
+
+const PostgresExtensionSchema = z.enum(POSTGRES_EXTENSIONS, {
+  error: (issue) =>
+    `unsupported PostgreSQL extension ${JSON.stringify(issue.input)}; supported extensions: ${POSTGRES_EXTENSIONS.join(", ")}`,
+});
+
+const PostgresExtensionsSchema = z.array(PostgresExtensionSchema).superRefine((list, ctx) => {
+  const seen = new Set<string>();
+  for (let i = 0; i < list.length; i++) {
+    const name = list[i] as PostgresExtension;
+    if (seen.has(name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [i],
+        message: `duplicate PostgreSQL extension "${name}"`,
+      });
+    }
+    seen.add(name);
+  }
+  const postgis = list.filter((name) => POSTGIS_EXTENSION_SET.has(name));
+  if (seen.has(POSTGRES_VECTOR_EXTENSION) && postgis.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      message: `cannot combine "${POSTGRES_VECTOR_EXTENSION}" with PostGIS (${postgis.join(", ")}) in the same PostgreSQL service: no single official image carries both`,
+    });
+  }
+});
+
 /** A service entry as written, its name perhaps left out. */
 const ServiceEntrySchema = z.discriminatedUnion("kind", [
   serviceEntry(z.enum(["valkey", "redis"]), z.strictObject({ mode: RedisModeSchema })),
@@ -193,6 +262,12 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
          * databases made before it.
          */
         logins: z.literal("separate", { message: 'must be "separate"' }).optional(),
+        /**
+         * PostgreSQL extensions OpsCrew installs as superuser before migrations (feature 045):
+         * `vector` selects `pgvector/pgvector`, PostGIS extensions select `postgis/postgis`
+         * (`amd64` only), and standard `contrib` extensions stay on `postgres:*-alpine`.
+         */
+        extensions: PostgresExtensionsSchema.optional(),
       })
       .prefault({}),
   ),
@@ -250,6 +325,33 @@ export function serviceOf<K extends PlanService["kind"]>(
 /** Whether a service is a PostgreSQL whose app and migrations have their own logins (`logins: separate`). */
 export function postgresLogins(service: PlanService): boolean {
   return service.kind === "postgres" && service.options.logins === "separate";
+}
+
+/** The PostgreSQL extensions declared on `service` (empty for non-PostgreSQL or when unset). */
+export function postgresExtensions(service: PlanService): readonly PostgresExtension[] {
+  return service.kind === "postgres" ? (service.options.extensions ?? []) : [];
+}
+
+/** True when `service` is a PostgreSQL requesting `vector` (`pgvector/pgvector`). */
+export function postgresUsesVector(service: PlanService): boolean {
+  return postgresExtensions(service).includes(POSTGRES_VECTOR_EXTENSION);
+}
+
+/** The PostGIS extensions requested on `service` (empty when none or not PostgreSQL). */
+export function postgresPostgisExtensions(service: PlanService): PostgresExtension[] {
+  return postgresExtensions(service).filter((name) => POSTGIS_EXTENSION_SET.has(name));
+}
+
+/** True when `service` is a PostgreSQL requesting any PostGIS extension (`postgis/postgis`, `amd64` only). */
+export function postgresUsesPostgis(service: PlanService): boolean {
+  return postgresPostgisExtensions(service).length > 0;
+}
+
+/** Which pinned PostgreSQL image family `service` requires (`postgres`, `pgvector`, or `postgis`). */
+export function postgresImageVariant(service: PlanService): PostgresImageVariant {
+  if (postgresUsesVector(service)) return "pgvector";
+  if (postgresUsesPostgis(service)) return "postgis";
+  return "postgres";
 }
 
 /**

@@ -83,7 +83,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   stackPlanFile,
 } from "./portainer";
-import { portainerStacksFor } from "./portainer-flow";
+import { portainerInspect, portainerStacksFor } from "./portainer-flow";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import { readCloudflareRecord } from "./shared-cloudflare";
@@ -1148,6 +1148,72 @@ describe.skipIf(!findExecutable("git"))("the components in the user's Portainer"
     expect(s.fake.mutations()).toEqual([]);
     expect(s.engine.calls).toEqual([]);
     await expect(readFile(join(s.root, STACK_TEMPLATE), "utf8")).rejects.toThrow();
+  });
+
+  it("stops before any change when the inspected Portainer host is arm64 and PostgreSQL requests PostGIS (045)", async () => {
+    const withPgExt = (arch: "amd64" | "arm64", extensions: readonly ("postgis" | "vector")[]) => {
+      const base = portainerPlan({ arch });
+      return DeployPlanSchema.parse({
+        ...base,
+        services: base.services.map((service) =>
+          service.kind === "postgres"
+            ? { ...service, options: { extensions: [...extensions] } }
+            : service,
+        ),
+      });
+    };
+
+    const armPlan = withPgExt("arm64", ["postgis"]);
+    const s = await setup({
+      plan: armPlan,
+      portainer: { architecture: "aarch64" },
+      connection: { arch: "arm64" },
+    });
+    const armClient = portainerClient(
+      { url: PORTAINER_URL, certFingerprint: CERT.fingerprint },
+      PORTAINER_TOKEN,
+      { request: s.fake.request },
+    );
+    await expect(
+      portainerInspect(s.deps, armClient, { plan: armPlan, phase: "provision" })(),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringMatching(/postgis\/postgis.*Portainer host is arm64/i),
+    });
+    expect(s.fake.mutations()).toEqual([]);
+
+    // Full runProvision also stops before any approval, Portainer mutation, or Terraform call.
+    await expect(s.run()).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringMatching(/postgis\/postgis.*Portainer host is arm64/i),
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.fake.mutations()).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+    await expect(readFile(join(s.root, STACK_TEMPLATE), "utf8")).rejects.toThrow();
+
+    // amd64 with PostGIS and arm64 with vector both pass portainerInspect.
+    for (const [arch, dockerArch, extensions] of [
+      ["amd64", "x86_64", ["postgis"]],
+      ["arm64", "aarch64", ["vector"]],
+    ] as const) {
+      const okPlan = withPgExt(arch, extensions);
+      const ok = await setup({
+        plan: okPlan,
+        portainer: { architecture: dockerArch },
+        connection: { arch },
+      });
+      const okClient = portainerClient(
+        { url: PORTAINER_URL, certFingerprint: CERT.fingerprint },
+        PORTAINER_TOKEN,
+        { request: ok.fake.request },
+      );
+      const facts = await portainerInspect(ok.deps, okClient, {
+        plan: okPlan,
+        phase: "provision",
+      })();
+      expect(facts.environment?.arch).toBe(arch);
+    }
   });
 
   it("creates an R2 bucket through its own approved plan, then gives the app its key in the stack", async () => {

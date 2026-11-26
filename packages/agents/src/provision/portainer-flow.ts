@@ -47,7 +47,9 @@ import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provisio
 import { provisionUptime, type UptimeStep } from "../check/uptime";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
+import { requirePostgisArch } from "../design/postgres-extensions";
 import { builderBranch } from "../environments/branches";
+import { planFile } from "../runners/words";
 import { knownRecipients } from "../secrets/store";
 import {
   type AppEnvironment,
@@ -723,6 +725,13 @@ export function portainerInspect(
       ...(detail !== undefined ? { detail } : {}),
     });
     requireUsableFacts(facts, target, command);
+    if (facts.environment?.arch === "arm64") {
+      requirePostgisArch(plan.services, "arm64", "your Portainer host", {
+        planFile: planFile(plan),
+        command: command ?? "opscrew provision",
+        unchanged: "Nothing was changed.",
+      });
+    }
     return facts;
   };
 }

@@ -11,7 +11,7 @@ import {
   snapshotScheduleOf,
   snapshotsOn,
 } from "@opscrew/plan-schema";
-import { dataDirs, serviceSpec } from "../catalog";
+import { dataDirs, serviceImageRef, serviceSpec } from "../catalog";
 import { loginsCheck, loginsLoad } from "../catalog/postgres-logins";
 import { IMAGES } from "../pins";
 import { FILES_VOLUME, SQLITE_VOLUME } from "../runtime";
@@ -135,7 +135,7 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
       online: onlineKind(service.kind),
       ...("mode" in service.options ? { mode: service.options.mode } : {}),
       ...(postgresLogins(service) ? { logins: true as const } : {}),
-      image: IMAGES[serviceSpec(service.kind).image].ref,
+      image: serviceImageRef(service),
     };
   });
   if (server !== APP_SERVER) return services;

@@ -41,6 +41,7 @@ import {
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
 import { sharedAccessWarning } from "../design/own";
+import { requirePostgisArch } from "../design/postgres-extensions";
 import { commandFlags } from "../environments/choice";
 import { homeForwards, homeForwardsInput } from "../home/forwards";
 import {
@@ -675,6 +676,12 @@ export async function prepareOwnServer(
     );
   }
   requireMongoAvx(plan, facts);
+  if (facts.arch === "amd64" || facts.arch === "arm64") {
+    requirePostgisArch(servicesOn(plan, APP_SERVER), facts.arch, "your server", {
+      unchanged: "Nothing was changed.",
+      command: "opscrew provision",
+    });
+  }
   const repo = lazyRepository(deps, input.services.runnerGitHub);
   // The server's runner, after the repository's check (a public one needs its own approval).
   const runner =
@@ -1539,6 +1546,12 @@ export async function prepareExtraOwnServer(
     );
   }
   requireMongoAvx(plan, run.facts, name);
+  if (arch === "amd64" || arch === "arm64") {
+    requirePostgisArch(servicesOn(plan, name), arch, `server ${name}`, {
+      unchanged: "Nothing was changed.",
+      command: input.command,
+    });
+  }
   // A server that only holds a moving service's old copy has nothing new to set up.
   if (servicesOn(plan, name).length > 0) {
     requireNoBlockers(

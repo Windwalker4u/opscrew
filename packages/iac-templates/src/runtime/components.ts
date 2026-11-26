@@ -5,7 +5,14 @@
  */
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
-import { checkServiceVersion, dataDirs, hostSysctl, renderContext, serviceSpec } from "../catalog";
+import {
+  checkServiceVersion,
+  dataDirs,
+  hostSysctl,
+  renderContext,
+  serviceImageRef,
+  serviceSpec,
+} from "../catalog";
 import type { ServiceHealthcheck, ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
@@ -252,7 +259,7 @@ export function renderServices(
     const entrypoint = spec.entrypoint?.(ctx);
     const command = spec.command?.(ctx);
     rendered.services[service.name] = {
-      image: IMAGES[spec.image].ref,
+      image: serviceImageRef(service),
       restart: "unless-stopped",
       ...(spec.hostname ? { hostname: service.name } : {}),
       ...(entrypoint === undefined ? {} : { entrypoint: entrypoint.map(composeLiteral) }),

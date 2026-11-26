@@ -90,6 +90,7 @@ const MOVES = [
   `SELECT format('ALTER SCHEMA %I OWNER TO ${OWNER}', n.nspname) FROM pg_namespace n`,
   `  WHERE n.nspowner IN ('${SUPERUSER}'::regrole, 'pg_database_owner'::regrole) AND ${APP_SCHEMA}`,
   `  AND ${notInExtension("pg_namespace", "n.oid")}`,
+  "  AND (n.nspname = 'public' OR NOT EXISTS (SELECT FROM pg_extension e JOIN pg_available_extension_versions v ON v.name = e.extname AND v.version = e.extversion WHERE e.extnamespace = n.oid AND v.schema = n.nspname))",
   "UNION ALL",
   `SELECT format('ALTER %s %s OWNER TO ${OWNER}', CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END, c.oid::regclass)`,
   "  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace",
@@ -367,12 +368,14 @@ const FIRST = "SCHEMA|EXTENSION|COMMENT - EXTENSION";
 const LAST = "ACL|DEFAULT ACL";
 
 /**
- * The extensions' own tables, whose rows a dump keeps, as `pg_restore -l` lists their rows after
- * the entry's ID and OIDs: `TABLE DATA <schema> <table> <owner>`.
+ * The extensions' own tables and sequences, whose rows or values a dump keeps, as `pg_restore -l`
+ * lists them after the entry's ID and OIDs: `TABLE DATA <schema> <table> <owner>` or
+ * `SEQUENCE SET <schema> <sequence> <owner>` (for example PostGIS's `topology.topology_id_seq`).
  */
 const EXTENSION_TABLES = [
   "SET search_path = pg_catalog;",
-  "SELECT 'TABLE DATA ' || n.nspname || ' ' || c.relname || ' ' || pg_get_userbyid(c.relowner)",
+  "SELECT CASE c.relkind WHEN 'S' THEN 'SEQUENCE SET ' ELSE 'TABLE DATA ' END",
+  "    || n.nspname || ' ' || c.relname || ' ' || pg_get_userbyid(c.relowner)",
   "  FROM pg_extension e CROSS JOIN LATERAL unnest(e.extconfig) AS x(oid)",
   "  JOIN pg_class c ON c.oid = x.oid JOIN pg_namespace n ON n.oid = c.relnamespace;",
 ];

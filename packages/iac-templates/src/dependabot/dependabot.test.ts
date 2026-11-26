@@ -452,6 +452,37 @@ describe("renderDependabot", () => {
       (u) => u["package-ecosystem"] === "docker-compose",
     );
     expect(compose?.ignore?.map((rule) => rule["dependency-name"])).toEqual(NO_MAJOR_UPDATES);
+    expect(compose?.ignore?.map((rule) => rule["dependency-name"])).not.toContain(
+      "pgvector/pgvector",
+    );
+    expect(compose?.ignore?.map((rule) => rule["dependency-name"])).not.toContain(
+      "postgis/postgis",
+    );
+
+    // Extension images join docker-compose's ignore only when a plan uses them (045).
+    const withVector: DeployPlan = {
+      ...deployPlan,
+      services: deployPlan.services.map((s) =>
+        s.kind === "postgres" ? { ...s, options: { ...s.options, extensions: ["vector"] } } : s,
+      ),
+    };
+    const vectorIgnore = updates(sample, withVector)
+      .find((u) => u["package-ecosystem"] === "docker-compose")
+      ?.ignore?.map((rule) => rule["dependency-name"]);
+    expect(vectorIgnore).toContain("pgvector/pgvector");
+    expect(vectorIgnore).not.toContain("postgis/postgis");
+
+    const withPostgis: DeployPlan = {
+      ...deployPlan,
+      services: deployPlan.services.map((s) =>
+        s.kind === "postgres" ? { ...s, options: { ...s.options, extensions: ["postgis"] } } : s,
+      ),
+    };
+    const postgisIgnore = updates(sample, withPostgis)
+      .find((u) => u["package-ecosystem"] === "docker-compose")
+      ?.ignore?.map((rule) => rule["dependency-name"]);
+    expect(postgisIgnore).toContain("postgis/postgis");
+    expect(postgisIgnore).not.toContain("pgvector/pgvector");
   });
 
   it("proposes no minor update of Meilisearch either: a new minor can need a dump and import", () => {

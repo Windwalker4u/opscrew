@@ -1,0 +1,21 @@
+# Tasks: Postgres extensions for an app's database
+
+**Feature**: `045-postgres-extensions` | **Issue**: `#28` | **PR**: `#30` | **Plan**: [plan.md](plan.md)
+
+## In `0.2.12`
+
+- [x] **T4501 — Plan schema (`@opscrew/plan-schema`)**: Add `POSTGRES_EXTENSIONS` constants (`vector`, `postgis`, `postgis_raster`, `postgis_sfcgal`, and 17 `contrib` extensions), optional `options.extensions` validation (supported list, unique, refuse `vector` + PostGIS combined, refuse non-postgres), and helpers (`postgresExtensions`, `postgresPostgisExtensions`, `postgresUsesVector`, `postgresUsesPostgis`, `postgresImageVariant`) with unit tests and regenerated `plan.schema.json`.
+- [x] **T4502 — Image pins, resolver & conditional Dependabot (`@opscrew/iac-templates`)**: Pin `IMAGES.pgvector` (`pgvector/pgvector:0.8.7-pg17-trixie`) and `IMAGES.postgis` (`postgis/postgis:17-3.7-alpine`) in `pins.ts`; export simplified `serviceImageKey` / `serviceImageRef`; wire into `runtime/components.ts`, `portainer-target/stack.ts`, `workflow/snapshots.ts`, `portainer-target/snapshots.ts`; add `pgvector/pgvector` / `postgis/postgis` to Dependabot `ignore` only when a plan uses them while keeping major-lock in `pins-carry`.
+- [x] **T4503 — Superuser extensions setup & 047 schema/sequence fixes (`@opscrew/iac-templates`)**: Implement `postgres-extensions.ts` (`extensionsCheck`, `extensionsSetup` with event-trigger guard and `CREATE EXTENSION IF NOT EXISTS ... CASCADE`); wire before `loginsSetup` in `postgresInit`; update `postgres-logins.ts` to preserve superuser ownership of extension-created schemas (`deptype = 'n'` as well as `'e'`, excluding `public`) and restore extension-owned `SEQUENCE SET` entries as superuser; add unit tests.
+- [x] **T4504 — Design `amd64` / PostGIS checks (`@opscrew/agents`)**: Add `design/postgres-extensions.ts` and refuse PostGIS on `arm64` hosts in `design/own.ts`, `design/own-servers.ts`, `design/portainer.ts` (passing `components` with `previous` edits), `design/servers.ts` (arm `serverType`), and `localhost/design.ts`, with design-level unit tests.
+- [x] **T4505 — Provision recording, refusal on existing DBs, `arm64` checks & retarget (`@opscrew/agents`)**: Record `postgresExtensions` in `generated_values.json` (`shared/app-secrets.ts`, `provision/secrets.ts`); implement `provision/postgres-extensions.ts` (`requireExtensionsArch` including hand-edited ARM cloud `serverType` lookup, and `postgresExtensionsStep` refusing add/remove on databases with data via `neverRan` before anything changes); wire before `postgresLoginsStep` in `provision/run.ts`, plus live arch checks in `provision/own.ts` and `provision/portainer-flow.ts`, and `retarget/sides/postgres.ts` / `retarget/window.ts`; add unit and `runProvision` tests.
+- [ ] **T4506 — Real Docker tests (`OPSCREW_DOCKER_TESTS=1`)**: Updated `packages/iac-templates/src/catalog/postgres-extensions.docker.test.ts` covering:
+  1. Fresh `pgvector` + `pg_trgm` with `logins: separate` + `app_owner` migration + `app_runtime` query + dump/restore/drill;
+  2. Fresh `postgis/postgis:17-3.7-alpine` (`postgis` + `postgis_raster`) with `logins: separate`, geometry + `spatial_ref_sys` preserved across in-place restore, drill, and move (`app_owner` stays non-superuser), plus verifying S1 (`topology` schema stays owned by `app` after `loginsSetup`).
+  Ready for execution on a Docker-enabled host (`OPSCREW_DOCKER_TESTS=1`).
+- [x] **T4507 — User documentation & full verification**: Update `docs/guide/databases.md` and `specs/045-postgres-extensions/*`, run `pnpm format`, `pnpm lint`, `pnpm typecheck`, affected tests, and `opscrew` CLI build, and push to `fork/045-postgres-extensions`.
+
+## Later (not in `0.2.12`)
+
+- [ ] **T4508 — Snapshot-based rebuild for changing extensions on an existing database**: Add a hash-approved rebuild flow that takes a snapshot, recreates the database volume on the new image with extensions installed before `loginsSetup`, and loads the snapshot via `loginsLoad` (supporting safe Alpine/musl ↔ Debian/glibc moves without `REFRESH COLLATION VERSION` from NULL and without running superuser `CREATE EXTENSION` in an `app_owner`-controlled `public` schema).
+- [ ] **T4509 — `postgis_topology` runtime grants**: Design and test safe non-superuser grants for `topology.CreateTopology()` under `logins: separate` before re-enabling `postgis_topology`.

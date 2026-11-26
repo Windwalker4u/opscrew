@@ -200,6 +200,49 @@ that would give the app the superuser again.
 restarts the database (in your Portainer, see the credential rotation page). See
 [Rotating your app's credentials](credential-rotation.md#services).
 
+## PostgreSQL extensions
+
+Apps that need embeddings (`pgvector`), geospatial data (PostGIS), or built-in PostgreSQL `contrib`
+extensions declare them under `options.extensions` on the PostgreSQL service in `opscrew/plan.yaml`.
+OpsCrew installs each extension as the superuser `app` before your release command (migrations)
+runs, so neither `app_owner` nor `app_runtime` ever needs superuser rights.
+
+```yaml
+services:
+  - name: db
+    kind: postgres
+    version: "17"
+    options:
+      logins: separate
+      extensions:
+        - vector
+        - pg_trgm
+```
+
+### Supported extensions and images
+
+| Extensions | Image OpsCrew runs | Architectures |
+|---|---|---|
+| `pgcrypto`, `uuid-ossp`, `pg_trgm`, `citext`, `hstore`, `unaccent`, `fuzzystrmatch`, `btree_gin`, `btree_gist`, `ltree`, `intarray`, `cube`, `earthdistance`, `tablefunc`, `isn`, `lo`, `bloom` | `postgres:17-alpine` (no image change) | `amd64`, `arm64` |
+| `vector` (plus any of the `contrib` extensions above) | `pgvector/pgvector:0.8.7-pg17-trixie` (pinned by digest) | `amd64`, `arm64` |
+| `postgis`, `postgis_raster`, `postgis_sfcgal` (plus any of the `contrib` extensions above) | `postgis/postgis:17-3.7-alpine` (pinned by digest) | `amd64` only |
+
+- **PostGIS needs an `amd64` server:** the official `postgis/postgis` image publishes only `linux/amd64` manifests, so design and `npx opscrew provision` refuse placing a PostGIS database on an `arm64` host (your own server, a Portainer host, this computer, or an ARM cloud server type).
+- **`vector` and PostGIS cannot be combined in one database:** no single official image ships both, so OpsCrew refuses combining them in the same PostgreSQL service before anything changes. Any unsupported extension name is refused the same way, listing the supported names above.
+- **Snapshots, restores, restore drills, and moves** run with the database's extension image and preserve `vector` indexes, PostGIS geometry data, and `spatial_ref_sys` under [Two logins](#two-logins) (keeping `app_owner` non-superuser).
+
+### New databases only (in 0.2.12)
+
+Extensions are set up when the database is created, before [Two logins](#two-logins) hands schema
+ownership to `app_owner`. OpsCrew records the database's extension set in its local generated values
+when `npx opscrew provision` creates it:
+
+- If a database already has data, `npx opscrew provision` refuses adding or removing extensions in
+  `opscrew/plan.yaml` before anything changes. Keep `extensions` as it was when the database was
+  created (or create a new database with the extensions you need).
+- If a database has never started yet (has no data), you can still adjust `options.extensions`
+  before the first deploy.
+
 ## Settings for small servers
 
 - **MySQL** gets a buffer pool of its memory limit minus about 400 MB for everything else (at least

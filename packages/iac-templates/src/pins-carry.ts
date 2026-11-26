@@ -2,7 +2,7 @@
  * Carrying pins over from the committed copy of a file OpsCrew renders again, so a pin the user or
  * Dependabot updated is not reverted (FR-1222).
  */
-import { NO_MAJOR_UPDATES, NO_MINOR_UPDATES } from "./dependabot";
+import { EXTENSION_NO_MAJOR_UPDATES, NO_MAJOR_UPDATES, NO_MINOR_UPDATES } from "./dependabot";
 
 /** `repo:tag@sha256:<hex>`, on any registry. */
 const IMAGE_PIN =
@@ -88,7 +88,7 @@ export function keepNewerPins(committed: string, rendered: string): string {
       newer(
         images.get(keyOf(repo, tag)),
         { tag, text },
-        NO_MAJOR_UPDATES.includes(repo),
+        NO_MAJOR_UPDATES.includes(repo) || EXTENSION_NO_MAJOR_UPDATES.includes(repo),
         NO_MINOR_UPDATES.includes(repo),
       ),
     )

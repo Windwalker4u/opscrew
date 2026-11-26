@@ -611,7 +611,13 @@ async function pricePortainer(
   if (problem !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", problem.message, { hint: problem.hint });
   }
-  const option = buildPortainerOption({ facts, requirements, choice, now: deps.clock.now() });
+  const option = buildPortainerOption({
+    facts,
+    requirements,
+    choice,
+    components: designed.components,
+    now: deps.clock.now(),
+  });
   deps.reporter.info(
     deps.redactor.redact(
       `${option.title} (${option.id}): ${lowerFirst(PORTAINER_PRICE_NOTE)} — recommended`,
@@ -730,6 +736,7 @@ async function priceLocalhost(
     facts,
     requirements,
     arch: choice.arch,
+    components: designed.components,
     now: deps.clock.now(),
   });
   deps.reporter.info(
