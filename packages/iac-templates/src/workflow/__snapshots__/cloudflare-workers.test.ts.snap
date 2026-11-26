@@ -385,6 +385,11 @@ jobs:
             exit 1
           fi
           previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          # The id goes into this job's outputs and Wrangler's arguments: only a version id passes.
+          if [[ -n "$previous" && ! "$previous" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again."
+            exit 1
+          fi
           echo "id=$previous" >> "$GITHUB_OUTPUT"
       - id: upload
         name: Upload the new version
@@ -482,13 +487,18 @@ jobs:
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::The version that ran before has no version id, so OpsCrew did not activate it again."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/wrangler"
+          npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'
       - name: Report the failed deploy
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
         env:
@@ -814,6 +824,11 @@ jobs:
             exit 1
           fi
           previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          # The id goes into this job's outputs and Wrangler's arguments: only a version id passes.
+          if [[ -n "$previous" && ! "$previous" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again."
+            exit 1
+          fi
           echo "id=$previous" >> "$GITHUB_OUTPUT"
       - id: upload
         name: Upload the new version
@@ -912,13 +927,18 @@ jobs:
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::The version that ran before has no version id, so OpsCrew did not activate it again."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/wrangler"
+          npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'
       - name: Report the failed deploy
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
         env:
@@ -1209,6 +1229,11 @@ jobs:
             exit 1
           fi
           previous="$(jq -r '[.result.deployments[0].versions[]? | select(.percentage == 100) | .version_id][0] // empty' <<< "$answer")"
+          # The id goes into this job's outputs and Wrangler's arguments: only a version id passes.
+          if [[ -n "$previous" && ! "$previous" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::Cloudflare listed a running version of the Worker example-app whose id is not a version id, so OpsCrew stopped before the upload. Run the workflow again."
+            exit 1
+          fi
           echo "id=$previous" >> "$GITHUB_OUTPUT"
       - id: upload
         name: Upload the new version
@@ -1299,13 +1324,18 @@ jobs:
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
-        uses: <pin:ACTIONS.wranglerAction>
-        with:
-          apiToken: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
-          accountId: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "<pin:TOOLS.wrangler.version>"
-          workingDirectory: \${{ runner.temp }}/wrangler
-          command: versions deploy \${{ steps.previous.outputs.id }}@100 -y --config \${{ github.workspace }}/opscrew/cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS: \${{ steps.previous.outputs.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::The version that ran before has no version id, so OpsCrew did not activate it again."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/wrangler"
+          npx --no-install wrangler versions deploy "$PREVIOUS@100" -y --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc'
       - name: Report the failed deploy
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')
         env:
