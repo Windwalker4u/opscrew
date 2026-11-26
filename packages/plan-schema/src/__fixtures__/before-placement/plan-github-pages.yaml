@@ -70,7 +70,7 @@ security:
   sshAllowedCidrs:
     - 203.0.113.0/24
     - 2001:db8::/32
-  httpAllowedFrom: cloudflare
+  httpAllowedFrom: edge
   wafCustomRules: false
   imageScan: true
 supplyChain:

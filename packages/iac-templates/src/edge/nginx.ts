@@ -4,6 +4,7 @@
  * the apps' site files, and the loops of the nginx and certbot containers. Both run as the deploy
  * user, so nginx reads the origin key the deploy writes (0600) and certbot's files.
  */
+import { edgeProvider } from "@opscrew/edge-providers";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 
@@ -284,9 +285,10 @@ function byRedirect(site: NginxSite, hosts: readonly string[]) {
 function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
   const header = (name: string, value: string) => `\tadd_header ${name} "${value}" always;`;
   const realIp = site.realIpFrom ?? [];
+  const realIpHeader = edgeProvider("cloudflare").capabilities.realIpHeader;
   return [
     ...realIp.map((range) => `\tset_real_ip_from ${range};`),
-    ...(realIp.length > 0 ? ["\treal_ip_header CF-Connecting-IP;"] : []),
+    ...(realIp.length > 0 ? [`\treal_ip_header ${realIpHeader};`] : []),
     ...(o.hsts ? [header("Strict-Transport-Security", HSTS)] : []),
     ...BASELINE_HEADERS.map(([name, value]) => header(name, value)),
     ...(o.h3 ? [`\tadd_header Alt-Svc 'h3=":443"; ma=2592000' always;`] : []),

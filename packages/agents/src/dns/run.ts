@@ -58,7 +58,7 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
       ...plan,
       updatedAt: deps.clock.now().toISOString(),
       dns: { ...dns, provider: "cloudflare", domain, proxied: true },
-      security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+      security: { ...plan.security, httpAllowedFrom: "edge" },
     };
   }
   const updated = plan;
@@ -101,6 +101,6 @@ function runningServerNote(domain: string, app: string): string {
  * changed it; without a domain no URL is recorded).
  */
 function switchesRunningServer(plan: DeployPlan, domain: string, changed: boolean): boolean {
-  if (!plan.dns.proxied || plan.security.httpAllowedFrom !== "cloudflare") return false;
+  if (!plan.dns.proxied || plan.security.httpAllowedFrom !== "edge") return false;
   return changed || plan.deployment.url !== `https://${domain}`;
 }

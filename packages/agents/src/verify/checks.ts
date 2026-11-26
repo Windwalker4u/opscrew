@@ -976,7 +976,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
       "Skipped: the site is not behind Cloudflare's proxy.",
     );
   }
-  if (plan.security.httpAllowedFrom !== "cloudflare") {
+  if (plan.security.httpAllowedFrom !== "edge") {
     return checkResult(
       id,
       title,

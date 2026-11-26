@@ -296,7 +296,7 @@ export function ownWebFromCloudflare(plan: DeployPlan): boolean {
     plan.target.access === "public" &&
     plan.dns.provider === "cloudflare" &&
     plan.dns.proxied &&
-    plan.security.httpAllowedFrom === "cloudflare"
+    plan.security.httpAllowedFrom === "edge"
   );
 }
 

@@ -59,7 +59,7 @@ function homePlan(o: { proxied?: boolean; ipv4?: boolean; dnsElsewhere?: boolean
   return DeployPlanSchema.parse({
     ...base,
     target: { ...base.target, home: { ipv4: o.ipv4 ?? true } },
-    security: { ...base.security, httpAllowedFrom: proxied ? "cloudflare" : "any" },
+    security: { ...base.security, httpAllowedFrom: proxied ? "edge" : "any" },
     environment: { runner: "server" },
     ...(o.dnsElsewhere
       ? { dns: { provider: "none", domain: "shop.example.com", proxied: false } }

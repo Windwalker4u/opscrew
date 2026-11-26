@@ -141,7 +141,7 @@ describe("input tolerance", () => {
     });
     expect(plan.security).toEqual({
       sshAllowedCidrs: ["0.0.0.0/0", "::/0"],
-      httpAllowedFrom: "cloudflare",
+      httpAllowedFrom: "edge",
       wafCustomRules: true,
       imageScan: true,
     });

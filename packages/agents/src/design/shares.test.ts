@@ -182,7 +182,7 @@ describe("design for a second app on the server of another app", () => {
       domain: DOMAIN,
       proxied: true,
     });
-    expect(result.plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(result.plan.security.httpAllowedFrom).toBe("edge");
     expect(result.options).toHaveLength(1);
     expect(result.chosen).toMatchObject({
       title: 'Beside "shop" on its Hetzner Cloud server',

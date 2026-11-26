@@ -1,4 +1,5 @@
 packages:
   - "packages/*"
   - "packages/connectors/*"
+  - "packages/edge-providers/*"
   - "packages/providers/*"

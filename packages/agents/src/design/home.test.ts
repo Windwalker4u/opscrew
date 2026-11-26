@@ -143,7 +143,7 @@ describe("design for a server at home", () => {
       edge: "caddy",
     });
     expect(result.plan.dns).toMatchObject({ provider: "cloudflare", proxied: true });
-    expect(result.plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(result.plan.security.httpAllowedFrom).toBe("edge");
     expect(result.plan.environment).toEqual({ deploySource: { from: "main" }, runner: "server" });
     expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(result.plan);
 

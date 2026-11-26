@@ -384,7 +384,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     cost: option.cost,
     codeChanges: input.codeChanges,
     dns,
-    ...(webFilter ? { security: { httpAllowedFrom: "cloudflare" } } : {}),
+    ...(webFilter ? { security: { httpAllowedFrom: "edge" } } : {}),
     // GitHub Pages' hostnames are DNS-only, so Cloudflare's WAF never sees their traffic.
     ...(pages ? { security: { wafCustomRules: false } } : {}),
     cicd: {

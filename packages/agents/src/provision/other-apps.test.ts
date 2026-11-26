@@ -89,7 +89,7 @@ function deployedPlan(serverType: string, changes: Partial<DeployPlan> = {}): De
 }
 
 /** The same, served behind Cloudflare's proxy at `shop.example.com`. */
-function proxiedPlan(httpAllowedFrom?: "any" | "cloudflare"): DeployPlan {
+function proxiedPlan(httpAllowedFrom?: "any" | "edge"): DeployPlan {
   const plan = testPlan({
     domain: "shop.example.com",
     ...(httpAllowedFrom !== undefined ? { httpAllowedFrom } : {}),

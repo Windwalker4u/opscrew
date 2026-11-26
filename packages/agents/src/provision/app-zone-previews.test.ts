@@ -63,7 +63,7 @@ function previewOf(prod: DeployPlan): DeployPlan {
     },
     infra: { ...prod.infra, dir: "opscrew/infra/preview" },
     dns: { provider: "cloudflare", zone: ZONE, proxied: true, www: false },
-    security: { ...prod.security, httpAllowedFrom: "cloudflare" },
+    security: { ...prod.security, httpAllowedFrom: "edge" },
     supplyChain: { ...prod.supplyChain, sign: false },
     cicd: {
       ...prod.cicd,

@@ -123,7 +123,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
       zone: "example.com",
       proxied: true,
     });
-    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(plan.security.httpAllowedFrom).toBe("edge");
     const requirements = await readArtifact("requirements", deps.paths.files.requirements);
     expect(requirements).toMatchObject({ domain: "shop.example.com", dnsProvider: "cloudflare" });
 
@@ -259,7 +259,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
         proxied: true,
         registration,
       },
-      security: { ...plan.security, httpAllowedFrom: "cloudflare" as const },
+      security: { ...plan.security, httpAllowedFrom: "edge" as const },
     };
     await writeArtifact("plan", deps.paths.files.plan, bought);
 

@@ -35,7 +35,7 @@ async function secondAppPlan(target: Record<string, unknown>) {
       proxied: true,
       www: false,
     },
-    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+    security: { ...plan.security, httpAllowedFrom: "edge" },
   };
 }
 

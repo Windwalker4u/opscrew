@@ -33,7 +33,7 @@ export function previewTestPlan(options: { own?: boolean } = {}): DeployPlan {
     },
     infra: { ...base.infra, dir: "opscrew/infra/preview" },
     dns: { provider: "cloudflare", zone: PREVIEW_ZONE, proxied: true, www: false },
-    security: { ...base.security, httpAllowedFrom: "cloudflare" },
+    security: { ...base.security, httpAllowedFrom: "edge" },
     supplyChain: { ...base.supplyChain, sign: false },
     cicd: {
       ...base.cicd,

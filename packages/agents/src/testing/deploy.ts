@@ -77,7 +77,7 @@ export interface PlanInputOptions {
   provider?: CloudProvider;
   /** The user supplies `STRIPE_SECRET_KEY` (default true); false leaves it out of the app's env. */
   userSecret?: boolean;
-  httpAllowedFrom?: "any" | "cloudflare";
+  httpAllowedFrom?: "any" | "edge";
   /** The provider's automated backups (default: on where the provider offers them). */
   backups?: boolean;
 }

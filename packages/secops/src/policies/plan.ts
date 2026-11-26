@@ -6,6 +6,7 @@ import type {
   Severity,
 } from "@opscrew/contracts";
 import { isRecord } from "@opscrew/core";
+import { edgeProvider } from "@opscrew/edge-providers";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 
@@ -316,16 +317,17 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
   const proxiedBehindCloudflare =
     deployPlan.dns.provider === "cloudflare" &&
     deployPlan.dns.proxied &&
-    deployPlan.security.httpAllowedFrom === "cloudflare";
+    deployPlan.security.httpAllowedFrom === "edge";
   const results = PROVIDERS.flatMap((provider) =>
     providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCloudflare),
   );
 
   if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {
     const domain = deployPlan.dns.domain;
+    const recordType = edgeProvider(deployPlan.dns.provider).terraform.dnsRecordResourceType;
     const appRecords = resources.filter(
       (r) =>
-        r.type === "cloudflare_dns_record" &&
+        r.type === recordType &&
         (r.values.type === "A" || r.values.type === "AAAA") &&
         r.values.name === domain,
     );

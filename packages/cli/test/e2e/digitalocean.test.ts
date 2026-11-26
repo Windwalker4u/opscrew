@@ -168,7 +168,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
         planJson: planJsonFor({
           provider: "digitalocean",
           plan: before,
-          proxied: before.dns.proxied && before.security.httpAllowedFrom === "cloudflare",
+          proxied: before.dns.proxied && before.security.httpAllowedFrom === "edge",
         }),
         changes: DIGITALOCEAN_CREATE,
       });

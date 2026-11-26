@@ -17,7 +17,7 @@ export function previewPlanOf(prod: DeployPlan, name = "preview"): DeployPlan {
       previews: { cap: 3, lifetimeDays: 7, domain: "example-previews.com" },
     },
     dns: { provider: "cloudflare", zone: "example-previews.com", proxied: true, www: false },
-    security: { ...prod.security, httpAllowedFrom: "cloudflare" },
+    security: { ...prod.security, httpAllowedFrom: "edge" },
     deployment: {},
   };
 }

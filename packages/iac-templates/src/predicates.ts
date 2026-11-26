@@ -7,9 +7,9 @@ export function usesCloudflare(plan: DeployPlan): boolean {
 
 /**
  * True when web traffic may reach the server only through Cloudflare: a proxied Cloudflare domain,
- * or a preview environment's proxied wildcard, with `security.httpAllowedFrom: cloudflare`.
+ * or a preview environment's proxied wildcard, with `security.httpAllowedFrom: edge`.
  */
 export function webOnlyFromCloudflare(plan: DeployPlan): boolean {
   const cloudflare = usesCloudflare(plan) || plan.environment?.previews !== undefined;
-  return cloudflare && plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare";
+  return cloudflare && plan.dns.proxied && plan.security.httpAllowedFrom === "edge";
 }

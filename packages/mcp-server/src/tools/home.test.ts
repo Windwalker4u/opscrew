@@ -50,7 +50,7 @@ function homePlan() {
     ...base,
     target: { ...base.target, home: { ipv4: true } },
     dns: { ...base.dns, zone: "example.com" },
-    security: { ...base.security, httpAllowedFrom: "cloudflare" },
+    security: { ...base.security, httpAllowedFrom: "edge" },
     environment: { runner: "server" },
     deployment: {
       lastApplyAt: "2026-11-20T09:00:00.000Z",

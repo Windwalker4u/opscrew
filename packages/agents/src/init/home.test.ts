@@ -20,7 +20,7 @@ function homePlan(dns: "cloudflare" | "none" = "cloudflare"): DeployPlan {
     ...base,
     target: { ...base.target, home: { ipv4: true } },
     dns: { ...base.dns, provider: dns },
-    security: { ...base.security, httpAllowedFrom: dns === "cloudflare" ? "cloudflare" : "any" },
+    security: { ...base.security, httpAllowedFrom: dns === "cloudflare" ? "edge" : "any" },
     environment: { runner: "server" },
   });
 }

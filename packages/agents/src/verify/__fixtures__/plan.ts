@@ -13,7 +13,7 @@ export interface TestPlanOptions {
   www?: boolean;
   /** The server is provisioned (default true): the plan records the apply. */
   ip?: boolean;
-  httpAllowedFrom?: "any" | "cloudflare";
+  httpAllowedFrom?: "any" | "edge";
   sshAllowedCidrs?: string[];
   /** Cloud provider (default Hetzner). */
   provider?: CloudProvider;

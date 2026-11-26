@@ -915,7 +915,7 @@ describe("runDesign", () => {
       const deps = await existingPlan("hetzner-single-cx13-fsn1", (plan) => ({
         ...deployed(plan),
         dns: { provider: "cloudflare", domain: "app.example.com", proxied: true, www: false },
-        security: { ...deployed(plan).security, httpAllowedFrom: "cloudflare" },
+        security: { ...deployed(plan).security, httpAllowedFrom: "edge" },
       }));
       const result = await runDesign(deps, {
         catalog: euCatalog(),

@@ -415,7 +415,7 @@ describe("runDesign for a server the user owns", () => {
     const filtered = await runDesign(proxy, { ownServer: { facts } });
     expect(filtered.plan.target).toMatchObject({ access: "public" });
     expect(filtered.plan.dns).toMatchObject({ provider: "cloudflare", proxied: true });
-    expect(filtered.plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(filtered.plan.security.httpAllowedFrom).toBe("edge");
     expect(filtered.chosen.summary).toMatch(/a filter in Docker lets only Cloudflare/);
     expect(filtered.chosen.tradeoffs.join(" ")).toMatch(/fails closed/);
 

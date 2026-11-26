@@ -92,7 +92,7 @@ export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
     // The environment's own folder and workflow file (infraDirFor, workflowPathFor).
     infra: {},
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: { ...base.security, httpAllowedFrom: "cloudflare" },
+    security: { ...base.security, httpAllowedFrom: "edge" },
   });
 }
 

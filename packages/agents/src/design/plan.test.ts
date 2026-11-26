@@ -121,7 +121,7 @@ describe("optionToPlan", () => {
         branch: "trunk",
         workflowPath: ".github/workflows/opscrew-deploy.yml",
       },
-      security: { httpAllowedFrom: "cloudflare" },
+      security: { httpAllowedFrom: "edge" },
       infra: { engine: "auto", dir: "opscrew/infra/prod", stateEncryption: true },
     });
     expect(plan.cost).toEqual(option.cost);

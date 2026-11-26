@@ -838,7 +838,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
         domain: "shop.example.com",
         proxied: true,
       },
-      security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+      security: { ...plan.security, httpAllowedFrom: "edge" },
     });
     const printed = deps.reporter.text().length;
 

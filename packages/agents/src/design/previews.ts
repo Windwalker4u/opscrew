@@ -186,7 +186,7 @@ export function previewPlan(plan: DeployPlan, zone: string, facts: ProjectFacts)
     ...("edge" in plan.target ? { target: { ...plan.target, edge: "caddy" as const } } : {}),
     // Behind the proxy a preview's name is in no public certificate (research R6).
     dns: { provider: "cloudflare", zone, proxied: true, www: false },
-    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+    security: { ...plan.security, httpAllowedFrom: "edge" },
     supplyChain: { ...plan.supplyChain, sign: false },
     cicd: { ...plan.cicd, deployTags: { enabled: false, release: false } },
   };

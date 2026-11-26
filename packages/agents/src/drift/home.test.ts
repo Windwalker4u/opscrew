@@ -58,7 +58,7 @@ function homePlan(o: { ipv4?: boolean } = {}): DeployPlan {
   return DeployPlanSchema.parse({
     ...base,
     target: { ...base.target, home: { ipv4: o.ipv4 ?? false } },
-    security: { ...base.security, httpAllowedFrom: "cloudflare" },
+    security: { ...base.security, httpAllowedFrom: "edge" },
     environment: { runner: "server" },
   });
 }
