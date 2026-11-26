@@ -3,6 +3,7 @@ import {
   APP_SERVER,
   type DeployPlan,
   type PlanService,
+  postgresImageVariant,
   postgresLogins,
   type SelfHostedServiceKind,
   servicesOn,
@@ -24,11 +25,13 @@ import {
 import type {
   DatabaseSettings,
   GeneratedSecret,
+  ImagePinKey,
   ServiceContext,
   ServiceRotation,
   ServiceSpec,
 } from "./types";
 
+export * from "./postgres-extensions";
 export * from "./postgres-logins";
 export {
   DRAGONFLY_MIN_VCPUS,
@@ -48,6 +51,24 @@ export const CATALOG = Object.fromEntries(
 /** The catalog's entry for `kind`. */
 export function serviceSpec(kind: SelfHostedServiceKind): ServiceSpec {
   return CATALOG[kind];
+}
+
+/**
+ * The pinned image key (`IMAGES`) for `service`: `pgvector` or `postgis` for a PostgreSQL service
+ * requesting those extensions (feature 045), otherwise the catalog entry's default `spec.image`.
+ */
+export function serviceImageKey(service: PlanService): ImagePinKey {
+  if (service.kind === "postgres") {
+    const variant = postgresImageVariant(service);
+    if (variant === "pgvector") return "pgvector";
+    if (variant === "postgis") return "postgis";
+  }
+  return serviceSpec(service.kind).image;
+}
+
+/** The pinned image ref (`repo:tag@sha256:…`) for `service`. */
+export function serviceImageRef(service: PlanService): string {
+  return IMAGES[serviceImageKey(service)].ref;
 }
 
 /**

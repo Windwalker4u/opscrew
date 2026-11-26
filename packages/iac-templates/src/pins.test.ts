@@ -105,9 +105,13 @@ describe("pins.ts", () => {
       php83Cli: "8.3-cli",
       php84Cli: "8.4-cli",
       php85Cli: "8.5-cli",
+      pgvector: "0.8.7-pg17-trixie",
+      postgis: "17-3.7-alpine",
       composer: "2.11.2",
     });
     // Distroless publishes no versioned tags; the digest pins it, update-pins refreshes it.
+    expect(parseImageRef(IMAGES.pgvector.ref).repo).toBe("pgvector/pgvector");
+    expect(parseImageRef(IMAGES.postgis.ref).repo).toBe("postgis/postgis");
     expect(parseImageRef(IMAGES.linuxTools.ref).repo).toBe("gcr.io/distroless/base-debian13");
     expect(parseImageRef(IMAGES.sshAudit.ref).repo).toBe("positronsecurity/ssh-audit");
     expect(parseImageRef(IMAGES.testssl.ref).repo).toBe("ghcr.io/testssl/testssl.sh");
@@ -171,7 +175,9 @@ describe("pins.ts", () => {
         "php83Cli",
         "php84Cli",
         "php85Cli",
+        "pgvector",
         "portainer",
+        "postgis",
         "postgres",
         "prometheus",
         "python",

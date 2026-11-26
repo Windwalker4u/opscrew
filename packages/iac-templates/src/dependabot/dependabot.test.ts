@@ -440,6 +440,8 @@ describe("renderDependabot", () => {
       "nats",
       "node",
       "opensearchproject/opensearch",
+      "pgvector/pgvector",
+      "postgis/postgis",
       "postgres",
       "python",
       "rabbitmq",

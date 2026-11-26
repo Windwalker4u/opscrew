@@ -45,6 +45,8 @@ const RUNTIME_ECOSYSTEM: Partial<Record<RuntimeLanguage, string>> = {
 export const NO_MAJOR_UPDATES: readonly string[] = [
   "caddy",
   "node",
+  "pgvector/pgvector",
+  "postgis/postgis",
   "python",
   ...SERVICE_SPECS.filter((spec) => spec.majorLocked).map(imageName),
 ].sort();

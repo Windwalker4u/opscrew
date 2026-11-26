@@ -300,14 +300,18 @@ describe.skipIf(!shWorks())("the load of a dump", () => {
     "218; 1259 16441 TABLE shop t app_owner",
     "3469; 0 0 ACL shop TABLE t app_owner",
     "3457; 0 16441 TABLE DATA shop t app_owner",
-    // An extension's own table, and the owner's table whose name starts with its name.
+    // An extension's own table and sequence, and the owner's table whose name starts with its name.
     "3366; 0 16458 TABLE DATA public cfg app",
     "3367; 0 16460 TABLE DATA public cfg trap app_owner",
+    "3368; 0 16462 SEQUENCE SET topology topology_id_seq app",
     "3504; 2613 16447 BLOB METADATA - 16447 app_owner",
     "2090; 826 16448 DEFAULT ACL - DEFAULT PRIVILEGES FOR TABLES app_owner",
   ];
-  /** The fakes' output: the TOC from `pg_restore -l`, an extension's table from the config query. */
-  const DUMP = { PG_RESTORE_PRINTS: TOC.join("\n"), PSQL_PRINTS: "TABLE DATA public cfg app" };
+  /** The fakes' output: the TOC from `pg_restore -l`, an extension's table and sequence from the config query. */
+  const DUMP = {
+    PG_RESTORE_PRINTS: TOC.join("\n"),
+    PSQL_PRINTS: "TABLE DATA public cfg app\nSEQUENCE SET topology topology_id_seq app",
+  };
   const entries = (list: string | undefined) =>
     (list ?? "").split("\n").filter((line) => /^\d+;/.test(line));
 
@@ -334,8 +338,8 @@ describe.skipIf(!shWorks())("the load of a dump", () => {
     expect(grants).toContain("[-h] [db] [-U] [app] [-d] [app]");
     expect(ran.lists.map(entries)).toEqual([
       [TOC[3], TOC[5], TOC[6], TOC[7]],
-      [TOC[8], TOC[9], TOC[11], TOC[13], TOC[14]],
-      [TOC[4], TOC[10], TOC[15], TOC[12]],
+      [TOC[8], TOC[9], TOC[11], TOC[13], TOC[15]],
+      [TOC[4], TOC[10], TOC[16], TOC[12], TOC[14]],
     ]);
     expect(ran.psqlStdin).toContain(`getenv owner_password ${OWNER_PASSWORD_ENV}`);
   });

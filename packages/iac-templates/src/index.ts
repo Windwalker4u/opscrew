@@ -15,6 +15,8 @@ export {
   releaseVariables,
   SERVICE_SPECS,
   type ServiceUrlKind,
+  serviceImageKey,
+  serviceImageRef,
   serviceRotation,
   serviceSecrets,
   serviceSpec,
@@ -23,6 +25,7 @@ export {
   splitDatabaseSettings,
   sqlDatabases,
 } from "./catalog";
+export * from "./catalog/postgres-extensions";
 export * from "./catalog/postgres-logins";
 export type {
   DatabaseSettings,

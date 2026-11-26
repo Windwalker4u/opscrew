@@ -14,6 +14,7 @@ import {
   enabledServices,
   releaseVariables,
   renderContext,
+  serviceImageRef,
   serviceSecrets,
   serviceSpec,
 } from "../catalog";
@@ -256,7 +257,6 @@ function checkStackServices(plan: DeployPlan): void {
  */
 function initService(
   service: PlanService,
-  spec: ServiceSpec,
   steps: readonly ServiceInitStep[],
   rendered: { environment?: Record<string, string>; volumes?: string[] },
 ): object {
@@ -268,7 +268,7 @@ function initService(
     ),
   ].join("\n");
   return {
-    image: IMAGES[spec.image].ref,
+    image: serviceImageRef(service),
     restart: "no",
     network_mode: `service:${service.name}`,
     ...(rendered.environment === undefined ? {} : { environment: { ...rendered.environment } }),
@@ -299,7 +299,7 @@ function stackSetup(
       volumes?: string[];
     };
     const name = `${service.name}-init`;
-    backing.services[name] = initService(service, spec, steps, rendered);
+    backing.services[name] = initService(service, steps, rendered);
     ready[name] = { condition: "service_completed_successfully" };
   }
   return ready;

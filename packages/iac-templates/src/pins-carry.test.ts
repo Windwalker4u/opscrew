@@ -153,4 +153,18 @@ describe("keepNewerPins", () => {
     const rendered = `FROM node:24-alpine@${digest("a")}\n`;
     expect(keepNewerPins(committed, rendered)).toBe(`FROM node:24.2-alpine@${digest("c")}\n`);
   });
+
+  it("never carries a postgres pin over to pgvector or postgis, while keeping their own committed majors", () => {
+    const pgCommitted = `    image: postgres:17-alpine@${digest("b")}\n`;
+    const vecRendered = `    image: pgvector/pgvector:0.8.7-pg17-trixie@${digest("a")}\n`;
+    const geoRendered = `    image: postgis/postgis:17-3.7-alpine@${digest("a")}\n`;
+    expect(keepNewerPins(pgCommitted, vecRendered)).toBe(vecRendered);
+    expect(keepNewerPins(pgCommitted, geoRendered)).toBe(geoRendered);
+    expect(keepNewerPins(vecRendered, pgCommitted)).toBe(pgCommitted);
+
+    // Within postgis/postgis, committed PG 17 stays if OpsCrew renders PG 18.
+    const geo17 = `    image: postgis/postgis:17-3.7-alpine@${digest("b")}\n`;
+    const geo18 = `    image: postgis/postgis:18-3.7-alpine@${digest("a")}\n`;
+    expect(keepNewerPins(geo17, geo18)).toBe(geo17);
+  });
 });

@@ -8,7 +8,7 @@ import {
   snapshotScheduleOf,
   snapshotsOn,
 } from "@opscrew/plan-schema";
-import { dataDirs, serviceSpec } from "../catalog";
+import { dataDirs, serviceImageRef, serviceSpec } from "../catalog";
 import { OWNER_PASSWORD_ENV, RUNTIME_PASSWORD_ENV } from "../catalog/postgres-logins";
 import { DRILL_LIMIT_SECONDS, DRILL_RECORD_PREFIX } from "../drill/record";
 import { DRILL_SLOT_AFTER_HOURS, drillScheduleHours, drillWatchdog } from "../drill/script";
@@ -168,7 +168,7 @@ export function portainerSnapshotParts(plan: DeployPlan): PortainerSnapshotPart[
       return {
         ...part,
         service,
-        image: IMAGES[serviceSpec(service.kind).image].ref,
+        image: serviceImageRef(service),
         // The service's data volumes, as the stack names them (so Docker adds no anonymous ones
         // for the image's; Dragonfly's part reads its saved file there).
         mounts: dataDirs(serviceSpec(service.kind)).map(([name, dir]) => ({
