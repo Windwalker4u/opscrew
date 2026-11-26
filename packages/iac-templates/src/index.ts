@@ -11,6 +11,7 @@ export {
   kafkaTool,
   POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
+  POSTGRES_RUNTIME_SECRET,
   pinnedVersion,
   releaseVariables,
   SERVICE_SPECS,
