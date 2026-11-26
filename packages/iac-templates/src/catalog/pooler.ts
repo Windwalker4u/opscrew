@@ -1,8 +1,9 @@
 /**
  * PgBouncer beside a PostgreSQL with `pooler: pgbouncer` (050, plan 2.): the Compose service
- * `<db>-pooler` on the database's server and network, in transaction mode, which the app's web,
- * workers and cron reach the database through. The release keeps the direct address
- * (`releaseVariables`), so migrations, which may use session features, never go through it.
+ * `<db>-pooler` on the database's server and network, in session mode, which the app's web,
+ * workers and cron reach the database through: a PHP request's connection gets a backend that an
+ * earlier request warmed, instead of a new one. The release keeps the direct address
+ * (`releaseVariables`), so migrations never wait for the pool.
  *
  * It holds no data and mounts no file: its start command writes its settings and the runtime
  * login's password into `/tmp` from its environment, so a Portainer stack runs it the same way.
@@ -29,10 +30,14 @@ export function poolerName(service: PlanService): string {
 
 /**
  * PgBouncer's settings (research 6): the database `app` of `service`, on its own Compose name,
- * in transaction mode; SCRAM with the client and the server from the runtime login's password in
- * {@link USERLIST} (research 3); protocol-level prepared statements tracked (PDO's); the
- * `extra_float_digits` drivers send ignored; no log line for each connection, which a PHP app opens on
- * every request. No admin login, and the runtime login may read its statistics (`SHOW POOLS`).
+ * in session mode, each backend kept for the next client once `DISCARD ALL` reset it; SCRAM with
+ * the client and the server from the runtime login's password in {@link USERLIST} (research 3);
+ * the `extra_float_digits` drivers send ignored; no log line for each connection, which a PHP app
+ * opens on every request. Session mode keeps everything a session may use (prepared statements
+ * and their SQL `DEALLOCATE`, which pdo_pgsql built against libpq before 17 sends, `SET`, advisory
+ * locks, `LISTEN`), so nothing in the app changes; a client beyond the pool's backends waits for
+ * one, which a PHP request holds only while it runs. No admin login, and the runtime login may
+ * read its statistics (`SHOW POOLS`).
  */
 function settings(service: PlanService): string[] {
   return [
@@ -43,10 +48,10 @@ function settings(service: PlanService): string[] {
     `listen_port = ${POOLER_PORT}`,
     "auth_type = scram-sha-256",
     `auth_file = ${USERLIST}`,
-    "pool_mode = transaction",
-    "default_pool_size = 10",
+    "pool_mode = session",
+    "server_reset_query = DISCARD ALL",
+    "default_pool_size = 20",
     "max_client_conn = 100",
-    "max_prepared_statements = 200",
     "ignore_startup_parameters = extra_float_digits",
     "log_connections = 0",
     "log_disconnections = 0",
