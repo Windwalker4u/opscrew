@@ -2110,7 +2110,7 @@
         },
         "httpAllowedFrom": {
           "type": "string",
-          "enum": ["any", "cloudflare"]
+          "enum": ["any", "edge"]
         },
         "wafCustomRules": {
           "default": true,

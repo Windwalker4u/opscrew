@@ -45,7 +45,7 @@ function homePlan(o: { proxied?: boolean; dnsElsewhere?: boolean } = {}): Deploy
   return DeployPlanSchema.parse({
     ...base,
     target: { ...base.target, home: { ipv4: true } },
-    security: { ...base.security, httpAllowedFrom: proxied ? "cloudflare" : "any" },
+    security: { ...base.security, httpAllowedFrom: proxied ? "edge" : "any" },
     environment: { runner: "server" },
     deployment: {
       lastApplyAt: "2026-11-19T09:00:00.000Z",

@@ -198,7 +198,7 @@ export function homePlan(o: HomePlanOptions = {}): DeployPlan {
     dns: o.dnsElsewhere
       ? { provider: "none", domain, proxied: false, www }
       : { ...plan.dns, proxied, www },
-    security: { ...plan.security, httpAllowedFrom: proxied ? "cloudflare" : "any" },
+    security: { ...plan.security, httpAllowedFrom: proxied ? "edge" : "any" },
     environment:
       o.runner === "host"
         ? { runner: "host", runnerHost: { name: "builder", arch: "amd64" } }

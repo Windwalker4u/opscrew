@@ -378,7 +378,7 @@ describe("runSecure", () => {
   });
 
   it("treats filtered web ports as expected when only Cloudflare may reach the origin", async () => {
-    const deps = await setup({ httpAllowedFrom: "cloudflare" });
+    const deps = await setup({ httpAllowedFrom: "edge" });
     const result = await runSecure(deps, {
       scanners: noScanners,
       tcpConnect: async (_host, port) => port === 22,

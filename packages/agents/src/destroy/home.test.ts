@@ -62,7 +62,7 @@ function atHome(plan: DeployPlan, more: Record<string, unknown> = {}): DeployPla
   return DeployPlanSchema.parse({
     ...plan,
     target: { ...plan.target, home: { ipv4: true } },
-    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+    security: { ...plan.security, httpAllowedFrom: "edge" },
     environment: { ...plan.environment, runner: "server" },
     ...more,
   });

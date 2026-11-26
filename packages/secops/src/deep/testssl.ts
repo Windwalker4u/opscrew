@@ -1,4 +1,5 @@
 import type { CheckResult, Severity } from "@opscrew/contracts";
+import { edgeProvider } from "@opscrew/edge-providers";
 import { z } from "zod";
 import { markNoise } from "./noise";
 import { dockerRunSkip, imageVersion, json, runLocalContainer, skipResult } from "./shared";
@@ -77,9 +78,9 @@ const SEVERITY: Partial<Record<TestsslItem["severity"], Severity>> = {
   LOW: "low",
 };
 
-/** A hostname as the report shows it: a proxied one is Cloudflare's edge (FR-1423). */
+/** A hostname as the report shows it: a proxied one is the edge provider's edge (FR-1423). */
 function shownTarget(hostname: string, edge: boolean): string {
-  return edge ? `${hostname} (Cloudflare's edge)` : hostname;
+  return edge ? `${hostname} (${edgeProvider("cloudflare").texts.secops.edgeLabel})` : hostname;
 }
 
 /**
@@ -116,8 +117,7 @@ export function testsslResults(
         message: `${item.id}: ${finding}`,
         ...(edge
           ? {
-              remediation:
-                "This is what Cloudflare serves to visitors: change it in Cloudflare's SSL/TLS settings for the zone.",
+              remediation: edgeProvider("cloudflare").texts.secops.edgeTlsHint,
             }
           : {}),
         target,

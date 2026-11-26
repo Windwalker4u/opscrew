@@ -118,7 +118,7 @@ function homePlan(o: { ipv4?: boolean; proxied?: boolean } = {}): DeployPlan {
   return DeployPlanSchema.parse({
     ...base,
     target: { ...base.target, home: { ipv4: o.ipv4 ?? true } },
-    security: { ...base.security, httpAllowedFrom: proxied ? "cloudflare" : "any" },
+    security: { ...base.security, httpAllowedFrom: proxied ? "edge" : "any" },
     environment: { runner: "server" },
   });
 }

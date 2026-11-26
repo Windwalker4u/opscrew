@@ -83,7 +83,7 @@ describe("environment.previews", () => {
     expect(plan.dns.domain).toBeUndefined();
     expect(plan.dns.zone).toBe("example-previews.com");
     expect(plan.dns.proxied).toBe(true);
-    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(plan.security.httpAllowedFrom).toBe("edge");
     expect(parseArtifact("plan", serializeArtifact("plan", plan), "plan.yaml")).toEqual(plan);
     const seeded = DeployPlanSchema.parse(
       await previewPlan((p) => {
@@ -107,7 +107,7 @@ describe("environment.previews", () => {
     const byDefault = await previewPlan((p) => {
       delete p.security.httpAllowedFrom;
     });
-    expect(DeployPlanSchema.parse(byDefault).security.httpAllowedFrom).toBe("cloudflare");
+    expect(DeployPlanSchema.parse(byDefault).security.httpAllowedFrom).toBe("edge");
   });
 
   it("parses every plan without previews as before: a Cloudflare plan still needs a domain", async () => {
@@ -307,7 +307,7 @@ describe("environment.previews", () => {
       });
       expect(open).toEqual({
         path: "security.httpAllowedFrom",
-        message: `must be "cloudflare" with previews: the preview server's web ports accept only Cloudflare, so nobody reaches a preview around the proxy; set security.httpAllowedFrom to "cloudflare"`,
+        message: `must be "edge" with previews: the preview server's web ports accept only Cloudflare, so nobody reaches a preview around the proxy; set security.httpAllowedFrom to "edge"`,
       });
     }
     const www = await refused((p) => {

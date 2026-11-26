@@ -105,7 +105,7 @@ export function onSiteHost(plan: DeployPlan, target: SiteTarget): DeployPlan {
     security: {
       ...plan.security,
       wafCustomRules: workers,
-      httpAllowedFrom: workers ? "cloudflare" : "any",
+      httpAllowedFrom: workers ? "edge" : "any",
     },
   };
 }

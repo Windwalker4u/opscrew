@@ -7,6 +7,7 @@
  * target) the same edge listens on 127.0.0.1 with leaf certificates from OpsCrew's local CA.
  */
 import { sha256Hex } from "@opscrew/core";
+import { edgeProvider } from "@opscrew/edge-providers";
 import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
@@ -212,10 +213,12 @@ function caddyfile(ranges: readonly string[], local: boolean): string {
     options.push(`\t${name} {`, ...lines.map((line) => `\t\t${line}`), "\t}");
   };
   if (ranges.length > 0) {
+    const edge = edgeProvider("cloudflare");
+    const header = edge.capabilities.realIpHeader;
     option(
-      "# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.",
+      `# Requests from ${edge.displayName}'s addresses carry the visitor's in ${header}.`,
       "servers",
-      [`trusted_proxies static ${ranges.join(" ")}`, "client_ip_headers CF-Connecting-IP"],
+      [`trusted_proxies static ${ranges.join(" ")}`, `client_ip_headers ${header}`],
     );
   }
   if (local) {

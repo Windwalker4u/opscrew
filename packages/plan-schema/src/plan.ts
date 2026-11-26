@@ -1702,7 +1702,7 @@ function checkPreviewDns(
   if (plan.security.httpAllowedFrom === "any") {
     issue(
       ["security", "httpAllowedFrom"],
-      `must be "cloudflare" with previews: the preview server's web ports accept only Cloudflare, so nobody reaches a preview around the proxy; set security.httpAllowedFrom to "cloudflare"`,
+      `must be "edge" with previews: the preview server's web ports accept only Cloudflare, so nobody reaches a preview around the proxy; set security.httpAllowedFrom to "edge"`,
     );
   }
   if (dns.www) {
@@ -2431,8 +2431,15 @@ const DeployPlanFieldsSchema = z.strictObject({
       sshAllowedCidrs: z
         .array(z.union([z.cidrv4(), z.cidrv6()]))
         .default(() => ["0.0.0.0/0", "::/0"]),
-      /** Defaults to `cloudflare` when `dns.proxied`, else `any`. */
-      httpAllowedFrom: z.enum(["any", "cloudflare"]).optional(),
+      /** Defaults to `edge` when `dns.proxied`, else `any`. */
+      httpAllowedFrom: z
+        .enum(["any", "edge"], {
+          error: (issue) =>
+            issue.input === "cloudflare"
+              ? 'was renamed from "cloudflare" to "edge": set security.httpAllowedFrom to "edge"'
+              : undefined,
+        })
+        .optional(),
       wafCustomRules: z.boolean().default(true),
       imageScan: z.boolean().default(true),
     })
@@ -2550,7 +2557,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
       code: "custom",
       path: ["security", "httpAllowedFrom"],
       message:
-        'must be "cloudflare" when your own server serves the site directly behind Cloudflare\'s proxy (only OpsCrew\'s filter then keeps visitors from reaching the server around Cloudflare); to let everyone reach the server, set dns.proxied to false (DNS only), or use a Cloudflare Tunnel (target.access "tunnel")',
+        'must be "edge" when your own server serves the site directly behind Cloudflare\'s proxy (only OpsCrew\'s filter then keeps visitors from reaching the server around Cloudflare); to let everyone reach the server, set dns.proxied to false (DNS only), or use a Cloudflare Tunnel (target.access "tunnel")',
     });
   }
   if (plan.retarget !== undefined) checkRetarget(plan.retarget, plan, ctx);
@@ -2925,7 +2932,7 @@ function withTargetDefaults(target: z.output<typeof DeployTargetSchema>) {
 
 /**
  * `opscrew/plan.yaml`: the chosen deployment. Parsing fills every documented default, including
- * `security.httpAllowedFrom` (`cloudflare` when `dns.proxied`, else `any`), and `infra.dir` and
+ * `security.httpAllowedFrom` (`edge` when `dns.proxied`, else `any`), and `infra.dir` and
  * `cicd.workflowPath` from the app's key and the environment's name. The filled objects keep
  * their fields' order, so a plan's file keeps its bytes.
  */
@@ -2962,8 +2969,7 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
     security: {
       sshAllowedCidrs: plan.security.sshAllowedCidrs,
       httpAllowedFrom:
-        plan.security.httpAllowedFrom ??
-        (plan.dns.proxied ? ("cloudflare" as const) : ("any" as const)),
+        plan.security.httpAllowedFrom ?? (plan.dns.proxied ? ("edge" as const) : ("any" as const)),
       wafCustomRules: plan.security.wafCustomRules,
       imageScan: plan.security.imageScan,
     },

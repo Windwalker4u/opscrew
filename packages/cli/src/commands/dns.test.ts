@@ -65,7 +65,7 @@ describe.skipIf(GIT === undefined)("opscrew dns", () => {
       proxied: true,
       zone: "example.com",
     });
-    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(plan.security.httpAllowedFrom).toBe("edge");
     expect(engine.calls).toEqual(["init", "validate", "plan"]);
     expect(ctx.output).toContain("https://shop.example.com through Cloudflare");
     // The Cloudflare plan (OpsCrew's shared rules) and the infrastructure plan, one hash each.

@@ -29,6 +29,7 @@
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/detect": "workspace:*",
+    "@opscrew/edge-providers": "workspace:*",
     "@opscrew/iac-engine": "workspace:*",
     "@opscrew/iac-templates": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",

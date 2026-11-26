@@ -119,7 +119,7 @@ describe("buyDomain: the purchase", () => {
       "opscrew/requirements.yaml: domain shopapp.com, dnsProvider cloudflare.",
       // item 9: the proxy and port changes are named, with when they take effect
       "dns.proxied becomes true",
-      "security.httpAllowedFrom becomes cloudflare",
+      "security.httpAllowedFrom becomes edge",
       "takes effect on the next `opscrew dns` or `opscrew provision`",
       "Domain purchases cannot be refunded.",
     ]) {
@@ -160,7 +160,7 @@ describe("buyDomain: the purchase", () => {
         dnssec: true,
       },
     });
-    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(plan.security.httpAllowedFrom).toBe("edge");
     const requirements = await readArtifact("requirements", deps.paths.files.requirements);
     expect(requirements).toMatchObject({ domain: DOMAIN, dnsProvider: "cloudflare" });
     expect(await exists(recordFile(deps))).toBe(false);

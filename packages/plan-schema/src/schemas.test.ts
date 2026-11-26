@@ -682,17 +682,26 @@ describe("DeployPlan target on a server the user owns", () => {
     const plan = await validPlan();
     const publicOwn = { ...own, access: "public" } as const;
     const cloudflare = { provider: "cloudflare", domain: "shop.example.com", proxied: true };
-    const security = (httpAllowedFrom?: "any" | "cloudflare") => ({
+    const security = (httpAllowedFrom?: "any" | "edge") => ({
       ...(httpAllowedFrom !== undefined ? { httpAllowedFrom } : {}),
     });
-    // Proxied: the filter (httpAllowedFrom cloudflare, the default when proxied).
+    // Proxied: the filter (httpAllowedFrom edge, the default when proxied).
     const filtered = DeployPlanSchema.parse({
       ...plan,
       target: publicOwn,
       dns: cloudflare,
       security: security(),
     });
-    expect(filtered.security.httpAllowedFrom).toBe("cloudflare");
+    expect(filtered.security.httpAllowedFrom).toBe("edge");
+    // Old value "cloudflare" is refused with a one-line fix (ADR 0038).
+    const legacy = DeployPlanSchema.safeParse({
+      ...plan,
+      target: publicOwn,
+      dns: cloudflare,
+      security: { httpAllowedFrom: "cloudflare" },
+    });
+    expect(pathsOf(legacy)).toEqual(["security.httpAllowedFrom"]);
+    expect(legacy.error?.issues[0]?.message).toContain('set security.httpAllowedFrom to "edge"');
     // Proxied but open to every address: refused in plain words.
     const open = DeployPlanSchema.safeParse({
       ...plan,
@@ -1854,12 +1863,13 @@ describe("DeployPlan serialisation of existing targets", () => {
   // not change one byte of a Hetzner, DigitalOcean or own-server plan. Updated in 012, which adds
   // `deploy`, `supplyChain`, `cicd.deployTags` and `cicd.imageRetention` (with their defaults) to
   // every plan, in 013, which adds `app.memoryMb` and `processes` (with their defaults) and
-  // turns `services` into a list, and in 014, which adds `app.maxBodyMb` and `target.edge` (with
-  // their defaults) and drops `deployment.lastCompletedPhase` (T1414d, also from the fixture).
+  // turns `services` into a list, in 014, which adds `app.maxBodyMb` and `target.edge` (with
+  // their defaults) and drops `deployment.lastCompletedPhase` (T1414d, also from the fixture), and
+  // in 036, which renames `security.httpAllowedFrom` from `"cloudflare"` to `"edge"` (ADR 0038).
   const BEFORE_010 = {
-    hetzner: "571bed11fb853ae2fa62e1a2dfadc9cf991fd2fc462adde16720c4e991d92304",
-    digitalocean: "5a1900d25dbe1e0af4101a4713ee249e159c4762efb86b5e09362696889d7ffa",
-    own: "e85e7d0cd7f318bc00b3f3e10d121caf0558c93857b2ba1979b2ef8f943333d3",
+    hetzner: "5344e313424269c86970ef44acd1673549258e15e222b670078eaf14c927ade1",
+    digitalocean: "3afd9c8e3e72de0afbd73b67897e56c5fcbb7a142d82e6b09cf24e7312530004",
+    own: "5d2f0a2dce27e539f58734a80b0196d01de2e2a7c8b35330f728136f9052d07d",
   };
 
   it("keeps Hetzner, DigitalOcean and own-server plans byte-identical", async () => {

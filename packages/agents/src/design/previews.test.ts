@@ -51,7 +51,7 @@ function previewPlanFile(extra: Record<string, unknown> = {}): Record<string, un
       previews: PREVIEWS,
     },
     dns: { provider: "cloudflare", zone: PREVIEW_ZONE, proxied: true, www: false },
-    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+    security: { ...plan.security, httpAllowedFrom: "edge" },
     ...extra,
   };
 }

@@ -60,7 +60,7 @@ function homePlan(
     dns: o.elsewhere
       ? { provider: "none", domain: "shop.example.com", proxied: false, www: false }
       : { ...base.dns, zone: "example.com" },
-    security: { ...base.security, httpAllowedFrom: proxied ? "cloudflare" : "any" },
+    security: { ...base.security, httpAllowedFrom: proxied ? "edge" : "any" },
     environment: { runner: "server" },
     deployment: { lastApplyAt: "2026-11-20T09:00:00.000Z" },
   });

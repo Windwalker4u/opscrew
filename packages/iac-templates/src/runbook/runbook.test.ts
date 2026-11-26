@@ -310,7 +310,7 @@ describe("the runbook's shared rows", () => {
     const proxied = plan({ domain: "shop.example.com" });
     const only: DeployPlan = {
       ...proxied,
-      security: { ...proxied.security, httpAllowedFrom: "cloudflare" },
+      security: { ...proxied.security, httpAllowedFrom: "edge" },
     };
     expect(webOnlyFromCloudflare(only)).toBe(true);
     expect(webOnlyFromCloudflare({ ...only, dns: { ...only.dns, proxied: false } })).toBe(false);

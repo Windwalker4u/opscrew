@@ -10,6 +10,7 @@
  * loads those copies.
  */
 import { escapeRegExp } from "@opscrew/core";
+import { edgeProvider } from "@opscrew/edge-providers";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 import { ACME_WEBROOT, certbotLive, MOZILLA_CIPHERS, RELOAD_DIR } from "./nginx";
@@ -170,6 +171,7 @@ function listener(name: string, port: number, tls: readonly string[]): string[] 
  */
 export function openlitespeedConf(local: boolean, ranges: readonly string[] = []): string {
   const trusted = ranges.length > 0;
+  const edge = edgeProvider("cloudflare");
   return [
     "# OpsCrew's shared edge: each OpsCrew app on this server has its virtual host in /srv/edge/sites/<app>.vhost,",
     "# its hostnames in <app>.map and its configuration in <app>.vhconf.",
@@ -185,7 +187,7 @@ export function openlitespeedConf(local: boolean, ranges: readonly string[] = []
     "disableWebAdmin           1",
     ...(trusted
       ? [
-          "# Requests from Cloudflare's addresses (marked T below) carry the visitor's in CF-Connecting-IP.",
+          `# Requests from ${edge.displayName}'s addresses (marked T below) carry the visitor's in ${edge.capabilities.realIpHeader}.`,
           "useIpInProxyHeader        2",
         ]
       : []),

@@ -76,12 +76,12 @@ export function projectChanges(files: ProjectFiles, domain: string): ProjectChan
     );
     const switching = switchesToProxy(plan, hostname);
     const proxy = switching && !plan.dns.proxied;
-    const ports = switching && plan.security.httpAllowedFrom !== "cloudflare";
+    const ports = switching && plan.security.httpAllowedFrom !== "edge";
     if (proxy || ports) {
       const changes = [
         ...(proxy ? ["dns.proxied becomes true (traffic goes through Cloudflare's proxy)"] : []),
         ...(ports
-          ? ["security.httpAllowedFrom becomes cloudflare (web ports accept only Cloudflare)"]
+          ? ["security.httpAllowedFrom becomes edge (web ports accept only Cloudflare)"]
           : []),
       ];
       lines.push(
@@ -182,7 +182,7 @@ export async function recordDomain(
         ...(switching ? { proxied: true } : {}),
         registration: registrationOf(info, options.dnssec),
       },
-      security: switching ? { ...plan.security, httpAllowedFrom: "cloudflare" } : plan.security,
+      security: switching ? { ...plan.security, httpAllowedFrom: "edge" } : plan.security,
       cost:
         options.purchase === undefined
           ? plan.cost

@@ -31,7 +31,7 @@ async function homePlan(overrides: Record<string, unknown> = {}) {
       proxied: true,
       www: false,
     },
-    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+    security: { ...plan.security, httpAllowedFrom: "edge" },
     environment: { deploySource: { from: "main" }, runner: "server" },
     ...overrides,
   };
@@ -159,7 +159,7 @@ describe("target.home", () => {
     expect(issues({ ...base, security: { ...base.security, httpAllowedFrom: "any" } })).toEqual([
       {
         path: "security.httpAllowedFrom",
-        message: expect.stringContaining('must be "cloudflare"'),
+        message: expect.stringContaining('must be "edge"'),
       },
     ]);
     expect(issues(await homePlan({ environment: { runner: "local" } }))).toContainEqual({

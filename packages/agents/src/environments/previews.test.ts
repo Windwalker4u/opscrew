@@ -180,7 +180,7 @@ describe("addEnvironment with previews", () => {
       proxied: true,
       www: false,
     });
-    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(plan.security.httpAllowedFrom).toBe("edge");
     expect(plan.supplyChain.sign).toBe(false);
     expect(plan.cicd.deployTags.enabled).toBe(false);
     expect(plan.observability?.check?.enabled).toBe(false);

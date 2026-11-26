@@ -80,7 +80,7 @@ export function homePlan(): DeployPlan {
     DeployPlanSchema.parse({
       ...base,
       target: { ...base.target, home: { ipv4: true } },
-      security: { ...base.security, httpAllowedFrom: "cloudflare" },
+      security: { ...base.security, httpAllowedFrom: "edge" },
       environment: { runner: "server" },
     }),
   );
