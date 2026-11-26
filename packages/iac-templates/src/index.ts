@@ -9,6 +9,7 @@ export {
   hostSysctl,
   initStepsFor,
   kafkaTool,
+  POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
   pinnedVersion,
   releaseVariables,

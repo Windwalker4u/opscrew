@@ -3,8 +3,20 @@
  * database without them, the refusals, and the switch of an existing database, which provision
  * shows in a plan approved by its hash and goes on with only after a snapshot of the database.
  */
-import { canonicalJson, errorText, OpsCrewError, sha256Hex } from "@opscrew/core";
-import { POSTGRES_OWNER_SECRET, type SnapshotPart, snapshotParts } from "@opscrew/iac-templates";
+import {
+  canonicalJson,
+  errorText,
+  OpsCrewError,
+  readTextIfExists,
+  sha256Hex,
+  writeFileAtomic,
+} from "@opscrew/core";
+import {
+  POSTGRES_LOGINS,
+  POSTGRES_OWNER_SECRET,
+  type SnapshotPart,
+  snapshotParts,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -34,6 +46,29 @@ async function keptLogins(deps: Pick<PhaseDeps, "paths">): Promise<KeptLogins> {
 /** True when this environment keeps `service`'s owner password: its database has the two logins. */
 function ownerKept(kept: KeptLogins, service: PlanService): boolean {
   return kept.services?.[service.name]?.[POSTGRES_OWNER_SECRET] !== undefined;
+}
+
+/**
+ * Forgets the two logins' passwords of the databases `services` from this environment's generated
+ * values. A `--plan-only` run that shows their switch renders the rest of the plan with new ones,
+ * and keeping them would make the run that approves the switch take the database for switched
+ * ({@link ownerKept}), with no snapshot first. That run makes them again, after the snapshot.
+ */
+export async function forgetSwitchPasswords(
+  deps: Pick<PhaseDeps, "paths">,
+  services: readonly string[],
+): Promise<void> {
+  const file = generatedValuesFile(deps);
+  const text = await readTextIfExists(file);
+  if (text === undefined) return;
+  const values = JSON.parse(text) as { services?: Record<string, Record<string, unknown>> };
+  for (const name of services) {
+    const secrets = values.services?.[name];
+    if (secrets === undefined) continue;
+    for (const secret of POSTGRES_LOGINS.secrets) delete secrets[secret.name];
+    if (Object.keys(secrets).length === 0) delete values.services?.[name];
+  }
+  await writeFileAtomic(file, `${JSON.stringify(values)}\n`);
 }
 
 /** The enabled PostgreSQLs of `plan`. */
@@ -131,8 +166,8 @@ export type LoginsSnapshot = (skip: readonly string[]) => Promise<unknown>;
  * ({@link requireLogins}), the notices ({@link loginsNotices}), then a switch's plan
  * ({@link loginsSwitch}). With `planOnly` that plan is shown with its hash and nothing more;
  * otherwise it is approved by its hash (`iac-apply`; `--approve <hash>` in a script), then the
- * switching databases' snapshot is taken (`snapshot`, their parts alone). Returns the switch's
- * hash, which no other plan of the run is.
+ * switching databases' snapshot is taken (`snapshot`, their parts alone). Returns the switch, whose
+ * hash no other plan of the run is.
  * @throws OpsCrewError `INVALID_INPUT` for a refusal, `APPROVAL_REFUSED` when the switch is not
  * approved, `COMMAND_FAILED` when the snapshot fails, each with nothing changed.
  */
@@ -140,7 +175,7 @@ export async function postgresLoginsStep(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals">,
   plan: DeployPlan,
   o: { command: string; planOnly?: boolean | undefined; snapshot: LoginsSnapshot },
-): Promise<string | undefined> {
+): Promise<LoginsSwitch | undefined> {
   if (!plan.services.some((service) => service.kind === "postgres")) return undefined;
   const kept = await keptLogins(deps);
   requireLogins(plan, kept, o.command);
@@ -153,7 +188,7 @@ export async function postgresLoginsStep(
     deps.reporter.info(
       `${title}:\n${details}\nIn a script, approve it with --approve ${change.hash}.`,
     );
-    return change.hash;
+    return change;
   }
   await requestApproval(deps, {
     kind: "iac-apply",
@@ -184,7 +219,7 @@ export async function postgresLoginsStep(
       },
     );
   }
-  return change.hash;
+  return change;
 }
 
 /** Every part a snapshot of `plan`'s data has, on each of its servers. */
