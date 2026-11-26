@@ -187,6 +187,42 @@ describe("runMove", () => {
     }
   });
 
+  it("050: moves Postgres with its pooler, switching the workers' direct settings too", async () => {
+    const w = await moveWorld({ step: "deployed", pooler: true });
+    await runMove(w.deps, { plan: w.plan, services: w.services });
+
+    expect(w.servers.data.data.get("db")).toBe("rows of the shop");
+    // The web process and cron reach the pooler beside the new copy, on its server's address.
+    expect(w.env.after).toContain(`app_runtime:${w.passwords.runtime}@${w.dataAddress}:6432/app`);
+    expect(w.servers.app.env).toBe(w.env.after);
+    expect(w.github.secrets.get("OPSCREW_APP_ENV")).toBe(w.env.after);
+    // The workers' and the release's own settings follow PostgreSQL itself, here and in GitHub.
+    expect(w.workers.after).toContain(
+      `app_runtime:${w.passwords.runtime}@${w.dataAddress}:5432/app`,
+    );
+    expect(w.servers.app.workers).toBe(w.workers.after);
+    expect(w.github.secrets.get("OPSCREW_WORKER_DB_ENV")).toBe(w.workers.after);
+    expect(w.servers.app.release).toBe(w.release.after);
+
+    const [window] = w.handler.requests;
+    expect(window?.details).toContain(
+      "and the release command's settings (/srv/apps/shop/release.db.env on the app's server, and the GitHub secret OPSCREW_RELEASE_DB_ENV); and the workers' settings (/srv/apps/shop/worker.db.env on the app's server, and the GitHub secret OPSCREW_WORKER_DB_ENV).",
+    );
+    const text = `${window?.details}\n${JSON.stringify(w.deps.audit.entries)}\n${w.deps.reporter.text()}`;
+    for (const password of [w.passwords.db, w.passwords.owner, w.passwords.runtime]) {
+      expect(text).not.toContain(password);
+    }
+  });
+
+  it("050: puts the workers' settings back with the app's when the window fails", async () => {
+    const w = await moveWorld({ step: "deployed", pooler: true, grafana: true });
+    w.servers.app.fail = /^bash -s$/;
+    await expect(runMove(w.deps, { plan: w.plan, services: w.services })).rejects.toThrow();
+    expect(w.servers.app.env?.replace(/\n+$/, "\n")).toBe(w.env.before);
+    expect(w.servers.app.workers).toBe(w.workers.before);
+    expect(w.github.secrets.get("OPSCREW_WORKER_DB_ENV")).toBe(w.workers.before);
+  });
+
   it("047: puts the release's settings back with the app's when the window fails", async () => {
     const w = await moveWorld({ step: "deployed", logins: true, grafana: true });
     // Grafana Alloy's masking file can't be rewritten after the settings were switched.

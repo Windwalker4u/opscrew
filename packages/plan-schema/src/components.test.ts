@@ -7,6 +7,7 @@ import {
   type PlanService,
   ProjectFactsSchema,
   parseArtifact,
+  poolerName,
   postgresLogins,
   postgresPooler,
   serviceOf,
@@ -418,6 +419,7 @@ describe("postgresPooler", () => {
       ],
     });
     expect(plan.services.map(postgresPooler)).toEqual([true, false, false]);
+    expect(plan.services.map(poolerName)).toEqual(["db-pooler", "plain-pooler", "queue-pooler"]);
   });
 
   it("refuses a worker or service named like a running pooler", async () => {

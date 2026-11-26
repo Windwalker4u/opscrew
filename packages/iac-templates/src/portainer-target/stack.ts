@@ -16,6 +16,7 @@ import {
   renderContext,
   serviceSecrets,
   serviceSpec,
+  workerVariables,
 } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
 import { isBuildValue } from "../docker";
@@ -673,7 +674,13 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     services,
     renderProcesses(plan, {
       image: PORTAINER_IMAGE_PLACEHOLDER,
-      environment: () => ({ environment: environment() }),
+      // Beside a PostgreSQL's pooler, the workers reach PostgreSQL itself (050).
+      environment: (process) => ({
+        environment: {
+          ...environment(),
+          ...(process === "worker" ? workerVariables(plan, stackRef) : {}),
+        },
+      }),
       dependsOn: appDependsOn,
       crontab: { configs: [STACK_CRONTAB] },
     }),

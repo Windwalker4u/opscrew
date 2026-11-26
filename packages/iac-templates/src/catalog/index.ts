@@ -4,6 +4,7 @@ import {
   type DeployPlan,
   type PlanService,
   postgresLogins,
+  postgresPooler,
   type SelfHostedServiceKind,
   servicesOn,
 } from "@opscrew/plan-schema";
@@ -19,7 +20,7 @@ import {
   POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
   POSTGRES_RUNTIME_SECRET,
-  postgresOwner,
+  postgresDirect,
   SERVICE_SPECS,
 } from "./entries";
 import type {
@@ -180,13 +181,22 @@ export function serviceRotation(service: PlanService): ServiceRotation {
 
 /**
  * The split settings that hold a SQL database's login, by the names an app reads them by: the
- * user's and the password's (the host, port and database are the same for every login).
+ * user's and the password's (the database is the same for every login).
  */
 const SPLIT_LOGIN: Readonly<Record<string, keyof DatabaseSettings>> = {
   DB_USERNAME: "user",
   DB_USER: "user",
   DB_PASSWORD: "password",
   DB_PASS: "password",
+};
+
+/**
+ * The split settings that hold where a SQL database is reached, by the names an app reads them by,
+ * which differ from `app.env`'s only beside a PostgreSQL's pooler (050).
+ */
+const SPLIT_ADDRESS: Readonly<Record<string, keyof DatabaseSettings>> = {
+  DB_HOST: "host",
+  DB_PORT: "port",
 };
 
 /** The kind of service whose connection URL a variable holds: PostgreSQL, or Valkey/Redis 8/Dragonfly. */
@@ -274,23 +284,21 @@ export function splitDatabase(owner: {
 }
 
 /**
- * The release command's database variables (047): for each PostgreSQL with `logins: separate`, the
- * names `app.env` has its address under, each with the owner's login `app_owner` and `secret`'s
- * `owner-password`, so the release never logs in as the runtime login. Those are:
+ * The database variables of a container that reaches each PostgreSQL `has` accepts directly, with
+ * `login`, by the names `app.env` has its address under:
  * - the catalog's names (`DATABASE_URL`) and the app's own detected variable, unless another
  *   service gives `app.env` that name (one service's own `variable` is its alone; else the first
  *   service's);
  * - when the app reads `DB_HOST` and the database is the one whose split settings `app.env` holds
  *   (the SQL database whose variable is `DATABASE_URL`, else the first), the user's and the
- *   password's split names the app reads;
+ *   password's split names the app reads, and beside a pooler the host's and the port's too;
  * - the app's other derived names for the first PostgreSQL's address ({@link serviceUrlKind}).
- *
- * `release.db.env` holds them, which the release reads after `app.env`. Empty without such a
- * PostgreSQL.
  */
-export function releaseVariables(
+function directVariables(
   plan: DeployPlan,
   secret: (service: PlanService, name: string) => string,
+  has: (service: PlanService) => boolean,
+  login: "owner" | "runtime",
 ): Record<string, string> {
   const running = enabledServices(plan);
   const own = new Set(running.flatMap((s) => (s.variable === undefined ? [] : [s.variable])));
@@ -300,10 +308,13 @@ export function releaseVariables(
     secretRef,
     ...(service.variable === undefined ? {} : { variable: service.variable }),
   });
-  const owner = (service: PlanService) =>
-    postgresOwner(context(service, (name) => secret(service, name)));
+  const direct = (service: PlanService) =>
+    postgresDirect(
+      context(service, (name) => secret(service, name)),
+      login,
+    );
   const given = new Set<string>();
-  const release: Record<string, string> = {};
+  const variables: Record<string, string> = {};
   for (const service of running) {
     const mine = Object.keys(appVariables(context(service, () => ""))).filter(
       (name) =>
@@ -312,25 +323,54 @@ export function releaseVariables(
         (!own.has(name) || service.variable === name),
     );
     for (const name of mine) given.add(name);
-    if (!postgresLogins(service) || mine.length === 0) continue;
-    const { address } = owner(service);
-    for (const name of mine) release[name] = address;
+    if (!has(service) || mine.length === 0) continue;
+    const { address } = direct(service);
+    for (const name of mine) variables[name] = address;
   }
   const reads = new Set(plan.app.env.map((variable) => variable.name));
   const split = reads.has("DB_HOST") ? splitDatabase(plan) : undefined;
-  if (split !== undefined && postgresLogins(split)) {
-    const { settings } = owner(split);
-    for (const [name, setting] of Object.entries(SPLIT_LOGIN)) {
-      if (reads.has(name) && !given.has(name)) release[name] = settings[setting];
+  if (split !== undefined && has(split)) {
+    const { settings } = direct(split);
+    const names = postgresPooler(split) ? { ...SPLIT_ADDRESS, ...SPLIT_LOGIN } : SPLIT_LOGIN;
+    for (const [name, setting] of Object.entries(names)) {
+      if (reads.has(name) && !given.has(name)) variables[name] = settings[setting];
     }
   }
   const first = running.find((s) => s.kind === "postgres");
-  if (first !== undefined && postgresLogins(first)) {
+  if (first !== undefined && has(first)) {
     for (const { name, source } of plan.app.env) {
       if (source === "derived" && !given.has(name) && serviceUrlKind(name) === "postgres") {
-        release[name] = owner(first).address;
+        variables[name] = direct(first).address;
       }
     }
   }
-  return release;
+  return variables;
+}
+
+/**
+ * The release command's database variables (047): for each PostgreSQL with `logins: separate`, the
+ * names `app.env` has its address under ({@link directVariables}), each with the owner's login
+ * `app_owner` and `secret`'s `owner-password` on PostgreSQL itself, so the release never logs in as
+ * the runtime login nor goes through a pooler. `release.db.env` holds them, which the release reads
+ * after `app.env`. Empty without such a PostgreSQL.
+ */
+export function releaseVariables(
+  plan: DeployPlan,
+  secret: (service: PlanService, name: string) => string,
+): Record<string, string> {
+  return directVariables(plan, secret, postgresLogins, "owner");
+}
+
+/**
+ * The long-running workers' database variables (050): for each PostgreSQL with
+ * `pooler: pgbouncer`, the names `app.env` has its address under ({@link directVariables}), each
+ * with the runtime login `app_runtime` and `secret`'s `runtime-password` on PostgreSQL itself, so a
+ * worker never holds one of the pool's backends for as long as it runs. `worker.db.env` holds
+ * them, which the workers read after `app.env`. Empty without such a PostgreSQL.
+ */
+export function workerVariables(
+  plan: DeployPlan,
+  secret: (service: PlanService, name: string) => string,
+): Record<string, string> {
+  return directVariables(plan, secret, postgresPooler, "runtime");
 }

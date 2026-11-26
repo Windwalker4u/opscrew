@@ -1,7 +1,7 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
-import { hostSettingsServices, poolerName, serviceSpec } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, postgresPooler } from "@opscrew/plan-schema";
+import { hostSettingsServices, serviceSpec } from "@opscrew/iac-templates";
+import { APP_SERVER, type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
 import { hasExtraServers } from "../shared/servers";
 
 /** A component of the plan that runs as containers: its Compose service and what it is. */

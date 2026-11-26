@@ -4,8 +4,8 @@
  * new PHP app's gets PgBouncer beside it too (`pooler: pgbouncer`, 050), as PHP opens a new
  * connection on every request.
  */
-import { POOLER_MEMORY_MB, poolerName } from "@opscrew/iac-templates";
-import type { PlanService, RuntimeLanguage } from "@opscrew/plan-schema";
+import { POOLER_MEMORY_MB } from "@opscrew/iac-templates";
+import { type PlanService, poolerName, type RuntimeLanguage } from "@opscrew/plan-schema";
 
 /** The first PostgreSQL version the logins' setup runs on: it binds passwords with psql's `\getenv`. */
 export const LOGINS_MIN_VERSION = 15;

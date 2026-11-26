@@ -23,8 +23,9 @@ export {
   splitDatabase,
   splitDatabaseSettings,
   sqlDatabases,
+  workerVariables,
 } from "./catalog";
-export { POOLER_MEMORY_MB, poolerName } from "./catalog/pooler";
+export { POOLER_MEMORY_MB } from "./catalog/pooler";
 export * from "./catalog/postgres-logins";
 export type {
   DatabaseSettings,

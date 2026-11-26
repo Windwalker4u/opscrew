@@ -272,6 +272,11 @@ export function postgresPooler(service: PlanService): boolean {
   return service.kind === "postgres" && service.options.pooler === "pgbouncer";
 }
 
+/** The Compose name of `service`'s pooler (050): `db-pooler` for `db`. */
+export function poolerName(service: Pick<PlanService, "name">): string {
+  return `${service.name}-pooler`;
+}
+
 /**
  * Object storage: an S3-compatible bucket at a provider, or Garage on the user's own server.
  * `contabo` is Contabo's Object Storage, which OpsCrew orders (or reuses) through Contabo's API.

@@ -29,7 +29,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
-import type { PlanService } from "@opscrew/plan-schema";
+import { type PlanService, poolerName } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { docker, hasImage } from "../__fixtures__/docker";
@@ -52,8 +52,9 @@ import {
   renderContext,
   serviceRotation,
   serviceSpec,
+  workerVariables,
 } from "./index";
-import { POOLER_MEMORY_MB, POOLER_PORT, poolerName } from "./pooler";
+import { POOLER_MEMORY_MB, POOLER_PORT } from "./pooler";
 import { POSTGRES_RUNTIME } from "./postgres-logins";
 
 const reason = skipReason();
@@ -553,10 +554,17 @@ describe.skipIf(reason !== undefined)("PgBouncer beside PostgreSQL on Docker (05
     const old = runtimeUrl();
     const next = fakeSecret("generic-password", `${PROJECT}-runtime-next`);
     values["runtime-password"] = next;
-    expect(rotateEnvFiles([step])).toEqual(["app.env", `${db.name}.env`]);
-    const input = rotateInput([step], {
+    expect(rotateEnvFiles(serverPlan, [step])).toEqual([
+      "app.env",
+      "worker.db.env",
+      `${db.name}.env`,
+    ]);
+    const input = rotateInput(serverPlan, [step], {
       envFiles: {
         "app.env": envFile({ DATABASE_URL: runtimeUrl() }),
+        "worker.db.env": envFile(
+          workerVariables(serverPlan, (_service, name) => values[name] ?? ""),
+        ),
         [`${db.name}.env`]: dbEnv(),
       },
       values: [{ old: firstRuntime, new: next }],

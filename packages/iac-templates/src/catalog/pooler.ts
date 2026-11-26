@@ -1,9 +1,10 @@
 /**
  * PgBouncer beside a PostgreSQL with `pooler: pgbouncer` (050, plan 2.): the Compose service
- * `<db>-pooler` on the database's server and network, in session mode, which the app's web,
- * workers and cron reach the database through: a PHP request's connection gets a backend that an
- * earlier request warmed, instead of a new one. The release keeps the direct address
- * (`releaseVariables`), so migrations never wait for the pool.
+ * `<db>-pooler` on the database's server and network, in session mode, which the app's web process
+ * and cron reach the database through: a PHP request's connection gets a backend that an earlier
+ * request warmed, instead of a new one. The release (`releaseVariables`) and the long-running
+ * workers (`workerVariables`), which would each hold one of the pool's backends for as long as
+ * they run, keep the direct address.
  *
  * It holds no data and mounts no file: its start command writes its settings and the runtime
  * login's password into `/tmp` from its environment, so a Portainer stack runs it the same way.
@@ -22,11 +23,6 @@ export const POOLER_MEMORY_MB = 32;
 /** The pooler's settings and login file, in the container's `/tmp` (the image's user may write there). */
 const INI = "/tmp/pgbouncer.ini";
 const USERLIST = "/tmp/userlist.txt";
-
-/** The Compose name of `service`'s pooler: `db-pooler` for `db`. */
-export function poolerName(service: PlanService): string {
-  return `${service.name}-pooler`;
-}
 
 /**
  * PgBouncer's settings (research 6): the database `app` of `service`, on its own Compose name,
@@ -84,6 +80,6 @@ export function poolerStart(service: PlanService): string[] {
  * opens one and closes it, which PgBouncer doesn't log (`pg_isready` would log a login attempt on
  * every check).
  */
-export function poolerHealthcheck(): ServiceHealthcheck {
-  return { test: ["CMD", "bash", "-c", `</dev/tcp/127.0.0.1/${POOLER_PORT}`] };
-}
+export const POOLER_HEALTHCHECK: ServiceHealthcheck = {
+  test: ["CMD", "bash", "-c", `</dev/tcp/127.0.0.1/${POOLER_PORT}`],
+};

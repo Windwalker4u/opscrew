@@ -437,13 +437,18 @@ describe("opscrew restore --server after a rotation", () => {
           db: { "owner-password": LOGINS.owner1, "runtime-password": LOGINS.runtime1 },
         },
       },
-      files: 3,
+      // app.env, release.db.env, worker.db.env (050) and db.env.
+      files: 4,
     });
     for (const value of Object.values(then)) w.app.accepts.add(value);
     await w.restore();
 
     const [run] = w.app.runs;
-    expect(readInput(run, 3).values).toEqual([
+    // The workers' env file gets the runtime login's current password, on PostgreSQL itself.
+    expect(readInput(run, 4).files[2]).toBe(
+      `DATABASE_URL=postgresql://app_runtime:${LOGINS.runtime2}@db:5432/app\n`,
+    );
+    expect(readInput(run, 4).values).toEqual([
       DB.g1,
       DB.g2,
       LOGINS.owner1,

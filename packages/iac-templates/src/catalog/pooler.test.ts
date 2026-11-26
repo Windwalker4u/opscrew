@@ -1,5 +1,10 @@
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, type PlanService, postgresPooler } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type PlanService,
+  poolerName,
+  postgresPooler,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testCloudflareAccount, testContext, testPlan } from "../__fixtures__/plans";
@@ -17,14 +22,9 @@ import {
   serviceSecrets,
   serviceSpec,
   splitDatabaseSettings,
+  workerVariables,
 } from "./index";
-import {
-  POOLER_MEMORY_MB,
-  POOLER_PORT,
-  poolerHealthcheck,
-  poolerName,
-  poolerStart,
-} from "./pooler";
+import { POOLER_HEALTHCHECK, POOLER_MEMORY_MB, POOLER_PORT, poolerStart } from "./pooler";
 import type { ServiceContext } from "./types";
 
 type ComposeService = Record<string, unknown> & {
@@ -80,6 +80,9 @@ const IMAGE = `ghcr.io/acme/shop@sha256:${"ab".repeat(32)}`;
 
 const POOLED = "postgresql://app_runtime:<runtime-password>@db-pooler:6432/app";
 
+/** A Laravel app's database names: the split settings and an alias of the URL. */
+const LARAVEL = ["DB_HOST", "DB_PORT", "DB_USERNAME", "DB_PASSWORD", "POSTGRES_URL"];
+
 describe("PgBouncer beside PostgreSQL (050)", () => {
   const plan = withPooler(testPlan());
   const db = serviceOf(plan);
@@ -106,14 +109,33 @@ describe("PgBouncer beside PostgreSQL (050)", () => {
     });
   });
 
-  it("keeps the release on PostgreSQL itself, with the owner's login", () => {
-    const laravel = withAppEnv(plan, ["DB_HOST", "DB_USERNAME", "DB_PASSWORD", "POSTGRES_URL"]);
+  it("keeps the release on PostgreSQL itself, with the owner's login, by every name", () => {
+    const laravel = withAppEnv(plan, LARAVEL);
     expect(releaseVariables(laravel, secretOf)).toEqual({
       DATABASE_URL: "postgresql://app_owner:<db:owner-password>@db:5432/app",
+      // An app reading DB_HOST (no DB_URL) migrates on PostgreSQL itself too, not on the pooler.
+      DB_HOST: "db",
+      DB_PORT: "5432",
       DB_USERNAME: "app_owner",
       DB_PASSWORD: "<db:owner-password>",
       POSTGRES_URL: "postgresql://app_owner:<db:owner-password>@db:5432/app",
     });
+  });
+
+  it("keeps the long-running workers on PostgreSQL itself, with the runtime login, by every name", () => {
+    const laravel = withAppEnv(plan, LARAVEL);
+    expect(workerVariables(laravel, secretOf)).toEqual({
+      DATABASE_URL: "postgresql://app_runtime:<db:runtime-password>@db:5432/app",
+      DB_HOST: "db",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_runtime",
+      DB_PASSWORD: "<db:runtime-password>",
+      POSTGRES_URL: "postgresql://app_runtime:<db:runtime-password>@db:5432/app",
+    });
+  });
+
+  it("gives the workers nothing of their own without the pooler", () => {
+    expect(workerVariables(withAppEnv(withLogins(testPlan()), LARAVEL), secretOf)).toEqual({});
   });
 
   it("reaches the database it sits beside in session mode, as the runtime login", () => {
@@ -159,7 +181,7 @@ describe("PgBouncer beside PostgreSQL (050)", () => {
   });
 
   it("is healthy once it accepts a connection, which needs no password", () => {
-    expect(poolerHealthcheck()).toEqual({
+    expect(POOLER_HEALTHCHECK).toEqual({
       test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/6432"],
     });
   });
@@ -201,6 +223,10 @@ describe("the pooler's Compose service (050)", () => {
         });
       }
       expect(all.release?.env_file).toEqual(["app.env", "release.db.env"]);
+      // Only the web process and cron go through the pooler; a worker reads its direct address.
+      expect(all.jobs?.env_file).toEqual(["app.env", "worker.db.env"]);
+      expect(all.app?.env_file).toEqual(["app.env"]);
+      expect(all.cron?.env_file).toEqual(["app.env"]);
     });
   }
 
@@ -208,9 +234,15 @@ describe("the pooler's Compose service (050)", () => {
     const logins = composeServices(renderCompose(full(withLogins(testPlan()))).content);
     const pooled = composeServices(renderCompose(full(withPooler(testPlan()))).content);
     const { "db-pooler": _pooler, ...rest } = pooled;
+    // A worker also reads the workers' own env file after app.env.
     const without = (service: ComposeService | undefined) => {
       const { "db-pooler": _p, ...others } = service?.depends_on ?? {};
-      return { ...service, depends_on: others };
+      const files = service?.env_file?.filter((file) => file !== "worker.db.env");
+      return {
+        ...service,
+        depends_on: others,
+        ...(files === undefined ? {} : { env_file: files }),
+      };
     };
     expect(Object.keys(rest)).toEqual(Object.keys(logins));
     for (const name of Object.keys(logins)) {
@@ -236,6 +268,21 @@ describe("the pooler's Compose service (050)", () => {
     expect(releaseVariables(split, secretOf)).toEqual({
       DATABASE_URL: "postgresql://app_owner:<db:owner-password>@10.200.4.2:5432/app",
     });
+    expect(workerVariables(split, secretOf)).toEqual({
+      DATABASE_URL: "postgresql://app_runtime:<db:runtime-password>@10.200.4.2:5432/app",
+    });
+    // An app reading DB_HOST: the release and the workers on PostgreSQL's private address.
+    const laravel = withAppEnv(split, ["DB_HOST", "DB_PORT", "DB_USERNAME"]);
+    expect(releaseVariables(laravel, secretOf)).toMatchObject({
+      DB_HOST: "10.200.4.2",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_owner",
+    });
+    expect(workerVariables(laravel, secretOf)).toMatchObject({
+      DB_HOST: "10.200.4.2",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_runtime",
+    });
   });
 
   it("renders the same service in a Portainer stack, given only the runtime login's password", () => {
@@ -252,6 +299,20 @@ describe("the pooler's Compose service (050)", () => {
       OPSCREW_RUNTIME_PASSWORD: "${OPSCREW_SVC_DB_RUNTIME_PASSWORD}",
     });
     expect(all.app?.depends_on?.["db-pooler"]).toEqual({ condition: "service_healthy" });
+  });
+
+  it("gives a Portainer stack's workers the direct address, and its web process and cron the pooler", () => {
+    const stack = (plan: DeployPlan) =>
+      composeServices(fillPortainerStack(renderPortainerStack(plan, testContext()).content, IMAGE));
+    const pooled = stack(full(withPooler(portainerTestPlan({ postgres: true }))));
+    const direct = (name: string) => pooled[name]?.environment?.DATABASE_URL;
+    expect(direct("jobs")).toMatch(/^postgresql:\/\/app_runtime:\$\{\w+\}@db:5432\/app$/);
+    for (const name of ["app", "cron"]) {
+      expect(direct(name), name).toMatch(/^\$\{DATABASE_URL\}$/);
+    }
+    // Without the pooler, every process reads the same variables.
+    const logins = stack(full(withLogins(portainerTestPlan({ postgres: true }))));
+    expect(logins.jobs?.environment).toEqual(logins.app?.environment);
   });
 });
 
