@@ -48,7 +48,7 @@
   - **Verify:** `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/catalog src/workflow && pnpm lint`
   - **Effort:** high
 
-- [ ] T5003 [US3] Design, provision's line, server-fit and status
+- [x] T5003 [US3] Design, provision's line, server-fit and status
   - **Owns:** `packages/agents/src/design/**`, provision's notice (beside 047's in
     `packages/agents/src/provision/postgres-logins.ts`), `packages/agents/src/provision/server-fit.ts`,
     and their tests.
