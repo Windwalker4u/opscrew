@@ -577,7 +577,7 @@ export async function provisionUptime(
       { hint: "Report this to OpsCrew." },
     );
   }
-  await reportHostPlan(deps, {
+  const outcome = await reportHostPlan(deps, {
     plan: reports.plan,
     services: reports.services,
     entry: step.target.id,
@@ -598,6 +598,11 @@ export async function provisionUptime(
     phase: input.phase,
     ...(input.planOnly === true ? { planOnly: true } : {}),
   });
+  if (input.planOnly === true && outcome?.plan.steps.some((item) => item.state === "change")) {
+    deps.reporter.info(
+      `The uptime report has a host plan of its own: uptime-report plan ${outcome.hash}. In a script, approve it too (\`--approve ${outcome.hash}\`).`,
+    );
+  }
   return hash;
 }
 

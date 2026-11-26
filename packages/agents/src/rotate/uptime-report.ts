@@ -22,8 +22,10 @@ import { commandFlags } from "../environments/choice";
  * After the rotation of `names` was recorded: when the environment's server reports its checks to
  * the Cloudflare uptime Worker and its config dates one of them, the server's host plan with the
  * step `uptime-report` and its new config (the new dates; never a value) is shown, approved by its
- * hash and applied, reached with `services` (SSH by default). A declined plan, or a server OpsCrew
- * can't reach, leaves the old date there, which a warning says with how to put the new one there.
+ * hash and applied, reached with `services` (SSH by default). In a script (not interactive) it is
+ * only shown and saved, never asked with the rotation's own `--approve`. A plan not applied, or a
+ * server OpsCrew can't reach, leaves the old date there, which a warning says with how to put the
+ * new one there.
  * Nothing happens otherwise, and nothing is read from a server.
  */
 export async function updateReportDates(
@@ -52,7 +54,7 @@ export async function updateReportDates(
   }
   deps.reporter.step(`Writing the new date of ${which} into the server's uptime report`);
   try {
-    await reportHostPlan(deps, {
+    const outcome = await reportHostPlan(deps, {
       plan,
       services,
       entry: record.id,
@@ -67,7 +69,14 @@ export async function updateReportDates(
       },
       command: provision,
       phase: "provision",
+      // In a script the rotation's --approve is not this plan's: show and save it only.
+      ...(deps.interactive ? {} : { planOnly: true }),
     });
+    if (!deps.interactive && outcome?.plan.steps.some((step) => step.state === "change")) {
+      deps.reporter.warn(
+        `${stays}. Run \`${provision} --approve ${outcome.hash}\` to put the new date there.`,
+      );
+    }
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     deps.reporter.warn(`${stays}. ${errorText(error)}`);
