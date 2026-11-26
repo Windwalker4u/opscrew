@@ -136,6 +136,14 @@ export interface UptimeIo {
 /** The most a report's body holds, in bytes; a longer one is refused with 413. */
 export const MAX_BODY: number;
 
+/** Copies of the scheduled check's (check.mjs): its thresholds, drill failures, hints and dates. */
+export const DISK_WARN: number;
+export const DISK_HIGH: number;
+export const CERT_DAYS: number;
+export const DRILL_FAILURES: Readonly<Record<"not-restored" | "unhealthy" | "failed", string>>;
+export const HINTS: Readonly<Record<"disk" | "snapshot" | "drill" | "certificate", string>>;
+export const CREDENTIAL_DATES: Readonly<Record<"rotated" | "made" | "first-deploy", string>>;
+
 export function runUptime(env: UptimeEnv, io: UptimeIo): Promise<void>;
 
 /**

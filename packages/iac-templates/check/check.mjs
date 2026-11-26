@@ -109,17 +109,23 @@ const DRILL_PERIOD_MS = { weekly: 7 * 86_400_000, daily: 86_400_000 };
 const DRILL_GRACE_MS = 3_600_000;
 
 /** Why the last scheduled drill failed, by its result (research R19). */
-const DRILL_FAILURES = {
+export const DRILL_FAILURES = {
   "not-restored": "the snapshot did not restore.",
   unhealthy:
     "the app did not become healthy on the restored data, with no internet and none of production's .env values.",
   failed: "the copy could not be made, cut off from the internet or started.",
 };
 
-const DRILL_HINT =
+export const DRILL_HINT =
   "To see why, run `npx opscrew status` in this repository, with `--app <key>` and `--env <name>` for an app or environment other than the first app's prod; `npx opscrew restore --drill` runs a drill now. Each drill's line stays on the server, in .snapshots/drills.log in the app's folder.";
 
-const SNAPSHOT_HINT =
+export const DISK_HINT =
+  "Old container images and logs usually fill it. To see more, run `npx opscrew status` in this repository; on the server, `docker system df` shows what Docker keeps.";
+
+export const CERTIFICATE_HINT =
+  "Certificates are normally renewed 30 days before they expire, so this one's renewal is failing. To see why, run `npx opscrew status` in this repository; on a server, `npx opscrew logs --service edge` shows the reverse proxy's lines.";
+
+export const SNAPSHOT_HINT =
   "To see why, run `npx opscrew status` in this repository, with `--app <key>` and `--env <name>` for an app or environment other than the first app's prod. The snapshot's output stays on the server, in .snapshots/scheduled.log in the app's folder.";
 
 /**
@@ -528,6 +534,13 @@ function unquote(text) {
   return /^(".*"|'.*')$/.test(text) ? text.slice(1, -1) : text;
 }
 
+/** How a credential's date came about, in its issue's words, by the date's source. */
+export const CREDENTIAL_DATES = {
+  rotated: "was last rotated",
+  made: "was made",
+  "first-deploy": "dates from the first deploy,",
+};
+
 /** A credential made or last rotated more than the environment's `maxAgeDays` ago. */
 function checkCredential(check, io) {
   const { name, date, environment } = check;
@@ -537,11 +550,7 @@ function checkCredential(check, io) {
   const label = appLabel(check.key);
   io.log(`${label}: the credential ${name} is ${plural(days, "day")} old.`);
   if (ms <= maxAgeDays * DAY_MS) return null;
-  const when = {
-    rotated: "was last rotated",
-    made: "was made",
-    "first-deploy": "dates from the first deploy,",
-  }[date.source];
+  const when = CREDENTIAL_DATES[date.source];
   return {
     title: `OpsCrew check: ${label} credential ${name} is older than ${maxAgeDays} days`,
     what: `The credential ${name} of ${label} ${when} on ${date.at.slice(0, 10)}, ${plural(days, "day")} ago: more than ${maxAgeDays} days.`,
@@ -611,7 +620,7 @@ async function checkCertificate(check, t, io) {
       days < 0
         ? `The certificate of ${hostname} expired ${plural(-days, "day")} ago.`
         : `The certificate of ${hostname} expires in ${plural(days, "day")}.`,
-    hint: "Certificates are normally renewed 30 days before they expire, so this one's renewal is failing. To see why, run `npx opscrew status` in this repository; on a server, `npx opscrew logs --service edge` shows the reverse proxy's lines.",
+    hint: CERTIFICATE_HINT,
   };
 }
 
@@ -654,7 +663,7 @@ async function checkDisk(check, t, read, io) {
   return {
     title: `OpsCrew check: ${appLabel(check.key)} disk over ${threshold}% full on ${server.id}`,
     what: `The disk of the server ${server.id} is ${disk.percent}% full: ${gigabytes(disk.free)} free of ${gigabytes(disk.total)}.`,
-    hint: "Old container images and logs usually fill it. To see more, run `npx opscrew status` in this repository; on the server, `docker system df` shows what Docker keeps.",
+    hint: DISK_HINT,
   };
 }
 

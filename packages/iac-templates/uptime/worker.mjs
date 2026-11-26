@@ -54,10 +54,10 @@ const HEARTBEAT_MS = 26 * 3_600_000;
 /** The test-only `heartbeatMinutes` an entry may set instead (the live test's), in minutes. */
 const HEARTBEAT_MINUTES = { min: 5, max: 1560 };
 
-/** The Actions check's thresholds (`THRESHOLDS` in check.mjs), which the servers apply. */
-const DISK_WARN = 85;
-const DISK_HIGH = 95;
-const CERT_DAYS = 14;
+/** The Actions check's thresholds (`CHECK_THRESHOLDS`), which the servers apply. */
+export const DISK_WARN = 85;
+export const DISK_HIGH = 95;
+export const CERT_DAYS = 14;
 
 /** `<owner>/<repo>/<app>/<env>`. */
 const ENTRY_ID = /^[^/\s]+\/[^/\s]+\/[^/\s]+\/[^/\s]+$/;
@@ -69,7 +69,7 @@ const HEX_32 = /^[0-9a-f]{64}$/i;
 const FAILING = new Set(["warn", "high", "failed", "copy-failed", "late", "expired", "old"]);
 
 /** Why the last scheduled drill failed, by its result: check.mjs's `DRILL_FAILURES`. */
-const DRILL_FAILURES = {
+export const DRILL_FAILURES = {
   "not-restored": "the snapshot did not restore.",
   unhealthy:
     "the app did not become healthy on the restored data, with no internet and none of production's .env values.",
@@ -77,7 +77,7 @@ const DRILL_FAILURES = {
 };
 
 /** check.mjs's hints, by check. */
-const HINTS = {
+export const HINTS = {
   disk: "Old container images and logs usually fill it. To see more, run `npx opscrew status` in this repository; on the server, `docker system df` shows what Docker keeps.",
   snapshot:
     "To see why, run `npx opscrew status` in this repository, with `--app <key>` and `--env <name>` for an app or environment other than the first app's prod. The snapshot's output stays on the server, in .snapshots/scheduled.log in the app's folder.",
@@ -87,8 +87,8 @@ const HINTS = {
     "Certificates are normally renewed 30 days before they expire, so this one's renewal is failing. To see why, run `npx opscrew status` in this repository; on a server, `npx opscrew logs --service edge` shows the reverse proxy's lines.",
 };
 
-/** How a credential's date came about, as check.mjs's `checkCredential` says it. */
-const CREDENTIAL_DATES = {
+/** How a credential's date came about: check.mjs's `CREDENTIAL_DATES`. */
+export const CREDENTIAL_DATES = {
   rotated: "was last rotated",
   made: "was made",
   "first-deploy": "dates from the first deploy,",
