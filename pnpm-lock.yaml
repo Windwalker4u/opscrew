@@ -77,6 +77,9 @@ importers:
       '@opscrew/detect':
         specifier: workspace:*
         version: link:../detect
+      '@opscrew/edge-providers':
+        specifier: workspace:*
+        version: link:../edge-providers/registry
       '@opscrew/iac-engine':
         specifier: workspace:*
         version: link:../iac-engine
@@ -431,6 +434,36 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
 
+  packages/edge-providers/cloudflare:
+    dependencies:
+      '@opscrew/connector-cloudflare':
+        specifier: workspace:*
+        version: link:../../connectors/cloudflare
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+
+  packages/edge-providers/registry:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@opscrew/edge-provider-cloudflare':
+        specifier: workspace:*
+        version: link:../cloudflare
+      '@opscrew/plan-schema':
+        specifier: workspace:*
+        version: link:../../plan-schema
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
   packages/iac-engine:
     dependencies:
       '@opscrew/contracts':
@@ -451,6 +484,9 @@ importers:
       '@opscrew/core':
         specifier: workspace:*
         version: link:../core
+      '@opscrew/edge-providers':
+        specifier: workspace:*
+        version: link:../edge-providers/registry
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
@@ -635,6 +671,9 @@ importers:
       '@opscrew/detect':
         specifier: workspace:*
         version: link:../detect
+      '@opscrew/edge-providers':
+        specifier: workspace:*
+        version: link:../edge-providers/registry
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
