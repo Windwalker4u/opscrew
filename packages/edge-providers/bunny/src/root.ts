@@ -131,21 +131,25 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
         ] as [string, string][])
       : []),
   ];
+  const moduleName = input.moduleName ?? "edge";
   return {
     mainLines: formatModuleBlock(
       [
         "# Bunny.net Pull Zone (caching off, verified origin HTTPS, free probe blocking).",
         "# The shared origin-verification header is applied via the Bunny API after apply, never here.",
       ],
-      "edge",
+      moduleName,
       BUNNY_EDGE_MODULE_NAME,
       args,
     ),
     variables,
-    outputLines: [
-      ...formatOutput("bunny_pullzone_id", "module.edge.pullzone_id"),
-      ...formatOutput("bunny_pullzone_hostname", "module.edge.pullzone_hostname"),
-    ],
+    outputLines:
+      moduleName === "edge"
+        ? [
+            ...formatOutput("bunny_pullzone_id", "module.edge.pullzone_id"),
+            ...formatOutput("bunny_pullzone_hostname", "module.edge.pullzone_hostname"),
+          ]
+        : [],
     tfvars: {
       ...(input.hasDomainVar ? {} : { domain: input.domain, www: input.www }),
       bunny_pullzone_name: bunnyPullzoneName(input.appName, input.environmentName),

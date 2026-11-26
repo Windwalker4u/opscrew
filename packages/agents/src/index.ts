@@ -39,6 +39,7 @@ export {
   type ThirdPartyEdgeSetup,
   writeEdgeOriginToken,
 } from "./provision/edge-origin-token";
+export { syncFastlyOriginMtls } from "./provision/fastly-origin-mtls";
 export * from "./retarget";
 export * from "./rollback";
 export { publishRotatedKey, type RotatedKeyResult } from "./rotate/addons";

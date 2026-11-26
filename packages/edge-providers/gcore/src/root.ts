@@ -91,18 +91,22 @@ export function renderGcoreRoot(input: EdgeRootInput): EdgeRootContribution {
         ] as [string, string][])
       : []),
   ];
+  const moduleName = input.moduleName ?? "edge";
   return {
     mainLines: formatModuleBlock(
       [
         "# Gcore CDN resource (caching off, HTTPS to origin, free force_return 403 probe blocking).",
         "# The shared origin-verification header is applied via the Gcore API after apply, never here.",
       ],
-      "edge",
+      moduleName,
       GCORE_EDGE_MODULE_NAME,
       args,
     ),
     variables,
-    outputLines: [...formatOutput("gcore_cdn_resource_id", "module.edge.cdn_resource_id")],
+    outputLines:
+      moduleName === "edge"
+        ? [...formatOutput("gcore_cdn_resource_id", "module.edge.cdn_resource_id")]
+        : [],
     tfvars: {
       ...(input.hasDomainVar ? {} : { domain: input.domain, www: input.www }),
       gcore_origin_group_name: gcoreOriginGroupName(input.appName, input.environmentName),

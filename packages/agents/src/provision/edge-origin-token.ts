@@ -35,13 +35,14 @@ export const EDGE_ORIGIN_TOKEN_CREDENTIAL = "edge-origin-token";
 
 export type EdgeOriginTokenValue = z.infer<typeof EdgeOriginTokenSchema>;
 
-/** Resolved credentials and optional DNS zone id for a non-Cloudflare edge/DNS provider. */
+/** Resolved credentials and optional DNS zone id / CIDR ranges for a non-Cloudflare edge/DNS provider. */
 export interface ThirdPartyEdgeSetup {
   id: string;
   envVar: string;
   apiKey: string;
   dnsZoneId?: number;
   dnsZoneName?: string;
+  edgeRanges?: string[];
 }
 
 const RawGeneratedObjectSchema = z.looseObject({});
@@ -192,12 +193,24 @@ export async function setupThirdPartyEdge(
     dnsZoneId = zone.id;
     dnsZoneName = zone.domain;
   }
+  let edgeRanges: string[] | undefined;
+  if (
+    edge.capabilities.originIpFiltering === "compact-cidrs" &&
+    connector.getIpRanges !== undefined
+  ) {
+    const ranges = await connector.getIpRanges({
+      ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+      redactor: deps.redactor,
+    });
+    edgeRanges = [...ranges.ipv4, ...ranges.ipv6];
+  }
   return {
     id,
     envVar,
     apiKey,
     ...(dnsZoneId === undefined ? {} : { dnsZoneId }),
     ...(dnsZoneName === undefined ? {} : { dnsZoneName }),
+    ...(edgeRanges === undefined ? {} : { edgeRanges }),
   };
 }
 

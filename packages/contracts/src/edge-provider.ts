@@ -76,6 +76,8 @@ export interface EdgeVariableSpec {
 
 /** Inputs passed from the root Terraform renderer to an edge provider's root contribution. */
 export interface EdgeRootInput {
+  /** Module name in `main.tf` (defaults to `"edge"`; `"dns"` when paired under a separate edge). */
+  moduleName?: "dns" | "edge";
   appName: string;
   environmentName?: string;
   domain: string;
@@ -154,6 +156,20 @@ export interface EdgeOriginHeaderPlan {
   hash: string;
 }
 
+/** Plan-hash-bound origin mTLS change planned by an `mtls-client-cert` edge provider connector. */
+export interface EdgeOriginMtlsPlan {
+  action: "configure" | "update" | "noop";
+  serviceId: string;
+  activeVersion: number;
+  backendName: string;
+  /** Short SHA-256 fingerprint of the public client certificate PEM (never the private key). */
+  certFingerprint: string;
+  /** Plain-English summary shown before approval (contains no private key). */
+  summary: string;
+  /** SHA-256 hash binding approval to this exact service, version, backend, and cert fingerprint. */
+  hash: string;
+}
+
 /** Redactor hook passed to edge provider connectors so secrets never leak into errors or logs. */
 export interface EdgeRedactorLike {
   addLiteral(value: string, label: string): void;
@@ -167,6 +183,10 @@ export interface EdgeProviderConnector {
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;
   }): Promise<CredentialCheck>;
+  getIpRanges?(input: {
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<{ ipv4: string[]; ipv6: string[] }>;
   lookupDnsZone?(input: {
     apiKey: string;
     domain: string;
@@ -189,6 +209,24 @@ export interface EdgeProviderConnector {
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;
   }): Promise<{ applied: boolean }>;
+  planOriginMtls?(input: {
+    apiKey: string;
+    serviceId: string;
+    backendName: string;
+    clientCertPem: string;
+    clientKeyPem: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<EdgeOriginMtlsPlan>;
+  applyOriginMtls?(input: {
+    apiKey: string;
+    plan: EdgeOriginMtlsPlan;
+    clientCertPem: string;
+    clientKeyPem: string;
+    approvedHash: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<{ applied: boolean; activatedVersion?: number }>;
 }
 
 /** Plain-English wording per OpsCrew surface. */

@@ -56,9 +56,12 @@ const secops = z
 const connector = z
   .object({
     verifyCredentials: fn,
+    getIpRanges: fn.optional(),
     lookupDnsZone: fn.optional(),
     planOriginHeader: fn.optional(),
     applyOriginHeader: fn.optional(),
+    planOriginMtls: fn.optional(),
+    applyOriginMtls: fn.optional(),
   })
   .optional();
 
