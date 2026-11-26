@@ -18,6 +18,7 @@ import {
   kafkaTool,
   POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
+  POSTGRES_RUNTIME_SECRET,
   postgresOwner,
   SERVICE_SPECS,
 } from "./entries";
@@ -38,6 +39,7 @@ export {
   kafkaTool,
   POSTGRES_LOGINS,
   POSTGRES_OWNER_SECRET,
+  POSTGRES_RUNTIME_SECRET,
   SERVICE_SPECS,
 };
 

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { sha256Hex } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { withServices } from "../catalog/__fixtures__/plans";
+import { withPooler, withServices } from "../catalog/__fixtures__/plans";
 import { splitPlan, withMonitoring, withProcesses, withSqlite } from "./__fixtures__/plans";
 import { fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import {
@@ -120,7 +120,7 @@ const IMAGE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
  * - `compose ps -q <service>` prints `c-<service>` while $WORK/running/<service> exists; `ps -aq app`
  *   the app's containers ($WORK/apps/list); `ps -aq <worker>` `p-<worker>` for those in PROCESSES.
  * - `compose up` of services or workers creates again each whose env file (the app's for those in
- *   PROCESSES) differs from the one it was created with ($WORK/created/<service>), or every one with
+ *   PROCESSES, its database's for a pooler `<service>-pooler`) differs from the one it was created with ($WORK/created/<service>), or every one with
  *   `--force-recreate`, logging it to $WORK/recreated.log; it fails for the service UP_FAIL names.
  *   `--scale app=<n>` starts app containers `a<k>` up to n, each keeping the `app.env` it started
  *   with ($WORK/apps/a<k>.env); `up … app` alone replaces them with one.
@@ -187,7 +187,7 @@ const FAKE_DOCKER = [
   '      for arg in "${@:3}"; do',
   '        [[ "$arg" != -* ]] || continue',
   '        if [[ "${UP_FAIL:-}" == "$arg" ]]; then echo "container $arg is unhealthy" >&2; exit 1; fi',
-  '        env="$arg.env"; [[ " ${PROCESSES:-} " != *" $arg "* ]] || env=app.env',
+  '        env="$arg.env"; [[ " ${PROCESSES:-} " != *" $arg "* ]] || env=app.env; [[ "$arg" != *-pooler ]] || env="${arg%-pooler}.env"',
   '        slurp "$env"; now="$text"; slurp "$WORK/created/$arg"',
   '        if [[ " $* " == *" --force-recreate "* || "$now" != "$text" ]]; then',
   '          printf "%s" "$now" > "$WORK/created/$arg"; echo "$arg" >> "$WORK/recreated.log"',
@@ -522,6 +522,52 @@ describe.skipIf(!shWorks())("rotate.sh", { timeout: 180_000 }, () => {
     expect(again.status).toBe(1);
     expect(again.stderr).toContain("A rotation needs its one-time approval");
     expect(ran("db change")).toBe(1);
+  });
+
+  describe("with PgBouncer beside db (050)", () => {
+    const plan = withPooler(PLAN);
+    /** {@link STEPS} with db's step the rotation of `secret`. */
+    const rotating = (secret: string) =>
+      STEPS.map((step) => (step.service === "db" ? { ...step, secrets: [secret] } : step));
+    const calls = () => lines(`${work}/docker.log`);
+    const callAt = (text: string) => calls().findIndex((call) => call.includes(text));
+    const pooler = "--force-recreate db-pooler";
+
+    it("creates db-pooler again from the new db.env once db has the runtime login's new password, before the app's switch", () => {
+      approve();
+      const steps = rotating("runtime-password");
+      const result = run([HASH], {}, { plan, steps });
+      expect(result.status, result.output).toBe(0);
+      expectRotated();
+      expect(read(`${work}/created/db-pooler`)).toBe(envFiles("new")["db.env"]);
+      expect(recreatedList().filter((name) => name === "db-pooler")).toHaveLength(1);
+      expect(callAt(pooler)).toBeGreaterThan(callAt("c-db sh -c change"));
+      expect(callAt(pooler)).toBeGreaterThan(callAt("--wait stream"));
+      expect(callAt(pooler)).toBeLessThan(callAt("--scale app=2 app"));
+    });
+
+    it("creates it again from the old db.env on an undo, once db has the old password, before the app's switch back", () => {
+      approve();
+      const steps = rotating("runtime-password");
+      expect(run([HASH], { HEALTH_FAIL: "1" }, { plan, steps }).status).toBe(1);
+      expect(read(`${work}/created/db-pooler`)).toBe(envFiles("new")["db.env"]);
+      write(`${work}/docker.log`, "");
+      approve("undo");
+      const undone = run(["--undo", HASH], {}, { plan, steps });
+      expect(undone.status, undone.output).toBe(0);
+      expectUndone();
+      expect(read(`${work}/created/db-pooler`)).toBe(envFiles("old")["db.env"]);
+      expect(callAt(pooler)).toBeGreaterThan(callAt("c-db sh -c change"));
+      expect(callAt(pooler)).toBeLessThan(callAt("kamal-proxy deploy shop"));
+    });
+
+    it("leaves it alone when another of db's passwords rotates", () => {
+      approve();
+      const result = run([HASH], {}, { plan, steps: rotating("password") });
+      expect(result.status, result.output).toBe(0);
+      expect(recreatedList()).not.toContain("db-pooler");
+      expect(read(`${work}/docker.log`)).not.toContain("db-pooler");
+    });
   });
 
   describe("refuses before any change", () => {

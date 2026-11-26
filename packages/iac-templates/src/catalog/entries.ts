@@ -251,6 +251,11 @@ const OWNER_LOGIN = { user: POSTGRES_OWNER, secret: "owner-password" } as const;
 /** The secret of PostgreSQL's owner's login, which the release's own env file holds. */
 export const POSTGRES_OWNER_SECRET = OWNER_LOGIN.secret;
 const RUNTIME_LOGIN = { user: POSTGRES_RUNTIME, secret: "runtime-password" } as const;
+/**
+ * The secret of PostgreSQL's runtime login, which its pooler holds too (050): its rotation creates
+ * the pooler again.
+ */
+export const POSTGRES_RUNTIME_SECRET = RUNTIME_LOGIN.secret;
 
 /** The login of the app's own containers: the runtime's with `logins: separate`, else `app`. */
 function postgresAppLogin(service: PlanService): Login {
