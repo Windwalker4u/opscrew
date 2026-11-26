@@ -13,6 +13,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { UPTIME_WORKER_SCRIPT } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { recordServerAddress } from "../shared/server-record";
 import { ensureDeployKey } from "../shared/ssh-keys";
 import {
@@ -286,6 +287,37 @@ describe("provisionCheck with the Cloudflare uptime Worker", () => {
     expect(String(params?.credentials).split("\n")).toContain(
       "deploy-key 2026-01-02T03:04:05Z first-deploy",
     );
+  });
+
+  it("leaves out a credential whose name is over 128 characters, says so, and still reports", async () => {
+    const s = await setup();
+    const base = uptimePlan("cloudflare");
+    // A generated value with a long name: its credential app:<NAME> has 130 characters.
+    const name = `K${"_".repeat(123)}EY`;
+    const long = `app:${name}`;
+    expect(long).toHaveLength(130);
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, env: [...base.app.env, { name, secret: true, source: "generated" }] },
+      observability: {
+        check: { enabled: true, runner: "cloudflare", webhook: "slack", credentials: true },
+      },
+      deployment: { ...base.deployment, firstDeployAt: "2026-01-02T03:04:05Z" },
+    });
+    await ensureDeployKey(s.deps.paths, s.deps.redactor);
+    await writeFile(
+      generatedValuesFile(s.deps),
+      `${JSON.stringify({ env: { [name]: "kept" } })}\n`,
+    );
+    await s.provision(plan);
+    expect(s.deps.reporter.text()).toContain(
+      `The uptime report leaves out the credential ${long}, whose name is over 128 characters: its age isn't reported.`,
+    );
+    // The report still goes out, with the other credentials.
+    expect(s.server.applies).toHaveLength(1);
+    const lines = String(s.server.applies[0]?.plan.steps[0]?.params.credentials).split("\n");
+    expect(lines).toContain("deploy-key 2026-01-02T03:04:05Z first-deploy");
+    expect(lines.some((line) => line.startsWith(long))).toBe(false);
   });
 
   it("asks for the address when the Worker has no secret for the entry, and keeps a stored one", async () => {

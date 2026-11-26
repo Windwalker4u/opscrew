@@ -14,6 +14,7 @@ import {
   inspectUptimeReport,
   planUptimeReport,
   UPTIME_REPORT_KEY_REACH,
+  UPTIME_REPORT_NAME_MAX,
   type UptimeReportFacts,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
@@ -161,17 +162,24 @@ export function reportDesignLines(plan: DeployPlan): string[] {
  * The credentials the server dates, as check.mjs dates them: each one the scheduled check dates
  * (`checkedCredentialNames`) with its last rotation in the app's rotation record, else when it was
  * made, else the environment's first deploy (one with none is left out), and
- * `credentials.maxAgeDays`. Names and dates only. `undefined` with `check.credentials` off.
+ * `credentials.maxAgeDays`. Names and dates only. `undefined` with `check.credentials` off. A
+ * name over `UPTIME_REPORT_NAME_MAX` characters is left out too, and named in `leftOut`.
  */
-export async function reportCredentials(
+async function datedCredentials(
   deps: Pick<PhaseDeps, "paths" | "env" | "clock">,
   plan: DeployPlan,
-): Promise<DesiredUptimeReport["credentials"]> {
-  if (plan.observability?.check?.credentials !== true) return undefined;
+): Promise<{ credentials: DesiredUptimeReport["credentials"]; leftOut: string[] }> {
+  if (plan.observability?.check?.credentials !== true)
+    return { credentials: undefined, leftOut: [] };
   const recorded = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
   const since = plan.deployment.firstDeployAt;
   const dates: NonNullable<DesiredUptimeReport["credentials"]>["dates"] = [];
+  const leftOut: string[] = [];
   for (const name of await checkedCredentialNames(deps, plan)) {
+    if (name.length > UPTIME_REPORT_NAME_MAX) {
+      leftOut.push(name);
+      continue;
+    }
     const { madeAt, rotatedAt } = recorded[name] ?? {};
     const at = rotatedAt ?? madeAt;
     if (at !== undefined) {
@@ -180,21 +188,34 @@ export async function reportCredentials(
       dates.push({ name, at: since, source: "first-deploy" });
     }
   }
-  return { maxAgeDays: credentialMaxAgeDaysOf(plan), dates };
+  return { credentials: { maxAgeDays: credentialMaxAgeDaysOf(plan), dates }, leftOut };
+}
+
+/** The credentials the server dates ({@link datedCredentials}). */
+export async function reportCredentials(
+  deps: Pick<PhaseDeps, "paths" | "env" | "clock">,
+  plan: DeployPlan,
+): Promise<DesiredUptimeReport["credentials"]> {
+  return (await datedCredentials(deps, plan)).credentials;
 }
 
 /**
  * The `uptime-report` step's settings on `server` for the entry `entry`: the report address, the
  * server's id, its drills, the hostnames whose certificates it serves for the app, the scheduled
  * check's thresholds, the credentials' names and dates ({@link reportCredentials}) and the report
- * key by its SHA-256. Never a value.
+ * key by its SHA-256. Never a value. Says which credential a name too long leaves out.
  */
 export async function reportSettings(
-  deps: Pick<PhaseDeps, "paths" | "env" | "clock">,
+  deps: Pick<PhaseDeps, "paths" | "env" | "clock" | "reporter">,
   plan: DeployPlan,
   input: { url: string; entry: string; server: ReportServer; key: ReportKey },
 ): Promise<DesiredUptimeReport> {
-  const credentials = await reportCredentials(deps, plan);
+  const { credentials, leftOut } = await datedCredentials(deps, plan);
+  for (const name of leftOut) {
+    deps.reporter.warn(
+      `The uptime report leaves out the credential ${name}, whose name is over ${UPTIME_REPORT_NAME_MAX} characters: its age isn't reported.`,
+    );
+  }
   return {
     url: input.url,
     entry: input.entry,

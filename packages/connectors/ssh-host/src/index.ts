@@ -192,6 +192,7 @@ export {
   type HostStep,
   type HostStepId,
   MAX_SSH_SOURCES,
+  UPTIME_REPORT_NAME_MAX,
 } from "./types";
 export {
   renderUptimeReportScript,
