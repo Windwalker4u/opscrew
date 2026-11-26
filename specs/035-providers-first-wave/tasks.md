@@ -437,7 +437,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && npx vitest run --root packages/providers/kamatera && pnpm lint`
   - Effort: high
 
-- [ ] T3523 [P] [US6] [US8] The catalogue and the price table
+- [x] T3523 [P] [US6] [US8] The catalogue and the price table
   - Owns: `packages/providers/kamatera/src/catalog.ts`, `catalog.test.ts`, `static-prices.ts`, its
     fixtures under `src/__fixtures__/catalog*`
   - Reads: plan 8.; research R4 §3, §5 and §7; plan decision 5; `ComputeCatalog`, `ComputeOffer`
