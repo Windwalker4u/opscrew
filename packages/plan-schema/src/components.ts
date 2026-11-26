@@ -193,6 +193,21 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
          * databases made before it.
          */
         logins: z.literal("separate", { message: 'must be "separate"' }).optional(),
+        /**
+         * `pgbouncer`: a PgBouncer in transaction mode beside it, which the app's web, workers and
+         * cron reach it through; the release keeps its direct address (050). Needs `logins`.
+         */
+        pooler: z.literal("pgbouncer", { message: 'must be "pgbouncer"' }).optional(),
+      })
+      .superRefine((options, ctx) => {
+        if (options.pooler !== undefined && options.logins !== "separate") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["pooler"],
+            message:
+              "`pooler: pgbouncer` needs `logins: separate` under the same options: migrations must reach PostgreSQL directly, and only separate logins give the release its own address.",
+          });
+        }
       })
       .prefault({}),
   ),
@@ -250,6 +265,11 @@ export function serviceOf<K extends PlanService["kind"]>(
 /** Whether a service is a PostgreSQL whose app and migrations have their own logins (`logins: separate`). */
 export function postgresLogins(service: PlanService): boolean {
   return service.kind === "postgres" && service.options.logins === "separate";
+}
+
+/** Whether a service is a PostgreSQL with PgBouncer beside it (`pooler: pgbouncer`, 050). */
+export function postgresPooler(service: PlanService): boolean {
+  return service.kind === "postgres" && service.options.pooler === "pgbouncer";
 }
 
 /**

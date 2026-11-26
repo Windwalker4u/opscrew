@@ -171,6 +171,14 @@ export const IMAGES = {
   neo4j: {
     ref: "neo4j:2026.09-community@sha256:d6269a020149934597c8c3df926d080a612796dbbb48861ca9d5b1109cabf0d8",
   },
+  /**
+   * PgBouncer beside a PostgreSQL with `pooler: pgbouncer` (050): CloudNativePG's build, amd64 and
+   * arm64, since the PgBouncer project publishes no image (read from the registry 2026-11-26). It
+   * runs as its own user `pgbouncer`, and has `/bin/sh` and bash.
+   */
+  pgbouncer: {
+    ref: "ghcr.io/cloudnative-pg/pgbouncer:1.26.1@sha256:9f648625e11f67f5171f1edd31648c7d02a1a4a5e1b8adf7d4a9db30dce8c22b",
+  },
   // The 014 checks and edge (2026-10-21, research.md R1 and R5).
   /** ssh-audit, run on the user's machine against the server's SSH port (`secure --deep`). */
   sshAudit: {

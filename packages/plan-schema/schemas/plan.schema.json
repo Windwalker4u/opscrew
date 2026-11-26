@@ -1263,6 +1263,10 @@
                   "logins": {
                     "type": "string",
                     "const": "separate"
+                  },
+                  "pooler": {
+                    "type": "string",
+                    "const": "pgbouncer"
                   }
                 },
                 "additionalProperties": false

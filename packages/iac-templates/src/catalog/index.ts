@@ -29,6 +29,7 @@ import type {
   ServiceSpec,
 } from "./types";
 
+export * from "./pooler";
 export * from "./postgres-logins";
 export {
   DRAGONFLY_MIN_VCPUS,
