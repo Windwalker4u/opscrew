@@ -467,6 +467,18 @@ importers:
         specifier: workspace:*
         version: link:../../core
 
+  packages/git-platforms/gitlab:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
   packages/git-platforms/registry:
     dependencies:
       '@opscrew/contracts':
@@ -478,6 +490,12 @@ importers:
       '@opscrew/git-github':
         specifier: workspace:*
         version: link:../github
+      '@opscrew/git-gitlab':
+        specifier: workspace:*
+        version: link:../gitlab
+      '@opscrew/plan-schema':
+        specifier: workspace:*
+        version: link:../../plan-schema
       zod:
         specifier: ^4.6.5
         version: 4.6.5

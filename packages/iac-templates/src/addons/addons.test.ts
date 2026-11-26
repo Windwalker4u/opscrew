@@ -453,6 +453,7 @@ describe("Grafana Alloy", () => {
 const SAMPLES: Record<keyof typeof TOKEN_PATTERNS, { kind: FakeSecretKind; before?: string }> = {
   "github-token": { kind: "github-token" },
   "github-pat": { kind: "github-pat" },
+  "gitlab-token": { kind: "gitlab-token" },
   "anthropic-api-key": { kind: "anthropic-key" },
   "openai-api-key": { kind: "openai-key" },
   "aws-access-key-id": { kind: "aws-access-key-id" },

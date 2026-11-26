@@ -1,12 +1,14 @@
 import type { GitPlatformDefinition } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { definition as github } from "@opscrew/git-github";
+import { definition as gitlab } from "@opscrew/git-gitlab";
 import { describe, expect, it } from "vitest";
 import { validateGitPlatform } from "./validate";
 
 describe("validateGitPlatform", () => {
-  it("accepts a valid built-in git platform definition", () => {
+  it("accepts every built-in git platform definition", () => {
     expect(validateGitPlatform(github)).toBe(github);
+    expect(validateGitPlatform(gitlab)).toBe(gitlab);
   });
 
   it("refuses a wrong contract version", () => {
@@ -18,14 +20,28 @@ describe("validateGitPlatform", () => {
     ).toThrow(OpsCrewError);
   });
 
-  it("refuses a bad platform id", () => {
+  it("refuses a bad platform id, cicdProvider, or registryId", () => {
     for (const badId of ["", "GitHub", "1github", "git_hub"]) {
       expect(() => validateGitPlatform({ ...github, id: badId })).toThrow(OpsCrewError);
+      expect(() => validateGitPlatform({ ...github, cicdProvider: badId })).toThrow(OpsCrewError);
+      expect(() => validateGitPlatform({ ...github, registryId: badId })).toThrow(OpsCrewError);
     }
   });
 
-  it("refuses an empty displayName", () => {
+  it("refuses an empty displayName or blank texts", () => {
     expect(() => validateGitPlatform({ ...github, displayName: "" })).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({ ...github, texts: { ...github.texts, remoteFixHint: "" } }),
+    ).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({ ...github, texts: { ...github.texts, tokenFixHint: "" } }),
+    ).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({ ...github, texts: { ...github.texts, changeRequestNoun: "" } }),
+    ).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({ ...github, texts: { ...github.texts, pipelineNoun: "" } }),
+    ).toThrow(OpsCrewError);
   });
 
   it("refuses empty credentials.envVars or blank env var names", () => {
@@ -39,15 +55,6 @@ describe("validateGitPlatform", () => {
       validateGitPlatform({
         ...github,
         credentials: { ...github.credentials, envVars: [""] },
-      }),
-    ).toThrow(OpsCrewError);
-  });
-
-  it("refuses a missing remoteFixHint", () => {
-    expect(() =>
-      validateGitPlatform({
-        ...github,
-        texts: { remoteFixHint: "" },
       }),
     ).toThrow(OpsCrewError);
   });
@@ -72,11 +79,29 @@ describe("validateGitPlatform", () => {
     ).toThrow(/must use the \/g flag/);
   });
 
-  it("refuses a non-function parseRemote", () => {
+  it("refuses non-function hooks", () => {
     expect(() =>
       validateGitPlatform({
         ...github,
-        parseRemote: "not-a-function" as unknown as GitPlatformDefinition["parseRemote"],
+        parseRemote: "bad" as unknown as GitPlatformDefinition["parseRemote"],
+      }),
+    ).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({
+        ...github,
+        containerImage: "bad" as unknown as GitPlatformDefinition["containerImage"],
+      }),
+    ).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({
+        ...github,
+        resolveToken: "bad" as unknown as GitPlatformDefinition["resolveToken"],
+      }),
+    ).toThrow(OpsCrewError);
+    expect(() =>
+      validateGitPlatform({
+        ...github,
+        createConnector: "bad" as unknown as GitPlatformDefinition["createConnector"],
       }),
     ).toThrow(OpsCrewError);
   });

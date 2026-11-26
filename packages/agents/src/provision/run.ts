@@ -10,6 +10,7 @@ import {
   plural,
   readTextIfExists,
 } from "@opscrew/core";
+import { gitPlatformByCicdProvider } from "@opscrew/git-platforms";
 import {
   additionsPath,
   appServerVariables,
@@ -32,7 +33,6 @@ import {
   backupsBucketOf,
   type CloudDeployTarget,
   type DeployPlan,
-  ghcrImageFor,
   isCloudTarget,
   isHostingTarget,
   isServerlessProvider,
@@ -1639,7 +1639,11 @@ async function provisionFlow(
       env: previewEnv,
       key: previewKey,
       repository,
-      imageName: ghcrImageFor(repository, plan.app.key),
+      imageName: gitPlatformByCicdProvider(plan.cicd.provider).containerImage(
+        { host: plan.cicd.host ?? "github.com", fullPath: repository },
+        plan.app.key,
+        plan.cicd.registryHost,
+      ),
       branchRules: placed.branchRules,
       readable: placed.readable ?? [],
       command: again,

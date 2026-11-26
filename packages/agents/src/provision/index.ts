@@ -25,6 +25,13 @@ export {
   setupCloudflare,
   setupGitHub,
 } from "./credentials";
+export {
+  deletePlatformDeploySecrets,
+  type GitPlatformSetup,
+  publishPlatformChangeRequest,
+  setPlatformDeploySecrets,
+  setupGitPlatform,
+} from "./git-platform";
 export { type MoveInProgress, moveInProgress, requireNoMoveInProgress } from "./guard";
 export {
   applyOwnHostPlan,

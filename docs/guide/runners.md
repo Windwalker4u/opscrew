@@ -344,3 +344,16 @@ reports the same as findings:
 Self-hosted runners need Administration (Read and write) on your GitHub token, for the registration
 and removal tokens, the runner list and the fork pull request policy. See
 [The GitHub token](security.md#the-github-token).
+
+## GitLab Runner
+
+For projects hosted on [GitLab](gitlab.md) (`gitlab.com` or self-managed), OpsCrew supports
+self-hosted GitLab Runners with the same safety model:
+
+- OpsCrew creates a locked, tagged project runner via GitLab's `POST /user/runners` API (requiring
+  `create_runner` scope on `GITLAB_TOKEN`), receiving a `glrt-` runner authentication token.
+- The pinned `gitlab-runner` binary is verified by SHA-256 and registered non-interactively with the
+  `shell` executor under `/srv/runners/<app>`, with the `glrt-` token delivered only on standard
+  input (never written to any plan, log, or repository file).
+- The runner runs as the `deploy` user's systemd user service (`opscrew-runner-<app>.service`) with
+  `sg docker` and `KillMode=control-group`, taking only jobs tagged `opscrew-<app>-<env>`.

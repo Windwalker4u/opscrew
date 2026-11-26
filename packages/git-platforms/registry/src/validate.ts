@@ -15,14 +15,25 @@ const DefinitionSchema = z.object({
   contractVersion: z.literal(GIT_PLATFORM_CONTRACT_VERSION),
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
   displayName: z.string().min(1),
+  cicdProvider: z.string().regex(/^[a-z][a-z0-9-]*$/),
+  registryId: z.string().regex(/^[a-z][a-z0-9-]*$/),
   credentials: z.object({
     envVars: z.array(z.string().min(1)).min(1),
+    cliCommand: z.string().min(1).optional(),
     tokenRules: z.array(TokenRuleSchema),
   }),
   texts: z.object({
+    changeRequestNoun: z.string().min(1),
+    pipelineNoun: z.string().min(1),
     remoteFixHint: z.string().min(1),
+    tokenFixHint: z.string().min(1),
   }),
   parseRemote: z.custom<GitPlatformDefinition["parseRemote"]>((v) => typeof v === "function"),
+  containerImage: z.custom<GitPlatformDefinition["containerImage"]>((v) => typeof v === "function"),
+  resolveToken: z.custom<GitPlatformDefinition["resolveToken"]>((v) => typeof v === "function"),
+  createConnector: z.custom<GitPlatformDefinition["createConnector"]>(
+    (v) => typeof v === "function",
+  ),
 });
 
 /** Validates a git platform definition at registry load time (ADR 0039 D3). */

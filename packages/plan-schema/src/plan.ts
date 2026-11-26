@@ -2398,13 +2398,17 @@ const DeployPlanFieldsSchema = z.strictObject({
       .optional(),
   }),
   cicd: z.strictObject({
-    provider: z.literal("github-actions"),
+    provider: z.enum(["github-actions", "gitlab-ci"]).default("github-actions"),
     /**
-     * Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name)`. A
-     * later design keeps it.
+     * Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name, provider)`.
+     * A later design keeps it.
      */
     workflowPath: RepoPathSchema.optional(),
-    registry: z.literal("ghcr"),
+    registry: z.enum(["ghcr", "gitlab-registry"]).default("ghcr"),
+    /** Self-managed git platform host (e.g. `gitlab.company.internal`); absent uses the platform default. */
+    host: z.string().min(1).optional(),
+    /** Custom container registry host; absent uses the platform default (`ghcr.io` or `registry.gitlab.com`). */
+    registryHost: z.string().min(1).optional(),
     /** Deploys run on pushes to this branch. */
     branch: z.string().min(1).default("main"),
     /** A `deploy-<UTC time>` tag on the commit after each healthy deploy. */
@@ -2954,7 +2958,11 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
           ),
         }),
     infra: { engine, dir: dir ?? infraDirFor(key, environment), ...infra },
-    cicd: { provider, workflowPath: workflowPath ?? workflowPathFor(key, environment), ...cicd },
+    cicd: {
+      provider,
+      workflowPath: workflowPath ?? workflowPathFor(key, environment, provider),
+      ...cicd,
+    },
     ...(plan.retarget === undefined
       ? {}
       : {

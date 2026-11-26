@@ -41,6 +41,7 @@ import {
 } from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
 import { renderGithubPagesWorkflow } from "./github-pages";
+import { renderGitLabPipeline } from "./gitlab";
 import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
 import { inFolder, pushPaths } from "./paths";
 import {
@@ -116,6 +117,7 @@ export {
   renderCloudflareWorkersWorkflow,
 } from "./cloudflare-workers";
 export { PAGES_PUBLISH_JOB, renderGithubPagesWorkflow } from "./github-pages";
+export { renderGitLabPipeline } from "./gitlab";
 export { DEPLOY_PAUSED_VARIABLE } from "./pause";
 export {
   PORTAINER_DEPLOY_SECRETS,
@@ -1724,6 +1726,7 @@ export async function isMoveReady(
  * at the repository root.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
+  if (plan.cicd.provider === "gitlab-ci") return renderGitLabPipeline(plan, ctx);
   if (plan.target.provider === "cloudflare-workers") {
     return renderCloudflareWorkersWorkflow(plan, ctx);
   }

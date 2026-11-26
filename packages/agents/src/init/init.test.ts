@@ -317,17 +317,17 @@ describe("runInitChecks", () => {
     expect(initPassed(checks)).toBe(false);
   });
 
-  it("fails outside a git repository, without origin and with a non-GitHub origin", async () => {
+  it("fails outside a git repository, without origin and with an unsupported git host", async () => {
     const notRepo = await check("repository", { repo: { isRepo: false } });
     expect(notRepo.status).toBe("fail");
     expect(notRepo.fix).toContain("git init");
     const noOrigin = await check("repository", { repo: { origin: null } });
     expect(noOrigin.status).toBe("fail");
     expect(noOrigin.fix).toContain("git remote add origin");
-    const gitlab = await check("repository", {
-      repo: { origin: "https://gitlab.com/acme/shop.git" },
+    const unsupported = await check("repository", {
+      repo: { origin: "https://bitbucket.org/acme/shop.git" },
     });
-    expect(gitlab.status).toBe("fail");
+    expect(unsupported.status).toBe("fail");
   });
 
   it("fails when neither OpenTofu nor Terraform is installed, or the version is too old", async () => {

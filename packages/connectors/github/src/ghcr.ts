@@ -2,15 +2,8 @@
  * Reads images from GitHub's container registry (GHCR) through its registry API (the OCI
  * distribution API), with a pull token issued for the user's GitHub token.
  */
-import type { FetchLike } from "@opscrew/contracts";
-import {
-  CONNECTION_HINT,
-  durationText,
-  OpsCrewError,
-  parseAnswer,
-  type Redactor,
-  sha256Hex,
-} from "@opscrew/core";
+import type { FetchLike, ProviderRedactor } from "@opscrew/contracts";
+import { CONNECTION_HINT, durationText, OpsCrewError, parseAnswer, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
 
 const GHCR = "https://ghcr.io";
@@ -119,7 +112,7 @@ export interface GhcrReaderOptions {
   /** The user's GitHub login and token, used when a call is given no credential of its own. */
   credentials: () => Promise<RegistryCredential>;
   /** Every pull token is registered here as soon as it arrives. */
-  redactor: Redactor;
+  redactor: ProviderRedactor;
   timeoutMs: number;
 }
 
