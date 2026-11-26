@@ -65,7 +65,8 @@ web installer that asks for it once, read it on your computer: see
 [An installer that asks for the database's password](builders.md#an-installer-that-asks-for-the-databases-password).
 
 [Laravel](https://laravel.com/) reads these names too, so a Laravel app on MySQL, MariaDB or PostgreSQL gets them the
-same way. Its `REDIS_HOST`, `REDIS_PORT` and `REDIS_PASSWORD` come from the Valkey, Redis or
+same way. When its `.env.example` leaves the `DB_HOST` line commented out, as a new Laravel app's
+does, the app gets the database's address as `DB_URL` instead, the name Laravel reads it from. Its `REDIS_HOST`, `REDIS_PORT` and `REDIS_PASSWORD` come from the Valkey, Redis or
 Dragonfly it uses. A value of its `.env.example` that chose a service, such as
 `DB_CONNECTION=pgsql` or `QUEUE_CONNECTION=redis`, is given with that value, so the app uses the
 service OpsCrew runs. The PHP driver of each service is in the image (see

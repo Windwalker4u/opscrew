@@ -574,6 +574,27 @@ function urlVariable(
   );
 }
 
+/**
+ * Laravel's database URL variable, `DB_URL`, for the server database its `DB_CONNECTION` chose
+ * (`dbConnection`). Laravel 11 and later read it in `config/database.php`, and the app's example
+ * env file leaves it out, so it is in no name the detection found. Without it the app would get
+ * only `DATABASE_URL`, which Laravel does not read, and reach `127.0.0.1`. A database that already
+ * has a variable keeps it, and an app whose example names `DB_HOST` gets the split settings instead.
+ */
+export function withLaravelDbUrl(
+  services: readonly DetectedService[],
+  names: readonly string[],
+  dbConnection: string | undefined,
+): DetectedService[] {
+  if (dbConnection === undefined || names.includes("DB_HOST")) return [...services];
+  const chosen = `env:DB_CONNECTION=${dbConnection}`;
+  return services.map((service) =>
+    service.kind !== "sqlite" && service.variable === undefined && service.evidence.includes(chosen)
+      ? { ...service, variable: "DB_URL" }
+      : service,
+  );
+}
+
 /** The services with the variable each one's URL is read from, when one is found. */
 export function withUrlVariables(
   services: readonly DetectedService[],

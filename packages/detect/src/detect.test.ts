@@ -14,6 +14,7 @@ const FIXTURE_NAMES = [
   "django-postgres",
   "express-api",
   "fastapi-redis",
+  "laravel-pgsql",
   "laravel-sail",
   "lovable-vite-supabase",
   "monorepo-three-apps",
@@ -934,6 +935,39 @@ describe("Laravel apps", () => {
       SESSION_SECURE_COOKIE: false,
       SHOP_API_TOKEN: false,
     });
+  });
+
+  it("gives the SQL database DB_CONNECTION chose DB_URL, which Laravel reads, when the example comments out DB_HOST", async () => {
+    // As `laravel new` writes it: the connection set, its parts commented out.
+    const example = (connection: string, ...lines: string[]) => ({
+      ".env.example": [
+        `DB_CONNECTION=${connection}`,
+        "# DB_HOST=127.0.0.1",
+        "# DB_PORT=3306",
+        "# DB_DATABASE=laravel",
+        "# DB_USERNAME=root",
+        "# DB_PASSWORD=",
+        ...lines,
+        "",
+      ].join("\n"),
+    });
+    for (const [connection, kind] of [
+      ["pgsql", "postgres"],
+      ["mysql", "mysql"],
+      ["mariadb", "mariadb"],
+    ] as const) {
+      const facts = await detectProject(await laravel({}, example(connection)));
+      expect(facts.services, connection).toEqual([
+        { kind, evidence: [`env:DB_CONNECTION=${connection}`], variable: "DB_URL" },
+      ]);
+    }
+    // The split settings, or a URL variable the app names, stay what the app reads.
+    const split = await detectProject(await laravel({}, example("pgsql", "DB_HOST=127.0.0.1")));
+    expect(split.services[0]?.variable).toBeUndefined();
+    const own = await detectProject(await laravel({}, example("pgsql", "DATABASE_URL=")));
+    expect(own.services[0]?.variable).toBe("DATABASE_URL");
+    const sqlite = await detectProject(await laravel({}, example("sqlite")));
+    expect(sqlite.services.map((service) => service.variable)).toEqual([undefined]);
   });
 
   it("keeps its uploads in storage/app, apart from SQLite's folder", async () => {

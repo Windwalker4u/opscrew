@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakeSecret } from "@opscrew/core/testing";
 import { detectProject } from "@opscrew/detect";
+import { releaseVariables } from "@opscrew/iac-templates";
 import {
   DeployPlanSchema,
   type ProjectFacts,
@@ -914,8 +915,10 @@ describe("examples/rails-api and examples/laravel-app: production defaults", () 
 
 describe("detect's php-plain and laravel-sail fixtures: facts → plan → production environment (US8)", () => {
   const DOMAIN = "guestbook.example.com";
-  async function fixturePlan(name: string, domain?: string) {
-    const root = fileURLToPath(new URL(`../../../detect/test/fixtures/${name}/`, import.meta.url));
+  const fixtureRoot = (name: string) =>
+    fileURLToPath(new URL(`../../../detect/test/fixtures/${name}/`, import.meta.url));
+  const fixturePlan = (name: string, domain?: string) => rootPlan(fixtureRoot(name), domain);
+  async function rootPlan(root: string, domain?: string) {
     const facts = await detectProject(root);
     const requirements = makeRequirements(
       domain === undefined ? {} : { dnsProvider: "other", domain },
@@ -1026,6 +1029,45 @@ describe("detect's php-plain and laravel-sail fixtures: facts → plan → produ
     expect(onAddress.values.app.APP_URL).toBe("http://203.0.113.7");
   });
 
+  it("gives a Laravel app whose example comments out the DB_* lines DB_URL, which Laravel reads", async () => {
+    const plan = await fixturePlan("laravel-pgsql");
+    const byName = Object.fromEntries(plan.app.env.map((variable) => [variable.name, variable]));
+    expect(byName.DB_URL).toEqual(derived("DB_URL", true));
+    expect(byName.DB_HOST).toBeUndefined();
+    // APP_NAME is the user's: Laravel's own config reads it without a default.
+    const dotenvText = "APP_NAME=Notes\n";
+    const env = await assembleAppEnv({ plan, dotenvText });
+    const db = env.values.services.db;
+    // A new PostgreSQL has its own logins (047): the app gets the runtime one.
+    expect(env.values.app.DB_URL).toBe(
+      `postgresql://app_runtime:${db?.["runtime-password"]}@db:5432/app`,
+    );
+    expect(parseDotenv(env.appEnv).get("DB_URL")).toBe(env.values.app.DB_URL);
+    // The release's release.db.env overrides DB_URL with the owner's login.
+    const owner = "postgresql://app_owner:<owner-password>@db:5432/app";
+    expect(releaseVariables(plan, (_service, name) => `<${name}>`)).toEqual({
+      DATABASE_URL: owner,
+      DB_URL: owner,
+    });
+
+    // MySQL, from the same layout.
+    const root = await mkdtemp(join(tmpdir(), "opscrew-plan-laravel-mysql-"));
+    try {
+      await cp(fixtureRoot("laravel-pgsql"), root, { recursive: true });
+      const example = join(root, ".env.example");
+      const text = await readFile(example, "utf8");
+      await writeFile(example, text.replace("DB_CONNECTION=pgsql", "DB_CONNECTION=mysql"));
+      const mysql = await rootPlan(root);
+      expect(mysql.services.filter((s) => s.enabled).map((s) => s.kind)).toEqual(["mysql"]);
+      const mysqlEnv = await assembleAppEnv({ plan: mysql, dotenvText });
+      const password = mysqlEnv.values.services.mysql?.password;
+      expect(mysqlEnv.values.app.DB_URL).toBe(`mysql://app:${password}@mysql:3306/app`);
+      expect(mysqlEnv.values.app.DB_CONNECTION).toBe("mysql");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("gives a Laravel app with Sail its PostgreSQL settings and keeps the values that chose its services", async () => {
     const plan = await fixturePlan("laravel-sail", DOMAIN);
     expect(plan.app.build).toMatchObject({ builder: "railpack", runtime: { language: "php" } });
@@ -1047,6 +1089,8 @@ describe("detect's php-plain and laravel-sail fixtures: facts → plan → produ
       expect(byName[name], name).toEqual(derived(name));
     }
     expect(byName.DB_PASSWORD).toEqual(derived("DB_PASSWORD", true));
+    // Its example names DB_HOST: the split settings, no DB_URL.
+    expect(byName.DB_URL).toBeUndefined();
     expect(byName.REDIS_HOST).toEqual(derived("REDIS_HOST"));
     expect(byName.REDIS_PASSWORD).toEqual(derived("REDIS_PASSWORD", true));
     expect(byName.REDIS_PORT).toEqual(derived("REDIS_PORT"));
