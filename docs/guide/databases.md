@@ -178,7 +178,8 @@ sure nothing in your app changes the schema outside its migrations (see above).
    ```
 
 2. Run `npx opscrew provision`. It shows the switch as a plan you approve by its hash:
-   - a snapshot of the database is taken first, and provision stops if it fails;
+   - a snapshot of the database is taken first, and provision stops if it fails (a database that
+     never ran has no data yet, so provision says so and goes on);
    - the database restarts once, for a few seconds, with two new passwords;
    - the next deploy makes `app_owner` and `app_runtime` and gives `app_owner` the database, its
      schemas and the app's tables, in one transaction;

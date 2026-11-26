@@ -1,7 +1,10 @@
 /**
- * Provision and PostgreSQL's two logins (047, ADR 0037, research R11): the notice for a deployed
+ * Provision and PostgreSQL's two logins (047, ADR 0037, research R11): the notice for an existing
  * database without them, the refusals, and the switch of an existing database, which provision
- * shows in a plan approved by its hash and goes on with only after a snapshot of the database.
+ * shows in a plan approved by its hash and goes on with only after a snapshot of the database (or
+ * once it finds the database never ran, so has no data to copy). An existing database is one whose
+ * superuser's password this environment's generated values keep: whether `opscrew verify` saw a
+ * deploy does not count, as the localhost target and a deploy by CI never run it.
  */
 import {
   canonicalJson,
@@ -76,11 +79,6 @@ function postgresOf(plan: DeployPlan): PlanService[] {
   return plan.services.filter((service) => service.enabled && service.kind === "postgres");
 }
 
-/** True when the environment has been deployed (`deployment.firstDeployAt`). */
-function deployed(plan: DeployPlan): boolean {
-  return plan.deployment.firstDeployAt !== undefined;
-}
-
 /**
  * Stops (`INVALID_INPUT`, before any change) when a PostgreSQL below 15 has `logins: separate`, or
  * one whose owner password this environment keeps (`kept`, {@link keptLogins}) lost it, with
@@ -107,11 +105,12 @@ export function requireLogins(plan: DeployPlan, kept: KeptLogins, command: strin
 }
 
 /**
- * Provision's notice for each deployed PostgreSQL without its own logins (data-model.md): how to
- * switch it, or below 15 that separate logins come with an upgrade. None before the first deploy.
+ * Provision's notice for each existing PostgreSQL without its own logins (data-model.md), one whose
+ * superuser's password this environment keeps (`kept`, {@link keptLogins}): how to switch it, or
+ * below 15 that separate logins come with an upgrade. None for a new database.
  */
-export function loginsNotices(plan: DeployPlan, command: string): string[] {
-  if (!deployed(plan)) return [];
+export function loginsNotices(plan: DeployPlan, kept: KeptLogins, command: string): string[] {
+  if (kept.dbPassword === undefined) return [];
   return postgresOf(plan)
     .filter((service) => !postgresLogins(service))
     .map((service) =>
@@ -130,17 +129,16 @@ export interface LoginsSwitch {
 }
 
 /**
- * The switch provision shows for a deployed environment (research R11): the PostgreSQLs that have
- * `logins: separate` while this environment keeps (`kept`, {@link keptLogins}) their superuser's
- * password but not their owner's, each with data-model.md's five lines, and the hash that binds
- * them; none when nothing switches.
+ * The switch provision shows (research R11): the PostgreSQLs that have `logins: separate` while this
+ * environment keeps (`kept`, {@link keptLogins}) their superuser's password but not their owner's,
+ * each with data-model.md's five lines, and the hash that binds them; none when nothing switches.
  */
 export function loginsSwitch(
   plan: DeployPlan,
   kept: KeptLogins,
   environment: string,
 ): LoginsSwitch | undefined {
-  if (!deployed(plan) || kept.dbPassword === undefined) return undefined;
+  if (kept.dbPassword === undefined) return undefined;
   const services = postgresOf(plan)
     .filter((service) => postgresLogins(service) && !ownerKept(kept, service))
     .map((service) => service.name);
@@ -158,16 +156,25 @@ export function loginsSwitch(
   return { services, lines, hash };
 }
 
-/** Takes a snapshot of the environment's data with the parts `skip` names left out. */
-export type LoginsSnapshot = (skip: readonly string[]) => Promise<unknown>;
+/** The snapshot a switch takes first. */
+export interface LoginsSnapshot {
+  /**
+   * The services among `names` that never ran where the environment keeps its data (no container
+   * and no volume of theirs), so have no data to copy.
+   */
+  neverRan(names: readonly string[]): Promise<readonly string[]>;
+  /** Takes a snapshot of the environment's data with the parts `skip` names left out. */
+  take(skip: readonly string[]): Promise<unknown>;
+}
 
 /**
  * Provision's step for PostgreSQL's two logins, before anything else changes: the refusals
  * ({@link requireLogins}), the notices ({@link loginsNotices}), then a switch's plan
  * ({@link loginsSwitch}). With `planOnly` that plan is shown with its hash and nothing more;
  * otherwise it is approved by its hash (`iac-apply`; `--approve <hash>` in a script), then the
- * switching databases' snapshot is taken (`snapshot`, their parts alone). Returns the switch, whose
- * hash no other plan of the run is.
+ * switching databases' snapshot is taken (`snapshot`, their parts alone), each that never ran left
+ * out with a line that it has no data yet. Returns the switch, whose hash no other plan of the run
+ * is.
  * @throws OpsCrewError `INVALID_INPUT` for a refusal, `APPROVAL_REFUSED` when the switch is not
  * approved, `COMMAND_FAILED` when the snapshot fails, each with nothing changed.
  */
@@ -179,7 +186,7 @@ export async function postgresLoginsStep(
   if (!plan.services.some((service) => service.kind === "postgres")) return undefined;
   const kept = await keptLogins(deps);
   requireLogins(plan, kept, o.command);
-  for (const notice of loginsNotices(plan, o.command)) deps.reporter.info(notice);
+  for (const notice of loginsNotices(plan, kept, o.command)) deps.reporter.info(notice);
   const change = loginsSwitch(plan, kept, deps.paths.environment);
   if (change === undefined) return undefined;
   const title = `Switch ${change.services.join(" and ")} to separate logins for the app and its migrations`;
@@ -202,13 +209,19 @@ export async function postgresLoginsStep(
     },
   });
   await deps.approvals.assertApprovedPlan(change.hash);
-  const switching = new Set(change.services);
-  const skip = dataParts(plan)
-    .map((part) => part.name)
-    .filter((name) => !switching.has(name));
-  deps.reporter.step(`Taking a snapshot of ${change.services.join(" and ")} before the switch`);
   try {
-    await o.snapshot(skip);
+    const empty = new Set(await o.snapshot.neverRan(change.services));
+    for (const name of empty) {
+      deps.reporter.info(`${name} has no data yet, so there's nothing to snapshot.`);
+    }
+    const copied = new Set(change.services.filter((name) => !empty.has(name)));
+    if (copied.size > 0) {
+      const skip = dataParts(plan)
+        .map((part) => part.name)
+        .filter((name) => !copied.has(name));
+      deps.reporter.step(`Taking a snapshot of ${[...copied].join(" and ")} before the switch`);
+      await o.snapshot.take(skip);
+    }
   } catch (error) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
