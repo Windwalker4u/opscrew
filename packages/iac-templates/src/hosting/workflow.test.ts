@@ -104,9 +104,10 @@ describe("renderHostingWorkflow", () => {
     expect(Object.keys(flow.on)).toEqual(["push", "workflow_dispatch"]);
     expect(flow.on.push).toMatchObject({ branches: ["main"] });
     expect(flow.permissions).toEqual({ contents: "read" });
-    expect(Object.keys(flow.jobs)).toEqual(["paused", "build", "publish", "wait"]);
+    expect(Object.keys(flow.jobs)).toEqual(["branch", "paused", "build", "publish", "wait"]);
+    expect(flow.jobs.build?.if).toBe("${{ github.ref == 'refs/heads/main' }}");
     expect(flow.jobs.publish?.if).toBe(
-      "${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '\"shop/staging\"') }}",
+      "${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '\"shop/staging\"')) }}",
     );
     expect(flow.jobs.paused?.if).toBe(
       "${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '\"shop/staging\"') }}",

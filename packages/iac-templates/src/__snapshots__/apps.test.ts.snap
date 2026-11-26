@@ -46,6 +46,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ !(inputs.rollback || inputs.digest) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"docs/prod"') }}
@@ -75,7 +88,7 @@ jobs:
 
   build:
     name: Build the image
-    if: \${{ !(inputs.rollback || inputs.digest) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!(inputs.rollback || inputs.digest)) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -150,7 +163,7 @@ jobs:
 
   verify:
     name: Check where the image was built
-    if: \${{ inputs.rollback || inputs.digest }}
+    if: \${{ github.ref == 'refs/heads/main' && (inputs.rollback || inputs.digest) }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -238,7 +251,7 @@ jobs:
   deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"docs/prod"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"docs/prod"'))) }}
     runs-on: ubuntu-latest
     environment: docs-production
     permissions:
@@ -1831,6 +1844,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"docs/prod"') }}
@@ -1860,6 +1886,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1919,7 +1946,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"docs/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"docs/prod"')) }}
     runs-on: ubuntu-latest
     environment: docs-production
     permissions:

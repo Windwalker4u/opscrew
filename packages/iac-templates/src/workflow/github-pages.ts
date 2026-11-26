@@ -11,6 +11,7 @@ import { pausedJob, unpaused } from "./pause";
 import {
   appFlag,
   DISPATCH_BY_HAND,
+  deployBranchIf,
   job,
   promoted,
   provisionCommand,
@@ -59,6 +60,7 @@ export function renderGithubPagesWorkflow(
   const build = job({
     id: "build",
     name: "Build the site",
+    if: deployBranchIf(plan),
     permissions: ["contents: read", "pages: read"],
     steps: [
       ...siteBuildSteps(plan, []),
@@ -88,7 +90,7 @@ export function renderGithubPagesWorkflow(
     id: "deploy",
     name: PAGES_PUBLISH_JOB,
     needs: "build",
-    if: `\${{ ${unpaused(plan, rerun)} }}`,
+    if: deployBranchIf(plan, unpaused(plan, rerun)),
     environment: "github-pages",
     permissions: ["pages: write", "id-token: write"],
     steps: [

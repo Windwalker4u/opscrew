@@ -3,6 +3,7 @@
 exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, Hugo 1`] = `
 "  build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,6 +64,7 @@ exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, Hu
 exports[`renderCloudflareWorkersWorkflow > matches the snapshots > build job, pnpm 1`] = `
 "  build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -152,6 +154,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        run: |
+          echo "::error::This workflow deploys prod only from the repository's default branch, and this run is on $GITHUB_REF_NAME, so nothing was deployed. Start it with \\\`opscrew promote --to prod\\\`, which runs it there."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -181,7 +194,7 @@ jobs:
 
   deploy:
     name: Deploy to Cloudflare
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -523,6 +536,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -552,6 +578,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -639,7 +666,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -938,6 +965,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -967,6 +1007,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1025,7 +1066,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
-    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:

@@ -27,6 +27,7 @@ import {
   block,
   builderBranchOf,
   DISPATCH_BY_HAND,
+  deployBranchIf,
   deploySecretName,
   environmentName,
   githubEnvironment,
@@ -145,6 +146,7 @@ function buildJob(plan: DeployPlan, files: SiteFiles): string[] {
   return job({
     id: "build",
     name: "Build the site",
+    if: deployBranchIf(plan),
     permissions: ["contents: read"],
     outputs: ["sha256: ${{ steps.manifest.outputs.sha256 }}"],
     steps: [
@@ -412,8 +414,9 @@ function buildRunCheck(
  * 6. while the app moves to another Cloudflare account, the same version deployed there too
  *    ({@link moveDeployStep}).
  *
- * It is skipped while the environment's deploys are paused ({@link unpaused}): `opscrew
- * rollback` activates an earlier version itself, with no run.
+ * It runs only on the environment's branch ({@link deployBranchIf}), and is skipped while the
+ * environment's deploys are paused ({@link unpaused}): `opscrew rollback` activates an earlier
+ * version itself, with no run.
  */
 function deployJob(
   plan: DeployPlan,
@@ -585,7 +588,7 @@ function deployJob(
     id: "deploy",
     name: "Deploy to Cloudflare",
     needs: fromRun ? undefined : "build",
-    if: `\${{ ${unpaused(plan)} }}`,
+    if: deployBranchIf(plan, unpaused(plan)),
     environment: githubEnvironment(plan),
     permissions: fromRun ? ["actions: read", "contents: read"] : ["contents: read"],
     steps,

@@ -45,6 +45,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys staging only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ !(inputs.rollback || inputs.digest) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
@@ -74,7 +87,7 @@ jobs:
 
   build:
     name: Build the image
-    if: \${{ !(inputs.rollback || inputs.digest) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!(inputs.rollback || inputs.digest)) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -149,7 +162,7 @@ jobs:
 
   verify:
     name: Check where the image was built
-    if: \${{ inputs.rollback || inputs.digest }}
+    if: \${{ github.ref == 'refs/heads/main' && (inputs.rollback || inputs.digest) }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -237,7 +250,7 @@ jobs:
   deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"'))) }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -1835,6 +1848,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        run: |
+          echo "::error::This workflow deploys prod only from the repository's default branch, and this run is on $GITHUB_REF_NAME, so nothing was deployed. Start it with \\\`opscrew promote --to prod\\\`, which runs it there."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
@@ -1864,6 +1888,7 @@ jobs:
 
   verify:
     name: Check where the image was built
+    if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1949,7 +1974,7 @@ jobs:
   deploy:
     name: Deploy to the server
     needs: verify
-    if: \${{ !cancelled() && (needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (!cancelled() && (needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -3263,7 +3288,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/eu-staging"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/eu-staging"'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -4542,7 +4567,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"'))) }}
     runs-on: [self-hosted, opscrew-shop-staging]
     defaults:
       run:
@@ -5814,7 +5839,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/dev"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/dev"'))) }}
     runs-on: [self-hosted, opscrew-shop-dev]
     defaults:
       run:
@@ -7137,6 +7162,7 @@ exports[`the label job > runs after a healthy deploy, with only packages: write 
 exports[`the verify job > runs the provenance check with the job's token and the branch that builds the images 1`] = `
 "  verify:
     name: Check where the image was built
+    if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     permissions:
       actions: read

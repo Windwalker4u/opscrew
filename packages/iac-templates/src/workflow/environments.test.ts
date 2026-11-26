@@ -112,6 +112,7 @@ describe("a workflow per environment", () => {
       workflow_dispatch: { inputs: expect.objectContaining({ rollback: expect.anything() }) },
     });
     expect(Object.keys(doc.jobs)).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -153,7 +154,7 @@ describe("a workflow per environment", () => {
         },
       },
     });
-    expect(Object.keys(doc.jobs)).toEqual(["paused", "verify", "deploy", "label"]);
+    expect(Object.keys(doc.jobs)).toEqual(["branch", "paused", "verify", "deploy", "label"]);
     const { verify, deploy } = doc.jobs;
     expect(verify?.["runs-on"]).toBe("ubuntu-latest");
     expect(verify?.permissions).toEqual({ actions: "read", packages: "read" });
@@ -174,7 +175,13 @@ describe("a workflow per environment", () => {
       withPlan(serverPlan(), { supplyChain: { sign: true }, deployTags: { enabled: true } }),
       { deploySource: PROMOTE },
     );
-    expect(Object.keys(workflow(everything).jobs)).toEqual(["paused", "verify", "deploy", "label"]);
+    expect(Object.keys(workflow(everything).jobs)).toEqual([
+      "branch",
+      "paused",
+      "verify",
+      "deploy",
+      "label",
+    ]);
   });
 
   it("matches the snapshots of staging following main and prod promoted from it", () => {
@@ -201,7 +208,7 @@ describe("a workflow per environment", () => {
       deploySource: PROMOTE,
     });
     const doc = workflow(portainer);
-    expect(Object.keys(doc.jobs)).toEqual(["paused", "verify", "deploy", "label"]);
+    expect(Object.keys(doc.jobs)).toEqual(["branch", "paused", "verify", "deploy", "label"]);
     expect(doc.jobs.verify).toEqual(workflow(promotedProd).jobs.verify);
     expect(doc.jobs.deploy?.needs).toBe("verify");
     expect(stepOf(doc.jobs.deploy, "write").env?.IMAGE).toBe("${{ needs.verify.outputs.image }}");

@@ -4,7 +4,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -1235,7 +1235,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -2492,7 +2492,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
 "  deploy:
     name: Deploy to the server
     needs: [build, verify]
-    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
+    if: \${{ github.ref == 'refs/heads/main' && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:

@@ -11,6 +11,7 @@ import {
   CHECK_IMAGE,
   DEPLOYS_DIGEST,
   DIGEST_REF_PATTERN,
+  deployBranchIf,
   environmentName,
   environmentTag,
   GHCR_LOGIN,
@@ -171,7 +172,7 @@ function verifyJob(plan: DeployPlan, ctx: Pick<RenderContext, "builderBranch">):
   return job({
     id: "verify",
     name: "Check where the image was built",
-    ...(promoted(plan) ? {} : { if: `\${{ ${DEPLOYS_DIGEST} }}` }),
+    if: deployBranchIf(plan, promoted(plan) ? undefined : DEPLOYS_DIGEST),
     permissions: ["actions: read", "packages: read"],
     outputs: [
       "image: ${{ steps.provenance.outputs.image }}",
@@ -232,7 +233,9 @@ export function jobsBeforeDeploy(
   return [
     ...pausedJob(plan, givesImage(plan)),
     "",
-    ...(promoted(plan) ? [] : [...buildJob(plan), ""]),
+    ...(promoted(plan)
+      ? []
+      : [...buildJob(plan, deployBranchIf(plan, `!(${DEPLOYS_DIGEST})`)), ""]),
     ...verifyJob(plan, ctx),
   ];
 }
@@ -246,7 +249,8 @@ export function jobsBeforeDeploy(
  * ran before this deploy (empty on the first one), which the image retention job never deletes and
  * the label job labels `opscrew-<env>-previous`.
  *
- * It is skipped while the environment is paused ({@link unpaused}), except in a dispatch with an
+ * It runs only on the environment's branch ({@link deployBranchIf}), as do the build and the
+ * digest's check. It is skipped while the environment is paused ({@link unpaused}), except in a dispatch with an
  * image ({@link givesImage}): a rollback (of a rollback), or a move's deploy in its maintenance
  * window. In an environment that follows a branch one of `build` and `verify`
  * is always skipped, so it checks their results itself (research R6, S3).
@@ -266,7 +270,10 @@ export function deployJob(
     id: "deploy",
     name,
     needs: imageJobs(plan),
-    if: `\${{ !cancelled() && (${imaged}) && (${unpaused(plan, givesImage(plan))}) }}`,
+    if: deployBranchIf(
+      plan,
+      `!cancelled() && (${imaged}) && (${unpaused(plan, givesImage(plan))})`,
+    ),
     environment: githubEnvironment(plan),
     runsOn: own ? `[self-hosted, ${runnerLabel(plan)}]` : undefined,
     shell: own ? "bash" : undefined,

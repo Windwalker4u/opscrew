@@ -26,6 +26,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ !(github.run_attempt > 1) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -55,6 +68,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -100,7 +114,7 @@ jobs:
   deploy:
     name: Publish on GitHub Pages
     needs: build
-    if: \${{ github.run_attempt > 1 || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (github.run_attempt > 1 || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: github-pages
     permissions:
@@ -137,6 +151,7 @@ jobs:
 exports[`renderGithubPagesWorkflow > matches the snapshots > build job, pnpm 1`] = `
 "  build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -211,6 +226,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  branch:
+    name: Refuse a run on another branch
+    if: \${{ !(github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          BRANCH: "main"
+        run: |
+          echo "::error::This workflow deploys prod only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH."
+          exit 1
+
   paused:
     name: Report the deploy pause
     if: \${{ !(github.run_attempt > 1) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
@@ -240,6 +268,7 @@ jobs:
 
   build:
     name: Build the site
+    if: \${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -286,7 +315,7 @@ jobs:
   deploy:
     name: Publish on GitHub Pages
     needs: build
-    if: \${{ github.run_attempt > 1 || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    if: \${{ github.ref == 'refs/heads/main' && (github.run_attempt > 1 || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"')) }}
     runs-on: ubuntu-latest
     environment: github-pages
     permissions:

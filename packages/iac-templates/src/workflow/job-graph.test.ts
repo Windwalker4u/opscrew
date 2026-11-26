@@ -84,6 +84,12 @@ function evaluate(expression: string, scope: Scope): Value {
     if (name === "failure") return scope.failure;
     if (name === "cancelled") return false;
     if (name === "always") return true;
+    if (name === "format") {
+      const [text, ...values] = args;
+      return String(text ?? "").replace(/\{(\d+)\}/g, (_, n: string) =>
+        String(values[Number(n)] ?? ""),
+      );
+    }
     if (name === "contains") {
       const [search, item] = args;
       return String(search ?? "")
@@ -183,6 +189,8 @@ interface Run {
   attempt?: string;
   /** The jobs that fail when they run. */
   fail?: readonly string[];
+  /** The branch the run is on (`github.ref`, default `refs/heads/main`, also the default branch). */
+  ref?: string;
 }
 
 type Result = "success" | "failure" | "skipped";
@@ -219,7 +227,11 @@ function simulate(content: string, run: Run) {
   const contexts = {
     inputs: run.inputs ?? {},
     vars,
-    github: { run_attempt: run.attempt ?? "1" },
+    github: {
+      run_attempt: run.attempt ?? "1",
+      ref: run.ref ?? "refs/heads/main",
+      event: { repository: { default_branch: "main" } },
+    },
   };
   const scopeOf = (id: string): Scope => {
     const done = before(id).map((n) => results[n]);
@@ -287,6 +299,9 @@ const MOVE_PAUSED: Run = {
 const PROMOTION_PAUSED: Run = { ...PROMOTION, paused: pausedFor("shop/prod") };
 
 const PAUSED = `contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')`;
+/** The deploy jobs' guard: the environment's branch, or a promoted one's default branch. */
+const ON_MAIN = "github.ref == 'refs/heads/main'";
+const ON_DEFAULT = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)";
 const PROMOTE = { from: "promote", source: "staging" } as const;
 
 describe("a server environment that follows its branch (S3)", () => {
@@ -333,6 +348,7 @@ describe("a server environment that follows its branch (S3)", () => {
 
   it("has the needs and the conditions S3 ran", () => {
     expect(Object.keys(jobs)).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -348,12 +364,13 @@ describe("a server environment that follows its branch (S3)", () => {
     const afterBuild =
       "${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}";
     expect(shape).toEqual({
+      branch: { if: `\${{ !(${ON_MAIN}) }}` },
       paused: { if: `\${{ !(inputs.rollback || inputs.digest) && ${PAUSED} }}` },
-      build: { if: "${{ !(inputs.rollback || inputs.digest) }}" },
-      verify: { if: "${{ inputs.rollback || inputs.digest }}" },
+      build: { if: `\${{ ${ON_MAIN} && (!(inputs.rollback || inputs.digest)) }}` },
+      verify: { if: `\${{ ${ON_MAIN} && (inputs.rollback || inputs.digest) }}` },
       deploy: {
         needs: ["build", "verify"],
-        if: `\${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !${PAUSED}) }}`,
+        if: `\${{ ${ON_MAIN} && (!cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || inputs.digest || !${PAUSED})) }}`,
       },
       sign: { needs: "build" },
       tag: { needs: ["build", "deploy"], if: afterBuild },
@@ -388,6 +405,13 @@ describe("a server environment that follows its branch (S3)", () => {
     expect(ran(flow, PUSH_PAUSED)).toEqual(["build", "paused", "sign"]);
     const move = JSON.stringify({ "shop/prod": { reason: "move", since: SINCE } });
     expect(ran(flow, { inputs: {}, paused: move })).toEqual(["build", "paused", "sign"]);
+  });
+
+  it("only fails a run started by hand, a rollback or a move on another branch", () => {
+    for (const run of [BY_HAND, ROLLBACK, ROLLBACK_PAUSED, MOVE]) {
+      expect(ran(flow, { ...run, ref: "refs/heads/feature" })).toEqual(["branch"]);
+    }
+    expect(ran(flow, { ...BY_HAND, ref: "refs/tags/v1" })).toEqual(["branch"]);
   });
 
   it("deploys a rollback's image after verify, paused or not, and labels it", () => {
@@ -524,18 +548,24 @@ describe("a promoted server environment", () => {
       Object.entries(jobs).map(([id, job]) => [id, { needs: job.needs, if: job.if }]),
     );
     expect(shape).toEqual({
+      branch: { if: `\${{ !(${ON_DEFAULT}) }}` },
       paused: { if: `\${{ !(inputs.rollback) && ${PAUSED} }}` },
-      verify: {},
+      verify: { if: `\${{ ${ON_DEFAULT} }}` },
       // The server's conditions: with verify the only image job, they hold as GitHub's own.
       deploy: {
         needs: "verify",
-        if: `\${{ !cancelled() && (needs.verify.result == 'success') && (inputs.rollback || !${PAUSED}) }}`,
+        if: `\${{ ${ON_DEFAULT} && (!cancelled() && (needs.verify.result == 'success') && (inputs.rollback || !${PAUSED})) }}`,
       },
       label: {
         needs: ["verify", "deploy"],
         if: "${{ !cancelled() && needs.deploy.result == 'success' }}",
       },
     });
+  });
+
+  it("deploys only from the default branch, where `opscrew promote` starts it", () => {
+    expect(ran(flow, { ...PROMOTION, ref: "refs/heads/feature" })).toEqual(["branch"]);
+    expect(ran(flow, { ...ROLLBACK, ref: "refs/heads/feature" })).toEqual(["branch"]);
   });
 
   it("deploys a promotion, unless paused, and a rollback always", () => {
@@ -565,6 +595,7 @@ describe("Portainer and the local runner, as a server", () => {
     for (const flow of [portainer, local]) {
       expect(on(flow).workflow_dispatch).toEqual(server);
       expect(Object.keys(jobsOf(flow))).toEqual([
+        "branch",
         "paused",
         "build",
         "verify",
@@ -614,7 +645,7 @@ describe("the sites", () => {
   });
 
   it("skip Cloudflare's deploy while paused", () => {
-    expect(jobsOf(workers).deploy?.if).toBe(`\${{ !${SITE_PAUSED} }}`);
+    expect(jobsOf(workers).deploy?.if).toBe(`\${{ ${ON_MAIN} && (!${SITE_PAUSED}) }}`);
     expect(jobsOf(workers).paused?.if).toBe(`\${{ ${SITE_PAUSED} }}`);
     expect(ran(workers, PUSH)).toEqual(["build", "deploy"]);
     expect(ran(workers, pushPaused)).toEqual(["build", "paused"]);
@@ -622,15 +653,20 @@ describe("the sites", () => {
     const dispatch: Run = { inputs: { run: "4242", sha256: "e".repeat(64) } };
     expect(ran(promotedWorkers, dispatch)).toEqual(["deploy"]);
     expect(ran(promotedWorkers, { ...dispatch, paused: pushPaused.paused })).toEqual(["paused"]);
+    expect(ran(workers, { ...BY_HAND, ref: "refs/heads/feature" })).toEqual(["branch"]);
+    expect(ran(promotedWorkers, { ...dispatch, ref: "refs/heads/feature" })).toEqual(["branch"]);
   });
 
   it("skip GitHub Pages' deploy while paused, except in a re-run (S4)", () => {
-    expect(jobsOf(pages).deploy?.if).toBe(`\${{ github.run_attempt > 1 || !${SITE_PAUSED} }}`);
+    expect(jobsOf(pages).deploy?.if).toBe(
+      `\${{ ${ON_MAIN} && (github.run_attempt > 1 || !${SITE_PAUSED}) }}`,
+    );
     expect(jobsOf(pages).paused?.if).toBe(`\${{ !(github.run_attempt > 1) && ${SITE_PAUSED} }}`);
     expect(ran(pages, PUSH)).toEqual(["build", "deploy"]);
     expect(ran(pages, pushPaused)).toEqual(["build", "paused"]);
     expect(ran(pages, { ...pushPaused, attempt: "2" })).toEqual(["build", "deploy"]);
     expect(ran(pages, { ...PUSH, attempt: "2" })).toEqual(["build", "deploy"]);
+    expect(ran(pages, { ...BY_HAND, ref: "refs/heads/feature" })).toEqual(["branch"]);
   });
 });
 

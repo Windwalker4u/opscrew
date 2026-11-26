@@ -139,6 +139,7 @@ describe("deploy tags", () => {
 describe("the jobs after the deploy", () => {
   it("lists only the jobs that are on, and always the environment's image labels", () => {
     expect(Object.keys(jobs(serverPlan()))).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -151,6 +152,7 @@ describe("the jobs after the deploy", () => {
       deployTags: { enabled: true },
     });
     expect(Object.keys(jobs(everything))).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -162,6 +164,7 @@ describe("the jobs after the deploy", () => {
     ]);
     const nothing = withPlan(serverPlan(), { imageRetention: { enabled: false } });
     expect(Object.keys(jobs(nothing))).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -194,6 +197,7 @@ describe("the jobs after the deploy", () => {
     const p = jobs(portainer);
     const s = jobs(server);
     expect(Object.keys(p)).toEqual([
+      "branch",
       "paused",
       "build",
       "verify",
@@ -203,7 +207,7 @@ describe("the jobs after the deploy", () => {
       "prune",
       "label",
     ]);
-    for (const id of ["paused", "build", "verify"]) expect(p[id]).toEqual(s[id]);
+    for (const id of ["branch", "paused", "build", "verify"]) expect(p[id]).toEqual(s[id]);
     for (const id of ["sign", "tag", "prune", "label"]) expect(p[id]).toEqual(s[id]);
     expect(parse(content(portainer)).jobs.deploy.outputs).toEqual({
       previous: "${{ steps.write.outputs.previous_image }}",

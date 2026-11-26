@@ -17,6 +17,7 @@ import { pushPaths } from "../workflow/paths";
 import { pausedJob, unpaused } from "../workflow/pause";
 import {
   DISPATCH_BY_HAND,
+  deployBranchIf,
   deploySecretName,
   environmentName,
   githubEnvironment,
@@ -232,6 +233,7 @@ export function releaseBuildJob(plan: DeployPlan, target: HostingDeployTarget): 
   return job({
     id: "build",
     name: "Build the release",
+    if: deployBranchIf(plan),
     permissions: ["contents: read"],
     steps: [
       `- uses: ${ACTIONS.checkout}`,
@@ -413,7 +415,7 @@ export function renderHostingWorkflow(
     id: "publish",
     name: `Publish the release on ${branch}`,
     needs: "build",
-    if: `\${{ ${unpaused(plan)} }}`,
+    if: deployBranchIf(plan, unpaused(plan)),
     ...(environment === undefined ? {} : { environment }),
     permissions: ["contents: write"],
     outputs: ["release: ${{ steps.publish.outputs.release }}"],

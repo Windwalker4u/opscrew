@@ -80,14 +80,16 @@ describe("renderSftpWorkflow", () => {
 
   it("builds as a panel account does, then deploys unless paused, in the deploy environment", () => {
     const flow = doc(PHP);
-    expect(Object.keys(flow.jobs)).toEqual(["paused", "build", "deploy"]);
+    expect(Object.keys(flow.jobs)).toEqual(["branch", "paused", "build", "deploy"]);
     expect(Object.keys(flow.on)).toEqual(["push", "workflow_dispatch"]);
     const { build, deploy } = flow.jobs;
     expect(build?.permissions).toEqual({ contents: "read" });
     expect(deploy?.needs).toBe("build");
     expect(deploy?.permissions).toEqual({});
     expect(deploy?.environment).toBe("staging");
-    expect(deploy?.if).toBe("${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '\"shop/staging\"') }}");
+    expect(deploy?.if).toBe(
+      "${{ github.ref == 'refs/heads/main' && (!contains(vars.OPSCREW_DEPLOY_PAUSED, '\"shop/staging\"')) }}",
+    );
     expect(build?.steps.map((s) => s.name ?? s.uses?.split("@")[0])).toContain(
       "Install the app's PHP packages with Composer in PHP 8.3",
     );

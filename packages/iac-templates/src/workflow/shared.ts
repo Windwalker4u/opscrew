@@ -506,6 +506,53 @@ function imageDispatch(promotion: boolean): string[] {
 export const DISPATCH_BY_HAND = ["  workflow_dispatch: {}"];
 
 /**
+ * True when the run is on the branch the environment deploys from (an expression): `cicd.branch`,
+ * whose pushes deploy it and on which OpsCrew's dispatches start it, or for a promoted environment
+ * the repository's default branch, on which `opscrew promote` starts it. A run started by hand on
+ * any other branch would build that branch's files and deploy them with the environment's secrets
+ * (a repository's secrets reach every branch, and GitHub Free gives a private repository's
+ * environments no branch rules), so the jobs that build, deploy or hold its secrets run only here.
+ */
+export function onDeployBranch(plan: DeployPlan): string {
+  if (promoted(plan)) {
+    return "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)";
+  }
+  // A quote in an expression's string is written twice.
+  return `github.ref == '${`refs/heads/${plan.cicd.branch}`.replaceAll("'", "''")}'`;
+}
+
+/**
+ * The `if:` of a deploy workflow's job that builds, deploys or holds the environment's secrets:
+ * {@link onDeployBranch}, and `condition` (an expression) when given.
+ */
+export function deployBranchIf(plan: DeployPlan, condition?: string): string {
+  const guard = onDeployBranch(plan);
+  return `\${{ ${condition === undefined ? guard : `${guard} && (${condition})`} }}`;
+}
+
+/**
+ * The job that fails a run on another branch than {@link onDeployBranch}'s with a message that
+ * says where to start it, as every other job is skipped there.
+ */
+function otherBranchJob(plan: DeployPlan): string[] {
+  const env = environmentName(plan);
+  const text = promoted(plan)
+    ? `This workflow deploys ${env} only from the repository's default branch, and this run is on $GITHUB_REF_NAME, so nothing was deployed. Start it with \\\`${promoteCommand(plan)}\\\`, which runs it there.`
+    : `This workflow deploys ${env} only from the branch $BRANCH, and this run is on $GITHUB_REF_NAME, so nothing was built or deployed. Start it on $BRANCH (Run workflow, then Use workflow from $BRANCH), or push to $BRANCH.`;
+  return job({
+    id: "branch",
+    name: "Refuse a run on another branch",
+    if: `\${{ !(${onDeployBranch(plan)}) }}`,
+    permissions: [],
+    steps: [
+      "- name: Say why this run does not deploy",
+      ...(promoted(plan) ? [] : ["  env:", `    BRANCH: ${JSON.stringify(plan.cicd.branch)}`]),
+      ...run([`echo "::error::${text}"`, "exit 1"]),
+    ],
+  });
+}
+
+/**
  * The deploy workflow's name in GitHub → Actions: `OpsCrew deploy`, then a further app's key, then
  * `(<env>)` outside prod (`OpsCrew deploy`, `OpsCrew deploy (staging)`, `OpsCrew deploy docs`,
  * `OpsCrew deploy docs (staging)`).
@@ -567,7 +614,8 @@ export function said(text: string): string {
  * environment's runs queue in a group of their own (the first app's prod's `opscrew-deploy`, any
  * other's `opscrew-deploy-<app name>`, which is unique in the repository), so one environment never
  * deploys twice at once. A running deploy is never cancelled; of the runs waiting behind it, GitHub
- * keeps only the newest.
+ * keeps only the newest. The first job, `branch`, fails a run started on another branch than the
+ * environment's ({@link onDeployBranch}), whose other jobs are skipped.
  */
 export function workflowStart(
   plan: DeployPlan,
@@ -601,6 +649,8 @@ export function workflowStart(
     "  cancel-in-progress: false",
     "",
     "jobs:",
+    ...otherBranchJob(plan),
+    "",
   ];
 }
 

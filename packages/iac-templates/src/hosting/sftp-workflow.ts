@@ -6,6 +6,7 @@ import { shellQuote } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
 import { unpaused } from "../workflow/pause";
 import {
+  deployBranchIf,
   deploySecretName,
   environmentName,
   githubEnvironment,
@@ -393,7 +394,7 @@ export function renderSftpWorkflow(
     id: "deploy",
     name: `Upload the release over SFTP and switch ${domain} to it`,
     needs: "build",
-    if: `\${{ ${unpaused(plan)} }}`,
+    if: deployBranchIf(plan, unpaused(plan)),
     ...(environment === undefined ? {} : { environment }),
     permissions: [],
     steps: [
