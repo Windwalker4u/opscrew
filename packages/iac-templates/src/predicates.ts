@@ -6,22 +6,15 @@ export function usesCloudflare(plan: DeployPlan): boolean {
   return plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
 }
 
-/** True when the plan's DNS is a domain on Bunny.net. */
-export function usesBunny(plan: DeployPlan): boolean {
-  return plan.dns.provider === "bunny" && plan.dns.domain !== undefined;
-}
-
-/** True when web traffic reaches the server through a configured edge proxy provider. */
-export function usesEdge(plan: DeployPlan): boolean {
-  return activeEdgeProvider(plan) !== undefined;
-}
-
 /**
- * True when web traffic may reach the server only through the active edge proxy
- * (`security.httpAllowedFrom: edge`).
+ * The non-Cloudflare edge/DNS provider id used by `plan`'s Terraform root (`dns.edge` if set,
+ * otherwise `dns.provider` when it is not `"cloudflare"` or `"none"` and a domain is set).
  */
-export function webOnlyFromEdge(plan: DeployPlan): boolean {
-  return usesEdge(plan) && plan.security.httpAllowedFrom === "edge";
+export function thirdPartyEdgeId(plan: DeployPlan): string | undefined {
+  if (plan.dns.domain === undefined) return undefined;
+  if (plan.dns.edge !== undefined) return plan.dns.edge;
+  if (plan.dns.provider !== "cloudflare" && plan.dns.provider !== "none") return plan.dns.provider;
+  return undefined;
 }
 
 /**
@@ -34,13 +27,25 @@ export function webOnlyFromCloudflare(plan: DeployPlan): boolean {
 }
 
 /**
- * True when the active edge provider publishes compact CIDRs that fit cloud firewalls and server
- * real-IP trust lists (`originIpFiltering: "compact-cidrs"`). False for `dynamic-ips` providers
- * such as Bunny.net, where the firewall leaves ports 80/443 open and the shared header is the gate.
+ * True when the active edge provider publishes compact CIDRs that fit cloud firewalls
+ * (`originIpFiltering: "compact-cidrs"` with `security.httpAllowedFrom: edge`). False for
+ * `dynamic-ips` providers such as Bunny.net, where the firewall leaves ports 80/443 open and the
+ * shared header is the gate.
  */
 export function usesCompactEdgeCidrs(plan: DeployPlan): boolean {
   const edgeId = activeEdgeProvider(plan);
   if (edgeId === undefined || plan.security.httpAllowedFrom !== "edge") return false;
+  return edgeProvider(edgeId).capabilities.originIpFiltering === "compact-cidrs";
+}
+
+/**
+ * True when the active edge provider uses compact CIDRs and proxies traffic to the server
+ * (regardless of `security.httpAllowedFrom`, so proxied Cloudflare apps with `httpAllowedFrom: any`
+ * still trust Cloudflare's real-IP header).
+ */
+export function trustsCompactEdgeRealIp(plan: DeployPlan): boolean {
+  const edgeId = activeEdgeProvider(plan);
+  if (edgeId === undefined) return false;
   return edgeProvider(edgeId).capabilities.originIpFiltering === "compact-cidrs";
 }
 

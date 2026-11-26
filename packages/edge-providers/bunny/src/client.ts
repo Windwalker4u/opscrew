@@ -70,7 +70,6 @@ export interface BunnyClient {
     headerName: string;
     token: string;
   }): Promise<void>;
-  deleteEdgeRule(pullZoneId: number, guid: string): Promise<void>;
 }
 
 /** Creates a typed Bunny.net API client authenticating via `AccessKey`. */
@@ -217,10 +216,6 @@ export function bunnyClient(deps: BunnyClientDeps): BunnyClient {
           },
         ],
       });
-    },
-
-    async deleteEdgeRule(pullZoneId: number, guid: string): Promise<void> {
-      await request("DELETE", `/pullzone/${pullZoneId}/edgerules/${encodeURIComponent(guid)}`);
     },
   };
 }

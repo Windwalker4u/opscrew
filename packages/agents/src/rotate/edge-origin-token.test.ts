@@ -1,178 +1,266 @@
-import {
-  BUNNY_ACTION_SET_REQUEST_HEADER,
-  type BunnyEdgeRule,
-  OPSCREW_ORIGIN_HEADER_DESCRIPTION,
-} from "@opscrew/edge-provider-bunny";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { FetchLike, RemoteExec } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import type { PhaseDeps } from "../context";
 import {
   ensureEdgeOriginToken,
   readEdgeOriginToken,
-  syncBunnyOriginHeader,
+  setupThirdPartyEdge,
+  syncEdgeOriginHeader,
+  writeEdgeOriginToken,
 } from "../provision/edge-origin-token";
-import { createTestPhaseDeps, ScriptedApprovalHandler, testPlan } from "../testing";
+import { recordServerAddress } from "../shared";
+import { ensureDeployKey } from "../shared/ssh-keys";
+import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { rotateEdgeOriginToken } from "./edge-origin-token";
-import { credentialInventory } from "./inventory";
 
-function bunnyPlan(edge: "caddy" | "nginx" | "openlitespeed" = "caddy") {
-  const base = testPlan();
+const tempDirs: string[] = [];
+const API_KEY = fakeSecret("generic-password", "bunny-rotate-key");
+
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function makeDeps(approve: boolean, env: Record<string, string> = {}): Promise<PhaseDeps> {
+  const root = await mkdtemp(join(tmpdir(), "opscrew-edge-rotate-"));
+  tempDirs.push(root);
+  const deps = await createTestPhaseDeps({
+    root,
+    approvalHandler: new ScriptedApprovalHandler(() => approve),
+    env: { BUNNYNET_API_KEY: API_KEY, ...env },
+  });
+  await recordServerAddress(deps.paths, { ipv4: "203.0.113.10" });
+  await ensureDeployKey(deps.paths, deps.redactor);
+  return deps;
+}
+
+function bunnyPlan(dnsProvider: "bunny" | "cloudflare" = "bunny") {
   return DeployPlanSchema.parse({
-    ...base,
-    target: { ...base.target, edge },
+    schemaVersion: 1,
+    createdAt: "2026-11-26T00:00:00.000Z",
+    updatedAt: "2026-11-26T00:00:00.000Z",
+    app: { name: "shop", port: 3000, healthPath: "/health", env: [] },
+    target: {
+      provider: "hetzner",
+      mode: "vps-compose",
+      location: "fsn1",
+      serverType: "cx23",
+      backups: true,
+      edge: "caddy",
+    },
     dns: {
-      provider: "bunny",
+      provider: dnsProvider,
       domain: "shop.example.com",
       zone: "example.com",
       proxied: true,
       www: false,
     },
-    security: { ...base.security, httpAllowedFrom: "edge" },
+    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
+    security: { httpAllowedFrom: "edge", wafCustomRules: true },
+    services: [],
+    externalServices: [],
+    codeChanges: [],
+    cost: {
+      monthly: { amount: 4.5, currency: "EUR" },
+      breakdown: [{ item: "Hetzner cx23", monthly: { amount: 4.5, currency: "EUR" } }],
+      pricesIncludeVat: false,
+      source: "static",
+      asOf: "2026-11-26T00:00:00.000Z",
+    },
   });
 }
 
-function fakeBunnyEdge(initial: BunnyEdgeRule[] = []) {
-  let rules = [...initial];
-  const calls: string[] = [];
-  const upsertedTokens: string[] = [];
-  return {
-    calls,
-    upsertedTokens,
-    client: {
-      async listEdgeRules() {
-        return [...rules];
-      },
-      async upsertOriginHeaderRule(input: {
-        pullZoneId: number;
-        guid?: string;
-        headerName: string;
-        token: string;
-      }) {
-        calls.push("bunny:upsert");
-        upsertedTokens.push(input.token);
-        rules = [
-          {
-            Guid: input.guid ?? "bunny-rule-1",
-            ActionType: BUNNY_ACTION_SET_REQUEST_HEADER,
-            ActionParameter1: input.headerName,
-            ActionParameter2: input.token,
-            Description: OPSCREW_ORIGIN_HEADER_DESCRIPTION,
-            Enabled: true,
-            Triggers: [{ Type: 0, PatternMatches: ["*"], Parameter1: "" }],
-          },
-        ];
-      },
-    },
-  };
+function fakeBunnyApi(opts: { initialToken?: string; failUpsertOnce?: boolean } = {}) {
+  const events: string[] = [];
+  let currentToken = opts.initialToken;
+  let shouldFailUpsert = opts.failUpsertOnce === true;
+
+  const fetch: FetchLike = (async (url: string | URL, init?: RequestInit) => {
+    const href = String(url);
+    if (href.includes("/dnszone")) {
+      return new Response(JSON.stringify({ Items: [{ Id: 777, Domain: "example.com" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (href.includes("/edgerules/addOrUpdate") && init?.method === "POST") {
+      if (shouldFailUpsert) {
+        shouldFailUpsert = false;
+        events.push("edge:failed");
+        return new Response("temporary Bunny error", { status: 503 });
+      }
+      const body = JSON.parse(String(init.body)) as { ActionParameter2: string };
+      currentToken = body.ActionParameter2;
+      events.push(`edge:set:${currentToken.slice(0, 6)}`);
+      return new Response(null, { status: 201 });
+    }
+    if (href.includes("/pullzone/")) {
+      return new Response(
+        JSON.stringify({
+          Id: 55,
+          Name: "opscrew-shop",
+          EdgeRules:
+            currentToken === undefined
+              ? []
+              : [
+                  {
+                    Guid: "guid-1",
+                    ActionType: 6,
+                    ActionParameter1: "X-OpsCrew-Origin-Token",
+                    ActionParameter2: currentToken,
+                    Description: "OpsCrew origin verification header",
+                    Enabled: true,
+                    Triggers: [{ Type: 0, PatternMatches: ["*"], Parameter1: "" }],
+                  },
+                ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  }) as unknown as FetchLike;
+
+  return { events, fetch, getCurrentToken: () => currentToken };
 }
 
-describe("Bunny.net shared-header token provisioning and zero-downtime rotation (036 PR 2)", () => {
-  it("generates and persists edge-origin-token once, syncs Bunny with plan-hash approval, and lists it in credentialInventory", async () => {
-    const handler = new ScriptedApprovalHandler(() => true);
-    const deps = await createTestPhaseDeps({ approvalHandler: handler });
-    const plan = bunnyPlan("caddy");
-    const bunny = fakeBunnyEdge();
+function fakeRemote(events: string[], snippets: string[]): (host: string) => RemoteExec {
+  return (host) => ({
+    host,
+    async run(command, options) {
+      const stdin = options?.input ?? "";
+      snippets.push(stdin);
+      const isDual = stdin.includes("|");
+      events.push(isDual ? "server:dual-accept" : "server:narrow");
+      expect(command).toContain("/srv/edge/tls/shop/origin-token.caddy");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+}
 
-    const first = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
-    expect(first.current).toBe("11".repeat(32));
-    // Subsequent call reuses the kept token.
-    const second = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x22));
-    expect(second).toEqual(first);
+describe("third-party edge setup and zero-downtime edge-origin-token rotation (036 PR 2)", () => {
+  it("B1: verifies BUNNYNET_API_KEY, redacts it, looks up dnsZoneId, and syncs origin header via registry", async () => {
+    const deps = await makeDeps(true);
+    const plan = bunnyPlan("bunny");
+    const bunny = fakeBunnyApi();
 
-    // Syncing Bunny asks for plan-hash approval without leaking the plaintext token.
-    const synced = await syncBunnyOriginHeader(deps, plan, {
-      pullZoneId: 77,
-      token: first.current,
-      client: bunny.client,
+    const setup = await setupThirdPartyEdge(deps, plan, { edgeFetch: bunny.fetch });
+    expect(setup).toEqual({
+      id: "bunny",
+      envVar: "BUNNYNET_API_KEY",
+      apiKey: API_KEY,
+      dnsZoneId: 777,
+    });
+    expect(deps.redactor.redact(`key=${API_KEY}`)).not.toContain(API_KEY);
+
+    const token = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
+    const synced = await syncEdgeOriginHeader(deps, plan, {
+      resourceId: "55",
+      token: token.current,
+      apiKey: API_KEY,
       command: "opscrew provision",
+      fetch: bunny.fetch,
     });
     expect(synced.applied).toBe(true);
-    expect(handler.requests).toHaveLength(1);
-    expect(handler.requests[0]?.details).not.toContain(first.current);
-    expect(bunny.upsertedTokens).toEqual([first.current]);
-
-    // Inventory lists `edge-origin-token` as seamless.
-    const items = await credentialInventory(deps, plan);
-    expect(items.find((c) => c.name === "edge-origin-token")).toMatchObject({
-      name: "edge-origin-token",
-      kind: "edge-origin-token",
-      rotation: { mode: "seamless" },
-    });
+    expect(bunny.getCurrentToken()).toBe("11".repeat(32));
   });
 
-  it("rotates with zero downtime: server dual-accept -> approved Bunny switch -> server narrow", async () => {
-    const handler = new ScriptedApprovalHandler(() => true);
-    const deps = await createTestPhaseDeps({ approvalHandler: handler });
-    const plan = bunnyPlan("nginx");
-    const initial = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0xaa));
-    const bunny = fakeBunnyEdge([
-      {
-        Guid: "existing-guid",
-        ActionType: BUNNY_ACTION_SET_REQUEST_HEADER,
-        ActionParameter1: "X-OpsCrew-Origin-Token",
-        ActionParameter2: initial.current,
-        Description: OPSCREW_ORIGIN_HEADER_DESCRIPTION,
-        Enabled: true,
-        Triggers: [{ Type: 0, PatternMatches: ["*"], Parameter1: "" }],
-      },
-    ]);
-
-    const timeline: string[] = [];
-    const snippets: { phase: string; content: string }[] = [];
-    const secrets: { name: string; value: string }[] = [];
+  it("rotates in order: approve -> server dual-accept -> edge switch -> server narrow, dropping previous", async () => {
+    const deps = await makeDeps(true);
+    const plan = bunnyPlan("bunny");
+    const initial = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
+    const bunny = fakeBunnyApi({ initialToken: initial.current });
+    const snippets: string[] = [];
 
     const result = await rotateEdgeOriginToken(deps, plan, {
-      pullZoneId: 77,
-      bunny: {
-        listEdgeRules: bunny.client.listEdgeRules,
-        upsertOriginHeaderRule: async (input) => {
-          timeline.push("edge:switch");
-          await bunny.client.upsertOriginHeaderRule(input);
-        },
-      },
-      installServerSnippet: async ({ phase, content }) => {
-        timeline.push(`server:${phase}`);
-        snippets.push({ phase, content });
-      },
-      setDeploySecret: async (name, value) => {
-        secrets.push({ name, value });
-      },
-      randomBytes: () => Buffer.alloc(32, 0xbb),
+      resourceId: "55",
+      fetch: bunny.fetch,
+      remote: fakeRemote(bunny.events, snippets),
+      randomBytes: () => Buffer.alloc(32, 0x22),
     });
 
-    const next = "bb".repeat(32);
+    const next = "22".repeat(32);
     expect(result.rotated).toBe(true);
-    expect(result.proxy).toBe("nginx");
-    expect(result.serverPath).toBe("/srv/edge/tls/shop/origin-token.conf");
-    expect(timeline).toEqual(["server:dual-accept", "edge:switch", "server:narrow"]);
-
-    // Dual-accept snippet accepts BOTH next and initial; narrow snippet accepts ONLY next.
-    expect(snippets[0]?.content).toContain(`${next}|${initial.current}`);
-    expect(snippets[1]?.content).toContain(next);
-    expect(snippets[1]?.content).not.toContain(initial.current);
-
-    // GitHub secret updated to dual-line then single-line.
-    expect(secrets).toEqual([
-      { name: "OPSCREW_EDGE_ORIGIN_TOKEN", value: `${next}\n${initial.current}` },
-      { name: "OPSCREW_EDGE_ORIGIN_TOKEN", value: next },
-    ]);
-
-    // Approval prompt never leaked the plaintext secret.
-    expect(handler.requests).toHaveLength(1);
-    expect(handler.requests[0]?.details).not.toContain(next);
-    expect(handler.requests[0]?.details).not.toContain(initial.current);
-
-    // Generated values persisted with `next` only (dropped `previous`).
+    expect(result.proxy).toBe("caddy");
+    expect(result.serverPath).toBe("/srv/edge/tls/shop/origin-token.caddy");
+    expect(bunny.events).toEqual(["server:dual-accept", "edge:set:222222", "server:narrow"]);
+    expect(snippets[0]).toContain(`${next}|${initial.current}`);
+    expect(snippets[1]).toContain(`^(${next})$`);
+    expect(snippets[1]).not.toContain(initial.current);
     expect(await readEdgeOriginToken(deps)).toEqual({ current: next });
+    expect(deps.redactor.redact(`t=${next} old=${initial.current}`)).not.toContain(next);
+    expect(deps.redactor.redact(`t=${next} old=${initial.current}`)).not.toContain(initial.current);
   });
 
-  it("refuses rotating on a Cloudflare plan that does not use shared-header auth", async () => {
-    const deps = await createTestPhaseDeps();
-    const bunny = fakeBunnyEdge();
+  it("B4: a refused rotation changes nothing locally, on the server, or on Bunny", async () => {
+    const deps = await makeDeps(false);
+    const plan = bunnyPlan("bunny");
+    const initial = await ensureEdgeOriginToken(deps, () => Buffer.alloc(32, 0x11));
+    const bunny = fakeBunnyApi({ initialToken: initial.current });
+    const snippets: string[] = [];
+
     await expect(
-      rotateEdgeOriginToken(deps, testPlan(), {
-        pullZoneId: 77,
-        bunny: bunny.client,
-        installServerSnippet: async () => undefined,
+      rotateEdgeOriginToken(deps, plan, {
+        resourceId: "55",
+        fetch: bunny.fetch,
+        remote: fakeRemote(bunny.events, snippets),
+        randomBytes: () => Buffer.alloc(32, 0x22),
+      }),
+    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+
+    expect(bunny.events).toEqual([]);
+    expect(snippets).toEqual([]);
+    expect(bunny.getCurrentToken()).toBe(initial.current);
+    expect(await readEdgeOriginToken(deps)).toEqual({ current: initial.current });
+  });
+
+  it("B4: a failed mid-rotation preserves {current, previous} and rerunning resumes with that exact pair", async () => {
+    const deps = await makeDeps(true);
+    const plan = bunnyPlan("bunny");
+    const oldToken = "11".repeat(32);
+    const nextToken = "22".repeat(32);
+    await writeEdgeOriginToken(deps, { current: oldToken });
+    const bunny = fakeBunnyApi({ initialToken: oldToken, failUpsertOnce: true });
+    const snippets: string[] = [];
+
+    // First run fails at the Bunny API call AFTER server dual-accept was installed.
+    await expect(
+      rotateEdgeOriginToken(deps, plan, {
+        resourceId: "55",
+        fetch: bunny.fetch,
+        remote: fakeRemote(bunny.events, snippets),
+        randomBytes: () => Buffer.alloc(32, 0x22),
+      }),
+    ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
+
+    // Local state keeps BOTH nextToken and oldToken so oldToken is never dropped.
+    expect(await readEdgeOriginToken(deps)).toEqual({ current: nextToken, previous: oldToken });
+
+    // Second run with DIFFERENT randomBytes (0x33) MUST resume with (nextToken, oldToken), NOT 0x33!
+    const resumed = await rotateEdgeOriginToken(deps, plan, {
+      resourceId: "55",
+      fetch: bunny.fetch,
+      remote: fakeRemote(bunny.events, snippets),
+      randomBytes: () => Buffer.alloc(32, 0x33),
+    });
+
+    expect(resumed.rotated).toBe(true);
+    expect(bunny.getCurrentToken()).toBe(nextToken);
+    expect(snippets[1]).toContain(`${nextToken}|${oldToken}`);
+    expect(snippets[2]).toContain(`^(${nextToken})$`);
+    expect(await readEdgeOriginToken(deps)).toEqual({ current: nextToken });
+  });
+
+  it("refuses plans that do not use a shared-header edge provider", async () => {
+    const deps = await makeDeps(true);
+    await expect(
+      rotateEdgeOriginToken(deps, bunnyPlan("cloudflare"), {
+        resourceId: "55",
       }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });

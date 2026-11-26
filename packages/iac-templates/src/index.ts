@@ -72,12 +72,10 @@ export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";
 export * from "./portainer-target";
 export {
-  usesBunny,
+  thirdPartyEdgeId,
   usesCompactEdgeCidrs,
-  usesEdge,
   usesSharedOriginHeader,
   webOnlyFromCloudflare,
-  webOnlyFromEdge,
 } from "./predicates";
 export * from "./previews";
 export { PREVIOUS_VALUES, previousValueVariables } from "./previous-values";

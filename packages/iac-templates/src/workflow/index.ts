@@ -1,8 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 
 import { OpsCrewError } from "@opscrew/core";
+import { edgeProvider } from "@opscrew/edge-providers";
 import {
   APP_SERVER,
+  activeEdgeProvider,
   type DeployPlan,
   type ExtraServer,
   isHostingTarget,
@@ -13,12 +15,20 @@ import {
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor } from "../catalog";
-import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
+import {
+  additionsPath,
+  appDir,
+  EDGE_DIR,
+  edgeProxy,
+  type LocalhostSite,
+  nginxHeaderVar,
+  ORIGIN_TOKEN_FILE,
+} from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { renderSftpWorkflow, SFTP_DEPLOY_SECRETS } from "../hosting/sftp-workflow";
 import { RELEASE_SIGNING_KEY_SECRET, renderHostingWorkflow } from "../hosting/workflow";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
-import { usesCloudflare } from "../predicates";
+import { usesCloudflare, usesSharedOriginHeader } from "../predicates";
 import { previousValueVariables } from "../previous-values";
 import {
   certbotHosts,
@@ -537,6 +547,49 @@ function originTlsUpload(plan: DeployPlan, dir: string, on: On): string[] {
   ];
 }
 
+/** Shown when the shared-header edge origin-verification secret is missing or malformed. */
+function originTokenMissing(plan: DeployPlan): string {
+  return `::error::The deploy secret ${deploySecretName(plan, DEPLOY_SECRETS.edgeOriginToken)} must hold 1 or 2 lines of 64 lower-case hex characters for the app's edge origin-verification header. Run \\\`${provisionCommand(plan)}\\\` again to set it, then deploy again.`;
+}
+
+/**
+ * The upload's lines for a `shared-header` edge provider (ADR 0038 D6): validates 1 or 2 lines of
+ * 64-char hex from {@link DEPLOY_SECRETS}' `edgeOriginToken` without printing any value, renders
+ * the reverse-proxy snippet, and pipes it on stdin into `dir` (`/srv/edge/tls/<app>`, 0700, file
+ * 0600) as `origin-token.<ext>.new`, which the start step swaps into place under the edge lock.
+ */
+function originTokenUpload(plan: DeployPlan, dir: string, on: On): string[] {
+  const edgeId = activeEdgeProvider(plan);
+  if (edgeId === undefined) return [];
+  const headerName = edgeProvider(edgeId).capabilities.originAuthHeader;
+  if (headerName === undefined) return [];
+  const proxy = edgeProxy(plan);
+  const file = ORIGIN_TOKEN_FILE[proxy];
+  const missing = originTokenMissing(plan);
+  const render =
+    proxy === "caddy"
+      ? `printf '@bad_origin_token {\\n\\tnot header_regexp ${headerName} ^(%s)$\\n}\\nrespond @bad_origin_token 403\\n' "$origin_pattern"`
+      : proxy === "nginx"
+        ? `printf 'if (${nginxHeaderVar(headerName)} !~ "^(%s)$") {\\n\\treturn 403;\\n}\\n' "$origin_pattern"`
+        : `printf 'RewriteCond %%{REQUEST_URI} !^/\\\\.well-known/acme-challenge/[^/]+$\\nRewriteCond %%{HTTP:${headerName}} !^(%s)$\\nRewriteRule ^ - [F]\\n' "$origin_pattern"`;
+  return [
+    '    origin_pattern=""',
+    "    origin_count=0",
+    '    while IFS= read -r _tok || [ -n "$_tok" ]; do',
+    '      [ -z "$_tok" ] && continue',
+    '      case "$_tok" in',
+    `        *[!0-9a-f]*) echo "${missing}"; exit 1 ;;`,
+    "      esac",
+    `      if [ "\${#_tok}" -ne 64 ]; then echo "${missing}"; exit 1; fi`,
+    "      origin_count=$((origin_count + 1))",
+    '      origin_pattern="${origin_pattern:+${origin_pattern}|}${_tok}"',
+    `    done <<< "\${${DEPLOY_SECRETS.edgeOriginToken}:-}"`,
+    `    if [ "$origin_count" -lt 1 ] || [ "$origin_count" -gt 2 ]; then echo "${missing}"; exit 1; fi`,
+    `    ${render} | ${on(`umask 077 && mkdir -p ${dir} && chmod 700 ${dir} && cat > ${dir}/${file}.new`)}`,
+    "    unset _tok origin_pattern origin_count",
+  ];
+}
+
 /** The env files the upload writes next to compose.yaml, each from its deploy secret. */
 interface EnvFile {
   file: string;
@@ -1032,6 +1085,9 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
     ),
     ...(upload.edgeFiles.originTls
       ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
+      : []),
+    ...(upload.edgeFiles.originToken === true
+      ? originTokenUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
       : []),
     ...snapshotUpload(plan, APP_SERVER, dir, OVER_SSH),
   ];
@@ -1547,7 +1603,9 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
     ...maskFileWrite(plan, APP_SERVER, appEnvFiles(plan), '"$dir"', HERE).map(
       (line) => `    ${line}`,
     ),
-    ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
+    ...(upload.edgeFiles.originTls || upload.edgeFiles.originToken === true ? [tls] : []),
+    ...(upload.edgeFiles.originTls ? originTlsUpload(plan, '"$tls"', HERE) : []),
+    ...(upload.edgeFiles.originToken === true ? originTokenUpload(plan, '"$tls"', HERE) : []),
     ...snapshotUpload(plan, APP_SERVER, '"$dir"', HERE),
   ];
   return {
@@ -1654,6 +1712,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     ...enabledServices(plan).map(({ name }) => serviceEnvSecret(name)),
     ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
+    ...(usesSharedOriginHeader(plan) && !tunnel ? [DEPLOY_SECRETS.edgeOriginToken] : []),
     ...build,
   ];
 }
@@ -1739,6 +1798,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   const hosts = certbotHosts(plan, ctx);
   const edgeFiles: EdgeFiles = {
     originTls: ctx.originTls !== undefined && !tunnelMode(plan),
+    ...(usesSharedOriginHeader(plan) && !tunnelMode(plan) ? { originToken: true } : {}),
     additions: ctx.additions === true,
     certbot: hosts.length > 0 ? { hosts, email: ctx.acmeEmail } : undefined,
     localhost: ctx.localhost,
@@ -1760,6 +1820,9 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       ...envFileEnv(plan, envFiles),
       ...(edgeFiles.originTls
         ? [`    ${DEPLOY_SECRETS.originTls}: ${secret(plan, DEPLOY_SECRETS.originTls)}`]
+        : []),
+      ...(edgeFiles.originToken === true
+        ? [`    ${DEPLOY_SECRETS.edgeOriginToken}: ${secret(plan, DEPLOY_SECRETS.edgeOriginToken)}`]
         : []),
     ],
     envFiles,

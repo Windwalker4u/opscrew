@@ -53,9 +53,9 @@ export interface RenderContext {
      */
     oneTimePinIdentityProviderId?: string;
   };
-  /** Bunny.net zone metadata when `dns.provider` is `"bunny"`. */
-  bunny?: {
-    /** Numeric Bunny DNS zone id when OpsCrew manages DNS records in Bunny DNS. */
+  /** Non-Cloudflare edge/DNS zone metadata (for example Bunny DNS zone id). */
+  edge?: {
+    /** Numeric DNS zone id when OpsCrew manages DNS records on a non-Cloudflare provider. */
     dnsZoneId?: number;
   };
   /**

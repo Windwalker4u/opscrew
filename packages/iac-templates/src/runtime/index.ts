@@ -30,7 +30,7 @@ import {
   openlitespeedAdditionsFile,
   openlitespeedSite,
 } from "../edge/openlitespeed";
-import { usesCompactEdgeCidrs, usesSharedOriginHeader } from "../predicates";
+import { trustsCompactEdgeRealIp, usesSharedOriginHeader } from "../predicates";
 import { notOnServer, wrongTarget } from "../providers";
 import { imageEnvironment } from "../railpack-laravel";
 import { runtimeDir } from "../runtime-dir";
@@ -339,7 +339,7 @@ function redirectedHosts(plan: DeployPlan): string[] {
  * trusted before the shared origin-verification header check.
  */
 function realIpRanges(plan: DeployPlan, ctx: SiteContext): readonly string[] | undefined {
-  if (!usesCompactEdgeCidrs(plan) || tunnelMode(plan)) return undefined;
+  if (!trustsCompactEdgeRealIp(plan) || tunnelMode(plan)) return undefined;
   const ranges = ctx.cloudflareRanges;
   if (ranges === undefined) return undefined;
   return ranges.length > 0 ? ranges : undefined;

@@ -1,4 +1,8 @@
-import type { CloudProviderDefinition, VariablePrefix } from "@opscrew/contracts";
+import type {
+  CloudProviderDefinition,
+  EdgeRootContribution,
+  VariablePrefix,
+} from "@opscrew/contracts";
 import { edgeProvider } from "@opscrew/edge-providers";
 import {
   APP_SERVER,
@@ -10,16 +14,9 @@ import {
   type PortainerDeployTarget,
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
-import { usesCompactEdgeCidrs, webOnlyFromCloudflare } from "../predicates";
+import { thirdPartyEdgeId, usesCompactEdgeCidrs, webOnlyFromCloudflare } from "../predicates";
 import { cloudTarget, wrongTarget } from "../providers";
 import type { InfraLayout, LayoutSide, RenderContext, RenderedFile, ServerModule } from "../types";
-import {
-  bunnyEdgeModule,
-  bunnyOutputs,
-  bunnyTfvars,
-  bunnyVariables,
-  usesBunnyInfra,
-} from "./bunny";
 import {
   dnsModule,
   previewsCertificatePack,
@@ -316,20 +313,58 @@ function adoptingImports(shape: RootShape, ctx: RenderContext): string[] {
   ];
 }
 
+function thirdPartyEdgeRoot(
+  plan: DeployPlan,
+  shape: RootShape,
+  ctx: RenderContext,
+  hasDomainVar: boolean,
+):
+  | {
+      def: ReturnType<typeof edgeProvider>;
+      contribution: EdgeRootContribution;
+    }
+  | undefined {
+  const id = thirdPartyEdgeId(plan);
+  if (id === undefined || plan.dns.domain === undefined) return undefined;
+  const def = edgeProvider(id);
+  const root = def.terraform.root;
+  if (root === undefined) return undefined;
+  const { ipv4, ipv6 } = addressesOf(shape.live);
+  return {
+    def,
+    contribution: root.render({
+      appName: plan.app.name,
+      ...(plan.environment?.name === undefined ? {} : { environmentName: plan.environment.name }),
+      domain: plan.dns.domain,
+      ...(plan.dns.zone === undefined ? {} : { zone: plan.dns.zone }),
+      www: plan.dns.www,
+      proxied: plan.dns.proxied,
+      manageDns: plan.dns.provider === id,
+      wafCustomRules: plan.security.wafCustomRules,
+      ipv4Expr: ipv4,
+      ipv6Expr: ipv6,
+      hasDomainVar,
+      ...(ctx.edge?.dnsZoneId === undefined ? {} : { dnsZoneId: ctx.edge.dnsZoneId }),
+    }),
+  };
+}
+
 function mainTf(
   plan: DeployPlan,
   shape: RootShape,
   ctx: RenderContext,
   pieces: TunnelPieces | undefined,
   checkKey: boolean,
+  edgeRoot:
+    | { def: ReturnType<typeof edgeProvider>; contribution: EdgeRootContribution }
+    | undefined,
 ): string {
   const lines = [rootHeader(plan), ""];
   if (shape.moving) lines.push(moveNote(shape.addresses.length > 0 ? "server" : "provider"), "");
   for (const provider of shape.providers) lines.push(...providerBlock(provider));
   const zone = serverZoneUse(plan);
-  const bunny = usesBunnyInfra(plan);
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
-  if (bunny) lines.push(...edgeProviderBlock(edgeProvider("bunny")));
+  if (edgeRoot !== undefined) lines.push(...edgeProviderBlock(edgeRoot.def));
   const borrowed = borrowedShared(shape.extras, shape.shared);
   for (const server of shape.servers) {
     const previous = server.slot === "server_previous";
@@ -375,9 +410,8 @@ function mainTf(
     lines.push(...dnsModule(zone, ipv4, ipv6, ipv6Record(plan, shape.live)));
     lines.push(...adoptingImports(shape, ctx));
   }
-  if (bunny) {
-    const { ipv4, ipv6 } = addressesOf(shape.live);
-    lines.push(...bunnyEdgeModule(plan, ipv4, ipv6));
+  if (edgeRoot !== undefined) {
+    lines.push(...edgeRoot.contribution.mainLines);
   }
   lines.push(...(previewsCertificatePack(plan)?.main ?? []));
   if (pieces) lines.push(...pieces.main);
@@ -392,6 +426,9 @@ function variables(
   shape: RootShape,
   pieces: TunnelPieces | undefined,
   checkKey: boolean,
+  edgeRoot:
+    | { def: ReturnType<typeof edgeProvider>; contribution: EdgeRootContribution }
+    | undefined,
 ): VariableSpec[] {
   const base: VariableSpec[] = [
     APP_NAME_VARIABLE,
@@ -415,12 +452,10 @@ function variables(
       : []),
   ];
   const zone = serverZoneUse(plan);
-  const bunny = usesBunnyInfra(plan);
-  const hasDomainVar = zone === "records";
   return [
     ...base,
     ...(zone !== undefined ? zoneVariables(zone) : []),
-    ...(bunny ? bunnyVariables(plan, hasDomainVar) : []),
+    ...(edgeRoot !== undefined ? edgeRoot.contribution.variables : []),
     ...(pieces?.variables ?? []),
   ];
 }
@@ -508,15 +543,21 @@ function wantedBackupsOutput(shape: RootShape): string[] {
   ];
 }
 
-function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
+function outputsTf(
+  plan: DeployPlan,
+  shape: RootShape,
+  pieces: TunnelPieces | undefined,
+  edgeRoot:
+    | { def: ReturnType<typeof edgeProvider>; contribution: EdgeRootContribution }
+    | undefined,
+): string {
   const { live } = shape;
   const { ipv4, ipv6 } = addressesOf(live);
-  const bunny = usesBunnyInfra(plan);
   // A preview environment serves no address of its own: its url is the server's.
   const url =
     serverZoneUse(plan) === "records"
       ? "module.dns.url"
-      : bunny
+      : edgeRoot !== undefined
         ? "module.edge.url"
         : `"http://\${${ipv4}}"`;
   return [
@@ -532,7 +573,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
         ]
       : []),
     ...output("url", url),
-    ...(bunny ? bunnyOutputs() : []),
+    ...(edgeRoot !== undefined ? edgeRoot.contribution.outputLines : []),
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
     ...wantedFirewallsOutput(shape),
@@ -557,28 +598,27 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   if (shape.servers.length > 0) values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   const checkKey = ctx.checkKeyLine !== undefined;
   const zone = serverZoneUse(plan);
-  const bunny = usesBunnyInfra(plan);
-  const bunnyDef = bunny ? edgeProvider("bunny") : undefined;
-  const bunnyModuleName = bunnyDef?.terraform.module?.name;
+  const edgeRoot = thirdPartyEdgeRoot(plan, shape, ctx, zone === "records");
+  const edgeModuleName = edgeRoot?.def.terraform.module?.name;
   return {
     versions: versionsTf(plan, [
       ...shape.providers.map((provider) => provider.terraform.provider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
-      ...(bunnyDef !== undefined ? [bunnyDef.terraform.provider] : []),
+      ...(edgeRoot !== undefined ? [edgeRoot.def.terraform.provider] : []),
     ]),
-    main: mainTf(plan, shape, ctx, pieces, checkKey),
-    variables: variablesTf(plan, variables(plan, shape, pieces, checkKey)),
-    outputs: outputsTf(plan, shape, pieces),
+    main: mainTf(plan, shape, ctx, pieces, checkKey, edgeRoot),
+    variables: variablesTf(plan, variables(plan, shape, pieces, checkKey, edgeRoot)),
+    outputs: outputsTf(plan, shape, pieces, edgeRoot),
     tfvars: {
       ...values,
       ...(zone !== undefined ? zoneTfvars(plan, ctx, zone) : {}),
-      ...(bunny ? bunnyTfvars(plan, ctx, zone === "records") : {}),
+      ...(edgeRoot !== undefined ? edgeRoot.contribution.tfvars : {}),
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
       ...shape.providers.map((provider) => provider.terraform.module.name),
       ...(zone !== undefined ? ["cloudflare-dns"] : []),
-      ...(bunnyModuleName !== undefined ? [bunnyModuleName] : []),
+      ...(edgeModuleName !== undefined ? [edgeModuleName] : []),
       ...(pieces?.modules ?? []),
     ],
   };

@@ -4,12 +4,10 @@ import {
   type BunnyEdgeRule,
   OPSCREW_ORIGIN_HEADER_DESCRIPTION,
 } from "./client";
-import {
-  applyBunnyOriginHeader,
-  BUNNY_ORIGIN_AUTH_HEADER,
-  planBunnyOriginHeader,
-} from "./origin-header";
+import { definition } from "./definition";
+import { applyBunnyOriginHeader, planBunnyOriginHeader } from "./origin-header";
 
+const HEADER_NAME = definition.capabilities.originAuthHeader ?? "";
 const TOKEN_1 = "1".repeat(64);
 const TOKEN_2 = "2".repeat(64);
 
@@ -50,10 +48,12 @@ describe("Bunny origin-verification header plan & hash-bound apply", () => {
     const fake = fakeBunny();
     const createPlan = await planBunnyOriginHeader(fake.client, {
       pullZoneId: 101,
+      headerName: HEADER_NAME,
       token: TOKEN_1,
     });
     expect(createPlan.action).toBe("create");
-    expect(createPlan.headerName).toBe(BUNNY_ORIGIN_AUTH_HEADER);
+    expect(createPlan.headerName).toBe("X-OpsCrew-Origin-Token");
+    expect(createPlan.resourceId).toBe("101");
     expect(createPlan.summary).not.toContain(TOKEN_1);
     expect(createPlan.hash).toMatch(/^[0-9a-f]{64}$/);
 
@@ -87,10 +87,11 @@ describe("Bunny origin-verification header plan & hash-bound apply", () => {
     // Re-planning with the same token is a noop.
     const noopPlan = await planBunnyOriginHeader(fake.client, {
       pullZoneId: 101,
+      headerName: HEADER_NAME,
       token: TOKEN_1,
     });
     expect(noopPlan.action).toBe("noop");
-    expect(noopPlan.existingGuid).toBe("guid-created-1");
+    expect(noopPlan.existingId).toBe("guid-created-1");
     await expect(
       applyBunnyOriginHeader(fake.client, noopPlan, {
         token: TOKEN_1,
@@ -102,10 +103,11 @@ describe("Bunny origin-verification header plan & hash-bound apply", () => {
     // Planning a rotation to TOKEN_2 updates the existing GUID in place.
     const rotatePlan = await planBunnyOriginHeader(fake.client, {
       pullZoneId: 101,
+      headerName: HEADER_NAME,
       token: TOKEN_2,
     });
     expect(rotatePlan.action).toBe("update");
-    expect(rotatePlan.existingGuid).toBe("guid-created-1");
+    expect(rotatePlan.existingId).toBe("guid-created-1");
     expect(rotatePlan.summary).not.toContain(TOKEN_2);
     expect(rotatePlan.hash).not.toBe(createPlan.hash);
 
@@ -118,7 +120,7 @@ describe("Bunny origin-verification header plan & hash-bound apply", () => {
     expect(fake.upserts[1]).toEqual({
       pullZoneId: 101,
       guid: "guid-created-1",
-      headerName: BUNNY_ORIGIN_AUTH_HEADER,
+      headerName: "X-OpsCrew-Origin-Token",
       token: TOKEN_2,
     });
   });
@@ -126,7 +128,11 @@ describe("Bunny origin-verification header plan & hash-bound apply", () => {
   it("refuses tokens that are not 64 lower-case hex characters", async () => {
     const fake = fakeBunny();
     await expect(
-      planBunnyOriginHeader(fake.client, { pullZoneId: 101, token: "too-short" }),
+      planBunnyOriginHeader(fake.client, {
+        pullZoneId: 101,
+        headerName: HEADER_NAME,
+        token: "too-short",
+      }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });
 });

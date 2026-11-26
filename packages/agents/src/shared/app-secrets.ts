@@ -133,6 +133,10 @@ export async function registerAppSecrets(
   for (const password of [grafanaAdminPassword, postgresPassword]) {
     if (password !== undefined) deps.redactor.addLiteral(password, "monitoring-password");
   }
+  const { current: edgeCurrent, previous: edgePrevious } = generated.edgeOriginToken ?? {};
+  for (const token of [edgeCurrent, edgePrevious]) {
+    if (token !== undefined) deps.redactor.addLiteral(token, "edge-origin-token");
+  }
 }
 
 /**

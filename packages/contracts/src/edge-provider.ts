@@ -5,6 +5,8 @@
  * a zod schema or a class instance (matching ADR 0029 D2). OpsCrew validates every definition it
  * loads (`@opscrew/edge-providers`) and everything it reads from one.
  */
+import type { CredentialCheck } from "./connector";
+import type { FetchLike } from "./io";
 import type { ProviderRequirement } from "./provider";
 
 /** The contract version this OpsCrew reads; a definition of another version is refused. */
@@ -32,13 +34,11 @@ export type EdgeOriginIpFiltering = "compact-cidrs" | "dynamic-ips";
 
 /** Capabilities of an edge proxy provider. */
 export interface EdgeProviderCapabilities {
-  /** True when the provider hosts authoritative DNS zones (Cloudflare, Bunny.net, Gcore; false for Fastly). */
-  dns: boolean;
   /** How the edge authenticates upstream requests to the origin server. */
   originAuth: EdgeOriginAuth;
   /**
    * HTTP header name carrying the shared origin-verification token when `originAuth` is
-   * `"shared-header"` (for example `X-OpsCrew-Origin-Token`). Omitted otherwise.
+   * `"shared-header"` (for example `X-OpsCrew-Origin-Token`). Defined once here; omitted otherwise.
    */
   originAuthHeader?: string;
   /** Whether the edge's published IP list fits cloud firewalls (`compact-cidrs`) or not (`dynamic-ips`). */
@@ -50,16 +50,12 @@ export interface EdgeProviderCapabilities {
   realIpHeader: string;
 }
 
-/** How the edge/DNS provider's credentials are configured. */
+/** How an edge/DNS provider's API credentials are supplied. */
 export interface EdgeProviderCredentials {
-  /** The environment variables, in order. */
+  /** The environment variables, in order (for example `["BUNNYNET_API_KEY"]`). */
   envVars: readonly string[];
-  /** Human-readable label for each variable in `envVars`. */
-  labels: Readonly<Record<string, string>>;
   /** Where the user creates API tokens or keys. */
   createUrl: string;
-  /** Prefixes of variables that belong to the provider, for detection (e.g. `BUNNYNET`). */
-  envPrefixes: readonly string[];
 }
 
 /** Vendored Terraform module shipped by an edge provider package. */
@@ -70,21 +66,133 @@ export interface EdgeProviderTerraformModule {
   files: Readonly<Record<string, string>>;
 }
 
+/** Variable declaration contributed by an edge provider to the root Terraform module. */
+export interface EdgeVariableSpec {
+  name: string;
+  type: string;
+  description: string;
+  default?: string;
+}
+
+/** Inputs passed from the root Terraform renderer to an edge provider's root contribution. */
+export interface EdgeRootInput {
+  appName: string;
+  environmentName?: string;
+  domain: string;
+  zone?: string;
+  www: boolean;
+  proxied: boolean;
+  manageDns: boolean;
+  wafCustomRules: boolean;
+  ipv4Expr: string;
+  ipv6Expr: string;
+  hasDomainVar: boolean;
+  /** Provider-specific DNS zone id looked up by the connector before rendering. */
+  dnsZoneId?: number;
+}
+
+/** Root Terraform module fragments contributed by an edge provider. */
+export interface EdgeRootContribution {
+  /** Module block lines for `main.tf`. */
+  mainLines: string[];
+  /** Root variable declarations for `variables.tf`. */
+  variables: EdgeVariableSpec[];
+  /** Output block lines for `outputs.tf`. */
+  outputLines: string[];
+  /** Non-secret entries for `terraform.tfvars.json`. */
+  tfvars: Record<string, unknown>;
+}
+
+/** Root Terraform integration implemented by a non-Cloudflare edge/DNS provider. */
+export interface EdgeProviderTerraformRoot {
+  /** Terraform output name carrying the edge resource id for connector post-apply sync. */
+  resourceIdOutput: string;
+  render(input: EdgeRootInput): EdgeRootContribution;
+}
+
 /** Terraform / OpenTofu facts for an edge/DNS provider. */
 export interface EdgeProviderTerraform {
   provider: ProviderRequirement;
   /** Comment placed above the provider block (for example `Token from the CLOUDFLARE_API_TOKEN environment variable.`). */
   credentialsComment: string;
-  /** Terraform resource type of a DNS record when `capabilities.dns` is true. */
+  /** Terraform resource type of a DNS record when the provider hosts DNS. */
   dnsRecordResourceType?: string;
   /** Vendored edge/DNS Terraform module shipped by this provider package. */
   module?: EdgeProviderTerraformModule;
+  /** Root Terraform contribution (`main.tf`, `variables.tf`, `outputs.tf`, `tfvars`). */
+  root?: EdgeProviderTerraformRoot;
+}
+
+/** Planned Terraform resource shape inspected by an edge provider's SecOps plan policy. */
+export interface EdgePlanResource {
+  type: string;
+  address: string;
+  values: Readonly<Record<string, unknown>>;
+}
+
+/** SecOps plan policy result emitted by an edge provider. */
+export interface EdgePlanPolicyResult {
+  id: string;
+  title: string;
+  severity: "critical" | "high" | "medium" | "low";
+  passed: boolean;
+  detail: string;
+  resource?: string;
+}
+
+/** Plan-hash-bound origin-header change planned by a `shared-header` edge provider connector. */
+export interface EdgeOriginHeaderPlan {
+  action: "create" | "update" | "noop";
+  resourceId: string;
+  headerName: string;
+  existingId?: string;
+  /** Short SHA-256 fingerprint of the desired token (never the plaintext secret). */
+  tokenFingerprint: string;
+  /** Plain-English summary shown before approval (contains no secret). */
+  summary: string;
+  /** SHA-256 hash binding approval to this exact resource, header, action, and token fingerprint. */
+  hash: string;
+}
+
+/** Redactor hook passed to edge provider connectors so secrets never leak into errors or logs. */
+export interface EdgeRedactorLike {
+  addLiteral(value: string, label: string): void;
+  redact(text: string): string;
+}
+
+/** Typed API connector hooks for an edge/DNS provider (never called from Terraform). */
+export interface EdgeProviderConnector {
+  verifyCredentials(input: {
+    apiKey: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<CredentialCheck>;
+  lookupDnsZone?(input: {
+    apiKey: string;
+    domain: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<{ id: number; domain: string } | undefined>;
+  planOriginHeader?(input: {
+    apiKey: string;
+    resourceId: string;
+    headerName: string;
+    token: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<EdgeOriginHeaderPlan>;
+  applyOriginHeader?(input: {
+    apiKey: string;
+    plan: EdgeOriginHeaderPlan;
+    token: string;
+    approvedHash: string;
+    fetch?: FetchLike;
+    redactor?: EdgeRedactorLike;
+  }): Promise<{ applied: boolean }>;
 }
 
 /** Plain-English wording per OpsCrew surface. */
 export interface EdgeProviderTexts {
-  /** Plain-English summary of how origin traffic is gated for this provider. */
-  originProtectionNote: string;
   secops: {
     /** Label used in TLS/edge scan reports (for example `Cloudflare's edge`). */
     edgeLabel: string;
@@ -101,5 +209,9 @@ export interface EdgeProviderDefinition {
   capabilities: EdgeProviderCapabilities;
   credentials: EdgeProviderCredentials;
   terraform: EdgeProviderTerraform;
+  secops?: {
+    checkPlan(resources: readonly EdgePlanResource[]): EdgePlanPolicyResult[];
+  };
+  connector?: EdgeProviderConnector;
   texts: EdgeProviderTexts;
 }

@@ -13,6 +13,7 @@ import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
   DockerTransport,
+  FetchLike,
   IacEngine,
   ObjectStorageApi,
   PolicyResult,
@@ -142,6 +143,8 @@ export interface ProvisionServices {
   providerBackups?: ProviderBackupsApis;
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: CloudflareApi | null;
+  /** HTTP fetch override for non-Cloudflare edge/DNS providers (tests). */
+  edgeFetch?: FetchLike;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */
   github?: GitHubApi | null;
   tcpConnect?: TcpConnect;

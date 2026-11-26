@@ -67,7 +67,6 @@ export {
 export {
   nginxHeaderVar,
   ORIGIN_TOKEN_FILE,
-  ORIGIN_TOKEN_HEADER,
   originTokenContainerPath,
   originTokenServerPath,
   originTokenSnippet,

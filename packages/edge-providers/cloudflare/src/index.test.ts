@@ -6,7 +6,6 @@ describe("@opscrew/edge-provider-cloudflare", () => {
     expect(definition.id).toBe("cloudflare");
     expect(definition.displayName).toBe("Cloudflare");
     expect(definition.capabilities).toEqual({
-      dns: true,
       originAuth: "cloudflare-aop",
       originIpFiltering: "compact-cidrs",
       realIpHeader: "CF-Connecting-IP",

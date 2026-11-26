@@ -20,6 +20,7 @@ import {
   edgeProxy,
   type LocalhostSite,
   OPENLITESPEED_COMMAND,
+  ORIGIN_TOKEN_FILE,
   openlitespeedCachePurge,
   otherProxies,
 } from "../edge";
@@ -873,6 +874,11 @@ export interface EdgeFiles {
    */
   originTls: boolean;
   /**
+   * The upload left the app's shared-header origin-verification snippet in `/srv/edge/tls/<app>/`
+   * as `origin-token.<ext>.new`, swapped into place under the edge lock before reloading the proxy.
+   */
+  originToken?: boolean;
+  /**
    * The upload left the user's additions in the app's folder (`additions.caddy`, `.nginx` or
    * `.openlitespeed`).
    */
@@ -939,6 +945,7 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const tls = `${EDGE}/tls/${app}`;
   const local = plan.target.provider === "localhost";
   const tlsFiles = local ? LOCAL_TLS_FILES : TLS_FILES;
+  const originTokenFile = o.originToken === true && !local ? ORIGIN_TOKEN_FILE[proxy] : undefined;
   /** The upload left new TLS files as `<file>.new`. */
   const newTls = local || o.originTls;
   const stamp = (key: string, file: string) => `sed -n 's/^${key}: //p' ${file}`;
@@ -960,6 +967,11 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
       `for f in ${tlsFiles}; do`,
       `  if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
       "done",
+      ...(originTokenFile === undefined
+        ? []
+        : [
+            `if [ -f ${tls}/${originTokenFile}.previous ]; then mv -f ${tls}/${originTokenFile}.previous ${tls}/${originTokenFile}; else rm -f ${tls}/${originTokenFile}; fi`,
+          ]),
     ].map((line) => `${pad}${line}`);
   /** After a switch: the server's previous edge file back, which starts its proxy again. */
   const restoreEdge = (pad: string) =>
@@ -1087,6 +1099,12 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
           ...(newTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
         ]),
     "  done",
+    ...(originTokenFile === undefined
+      ? []
+      : [
+          `  if [ -f ${tls}/${originTokenFile} ]; then mv -f ${tls}/${originTokenFile} ${tls}/${originTokenFile}.previous; else rm -f ${tls}/${originTokenFile}.previous; fi`,
+          `  mv -f ${tls}/${originTokenFile}.new ${tls}/${originTokenFile}`,
+        ]),
     ...(proxy !== "caddy" && !local
       ? [
           `  ${certbotRun(`--user 0:0 --cap-add CHOWN --entrypoint chown certbot "$(id -u):$(id -g)" ${LETSENCRYPT} ${ACME_WEBROOT} ${RELOAD_DIR}`)}`,

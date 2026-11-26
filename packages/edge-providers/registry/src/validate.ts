@@ -10,27 +10,20 @@ const headerName = z
   .regex(/^[A-Za-z][A-Za-z0-9-]*$/, "must be a valid HTTP header name such as CF-Connecting-IP");
 
 const capabilities = z.object({
-  dns: z.boolean(),
   originAuth: z.enum(["cloudflare-aop", "mtls-client-cert", "shared-header"]),
   originAuthHeader: headerName.optional(),
   originIpFiltering: z.enum(["compact-cidrs", "dynamic-ips"]),
   realIpHeader: headerName,
 });
 
-const credentials = z
-  .object({
-    envVars: z.array(z.string().min(1)).min(1, "names no environment variable"),
-    labels: z.record(z.string(), z.string().min(1)),
-    createUrl: PlainUrlSchema,
-    envPrefixes: z.array(z.string().min(1)),
-  })
-  .superRefine((value, ctx) => {
-    for (const name of value.envVars) {
-      if (value.labels[name] === undefined) {
-        ctx.addIssue({ code: "custom", path: ["labels"], message: `has no label for ${name}` });
-      }
-    }
-  });
+const credentials = z.object({
+  envVars: z.array(z.string().min(1)).min(1, "names no environment variable"),
+  createUrl: PlainUrlSchema,
+});
+
+const fn = z.custom<(...args: never[]) => unknown>((v) => typeof v === "function", {
+  message: "must be a function",
+});
 
 const terraform = z.object({
   provider: z.object({
@@ -46,17 +39,37 @@ const terraform = z.object({
       files: z.record(z.string().min(1), z.string().min(1)),
     })
     .optional(),
+  root: z
+    .object({
+      resourceIdOutput: z.string().min(1),
+      render: fn,
+    })
+    .optional(),
 });
 
+const secops = z
+  .object({
+    checkPlan: fn,
+  })
+  .optional();
+
+const connector = z
+  .object({
+    verifyCredentials: fn,
+    lookupDnsZone: fn.optional(),
+    planOriginHeader: fn.optional(),
+    applyOriginHeader: fn.optional(),
+  })
+  .optional();
+
 const texts = z.object({
-  originProtectionNote: z.string().min(1),
   secops: z.object({
     edgeLabel: z.string().min(1),
     edgeTlsHint: z.string().min(1),
   }),
 });
 
-const definitionSchema: z.ZodType<Definition> = z
+const definitionSchema = z
   .object({
     contractVersion: z.literal(EDGE_PROVIDER_CONTRACT_VERSION, {
       error: `must be ${EDGE_PROVIDER_CONTRACT_VERSION}, the edge contract version this OpsCrew reads`,
@@ -66,6 +79,8 @@ const definitionSchema: z.ZodType<Definition> = z
     capabilities,
     credentials,
     terraform,
+    secops,
+    connector,
     texts,
   })
   .superRefine((definition, ctx) => {
@@ -99,22 +114,15 @@ const definitionSchema: z.ZodType<Definition> = z
         message: 'must be omitted unless originAuth is "shared-header"',
       });
     }
-    if (definition.capabilities.dns && definition.terraform.dnsRecordResourceType === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["terraform", "dnsRecordResourceType"],
-        message: "is required when capabilities.dns is true",
-      });
-    }
   });
 
 /**
  * Checks an edge/DNS provider definition against the contract (ADR 0038) and returns it unchanged.
  * Throws an `INTERNAL` error naming the provider's id and the parts that fail.
  */
-export function validateEdgeProvider(candidate: unknown): EdgeProviderDefinition {
+export function validateEdgeProvider(candidate: unknown): Definition {
   const parsed = definitionSchema.safeParse(candidate);
-  if (parsed.success) return candidate as EdgeProviderDefinition;
+  if (parsed.success) return candidate as Definition;
   const id = isRecord(candidate) && typeof candidate.id === "string" ? candidate.id : undefined;
   const which =
     id === undefined

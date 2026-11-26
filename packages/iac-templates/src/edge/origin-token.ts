@@ -7,14 +7,14 @@
  *   from `OPSCREW_EDGE_ORIGIN_TOKEN` (1 or 2 lines of 64 lower-case hex characters).
  * - Every proxy rejects requests missing an exact matching header value with HTTP 403 BEFORE
  *   forwarding to `kamal-proxy` and BEFORE trusting the edge's visitor-IP header (`realIpHeader`).
+ * - Caddy's built-in ACME HTTP-01 solver answers before routes run, so Caddy carries NO path
+ *   exemption; OpenLiteSpeed exempts only single-segment `^/\.well-known/acme-challenge/[^/]+$`
+ *   paths, which its static webroot context serves directly without proxying to `kamal-proxy`.
  * - During `opscrew rotate`, passing `[newToken, oldToken]` accepts both values seamlessly until
  *   the edge switches and the server narrows to `[newToken]`.
  */
 import { OpsCrewError } from "@opscrew/core";
 import type { EdgeProxy } from "./index";
-
-/** Default HTTP header carrying OpsCrew's shared origin-verification secret. */
-export const ORIGIN_TOKEN_HEADER = "X-OpsCrew-Origin-Token";
 
 /** File name inside `/srv/edge/tls/<app>/` for each reverse proxy. */
 export const ORIGIN_TOKEN_FILE: Record<EdgeProxy, string> = {
@@ -25,7 +25,7 @@ export const ORIGIN_TOKEN_FILE: Record<EdgeProxy, string> = {
 
 /** Information passed to site renderers when `originAuth` is `"shared-header"`. */
 export interface SharedOriginHeader {
-  /** Header verified on every request (for example `X-OpsCrew-Origin-Token`). */
+  /** Header verified on every request (from the active edge provider definition). */
   headerName: string;
   /** Visitor-IP header trusted ONLY after `headerName` passes (for example `X-Real-IP`). */
   realIpHeader: string;
@@ -85,9 +85,9 @@ export function originTokenSnippet(
   }
   const pattern = tokens.join("|");
   if (proxy === "caddy") {
+    // Caddy's HTTP-01 ACME solver runs before route handlers, so no path exemption is needed.
     return [
       "@bad_origin_token {",
-      "\tnot path /.well-known/acme-challenge/*",
       `\tnot header_regexp ${headerName} ^(${pattern})$`,
       "}",
       "respond @bad_origin_token 403",
@@ -99,9 +99,11 @@ export function originTokenSnippet(
     return [`if (${variable} !~ "^(${pattern})$") {`, "\treturn 403;", "}", ""].join("\n");
   }
   // OpenLiteSpeed rewriteFile loaded inside top-level `rewrite { rules ... }` (runs before both
-  // `context /` and `websocket /`, while keeping certbot's HTTP-01 challenge reachable).
+  // `context /` and `websocket /`). Only exact single-segment ACME challenge tokens — which
+  // `context exp:^/(\.well-known/acme-challenge/[^/]+)$` serves strictly from the static webroot —
+  // bypass the header check; no other path can reach `context /` without the header.
   return [
-    "RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/",
+    "RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/[^/]+$",
     `RewriteCond %{HTTP:${headerName}} !^(${pattern})$`,
     "RewriteRule ^ - [F]",
     "",

@@ -2539,6 +2539,20 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
       message: `is required when dns.provider is "${plan.dns.provider}"`,
     });
   }
+  if (plan.dns.edge !== undefined && plan.dns.edge === plan.dns.provider) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "edge"],
+      message: `repeats dns.provider ("${plan.dns.provider}"): omit dns.edge when the same provider handles both DNS and the edge`,
+    });
+  }
+  if (plan.dns.edge !== undefined && plan.dns.provider === "cloudflare") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "edge"],
+      message: `cannot be combined with dns.provider: "cloudflare" yet: use dns.provider: "${plan.dns.edge}" or dns.provider: "none" with dns.edge: "${plan.dns.edge}"`,
+    });
+  }
   if (plan.dns.edge !== undefined && !plan.dns.proxied) {
     ctx.addIssue({
       code: "custom",

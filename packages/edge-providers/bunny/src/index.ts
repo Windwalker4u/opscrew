@@ -15,8 +15,7 @@ export { BUNNY_EDGE_MODULE_FILES, BUNNY_EDGE_MODULE_NAME } from "./module";
 export {
   applyBunnyOriginHeader,
   assertOriginTokenFormat,
-  BUNNY_ORIGIN_AUTH_HEADER,
-  type BunnyOriginHeaderPlan,
   type OriginHeaderAction,
   planBunnyOriginHeader,
 } from "./origin-header";
+export { bunnyPullzoneName, bunnyRecordNames, checkBunnyPlan, renderBunnyRoot } from "./root";

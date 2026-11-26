@@ -77,9 +77,6 @@ importers:
       '@opscrew/detect':
         specifier: workspace:*
         version: link:../detect
-      '@opscrew/edge-provider-bunny':
-        specifier: workspace:*
-        version: link:../edge-providers/bunny
       '@opscrew/edge-providers':
         specifier: workspace:*
         version: link:../edge-providers/registry

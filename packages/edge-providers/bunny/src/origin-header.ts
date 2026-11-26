@@ -7,6 +7,7 @@
  * to the plan's SHA-256 hash. Neither the plan display nor the hash payload ever contains the
  * plaintext token — only its SHA-256 fingerprint binds the approval to the exact token value.
  */
+import type { EdgeOriginHeaderPlan } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
   BUNNY_ACTION_SET_REQUEST_HEADER,
@@ -14,25 +15,9 @@ import {
   OPSCREW_ORIGIN_HEADER_DESCRIPTION,
 } from "./client";
 
-/** Default HTTP header carrying OpsCrew's shared origin-verification secret. */
-export const BUNNY_ORIGIN_AUTH_HEADER = "X-OpsCrew-Origin-Token";
-
 const HEX_64 = /^[0-9a-f]{64}$/;
 
-export type OriginHeaderAction = "create" | "update" | "noop";
-
-export interface BunnyOriginHeaderPlan {
-  action: OriginHeaderAction;
-  pullZoneId: number;
-  headerName: string;
-  existingGuid?: string;
-  /** Short SHA-256 fingerprint of the desired token (never the plaintext secret). */
-  tokenFingerprint: string;
-  /** Plain-English summary shown before approval (contains no secret). */
-  summary: string;
-  /** SHA-256 hash binding approval to this exact pull zone, header, action, and token fingerprint. */
-  hash: string;
-}
+export type OriginHeaderAction = EdgeOriginHeaderPlan["action"];
 
 /** Validates that `token` is a 32-byte lowercase hex secret (64 hex chars). */
 export function assertOriginTokenFormat(token: string): void {
@@ -47,6 +32,23 @@ export function assertOriginTokenFormat(token: string): void {
   }
 }
 
+function parsePullZoneId(resourceId: string): number {
+  if (!/^\d+$/.test(resourceId)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Invalid Bunny.net Pull Zone id "${resourceId}": expected a positive integer.`,
+    );
+  }
+  const id = Number(resourceId);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Invalid Bunny.net Pull Zone id "${resourceId}": expected a positive integer.`,
+    );
+  }
+  return id;
+}
+
 /**
  * Inspects the Bunny Pull Zone's current Edge Rules and plans creating or updating OpsCrew's
  * `SetRequestHeader` rule without exposing the token value in the plan or hash input.
@@ -54,14 +56,16 @@ export function assertOriginTokenFormat(token: string): void {
 export async function planBunnyOriginHeader(
   client: Pick<BunnyClient, "listEdgeRules">,
   input: {
-    pullZoneId: number;
-    headerName?: string;
+    pullZoneId: number | string;
+    headerName: string;
     token: string;
   },
-): Promise<BunnyOriginHeaderPlan> {
+): Promise<EdgeOriginHeaderPlan> {
   assertOriginTokenFormat(input.token);
-  const headerName = input.headerName ?? BUNNY_ORIGIN_AUTH_HEADER;
-  const rules = await client.listEdgeRules(input.pullZoneId);
+  const pullZoneId =
+    typeof input.pullZoneId === "number" ? input.pullZoneId : parsePullZoneId(input.pullZoneId);
+  const headerName = input.headerName;
+  const rules = await client.listEdgeRules(pullZoneId);
   const existing = rules.find(
     (rule) =>
       rule.ActionType === BUNNY_ACTION_SET_REQUEST_HEADER &&
@@ -77,14 +81,14 @@ export async function planBunnyOriginHeader(
     existing === undefined ? "create" : matches ? "noop" : "update";
   const summary =
     action === "noop"
-      ? `Bunny Pull Zone ${input.pullZoneId} already sends ${headerName} (fingerprint ${tokenFingerprint}).`
+      ? `Bunny Pull Zone ${pullZoneId} already sends ${headerName} (fingerprint ${tokenFingerprint}).`
       : action === "create"
-        ? `Add Bunny Edge Rule on Pull Zone ${input.pullZoneId} to send ${headerName} (fingerprint ${tokenFingerprint}) to the origin.`
-        : `Update Bunny Edge Rule ${existing?.Guid} on Pull Zone ${input.pullZoneId} to send the new ${headerName} (fingerprint ${tokenFingerprint}) to the origin.`;
+        ? `Add Bunny Edge Rule on Pull Zone ${pullZoneId} to send ${headerName} (fingerprint ${tokenFingerprint}) to the origin.`
+        : `Update Bunny Edge Rule ${existing?.Guid} on Pull Zone ${pullZoneId} to send the new ${headerName} (fingerprint ${tokenFingerprint}) to the origin.`;
   const hash = sha256Hex(
     canonicalJson({
       op: "bunny-origin-header",
-      pullZoneId: input.pullZoneId,
+      pullZoneId,
       headerName,
       action,
       existingGuid: existing?.Guid ?? null,
@@ -93,9 +97,9 @@ export async function planBunnyOriginHeader(
   );
   return {
     action,
-    pullZoneId: input.pullZoneId,
+    resourceId: String(pullZoneId),
     headerName,
-    ...(existing === undefined ? {} : { existingGuid: existing.Guid }),
+    ...(existing === undefined ? {} : { existingId: existing.Guid }),
     tokenFingerprint,
     summary,
     hash,
@@ -108,7 +112,7 @@ export async function planBunnyOriginHeader(
  */
 export async function applyBunnyOriginHeader(
   client: Pick<BunnyClient, "upsertOriginHeaderRule">,
-  plan: BunnyOriginHeaderPlan,
+  plan: EdgeOriginHeaderPlan,
   input: {
     token: string;
     approvedHash: string;
@@ -118,7 +122,7 @@ export async function applyBunnyOriginHeader(
   if (input.approvedHash.toLowerCase() !== plan.hash.toLowerCase()) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `Approval hash mismatch for Bunny Pull Zone ${plan.pullZoneId} origin-header update. Nothing was changed.`,
+      `Approval hash mismatch for Bunny Pull Zone ${plan.resourceId} origin-header update. Nothing was changed.`,
       { hint: "Re-run the command to generate a fresh plan and approve its hash." },
     );
   }
@@ -132,8 +136,8 @@ export async function applyBunnyOriginHeader(
   }
   if (plan.action === "noop") return { applied: false };
   await client.upsertOriginHeaderRule({
-    pullZoneId: plan.pullZoneId,
-    ...(plan.existingGuid === undefined ? {} : { guid: plan.existingGuid }),
+    pullZoneId: parsePullZoneId(plan.resourceId),
+    ...(plan.existingId === undefined ? {} : { guid: plan.existingId }),
     headerName: plan.headerName,
     token: input.token,
   });

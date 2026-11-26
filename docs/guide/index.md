@@ -28,6 +28,7 @@ an app yet.
 - [Portainer: a web UI for your containers](portainer.md)
 - [Buying or connecting a domain](domains.md)
 - [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
+- [Bunny.net edge proxy and DNS](bunny.md)
 
 ### The providers, for tools
 

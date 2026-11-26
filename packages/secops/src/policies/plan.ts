@@ -353,52 +353,12 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
     }
   }
 
-  if (activeEdge === "bunny") {
-    for (const pz of resources.filter((r) => r.type === "bunnynet_pullzone")) {
-      results.push(
-        result(
-          "bunny-cache-disabled",
-          "Bunny Pull Zone does not cache dynamic responses by default",
-          "medium",
-          pz.values.cache_enabled === false,
-          pz.values.cache_enabled === false
-            ? "Bunny Pull Zone has cache_enabled = false so dynamic responses are not cached."
-            : "Set cache_enabled = false on the Bunny Pull Zone so dynamic or authenticated responses are not cached.",
-          pz.address,
-        ),
-      );
-      const origin = Array.isArray(pz.values.origin)
-        ? (pz.values.origin[0] as Record<string, unknown> | undefined)
-        : (pz.values.origin as Record<string, unknown> | undefined);
-      const verifiesSsl = origin?.verify_ssl === true;
-      results.push(
-        result(
-          "bunny-origin-ssl-verify",
-          "Bunny Pull Zone verifies the origin TLS certificate",
-          "high",
-          verifiesSsl,
-          verifiesSsl
-            ? "Bunny Pull Zone verifies the origin server's TLS certificate."
-            : "Set origin.verify_ssl = true on the Bunny Pull Zone so edge-to-origin traffic is verified.",
-          pz.address,
-        ),
-      );
-    }
-    for (const rule of resources.filter((r) => r.type === "bunnynet_pullzone_edgerule")) {
-      const actions = Array.isArray(rule.values.actions)
-        ? (rule.values.actions as Record<string, unknown>[])
-        : [];
-      const setsHeader = actions.some((action) => action?.type === "SetRequestHeader");
-      if (setsHeader) {
+  if (activeEdge !== undefined) {
+    const providerChecks = edgeProvider(activeEdge).secops?.checkPlan(resources);
+    if (providerChecks !== undefined) {
+      for (const check of providerChecks) {
         results.push(
-          result(
-            "bunny-no-secret-header-in-state",
-            "Origin verification header is not stored in Terraform state",
-            "critical",
-            false,
-            "A bunnynet_pullzone_edgerule with SetRequestHeader stores header values in Terraform state. Apply OpsCrew's origin-verification header through the Bunny API connector instead.",
-            rule.address,
-          ),
+          result(check.id, check.title, check.severity, check.passed, check.detail, check.resource),
         );
       }
     }

@@ -7,14 +7,13 @@ function baseCtx() {
     opscrewVersion: "0.2.12",
     github: { owner: "acme", repo: "shop" },
     deploySshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey test@opscrew",
-    cloudflare: { zoneId: "cf-zone-1" },
     cloudflareRanges: ["173.245.48.0/20"],
-    bunny: { dnsZoneId: 12345 },
+    edge: { dnsZoneId: 12345 },
   };
 }
 
 function makeBunnyPlan(opts: {
-  dnsProvider?: "bunny" | "cloudflare" | "none";
+  dnsProvider?: "bunny" | "none";
   edge?: "bunny" | undefined;
   domain?: string;
   zone?: string;
@@ -90,32 +89,39 @@ describe("Bunny.net infrastructure rendering (036 PR 2)", () => {
     // Vendored bunny-edge module is emitted beside infra/ and holds no origin-token secret.
     const moduleMain = byPath("modules/bunny-edge/main.tf");
     expect(moduleMain).toContain('resource "bunnynet_pullzone" "this"');
+    expect(moduleMain).toContain("tls_enabled = true");
     expect(moduleMain).toContain('type       = "BlockRequest"');
     expect(moduleMain).not.toContain("SetRequestHeader");
     expect(moduleMain).not.toContain("X-OpsCrew-Origin-Token");
   });
 
-  it("supports Cloudflare DNS + Bunny.net edge (dns.provider: cloudflare, dns.edge: bunny) with Cloudflare DNS unproxied", () => {
+  it("refuses rendering Bunny DNS without a looked-up dnsZoneId (never renders 0)", () => {
+    const ctx = baseCtx();
+    ctx.edge = undefined as unknown as { dnsZoneId: number };
+    expect(() => renderInfra(makeBunnyPlan({ dnsProvider: "bunny" }), ctx)).toThrow(
+      /Bunny DNS zone id/,
+    );
+  });
+
+  it("supports external DNS + Bunny.net edge (dns.provider: none, dns.edge: bunny) with manage_dns = false", () => {
     const files = renderInfra(
-      makeBunnyPlan({ dnsProvider: "cloudflare", edge: "bunny", domain: "example.com" }),
-      baseCtx(),
+      makeBunnyPlan({ dnsProvider: "none", edge: "bunny", domain: "example.com" }),
+      { ...baseCtx(), edge: undefined },
     );
     const byPath = (suffix: string) => files.find((f) => f.path.endsWith(suffix))?.content ?? "";
 
     const versions = byPath("/versions.tf");
-    expect(versions).toContain("cloudflare/cloudflare");
+    expect(versions).not.toContain("cloudflare/cloudflare");
     expect(versions).toContain("BunnyWay/bunnynet");
 
     const main = byPath("/main.tf");
-    expect(main).toContain('module "dns"');
     expect(main).toContain('module "edge"');
     expect(main).toContain("manage_dns");
     expect(main).toContain("= false");
 
     const tfvars = JSON.parse(byPath("/terraform.tfvars.json")) as Record<string, unknown>;
-    // Cloudflare DNS records stay DNS-only while Bunny Pull Zone is the active edge.
-    expect(tfvars.proxied).toBe(false);
     expect(tfvars.bunny_proxied).toBe(true);
+    expect(tfvars.bunny_dns_zone_id).toBeUndefined();
     expect(tfvars.http_allowed_cidrs).toEqual(["0.0.0.0/0", "::/0"]);
   });
 });

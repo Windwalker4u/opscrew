@@ -101,7 +101,7 @@ resource "bunnynet_pullzone" "this" {
 
   origin {
     type                = "OriginUrl"
-    url                 = "https://\${var.origin_host}"
+    url                 = "https://\${strcontains(var.origin_host, ":") ? "[\${var.origin_host}]" : var.origin_host}"
     verify_ssl          = true
     forward_host_header = true
   }
@@ -112,17 +112,19 @@ resource "bunnynet_pullzone" "this" {
 }
 
 resource "bunnynet_pullzone_hostname" "domain" {
-  count     = var.proxied ? 1 : 0
-  pullzone  = bunnynet_pullzone.this[0].id
-  name      = var.domain
-  force_ssl = true
+  count       = var.proxied ? 1 : 0
+  pullzone    = bunnynet_pullzone.this[0].id
+  name        = var.domain
+  tls_enabled = true
+  force_ssl   = true
 }
 
 resource "bunnynet_pullzone_hostname" "www" {
-  count     = var.proxied && var.www ? 1 : 0
-  pullzone  = bunnynet_pullzone.this[0].id
-  name      = "www.\${var.domain}"
-  force_ssl = true
+  count       = var.proxied && var.www ? 1 : 0
+  pullzone    = bunnynet_pullzone.this[0].id
+  name        = "www.\${var.domain}"
+  tls_enabled = true
+  force_ssl   = true
 }
 
 # Included free on every Pull Zone: blocks common secret and admin-panel probes at the edge.

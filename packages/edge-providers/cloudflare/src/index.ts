@@ -10,18 +10,13 @@ export const definition: EdgeProviderDefinition = {
   id: "cloudflare",
   displayName: "Cloudflare",
   capabilities: {
-    dns: true,
     originAuth: "cloudflare-aop",
     originIpFiltering: "compact-cidrs",
     realIpHeader: "CF-Connecting-IP",
   },
   credentials: {
     envVars: ["CLOUDFLARE_API_TOKEN"],
-    labels: {
-      CLOUDFLARE_API_TOKEN: "Cloudflare API token",
-    },
     createUrl: "https://dash.cloudflare.com/profile/api-tokens",
-    envPrefixes: ["CLOUDFLARE"],
   },
   terraform: {
     provider: {
@@ -33,8 +28,6 @@ export const definition: EdgeProviderDefinition = {
     dnsRecordResourceType: "cloudflare_dns_record",
   },
   texts: {
-    originProtectionNote:
-      "Server web ports accept only Cloudflare's CIDRs, and origin TLS requires Cloudflare's per-hostname client certificate (Authenticated Origin Pulls).",
     secops: {
       edgeLabel: "Cloudflare's edge",
       edgeTlsHint:

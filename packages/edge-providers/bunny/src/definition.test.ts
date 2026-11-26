@@ -7,7 +7,6 @@ describe("@opscrew/edge-provider-bunny", () => {
     expect(definition.id).toBe("bunny");
     expect(definition.displayName).toBe("Bunny.net");
     expect(definition.capabilities).toEqual({
-      dns: true,
       originAuth: "shared-header",
       originAuthHeader: "X-OpsCrew-Origin-Token",
       originIpFiltering: "dynamic-ips",
@@ -21,14 +20,20 @@ describe("@opscrew/edge-provider-bunny", () => {
     });
     expect(definition.terraform.dnsRecordResourceType).toBe("bunnynet_dns_record");
     expect(definition.terraform.module?.name).toBe("bunny-edge");
+    expect(definition.terraform.root?.resourceIdOutput).toBe("bunny_pullzone_id");
+    expect(typeof definition.secops?.checkPlan).toBe("function");
+    expect(typeof definition.connector?.verifyCredentials).toBe("function");
   });
 
-  it("renders a safe bunny-edge Terraform module with BlockRequest probes, cache off, verified SSL, and no SetRequestHeader secret", () => {
+  it("renders a safe bunny-edge Terraform module with tls_enabled, IPv6 bracketing, BlockRequest probes, cache off, verified SSL, and no SetRequestHeader secret", () => {
     const main = BUNNY_EDGE_MODULE_FILES["main.tf"] ?? "";
     expect(main).toContain('resource "bunnynet_pullzone" "this"');
     expect(main).toContain("cache_enabled = false");
     expect(main).toContain("verify_ssl          = true");
     expect(main).toContain("forward_host_header = true");
+    expect(main).toContain("tls_enabled = true");
+    expect(main).toContain("force_ssl   = true");
+    expect(main).toContain('strcontains(var.origin_host, ":")');
     expect(main).toContain('type       = "BlockRequest"');
     for (const pattern of [
       "*/.env*",

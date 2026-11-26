@@ -31,7 +31,7 @@ function basePlan(dns: Record<string, unknown>, security: Record<string, unknown
 }
 
 describe("plan-schema DNS host and Bunny.net edge provider rules (036 PR 2)", () => {
-  it("accepts Bunny DNS + Bunny edge (implicit) and resolves activeEdgeProvider", () => {
+  it("accepts Bunny DNS + Bunny edge (implicit) and external DNS + Bunny edge", () => {
     const plan = DeployPlanSchema.parse(
       basePlan({ provider: "bunny", domain: "shop.example.com", proxied: true }),
     );
@@ -39,18 +39,6 @@ describe("plan-schema DNS host and Bunny.net edge provider rules (036 PR 2)", ()
     expect(plan.dns.edge).toBeUndefined();
     expect(plan.security.httpAllowedFrom).toBe("edge");
     expect(activeEdgeProvider(plan)).toBe("bunny");
-  });
-
-  it("accepts Cloudflare DNS + Bunny edge (dns.edge: bunny) and external DNS + Bunny edge", () => {
-    const cfDns = DeployPlanSchema.parse(
-      basePlan({
-        provider: "cloudflare",
-        edge: "bunny",
-        domain: "shop.example.com",
-        proxied: true,
-      }),
-    );
-    expect(activeEdgeProvider(cfDns)).toBe("bunny");
 
     const extDns = DeployPlanSchema.parse(
       basePlan({ provider: "none", edge: "bunny", domain: "shop.example.com", proxied: true }),
@@ -70,6 +58,32 @@ describe("plan-schema DNS host and Bunny.net edge provider rules (036 PR 2)", ()
     expect(activeEdgeProvider(cf)).toBe("cloudflare");
   });
 
+  it("refuses dns.edge repeating dns.provider (S5) and dns.edge paired with dns.provider: cloudflare (B2)", () => {
+    const duplicate = DeployPlanSchema.safeParse(
+      basePlan({
+        provider: "bunny",
+        edge: "bunny",
+        domain: "shop.example.com",
+        proxied: true,
+      }),
+    );
+    expect(duplicate.success).toBe(false);
+    expect(duplicate.error?.issues[0]?.message).toContain('repeats dns.provider ("bunny")');
+
+    const cfPlusBunny = DeployPlanSchema.safeParse(
+      basePlan({
+        provider: "cloudflare",
+        edge: "bunny",
+        domain: "shop.example.com",
+        proxied: true,
+      }),
+    );
+    expect(cfPlusBunny.success).toBe(false);
+    expect(cfPlusBunny.error?.issues[0]?.message).toContain(
+      'cannot be combined with dns.provider: "cloudflare"',
+    );
+  });
+
   it("refuses dns.edge: cloudflare, dns.edge without proxied: true, and bunny without domain", () => {
     const cfEdge = DeployPlanSchema.safeParse(
       basePlan({
@@ -84,7 +98,7 @@ describe("plan-schema DNS host and Bunny.net edge provider rules (036 PR 2)", ()
 
     const unproxied = DeployPlanSchema.safeParse(
       basePlan({
-        provider: "cloudflare",
+        provider: "none",
         edge: "bunny",
         domain: "shop.example.com",
         proxied: false,

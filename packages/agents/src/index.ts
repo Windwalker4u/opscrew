@@ -34,7 +34,9 @@ export {
   formatEdgeOriginTokenSecret,
   generateEdgeOriginToken,
   readEdgeOriginToken,
-  syncBunnyOriginHeader,
+  setupThirdPartyEdge,
+  syncEdgeOriginHeader,
+  type ThirdPartyEdgeSetup,
   writeEdgeOriginToken,
 } from "./provision/edge-origin-token";
 export * from "./retarget";
@@ -58,7 +60,7 @@ export {
 } from "./rotate/app-site";
 export { dropPreviousNames, isAppName } from "./rotate/app-values";
 export {
-  type EdgeOriginTokenRotationHooks,
+  type EdgeOriginTokenRotationOptions,
   type EdgeOriginTokenRotationResult,
   rotateEdgeOriginToken,
 } from "./rotate/edge-origin-token";
