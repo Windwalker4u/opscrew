@@ -34,6 +34,7 @@ import {
   verifyHosts,
 } from "./checks";
 import type { DnsResolver, TlsCertificateInfo, TlsConnect } from "./net";
+import { ownHeadersCheck } from "./own-headers";
 import type { VerifyResult } from "./run";
 
 /** GitHub Pages' published addresses (its A and AAAA records for an apex domain). */
@@ -78,6 +79,20 @@ function get(input: Pick<VerifySiteInput, "fetch" | "timeoutMs">, url: string): 
     redirect: "follow",
     signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
   });
+}
+
+/** The headers of the answer at `url`; none when it did not come or was a server error. */
+async function readHeaders(
+  input: Pick<VerifySiteInput, "fetch" | "timeoutMs">,
+  url: string,
+): Promise<Headers | undefined> {
+  try {
+    const response = await get(input, url);
+    await response.body?.cancel();
+    return response.status >= 500 ? undefined : response.headers;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The site's host on Cloudflare's hosting, or GitHub Pages. */
@@ -349,15 +364,7 @@ export async function siteHeaderChecks(
 ): Promise<CheckResult[]> {
   const [domain] = verifyHosts(plan);
   if (domain === undefined || plan.target.provider !== "cloudflare-workers") return [];
-  const read = async (url: string) => {
-    try {
-      const response = await get(input, url);
-      await response.body?.cancel();
-      return response.status >= 500 ? undefined : response.headers;
-    } catch {
-      return undefined;
-    }
-  };
+  const read = (url: string) => readHeaders(input, url);
   const front = `https://${domain}/`;
   const checks = [siteHeadersCheck(front, await read(front), input.flag)];
   if (plan.target.render === "ssr") {
@@ -475,7 +482,8 @@ function pagesCheck(state: PagesState, domain: string, flag: string): CheckResul
 
 /**
  * Checks a site on Cloudflare's hosting or GitHub Pages (FR-1608): for each hostname its DNS, its
- * certificate and an answer; on Cloudflare OpsCrew's headers ({@link siteHeaderChecks}); on GitHub
+ * certificate and an answer; on Cloudflare OpsCrew's headers ({@link siteHeaderChecks}) and the
+ * policies the site's own `_headers` sets ({@link ownHeadersCheck}); on GitHub
  * Pages its certificate and HTTPS ({@link pagesCheck}), and that GitHub sets no headers. While
  * GitHub has not issued the certificate, the hostnames' certificate and answer checks warn instead
  * of failing. Changes nothing anywhere, writes the runbook (`renderSiteRunbook`) beside the plan,
@@ -510,6 +518,12 @@ export async function verifySite(
   }
   if (pages === undefined) {
     checked.push(...(await siteHeaderChecks(plan, input)));
+    const own = await ownHeadersCheck(deps, plan, {
+      domain,
+      flag: input.flag,
+      read: (at) => readHeaders(input, at),
+    });
+    if (own !== undefined) checked.push(own);
   } else {
     checked.push(
       pagesCheck(pages, domain, input.flag),
