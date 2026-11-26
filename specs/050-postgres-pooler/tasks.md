@@ -37,7 +37,7 @@
 
 ## Wave 2 (after T5001, in parallel)
 
-- [ ] T5002 [US2] Rotation recreates the pooler
+- [x] T5002 [US2] Rotation recreates the pooler
   - **Owns:** the catalog's rotation for PostgreSQL's `runtime-password`, and
     `packages/iac-templates/src/workflow/rotate.ts`, and their tests.
   - **Reads:** plan 3.; 047's rotation (`POSTGRES_LOGINS.rotation`, `swap`).
