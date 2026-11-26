@@ -110,8 +110,9 @@ function isSecretBasename(base: string): boolean {
  * `.env.example|sample|template|dist`), keys and certificates, Terraform state and variables,
  * SSH keys, package-registry and git credentials, anything under `.ssh`, `.aws`, `.gnupg`,
  * `.docker`, `.terraform`, `.opscrew`, `.git` (but not `.gitignore`/`.gitattributes`), `.kube`,
- * `.azure`, `.terraform.d` and token-holding `.config/` directories. Accepts `/` and `\`
- * separators and compares case-insensitively.
+ * `.azure`, `.terraform.d` and token-holding `.config/` directories, and anything inside a
+ * directory named like a secret file (`.env/`). Accepts `/` and `\` separators and compares
+ * case-insensitively.
  */
 export function isSecretPath(p: string): boolean {
   if (typeof p !== "string" || p === "") return false;
@@ -122,10 +123,10 @@ export function isSecretPath(p: string): boolean {
   const base = segments.at(-1);
   if (base === undefined) return false;
   for (const [i, segment] of segments.entries()) {
-    if (SECRET_DIR_SEGMENTS.has(segment)) return true;
+    // A directory named like a secret file (`.env/`, `server.pem/`) holds secrets too.
+    if (SECRET_DIR_SEGMENTS.has(segment) || isSecretBasename(segment)) return true;
     if (segment === ".config" && CONFIG_SECRET_DIRS.has(segments[i + 1] ?? "")) return true;
   }
-  if (isSecretBasename(base)) return true;
   // NTFS alternate data streams: `.env::$DATA` reads `.env`.
   const colon = base.indexOf(":");
   return colon > 0 && isSecretBasename(normalizeSegment(base.slice(0, colon)));
@@ -1370,7 +1371,8 @@ function redirectVerdict(ctx: PathContext, redirect: Redirect): Verdict {
   if ((op === ">&" || op === "<&") && /^(\d+|-)$/.test(value)) return { kind: "allow" };
   if (value === "/dev/null" && !target.dynamic) return { kind: "allow" };
   const reads = op === "<" || op === "<&";
-  // bash expands a wildcard in a redirection target (`cat < .en[v]` reads `.env`).
+  // bash (outside POSIX mode) expands a wildcard in a redirection target when it matches one
+  // file (`cat < .en[v]` reads `.env`); POSIX shells such as dash don't. Either way it's unchecked.
   if (target.glob || target.brace) {
     return reads
       ? { kind: "ask", reason: `it reads \`${value}\`, a wildcard that cannot be checked` }
