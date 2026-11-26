@@ -21,6 +21,59 @@ export async function runPhaseCommand<T>(
   }
 }
 
+/** True for the refusal a non-interactive run without `--yes` gives every approval it is asked. */
+function refusedForYes(ctx: CliContext, yes: boolean | undefined, error: unknown): boolean {
+  return (
+    !ctx.isInteractive &&
+    yes !== true &&
+    isUserFacingError(error) &&
+    error.code === "APPROVAL_REFUSED"
+  );
+}
+
+/**
+ * A `--plan-only` run: its `--yes`, and whether its refusal is the one for a missing `--yes` (not,
+ * say, a `--confirm` name that differs).
+ */
+export interface PlanOnlyRun {
+  yes: boolean | undefined;
+  stopsForYes?: () => boolean;
+}
+
+/**
+ * {@link runPhaseCommand} for a command that may be a `--plan-only` run (`planOnly`). Such a run in
+ * a script without `--yes` stops at the first step that needs it (writing the files the next plans
+ * are made from): it showed what it could, as asked, and changed nothing, so it says so and how to
+ * go on, and answers `undefined` (exit 0). Any other error, and a refusal in a terminal or with
+ * `--yes`, keeps its message and exit code.
+ */
+export async function runPlanOnlyCommand<T>(
+  ctx: CliContext,
+  planOnly: PlanOnlyRun | undefined,
+  run: () => Promise<T>,
+  extraHint?: (error: unknown) => string | undefined,
+): Promise<T | undefined> {
+  return runPhaseCommand(
+    ctx,
+    async () => {
+      try {
+        return await run();
+      } catch (error) {
+        const stops = planOnly?.stopsForYes?.() ?? true;
+        if (planOnly === undefined || !stops || !refusedForYes(ctx, planOnly.yes, error)) {
+          throw error;
+        }
+        ctx.reporter.warn((error as Error).message);
+        ctx.stdout(
+          "\nThis --plan-only run stopped there: outside a terminal that step needs --yes, and nothing was changed. Run the same command with --yes to see every plan and its hash; it prints the `--approve <hash>` command that applies them.\n",
+        );
+        return undefined;
+      }
+    },
+    extraHint,
+  );
+}
+
 /**
  * Hint for an approval refused in a non-interactive run without `--yes`. For `provision`, which has
  * `--confirm <app>`, it also says how a script applies a plan that deletes or replaces resources.
@@ -35,10 +88,7 @@ export function assumeYesHint(
       ? "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), a move's maintenance window --allow-downtime, other destroys and changed host keys need an interactive terminal."
       : "destroys and changed host keys need an interactive terminal.";
   return (error) =>
-    !ctx.isInteractive &&
-    yes !== true &&
-    isUserFacingError(error) &&
-    error.code === "APPROVAL_REFUSED"
+    refusedForYes(ctx, yes, error)
       ? `This run is not interactive: add --yes to approve writing the generated files, storing the GitHub secrets, pushing and opening the pull request. Infrastructure changes need --approve <hash>; ${deletions}`
       : undefined;
 }

@@ -385,10 +385,40 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(ctx.errors).toMatch(/opscrew provision --approve [0-9a-f]{64}/);
   });
 
+  it("ends a script's --plan-only run with exit 0 where it needs --yes, naming the next command", async () => {
+    project = await deployProject();
+    const { ctx, engine } = context(project);
+    expect(await run(ctx, "provision", "--plan-only"), ctx.errors).toBe(0);
+    expect(ctx.errors).toContain("Nothing was written and nothing was created.");
+    expect(ctx.output).toContain(
+      "This --plan-only run stopped there: outside a terminal that step needs --yes, and nothing was changed. Run the same command with --yes to see every plan and its hash; it prints the `--approve <hash>` command that applies them.",
+    );
+    expect(engine.calls).toEqual([]);
+  });
+
+  it("keeps exit 1 for a --plan-only run refused in a terminal, or for a --confirm name that differs", async () => {
+    project = await deployProject();
+    const refuseAll: ApprovalHandler = {
+      request: async () => ({
+        approved: false,
+        approver: "test",
+        decidedAt: "2026-10-11T12:00:00.000Z",
+      }),
+    };
+    const terminal = context(project, { interactive: true, approvals: refuseAll });
+    expect(await run(terminal.ctx, "provision", "--plan-only")).toBe(1);
+    expect(terminal.ctx.errors).toContain("Nothing was written and nothing was created.");
+    expect(terminal.ctx.output).not.toContain("This --plan-only run stopped there");
+    const named = context(project);
+    expect(await run(named.ctx, "provision", "--plan-only", "--confirm", "not-the-app")).toBe(1);
+    expect(named.ctx.errors).toContain("does not match the app's name");
+    expect(named.ctx.output).not.toContain("This --plan-only run stopped there");
+  });
+
   it("explains --yes when a non-interactive run cannot write the files", async () => {
     project = await deployProject();
     const { ctx, engine } = context(project);
-    expect(await run(ctx, "provision", "--plan-only")).toBe(1);
+    expect(await run(ctx, "provision")).toBe(1);
     expect(ctx.errors).toContain("Nothing was written and nothing was created.");
     expect(ctx.errors).toContain("add --yes");
     expect(ctx.errors).toContain(
