@@ -455,6 +455,18 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  packages/git-platforms/forgejo-gitea:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
   packages/git-platforms/github:
     dependencies:
       '@opscrew/connector-github':
@@ -487,6 +499,9 @@ importers:
       '@opscrew/core':
         specifier: workspace:*
         version: link:../../core
+      '@opscrew/git-forgejo-gitea':
+        specifier: workspace:*
+        version: link:../forgejo-gitea
       '@opscrew/git-github':
         specifier: workspace:*
         version: link:../github

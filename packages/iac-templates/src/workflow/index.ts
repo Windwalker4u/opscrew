@@ -40,6 +40,7 @@ import {
   renderCloudflareWorkersWorkflow,
 } from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
+import { renderForgejoOrGiteaWorkflow } from "./forgejo-gitea";
 import { renderGithubPagesWorkflow } from "./github-pages";
 import { renderGitLabPipeline } from "./gitlab";
 import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
@@ -116,6 +117,7 @@ export {
   CLOUDFLARE_DEPLOY_SECRETS_NEW,
   renderCloudflareWorkersWorkflow,
 } from "./cloudflare-workers";
+export { renderForgejoOrGiteaWorkflow } from "./forgejo-gitea";
 export { PAGES_PUBLISH_JOB, renderGithubPagesWorkflow } from "./github-pages";
 export { renderGitLabPipeline } from "./gitlab";
 export { DEPLOY_PAUSED_VARIABLE } from "./pause";
@@ -1727,6 +1729,9 @@ export async function isMoveReady(
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   if (plan.cicd.provider === "gitlab-ci") return renderGitLabPipeline(plan, ctx);
+  if (plan.cicd.provider === "forgejo-actions" || plan.cicd.provider === "gitea-actions") {
+    return renderForgejoOrGiteaWorkflow(plan, ctx, renderWorkflow);
+  }
   if (plan.target.provider === "cloudflare-workers") {
     return renderCloudflareWorkersWorkflow(plan, ctx);
   }

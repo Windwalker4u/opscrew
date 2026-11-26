@@ -357,3 +357,17 @@ self-hosted GitLab Runners with the same safety model:
   input (never written to any plan, log, or repository file).
 - The runner runs as the `deploy` user's systemd user service (`opscrew-runner-<app>.service`) with
   `sg docker` and `KillMode=control-group`, taking only jobs tagged `opscrew-<app>-<env>`.
+
+## Forgejo Runner and Gitea `act_runner`
+
+For projects hosted on [Forgejo](forgejo.md) or [Gitea](gitea.md), OpsCrew supports self-hosted
+`forgejo-runner` and `act_runner` daemons with the same security model:
+
+- OpsCrew fetches a repository registration token (`GET .../actions/runners/registration-token` on
+  Forgejo; `POST .../actions/runners/registration-token` on Gitea) only at apply time and passes it
+  exclusively on standard input (never in a plan, log, CLI argument, or repository file).
+- The pinned static binary is verified by SHA-256 and registered non-interactively under
+  `/srv/runners/<app>` with the single host label `opscrew-<app>-<env>:host`.
+- The daemon runs as the `deploy` user's systemd user service (`opscrew-runner-<app>.service`) with
+  `sg docker` and `KillMode=control-group`. Deploy workflows target `runs-on: opscrew-<app>-<env>`
+  directly so jobs never collide with shared docker-mode runners.

@@ -2036,7 +2036,7 @@
         "provider": {
           "default": "github-actions",
           "type": "string",
-          "enum": ["github-actions", "gitlab-ci"]
+          "enum": ["github-actions", "gitlab-ci", "forgejo-actions", "gitea-actions"]
         },
         "workflowPath": {
           "type": "string",
@@ -2044,7 +2044,7 @@
         },
         "registry": {
           "type": "string",
-          "enum": ["ghcr", "gitlab-registry"]
+          "enum": ["ghcr", "gitlab-registry", "forgejo-registry", "gitea-registry"]
         },
         "host": {
           "type": "string",
