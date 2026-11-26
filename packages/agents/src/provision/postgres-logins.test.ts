@@ -308,6 +308,30 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
   });
 
+  it("on a cloud server never applied, says the database has no data yet without reaching any server, and goes on", async () => {
+    // Generated values from a `--plan-only` run: no apply recorded, so no server exists yet.
+    const plan = planWith(SEPARATE, false);
+    expect(plan.deployment.lastApplyAt).toBeUndefined();
+    const s = await project(plan, BEFORE_047);
+    const { snapshot: _fake, ...services } = s.services;
+    const reached: string[] = [];
+    const remote = (host: string) => {
+      const ready = readyRemote(host);
+      return {
+        host,
+        run: (command: string, options?: Parameters<typeof ready.run>[1]) => {
+          reached.push(command);
+          return ready.run(command, options);
+        },
+      };
+    };
+    await runProvision(s.deps, { services: { ...services, remote } });
+    expect(s.deps.reporter.text()).toContain("db has no data yet, so there's nothing to snapshot.");
+    expect(reached.filter((command) => command.includes("docker volume ls"))).toEqual([]);
+    expect(reached.filter((command) => command.includes("snapshot.sh"))).toEqual([]);
+    expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
+  });
+
   it("says a database that never ran has no data to snapshot, and goes on", async () => {
     const plan = planWith(SEPARATE, false);
     const s = await project(plan, BEFORE_047);

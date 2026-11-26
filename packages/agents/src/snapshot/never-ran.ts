@@ -6,8 +6,9 @@
  */
 import { OpsCrewError } from "@opscrew/core";
 import { localComposeProject, shellQuote, snapshotParts } from "@opscrew/iac-templates";
+import { isCloudTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { serverWords } from "../shared/server-address";
+import { hasDeployment, serverWords } from "../shared/server-address";
 import { serverShell } from "../status/servers";
 import { dataServers, READ_TIMEOUT_MS } from "./hosts";
 import { ofService, portainerPlace, stackContainers } from "./portainer";
@@ -60,8 +61,9 @@ function dataCommand(app: string, names: readonly string[]): string {
 
 /**
  * The services among `names` that have never run where the environment `deps` belong to keeps its
- * data: the app's servers, this computer or the user's Portainer. A hosting account's, and a
- * service on none of the app's servers, are taken to have run.
+ * data: the app's servers, this computer or the user's Portainer. Every one on a cloud server whose
+ * infrastructure the plan records no apply of ({@link hasDeployment}) never ran, with no server
+ * reached. A hosting account's, and a service on none of the app's servers, are taken to have run.
  * @throws OpsCrewError when a machine can't be reached or its Docker does not answer.
  */
 export async function neverRan(
@@ -102,6 +104,16 @@ export async function neverRan(
           place.stack,
           name,
         ),
+    );
+  }
+  // A cloud server OpsCrew never applied (the generated values of a `--plan-only` run) does not
+  // exist yet, so nothing ran on it: reaching it would fail on every run, before the apply that
+  // makes it. The user's own server exists whatever OpsCrew applied.
+  if (isCloudTarget(plan.target) && !hasDeployment(plan)) {
+    return names.filter((name) =>
+      dataServers(plan).some((server) =>
+        snapshotParts(plan, server).some((part) => part.name === name),
+      ),
     );
   }
   const ran = new Set<string>();

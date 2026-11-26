@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan, localProject } from "../localhost/__fixtures__/computer";
-import { portainerPlan } from "../testing";
+import { recordOwnServer } from "../shared";
+import { OWN_IPV4, ownPlan, portainerPlan, testPlan } from "../testing";
 import { portainerWorld } from "./__fixtures__/portainer";
 import { SH_AVAILABLE } from "./__fixtures__/server";
 import { snapshotWorld, stagingPlan } from "./__fixtures__/world";
@@ -16,6 +17,46 @@ describe.skipIf(!SH_AVAILABLE)("which switching databases never ran (047)", () =
     expect(command).toContain("[ -e /srv/data/");
     // Read wherever the app's folder is or not: no `cd` into it first.
     expect(command).not.toMatch(/^cd /);
+  });
+
+  it("on a cloud server whose infrastructure was never applied: never ran, with no server reached", async () => {
+    // Generated values from a `--plan-only` run, and no apply recorded: no server exists yet.
+    const world = await snapshotWorld(
+      stagingPlan([{ kind: "postgres", name: "db" }], { base: testPlan({ deployed: false }) }),
+    );
+    const reached: string[] = [];
+    const services = {
+      ...world.services,
+      remote: (host: string) => {
+        reached.push(host);
+        throw new Error("no server to reach");
+      },
+    };
+    expect(await neverRan(world.deps, ["db"], services)).toEqual(["db"]);
+    expect(reached).toEqual([]);
+  });
+
+  it("on a cloud server whose infrastructure was applied, or the user's own server: reached, and a failure stops", async () => {
+    for (const base of [testPlan({ deployed: true }), { ...ownPlan(), services: [] }]) {
+      const world = await snapshotWorld(stagingPlan([{ kind: "postgres", name: "db" }], { base }));
+      await recordOwnServer(world.deps.paths, {
+        host: OWN_IPV4,
+        port: 22,
+        user: "alice",
+        agent: true,
+        reachable: true,
+      });
+      const server = world.servers.app;
+      if (server === undefined) throw new Error("no app server");
+      server.answer = (command) =>
+        command.includes("docker volume ls")
+          ? { exitCode: 255, stdout: "", stderr: "" }
+          : undefined;
+      await expect(neverRan(world.deps, ["db"], world.services)).rejects.toMatchObject({
+        code: "COMMAND_FAILED",
+      });
+      expect(server.commands.some((command) => command.includes("docker volume ls"))).toBe(true);
+    }
   });
 
   it("on a server: one whose container, volume or data folder is there ran", async () => {
