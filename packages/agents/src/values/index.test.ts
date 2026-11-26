@@ -9,16 +9,20 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { hostingTestPlan } from "../hosting/__fixtures__/account";
+import { STORAGE_KEY_VARS } from "../provision/storage";
+import { keepPendingRotation } from "../rotate/values-pending";
 import { appEnvText, buildLinesText, readDotenvLine } from "../shared/app-env";
 import {
   createTestPhaseDeps,
   FakeGitHub,
+  movingPlan,
   ScriptedApprovalHandler,
   type TestPhaseDeps,
   testPlan,
+  withBucket,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
-import { appValueRows, changeAppValues, checkValueChange, type ValueChange } from "./index";
+import { appValueRows, changeAppValues, checkValueChange } from "./index";
 import { readAppValues, writeAppValues } from "./record";
 
 const KEY = fakeSecret("stripe-live-key", "values-key");
@@ -33,31 +37,53 @@ const RECORDED = {
   build: {},
 };
 
+/** A change as a test gives it: the values to set, the names to remove and the flags. */
+interface Input {
+  set?: Record<string, string>;
+  unset?: string[];
+  plain?: boolean;
+  redeploy?: boolean;
+}
+
+/** `input`'s names, as `checkValueChange` takes them. */
+function namesOf(input: Input) {
+  return {
+    set: Object.keys(input.set ?? {}),
+    unset: input.unset ?? [],
+    ...(input.plain === undefined ? {} : { plain: input.plain }),
+    ...(input.redeploy === undefined ? {} : { redeploy: input.redeploy }),
+  };
+}
+
 /** The deps of a deployed environment with `plan` written and `record` kept, and GitHub faked. */
 async function world(
   plan: DeployPlan = testPlan({ deployed: true }),
-  options: { record?: typeof RECORDED | null; approve?: boolean; environment?: string } = {},
+  options: {
+    record?: typeof RECORDED | null;
+    approve?: boolean;
+    environment?: string;
+    /** The plan on disk, when `plan` isn't one the schema takes. */
+    onDisk?: DeployPlan;
+    env?: Record<string, string>;
+  } = {},
 ) {
   const deps = await createTestPhaseDeps({
     ...(options.environment === undefined ? {} : { environment: options.environment }),
+    ...(options.env === undefined ? {} : { env: options.env }),
     approvalHandler: new ScriptedApprovalHandler(() => options.approve ?? true),
   });
-  await writeArtifact("plan", deps.paths.files.plan, plan);
-  if (options.record !== null) await writeAppValues(deps, options.record ?? RECORDED);
+  await writeArtifact("plan", deps.paths.files.plan, options.onDisk ?? plan);
+  if (options.record !== null) await writeAppValues(deps, plan, options.record ?? RECORDED);
   const github = new FakeGitHub();
-  const change = (input: Partial<ValueChange>) =>
-    changeAppValues(
-      deps,
-      plan,
-      { set: {}, unset: [], ...input },
-      {
-        api: github,
-        owner: "acme",
-        repo: "shop",
-        defaultBranch: "main",
-      },
-    );
-  return { deps, github, plan, change };
+  const check = (input: Input) => checkValueChange(deps, plan, namesOf(input));
+  const change = async (input: Input) =>
+    changeAppValues(deps, plan, await check(input), input.set ?? {}, {
+      api: github,
+      owner: "acme",
+      repo: "shop",
+      defaultBranch: "main",
+    });
+  return { deps, github, plan, check, change };
 }
 
 /** Everything a run wrote that a person or a log could read. */
@@ -206,19 +232,26 @@ describe("changeAppValues on a site", () => {
 });
 
 describe("checkValueChange's refusals", () => {
+  const deployed = testPlan({ deployed: true });
+  /** Refuses `input` on `plan` with `message`, and changes nothing. */
   const refused = async (
     plan: DeployPlan,
-    change: Partial<ValueChange>,
+    input: Input,
     message: string,
     options: Parameters<typeof world>[1] = {},
   ) => {
     const w = await world(plan, options);
-    await expect(
-      checkValueChange(w.deps, plan, { set: {}, unset: [], ...change }),
-    ).rejects.toMatchObject({ message: expect.stringContaining(message) });
+    const before = await readAppValues(w.deps);
+    await expect(w.change(input)).rejects.toMatchObject({
+      message: expect.stringContaining(message),
+    });
+    expect(w.github.secrets.size).toBe(0);
+    expect((w.deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
+    expect(await readAppValues(w.deps)).toEqual(before);
+    const onDisk = await readArtifact("plan", w.deps.paths.files.plan);
+    expect(onDisk.app.env).toEqual(plan.app.env);
     return w;
   };
-  const deployed = testPlan({ deployed: true });
 
   it("refuses a target whose values don't live in GitHub, naming provision", async () => {
     const plan = DeployPlanSchema.parse({
@@ -230,9 +263,9 @@ describe("checkValueChange's refusals", () => {
       { set: { A: "b" } },
       "on the hosting account, not in GitHub's secrets",
     );
-    await expect(
-      checkValueChange(w.deps, plan, { set: { A: "b" }, unset: [] }),
-    ).rejects.toMatchObject({ hint: expect.stringContaining("opscrew provision") });
+    await expect(w.check({ set: { A: "b" } })).rejects.toMatchObject({
+      hint: expect.stringContaining("opscrew provision"),
+    });
   });
 
   it("refuses an environment not set up, and a server without a record", async () => {
@@ -240,9 +273,47 @@ describe("checkValueChange's refusals", () => {
     await refused(deployed, { set: { A: "b" } }, "no record of the app's values", { record: null });
   });
 
-  it("refuses generated and derived names, and a name that isn't one", async () => {
+  it("refuses while a rotation is unfinished", async () => {
+    const w = await world(deployed);
+    const value = (seed: string) => fakeSecret("generic-password", seed);
+    await keepPendingRotation(w.deps, {
+      names: ["db"],
+      services: { db: { password: { old: value("values-db-2"), new: value("values-db-3") } } },
+      hash: "a".repeat(64),
+      step: "started",
+    });
+    await expect(w.change({ set: { STRIPE_SECRET_KEY: NEW_KEY } })).rejects.toMatchObject({
+      message: expect.stringContaining("The rotation of db in prod is unfinished"),
+    });
+    expect(w.github.secrets.size).toBe(0);
+    expect(await readAppValues(w.deps)).toEqual(RECORDED);
+  });
+
+  it("refuses during a service's move and a move to another provider", async () => {
+    const moving = {
+      ...deployed,
+      move: { service: "db", from: "app", to: "data", step: "started", copy: "dump" },
+    } as DeployPlan;
+    await refused(moving, { set: { STRIPE_SECRET_KEY: NEW_KEY } }, "A move of db", {
+      onDisk: deployed,
+    });
+    await refused(movingPlan(), { set: { STRIPE_SECRET_KEY: NEW_KEY } }, "is in progress");
+  });
+
+  it("refuses generated names, the ones provision fills, and a name that isn't one", async () => {
     await refused(deployed, { set: { SESSION_SECRET: "x" } }, "OpsCrew generates SESSION_SECRET");
     await refused(deployed, { unset: ["DATABASE_URL"] }, "OpsCrew fills DATABASE_URL");
+    // Provision fills it from the running Postgres, whatever the plan says of it.
+    const mine = DeployPlanSchema.parse({
+      ...deployed,
+      app: {
+        ...deployed.app,
+        env: deployed.app.env.map((v) =>
+          v.name === "DATABASE_URL" ? { ...v, source: "user" } : v,
+        ),
+      },
+    });
+    await refused(mine, { set: { DATABASE_URL: "x" } }, "OpsCrew fills DATABASE_URL");
     await refused(deployed, { set: { "NOT-A-NAME": "x" } }, "isn't a variable name");
   });
 
@@ -260,21 +331,63 @@ describe("checkValueChange's refusals", () => {
     await refused(deployed, { unset: ["NOTHING_HERE"] }, "has no value");
   });
 
-  it("refuses --redeploy and a build value in a promoted environment", async () => {
+  it("refuses --redeploy, a value and a removal in a promoted environment", async () => {
     const plan = sitePlan({
       deployed: true,
       environment: "prod2",
       promotedFrom: "staging",
       env: ["API_KEY"],
     });
-    await refused(plan, { set: { API_KEY: "x" }, redeploy: true }, "--redeploy can't start");
-    await refused(plan, { set: { API_KEY: "x" } }, "its own value would change nothing");
+    const options = { record: null };
+    await refused(
+      plan,
+      { set: { API_KEY: "x" }, redeploy: true },
+      "--redeploy can't start",
+      options,
+    );
+    await refused(plan, { set: { API_KEY: "x" } }, "its own value would change nothing", options);
+    await refused(plan, { unset: ["API_KEY"] }, "its own value would change nothing", options);
   });
 
-  it("registers every value with the redactor first", async () => {
-    const w = await world(deployed);
-    await checkValueChange(w.deps, deployed, { set: { STRIPE_SECRET_KEY: NEW_KEY }, unset: [] });
-    expect(w.deps.redactor.redact(`x ${NEW_KEY}`)).not.toContain(NEW_KEY);
+  it("refuses a multi-line build value", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...deployed,
+      app: {
+        ...deployed.app,
+        env: [...deployed.app.env, { name: "VITE_API_URL", secret: false, source: "user" }],
+      },
+    });
+    await refused(plan, { set: { VITE_API_URL: "a\nb" } }, "must be a single line");
+  });
+});
+
+describe("the bucket's key (FR-1318)", () => {
+  const ACCESS = fakeSecret("aws-access-key-id", "values-bucket");
+  const SECRET = fakeSecret("aws-secret-access-key", "values-bucket");
+  const plan = withBucket(testPlan({ deployed: true }), "hetzner");
+
+  it("is refused before anything is read when provision's source of it is missing", async () => {
+    const w = await world(plan);
+    await expect(w.check({ set: { STRIPE_SECRET_KEY: NEW_KEY } })).rejects.toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      hint: expect.stringContaining(STORAGE_KEY_VARS.secretAccessKey),
+    });
+  });
+
+  it("comes from provision's source into the app's settings, never into the record", async () => {
+    const w = await world(plan, {
+      env: { [STORAGE_KEY_VARS.accessKeyId]: ACCESS, [STORAGE_KEY_VARS.secretAccessKey]: SECRET },
+    });
+    await w.change({ set: { STRIPE_SECRET_KEY: NEW_KEY } });
+    const appEnv = w.github.secrets.get("OPSCREW_APP_ENV");
+    expect(valueIn(appEnv, "AWS_ACCESS_KEY_ID")).toBe(ACCESS);
+    expect(valueIn(appEnv, "AWS_SECRET_ACCESS_KEY")).toBe(SECRET);
+    expect(valueIn(appEnv, "STRIPE_SECRET_KEY")).toBe(NEW_KEY);
+    const record = JSON.stringify(await readAppValues(w.deps));
+    expect(record).not.toContain(ACCESS);
+    expect(record).not.toContain(SECRET);
+    expect(record).not.toContain("AWS_SECRET_ACCESS_KEY");
+    for (const value of [ACCESS, SECRET]) expect(said(w.deps)).not.toContain(value);
   });
 });
 

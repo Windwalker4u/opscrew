@@ -394,7 +394,7 @@ const secret = (w: World, name: string) => w.github.secrets.get(`/OPSCREW_STAGIN
 describe("rotateServices on one server", () => {
   it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
     const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
-    await writeAppValues(w.deps, { app: { STALE: "x" }, build: { VITE_A: "a" } });
+    await writeAppValues(w.deps, {}, { app: { STALE: "x" }, build: { VITE_A: "a" } });
     await w.run(["db"]);
     const record = await readAppValues(w.deps);
     expect(appEnvText(record?.app ?? {})).toBe(secret(w, "APP_ENV"));

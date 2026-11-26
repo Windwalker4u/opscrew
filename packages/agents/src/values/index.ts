@@ -12,6 +12,7 @@ import {
   deploySecretNamesFor,
   isBuildValue,
   isClientExposedEnvName,
+  providerBucket,
   siteEnvSecret,
 } from "@opscrew/iac-templates";
 import {
@@ -32,26 +33,27 @@ import {
   type SecretPlace,
   setSecretAt,
 } from "../provision/secrets";
+import { requireStorageKey } from "../provision/storage";
+import type { ProvisionServices } from "../provision/types";
 import { assertValuesCurrent } from "../rotate/record";
 import { readPendingRotation, unfinishedRotation } from "../rotate/values-pending";
 import {
   appEnvText,
   buildLinesText,
   publicSplitSetting,
+  type StorageLogin,
   serviceFilledNames,
+  storageLoginValue,
   storageVariableKind,
 } from "../shared/app-env";
-import { registerNamedValues } from "../shared/app-secrets";
 import { writePlanIfChanged } from "../shared/plan-file";
 import { hasDeployment } from "../shared/server-address";
-import { type RecordedValues, readAppValues, writeAppValues } from "./record";
+import { bucketKeyVariable, type RecordedValues, readAppValues, writeAppValues } from "./record";
 
-export { appValuesFile, type RecordedValues, readAppValues, writeAppValues } from "./record";
-
-/** What `opscrew values set` or `unset` changes. */
-export interface ValueChange {
-  /** The values to set, by name. */
-  set: Readonly<Record<string, string>>;
+/** What `opscrew values set` or `unset` changes, by name: no value is read yet. */
+export interface ValueNames {
+  /** The names to set. */
+  set: readonly string[];
   /** The names to remove. */
   unset: readonly string[];
   /** `--plain`: a name the plan doesn't have yet is added as not secret. */
@@ -63,10 +65,13 @@ export interface ValueChange {
 /** Where the environment's app values live in GitHub. */
 type Kind = "server" | "site";
 
-/** What {@link checkValueChange} found: where the values live, and the record. */
-interface Checked {
+/** A change {@link checkValueChange} let through, for {@link changeAppValues}. */
+export interface CheckedChange {
+  names: ValueNames;
   kind: Kind;
   record: RecordedValues | undefined;
+  /** The key of the plan's bucket at a provider, from where provision reads it each run. */
+  storage?: StorageLogin;
   /** ` --app <key> --env <name>` as the commands it suggests name them. */
   flags: string;
 }
@@ -85,30 +90,33 @@ function elsewhere(plan: DeployPlan): string | undefined {
   return undefined;
 }
 
+const nothing = (message: string) => `${message} Nothing was changed.`;
+const refuse = (message: string, hint?: string) =>
+  new OpsCrewError("INVALID_INPUT", nothing(message), hint ? { hint } : {});
+const stop = (message: string, hint: string) =>
+  new OpsCrewError("PHASE_PRECONDITION", nothing(message), { hint });
+
 /**
- * Refuses `change` before anything is read from GitHub or changed: a target whose values don't
- * live in GitHub's secrets, an environment not set up or with no record of its values (on a
- * server), a move or an unfinished rotation, a name that isn't one, a generated or derived name,
- * a new build-time name or a new name of a site, a build value of a promoted environment, a
- * multi-line build value, `--plain` on a declared name, removing what has no value, and
- * `--redeploy` in a promoted environment. Registers every value with the redactor first.
- * @throws OpsCrewError `INVALID_INPUT` or `PHASE_PRECONDITION`, saying "Nothing was changed."
+ * Refuses the change of `names` before any value is asked for or read, and before GitHub is
+ * reached: a target whose values don't live in GitHub's secrets, an environment not set up or with
+ * no record of its values (on a server), a move or an unfinished rotation, a name that isn't one, a
+ * generated name or one OpsCrew fills from the deployment, a new build-time name or a new name of a
+ * site, a value a promoted environment doesn't read, `--plain` on a declared name, removing what
+ * has no value, and `--redeploy` in a promoted environment. On a server with a bucket at a
+ * provider it reads the bucket's key from where provision reads it each run (`services`), never
+ * asking for it.
+ * @throws OpsCrewError `INVALID_INPUT`, `PHASE_PRECONDITION` or `CREDENTIALS_MISSING` (the key's
+ * variables named), saying nothing was changed.
  */
 export async function checkValueChange(
   deps: PhaseDeps,
   plan: DeployPlan,
-  change: ValueChange,
-): Promise<Checked> {
-  registerNamedValues(deps.redactor, change.set);
-  // Address-like names are left out above; a value set by hand is masked whatever its name.
-  for (const value of Object.values(change.set)) deps.redactor.addLiteral(value, "app-env");
+  names: ValueNames,
+  services: Pick<ProvisionServices, "askStorageKey" | "objectStorage"> = {},
+): Promise<CheckedChange> {
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const provision = `opscrew provision${flags}`;
-  const refuse = (message: string, hint?: string) =>
-    new OpsCrewError("INVALID_INPUT", `${message} Nothing was changed.`, hint ? { hint } : {});
-  const stop = (message: string, hint: string) =>
-    new OpsCrewError("PHASE_PRECONDITION", `${message} Nothing was changed.`, { hint });
 
   const where = elsewhere(plan);
   if (where !== undefined) {
@@ -137,7 +145,7 @@ export async function checkValueChange(
       rotation,
       environment,
       flags,
-      "and it changes the app's values. Nothing was changed.",
+      nothing("and it changes the app's values."),
     );
   }
 
@@ -149,16 +157,15 @@ export async function checkValueChange(
       `Run \`${provision}\` once on this computer, which records them, or bring the record from the computer that ran it with \`opscrew secrets restore${flags}\`.`,
     );
   }
-  const promoted = !followsBranch(plan);
-  if (change.redeploy === true && promoted) {
+  if (names.redeploy === true && !followsBranch(plan)) {
     throw refuse(
       `The ${environment} environment deploys the image of the environment it is promoted from, so --redeploy can't start its deploy.`,
       `Leave --redeploy out: the next promotion to ${environment} applies the values.`,
     );
   }
   const read = new Set(deploySecretNamesFor(plan));
-  const names = [...Object.keys(change.set), ...change.unset];
-  for (const name of names) {
+  const filled = serviceFilledNames(plan);
+  for (const name of [...names.set, ...names.unset]) {
     if (!EnvVarNameSchema.safeParse(name).success) {
       throw refuse(
         `${name} isn't a variable name.`,
@@ -172,27 +179,13 @@ export async function checkValueChange(
         `To replace it, run \`opscrew rotate app:${name}${flags}\`.`,
       );
     }
-    if (
-      variable?.source === "derived" ||
-      (variable === undefined && serviceFilledNames(plan).has(name))
-    ) {
+    if (variable?.source === "derived" || filled.has(name)) {
       throw refuse(
         `OpsCrew fills ${name} from the deployment (a service's address, the domain or a setting it chose), so it has no value of yours to set.`,
       );
     }
-    const value = change.set[name];
-    if (value === undefined) {
-      if (
-        variable === undefined &&
-        record?.app[name] === undefined &&
-        record?.build[name] === undefined
-      ) {
-        throw refuse(`${name} has no value in ${environment}, so there is nothing to remove.`);
-      }
-      continue;
-    }
-    const build = isBuildValue(variable ?? { name });
-    if (variable === undefined) {
+    const setting = names.set.includes(name);
+    if (variable === undefined && setting) {
       const why =
         kind === "site"
           ? "the site's deploy workflow reads each of its values by name"
@@ -202,48 +195,87 @@ export async function checkValueChange(
       if (why !== undefined) {
         throw refuse(
           `${name} is new to the app, and ${why}, so only provision can add it.`,
-          `Add \`- { name: ${name}, secret: ${change.plain !== true}, source: user }\` to app.env in opscrew/plan.yaml and put the value in the file provision reads, then run \`${provision}\`.`,
+          `Add \`- { name: ${name}, secret: ${names.plain !== true}, source: user }\` to app.env in opscrew/plan.yaml and put the value in the file provision reads, then run \`${provision}\`.`,
         );
       }
-    } else if (change.plain === true) {
+    }
+    if (variable !== undefined && setting && names.plain === true) {
       throw refuse(
         `${name} is in the plan already, as a ${variable.secret ? "secret" : "plain"} value; --plain goes only with a name the plan doesn't have yet.`,
         "Leave --plain out, or change secret in opscrew/plan.yaml.",
       );
     }
+    if (
+      !setting &&
+      variable === undefined &&
+      record?.app[name] === undefined &&
+      record?.build[name] === undefined
+    ) {
+      throw refuse(`${name} has no value in ${environment}, so there is nothing to remove.`);
+    }
     const secret =
-      kind === "site" ? siteEnvSecret(name) : build ? DEPLOY_SECRETS.buildEnv : undefined;
+      kind === "site"
+        ? siteEnvSecret(name)
+        : isBuildValue(variable ?? { name })
+          ? DEPLOY_SECRETS.buildEnv
+          : undefined;
     if (secret !== undefined && !read.has(secret)) {
       throw refuse(
         `The ${environment} environment deploys what the environment it is promoted from builds, which holds ${name}, so its own value would change nothing.`,
-        "Set the value in the environment that builds it.",
+        "Change the value in the environment that builds it.",
       );
     }
-    if (build && /[\r\n]/.test(value))
-      throw refuse(`${name} is a build value and must be a single line.`);
   }
-  return { kind, record, flags };
+  // The bucket's key never goes into the record: read it as provision does, never asking.
+  const storage =
+    kind === "server" && providerBucket(plan) !== undefined
+      ? await requireStorageKey(deps, plan, services, {
+          command: `opscrew values ${names.set.length > 0 ? "set" : "unset"}${flags}`,
+          asks: false,
+        })
+      : undefined;
+  return { names, kind, record, flags, ...(storage === undefined ? {} : { storage }) };
 }
 
 /** One secret this change sets (with its value) or deletes. */
 type SecretChange = SecretPlace & { value?: string };
 
-/** The record with `change` applied: each value where the plan puts it (the build's or the app's). */
+/** The record with the change applied: each value where the plan puts it (the build's or the app's). */
 function changedRecord(
   plan: DeployPlan,
   record: RecordedValues,
-  change: ValueChange,
+  set: Readonly<Record<string, string>>,
+  unset: readonly string[],
 ): RecordedValues {
   const next = { app: { ...record.app }, build: { ...record.build } };
-  for (const name of change.unset) {
+  for (const name of unset) {
     delete next.app[name];
     delete next.build[name];
   }
-  for (const [name, value] of Object.entries(change.set)) {
+  for (const [name, value] of Object.entries(set)) {
     const variable = variableOf(plan, name) ?? { name };
     (isBuildValue(variable) ? next.build : next.app)[name] = value;
   }
   return next;
+}
+
+/** `values` with the bucket's key in its variables, as provision gives the app them. */
+function withBucketKey(
+  plan: DeployPlan,
+  values: RecordedValues,
+  login: StorageLogin | undefined,
+): RecordedValues {
+  const bucket = providerBucket(plan);
+  if (bucket === undefined || login === undefined) return values;
+  const keys = Object.fromEntries(
+    plan.app.env.flatMap(({ name }) => {
+      const value = bucketKeyVariable(plan, name)
+        ? storageLoginValue(name, bucket, login)
+        : undefined;
+      return value === undefined ? [] : [[name, value]];
+    }),
+  );
+  return { ...values, app: { ...values.app, ...keys } };
 }
 
 /** The build values of `values` the plan marks `secret` (true) or not. */
@@ -278,21 +310,25 @@ function serverSecrets(
 }
 
 /** A site's secrets: one repository secret per variable, set or deleted. */
-function siteSecrets(plan: DeployPlan, change: ValueChange): SecretChange[] {
+function siteSecrets(
+  plan: DeployPlan,
+  set: Readonly<Record<string, string>>,
+  unset: readonly string[],
+): SecretChange[] {
   const place = (name: string) => deploySecretName(plan, siteEnvSecret(name));
   return [
-    ...Object.entries(change.set).map(([name, value]) => ({ name: place(name), value })),
-    ...change.unset.map((name) => ({ name: place(name) })),
+    ...Object.entries(set).map(([name, value]) => ({ name: place(name), value })),
+    ...unset.map((name) => ({ name: place(name) })),
   ];
 }
 
 /** The plan's `app.env` with the removed names out and the new names in (`source: user`). */
-function changedPlan(plan: DeployPlan, change: ValueChange): DeployPlan {
-  const added = Object.keys(change.set)
+function changedPlan(plan: DeployPlan, names: ValueNames): DeployPlan {
+  const added = names.set
     .filter((name) => variableOf(plan, name) === undefined)
-    .map((name) => ({ name, secret: change.plain !== true, source: "user" as const }));
+    .map((name) => ({ name, secret: names.plain !== true, source: "user" as const }));
   const env = [
-    ...plan.app.env.filter((variable) => !change.unset.includes(variable.name)),
+    ...plan.app.env.filter((variable) => !names.unset.includes(variable.name)),
     ...added,
   ];
   return { ...plan, app: { ...plan.app, env } };
@@ -312,18 +348,20 @@ export interface ChangedValues {
 const SEALED = "(names only; values are encrypted on this computer before upload and never shown)";
 
 /**
- * Changes the environment's app values (`change`, checked with {@link checkValueChange}): after
- * one `github-secrets` approval naming the secrets, the variables and the plan's change, stores
- * the secrets that changed (a server's app env file and build values, or a site's one secret per
- * variable) and deletes a site's removed ones, each audited by name; then the record and the plan.
- * With `redeploy` it starts the deploy workflow on its branch, otherwise it says the next deploy
- * applies them. A refusal changes nothing.
- * @throws OpsCrewError for {@link checkValueChange}'s refusals, `APPROVAL_REFUSED`.
+ * Changes the environment's app values: `values`, one for each name `checked` sets (from
+ * {@link checkValueChange}), are registered with the redactor first, and a multi-line build value
+ * is refused. After one `github-secrets` approval naming the secrets, the variables and the plan's
+ * change, it stores the secrets that changed (a server's app env file and build values, or a
+ * site's one secret per variable) and deletes a site's removed ones, each audited by name; then the
+ * record and the plan. With `redeploy` it starts the deploy workflow on its branch, otherwise it
+ * says the next deploy applies them. A refusal changes nothing.
+ * @throws OpsCrewError `INVALID_INPUT` for a multi-line build value, `APPROVAL_REFUSED`.
  */
 export async function changeAppValues(
   deps: PhaseDeps,
   plan: DeployPlan,
-  change: ValueChange,
+  checked: CheckedChange,
+  values: Readonly<Record<string, string>>,
   github: Pick<GitHubSetup, "owner" | "repo" | "defaultBranch"> & {
     api: Pick<
       GitHubSetup["api"],
@@ -335,17 +373,30 @@ export async function changeAppValues(
     >;
   },
 ): Promise<ChangedValues> {
-  const { kind, record, flags } = await checkValueChange(deps, plan, change);
+  for (const value of Object.values(values)) deps.redactor.addLiteral(value, "app-env");
+  const { names, kind, record, flags } = checked;
+  if ([...names.set].sort().join() !== Object.keys(values).sort().join()) {
+    throw new Error("changeAppValues needs one value for each name checkValueChange checked.");
+  }
+  for (const [name, value] of Object.entries(values)) {
+    if (isBuildValue(variableOf(plan, name) ?? { name }) && /[\r\n]/.test(value)) {
+      throw refuse(`${name} is a build value and must be a single line.`);
+    }
+  }
   const { environment } = deps.paths;
   const repository = `${github.owner}/${github.repo}`;
-  const next = record === undefined ? undefined : changedRecord(plan, record, change);
+  const next = record === undefined ? undefined : changedRecord(plan, record, values, names.unset);
   const secrets =
     kind === "site"
-      ? siteSecrets(plan, change)
-      : serverSecrets(plan, record as RecordedValues, next as RecordedValues);
-  const nextPlan = changedPlan(plan, change);
+      ? siteSecrets(plan, values, names.unset)
+      : serverSecrets(
+          plan,
+          withBucketKey(plan, record as RecordedValues, checked.storage),
+          withBucketKey(plan, next as RecordedValues, checked.storage),
+        );
+  const nextPlan = changedPlan(plan, names);
   const added = nextPlan.app.env.filter((v) => variableOf(plan, v.name) === undefined);
-  const removed = plan.app.env.filter((v) => change.unset.includes(v.name));
+  const removed = plan.app.env.filter((v) => names.unset.includes(v.name));
   const planChanged = added.length > 0 || removed.length > 0;
   if (secrets.length === 0 && !planChanged) {
     deps.reporter.info(
@@ -355,7 +406,7 @@ export async function changeAppValues(
   }
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const branch = workflowBranch(plan, github.defaultBranch);
-  const setNames = Object.keys(change.set).sort();
+  const setNames = [...names.set].sort();
   const stored = secrets.filter((secret) => secret.value !== undefined);
   const deleted = secrets.filter((secret) => secret.value === undefined);
   const approval = await deps.approvals.request({
@@ -363,7 +414,7 @@ export async function changeAppValues(
     title: `Change the app's values of ${environment} in GitHub Actions for ${repository}`,
     details: [
       ...(setNames.length > 0 ? [`Set: ${listText(setNames)}.`] : []),
-      ...(change.unset.length > 0 ? [`Removed: ${listText([...change.unset].sort())}.`] : []),
+      ...(names.unset.length > 0 ? [`Removed: ${listText([...names.unset].sort())}.`] : []),
       ...(stored.length > 0
         ? [`Secrets ${SEALED}:`, ...stored.map((s) => `  ${placeText(s)}`)]
         : []),
@@ -378,7 +429,7 @@ export async function changeAppValues(
       ...(removed.length > 0
         ? [`opscrew/plan.yaml no longer lists ${listText(removed.map((v) => v.name))}.`]
         : []),
-      change.redeploy === true
+      names.redeploy === true
         ? `Then ${workflowFile} is started on ${branch}, which deploys the app with them.`
         : "The app gets them at its next deploy.",
       "No infrastructure, Cloudflare, DNS or server change.",
@@ -387,7 +438,7 @@ export async function changeAppValues(
   if (!approval.approved) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `The app's values of ${environment} were not changed. Nothing was changed.`,
+      nothing(`The app's values of ${environment} were not changed.`),
       { hint: "Run the command again when you are ready." },
     );
   }
@@ -400,11 +451,11 @@ export async function changeAppValues(
     if (secret.value === undefined) await deleteSecretAt(deps, at, place);
     else await setSecretAt(deps, at, place, secret.value);
   }
-  if (next !== undefined) await writeAppValues(deps, next);
+  if (next !== undefined) await writeAppValues(deps, plan, next);
   if (planChanged) await writePlanIfChanged(deps, nextPlan);
-  const changed = listText([...setNames, ...change.unset]);
+  const changed = listText([...setNames, ...names.unset]);
   deps.reporter.success(`Changed ${changed} in ${environment}.`);
-  if (change.redeploy !== true) {
+  if (names.redeploy !== true) {
     deps.reporter.info(
       followsBranch(plan)
         ? `The app gets the new values at its next deploy: a push to ${branch}, or \`opscrew values set${flags} --redeploy\` next time.`

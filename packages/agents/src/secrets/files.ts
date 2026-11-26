@@ -137,7 +137,7 @@ export function registerGeneratedValues(redactor: Redactor, files: Record<string
   const recorded = generatedLeaves(files[APP_VALUES]);
   registerNamedValues(
     redactor,
-    Object.fromEntries([...recorded].map(([name, value]) => [name.replace(/^[^.]*./, ""), value])),
+    Object.fromEntries([...recorded].map(([name, value]) => [name.replace(/^[^.]*\./, ""), value])),
   );
   for (const [name, value] of generatedLeaves(files[GENERATED_VALUES])) {
     redactor.addLiteral(value, "app-env");

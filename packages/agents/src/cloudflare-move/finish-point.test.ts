@@ -67,12 +67,18 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
     const w = await serverPointWorld();
     const deps = environmentDeps(w.session, w.environment);
-    await writeAppValues(deps, { app: { STALE: "x" }, build: {} });
+    await writeAppValues(deps, {}, { app: { STALE: "x" }, build: {} });
     const point = await pointAtB(w.session, w.environment);
     await point.approve();
     await point.secrets();
     const record = await readAppValues(deps);
-    expect(appEnvText(record?.app ?? {})).toBe(w.github.secrets.get("OPSCREW_APP_ENV"));
+    // Everything but the bucket's key, which OpsCrew keeps like a provider token (FR-1318).
+    const stored = (w.github.secrets.get("OPSCREW_APP_ENV") ?? "")
+      .split("\n")
+      .filter((line) => !/^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)=/.test(line))
+      .join("\n");
+    expect(appEnvText(record?.app ?? {})).toBe(stored);
+    expect(Object.keys(record?.app ?? {})).not.toContain("AWS_SECRET_ACCESS_KEY");
   });
 
   it("writes nothing when what it would write no longer has the approved hash, or without the approval", async () => {

@@ -44,6 +44,7 @@ import {
 } from "../testing";
 import { pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
+import { changeAppValues, checkValueChange } from "../values";
 import { readAppValues, writeAppValues } from "../values/record";
 import { runProvision } from "./run";
 import {
@@ -1218,27 +1219,72 @@ describe("the deploy secrets OpsCrew stored before", () => {
 describe("the record of the app's values (048)", () => {
   const KEY = fakeSecret("stripe-live-key", "048-record");
 
-  it("records what it assembled, and a script reuses a recorded value its file lacks", async () => {
-    const deps = await createTestPhaseDeps();
+  const OTHER = fakeSecret("stripe-live-key", "048-other");
+
+  /** A script's provision of testPlan's prod with `STRIPE_SECRET_KEY=value` in its values file. */
+  async function stored(deps: TestPhaseDeps, github: FakeGitHub, value: string) {
+    await writeFile(join(deps.paths.root, "prod.env"), `STRIPE_SECRET_KEY=${value}\n`);
+    const plan = testPlan({ deployed: true });
+    const environment = await buildAppEnvironment(deps, plan, {});
+    const setup = { api: github, owner: "acme", repo: "shop", defaultBranch: "main" };
+    const secrets = deploySecrets({
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment,
+    });
+    await setDeploySecrets(deps, setup, plan, secrets, environment.names);
+    return environment;
+  }
+
+  /** The deps of a script whose values file is prod.env, approving as `answers` say. */
+  async function script(answers: boolean[] = []) {
+    const deps = await createTestPhaseDeps({
+      approvalHandler: new ScriptedApprovalHandler(answers.length === 0 ? () => true : answers),
+    });
     deps.interactive = false;
-    await writeFile(join(deps.paths.root, "prod.env"), `STRIPE_SECRET_KEY=${KEY}\n`);
     deps.env.OPSCREW_APP_ENV_FILE = "prod.env";
-    const first = await buildAppEnvironment(deps, testPlan(), {});
+    return deps;
+  }
+
+  it("records what GitHub holds once the secrets are stored, and a script reuses it", async () => {
+    const deps = await script();
+    const github = new FakeGitHub();
+    const first = await stored(deps, github, KEY);
     expect(await readAppValues(deps)).toEqual({
       app: first.values.app,
       build: first.values.build,
     });
-    expect(first.values.app.STRIPE_SECRET_KEY).toBe(KEY);
     await writeFile(join(deps.paths.root, "prod.env"), "");
     const again = await buildAppEnvironment(deps, testPlan(), {});
     expect(again.values.app.STRIPE_SECRET_KEY).toBe(KEY);
     expect(deps.reporter.text()).not.toContain(KEY);
   });
 
-  it("offers a terminal the recorded value to keep", async () => {
+  it("leaves the record as it was when the secrets' approval is refused", async () => {
+    const deps = await script([true, false, true]);
+    const github = new FakeGitHub();
+    await stored(deps, github, KEY);
+    const before = await readAppValues(deps);
+    await expect(stored(deps, github, OTHER)).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    expect(await readAppValues(deps)).toEqual(before);
+    // A later change of another value uploads the stored one, never the refused one.
+    const plan = testPlan({ deployed: true });
+    await writeArtifact("plan", deps.paths.files.plan, plan);
+    const later = { api: github, owner: "acme", repo: "shop", defaultBranch: "main" };
+    const checked = await checkValueChange(deps, plan, { set: ["TLS_KEY"], unset: [] });
+    const tls = fakeSecret("generic-password", "048-tls");
+    await changeAppValues(deps, plan, checked, { TLS_KEY: tls }, later);
+    const appEnv = github.secrets.get("OPSCREW_APP_ENV") ?? "";
+    expect(appEnv).toContain(`STRIPE_SECRET_KEY=${KEY}`);
+    expect(appEnv).not.toContain(OTHER);
+  });
+
+  it("offers a terminal the recorded value to keep only when the local file has none", async () => {
     const deps = await createTestPhaseDeps();
     deps.interactive = true;
-    await writeAppValues(deps, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
+    await writeAppValues(deps, {}, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
     const offered: (true | undefined)[] = [];
     const environment = await buildAppEnvironment(deps, testPlan(), {
       askEnv: async (question) => {
@@ -1248,6 +1294,17 @@ describe("the record of the app's values (048)", () => {
     });
     expect(offered).toEqual([true]);
     expect(environment.values.app.STRIPE_SECRET_KEY).toBe(KEY);
+    // A value in .env, which the user may have changed, is offered as before 048.
+    await writeFile(join(deps.paths.root, ".env"), `STRIPE_SECRET_KEY=${OTHER}\n`);
+    const local: [true | undefined, boolean][] = [];
+    const fromLocal = await buildAppEnvironment(deps, testPlan(), {
+      askEnv: async (question) => {
+        local.push([question.keptValueAvailable, question.localValueAvailable]);
+        return { useLocal: true };
+      },
+    });
+    expect(local).toEqual([[undefined, true]]);
+    expect(fromLocal.values.app.STRIPE_SECRET_KEY).toBe(OTHER);
   });
 
   it("records nothing for a site, whose values stay off this computer", async () => {
@@ -1265,7 +1322,7 @@ describe("the record of the app's values (048)", () => {
 
   it("registers the recorded values with the redactor when nothing is assembled", async () => {
     const deps = await createTestPhaseDeps();
-    await writeAppValues(deps, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
+    await writeAppValues(deps, {}, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
     await registerAppSecrets(deps, testPlan());
     expect(deps.redactor.redact(`key ${KEY}`)).not.toContain(KEY);
   });

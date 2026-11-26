@@ -396,7 +396,7 @@ async function replaceSecrets(
     await setSecretAt(deps, github, deploySecretPlace(plan, name), value);
   }
   const appEnv = secrets[DEPLOY_SECRETS.appEnv];
-  if (appEnv !== undefined) await recordAppEnvText(deps, appEnv);
+  if (appEnv !== undefined) await recordAppEnvText(deps, plan, appEnv);
 }
 
 /** One rotation's facts the runs on the servers need. */

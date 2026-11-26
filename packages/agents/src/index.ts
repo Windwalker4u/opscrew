@@ -152,10 +152,10 @@ export {
   type AppValueRow,
   appValueRows,
   type ChangedValues,
+  type CheckedChange,
   changeAppValues,
   checkValueChange,
-  type ValueChange,
-  writeAppValues,
+  type ValueNames,
 } from "./values";
 export * from "./verify";
 export * from "./vpn";

@@ -111,8 +111,8 @@ export interface EnvQuestion {
   /** True when {@link localFile} has a value the user may reuse for the environment. */
   localValueAvailable: boolean;
   /**
-   * True when OpsCrew keeps a value of the variable from an earlier run (`app_values.json`), which
-   * the user may keep (`{ keep: true }`); absent otherwise.
+   * True when OpsCrew keeps a value of the variable from an earlier run (`app_values.json`) and the
+   * local file has none, so the user may keep it (`{ keep: true }`); absent otherwise.
    */
   keptValueAvailable?: true;
   /**
@@ -679,8 +679,8 @@ export interface AssembleAppEnvOptions {
   storage?: StorageLogin;
   /**
    * The app's values OpsCrew recorded at its last run (`app_values.json`), by name: `ask` offers
-   * to keep one (`keptValueAvailable`), and a variable read from `dotenvText` takes it when the
-   * file has none. Never for a generated, derived or fixed value.
+   * to keep one the local file has no value of (`keptValueAvailable`), and a variable read from
+   * `dotenvText` takes it when the file has none. Never for a generated, derived or fixed value.
    */
   kept?: Readonly<Record<string, string>>;
   /**
@@ -871,7 +871,10 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
         environment: options.local?.environment ?? "prod",
         localFile: options.local?.file ?? ".env",
         localValueAvailable: local.has(variable.name),
-        ...(keptValue === undefined ? {} : { keptValueAvailable: true as const }),
+        // A local value the user may have changed is offered as before 048.
+        ...(keptValue === undefined || local.has(variable.name)
+          ? {}
+          : { keptValueAvailable: true as const }),
         optional,
       });
       if ("useLocal" in answer) value = local.get(variable.name);

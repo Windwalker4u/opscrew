@@ -32,15 +32,16 @@ home and the recovery copy, without provision's infrastructure, Cloudflare, DNS 
    `OPSCREW_APP_ENV_FILE` at each run, and the full app env existed only in GitHub's write-only
    secret and on the server. So `values set` couldn't rebuild `OPSCREW_APP_ENV` without asking for
    every other value. Where the app's settings are the one secret `OPSCREW_APP_ENV` (a server's),
-   provision's `buildAppEnvironment` now writes what it assembled,
+   `setDeploySecrets` now writes what GitHub holds once it stored it (never before the approval),
    `{ app, build }` by name, to `app_values.json` in the project's home (0600), which the recovery
    copy holds. `values set` changes that record and renders the secrets from it with the same
    formatting as provision (sorted `dotenvLine`s; `NAME=value` build lines, split by the plan's
    `secret`).
    - **Only there:** a site's values are one secret each, so `values set` needs no record, and
      elsewhere `values` refuses; the user's own values stay off this computer as before.
-   - **The bucket's key** is among the app's values, so it is in the record and the recovery copy
-     too (the lead may prefer to leave it out and ask for the key again).
+   - **The bucket's key** is never in the record (the lead, FR-1318: OpsCrew keeps it like a
+     provider token). `values set` reads it from where provision reads it each run
+     (`requireStorageKey` without asking) and refuses, before any value is read, without it.
    - **Why not recompute with `assembleAppEnv`:** it needs the bucket's key and endpoint (a
      Contabo API call, R2's account) and the server's address, which a values change shouldn't
      need. **Why not read `app.env` over SSH, as rotate does:** the build values aren't on the
@@ -52,7 +53,7 @@ home and the recovery copy, without provision's infrastructure, Cloudflare, DNS 
    `values set` would put back an old database password or address.
 3. **Provision reuses the record.** A variable provision reads from `OPSCREW_APP_ENV_FILE` takes
    the recorded value when the file has none (the file wins), and a terminal offers to keep the
-   recorded value first (still asking, so a value stays changeable on every target). Otherwise a
+   recorded value first when the local file has none for it (a local value is offered as before). Otherwise a
    name added with `values set` could be skipped by mistake, or stop a script.
 4. **What it refuses:** a target whose values don't live in GitHub (Portainer, hosting accounts,
    this computer, preview environments); an environment with no record; a new build-time name or a

@@ -516,8 +516,7 @@ async function leaks(f: Flow): Promise<string> {
   const contents = await Promise.all(
     files
       .split("\0")
-      // OpsCrew's home is outside the repository in real use; it keeps the app's values (048).
-      .filter((path) => path !== "" && !path.startsWith(".home-opscrew/"))
+      .filter((path) => path !== "")
       .map((path) => readTextIfExists(join(f.root, path)).then((text) => text ?? "")),
   );
   return [

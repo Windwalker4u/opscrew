@@ -58,10 +58,14 @@ describe("the recovery copy's files", () => {
     expect(fileMode("home/app_values.json")).toBe(0o600);
     const key = fakeSecret("stripe-live-key", "copy");
     const build = fakeSecret("generic-password", "copy-build");
-    await writeAppValues(deps, {
-      app: { STRIPE_SECRET_KEY: key, APP_URL: "https://shop.example.com" },
-      build: { NEXT_PUBLIC_KEY: build },
-    });
+    await writeAppValues(
+      deps,
+      {},
+      {
+        app: { STRIPE_SECRET_KEY: key, APP_URL: "https://shop.example.com" },
+        build: { NEXT_PUBLIC_KEY: build },
+      },
+    );
     const files = await readLocalFiles(deps.paths, deps.redactor);
     expect(Object.keys(files)).toEqual(["home/app_values.json"]);
     for (const value of [key, build]) {

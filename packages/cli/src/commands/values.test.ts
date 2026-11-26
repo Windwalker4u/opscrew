@@ -165,6 +165,33 @@ describe.skipIf(!GIT)("opscrew values", () => {
     const both = context(p);
     expect(await run(both.ctx, "values", "set", "A", "--from-file", "x.env")).toBe(2);
     expect(both.ctx.errors).toContain("--from-file sets every value of its file");
+    await writeFile(path.join(p.root, "blank.env"), `STRIPE_SECRET_KEY=${NEW_KEY}\nOTHER=\n`);
+    const blank = context(p);
+    expect(await run(blank.ctx, "values", "set", "--from-file", "blank.env")).toBe(2);
+    expect(blank.ctx.errors).toContain("gives OTHER an empty value.");
+    expect(blank.ctx.errors).not.toContain(NEW_KEY);
+    expect(blank.github.secrets.size).toBe(0);
+  });
+
+  it("refuses unset NAME=value without echoing it", async () => {
+    const p = await setup();
+    const c = context(p);
+    expect(await run(c.ctx, "values", "unset", `STRIPE_SECRET_KEY=${NEW_KEY}`)).toBe(2);
+    expect(c.ctx.errors).toContain("A value never goes on the command line");
+    expect(c.ctx.errors).toContain(
+      "Give the names alone: `opscrew values unset STRIPE_SECRET_KEY`.",
+    );
+    expect(await everything(p, c)).not.toContain(NEW_KEY);
+    expect(c.github.secrets.size).toBe(0);
+  });
+
+  it("checks the name before a terminal asks for the value", async () => {
+    const p = await setup();
+    const prompts = new ScriptedPrompts([]);
+    const c = context(p, { prompts });
+    expect(await run(c.ctx, "values", "set", "SESSION_SECRET")).toBe(2);
+    expect(c.ctx.errors).toContain("OpsCrew generates SESSION_SECRET");
+    expect(prompts.calls).toEqual([]);
   });
 
   it("removes a value and its name, and lists names without values", async () => {

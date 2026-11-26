@@ -8,9 +8,8 @@ import {
   publishDeploySetup,
   requireGitRepo,
   setupGitHub,
-  type ValueChange,
 } from "@opscrew/agents";
-import { errorText, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { errorText, listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
@@ -49,16 +48,25 @@ const processStdin: ValueInput = {
  * Refuses `NAME=value` among `names` before anything else, without echoing the value (registered
  * with the redactor at once): a value never goes on the command line, where shell history keeps it.
  */
-function refuseValuesInArguments(ctx: CliContext, names: readonly string[], flags: AppEnvFlags) {
+function refuseValuesInArguments(
+  ctx: CliContext,
+  command: "set" | "unset",
+  names: readonly string[],
+  flags: AppEnvFlags,
+) {
   const given = names.filter((name) => name.includes("="));
   for (const argument of given) ctx.redactor.addLiteral(argument.slice(argument.indexOf("=") + 1));
-  if (given.length === 0) return;
-  const name = given[0]?.slice(0, given[0].indexOf("=")) ?? "NAME";
+  const [first] = given;
+  if (first === undefined) return;
+  const name = first.slice(0, first.indexOf("="));
   throw new OpsCrewError(
     "INVALID_INPUT",
     `A value never goes on the command line, where your shell's history keeps it, so OpsCrew took none of ${name}'s. Nothing was changed.`,
     {
-      hint: `Run \`opscrew values set${givenFlags(flags)} ${name}\` and paste the value when asked, pipe it in (\`< file\`), or use \`--from-file <file>\`.`,
+      hint:
+        command === "set"
+          ? `Run \`opscrew values set${givenFlags(flags)} ${name}\` and paste the value when asked, pipe it in (\`< file\`), or use \`--from-file <file>\`.`
+          : `Give the names alone: \`opscrew values unset${givenFlags(flags)} ${name}\`.`,
     },
   );
 }
@@ -69,54 +77,66 @@ function inputValue(text: string): string {
   return /[\r\n]/.test(single) ? text : single;
 }
 
+const refuse = (message: string, hint: string) =>
+  new OpsCrewError("INVALID_INPUT", `${message} Nothing was changed.`, { hint });
+
 /**
- * The values `values set` stores: each of `--from-file`'s, or the one name's from standard input
- * (a hidden prompt in a terminal). Every value is registered with the redactor as it is read.
- * @throws OpsCrewError `INVALID_INPUT` for names with `--from-file`, none or several without it,
- * an unreadable or empty file, and an empty value.
+ * The values of `--from-file`, each registered with the redactor as it is read; `undefined`
+ * without it.
+ * @throws OpsCrewError `INVALID_INPUT` with names, for an unreadable file, one with no value, and
+ * an empty value.
  */
-async function readValues(
+async function fileValues(
   ctx: CliContext,
   names: readonly string[],
   flags: ChangeFlags,
-  environment: string,
   again: string,
-): Promise<Record<string, string>> {
-  const refuse = (message: string, hint: string) =>
-    new OpsCrewError("INVALID_INPUT", `${message} Nothing was changed.`, { hint });
-  if (flags.fromFile !== undefined) {
-    if (names.length > 0) {
-      throw refuse(
-        "--from-file sets every value of its file, so it doesn't go with names.",
-        `Run \`${again} --from-file <file>\` alone, or leave --from-file out to set one name.`,
-      );
-    }
-    const file = userPath(ctx, flags.fromFile);
-    let text: string;
-    try {
-      text = await readFile(file, "utf8");
-    } catch (error) {
-      throw refuse(`OpsCrew could not read ${file}.`, `Check the path (${errorText(error)}).`);
-    }
-    const values = Object.fromEntries(parseDotenv(text));
-    for (const value of Object.values(values)) ctx.redactor.addLiteral(value, "app-env");
-    if (Object.keys(values).length === 0) {
-      throw refuse(
-        `${file} holds no value.`,
-        "Write one NAME=value line per value (a value with line ends in double quotes, with \\n).",
-      );
-    }
-    return values;
-  }
-  const [name] = names;
-  if (name === undefined || names.length > 1) {
+): Promise<Record<string, string> | undefined> {
+  if (flags.fromFile === undefined) return undefined;
+  if (names.length > 0) {
     throw refuse(
-      names.length === 0
-        ? "Name the value to set."
-        : "Standard input holds one value, for one name.",
-      `Run \`${again} <NAME>\` for one value, or \`${again} --from-file <file>\` for several.`,
+      "--from-file sets every value of its file, so it doesn't go with names.",
+      `Run \`${again} --from-file <file>\` alone, or leave --from-file out to set one name.`,
     );
   }
+  const file = userPath(ctx, flags.fromFile);
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    throw refuse(`OpsCrew could not read ${file}.`, `Check the path (${errorText(error)}).`);
+  }
+  const values = Object.fromEntries(parseDotenv(text));
+  for (const value of Object.values(values)) ctx.redactor.addLiteral(value, "app-env");
+  if (Object.keys(values).length === 0) {
+    throw refuse(
+      `${file} holds no value.`,
+      "Write one NAME=value line per value (a value with line ends in double quotes, with \\n).",
+    );
+  }
+  const empty = Object.keys(values).filter((name) => values[name] === "");
+  if (empty.length > 0) {
+    const one = empty.length === 1;
+    throw refuse(
+      `${file} gives ${listText(empty)} an empty value.`,
+      `Give ${one ? "it a value" : "them values"}, or remove ${one ? "it" : "them"} with \`opscrew values unset${givenFlags(flags)} ${empty.join(" ")}\`.`,
+    );
+  }
+  return values;
+}
+
+/**
+ * The one name's value from standard input (a hidden prompt in a terminal), registered with the
+ * redactor as it is read.
+ * @throws OpsCrewError `INVALID_INPUT` for an empty value; `APPROVAL_REFUSED` when cancelled.
+ */
+async function inputValueOf(
+  ctx: CliContext,
+  name: string,
+  flags: ChangeFlags,
+  environment: string,
+  again: string,
+): Promise<string> {
   const input = servicesOf(ctx).valueInput ?? processStdin;
   let value: string;
   if (input.isTTY) {
@@ -136,12 +156,13 @@ async function readValues(
       `To remove ${name}, run \`opscrew values unset${givenFlags(flags)} ${name}\`.`,
     );
   }
-  return { [name]: value };
+  return value;
 }
 
 /**
- * `values set` or `unset`: the change checked before GitHub is reached, then stored after its
- * approval, and the plan's change (and the recovery copy) proposed in the deploy pull request.
+ * `values set` or `unset`: the names checked before any value is asked for or read and before
+ * GitHub is reached, the values stored after their approval, and the plan's change (and the
+ * recovery copy) proposed in the deploy pull request.
  */
 async function change(
   ctx: CliContext,
@@ -149,21 +170,23 @@ async function change(
   names: readonly string[],
   flags: ChangeFlags,
 ): Promise<void> {
-  if (command === "set") refuseValuesInArguments(ctx, names, flags);
+  refuseValuesInArguments(ctx, command, names, flags);
   const { app, name, flag } = await chooseEnvironment(ctx, flags, `values ${command}`);
   const again = `opscrew values ${command}${flag}`;
-  const set = command === "set" ? await readValues(ctx, names, flags, name, again) : {};
-  if (command === "unset" && names.length === 0) {
-    throw new OpsCrewError("INVALID_INPUT", "Name the values to remove. Nothing was changed.", {
-      hint: `For example \`${again} STRIPE_SECRET_KEY\`.`,
-    });
+  const fromFile = command === "set" ? await fileValues(ctx, names, flags, again) : undefined;
+  if (command === "set" && fromFile === undefined && names.length !== 1) {
+    throw refuse(
+      names.length === 0
+        ? "Name the value to set."
+        : "Standard input holds one value, for one name.",
+      `Run \`${again} <NAME>\` for one value, or \`${again} --from-file <file>\` for several.`,
+    );
   }
-  const valueChange: ValueChange = {
-    set,
-    unset: command === "unset" ? names : [],
-    ...(flags.plain === true ? { plain: true } : {}),
-    ...(flags.redeploy === true ? { redeploy: true } : {}),
-  };
+  if (command === "unset" && names.length === 0) {
+    throw refuse("Name the values to remove.", `For example \`${again} STRIPE_SECRET_KEY\`.`);
+  }
+  const setNames =
+    command === "unset" ? [] : fromFile === undefined ? names : Object.keys(fromFile);
   const deps = createPhaseDeps(ctx, {
     ai: false,
     app,
@@ -171,11 +194,27 @@ async function change(
     ...(flags.yes === true ? { assumeYes: true } : {}),
   });
   const plan = await readArtifact("plan", deps.paths.files.plan);
-  await checkValueChange(deps, plan, valueChange);
+  const services = servicesOf(ctx).provision ?? {};
+  // Every check that needs no value runs before one is asked for or read.
+  const checked = await checkValueChange(
+    deps,
+    plan,
+    {
+      set: setNames,
+      unset: command === "unset" ? names : [],
+      ...(flags.plain === true ? { plain: true } : {}),
+      ...(flags.redeploy === true ? { redeploy: true } : {}),
+    },
+    services,
+  );
+  const [one] = setNames;
+  const values =
+    fromFile ??
+    (one === undefined ? {} : { [one]: await inputValueOf(ctx, one, flags, name, again) });
   const git = await requireGitRepo(deps);
-  const github = await setupGitHub(deps, git, servicesOf(ctx).provision ?? {});
+  const github = await setupGitHub(deps, git, services);
   const branch = await chooseDeployBranch(deps, git, github, plan);
-  const changed = await changeAppValues(deps, plan, valueChange, github);
+  const changed = await changeAppValues(deps, plan, checked, values, github);
   const published = await publishDeploySetup(deps, {
     git,
     github,

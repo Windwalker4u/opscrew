@@ -525,7 +525,8 @@ async function recordStoredAppEnv(
 ): Promise<void> {
   const { name } = deploySecretPlace(environment.plan, DEPLOY_SECRETS.appEnv);
   const appEnv = set.find((stored) => stored.name === name)?.value;
-  if (appEnv !== undefined) await recordAppEnvText(environmentDeps(session, environment), appEnv);
+  if (appEnv !== undefined)
+    await recordAppEnvText(environmentDeps(session, environment), environment.plan, appEnv);
 }
 
 /**

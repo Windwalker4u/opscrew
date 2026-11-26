@@ -219,9 +219,11 @@ Give an external service the app uses, such as a hosted database or a payment pr
 connection value per environment: a staging database, a test-mode key. Then staging never touches
 prod's data or money.
 
-On a server, provision keeps the values it stored on this computer, beside the passwords it
-generated, and in the [recovery copy](secrets-recovery.md). A later provision reuses them: a terminal offers to keep
-each one, and in scripts a value in the file `OPSCREW_APP_ENV_FILE` names still wins.
+On a server, provision keeps the values it stored in GitHub on this computer, beside the
+passwords it generated, and in the [recovery copy](secrets-recovery.md); your bucket's storage key
+is never among them. A later provision reuses them: a terminal offers to keep each one your local
+`.env` file has no value for, and in scripts a value in the file `OPSCREW_APP_ENV_FILE` names still
+wins.
 
 ### Changing one value
 
@@ -244,6 +246,10 @@ npx opscrew values list --env staging                             # names, secre
   the values OpsCrew keeps on this computer and the recovery copy. No infrastructure, Cloudflare,
   DNS or server plan runs. OpsCrew lists the secrets and the names before it stores them, as
   provision does; `--yes` approves that in scripts.
+- **An app with a bucket at a provider:** its storage key reaches the app from where provision
+  reads it each run (`OPSCREW_STORAGE_ACCESS_KEY_ID` and `OPSCREW_STORAGE_SECRET_ACCESS_KEY`, or the
+  key OpsCrew keeps for that bucket; a bucket in Contabo's storage, from Contabo). Without it,
+  `values` stops before it asks for a value.
 - **A new name** joins the plan's `app.env` as a secret value of yours (`--plain` for one that
   isn't secret), and `unset` takes a name out. That change, and the updated recovery copy, come as
   a pull request.

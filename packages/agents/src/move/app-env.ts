@@ -169,5 +169,5 @@ export async function storeAppEnv(
     text,
     "provision",
   );
-  await recordAppEnvText(deps, text);
+  await recordAppEnvText(deps, plan, text);
 }
