@@ -5,9 +5,15 @@ import {
   ArchitectureSchema,
   DeployPlanSchema,
   type PlanService,
+  PlanServiceSchema,
+  POSTGRES_EXTENSIONS,
   ProjectFactsSchema,
   parseArtifact,
+  postgresExtensions,
+  postgresImageVariant,
   postgresLogins,
+  postgresUsesPostgis,
+  postgresUsesVector,
   serviceOf,
 } from "./index";
 
@@ -386,6 +392,82 @@ describe("postgresLogins", () => {
       ],
     });
     expect(plan.services.map(postgresLogins)).toEqual([true, false, false]);
+  });
+});
+
+describe("postgresExtensions", () => {
+  it("accepts vector, PostGIS, and contrib extensions and resolves image variants", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...(await validPlan()),
+      externalServices: [],
+      services: [
+        { ...postgres, name: "plain" },
+        {
+          ...postgres,
+          name: "contrib",
+          options: { logins: "separate", extensions: ["pgcrypto", "pg_trgm"] },
+        },
+        {
+          ...postgres,
+          name: "vec",
+          options: { logins: "separate", extensions: ["vector", "uuid-ossp"] },
+        },
+        { ...postgres, name: "geo", options: { extensions: ["postgis", "postgis_topology"] } },
+        valkey("queue"),
+      ],
+    });
+    expect(plan.services.map(postgresExtensions)).toEqual([
+      [],
+      ["pgcrypto", "pg_trgm"],
+      ["vector", "uuid-ossp"],
+      ["postgis", "postgis_topology"],
+      [],
+    ]);
+    expect(plan.services.map(postgresUsesVector)).toEqual([false, false, true, false, false]);
+    expect(plan.services.map(postgresUsesPostgis)).toEqual([false, false, false, true, false]);
+    expect(plan.services.map(postgresImageVariant)).toEqual([
+      "postgres",
+      "postgres",
+      "pgvector",
+      "postgis",
+      "postgres",
+    ]);
+  });
+
+  it("refuses unknown extensions (listing supported ones), duplicates, vector+postgis combined, and non-postgres services", () => {
+    const unknown = PlanServiceSchema.safeParse({
+      ...postgres,
+      options: { extensions: ["timescaledb"] },
+    });
+    expect(unknown.success).toBe(false);
+    if (!unknown.success) {
+      const msg = unknown.error.issues[0]?.message ?? "";
+      expect(msg).toContain("timescaledb");
+      for (const supported of POSTGRES_EXTENSIONS) expect(msg).toContain(supported);
+    }
+
+    const dup = PlanServiceSchema.safeParse({
+      ...postgres,
+      options: { extensions: ["vector", "vector"] },
+    });
+    expect(dup.success).toBe(false);
+    if (!dup.success) expect(dup.error.issues[0]?.message).toContain("duplicate");
+
+    const combined = PlanServiceSchema.safeParse({
+      ...postgres,
+      options: { extensions: ["vector", "postgis"] },
+    });
+    expect(combined.success).toBe(false);
+    if (!combined.success) {
+      expect(combined.error.issues[0]?.message).toContain("cannot combine");
+      expect(combined.error.issues[0]?.message).toContain("no single official image");
+    }
+
+    const onValkey = PlanServiceSchema.safeParse({
+      ...valkey("cache"),
+      options: { mode: "cache", extensions: ["vector"] },
+    });
+    expect(onValkey.success).toBe(false);
   });
 });
 
