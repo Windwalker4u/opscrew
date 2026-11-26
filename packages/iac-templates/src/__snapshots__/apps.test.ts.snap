@@ -20,6 +20,7 @@ on:
       - "opscrew/apps/docs/runtime/edge/**"
       - "opscrew/apps/docs/proxy/additions.caddy"
       - ".github/workflows/opscrew-deploy-docs.yml"
+      - "opscrew/apps/docs/secrets.sops.json"
   workflow_dispatch:
     inputs:
       digest:
@@ -1834,6 +1835,7 @@ on:
       - "!.github/workflows/opscrew-preview*.yml"
       - "opscrew/apps/docs/cloudflare/wrangler.jsonc"
       - ".github/workflows/opscrew-deploy-docs.yml"
+      - "opscrew/apps/docs/secrets.sops.json"
   workflow_dispatch: {}
 
 permissions:

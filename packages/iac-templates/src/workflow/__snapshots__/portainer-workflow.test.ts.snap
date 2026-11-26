@@ -19,6 +19,7 @@ on:
       - "Dockerfile"
       - "opscrew/runtime/compose.yaml"
       - ".github/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch:
     inputs:
       digest:
@@ -736,6 +737,7 @@ on:
       - "Dockerfile"
       - "opscrew/runtime/compose.yaml"
       - ".github/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch:
     inputs:
       digest:

@@ -12,7 +12,7 @@ import {
 import { appRoot } from "../app-root";
 import { ACTIONS, type PinArch } from "../pins";
 import { shellQuote } from "../runtime/services";
-import { type AppEnvironment, artefactsFolder } from "../runtime-dir";
+import { type AppEnvironment, artefactsFolder, recoveryCopyPath } from "../runtime-dir";
 import type { RenderContext } from "../types";
 
 /**
@@ -623,7 +623,9 @@ export function said(text: string): string {
 /**
  * The workflow's header comment (`about`), triggers, default permissions and concurrency. An
  * environment that follows the branch deploys on each push to it that changes one of `paths`
- * (the filter `pushPaths` makes from what the run reads), and by hand; a promoted one only
+ * (the filter `pushPaths` makes from what the run reads) or the environment's recovery copy
+ * ({@link recoveryCopyPath}, which a change to the app's values updates: `opscrew values set`'s
+ * pull request deploys them when merged), and by hand; a promoted one only
  * through a dispatch. `dispatch` is the `workflow_dispatch` trigger: by default a server's or
  * Portainer's, which takes an image's digest and commit tag, for a promotion or a rollback
  * ({@link imageDispatch}). Each
@@ -653,7 +655,7 @@ export function workflowStart(
           `    branches: [${JSON.stringify(plan.cicd.branch)}]`,
           "    # A push starts it only when it changes one of these paths, which the run reads.",
           "    paths:",
-          ...paths.map((path) => `      - ${JSON.stringify(path)}`),
+          ...[...paths, recoveryCopyPath(plan)].map((path) => `      - ${JSON.stringify(path)}`),
         ]),
     ...dispatch,
     "",

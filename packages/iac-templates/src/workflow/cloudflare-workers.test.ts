@@ -133,7 +133,7 @@ describe("renderCloudflareWorkersWorkflow", () => {
       push: {
         branches: ["main"],
         // A site at the repository root: every path but OpsCrew's own files and the other deploy
-        // workflows, then the Wrangler config and the workflow itself.
+        // workflows, then the Wrangler config, the workflow itself and the app's values.
         paths: [
           "**",
           "!opscrew/**",
@@ -141,6 +141,7 @@ describe("renderCloudflareWorkersWorkflow", () => {
           "!.github/workflows/opscrew-preview*.yml",
           "opscrew/cloudflare/wrangler.jsonc",
           ".github/workflows/opscrew-deploy.yml",
+          "opscrew/secrets.sops.json",
         ],
       },
       workflow_dispatch: {},

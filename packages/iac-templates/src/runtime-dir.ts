@@ -43,3 +43,12 @@ export function artefactsFolder(plan: AppEnvironment, environment?: string): str
 export function runtimeDir(plan: AppEnvironment): string {
   return `${artefactsFolder(plan)}/runtime`;
 }
+
+/**
+ * The repository path of the environment's encrypted recovery copy of its secrets,
+ * `<artefactsFolder>/secrets.sops.json` ({@link artefactsFolder}): `opscrew/secrets.sops.json` for
+ * the first app's prod, `opscrew/environments/<env>/secrets.sops.json` for a named environment.
+ */
+export function recoveryCopyPath(plan: AppEnvironment): string {
+  return `${artefactsFolder(plan)}/secrets.sops.json`;
+}

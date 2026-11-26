@@ -282,6 +282,30 @@ describe("a deploy workflow's push filter", () => {
     );
   });
 
+  it("deploys for a change to the environment's app values alone (its recovery copy)", () => {
+    const staging = (plan: DeployPlan) => inEnvironment(plan, { name: "staging" });
+    for (const [plan, copy] of [
+      [serverPlan(), "opscrew/secrets.sops.json"],
+      [inFolder(serverPlan(), "services/api"), "opscrew/secrets.sops.json"],
+      [staging(serverPlan()), "opscrew/environments/staging/secrets.sops.json"],
+      [
+        staging(inFolder(serverPlan(), "services/api")),
+        "opscrew/environments/staging/secrets.sops.json",
+      ],
+      [portainerTestPlan(), "opscrew/secrets.sops.json"],
+      [cloudflarePlan({ buildContext: "sites/landing" }), "opscrew/secrets.sops.json"],
+    ] as const) {
+      const { flow } = deployment(plan);
+      expect(runs(flow, [copy]), `${flow.path} ${copy}`).toBe(true);
+      // Another environment's copy is not this one's.
+      const other =
+        copy === "opscrew/secrets.sops.json"
+          ? "opscrew/environments/staging/secrets.sops.json"
+          : "opscrew/secrets.sops.json";
+      expect(runs(flow, [other]), `${flow.path} ${other}`).toBe(false);
+    }
+  });
+
   it("covers the repository root's files but Markdown for a Node.js site in a folder", () => {
     const root = [
       "package.json",
@@ -426,6 +450,7 @@ describe("two apps in one repository", () => {
         "opscrew/runtime/compose.yaml",
         "opscrew/runtime/edge/**",
         ".github/workflows/opscrew-deploy.yml",
+        "opscrew/secrets.sops.json",
       ]);
       expect(runs(root.flow, ["sites/docs/src/index.md", docs.flow.path])).toBe(false);
       expect(runs(root.flow, [".github/workflows/opscrew-preview.yml"])).toBe(false);
