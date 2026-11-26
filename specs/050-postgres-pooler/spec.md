@@ -82,7 +82,8 @@ migration connection goes straight to PostgreSQL.
 - **FR-5001**: A PostgreSQL service MUST accept `options.pooler: "pgbouncer"`, valid only with
   `logins: separate` (so PostgreSQL 15 or later).
 - **FR-5002**: With it, the rendered Compose project MUST have a `<db>-pooler` service: the pinned
-  image, no published port, on the database's server and network, a memory limit, a health check,
+  image, no published port (on a split plan, only on the database server's private address, as the
+  database itself), on the database's server and network, a memory limit, a health check,
   restart like the database's, and settings written by its start command from its environment.
 - **FR-5003**: The pooler MUST run in transaction mode, authenticate the runtime login with SCRAM
   against a password it reads from its environment (never a file in the repository), log in to

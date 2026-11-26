@@ -75,7 +75,7 @@
   - **Verify:** `OPSCREW_DOCKER_TESTS=1 OPSCREW_TEST_TMP=D:/opscrew-test-tmp npx vitest run --root packages/iac-templates src/catalog/pooler.docker.test.ts && pnpm lint`
   - **Effort:** high
 
-- [ ] T5005 [US1] The guide
+- [x] T5005 [US1] The guide
   - **Owns:** `docs/guide/databases.md` (a section).
   - **Accept:** what it does and why, how to turn it on, that migrations bypass it, the session
     features that break in transaction mode (research 4), its memory, and that it needs separate
