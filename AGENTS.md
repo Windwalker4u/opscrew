@@ -145,6 +145,11 @@ It reviews every pull request and merges it; nothing reaches `main` any other wa
   one task wave). The core's lead reviews it, whoever opened it.
   - **Its description:** what it does, which issues it resolves, how you tested it (the commands and
     their results), and every open question.
+  - **While it waits for review:** keep working.
+    - **What to work on:** the next piece, on a branch stacked on this one, or another issue you
+      take. An open pull request doesn't hold you to one task.
+    - **No polling:** run the watcher (below), which wakes you on the review.
+    - **When a review arrives:** answer its change requests before anything else.
   - **The review:** answer each review comment in the same pull request, with a commit or a reply.
     The lead merges once nothing is open, so don't merge it yourself.
   - **After a merge:** rebase your next branch onto `main`.
