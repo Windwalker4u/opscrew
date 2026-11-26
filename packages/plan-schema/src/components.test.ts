@@ -8,6 +8,7 @@ import {
   ProjectFactsSchema,
   parseArtifact,
   postgresLogins,
+  postgresPooler,
   serviceOf,
 } from "./index";
 
@@ -173,6 +174,22 @@ describe("DeployPlan components", () => {
     expect(pathsOf(shared)).toEqual(["services.0.options.logins"]);
     expect(shared.error?.issues[0]?.message).toBe('must be "separate"');
     expect(pathsOf(parse({ ...mongodb, options: { logins: "separate" } }))).toEqual([
+      "services.0.options",
+    ]);
+    // PgBouncer beside it (050), only with separate logins: the release must reach it directly.
+    expect(
+      parse({ ...postgres, options: { logins: "separate", pooler: "pgbouncer" } }).data?.services[0]
+        ?.options,
+    ).toEqual({ logins: "separate", pooler: "pgbouncer" });
+    const alone = parse({ ...postgres, options: { pooler: "pgbouncer" } });
+    expect(pathsOf(alone)).toEqual(["services.0.options.pooler"]);
+    expect(alone.error?.issues[0]?.message).toBe(
+      "`pooler: pgbouncer` needs `logins: separate` under the same options: migrations must reach PostgreSQL directly, and only separate logins give the release its own address.",
+    );
+    expect(
+      pathsOf(parse({ ...postgres, options: { logins: "separate", pooler: "pgcat" } })),
+    ).toEqual(["services.0.options.pooler"]);
+    expect(pathsOf(parse({ ...mongodb, options: { pooler: "pgbouncer" } }))).toEqual([
       "services.0.options",
     ]);
     expect(pathsOf(parse({ ...postgres, kind: "keydb" }))).toEqual(["services.0.kind"]);
@@ -386,6 +403,21 @@ describe("postgresLogins", () => {
       ],
     });
     expect(plan.services.map(postgresLogins)).toEqual([true, false, false]);
+  });
+});
+
+describe("postgresPooler", () => {
+  it("is true only for a PostgreSQL with PgBouncer beside it", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...(await validPlan()),
+      externalServices: [],
+      services: [
+        { ...postgres, options: { logins: "separate", pooler: "pgbouncer" } },
+        { ...postgres, name: "plain", options: { logins: "separate" } },
+        valkey("queue"),
+      ],
+    });
+    expect(plan.services.map(postgresPooler)).toEqual([true, false, false]);
   });
 });
 

@@ -53,6 +53,21 @@ export function withLogins(plan: DeployPlan): DeployPlan {
   });
 }
 
+/**
+ * `plan` with each PostgreSQL's own logins and PgBouncer beside it (`pooler: pgbouncer`, 050), as
+ * design writes it for a new PHP app.
+ */
+export function withPooler(plan: DeployPlan): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...plan,
+    services: plan.services.map((service) =>
+      service.kind === "postgres"
+        ? { ...service, options: { logins: "separate", pooler: "pgbouncer" } }
+        : service,
+    ),
+  });
+}
+
 /** `plan` with `app.env` declaring each of `names`, derived (a password's a secret). */
 export function withAppEnv(plan: DeployPlan, names: readonly string[]): DeployPlan {
   return DeployPlanSchema.parse({

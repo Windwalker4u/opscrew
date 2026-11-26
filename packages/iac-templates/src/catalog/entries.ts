@@ -15,12 +15,14 @@ import {
   DeviceNameSchema,
   type PlanService,
   postgresLogins,
+  postgresPooler,
 } from "@opscrew/plan-schema";
 import { appServerOf } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
+import { POOLER_PORT, poolerName } from "./pooler";
 import {
   loginPassword,
   loginsCheck,
@@ -189,14 +191,18 @@ function loginUrl(
   return `${scheme}://${login.user}:${ctx.secretRef(login.secret)}@${serviceHost(ctx)}:${port}${path}`;
 }
 
-/** A SQL database's settings one by one: the database `app` and `login`, as in {@link loginUrl}. */
+/**
+ * A SQL database's settings one by one: the database `app` and `login`, as in {@link loginUrl},
+ * on `host` (the service's own by default).
+ */
 function sqlSettings(
   ctx: ServiceContext,
   port: number,
   login: Login = APP_LOGIN,
+  host = serviceHost(ctx),
 ): DatabaseSettings {
   return {
-    host: serviceHost(ctx),
+    host,
     port: String(port),
     database: "app",
     user: login.user,
@@ -251,11 +257,34 @@ function postgresAppLogin(service: PlanService): Login {
   return postgresLogins(service) ? RUNTIME_LOGIN : APP_LOGIN;
 }
 
-/** PostgreSQL's address for `login`: the database `app` on the service's host. */
-function postgresUrl(ctx: ServiceContext, login: Login): string {
+/** Where a login reaches PostgreSQL: a host and its port. */
+interface PostgresEndpoint {
+  host: string;
+  port: number;
+}
+
+/** PostgreSQL itself: port 5432 on the service's host. */
+function direct(ctx: ServiceContext): PostgresEndpoint {
+  return { host: serviceHost(ctx), port: 5432 };
+}
+
+/**
+ * Where the app's own containers reach PostgreSQL: with `pooler: pgbouncer` its pooler (050) on
+ * the same server, by its Compose name on the app's server or the extra server's private address;
+ * else PostgreSQL itself.
+ */
+function appEndpoint(ctx: ServiceContext): PostgresEndpoint {
+  if (!postgresPooler(ctx.service)) return direct(ctx);
+  const server = appServerOf(ctx.plan, ctx.service);
+  const host = server === APP_SERVER ? poolerName(ctx.service) : privateAddress(ctx.plan, server);
+  return { host, port: POOLER_PORT };
+}
+
+/** PostgreSQL's address for `login` at `endpoint`: the database `app`. */
+function postgresUrl(ctx: ServiceContext, login: Login, endpoint = direct(ctx)): string {
   // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
   // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
-  return loginUrl(ctx, "postgresql", 5432, "/app", login);
+  return `postgresql://${login.user}:${ctx.secretRef(login.secret)}@${endpoint.host}:${endpoint.port}/app`;
 }
 
 /**
@@ -330,9 +359,12 @@ const POSTGRES: ServiceSpec = {
   init: postgresInit,
   // `logins: separate` adds POSTGRES_LOGINS' secrets (the catalog's `serviceSecrets`).
   secrets: [PASSWORD],
-  address: (ctx) => postgresUrl(ctx, postgresAppLogin(ctx.service)),
+  address: (ctx) => postgresUrl(ctx, postgresAppLogin(ctx.service), appEndpoint(ctx)),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
-  databaseSettings: (ctx) => sqlSettings(ctx, 5432, postgresAppLogin(ctx.service)),
+  databaseSettings: (ctx) => {
+    const { host, port } = appEndpoint(ctx);
+    return sqlSettings(ctx, port, postgresAppLogin(ctx.service), host);
+  },
   targets: BOTH_TARGETS,
   // `app` is the image's superuser, which the container's socket lets in without a password; the
   // image reads POSTGRES_PASSWORD on its first start only. `logins: separate` adds POSTGRES_LOGINS'
