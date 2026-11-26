@@ -11,9 +11,11 @@
  */
 import { escapeRegExp } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
+import type { EdgeProviderId } from "@opscrew/plan-schema";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 import { ACME_WEBROOT, certbotLive, MOZILLA_CIPHERS, RELOAD_DIR } from "./nginx";
+import type { SharedOriginHeader } from "./origin-token";
 
 /** OpenLiteSpeed's folder in its image. */
 const LSWS = "/usr/local/lsws";
@@ -169,9 +171,13 @@ function listener(name: string, port: number, tls: readonly string[]): string[] 
  * uses as the client's (`useIpInProxyHeader 2`, those ranges marked trusted with `T`), as Caddy
  * and nginx do; from any other address the header is ignored.
  */
-export function openlitespeedConf(local: boolean, ranges: readonly string[] = []): string {
+export function openlitespeedConf(
+  local: boolean,
+  ranges: readonly string[] = [],
+  edgeId: EdgeProviderId = "cloudflare",
+): string {
   const trusted = ranges.length > 0;
-  const edge = edgeProvider("cloudflare");
+  const edge = edgeProvider(edgeId);
   return [
     "# OpsCrew's shared edge: each OpsCrew app on this server has its virtual host in /srv/edge/sites/<app>.vhost,",
     "# its hostnames in <app>.map and its configuration in <app>.vhconf.",
@@ -305,6 +311,11 @@ export interface OpenLiteSpeedSite {
    * `httpsPort`.
    */
   local?: { httpsPort: number } | undefined;
+  /**
+   * Shared-header edge protection (ADR 0038 D6, Bunny.net / Gcore): loads the 0600 rewriteFile
+   * inside top-level `rewrite` (before `context /` and `websocket /`) and strips the secret header.
+   */
+  sharedOriginHeader?: SharedOriginHeader | undefined;
 }
 
 /** How the app's virtual host serves its hostnames. */
@@ -411,6 +422,9 @@ function rewriteRules(site: OpenLiteSpeedSite, how: Serving): string[] {
       );
     }
   }
+  if (site.sharedOriginHeader !== undefined) {
+    rules.push(`rewriteFile ${site.sharedOriginHeader.file}`);
+  }
   return rules;
 }
 
@@ -447,6 +461,9 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
   const headers = [
     ...(how.hsts ? [`Header set Strict-Transport-Security "${HSTS}"`] : []),
     ...BASELINE_HEADERS.map(([name, value]) => `Header set ${name} "${value}"`),
+    ...(site.sharedOriginHeader === undefined
+      ? []
+      : [`RequestHeader unset ${site.sharedOriginHeader.headerName}`]),
     "RequestHeader unset X-Forwarded-For",
     "RequestHeader unset X-Forwarded-Host",
     "RequestHeader unset X-Forwarded-Proto",

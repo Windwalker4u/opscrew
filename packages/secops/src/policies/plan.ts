@@ -7,7 +7,7 @@ import type {
 } from "@opscrew/contracts";
 import { isRecord } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { activeEdgeProvider, type DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
@@ -314,15 +314,21 @@ function providerPolicies(
  */
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
   const resources = plannedResources(planJson);
-  const proxiedBehindCloudflare =
-    deployPlan.dns.provider === "cloudflare" &&
-    deployPlan.dns.proxied &&
+  const activeEdge = activeEdgeProvider(deployPlan);
+  const proxiedBehindCompactEdge =
+    activeEdge !== undefined &&
+    edgeProvider(activeEdge).capabilities.originIpFiltering === "compact-cidrs" &&
     deployPlan.security.httpAllowedFrom === "edge";
   const results = PROVIDERS.flatMap((provider) =>
-    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCloudflare),
+    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCompactEdge),
   );
 
-  if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {
+  if (
+    activeEdge === "cloudflare" &&
+    deployPlan.dns.provider === "cloudflare" &&
+    deployPlan.dns.proxied &&
+    deployPlan.dns.domain
+  ) {
     const domain = deployPlan.dns.domain;
     const recordType = edgeProvider(deployPlan.dns.provider).terraform.dnsRecordResourceType;
     const appRecords = resources.filter(
@@ -344,6 +350,57 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
           record.address,
         ),
       );
+    }
+  }
+
+  if (activeEdge === "bunny") {
+    for (const pz of resources.filter((r) => r.type === "bunnynet_pullzone")) {
+      results.push(
+        result(
+          "bunny-cache-disabled",
+          "Bunny Pull Zone does not cache dynamic responses by default",
+          "medium",
+          pz.values.cache_enabled === false,
+          pz.values.cache_enabled === false
+            ? "Bunny Pull Zone has cache_enabled = false so dynamic responses are not cached."
+            : "Set cache_enabled = false on the Bunny Pull Zone so dynamic or authenticated responses are not cached.",
+          pz.address,
+        ),
+      );
+      const origin = Array.isArray(pz.values.origin)
+        ? (pz.values.origin[0] as Record<string, unknown> | undefined)
+        : (pz.values.origin as Record<string, unknown> | undefined);
+      const verifiesSsl = origin?.verify_ssl === true;
+      results.push(
+        result(
+          "bunny-origin-ssl-verify",
+          "Bunny Pull Zone verifies the origin TLS certificate",
+          "high",
+          verifiesSsl,
+          verifiesSsl
+            ? "Bunny Pull Zone verifies the origin server's TLS certificate."
+            : "Set origin.verify_ssl = true on the Bunny Pull Zone so edge-to-origin traffic is verified.",
+          pz.address,
+        ),
+      );
+    }
+    for (const rule of resources.filter((r) => r.type === "bunnynet_pullzone_edgerule")) {
+      const actions = Array.isArray(rule.values.actions)
+        ? (rule.values.actions as Record<string, unknown>[])
+        : [];
+      const setsHeader = actions.some((action) => action?.type === "SetRequestHeader");
+      if (setsHeader) {
+        results.push(
+          result(
+            "bunny-no-secret-header-in-state",
+            "Origin verification header is not stored in Terraform state",
+            "critical",
+            false,
+            "A bunnynet_pullzone_edgerule with SetRequestHeader stores header values in Terraform state. Apply OpsCrew's origin-verification header through the Bunny API connector instead.",
+            rule.address,
+          ),
+        );
+      }
     }
   }
   return results;

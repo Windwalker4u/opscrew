@@ -2367,16 +2367,28 @@ const DeployPlanFieldsSchema = z.strictObject({
     })
     .prefault({}),
   dns: z.strictObject({
-    provider: z.enum(["cloudflare", "none"]),
+    provider: z.enum(["cloudflare", "bunny", "none"]),
     /**
-     * Required when `provider` is `cloudflare`, except in a preview environment's plan, which has
-     * none (its base is `environment.previews.domain`).
+     * Separate edge proxy in front of `dns.provider` (`"bunny"` in PR 2; no `"cloudflare"` value:
+     * absent with `proxied: true` means `dns.provider`'s own proxy). Refused without `proxied: true`.
+     */
+    edge: z
+      .enum(["bunny"], {
+        error: (issue) =>
+          issue.input === "cloudflare"
+            ? 'must not be "cloudflare": leave dns.edge unset when using Cloudflare as both DNS and edge (dns.provider: "cloudflare" with dns.proxied: true)'
+            : undefined,
+      })
+      .optional(),
+    /**
+     * Required when `provider` is not `none` or when `edge` is set, except in a preview
+     * environment's plan, which has none (its base is `environment.previews.domain`).
      */
     domain: FqdnSchema.optional(),
     /** Registrable zone, for example `example.com`. */
     zone: FqdnSchema.optional(),
     /**
-     * Behind Cloudflare's proxy. Design sets it from the target and the interview; on a server
+     * Behind the active edge proxy. Design sets it from the target and the interview; on a server
      * OpsCrew creates, a later design keeps it.
      */
     proxied: z.boolean().default(true),
@@ -2515,7 +2527,7 @@ type DeployPlanFields = z.output<typeof DeployPlanFieldsSchema>;
 const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) => {
   const { environment } = plan;
   if (
-    plan.dns.provider === "cloudflare" &&
+    plan.dns.provider !== "none" &&
     plan.dns.domain === undefined &&
     environment?.previews === undefined &&
     // A hosting account has its own refusal (checkHostingTarget).
@@ -2524,7 +2536,22 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     ctx.addIssue({
       code: "custom",
       path: ["dns", "domain"],
-      message: 'is required when dns.provider is "cloudflare"',
+      message: `is required when dns.provider is "${plan.dns.provider}"`,
+    });
+  }
+  if (plan.dns.edge !== undefined && !plan.dns.proxied) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "edge"],
+      message:
+        "is refused without dns.proxied: true: dns.edge names an edge proxy, so set dns.proxied to true or remove dns.edge",
+    });
+  }
+  if (plan.dns.edge !== undefined && plan.dns.domain === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "domain"],
+      message: `is required when dns.edge is "${plan.dns.edge}"`,
     });
   }
   if (
@@ -3025,3 +3052,23 @@ export type BeszelSettings = NonNullable<Observability["beszel"]>;
 export type GrafanaCloudSettings = NonNullable<Observability["grafanaCloud"]>;
 /** Self-hosted monitoring's settings with their defaults filled in. */
 export type MonitoringSettings = z.output<typeof MonitoringSchema>;
+
+/** Edge proxy provider ids supported by `opscrew/plan.yaml`. */
+export type EdgeProviderId = "cloudflare" | "bunny";
+
+/**
+ * The edge proxy provider serving the app for `plan`, or `undefined` when traffic is not proxied
+ * through an edge:
+ * - preview environments always use `"cloudflare"`;
+ * - an explicit `dns.edge` overrides the DNS host's own proxy;
+ * - otherwise, when `dns.proxied` is true and `dns.provider` is not `"none"`, the DNS host's own
+ *   proxy (`"cloudflare"` or `"bunny"`).
+ */
+export function activeEdgeProvider(
+  plan: Pick<DeployPlan, "dns" | "environment">,
+): EdgeProviderId | undefined {
+  if (plan.environment?.previews !== undefined) return "cloudflare";
+  if (plan.dns.edge !== undefined) return plan.dns.edge;
+  if (plan.dns.proxied && plan.dns.provider !== "none") return plan.dns.provider;
+  return undefined;
+}

@@ -53,6 +53,11 @@ export interface RenderContext {
      */
     oneTimePinIdentityProviderId?: string;
   };
+  /** Bunny.net zone metadata when `dns.provider` is `"bunny"`. */
+  bunny?: {
+    /** Numeric Bunny DNS zone id when OpsCrew manages DNS records in Bunny DNS. */
+    dnsZoneId?: number;
+  };
   /**
    * Cloudflare's IP ranges (IPv4, then IPv6, from Cloudflare's API). When Cloudflare's proxy
    * serves the app's hostnames, a cloud firewall opens ports 80/443 only to them, and requests from

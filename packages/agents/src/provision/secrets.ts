@@ -89,6 +89,7 @@ import type { ProvisionServices } from "./types";
 const KEPT_VALUES = [
   "originTls",
   "originTlsNext",
+  "edgeOriginToken",
   "network",
   "grants",
   "monitoring",

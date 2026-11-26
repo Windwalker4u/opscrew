@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { activeEdgeProvider, type DeployPlan } from "@opscrew/plan-schema";
 import type { EdgeProxy } from "../edge";
 import { usesCloudflare } from "../predicates";
 import type { RenderContext } from "../types";
@@ -84,7 +84,7 @@ export function zoneTfvars(
   else if (use !== "zone") values.domain = plan.dns.domain;
   values.cloudflare_zone_id = ctx.cloudflare?.zoneId ?? "";
   if (use === "records") {
-    values.proxied = plan.dns.proxied;
+    values.proxied = activeEdgeProvider(plan) === "cloudflare" && plan.dns.proxied;
     values.www = plan.dns.www;
     values.caa_issuers = caaIssuers(plan);
   }

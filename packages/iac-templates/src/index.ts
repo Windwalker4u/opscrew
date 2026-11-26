@@ -71,7 +71,14 @@ export * from "./pins";
 export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";
 export * from "./portainer-target";
-export { webOnlyFromCloudflare } from "./predicates";
+export {
+  usesBunny,
+  usesCompactEdgeCidrs,
+  usesEdge,
+  usesSharedOriginHeader,
+  webOnlyFromCloudflare,
+  webOnlyFromEdge,
+} from "./predicates";
 export * from "./previews";
 export { PREVIOUS_VALUES, previousValueVariables } from "./previous-values";
 export * from "./prices";

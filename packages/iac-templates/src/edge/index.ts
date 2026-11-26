@@ -8,7 +8,13 @@
  */
 import { sha256Hex } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
-import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
+import {
+  activeEdgeProvider,
+  type DeployPlan,
+  type EdgeProviderId,
+  isHostingTarget,
+  isServerlessTarget,
+} from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { notOnServer, wrongTarget } from "../providers";
@@ -58,6 +64,15 @@ export {
   OPENLITESPEED_INPUT,
   openlitespeedCachePurge,
 } from "./openlitespeed";
+export {
+  nginxHeaderVar,
+  ORIGIN_TOKEN_FILE,
+  ORIGIN_TOKEN_HEADER,
+  originTokenContainerPath,
+  originTokenServerPath,
+  originTokenSnippet,
+  type SharedOriginHeader,
+} from "./origin-token";
 
 /** The edge's Compose project, and the external network the edge and every app's web service join. */
 export const EDGE_PROJECT = "opscrew-edge";
@@ -205,7 +220,11 @@ export function originPullPem(plan: DeployPlan): string {
  * only the figures, and {@link CATCH_ALL_SITES}. The figures are on with or without monitoring, so
  * every app on a server renders the same edge.
  */
-function caddyfile(ranges: readonly string[], local: boolean): string {
+function caddyfile(
+  ranges: readonly string[],
+  local: boolean,
+  edgeId: EdgeProviderId = "cloudflare",
+): string {
   const comments: string[] = [];
   const options: string[] = [];
   const option = (comment: string, name: string, lines: readonly string[]) => {
@@ -213,7 +232,7 @@ function caddyfile(ranges: readonly string[], local: boolean): string {
     options.push(`\t${name} {`, ...lines.map((line) => `\t\t${line}`), "\t}");
   };
   if (ranges.length > 0) {
-    const edge = edgeProvider("cloudflare");
+    const edge = edgeProvider(edgeId);
     const header = edge.capabilities.realIpHeader;
     option(
       `# Requests from ${edge.displayName}'s addresses carry the visitor's in ${header}.`,
@@ -288,7 +307,8 @@ const CADDY_HEALTHCHECK = {
  */
 function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";
-  const main = caddyfile(local ? [] : ranges, local);
+  const edgeId = activeEdgeProvider(plan) ?? "cloudflare";
+  const main = caddyfile(local ? [] : ranges, local, edgeId);
   return {
     services: {
       caddy: {
@@ -399,7 +419,8 @@ function certbotService() {
 function openlitespeedEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";
   const certbot = !local;
-  const conf = openlitespeedConf(local, local ? [] : ranges);
+  const edgeId = activeEdgeProvider(plan) ?? "cloudflare";
+  const conf = openlitespeedConf(local, local ? [] : ranges, edgeId);
   const files = {
     "openlitespeed-conf": { target: OPENLITESPEED_INPUT.conf, content: conf },
     "openlitespeed-catchall": {

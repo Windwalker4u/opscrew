@@ -26,9 +26,19 @@ export * from "./providers";
 // Not in ./providers: the catalogue reads design and init, which read ./providers.
 export { providerCatalogue } from "./providers/catalogue";
 export * from "./provision";
+// `opscrew rotate` (025): the inventory and every rotation's entry point.
+export {
+  EDGE_ORIGIN_TOKEN_CREDENTIAL,
+  type EdgeOriginTokenValue,
+  ensureEdgeOriginToken,
+  formatEdgeOriginTokenSecret,
+  generateEdgeOriginToken,
+  readEdgeOriginToken,
+  syncBunnyOriginHeader,
+  writeEdgeOriginToken,
+} from "./provision/edge-origin-token";
 export * from "./retarget";
 export * from "./rollback";
-// `opscrew rotate` (025): the inventory and every rotation's entry point.
 export { publishRotatedKey, type RotatedKeyResult } from "./rotate/addons";
 export { rotateBeszel } from "./rotate/addons-beszel";
 export {
@@ -47,6 +57,11 @@ export {
   type SiteRotationOptions,
 } from "./rotate/app-site";
 export { dropPreviousNames, isAppName } from "./rotate/app-values";
+export {
+  type EdgeOriginTokenRotationHooks,
+  type EdgeOriginTokenRotationResult,
+  rotateEdgeOriginToken,
+} from "./rotate/edge-origin-token";
 export {
   type AccessTokenServices,
   type InfraRotation,

@@ -79,8 +79,8 @@ const SEVERITY: Partial<Record<TestsslItem["severity"], Severity>> = {
 };
 
 /** A hostname as the report shows it: a proxied one is the edge provider's edge (FR-1423). */
-function shownTarget(hostname: string, edge: boolean): string {
-  return edge ? `${hostname} (${edgeProvider("cloudflare").texts.secops.edgeLabel})` : hostname;
+function shownTarget(hostname: string, edge: boolean, edgeProviderId = "cloudflare"): string {
+  return edge ? `${hostname} (${edgeProvider(edgeProviderId).texts.secops.edgeLabel})` : hostname;
 }
 
 /**
@@ -92,8 +92,9 @@ export function testsslResults(
   items: readonly TestsslItem[],
   hostname: string,
   edge: boolean,
+  edgeProviderId = "cloudflare",
 ): CheckResult[] {
-  const target = shownTarget(hostname, edge);
+  const target = shownTarget(hostname, edge, edgeProviderId);
   const results = items.flatMap((item): CheckResult[] => {
     const finding = item.finding === "--" ? "none" : item.finding;
     if (item.severity === "WARN" || item.severity === "FATAL") {
@@ -117,7 +118,7 @@ export function testsslResults(
         message: `${item.id}: ${finding}`,
         ...(edge
           ? {
-              remediation: edgeProvider("cloudflare").texts.secops.edgeTlsHint,
+              remediation: edgeProvider(edgeProviderId).texts.secops.edgeTlsHint,
             }
           : {}),
         target,

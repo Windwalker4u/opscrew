@@ -46,6 +46,11 @@ export const DEPLOY_SECRETS = {
    * which the deploy writes to `/srv/edge/tls/<app>/origin.pem` and `origin.key`.
    */
   originTls: "OPSCREW_ORIGIN_TLS",
+  /**
+   * With a `shared-header` edge (Bunny.net, Gcore): 1 or 2 lines of 64 lower-case hex characters
+   * (current, and previous during rotation) written to `/srv/edge/tls/<app>/origin-token.<ext>`.
+   */
+  edgeOriginToken: "OPSCREW_EDGE_ORIGIN_TOKEN",
 } as const;
 
 /**

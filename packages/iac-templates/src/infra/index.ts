@@ -1,4 +1,5 @@
 import type { CloudProviderDefinition, VariablePrefix } from "@opscrew/contracts";
+import { edgeProvider } from "@opscrew/edge-providers";
 import {
   APP_SERVER,
   type CloudDeployTarget,
@@ -9,9 +10,16 @@ import {
   type PortainerDeployTarget,
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
-import { webOnlyFromCloudflare } from "../predicates";
+import { usesCompactEdgeCidrs, webOnlyFromCloudflare } from "../predicates";
 import { cloudTarget, wrongTarget } from "../providers";
 import type { InfraLayout, LayoutSide, RenderContext, RenderedFile, ServerModule } from "../types";
+import {
+  bunnyEdgeModule,
+  bunnyOutputs,
+  bunnyTfvars,
+  bunnyVariables,
+  usesBunnyInfra,
+} from "./bunny";
 import {
   dnsModule,
   previewsCertificatePack,
@@ -23,6 +31,7 @@ import {
   APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
+  edgeProviderBlock,
   moduleBlock,
   output,
   type RootFiles,
@@ -106,10 +115,10 @@ function moveNote(to: "provider" | "server"): string {
   ].join("\n");
 }
 
-/** CIDRs allowed to reach ports 80/443: Cloudflare's ranges when proxied and restricted. */
+/** CIDRs allowed to reach ports 80/443: compact edge CIDRs when proxied and restricted; open for dynamic-ips edges. */
 function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
   const ranges = ctx.cloudflareRanges;
-  if (webOnlyFromCloudflare(plan) && ranges && ranges.length > 0) return [...ranges];
+  if (usesCompactEdgeCidrs(plan) && ranges && ranges.length > 0) return [...ranges];
   return OPEN_TO_ALL;
 }
 
@@ -318,7 +327,9 @@ function mainTf(
   if (shape.moving) lines.push(moveNote(shape.addresses.length > 0 ? "server" : "provider"), "");
   for (const provider of shape.providers) lines.push(...providerBlock(provider));
   const zone = serverZoneUse(plan);
+  const bunny = usesBunnyInfra(plan);
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
+  if (bunny) lines.push(...edgeProviderBlock(edgeProvider("bunny")));
   const borrowed = borrowedShared(shape.extras, shape.shared);
   for (const server of shape.servers) {
     const previous = server.slot === "server_previous";
@@ -364,6 +375,10 @@ function mainTf(
     lines.push(...dnsModule(zone, ipv4, ipv6, ipv6Record(plan, shape.live)));
     lines.push(...adoptingImports(shape, ctx));
   }
+  if (bunny) {
+    const { ipv4, ipv6 } = addressesOf(shape.live);
+    lines.push(...bunnyEdgeModule(plan, ipv4, ipv6));
+  }
   lines.push(...(previewsCertificatePack(plan)?.main ?? []));
   if (pieces) lines.push(...pieces.main);
   return lines.join("\n");
@@ -400,8 +415,14 @@ function variables(
       : []),
   ];
   const zone = serverZoneUse(plan);
-  if (zone === undefined) return base;
-  return [...base, ...zoneVariables(zone), ...(pieces?.variables ?? [])];
+  const bunny = usesBunnyInfra(plan);
+  const hasDomainVar = zone === "records";
+  return [
+    ...base,
+    ...(zone !== undefined ? zoneVariables(zone) : []),
+    ...(bunny ? bunnyVariables(plan, hasDomainVar) : []),
+    ...(pieces?.variables ?? []),
+  ];
 }
 
 /**
@@ -490,8 +511,14 @@ function wantedBackupsOutput(shape: RootShape): string[] {
 function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
   const { live } = shape;
   const { ipv4, ipv6 } = addressesOf(live);
+  const bunny = usesBunnyInfra(plan);
   // A preview environment serves no address of its own: its url is the server's.
-  const url = serverZoneUse(plan) === "records" ? "module.dns.url" : `"http://\${${ipv4}}"`;
+  const url =
+    serverZoneUse(plan) === "records"
+      ? "module.dns.url"
+      : bunny
+        ? "module.edge.url"
+        : `"http://\${${ipv4}}"`;
   return [
     rootHeader(plan),
     "",
@@ -505,6 +532,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
         ]
       : []),
     ...output("url", url),
+    ...(bunny ? bunnyOutputs() : []),
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
     ...wantedFirewallsOutput(shape),
@@ -529,10 +557,14 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   if (shape.servers.length > 0) values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   const checkKey = ctx.checkKeyLine !== undefined;
   const zone = serverZoneUse(plan);
+  const bunny = usesBunnyInfra(plan);
+  const bunnyDef = bunny ? edgeProvider("bunny") : undefined;
+  const bunnyModuleName = bunnyDef?.terraform.module?.name;
   return {
     versions: versionsTf(plan, [
       ...shape.providers.map((provider) => provider.terraform.provider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
+      ...(bunnyDef !== undefined ? [bunnyDef.terraform.provider] : []),
     ]),
     main: mainTf(plan, shape, ctx, pieces, checkKey),
     variables: variablesTf(plan, variables(plan, shape, pieces, checkKey)),
@@ -540,11 +572,13 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
     tfvars: {
       ...values,
       ...(zone !== undefined ? zoneTfvars(plan, ctx, zone) : {}),
+      ...(bunny ? bunnyTfvars(plan, ctx, zone === "records") : {}),
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
       ...shape.providers.map((provider) => provider.terraform.module.name),
       ...(zone !== undefined ? ["cloudflare-dns"] : []),
+      ...(bunnyModuleName !== undefined ? [bunnyModuleName] : []),
       ...(pieces?.modules ?? []),
     ],
   };

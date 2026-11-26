@@ -1,4 +1,4 @@
-import type { ProviderRequirement } from "@opscrew/contracts";
+import type { EdgeProviderDefinition, ProviderRequirement } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { AppEnvironment } from "../runtime-dir";
 import type { RenderedFile } from "../types";
@@ -58,6 +58,15 @@ export const CLOUDFLARE_PROVIDER_BLOCK = [
   'provider "cloudflare" {}',
   "",
 ];
+
+/** The provider block of `main.tf` for an edge/DNS provider definition. */
+export function edgeProviderBlock(provider: EdgeProviderDefinition): string[] {
+  return [
+    `# ${provider.terraform.credentialsComment}`,
+    `provider "${provider.terraform.provider.name}" {}`,
+    "",
+  ];
+}
 
 /** `  name = value` lines with the `=` signs aligned, as `terraform fmt` writes them. */
 export function alignedArguments(args: readonly (readonly [string, string])[]): string[] {
