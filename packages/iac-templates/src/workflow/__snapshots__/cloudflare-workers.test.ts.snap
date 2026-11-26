@@ -536,6 +536,7 @@ on:
       - "opscrew/cloudflare/wrangler.jsonc"
       - "opscrew/cloudflare/headers-entry.js"
       - ".github/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch: {}
 
 permissions:
@@ -975,6 +976,7 @@ on:
       - "!.github/workflows/opscrew-preview*.yml"
       - "opscrew/cloudflare/wrangler.jsonc"
       - ".github/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch: {}
 
 permissions:

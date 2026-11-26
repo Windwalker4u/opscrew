@@ -19,6 +19,7 @@ on:
       - "opscrew/runtime/compose.yaml"
       - "opscrew/runtime/edge/**"
       - ".github/workflows/opscrew-deploy.yml"
+      - "opscrew/secrets.sops.json"
   workflow_dispatch:
     inputs:
       digest:

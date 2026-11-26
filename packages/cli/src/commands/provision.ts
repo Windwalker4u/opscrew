@@ -55,6 +55,7 @@ import {
   type PlannedHash,
   printPlanHashes,
   runPhaseCommand,
+  runPlanOnlyCommand,
 } from "../ui/deploy";
 import { createEnvPrompt } from "../ui/env-prompt";
 import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
@@ -415,8 +416,9 @@ export async function runInfraCommand(
   let wrongName = false;
   const yesHint = assumeYesHint(ctx, flags.yes, command);
   let flag = "";
-  const result = await runPhaseCommand(
+  const outcome = await runPlanOnlyCommand(
     ctx,
+    flags.planOnly === true ? { yes: flags.yes, stopsForYes: () => !wrongName } : undefined,
     async () => {
       const hashes = checkApproveFlags(command, flags);
       const recipients = checkRecipients(flags);
@@ -660,6 +662,9 @@ export async function runInfraCommand(
     },
     (error) => (wrongName ? undefined : yesHint(error)),
   );
+  // A --plan-only run in a script that stopped where it needs --yes, as it said.
+  if (outcome === undefined) return;
+  const result = outcome;
 
   const { outputs, applied } = result.result;
   if (planOnly) {

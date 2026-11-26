@@ -68,6 +68,7 @@ describe("renderGithubPagesWorkflow", () => {
           "!.github/workflows/opscrew-deploy*.yml",
           "!.github/workflows/opscrew-preview*.yml",
           ".github/workflows/opscrew-deploy.yml",
+          "opscrew/secrets.sops.json",
         ],
       },
       workflow_dispatch: {},

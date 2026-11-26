@@ -96,7 +96,7 @@ describe("a workflow per environment", () => {
     expect(doc.on).toEqual({
       push: {
         branches: ["main"],
-        // Its own runtime files and workflow, never prod's.
+        // Its own runtime files, workflow and values, never prod's.
         paths: [
           "**",
           "!opscrew/**",
@@ -106,6 +106,7 @@ describe("a workflow per environment", () => {
           "opscrew/environments/staging/runtime/compose.yaml",
           "opscrew/environments/staging/runtime/edge/**",
           ".github/workflows/opscrew-deploy-staging.yml",
+          "opscrew/environments/staging/secrets.sops.json",
         ],
       },
       // By hand: without inputs it builds; `opscrew rollback` gives these (job-graph.test.ts).
