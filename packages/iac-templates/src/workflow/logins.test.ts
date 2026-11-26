@@ -1,15 +1,18 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax in expected lines, not JavaScript templates.
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { parse, parseDocument } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { GRAFANA_CLOUD, observabilityPlan } from "../addons/__fixtures__/plans";
 import { renderContext, serviceRotation } from "../catalog";
 import { withLogins } from "../catalog/__fixtures__/plans";
 import { loginsCheck, loginsLoad } from "../catalog/postgres-logins";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
+import { previewPlan } from "../previews/__fixtures__/plans";
 import { shellQuote } from "../runtime/services";
 import { inEnvironment, localhostPlan, serverPlan, splitPlan } from "./__fixtures__/plans";
 import { DEPLOY_SECRETS, deploySecretNamesFor, maskFileScript, renderWorkflow } from "./index";
+import { renderPreviewWorkflow } from "./preview";
 import { type RotateStep, renderRotateScript, rotateEnvFiles } from "./rotate";
 import { RELEASE_DB_ENV } from "./shared";
 import { snapshotScript } from "./snapshot-script";
@@ -157,5 +160,55 @@ describe("snapshots of a PostgreSQL with its own logins (047)", () => {
       expect(snapshotScript(plan, server).join("\n")).toContain(`ro db ${shellQuote(load ?? "")}`);
     }
     expect(snapshotScript(testPlan()).join("\n")).not.toContain("app_owner");
+  });
+});
+
+describe("the deploy workflow with a PostgreSQL's own logins (047)", () => {
+  /** Every step's `run:` script of the workflow `content`, parsed as YAML. */
+  const runs = (content: string): string[] => {
+    const jobs = (parse(content) as { jobs: Record<string, { steps?: { run?: string }[] }> }).jobs;
+    return Object.values(jobs).flatMap((job) => (job.steps ?? []).flatMap((s) => s.run ?? []));
+  };
+
+  it("parses, and the snapshot.sh it uploads to each server is the script line for line", () => {
+    for (const [where, plan, servers] of [
+      ["a server", withLogins(serverPlan()), ["app"]],
+      [
+        "the local runner",
+        withLogins(inEnvironment(localhostPlan(), { runner: "local" })),
+        ["app"],
+      ],
+      ["a database on an extra server", withLogins(splitPlan()), ["app", "data"]],
+    ] as const) {
+      const content = workflow(plan);
+      expect(
+        parseDocument(content).errors.map((error) => error.message),
+        where,
+      ).toEqual([]);
+      const uploaded = runs(content).flatMap((run) =>
+        [...run.matchAll(/<<'SNAPSHOT'\n([\s\S]*?)\nSNAPSHOT$/gm)].map((match) => match[1]),
+      );
+      for (const server of servers) {
+        expect(uploaded, `${where}: ${server}'s snapshot.sh`).toContain(
+          snapshotScript(plan, server).join("\n"),
+        );
+      }
+    }
+  });
+
+  it("parses for a Portainer stack and for the previews too", () => {
+    const previews = renderPreviewWorkflow(
+      withLogins(previewPlan({ secrets: "environment" })),
+      ctx,
+    );
+    for (const [where, content] of [
+      ["Portainer", workflow(withLogins(portainerTestPlan({ postgres: true })))],
+      ["the previews", previews.content],
+    ] as const) {
+      expect(
+        parseDocument(content).errors.map((error) => error.message),
+        where,
+      ).toEqual([]);
+    }
   });
 });

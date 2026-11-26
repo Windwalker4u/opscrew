@@ -484,9 +484,20 @@ function uploadReads(plan: DeployPlan, files: readonly string[]): string[] {
   );
 }
 
+/**
+ * The lines of `script` indented into a step's `run: |` block, each line of an entry that holds
+ * several too (a PostgreSQL's logins' SQL, 047), or the workflow would not parse. Empty lines stay
+ * empty.
+ */
+function runBlock(script: readonly string[]): string[] {
+  return script
+    .flatMap((entry) => entry.split("\n"))
+    .map((line) => (line.length > 0 ? `    ${line}` : ""));
+}
+
 /** The lines of a server script for a `run: |` block, ended by the heredoc's `REMOTE`. */
 function remote(script: readonly string[]): string[] {
-  return [...script.map((line) => (line.length > 0 ? `    ${line}` : "")), "    REMOTE"];
+  return [...runBlock(script), "    REMOTE"];
 }
 
 /** A shell command, wrapped to run on the machine the app runs on. */
@@ -652,7 +663,7 @@ function snapshotUpload(plan: DeployPlan, server: string, dir: string, on: On): 
   const path = `${dir}/${SNAPSHOT_SCRIPT}`;
   return [
     `    ${on(`umask 077 && cat > ${path}.new && mv -f ${path}.new ${path}`)} <<'SNAPSHOT'`,
-    ...script.map((line) => (line.length > 0 ? `    ${line}` : "")),
+    ...runBlock(script),
     "    SNAPSHOT",
   ];
 }
