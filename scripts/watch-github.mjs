@@ -45,7 +45,15 @@ const titled = (title) => values.title === undefined || (title ?? "").includes(v
 
 const SECRET = randomBytes(32).toString("hex");
 const EVENTS = "issue_comment,issues,pull_request,pull_request_review,pull_request_review_comment";
-const ACTIONS = new Set(["opened", "reopened", "closed", "created", "submitted", "synchronize"]);
+const ACTIONS = new Set([
+  "opened",
+  "reopened",
+  "closed",
+  "created",
+  "submitted",
+  "synchronize",
+  "ready_for_review",
+]);
 
 function wake(line) {
   console.log(`Woken: ${line}`);
@@ -126,7 +134,9 @@ function polled() {
         "--limit",
         "50",
         "--json",
-        "number,title,author,comments,state",
+        kind === "pr"
+          ? "number,title,author,comments,state,isDraft,headRefOid,reviews"
+          : "number,title,author,comments,state",
       ]),
     );
     for (const item of items.filter((i) => titled(i.title))) {
@@ -135,6 +145,27 @@ function polled() {
           `${kind}#${item.number}`,
           `${kind} #${item.number} by ${item.author.login}: ${item.title}`,
         );
+      if (kind === "pr" && wakes(item.author.login)) {
+        // A draft turned ready, and each new push, wake as well (the push key is its head commit).
+        if (item.isDraft === false)
+          lines.set(
+            `pr#${item.number}:ready`,
+            `pr #${item.number} ready for review: ${item.title}`,
+          );
+        if (item.headRefOid)
+          lines.set(
+            `pr#${item.number}@${item.headRefOid}`,
+            `push to pr #${item.number}: ${item.title}`,
+          );
+      }
+      for (const review of item.reviews ?? []) {
+        if (wakes(review.author?.login)) {
+          lines.set(
+            `${kind}#${item.number}~${review.submittedAt}`,
+            `review by ${review.author.login} on ${kind} #${item.number}: ${item.title}`,
+          );
+        }
+      }
       for (const comment of item.comments ?? []) {
         if (wakes(comment.author.login)) {
           lines.set(
