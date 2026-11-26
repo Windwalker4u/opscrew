@@ -6,7 +6,7 @@
 ## Summary
 
 An opt-in `pooler: pgbouncer` on a PostgreSQL service with `logins: separate` adds one stateless
-Compose service, `<db>-pooler`, beside the database. It runs PgBouncer 1.26.1 in transaction mode.
+Compose service, `<db>-pooler`, beside the database. It runs PgBouncer 1.26.1 in session mode (research 9).
 The app's runtime processes reach the database through it; the release command keeps its direct
 address (047's `release.db.env`), so migrations, which may use session features, never go through
 it. Design writes it for new PHP apps. Nothing changes for plans without it.
@@ -47,11 +47,11 @@ release its own address." `postgresPooler(service)` says whether a service has i
   `/tmp/userlist.txt` (mode 0600) from its environment, then `exec pgbouncer /tmp/pgbouncer.ini`.
   No file is mounted, so a Portainer stack works the same way. The settings:
   - `[databases] app = host=<db> port=5432 dbname=app`;
-  - `pool_mode = transaction`, `listen_addr = 0.0.0.0`, `listen_port = 6432`;
+  - `pool_mode = session`, `listen_addr = 0.0.0.0`, `listen_port = 6432`;
   - `auth_type = scram-sha-256`, `auth_file = /tmp/userlist.txt` with the runtime login and its
     password in plain text (research 3: PgBouncer then does SCRAM with the client and with the
     server; pass-through is avoided);
-  - `default_pool_size = 10`, `max_client_conn = 100`, `max_prepared_statements = 200`,
+  - `default_pool_size = 20`, `max_client_conn = 100`, `server_reset_query = DISCARD ALL`,
     `ignore_startup_parameters = extra_float_digits`;
   - `admin_users` empty, `stats_users` the runtime login (for `SHOW` checks only).
 - **Its environment:** the runtime login's name and password, from the database's generated

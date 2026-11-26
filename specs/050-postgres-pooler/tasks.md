@@ -78,7 +78,7 @@
 - [x] T5005 [US1] The guide
   - **Owns:** `docs/guide/databases.md` (a section).
   - **Accept:** what it does and why, how to turn it on, that migrations bypass it, the session
-    features that break in transaction mode (research 4), its memory, and that it needs separate
+    connections it holds at once (session mode, research 9), its memory, and that it needs separate
     logins. Names match the code.
   - **Verify:** `pnpm lint`
   - **Effort:** medium

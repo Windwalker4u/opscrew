@@ -239,25 +239,19 @@ A worker or service of your app can't be called `<db>-pooler`.
 ### Migrations connect directly
 
 The release command, which runs your migrations as `app_owner`, never goes through the pooler: its
-`release.db.env` keeps PostgreSQL's own address, `db` and port `5432`. Migration tools often use features the pooler doesn't
-carry over, such as a lock held for the whole migration.
+`release.db.env` keeps PostgreSQL's own address, `db` and port `5432`. The pooler serves only the
+login your app runs as.
 
-### What doesn't work through it
+### How it hands out connections
 
-The pooler runs in transaction mode: each transaction may run on a different PostgreSQL
-connection, so anything that stays on a connection after its transaction ends is lost or reaches
-another request. Through the pooler, these don't work:
+The pooler gives each connection of your app a PostgreSQL connection of its own for as long as it
+stays open, which for PHP is one request. When the request ends, the connection goes back to the
+pooler, which resets it (`DISCARD ALL`) and hands it to the next request, already warm.
 
-- `SET` or `RESET` outside a transaction (use `SET LOCAL` inside one);
-- `LISTEN` (a `NOTIFY` is sent, but nothing listens for it);
-- session advisory locks (`pg_advisory_lock`; the transaction ones, `pg_advisory_xact_lock`,
-  work);
-- cursors declared `WITH HOLD`;
-- `PREPARE`, `EXECUTE` and `DEALLOCATE` written in SQL;
-- temporary tables kept across transactions.
-
-Prepared statements made through the driver, as PHP's PDO makes them, work. If your app's web,
-workers or cron use any of the features above, leave the pooler off.
+- **Everything works through it:** prepared statements, `SET`, locks, `LISTEN` and temporary
+  tables all behave as they do on a direct connection, for as long as that connection stays open.
+- **Up to 20 at a time:** at most 20 of your app's connections are open at once. A request beyond
+  that waits until one is free, which for PHP's short requests is a matter of milliseconds.
 
 ### Apps in other languages
 

@@ -75,3 +75,24 @@ The docs describe no dedicated health endpoint (https://www.pgbouncer.org/usage.
 - A TCP check on port 6432 is a minimal liveness test. The minimal edoburu image may not contain `psql` or `pg_isready`, so that is NOT VERIFIED.
 - `pg_isready -p 6432`: NOT VERIFIED against PgBouncer from an official source.
 - Suggested check: a TCP connect to 6432 from inside the container (for example a shell `/dev/tcp` check or the `nc` that the image has), and a deeper check from the app side.
+
+## 9. Session mode, not transaction mode (the lead, 2026-11-26)
+
+The Docker test (T5004) answered section 2's open question against real PHP. In transaction mode,
+PDO's native prepared statements work only when `pdo_pgsql` is built against libpq 17 or later.
+Without libpq 17's `PQclosePrepared`, `pdo_pgsql` (`ext/pdo_pgsql/pgsql_statement.c`) frees a
+statement with SQL `DEALLOCATE pdo_stmt_…`. PgBouncer doesn't track SQL `DEALLOCATE` and has
+renamed the statement, so PostgreSQL knows no such name, the transaction aborts, and the next query
+fails with `25P02`. With Debian 12's libpq 15, the base of common PHP images, every Laravel
+transaction of two or more queries failed through the pooler (40 of 40), while the same requests
+straight to PostgreSQL passed. No PgBouncer setting fixes it in transaction mode.
+
+**Decision:** `pool_mode = session`. The cost the pooler removes is a fresh backend per PHP request.
+In session mode a client keeps one server connection while it is connected; when it disconnects,
+the connection returns to the pool after `server_reset_query` (`DISCARD ALL`), which resets the
+session but keeps the backend and its caches warm, so the next request gets a warm backend.
+Prepared statements, `DEALLOCATE`, `SET`, advisory locks, `LISTEN` and temporary tables all work as
+on a direct connection, so section 4's list no longer applies. The price is that clients beyond
+`default_pool_size` wait for a free connection. PHP holds one only for a request, so
+`default_pool_size = 20` (FrankenPHP's threads and a few workers) with `max_client_conn = 100`.
+`max_prepared_statements` isn't needed in session mode.

@@ -17,7 +17,7 @@ most other runtimes keep a pool inside the app.
 
 A user's Laravel app on a server uses PostgreSQL with separate logins. They add
 `pooler: pgbouncer` under the database's options (design writes it for new PHP apps) and run
-`npx opscrew provision`. The deploy starts a small PgBouncer next to the database, in transaction
+`npx opscrew provision`. The deploy starts a small PgBouncer next to the database, in session
 mode. The app's web, worker and cron processes reach the database through it; the release command
 (migrations) still connects to PostgreSQL directly. Pages that query the database get faster
 because PgBouncer keeps the database's backends warm between requests.
@@ -25,7 +25,7 @@ because PgBouncer keeps the database's backends warm between requests.
 **Why this priority**: it is the feature.
 
 **Independent Test**: with Docker, a PHP container using PDO's native prepared statements runs a
-few thousand requests' worth of queries through the rendered PgBouncer in transaction mode: every
+few thousand requests' worth of queries through the rendered PgBouncer in session mode: every
 query succeeds, PostgreSQL shows only a handful of backends for the runtime login, and the
 migration connection goes straight to PostgreSQL.
 
@@ -39,9 +39,9 @@ migration connection goes straight to PostgreSQL.
    before.
 3. **Given** `pooler: pgbouncer` without `logins: separate` (or on PostgreSQL below 15), **When**
    provision runs, **Then** it is refused before any change, saying to add `logins: separate`
-   first, since migrations must not go through a transaction-mode pooler.
+   first: only separate logins give the release its own direct address.
 4. **Given** PDO with native prepared statements, **When** the app queries through the pooler,
-   **Then** they work (PgBouncer 1.21+ with `max_prepared_statements`).
+   **Then** they work, whatever the app image's libpq version (research 9).
 
 ### User Story 2 - Rotation and every other flow keep working (Priority: P1)
 
@@ -68,9 +68,9 @@ migration connection goes straight to PostgreSQL.
 
 ### Edge Cases
 
-- **Session features in the app:** transaction mode breaks session `SET`, `LISTEN`, session
-  advisory locks, `WITH HOLD` cursors, SQL-level `PREPARE` and session temp tables. The guide says
-  so, and that such an app should leave the pooler off.
+- **Session mode, not transaction mode** (research 9): each client connection keeps one PostgreSQL
+  connection while it is open, so prepared statements, `SET`, locks and `LISTEN` work as on a direct
+  connection; clients beyond the pool's 20 wait.
 - **The release command** never goes through the pooler.
 - **A split plan** (the database on another server): the pooler runs on the database's server.
 - **A Portainer stack** gets the same service: the pooler's settings are written by its own start
@@ -85,9 +85,9 @@ migration connection goes straight to PostgreSQL.
   image, no published port (on a split plan, only on the database server's private address, as the
   database itself), on the database's server and network, a memory limit, a health check,
   restart like the database's, and settings written by its start command from its environment.
-- **FR-5003**: The pooler MUST run in transaction mode, authenticate the runtime login with SCRAM
+- **FR-5003**: The pooler MUST run in session mode, authenticate the runtime login with SCRAM
   against a password it reads from its environment (never a file in the repository), log in to
-  PostgreSQL as that login, keep `max_prepared_statements` above zero and ignore
+  PostgreSQL as that login, ignore
   `extra_float_digits`.
 - **FR-5004**: The app's web, worker and cron processes MUST reach the database at
   `<db>-pooler:6432` (every variable name the alias rule fills), and the release command MUST keep
@@ -97,7 +97,7 @@ migration connection goes straight to PostgreSQL.
 - **FR-5006**: Without `pooler`, every rendered file MUST stay byte for byte as before.
 - **FR-5007**: Design MUST write `pooler: pgbouncer` for new PHP apps with PostgreSQL 15 or later;
   provision MUST print a one-line suggestion for existing PHP plans without it.
-- **FR-5008**: The guide MUST say what the pooler does, when to leave it off (session features),
+- **FR-5008**: The guide MUST say what the pooler does, how many connections it holds at once,
   that migrations bypass it, and its memory.
 - **FR-5009**: No password appears in logs, plans, audit entries, the repository or process
   arguments.
