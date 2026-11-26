@@ -14,28 +14,13 @@ export const STATIC_PRICES_AS_OF = "2026-11-22T00:00:00.000Z";
 export const HOURS_A_MONTH = 730;
 
 /**
- * The datacenters OpsCrew maps its regions to, in the order of research R4 §6's mapping:
- * Frankfurt, Amsterdam, Stockholm, New York, Atlanta, Miami, Chicago, Santa Clara, Los Angeles,
- * Seattle, Singapore, Sydney and Hong Kong. Stockholm, Atlanta, Miami, Chicago, Los Angeles,
- * Seattle, Singapore and Sydney are read from the code against Kamatera's city list
+ * The datacenters OpsCrew maps its regions to (research R4 §6): Frankfurt and Amsterdam
+ * (eu-central), Stockholm (eu-north), New York (us-east), Santa Clara (us-west) and Singapore
+ * (ap-southeast). `EU-ST` and `AS-SG` are read from the code against Kamatera's city list
  * (unverified until a live `datacenters` list says it); every code is in the calculator's
  * `datacenters` list.
  */
-export const KAMATERA_LOCATIONS = [
-  "EU-FR",
-  "EU",
-  "EU-ST",
-  "US-NY2",
-  "US-AT",
-  "US-MI",
-  "US-CH",
-  "US-SC",
-  "US-LA",
-  "US-SE",
-  "AS-SG",
-  "AU-SY",
-  "AS",
-] as const;
+export const KAMATERA_LOCATIONS = ["EU-FR", "EU", "EU-ST", "US-NY2", "US-SC", "AS-SG"] as const;
 
 /** One of {@link KAMATERA_LOCATIONS}. */
 export type KamateraLocation = (typeof KAMATERA_LOCATIONS)[number];
@@ -71,7 +56,10 @@ export const STATIC_PLANS: readonly KamateraPlan[] = [
   { id: "B-4-8", cpuType: "B", vcpus: 4, memoryGb: 8, diskGb: 80, monthly: 90 },
 ];
 
-/** The rates besides the server's own, USD; each names its calculator line. */
+/**
+ * The rates besides the server's own, USD; each names its calculator line. The catalogue's
+ * `extras()` gives the snapshot rate; the others are for the destroy and guide texts.
+ */
 export interface KamateraRates {
   /** A snapshot per GB (`snapshot`). That it is a month's rate is unverified. */
   snapshotPerGbMonth: number;
@@ -107,13 +95,6 @@ export const STATIC_TRAFFIC_GB: Readonly<Record<KamateraLocation, number>> = {
   EU: 5000,
   "EU-ST": 5000,
   "US-NY2": 5000,
-  "US-AT": 5000,
-  "US-MI": 5000,
-  "US-CH": 5000,
   "US-SC": 5000,
-  "US-LA": 5000,
-  "US-SE": 5000,
   "AS-SG": 1000,
-  "AU-SY": 1000,
-  AS: 1000,
 };

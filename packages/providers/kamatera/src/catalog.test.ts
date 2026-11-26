@@ -10,6 +10,8 @@ import {
   KAMATERA_LOCATIONS,
   STATIC_PLANS,
   STATIC_PRICES_AS_OF,
+  STATIC_RATES,
+  STATIC_TRAFFIC_GB,
 } from "./static-prices";
 
 const NOW = new Date("2026-11-26T12:00:00.000Z");
@@ -93,6 +95,29 @@ describe("KamateraCatalog without the calculator file", () => {
     expect(singapore).toHaveLength(STATIC_PLANS.length);
     expect(new Set(singapore.map((o) => o.location))).toEqual(new Set(["AS-SG"]));
     expect(await catalog.listOffers("IL-TA")).toEqual([]);
+    expect(await catalog.listOffers("AU-SY")).toEqual([]);
+  });
+
+  it("maps the six datacenters the definition uses, in order", () => {
+    expect(KAMATERA_LOCATIONS).toEqual(["EU-FR", "EU", "EU-ST", "US-NY2", "US-SC", "AS-SG"]);
+  });
+
+  it("keeps the published traffic allowance and the other rates for the texts", () => {
+    expect(STATIC_TRAFFIC_GB).toEqual({
+      "EU-FR": 5000,
+      EU: 5000,
+      "EU-ST": 5000,
+      "US-NY2": 5000,
+      "US-SC": 5000,
+      "AS-SG": 1000,
+    });
+    expect(STATIC_RATES).toEqual({
+      snapshotPerGbMonth: 0.05,
+      extraIpv4Monthly: 1,
+      trafficPerGbOver: 0.01,
+      stoppedIpv4Monthly: 5,
+      stoppedDiskPerGbMonth: 0.05,
+    });
   });
 
   it("keeps the table on any failed read, tries no second read and claims no availability", async () => {
@@ -178,52 +203,30 @@ describe("KamateraCatalog with the calculator file", () => {
 });
 
 describe("KamateraCatalog extras", () => {
-  it("gives the table's rates, and the traffic of each datacenter", async () => {
+  it("gives the table's snapshot rate and nothing else: the first IPv4 is in the price", async () => {
     const { catalog } = setup(offline);
-    expect(await catalog.extras("EU-FR")).toEqual({
-      snapshotPerGbMonth: { amount: 0.05, currency: "USD" },
-      snapshotPerGbHour: { amount: 0.05 / HOURS_A_MONTH, currency: "USD" },
-      extraIpv4Monthly: { amount: 1, currency: "USD" },
-      trafficIncludedGb: 5000,
-      trafficPerGbOver: { amount: 0.01, currency: "USD" },
-      stoppedIpv4Monthly: { amount: 5, currency: "USD" },
-      stoppedDiskPerGbMonth: { amount: 0.05, currency: "USD" },
-      pricesIncludeVat: false,
-      source: "static",
-      asOf: STATIC_PRICES_AS_OF,
-    });
-    for (const location of ["AS-SG", "AU-SY", "AS"]) {
-      expect((await catalog.extras(location)).trafficIncludedGb).toBe(1000);
+    for (const location of KAMATERA_LOCATIONS) {
+      expect(await catalog.extras(location)).toEqual({
+        snapshotPerGbMonth: { amount: 0.05, currency: "USD" },
+        snapshotPerGbHour: { amount: 0.05 / HOURS_A_MONTH, currency: "USD" },
+        pricesIncludeVat: false,
+        source: "static",
+        asOf: STATIC_PRICES_AS_OF,
+      });
     }
   });
 
-  it("names no primary IPv4 price and no backup rate", async () => {
-    const { catalog } = setup(offline);
-    const extras = await catalog.extras("US-SC");
-    expect(extras.ipv4Monthly).toBeUndefined();
-    expect(extras.ipv4Hourly).toBeUndefined();
-    expect(extras.backupPercent).toBeUndefined();
-  });
-
-  it("reads the rates from the file when it is reachable", async () => {
+  it("reads the snapshot rate from the file when it is reachable", async () => {
     const changed = FILE.replace(
       '"snapshot":[{"description":"Snapshot Price","options":[{"value":"1","description":"Snapshot price per GB","price":0.05}]}]',
       '"snapshot":[{"description":"Snapshot Price","options":[{"value":"1","description":"Snapshot price per GB","price":0.07}]}]',
-    ).replace(
-      '"netPck.AS-SG":[{"description":"Network Package AS-SG","options":[{"value":"t1000"',
-      '"netPck.AS-SG":[{"description":"Network Package AS-SG","options":[{"value":"t2000"',
     );
     expect(changed).not.toBe(FILE);
     const { catalog } = setup({ text: changed });
-    const extras = await catalog.extras("AS-SG");
-    expect(extras).toMatchObject({
+    expect(await catalog.extras("AS-SG")).toEqual({
       snapshotPerGbMonth: { amount: 0.07, currency: "USD" },
       snapshotPerGbHour: { amount: 0.07 / HOURS_A_MONTH, currency: "USD" },
-      extraIpv4Monthly: { amount: 1, currency: "USD" },
-      trafficIncludedGb: 2000,
-      trafficPerGbOver: { amount: 0.01, currency: "USD" },
-      stoppedIpv4Monthly: { amount: 5, currency: "USD" },
-      stoppedDiskPerGbMonth: { amount: 0.05, currency: "USD" },
+      pricesIncludeVat: false,
       source: "live",
       asOf: NOW.toISOString(),
     });

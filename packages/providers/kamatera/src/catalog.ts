@@ -10,13 +10,10 @@ import { z } from "zod";
 import {
   HOURS_A_MONTH,
   KAMATERA_LOCATIONS,
-  type KamateraLocation,
   type KamateraPlan,
-  type KamateraRates,
   STATIC_PLANS,
   STATIC_PRICES_AS_OF,
   STATIC_RATES,
-  STATIC_TRAFFIC_GB,
 } from "./static-prices";
 
 /**
@@ -32,20 +29,6 @@ const CALCULATOR_TIMEOUT_MS = 15_000;
  */
 const FILE_PATTERN = /^\s*var prd_prices = '([\s\S]*)';\s*$/;
 
-/** The rates and allowances besides a server's price, for one datacenter (all USD). */
-export interface KamateraExtras extends ProviderExtras {
-  /** Each IPv4 address beyond the one included in a server's price, a month. */
-  extraIpv4Monthly: Money;
-  /** The traffic included each month in this datacenter, GB (unverified for hourly servers). */
-  trafficIncludedGb: number;
-  /** Each GB of traffic over {@link trafficIncludedGb}. */
-  trafficPerGbOver: Money;
-  /** A powered-off hourly server's address, a month: a stopped server keeps billing. */
-  stoppedIpv4Monthly: Money;
-  /** A powered-off hourly server's disk per GB, a month (inferred, unverified). */
-  stoppedDiskPerGbMonth: Money;
-}
-
 export interface KamateraCatalogOptions {
   /** For the public calculator file, which needs no sign-in. Default: the global `fetch`. */
   fetch?: FetchLike;
@@ -60,17 +43,11 @@ const lineSchema = z.tuple([
   }),
 ]);
 
-/** A datacenter's traffic: the allowance, GB a month, and each GB over it, USD. */
-interface Traffic {
-  includedGb: number;
-  perGbOver: number;
-}
-
-/** What the catalogue read: the table's shape, from the table or from the file. */
+/** What the catalogue read, from the file or from the table. */
 interface Prices {
   plans: readonly KamateraPlan[];
-  rates: Omit<KamateraRates, "trafficPerGbOver">;
-  traffic: Readonly<Record<KamateraLocation, Traffic>>;
+  /** USD per GB a month (`snapshot`). */
+  snapshotPerGbMonth: number;
   source: "live" | "static";
   asOf: string;
 }
@@ -124,27 +101,21 @@ export class KamateraCatalog implements ComputeCatalog {
   }
 
   /**
-   * The snapshot rate, the extra IPv4, the datacenter's traffic allowance and its overage rate,
-   * and the powered-off rate. No `ipv4Monthly`: a server's one IPv4 is in its price.
+   * The snapshot rate. No `ipv4Monthly`: a server's one IPv4 is in its price.
    * @throws OpsCrewError `INVALID_INPUT` for a datacenter OpsCrew doesn't map.
    */
-  async extras(location: string): Promise<KamateraExtras> {
-    if (!isLocation(location)) {
+  async extras(location: string): Promise<ProviderExtras> {
+    if (!(KAMATERA_LOCATIONS as readonly string[]).includes(location)) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         `OpsCrew doesn't use the Kamatera datacenter ${location}.`,
         { hint: `Use one of ${orText(KAMATERA_LOCATIONS)}.` },
       );
     }
-    const { rates, traffic, source, asOf } = await this.#read();
+    const { snapshotPerGbMonth, source, asOf } = await this.#read();
     return {
-      snapshotPerGbMonth: usd(rates.snapshotPerGbMonth),
-      snapshotPerGbHour: usd(rates.snapshotPerGbMonth / HOURS_A_MONTH),
-      extraIpv4Monthly: usd(rates.extraIpv4Monthly),
-      trafficIncludedGb: traffic[location].includedGb,
-      trafficPerGbOver: usd(traffic[location].perGbOver),
-      stoppedIpv4Monthly: usd(rates.stoppedIpv4Monthly),
-      stoppedDiskPerGbMonth: usd(rates.stoppedDiskPerGbMonth),
+      snapshotPerGbMonth: usd(snapshotPerGbMonth),
+      snapshotPerGbHour: usd(snapshotPerGbMonth / HOURS_A_MONTH),
       pricesIncludeVat: false,
       source,
       asOf,
@@ -157,11 +128,7 @@ export class KamateraCatalog implements ComputeCatalog {
       (live): Prices => ({ ...live, source: "live", asOf: this.#now().toISOString() }),
       (): Prices => ({
         plans: STATIC_PLANS,
-        rates: STATIC_RATES,
-        traffic: perLocation((location) => ({
-          includedGb: STATIC_TRAFFIC_GB[location],
-          perGbOver: STATIC_RATES.trafficPerGbOver,
-        })),
+        snapshotPerGbMonth: STATIC_RATES.snapshotPerGbMonth,
         source: "static",
         asOf: STATIC_PRICES_AS_OF,
       }),
@@ -171,7 +138,7 @@ export class KamateraCatalog implements ComputeCatalog {
 }
 
 /**
- * The calculator file's prices for the table's plans and rates.
+ * The calculator file's prices for the table's plans, and its snapshot rate.
  * @throws when the file can't be read or lacks a line the table needs.
  */
 async function readCalculator(
@@ -198,12 +165,6 @@ async function readCalculator(
     if (option === undefined) throw new Error(`no ${key} ${value}`);
     return option.price;
   };
-  /** The one price on the line `key`, whatever its value is named. */
-  const rate = (key: string): number => {
-    const [option] = lineSchema.parse(lines[key])[0].options;
-    if (option === undefined) throw new Error(`no ${key}`);
-    return option.price;
-  };
   return {
     plans: STATIC_PLANS.map((plan) => ({
       ...plan,
@@ -213,36 +174,10 @@ async function readCalculator(
         price("diskGB", String(plan.diskGb)) +
         price("wan", "1"),
     })),
-    rates: {
-      snapshotPerGbMonth: rate("snapshot"),
-      extraIpv4Monthly: rate("wanEx"),
-      stoppedIpv4Monthly: rate("wanPoweredOff"),
-      stoppedDiskPerGbMonth: rate("diskExGB"),
-    },
-    traffic: perLocation((location) => {
-      // The metered package (`t5000`); `b50` is the unmetered 50 Mbit/s one.
-      const metered = lineSchema
-        .parse(lines[`netPck.${location}`])[0]
-        .options.map((o) => /^t(\d+)$/.exec(o.value)?.[1])
-        .find((gb) => gb !== undefined);
-      if (metered === undefined) throw new Error(`no traffic package in ${location}`);
-      return { includedGb: Number(metered), perGbOver: rate(`netPckTrafficEx.${location}`) };
-    }),
+    snapshotPerGbMonth: price("snapshot", "1"),
   };
-}
-
-/** `of(location)` for each mapped datacenter. */
-function perLocation<T>(of: (location: KamateraLocation) => T): Record<KamateraLocation, T> {
-  return Object.fromEntries(KAMATERA_LOCATIONS.map((l) => [l, of(l)])) as Record<
-    KamateraLocation,
-    T
-  >;
 }
 
 function usd(amount: number): Money {
   return { amount, currency: "USD" };
-}
-
-function isLocation(location: string): location is KamateraLocation {
-  return (KAMATERA_LOCATIONS as readonly string[]).includes(location);
 }
