@@ -4407,6 +4407,129 @@ OPSCREW_E2E_SHARED_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO
 Measured: 27 minutes (run 7, 2026-11-19), with one CX23 for that time (a few cents), five deploy
 runs and one run of the check.
 
+## PostgreSQL's two logins
+
+`packages/cli/test/live/postgres-logins.test.ts`, with `OPSCREW_E2E_POSTGRES_LOGINS=1`, runs
+feature 047's quickstart "Live" ([the guide](guide/databases.md#two-logins)) on the localhost
+target: nothing is bought and no server is created. Two throwaway apps run on this computer, one
+after the other.
+
+- **App A** is `examples/laravel-app` in the private `OPSCREW_E2E_GITHUB_REPO`, with what the
+  quickstart asks for written over it: PostgreSQL as `laravel new --database=pgsql` writes
+  `.env.example`, a queued job (so design gives it a queue worker on the database driver), a few
+  routes the checks call, and a Dockerfile of its own. Prod is designed at Hetzner and never
+  provisioned. Its environment `logins` runs on this computer and the local runner deploys it, as
+  in [the local runner](#the-local-runner). It isn't called `dev`, because the repository's
+  registry keeps the `opscrew-dev` images of that test's own app.
+- **App B** is `examples/koa-knex` in `OPSCREW_E2E_GITHUB_REPO_C`, on this computer without a
+  runner, since rotating an environment the local runner deploys is refused.
+
+Every check reads PostgreSQL through `docker compose exec db psql`, calls the apps through
+127.0.0.1 with OpsCrew's local CA, and compares the containers' ids and start times. Passwords are
+compared by SHA-256 or in memory, never printed. Docker is touched only through the Compose
+projects of the two apps, their drills and OpsCrew's edge. The test stops before any change when
+Docker has one of them already.
+
+The steps keep the quickstart's numbers. They run in this order: 1a to 3, 6, 7 and 8a on A, then
+4a to 5 and 8b on B, then 9.
+
+1. **A new database (quickstart 1.):**
+   - **1a. The plans:** prod's and the environment's plans say `logins: separate` under `db`. The
+     environment's plan gets `target.image: registry`, and its kept folder `storage/app` is taken
+     out, so this computer can build the first image as GitHub Actions does.
+   - **1b. The first provision:** adapt (pull request merged), then provision until done. The
+     stack runs, and the record of the deploy secrets names `OPSCREW_LOGINS_RELEASE_DB_ENV`.
+   - **1c. The first deploy:** the runner deploys the deploy-setup pull request. Then:
+     - `\du` lists `app_owner` and `app_runtime` with every attribute off and no memberships, and
+       every table, sequence and schema of `public`, and the database, is `app_owner`'s;
+     - the web's and the worker's container env names `app_runtime` and holds neither the
+       superuser's nor the owner's password;
+     - `release.db.env` names `app_owner`, and only Compose's `release` service reads it;
+     - the web answers `current_user` as `app_runtime`, and a queued job records that the worker
+       ran as `app_runtime`.
+2. **A migration later (quickstart 2.):** a merged migration creates `e2e_identity` (an `IDENTITY`
+   id) and `e2e_serial` (a `serial` id), and the runner deploys it. A request inserts into both as
+   `app_runtime`, and both tables and their sequences are `app_owner`'s.
+3. **The runtime login's limits (quickstart 3.):** in the web's container, a PHP script logs in
+   with the container's own `DATABASE_URL`. `CREATE TABLE`, `CREATE ROLE`,
+   `SELECT * FROM pg_authid` and `CREATE TEMP TABLE` are each refused with SQLSTATE 42501.
+4. **An existing database (quickstart 4.), on B:**
+   - **4a. As 0.2.11 made it:** B is designed (with `logins: separate`), and `logins` is taken out
+     of its plan before its first provision. `verify` follows, as provision's next step says: it
+     records the first deploy, which the notice and the switch need. Then rows are added: five
+     requests and 1,000 rows by SQL. Only the superuser exists, and it owns every object.
+   - **4b. Provision again:** the `db` container's id and start time are as before, and so is
+     every file provision writes: those in the app's folder (not the deploy's own records, such as
+     `.env` naming the image that runs, `.env.previous` and the logs) and those under
+     `opscrew/runtime/`. Provision prints how to switch.
+   - **4c. The switch:** `logins: separate` added and committed. `provision --plan-only` shows the
+     switch's lines and its hash, and changes nothing. Provision, approved by every hash it
+     printed, then takes a snapshot of `db` and restarts it. After it:
+     - the rows are all there, and the app answers;
+     - its connections are `app_runtime`'s, read in `pg_stat_activity`;
+     - every object is `app_owner`'s, and the env checks of 1c hold.
+5. **Rotation (quickstart 5.), on B:** `rotate db` in a script, which rotates the superuser's,
+   the owner's and the runtime login's passwords in one plan (no name rotates one of them alone).
+   Its plan shows a short swap for each and no restart. Then:
+   - each of the three passwords changed: the new one logs in over TCP, the old one is refused;
+   - the `db` container's id and start time are unchanged, and the app answers;
+   - a new Knex migration is committed, and the next provision runs it as `app_owner`.
+6. **Restore (quickstart 6.), on A:** `snapshot`, a row deleted, then `restore <id>` with the app's
+   name typed. The row is back, every object is `app_owner`'s, and the app writes again.
+7. **The drill (quickstart 7.), on A:** `restore --drill --keep` is approved with `<app>-drill`
+   typed, and its outcome is `healthy`. Its copy's `db` holds new passwords (none is production's
+   or a placeholder left unfilled), and so does its app. `restore --drill --remove` then leaves
+   nothing of the copy.
+8. **Clean up (quickstart 8.):**
+   - **8a. A:** the runner stops, then `destroy --env logins --delete-data`. Nothing of A or its
+     drill is left in Docker. Its deploy secrets, `OPSCREW_LOGINS_RELEASE_DB_ENV` among them, and
+     the GitHub environment `logins` are gone. Whether GitHub still lists the stopped runner 3
+     minutes later is logged: on Windows the stop ends it by force, and GitHub can then keep it as
+     running a job for about half an hour.
+   - **8b. B:** `destroy --delete-data`. No container, network or volume of either app, a drill or
+     the edge is left. The images the pass pulled or built are removed, and none is left. Neither
+     repository has a `*RELEASE_DB_ENV` secret.
+9. **Nothing leaked:** no token, password, generated value or local CA key in any output, commit,
+   pull request, audit entry or state file of either app.
+
+**Cleanup** always runs, whatever failed: the runner is stopped, `destroy --delete-data` runs for
+an app not destroyed yet, and what Docker still lists with the pass's Compose project labels is
+removed (never anything else, and never a prune). Then the images the pass pulled or built that
+Docker didn't have before. Then the cleanup of [the local runner](#the-local-runner): GitHub's
+runners with the label, the GitHub environments and deploy secrets the run made, and both
+repositories' `main` put back and reset. A runner GitHub refuses to delete as running a job is
+tried again each minute, for up to 40 minutes. BuildKit's cache of the local builds stays, as
+Docker's own cache, and so do the app's images in the repository's registry, which the image
+retention job of later deploys prunes.
+
+**If a run was interrupted**, delete by hand only the pass's own:
+- **At GitHub:** the runner labelled `opscrew-<app>-logins`, and the GitHub environment `logins`
+  with its secrets.
+- **In Docker:** what has the label `com.docker.compose.project=` with `opscrew-<app>-logins`,
+  `<app>-logins-drill`, `opscrew-<app>`, `<app>-drill` or `opscrew-edge`.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_POSTGRES_LOGINS` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | As for [the local runner](#the-local-runner). The repository must be private. The Hetzner token only prices prod's design. |
+| `OPSCREW_E2E_GITHUB_REPO_C` | The public throwaway repository (the same as [the environment rules](#the-environment-rules-on-a-public-repository)), for B, which needs no runner. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | Optional but recommended, as for the local runner. |
+
+Requirements: Docker here with Linux containers and Compose 2.23 or newer, and on Windows Git for
+Windows' `bash`. Keep `OPSCREW_TEST_TMP` short on Windows, since the runner's work folder is in it.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_POSTGRES_LOGINS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_C=you/opscrew-e2e-c OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_GHCR_READ_TOKEN=… OPSCREW_TEST_TMP=D:/opscrew-test-tmp \
+  npx vitest run test/live/postgres-logins.test.ts
+```
+
+Measured: 27 minutes (run 8, 2026-11-26), with no server. The two builds run on GitHub's machines
+and their deploy jobs on this computer.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
