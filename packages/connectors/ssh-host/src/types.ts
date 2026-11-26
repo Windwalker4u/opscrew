@@ -345,11 +345,14 @@ export const UPTIME_ENTRY_RE =
 /**
  * A credential's name in the rotation record, a copy of plan-schema's `CredentialNameSchema`: a
  * lower-case name (`deploy-key`), optionally followed by `:` and a part (`app:SECRET_KEY_BASE`,
- * `grant:laptop/cache`).
+ * `grant:laptop/cache`), of at most 128 characters, so the largest report fits the Worker's body.
  */
-const CredentialNameSchema = z.string().regex(/^[a-z][a-z0-9-]*(?::[A-Za-z0-9_./-]+)?$/, {
-  message: "must be a credential's name such as deploy-key or app:SECRET_KEY_BASE",
-});
+const CredentialNameSchema = z
+  .string()
+  .max(128, { message: "must be at most 128 characters" })
+  .regex(/^[a-z][a-z0-9-]*(?::[A-Za-z0-9_./-]+)?$/, {
+    message: "must be a credential's name such as deploy-key or app:SECRET_KEY_BASE",
+  });
 
 /**
  * One environment's uptime report from this server (`planUptimeReport`, feature 046): the

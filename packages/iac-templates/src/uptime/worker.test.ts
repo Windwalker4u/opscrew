@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { readUptimeScript } from "../../scripts/gen-modules";
 import worker, {
   handleReport,
+  MAX_BODY,
   runUptime,
   type UptimeEntry,
   type UptimeEnv,
@@ -764,13 +765,14 @@ function said(world: World) {
 }
 
 describe("handleReport's refusals before any KV operation", () => {
-  it("a body over 4 KB: 413; 4,096 bytes is read", async () => {
+  it("a body over MAX_BODY (64 KiB): 413; MAX_BODY bytes is read", async () => {
     const world = reporting();
     const body = JSON.stringify(report());
-    expect(await world.send(body + " ".repeat(4097 - body.length))).toBe(413);
-    expect(await world.send(body + " ".repeat(100_000))).toBe(413);
+    expect(MAX_BODY).toBe(65_536);
+    expect(await world.send(body + " ".repeat(MAX_BODY + 1 - body.length))).toBe(413);
+    expect(await world.send(body + " ".repeat(200_000))).toBe(413);
     expect(world.kv.ops).toEqual([]);
-    expect(await world.send(body + " ".repeat(4096 - body.length))).toBe(204);
+    expect(await world.send(body + " ".repeat(MAX_BODY - body.length))).toBe(204);
   });
 
   it("a missing or wrong signature: 401", async () => {

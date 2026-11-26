@@ -133,6 +133,9 @@ export interface UptimeIo {
  * One run: fetches each entry's hostnames once, posts the changes and the servers whose reports
  * stopped or resumed, and writes the changed states.
  */
+/** The most a report's body holds, in bytes; a longer one is refused with 413. */
+export const MAX_BODY: number;
+
 export function runUptime(env: UptimeEnv, io: UptimeIo): Promise<void>;
 
 /**

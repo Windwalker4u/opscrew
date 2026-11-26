@@ -7,6 +7,8 @@ export type {
   UptimeServerReport,
   UptimeState,
 } from "../../uptime/worker.mjs";
+/** The most a server's report to the uptime Worker holds, in bytes. */
+export { MAX_BODY as UPTIME_REPORT_MAX_BYTES } from "../../uptime/worker.mjs";
 export { UPTIME_WORKER_SCRIPT, UPTIME_WORKER_SHA256 } from "../generated/uptime";
 
 /**

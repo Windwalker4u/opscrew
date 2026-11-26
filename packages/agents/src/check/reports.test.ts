@@ -1,3 +1,5 @@
+import { planUptimeReport } from "@opscrew/connector-ssh-host";
+import { UPTIME_REPORT_MAX_BYTES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { credentialsRecordFile } from "../rotate/record";
@@ -87,5 +89,81 @@ describe("reportCredentials", () => {
     ]);
     // With the credentials' ages off, none.
     expect(await reportCredentials(deps, worker(base))).toBeUndefined();
+  });
+});
+
+describe("the largest report the uptime-report step allows", () => {
+  /** A 253-character hostname, the most a name may have, told apart by `i`. */
+  const hostname = (i: number) =>
+    [`h${i}`.padEnd(63, "a"), "b".repeat(63), "c".repeat(63), "d".repeat(57), "com"].join(".");
+  /** A 128-character credential name, the most the step takes, told apart by `i`. */
+  const credential = (i: number) => `app:${`N${i}_`.padEnd(124, "X")}`;
+  const settings = (hosts: number, credentials: number, name = credential) => ({
+    url: "https://opscrew-uptime.acme.workers.dev/report",
+    entry: "acme/shop/shop/prod",
+    server: `s${"x".repeat(99)}`,
+    drill: "weekly" as const,
+    hosts: Array.from({ length: hosts }, (_, i) => hostname(i)),
+    thresholds: { diskWarn: 85, diskHigh: 95, certDays: 14 },
+    credentials: {
+      maxAgeDays: 365,
+      dates: Array.from({ length: credentials }, (_, i) => ({
+        name: name(i),
+        at: "2026-01-02T03:04:05.000Z",
+        source: "first-deploy" as const,
+      })),
+    },
+    keySha256: "a".repeat(64),
+  });
+  const plan = (enable: ReturnType<typeof settings>) =>
+    planUptimeReport({
+      app: "shop",
+      facts: {
+        version: null,
+        script: null,
+        service: null,
+        timer: null,
+        dir: null,
+        tools: { curl: true, openssl: true },
+        instances: [],
+      },
+      enable,
+    });
+
+  it("is 40 hostnames and 64 credentials of 128 characters, and one more of each is refused", () => {
+    expect(() => plan(settings(40, 64))).not.toThrow();
+    expect(() => plan(settings(41, 64))).toThrow(/not valid/);
+    expect(() => plan(settings(40, 65))).toThrow(/not valid/);
+    expect(() => plan(settings(40, 64, (i) => `${credential(i)}Y`))).toThrow(/not valid/);
+  });
+
+  it("fits the Worker's body limit, with room to spare", () => {
+    const largest = settings(40, 64);
+    // As the server's script writes it, with the longest value of each field.
+    const body = JSON.stringify({
+      version: 1,
+      server: largest.server,
+      kind: "heartbeat",
+      disk: {
+        status: "high",
+        percent: 100,
+        free: 9_007_199_254_740_991,
+        total: 9_007_199_254_740_991,
+      },
+      snapshot: { status: "copy-failed", id: "20261125T030000Z" },
+      drill: { status: "failed", result: "not-restored", at: "2026-11-24T03:41:00Z" },
+      certificates: largest.hosts.map((name) => ({
+        hostname: name,
+        status: "expired",
+        days: -2_147_483_648,
+      })),
+      credentials: largest.credentials.dates.map((date) => ({
+        name: date.name,
+        status: "old",
+        days: 2_147_483_647,
+        source: date.source,
+      })),
+    });
+    expect(Buffer.byteLength(body)).toBeLessThan(UPTIME_REPORT_MAX_BYTES * 0.8);
   });
 });

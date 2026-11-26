@@ -39,8 +39,11 @@ const ENTRY = "entry:";
 const STATE = "state:";
 const REPORT = "report:";
 
-/** The most a report's body holds, in bytes. */
-const MAX_BODY = 4096;
+/**
+ * The most a report's body holds, in bytes: the largest report the servers' step allows (40
+ * certificates and 64 credentials, each at its longest) is about 25 KB, well under it.
+ */
+export const MAX_BODY = 65_536;
 
 /** How far a report's time may be from the Worker's clock. */
 const SKEW_MS = 5 * 60_000;
@@ -274,9 +277,9 @@ function label(entry) {
 
 /**
  * A request to the Worker's address. Only `POST /report` is served, and 404 answers anything
- * else. Before any KV operation it refuses a body over 4 KB (413), and a report not signed with
- * the entry's report key, or more than 5 minutes off this clock (401), or not in the report's
- * shape (400). It then refuses a server the entry doesn't list (401), and a report no newer than
+ * else. Before any KV operation it refuses a body over {@link MAX_BODY} bytes (413), and a
+ * report not signed with the entry's report key, or more than 5 minutes off this clock (401), or
+ * not in the report's shape (400). It then refuses a server the entry doesn't list (401), and a report no newer than
  * the one kept (409). It posts each check whose status changed, and keeps the report once every
  * post was accepted (204): a failed post answers 502 and keeps nothing, so the server sends again.
  */
