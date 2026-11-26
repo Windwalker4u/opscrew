@@ -629,6 +629,11 @@ describe("isSecretPath", () => {
     "/home/dev/.config/gh/hosts.yml",
     "/home/dev/.config/hcloud/cli.toml",
     ".terraform.d/credentials.tfrc.json",
+    // a directory named like a secret holds secrets too (#36)
+    ".env/config",
+    "app/.env.production/values",
+    "certs/server.pem/fullchain",
+    "infra/terraform.tfstate.d/prod/terraform.tfstate",
   ])("treats %s as secret", (p) => {
     expect(isSecretPath(p)).toBe(true);
   });
@@ -654,6 +659,8 @@ describe("isSecretPath", () => {
     "monkey.json",
     "credentials.md",
     "opscrew/plan.yaml",
+    ".env.example/config",
+    "src/env/index.ts",
     "",
   ])("does not treat %s as secret", (p) => {
     expect(isSecretPath(p)).toBe(false);
