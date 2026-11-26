@@ -157,7 +157,9 @@ repository secret `OPSCREW_CHECK_WEBHOOK`, never in a file, a plan, a log or the
 - **ntfy:** the topic's URL, such as `https://ntfy.sh/<topic>` or a topic on your own ntfy server.
   On ntfy.sh, anyone who knows a topic's name can read it, so pick a long, random one, or protect it
   and set `OPSCREW_CHECK_NTFY_TOKEN` to an access token. Openings are sent with priority 4, closings
-  with 3. ntfy.sh allows 250 messages a day.
+  with 3. ntfy.sh limits how many messages each sender may post, and counts a sender without an
+  account by its address (see [ntfy's limits](https://docs.ntfy.sh/publish/#limitations)). With the
+  Worker, read [ntfy.sh and the Worker](#ntfysh-and-the-worker).
 
 GitHub keeps the address it holds. To change it, or after changing the webhook's kind, set
 `OPSCREW_CHECK_WEBHOOK` to the new address and run `npx opscrew provision` again: without it, the
@@ -304,6 +306,19 @@ A message that can't be sent is sent again at the next run.
 
 `npx opscrew status` says that the Worker checks the environment, and lists the hostnames that are
 down and since when. When the Worker or the entry is gone, it says to run `npx opscrew provision`.
+
+### ntfy.sh and the Worker
+
+ntfy.sh counts its free limits per sending address, and Cloudflare's Workers share their addresses
+with other Workers. So ntfy.sh can refuse the Worker's posts for a while (HTTP 429), and the
+message then goes at a later run: in OpsCrew's live test, some alerts came 5 to 10 minutes late,
+and one hadn't come after 15 minutes. For alerts on time:
+
+- **An ntfy.sh account,** whose limits count per account: make an access token for it, set
+  `OPSCREW_CHECK_NTFY_TOKEN` to the token and `OPSCREW_CHECK_WEBHOOK` to the topic's address, and
+  run `npx opscrew provision`. The Worker's secret then holds the token, and the Worker sends it
+  with each post.
+- **Another webhook:** Slack, Discord or your own ntfy server.
 
 ### The server's own checks
 
