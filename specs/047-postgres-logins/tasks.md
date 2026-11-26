@@ -240,3 +240,9 @@ Secret-shaped values in tests come from `fakeSecret`.
   command migrates as the schema's owner, and the app, workers and cron run as a login that can
   only read and write data. New databases get them by default; an existing one switches with
   `logins: separate` and `opscrew provision`."
+
+## After 0.2.12 (found live on 0.2.12, 2026-11-26)
+
+- [ ] T4794 (lead) One snapshot per switch. Approving only the switch's hash takes the snapshot, then stops
+  at the next plan's approval (the host plan), so each rerun takes another one (three on the inventory
+  demo). Take the switch's snapshot only once every plan of the run is approved, with a test.

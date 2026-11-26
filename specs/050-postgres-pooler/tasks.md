@@ -88,11 +88,15 @@
 
 - [x] T5090 (lead) A fresh review of the merged waves.
 - [ ] T5091 (lead) `/simplify` over the feature's diff.
-- [ ] T5092 (lead) The live pass on the localhost target with `examples/laravel-app`: SC-5001's flat
+- [x] T5092 (lead) The live pass on the localhost target with `examples/laravel-app`: SC-5001's flat
   backend count over 100 signed-in requests, and nothing left behind. The results go into
   `docs/e2e-coverage.md`.
   - **Moved (the founder's weekly limit, 2026-11-26):** 0.2.12 ships with the Docker test's proof; the
     live pass is the inventory demo's move to the pooler on 0.2.12, and the `/simplify` pass (T5091)
     follows on 2026-12-02.
+  - **Done (2026-11-26):** the inventory demo on 0.2.12 with the pooler. The web process reaches
+    `db-pooler`, workers connect directly, and one warm backend served every request. The dashboard
+    dropped from 351 ms to 276–290 ms at the origin, and a connection costs 15–22 ms through the
+    pooler against 31–42 ms direct.
 - [x] T5093 (lead) The changelog line for 0.2.12: "An optional PgBouncer in front of an app's
   PostgreSQL (`pooler: pgbouncer`), which design turns on for PHP apps."
