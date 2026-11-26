@@ -5,7 +5,7 @@
  * the local executor.
  */
 import type { GitClient } from "@opscrew/connector-github";
-import { RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
+import { serviceEnvSecret } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireOwnHostnames } from "../environments/hostnames";
@@ -15,8 +15,8 @@ import { type GitHubSetup, setupGitHub } from "../provision/credentials";
 import {
   buildAppEnvironment,
   checkSecretsPlacement,
+  dbEnvFiles,
   deploySecrets,
-  releaseDbEnvFile,
   serviceEnvSecrets,
   setDeploySecrets,
 } from "../provision/secrets";
@@ -65,14 +65,17 @@ function valueLines(text: string): Record<string, string> {
 
 /**
  * The env files of the app's folder: `app.env`, the release's `release.db.env` with a PostgreSQL's
- * own logins (047), and `<service>.env` for each running service.
+ * own logins (047), the workers' `worker.db.env` beside its pooler (050), and `<service>.env` for
+ * each running service.
  */
 function localEnvFiles(plan: DeployPlan, environment: AppEnvironment): LocalFile[] {
   const secrets = serviceEnvSecrets(plan, environment);
-  const release = releaseDbEnvFile(plan, environment.values.services);
   return [
     { path: "app.env", content: environment.appEnv },
-    ...(release === undefined ? [] : [{ path: RELEASE_DB_ENV.file, content: release }]),
+    ...Object.entries(dbEnvFiles(plan, environment.values.services)).map(([path, content]) => ({
+      path,
+      content,
+    })),
     ...plan.services.flatMap((service) => {
       const content = secrets[serviceEnvSecret(service.name)];
       return content === undefined ? [] : [{ path: `${service.name}.env`, content }];

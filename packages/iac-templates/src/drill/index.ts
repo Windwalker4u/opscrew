@@ -10,10 +10,10 @@ import {
   type DeployPlan,
   isHostingTarget,
   isServerlessTarget,
+  poolerName,
   postgresPooler,
 } from "@opscrew/plan-schema";
 import { parse, Scalar, stringify } from "yaml";
-import { poolerName } from "../catalog/pooler";
 import type { PreviewEnvTemplates } from "../previews";
 import { wrongTarget } from "../providers";
 import { noStartMigrations } from "../railpack-laravel";

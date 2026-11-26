@@ -16,15 +16,13 @@ import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   localComposeProject,
   POSTGRES_RUNTIME_SECRET,
-  poolerName,
   processServices,
-  RELEASE_DB_ENV,
   RESTORE_HELD,
   ROTATION_HOLDER,
   SNAPSHOT_GENERATIONS,
   serviceRotation,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, postgresPooler } from "@opscrew/plan-schema";
+import { type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { projectObjects } from "../localhost/docker";
@@ -36,7 +34,7 @@ import {
   requireOwnLocalApp,
 } from "../localhost/services";
 import { requireNoCloudflareMove } from "../provision/guard";
-import { releaseDbEnvFile } from "../provision/secrets";
+import { dbEnvFiles } from "../provision/secrets";
 import { withAppEnv } from "./app-values";
 import {
   type DockerRotation,
@@ -131,8 +129,8 @@ export async function rotateLocalServices(
   };
   /**
    * The env files as provision writes them, with `values` on their `which` side: the rotated
-   * services' own and, unless `servicesOnly`, the release's (with a PostgreSQL's own logins) and
-   * the app's.
+   * services' own and, unless `servicesOnly`, the release's (with a PostgreSQL's own logins), the
+   * workers' (beside its pooler) and the app's.
    */
   const rewrite = async (values: RotationValues, which: keyof ValuePair, servicesOnly = false) => {
     const sides = await serviceValues(deps, plan, values, which);
@@ -144,9 +142,8 @@ export async function rotateLocalServices(
       }
     }
     if (servicesOnly) return;
-    const release = releaseDbEnvFile(plan, sides);
-    if (release !== undefined) {
-      await writeFileAtomic(join(folder, RELEASE_DB_ENV.file), release, { mode: 0o600 });
+    for (const [file, content] of Object.entries(dbEnvFiles(plan, sides))) {
+      await writeFileAtomic(join(folder, file), content, { mode: 0o600 });
     }
     const app = join(folder, "app.env");
     const text = await readTextIfExists(app);

@@ -24,6 +24,7 @@ import {
   serviceSecrets,
   serviceSpec,
   shellQuote,
+  WORKER_DB_ENV,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -31,13 +32,14 @@ import {
   onOneServer,
   type PlanService,
   postgresLogins,
+  postgresPooler,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import type { GitHubSetup } from "../provision/credentials";
 import { requireNoCloudflareMove } from "../provision/guard";
-import { deploySecretPlace, releaseDbEnvFile, setSecretAt } from "../provision/secrets";
+import { dbEnvFiles, deploySecretPlace, setSecretAt } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { registerAppSecrets } from "../shared/app-secrets";
@@ -379,16 +381,22 @@ async function readAppEnv(
   return result.stdout;
 }
 
+/** The database env files beside `app.env` (047, 050), each with its deploy secret. */
+const DB_ENV_FILES = [RELEASE_DB_ENV, WORKER_DB_ENV];
+
 /**
  * The deploy secrets a rotation of `services` replaces, by their unprefixed names: the app's
- * settings, the release's with a PostgreSQL's own logins, and each running one's env file.
+ * settings, the release's with a PostgreSQL's own logins, the workers' beside its pooler, and each
+ * running one's env file.
  */
 function rotatedSecrets(services: readonly PlanService[]): string[] {
   const running = services.filter((s) => s.enabled);
   return [
     DEPLOY_SECRETS.appEnv,
-    // A PostgreSQL's own logins change the release's env file too (047).
+    // A PostgreSQL's own logins change the release's env file too (047), and its runtime login
+    // the workers' beside its pooler (050).
     ...(running.some(postgresLogins) ? [RELEASE_DB_ENV.secret] : []),
+    ...(running.some(postgresPooler) ? [WORKER_DB_ENV.secret] : []),
     ...running.map((s) => serviceEnvSecret(s.name)),
   ];
 }
@@ -420,7 +428,10 @@ interface Rotation {
   from: PendingRotation["step"];
   runs: readonly ServerRun[];
   hosts: ReadonlyMap<string, RotateHost>;
-  /** The new env files by file name: the app's settings and every running service's. */
+  /**
+   * The new env files by file name: the app's settings, the database env files beside them and
+   * every running service's.
+   */
   envFiles: Readonly<Record<string, string>>;
   /** `opscrew rotate <names> [flags]`. */
   again: string;
@@ -446,6 +457,7 @@ async function runScript(rotation: Rotation, run: ServerRun, action: RotateActio
   }
   const steps = run.steps.map((step) => step.step);
   const input = rotateInput(
+    rotation.plan,
     steps,
     { envFiles: rotation.envFiles, values: run.steps.map((step) => stepValues(step, pending)) },
     run.server,
@@ -580,10 +592,9 @@ async function envFilesWith(
   side: "old" | "new",
 ): Promise<Record<string, string>> {
   const { from, to } = await serviceSides(deps, plan, values, side);
-  const release = releaseDbEnvFile(plan, to);
   return {
     ...serviceEnvTexts(plan, to),
-    ...(release === undefined ? {} : { [RELEASE_DB_ENV.file]: release }),
+    ...dbEnvFiles(plan, to),
     ...(appEnv === undefined
       ? {}
       : { "app.env": withAppEnv(swapAppEnv(plan, appEnv, values, from, to), values.app, side) }),
@@ -600,9 +611,8 @@ function secretValues(
       const file =
         name === DEPLOY_SECRETS.appEnv
           ? "app.env"
-          : name === RELEASE_DB_ENV.secret
-            ? RELEASE_DB_ENV.file
-            : `${services.find((s) => serviceEnvSecret(s.name) === name)?.name}.env`;
+          : (DB_ENV_FILES.find((env) => env.secret === name)?.file ??
+            `${services.find((s) => serviceEnvSecret(s.name) === name)?.name}.env`);
       return [name, files[file] as string];
     }),
   );

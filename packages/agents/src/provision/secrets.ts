@@ -23,6 +23,7 @@ import {
   githubEnvironment,
   grantHashSecret,
   hasReleaseDbEnv,
+  hasWorkerDbEnv,
   OFFSITE_ENV_SECRET,
   PORTAINER_DEPLOY_SECRETS,
   RELEASE_DB_ENV,
@@ -32,6 +33,8 @@ import {
   serviceSpec,
   siteEnvSecret,
   TUNNEL_DEPLOY_SECRETS,
+  WORKER_DB_ENV,
+  workerVariables,
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -40,6 +43,7 @@ import {
   isHostingTarget,
   isServerlessProvider,
   postgresLogins,
+  postgresPooler,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -400,13 +404,49 @@ export function releaseDbEnvFile(
   plan: DeployPlan,
   services: Readonly<Record<string, Readonly<Record<string, string>>>>,
 ): string | undefined {
-  if (!hasReleaseDbEnv(plan)) return undefined;
-  const variables = releaseVariables(plan, (service, name) => {
+  return hasReleaseDbEnv(plan) ? dbEnvText(plan, services, releaseVariables) : undefined;
+}
+
+/**
+ * The workers' own env file, `worker.db.env`, beside a PostgreSQL's pooler (050): the database's
+ * variables (`workerVariables`) on PostgreSQL itself with the runtime login, from the services'
+ * secrets `services` as in {@link releaseDbEnvFile}. None without one.
+ */
+export function workerDbEnvFile(
+  plan: DeployPlan,
+  services: Readonly<Record<string, Readonly<Record<string, string>>>>,
+): string | undefined {
+  return hasWorkerDbEnv(plan) ? dbEnvText(plan, services, workerVariables) : undefined;
+}
+
+/**
+ * The database env files beside `app.env` on the app's server by file name:
+ * {@link releaseDbEnvFile}'s and {@link workerDbEnvFile}'s, each when the plan has it.
+ */
+export function dbEnvFiles(
+  plan: DeployPlan,
+  services: Readonly<Record<string, Readonly<Record<string, string>>>>,
+): Record<string, string> {
+  const release = releaseDbEnvFile(plan, services);
+  const workers = workerDbEnvFile(plan, services);
+  return {
+    ...(release === undefined ? {} : { [RELEASE_DB_ENV.file]: release }),
+    ...(workers === undefined ? {} : { [WORKER_DB_ENV.file]: workers }),
+  };
+}
+
+/** `variables`' text as an env file, each secret from `services` (by service, then name). */
+function dbEnvText(
+  plan: DeployPlan,
+  services: Readonly<Record<string, Readonly<Record<string, string>>>>,
+  variables: typeof releaseVariables,
+): string {
+  const values = variables(plan, (service, name) => {
     const value = services[service.name]?.[name];
     if (value === undefined) throw new Error(`${service.name} has no secret ${name}.`);
     return value;
   });
-  const lines = Object.entries(variables).map(([name, value]) => dotenvLine(name, value));
+  const lines = Object.entries(values).map(([name, value]) => dotenvLine(name, value));
   return `${lines.join("\n")}\n`;
 }
 
@@ -414,7 +454,8 @@ export function releaseDbEnvFile(
  * Every GitHub Actions secret provision may have set for the plan's environment, by its name there
  * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
  * service (enabled or not, an earlier run may have set it), the release's env file once a
- * PostgreSQL has its own logins (`OPSCREW_RELEASE_DB_ENV`), the off-server copy's env file
+ * PostgreSQL has its own logins (`OPSCREW_RELEASE_DB_ENV`), the workers' beside its pooler
+ * (`OPSCREW_WORKER_DB_ENV`), the off-server copy's env file
  * (`OFFSITE_ENV_SECRET`) while `snapshots.offsite` is on (turning it off deletes it as stale),
  * each extra server's
  * address and known hosts and, on a server the user owns, the tunnel's service token. In the user's
@@ -436,8 +477,10 @@ export function deploySecretNames(plan: DeployPlan): string[] {
         : [
             ...Object.values(DEPLOY_SECRETS),
             ...plan.services.map((service) => serviceEnvSecret(service.name)),
-            // The release's own env file, once a PostgreSQL has its own logins (047).
+            // The release's own env file, once a PostgreSQL has its own logins (047), and the
+            // workers' beside its pooler (050).
             ...(plan.services.some(postgresLogins) ? [RELEASE_DB_ENV.secret] : []),
+            ...(plan.services.some(postgresPooler) ? [WORKER_DB_ENV.secret] : []),
             ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
             ...(plan.servers ?? []).flatMap((server) =>
               Object.values(serverDeploySecrets(server.name)),
@@ -891,7 +934,8 @@ export interface ServerReach {
 /**
  * The GitHub Actions secrets the deploy workflow reads, with one per running service
  * ({@link serviceEnvSecrets}) and, with a PostgreSQL's own logins, the release's env file
- * ({@link releaseDbEnvFile}, `OPSCREW_RELEASE_DB_ENV`). In tunnel mode (a server the user owns without a public address)
+ * ({@link releaseDbEnvFile}, `OPSCREW_RELEASE_DB_ENV`), and beside its pooler the workers'
+ * ({@link workerDbEnvFile}, `OPSCREW_WORKER_DB_ENV`). In tunnel mode (a server the user owns without a public address)
  * `tunnel` adds the Cloudflare Access service token the workflow reaches SSH through; `host` is
  * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.
  * With origin TLS, `originTls` is the origin certificate's PEM, then its key's
@@ -910,9 +954,8 @@ export function deploySecrets(input: {
   servers?: readonly ServerReach[];
   offsite?: string;
 }): Record<string, string> {
-  const release = hasReleaseDbEnv(input.plan)
-    ? releaseDbEnvFile(input.plan, input.environment.values.services)
-    : undefined;
+  const release = releaseDbEnvFile(input.plan, input.environment.values.services);
+  const workers = workerDbEnvFile(input.plan, input.environment.values.services);
   return {
     [DEPLOY_SECRETS.host]: input.host,
     [DEPLOY_SECRETS.sshKey]: input.privateKey,
@@ -928,6 +971,7 @@ export function deploySecrets(input: {
     ),
     [DEPLOY_SECRETS.appEnv]: input.environment.appEnv,
     ...(release === undefined ? {} : { [RELEASE_DB_ENV.secret]: release }),
+    ...(workers === undefined ? {} : { [WORKER_DB_ENV.secret]: workers }),
     ...serviceEnvSecrets(input.plan, input.environment),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
     [DEPLOY_SECRETS.buildSecrets]: input.environment.buildSecrets,

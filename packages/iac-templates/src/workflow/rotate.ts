@@ -1,10 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { APP_SERVER, type DeployPlan, postgresPooler } from "@opscrew/plan-schema";
-import { POSTGRES_OWNER_SECRET, POSTGRES_RUNTIME_SECRET, poolerName } from "../catalog";
+import { APP_SERVER, type DeployPlan, poolerName, postgresPooler } from "@opscrew/plan-schema";
+import { POSTGRES_OWNER_SECRET, POSTGRES_RUNTIME_SECRET } from "../catalog";
 import type { RotationCommand, RotationMode, RotationStep } from "../catalog/types";
 import { shellQuote } from "../runtime/services";
 import { maskFileScript } from "./index";
-import { opscrew, RELEASE_DB_ENV, said } from "./shared";
+import { hasWorkerDbEnv, opscrew, RELEASE_DB_ENV, said, WORKER_DB_ENV } from "./shared";
 import { SNAPSHOT_GENERATIONS, SNAPSHOTS_DIR } from "./snapshots";
 import {
   appFolder,
@@ -104,18 +104,22 @@ export interface RotateStep {
 
 /**
  * The env files `rotate.sh` on `server` reads from its input, in order: on the app's server the
- * app's first, then the release's when a step there changes its login, then each step's once.
+ * app's first, then the release's when a step there changes its login, then beside a PostgreSQL's
+ * pooler the workers' ({@link WORKER_DB_ENV}, 050), which hold the runtime login's password as
+ * `app.env` does, wherever the database runs; then each step's once.
  */
 export function rotateEnvFiles(
+  plan: Pick<DeployPlan, "services">,
   steps: readonly RotateStep[],
   server: string = APP_SERVER,
 ): string[] {
-  const release =
-    server === APP_SERVER && steps.some((step) => step.secrets?.includes(POSTGRES_OWNER_SECRET));
+  const app = server === APP_SERVER;
+  const release = app && steps.some((step) => step.secrets?.includes(POSTGRES_OWNER_SECRET));
   return [
     ...new Set([
-      ...(server === APP_SERVER ? [APP_ENV] : []),
+      ...(app ? [APP_ENV] : []),
       ...(release ? [RELEASE_DB_ENV.file] : []),
+      ...(app && hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.file] : []),
       ...steps.map((s) => s.envFile),
     ]),
   ];
@@ -128,6 +132,7 @@ export function rotateEnvFiles(
  * uses none).
  */
 export function rotateInput(
+  plan: Pick<DeployPlan, "services">,
   steps: readonly RotateStep[],
   input: {
     envFiles: Readonly<Record<string, string>>;
@@ -138,7 +143,7 @@ export function rotateInput(
   if (input.values.length !== steps.length) {
     throw new Error("rotate.sh's input needs the old and the new value of each step.");
   }
-  const lines = rotateEnvFiles(steps, server).map((file) => {
+  const lines = rotateEnvFiles(plan, steps, server).map((file) => {
     const content = input.envFiles[file];
     if (content === undefined) throw new Error(`rotate.sh's input has no new ${file}.`);
     return Buffer.from(content, "utf8").toString("base64");
@@ -305,7 +310,7 @@ export function renderRotateScript(
 ): string[] {
   const app = server === APP_SERVER;
   const folder = appFolder(plan);
-  const files = rotateEnvFiles(steps, server);
+  const files = rotateEnvFiles(plan, steps, server);
   const number = new Map(files.map((file, i) => [file, i + 1]));
   const write = (file: string) => [
     `printf '%s' "$rot_env_${number.get(file)}" | base64 -d > ${file}.new`,

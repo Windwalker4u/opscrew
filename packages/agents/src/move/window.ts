@@ -13,7 +13,6 @@ import {
   edgeProxy,
   maskFileScript,
   POSTGRES_OWNER,
-  RELEASE_DB_ENV,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Move, postgresLogins } from "@opscrew/plan-schema";
 import { type CheckPauseTarget, changeCheckPause } from "../check/pause";
@@ -399,7 +398,7 @@ async function approveWindow(
               : [`${db} starts empty on ${serverWords(to.name)}: nothing is copied.`]),
             ...(env.after !== env.before
               ? [
-                  `The app's settings get ${db}'s address on ${serverWords(to.name)}: ${ops.folder}/app.env on the app's server, and the GitHub secret ${secret}${env.release === undefined ? "" : `; and the release command's settings (${ops.folder}/${RELEASE_DB_ENV.file} on the app's server, and the GitHub secret ${deploySecretName(plan, RELEASE_DB_ENV.secret)})`}.`,
+                  `The app's settings get ${db}'s address on ${serverWords(to.name)}: ${ops.folder}/app.env on the app's server, and the GitHub secret ${secret}${env.dbFiles.map((file) => `; and ${file.what} (${ops.folder}/${file.file} on the app's server, and the GitHub secret ${deploySecretName(plan, file.secret)})`).join("")}.`,
                 ]
               : []),
           ]),

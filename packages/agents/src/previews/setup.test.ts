@@ -127,6 +127,25 @@ describe("previewEnvironment with PostgreSQL's two logins (047)", () => {
       "OPSCREW_RUNTIME_PASSWORD=@SECRET:db-runtime-password:hex32@",
     );
     expect((await previewEnvironment(deps, plan)).templates.release).toBeUndefined();
+    expect(env.templates.workers).toBeUndefined();
+  });
+
+  it("gives the workers their own env template beside the pooler (050), on PostgreSQL itself", async () => {
+    const { deps, plan, root } = await previewProject();
+    const pooled = DeployPlanSchema.parse({
+      ...plan,
+      services: plan.services.map((s) =>
+        s.kind === "postgres" ? { ...s, options: { logins: "separate", pooler: "pgbouncer" } } : s,
+      ),
+    });
+    await writeFile(join(root, ".env.preview"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
+    const env = await previewEnvironment(deps, pooled);
+    expect(env.templates.workers).toBe(
+      "DATABASE_URL=postgresql://app_runtime:@SECRET:db-runtime-password:hex32@@db:5432/app\n",
+    );
+    expect(env.templates.app).toContain(
+      "DATABASE_URL=postgresql://app_runtime:@SECRET:db-runtime-password:hex32@@db-pooler:6432/app",
+    );
   });
 });
 

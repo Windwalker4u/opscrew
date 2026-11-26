@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { heldByRotation } from "../localhost/apply";
 import { appFolder } from "../localhost/services";
-import { releaseDbEnvFile } from "../provision/secrets";
+import { dbEnvFiles } from "../provision/secrets";
 import { dotenvLine, serviceAppVariables } from "../shared/app-env";
 import { generatedValuesFile } from "../shared/app-secrets";
 import {
@@ -161,6 +161,9 @@ class FakeDocker {
       for (const file of ["app.env", "db.env", "cache.env", "files.env"]) {
         files[file] = await readFile(join(this.folder, file), "utf8");
       }
+      // The workers' own beside a pooler (050).
+      const workers = await readFile(join(this.folder, "worker.db.env"), "utf8").catch(() => "");
+      if (workers !== "") files["worker.db.env"] = workers;
       this.composes.push({ services, files });
       if (services.some((s) => this.failCompose.has(s))) {
         return { exitCode: 1, stdout: "", stderr: "container opscrew-shop-app-1 is unhealthy" };
@@ -280,8 +283,8 @@ function dbPassword(service: string, secret: string): boolean {
 
 /**
  * The env files provision writes with `values` (by `<service>/<secret>`): each service's
- * `<service>.env`, `app.env` with the app's settings of the services, and with PostgreSQL's two
- * logins the release's `release.db.env`.
+ * `<service>.env`, `app.env` with the app's settings of the services, with PostgreSQL's two
+ * logins the release's `release.db.env`, and beside its pooler the workers' `worker.db.env`.
  */
 function envFilesOf(p: DeployPlan, values: Map<string, string>): Record<string, string> {
   const services: Record<string, Record<string, string>> = {};
@@ -290,11 +293,10 @@ function envFilesOf(p: DeployPlan, values: Map<string, string>): Record<string, 
     services[name] = { ...services[name], [secret]: value };
   }
   const app = serviceAppVariables(p, (s, name) => services[s.name]?.[name] as string);
-  const release = releaseDbEnvFile(p, services);
   return {
     ...serviceEnvTexts(p, services),
     "app.env": `${[...app].map(([name, value]) => dotenvLine(name, value)).join("\n")}\n`,
-    ...(release === undefined ? {} : { [RELEASE_DB_ENV.file]: release }),
+    ...dbEnvFiles(p, services),
   };
 }
 
@@ -631,6 +633,26 @@ describe("rotateLocalServices with PostgreSQL's pooler (050)", () => {
     expect(steps.slice(pooler + 1, pooler + 2)).toEqual(["compose app"]);
     const at = w.docker.composes.findLast((c) => c.services.join(" ") === POOLER.join(" "));
     expect(at?.files["db.env"]).toContain(w.old.get("db/runtime-password"));
+    expectNoValue(w, [...w.old.values(), ...next.values()]);
+  });
+
+  it("writes the runtime login's new password to the workers' env file before the app's switch, and an undo writes the old one back", async () => {
+    const w = await pooled();
+    /** The workers' env file: PostgreSQL itself with the runtime login's password in `values`. */
+    const direct = (values: Map<string, string>) =>
+      `DATABASE_URL=postgresql://app_runtime:${values.get("db/runtime-password")}@db:5432/app\n`;
+    expect(await envFile(w, "worker.db.env")).toBe(direct(w.old));
+    w.docker.failCompose.add("app");
+    await failure(w.rotate(["db"]));
+    const next = await pendingNew(w);
+    const app = w.docker.composes.find((c) => c.services.join(" ") === "app");
+    expect(app?.files["worker.db.env"]).toBe(direct(next));
+    if (process.platform !== "win32") {
+      expect((await stat(join(w.folder, "worker.db.env"))).mode & 0o777).toBe(0o600);
+    }
+    w.docker.failCompose.clear();
+    expect(await w.rotate(["db"], true)).toMatchObject({ undone: true });
+    expect(await envFile(w, "worker.db.env")).toBe(direct(w.old));
     expectNoValue(w, [...w.old.values(), ...next.values()]);
   });
 

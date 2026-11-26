@@ -6,6 +6,7 @@ import {
   deploySecretPrefix,
   githubEnvironmentFor,
   postgresLogins,
+  postgresPooler,
   targetArch,
 } from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
@@ -69,6 +70,21 @@ export const RELEASE_DB_ENV = { file: "release.db.env", secret: "OPSCREW_RELEASE
  */
 export function hasReleaseDbEnv(plan: Pick<DeployPlan, "services">): boolean {
   return plan.services.some((service) => service.enabled && postgresLogins(service));
+}
+
+/**
+ * The long-running workers' own env file beside a PostgreSQL's pooler (050): the database's
+ * variables on PostgreSQL itself with the runtime login (the catalog's `workerVariables`), next to
+ * `app.env` on the app's server, from its deploy secret. Only the workers read it, after `app.env`.
+ */
+export const WORKER_DB_ENV = { file: "worker.db.env", secret: "OPSCREW_WORKER_DB_ENV" } as const;
+
+/**
+ * True when an enabled PostgreSQL of the plan has `pooler: pgbouncer`: the workers then have their
+ * own env file, {@link WORKER_DB_ENV}.
+ */
+export function hasWorkerDbEnv(plan: Pick<DeployPlan, "services">): boolean {
+  return plan.services.some((service) => service.enabled && postgresPooler(service));
 }
 
 /** The CPU architecture the image is built for: the target's ({@link targetArch}). */

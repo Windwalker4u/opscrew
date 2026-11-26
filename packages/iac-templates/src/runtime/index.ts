@@ -26,7 +26,14 @@ import { imageEnvironment } from "../railpack-laravel";
 import { runtimeDir } from "../runtime-dir";
 import { CONNECTOR_MEMORY_MB, CONNECTOR_METRICS, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
-import { hasCronJobs, hasReleaseDbEnv, planFilePath, RELEASE_DB_ENV } from "../workflow/shared";
+import {
+  hasCronJobs,
+  hasReleaseDbEnv,
+  hasWorkerDbEnv,
+  planFilePath,
+  RELEASE_DB_ENV,
+  WORKER_DB_ENV,
+} from "../workflow/shared";
 import {
   appVolumes,
   crontab,
@@ -165,7 +172,8 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
   const image = "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}";
   const healthcheck = appHealthcheck(plan);
   const backing = renderServices(plan, { kind: "server" });
-  // `files`: the env files a container reads after app.env (the release's own, with logins).
+  // `files`: the env files a container reads after app.env (the release's own with logins, the
+  // workers' own beside a pooler).
   const environment = (files: readonly string[] = []) => ({
     env_file: ["app.env", ...files],
     environment: { PORT: String(plan.app.port), ...imageEnvironment(plan) },
@@ -208,7 +216,8 @@ export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): Rend
     renderProcesses(plan, {
       image,
       pull,
-      environment: () => environment(),
+      environment: (process) =>
+        environment(process === "worker" && hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.file] : []),
       dependsOn: backing.dependsOn,
       crontab: local ? { configs: [STACK_CRONTAB] } : { volumes: [SERVER_CRONTAB.mount] },
     }),

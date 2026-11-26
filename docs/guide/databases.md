@@ -229,18 +229,25 @@ pooler before it changes anything. For a new PHP app with PostgreSQL 15 or later
 `npx opscrew provision` prints a line on how to add it, and changes nothing because of it.
 
 The deploy then runs a service called `<db>-pooler` (`db-pooler` for `db`) next to the database,
-with a memory limit of 32 MB and no port open outside the app's network. The app's web, workers
-and cron reach the database through it: `DATABASE_URL` and the split settings name
-`db-pooler` and port `6432` instead of `db` and `5432`, with the `app_runtime` login. For a
-database on [a server of its own](split-placement.md), the pooler runs on that server, at its
+with a memory limit of 32 MB and no port open outside the app's network. Only the app's web
+process and cron reach the database through it: in `app.env`, `DATABASE_URL` and the split
+settings name `db-pooler` and port `6432` instead of `db` and `5432`, with the `app_runtime` login.
+For a database on [a server of its own](split-placement.md), the pooler runs on that server, at its
 private address. The pooler holds no data, so snapshots, restores and moves work as without it.
 A worker or service of your app can't be called `<db>-pooler`.
 
-### Migrations connect directly
+### Migrations and workers connect directly
 
 The release command, which runs your migrations as `app_owner`, never goes through the pooler: its
-`release.db.env` keeps PostgreSQL's own address, `db` and port `5432`. The pooler serves only the
-login your app runs as.
+`release.db.env` keeps PostgreSQL's own address, `db` and port `5432`, by every name `app.env` gives
+the database under, `DB_HOST` and `DB_PORT` too.
+
+Your workers (`queue:work`, Horizon and the like) don't go through it either. A worker keeps its
+connection open for as long as it runs, so through the pooler it would hold one of the pooler's
+connections all that time, and a few workers would leave web requests waiting. The workers read
+`worker.db.env` after `app.env`: PostgreSQL's own address with the `app_runtime` login. The deploy
+writes it next to `app.env`, readable only by its owner, and a credential rotation and a move
+rewrite it with `app.env`.
 
 ### How it hands out connections
 
@@ -252,13 +259,14 @@ pooler, which resets it (`DISCARD ALL`) and hands it to the next request, alread
   tables all behave as they do on a direct connection, for as long as that connection stays open.
 - **Up to 20 at a time:** at most 20 of your app's connections are open at once. A request beyond
   that waits until one is free, which for PHP's short requests is a matter of milliseconds.
+- **At most 100 waiting or open:** past 100 connections to the pooler at once, it refuses new ones.
 
 ### Apps in other languages
 
 Apps in Node.js, Python, Ruby, Go and most other languages keep their own pool of connections
-inside the app, so a pooler rarely helps them, and design doesn't write it for them. It can help
-when many processes of your app together come near PostgreSQL's limit of 100 connections; you can
-add `pooler: pgbouncer` yourself then.
+inside the app, open for as long as the app runs. Through the pooler, each of those would hold one
+of its connections all that time, so they gain nothing from it, and design doesn't write it for
+them.
 
 ## Settings for small servers
 

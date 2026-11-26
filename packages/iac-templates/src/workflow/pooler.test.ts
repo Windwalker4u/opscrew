@@ -1,11 +1,59 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax in expected lines, not JavaScript templates.
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "../__fixtures__/plans";
+import { testContext, testPlan } from "../__fixtures__/plans";
+import { GRAFANA_CLOUD, observabilityPlan } from "../addons/__fixtures__/plans";
 import { renderContext, serviceRotation } from "../catalog";
 import { withLogins, withPooler } from "../catalog/__fixtures__/plans";
-import { splitPlan } from "./__fixtures__/plans";
-import { type RotateStep, renderRotateScript } from "./rotate";
+import { inEnvironment, localhostPlan, serverPlan, splitPlan } from "./__fixtures__/plans";
+import { DEPLOY_SECRETS, deploySecretNamesFor, maskFileScript, renderWorkflow } from "./index";
+import { type RotateStep, renderRotateScript, rotateEnvFiles } from "./rotate";
+import { WORKER_DB_ENV } from "./shared";
 import { switchCommands } from "./switch";
+
+const ctx = { ...testContext(), localhost: { hostname: "shop.localhost" } };
+const workflow = (plan: DeployPlan) => renderWorkflow(plan, ctx).content;
+
+describe("the workers' env file, worker.db.env (050)", () => {
+  it("is a deploy secret beside the pooler only, after the release's", () => {
+    for (const base of [serverPlan(), localhostPlan()]) {
+      const before = deploySecretNamesFor(withLogins(base));
+      const after = deploySecretNamesFor(withPooler(base));
+      expect(before).not.toContain(WORKER_DB_ENV.secret);
+      const at = after.indexOf(DEPLOY_SECRETS.appEnv) + 2;
+      expect(after[at]).toBe("OPSCREW_WORKER_DB_ENV");
+      expect([...after.slice(0, at), ...after.slice(at + 1)]).toEqual(before);
+    }
+  });
+
+  it("is written owner-only next to app.env and release.db.env, from its deploy secret", () => {
+    const content = workflow(withPooler(serverPlan()));
+    const lines = content.split("\n");
+    const release = lines.findIndex((line) => line.includes("cat > /srv/apps/shop/release.db.env"));
+    expect(lines[release + 1]?.trim()).toBe(
+      `printf '%s\\n' "\${OPSCREW_WORKER_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/worker.db.env'`,
+    );
+    expect(content).toContain("    OPSCREW_WORKER_DB_ENV: ${{ secrets.OPSCREW_WORKER_DB_ENV }}\n");
+    const local = workflow(withPooler(inEnvironment(localhostPlan(), { runner: "local" })));
+    expect(local).toContain(
+      `printf '%s\\n' "\${OPSCREW_WORKER_DB_ENV:-}" | (umask 077 && cat > "$dir"/worker.db.env)`,
+    );
+  });
+
+  it("is nowhere in a workflow without the pooler", () => {
+    expect(workflow(withLogins(serverPlan()))).not.toMatch(/worker\.db\.env|WORKER_DB_ENV/);
+  });
+
+  it("joins app.env in Grafana Alloy's masking file, so its password is masked too", () => {
+    const plan = withPooler(observabilityPlan({ grafanaCloud: GRAFANA_CLOUD }));
+    expect(workflow(plan)).toContain(
+      `done <<< "$(printf '%s\\n' "\${OPSCREW_APP_ENV:-}" "\${OPSCREW_RELEASE_DB_ENV:-}" "\${OPSCREW_WORKER_DB_ENV:-}")"`,
+    );
+    expect(maskFileScript(plan)).toContain(
+      'OPSCREW_WORKER_DB_ENV="$(cat /srv/apps/shop/worker.db.env)"',
+    );
+  });
+});
 
 /** The deploy's start of the services that stay running (`--no-deps` starts no dependency). */
 function steady(plan: Parameters<typeof switchCommands>[0]): string | undefined {
@@ -90,12 +138,23 @@ describe("rotating the runtime login's password with PgBouncer beside PostgreSQL
     expect(at(RECREATE)).toBeLessThan(at("rot_what='starting to drop the old values'"));
   });
 
-  it("leaves it alone in the other rotations", () => {
+  it("rewrites the workers' env file on the app's server, which holds the runtime login's password", () => {
+    expect(rotateEnvFiles(plan, [runtime])).toEqual(["app.env", "worker.db.env", "db.env"]);
+    const { at } = lines(plan, [runtime]);
+    const written = at("mv -f worker.db.env.new worker.db.env");
+    expect(written).toBeGreaterThan(at("ALTER ROLE app_runtime"));
+    expect(written).toBeLessThan(at("rot_what='switching the app to the new values'"));
+    // With the database on an extra server too: the app's server's run has no step of its own.
+    const split = withPooler(splitPlan());
+    const onData = dbSteps(split)["runtime-password"] as RotateStep;
+    expect(rotateEnvFiles(split, [])).toEqual(["app.env", "worker.db.env"]);
+    expect(rotateEnvFiles(split, [onData], "data")).toEqual(["db.env"]);
+  });
+
+  it("leaves the pooler alone in the other rotations", () => {
     for (const name of ["password", "owner-password"]) {
-      const others = [steps[name] as RotateStep];
-      expect(renderRotateScript(plan, others)).toEqual(
-        renderRotateScript(withLogins(testPlan()), others),
-      );
+      const script = renderRotateScript(plan, [steps[name] as RotateStep]).join("\n");
+      expect(script, name).not.toContain("db-pooler");
     }
   });
 
@@ -103,5 +162,7 @@ describe("rotating the runtime login's password with PgBouncer beside PostgreSQL
     const without = withLogins(testPlan());
     const script = renderRotateScript(without, Object.values(dbSteps(without))).join("\n");
     expect(script).not.toContain("pooler");
+    expect(script).not.toContain("worker.db.env");
+    expect(rotateEnvFiles(without, [runtime])).toEqual(["app.env", "db.env"]);
   });
 });

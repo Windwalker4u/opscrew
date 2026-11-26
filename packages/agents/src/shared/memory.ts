@@ -1,10 +1,11 @@
-import { cronMemoryMb, POOLER_MEMORY_MB, poolerName } from "@opscrew/iac-templates";
+import { cronMemoryMb, POOLER_MEMORY_MB } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
   monitoringOf,
   monitoringServerName,
   type PlanService,
+  poolerName,
   postgresPooler,
 } from "@opscrew/plan-schema";
 

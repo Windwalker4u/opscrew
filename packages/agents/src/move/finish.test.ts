@@ -52,6 +52,28 @@ describe("opscrew provision --finish-move", () => {
     );
   });
 
+  it("050: deletes the old copy's pooler with its database, in the same fixed command", async () => {
+    const w = await moveWorld({ step: "switched", pooler: true });
+    w.servers.app.running.delete("db");
+    w.servers.app.running.add("db-pooler");
+    w.servers.app.env = w.env.after;
+    w.servers.app.release = w.release.after;
+    w.servers.app.workers = w.workers.after;
+    await runProvision(w.deps, { finishMove: true, services: w.services });
+
+    expect(w.servers.app.deleted).toEqual(["db", "db-pooler"]);
+    expect(w.servers.app.running.has("db-pooler")).toBe(false);
+    const deleted = w.servers.app.calls.find((call) => call.startsWith("ids="));
+    expect(deleted).toMatch(
+      /^ids=\$\(docker ps -aq --filter label=com\.docker\.compose\.project=shop --filter label=com\.docker\.compose\.service=db; docker ps -aq --filter label=com\.docker\.compose\.project=shop --filter label=com\.docker\.compose\.service=db-pooler\) && \{ \[ -z "\$ids" \] \|\| docker rm -f \$ids > \/dev\/null; \} && docker run --rm --network none --user 0:0 --entrypoint rm -v \/srv\/data\/shop:\/d caddy:\S+ -rf \/d\/db$/,
+    );
+    const [request] = w.handler.requests;
+    expect(request?.details).toContain(
+      "Its old copy on the app's server is deleted for good: its container and its pooler's (db-pooler), if one is left, and its data folder /srv/data/shop/db.",
+    );
+    expect(request?.details).toContain(deleted);
+  });
+
   it("is refused without the typed service name, deleting nothing", async () => {
     const w = await switched();
     w.answers.typed = "app";

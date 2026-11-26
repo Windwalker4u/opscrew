@@ -7,11 +7,12 @@
 import {
   APP_SERVER,
   type DeployPlan,
+  poolerName,
   postgresPooler,
   servicesOn,
   snapshotScheduleOf,
 } from "@opscrew/plan-schema";
-import { POOLER_MEMORY_MB, poolerName } from "../catalog/pooler";
+import { POOLER_MEMORY_MB } from "../catalog/pooler";
 import { IMAGES } from "../pins";
 import type { PreviewEnvTemplates } from "../previews";
 import { PREVIEW_SECRET_PLACEHOLDER, previewGenerate, previewSecretFill } from "../previews/script";

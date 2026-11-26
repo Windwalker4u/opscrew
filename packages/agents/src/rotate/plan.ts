@@ -8,7 +8,6 @@ import { isDeepStrictEqual } from "node:util";
 import { canonicalJson, listText, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
   POSTGRES_RUNTIME_SECRET,
-  poolerName,
   type RotateStep,
   renderRotateScript,
   type SecretRotation,
@@ -20,6 +19,7 @@ import {
   APP_SERVER,
   type DeployPlan,
   type PlanService,
+  poolerName,
   postgresPooler,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";

@@ -3,10 +3,10 @@ import {
   APP_SERVER,
   type DeployPlan,
   type ImageBuilder,
+  poolerName,
   postgresPooler,
   servicesOn,
 } from "@opscrew/plan-schema";
-import { poolerName } from "../catalog/pooler";
 import {
   APPS_DIR,
   additionsPath,

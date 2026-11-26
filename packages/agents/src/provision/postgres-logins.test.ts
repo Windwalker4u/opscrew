@@ -4,7 +4,12 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_SECRETS, RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
+import {
+  DEPLOY_SECRETS,
+  RELEASE_DB_ENV,
+  serviceEnvSecret,
+  WORKER_DB_ENV,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan, localProject } from "../localhost/__fixtures__/computer";
@@ -238,6 +243,68 @@ describe("the two logins' secrets (047)", () => {
   it("destroy deletes the release's env file with the other deploy secrets", () => {
     expect(deploySecretNames(planWith(SEPARATE))).toContain(RELEASE_DB_ENV.secret);
     expect(deploySecretNames(planWith(SINGLE))).not.toContain(RELEASE_DB_ENV.secret);
+  });
+});
+
+describe("the workers' env file beside the pooler (050)", () => {
+  it("gives the workers PostgreSQL itself with the runtime login, by every name the app reads it by", async () => {
+    const deps = await createTestPhaseDeps();
+    const base = testPlan({ userSecret: false });
+    const env = [
+      ...base.app.env,
+      ...["DB_HOST", "DB_PORT", "DB_USERNAME", "DB_PASSWORD"].map((name) => ({
+        name,
+        secret: name === "DB_PASSWORD",
+        source: "derived" as const,
+      })),
+    ];
+    const plan = planWith(POOLED, false, { ...base, app: { ...base.app, env } });
+    const environment = await buildAppEnvironment(deps, plan, {});
+    const runtime = environment.values.services.db?.["runtime-password"] as string;
+    const owner = environment.values.services.db?.["owner-password"] as string;
+    // The web process and cron reach the pooler.
+    const app = parseDotenv(environment.appEnv);
+    expect(app.get("DATABASE_URL")).toBe(`postgresql://app_runtime:${runtime}@db-pooler:6432/app`);
+    expect([app.get("DB_HOST"), app.get("DB_PORT")]).toEqual(["db-pooler", "6432"]);
+    const secrets = deploySecrets({
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment,
+    });
+    const workers = parseDotenv(secrets[WORKER_DB_ENV.secret] ?? "");
+    expect(Object.fromEntries(workers)).toEqual({
+      DATABASE_URL: `postgresql://app_runtime:${runtime}@db:5432/app`,
+      DB_HOST: "db",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_runtime",
+      DB_PASSWORD: runtime,
+    });
+    // The release migrates on PostgreSQL itself, as its owner, by the split names too.
+    const release = parseDotenv(secrets[RELEASE_DB_ENV.secret] ?? "");
+    expect(Object.fromEntries(release)).toEqual({
+      DATABASE_URL: `postgresql://app_owner:${owner}@db:5432/app`,
+      DB_HOST: "db",
+      DB_PORT: "5432",
+      DB_USERNAME: "app_owner",
+      DB_PASSWORD: owner,
+    });
+  });
+
+  it("is a deploy secret, which destroy deletes, beside the pooler only", async () => {
+    expect(deploySecretNames(planWith(POOLED))).toContain(WORKER_DB_ENV.secret);
+    expect(deploySecretNames(planWith(SEPARATE))).not.toContain(WORKER_DB_ENV.secret);
+    const deps = await createTestPhaseDeps();
+    const plan = planWith(SEPARATE, false, testPlan({ userSecret: false }));
+    const secrets = deploySecrets({
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment: await buildAppEnvironment(deps, plan, {}),
+    });
+    expect(Object.keys(secrets)).not.toContain(WORKER_DB_ENV.secret);
   });
 });
 

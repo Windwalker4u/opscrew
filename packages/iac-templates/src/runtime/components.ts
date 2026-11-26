@@ -8,16 +8,11 @@ import {
   APP_SERVER,
   type DeployPlan,
   type PlanService,
+  poolerName,
   postgresPooler,
 } from "@opscrew/plan-schema";
 import { checkServiceVersion, dataDirs, hostSysctl, renderContext, serviceSpec } from "../catalog";
-import {
-  POOLER_MEMORY_MB,
-  POOLER_PORT,
-  poolerHealthcheck,
-  poolerName,
-  poolerStart,
-} from "../catalog/pooler";
+import { POOLER_HEALTHCHECK, POOLER_MEMORY_MB, POOLER_PORT, poolerStart } from "../catalog/pooler";
 import { RUNTIME_PASSWORD_ENV } from "../catalog/postgres-logins";
 import type { ServiceHealthcheck, ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
@@ -29,7 +24,7 @@ import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { filesFolder, planFilePath, sqliteFolder } from "../workflow/shared";
 import { RUBY_WITHOUT_RUBYOPT } from "./healthcheck";
 import { servicesRunningOn } from "./move";
-import { dashboardAddress, privateAddress, publishedAddress } from "./network";
+import { dashboardAddress, publishedAddress } from "./network";
 import { composeLiteral, hardened, scriptLiteral, shellQuote } from "./services";
 
 /** `mem_limit` and an equal `memswap_limit`: Docker's default lets a container swap as much again. */
@@ -314,8 +309,7 @@ export function renderServices(
  * server reaches it; none on the app's server, where the app reaches it on the internal network.
  */
 function poolerAddress(plan: DeployPlan, service: PlanService): string | undefined {
-  const server = service.server ?? APP_SERVER;
-  return server === APP_SERVER ? undefined : privateAddress(plan, server);
+  return service.server === undefined ? undefined : publishedAddress(plan, service);
 }
 
 /**
@@ -345,7 +339,7 @@ function poolerService(
         }),
     depends_on: { [service.name]: { condition: "service_healthy" } },
     ...(address === undefined ? {} : { ports: [`${address}:${POOLER_PORT}:${POOLER_PORT}`] }),
-    healthcheck: healthcheck(poolerHealthcheck()),
+    healthcheck: healthcheck(POOLER_HEALTHCHECK),
     ...memoryLimit(POOLER_MEMORY_MB),
     ...hardened({ noCapabilities: true, internal: true }),
   };
@@ -640,8 +634,11 @@ export interface ProcessBase {
   image: string;
   /** The app service's `pull_policy`, when it has one (an image built on this computer). */
   pull?: { pull_policy?: string };
-  /** The app's `env_file` and `environment`, a new object each time (no YAML aliases). */
-  environment: () => object;
+  /**
+   * The `env_file` and `environment` of a worker or of cron: the app's, and a worker's own database
+   * variables beside a PostgreSQL's pooler (050); a new object each time (no YAML aliases).
+   */
+  environment: (process: "worker" | "cron") => object;
   dependsOn: Record<string, { condition: string }>;
   /** How the crontab reaches the cron service: a mounted file, or a config. */
   crontab: { volumes: string[] } | { configs: { source: string; target: string }[] };
@@ -669,7 +666,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       image: base.image,
       ...base.pull,
       restart: "unless-stopped",
-      ...base.environment(),
+      ...base.environment("worker"),
       ...workerStart(plan, worker),
       ...appVolumes(plan),
       stop_grace_period: `${worker.stopGraceSeconds}s`,
@@ -683,7 +680,7 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       image: base.image,
       ...base.pull,
       restart: "unless-stopped",
-      ...base.environment(),
+      ...base.environment("cron"),
       ...cronStart(plan),
       ...base.crontab,
       ...appVolumes(plan, "volumes" in base.crontab ? base.crontab.volumes : []),

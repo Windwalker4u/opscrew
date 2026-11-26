@@ -38,6 +38,8 @@ export class FakeServer implements RemoteExec {
   env: string | undefined;
   /** `release.db.env`, the release command's settings with two PostgreSQL logins (047). */
   release: string | undefined;
+  /** `worker.db.env`, the workers' settings beside PostgreSQL's pooler (050). */
+  workers: string | undefined;
   /** What each database service holds, by its name. */
   readonly data = new Map<string, string>();
   /** The move's dump file. */
@@ -70,6 +72,13 @@ export class FakeServer implements RemoteExec {
     }
     if (command.includes("cat > /srv/apps/shop/release.db.env.opscrew")) {
       this.release = options.input;
+      return ok();
+    }
+    if (command === "cat /srv/apps/shop/worker.db.env") {
+      return this.workers === undefined ? broken("No such file or directory") : ok(this.workers);
+    }
+    if (command.includes("cat > /srv/apps/shop/worker.db.env.opscrew")) {
+      this.workers = options.input;
       return ok();
     }
     if (command === "bash -s" && options.input?.includes("/srv/apps/shop/mask.re")) {
@@ -121,11 +130,15 @@ export class FakeServer implements RemoteExec {
     if (command.includes("wget")) {
       return this.running.has("app") ? ok() : broken("wget: can't connect to remote host");
     }
-    const removed = match(/com\.docker\.compose\.service=(\S+)\)/);
-    if (removed !== undefined && command.endsWith(`-rf /d/${removed}`)) {
-      this.running.delete(removed);
+    // The old copy's deletion: each container named in its lookups, then its data folder.
+    const removed = match(/ -rf \/d\/(\S+)$/);
+    if (removed !== undefined && command.includes(`com.docker.compose.service=${removed}`)) {
+      const containers = [...command.matchAll(/com\.docker\.compose\.service=([\w-]+)/g)];
+      for (const [, name = ""] of containers) {
+        this.running.delete(name);
+        this.deleted.push(name);
+      }
       this.data.delete(removed);
-      this.deleted.push(removed);
       return ok();
     }
     throw new Error(`Unexpected command on ${this.host}: ${command}`);
@@ -143,6 +156,8 @@ export interface MoveWorldOptions {
   grafana?: boolean;
   /** Postgres `db` has the app's two logins (`logins: separate`, 047). */
   logins?: boolean;
+  /** Postgres `db` has its two logins and PgBouncer beside it (`pooler: pgbouncer`, 050). */
+  pooler?: boolean;
 }
 
 /**
@@ -156,6 +171,7 @@ export interface MoveWorldOptions {
  */
 export async function moveWorld(o: MoveWorldOptions = {}) {
   const service = o.service ?? "db";
+  const logins = o.logins === true || o.pooler === true;
   const own = o.dataPort !== undefined;
   const split = splitPlan({ data: own ? "own" : "cloud" });
   const base = {
@@ -163,7 +179,13 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
     services: selfHostedServices({ postgres: true, redis: service === "cache" })
       .map((s) => (s.name === service ? { ...s, server: "data" } : s))
       .map((s) =>
-        o.logins === true && s.kind === "postgres" ? { ...s, options: { logins: "separate" as const } } : s,
+        s.kind !== "postgres"
+          ? s
+          : o.pooler === true
+            ? { ...s, options: { logins: "separate" as const, pooler: "pgbouncer" as const } }
+            : o.logins === true
+              ? { ...s, options: { logins: "separate" as const } }
+              : s,
       ),
   };
   const facts: Record<string, NetworkHostFacts> = own
@@ -244,7 +266,7 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
       dbPassword: passwords.db,
       services: {
         cache: { password: passwords.cache },
-        ...(o.logins === true
+        ...(logins
           ? { db: { "owner-password": passwords.owner, "runtime-password": passwords.runtime } }
           : {}),
       },
@@ -253,10 +275,13 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
 
   const dataAddress = plan.network?.members.find((m) => m.name === "data")?.address ?? "";
   const dbHost = (host: string) => (service === "db" ? host : "db");
-  const appLogin = o.logins === true ? `app_runtime:${passwords.runtime}` : `app:${passwords.db}`;
+  const appLogin = logins ? `app_runtime:${passwords.runtime}` : `app:${passwords.db}`;
+  // Beside the pooler, the app reaches it: `db-pooler` on the app's server, else the same address.
+  const appHost = (host: string) =>
+    o.pooler === true ? `${host === "db" ? "db-pooler" : host}:6432` : `${host}:5432`;
   const settings = (host: string) =>
     `${[
-      dotenvLine("DATABASE_URL", `postgresql://${appLogin}@${dbHost(host)}:5432/app`),
+      dotenvLine("DATABASE_URL", `postgresql://${appLogin}@${appHost(dbHost(host))}/app`),
       ...(service === "cache"
         ? [dotenvLine("REDIS_URL", `redis://:${passwords.cache}@${host}:6379`)]
         : []),
@@ -267,19 +292,25 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
   const releaseSettings = (host: string) =>
     `${dotenvLine("DATABASE_URL", `postgresql://app_owner:${passwords.owner}@${dbHost(host)}:5432/app`)}\n`;
   const release = { before: releaseSettings(service), after: releaseSettings(dataAddress) };
+  /** The workers' settings beside the pooler: PostgreSQL itself with the runtime login. */
+  const workerSettings = (host: string) =>
+    `${dotenvLine("DATABASE_URL", `postgresql://app_runtime:${passwords.runtime}@${dbHost(host)}:5432/app`)}\n`;
+  const workers = { before: workerSettings(service), after: workerSettings(dataAddress) };
 
   servers.app.running.add("app").add("db");
   if (service === "cache") servers.app.running.add("cache");
   servers.app.data.set("db", "rows of the shop");
   // The deploy writes app.env from the secret with a final newline of its own.
   servers.app.env = `${env.before}\n`;
-  if (o.logins === true) servers.app.release = release.before;
+  if (logins) servers.app.release = release.before;
+  if (o.pooler === true) servers.app.workers = workers.before;
   if (step !== "started") servers.data.running.add(service);
   servers.data.data.set(service, "");
 
   const github = new FakeGitHub();
   github.secrets.set("OPSCREW_APP_ENV", env.before);
-  if (o.logins === true) github.secrets.set("OPSCREW_RELEASE_DB_ENV", release.before);
+  if (logins) github.secrets.set("OPSCREW_RELEASE_DB_ENV", release.before);
+  if (o.pooler === true) github.secrets.set("OPSCREW_WORKER_DB_ENV", workers.before);
   let clock = 0;
   const services: ProvisionServices = {
     github,
@@ -306,6 +337,7 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
     services,
     env,
     release,
+    workers,
     passwords,
     dataAddress,
   };

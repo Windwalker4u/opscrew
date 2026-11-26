@@ -12,7 +12,7 @@ import { wrongTarget } from "../providers";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { artefactsFolder, runtimeDir } from "../runtime-dir";
 import type { RenderedFile } from "../types";
-import { planFilePath, RELEASE_DB_ENV } from "../workflow/shared";
+import { planFilePath, RELEASE_DB_ENV, WORKER_DB_ENV } from "../workflow/shared";
 import { rollbackCommands, switchCommands } from "../workflow/switch";
 import {
   PREVIEW_SECRET_NAME,
@@ -72,6 +72,11 @@ export interface PreviewEnvTemplates {
    * the release command reads it after `app.env`, as on the app's server.
    */
   release?: string;
+  /**
+   * The workers' own env file, `worker.db.env`, beside a PostgreSQL's pooler (050): the workers
+   * read it after `app.env`, as on the app's server.
+   */
+  workers?: string;
   /** Each service's env file, `<service>.env`, by the service's name: one per enabled service. */
   services: Readonly<Record<string, string>>;
 }
@@ -146,6 +151,7 @@ function checkEnv(env: PreviewEnvTemplates): void {
   for (const [file, text] of [
     ["app.env", env.app],
     ...(env.release === undefined ? [] : [[RELEASE_DB_ENV.file, env.release] as const]),
+    ...(env.workers === undefined ? [] : [[WORKER_DB_ENV.file, env.workers] as const]),
     ...Object.entries(env.services).map(([name, t]) => [`${name}.env`, t] as const),
   ] as const) {
     const placeholders = [...text.matchAll(SECRET_PLACEHOLDERS)];
@@ -229,8 +235,8 @@ function settingsFile(plan: DeployPlan, previews: Previews, o: PreviewRecipeOpti
  *   plan has a seed command, the services' files, the crontab, the edge's Compose file and the
  *   site, served with the Origin CA certificate in `/srv/edge/tls/<app>/` and sending
  *   `X-Robots-Tag: noindex`), `start.sh` and `rollback.sh` (the deploy's start and rollback
- *   scripts) and `env/app.env`, `env/release.db.env` (with a PostgreSQL's own logins) and
- *   `env/<service>.env` from `o.env`, with `@N@` in the number's
+ *   scripts) and `env/app.env`, `env/release.db.env` (with a PostgreSQL's own logins),
+ *   `env/worker.db.env` (beside its pooler) and `env/<service>.env` from `o.env`, with `@N@` in the number's
  *   place and the address `pr-@N@-@R@.<base>`, `@R@` the preview's random part; on another
  *   environment's server (`o.host`) the edge's Compose file is that environment's;
  * - `bin/opscrew-preview` (0755), the command that enforces it.
@@ -281,6 +287,9 @@ export function renderPreviewRecipe(plan: DeployPlan, o: PreviewRecipeOptions): 
     ...(o.env.release === undefined
       ? []
       : [{ path: `env/${RELEASE_DB_ENV.file}`, content: o.env.release }]),
+    ...(o.env.workers === undefined
+      ? []
+      : [{ path: `env/${WORKER_DB_ENV.file}`, content: o.env.workers }]),
     ...Object.entries(o.env.services).map(([name, content]) => ({
       path: `env/${name}.env`,
       content,

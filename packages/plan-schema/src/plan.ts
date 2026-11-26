@@ -6,6 +6,7 @@ import {
   ComponentNameSchema,
   PlanServiceSchema,
   ProcessesSchema,
+  poolerName,
   postgresPooler,
   REDIS_PROTOCOL_KINDS,
   ServerNameSchema,
@@ -2734,7 +2735,7 @@ function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const poolers = new Map(
     plan.services
       .filter((service) => service.enabled && postgresPooler(service))
-      .map((service) => [`${service.name}-pooler`, service.name]),
+      .map((service) => [poolerName(service), service.name]),
   );
   const unique = (name: string, path: (string | number)[]) => {
     const database = poolers.get(name);
