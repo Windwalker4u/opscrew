@@ -206,16 +206,29 @@ Following ADR 0029 (`CloudProviderDefinition` in `packages/contracts/src/provide
 
 ---
 
-## R7 — Open decisions for the core's lead (`#29`)
+## R7 — Decisions approved by the core's lead (`#29`, 2026-11-26)
 
-Before modifying shared files (`packages/contracts`, `packages/plan-schema`), the following contract and schema questions are posted on Issue `#29`:
+All four technical contract and schema decisions were approved by the core's lead (`softzer0`) on `#29` on 2026-11-26:
 
-1. **Plan schema representation of DNS host vs edge proxy:**
-   - Keep `dns.provider: "cloudflare" | "bunny" | "gcore" | "none"` for DNS hosting, and add optional `dns.edge?: "cloudflare" | "bunny" | "gcore" | "fastly"` (defaulting to `dns.provider` when `dns.proxied: true` and `dns.provider !== "none"`, omitted when `dns.proxied: false` or unchanged for existing Cloudflare plans so existing `plan.yaml` files stay byte-identical).
-   - For `security.httpAllowedFrom`: accept `"any" | "cloudflare" | "edge"`, keeping `"cloudflare"` as the default when proxied by Cloudflare (byte-identical for existing plans) and defaulting to `"edge"` when proxied by Bunny, Gcore, or Fastly.
-2. **Origin protection for Bunny.net and Gcore (`shared-header`):**
-   - Because Bunny and Gcore do not support custom client-cert mTLS to origin and publish large/dynamic edge IP lists that can exceed cloud firewall CIDR limits, use a generated per-app 32-byte hex origin-verification token (`X-OpsCrew-Origin-Token`, stored in `generated_values.json`, passed via `TF_VAR_` to Terraform and rendered into Caddy/nginx/OpenLiteSpeed to reject direct requests with 403/abort) over verified HTTPS (`verify_ssl` / `origin_protocol: "HTTPS"`). Fastly uses compact CIDRs (`fastly_ip_ranges`) + true origin mTLS (`ssl_client_cert` / `ssl_client_key`), reusing OpsCrew's `pull.pem`.
-3. **Package layout:**
-   - Mirror `packages/providers/*` with `packages/edge-providers/<id>` (`@opscrew/edge-cloudflare`, `@opscrew/edge-bunny`, `@opscrew/edge-gcore`, `@opscrew/edge-fastly`) + `packages/edge-providers/registry` (`@opscrew/edge-providers`), keeping `@opscrew/connector-cloudflare` for Cloudflare's API client and Cloudflare-only features (wrapped by `@opscrew/edge-cloudflare`).
-4. **PR 1 scope:**
-   - PR 1 adds ADR 0038 + `EdgeProviderDefinition` in `@opscrew/contracts` + `@opscrew/edge-providers` registry + `@opscrew/edge-cloudflare` with zero user-visible or output changes (byte-identical rendered files and schemas for existing Cloudflare users). Subsequent PRs add Bunny.net, Gcore, and Fastly one by one.
+1. **Plan schema — DNS host and edge proxy:**
+   - `dns.provider`: DNS host (`"cloudflare" | "bunny" | "gcore" | "none"` — only `"cloudflare" | "none"` in PR 1).
+   - `dns.edge?: "bunny" | "gcore" | "fastly"` (introduced with the first non-Cloudflare edge provider; no `"cloudflare"` value — one way to say each thing). Absent with `proxied: true` means the DNS host's own proxy (Cloudflare today, keeping every existing plan unchanged). `dns.edge` without `proxied: true` is refused; `dns.edge: "fastly"` with `dns.provider: "none"` is refused (someone must host DNS pointing at Fastly).
+   - `security.httpAllowedFrom: "any" | "edge"`: renamed from `"cloudflare"` to `"edge"` with no alias (pre-1.0). A plan with `"cloudflare"` is refused with a one-line fix (`set security.httpAllowedFrom to "edge"`). Rendered infrastructure/proxy output stays byte-for-byte identical for Cloudflare users.
+2. **Origin protection & where secrets live (never in Terraform state or the repo):**
+   - Contract fields: `originAuth: "cloudflare-aop" | "mtls-client-cert" | "shared-header"`, `originIpFiltering: "compact-cidrs" | "dynamic-ips"`, and `realIpHeader`.
+   - **Cloudflare:** `originAuth: "cloudflare-aop"`, `originIpFiltering: "compact-cidrs"`, `realIpHeader: "CF-Connecting-IP"`. Origin CA private key and client certificate private key stay in `generated_values.json` (0600); Cloudflare's side is applied via `@opscrew/connector-cloudflare`'s shared plan (`cloudflare-apply`), never stored in Terraform state.
+   - **Bunny.net:** `originAuth: "shared-header"`, `originIpFiltering: "dynamic-ips"`, `realIpHeader: "X-Real-IP"`. Because Terraform's `bunnynet_pullzone_edgerule` resource stores `SetRequestHeader` parameters in Terraform state, OpsCrew **must not** manage the origin-verification header rule in Terraform: the per-app 32-byte hex secret stays in `generated_values.json` (0600) and is applied to the Pull Zone via a typed connector call after `tofu`/`terraform apply` (approved by plan hash, never written into state or the repo).
+   - **Gcore:** `originAuth: "shared-header"`, `originIpFiltering: "dynamic-ips"`, `realIpHeader: "X-Forwarded-For"`. Because Terraform's `gcore_cdn_resource.options.static_request_headers` stores header values in Terraform state, OpsCrew **must not** put the origin-verification header in Terraform: the secret stays in `generated_values.json` (0600) and is set via a typed Gcore connector call after apply (approved by plan hash).
+   - **Fastly:** `originAuth: "mtls-client-cert"`, `originIpFiltering: "compact-cidrs"`, `realIpHeader: "Fastly-Client-IP"`. Fastly's `fastly_service_vcl.backend` `ssl_client_key` would be stored in Terraform state if passed to Terraform; therefore OpsCrew keeps the client certificate private key in `generated_values.json` (0600) and configures/attaches the backend client certificate via a typed Fastly connector call (or Terraform-free origin TLS step approved by hash), reusing `pull.pem` on the server proxy.
+   - **Rotation (`opscrew rotate`):** Every `shared-header` secret is rotatable without downtime: the edge rule receives the new value first while the server's proxy accepts both old and new headers, then the server's proxy narrows to the new value only.
+   - **Server proxy ordering:** For `shared-header`, the server's proxy (Caddy, nginx, OpenLiteSpeed) rejects any request missing the exact header **before** forwarding to `kamal-proxy` and **before** trusting `realIpHeader`. With `dynamic-ips`, the server's cloud firewall leaves ports 80 and 443 open, so the shared header is the gate (documented plainly beside Cloudflare's and Fastly's mTLS + CIDR firewall).
+3. **Probe blocking on free/cheapest tiers:**
+   - Each provider's probe-blocking rule (`/.env`, `/.git`, `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`, `/phpmyadmin`) gets a unit test of what it renders; the live pass verifies a probe path answers `403` at the edge without reaching the server.
+4. **Package layout & PR order:**
+   - `packages/contracts/src/edge-provider.ts` (`EdgeProviderDefinition`, `EDGE_PROVIDER_CONTRACT_VERSION = 1`).
+   - `packages/edge-providers/<id>` as `@opscrew/edge-provider-<id>` (mirroring `@opscrew/provider-<id>`).
+   - `packages/edge-providers/registry` as `@opscrew/edge-providers` (the one place code reads edge facts from; no other code branches on an edge's id).
+   - `@opscrew/edge-provider-cloudflare` wraps `@opscrew/connector-cloudflare`; Cloudflare-only features stay Cloudflare's.
+   - Leave `AGENTS.md` untouched (core lead updates its package list at merge).
+   - PR order: PR 1 = contract + Cloudflare behind it (byte-identical rendered output), then PR 2 = Bunny.net, PR 3 = Gcore, PR 4 = Fastly.
+
