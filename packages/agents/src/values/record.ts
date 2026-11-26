@@ -19,6 +19,11 @@ const RecordedValuesSchema = z.strictObject({
   build: z.record(z.string(), z.string()),
 });
 
+/** What the record reads of the plan: its bucket, and the sources of the app's variables. */
+type RecordPlan = Pick<DeployPlan, "storage"> & {
+  app: { env: readonly Pick<DeployPlan["app"]["env"][number], "name" | "source">[] };
+};
+
 /** The app's values OpsCrew recorded for an environment. */
 export type RecordedValues = z.infer<typeof RecordedValuesSchema>;
 
@@ -33,17 +38,22 @@ export function readAppValues(deps: Pick<PhaseDeps, "paths">): Promise<RecordedV
 }
 
 /**
- * True for a variable of `plan` that holds the key of its bucket at a provider (the app's
- * `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`), which the record never holds.
+ * True for a variable of `plan` that holds the key of its bucket at a provider: `AWS_ACCESS_KEY_ID`
+ * or `AWS_SECRET_ACCESS_KEY` as OpsCrew plans it (`derived`), which the record never holds. One the
+ * plan names as the user's own is the user's value.
  */
-export function bucketKeyVariable(plan: Pick<DeployPlan, "storage">, name: string): boolean {
-  return providerBucket(plan) !== undefined && storageVariableKind(name) === "key";
+export function bucketKeyVariable(plan: RecordPlan, name: string): boolean {
+  return (
+    providerBucket(plan) !== undefined &&
+    storageVariableKind(name) === "key" &&
+    plan.app.env.some((variable) => variable.name === name && variable.source === "derived")
+  );
 }
 
 /** Writes the record (0600), without the bucket's key. */
 export async function writeAppValues(
   deps: Pick<PhaseDeps, "paths">,
-  plan: Pick<DeployPlan, "storage">,
+  plan: RecordPlan,
   values: RecordedValues,
 ): Promise<void> {
   const kept = (part: Record<string, string>) =>
@@ -78,7 +88,7 @@ function buildValues(text: string | undefined): Record<string, string> {
  */
 export async function recordStoredValues(
   deps: Pick<PhaseDeps, "paths">,
-  plan: Pick<DeployPlan, "storage">,
+  plan: RecordPlan,
   stored: { appEnv: string; buildEnv?: string; buildSecrets?: string },
 ): Promise<void> {
   await writeAppValues(deps, plan, {
@@ -94,7 +104,7 @@ export async function recordStoredValues(
  */
 export async function recordAppEnvText(
   deps: Pick<PhaseDeps, "paths">,
-  plan: Pick<DeployPlan, "storage">,
+  plan: RecordPlan,
   text: string,
 ): Promise<void> {
   const record = await readAppValues(deps);

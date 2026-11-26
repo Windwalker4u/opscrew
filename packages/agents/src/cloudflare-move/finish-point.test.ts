@@ -67,7 +67,7 @@ describe.skipIf(!findExecutable("git"))("pointAtB on a server", () => {
   it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
     const w = await serverPointWorld();
     const deps = environmentDeps(w.session, w.environment);
-    await writeAppValues(deps, {}, { app: { STALE: "x" }, build: {} });
+    await writeAppValues(deps, { app: { env: [] } }, { app: { STALE: "x" }, build: {} });
     const point = await pointAtB(w.session, w.environment);
     await point.approve();
     await point.secrets();

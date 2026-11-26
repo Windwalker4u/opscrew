@@ -18,7 +18,11 @@ const PEM = fakeSecret("private-key-pem", "record-pem");
 describe("the record of the app's values (048)", () => {
   it("is written owner-only in the project's home and read back", async () => {
     const deps = await createTestPhaseDeps();
-    await writeAppValues(deps, {}, { app: { STRIPE_SECRET_KEY: KEY }, build: { VITE_A: "a" } });
+    await writeAppValues(
+      deps,
+      { app: { env: [] } },
+      { app: { STRIPE_SECRET_KEY: KEY }, build: { VITE_A: "a" } },
+    );
     expect(await readAppValues(deps)).toEqual({
       app: { STRIPE_SECRET_KEY: KEY },
       build: { VITE_A: "a" },
@@ -31,15 +35,19 @@ describe("the record of the app's values (048)", () => {
   it("reads as none when missing or damaged", async () => {
     const deps = await createTestPhaseDeps();
     expect(await readAppValues(deps)).toBeUndefined();
-    await writeAppValues(deps, {}, { app: {}, build: {} });
+    await writeAppValues(deps, { app: { env: [] } }, { app: {}, build: {} });
     await writeFile(appValuesFile(deps), "{not json");
     expect(await readAppValues(deps)).toBeUndefined();
   });
 
   it("takes the app's values from an env text another flow stored, keeping the build values", async () => {
     const deps = await createTestPhaseDeps();
-    await writeAppValues(deps, {}, { app: { OLD: "x" }, build: { VITE_A: "a" } });
-    await recordAppEnvText(deps, {}, appEnvText({ STRIPE_SECRET_KEY: KEY, TLS_KEY: PEM }));
+    await writeAppValues(deps, { app: { env: [] } }, { app: { OLD: "x" }, build: { VITE_A: "a" } });
+    await recordAppEnvText(
+      deps,
+      { app: { env: [] } },
+      appEnvText({ STRIPE_SECRET_KEY: KEY, TLS_KEY: PEM }),
+    );
     expect(await readAppValues(deps)).toEqual({
       app: { STRIPE_SECRET_KEY: KEY, TLS_KEY: PEM },
       build: { VITE_A: "a" },
@@ -48,7 +56,7 @@ describe("the record of the app's values (048)", () => {
 
   it("writes no record from an env text when there is none", async () => {
     const deps = await createTestPhaseDeps();
-    await recordAppEnvText(deps, {}, appEnvText({ STRIPE_SECRET_KEY: KEY }));
+    await recordAppEnvText(deps, { app: { env: [] } }, appEnvText({ STRIPE_SECRET_KEY: KEY }));
     await expect(readFile(appValuesFile(deps), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 

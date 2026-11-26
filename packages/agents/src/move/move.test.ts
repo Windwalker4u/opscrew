@@ -65,7 +65,7 @@ describe("runMove", () => {
   it("keeps OpsCrew's record of the app's values with the settings it stores (048)", async () => {
     const w = await moveWorld({ step: "started" });
     w.servers.data.running.add("db");
-    await writeAppValues(w.deps, {}, { app: { STALE: "x" }, build: {} });
+    await writeAppValues(w.deps, { app: { env: [] } }, { app: { STALE: "x" }, build: {} });
     await runMove(w.deps, { plan: w.plan, services: w.services });
     const record = await readAppValues(w.deps);
     expect(appEnvText(record?.app ?? {})).toBe(w.github.secrets.get("OPSCREW_APP_ENV"));

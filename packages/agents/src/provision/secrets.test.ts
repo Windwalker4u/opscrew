@@ -1284,7 +1284,11 @@ describe("the record of the app's values (048)", () => {
   it("offers a terminal the recorded value to keep only when the local file has none", async () => {
     const deps = await createTestPhaseDeps();
     deps.interactive = true;
-    await writeAppValues(deps, {}, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
+    await writeAppValues(
+      deps,
+      { app: { env: [] } },
+      { app: { STRIPE_SECRET_KEY: KEY }, build: {} },
+    );
     const offered: (true | undefined)[] = [];
     const environment = await buildAppEnvironment(deps, testPlan(), {
       askEnv: async (question) => {
@@ -1322,7 +1326,11 @@ describe("the record of the app's values (048)", () => {
 
   it("registers the recorded values with the redactor when nothing is assembled", async () => {
     const deps = await createTestPhaseDeps();
-    await writeAppValues(deps, {}, { app: { STRIPE_SECRET_KEY: KEY }, build: {} });
+    await writeAppValues(
+      deps,
+      { app: { env: [] } },
+      { app: { STRIPE_SECRET_KEY: KEY }, build: {} },
+    );
     await registerAppSecrets(deps, testPlan());
     expect(deps.redactor.redact(`key ${KEY}`)).not.toContain(KEY);
   });

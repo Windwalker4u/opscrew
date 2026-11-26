@@ -59,7 +59,7 @@ function namesOf(input: Input) {
 async function world(
   plan: DeployPlan = testPlan({ deployed: true }),
   options: {
-    record?: typeof RECORDED | null;
+    record?: { app: Record<string, string>; build: Record<string, string> } | null;
     approve?: boolean;
     environment?: string;
     /** The plan on disk, when `plan` isn't one the schema takes. */
@@ -365,6 +365,29 @@ describe("the bucket's key (FR-1318)", () => {
   const ACCESS = fakeSecret("aws-access-key-id", "values-bucket");
   const SECRET = fakeSecret("aws-secret-access-key", "values-bucket");
   const plan = withBucket(testPlan({ deployed: true }), "hetzner");
+
+  it("leaves a value of the user's own under a bucket key's name as it is", async () => {
+    const own = fakeSecret("aws-secret-access-key", "values-own");
+    const mine = DeployPlanSchema.parse({
+      ...plan,
+      app: {
+        ...plan.app,
+        env: plan.app.env.map((v) =>
+          v.name === "AWS_SECRET_ACCESS_KEY" ? { ...v, source: "user" } : v,
+        ),
+      },
+    });
+    const w = await world(mine, {
+      record: { ...RECORDED, app: { ...RECORDED.app, AWS_SECRET_ACCESS_KEY: own } },
+      env: { [STORAGE_KEY_VARS.accessKeyId]: ACCESS, [STORAGE_KEY_VARS.secretAccessKey]: SECRET },
+    });
+    expect((await readAppValues(w.deps))?.app.AWS_SECRET_ACCESS_KEY).toBe(own);
+    await w.change({ set: { STRIPE_SECRET_KEY: NEW_KEY } });
+    const appEnv = w.github.secrets.get("OPSCREW_APP_ENV");
+    expect(valueIn(appEnv, "AWS_SECRET_ACCESS_KEY")).toBe(own);
+    expect(valueIn(appEnv, "AWS_ACCESS_KEY_ID")).toBe(ACCESS);
+    expect((await readAppValues(w.deps))?.app.AWS_SECRET_ACCESS_KEY).toBe(own);
+  });
 
   it("is refused before anything is read when provision's source of it is missing", async () => {
     const w = await world(plan);

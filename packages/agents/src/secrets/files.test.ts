@@ -60,7 +60,7 @@ describe("the recovery copy's files", () => {
     const build = fakeSecret("generic-password", "copy-build");
     await writeAppValues(
       deps,
-      {},
+      { app: { env: [] } },
       {
         app: { STRIPE_SECRET_KEY: key, APP_URL: "https://shop.example.com" },
         build: { NEXT_PUBLIC_KEY: build },
