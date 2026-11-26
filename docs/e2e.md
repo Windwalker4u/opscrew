@@ -3561,7 +3561,8 @@ monitoring, rollback, data snapshots, `advise` and `rotate` on Contabo; a create
 OVHcloud Public Cloud (SC-3501, SC-3505, SC-3507): `examples/flask-sqlite` on one `d2-4` (2 vCPU,
 4 GB, 50 GB disk; design sizes 40 GB, more than a `d2-2` has) in DE1 (Limburg) or GRA11 (Gravelines), in a Public Cloud project of yours.
 
-**It costs money, so ask the founder before every run.** OVHcloud bills the server by the hour,
+**It costs money.** It runs on the contributor's own OVHcloud account, just before the release
+that ships OVHcloud, and the founder is asked then (opscrew-hub/opscrew#14). OVHcloud bills the server by the hour,
 per second with a one-minute minimum, until it is deleted: a `d2-4` costs about €0.0206 an hour
 before VAT. The whole-server snapshot of step 5 costs €0.011 per GB a month while it exists (at
 most 50 GB, so under €0.0008 an hour), and the test deletes it right after the destroy. A pass
@@ -3626,7 +3627,8 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
    output must name each snapshot of the server the run recorded (`OVHcloud snapshot <id>`), as
    the snapshots that stay and keep billing. The project must have no server of the app, and
    Cloudflare nothing of the app. Then the test deletes each of those snapshots through OVHcloud's
-   API.
+   API, and lists the project's snapshots, SSH keys and security groups: none may carry the app's
+   names (`opscrew-<app>-…`, `<app>-deploy`, `opscrew-<app>`).
 9. **Nothing leaked** (SC-3505), always run: none of `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` and
    `OVH_CLOUD_PROJECT_SERVICE`, and no other known secret, in any CLI output, the deploy job's
    log, any audit entry, saved plan, state file, report or Cloudflare record, any commit (every
@@ -3638,8 +3640,9 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
 The cleanup is the one for environments, after every step and always: `opscrew destroy` if a
 step failed after provision started, then the GitHub environments, deploy secrets and deploy
 pauses, the app's records in Cloudflare, and the repository reset. Then, at OVHcloud, each
-snapshot the run recorded and has not deleted yet is deleted, each one named in the log, and a
-server of the app still in the project fails the run with its name and id.
+snapshot the run recorded and has not deleted yet is deleted, each one named in the log. Then a
+server, snapshot, SSH key or security group of the app still in the project fails the run, each
+named.
 
 After a finished pass nothing of the run stays at OVHcloud: the destroy deletes the server, its
 security group `opscrew-<app>` and its SSH key `<app>-deploy`, and names the server's snapshots
@@ -3653,7 +3656,7 @@ throwaway repository and in Cloudflare, delete what the environments test lists.
 
 | Variable | What it is |
 |---|---|
-| `OPSCREW_E2E_OVHCLOUD` | `1` runs this test. Ask the founder first: it costs up to €0.07. |
+| `OPSCREW_E2E_OVHCLOUD` | `1` runs this test, just before the release that ships OVHcloud, after the founder agrees: it costs up to €0.07. |
 | `OVH_ENDPOINT` | `ovh-eu`. |
 | `OVH_CLIENT_ID`, `OVH_CLIENT_SECRET` | The service account's client id and secret ([above](#before-the-first-run-once-in-the-control-panel)). |
 | `OVH_CLOUD_PROJECT_SERVICE` | The Public Cloud project's id. |

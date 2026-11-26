@@ -350,4 +350,8 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 - [x] T3514 (lead) A fresh review of the whole branch, `pnpm check`, research R1 updated with the
   implementers' findings, then the pull request (OVHcloud's)
-- [ ] T3515 (lead) The live pass, only with the founder's go-ahead (it costs money; [issue #3](https://github.com/opscrew-hub/opscrew/issues/3))
+- [ ] T3515 The live pass, on the contributor's own OVHcloud account, just before the release that
+  ships OVHcloud, when the founder is asked ([#3](https://github.com/opscrew-hub/opscrew/issues/3),
+  [#14](https://github.com/opscrew-hub/opscrew/issues/14)). It costs money. After the destroy, the
+  test proves nothing of the app is left (servers, snapshots, SSH keys, security groups), and its
+  findings tighten `offering.unavailable` to OVHcloud's real wording.

@@ -20,10 +20,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import type { ServerSnapshotApi } from "@opscrew/contracts";
+import { Redactor } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { OvhcloudClient, readOvhcloudCredentials } from "@opscrew/provider-ovhcloud";
 import { cloudProvider } from "@opscrew/providers";
 import { describe, expect } from "vitest";
+import { z } from "zod";
 import { minutes } from "./cloud";
 import { readValue, writeValue } from "./component-checks";
 import { serverSnapshotId, takeoverLines, unsaid } from "./contabo-support";
@@ -114,6 +117,39 @@ describe.skipIf(MISSING.length > 0)(
       api ??= cloudProvider("ovhcloud").connector({ env: credentials }).servers;
       if (api === undefined) throw new Error("OpsCrew's OVHcloud connector has no server API.");
       return api;
+    }
+
+    /**
+     * What the project still holds with the app's names, read through OVHcloud's v2 lists: its
+     * snapshots (`opscrew-<app>-…`), its deploy key (`<app>-deploy`) and its security groups
+     * (`opscrew-<app>`, `opscrew-<app>-<server>`). Each list's first page, as the connector reads.
+     */
+    async function leftovers(): Promise<string[]> {
+      const read = readOvhcloudCredentials(credentials, new Redactor());
+      if (!("credentials" in read)) throw new Error(read.problem);
+      const client = new OvhcloudClient({
+        credentials: read.credentials,
+        redactor: new Redactor(),
+      });
+      const v2 = client.projectPath("v2");
+      const named = z.array(z.looseObject({ targetSpec: z.looseObject({ name: z.string() }) }));
+      const ours = (name: string) => name === app || name.startsWith(`${app}-`);
+      const snapshotsLeft = (await client.get(`${v2}/compute/snapshot`, named))
+        .map((s) => s.targetSpec.name)
+        .filter((name) => name.startsWith(`opscrew-${app}-`));
+      const keysLeft = (
+        await client.get(`${v2}/sshKey`, z.array(z.looseObject({ name: z.string() })))
+      )
+        .map((key) => key.name)
+        .filter(ours);
+      const groupsLeft = (await client.get(`${v2}/securityGroup`, named))
+        .map((group) => group.targetSpec.name)
+        .filter((name) => name.startsWith("opscrew-") && ours(name.slice("opscrew-".length)));
+      return [
+        ...snapshotsLeft.map((name) => `snapshot ${name}`),
+        ...keysLeft.map((name) => `SSH key ${name}`),
+        ...groupsLeft.map((name) => `security group ${name}`),
+      ];
     }
 
     /** Records every snapshot OVHcloud lists for the app's server, so the cleanup deletes them. */
@@ -329,7 +365,10 @@ ${run.tail(taken.output)}`,
           snapshots.delete(id);
           log(`observed: the snapshot ${id} deleted by the test`);
         }
-        log(`observed: the server ${serverId} deleted`);
+        expect(await leftovers(), "the app's snapshots, SSH keys and security groups").toEqual([]);
+        log(
+          `observed: the server ${serverId} deleted, and no snapshot, SSH key or security group of the app left`,
+        );
       },
     );
 
@@ -356,10 +395,15 @@ ${run.tail(taken.output)}`,
           });
         }
         await attempt(`check that nothing of ${app} is left at OVHcloud`, async () => {
-          const left = await ovhcloud().findAppServers(app);
+          const left = [
+            ...(await ovhcloud().findAppServers(app)).map(
+              (server) => `server ${server.name} (${server.id})`,
+            ),
+            ...(await leftovers()),
+          ];
           if (left.length > 0) {
             throw new Error(
-              `OVHcloud still has ${left.map((server) => `${server.name} (${server.id})`).join(", ")}: delete it in the control panel (Public Cloud → your project → Compute → Instances).`,
+              `OVHcloud still has ${left.join(", ")}: delete each in your Public Cloud project in OVHcloud's control panel.`,
             );
           }
         });
