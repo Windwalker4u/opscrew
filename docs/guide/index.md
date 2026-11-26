@@ -29,6 +29,7 @@ an app yet.
 - [Buying or connecting a domain](domains.md)
 - [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
 - [Bunny.net edge proxy and DNS](bunny.md)
+- [Gcore edge proxy and DNS](gcore.md)
 
 ### The providers, for tools
 

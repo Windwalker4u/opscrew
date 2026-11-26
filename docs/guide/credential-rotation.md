@@ -131,7 +131,7 @@ Kafka and Redpanda without their login have nothing to rotate; the list says so.
 
 ### Shared-header edge origin token
 
-When your app runs behind a shared-header edge proxy such as [Bunny.net](bunny.md),
+When your app runs behind a shared-header edge proxy such as [Bunny.net](bunny.md) or [Gcore](gcore.md),
 `npx opscrew rotate edge-origin-token` rotates `X-OpsCrew-Origin-Token` without downtime: it sets
 the server's reverse proxy to accept both the new and previous tokens, switches the edge rule after
 hash-bound approval, and then narrows the server to the new token only.

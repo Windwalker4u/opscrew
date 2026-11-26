@@ -1,7 +1,7 @@
 # Only Cloudflare reaches your server: origin protection
 
 When your app's hostnames are behind [Cloudflare](https://www.cloudflare.com/)'s proxy (the orange cloud), visitors meet
-Cloudflare first: its firewall, OpsCrew's probe block and your own rules. (If you use [Bunny.net](bunny.md) instead of Cloudflare's proxy, see [Bunny.net edge proxy and DNS](bunny.md) for its shared-header origin protection and how it differs from Cloudflare's mTLS + CIDR firewall.) Limiting your server to
+Cloudflare first: its firewall, OpsCrew's probe block and your own rules. (If you use [Bunny.net](bunny.md) or [Gcore](gcore.md) instead of Cloudflare's proxy, see their guides for shared-header origin protection and how it differs from Cloudflare's mTLS + CIDR firewall.) Limiting your server to
 Cloudflare's addresses is not enough on its own, because anyone with a Cloudflare account can point
 their own zone at your server's address and reach it through Cloudflare. Origin protection closes
 that gap: your server accepts connections for your app only from Cloudflare acting for **your**

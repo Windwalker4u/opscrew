@@ -2367,13 +2367,14 @@ const DeployPlanFieldsSchema = z.strictObject({
     })
     .prefault({}),
   dns: z.strictObject({
-    provider: z.enum(["cloudflare", "bunny", "none"]),
+    provider: z.enum(["cloudflare", "bunny", "gcore", "none"]),
     /**
-     * Separate edge proxy in front of `dns.provider` (`"bunny"` in PR 2; no `"cloudflare"` value:
-     * absent with `proxied: true` means `dns.provider`'s own proxy). Refused without `proxied: true`.
+     * Separate edge proxy in front of `dns.provider` (`"bunny" | "gcore"` in PR 3; no
+     * `"cloudflare"` value: absent with `proxied: true` means `dns.provider`'s own proxy). Refused
+     * without `proxied: true`.
      */
     edge: z
-      .enum(["bunny"], {
+      .enum(["bunny", "gcore"], {
         error: (issue) =>
           issue.input === "cloudflare"
             ? 'must not be "cloudflare": leave dns.edge unset when using Cloudflare as both DNS and edge (dns.provider: "cloudflare" with dns.proxied: true)'
@@ -3080,7 +3081,7 @@ export type GrafanaCloudSettings = NonNullable<Observability["grafanaCloud"]>;
 export type MonitoringSettings = z.output<typeof MonitoringSchema>;
 
 /** Edge proxy provider ids supported by `opscrew/plan.yaml`. */
-export type EdgeProviderId = "cloudflare" | "bunny";
+export type EdgeProviderId = "cloudflare" | "bunny" | "gcore";
 
 /**
  * The edge proxy provider serving the app for `plan`, or `undefined` when traffic is not proxied

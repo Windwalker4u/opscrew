@@ -206,4 +206,26 @@ describe("shared-header origin protection across Caddy, nginx, and OpenLiteSpeed
     expect(olsCompose).not.toContain("useIpInProxyHeader");
     expect(olsCompose).not.toContain("Bunny.net");
   });
+
+  it("threads Gcore's X-Forwarded-For realIpHeader automatically into Caddy and nginx behind the shared-header gate", () => {
+    const gcoreCaddy = DeployPlanSchema.parse({
+      ...bunnyPlan("caddy"),
+      dns: { provider: "gcore", domain: "shop.example.com", proxied: true, www: false },
+    });
+    const [caddySiteFile] = renderEdgeSite(gcoreCaddy, {});
+    expect(caddySiteFile?.content).toContain(
+      "\t\theader_up X-Forwarded-For {http.request.header.X-Forwarded-For}",
+    );
+    expect(caddySiteFile?.content).toContain(`\t\theader_up -${HEADER_NAME}`);
+
+    const gcoreNginx = DeployPlanSchema.parse({
+      ...bunnyPlan("nginx"),
+      dns: { provider: "gcore", domain: "shop.example.com", proxied: true, www: false },
+    });
+    const [nginxSiteFile] = renderEdgeSite(gcoreNginx, {});
+    expect(nginxSiteFile?.content).toContain(
+      "\tproxy_set_header X-Forwarded-For $http_x_forwarded_for;",
+    );
+    expect(nginxSiteFile?.content).toContain(`\tproxy_set_header ${HEADER_NAME} "";`);
+  });
 });

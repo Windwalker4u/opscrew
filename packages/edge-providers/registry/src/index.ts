@@ -6,12 +6,13 @@ import type { EdgeProviderDefinition } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
 import { definition as bunny } from "@opscrew/edge-provider-bunny";
 import { definition as cloudflare } from "@opscrew/edge-provider-cloudflare";
+import { definition as gcore } from "@opscrew/edge-provider-gcore";
 import { validateEdgeProvider } from "./validate";
 
 export { validateEdgeProvider } from "./validate";
 
 /** The built-in edge proxy providers, in order. */
-export const EDGE_PROVIDERS: readonly EdgeProviderDefinition[] = [cloudflare, bunny].map(
+export const EDGE_PROVIDERS: readonly EdgeProviderDefinition[] = [cloudflare, bunny, gcore].map(
   validateEdgeProvider,
 );
 
