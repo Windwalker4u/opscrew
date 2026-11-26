@@ -5,7 +5,7 @@ import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_SECRETS, RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan, localProject } from "../localhost/__fixtures__/computer";
 import { parseDotenv } from "../shared/app-env";
@@ -23,7 +23,13 @@ import {
   testPlan,
 } from "../testing";
 import { noOtherApps } from "../testing/other-apps";
-import { type KeptLogins, loginsNotices, loginsSwitch, requireLogins } from "./postgres-logins";
+import {
+  type KeptLogins,
+  loginsNotices,
+  loginsSwitch,
+  poolerNotices,
+  requireLogins,
+} from "./postgres-logins";
 import { runProvision } from "./run";
 import { buildAppEnvironment, deploySecretNames, deploySecrets } from "./secrets";
 import type { ProvisionServices } from "./types";
@@ -60,6 +66,23 @@ const WITH_LOGINS = {
     },
   },
 };
+
+/** `plan` built as a PHP app. */
+const php = (plan: DeployPlan): DeployPlan =>
+  DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      build: {
+        builder: "railpack",
+        chosen: "auto",
+        reason: "The app is a Laravel app.",
+        runtime: { language: "php", version: "8.4" },
+        probe: "php",
+      },
+    },
+  });
+const POOLED = { options: { logins: "separate", pooler: "pgbouncer" } };
 
 describe("provision's texts for PostgreSQL's two logins (047)", () => {
   it("tells an environment whose superuser's password is kept, without logins, how to switch, every run, deployed or not", () => {
@@ -118,6 +141,21 @@ describe("provision's texts for PostgreSQL's two logins (047)", () => {
     // password is kept.
     expect(loginsSwitch(planWith(SEPARATE), {}, "prod")).toBeUndefined();
     expect(loginsSwitch(planWith(SEPARATE), WITH_LOGINS, "prod")).toBeUndefined();
+  });
+});
+
+describe("provision's line on the pooler for a PHP app (050)", () => {
+  it("says how to add the pooler to a deployed PHP app with logins and no pooler", () => {
+    expect(poolerNotices(php(planWith(SEPARATE)), WITH_LOGINS)).toEqual([
+      "Your PHP app opens a new database connection on every request. Add `pooler: pgbouncer` under db's options in opscrew/plan.yaml to keep them open.",
+    ]);
+  });
+
+  it("says nothing with the pooler, without logins, for a new database, or for another language", () => {
+    expect(poolerNotices(php(planWith(POOLED)), WITH_LOGINS)).toEqual([]);
+    expect(poolerNotices(php(planWith(SINGLE)), BEFORE_047)).toEqual([]);
+    expect(poolerNotices(php(planWith(SEPARATE)), {})).toEqual([]);
+    expect(poolerNotices(planWith(SEPARATE), WITH_LOGINS)).toEqual([]);
   });
 });
 
@@ -438,6 +476,21 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     );
     expect(s.atSnapshot).toEqual([]);
     expect(s.github.secrets.has(RELEASE_DB_ENV.secret)).toBe(false);
+  });
+
+  it("says how to add the pooler to a deployed PHP app, and changes nothing for it (050)", async () => {
+    const plan = php(planWith(SEPARATE));
+    const s = await project(plan, WITH_LOGINS);
+    await runProvision(s.deps, { services: s.services });
+    expect(s.deps.reporter.text()).toContain(
+      "Your PHP app opens a new database connection on every request. Add `pooler: pgbouncer` under db's options in opscrew/plan.yaml to keep them open.",
+    );
+    const services = (await readArtifact("plan", s.deps.paths.files.plan)).services;
+    expect(services.find((service) => service.name === "db")?.options).toEqual({
+      logins: "separate",
+    });
+    const files = await s.git(s.root, "show", "opscrew/deploy-setup", "--name-only", "--format=");
+    expect(files).not.toContain("pooler");
   });
 });
 

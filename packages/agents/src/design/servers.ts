@@ -13,7 +13,12 @@ import {
   type Region,
 } from "@opscrew/plan-schema";
 import { providerProfile, VPS_PROVIDERS } from "../providers";
-import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import {
+  type MemoryLimit,
+  memoryHeadroom,
+  SYSTEM_RESERVE_MB,
+  serviceMemoryLimits,
+} from "../shared/memory";
 import { backupsOnOrderPage, orderPageBackupsText, orderPageProviders } from "./backups";
 import {
   convertedNote,
@@ -78,7 +83,7 @@ export function extraServerNeed(
   vcpus: number;
 } {
   const running = services.filter((service) => service.enabled);
-  const limits = [...running, ...addons].reduce(
+  const limits = [...serviceMemoryLimits(running), ...addons].reduce(
     (sum, limit) => sum + limit.memoryMb,
     SYSTEM_RESERVE_MB,
   );
@@ -276,7 +281,10 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       },
     );
   }
-  const limitsMb = [...services, ...addons].reduce((sum, limit) => sum + limit.memoryMb, 0);
+  const limitsMb = [...serviceMemoryLimits(services), ...addons].reduce(
+    (sum, limit) => sum + limit.memoryMb,
+    0,
+  );
   const headroom = memoryHeadroom(offer.memoryGb * 1024, limitsMb, 0);
   const warnings = [
     ...(kept === undefined ? [] : [keptTypeText(name, provider, planned.id, kept.id)]),

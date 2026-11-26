@@ -1038,9 +1038,10 @@ describe("detect's php-plain and laravel-sail fixtures: facts → plan → produ
     const dotenvText = "APP_NAME=Notes\n";
     const env = await assembleAppEnv({ plan, dotenvText });
     const db = env.values.services.db;
-    // A new PostgreSQL has its own logins (047): the app gets the runtime one.
+    // A new PostgreSQL has its own logins (047): the app gets the runtime one, and a PHP app
+    // reaches it through its pooler (050).
     expect(env.values.app.DB_URL).toBe(
-      `postgresql://app_runtime:${db?.["runtime-password"]}@db:5432/app`,
+      `postgresql://app_runtime:${db?.["runtime-password"]}@db-pooler:6432/app`,
     );
     expect(parseDotenv(env.appEnv).get("DB_URL")).toBe(env.values.app.DB_URL);
     // The release's release.db.env overrides DB_URL with the owner's login.
@@ -1115,10 +1116,11 @@ describe("detect's php-plain and laravel-sail fixtures: facts → plan → produ
       CACHE_STORE: "redis",
       DB_CONNECTION: "pgsql",
       DB_DATABASE: "app",
-      DB_HOST: "db",
+      // Through its pooler (050), a PHP app's.
+      DB_HOST: "db-pooler",
       // A new PostgreSQL has its own logins (047): the app gets the runtime one.
       DB_PASSWORD: env.values.services.db?.["runtime-password"],
-      DB_PORT: "5432",
+      DB_PORT: "6432",
       DB_USERNAME: "app_runtime",
       QUEUE_CONNECTION: "redis",
       SESSION_DRIVER: "redis",

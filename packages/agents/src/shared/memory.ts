@@ -1,9 +1,11 @@
-import { cronMemoryMb } from "@opscrew/iac-templates";
+import { cronMemoryMb, POOLER_MEMORY_MB, poolerName } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
   monitoringOf,
   monitoringServerName,
+  type PlanService,
+  postgresPooler,
 } from "@opscrew/plan-schema";
 
 /** Memory left to the operating system, Docker and the shell on every server. */
@@ -54,9 +56,24 @@ export function monitoringLimits(
 }
 
 /**
+ * The memory limits of the enabled ones of `services`, each PostgreSQL's pooler (`<db>-pooler`,
+ * 050) after its database, on the database's server.
+ */
+export function serviceMemoryLimits(services: readonly PlanService[]): MemoryLimit[] {
+  return services
+    .filter((service) => service.enabled)
+    .flatMap((service) => [
+      { name: service.name, memoryMb: service.memoryMb },
+      ...(postgresPooler(service)
+        ? [{ name: poolerName(service), memoryMb: POOLER_MEMORY_MB }]
+        : []),
+    ]);
+}
+
+/**
  * Each running container's memory limit in MB with its name, the web process first: each enabled
  * worker times its copies, the cron container when a cron job is enabled (its limit from
- * `cronMemoryMb`), each enabled service, then each enabled add-on with all its containers (Beszel:
+ * `cronMemoryMb`), each enabled service with its pooler ({@link serviceMemoryLimits}), then each enabled add-on with all its containers (Beszel:
  * its hub in hub mode, its agent and its Docker proxy; Grafana Alloy: Alloy and its Docker proxy,
  * once, at monitoring's limits when monitoring is on), and with monitoring on the app's server the
  * stack ({@link monitoringLimits}).
@@ -72,9 +89,7 @@ export function appMemoryLimits(plan: AppMemoryInput): MemoryLimit[] {
       .filter((worker) => worker.enabled)
       .map((worker) => ({ name: worker.name, memoryMb: worker.memoryMb * worker.count })),
     ...(cron === undefined ? [] : [{ name: "cron", memoryMb: cron }]),
-    ...plan.services
-      .filter((service) => service.enabled)
-      .map((service) => ({ name: service.name, memoryMb: service.memoryMb })),
+    ...serviceMemoryLimits(plan.services),
     ...(beszel?.enabled
       ? [
           {
