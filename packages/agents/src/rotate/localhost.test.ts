@@ -579,3 +579,64 @@ describe("rotateLocalServices with PostgreSQL's two logins (047)", () => {
     expectNoValue(w, [...w.old.values(), ...next.values()]);
   });
 });
+
+describe("rotateLocalServices with PostgreSQL's pooler (050)", () => {
+  /** The world with db's two logins and its pooler. */
+  async function pooled() {
+    const base = plan();
+    return world({
+      plan: DeployPlanSchema.parse({
+        ...base,
+        services: base.services.map((s) =>
+          s.name === "db" ? { ...s, options: { logins: "separate", pooler: "pgbouncer" } } : s,
+        ),
+      }),
+    });
+  }
+  const POOLER = ["--force-recreate", "db-pooler"];
+  /** Each docker command after the first `n`, as `exec <service>` or `compose <services>`. */
+  const timeline = (w: World, n = 0) =>
+    w.docker.runner.calls.slice(n).flatMap(({ args }) => {
+      if (args[0] === "exec") return [`exec ${(args[5] ?? "").slice("opscrew-shop-".length, -2)}`];
+      if (args[0] === "compose")
+        return [`compose ${args.slice(args.indexOf("--wait") + 1).join(" ")}`];
+      return [];
+    });
+
+  it("creates the pooler again once db and its env file have the new runtime password, before the app", async () => {
+    const w = await pooled();
+    await w.rotate(["db"]);
+    const steps = timeline(w);
+    const pooler = steps.indexOf("compose --force-recreate db-pooler");
+    expect(pooler).toBeGreaterThan(steps.lastIndexOf("exec db"));
+    expect(steps.slice(pooler + 1, pooler + 2)).toEqual(["compose app"]);
+    expect(steps.filter((step) => step === "compose --force-recreate db-pooler")).toHaveLength(1);
+    const next = await current(w);
+    const at = w.docker.composes.find((c) => c.services.join(" ") === POOLER.join(" "));
+    expect(at?.files["db.env"]).toContain(next.get("db/runtime-password"));
+    expectNoValue(w, [...w.old.values(), ...next.values()]);
+  });
+
+  it("an undo creates it again with the old password once db has it back, before the app", async () => {
+    const w = await pooled();
+    w.docker.failCompose.add("app");
+    await failure(w.rotate(["db"]));
+    const next = await pendingNew(w);
+    w.docker.failCompose.clear();
+    const before = w.docker.runner.calls.length;
+    expect(await w.rotate(["db"], true)).toMatchObject({ undone: true });
+    const steps = timeline(w, before);
+    const pooler = steps.indexOf("compose --force-recreate db-pooler");
+    expect(pooler).toBeGreaterThan(steps.indexOf("exec db"));
+    expect(steps.slice(pooler + 1, pooler + 2)).toEqual(["compose app"]);
+    const at = w.docker.composes.findLast((c) => c.services.join(" ") === POOLER.join(" "));
+    expect(at?.files["db.env"]).toContain(w.old.get("db/runtime-password"));
+    expectNoValue(w, [...w.old.values(), ...next.values()]);
+  });
+
+  it("leaves the pooler alone when only another service rotates", async () => {
+    const w = await pooled();
+    await w.rotate(["cache"]);
+    expect(timeline(w).join("\n")).not.toContain("db-pooler");
+  });
+});
