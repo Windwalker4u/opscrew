@@ -240,9 +240,9 @@ each.
 
 In a private repository the scheduled check uses Actions minutes. If you'd rather not spend them,
 a Worker in your Cloudflare account, on Cloudflare's free plan, can run the check instead: it
-checks that the app answers, and posts down and recovered messages to your webhook. On a server,
-the server checks its disk, snapshots, restore drills, certificates and credentials itself and
-reports to the Worker, so nothing needs GitHub Actions any more.
+checks that the app answers, and posts down and recovered messages to your webhook. On a server
+OpsCrew reaches over SSH, the server checks its disk, snapshots, restore drills, certificates and
+credentials itself and reports to the Worker, so nothing needs GitHub Actions any more.
 
 ### Choosing it
 
@@ -307,8 +307,9 @@ down and since when. When the Worker or the entry is gone, it says to run `npx o
 
 ### The server's own checks
 
-With `runner: cloudflare` on a server, nothing needs GitHub Actions any more. The Worker checks the
-addresses, and the server checks everything else and reports to the Worker. The environment is left
+With `runner: cloudflare` on a server OpsCrew reaches over SSH, nothing needs GitHub Actions any
+more. The Worker checks the addresses, and the server checks everything else and reports to the
+Worker. The environment is left
 out of `check.json`; when no environment uses Actions any more, the next deploy-setup pull request
 removes the workflow and `opscrew/check/`, as when the check is turned off.
 
@@ -320,8 +321,10 @@ removes the workflow and `opscrew/check/`, as when the check is turned off.
 - **A host plan per server,** approved by its hash, shows the step `uptime-report`. It installs a
   script, a systemd timer, a config and a key file (both readable only by root), and `curl` and
   `openssl` when the server lacks them. The plan names the key; it never shows it.
-- **A server that provision can't reach with a host plan** gets no timer, and design names it as
-  not checked.
+- **Only the app's server gets a timer,** and only where the scheduled check reaches it over SSH.
+  A server behind a Cloudflare Tunnel, at home, or deploying with its own runner gets none, even
+  though OpsCrew still changes it with host plans, and neither do the plan's extra `servers`.
+  Design and provision name each one (see [Targets with no server checks](#targets-with-no-server-checks)).
 
 A server that two environments share gets one timer per environment. Each reports to its own entry,
 so a full disk is reported to each environment's webhook.
@@ -338,8 +341,8 @@ key or what the Worker answered.
   - the last scheduled restore drill, or a drill that is late;
   - the days left on the certificates the server serves for the app: under 14 fails. It asks the
     server's own web server, so behind Cloudflare's proxy this is the server's certificate, not
-    Cloudflare's. A hostname the server doesn't serve over HTTPS (such as a tunnel's origin served
-    over plain HTTP) isn't checked there and never posts; the Worker still checks its address;
+    Cloudflare's. A hostname the server doesn't serve over HTTPS isn't checked there and never
+    posts; the Worker still checks its address;
 - **once a day,** with `observability.check.credentials` on, the age of each credential against
   `credentials.maxAgeDays`.
 
@@ -405,6 +408,13 @@ the credentials' age there, keep `runner: actions`; Actions can't read a Portain
 snapshots or drills either (see [What it can't do](#what-it-cant-do)). A
 [hosting account](hosting-accounts.md) can't use the Worker yet.
 
+A server gets no timer either when the scheduled check can't reach it over SSH: your own server
+behind a Cloudflare Tunnel, a server at home, or one that deploys from
+[its own runner](runners.md#the-servers-runner). Design and provision say "No uptime report from
+the app's server", and the Worker checks the app's address only: its disk, snapshot,
+restore-drill, certificate-days and credential-age checks need `runner: actions`. The plan's extra
+`servers` get no timer, so their disk and scheduled snapshot checks need `runner: actions` too.
+
 ### Cloudflare's free limits
 
 - **40 hostnames per Cloudflare account,** across every app's entries. The plan refuses the 41st
@@ -454,6 +464,10 @@ typed confirmation.
   Pages:** the Worker checks their addresses only, with no disk, snapshot, restore-drill,
   certificate-days or credential-age check. Keep `runner: actions` for the checks Actions can run
   there (see [Targets with no server checks](#targets-with-no-server-checks)).
+- **Run the server checks with `runner: cloudflare` on a server behind a Cloudflare Tunnel, at home
+  or deploying from its own runner, or on the plan's extra `servers`:** none of them gets a timer.
+  Their disk, snapshot, restore-drill, certificate-days and credential-age checks need
+  `runner: actions`.
 - **Watch memory and CPU:** `npx opscrew status` shows them, and [Beszel](beszel.md) can alert on
   them.
 
