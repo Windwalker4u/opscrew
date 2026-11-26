@@ -2,7 +2,7 @@
 
 **Feature Branch**: `045-postgres-extensions` (feature directory `specs/045-postgres-extensions`)
 **Created**: 2026-11-25
-**Status**: Draft (waiting for 047 on `main` before writing `plan.md`, `tasks.md`, and code)
+**Status**: Ready (047 landed on `main`; implementing step 1 `vector` + `contrib` and step 2 PostGIS on `amd64` servers)
 **Input**: Roadmap entry `045 Postgres extensions for an app's database`, issue `#28`, and [research.md](research.md) (R1–R6, including the core lead's decisions of 2026-11-25).
 
 ## Why
