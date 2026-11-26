@@ -362,8 +362,12 @@ function entries(kinds: string): string {
   return `'^[0-9]+; [0-9]+ [0-9]+ (${kinds}) '`;
 }
 
-/** What the superuser restores first: the schemas, which extensions may live in, and extensions. */
-const FIRST = "SCHEMA|EXTENSION|COMMENT - EXTENSION";
+/**
+ * What the superuser restores first: the schemas, which extensions may live in, the extensions, and
+ * the comments on both (a comment runs no code; an extension's own schema, such as PostGIS's
+ * `topology`, stays the superuser's, so its comment can't be the owner's to restore).
+ */
+const FIRST = "SCHEMA|EXTENSION|COMMENT - EXTENSION|COMMENT - SCHEMA";
 /** What the superuser restores last: the rights, which run no code. */
 const LAST = "ACL|DEFAULT ACL";
 
