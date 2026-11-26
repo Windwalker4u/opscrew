@@ -1087,6 +1087,10 @@ it should, for the real path: Cloudflare, Caddy, kamal-proxy) then takes that co
   its hash.
 - **In 0.2.13**, beside 040. It changes the edge, the deploy's switch step and the host plans.
 - **Built by a contributor** (the founder, 2026-11-26): issue `[049]` (#35).
+- **Open after the first review of #37 (2026-11-26):** kamal-proxy runs without TLS, so it forwards
+  an incoming `X-Forwarded-For` (`--forward-headers` is on by default). Once it joins every app's
+  network, a container of app A can send app B a forged client address through it. The lead
+  decides the fix, likely exact trusted-proxy addresses for the app, before the PR merges.
 
 ## 050 A connection pooler for an app's PostgreSQL
 
