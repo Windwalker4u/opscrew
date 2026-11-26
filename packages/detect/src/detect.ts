@@ -85,6 +85,7 @@ import {
   laravelConfigDefault,
   REDIS_MODULE_CALLERS,
   ServiceCollector,
+  withLaravelDbUrl,
   withUrlVariables,
 } from "./services";
 import { manifestlessSiteDirs } from "./site";
@@ -591,7 +592,10 @@ export async function detectProjectDetails(
   }
   addLaravelRedis(services, laravelSettings);
   addComposeRedisEngines(services, composeEngines);
-  const serviceList = withUrlVariables(services.toList(), envNames, envUrls);
+  const urlServices = withUrlVariables(services.toList(), envNames, envUrls);
+  const serviceList = appFrameworkNames.has("laravel")
+    ? withLaravelDbUrl(urlServices, envNames, dbConnection)
+    : urlServices;
   // An app on Supabase's client already has its `supabase` service.
   const supabase = serviceList.some((service) => service.kind === "supabase");
   const hostedServices = [...envUrls]

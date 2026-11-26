@@ -1,0 +1,12 @@
+{
+  "name": "laravel-pgsql",
+  "languages": ["php"],
+  "frameworks": [{ "name": "laravel", "version": "^12.0", "path": "." }],
+  "services": [
+    {
+      "kind": "postgres",
+      "evidence": ["env:DB_CONNECTION=pgsql"],
+      "variable": "DB_URL"
+    }
+  ]
+}
