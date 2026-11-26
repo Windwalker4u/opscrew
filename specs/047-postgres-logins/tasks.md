@@ -230,7 +230,7 @@ Secret-shaped values in tests come from `fakeSecret`.
   - unchanged files for plans without `logins`;
   - the guide against the code.
 - [ ] T4791 (lead) `/simplify` over the feature's diff.
-- [ ] T4792 (lead) The live pass of [quickstart.md](quickstart.md).
+- [x] T4792 (lead) The live pass of [quickstart.md](quickstart.md).
   - **Where:** the localhost target, or one of the founder's existing test servers. Nothing is
     bought.
   - **Nothing left behind:** proven by listing the containers, volumes, images and deploy secrets
