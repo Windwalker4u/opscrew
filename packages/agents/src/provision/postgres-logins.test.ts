@@ -7,8 +7,10 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_SECRETS, RELEASE_DB_ENV, serviceEnvSecret } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { FakeComputer, localPlan, localProject } from "../localhost/__fixtures__/computer";
 import { parseDotenv } from "../shared/app-env";
 import { generatedValuesFile } from "../shared/app-secrets";
+import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
 import {
   createProject,
   createTestPhaseDeps,
@@ -60,23 +62,26 @@ const WITH_LOGINS = {
 };
 
 describe("provision's texts for PostgreSQL's two logins (047)", () => {
-  it("tells a deployed environment without logins how to switch, every run", () => {
-    expect(loginsNotices(planWith(SINGLE), COMMAND)).toEqual([
+  it("tells an environment whose superuser's password is kept, without logins, how to switch, every run, deployed or not", () => {
+    expect(loginsNotices(planWith(SINGLE, false), BEFORE_047, COMMAND)).toEqual(
+      loginsNotices(planWith(SINGLE), BEFORE_047, COMMAND),
+    );
+    expect(loginsNotices(planWith(SINGLE), BEFORE_047, COMMAND)).toEqual([
       "Your app logs in to PostgreSQL (db) as its superuser. To give it a login that can only read and write data, add `logins: separate` under db's options in opscrew/plan.yaml and run `npx opscrew provision`: it shows the switch before anything changes.",
     ]);
   });
 
   it("says below 15 that separate logins come with an upgrade, and refuses nothing", () => {
     const plan = planWith({ version: "14", options: {} });
-    expect(loginsNotices(plan, COMMAND)).toEqual([
+    expect(loginsNotices(plan, BEFORE_047, COMMAND)).toEqual([
       "db runs PostgreSQL 14, so your app logs in as its superuser. Separate logins for the app and its migrations come with an upgrade to PostgreSQL 15 or later.",
     ]);
     expect(() => requireLogins(plan, BEFORE_047, COMMAND)).not.toThrow();
   });
 
-  it("says nothing before the first deploy, nor with logins", () => {
-    expect(loginsNotices(planWith(SINGLE, false), COMMAND)).toEqual([]);
-    expect(loginsNotices(planWith(SEPARATE), COMMAND)).toEqual([]);
+  it("says nothing without the superuser's password (a new database), nor with logins", () => {
+    expect(loginsNotices(planWith(SINGLE), {}, COMMAND)).toEqual([]);
+    expect(loginsNotices(planWith(SEPARATE), BEFORE_047, COMMAND)).toEqual([]);
   });
 
   it("refuses a hand-written logins: separate below 15", () => {
@@ -94,7 +99,7 @@ describe("provision's texts for PostgreSQL's two logins (047)", () => {
     expect(() => requireLogins(planWith(SINGLE), BEFORE_047, COMMAND)).not.toThrow();
   });
 
-  it("switches a deployed database that keeps its superuser's password but no owner's, with data-model.md's lines", () => {
+  it("switches a database whose superuser's password is kept but no owner's, deployed or not, with data-model.md's lines", () => {
     const change = loginsSwitch(planWith(SEPARATE), BEFORE_047, "prod");
     expect(change?.services).toEqual(["db"]);
     expect(change?.lines).toEqual([
@@ -107,9 +112,10 @@ describe("provision's texts for PostgreSQL's two logins (047)", () => {
     expect(change?.hash).toMatch(/^[0-9a-f]{64}$/);
     // Another environment's switch is another plan.
     expect(loginsSwitch(planWith(SEPARATE), BEFORE_047, "staging")?.hash).not.toBe(change?.hash);
-    // Nothing switches before the first deploy, without the superuser's password (a new database),
-    // or once the owner's password is kept.
-    expect(loginsSwitch(planWith(SEPARATE, false), BEFORE_047, "prod")).toBeUndefined();
+    // The generated values alone decide, not `opscrew verify`'s first deploy.
+    expect(loginsSwitch(planWith(SEPARATE, false), BEFORE_047, "prod")).toEqual(change);
+    // Nothing switches without the superuser's password (a new database), or once the owner's
+    // password is kept.
     expect(loginsSwitch(planWith(SEPARATE), {}, "prod")).toBeUndefined();
     expect(loginsSwitch(planWith(SEPARATE), WITH_LOGINS, "prod")).toBeUndefined();
   });
@@ -229,13 +235,18 @@ async function project(
   /** What had been written when the snapshot was taken. */
   const atSnapshot: { requests: string[]; generated: boolean; secrets: number; skip: string[] }[] =
     [];
-  const snapshot: NonNullable<ProvisionServices["snapshot"]> = async (skip) => {
-    atSnapshot.push({
-      requests: handler.requests.map((r) => r.kind),
-      generated: (await readFile(generatedValuesFile(deps), "utf8")) !== keptText,
-      secrets: github.secrets.size,
-      skip: [...skip],
-    });
+  /** The switching databases the snapshot finds no container or volume of. */
+  const empty: string[] = [];
+  const snapshot: NonNullable<ProvisionServices["snapshot"]> = {
+    neverRan: async (names) => names.filter((name) => empty.includes(name)),
+    take: async (skip) => {
+      atSnapshot.push({
+        requests: handler.requests.map((r) => r.kind),
+        generated: (await readFile(generatedValuesFile(deps), "utf8")) !== keptText,
+        secrets: github.secrets.size,
+        skip: [...skip],
+      });
+    },
   };
   const services: ProvisionServices = {
     otherApps: { inspect: noOtherApps },
@@ -248,7 +259,7 @@ async function project(
     sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
     snapshot,
   };
-  return { ...created, deps, handler, github, services, atSnapshot, keptText };
+  return { ...created, deps, handler, github, services, atSnapshot, keptText, empty, snapshot };
 }
 
 /** Nothing of the run's changes was made: no value generated, no secret stored, no file written. */
@@ -284,6 +295,79 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     }
   });
 
+  it("asks for the switch and takes the snapshot first on an environment `opscrew verify` never saw deploy", async () => {
+    const plan = planWith(SEPARATE, false);
+    const s = await project(plan, BEFORE_047);
+    await runProvision(s.deps, { services: s.services });
+    const change = loginsSwitch(plan, BEFORE_047, "prod");
+    expect(change).toBeDefined();
+    expect(s.handler.requests[0]).toMatchObject({ kind: "iac-apply", planHash: change?.hash });
+    expect(s.atSnapshot).toEqual([
+      { requests: ["iac-apply"], generated: false, secrets: 0, skip: [] },
+    ]);
+    expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
+  });
+
+  it("on a cloud server never applied, says the database has no data yet without reaching any server, and goes on", async () => {
+    // Generated values from a `--plan-only` run: no apply recorded, so no server exists yet.
+    const plan = planWith(SEPARATE, false);
+    expect(plan.deployment.lastApplyAt).toBeUndefined();
+    const s = await project(plan, BEFORE_047);
+    const { snapshot: _fake, ...services } = s.services;
+    const reached: string[] = [];
+    const remote = (host: string) => {
+      const ready = readyRemote(host);
+      return {
+        host,
+        run: (command: string, options?: Parameters<typeof ready.run>[1]) => {
+          reached.push(command);
+          return ready.run(command, options);
+        },
+      };
+    };
+    await runProvision(s.deps, { services: { ...services, remote } });
+    expect(s.deps.reporter.text()).toContain("db has no data yet, so there's nothing to snapshot.");
+    expect(reached.filter((command) => command.includes("docker volume ls"))).toEqual([]);
+    expect(reached.filter((command) => command.includes("snapshot.sh"))).toEqual([]);
+    expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
+  });
+
+  it("says a database that never ran has no data to snapshot, and goes on", async () => {
+    const plan = planWith(SEPARATE, false);
+    const s = await project(plan, BEFORE_047);
+    s.empty.push("db");
+    await runProvision(s.deps, { services: s.services });
+    expect(s.handler.requests[0]).toMatchObject({
+      kind: "iac-apply",
+      planHash: loginsSwitch(plan, BEFORE_047, "prod")?.hash,
+    });
+    expect(s.atSnapshot).toEqual([]);
+    const info = s.deps.reporter.lines.filter((line) => line.message.includes("no data yet"));
+    expect(info.map((line) => line.message)).toEqual([
+      "db has no data yet, so there's nothing to snapshot.",
+    ]);
+    expect(s.deps.reporter.text()).not.toContain("Taking a snapshot of db");
+    expect(s.github.secrets.get(RELEASE_DB_ENV.secret)).toContain("app_owner:");
+  });
+
+  it("a failed look for the database's data stops provision with nothing written", async () => {
+    const s = await project(planWith(SEPARATE, false), BEFORE_047);
+    s.services.snapshot = {
+      ...s.snapshot,
+      neverRan: async () => {
+        throw new OpsCrewError("COMMAND_FAILED", "The app's server did not answer over SSH.");
+      },
+    };
+    const error = (await runProvision(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("COMMAND_FAILED");
+    expect(error.message).toBe(
+      "The snapshot of db before the switch to separate logins failed: The app's server did not answer over SSH. Nothing was changed.",
+    );
+    await expectNothingWritten(s);
+  });
+
   it("--plan-only shows the switch and keeps no new login's password, so the run that approves it still takes the snapshot first", async () => {
     const s = await project(planWith(SEPARATE), BEFORE_047);
     const change = loginsSwitch(planWith(SEPARATE), BEFORE_047, "prod");
@@ -304,8 +388,11 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
 
   it("a failed snapshot stops provision with nothing written, saying what to do next", async () => {
     const s = await project(planWith(SEPARATE), BEFORE_047);
-    s.services.snapshot = async () => {
-      throw new OpsCrewError("COMMAND_FAILED", "The app's server has too little free disk.");
+    s.services.snapshot = {
+      ...s.snapshot,
+      take: async () => {
+        throw new OpsCrewError("COMMAND_FAILED", "The app's server has too little free disk.");
+      },
     };
     const error = (await runProvision(s.deps, { services: s.services }).catch(
       (e: unknown) => e,
@@ -351,5 +438,51 @@ describe.skipIf(!findExecutable("git"))("provision's switch of an existing datab
     );
     expect(s.atSnapshot).toEqual([]);
     expect(s.github.secrets.has(RELEASE_DB_ENV.secret)).toBe(false);
+  });
+});
+
+describe.skipIf(!SH_AVAILABLE)("the switch's snapshot on this computer (047)", () => {
+  /** `shop` on this computer with `logins: separate`, a database made before 047, never verified. */
+  async function local(computer = new FakeComputer()) {
+    const plan = planWith(SEPARATE, false, localPlan());
+    const handler = new ScriptedApprovalHandler();
+    const { deps, root } = await localProject(plan, computer, { approve: handler });
+    await writeFile(join(root, "Dockerfile"), "FROM node:22-alpine\n");
+    const keptText = `${JSON.stringify(BEFORE_047)}\n`;
+    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+    await writeFile(generatedValuesFile(deps), keptText);
+    const run = () => runProvision(deps, { services: { localhost: computer.services() } });
+    return { deps, plan, handler, keptText, run };
+  }
+
+  it("says a database that never ran has no data yet, and goes on with the switch", async () => {
+    const computer = new FakeComputer();
+    const s = await local(computer);
+    await s.run();
+    expect(s.handler.requests[0]).toMatchObject({
+      kind: "iac-apply",
+      planHash: loginsSwitch(s.plan, BEFORE_047, "prod")?.hash,
+    });
+    expect(s.deps.reporter.text()).toContain("db has no data yet, so there's nothing to snapshot.");
+    expect(computer.scripts.some((run) => run.script.includes("'take'"))).toBe(false);
+    const kept = JSON.parse(await readFile(generatedValuesFile(s.deps), "utf8")) as KeptLogins;
+    expect(Object.keys(kept.services?.db ?? {}).sort()).toEqual([
+      "owner-password",
+      "runtime-password",
+    ]);
+  });
+
+  it("takes the snapshot of a database that ran, and stops with nothing written when it fails", async () => {
+    // The computer's shell answers nothing, so the snapshot can't read the free disk.
+    const computer = new FakeComputer().deployed();
+    const s = await local(computer);
+    const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("COMMAND_FAILED");
+    expect(error.message).toMatch(
+      /^The snapshot of db before the switch to separate logins failed: .+ Nothing was changed\.$/,
+    );
+    expect(s.deps.reporter.text()).toContain("Taking a snapshot of db before the switch");
+    expect(s.deps.reporter.text()).not.toContain("no data yet");
+    expect(await readFile(generatedValuesFile(s.deps), "utf8")).toBe(s.keptText);
   });
 });

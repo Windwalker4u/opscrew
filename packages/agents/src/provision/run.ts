@@ -142,6 +142,7 @@ import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { appWords, otherAppsOnServer, requireNoOtherApps, unreachableHint } from "../shares/guard";
+import { neverRan } from "../snapshot/never-ran";
 import { takeSnapshot } from "../snapshot/take";
 import { deployShell } from "../status/certificates";
 import { checkAdditions } from "./additions";
@@ -2095,20 +2096,18 @@ async function loginsFirst(
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const services = options.services ?? {};
   const { remote, localhost, portainer } = services;
+  const snapshotServices = {
+    ...(remote === undefined ? {} : { remote }),
+    ...(localhost === undefined ? {} : { localhost }),
+    ...(portainer === undefined ? {} : { portainer }),
+  };
   const change = await postgresLoginsStep(deps, plan, {
     command: `opscrew provision${flags}`,
     planOnly: options.planOnly,
-    snapshot:
-      services.snapshot ??
-      ((skip) =>
-        takeSnapshot(deps, {
-          skip,
-          services: {
-            ...(remote === undefined ? {} : { remote }),
-            ...(localhost === undefined ? {} : { localhost }),
-            ...(portainer === undefined ? {} : { portainer }),
-          },
-        })),
+    snapshot: services.snapshot ?? {
+      neverRan: (names) => neverRan(deps, names, snapshotServices),
+      take: (skip) => takeSnapshot(deps, { skip, services: snapshotServices }),
+    },
   });
   if (change === undefined) return { options };
   const { approveHashes } = options;

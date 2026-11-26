@@ -148,8 +148,9 @@ export interface ProvisionServices {
   /** Remote shell on the new server (default: `SshRemoteExec` with the deploy key). */
   remote?: (host: string) => RemoteExec;
   /**
-   * The snapshot a switch to PostgreSQL's own logins takes first (047), with the parts `skip` names
-   * left out (default: `opscrew snapshot`'s, with these services).
+   * The snapshot a switch to PostgreSQL's own logins takes first (047): which switching databases
+   * never ran, and the snapshot with the parts `skip` names left out (default: `neverRan` and
+   * `opscrew snapshot`'s, with these services).
    */
   snapshot?: LoginsSnapshot;
   /**

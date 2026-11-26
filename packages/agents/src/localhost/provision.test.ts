@@ -601,7 +601,10 @@ describe("the local deploy lock", () => {
 });
 
 describe("the switch of a database made before 047 on this computer", () => {
-  /** A deployed plan whose PostgreSQL has `logins: separate`, kept with the superuser's password only. */
+  /**
+   * A plan whose PostgreSQL has `logins: separate`, kept with the superuser's password only, which
+   * `opscrew verify` never saw deploy (it runs no first deploy's check here).
+   */
   async function before047() {
     const base = localPlan();
     const plan = DeployPlanSchema.parse({
@@ -609,7 +612,6 @@ describe("the switch of a database made before 047 on this computer", () => {
       services: base.services.map((service) =>
         service.kind === "postgres" ? { ...service, options: { logins: "separate" } } : service,
       ),
-      deployment: { ...base.deployment, firstDeployAt: "2026-10-20T08:00:00.000Z" },
     });
     const s = await project(plan);
     const values = generatedValuesFile(s.deps);
@@ -621,8 +623,11 @@ describe("the switch of a database made before 047 on this computer", () => {
         ...options,
         services: {
           localhost: s.computer.services(),
-          snapshot: async (skip) => {
-            snapshots.push([...skip]);
+          snapshot: {
+            neverRan: async () => [],
+            take: async (skip) => {
+              snapshots.push([...skip]);
+            },
           },
         },
       });
