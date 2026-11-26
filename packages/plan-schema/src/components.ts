@@ -194,7 +194,7 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
          */
         logins: z.literal("separate", { message: 'must be "separate"' }).optional(),
         /**
-         * `pgbouncer`: a PgBouncer in transaction mode beside it, which the app's web, workers and
+         * `pgbouncer`: a PgBouncer in session mode beside it, which the app's web, workers and
          * cron reach it through; the release keeps its direct address (050). Needs `logins`.
          */
         pooler: z.literal("pgbouncer", { message: 'must be "pgbouncer"' }).optional(),

@@ -59,7 +59,7 @@
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - **Effort:** medium
 
-- [ ] T5004 [US1] [US2] The Docker test
+- [x] T5004 [US1] [US2] The Docker test
   - **Owns:** `packages/iac-templates/src/catalog/pooler.docker.test.ts` (new).
   - **Reads:** plan 2.; 047's `postgres-logins.docker.test.ts` as the pattern.
   - **Accept:** gated by `OPSCREW_DOCKER_TESTS=1`. From the rendered files:
