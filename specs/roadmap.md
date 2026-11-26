@@ -1086,6 +1086,15 @@ it should, for the real path: Cloudflare, Caddy, kamal-proxy) then takes that co
 
 ## Later, not yet placed
 
+- **A connection pooler for an app's PostgreSQL** (from a profile of a deployed PHP app,
+  2026-11-26): a PHP app opens a new PostgreSQL connection on every request. On a small VPS a fresh
+  backend measured about 160 ms per page (the connection itself 28–35 ms, the rest the new
+  backend warming its caches), against about 26 ms on a kept connection. TLS isn't part of it:
+  OpsCrew's PostgreSQL runs without SSL on the app's own network, so `sslmode=prefer` falls back
+  after one packet. An optional PgBouncer in transaction mode between the app and its database
+  would give every such app kept backends without a code change (prepared statements need
+  PgBouncer 1.21 or later, or emulated prepares). Apps that can change their code can use
+  persistent connections or a worker mode (FrankenPHP's, Octane) instead.
 - **Previews checked by a test run before promoting** (the dashboard's lead, 2026-11-25, for a
   module that writes end-to-end tests and runs them in the user's Actions): `promote` reads a named
   check's result for the preview's commit and refuses a failed one unless the user overrides it,
