@@ -406,7 +406,8 @@ describe("planning the uptime-report step", () => {
 
 /**
  * A shell harness with what the step's scripts call stubbed: systemctl (timers enabled as files in
- * $S, `start` appends `$S/run` to the journal), journalctl (prints the journal), `stat` (each file
+ * $S, `start` appends the first line of `$S/runs` to the journal while it has one, else `$S/run`),
+ * `sleep` (returns at once), journalctl (prints the journal), `stat` (each file
  * with the mode the data model gives it, or `$S/mode-<name>`), and `id`, curl and openssl present.
  */
 function stepHarness(): ShellHarness {
@@ -419,9 +420,10 @@ function stepHarness(): ShellHarness {
   disable) for a do case "$a" in *.timer) rm -f "$S/enabled-$a" ;; esac; done ;;
   is-enabled) if [ -e "$S/enabled-$2" ]; then echo enabled; else echo disabled; exit 1; fi ;;
   is-active) t=$2; [ "$t" != --quiet ] || t=$3; if [ -e "$S/enabled-$t" ]; then echo active; else echo inactive; exit 3; fi ;;
-  start) cat "$S/run" >> "$S/journal" ;;
+  start) if [ -s "$S/runs" ]; then head -n 1 "$S/runs" >> "$S/journal"; sed -i 1d "$S/runs"; else cat "$S/run" >> "$S/journal"; fi ;;
 esac`,
   );
+  sh.stub("sleep", "exit 0");
   sh.stub("journalctl", `cat "$S/journal" 2>/dev/null || true`);
   sh.stub(
     "stat",
@@ -611,6 +613,43 @@ describe.skipIf(!BASH_AVAILABLE)("the step's scripts in a real shell (commands s
       sh.write("/state/journal", "");
       sh.write("/state/run", "");
       expect(sh.run(scripts.verify).stderr).toContain("wrote no line to the journal");
+    } finally {
+      sh.dispose();
+    }
+  });
+
+  it("runs again while the Worker took the report but could not post its message, then names the webhook", () => {
+    const sh = stepHarness();
+    try {
+      const plan = planUptimeReport({ app: "shop", facts: NO_FACTS, enable: REPORT });
+      const scripts = stepScripts(plan, stepOf(plan));
+      expect(sh.run(scripts.apply, `${KEY}\n`).status).toBe(0);
+      const unposted =
+        "uptime report: disk warn, snapshot ok, drill none; the Worker refused the report (HTTP 502), so the next run sends again";
+      const runs = () =>
+        (sh.read("/state/journal") ?? "").split("\n").filter((line) => line !== "");
+      // A webhook that refused one message: the second run sends it.
+      sh.write("/state/journal", "");
+      sh.write(
+        "/state/runs",
+        `${unposted}\nuptime report: disk warn, snapshot ok, drill none; sent a change report\n`,
+      );
+      expect(sh.run(scripts.verify).status).toBe(0);
+      expect(runs()).toHaveLength(2);
+      // One that keeps refusing: three runs, then a message about the webhook, not the Worker.
+      sh.write("/state/journal", "");
+      sh.write("/state/run", `${unposted}\n`);
+      const refused = sh.run(scripts.verify);
+      expect(runs()).toHaveLength(3);
+      expect(refused.status).toBe(5);
+      expect(refused.stderr).toBe(
+        "opscrew: The uptime report's first run reached the Worker, but the Worker could not post its message to the webhook (disk warn, snapshot ok, drill none; the Worker refused the report (HTTP 502), so the next run sends again). The timer sends it again every 5 minutes. Check the webhook's address (set OPSCREW_CHECK_WEBHOOK to it if it changed), then run the command again.\n",
+      );
+      // Any other refusal runs once.
+      sh.write("/state/journal", "");
+      sh.write("/state/run", `${unposted.replace("502", "401")}\n`);
+      expect(sh.run(scripts.verify).status).toBe(5);
+      expect(runs()).toHaveLength(1);
     } finally {
       sh.dispose();
     }
