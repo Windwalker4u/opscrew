@@ -1,5 +1,10 @@
 import { fileURLToPath } from "node:url";
 import type { ViteUserConfig } from "vitest/config";
+import { createRunFolder } from "./vitest-global-setup";
+
+// The run folder exists before Vitest starts, so its copies of transformed modules land in it
+// and go with it (see `createRunFolder`).
+createRunFolder();
 
 /**
  * Test options every package's `vitest.config.ts` spreads into its `test` block: one temporary

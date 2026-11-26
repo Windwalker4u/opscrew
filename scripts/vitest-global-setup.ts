@@ -4,12 +4,14 @@
  * Tests create many temporary folders (`mkdtemp(join(tmpdir(), "opscrew-…"))`) and the engine
  * tests download a provider into each one. Instead of cleaning up file by file, each `vitest run`
  * gets one run folder, `opscrew-test-run-XXXX`, under `OPSCREW_TEST_TMP` (when set) or the
- * system temporary folder. `TMPDIR`, `TEMP` and `TMP` point at it before the workers start, so
- * `os.tmpdir()` in test files and in child processes (git, tofu, terraform) lands inside it, and
- * teardown removes the whole folder. A run that was killed before its teardown (for example when
- * turbo stops the other tasks after a failure) is cleaned up by the next run on the same machine.
+ * system temporary folder. `TMPDIR`, `TEMP` and `TMP` point at it from the moment the config
+ * loads, so `os.tmpdir()` in Vitest itself, in test files and in child processes (git, tofu,
+ * terraform) lands inside it, and teardown removes the whole folder. A run that was killed before
+ * its teardown (for example when turbo stops the other tasks after a failure) is cleaned up by the
+ * next run on the same machine.
  */
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { TestProject } from "vitest/node";
@@ -105,19 +107,44 @@ export async function sweepStaleRunFolders(
   return removed;
 }
 
-/** Creates the run folder, redirects the temp variables to it and returns the teardown. */
-export default async function setup(project: TestProject): Promise<() => Promise<void>> {
+interface RunFolder {
+  dir: string;
+  parent: string;
+  previous: Map<string, string | undefined>;
+}
+
+/** Where this process keeps its run folder, so a config evaluated twice still makes one. */
+const RUN_FOLDER_KEY = "__opscrewTestRunFolder";
+const store = globalThis as { [RUN_FOLDER_KEY]?: RunFolder };
+
+/**
+ * Creates this process's run folder once and points the temp variables at it. It runs while the
+ * config loads (`scripts/vitest-base.ts`), before any global setup: Vitest picks the folder for
+ * its copies of transformed modules (`<os.tmpdir()>/<random>/ssr`, written for the forks pool)
+ * when it starts and removes it only on a clean close, so a run that was killed or timed out left
+ * it in the system temporary folder.
+ */
+export function createRunFolder(): RunFolder {
+  const existing = store[RUN_FOLDER_KEY];
+  if (existing) return existing;
   const parent = resolve(process.env.OPSCREW_TEST_TMP || tmpdir());
-  await mkdir(parent, { recursive: true });
-  await sweepStaleRunFolders(parent);
-  const dir = await mkdtemp(join(parent, RUN_DIR_PREFIX));
-  await writeFile(
+  mkdirSync(parent, { recursive: true });
+  const dir = mkdtempSync(join(parent, RUN_DIR_PREFIX));
+  writeFileSync(
     join(dir, RUN_MARKER_FILE),
     JSON.stringify({ pid: process.pid, hostname: hostname() }),
   );
-
   const previous = new Map(TEMP_DIR_VARIABLES.map((name) => [name, process.env[name]]));
   for (const name of TEMP_DIR_VARIABLES) process.env[name] = dir;
+  const folder = { dir, parent, previous };
+  store[RUN_FOLDER_KEY] = folder;
+  return folder;
+}
+
+/** Sweeps stale run folders, hands this run's folder to the tests and returns the teardown. */
+export default async function setup(project: TestProject): Promise<() => Promise<void>> {
+  const { dir, parent, previous } = createRunFolder();
+  await sweepStaleRunFolders(parent);
   project.provide("opscrewTestRunDir", dir);
 
   return async () => {
@@ -125,6 +152,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    delete store[RUN_FOLDER_KEY];
     await removeRunFolder(dir);
   };
 }
