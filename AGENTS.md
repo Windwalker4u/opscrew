@@ -25,7 +25,7 @@ overrides this file.
   `opscrew/plan.yaml`.
 - `packages/core` — config/paths, redaction, audit log, approvals, safety policy, the agent runtime
   contract and its fake, orchestrator, cost ledger. `packages/runtime-claude` — the Claude Agent SDK
-  adapter.
+  adapter; `packages/runtime-openai` — the OpenAI Responses API adapter.
 - `packages/detect` — deterministic repository analysis (frameworks, platform exports, env vars).
 - `packages/secops` — `opscrew scan` engine, built-in rules, optional external scanners, policies.
 - `packages/agents` — Analyst, Interviewer, Architect, Code-change, Infra, Domain, SecOps, Verifier.
