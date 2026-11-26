@@ -61,8 +61,9 @@ release its own address." `postgresPooler(service)` says whether a service has i
   works; it must not need a password.
 - **Memory:** `mem_limit` 32 MB, measured in the Docker test, and counted by design and server-fit.
 - **The app's variables:** every name the alias rule fills for this database (the URL names and the
-  split `DB_*` parts) uses host `<db>-pooler` and port 6432 for the runtime processes. The release's
-  `release.db.env` keeps `<db>:5432` with the owner's login.
+  split `DB_*` parts) uses host `<db>-pooler` and port 6432 for the web process and cron. Workers read
+  a small env file after `app.env` with the direct address and the runtime login, written and rotated
+  like `release.db.env`, which keeps `<db>:5432`, host and port included, with the owner's login.
 
 ### 3. Rotation
 

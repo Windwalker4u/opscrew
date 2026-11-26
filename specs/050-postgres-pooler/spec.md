@@ -18,8 +18,8 @@ most other runtimes keep a pool inside the app.
 A user's Laravel app on a server uses PostgreSQL with separate logins. They add
 `pooler: pgbouncer` under the database's options (design writes it for new PHP apps) and run
 `npx opscrew provision`. The deploy starts a small PgBouncer next to the database, in session
-mode. The app's web, worker and cron processes reach the database through it; the release command
-(migrations) still connects to PostgreSQL directly. Pages that query the database get faster
+mode. The app's web process and cron jobs reach the database through it; its long-running workers
+and the release command (migrations) connect to PostgreSQL directly. Pages that query the database get faster
 because PgBouncer keeps the database's backends warm between requests.
 
 **Why this priority**: it is the feature.
@@ -89,9 +89,11 @@ migration connection goes straight to PostgreSQL.
   against a password it reads from its environment (never a file in the repository), log in to
   PostgreSQL as that login, ignore
   `extra_float_digits`.
-- **FR-5004**: The app's web, worker and cron processes MUST reach the database at
-  `<db>-pooler:6432` (every variable name the alias rule fills), and the release command MUST keep
-  the direct address with the owner's login.
+- **FR-5004**: The app's web process and cron jobs MUST reach the database at `<db>-pooler:6432`
+  (every variable name the alias rule fills, the split host and port included). Long-running workers
+  MUST keep the direct address with the runtime login, since in session mode each would hold one of
+  the pool's connections for its whole life (the lead, 2026-11-26). The release command MUST keep
+  the direct address with the owner's login, host and port included.
 - **FR-5005**: A rotation of the runtime login's password MUST give the pooler the new password
   before the app uses it.
 - **FR-5006**: Without `pooler`, every rendered file MUST stay byte for byte as before.

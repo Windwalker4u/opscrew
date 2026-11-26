@@ -27,7 +27,8 @@
       it with plan 1.'s message; `postgresPooler(service)` is exported.
     - The rendered Compose has `<db>-pooler` as plan 2. says, and the pooler's env file holds the
       runtime login's name and password; a leak check shows the password in no other rendered file.
-    - The app's database variables name `<db>-pooler:6432` for web, workers and cron;
+    - The app's database variables name `<db>-pooler:6432` for web and cron (workers direct, after
+      the review);
       `release.db.env` keeps `<db>:5432` with the owner's login. A split plan puts the pooler on
       the database's server.
     - A Portainer stack renders the same service.
