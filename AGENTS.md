@@ -76,7 +76,9 @@ Tests that build real container images (they need Docker and the network) run on
 `OPSCREW_DOCKER_TESTS=1`.
 Each `vitest run` writes temporary files into one folder under `OPSCREW_TEST_TMP` (or the system
 temp folder) and removes it afterwards; point `OPSCREW_TEST_TMP` at a drive with space for the
-engine tests, never at a folder inside a Git checkout.
+engine tests, never at a folder inside a Git checkout. Vitest's copies of transformed modules
+(a random folder with an `ssr` folder inside) live in that run folder too, so a run that was
+killed leaves them there for the next run to sweep, not in the system temp folder.
 
 ## Code conventions
 
