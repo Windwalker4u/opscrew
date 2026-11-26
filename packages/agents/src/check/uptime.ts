@@ -4,7 +4,9 @@
  * entry there, its state and one secret (the webhook's address); every change is a Cloudflare
  * uptime plan approved by its hash (`cloudflare-apply`), applied by the connector's adapter. This
  * computer records where the entry is (`.opscrew/uptime.json`), so a provision that leaves the
- * Worker, and a destroy, find it.
+ * Worker, and a destroy, find it. The servers that report their own checks to the Worker (User
+ * Story 4) are listed in the entry, and their host step `uptime-report` follows the Cloudflare plan
+ * (`reports.ts`).
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -23,6 +25,7 @@ import {
   type UptimePlan,
   uptimeEntryKey,
   uptimeLabel,
+  uptimeReportKey,
   uptimeSecretName,
   uptimeStateKey,
 } from "@opscrew/connector-cloudflare";
@@ -51,12 +54,17 @@ import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
 import { adapterBlocked, gitClient, githubCoordinates, PlanRefusedError } from "../shared";
 import { readValidJson } from "../shared/files";
+import { ensureReportKey, type ReportKey, readReportKey } from "./key";
+import {
+  type ReportServer,
+  type ReportServices,
+  reportHostPlan,
+  reportServers,
+  reportSettings,
+  unreportedLines,
+} from "./reports";
 import { WEBHOOK_NAMES } from "./secrets";
 import { repositoryCheckSettings, usesUptimeWorker } from "./settings";
-
-/** What design and provision say when an environment chooses the Worker (spec, edge cases). */
-export const UPTIME_ONLY_LINE =
-  "The disk, snapshot, restore-drill and certificate-days checks need `runner: actions`.";
 
 const { worker: WORKER, namespace: NAMESPACE } = UPTIME_RESOURCES;
 
@@ -95,9 +103,19 @@ export function uptimeEntry(
 const UptimeRecordSchema = z.strictObject({
   accountId: z.string().regex(/^[0-9a-f]{32}$/),
   id: z.string().min(1),
+  /** The SHA-256 of the report key the entry's Worker secret holds, as this computer wrote it. */
+  reportKey: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+  /** Where the entry's servers send their reports, while it lists any. */
+  reportUrl: z.url().optional(),
 });
 
-/** Where the environment's entry is: the Cloudflare account and the entry's id. */
+/**
+ * Where the environment's entry is: the Cloudflare account and the entry's id, and for its
+ * servers' reports, the report key the Worker holds (by its SHA-256) and their address.
+ */
 export type UptimeRecord = z.infer<typeof UptimeRecordSchema>;
 
 function recordFile(paths: Pick<ProjectPaths, "stateDir">): string {
@@ -169,15 +187,25 @@ export interface UptimeStep {
   plan: UptimePlan;
   desired: UptimeDesired;
   details: string;
+  /**
+   * The servers' reports, changed after the Cloudflare plan: the `uptime-report` step set up on
+   * the app's server (`report`: the entry's server and the report key), or removed from it when
+   * the entry listed a server that reports no more. Absent: no host step.
+   */
+  reports?: {
+    plan: DeployPlan;
+    services: ReportServices;
+    report?: { server: ReportServer; key: ReportKey };
+  };
 }
 
 /**
- * The webhook's secret for the entry: `{ url, token? }` as JSON, with the address from
- * `OPSCREW_CHECK_WEBHOOK` or, in a terminal, asked with `ask` (never echoed) when the Worker has no
- * secret for the entry yet, and ntfy's token from `OPSCREW_CHECK_NTFY_TOKEN`. Every part is
- * registered with the redactor. `undefined` when no address was given: the stored one is kept.
+ * The webhook's address for the entry's secret, with ntfy's token from `OPSCREW_CHECK_NTFY_TOKEN`:
+ * from `OPSCREW_CHECK_WEBHOOK` or, in a terminal, asked with `ask` (never echoed) when the secret
+ * must be written and none was given (`stored` false). Both are registered with the redactor.
+ * `undefined` when no address was given: the stored secret is kept.
  */
-async function webhookSecret(
+async function webhookAddress(
   deps: Pick<PhaseDeps, "env" | "interactive" | "reporter" | "redactor">,
   input: {
     kind: UptimeEntry["webhook"];
@@ -185,7 +213,7 @@ async function webhookSecret(
     stored: boolean;
     ask: ProvisionServices["askCheckWebhook"];
   },
-): Promise<string | undefined> {
+): Promise<{ url: string; token?: string } | undefined> {
   const { kind, name, stored, ask } = input;
   let url = deps.env[CHECK_SECRETS.webhook]?.trim();
   if (!url && stored) {
@@ -205,23 +233,112 @@ async function webhookSecret(
   const token = kind === "ntfy" ? deps.env[CHECK_SECRETS.ntfyToken]?.trim() : undefined;
   deps.redactor.addLiteral(url, CHECK_SECRETS.webhook);
   if (token) deps.redactor.addLiteral(token, CHECK_SECRETS.ntfyToken);
-  const value = JSON.stringify({ url, ...(token ? { token } : {}) });
-  deps.redactor.addLiteral(value, name);
-  return value;
+  return { url, ...(token ? { token } : {}) };
+}
+
+/**
+ * The stop when the Worker's secret must be written again with the environment's report key (a
+ * new key, or another than the one it holds) and no webhook address was given for it.
+ */
+function reportKeyNeedsAddress(name: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The uptime Worker's secret ${name} doesn't hold this environment's report key, which signs its servers' reports, and writing it again needs the webhook's address. Nothing was changed.`,
+    {
+      hint: `Set ${CHECK_SECRETS.webhook} to the webhook's address (or run the command in a terminal to be asked for it), then run the command again.`,
+    },
+  );
+}
+
+/**
+ * For provision with the Worker chosen: the entry with the servers that report
+ * (`reportServers`, and the `rotate` flags with the credentials' ages on), and the webhook's
+ * secret (`{ url, token?, report? }` as JSON, registered with the redactor) when it is written: when
+ * an address is given, when the Worker has none, and when this computer's record doesn't say the
+ * Worker holds the key it keeps (a lost key file gives a new key, and a plan declined or shown
+ * only leaves it unwritten): the address is then asked as for a new secret.
+ * A new key is made only once the address is known, so the secret always gets it.
+ */
+async function entryWithReports(
+  deps: Pick<PhaseDeps, "paths" | "env" | "interactive" | "reporter" | "redactor" | "clock">,
+  input: {
+    plan: DeployPlan;
+    entry: UptimeEntry;
+    stored: boolean;
+    ask: ProvisionServices["askCheckWebhook"];
+  },
+): Promise<{
+  entry: UptimeEntry;
+  secret?: string;
+  report?: { server: ReportServer; key: ReportKey };
+}> {
+  const { plan, stored } = input;
+  const servers = await reportServers(deps, plan);
+  const [server] = servers;
+  const credentials = plan.observability?.check?.credentials === true;
+  const entry: UptimeEntry =
+    server === undefined
+      ? input.entry
+      : {
+          ...input.entry,
+          servers,
+          ...(credentials
+            ? { rotate: await commandFlags(deps.paths.root, deps.paths.environment, plan.app.key) }
+            : {}),
+        };
+  const existing =
+    server === undefined ? undefined : await readReportKey(deps.paths, deps.redactor);
+  const recorded = (await readUptimeRecord(deps.paths))?.reportKey;
+  // The Worker holds this computer's key only once a written secret recorded it here (or the
+  // recovery copy brought that record back).
+  const stale = server !== undefined && (existing === undefined || recorded !== existing.sha256);
+  const address = await webhookAddress(deps, {
+    kind: entry.webhook,
+    name: entry.secret,
+    stored: stored && !stale,
+    ask: input.ask,
+  });
+  if (address === undefined) {
+    if (stored && stale) throw reportKeyNeedsAddress(entry.secret);
+    // Without a stored secret the plan's finding stops the run, and no key is made for nothing.
+    return {
+      entry,
+      ...(server === undefined || existing === undefined
+        ? {}
+        : { report: { server, key: existing } }),
+    };
+  }
+  const key =
+    server === undefined
+      ? undefined
+      : (existing ?? (await ensureReportKey(deps.paths, deps.redactor)));
+  const secret = JSON.stringify({
+    ...address,
+    ...(key === undefined ? {} : { report: key.value }),
+  });
+  deps.redactor.addLiteral(secret, entry.secret);
+  return {
+    entry,
+    secret,
+    ...(server === undefined || key === undefined ? {} : { report: { server, key } }),
+  };
 }
 
 /**
  * Inspects the Worker's account and plans the environment's change, read-only: its entry (`want`,
- * provision with the Worker chosen) with its secret when one is given or asked, or the entry's
- * removal (with `destroy`, the Worker's and the namespace's too when no other entry is left).
+ * provision with the Worker chosen) with its servers and its secret when one is given or asked, or
+ * the entry's removal (with `destroy`, the Worker's and the namespace's too when no other entry is
+ * left). With `reports` (provision), the servers' host step follows the plan: set up where the
+ * entry lists a server, removed where the stored entry listed one and the new one lists none.
  */
 async function uptimeStep(
-  deps: Pick<PhaseDeps, "paths" | "env" | "interactive" | "reporter" | "redactor">,
+  deps: Pick<PhaseDeps, "paths" | "env" | "interactive" | "reporter" | "redactor" | "clock">,
   input: {
     client: CloudflareClient;
     target: UptimeRecord;
     want?: { plan: DeployPlan; repository: string; ask: ProvisionServices["askCheckWebhook"] };
     destroy?: boolean;
+    reports?: { plan: DeployPlan; services: ReportServices };
   },
 ): Promise<UptimeStep> {
   const { client, target, want } = input;
@@ -231,6 +348,7 @@ async function uptimeStep(
     script: SCRIPT,
     ...(input.destroy === true ? { destroy: true as const } : {}),
   };
+  let report: { server: ReportServer; key: ReportKey } | undefined;
   if (want !== undefined) {
     const kind = (await repositoryCheckSettings(deps.paths, want.plan))?.webhook;
     if (kind === undefined) {
@@ -240,23 +358,40 @@ async function uptimeStep(
         { hint: "Report this to OpsCrew." },
       );
     }
-    const entry = uptimeEntry(want.plan, want.repository, kind);
-    desired = { ...desired, entry };
+    const base = uptimeEntry(want.plan, want.repository, kind);
+    desired = { ...desired, entry: base };
     // What else blocks the plan stops it before the address is asked.
     const first = planUptime(facts, desired);
     if (first.findings.some((finding) => finding.code !== "secret-missing")) {
       return { client, target, plan: first, desired, details: describeUptimePlan(first) };
     }
-    const secret = await webhookSecret(deps, {
-      kind,
-      name: entry.secret,
-      stored: facts.secrets?.includes(entry.secret) === true,
+    const reporting = await entryWithReports(deps, {
+      plan: want.plan,
+      entry: base,
+      stored: facts.secrets?.includes(base.secret) === true,
       ask: want.ask,
     });
-    if (secret !== undefined) desired = { ...desired, secret };
+    report = reporting.report;
+    desired = {
+      ...desired,
+      entry: reporting.entry,
+      ...(reporting.secret === undefined ? {} : { secret: reporting.secret }),
+    };
   }
   const plan = planUptime(facts, desired);
-  return { client, target, plan, desired, details: describeUptimePlan(plan) };
+  const listed = (facts.entries[uptimeEntryKey(target.id)]?.servers ?? []).length > 0;
+  const reports =
+    input.reports === undefined || (report === undefined && !listed)
+      ? undefined
+      : { ...input.reports, ...(report === undefined ? {} : { report }) };
+  return {
+    client,
+    target,
+    plan,
+    desired,
+    details: describeUptimePlan(plan),
+    ...(reports === undefined ? {} : { reports }),
+  };
 }
 
 /** The stop on the plan's findings (`PHASE_PRECONDITION`, nothing changed), with the plan shown. */
@@ -345,51 +480,71 @@ async function applyStep(
   );
 }
 
-/** The record once the plan is applied (or has no change): kept with an entry, else removed. */
+/**
+ * The record once the plan is applied (or has no change): kept with an entry, else removed. With
+ * its servers it keeps their report address, and the report key the Worker's secret holds: the
+ * planned one when the plan wrote the secret, else the one recorded before.
+ */
 async function recordAfter(paths: Pick<ProjectPaths, "stateDir">, step: UptimeStep) {
-  if (step.desired.entry !== undefined) await writeUptimeRecord(paths, step.target);
-  else await removeUptimeRecord(paths);
+  const { entry, secret } = step.desired;
+  if (entry === undefined) {
+    await removeUptimeRecord(paths);
+    return;
+  }
+  const before = await readUptimeRecord(paths);
+  const reportKey = secret === undefined ? before?.reportKey : step.reports?.report?.key.sha256;
+  const reportUrl = (entry.servers ?? []).length > 0 ? step.plan.reportUrl : null;
+  await writeUptimeRecord(paths, {
+    accountId: step.target.accountId,
+    id: step.target.id,
+    ...(reportKey === undefined ? {} : { reportKey }),
+    ...(reportUrl === null ? {} : { reportUrl }),
+  });
 }
 
 // --- Provision --------------------------------------------------------------------------------
 
 /**
  * Provision's uptime step, planned read-only before anything changes: with the Worker chosen, the
- * environment's entry and secret in the account of the app's zone (the address from
- * `OPSCREW_CHECK_WEBHOOK`, or with `ask`, in a terminal, asked when the Worker has none for it and
- * nothing else blocks the plan); when the plan no longer chooses it and this computer recorded an
- * entry, that entry's removal, its state's and its secret's (the Worker, its trigger and the
- * namespace stay). Its findings stop the run (`PHASE_PRECONDITION`, nothing changed). `undefined`
- * when there is nothing to plan, which reads nothing.
+ * environment's entry, its servers that report (`reportServers`) and its secret in the account of
+ * the app's zone (the address from `OPSCREW_CHECK_WEBHOOK`, or with `ask`, in a terminal, asked
+ * when the Worker has none for it, or none with this computer's report key, and nothing else blocks
+ * the plan); when the plan no longer chooses it and this computer recorded an entry, that entry's
+ * removal, its state's and its secret's (the Worker, its trigger and the namespace stay). The
+ * servers' host step follows it ({@link provisionUptime}), reached with `services`. Says which
+ * servers report nothing ({@link unreportedLines}). Its findings stop the run
+ * (`PHASE_PRECONDITION`, nothing changed). `undefined` when there is nothing to plan, which reads
+ * nothing.
  */
 export async function planProvisionUptime(
   deps: Pick<
     PhaseDeps,
-    "paths" | "env" | "interactive" | "reporter" | "redactor" | "fetch" | "version"
+    "paths" | "env" | "interactive" | "reporter" | "redactor" | "fetch" | "version" | "clock"
   >,
   input: {
     plan: DeployPlan;
     /** The repository's GitHub coordinates (its remote), read only when there is a plan to make. */
     github: () => Promise<{ owner: string; repo: string }>;
-    services: Pick<ProvisionServices, "askCheckWebhook" | "sharedCloudflare">;
+    services: Pick<ProvisionServices, "askCheckWebhook" | "sharedCloudflare"> & ReportServices;
     command: string;
     ask: boolean;
   },
 ): Promise<UptimeStep | undefined> {
-  const { plan } = input;
+  const { plan, services } = input;
   const wanted = usesUptimeWorker(plan);
   if (!wanted && (await readUptimeRecord(deps.paths)) === undefined) return undefined;
-  if (wanted) deps.reporter.info(UPTIME_ONLY_LINE);
+  for (const line of unreportedLines(plan)) deps.reporter.info(line);
   const { owner, repo } = await input.github();
   const repository = `${owner}/${repo}`;
-  const client = sharedCloudflareClient(deps, input.services);
+  const client = sharedCloudflareClient(deps, services);
   const target = await uptimeTarget(deps.paths, plan, { client, repository });
   if (target === undefined) return undefined;
-  const ask = input.ask ? input.services.askCheckWebhook : undefined;
+  const ask = input.ask ? services.askCheckWebhook : undefined;
   const step = await uptimeStep(deps, {
     client,
     target,
     ...(wanted ? { want: { plan, repository, ask } } : {}),
+    reports: { plan, services },
   });
   requireNoFindings(deps, step, input.command);
   return step;
@@ -398,8 +553,11 @@ export async function planProvisionUptime(
 /**
  * Provision's part of the uptime Worker, at its step: the planned `step`
  * ({@link planProvisionUptime}) shown, approved by its hash (`cloudflare-apply`), applied and
- * audited; without changes only this computer's record is updated. With `planOnly` it is only
- * shown, with a line naming its hash for scripts. Returns the hash of a plan with changes.
+ * audited; without changes only this computer's record is updated. Then, with the Worker's entry
+ * in place (so it takes their first report), the servers' host step `uptime-report`
+ * (`reportHostPlan`), set up or removed, approved by its own hash. With `planOnly` each plan is only
+ * shown, with a line naming its hash for scripts. Returns the hash of a Cloudflare plan with
+ * changes.
  */
 export async function provisionUptime(
   deps: PhaseDeps,
@@ -407,6 +565,48 @@ export async function provisionUptime(
   input: { command: string; phase: PhaseName; planOnly?: boolean },
 ): Promise<string | undefined> {
   if (step === undefined) return undefined;
+  const hash = await provisionWorker(deps, step, input);
+  const { reports } = step;
+  if (reports === undefined) return hash;
+  const { report } = reports;
+  const url = step.plan.reportUrl;
+  if (report !== undefined && url === null) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      "OpsCrew planned the uptime report without the Worker's report address.",
+      { hint: "Report this to OpsCrew." },
+    );
+  }
+  await reportHostPlan(deps, {
+    plan: reports.plan,
+    services: reports.services,
+    entry: step.target.id,
+    ...(report === undefined || url === null
+      ? {}
+      : {
+          report: {
+            settings: await reportSettings(deps, reports.plan, {
+              url,
+              entry: step.target.id,
+              server: report.server,
+              key: report.key,
+            }),
+            key: report.key,
+          },
+        }),
+    command: input.command,
+    phase: input.phase,
+    ...(input.planOnly === true ? { planOnly: true } : {}),
+  });
+  return hash;
+}
+
+/** {@link provisionUptime}'s Cloudflare plan: the hash of one with changes. */
+async function provisionWorker(
+  deps: PhaseDeps,
+  step: UptimeStep,
+  input: { command: string; phase: PhaseName; planOnly?: boolean },
+): Promise<string | undefined> {
   if (step.plan.changes.length === 0) {
     deps.reporter.success(
       step.desired.entry !== undefined
@@ -439,7 +639,7 @@ export async function provisionUptime(
 export async function planUptimeTeardown(
   deps: Pick<
     PhaseDeps,
-    "paths" | "env" | "interactive" | "reporter" | "redactor" | "fetch" | "version"
+    "paths" | "env" | "interactive" | "reporter" | "redactor" | "fetch" | "version" | "clock"
   >,
   plan: DeployPlan,
   input: {
@@ -494,7 +694,8 @@ export async function applyUptimeTeardown(
 /**
  * The uptime check's lines in `status` for an environment the Worker checks, read from Cloudflare
  * now (read-only, with `CLOUDFLARE_API_TOKEN`): where it runs, the hostnames it checks, and the
- * hostnames its state has down, with since when and why. A missing Worker or entry says to run
+ * hostnames its state has down, with since when and why, and each listed server's last report
+ * (its time and statuses, "reports stopped" after 26 hours). A missing Worker or entry says to run
  * `provision`; a line says why instead when Cloudflare cannot be read. Redacted.
  */
 export async function uptimeStatusLines(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
@@ -539,6 +740,15 @@ async function uptimeState(deps: PhaseDeps, plan: DeployPlan): Promise<string[]>
   const state = text === undefined ? { hosts: {} } : parseUptimeState(text);
   const hosts = entry.hosts.map((host) => `${host.hostname}${host.healthPath}`);
   const down = Object.entries(state?.hosts ?? {}).filter(([, host]) => host.status === "down");
+  const servers: string[] = [];
+  for (const server of entry.servers ?? []) {
+    const report = await client.getKv(
+      target.accountId,
+      facts.namespaceId,
+      uptimeReportKey(target.id, server.id),
+    );
+    servers.push(`    ${server.id}: ${serverText(server, report, deps.clock.now())}`);
+  }
   return [
     `  Checked every 5 minutes by the Cloudflare Worker ${WORKER}: ${hosts.join(", ")}`,
     ...(state === undefined
@@ -551,5 +761,81 @@ async function uptimeState(deps: PhaseDeps, plan: DeployPlan): Promise<string[]>
               ([hostname, host]) => `    ${hostname} since ${host.since}: ${host.reason}`,
             ),
           ]),
+    ...(servers.length === 0
+      ? []
+      : ["  Server checks (each server reports its own, on a change and once a day):", ...servers]),
   ];
+}
+
+/** How long a server may stay silent before the Worker says its reports stopped: 26 hours. */
+const REPORTS_STOP_MS = 26 * 3_600_000;
+
+/** A server's last report as the Worker keeps it (`report:<id>/<server>`): its time and statuses. */
+const StoredReportSchema = z.looseObject({
+  at: z.number().int().positive(),
+  disk: z.looseObject({ status: z.string(), percent: z.number().optional() }),
+  snapshot: z.looseObject({ status: z.string() }),
+  drill: z.looseObject({ status: z.string() }),
+  certificates: z.array(
+    z.looseObject({ hostname: z.string(), status: z.string(), days: z.number().optional() }),
+  ),
+  credentials: z
+    .array(z.looseObject({ name: z.string(), status: z.string(), days: z.number().optional() }))
+    .optional(),
+});
+
+/** `2026-11-25T10:00:00Z`. */
+function utc(ms: number): string {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * A listed server's line in `status`: its last report's time and statuses (`text`, the Worker's
+ * value), "reports stopped" once its last report, or its listing without one, is over 26 hours
+ * old.
+ */
+function serverText(
+  server: NonNullable<UptimeEntry["servers"]>[number],
+  text: string | undefined,
+  now: Date,
+): string {
+  let json: unknown;
+  try {
+    json = text === undefined ? undefined : JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  const parsed = StoredReportSchema.safeParse(json);
+  const report = parsed.success ? parsed.data : undefined;
+  if (text !== undefined && report === undefined) {
+    return "its last report is not what the Worker writes.";
+  }
+  const last = report === undefined ? Date.parse(server.since) : report.at * 1000;
+  const hours = Math.floor((now.getTime() - last) / 3_600_000);
+  const ago = `${plural(Math.max(hours, 0), "hour")} ago`;
+  const stopped = now.getTime() - last > REPORTS_STOP_MS;
+  if (report === undefined) {
+    return stopped
+      ? `reports stopped: none came since it was listed, ${utc(last)} (${ago}).`
+      : `no report yet (listed since ${utc(last)}).`;
+  }
+  const old = (report.credentials ?? []).filter((item) => item.status !== "ok");
+  const statuses = [
+    `disk ${report.disk.status}${report.disk.percent === undefined ? "" : ` (${report.disk.percent}% used)`}`,
+    `snapshot ${report.snapshot.status}`,
+    `restore drill ${report.drill.status}`,
+    ...report.certificates.map(
+      (item) =>
+        `certificate of ${item.hostname} ${item.status}${item.days === undefined ? "" : ` (${plural(item.days, "day")} left)`}`,
+    ),
+    ...(report.credentials === undefined
+      ? []
+      : old.length === 0
+        ? ["credentials ok"]
+        : old.map(
+            (item) =>
+              `credential ${item.name} ${item.status}${item.days === undefined ? "" : ` (${plural(item.days, "day")})`}`,
+          )),
+  ].join(", ");
+  return `${stopped ? "reports stopped: the last one came" : "last report"} ${utc(last)} (${ago}): ${statuses}.`;
 }

@@ -20,10 +20,16 @@ import { answer, DENIED, type FakeFault, ok, only, paged, refuse, takeFault } fr
  * - **Schedules** are replaced as a whole; **secrets** are listed by name, set (`secret_text`) and
  *   deleted; deleting a Worker deletes its schedules and secrets. A Worker the account doesn't
  *   have answers 404 with code 10007.
+ * - **The workers.dev address** of a Worker is read and set (`…/subdomain`). A new Worker starts
+ *   with it off (the API states no default), an upload again keeps it, and turning it on needs the
+ *   account's subdomain (HTTP 403, code 10063).
  *
  * Any other request goes to `fallback` (another fake), or throws. Every request is recorded in
  * `calls`, a multipart one with its parts as text.
  */
+
+/** A Worker's workers.dev address when nothing turned it on. */
+const OFF = { enabled: false, previewsEnabled: false };
 
 /** A Workers KV namespace and its keys. */
 export interface FakeKvNamespace {
@@ -42,6 +48,8 @@ export interface FakeUptimeScript {
   /** Secret names and values. */
   secrets: Map<string, string>;
   crons: string[];
+  /** Its workers.dev address and its previews'; absent: both off. */
+  workersDev?: { enabled: boolean; previewsEnabled: boolean };
 }
 
 /** A request the fake received. */
@@ -93,7 +101,9 @@ export class FakeUptime {
       route === `${account}/workers/subdomain` ||
       route.startsWith(`${account}/storage/kv/namespaces`) ||
       (route.startsWith(scripts) &&
-        /^[^/]+(?:\/schedules|\/secrets(?:\/[^/]+)?)?$/.test(route.slice(scripts.length)));
+        /^[^/]+(?:\/schedules|\/subdomain|\/secrets(?:\/[^/]+)?)?$/.test(
+          route.slice(scripts.length),
+        ));
     if (!ours) {
       if (this.#fallback) return this.#fallback(input, init);
       throw new Error(`fake uptime: no route for ${method} ${path}`);
@@ -234,6 +244,18 @@ export class FakeUptime {
         schedules: script.crons.map((cron) => ({ cron, created_on: "", modified_on: "" })),
       });
     }
+    if (rest === "/subdomain" && method === "GET") {
+      const { enabled, previewsEnabled } = script.workersDev ?? OFF;
+      return ok({ enabled, previews_enabled: previewsEnabled });
+    }
+    if (rest === "/subdomain" && method === "POST") {
+      if (this.subdomain === undefined) {
+        return refuse(403, 10063, "You need a workers.dev subdomain in order to proceed");
+      }
+      const sent = body as { enabled: boolean; previews_enabled: boolean };
+      script.workersDev = { enabled: sent.enabled, previewsEnabled: sent.previews_enabled };
+      return ok({ enabled: sent.enabled, previews_enabled: sent.previews_enabled });
+    }
     if (rest === "/secrets" && method === "GET") {
       return ok(
         [...script.secrets.keys()].map((secret) => ({ name: secret, type: "secret_text" })),
@@ -276,6 +298,7 @@ export class FakeUptime {
       bindings,
       secrets: kept && previous ? previous.secrets : new Map(),
       crons: previous?.crons ?? [],
+      workersDev: previous?.workersDev ?? OFF,
     });
     return ok({ id: name, etag: this.#id(), handlers: ["scheduled"] });
   }

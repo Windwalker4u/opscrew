@@ -83,6 +83,8 @@ import {
   readableRecords,
   runnerOf,
   tunnelOf,
+  type UptimeReportFacts,
+  UptimeReportFactsSchema,
   type WebFilterRules,
 } from "./facts";
 import {
@@ -162,6 +164,7 @@ import {
   type DesiredRunnerHost,
   DesiredRunnerHostSchema,
   DesiredRunnerSchema,
+  DesiredUptimeReportSchema,
   EnvNameSchema,
   HOST_PLAN_SCHEMA_VERSION,
   type HostFinding,
@@ -176,6 +179,13 @@ import {
   ServiceNameSchema,
   sameRepository,
 } from "./types";
+import {
+  uptimeReportInstance,
+  uptimeReportRemoval,
+  uptimeReportStep,
+  uptimeReportTeardownStep,
+  uptimeReportUndoStep,
+} from "./uptime-report";
 import {
   sortedIpv6Networks,
   sortedNetworks,
@@ -2604,6 +2614,9 @@ export function planTeardown(
   // The app's address updater, and its script and units with the last instance.
   const updater = dnsUpdaterTeardownStep(f, app);
   if (updater !== undefined) steps.push(updater);
+  // The app's uptime reports, and their script and units with the last one.
+  const report = uptimeReportTeardownStep(f, app);
+  if (report !== undefined) steps.push(report);
   // The add-ons the app turned on (or left without a record, with the last app); Beszel's
   // history and the monitoring stack's volumes only with the app's data.
   for (const kind of ADDON_KINDS) {
@@ -2886,6 +2899,9 @@ export function planUndo(
   // Each app's teardown removes its address updater; what is left goes here.
   const updater = dnsUpdaterUndoStep(f);
   if (updater !== undefined) steps.push(updater);
+  // Each app's teardown removes its uptime reports; what is left goes here.
+  const report = uptimeReportUndoStep(f);
+  if (report !== undefined) steps.push(report);
   const ufw = entry("ufw");
   if (ufw) {
     const removeRules = rulesToRemove(f, ufw.previous);
@@ -3965,6 +3981,75 @@ export function planAddon<K extends AddonPlanKind>(
   };
   // Validate now so bad files or settings fail before anything is approved.
   for (const step of plan.steps) stepScripts(plan, step);
+  return plan;
+}
+
+/**
+ * A one-step host plan for the uptime report of one environment on this server (feature 046,
+ * User Story 4), from the server's `facts` (`inspectUptimeReport`):
+ *
+ * - `enable`: the `uptime-report` step installs or replaces the environment's instance (its
+ *   config and its key file, 0600 root) and, unless a newer version is there, the shared script
+ *   and template units, with `curl` and `openssl` when the server lacks them. The plan names the
+ *   report key by its SHA-256 only (`enable.keySha256`); the key itself is supplied at apply as
+ *   `ApplySecrets.uptimeReportKey` and reaches the server on standard input. In place when the
+ *   facts show all of it as planned.
+ * - `disable`: the removal of the entry's instance (its timer, config, key and state), and of the
+ *   script and units when no other instance is left; in place when the facts show no such
+ *   instance.
+ *
+ * The step runs as root everywhere: on a server OpsCrew created, through Docker (apply with
+ * `rootImage`). Apply it with `applyHostPlan` like any host plan.
+ */
+export function planUptimeReport(options: {
+  app: string;
+  facts: UptimeReportFacts;
+  enable?: z.input<typeof DesiredUptimeReportSchema>;
+  disable?: { entry: string };
+}): HostPlan {
+  const { app, enable, disable } = options;
+  if ((enable === undefined) === (disable === undefined)) {
+    throw new OpsCrewError("INVALID_INPUT", "Turn the uptime report either on or off, not both.");
+  }
+  requireAppName(app);
+  const facts = parseInput(
+    UptimeReportFactsSchema,
+    options.facts,
+    "The uptime report's facts are not valid",
+    "Inspect the server again with OpsCrew before planning.",
+  );
+  let item: HostStep;
+  if (enable !== undefined) {
+    const report = parseInput(
+      DesiredUptimeReportSchema,
+      enable,
+      "The uptime report's settings are not valid",
+      "Make the plan again with OpsCrew; if this keeps happening, report it.",
+    );
+    item = uptimeReportStep(facts, app, report);
+  } else {
+    const entry = parseInput(
+      DesiredUptimeReportSchema.shape.entry,
+      disable?.entry,
+      "The uptime entry is not valid",
+      "Make the plan again with OpsCrew; if this keeps happening, report it.",
+    );
+    const instance = uptimeReportInstance(entry);
+    const others = facts.instances.filter((found) => found.instance !== instance);
+    item = uptimeReportRemoval([instance], others.length === 0, "app");
+    if (others.length === facts.instances.length) {
+      item = { ...item, state: "in-place", reason: "Not on this server." };
+    }
+  }
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps: [item],
+    findings: [],
+  };
+  // Validate now so bad settings fail before anything is approved.
+  stepScripts(plan, item);
   return plan;
 }
 

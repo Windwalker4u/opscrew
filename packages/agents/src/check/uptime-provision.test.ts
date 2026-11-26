@@ -31,8 +31,14 @@ import {
   SERVER_IPV6,
   testPlan,
 } from "../testing";
-import { UPTIME_ONLY_LINE } from "./uptime";
-import { fakeUptimeAccount, WEBHOOK_URL, withUptimeAccount } from "./uptime.fakes";
+import { readReportKey } from "./key";
+import { UPTIME_ONLY_LINE } from "./reports";
+import {
+  FakeReportServer,
+  fakeUptimeAccount,
+  WEBHOOK_URL,
+  withUptimeAccount,
+} from "./uptime.fakes";
 
 const ID = "acme/shop/shop/prod";
 
@@ -67,6 +73,8 @@ async function setup(plan: DeployPlan) {
     approvalHandler: handler,
   });
   const account = fakeUptimeAccount();
+  /** The uptime report on the server OpsCrew creates. */
+  const server = new FakeReportServer();
   /** The infrastructure plan's changes (by default it creates the server), and its engines. */
   const scenario: { changes?: ResourceChange[] } = {};
   const engines: FakeEngine[] = [];
@@ -93,11 +101,23 @@ async function setup(plan: DeployPlan) {
     remote: readyRemote,
     sleep: async () => undefined,
     sharedCloudflare: withUptimeAccount(fakeSharedCloudflare(new FakeZone()), account.client),
+    serverHost: server,
   };
   const answerWith = (next: (request: ApprovalRequest) => boolean) => {
     answer = next;
   };
-  return { ...project, deps, github, handler, answerWith, services, account, scenario, engines };
+  return {
+    ...project,
+    deps,
+    github,
+    handler,
+    answerWith,
+    services,
+    account,
+    server,
+    scenario,
+    engines,
+  };
 }
 
 /** Another app's entry with `count` hostnames in the account's namespace. */
@@ -135,8 +155,8 @@ it("the connector's and the script's names and limits are the same", () => {
 });
 
 describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Worker", () => {
-  it("applies the uptime plan by its hash, with no Actions workflow and no GitHub check secrets", async () => {
-    const { deps, github, handler, services, account, root } = await setup(workerPlan());
+  it("applies the uptime plan by its hash, then the server's report, with no Actions workflow and no GitHub check secrets", async () => {
+    const { deps, github, handler, services, account, server, root } = await setup(workerPlan());
     await runProvision(deps, { services });
 
     const uptime = handler.requests.filter(
@@ -148,7 +168,20 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     expect(account.uptime.scripts.get("opscrew-uptime")?.secrets.has(uptimeSecretName(ID))).toBe(
       true,
     );
-    expect(deps.reporter.text()).toContain(UPTIME_ONLY_LINE);
+    // The server reports its own checks: its host plan comes after the Cloudflare plan.
+    expect(deps.reporter.text()).not.toContain(UPTIME_ONLY_LINE);
+    const kinds = handler.requests.map((r) => r.kind);
+    const host = handler.requests.find((r) => r.title.includes("Cloudflare uptime Worker"));
+    expect(host?.kind).toBe("host-apply");
+    expect(kinds.indexOf("host-apply", kinds.indexOf("cloudflare-apply"))).toBeGreaterThan(-1);
+    expect(handler.requests.indexOf(host as ApprovalRequest)).toBeGreaterThan(
+      handler.requests.indexOf(uptime[0] as ApprovalRequest),
+    );
+    expect(server.applies.map((a) => a.plan.steps.map((step) => step.id))).toEqual([
+      ["uptime-report"],
+    ]);
+    const key = await readReportKey(deps.paths, deps.redactor);
+    expect(server.applies[0]?.options.secrets).toEqual({ uptimeReportKey: key?.value });
 
     // No workflow, no check key, no GitHub check secrets.
     expect(existsSync(join(root, ".github/workflows/opscrew-check.yml"))).toBe(false);
@@ -160,6 +193,7 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     expect(deps.redactor.redact(`posting to ${WEBHOOK_URL}`)).not.toContain(WEBHOOK_URL);
     const seen = JSON.stringify([deps.reporter.lines, deps.audit.entries, handler.requests]);
     expect(seen).not.toContain(WEBHOOK_URL);
+    expect(seen).not.toContain(key?.value);
   });
 
   it("--plan-only shows the uptime plan with its hash and changes nothing in Cloudflare", async () => {
@@ -174,8 +208,8 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     expect(handler.requests.map((r) => r.title).join("\n")).not.toContain("uptime plan");
   });
 
-  it("applies the uptime plan from a script approving only its hash, kept apart from the infrastructure's", async () => {
-    const { deps, github, handler, answerWith, services, account, scenario } = await setup(
+  it("applies the uptime plans from a script approving only their hashes, kept apart from the infrastructure's", async () => {
+    const { deps, github, handler, answerWith, services, account, server, scenario } = await setup(
       workerPlan(),
     );
     const plan = workerPlan();
@@ -200,14 +234,23 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     expect(shown.uptimePlanHash).toMatch(/^[0-9a-f]{64}$/);
     expect(deps.reporter.text()).toContain(`Cloudflare uptime plan ${shown.uptimePlanHash}.`);
 
-    // A script: only the uptime plan's hash, nothing else bound to a hash is approved.
+    // The server's uptime report has a host plan of its own, shown with its hash.
+    const report = /uptime-report plan ([0-9a-f]{64}). In a script/.exec(deps.reporter.text())?.[1];
+    expect(report).toBeDefined();
+    expect(server.applies).toEqual([]);
+
+    // A script: only the uptime plans' hashes, nothing else bound to a hash is approved.
     const hash = shown.uptimePlanHash as string;
+    const hashes = [hash, report as string];
     handler.requests.length = 0;
     deps.interactive = false;
-    answerWith((r) => (r.planHash === undefined ? r.allowDestroy !== true : r.planHash === hash));
-    await runProvision(deps, { services, approveHashes: [hash] });
+    answerWith((r) =>
+      r.planHash === undefined ? r.allowDestroy !== true : hashes.includes(r.planHash),
+    );
+    await runProvision(deps, { services, approveHashes: hashes });
     expect(handler.requests.find((r) => r.title.includes("uptime plan"))?.planHash).toBe(hash);
     expect(account.uptime.namespace("opscrew-uptime")?.values.has(uptimeEntryKey(ID))).toBe(true);
+    expect(server.applies.map((a) => a.options.approvedHash)).toEqual([report]);
   });
 
   it("stops before any server is created when the account has no workers.dev subdomain", async () => {
@@ -215,7 +258,7 @@ describe.skipIf(!findExecutable("git"))("provision with the Cloudflare uptime Wo
     account.uptime.subdomain = undefined;
     await expect(runProvision(deps, { services })).rejects.toMatchObject({
       code: "PHASE_PRECONDITION",
-      message: expect.stringContaining("Your Cloudflare account has no workers.dev subdomain yet."),
+      message: expect.stringContaining("Your Cloudflare account has no workers.dev subdomain yet"),
       hint: expect.stringContaining("Open Workers & Pages in Cloudflare's dashboard once"),
     });
     expect(engines.flatMap((engine) => engine.applied)).toEqual([]);

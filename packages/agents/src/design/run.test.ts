@@ -973,8 +973,12 @@ describe("runDesign", () => {
       });
       const third = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
       const designed = await runDesign(third, { catalog: euCatalog() });
-      expect(designed.lines).toContain(
-        "The disk, snapshot, restore-drill and certificate-days checks need `runner: actions`.",
+      expect(designed.lines).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            "The app's server checks its own disk, last scheduled snapshot and restore drill",
+          ),
+        ]),
       );
     });
 

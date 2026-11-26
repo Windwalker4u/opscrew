@@ -142,6 +142,18 @@ export function localRead(): Promise<string>;
  */
 export const CHECK_COMMAND: string;
 
+/** Why the last scheduled drill failed, by its result. */
+export const DRILL_FAILURES: Readonly<Record<"not-restored" | "unhealthy" | "failed", string>>;
+
+/** The issues' hints: a full disk, a failed snapshot or drill, an expiring certificate. */
+export const DISK_HINT: string;
+export const SNAPSHOT_HINT: string;
+export const DRILL_HINT: string;
+export const CERTIFICATE_HINT: string;
+
+/** How a credential's date came about, in its issue's words, by the date's source. */
+export const CREDENTIAL_DATES: Readonly<Record<"rotated" | "made" | "first-deploy", string>>;
+
 /**
  * How {@link CHECK_COMMAND} reads a scheduled snapshot's log from its `lines`: its last
  * scheduled snapshot id line (`id`, absent without one) and the non-empty lines after it.

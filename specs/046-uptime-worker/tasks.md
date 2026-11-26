@@ -189,7 +189,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
 
 ## Wave 3 (User Story 4: the server reports its own checks)
 
-- [ ] T4606 [US4] The Worker's report handler and heartbeat alert
+- [x] T4606 [US4] The Worker's report handler and heartbeat alert
   - **Owns:** `packages/iac-templates/uptime/**`, `packages/iac-templates/src/uptime/**`,
     `packages/iac-templates/src/generated/uptime.ts`.
   - **Reads:** plan.md 6.2, data-model.md "Server reports", research R8 and R9, spec.md User
@@ -230,7 +230,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - **Effort:** xhigh
 
-- [ ] T4607 [US4] The host step `uptime-report`: the server's script, units and config
+- [x] T4607 [US4] The host step `uptime-report`: the server's script, units and config
   - **Owns:** `packages/connectors/ssh-host/src/uptime-report.ts` (new) and its tests (new,
     including a `uptime-report-script.test.ts` in the shell harness);
     `packages/connectors/ssh-host/src/{steps,facts,inspect,types,plan,index}.ts`, only for this
@@ -282,7 +282,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host && pnpm lint`
   - **Effort:** xhigh
 
-- [ ] T4608 [US4] The adapter's additions: workers.dev, servers and report keys
+- [x] T4608 [US4] The adapter's additions: workers.dev, servers and report keys
   - **Owns:** `packages/connectors/cloudflare/src/uptime.ts` and its tests,
     `packages/connectors/cloudflare/src/client.ts` (the two subdomain methods),
     `packages/connectors/cloudflare/src/client-uptime.test.ts`,
@@ -309,7 +309,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **Verify:** `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare && pnpm lint`
   - **Effort:** high
 
-- [ ] T4610 [US4] The guide's server part
+- [x] T4610 [US4] The guide's server part
   - **Owns:** `docs/guide/alerts.md`.
   - **Reads:** plan.md 6.5, spec.md User Story 4 and its edge cases, research R8 and R9.
   - **Depends:** T4605.
@@ -325,7 +325,7 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
 
 ## Wave 4
 
-- [ ] T4609 [US4] The agents' server reports: the key, the host step, the entry's servers, status
+- [x] T4609 [US4] The agents' server reports: the key, the host step, the entry's servers, status
   - **Owns:** `packages/agents/src/check/**`, `packages/agents/src/destroy/{common,own}.ts` and
     their tests, `packages/agents/src/status/check-state.ts` and its test,
     `packages/agents/src/rotate/uptime-report.ts` (new) and its test, and
@@ -380,6 +380,9 @@ Four build waves, then the lead's. Waves 3 and 4 are User Story 4 (the founder, 
   - **The silence alert:** proven in minutes with the test-only `heartbeatMinutes`, which only
     the live test's own setup passes (quickstart step 12).
   - **The results** go into `docs/e2e-coverage.md`.
+- [ ] T4694 (lead) The live pass's server part (quickstart steps 9–12a, and the timer's removal in
+  13 and 14), on a throwaway server the pass creates and destroys, after a fresh review of
+  T4606–T4610. The results go into `docs/e2e-coverage.md`.
 - [ ] T4693 (lead) The changelog line for 0.2.12: "An uptime check in your own Cloudflare account,
   instead of GitHub Actions (`observability.check.runner: cloudflare`), with the server reporting
   its disk, snapshots and restore drills itself."

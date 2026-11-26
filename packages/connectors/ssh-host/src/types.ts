@@ -18,7 +18,8 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
  * too, planned from `DesiredHost.drills` (and removed by a teardown). `check-key`, `monitoring`,
  * `beszel` and `alloy` are planned by `planAddon` (and removed by a teardown), `previews` by
  * `planAddon` alone, `network` and `network-filter` by `planNetwork` (and removed by a teardown or
- * an undo), `public-ssh` by `planPublicSsh` and `grant` by `planGrant`.
+ * an undo), `public-ssh` by `planPublicSsh`, `grant` by `planGrant`, and `uptime-report` by
+ * `planUptimeReport` (and removed by a teardown or an undo).
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -46,6 +47,7 @@ export const HOST_STEP_IDS = [
   "tunnel-connector",
   "portainer",
   "check-key",
+  "uptime-report",
   "previews",
   "monitoring",
   "beszel",
@@ -331,6 +333,83 @@ export const DesiredDnsUpdaterSchema = z
     path: ["ipv4"],
   });
 export type DesiredDnsUpdater = z.infer<typeof DesiredDnsUpdaterSchema>;
+
+/** The uptime Worker's report address: `https://opscrew-uptime.<account subdomain>.workers.dev/report`. */
+export const UPTIME_REPORT_URL_RE =
+  /^https:\/\/opscrew-uptime\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev\/report$/;
+
+/** An uptime entry's id, `<owner>/<repo>/<app>/<env>` (`acme/shop/shop/prod`). */
+export const UPTIME_ENTRY_RE =
+  /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}\/[a-z0-9][a-z0-9-]{0,40}\/[a-z0-9][a-z0-9-]{0,40}$/;
+
+/**
+ * The longest credential name the uptime report dates, so the largest report fits the Worker's
+ * body; the agents leave a longer one out.
+ */
+export const UPTIME_REPORT_NAME_MAX = 128;
+
+/**
+ * A credential's name in the rotation record, a copy of plan-schema's `CredentialNameSchema`: a
+ * lower-case name (`deploy-key`), optionally followed by `:` and a part (`app:SECRET_KEY_BASE`,
+ * `grant:laptop/cache`), of at most {@link UPTIME_REPORT_NAME_MAX} characters.
+ */
+const CredentialNameSchema = z
+  .string()
+  .max(UPTIME_REPORT_NAME_MAX, { message: `must be at most ${UPTIME_REPORT_NAME_MAX} characters` })
+  .regex(/^[a-z][a-z0-9-]*(?::[A-Za-z0-9_./-]+)?$/, {
+    message: "must be a credential's name such as deploy-key or app:SECRET_KEY_BASE",
+  });
+
+/**
+ * One environment's uptime report from this server (`planUptimeReport`, feature 046): the
+ * Worker's report address, the entry's id, the server's id in the scheduled check (never an
+ * address), the drill schedule while the app has scheduled restore drills, the hostnames whose
+ * certificates this server serves for the app, the check's thresholds, and, with the credentials'
+ * ages on, each credential's name, date and where the date comes from (names and dates only,
+ * never a value) and `maxAgeDays`. `keySha256` is the SHA-256 of the environment's report key
+ * (64 hex characters), which reaches the server only at apply time
+ * (`ApplySecrets.uptimeReportKey`).
+ */
+export const DesiredUptimeReportSchema = z.strictObject({
+  url: z.string().regex(UPTIME_REPORT_URL_RE, {
+    message: "must be the uptime Worker's report address on workers.dev",
+  }),
+  entry: z.string().regex(UPTIME_ENTRY_RE, { message: "must be <owner>/<repo>/<app>/<env>" }),
+  server: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/, {
+    message: "must be the server's id in the scheduled check",
+  }),
+  drill: z.enum(["weekly", "daily"]).optional(),
+  hosts: z
+    .array(HostnameSchema)
+    .max(40)
+    .refine((hosts) => new Set(hosts).size === hosts.length, { message: "must name each once" }),
+  thresholds: z
+    .strictObject({
+      diskWarn: z.number().int().min(1).max(100),
+      diskHigh: z.number().int().min(1).max(100),
+      certDays: z.number().int().min(1).max(365),
+    })
+    .refine((t) => t.diskWarn <= t.diskHigh, { message: "diskWarn must not exceed diskHigh" }),
+  credentials: z
+    .strictObject({
+      maxAgeDays: z.number().int().min(1).max(3650),
+      dates: z
+        .array(
+          z.strictObject({
+            name: CredentialNameSchema,
+            at: z.iso.datetime(),
+            source: z.enum(["made", "rotated", "first-deploy"]),
+          }),
+        )
+        .max(64)
+        .refine((dates) => new Set(dates.map((date) => date.name)).size === dates.length, {
+          message: "must name each credential once",
+        }),
+    })
+    .optional(),
+  keySha256: Sha256Schema,
+});
+export type DesiredUptimeReport = z.infer<typeof DesiredUptimeReportSchema>;
 
 /**
  * The app's scheduled restore drills (`DesiredHost.drills`, ADR 0034): `files`, the copy's files as
@@ -624,6 +703,12 @@ export interface ApplySecrets {
    * that hash, then writes it to the app's root-only token file.
    */
   dnsUpdaterToken?: string;
+  /**
+   * The environment's uptime report key (`uptime-report`): 64 lower-case hex characters (32
+   * random bytes). The step checks it against its `keySha256`, then writes it to the instance's
+   * root-only key file.
+   */
+  uptimeReportKey?: string;
 }
 
 export type SecretName = keyof ApplySecrets;

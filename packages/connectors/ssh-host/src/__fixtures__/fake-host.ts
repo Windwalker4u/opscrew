@@ -55,6 +55,13 @@ import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { runnerUnitText } from "../runner-unit";
 import { SSH_FIREWALL_RULES, SSH_FIREWALL_UNIT } from "../ssh-firewall";
 import {
+  UPTIME_REPORT_CONFIG_DIR,
+  UPTIME_REPORT_SCRIPT,
+  UPTIME_REPORT_SERVICE_UNIT,
+  UPTIME_REPORT_STATE_DIR,
+  UPTIME_REPORT_TIMER_UNIT,
+} from "../uptime-report";
+import {
   WEB_FILTER_DROP_IN,
   WEB_FILTER_NFT_DROP_IN,
   WEB_FILTER_SCRIPT,
@@ -359,6 +366,8 @@ export class FakeHost implements RemoteExec {
   dnsUpdaterRunError: string | undefined = undefined;
   /** The address updater's files whose `stat -c '%a %U'` differs from what OpsCrew writes, by path. */
   updaterModes = new Map<string, string>();
+  /** The uptime report's instances whose timer is enabled and active. */
+  uptimeReportTimers = new Set<string>();
   iptables = "";
   ip6tables = "";
   nft = "";
@@ -588,6 +597,10 @@ export class FakeHost implements RemoteExec {
     if (/^drills\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.drillsScript(name, params, input ?? "");
+    }
+    if (/^uptime-report\.remove\.(check|apply|verify)$/.test(name)) {
+      if (!root || asUser !== undefined) throw new Error(`fake host: ${name} must run as root`);
+      return this.uptimeReportRemoveScript(name, params);
     }
     if (/^drills\.remove\.(check|apply|verify)$/.test(name)) {
       const asLogin = params.RUN_AS === "login" && deploy && !root;
@@ -1151,7 +1164,90 @@ export class FakeHost implements RemoteExec {
     );
     add("dns-updaters", this.dnsUpdaterLines());
     add("dns-updater-files", this.dnsUpdaterFileLines());
+    add("uptime-report", this.uptimeReportLines(root));
     return sectionsOutput(sections);
+  }
+
+  /** The uptime report's instances, by their config files. */
+  private uptimeReportInstances(): string[] {
+    const dir = `${UPTIME_REPORT_CONFIG_DIR}/`;
+    return [...this.files.keys()]
+      .filter((path) => path.startsWith(dir) && path.endsWith(".conf"))
+      .map((path) => path.slice(dir.length, -".conf".length))
+      .sort();
+  }
+
+  /**
+   * The uptime report as `UPTIME_REPORT_SNIPPET` prints it: its instances only for root, since
+   * their folder is 0700 and root's, as OpsCrew writes it.
+   */
+  private uptimeReportLines(root: boolean): string {
+    const hashed = (name: string, path: string, mode: string) => {
+      const content = this.files.get(path);
+      return content === undefined ? [] : [`${name} ${mode} root ${sha256(content)}`];
+    };
+    const version = /^# opscrew-uptime-report version (\d+)$/.exec(
+      (this.files.get(UPTIME_REPORT_SCRIPT) ?? "").split("\n")[1] ?? "",
+    )?.[1];
+    return [
+      ...hashed("script", UPTIME_REPORT_SCRIPT, "755"),
+      ...hashed("service", UPTIME_REPORT_SERVICE_UNIT, "644"),
+      ...hashed("timer", UPTIME_REPORT_TIMER_UNIT, "644"),
+      ...(this.madeDirs.has(UPTIME_REPORT_CONFIG_DIR) ? ["dir 700 root"] : []),
+      ...(version === undefined ? [] : [`version ${version}`]),
+      ...["curl", "openssl"].filter((tool) => this.installed(tool)).map((tool) => `tool ${tool}`),
+      ...(root ? this.uptimeReportInstances() : []).flatMap((instance) => {
+        const config = this.files.get(`${UPTIME_REPORT_CONFIG_DIR}/${instance}.conf`) ?? "";
+        const app = /^app=([a-z0-9-]*)$/m.exec(config)?.[1] ?? "";
+        const on = this.uptimeReportTimers.has(instance) ? "enabled active" : "disabled inactive";
+        return [
+          `config ${instance} 600 root ${sha256(config)}`,
+          `app ${instance} ${app}`,
+          ...hashed(`key ${instance}`, `${UPTIME_REPORT_CONFIG_DIR}/${instance}.key`, "600"),
+          `unit ${instance} ${on}`,
+        ];
+      }),
+    ].join("\n");
+  }
+
+  /**
+   * The uptime report's removal (`uptime-report.remove.*`): each instance's timer, config, key and
+   * state, never another app's; with `SHARED`, the script, units and folder once no other is left.
+   */
+  private uptimeReportRemoveScript(name: string, p: Record<string, string>): CommandResult {
+    const instances = (p.INSTANCES ?? "").split(" ").filter(Boolean);
+    const files = (instance: string) => [
+      `${UPTIME_REPORT_CONFIG_DIR}/${instance}.conf`,
+      `${UPTIME_REPORT_CONFIG_DIR}/${instance}.key`,
+      `${UPTIME_REPORT_STATE_DIR}/${instance}/state`,
+    ];
+    const shared = [UPTIME_REPORT_SCRIPT, UPTIME_REPORT_SERVICE_UNIT, UPTIME_REPORT_TIMER_UNIT];
+    const othersLeft = () =>
+      this.uptimeReportInstances().some((instance) => !instances.includes(instance));
+    const gone = () =>
+      instances.every(
+        (instance) =>
+          !this.uptimeReportTimers.has(instance) &&
+          files(instance).every((path) => !this.files.has(path)),
+      ) &&
+      (p.SHARED !== "true" || othersLeft() || shared.every((path) => !this.files.has(path)));
+    if (name.endsWith(".check")) return this.check(gone());
+    if (name.endsWith(".verify")) return this.verify(gone(), p);
+    for (const instance of instances) {
+      const config = this.files.get(files(instance)[0] ?? "");
+      if (p.APP && config !== undefined && !config.split("\n").includes(`app=${p.APP}`)) {
+        return fail(`The uptime report ${instance} on this server is not "${p.APP}"'s, so OpsCrew does not remove it. Nothing was changed.`);
+      }
+    }
+    for (const instance of instances) {
+      this.uptimeReportTimers.delete(instance);
+      for (const path of files(instance)) this.files.delete(path);
+    }
+    if (p.SHARED === "true" && !othersLeft()) {
+      for (const path of shared) this.files.delete(path);
+      this.madeDirs.delete(UPTIME_REPORT_CONFIG_DIR);
+    }
+    return result();
   }
 
   /** `stat -c '%a %U'` of a file OpsCrew wrote. */
@@ -1768,6 +1864,7 @@ export class FakeHost implements RemoteExec {
             ["network", this.networkStateText(), 0],
             ["ufw-added", this.installed("ufw") ? this.ufwAdded() : "", this.installed("ufw") ? 0 : 127],
             ["apps", this.appRecordLines(), 0],
+            ["uptime-report", this.uptimeReportLines(true), 0],
           ]),
         );
       case "network.check":

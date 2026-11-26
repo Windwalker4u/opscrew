@@ -41,13 +41,15 @@ const HOME_FILES = [
   "preview_key.pub",
   "beszel_secrets.json",
   "grafana_cloud_token",
+  // The uptime Worker's report key (feature 046), which the entry's secret and the servers hold.
+  "uptime_report_key",
 ] as const;
 
 /**
  * From the project's `.opscrew/`, besides `tfstate/*.tfstate`. Not `state.json`: it only records
  * phase outcomes and times, and would change the copy on every run.
  */
-const STATE_FILES = ["server.json", "cloudflare.json", "hosting.json"] as const;
+const STATE_FILES = ["server.json", "cloudflare.json", "hosting.json", "uptime.json"] as const;
 
 const TFSTATE = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.tfstate$/;
 

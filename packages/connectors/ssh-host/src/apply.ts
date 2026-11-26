@@ -180,6 +180,12 @@ const SECRET_CHECKS: { [K in SecretName]: SecretCheck<K> } = {
     invalid: "The address updater's token must be 40 to 255 printable characters without spaces.",
     hint: "Copy the token again into OPSCREW_DNS_UPDATER_TOKEN, then try again.",
   },
+  uptimeReportKey: {
+    label: "uptime-report-key",
+    needs: "the environment's uptime report key",
+    valid: (value) => /^[0-9a-f]{64}$/.test(value),
+    invalid: "The uptime report key must be 64 lower-case hex characters.",
+  },
 };
 
 /**

@@ -477,7 +477,7 @@ export async function replaceToken(
 
   // One clock reading for both: another environment knows this token as the one put in place now.
   const now = deps.clock.now();
-  const at = { paths: deps.paths, clock: { now: () => now } };
+  const at = { ...deps, clock: { now: () => now } };
   await tokenFirstSeen(at, name, set.value);
   await recordRotation(at, [name]);
   deps.reporter.success(

@@ -81,6 +81,7 @@ export {
   type UptimeState,
   uptimeEntryKey,
   uptimeLabel,
+  uptimeReportKey,
   uptimeSecretName,
   uptimeStateKey,
 } from "./uptime";

@@ -1,10 +1,24 @@
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeUptime } from "@opscrew/connector-cloudflare/testing";
-import type { FetchLike } from "@opscrew/contracts";
+import {
+  type ApplyOptions,
+  type ApplyResult,
+  type DesiredUptimeReport,
+  type HostFacts,
+  type HostPlan,
+  type HostStep,
+  hostPlanHash,
+  UPTIME_REPORT_VERSION,
+  type UptimeReportFacts,
+  uptimeReportConfigText,
+  uptimeReportFileHashes,
+} from "@opscrew/connector-ssh-host";
+import type { FetchLike, RemoteExec } from "@opscrew/contracts";
+import { sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { createTestPhaseDeps, testPlan } from "../testing";
+import { createdServerFacts, createTestPhaseDeps, testPlan, unusedRemote } from "../testing";
 import { planProvisionUptime, provisionUptime } from "./uptime";
 
 /** A webhook address the tests give; it must never appear in a plan, a line or the audit. */
@@ -69,7 +83,9 @@ const UPTIME_CALLS = new Set<string>([
   "listWorkerSecrets",
   "putWorkerSecret",
   "deleteWorkerSecret",
-  "workersSubdomain",
+  "getWorkersSubdomain",
+  "getWorkerSubdomain",
+  "setWorkerSubdomain",
 ]);
 
 /**
@@ -117,7 +133,8 @@ export function uptimePlan(
 /**
  * The Worker as `plan`'s provision leaves it in `client`'s account for `github` (default
  * acme/shop): provisioned (with the address {@link WEBHOOK_URL}) by a run of its own on `deps`'
- * project, so this computer records the entry too. Its approvals are not `deps`'.
+ * project, so this computer records the entry too, and its server's report set up on a
+ * {@link FakeReportServer} of its own. Its approvals are not `deps`'.
  */
 export async function provisionedUptime(
   deps: Pick<PhaseDeps, "paths" | "env">,
@@ -134,9 +151,122 @@ export async function provisionedUptime(
   const step = await planProvisionUptime(own, {
     plan,
     github: async () => github,
-    services: { sharedCloudflare: client },
+    services: { sharedCloudflare: client, ...reportServices(new FakeReportServer()) },
     command: "opscrew provision",
     ask: false,
   });
   await provisionUptime(own, step, { command: "opscrew provision", phase: "provision" });
+}
+
+/**
+ * The services that reach `server` for the uptime report, on a server OpsCrew created
+ * (`serverHost`) or the user's own (`own.host`), with a shell that is never used.
+ */
+export function reportServices(server: FakeReportServer) {
+  return { serverHost: server, own: { host: server }, remote: unusedRemote };
+}
+
+/** No uptime report on the server yet, with `curl` and `openssl` there. */
+export function noUptimeReport(): UptimeReportFacts {
+  return {
+    version: null,
+    script: null,
+    service: null,
+    timer: null,
+    dir: null,
+    tools: { curl: true, openssl: true },
+    instances: [],
+  };
+}
+
+/** A root file with `mode` and SHA-256 `sha256`, as inspection reads it. */
+const rootFile = (mode: string, sha256: string) => ({ mode, owner: "root", sha256 });
+
+/** The settings the `uptime-report` step's params carry (the step's own params format). */
+function reportOf(p: HostStep["params"]): DesiredUptimeReport {
+  const lines = (value: unknown, sep: string) =>
+    String(value ?? "")
+      .split(sep)
+      .filter((line) => line !== "");
+  const drill = p.drill === "weekly" || p.drill === "daily" ? p.drill : undefined;
+  return {
+    url: String(p.url),
+    entry: String(p.entry),
+    server: String(p.server),
+    ...(drill === undefined ? {} : { drill }),
+    hosts: lines(p.hosts, " "),
+    thresholds: {
+      diskWarn: Number(p.diskWarn),
+      diskHigh: Number(p.diskHigh),
+      certDays: Number(p.certDays),
+    },
+    ...(p.maxAgeDays === undefined
+      ? {}
+      : {
+          credentials: {
+            maxAgeDays: Number(p.maxAgeDays),
+            dates: lines(p.credentials, "\n").map((line) => {
+              const [name = "", at = "", source] = line.split(" ");
+              return { name, at, source: source as "made" | "rotated" | "first-deploy" };
+            }),
+          },
+        }),
+    keySha256: String(p.keySha256),
+  };
+}
+
+/**
+ * A server's uptime report behind the host adapter (`services.serverHost`, or `services.own.host`
+ * on a server the user owns): `inspect` gives `base` with {@link FakeReportServer.report};
+ * `apply` refuses a plan whose hash is not the approved one, records it, and leaves the report as
+ * the `uptime-report` step would: installed and running with its config and key, or removed.
+ */
+export class FakeReportServer {
+  readonly applies: { plan: HostPlan; options: ApplyOptions }[] = [];
+  report: UptimeReportFacts = noUptimeReport();
+  constructor(private readonly base: HostFacts = createdServerFacts()) {}
+
+  async inspect(_remote: RemoteExec, _options?: { rootImage?: string }): Promise<HostFacts> {
+    return { ...this.base, uptimeReport: this.report };
+  }
+
+  async apply(_remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult> {
+    if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
+    this.applies.push({ plan, options });
+    const changes = plan.steps.filter((step) => step.state === "change");
+    for (const { id, params: p } of changes) {
+      if (id !== "uptime-report") continue;
+      if (p.remove === true) {
+        const gone = String(p.instances).split(" ");
+        const instances = this.report.instances.filter((i) => !gone.includes(i.instance));
+        this.report =
+          p.shared === true ? { ...noUptimeReport(), instances } : { ...this.report, instances };
+        continue;
+      }
+      const hashes = uptimeReportFileHashes();
+      const instance = {
+        instance: String(p.instance),
+        app: String(p.app),
+        config: rootFile("600", sha256Hex(uptimeReportConfigText(String(p.app), reportOf(p)))),
+        key: rootFile("600", String(p.keySha256)),
+        timer: { enabled: true, active: true },
+      };
+      this.report = {
+        version: UPTIME_REPORT_VERSION,
+        script: rootFile("755", hashes.script),
+        service: rootFile("644", hashes.service),
+        timer: rootFile("644", hashes.timer),
+        dir: { mode: "700", owner: "root" },
+        tools: { curl: true, openssl: true },
+        instances: [
+          ...this.report.instances.filter((i) => i.instance !== instance.instance),
+          instance,
+        ],
+      };
+    }
+    return {
+      applied: changes.map((step) => step.id),
+      skipped: plan.steps.filter((step) => step.state !== "change").map((step) => step.id),
+    };
+  }
 }

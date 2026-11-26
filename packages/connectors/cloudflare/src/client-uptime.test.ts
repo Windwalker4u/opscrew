@@ -1,5 +1,5 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { errorText, OpsCrewError, Redactor } from "@opscrew/core";
+import { errorText, OpsCrewError, Redactor, sha256Hex } from "@opscrew/core";
 import { fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
@@ -298,9 +298,10 @@ describe("the Worker's schedules, secrets and deletion", () => {
     expect(redactor.redact(`posted ${value}`)).toBe("posted [REDACTED:HOOK_A]");
   });
 
-  it("masks the webhook's address and token on their own too", async () => {
+  it("masks the webhook's address and token, and the report key, on their own too", async () => {
     const url = `https://ntfy.example.com/${fakeSecret("generic-password", "url")}`;
     const token = fakeSecret("generic-password", "token");
+    const report = sha256Hex(fakeSecret("generic-password", "report"));
     const redactor = new Redactor();
     const { client } = clientWith(
       { [`PUT ${SCRIPT}/secrets`]: ok({ name: "HOOK_A", type: "secret_text" }) },
@@ -308,10 +309,10 @@ describe("the Worker's schedules, secrets and deletion", () => {
     );
     await client.putWorkerSecret(ACCOUNT, "opscrew-uptime", {
       name: "HOOK_A",
-      text: JSON.stringify({ url, token }),
+      text: JSON.stringify({ url, token, report }),
     });
-    expect(redactor.redact(`posting to ${url} with ${token}`)).toBe(
-      "posting to [REDACTED:HOOK_A] with [REDACTED:HOOK_A]",
+    expect(redactor.redact(`posting to ${url} with ${token}, signed with ${report}`)).toBe(
+      "posting to [REDACTED:HOOK_A] with [REDACTED:HOOK_A], signed with [REDACTED:HOOK_A]",
     );
   });
 
@@ -331,13 +332,51 @@ describe("the Worker's schedules, secrets and deletion", () => {
 describe("the account's workers.dev subdomain", () => {
   const SUBDOMAIN = `/accounts/${ACCOUNT}/workers/subdomain`;
 
-  it("is read, or undefined when the account has none yet (code 10007)", async () => {
-    const { client } = clientWith({ [`GET ${SUBDOMAIN}`]: ok({ subdomain: "acme" }) });
-    expect(await client.workersSubdomain(ACCOUNT)).toBe("acme");
+  it("is read, or undefined when the account has none yet (code 10007) or an empty one", async () => {
+    const { client, calls } = clientWith({ [`GET ${SUBDOMAIN}`]: ok({ subdomain: "acme" }) });
+    expect(await client.getWorkersSubdomain(ACCOUNT)).toBe("acme");
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET ${SUBDOMAIN}`]);
     const none = clientWith({
       [`GET ${SUBDOMAIN}`]: refuse(404, 10007, "This subdomain does not exist."),
     });
-    expect(await none.client.workersSubdomain(ACCOUNT)).toBeUndefined();
+    expect(await none.client.getWorkersSubdomain(ACCOUNT)).toBeUndefined();
+    const empty = clientWith({ [`GET ${SUBDOMAIN}`]: ok({ subdomain: "" }) });
+    expect(await empty.client.getWorkersSubdomain(ACCOUNT)).toBeUndefined();
+  });
+
+  it("reads whether a Worker's workers.dev address is on, or undefined with no such Worker", async () => {
+    const { client, calls } = clientWith({
+      [`GET ${SCRIPT}/subdomain`]: ok({ enabled: true, previews_enabled: false }),
+    });
+    expect(await client.getWorkerSubdomain(ACCOUNT, "opscrew-uptime")).toEqual({
+      enabled: true,
+      previewsEnabled: false,
+    });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET ${SCRIPT}/subdomain`]);
+    const none = clientWith({
+      [`GET ${SCRIPT}/subdomain`]: refuse(
+        404,
+        10007,
+        "This Worker does not exist on your account.",
+      ),
+    });
+    expect(await none.client.getWorkerSubdomain(ACCOUNT, "opscrew-uptime")).toBeUndefined();
+  });
+
+  it("turns a Worker's workers.dev address on, with its previews off", async () => {
+    const { client, calls } = clientWith({
+      [`POST ${SCRIPT}/subdomain`]: ok({ enabled: true, previews_enabled: false }),
+    });
+    await client.setWorkerSubdomain(ACCOUNT, "opscrew-uptime", {
+      enabled: true,
+      previewsEnabled: false,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: `${SCRIPT}/subdomain`,
+      body: { enabled: true, previews_enabled: false },
+    });
   });
 
   it("names it, not the token, when a call is refused for want of one (code 10063)", async () => {
