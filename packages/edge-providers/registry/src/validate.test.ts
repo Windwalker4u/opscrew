@@ -21,7 +21,6 @@ describe("validateEdgeProvider", () => {
         id: "bunny",
         capabilities: {
           ...cloudflare.capabilities,
-          cloudflareOnlyFeatures: false,
           originIpFiltering: "dynamic-ips",
           originAuth: "mtls-client-cert",
         },
@@ -29,26 +28,15 @@ describe("validateEdgeProvider", () => {
     ).toThrow(/shared-header/);
   });
 
-  it("refuses dnsModuleName when capabilities.dns is false", () => {
+  it("refuses an invalid realIpHeader name", () => {
     expect(() =>
       validateEdgeProvider({
         ...cloudflare,
-        id: "fastly",
         capabilities: {
           ...cloudflare.capabilities,
-          dns: false,
-          cloudflareOnlyFeatures: false,
+          realIpHeader: "bad header!",
         },
       }),
-    ).toThrow(/dnsModuleName/);
-  });
-
-  it("refuses cloudflareOnlyFeatures on non-cloudflare providers", () => {
-    expect(() =>
-      validateEdgeProvider({
-        ...cloudflare,
-        id: "gcore",
-      }),
-    ).toThrow(/cloudflareOnlyFeatures|only on the "cloudflare" definition/);
+    ).toThrow(/HTTP header name/);
   });
 });

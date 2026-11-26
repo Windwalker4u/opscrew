@@ -324,7 +324,7 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
 
   if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {
     const domain = deployPlan.dns.domain;
-    const recordType = edgeProvider("cloudflare").terraform.dnsRecordResourceType;
+    const recordType = edgeProvider(deployPlan.dns.provider).terraform.dnsRecordResourceType;
     const appRecords = resources.filter(
       (r) =>
         r.type === recordType &&

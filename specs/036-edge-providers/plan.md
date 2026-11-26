@@ -23,36 +23,32 @@
 
 ## Architecture (PR 1)
 
+PR 1 carries only what currently has a reader plus the origin-protection fields decided on `#29`
+(`originAuth`, `originIpFiltering`, `realIpHeader`, `displayName`, `texts.secops.*`, and
+`terraform.dnsRecordResourceType`). Remaining contract fields (`name`, URLs, `apexCnameFlattening`,
+`credentials`, Terraform provider/module metadata, `texts.interview`/`design`/`runbook`,
+`DNS_PROVIDERS`, `dnsProvider`, `EDGE_CREDENTIALS`, and connector methods) join in PRs 2–4 alongside
+their first reader.
+
 ### 1. `@opscrew/contracts` (`packages/contracts/src/edge-provider.ts`)
 - Export `EDGE_PROVIDER_CONTRACT_VERSION = 1`.
 - Export `EdgeOriginAuth`, `EdgeOriginIpFiltering`, `EdgeProviderCapabilities`,
-  `EdgeProviderCredentials`, `EdgeIpRanges`, `EdgeProviderConnector`, `EdgeProviderTerraform`,
-  `EdgeProviderPricing`, `EdgeProviderTexts`, `EdgeProviderDefinition`.
+  `EdgeProviderTerraform`, `EdgeProviderTexts`, `EdgeProviderDefinition`.
 - Re-export from `packages/contracts/src/index.ts`.
 
 ### 2. `@opscrew/edge-provider-cloudflare` (`packages/edge-providers/cloudflare/`)
-- Wraps `@opscrew/connector-cloudflare` (`cloudflareConnector`, `CLOUDFLARE_TOKEN_PAGE`,
-  `CLOUDFLARE_API`).
 - Exports `definition: EdgeProviderDefinition` with:
-  - `id: "cloudflare"`, `displayName: "Cloudflare"`, `name: "Cloudflare"`
-  - `capabilities`: `dns: true`, `edge: true`, `apexCnameFlattening: true`,
-    `originAuth: "cloudflare-aop"`, `originIpFiltering: "compact-cidrs"`,
-    `realIpHeader: "CF-Connecting-IP"`, `cloudflareOnlyFeatures: true`
-  - `credentials`: `CLOUDFLARE_API_TOKEN`, `mode: "any"`, `createUrl: CLOUDFLARE_TOKEN_PAGE`,
-    `envPrefixes: ["CLOUDFLARE"]`, `apiPattern: /cloudflare/i`
-  - `connector(deps)`: returns `EdgeProviderConnector` wrapping `cloudflareConnector`
-    (`configured`, `verifyCredentials`, `fetchEdgeIpRanges` via Cloudflare `/ips`)
-  - `terraform`: `cloudflare/cloudflare` `~> 5.0`, `dnsModuleName: "cloudflare-dns"`,
-    `dnsRecordResourceType: "cloudflare_dns_record"`
-  - `pricing` & `texts` matching existing Cloudflare phrasing.
+  - `id: "cloudflare"`, `displayName: "Cloudflare"`
+  - `capabilities`: `originAuth: "cloudflare-aop"`, `originIpFiltering: "compact-cidrs"`,
+    `realIpHeader: "CF-Connecting-IP"`
+  - `terraform`: `dnsRecordResourceType: "cloudflare_dns_record"`
+  - `texts.secops`: `edgeLabel`, `edgeTlsHint` matching existing Cloudflare phrasing.
 
 ### 3. `@opscrew/edge-providers` (`packages/edge-providers/registry/`)
 - Mirrors `packages/providers/registry/`:
-  - `validate.ts`: zod validation of `EdgeProviderDefinition` (contract version, credentials
-    labels, capabilities invariants such as `dns: false` => `dnsModuleName` absent, non-empty
-    `realIpHeader`, global token regexes, HTTPS URLs).
-  - `index.ts`: exports `EDGE_PROVIDERS`, `DNS_PROVIDERS`, `EDGE_CREDENTIALS`, `edgeProvider(id)`,
-    `dnsProvider(id)`, `validateEdgeProvider`.
+  - `validate.ts`: zod validation of `EdgeProviderDefinition` (contract version, `dynamic-ips` =>
+    `shared-header` invariant, valid `realIpHeader` name, SecOps texts).
+  - `index.ts`: exports `EDGE_PROVIDERS`, `edgeProvider(id)`, `validateEdgeProvider`.
   - `index.test.ts` & `validate.test.ts`: conformance tests across every built-in edge provider
     plus validation failure tests.
 - Add `"packages/edge-providers/*"` to `pnpm-workspace.yaml`.
@@ -71,9 +67,15 @@
   - `src/predicates.ts`: `webOnlyFromEdge(plan)` (and keep `webOnlyFromCloudflare(plan)` delegating
     to it for Cloudflare plans) checking `plan.security.httpAllowedFrom === "edge"`.
   - `src/edge/index.ts`, `src/edge/nginx.ts`, `src/edge/openlitespeed.ts`: resolve real-IP header
-    and edge display name from `edgeProvider("cloudflare")` (byte-identical output:
-    `CF-Connecting-IP` and `Cloudflare`).
-- `@opscrew/secops`, `@opscrew/agents`, `@opscrew/mcp-server`, `packages/cli`:
+    and edge display name from `edgeProvider("cloudflare")` in PR 1 (byte-identical output:
+    `CF-Connecting-IP` and `Cloudflare`). **PR 2 threads the app's active edge provider through
+    from callers that hold the plan**, replacing these PR 1 `"cloudflare"` lookups (and the one in
+    `packages/secops/src/deep/testssl.ts`).
+- `@opscrew/secops`:
+  - `src/policies/plan.ts`: reads `edgeProvider(deployPlan.dns.provider).terraform.dnsRecordResourceType`.
+  - `src/deep/testssl.ts`: reads `edgeProvider("cloudflare").texts.secops.*` in PR 1 (threaded from
+    the plan in PR 2).
+- `@opscrew/agents`, `@opscrew/mcp-server`, `packages/cli`:
   - Update `httpAllowedFrom === "cloudflare"` / `httpAllowedFrom: "cloudflare"` to `"edge"`.
   - Keep rendered Terraform, Compose, Caddyfile, nginx.conf, OpenLiteSpeed conf, and workflow
     outputs byte-for-byte identical.

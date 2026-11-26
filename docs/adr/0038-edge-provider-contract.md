@@ -20,25 +20,21 @@ all four providers in view so the contract is never shaped by one.
 
 - **D1: one package per DNS/edge provider exporting one definition.** The definition is
   `EdgeProviderDefinition` in `@opscrew/contracts` (`edge-provider.ts`),
-  `EDGE_PROVIDER_CONTRACT_VERSION = 1`. It holds:
-  - its identity (`id`, `displayName`, `name`, `consoleUrl`, `signupUrl`, `pricingUrl`);
-  - its capabilities (`dns`, `edge`, `apexCnameFlattening`, `originAuth`, `originIpFiltering`,
-    `realIpHeader`, `cloudflareOnlyFeatures`);
-  - its credentials (`envVars`, `labels`, `mode`, `createUrl`, `tokenRules`, `envPrefixes`,
-    `apiPattern`);
-  - its connector factory (`connector(deps)`);
-  - its Terraform facts (`provider`, `credentialsComment`, `dnsModuleName`, `edgeModuleName`,
-    `dnsRecordResourceType`, `mirroredAttributes`);
-  - its pricing summary and plain-English texts (interview, design, runbook, SecOps).
+  `EDGE_PROVIDER_CONTRACT_VERSION = 1`. Fields are added with their first reader:
+  - PR 1 carries its identity (`id`, `displayName`), origin protection and real-IP capabilities
+    (`originAuth`, `originIpFiltering`, `realIpHeader`), DNS record resource type
+    (`terraform.dnsRecordResourceType`), and SecOps texts (`texts.secops.*`);
+  - PRs 2–4 add credentials, connectors, Terraform provider/module metadata, DNS provider listing
+    (`DNS_PROVIDERS`, `dnsProvider`, `EDGE_CREDENTIALS`), and interview/design/runbook texts as
+    each reader lands.
 - **D2: only plain data, regular expressions, and functions cross the contract.** Matching ADR
   0029 D2, no zod schema or class instance crosses the boundary, and a provider package imports
-  only `@opscrew/contracts` and `@opscrew/core` (plus its own connector package, e.g.
-  `@opscrew/connector-cloudflare`).
+  only `@opscrew/contracts` and `@opscrew/core` (plus its own connector package when wired).
 - **D3: one registry, `@opscrew/edge-providers`, is the single place consumers read edge facts
-  from.** It lists the built-in definitions in order (`EDGE_PROVIDERS`, `DNS_PROVIDERS`),
-  validates each definition at load (`validateEdgeProvider`), exports `edgeProvider(id)`,
-  `dnsProvider(id)`, and `EDGE_CREDENTIALS`, and runs a conformance test over every built-in
-  provider. No other code branches on an edge provider's id for generic DNS/edge behaviour.
+  from.** It lists the built-in definitions in order (`EDGE_PROVIDERS`), validates each definition
+  at load (`validateEdgeProvider`), exports `edgeProvider(id)`, and runs a conformance test over
+  every built-in provider. No other code branches on an edge provider's id for generic DNS/edge
+  behaviour.
 - **D4: package layout mirrors `packages/providers/*`.**
   - `packages/edge-providers/<id>` as `@opscrew/edge-provider-<id>` (starting with
     `@opscrew/edge-provider-cloudflare`, followed by `bunny`, `gcore`, and `fastly`).
