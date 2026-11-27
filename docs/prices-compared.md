@@ -4,8 +4,9 @@ Prices as of 2026-11-03, excluding VAT and sales tax. They change often: check t
 quoting a figure, and redo this page rather than editing one number.
 
 AWS, Google Cloud and Azure are planned targets that OpsCrew does not support yet, so they are
-named here but not priced. [Contabo](guide/contabo.md) and [OVHcloud](guide/ovhcloud.md) became
-targets after this comparison; see [Contabo](#contabo) and [OVHcloud](#ovhcloud) below.
+named here but not priced. [Contabo](guide/contabo.md), [OVHcloud](guide/ovhcloud.md) and
+[Kamatera](guide/kamatera.md) became targets after this comparison; see [Contabo](#contabo),
+[OVHcloud](#ovhcloud) and [Kamatera](#kamatera) below.
 
 ## The reference app
 
@@ -60,6 +61,19 @@ public catalogue of 2026-11-21, before VAT, for 730 hours (a month always on):
 
 See [Deploy to OVHcloud](guide/ovhcloud.md).
 
+### Kamatera
+
+Kamatera was not part of the comparison above, and design was not run against it. From Kamatera's
+public price list of 2026-11-22, before any tax, in USD, for 730 hours (a month always on):
+- **A-4-8 (4 shared vCPU, 8 GB, 80 GB disk): $42,** the smallest plan OpsCrew offers with the
+  60 GB disk design asks for this app; the 40 GB of an A-2-4 ($19) is too small.
+- **Billed by the hour,** counted by the minute, until the server is terminated. A stopped server
+  still bills its address and disk.
+- **No provider backups:** OpsCrew's own snapshots cover the data
+  (see [Snapshots and restores](guide/snapshots.md)).
+
+See [Deploy to Kamatera](guide/kamatera.md).
+
 ## On popular platforms
 
 The smallest always-on web service plus the smallest production-usable PostgreSQL (with
@@ -112,6 +126,8 @@ Notes:
 - **Contabo:** https://contabo.com/en/vps/
 - **OVHcloud:** https://www.ovhcloud.com/en-ie/public-cloud/prices/,
   https://eu.api.ovh.com/v1/order/catalog/public/cloud?ovhSubsidiary=IE
+- **Kamatera:** https://www.kamatera.com/pricing/,
+  https://console.kamatera.com/info/calculator.js.php
 - **Heroku:** https://www.heroku.com/pricing,
   https://devcenter.heroku.com/articles/heroku-postgres-plans
 - **Railway:** https://railway.com/pricing
