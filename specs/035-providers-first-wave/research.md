@@ -1026,3 +1026,31 @@ Computed from the calculator 2026-11-22 (USD, includes a 20 to 80 GB system disk
   seconds to ready, the `(1)` behaviour on a duplicate name, the no-capacity and quota error texts, whether
   terminate removes disks, snapshots and backups, whether a snapshot or backup shows afterwards, the powered-off
   rate, IPv6, whether a key works from another IP, and whether the console firewall has a route in the API.
+
+### What building Kamatera settled or changed (T3519 to T3532, 2026-11-27)
+
+- **Names:** plain `<app>` and `<app>-<name>`, as on the other providers (plan decision 10), not the random suffix
+  suggested above. The module refuses a name Kamatera refuses (4 to 40 characters of `[a-zA-Z0-9.-]`).
+  `findAppServers` stops with a plain error when it sees a `<name>(n)` duplicate. That check runs on the takeover,
+  destroy and snapshot paths, not before every apply.
+- **Takeover:** not possible. The Terraform import needs the server's internal id, which the name doesn't give,
+  so the provider has no `importId` and a takeover fails closed.
+- **Commands:** a queued command is polled at `/service/queue?id=`. A failed command's error never carries its
+  `log`, which can quote what the server was sent; the hint points at the server's tasks in the console instead.
+- **Rebuild:** done as a snapshot revert, the only restore Kamatera's API has.
+- **Prices:** six plans from `calculator.js.php` (A-1-2, A-2-4, A-4-8, B-1-2, B-2-4, B-4-8) with a 40 GB disk at
+  least, since design sizes every app at 40 GB or more, in six datacenters (EU-FR, EU, EU-ST, US-NY2, US-SC,
+  AS-SG). The calculator file is the price source; there is no price API.
+- **The server's own firewall** (D13): nftables, written by the first boot's script, default deny, SSH from the
+  plan's networks, 80 and 443 from the plan's `http_allowed_cidrs`. The script turns password logins off first,
+  then loads the rules; if any step before the rules are loaded fails, the server powers itself off rather than
+  stay reachable without them. SecOps reads the rules from the plan only for a server the plan creates, and
+  `opscrew secure` and `opscrew advise` compare the live table with the committed plan's networks.
+- **No restart repair:** a new Kamatera server that never opens SSH may have powered itself off for that reason,
+  and if Kamatera doesn't run the startup script again on a later boot, a restart would bring it up without a
+  firewall. OpsCrew doesn't offer that restart; it points at the first boot's log in the console.
+- **The generated root password** stays only in the encrypted state. The live pass reads it from the state and
+  searches every other file and log for it.
+- **Still for the live pass (T3533):** whether the startup script runs on later boots; the first real
+  `nft -f` of the rules (no root here); the seconds to ready and how long the server is open before the rules
+  load; the `(n)` behaviour; what terminate leaves behind.

@@ -604,7 +604,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
   - Effort: medium
 
-- [ ] T3532 (lead) A fresh review of Kamatera's branch, `pnpm check`, research R4 updated with the
+- [x] T3532 (lead) A fresh review of Kamatera's branch, `pnpm check`, research R4 updated with the
   implementers' findings, then its pull request, stacked on OVHcloud's
 - [ ] T3533 (lead) The live pass, only with the founder's go-ahead (it costs money;
   [issue #14](https://github.com/opscrew-hub/opscrew/issues/14))
