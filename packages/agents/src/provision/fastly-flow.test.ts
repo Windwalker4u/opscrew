@@ -36,7 +36,6 @@ function fastlyBunnyPlan() {
       provider: "bunny",
       edge: "fastly",
       domain: "shop.example.com",
-      zone: "example.com",
       proxied: true,
       www: true,
     },
@@ -53,6 +52,7 @@ function fakeFastlyAndBunnyApi() {
   let installedClientCert: string | null = null;
   let installedClientKey: string | null = null;
   let installedCaCert: string | null = null;
+  let installedAddress: string | null = null;
   const calls: string[] = [];
 
   const fetch: FetchLike = (async (url: string | URL, init?: RequestInit) => {
@@ -112,11 +112,13 @@ function fakeFastlyAndBunnyApi() {
         ssl_client_cert: string;
         ssl_client_key: string;
         ssl_ca_cert?: string;
+        address?: string;
       };
       calls.push("fastly:update-backend");
       installedClientCert = body.ssl_client_cert;
       installedClientKey = body.ssl_client_key;
       installedCaCert = body.ssl_ca_cert ?? null;
+      installedAddress = body.address ?? null;
       return new Response(JSON.stringify({ name: "opscrew_origin" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -141,6 +143,7 @@ function fakeFastlyAndBunnyApi() {
       clientCert: installedClientCert,
       clientKey: installedClientKey,
       caCert: installedCaCert,
+      address: installedAddress,
     }),
   };
 }
@@ -212,6 +215,9 @@ describe.skipIf(!findExecutable("git"))(
         await readFile(join(project.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
       ) as Record<string, unknown>;
       expect(tfvars.bunny_dns_zone_id).toBe(4321);
+      expect(tfvars.bunny_dns_zone_name).toBe("example.com");
+      expect(tfvars.bunny_record_name).toBe("shop");
+      expect(tfvars.bunny_www_record_name).toBe("www.shop");
       expect(tfvars.http_allowed_cidrs).toEqual([
         "23.235.32.0/20",
         "43.249.72.0/22",
@@ -236,11 +242,12 @@ describe.skipIf(!findExecutable("git"))(
       expect(originTlsDeploySecret).toContain(values.ORIGIN_TLS_CERT as string);
       expect(originTlsDeploySecret).toContain(values.ORIGIN_TLS_KEY as string);
 
-      // 4. Fastly backend received pull.pem client cert/key AND the per-app origin CA cert.
+      // 4. Fastly backend received pull.pem client cert/key, per-app origin CA cert, and origin address.
       const installed = api.getInstalled();
       expect(installed.clientCert).toBe(values.ORIGIN_PULL_CERT?.trim());
       expect(installed.clientKey).toBe(values.ORIGIN_PULL_KEY?.trim());
       expect(installed.caCert).toBe(values.ORIGIN_TLS_CA_CERT?.trim());
+      expect(installed.address).toBe(SERVER_IPV4);
 
       // 5. Private keys and API tokens never leak into Terraform files, reporter, or audit log.
       const printed = `${mainTf}\n${JSON.stringify(tfvars)}\n${deps.reporter.text()}\n${JSON.stringify(deps.audit.entries)}`;

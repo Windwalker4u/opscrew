@@ -35,12 +35,13 @@ export const EDGE_ORIGIN_TOKEN_CREDENTIAL = "edge-origin-token";
 
 export type EdgeOriginTokenValue = z.infer<typeof EdgeOriginTokenSchema>;
 
-/** Resolved credentials and optional DNS zone id / CIDR ranges for a non-Cloudflare edge/DNS provider. */
+/** Resolved credentials and optional DNS zone id / zone name / CIDR ranges for a non-Cloudflare edge/DNS provider. */
 export interface ThirdPartyEdgeSetup {
   id: string;
   envVar: string;
   apiKey: string;
   dnsZoneId?: number;
+  /** Learned DNS zone name (for example `example.com`) when `dns.zone` was omitted in plan.yaml. */
   dnsZoneName?: string;
   /**
    * Separate DNS provider credentials when `dns.provider` and `dns.edge` are two distinct
@@ -155,10 +156,10 @@ export function requireThirdPartyEdgeKey(
 
 /**
  * Checks credentials and (when a non-Cloudflare provider manages DNS) looks up the DNS zone id
- * via the edge registry. When `dns.provider` and `dns.edge` are two separate non-Cloudflare
- * providers (for example Bunny DNS + Fastly edge), verifies BOTH providers' credentials and looks
- * up the DNS zone on `dns.provider`. Returns `undefined` when the plan uses Cloudflare or no
- * third-party edge/DNS provider.
+ * and zone name via the edge registry. When `dns.provider` and `dns.edge` are two separate
+ * non-Cloudflare providers (for example Bunny DNS + Fastly edge), verifies BOTH providers'
+ * credentials and looks up the DNS zone on `dns.provider`. Returns `undefined` when the plan uses
+ * Cloudflare or no third-party edge/DNS provider.
  */
 export async function setupThirdPartyEdge(
   deps: Pick<PhaseDeps, "env" | "redactor">,

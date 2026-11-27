@@ -195,6 +195,8 @@ export interface EdgeOriginMtlsPlan {
   certFingerprint: string;
   /** Short SHA-256 fingerprint of the pinned origin CA certificate PEM, when configured. */
   caCertFingerprint?: string;
+  /** Desired origin server address when reconciling backend address alongside mTLS. */
+  originAddress?: string;
   /** Plain-English summary shown before approval (contains no private key). */
   summary: string;
   /** SHA-256 hash binding approval to this exact service, version, backend, and cert fingerprints. */
@@ -248,6 +250,8 @@ export interface EdgeProviderConnector {
     clientKeyPem: string;
     /** Optional PEM CA certificate pinned as `ssl_ca_cert` so the edge trusts OpsCrew's origin cert. */
     originCaCertPem?: string;
+    /** Optional origin server address reconciled alongside mTLS (because Terraform ignores backend drift). */
+    originAddress?: string;
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;
   }): Promise<EdgeOriginMtlsPlan>;
@@ -258,6 +262,8 @@ export interface EdgeProviderConnector {
     clientKeyPem: string;
     /** Optional PEM CA certificate pinned as `ssl_ca_cert` so the edge trusts OpsCrew's origin cert. */
     originCaCertPem?: string;
+    /** Optional origin server address reconciled alongside mTLS. */
+    originAddress?: string;
     approvedHash: string;
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;

@@ -871,6 +871,11 @@ async function provisionFlow(
   plan = learned.plan;
 
   // 3. Engine, state encryption, deploy key
+  // Ensure local origin mTLS keypair exists and is registered with deps.redactor BEFORE any
+  // OpenTofu/Terraform invocation so no refreshed state or plan output can ever leak ssl_client_key.
+  if (usesOriginMtls(plan) && !tunnelMode(plan)) {
+    await ensureLocalOriginMtlsValues(deps, plan);
+  }
   const { engine, env: engineEnv } = await provisionEngine(deps, plan, options);
   if (thirdPartyEdge !== undefined) {
     engineEnv[thirdPartyEdge.envVar] = thirdPartyEdge.apiKey;
@@ -1099,10 +1104,7 @@ async function provisionFlow(
       : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
   // The app's site: origin TLS as Cloudflare now has it (a missing permission keeps today's
   // site), or locally generated origin TLS + mTLS (`pull.pem` + per-app origin CA) for
-  // `mtls-client-cert` edges such as Fastly, plus the user's additions.
-  if (usesOriginMtls(plan) && !tunnelMode(plan)) {
-    await ensureLocalOriginMtlsValues(deps, plan);
-  }
+  // `mtls-client-cert` edges such as Fastly (ensured before step 3), plus the user's additions.
   const site = await recordedEdge(deps, persisted(plan));
   const ctx = await deploymentRenderContext(deps, {
     plan,
@@ -1602,6 +1604,7 @@ async function provisionFlow(
         },
       );
     }
+    const desiredOriginAddress = address?.ipv4 ?? address?.ipv6;
     await syncOriginMtls(deps, plan, {
       apiKey: thirdPartyEdge.apiKey,
       serviceId,
@@ -1611,6 +1614,7 @@ async function provisionFlow(
       ...(mtlsValues.ORIGIN_TLS_CA_CERT === undefined
         ? {}
         : { originCaCertPem: mtlsValues.ORIGIN_TLS_CA_CERT }),
+      ...(desiredOriginAddress === undefined ? {} : { originAddress: desiredOriginAddress }),
       command,
       ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
     });

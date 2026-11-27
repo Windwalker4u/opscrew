@@ -4,9 +4,9 @@
  * Why this is NOT in Terraform: `fastly_service_vcl.backend.ssl_client_key` would persist the
  * private client key inside Terraform state. Instead, OpsCrew keeps the per-app P-256 client key
  * in local `generated_values.json` (0600), puts only the public client certificate in `pull.pem`
- * on the server proxy, and configures `ssl_client_cert` + `ssl_client_key` on the Fastly backend
- * through Fastly's API (clone active version -> update backend -> activate) after an approval
- * bound to the plan's SHA-256 hash.
+ * on the server proxy, and configures `ssl_client_cert`, `ssl_client_key`, `ssl_ca_cert`, and
+ * backend `address` on the Fastly backend through Fastly's API (clone active version -> update
+ * backend -> activate) after an approval bound to the plan's SHA-256 hash.
  */
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import type { FastlyClient } from "./client";
@@ -22,6 +22,8 @@ export interface FastlyOriginMtlsPlan {
   certFingerprint: string;
   /** Short SHA-256 fingerprint of the pinned origin CA certificate PEM, when configured. */
   caCertFingerprint?: string;
+  /** Desired origin server address when reconciling backend address alongside mTLS. */
+  originAddress?: string;
   /** Plain-English summary shown before approval (contains no private key). */
   summary: string;
   /** SHA-256 hash binding approval to this exact service, version, backend, and cert fingerprints. */
@@ -55,8 +57,8 @@ function assertClientKeyPair(certPem: string, keyPem: string, originCaCertPem?: 
 
 /**
  * Inspects the active Fastly VCL service version's backend and plans configuring or updating its
- * mTLS client certificate (`pull.pem`) and optional pinned origin CA (`ssl_ca_cert`) without
- * exposing the private key in the plan or hash.
+ * mTLS client certificate (`pull.pem`), optional pinned origin CA (`ssl_ca_cert`), and optional
+ * origin backend address without exposing the private key in the plan or hash.
  */
 export async function planFastlyOriginMtls(
   client: Pick<FastlyClient, "getActiveVersion" | "getBackend">,
@@ -66,6 +68,7 @@ export async function planFastlyOriginMtls(
     clientCertPem: string;
     clientKeyPem: string;
     originCaCertPem?: string;
+    originAddress?: string;
   },
 ): Promise<FastlyOriginMtlsPlan> {
   assertClientKeyPair(input.clientCertPem, input.clientKeyPem, input.originCaCertPem);
@@ -76,24 +79,28 @@ export async function planFastlyOriginMtls(
   const desiredCaCert =
     input.originCaCertPem === undefined ? undefined : normalizePem(input.originCaCertPem);
   const existingCaCert = backend.ssl_ca_cert ? normalizePem(backend.ssl_ca_cert) : undefined;
+  const desiredAddress = input.originAddress?.trim() || undefined;
+  const existingAddress = backend.address.trim();
   const certFingerprint = sha256Hex(desiredCert).slice(0, 12);
   const caCertFingerprint =
     desiredCaCert === undefined ? undefined : sha256Hex(desiredCaCert).slice(0, 12);
   const clientMatches = existingCert === desiredCert;
   const caMatches = desiredCaCert === undefined || existingCaCert === desiredCaCert;
+  const addressMatches = desiredAddress === undefined || existingAddress === desiredAddress;
   const action: FastlyMtlsAction =
-    clientMatches && caMatches
+    clientMatches && caMatches && addressMatches
       ? "noop"
       : existingCert === undefined && existingCaCert === undefined
         ? "configure"
         : "update";
   const caSuffix = caCertFingerprint === undefined ? "" : ` and origin CA ${caCertFingerprint}`;
+  const addressSuffix = addressMatches ? "" : " and update origin backend address";
   const summary =
     action === "noop"
       ? `Fastly service ${input.serviceId} (v${activeVersion}) backend "${input.backendName}" already uses client certificate ${certFingerprint}${caSuffix}.`
       : action === "configure"
-        ? `Clone Fastly service ${input.serviceId} v${activeVersion}, configure mTLS client certificate ${certFingerprint}${caSuffix} on backend "${input.backendName}", and activate.`
-        : `Clone Fastly service ${input.serviceId} v${activeVersion}, rotate mTLS client certificate to ${certFingerprint}${caSuffix} on backend "${input.backendName}", and activate.`;
+        ? `Clone Fastly service ${input.serviceId} v${activeVersion}, configure mTLS client certificate ${certFingerprint}${caSuffix}${addressSuffix} on backend "${input.backendName}", and activate.`
+        : `Clone Fastly service ${input.serviceId} v${activeVersion}, update mTLS client certificate to ${certFingerprint}${caSuffix}${addressSuffix} on backend "${input.backendName}", and activate.`;
   const hash = sha256Hex(
     canonicalJson({
       op: "fastly-origin-mtls",
@@ -103,6 +110,7 @@ export async function planFastlyOriginMtls(
       action,
       certFingerprint,
       ...(caCertFingerprint === undefined ? {} : { caCertFingerprint }),
+      ...(desiredAddress === undefined ? {} : { originAddress: desiredAddress }),
     }),
   );
   return {
@@ -112,6 +120,7 @@ export async function planFastlyOriginMtls(
     backendName: input.backendName,
     certFingerprint,
     ...(caCertFingerprint === undefined ? {} : { caCertFingerprint }),
+    ...(desiredAddress === undefined ? {} : { originAddress: desiredAddress }),
     summary,
     hash,
   };
@@ -128,6 +137,7 @@ export async function applyFastlyOriginMtls(
     clientCertPem: string;
     clientKeyPem: string;
     originCaCertPem?: string;
+    originAddress?: string;
     approvedHash: string;
   },
 ): Promise<{ applied: boolean; activatedVersion?: number }> {
@@ -160,6 +170,14 @@ export async function applyFastlyOriginMtls(
       },
     );
   }
+  const actualAddress = input.originAddress?.trim() || undefined;
+  if (actualAddress !== plan.originAddress) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "The origin backend address changed after the Fastly plan was hashed. Nothing was changed.",
+      { hint: "Re-run the command so the approval hash matches the current origin address." },
+    );
+  }
   if (plan.action === "noop") return { applied: false };
   const nextVersion = await client.cloneVersion(plan.serviceId, plan.activeVersion);
   await client.updateBackendMtls({
@@ -171,6 +189,7 @@ export async function applyFastlyOriginMtls(
     ...(input.originCaCertPem === undefined
       ? {}
       : { originCaCertPem: normalizePem(input.originCaCertPem) }),
+    ...(actualAddress === undefined ? {} : { originAddress: actualAddress }),
   });
   await client.activateVersion(plan.serviceId, nextVersion);
   return { applied: true, activatedVersion: nextVersion };

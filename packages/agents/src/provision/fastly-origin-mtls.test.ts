@@ -182,11 +182,14 @@ describe("syncOriginMtls and split-DNS setupThirdPartyEdge (036 PR 4)", () => {
         fetch: fake.fetch,
         command: "opscrew provision",
       }),
-    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    ).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("HTTP 503"),
+    });
     expect(fake.calls).toEqual([]);
   });
 
-  it("setupThirdPartyEdge verifies BOTH Fastly and Bunny credentials and looks up Bunny's DNS zone id on split DNS", async () => {
+  it("setupThirdPartyEdge verifies BOTH Fastly and Bunny credentials and looks up Bunny's DNS zone id and name on split DNS", async () => {
     const seenUrls: string[] = [];
     const fetch: FetchLike = (async (url: string | URL) => {
       const href = String(url);
@@ -224,6 +227,7 @@ describe("syncOriginMtls and split-DNS setupThirdPartyEdge (036 PR 4)", () => {
       envVar: "FASTLY_API_KEY",
       apiKey: API_KEY,
       dnsZoneId: 4321,
+      dnsZoneName: "example.com",
       dnsProvider: {
         id: "bunny",
         envVar: "BUNNYNET_API_KEY",

@@ -67,6 +67,7 @@ export const definition: EdgeProviderDefinition = {
       clientCertPem,
       clientKeyPem,
       originCaCertPem,
+      originAddress,
       fetch,
       redactor,
     }) =>
@@ -82,6 +83,7 @@ export const definition: EdgeProviderDefinition = {
           clientCertPem,
           clientKeyPem,
           ...(originCaCertPem === undefined ? {} : { originCaCertPem }),
+          ...(originAddress === undefined ? {} : { originAddress }),
         },
       ),
     applyOriginMtls: ({
@@ -90,6 +92,7 @@ export const definition: EdgeProviderDefinition = {
       clientCertPem,
       clientKeyPem,
       originCaCertPem,
+      originAddress,
       approvedHash,
       fetch,
       redactor,
@@ -105,6 +108,7 @@ export const definition: EdgeProviderDefinition = {
           clientCertPem,
           clientKeyPem,
           ...(originCaCertPem === undefined ? {} : { originCaCertPem }),
+          ...(originAddress === undefined ? {} : { originAddress }),
           approvedHash,
         },
       ),

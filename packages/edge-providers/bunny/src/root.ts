@@ -144,6 +144,7 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
                 ["ipv6", input.ipv6Expr],
               ] as [string, string][])
             : ([
+                ["split_dns", "true"],
                 ["dns_zone_name", "var.bunny_dns_zone_name"],
                 ["edge_cname_target", input.edgeDns.cnameTargetExpr],
                 ...(input.edgeDns.tlsValidationRecordsExpr === undefined

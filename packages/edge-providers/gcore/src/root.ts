@@ -94,6 +94,7 @@ export function renderGcoreRoot(input: EdgeRootInput): EdgeRootContribution {
                 ["ipv6", input.ipv6Expr],
               ] as [string, string][])
             : ([
+                ["split_dns", "true"],
                 ["edge_cname_target", input.edgeDns.cnameTargetExpr],
                 ...(input.edgeDns.ipv4TargetsExpr === undefined
                   ? []

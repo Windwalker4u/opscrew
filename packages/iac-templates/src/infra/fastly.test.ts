@@ -111,7 +111,31 @@ describe("Fastly infrastructure and reverse-proxy rendering (036 PR 4)", () => {
     const bunnyMain = byPath("modules/bunny-edge/main.tf");
     expect(bunnyMain).toContain('resource "bunnynet_dns_record" "edge_target"');
     expect(bunnyMain).toContain('type    = var.record_name == "" ? "Flatten" : "CNAME"');
+    expect(bunnyMain).toContain("!var.split_dns");
+    expect(bunnyMain).toContain("precondition {");
     expect(bunnyMain).toContain('resource "bunnynet_dns_record" "tls_validation"');
+    expect(main).toContain("split_dns              = true");
+  });
+
+  it("uses learned ctx.edge.dnsZoneName when dns.zone is omitted for subdomains on Bunny and Gcore", () => {
+    for (const dnsProvider of ["bunny", "gcore"] as const) {
+      const plan = makeFastlyPlan({ dnsProvider });
+      const { zone: _omitted, ...dnsWithoutZone } = plan.dns;
+      const files = renderInfra(
+        { ...plan, dns: dnsWithoutZone },
+        { ...baseCtx(), edge: { dnsZoneId: 42, dnsZoneName: "example.com" } },
+      );
+      const tfvars = JSON.parse(
+        files.find((f) => f.path.endsWith("/terraform.tfvars.json"))?.content ?? "{}",
+      ) as Record<string, unknown>;
+      if (dnsProvider === "bunny") {
+        expect(tfvars.bunny_record_name).toBe("app");
+        expect(tfvars.bunny_www_record_name).toBe("www.app");
+        expect(tfvars.bunny_dns_zone_name).toBe("example.com");
+      } else {
+        expect(tfvars.gcore_dns_zone).toBe("example.com");
+      }
+    }
   });
 
   it("renders Gcore DNS (unproxied module dns) + Fastly edge (module edge) routing to Fastly targets without collisions", () => {

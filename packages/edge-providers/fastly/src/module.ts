@@ -51,9 +51,14 @@ variable "waf_custom_rules" {
 }
 `;
 
-const MAIN_TF = `# Fastly VCL service: dynamic-app-safe defaults (cache bypass via action = "pass", force HTTPS,
-# verified HTTPS to origin). Backend mTLS client key is applied outside Terraform via the Fastly
-# API so the private key never enters Terraform state (ADR 0038 D6).
+const MAIN_TF = `locals {
+  tls_hosts = var.www ? [var.domain, "www.\${var.domain}"] : [var.domain]
+}
+
+# Fastly VCL service: dynamic-app-safe defaults (cache bypass via action = "pass", force HTTPS,
+# verified HTTPS to origin). Backend mTLS client key and origin CA are applied outside Terraform
+# via the Fastly API so the private key never enters Terraform state (ADR 0038 D6), and
+# lifecycle.ignore_changes prevents later Terraform applies from wiping mTLS (causing HTTP 503).
 resource "fastly_service_vcl" "this" {
   name = var.service_name
 
@@ -110,6 +115,10 @@ resource "fastly_service_vcl" "this" {
   }
 
   force_destroy = true
+
+  lifecycle {
+    ignore_changes = [backend]
+  }
 }
 
 # Default Fastly TLS configuration exposing anycast IPv4/IPv6 and CNAME targets for DNS.
@@ -119,7 +128,7 @@ data "fastly_tls_configuration" "default" {
 
 # Managed TLS certificate (free up to 5 domains on Fastly's developer tier).
 resource "fastly_tls_subscription" "this" {
-  domains               = var.www ? [var.domain, "www.\${var.domain}"] : [var.domain]
+  domains               = local.tls_hosts
   certificate_authority = "certainly"
   configuration_id      = data.fastly_tls_configuration.default.id
   depends_on            = [fastly_service_vcl.this]
@@ -143,7 +152,7 @@ output "tls_subscription_id" {
 
 output "edge_cname_target" {
   description = "Fastly TLS configuration CNAME target for DNS routing."
-  value       = one([for r in data.fastly_tls_configuration.default.dns_records : r.record_value if r.record_type == "CNAME"])
+  value       = try([for r in data.fastly_tls_configuration.default.dns_records : r.record_value if r.record_type == "CNAME"][0], null)
 }
 
 output "edge_ipv4_targets" {
@@ -157,14 +166,17 @@ output "edge_ipv6_targets" {
 }
 
 output "tls_validation_records" {
-  description = "ACME DNS validation records required by fastly_tls_subscription_validation."
+  description = "ACME DNS validation records keyed by plan-time-known hostnames for fastly_tls_subscription_validation."
   value = {
-    for challenge in fastly_tls_subscription.this.managed_dns_challenges :
-    challenge.record_name => {
-      type  = challenge.record_type
-      name  = challenge.record_name
-      value = challenge.record_value
-    }
+    for host in local.tls_hosts :
+    host => [
+      for challenge in fastly_tls_subscription.this.managed_dns_challenges : {
+        type  = challenge.record_type
+        name  = challenge.record_name
+        value = challenge.record_value
+      }
+      if lower(trimsuffix(challenge.record_name, ".")) == lower("_acme-challenge.\${host}")
+    ][0]
   }
 }
 

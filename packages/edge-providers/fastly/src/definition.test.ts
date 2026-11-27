@@ -50,10 +50,16 @@ describe("@opscrew/edge-provider-fastly", () => {
     expect(main).toContain('data "fastly_tls_configuration" "default"');
     expect(main).toContain('resource "fastly_tls_subscription" "this"');
     expect(main).toContain("configuration_id      = data.fastly_tls_configuration.default.id");
+    expect(main).toContain("ignore_changes = [backend]");
     expect(outputs).toContain('output "edge_cname_target"');
+    expect(outputs).toContain("try([for r in data.fastly_tls_configuration.default.dns_records");
+    expect(outputs).not.toContain(
+      "one([for r in data.fastly_tls_configuration.default.dns_records",
+    );
     expect(outputs).toContain('output "edge_ipv4_targets"');
     expect(outputs).toContain('output "edge_ipv6_targets"');
     expect(outputs).toContain('output "tls_validation_records"');
+    expect(outputs).toContain("for host in local.tls_hosts :");
     expect(outputs).toContain("fastly_tls_subscription.this.managed_dns_challenges");
     // Security invariant (ADR 0038 D6): mTLS private key NEVER enters Terraform state.
     expect(main).not.toContain("ssl_client_key");

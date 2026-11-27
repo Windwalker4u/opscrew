@@ -51,11 +51,17 @@ Like Cloudflare, Fastly gives OpsCrew both layers of origin protection:
   (signed by a per-app CA) and client certificate (`pull.pem`) locally in `generated_values.json`
   (`0600`). The server's reverse proxy serves the origin certificate (`OPSCREW_ORIGIN_TLS`) and
   requires `pull.pem`; after Terraform apply, OpsCrew installs `ssl_ca_cert`, `ssl_client_cert`,
-  and `ssl_client_key` on Fastly's `opscrew_origin` backend via a plan-hash-approved Fastly API
-  sequence (clone active version -> update backend -> activate).
-- **Never in Terraform state or git:** OpsCrew intentionally omits `backend.ssl_client_key` from
-  `fastly_service_vcl` in Terraform so the private key never lands in Terraform state. SecOps
-  blocks any Terraform plan that puts `ssl_client_key` in state as a `critical` finding.
+  `ssl_client_key`, and reconciles the backend's origin `address` on Fastly's `opscrew_origin`
+  backend via a plan-hash-approved Fastly API sequence (clone active version -> update backend ->
+  activate). Refusing this post-apply mTLS approval leaves Fastly returning HTTP `503` until
+  approved because the origin requires `pull.pem` and Fastly has not yet pinned the origin CA.
+- **Never written by Terraform & protected at rest:** OpsCrew omits `backend.ssl_client_key` from
+  `fastly_service_vcl` in Terraform (SecOps blocks any Terraform plan setting `ssl_client_key` as a
+  `critical` finding) and sets `lifecycle { ignore_changes = [backend] }` on `fastly_service_vcl`
+  so subsequent applies never wipe mTLS or trigger a 503 window. OpsCrew registers the client
+  private key with its redactor before running OpenTofu/Terraform; when using **OpenTofu**
+  (OpsCrew's default), state encryption protects any refreshed provider state at rest, whereas
+  plain Terraform does not encrypt local state.
 
 ## Caching, TLS, and free probe blocking
 
@@ -92,3 +98,5 @@ and preview environments (`environment.previews`).
 3. Verify `https://<domain>/.env` returns HTTP `403` at Fastly's edge without hitting the origin.
 4. Verify a direct connection to port 443 on the server IP from outside Fastly's CIDRs is blocked by
    the cloud firewall, and a connection without the `pull.pem` client cert fails TLS handshake.
+5. Verify during the live pass whether Fastly's `GET /backend` masks or returns `ssl_client_key` on
+   OpenTofu refresh, and confirm a subsequent `opscrew provision` preserves mTLS without HTTP 503.

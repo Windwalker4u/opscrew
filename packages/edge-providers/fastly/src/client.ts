@@ -57,6 +57,7 @@ export interface FastlyClient {
     clientCertPem: string;
     clientKeyPem: string;
     originCaCertPem?: string;
+    originAddress?: string;
   }): Promise<void>;
   activateVersion(serviceId: string, version: number): Promise<void>;
 }
@@ -216,6 +217,7 @@ export function fastlyClient(deps: FastlyClientDeps): FastlyClient {
             ssl_client_cert: input.clientCertPem,
             ssl_client_key: input.clientKeyPem,
             ...(input.originCaCertPem === undefined ? {} : { ssl_ca_cert: input.originCaCertPem }),
+            ...(input.originAddress === undefined ? {} : { address: input.originAddress }),
           },
         },
       );

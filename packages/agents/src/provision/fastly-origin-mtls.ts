@@ -26,6 +26,7 @@ export async function syncOriginMtls(
     clientCertPem: string;
     clientKeyPem: string;
     originCaCertPem?: string;
+    originAddress?: string;
     command: string;
     planOnly?: boolean;
     fetch?: FetchLike;
@@ -61,6 +62,7 @@ export async function syncOriginMtls(
     clientCertPem: input.clientCertPem,
     clientKeyPem: input.clientKeyPem,
     ...(input.originCaCertPem === undefined ? {} : { originCaCertPem: input.originCaCertPem }),
+    ...(input.originAddress === undefined ? {} : { originAddress: input.originAddress }),
     ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
     redactor: deps.redactor,
   });
@@ -80,7 +82,7 @@ export async function syncOriginMtls(
     hash: planned.hash,
     refused: {
       plan: `${edge.displayName} origin mTLS update`,
-      unchanged: `Nothing was changed on ${edge.displayName}.`,
+      unchanged: `Nothing was changed on ${edge.displayName}. Until this origin mTLS update is approved, ${edge.displayName} will return HTTP 503 because the origin requires pull.pem and the edge has not yet pinned the origin CA.`,
       again: input.command,
     },
   });
@@ -91,6 +93,7 @@ export async function syncOriginMtls(
     clientCertPem: input.clientCertPem,
     clientKeyPem: input.clientKeyPem,
     ...(input.originCaCertPem === undefined ? {} : { originCaCertPem: input.originCaCertPem }),
+    ...(input.originAddress === undefined ? {} : { originAddress: input.originAddress }),
     approvedHash: planned.hash,
     ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
     redactor: deps.redactor,

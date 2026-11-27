@@ -17,11 +17,13 @@ function fakeFastly(initialCert: string | null = null, initialCaCert: string | n
   let activeVersion = 1;
   let cert = initialCert;
   let caCert = initialCaCert;
+  let address = "203.0.113.10";
   const events: string[] = [];
   return {
     events,
     getCert: () => cert,
     getCaCert: () => caCert,
+    getAddress: () => address,
     client: {
       async getActiveVersion() {
         return activeVersion;
@@ -29,7 +31,7 @@ function fakeFastly(initialCert: string | null = null, initialCaCert: string | n
       async getBackend(_serviceId: string, _version: number, backendName: string) {
         return {
           name: backendName,
-          address: "203.0.113.10",
+          address,
           ssl_client_cert: cert,
           ssl_ca_cert: caCert,
         };
@@ -46,10 +48,12 @@ function fakeFastly(initialCert: string | null = null, initialCaCert: string | n
         clientCertPem: string;
         clientKeyPem: string;
         originCaCertPem?: string;
+        originAddress?: string;
       }) {
         events.push(`update:v${input.version}:${input.backendName}`);
         cert = input.clientCertPem;
         if (input.originCaCertPem !== undefined) caCert = input.originCaCertPem;
+        if (input.originAddress !== undefined) address = input.originAddress;
       },
       async activateVersion(_serviceId: string, version: number) {
         events.push(`activate:v${version}`);
@@ -186,6 +190,38 @@ describe("Fastly origin mTLS plan & hash-bound apply", () => {
       originCaCertPem: CA_CERT_2,
     });
     expect(rotateCa.action).toBe("update");
+
+    // Reconciling a changed server IP plans an update even when certs already match, and rejects
+    // an address changed after hashing.
+    const moveOrigin = await planFastlyOriginMtls(fake.client, {
+      serviceId: "svc-fastly-2",
+      backendName: "opscrew_origin",
+      clientCertPem: CERT_1,
+      clientKeyPem: KEY_1,
+      originCaCertPem: CA_CERT_1,
+      originAddress: "198.51.100.77",
+    });
+    expect(moveOrigin.action).toBe("update");
+    expect(moveOrigin.originAddress).toBe("198.51.100.77");
+    await expect(
+      applyFastlyOriginMtls(fake.client, moveOrigin, {
+        clientCertPem: CERT_1,
+        clientKeyPem: KEY_1,
+        originCaCertPem: CA_CERT_1,
+        originAddress: "198.51.100.88",
+        approvedHash: moveOrigin.hash,
+      }),
+    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    await expect(
+      applyFastlyOriginMtls(fake.client, moveOrigin, {
+        clientCertPem: CERT_1,
+        clientKeyPem: KEY_1,
+        originCaCertPem: CA_CERT_1,
+        originAddress: "198.51.100.77",
+        approvedHash: moveOrigin.hash,
+      }),
+    ).resolves.toEqual({ applied: true, activatedVersion: 3 });
+    expect(fake.getAddress()).toBe("198.51.100.77");
   });
 
   it("refuses non-PEM certificates or keys", async () => {
