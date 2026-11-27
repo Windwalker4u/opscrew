@@ -125,27 +125,43 @@ function dockerBuildLines(plan: DeployPlan, imageTag: string): string[] {
   const buildSecretsVar = deploySecretName(plan, DEPLOY_SECRETS.buildSecrets);
   return [
     "export DOCKER_BUILDKIT=1",
-    'BUILD_SECRETS_DIR="$(mktemp -d)"',
-    "trap 'rm -rf \"$BUILD_SECRETS_DIR\"' EXIT",
+    'BUILD_SECRETS_DIR="$(umask 077 && mktemp -d)"',
+    'chmod 700 "$BUILD_SECRETS_DIR"',
+    'cleanup_build_secrets() { rm -rf "$BUILD_SECRETS_DIR"; }',
+    "trap cleanup_build_secrets EXIT",
     "set --",
     `if [ -n "\${${buildEnvVar}:-}" ]; then`,
-    `  while IFS= read -r line; do`,
-    '    case "$line" in "" | "#"* | *=*) ;; esac',
-    '    case "$line" in *=*) set -- "$@" --build-arg "$line" ;; esac',
-    `  done <<OPSCREW_BUILD_ENV_EOF\n$(${readVar(buildEnvVar)})\nOPSCREW_BUILD_ENV_EOF`,
+    `  (umask 077 && (${readVar(buildEnvVar)}) > "$BUILD_SECRETS_DIR/_env")`,
+    '  while IFS= read -r line || [ -n "$line" ]; do',
+    '    case "$line" in',
+    '      "" | "#"*) continue ;;',
+    "      *=*)",
+    '        arg_key="${line%%=*}"',
+    '        case "$arg_key" in',
+    '          "" | [0-9]* | *[!A-Za-z0-9_]*) echo "Invalid build arg name: $arg_key" >&2; exit 1 ;;',
+    "        esac",
+    '        set -- "$@" --build-arg "$line"',
+    "        ;;",
+    "    esac",
+    '  done < "$BUILD_SECRETS_DIR/_env"',
     "fi",
     `if [ -n "\${${buildSecretsVar}:-}" ]; then`,
-    `  while IFS= read -r line; do`,
+    `  (umask 077 && (${readVar(buildSecretsVar)}) > "$BUILD_SECRETS_DIR/_secrets")`,
+    '  while IFS= read -r line || [ -n "$line" ]; do',
     '    case "$line" in',
+    '      "" | "#"*) continue ;;',
     "      *=*)",
     '        secret_key="${line%%=*}"',
     '        secret_val="${line#*=}"',
-    '        printf \'%s\' "$secret_val" > "$BUILD_SECRETS_DIR/$secret_key"',
+    '        case "$secret_key" in',
+    '          "" | [0-9]* | *[!A-Za-z0-9_]*) echo "Invalid build secret name: $secret_key" >&2; exit 1 ;;',
+    "        esac",
+    '        (umask 077 && printf \'%s\' "$secret_val" > "$BUILD_SECRETS_DIR/$secret_key")',
     '        chmod 600 "$BUILD_SECRETS_DIR/$secret_key"',
     '        set -- "$@" --secret "id=$secret_key,src=$BUILD_SECRETS_DIR/$secret_key"',
     "        ;;",
     "    esac",
-    `  done <<OPSCREW_BUILD_SECRETS_EOF\n$(${readVar(buildSecretsVar)})\nOPSCREW_BUILD_SECRETS_EOF`,
+    '  done < "$BUILD_SECRETS_DIR/_secrets"',
     "fi",
     `docker build --pull -f ${shellQuote(dockerfile)} "$@" -t "${imageTag}" ${shellQuote(context)}`,
   ];
@@ -261,11 +277,11 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
     `cd ${targetDir} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi`,
   );
   const serverLoginLine = onServer
-    ? `mkdir -p ${targetDockerConfig} && printf '%s\\n' "$CI_JOB_TOKEN" | DOCKER_CONFIG=${targetDockerConfig} docker login "$REGISTRY_HOST" -u "$CI_REGISTRY_USER" --password-stdin`
-    : `printf '%s\\n' "$CI_JOB_TOKEN" | ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "mkdir -p ${targetDockerConfig} && DOCKER_CONFIG=${targetDockerConfig} docker login '$REGISTRY_HOST' -u '$CI_REGISTRY_USER' --password-stdin"`;
-  const serverLogoutLine = onServer
-    ? `DOCKER_CONFIG=${targetDockerConfig} docker logout "$REGISTRY_HOST" > /dev/null 2>&1 || true`
-    : `ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "DOCKER_CONFIG=${targetDockerConfig} docker logout '$REGISTRY_HOST' > /dev/null 2>&1 || true"`;
+    ? `umask 077 && mkdir -p ${targetDockerConfig} && chmod 700 ${targetDockerConfig} && printf '%s\\n' "$CI_JOB_TOKEN" | DOCKER_CONFIG=${targetDockerConfig} docker login "$REGISTRY_HOST" -u "$CI_REGISTRY_USER" --password-stdin`
+    : `printf '%s\\n' "$CI_JOB_TOKEN" | ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "umask 077 && mkdir -p ${targetDockerConfig} && chmod 700 ${targetDockerConfig} && DOCKER_CONFIG=${targetDockerConfig} docker login '$REGISTRY_HOST' -u '$CI_REGISTRY_USER' --password-stdin"`;
+  const serverLogoutFunc = onServer
+    ? `cleanup_logout() { DOCKER_CONFIG=${targetDockerConfig} docker logout "$REGISTRY_HOST" > /dev/null 2>&1 || true; }`
+    : `cleanup_logout() { ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "DOCKER_CONFIG=${targetDockerConfig} docker logout '$REGISTRY_HOST' > /dev/null 2>&1 || true" || true; }`;
 
   const deployScript = onServer
     ? [
@@ -276,8 +292,9 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
         ...envWriteLines,
         ...originTlsLines,
         savePreviousLine,
+        serverLogoutFunc,
         serverLoginLine,
-        `trap '${serverLogoutLine}' EXIT`,
+        "trap cleanup_logout EXIT",
         `cat <<'OPSCREW_SWITCH_EOF' | sh -s -- "$APP_IMAGE"\n${startScript}\nOPSCREW_SWITCH_EOF`,
       ]
     : [
@@ -288,8 +305,9 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
         ...envWriteLines,
         ...originTlsLines,
         savePreviousLine,
+        serverLogoutFunc,
         serverLoginLine,
-        `trap '${serverLogoutLine}' EXIT`,
+        "trap cleanup_logout EXIT",
         `cat <<'OPSCREW_SWITCH_EOF' | ssh $SSH_OPTS "deploy@$DEPLOY_HOST" sh -s -- "$APP_IMAGE"\n${startScript}\nOPSCREW_SWITCH_EOF`,
       ];
 
