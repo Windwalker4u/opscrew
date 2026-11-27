@@ -511,7 +511,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && OPSCREW_IT=1 npx vitest run --root packages/providers/kamatera && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3526 (lead; the founder chose option A on
+- [x] T3526 (lead; the founder chose option A on
   [issue #13](https://github.com/opscrew-hub/opscrew/issues/13), 2026-11-25) The server firewall
   and SecOps's check of it
   - Owns: `packages/contracts/src/provider.ts` (`ProviderSecOps.firewallCheck`),
