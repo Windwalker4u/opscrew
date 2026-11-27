@@ -30,10 +30,12 @@ export function baseAppNameFrom(plan: Pick<DeployPlan, "app">, environment: stri
  * existing environment); `undefined` when no other environment has a plan yet.
  */
 export async function referenceAppName(paths: ProjectPaths): Promise<string | undefined> {
-  const prod = await readOptionalArtifact("plan", environmentPaths(paths, "prod").files.plan);
-  if (prod !== undefined) return prod.app.name;
+  if (paths.environment !== "prod") {
+    const prod = await readOptionalArtifact("plan", environmentPaths(paths, "prod").files.plan);
+    if (prod !== undefined) return prod.app.name;
+  }
   for (const env of await environmentsOf(paths.root, paths.app)) {
-    if (env === paths.environment) continue;
+    if (env === paths.environment || env === "prod") continue;
     const plan = await readOptionalArtifact("plan", environmentPaths(paths, env).files.plan);
     if (plan !== undefined) return baseAppNameFrom(plan, env);
   }

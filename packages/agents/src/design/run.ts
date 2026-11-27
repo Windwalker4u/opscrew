@@ -1033,7 +1033,6 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const inputs = await readInputs(deps);
   const name = paths.environment;
   const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
-  const baseApp = prodPlan?.app.name ?? (await referenceAppName(paths));
   // The plan without its placement, which design completes from the user's edits below.
   const read = await readPlanWithEdits(paths.files.plan).catch((error: unknown) => {
     // A placement field that is not valid stops design: the rest of the plan is the user's.
@@ -1044,6 +1043,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     return undefined;
   });
   const previous = read?.plan;
+  const baseApp =
+    prodPlan?.app.name ??
+    (name === "prod" && previous !== undefined
+      ? undefined
+      : await referenceAppName(paths).catch(() => undefined));
   // A preview environment: its plan's settings, else the new one's (`opscrew env add --previews`).
   // Every preview runs on its one server, so the servers plan.yaml names and the add-ons go.
   const previews = previous?.environment?.previews ?? options.environment?.previews;
