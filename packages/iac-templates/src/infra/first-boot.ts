@@ -7,6 +7,9 @@ import { templatefile } from "./cloud-init";
  */
 export const FIRST_BOOT_SCRIPT = "first-boot.sh.tftpl";
 
+/** Where `first-boot.sh.tftpl` logs on the server, the server firewall's step included. */
+export const FIRST_BOOT_LOG = "/var/log/opscrew-first-boot.log";
+
 /** The variable the module's `templatefile` of `first-boot.sh.tftpl` fills (HCL's `base64encode`). */
 export const FIRST_BOOT_CONFIG = "cloud_config_b64";
 

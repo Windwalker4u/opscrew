@@ -1,4 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { PUBLIC_KEY } from "../__fixtures__/plans";
 import { renderCloudInit } from "./cloud-init";
@@ -36,16 +40,58 @@ const bash = (() => {
 const bashSkip = bash === undefined ? "no bash is here" : undefined;
 if (bashSkip !== undefined) console.warn(`[iac-templates] skipping the shell runs: ${bashSkip}`);
 
-/** nft, to check the rules file's syntax with: only as root, which `nft -c` needs. */
-const nftSkip =
-  spawnSync("nft", ["--version"]).status !== 0
-    ? "no nft is here"
-    : process.getuid?.() !== 0
-      ? "nft -c needs root"
-      : undefined;
+/** A POSIX shell (dash on Ubuntu) to check the script's syntax with too, or undefined. */
+const sh = [
+  "sh",
+  ...(process.platform === "win32"
+    ? [`${process.env.ProgramFiles ?? "C:\\Program Files"}\\Git\\bin\\sh.exe`]
+    : []),
+].find((candidate) => spawnSync(candidate, ["-n", "-c", "true"]).status === 0);
+
+/**
+ * nft, to check the rules file's syntax with: as root, or without root in a user and network
+ * namespace of its own (`unshare -rn`), since `nft -c` needs the rights to change the rules.
+ */
+const nft = ((): { command: string[] } | { skip: string } => {
+  if (spawnSync("nft", ["--version"]).status !== 0) return { skip: "no nft is here" };
+  if (process.getuid?.() === 0) return { command: ["nft"] };
+  return spawnSync("unshare", ["-rn", "nft", "list", "ruleset"]).status === 0
+    ? { command: ["unshare", "-rn", "nft"] }
+    : { skip: "nft -c needs root, and `unshare -rn` doesn't work here" };
+})();
+const nftSkip = "skip" in nft ? nft.skip : undefined;
 if (nftSkip !== undefined) {
   console.warn(`[iac-templates] checking the nft rules by their lines only: ${nftSkip}`);
 }
+
+/**
+ * Runs the rendered step as the first boot does (`set -euo pipefail`, stderr with stdout, as in
+ * its log), then `after`, with its files under a folder of its own instead of `/etc`, on an image
+ * without nft (so it installs it), and `systemctl`, `apt-get` and `nft` replaced by functions that
+ * print their arguments to stderr, `apt-get` or `nft` failing as `fail` says. Returns the run, its
+ * lines and the folder.
+ */
+async function runStep(rules: ServerFirewallRules, fail: "apt-get" | "nft" | "none", after = "") {
+  const root = (await mkdtemp(join(tmpdir(), "opscrew-first-boot-"))).replaceAll("\\", "/");
+  const stub = (name: string) =>
+    `${name}() { echo "${name} $*" >&2; ${fail === name ? "return 100" : "true"}; }`;
+  const script = [
+    "set -euo pipefail",
+    "exec 2>&1",
+    'command() { if [ "$*" = "-v nft" ]; then return 1; fi; builtin command "$@"; }',
+    'systemctl() { echo "systemctl $*" >&2; }',
+    stub("apt-get"),
+    stub("nft"),
+    renderServerFirewall(rules).replaceAll("/etc/", `${root}/etc/`),
+    after,
+  ].join("\n");
+  const run = spawnSync(bash ?? "bash", [], { input: script, encoding: "utf8" });
+  return { ...run, root, lines: run.stdout.split("\n").filter((line) => line !== "") };
+}
+
+/** The line the step logs before it powers the server off. */
+const POWER_OFF =
+  /^opscrew: the server firewall could not be set up, so the server powers off rather than stay reachable without it /;
 
 /**
  * Runs the rendered step with `-eu` (as the first boot does) up to the rules file, which it prints
@@ -111,6 +157,81 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
     ]);
     expect(script).not.toContain("${");
   });
+
+  it("turns password logins off first, then sets up the firewall, under a trap that powers the server off", () => {
+    const config = renderCloudInit({ sshPublicKey: PUBLIC_KEY, web: true });
+    const script = renderFirstBootScript(config, renderServerFirewall(RULES));
+    const at = (text: string) => {
+      const index = script.indexOf(text);
+      expect(index, text).toBeGreaterThan(-1);
+      return index;
+    };
+    const order = [
+      "\nopscrew_server_firewall() {\n",
+      "\n  trap 'echo \"opscrew: the server firewall could not be set up, so the server powers off rather than stay reachable without it $(date -Is)\" >&2; systemctl poweroff' EXIT\n",
+      ">/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf\n",
+      "\n  systemctl try-reload-or-restart ssh.service\n",
+      "install -y nftables\n",
+      "\n  nft -f /etc/nftables.conf\n",
+      "\n  systemctl enable nftables.service\n",
+      "\n  trap - EXIT\n",
+      "\nopscrew_server_firewall\n",
+      "cloud-init clean",
+    ].map(at);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    // The trap is set once, and cleared once the rules are kept: no later step powers it off.
+    expect(script.split("systemctl poweroff")).toHaveLength(2);
+  });
+
+  it.skipIf(bashSkip !== undefined)(
+    "runs the keys-only step before anything that needs the network, and keeps the rules",
+    async () => {
+      const run = await runStep(RULES, "none", "false");
+      // The first boot's later failure doesn't power the server off: the firewall is on.
+      expect(run.status).not.toBe(0);
+      expect(run.lines.filter((line) => POWER_OFF.test(line) || line.includes("poweroff"))).toEqual(
+        [],
+      );
+      expect(
+        run.lines.map((line) => line.replace(/^(opscrew: server firewall on) .*$/, "$1")),
+      ).toEqual([
+        "systemctl try-reload-or-restart ssh.service",
+        "apt-get -o DPkg::Lock::Timeout=600 update",
+        "apt-get -o DPkg::Lock::Timeout=600 install -y nftables",
+        `nft -f ${run.root}/etc/nftables.conf`,
+        "systemctl enable nftables.service",
+        "opscrew: server firewall on",
+      ]);
+      expect(
+        readFileSync(join(run.root, "etc/ssh/sshd_config.d/00-opscrew-keys-only.conf"), "utf8"),
+      ).toBe("PasswordAuthentication no\nKbdInteractiveAuthentication no\n");
+      expect(tableLines(readFileSync(join(run.root, "etc/nftables.conf"), "utf8"))).toEqual(
+        serverFirewallTable(RULES),
+      );
+    },
+  );
+
+  it.skipIf(bashSkip !== undefined)(
+    "powers the server off when any part of the firewall's step fails, after password logins are off",
+    async () => {
+      for (const [fail, rules, last] of [
+        ["apt-get", RULES, "apt-get -o DPkg::Lock::Timeout=600 update"],
+        ["nft", RULES, "nft -f "],
+        // Stopped while the rules file is written: the line still reaches the log.
+        ["none", { ...RULES, wireguardPort: Number.NaN }, "opscrew: not a port: NaN"],
+      ] as const) {
+        const run = await runStep(rules, fail, 'echo "opscrew: cloud-init ran"');
+        expect(run.status, fail).not.toBe(0);
+        expect(run.lines[0], fail).toBe("systemctl try-reload-or-restart ssh.service");
+        expect(run.lines.at(-3)?.startsWith(last), `${fail}: ${run.stdout}`).toBe(true);
+        expect(run.lines.at(-2), fail).toMatch(POWER_OFF);
+        expect(run.lines.at(-1), fail).toBe("systemctl poweroff");
+        // Nothing after the step runs, and nothing says the firewall is on.
+        expect(run.stdout).not.toContain("server firewall on");
+        expect(run.stdout).not.toContain("cloud-init ran");
+      }
+    },
+  );
 
   it("carries the plan's networks and WireGuard port as the module renders them", () => {
     const step = renderServerFirewall(RULES);
@@ -244,14 +365,20 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
       }),
       renderServerFirewall(RULES),
     );
-    const result = spawnSync(bash ?? "bash", ["-n"], { input: script, encoding: "utf8" });
-    expect(result.stderr).toBe("");
-    expect(result.status).toBe(0);
+    for (const shell of [bash ?? "bash", ...(sh === undefined ? [] : [sh])]) {
+      const result = spawnSync(shell, ["-n"], { input: script, encoding: "utf8" });
+      expect(result.stderr, shell).toBe("");
+      expect(result.status, shell).toBe(0);
+    }
   });
 
   it.skipIf(bashSkip !== undefined || nftSkip !== undefined)("is a file nft accepts", () => {
     const result = rulesFile(RULES);
-    const check = spawnSync("nft", ["-c", "-f", "-"], { input: result.stdout, encoding: "utf8" });
+    const [command = "nft", ...args] = "command" in nft ? nft.command : [];
+    const check = spawnSync(command, [...args, "-c", "-f", "-"], {
+      input: result.stdout,
+      encoding: "utf8",
+    });
     expect(check.stderr).toBe("");
     expect(check.status).toBe(0);
   });

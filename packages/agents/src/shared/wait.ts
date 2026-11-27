@@ -17,6 +17,9 @@ import {
   realSleep,
   sha256Hex,
 } from "@opscrew/core";
+import { FIRST_BOOT_LOG } from "@opscrew/iac-templates";
+import { isCloudProvider } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -493,6 +496,30 @@ async function pinInstalledServer(
   return { knownHostsLines, changed: true, created: false };
 }
 
+/** The provider's definition when its servers take the first boot as a startup script (Kamatera). */
+function startupScriptProvider(profile: ReadyProfile) {
+  const provider = isCloudProvider(profile.id) ? cloudProvider(profile.id) : undefined;
+  return provider?.terraform.firstBoot === "script" ? provider : undefined;
+}
+
+/**
+ * What to check about a new server that doesn't answer, then `again`: the server in the provider's
+ * console, or, where the first boot runs as its startup script (`firstBoot` `script`, Kamatera),
+ * that script's log there, saying that it powers the server off when it can't set up the server's
+ * own firewall (`firewallCheck` `server`).
+ */
+function consoleHint(profile: ReadyProfile, again: string): string {
+  const noun = profile.serverNoun;
+  const where = providerConsole(profile);
+  const provider = startupScriptProvider(profile);
+  if (provider === undefined) return `Check the ${noun} in the ${where}, then ${again}`;
+  const off =
+    provider.texts.secops.firewallCheck === "server"
+      ? ", which powers it off rather than leave it reachable without its own firewall"
+      : "";
+  return `The ${noun} runs OpsCrew's first boot as its startup script${off}. Read its log, ${FIRST_BOOT_LOG}, from the ${noun}'s console in the ${where}, then ${again}`;
+}
+
 /** Why the setup did not finish, with the steps cloud-init named as failed. */
 function setupFailure(subject: string, outcome: SetupOutcome, steps: readonly string[]): string {
   const within = outcome === "running" ? ` within ${durationText(CLOUD_INIT_WAIT_MS)}` : "";
@@ -601,7 +628,7 @@ export async function readyNewServer(
           continue;
         }
         throw new OpsCrewError("PROVIDER_ERROR", failure, {
-          hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then ${input.again}`,
+          hint: consoleHint(profile, input.again),
         });
       }
       pinned = network
@@ -631,11 +658,13 @@ export async function readyNewServer(
       return installed === undefined ? pinned : { ...pinned, installHash: installed.hash };
     }
     if (outcome === "unreachable") {
-      // Without the deploy user's login nothing shows what the server holds: no install.
+      // Without the deploy user's login nothing shows what the server holds: no install. A first
+      // boot run as a startup script has its log in the console instead.
+      const script = startupScriptProvider(profile) !== undefined;
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         `${subject} did not let the deploy user in to check its first-boot setup within ${durationText(CLOUD_INIT_WAIT_MS)}.`,
-        { hint: checkHint },
+        { hint: script ? consoleHint(profile, input.again) : checkHint },
       );
     }
     const failure = setupFailure(subject, outcome, await failedSetupSteps(remote));

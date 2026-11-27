@@ -5,9 +5,10 @@
 # plan's networks, the web ports as the plan says, and the private network's WireGuard port.
 # Docker's published ports are held to the same web rule. Traffic from inside the server (Docker's
 # networks, the private network) passes, as a cloud firewall never sees it: ufw filters it, as on
-# every server. The rules go in /etc/nftables.conf, which nftables.service loads at every boot,
-# and SSH stops taking passwords. Until this step runs, a few seconds after the server starts,
-# nothing filters its ports.
+# every server. The rules go in /etc/nftables.conf, which nftables.service loads at every boot.
+# SSH stops taking passwords first, which needs no network. Until this step runs, a few seconds
+# after the server starts, nothing filters its ports; if any part of it fails, the server powers
+# off rather than stay reachable without its firewall, and says so in the first boot's log.
 ssh_sources='${ssh_sources}'
 web_sources='${web_sources}'
 wireguard_port='${wireguard_port}'
@@ -77,6 +78,14 @@ opscrew_firewall_rules() {
   echo '}'
 }
 opscrew_server_firewall() {
+  # Fails closed: the first boot stops at any failure (set -e), and until the rules are kept, a
+  # stop powers the server off. The provision then fails on a server that never answers. The line
+  # goes to stderr, the log, even when the stop comes while the rules file is being written.
+  trap 'echo "opscrew: the server firewall could not be set up, so the server powers off rather than stay reachable without it $(date -Is)" >&2; systemctl poweroff' EXIT
+  # Key logins only from now on, whatever the image allowed; the cloud-config's SSH settings follow.
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf
+  systemctl try-reload-or-restart ssh.service
   if ! command -v nft >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 update
     DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y nftables
@@ -85,10 +94,7 @@ opscrew_server_firewall() {
   mv /etc/nftables.conf.opscrew /etc/nftables.conf
   nft -f /etc/nftables.conf
   systemctl enable nftables.service
-  # Key logins only from now on, whatever the image allowed; the cloud-config's SSH settings follow.
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf
-  systemctl try-reload-or-restart ssh.service
+  trap - EXIT
   echo "opscrew: server firewall on $(date -Is)"
 }
 opscrew_server_firewall

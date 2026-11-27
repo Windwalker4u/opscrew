@@ -66,6 +66,7 @@ export {
   type WorkerCustomDomain,
   workerCustomDomainAddresses,
 } from "./cloudflare-move";
+export { FIRST_BOOT_LOG } from "./first-boot";
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export {
   managesPortainerRecords,

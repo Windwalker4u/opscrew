@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { FIRST_BOOT_LOG } from "@opscrew/iac-templates";
+import { cloudProvider } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
 import type { PhaseDeps } from "../context";
 import { providerProfile, VPS_PROVIDERS } from "../providers";
@@ -16,6 +18,7 @@ import {
   NEW_HOST_KEY,
   ScriptedApprovalHandler,
 } from "../testing";
+import { providerConsole } from "./provider-text";
 import {
   confirmChangedHostKey,
   failedSetupSteps,
@@ -310,6 +313,31 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     });
   });
 
+  it("points a server that doesn't answer at its first boot's log where that runs as a startup script", async () => {
+    const script = cloudProvider(provider).terraform.firstBoot === "script";
+    const firewall = cloudProvider(provider).texts.secops.firewallCheck === "server";
+    const silent = await firstBoot(provider, { network: false, repair: false });
+    const locked = await firstBoot(provider, { login: false, repair: false });
+    expect(silent.result).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: `The server at ${HOST} did not open SSH within 5 minutes.`,
+    });
+    expect(locked.result).toMatchObject({ code: "PROVIDER_ERROR" });
+    for (const { result } of [silent, locked]) {
+      const hint = (result as OpsCrewError).hint ?? "";
+      expect(hint.includes(`Read its log, ${FIRST_BOOT_LOG}, from the server's console`)).toBe(
+        script,
+      );
+      expect(hint.includes("powers it off rather than leave it reachable")).toBe(firewall);
+      if (script) {
+        expect(hint).toBe(
+          `The server runs OpsCrew's first boot as its startup script${firewall ? ", which powers it off rather than leave it reachable without its own firewall" : ""}. Read its log, ${FIRST_BOOT_LOG}, from the server's console in the ${providerConsole(profile)}, then ${AGAIN}`,
+        );
+      }
+    }
+    expect((silent.result as OpsCrewError).hint).toContain(providerConsole(profile));
+  });
+
   it("without the approval restarts and installs nothing, and prints the command that approves it", async () => {
     const restart = await firstBoot(provider, { network: false, answer: () => false });
     expect(restart.server.calls).toEqual([]);
@@ -338,7 +366,11 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
       code: "PROVIDER_ERROR",
       message: `The server at ${HOST} did not let the deploy user in to check its first-boot setup within 8 minutes.`,
     });
-    expect((result as OpsCrewError).hint).toContain("cloud-init status --long");
+    // A first boot run as a startup script is read from its log in the console instead.
+    const script = cloudProvider(provider).terraform.firstBoot === "script";
+    expect((result as OpsCrewError).hint).toContain(
+      script ? FIRST_BOOT_LOG : "cloud-init status --long",
+    );
     expect(handler.requests).toEqual([]);
     expect(server.calls).toEqual([]);
   });

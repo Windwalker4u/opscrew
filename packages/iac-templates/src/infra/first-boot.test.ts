@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { PUBLIC_KEY } from "../__fixtures__/plans";
 import { renderCloudInit } from "./cloud-init";
-import { FIRST_BOOT_SCRIPT, renderFirstBootScript } from "./first-boot";
+import { FIRST_BOOT_LOG, FIRST_BOOT_SCRIPT, renderFirstBootScript } from "./first-boot";
 import { serverModuleFiles } from "./modules";
 
 /** A provider's module, as the contract carries it. */
@@ -45,8 +45,9 @@ describe("a provider that takes the first boot as a startup script", () => {
     expect(script).not.toContain("${");
   });
 
-  it("runs once, and says so with a marker", () => {
+  it("runs once, says so with a marker, and logs to its log", () => {
     const script = renderFirstBootScript(renderCloudInit({ sshPublicKey: PUBLIC_KEY, web: false }));
+    expect(script).toContain(`\nexec >>${FIRST_BOOT_LOG} 2>&1\n`);
     expect(script).toContain("if [ -e /var/lib/opscrew/first-boot.done ]; then");
     expect(script).toContain("date -Is >/var/lib/opscrew/first-boot.done");
     // The steps come from cloud-init, as on every other provider.
