@@ -661,3 +661,17 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - The pull request's answer names where raw plan JSON goes (the sidecar, policies, audit,
       prompts) and that each sees only the masked one; the task's report names the code for it.
   - Effort: medium
+
+- [ ] T3537 [US6] Kamatera's `findAppServers` matches only the plan's server names (review point 7,
+  [#56](https://github.com/opscrew-hub/opscrew/issues/56))
+  - Owns: `packages/contracts/src/connector.ts`, `packages/providers/kamatera/src/servers.ts` (and
+    tests), the agents' callers of `findAppServers` (`destroy/`, `provision/plan-apply.ts`,
+    `provision/takeover.ts`, `snapshot/`) and their tests
+  - Accept:
+    - `findAppServers(app, names?)`: `names` are the plan's server names. Kamatera, given them, keeps
+      exactly those names and their `(n)` duplicates (the guard stays for exactly those); without
+      them, it behaves as today. Every other provider ignores it, unchanged.
+    - Each agents caller that has the plan passes its server names, from the one helper that
+      already names servers (no new naming rule). A test: app `shop` with a sibling `shop-staging`
+      and `shop-staging(1)` on the account finds neither, and its own `shop-<extra>` still.
+  - Effort: high
