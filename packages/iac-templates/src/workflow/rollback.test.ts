@@ -276,6 +276,12 @@ const FAKE_DOCKER = [
   "    fi",
   // Legacy shared kamal-proxy cleanup after per-app switch never drops the app's own route.
   '    if [[ "$project" == opscrew-edge && "$6" == remove ]]; then exit 0; fi',
+  // kamal-proxy list reports routes currently registered on this proxy (omit on UPGRADE_0212 for app-proxy).
+  '    if [[ "$6" == list ]]; then',
+  '      if [[ "$project" != opscrew-edge && -n "${UPGRADE_0212:-}" ]]; then exit 0; fi',
+  '      if [[ -d "$WORK/routes" ]]; then ls "$WORK/routes" 2> /dev/null || true; fi',
+  "      exit 0",
+  "    fi",
   // kamal-proxy's pause and resume of a service it has (a route), which $WORK/paused/<service> marks.
   '    if [[ "$6" == pause || "$6" == resume ]]; then',
   '      if [[ ! -f "$WORK/routes/$7" ]]; then echo "Error: service not found" >&2; exit 1; fi',
@@ -691,6 +697,20 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(containers()).toEqual([OLD]);
       expect(routed()).toBe(OLD);
       expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+      expect(paused()).toBe(false);
+    });
+
+    it("defers install_edge until after kamal-proxy deploy during a 0.2.12 -> 0.2.13 recreate upgrade so requests are held, not 404'd", () => {
+      deployed();
+      const start = run(recreate.start, { UPGRADE_0212: "1" });
+      expect(start.status, start.output).toBe(0);
+      expect(at(PAUSE)).toBeLessThan(at("shop exec -T app-proxy kamal-proxy deploy shop "));
+      expect(at("shop exec -T app-proxy kamal-proxy deploy shop ")).toBeLessThan(
+        at("opscrew-edge exec -T caddy caddy reload"),
+      );
+      expect(at("opscrew-edge exec -T caddy caddy reload")).toBeLessThan(at(RESUME));
+      expect(containers()).toEqual([NEW]);
+      expect(routed()).toBe(NEW);
       expect(paused()).toBe(false);
     });
 

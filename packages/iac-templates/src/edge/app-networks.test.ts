@@ -134,22 +134,21 @@ describe("feature 049 (Option B): per-app kamal-proxy and network isolation", ()
     const switchScript = switchCommands(plan, [], { originTls: false, additions: false }).join(
       "\n",
     );
-    const startProxy = switchScript.indexOf(
-      `docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`,
-      switchScript.indexOf("recreate") > -1 ? 0 : 0,
-    );
     const switchTail = switchScript.slice(
       switchScript.lastIndexOf(`docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`),
     );
-    const callInstallEdge = switchTail.indexOf("\ninstall_edge\n");
+    const earlyInstallEdge = switchTail.indexOf("  install_edge\n  _edge_installed=1");
     const pausePerApp = switchTail.indexOf(
       `docker compose exec -T ${APP_KAMAL_PROXY_SERVICE} kamal-proxy pause shop`,
     );
     const recreateApp = switchTail.indexOf("docker compose up -d --no-deps --remove-orphans app");
-    expect(startProxy).toBeGreaterThan(-1);
-    expect(callInstallEdge).toBeGreaterThan(-1);
-    expect(pausePerApp).toBeGreaterThan(callInstallEdge);
+    const deferredInstallEdge = switchTail.indexOf(
+      'if [ -z "$_edge_installed" ]; then\n  install_edge',
+    );
+    expect(earlyInstallEdge).toBeGreaterThan(-1);
+    expect(pausePerApp).toBeGreaterThan(earlyInstallEdge);
     expect(recreateApp).toBeGreaterThan(pausePerApp);
+    expect(deferredInstallEdge).toBeGreaterThan(recreateApp);
     expect(switchScript).toContain("edge exec -T kamal-proxy kamal-proxy pause shop");
 
     const rollback = rollbackCommands(plan).join("\n");

@@ -123,7 +123,7 @@ describe.skipIf(reason !== undefined)("the visitor's address (OPSCREW_DOCKER_TES
       spawnSync("docker", ["rm", "-f", `${id}-${name}`]);
     spawnSync("docker", ["network", "rm", id]);
     if (work) rmSync(work, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   it("is CF-Connecting-IP's on nginx for a request from Cloudflare, and ignored from anywhere else", () => {
     const plan = on("nginx");

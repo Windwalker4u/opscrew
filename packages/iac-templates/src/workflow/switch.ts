@@ -751,7 +751,6 @@ function switchLines(
     "  exit 1",
     "fi",
   ];
-  const installEdge = options.installEdge === true ? ["install_edge"] : [];
   const rollingInstallEdge =
     options.installEdge === true ? ["_switch_mode=rolling", "install_edge", '_switch_mode=""'] : [];
   const dropSharedRoute =
@@ -761,14 +760,28 @@ function switchLines(
   if (strategy === "recreate") {
     return [
       ...ENSURE_APP_PROXY,
-      // Install/reload the edge BEFORE pausing or replacing the container so a failed edge check,
-      // certbot error, or reload leaves the currently running container and `.env` untouched.
-      ...installEdge,
+      // When per-app `app-proxy` already holds this app's route (0.2.13+ steady-state), install
+      // the edge BEFORE pausing or replacing `app` so a failed edge reload leaves the live
+      // container and `.env` untouched. On a first deploy or 0.2.12 -> 0.2.13 upgrade (no route
+      // on `app-proxy` yet), defer `install_edge` until after `kamal-proxy deploy` so requests
+      // stay held on the legacy shared proxy instead of hitting an empty per-app proxy.
+      ...(options.installEdge === true
+        ? [
+            '_edge_installed=""',
+            `if ${kamalProxy("list")} 2> /dev/null | grep -Eq ${shellQuote(`(^|[[:space:]])${app}([[:space:]]|$)`)}; then`,
+            "  install_edge",
+            "  _edge_installed=1",
+            "fi",
+          ]
+        : []),
       ...holdRequests(plan, onExit),
       WRITE_ENV,
       "docker compose up -d --no-deps --remove-orphans app",
       'new="$(docker compose ps -aq app)"',
       ...kamal,
+      ...(options.installEdge === true
+        ? ['if [ -z "$_edge_installed" ]; then', "  install_edge", "fi"]
+        : []),
       kamalProxy(`resume ${app}`),
       ...dropSharedRoute,
     ];

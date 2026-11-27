@@ -717,6 +717,7 @@ describe.skipIf(SKIP !== undefined)("049 Option B: per-app kamal-proxy isolation
       }
       const composePath = path.join(composeDir, "compose.yaml");
       await writeFile(composePath, stringify(doc, { lineWidth: 0 }));
+      await writeFile(path.join(composeDir, ".env"), `APP_IMAGE=${IMAGES.nodeAlpine.ref}\n`);
 
       // Start a 0.2.12-style shared kamal-proxy on edgeNet with alias `kamal-proxy` serving a legacy app.
       const legacyApp = startApp(legacyNet, "legacy-app", "legacy-0212");
