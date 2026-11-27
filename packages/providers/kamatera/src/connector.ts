@@ -9,7 +9,7 @@ import type {
 import { errorText, listText, plural, Redactor, realSleep } from "@opscrew/core";
 import { z } from "zod";
 import { KAMATERA_ENV, KamateraClient, readKamateraCredentials } from "./client";
-import { type KamateraServerApi, kamateraServerApi, kamateraServers } from "./servers";
+import { kamateraServerApi, kamateraServers } from "./servers";
 
 /** Credentials OpsCrew needs for Kamatera: one API key, which can't be limited. */
 export const KAMATERA_CREDENTIALS: CredentialRequirement = {
@@ -29,7 +29,6 @@ const datacenterSchema = z.looseObject({ id: z.string(), region: z.string() });
 /** The Kamatera connector. */
 export interface KamateraConnector extends VpsConnector {
   readonly id: "kamatera";
-  readonly servers: KamateraServerApi | undefined;
 }
 
 /** What the connector is built with beside its deps. */

@@ -5,14 +5,14 @@ import type {
   ServerSnapshotApi,
   SnapshotRequest,
 } from "@opscrew/contracts";
-import { type ErrorCode, escapeRegExp, OpsCrewError } from "@opscrew/core";
+import { type ErrorCode, escapeRegExp, listText, OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { KamateraClient } from "./client";
 
 /** How long a snapshot may take when the request sets no limit (the contract's default). */
 const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
 /**
- * How long a snapshot's deletion, a start or a restart may take. Kamatera runs each as a command in
+ * How long a snapshot's deletion or revert, a start or a restart may take. Kamatera runs each as a command in
  * the account's task queue, where it can wait behind others; its Terraform provider allows 40
  * minutes for any command, which its creates need. One of these still running after 15 minutes is
  * stuck, and the message says it may still finish.
@@ -64,29 +64,6 @@ export async function kamateraServers(
   return servers;
 }
 
-/** A server whose name clashes with the one the plan gives a new server. */
-export interface KamateraNameClash {
-  /** `taken`: named exactly so; `renamed`: `<name>(1)`, a duplicate Kamatera renamed. */
-  kind: "taken" | "renamed";
-  name: string;
-  /** Kamatera's datacenter code, such as `EU-FR`. */
-  datacenter: string;
-  /** What OpsCrew says of it, naming it and its datacenter, with what to do. */
-  message: string;
-}
-
-/** Kamatera's server API: the contract's, and the check of a new server's name. */
-export interface KamateraServerApi extends ServerSnapshotApi {
-  /**
-   * The account's servers named `name`, the name the plan gives a new server, or `<name>(1)`:
-   * Kamatera renames a duplicate so, and its Terraform provider then loses it while it bills.
-   * Each is reported, never adopted.
-   */
-  checkName(name: string): Promise<KamateraNameClash[]>;
-  /** Reboots the server and waits for Kamatera's command. */
-  restart(serverId: string): Promise<void>;
-}
-
 export interface KamateraServerApiOptions {
   /** Masks the API key and the servers' ids in OpsCrew's own errors. */
   redactor: ProviderRedactor;
@@ -99,13 +76,13 @@ export interface KamateraServerApiOptions {
  * snapshots and power actions for the provider-neutral teardown and snapshot commands. A server is
  * named by its name and reached by its id, since Kamatera's API reads a name as a pattern that may
  * match several servers; a name Kamatera has twice is refused. Every change is a queued command
- * the client waits for with the injected clock and sleep. A server is never rebuilt or installed
- * again in place: a Kamatera server is made again as a new one.
+ * the client waits for with the injected clock and sleep. A server is never installed again from
+ * its image: a Kamatera server that fails its first boot is made again as a new one.
  */
 export function kamateraServerApi(
   client: KamateraClient,
   options: KamateraServerApiOptions,
-): KamateraServerApi {
+): ServerSnapshotApi {
   const { redactor, now } = options;
 
   const fail = (message: string, hint: string, code: ErrorCode = "PROVIDER_ERROR") =>
@@ -150,37 +127,30 @@ export function kamateraServerApi(
      * its id (Kamatera's servers have no tags; the Terraform id is the name), so the generic
      * takeover adopts one only after OpsCrew's own apply stopped while creating it. Kamatera's list
      * shows no state but the power, so a server it is terminating is listed until it is gone.
+     * @throws OpsCrewError `PHASE_PRECONDITION` when the account has `<app>(n)` or
+     * `<app>-<name>(n)`: a duplicate Kamatera renamed so when a create was sent again for a name it
+     * had, which its Terraform provider then loses while it bills. Each is named with its
+     * datacenter, and the user deletes it before OpsCrew goes on.
      */
     async findAppServers(app: string): Promise<AppServer[]> {
-      return (await servers())
+      const all = await servers();
+      // Kamatera's `(1)`; a later number too, as a third create of one name would leave.
+      const renamed = new RegExp(`^${escapeRegExp(app)}(?:-.+)?\\(\\d+\\)$`);
+      const duplicates = all.filter(({ name }) => renamed.test(name));
+      if (duplicates.length > 0) {
+        const one = duplicates.length === 1;
+        const named = listText(duplicates.map((s) => `${s.name} in ${s.datacenter}`));
+        throw fail(
+          one
+            ? `Kamatera has the server ${named}: a duplicate Kamatera made and renamed when a create of a name it already had was sent again. It still bills, and OpsCrew never takes it over.`
+            : `Kamatera has the servers ${named}: duplicates Kamatera made and renamed when a create of a name it already had was sent again. They still bill, and OpsCrew never takes them over.`,
+          `Delete ${one ? "it" : "them"} in ${CONSOLE} (its Terminate action), then run the command again.`,
+          "PHASE_PRECONDITION",
+        );
+      }
+      return all
         .filter(({ name }) => name === app || name.startsWith(`${app}-`))
         .map(({ name, power }) => ({ id: name, name, status: power, nameOnly: true }));
-    },
-
-    async checkName(name: string): Promise<KamateraNameClash[]> {
-      // Kamatera's `(1)`; a later digit too, as a third create of one name would leave.
-      const renamed = new RegExp(`^${escapeRegExp(name)}\\(\\d+\\)$`);
-      return (await servers()).flatMap(({ name: found, datacenter }): KamateraNameClash[] => {
-        if (found === name) {
-          return [
-            {
-              kind: "taken",
-              name: found,
-              datacenter,
-              message: `Kamatera already has a server named ${found}, in ${datacenter}. OpsCrew never creates a second server with one name: Kamatera would rename the new one ${found}(1), which then keeps billing out of OpsCrew's sight. If it isn't the app's, rename or terminate it in ${CONSOLE}.`,
-            },
-          ];
-        }
-        if (!renamed.test(found)) return [];
-        return [
-          {
-            kind: "renamed",
-            name: found,
-            datacenter,
-            message: `Kamatera has a server named ${found}, in ${datacenter}: a duplicate Kamatera renamed because a server named ${name} already existed, as a create sent twice leaves. OpsCrew never takes it over, and it bills until it is terminated: check it in ${CONSOLE}, and terminate it there if it is a leftover.`,
-          },
-        ];
-      });
     },
 
     /**
@@ -256,11 +226,30 @@ export function kamateraServerApi(
       );
     },
 
-    /** Refused: OpsCrew makes a Kamatera server again as a new one, never in place. */
-    async rebuild(): Promise<void> {
-      throw fail(
-        "OpsCrew doesn't rebuild a Kamatera server from a snapshot in place: a Kamatera server is made again as a new one.",
-        "The snapshot stays in your Kamatera account, and its console can revert the server to it.",
+    /**
+     * Reverts the server to its snapshot (`POST /server/snapshot` with `revert`, the console API's
+     * `PUT /service/server/<id>/snapshot`) and waits for the command. The server stays the same
+     * server, its disk as the snapshot had it. Unverified, since Kamatera's documentation doesn't
+     * say: what the revert does to the server's newer snapshots (Contabo's deletes them), and
+     * whether the server is running after it.
+     */
+    async rebuild(serverId: string, snapshotId: string): Promise<void> {
+      const { server: serverName, snapshot } = snapshotRef(snapshotId);
+      if (serverName !== serverId) {
+        throw fail(
+          `The snapshot ${snapshotId} is of the Kamatera server ${serverName}, not ${serverId}: Kamatera reverts a server only to its own snapshots.`,
+          "`opscrew snapshot list` shows each snapshot with its server.",
+          "INVALID_INPUT",
+        );
+      }
+      const server = await serverNamed(serverId);
+      await client.command(
+        "/server/snapshot",
+        { id: server.id, revert: snapshot },
+        {
+          what: `revert the server ${serverId} to the snapshot ${snapshot}`,
+          timeoutMs: ACTION_TIMEOUT_MS,
+        },
       );
     },
 

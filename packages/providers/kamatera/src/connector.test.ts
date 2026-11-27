@@ -138,7 +138,6 @@ describe("kamateraConnector", () => {
     ]);
     await c.servers?.powerOn("shop-worker");
     expect(waits).toEqual([2_000]);
-    expect(await c.servers?.checkName("shop")).toHaveLength(1);
     expect(paths(calls)).toContain("POST /service/server/poweron");
   });
 

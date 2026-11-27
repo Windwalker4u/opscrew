@@ -89,7 +89,8 @@ describe("findAppServers", () => {
         server("myshop", { id: OTHER_ID }),
         server("SHOP", { id: OTHER_ID }),
         server("shop_2", { id: OTHER_ID }),
-        server("shop(1)", { id: OTHER_ID }),
+        server("shopfront(1)", { id: OTHER_ID }),
+        server("myshop(1)", { id: OTHER_ID }),
       ),
     });
     expect(await api.findAppServers("shop")).toEqual([
@@ -108,54 +109,37 @@ describe("findAppServers", () => {
       { id: "shop", name: "shop", status: "on", nameOnly: true },
     ]);
   });
-});
 
-describe("checkName", () => {
-  const NAME = "opscrew-shop-k3x9";
-
-  it("reports nothing when no server has the name or its (1) form", async () => {
-    const { api, calls } = setup({
+  it("stops at a duplicate Kamatera renamed <name>(1), naming it and its datacenter", async () => {
+    const { api } = setup({
       "GET /service/servers": serverList(
         server("shop"),
-        server(`${NAME}-worker`, { id: WORKER_ID }),
-        server(`x${NAME}`, { id: OTHER_ID }),
-        server(`${NAME}1`, { id: OTHER_ID }),
-        server(`${NAME}(1)x`, { id: OTHER_ID }),
-        server("opscrew-shop-k3x9a(1)", { id: OTHER_ID }),
+        server("shop(1)", { id: OTHER_ID, datacenter: "EU-FR" }),
       ),
     });
-    expect(await api.checkName(NAME)).toEqual([]);
-    expect(requests(calls)).toEqual(["GET /service/servers"]);
-  });
-
-  it("reports a server already named as the plan means to create it, with its datacenter", async () => {
-    const { api } = setup({
-      "GET /service/servers": serverList(server(NAME, { datacenter: "EU-FR", power: "off" })),
-    });
-    const [clash, ...rest] = await api.checkName(NAME);
-    expect(rest).toEqual([]);
-    expect(clash).toMatchObject({ kind: "taken", name: NAME, datacenter: "EU-FR" });
-    expect(clash?.message).toBe(
-      `Kamatera already has a server named ${NAME}, in EU-FR. OpsCrew never creates a second server with one name: Kamatera would rename the new one ${NAME}(1), which then keeps billing out of OpsCrew's sight. If it isn't the app's, rename or terminate it in your Kamatera account's console.`,
+    const error = await failure(api.findAppServers("shop"));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "Kamatera has the server shop(1) in EU-FR: a duplicate Kamatera made and renamed when a create of a name it already had was sent again. It still bills, and OpsCrew never takes it over.",
+    );
+    expect(error.hint).toBe(
+      "Delete it in your Kamatera account's console (its Terminate action), then run the command again.",
     );
   });
 
-  it("reports a <name>(1) server by name and datacenter, never as the app's", async () => {
+  it("names every duplicate of the app's servers, whatever their number", async () => {
     const { api } = setup({
       "GET /service/servers": serverList(
-        server(NAME, { datacenter: "EU-FR" }),
-        server(`${NAME}(1)`, { id: WORKER_ID, datacenter: "US-NY2" }),
-        server(`${NAME}(2)`, { id: OTHER_ID, datacenter: "AS-SG" }),
+        server("shop-worker(1)", { id: WORKER_ID, datacenter: "US-NY2" }),
+        server("shop(12)", { id: OTHER_ID, datacenter: "AS-SG" }),
       ),
     });
-    const clashes = await api.checkName(NAME);
-    expect(clashes.map(({ kind, name, datacenter }) => ({ kind, name, datacenter }))).toEqual([
-      { kind: "taken", name: NAME, datacenter: "EU-FR" },
-      { kind: "renamed", name: `${NAME}(1)`, datacenter: "US-NY2" },
-      { kind: "renamed", name: `${NAME}(2)`, datacenter: "AS-SG" },
-    ]);
-    expect(clashes[1]?.message).toBe(
-      `Kamatera has a server named ${NAME}(1), in US-NY2: a duplicate Kamatera renamed because a server named ${NAME} already existed, as a create sent twice leaves. OpsCrew never takes it over, and it bills until it is terminated: check it in your Kamatera account's console, and terminate it there if it is a leftover.`,
+    const error = await failure(api.findAppServers("shop"));
+    expect(error.message).toBe(
+      "Kamatera has the servers shop-worker(1) in US-NY2 and shop(12) in AS-SG: duplicates Kamatera made and renamed when a create of a name it already had was sent again. They still bill, and OpsCrew never takes them over.",
+    );
+    expect(error.hint).toBe(
+      "Delete them in your Kamatera account's console (its Terminate action), then run the command again.",
     );
   });
 });
@@ -377,7 +361,7 @@ describe("power", () => {
       "POST /service/server/reboot": POWER_COMMAND,
       "GET /service/queue": queued("complete"),
     });
-    await api.restart("shop");
+    await api.restart?.("shop");
     expect(requests(calls)).toEqual([
       "GET /service/servers",
       "POST /service/server/reboot",
@@ -392,23 +376,61 @@ describe("power", () => {
       "POST /service/server/reboot": POWER_COMMAND,
       "GET /service/queue": queued("error", "Server is locked"),
     });
-    const error = await failure(api.restart("shop"));
+    const error = await failure(Promise.resolve(api.restart?.("shop")));
     expect(error.message).toMatch(/^Kamatera's command to restart the server shop failed/);
     expect(error.hint).toContain("your Kamatera account's console");
   });
 });
 
-describe("rebuild and reinstall", () => {
-  it("refuses to rebuild a server in place, before any call", async () => {
-    const { api, calls } = setup({});
+describe("rebuild", () => {
+  it("reverts the server to its snapshot through its id and waits for the command", async () => {
+    const { api, calls } = setup({
+      "GET /service/servers": serverList(server("shop"), server("shop-worker", { id: WORKER_ID })),
+      "POST /server/snapshot": COMMAND,
+      "GET /service/queue": [queued("pending"), queued("complete")],
+    });
+    await api.rebuild("shop", "shop:1745411375");
+    expect(requests(calls)).toEqual([
+      "GET /service/servers",
+      "POST /server/snapshot",
+      "GET /service/queue?id=4242",
+      "GET /service/queue?id=4242",
+    ]);
+    expect(posted(calls)).toEqual([{ id: SHOP_ID, revert: "1745411375" }]);
+  });
+
+  it("stops waiting after 15 minutes with a plain message", async () => {
+    const { api } = setup({
+      "GET /service/servers": serverList(server("shop")),
+      "POST /server/snapshot": COMMAND,
+      "GET /service/queue": queued("running"),
+    });
     const error = await failure(api.rebuild("shop", "shop:17"));
     expect(error.message).toBe(
-      "OpsCrew doesn't rebuild a Kamatera server from a snapshot in place: a Kamatera server is made again as a new one.",
+      "Kamatera's command to revert the server shop to the snapshot 17 did not finish within 15 minutes.",
     );
-    expect(error.hint).toBe(
-      "The snapshot stays in your Kamatera account, and its console can revert the server to it.",
+  });
+
+  it("refuses another server's snapshot, or an id OpsCrew didn't give out, before any call", async () => {
+    const { api, calls } = setup({});
+    const other = await failure(api.rebuild("shop", "shop-worker:17"));
+    expect(other.code).toBe("INVALID_INPUT");
+    expect(other.message).toBe(
+      "The snapshot shop-worker:17 is of the Kamatera server shop-worker, not shop: Kamatera reverts a server only to its own snapshots.",
     );
+    expect(other.hint).toBe("`opscrew snapshot list` shows each snapshot with its server.");
+    const invalid = await failure(api.rebuild("shop", "17"));
+    expect(invalid.code).toBe("INVALID_INPUT");
     expect(calls).toEqual([]);
+  });
+
+  it("refuses a server name Kamatera has twice, before any change", async () => {
+    const { api, calls } = setup({
+      "GET /service/servers": serverList(server("shop"), server("shop", { id: OTHER_ID })),
+    });
+    const error = await failure(api.rebuild("shop", "shop:17"));
+    expect(error.message).toContain("Kamatera has 2 servers named shop");
+    expect(requests(calls)).toEqual(["GET /service/servers"]);
   });
 
   it("offers no reinstall, so a server that fails its first boot is made again as a new one", () => {
@@ -456,22 +478,22 @@ describe("server API leaks", () => {
       errors.push(await failure(api.deleteSnapshot("shop:17")));
       errors.push(await failure(api.powerOff("shop")));
       errors.push(await failure(api.powerOn("shop-worker")));
+      errors.push(await failure(api.rebuild("shop", "shop:17")));
     }
     // A failed list gives OpsCrew no server id to mask; the key is masked all the same.
     const { api } = setup({
       "GET /service/servers": refused(`${CREDENTIALS.clientId} ${CREDENTIALS.secret}`),
     });
     errors.push(await failure(api.findAppServers("shop")));
-    errors.push(await failure(api.checkName("shop")));
+    const duplicate = setup({
+      "GET /service/servers": serverList(server("shop(1)", { id: OTHER_ID })),
+    });
+    errors.push(await failure(duplicate.api.findAppServers("shop")));
     const found = setup({
       "GET /service/servers": list,
       "POST /server/snapshot": { body: [snapshot(1, "opscrew-shop-shop-20261120T080000Z")] },
     });
-    results.push(
-      await found.api.findAppServers("shop"),
-      await found.api.checkName("shop"),
-      await found.api.listSnapshots("shop"),
-    );
+    results.push(await found.api.findAppServers("shop"), await found.api.listSnapshots("shop"));
 
     for (const error of errors) {
       for (const value of SECRETS) expect(errorText(error)).not.toContain(value);
