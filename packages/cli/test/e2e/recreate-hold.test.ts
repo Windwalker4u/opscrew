@@ -100,7 +100,7 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
       path.join(appDir(), "compose.yaml"),
       "exec",
       "-T",
-      "kamal-proxy",
+      "app-proxy",
       "kamal-proxy",
       ...args,
     ]);

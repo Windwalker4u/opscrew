@@ -21,6 +21,6 @@
 ## Wave 3 — Tests, Docs, and Verification
 
 - [x] **T4911** Update unit tests and snapshots across `@opscrew/iac-templates`, `@opscrew/connector-ssh-host`, `@opscrew/agents`, and `opscrew`; add `app-networks.test.ts`, `status/app-networks.test.ts`, and `edge-support.test.ts`.
-- [ ] **T4912** Write Docker integration test suite `packages/iac-templates/src/edge/app-networks.docker.test.ts` (`OPSCREW_DOCKER_TESTS=1`) covering Caddy, nginx, and OpenLiteSpeed cross-app TCP + `Host:` / `X-Forwarded-*` blocking, mixed-version transition, nginx `zone` + `resolve` resilience with a stopped proxy, and OpenLiteSpeed reload after proxy recreate. *(Written & typechecked; run on a host with a Docker daemon — unavailable on this Windows runner.)*
+- [x] **T4912** Write Docker integration test suite `packages/iac-templates/src/edge/app-networks.docker.test.ts` (`OPSCREW_DOCKER_TESTS=1`) covering Caddy, nginx, and OpenLiteSpeed cross-app TCP + `Host:` / `X-Forwarded-*` blocking, mixed-version transition, nginx `zone` + `resolve` resilience with a stopped proxy, and OpenLiteSpeed reload after proxy recreate. *(Verified on Docker: `5/5` passed.)*
 - [x] **T4913** Update user docs (`docs/guide/shared-server.md`, `docs/guide/own-server.md`, `docs/e2e.md`).
 - [x] **T4914** Run `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm --filter opscrew build`, and all non-Docker Vitest suites cleanly.

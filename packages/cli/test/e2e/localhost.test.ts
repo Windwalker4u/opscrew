@@ -332,7 +332,7 @@ describe.skipIf(SKIP !== undefined)("the localhost target with real Docker", () 
         ...(await projectContainers(EDGE_PROJECT)),
       ];
       expect(containers.map((c) => c.service).sort()).toEqual(
-        ["app", "caddy", "kamal-proxy", "mysql"].sort(),
+        ["app", "app-proxy", "caddy", "kamal-proxy", "mysql"].sort(),
       );
       for (const container of containers) {
         expect(container.running, container.name).toBe(true);
