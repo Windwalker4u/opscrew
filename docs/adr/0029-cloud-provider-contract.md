@@ -124,13 +124,21 @@ kinds, not on which cloud.
   - **`texts.secops.firewallCheck`:** `cloud` (the default, every provider before Kamatera) or
     `server`. With `server`, iac-templates puts an nftables step first in the first-boot script
     (default deny inbound for IPv4 and IPv6; SSH, the web ports and WireGuard only as the plan
-    says; kept across reboots; password logins off), and it fails closed: a step that fails powers
-    the server off.
-  - **Checked twice:** SecOps checks the planned script's rules when the server is created, and
-    `opscrew secure` reads the live rules over SSH and fails on any difference from the plan.
+    says; outside traffic to Docker's networks that Docker didn't publish dropped). Its own oneshot
+    unit, `opscrew-firewall.service`, loads `/etc/opscrew/firewall.nft` at every boot and replaces
+    only OpsCrew's table (`nftables.service`, whose stop flushes every table, is never used). Password
+    logins go off first, confirmed with `sshd -T`. It fails closed: a step that fails powers the
+    server off, an apply never powers it back on (`power_on` is in `ignore_changes`), and OpsCrew's
+    repair never restarts it.
+  - **Checked twice:** SecOps checks the planned script's rules when the server is created. For a
+    server that exists, it compares the networks in the script the server was created with against
+    the plan's, and fails critical on any difference, so `provision` and `retarget` stop before
+    approval. `opscrew secure` and `opscrew advise` read the live rules over SSH and fail on any
+    difference from the plan.
   - **Said plainly:** the plan, design and the guide say "cloud firewall: none; server firewall: on"
     and name the time between the server's start and the rules. The rules aren't updated after the
-    first boot; `secure` says how to change them.
+    first boot: changing the networks of an existing server waits for a host plan, approved by hash,
+    that updates them (a follow-up).
 
 ## Consequences
 

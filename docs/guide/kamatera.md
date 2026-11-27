@@ -85,23 +85,30 @@ installs the server's own firewall instead:
 - **The first step of the first boot,** before anything else runs: nftables, for IPv4 and IPv6,
   that drops everything by default and lets in only SSH from the networks you allow, the web ports
   (80 and 443, and UDP 443 for HTTP/3) on the server that serves your site, and WireGuard's port
-  where the app's [private network](private-network.md) uses it. The same step turns password logins
-  off.
+  where the app's [private network](private-network.md) uses it. Outside traffic to Docker's networks
+  that Docker didn't publish is dropped too. The same step turns password logins off, and checks with
+  `sshd -T` that SSH really refuses them.
 - **Shortly after the server starts,** when Kamatera runs the startup script, password logins go
   off and then the rules apply: within seconds when the image has nftables, a few minutes when it
   must install it first. Until then nothing filters the server's ports, and nothing of your app
   runs there yet. If the firewall can't be put in place, the server powers itself off rather than
-  stay open.
-- **Kept across reboots:** the rules are in `/etc/nftables.conf`, which the server loads at every
-  boot.
+  stay open. It stays off: no later `npx opscrew provision` turns it on again, and OpsCrew doesn't
+  offer to restart it. Read why in its first boot's log, `/var/log/opscrew-first-boot.log`, from the
+  server's console.
+- **Kept across reboots:** the rules are in `/etc/opscrew/firewall.nft`, which OpsCrew's own unit,
+  `opscrew-firewall.service`, loads at every boot before the network and Docker. It replaces only
+  OpsCrew's table, never the rules Docker and ufw keep.
 - **Checked:** `npx opscrew secure` reads the live rules from the server and fails when they are
   missing or differ from the plan, with the steps to fix them.
 - **Not updated after the first boot.** Kamatera would have to make a new server to run a changed
-  startup script, so OpsCrew doesn't change the rules afterwards. When the networks you allow
-  change (a new address for SSH, say), `npx opscrew secure` reports the difference and gives the
-  steps: as root on the server, from Kamatera's console, change the networks in
-  `/etc/nftables.conf`, load it with `nft -f /etc/nftables.conf`, then run `npx opscrew secure`
-  again.
+  startup script, so OpsCrew can't change the rules in place yet. So once the server exists,
+  `npx opscrew provision` and `npx opscrew retarget` refuse a plan that changes the networks the
+  firewall lets in, before anything is approved. That covers a new address for SSH, new Cloudflare
+  ranges, or a private network for a second server. Change `opscrew/plan.yaml` back, or remove the
+  app's server and provision it again. If `npx opscrew secure` finds the live rules differ from the
+  plan, it gives the steps: as root, from Kamatera's console, `systemctl restart
+  opscrew-firewall.service` loads the rules again as they were written; to change them, edit
+  `/etc/opscrew/firewall.nft` to match the plan first.
 - **Kamatera's console firewall is yours to add.** Open the server in the console, its **Firewall**
   tab, and turn it on as a second layer. OpsCrew doesn't manage it or check it: let in at least SSH
   from your networks and the web ports, or your app and OpsCrew lose the server.
