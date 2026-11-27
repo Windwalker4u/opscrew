@@ -1720,9 +1720,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect((await move(h))?.step).toBe("renamed");
   });
 
-  // The old Kamatera server keeps its first boot's firewall while the move runs: a move whose plan
-  // changes its networks would leave the old rules on it, so it stops at the first plan.
-  it("stops before any approval when the plan changes the networks of the old server's own firewall", async () => {
+  // The old Kamatera server keeps its first boot's firewall while the move runs: when it cannot
+  // be reached over SSH for an in-place host plan update, the move stops at the first plan.
+  it("stops before any approval when the plan changes the networks of an unreachable old server's own firewall", async () => {
     // The fakes move from Hetzner; the old server in the plan is Kamatera's, which keeps no
     // provider backups (the old side's plan asks for none, so only the firewall's check fails).
     const h = await moveHarness();
@@ -1743,7 +1743,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(error.hint).toContain(
       `SSH: the server accepts 0.0.0.0/0 and ::/0, which the plan doesn't, and the plan adds ${NARROWED_SSH}`,
     );
-    expect(error.hint).toContain("OpsCrew can't change them in place yet");
+    expect(error.hint).toContain("/etc/opscrew/firewall-networks.json");
     expect(h.events.filter((e) => e.type === "approval")).toEqual([]);
     expect(applies(h)).toEqual([]);
   });

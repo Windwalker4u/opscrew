@@ -1255,6 +1255,11 @@ async function provisionFlow(
       firewalls: services.firewalls,
       providerBackups: services.providerBackups,
       servers: (provider) => givenServers(cancel, provider),
+      serverFirewall: {
+        plan: beforeApply(plan),
+        ...(services.remote !== undefined ? { remote: services.remote } : {}),
+        ...(services.serverHost !== undefined ? { host: services.serverHost } : {}),
+      },
       ...first.hooks,
       // An extra server no longer in the plan is deleted only with its name typed, as destroy asks.
       // A saved plan's servers taken over are named from its imports (it is not planned again).
@@ -1305,6 +1310,9 @@ async function provisionFlow(
     );
   }
   if (applied.approval) approvals.push(approvalEntry(applied.approval));
+  for (const outcome of applied.serverFirewallPlans ?? []) {
+    if (outcome.approval) approvals.push(approvalEntry(outcome.approval));
+  }
   if (first.host !== undefined) {
     earlyHost ??= first.host;
     if (first.host.approval) approvals.push(approvalEntry(first.host.approval));
@@ -1414,8 +1422,9 @@ async function provisionFlow(
       repository: machineRepository,
     });
     // The app's servers' own host plans (feature 018), then the monitoring's (feature 020), shown
-    // and saved where the servers exist.
+    // and saved where the servers exist (including any in-place server firewall updates).
     const serverPlans = [
+      ...(applied.serverFirewallPlans ?? []),
       ...(await serverHostPlans(deps, { ...serverPlansInput, plan, appPending, planOnly: true })),
       ...(await monitoringHostPlans(deps, plan, { ...serverPlansInput, planOnly: true })),
     ];

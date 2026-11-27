@@ -48,11 +48,18 @@ import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError, writePlan } from "../shared";
 import { applyWithConnectorRemoval } from "../shared/connector-removal";
 import { type FirewallApis, removeFirewalls, syncFirewalls } from "../shared/firewalls";
+import type { HostPlanOutcome } from "../shared/host-plan";
 import {
   markWantedBackups,
   type ProviderBackupsApis,
   syncProviderBackups,
 } from "../shared/provider-backups";
+import {
+  applyServerFirewallUpdates,
+  type ExistingServerFirewallsRead,
+  readExistingServerFirewalls,
+  type ServerFirewallRun,
+} from "../shared/server-firewall";
 import { extraCloudServers } from "../shared/servers";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
@@ -179,6 +186,13 @@ export interface PlanAndApplyOptions {
    * account it leaves runs with that account's own token.
    */
   tokenVar?: string;
+  /**
+   * In-place updates for existing servers whose provider has no cloud firewall (`firewallCheck:
+   * "server"`, issue #62): reads `/etc/opscrew/firewall-networks.json` over SSH before policy
+   * checks and emits/applies a SHA-256 hash-approved `server-firewall` host plan when networks
+   * differ.
+   */
+  serverFirewall?: ServerFirewallRun | undefined;
 }
 
 /**
@@ -437,6 +451,8 @@ export interface PlanAndApplyResult {
   outputs: Record<string, unknown>;
   approval?: ApprovalRecord;
   plan?: SavedPlan;
+  /** Host plan outcomes for in-place server firewall updates, if any. */
+  serverFirewallPlans?: HostPlanOutcome[];
 }
 
 /** `Estimated cost: €4.51 per month (…)`: the deployment's monthly price with its source. */
@@ -707,7 +723,10 @@ export function lastLines(text: string, count = 8): string {
   return text.trim().split(/\r?\n/).slice(-count).join("\n");
 }
 
-async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise<SavedPlan> {
+async function freshPlan(
+  deps: PhaseDeps,
+  options: PlanAndApplyOptions,
+): Promise<{ saved: SavedPlan; serverFirewalls?: ExistingServerFirewallsRead }> {
   const { engine, dir, env } = options;
   const statePath = options.statePath ?? tfstateFile(deps.paths);
   await mkdir(deps.paths.files.tfstateDir, { recursive: true });
@@ -758,7 +777,29 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
   const summary = await engine.plan(dir, planFile, planRunOptions(options));
   // Policies, summaries and the saved sidecar only ever see non-sensitive values.
   const planJson = maskSensitivePlanJson(summary.planJson);
-  return savedPlanOf({ ...summary, planJson }, evaluatePlanPolicies(planJson, options.deployPlan));
+  const serverFirewalls =
+    options.serverFirewall !== undefined && options.move !== true && options.destroy !== true
+      ? await readExistingServerFirewalls(
+          deps,
+          options.serverFirewall,
+          planJson,
+          options.phase ?? "provision",
+        )
+      : undefined;
+  const policy = evaluatePlanPolicies(
+    planJson,
+    options.deployPlan,
+    serverFirewalls === undefined
+      ? undefined
+      : {
+          serverFirewallNetworks: serverFirewalls.networks,
+          inPlaceServerFirewallAddresses: serverFirewalls.reachable,
+        },
+  );
+  return {
+    saved: savedPlanOf({ ...summary, planJson }, policy),
+    ...(serverFirewalls !== undefined ? { serverFirewalls } : {}),
+  };
 }
 
 /**
@@ -825,6 +866,7 @@ export async function planAndApply(
   const command = options.command ?? "opscrew provision";
   const move = options.move === true;
   let saved: SavedPlan;
+  let serverFirewallsRead: ExistingServerFirewallsRead | undefined;
   if (options.approvePlanHash !== undefined) {
     const found = await findSavedPlan(deps.paths.files.plansDir, options.approvePlanHash, {
       hint: `Run \`${command} --plan-only\` again, review the plan and approve the new hash.`,
@@ -864,7 +906,9 @@ export async function planAndApply(
     }
     saved = found;
   } else {
-    saved = await freshPlan(deps, options);
+    const planned = await freshPlan(deps, options);
+    saved = planned.saved;
+    serverFirewallsRead = planned.serverFirewalls;
   }
 
   // A server the user owns, or the user's Portainer, costs nothing more: only Cloudflare records,
@@ -902,6 +946,17 @@ export async function planAndApply(
     firewalls: options.firewalls,
     backups: options.providerBackups,
   };
+  const syncServerFirewalls = async (planOnly: boolean): Promise<HostPlanOutcome[]> => {
+    if (options.serverFirewall === undefined || move || options.destroy === true) return [];
+    return applyServerFirewallUpdates(deps, {
+      run: options.serverFirewall,
+      planJson: saved.planJson,
+      read: serverFirewallsRead,
+      planOnly,
+      command,
+      phase: options.phase ?? "provision",
+    });
+  };
   if (changesNothing(saved)) {
     deps.reporter.success("The infrastructure is already up to date.");
     // Saved with --plan-only all the same: the hash shown above can then be approved (a script
@@ -920,13 +975,27 @@ export async function planAndApply(
       await syncFirewalls(connectorRun, outputs);
       await syncProviderBackups(connectorRun, outputs);
     }
-    return { planHash: saved.planHash, applied: false, outputs, plan: saved };
+    const serverFirewallPlans = await syncServerFirewalls(options.planOnly === true);
+    return {
+      planHash: saved.planHash,
+      applied: false,
+      outputs,
+      plan: saved,
+      ...(serverFirewallPlans.length > 0 ? { serverFirewallPlans } : {}),
+    };
   }
 
   if (options.approvePlanHash === undefined) await writePlanSidecar(deps.redactor, saved);
   if (options.planOnly) {
     deps.reporter.info(`Saved the plan (hash ${saved.planHash}); nothing was changed.`);
-    return { planHash: saved.planHash, applied: false, outputs: {}, plan: saved };
+    const serverFirewallPlans = await syncServerFirewalls(true);
+    return {
+      planHash: saved.planHash,
+      applied: false,
+      outputs: {},
+      plan: saved,
+      ...(serverFirewallPlans.length > 0 ? { serverFirewallPlans } : {}),
+    };
   }
 
   const { create, update, delete: del, replace } = saved.counts;
@@ -1055,11 +1124,13 @@ export async function planAndApply(
     // The automated backups the providers' Terraform cannot turn on (Contabo's Auto Backup).
     await syncProviderBackups(connectorRun, result.outputs, backupsTurnedOn);
   }
+  const serverFirewallPlans = await syncServerFirewalls(false);
   return {
     planHash: saved.planHash,
     applied: true,
     outputs: result.outputs,
     approval,
     plan: saved,
+    ...(serverFirewallPlans.length > 0 ? { serverFirewallPlans } : {}),
   };
 }
