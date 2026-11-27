@@ -55,6 +55,7 @@ export const definition: GitPlatformDefinition = {
   contractVersion: GIT_PLATFORM_CONTRACT_VERSION,
   id: "github",
   displayName: "GitHub",
+  defaultHost: "github.com",
   cicdProvider: "github-actions",
   registryId: "ghcr",
   credentials: {

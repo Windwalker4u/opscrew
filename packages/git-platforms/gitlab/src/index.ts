@@ -90,6 +90,7 @@ export const definition: GitPlatformDefinition = {
   contractVersion: GIT_PLATFORM_CONTRACT_VERSION,
   id: "gitlab",
   displayName: "GitLab",
+  defaultHost: "gitlab.com",
   cicdProvider: "gitlab-ci",
   registryId: "gitlab-registry",
   credentials: {

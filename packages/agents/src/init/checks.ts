@@ -130,7 +130,7 @@ export type InitCheckId =
   | "namecheap"
   | "godaddy"
   | "github"
-  | "gitlab"
+  | `git-platform:${string}`
   /** Listed only with the scheduled check on in GitHub Actions: the GitHub token's permissions it needs. */
   | "scheduled-check"
   /**
@@ -193,6 +193,11 @@ const SCANNERS = [
   { name: "osv-scanner", url: "https://google.github.io/osv-scanner/installation/" },
   { name: "trivy", url: "https://trivy.dev/latest/getting-started/installation/" },
 ] as const;
+
+/** Derives the init checklist id for a registered git platform without unsafe casts. */
+function gitPlatformCheckId(platform: Pick<GitPlatformDefinition, "id">): InitCheckId {
+  return platform.id === "github" ? "github" : `git-platform:${platform.id}`;
+}
 
 /** True when no check failed (optional checks never fail, so warnings still pass). */
 export function initPassed(checks: readonly InitCheck[]): boolean {
@@ -432,7 +437,7 @@ export async function runInitChecks(
       ? (() => {
           const { platform, remote } = resolvedRepo.detected;
           return [
-            guard(platform.id as InitCheckId, `${platform.displayName} token`, true, () =>
+            guard(gitPlatformCheckId(platform), `${platform.displayName} token`, true, () =>
               withBudget(
                 checkGitPlatformToken(deps, offline, platform, remote.host),
                 budget,

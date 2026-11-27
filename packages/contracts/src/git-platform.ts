@@ -204,6 +204,8 @@ export interface GitPlatformDefinition {
   contractVersion: typeof GIT_PLATFORM_CONTRACT_VERSION;
   id: string;
   displayName: string;
+  /** Default SaaS hostname for this platform (e.g. `"github.com"`, `"gitlab.com"`). */
+  defaultHost: string;
   /** Value of `cicd.provider` in `opscrew/plan.yaml` (e.g. `"github-actions"`, `"gitlab-ci"`). */
   cicdProvider: string;
   /** Value of `cicd.registry` in `opscrew/plan.yaml` (e.g. `"ghcr"`, `"gitlab-registry"`). */

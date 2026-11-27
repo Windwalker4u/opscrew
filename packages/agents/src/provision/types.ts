@@ -13,6 +13,7 @@ import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
   DockerTransport,
+  GitPlatformClient,
   IacEngine,
   ObjectStorageApi,
   PolicyResult,
@@ -144,6 +145,8 @@ export interface ProvisionServices {
   cloudflare?: CloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */
   github?: GitHubApi | null;
+  /** Git platform API for non-GitHub plans (e.g. GitLab); `null` means no token. */
+  gitPlatform?: GitPlatformClient | null;
   tcpConnect?: TcpConnect;
   /** Remote shell on the new server (default: `SshRemoteExec` with the deploy key). */
   remote?: (host: string) => RemoteExec;

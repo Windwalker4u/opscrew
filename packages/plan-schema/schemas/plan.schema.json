@@ -2043,7 +2043,6 @@
           "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
         },
         "registry": {
-          "default": "ghcr",
           "type": "string",
           "enum": ["ghcr", "gitlab-registry"]
         },

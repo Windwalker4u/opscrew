@@ -179,11 +179,6 @@ export {
 export type { HostPrivilege } from "./privilege";
 export { type PublicSshParams, PublicSshParamsSchema } from "./public-ssh";
 export {
-  type GitLabRunnerInstallOptions,
-  gitlabRunnerInstallScript,
-  gitlabRunnerUnitText,
-} from "./runner-unit";
-export {
   type ApplyOptions,
   type ApplyResult,
   type ApplySecrets,

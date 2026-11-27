@@ -26,9 +26,9 @@ export {
   setupGitHub,
 } from "./credentials";
 export {
-  deletePlatformDeploySecrets,
   type GitPlatformSetup,
   publishPlatformChangeRequest,
+  publishPlatformDeployment,
   setPlatformDeploySecrets,
   setupGitPlatform,
 } from "./git-platform";

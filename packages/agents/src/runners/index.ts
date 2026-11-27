@@ -57,7 +57,6 @@ export {
   runnerHostAddresses,
   setRunnerHost,
 } from "./machine";
-export { ensurePlatformRunner, removePlatformRunners } from "./platform";
 export {
   planServerRunner,
   removeKeptRegistrations,

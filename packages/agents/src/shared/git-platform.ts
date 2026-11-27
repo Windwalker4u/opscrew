@@ -2,7 +2,6 @@ import type {
   GitPlatformClient,
   GitPlatformConnector,
   GitPlatformDefinition,
-  GitPlatformPipelineRun,
   GitPlatformRemote,
 } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
@@ -69,53 +68,5 @@ export async function gitPlatformConnectorFor(
     fetch: deps.fetch,
     redactor: deps.redactor,
     version: deps.version,
-  });
-}
-
-/**
- * Triggers a deploy pipeline on `target` and reads back its run status once the platform returns a
- * run id. Audits the trigger as a `provider-call`.
- */
-export async function dispatchPlatformPipeline(
-  deps: Pick<PhaseDeps, "audit">,
-  target: GitPlatformTarget,
-  input: { ref: string; workflowFile?: string; inputs?: Record<string, string> },
-): Promise<GitPlatformPipelineRun | undefined> {
-  const started = await target.client.triggerPipeline(target.remote, input);
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: `trigger ${target.platform.texts.pipelineNoun}`,
-    target: target.remote.fullPath,
-    decision: "approved",
-    detail: `ref ${input.ref}${started ? ` (run #${started.id})` : ""}`,
-  });
-  if (!started) return undefined;
-  return target.client.getPipelineRun(target.remote, started.id);
-}
-
-/** Returns the most recent pipeline run for `target` (or `undefined` when none exist). */
-export async function latestPlatformPipeline(
-  target: GitPlatformTarget,
-  options?: { ref?: string; workflowFile?: string },
-): Promise<GitPlatformPipelineRun | undefined> {
-  const runs = await target.client.listPipelineRuns(target.remote, { ...options, limit: 1 });
-  return runs[0];
-}
-
-/** Retries an existing pipeline run on `target` and audits the call. */
-export async function retryPlatformPipeline(
-  deps: Pick<PhaseDeps, "audit">,
-  target: GitPlatformTarget,
-  runId: number,
-): Promise<void> {
-  await target.client.retryPipelineRun(target.remote, runId);
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: `retry ${target.platform.texts.pipelineNoun}`,
-    target: target.remote.fullPath,
-    decision: "approved",
-    detail: `run #${runId}`,
   });
 }

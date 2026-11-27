@@ -35,7 +35,7 @@ describe("opscrew init GitLab detection (042)", () => {
       services: { which: (name) => (name === "git" ? "/usr/bin/git" : undefined) },
     });
     const repo = checks.find((c) => c.id === "repository");
-    const gitlab = checks.find((c) => c.id === "gitlab");
+    const gitlab = checks.find((c) => c.id === "git-platform:gitlab");
     expect(repo).toMatchObject({
       status: "pass",
       message: "origin is gitlab.com/acme/platform/shop.",
@@ -60,7 +60,7 @@ describe("opscrew init GitLab detection (042)", () => {
       status: "pass",
       message: "origin is gitlab.company.internal/team/api.",
     });
-    expect(checks.find((c) => c.id === "gitlab")).toMatchObject({
+    expect(checks.find((c) => c.id === "git-platform:gitlab")).toMatchObject({
       status: "fail",
       message: expect.stringContaining("No GitLab token found"),
       fix: expect.stringContaining("GITLAB_TOKEN"),

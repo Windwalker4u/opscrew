@@ -77,6 +77,18 @@ export const IMAGES = {
   curl: {
     ref: "curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac",
   },
+  /** Docker CLI for GitLab CI build and preview jobs (read from Docker Hub 2026-11-27). */
+  dockerCli: {
+    ref: "docker:28-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d",
+  },
+  /** Docker-in-Docker service for GitLab CI shared runners (read from Docker Hub 2026-11-27). */
+  dockerDind: {
+    ref: "docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac",
+  },
+  /** Minimal Alpine image for GitLab CI SSH deploy, rollback, and preview cleanup jobs (read from Docker Hub 2026-11-27). */
+  alpine: {
+    ref: "alpine:3.21@sha256:bc21487101ae47172509130ee1092cc273a831968d64b617776d1f69c81e42ab",
+  },
   /**
    * The carrier a move mounts each volume in, to read, empty, write and hash it (read from the
    * registry 2026-11-05).

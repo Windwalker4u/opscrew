@@ -1,51 +1,193 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitLab CI syntax, not JavaScript templates.
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { OpsCrewError } from "@opscrew/core";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  isCloudTarget,
+  servicesOn,
+  snapshotOffsiteOf,
+} from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { initStepsFor } from "../catalog";
-import { appDir } from "../edge";
-import { certbotHosts, type RuntimeContext } from "../runtime";
+import { additionsPath, appDir, EDGE_DIR } from "../edge";
+import { IMAGES } from "../pins";
+import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
+import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import { tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
-import { deploySecretName, githubEnvironment, healthPath, runnerLabel } from "./shared";
-import { type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
+import {
+  DEPLOY_SECRETS,
+  deploySecretName,
+  githubEnvironment,
+  hasReleaseDbEnv,
+  hasWorkerDbEnv,
+  healthPath,
+  imageSubpath,
+  RELEASE_DB_ENV,
+  runnerLabel,
+  serviceEnvSecret,
+  WORKER_DB_ENV,
+} from "./shared";
+import { OFFSITE_ENV_FILE, OFFSITE_ENV_SECRET } from "./snapshot-script";
+import { snapshotParts } from "./snapshots";
+import { dockerConfig, type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
+
+interface GitLabEnvFile {
+  file: string;
+  variable: string;
+}
 
 function gitlabEnvironmentName(plan: DeployPlan): string {
   return githubEnvironment(plan) ?? "production";
 }
 
+function readVar(varName: string): string {
+  return `if [ -f "\${${varName}:-}" ]; then cat "\${${varName}}"; else printf '%s\\n' "\${${varName}:-}"; fi`;
+}
+
 function sshPreamble(plan: DeployPlan, sshPort: number): string[] {
-  const hostVar = deploySecretName(plan, "SERVER_HOST");
-  const keyVar = deploySecretName(plan, "DEPLOY_SSH_KEY");
-  const knownVar = deploySecretName(plan, "SSH_KNOWN_HOSTS");
+  const hostVar = deploySecretName(plan, DEPLOY_SECRETS.host);
+  const keyVar = deploySecretName(plan, DEPLOY_SECRETS.sshKey);
+  const knownVar = deploySecretName(plan, DEPLOY_SECRETS.knownHosts);
   return [
     "set -eu",
     "mkdir -p ~/.ssh && chmod 700 ~/.ssh",
-    `if [ -f "$${keyVar}" ]; then cp "$${keyVar}" ~/.ssh/id_deploy; else printf '%s\\n' "$${keyVar}" > ~/.ssh/id_deploy; fi`,
+    `if [ -f "\${${keyVar}:-}" ]; then cp "\${${keyVar}}" ~/.ssh/id_deploy; else printf '%s\\n' "\${${keyVar}:-}" > ~/.ssh/id_deploy; fi`,
     "chmod 600 ~/.ssh/id_deploy",
-    `if [ -f "$${knownVar}" ]; then cp "$${knownVar}" ~/.ssh/known_hosts; else printf '%s\\n' "$${knownVar}" > ~/.ssh/known_hosts; fi`,
+    `if [ -f "\${${knownVar}:-}" ]; then cp "\${${knownVar}}" ~/.ssh/known_hosts; else printf '%s\\n' "\${${knownVar}:-}" > ~/.ssh/known_hosts; fi`,
     "chmod 644 ~/.ssh/known_hosts",
     `SSH_OPTS="-i ~/.ssh/id_deploy -p ${sshPort} -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"`,
-    `DEPLOY_HOST="$${hostVar}"`,
+    `DEPLOY_HOST="$(${readVar(hostVar)} | tr -d '\\r\\n')"`,
   ];
 }
 
-function appImageRef(plan: DeployPlan): string {
-  return plan.app.key === undefined ? "$CI_REGISTRY_IMAGE" : `$CI_REGISTRY_IMAGE/${plan.app.key}`;
+function registrySetup(plan: DeployPlan): string[] {
+  const customHost = plan.cicd.registryHost?.trim();
+  const subpath = imageSubpath(plan);
+  if (customHost && customHost.length > 0) {
+    return [
+      `REGISTRY_HOST=${shellQuote(customHost)}`,
+      `PROJECT_PATH_LOWER="$(printf '%s' "$CI_PROJECT_PATH" | tr '[:upper:]' '[:lower:]')"`,
+      `APP_IMAGE_BASE="\${REGISTRY_HOST}/\${PROJECT_PATH_LOWER}${subpath}"`,
+    ];
+  }
+  return ['REGISTRY_HOST="$CI_REGISTRY"', `APP_IMAGE_BASE="$CI_REGISTRY_IMAGE${subpath}"`];
+}
+
+function gitlabEnvFiles(plan: DeployPlan): GitLabEnvFile[] {
+  const files: GitLabEnvFile[] = [
+    { file: "app.env", variable: deploySecretName(plan, DEPLOY_SECRETS.appEnv) },
+  ];
+  if (hasReleaseDbEnv(plan)) {
+    files.push({
+      file: RELEASE_DB_ENV.file,
+      variable: deploySecretName(plan, RELEASE_DB_ENV.secret),
+    });
+  }
+  if (hasWorkerDbEnv(plan)) {
+    files.push({
+      file: WORKER_DB_ENV.file,
+      variable: deploySecretName(plan, WORKER_DB_ENV.secret),
+    });
+  }
+  for (const service of servicesOn(plan, APP_SERVER)) {
+    files.push({
+      file: `${service.name}.env`,
+      variable: deploySecretName(plan, serviceEnvSecret(service.name)),
+    });
+  }
+  if (snapshotOffsiteOf(plan) !== undefined && snapshotParts(plan, APP_SERVER).length > 0) {
+    files.push({
+      file: OFFSITE_ENV_FILE,
+      variable: deploySecretName(plan, OFFSITE_ENV_SECRET),
+    });
+  }
+  return files;
+}
+
+function runtimeUploadPaths(plan: DeployPlan, includeAdditions: boolean): string[] {
+  const dir = runtimeDir(plan);
+  const top = renderRuntimeFiles(plan).map(
+    (file) => `${dir}/${file.path.slice(dir.length + 1).split("/")[0]}`,
+  );
+  return [
+    `${dir}/compose.yaml`,
+    ...new Set(top),
+    ...(includeAdditions ? [additionsPath(plan)] : []),
+  ];
+}
+
+function dockerBuildLines(plan: DeployPlan, imageTag: string): string[] {
+  const dockerfile = plan.app.dockerfile || "Dockerfile";
+  const context = plan.app.buildContext || ".";
+  const buildEnvVar = deploySecretName(plan, DEPLOY_SECRETS.buildEnv);
+  const buildSecretsVar = deploySecretName(plan, DEPLOY_SECRETS.buildSecrets);
+  return [
+    "export DOCKER_BUILDKIT=1",
+    'BUILD_SECRETS_DIR="$(mktemp -d)"',
+    "trap 'rm -rf \"$BUILD_SECRETS_DIR\"' EXIT",
+    "set --",
+    `if [ -n "\${${buildEnvVar}:-}" ]; then`,
+    `  while IFS= read -r line; do`,
+    '    case "$line" in "" | "#"* | *=*) ;; esac',
+    '    case "$line" in *=*) set -- "$@" --build-arg "$line" ;; esac',
+    `  done <<OPSCREW_BUILD_ENV_EOF\n$(${readVar(buildEnvVar)})\nOPSCREW_BUILD_ENV_EOF`,
+    "fi",
+    `if [ -n "\${${buildSecretsVar}:-}" ]; then`,
+    `  while IFS= read -r line; do`,
+    '    case "$line" in',
+    "      *=*)",
+    '        secret_key="${line%%=*}"',
+    '        secret_val="${line#*=}"',
+    '        printf \'%s\' "$secret_val" > "$BUILD_SECRETS_DIR/$secret_key"',
+    '        chmod 600 "$BUILD_SECRETS_DIR/$secret_key"',
+    '        set -- "$@" --secret "id=$secret_key,src=$BUILD_SECRETS_DIR/$secret_key"',
+    "        ;;",
+    "    esac",
+    `  done <<OPSCREW_BUILD_SECRETS_EOF\n$(${readVar(buildSecretsVar)})\nOPSCREW_BUILD_SECRETS_EOF`,
+    "fi",
+    `docker build --pull -f ${shellQuote(dockerfile)} "$@" -t "${imageTag}" ${shellQuote(context)}`,
+  ];
+}
+
+function originTlsWriteLines(plan: DeployPlan, on: (cmd: string) => string): string[] {
+  const originVar = deploySecretName(plan, DEPLOY_SECRETS.originTls);
+  const tlsDir = `${EDGE_DIR}/tls/${plan.app.name}`;
+  return [
+    `ORIGIN_TLS_CONTENT="$(${readVar(originVar)})"`,
+    'case "$ORIGIN_TLS_CONTENT" in',
+    '  *"-----BEGIN CERTIFICATE-----"*"PRIVATE KEY-----"*) ;;',
+    `  *) echo "Missing or invalid ${originVar} (expected origin certificate and private key PEM)" >&2; exit 1 ;;`,
+    "esac",
+    `printf '%s\\n' "$ORIGIN_TLS_CONTENT" | sed '/-BEGIN [A-Z ]*PRIVATE KEY-/,$d' | ${on(`umask 077 && mkdir -p ${tlsDir} && chmod 700 ${tlsDir} && cat > ${tlsDir}/origin.pem.new`)}`,
+    `printf '%s\\n' "$ORIGIN_TLS_CONTENT" | sed -n '/-BEGIN [A-Z ]*PRIVATE KEY-/,$p' | ${on(`umask 077 && cat > ${tlsDir}/origin.key.new`)}`,
+  ];
 }
 
 /**
- * Renders `.gitlab-ci.yml` (or `plan.cicd.workflowPath`) for a GitLab CI deployment plan
+ * Renders `.gitlab-ci.yml` (or `plan.cicd.workflowPath`) for a GitLab CI VPS deployment plan
  * (`plan.cicd.provider === "gitlab-ci"`):
- * - builds and pushes the app image to GitLab Container Registry via `$CI_JOB_TOKEN`;
- * - deploys via SSH (using file-type `$DEPLOY_SSH_KEY`) or directly on a tagged self-hosted GitLab
- *   Runner (`tags: [opscrew-<app>-<env>]`), running OpsCrew's exact server-side switch script;
+ * - uses digest-pinned images from `pins.ts` (zero floating tags);
+ * - builds from `plan.app.dockerfile` and `plan.app.buildContext` with `OPSCREW_BUILD_ENV`
+ *   build arguments and `OPSCREW_BUILD_SECRETS` BuildKit secret mounts, pushing to GitLab
+ *   Container Registry (or `plan.cicd.registryHost`) via `$CI_JOB_TOKEN`;
+ * - uploads runtime files, `app.env`, service `.env` files, `release.db.env` / `worker.db.env`,
+ *   `offsite.env`, and `OPSCREW_ORIGIN_TLS` (when configured), logs into the registry on the
+ *   target server inside the app's `DOCKER_CONFIG`, runs OpsCrew's server-side switch script,
+ *   and logs out on exit;
  * - provides a manual/API `rollback` job;
  * - when `plan.environment?.previews` is set, adds `preview_up` and `preview_down` (`on_stop`)
  *   jobs gated to non-fork merge requests (`$CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID`)
  *   and invoking the server's recipe-bound `opscrew-preview` standing approval (ADR 0026).
  */
 export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
+  if (!isCloudTarget(plan.target) && plan.target.provider !== "own") {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `GitLab CI pipelines currently support only cloud server and own-server targets (got "${plan.target.provider}").`,
+    );
+  }
   const app = plan.app.name;
   const branch = plan.cicd.branch;
   const envName = gitlabEnvironmentName(plan);
@@ -53,7 +195,6 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
   const selfHosted = plan.environment?.runner === "server" || plan.environment?.runner === "host";
   const onServer = plan.environment?.runner === "server";
   const tag = runnerLabel(plan);
-  const image = appImageRef(plan);
   const hosts = certbotHosts(plan, ctx);
   const edgeFiles: EdgeFiles = {
     originTls: ctx.originTls !== undefined && !tunnelMode(plan),
@@ -65,7 +206,10 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
   const startScript = switchCommands(plan, initSteps, edgeFiles).join("\n");
   const rollbackScript = rollbackCommands(plan, ctx.localhost).join("\n");
   const previews = plan.environment?.previews;
-  const dir = runtimeDir(plan);
+  const targetDir = appDir(plan);
+  const targetDockerConfig = dockerConfig(plan);
+  const uploadPaths = runtimeUploadPaths(plan, edgeFiles.additions);
+  const envFiles = gitlabEnvFiles(plan);
 
   const stages = ["build", "deploy", "verify", ...(previews ? ["cleanup"] : [])];
   const workflowRules: Array<Record<string, unknown>> = [
@@ -81,8 +225,8 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
     ...(selfHosted
       ? { tags: [tag] }
       : {
-          image: "docker:28-cli",
-          services: ["docker:28-dind"],
+          image: IMAGES.dockerCli.ref,
+          services: [IMAGES.dockerDind.ref],
           variables: { DOCKER_TLS_CERTDIR: "/certs" },
         }),
     rules: [
@@ -91,10 +235,12 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
       { if: '$CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"' },
     ],
     script: [
-      'printf "%s\\n" "$CI_JOB_TOKEN" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin',
-      `docker build --pull -t "${image}:$CI_COMMIT_SHA" .`,
-      `docker push "${image}:$CI_COMMIT_SHA"`,
-      `DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${image}:$CI_COMMIT_SHA")"`,
+      "set -eu",
+      ...registrySetup(plan),
+      'printf "%s\\n" "$CI_JOB_TOKEN" | docker login "$REGISTRY_HOST" -u "$CI_REGISTRY_USER" --password-stdin',
+      ...dockerBuildLines(plan, "${APP_IMAGE_BASE}:$CI_COMMIT_SHA"),
+      'docker push "${APP_IMAGE_BASE}:$CI_COMMIT_SHA"',
+      'DIGEST="$(docker inspect --format=\'{{index .RepoDigests 0}}\' "${APP_IMAGE_BASE}:$CI_COMMIT_SHA")"',
       'echo "APP_IMAGE=$DIGEST" > build.env',
     ],
     artifacts: {
@@ -102,22 +248,54 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
     },
   };
 
+  const onLocal = (cmd: string) => `(${cmd})`;
+  const onSsh = (cmd: string) => `ssh $SSH_OPTS "deploy@$DEPLOY_HOST" '${cmd}'`;
+  const onTarget = onServer ? onLocal : onSsh;
+
+  const envWriteLines = envFiles.map(
+    ({ file, variable }) =>
+      `(${readVar(variable)}) | ${onTarget(`umask 077 && cat > ${targetDir}/${file}`)}`,
+  );
+  const originTlsLines = edgeFiles.originTls ? originTlsWriteLines(plan, onTarget) : [];
+  const savePreviousLine = onTarget(
+    `cd ${targetDir} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi`,
+  );
+  const serverLoginLine = onServer
+    ? `mkdir -p ${targetDockerConfig} && printf '%s\\n' "$CI_JOB_TOKEN" | DOCKER_CONFIG=${targetDockerConfig} docker login "$REGISTRY_HOST" -u "$CI_REGISTRY_USER" --password-stdin`
+    : `printf '%s\\n' "$CI_JOB_TOKEN" | ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "mkdir -p ${targetDockerConfig} && DOCKER_CONFIG=${targetDockerConfig} docker login '$REGISTRY_HOST' -u '$CI_REGISTRY_USER' --password-stdin"`;
+  const serverLogoutLine = onServer
+    ? `DOCKER_CONFIG=${targetDockerConfig} docker logout "$REGISTRY_HOST" > /dev/null 2>&1 || true`
+    : `ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "DOCKER_CONFIG=${targetDockerConfig} docker logout '$REGISTRY_HOST' > /dev/null 2>&1 || true"`;
+
   const deployScript = onServer
     ? [
         "set -eu",
-        `mkdir -p "${appDir(plan)}"`,
-        `cp -r "${dir}/." "${appDir(plan)}/"`,
+        ...registrySetup(plan),
+        `mkdir -p ${shellQuote(targetDir)}`,
+        `cp -r ${uploadPaths.map(shellQuote).join(" ")} ${shellQuote(`${targetDir}/`)}`,
+        ...envWriteLines,
+        ...originTlsLines,
+        savePreviousLine,
+        serverLoginLine,
+        `trap '${serverLogoutLine}' EXIT`,
         `cat <<'OPSCREW_SWITCH_EOF' | sh -s -- "$APP_IMAGE"\n${startScript}\nOPSCREW_SWITCH_EOF`,
       ]
     : [
         ...sshPreamble(plan, sshPort),
-        `scp -P ${sshPort} -i ~/.ssh/id_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -r "${dir}/." "deploy@$DEPLOY_HOST:${appDir(plan)}/"`,
+        ...registrySetup(plan),
+        onSsh(`mkdir -p ${targetDir}`),
+        `scp -P ${sshPort} -i ~/.ssh/id_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -r ${uploadPaths.map(shellQuote).join(" ")} "deploy@$DEPLOY_HOST:${targetDir}/"`,
+        ...envWriteLines,
+        ...originTlsLines,
+        savePreviousLine,
+        serverLoginLine,
+        `trap '${serverLogoutLine}' EXIT`,
         `cat <<'OPSCREW_SWITCH_EOF' | ssh $SSH_OPTS "deploy@$DEPLOY_HOST" sh -s -- "$APP_IMAGE"\n${startScript}\nOPSCREW_SWITCH_EOF`,
       ];
 
   const deployJob: Record<string, unknown> = {
     stage: "deploy",
-    ...(selfHosted ? { tags: [tag] } : { image: "alpine:3.21" }),
+    ...(selfHosted ? { tags: [tag] } : { image: IMAGES.alpine.ref }),
     needs: [{ job: "build", artifacts: true }],
     resource_group: `opscrew-${app}`,
     environment: {
@@ -135,7 +313,7 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
 
   const verifyJob: Record<string, unknown> = {
     stage: "verify",
-    image: "curlimages/curl:8.12.1",
+    image: IMAGES.curl.ref,
     needs: ["deploy"],
     rules: [
       { if: '$OPSCREW_MODE == "rollback"', when: "never" },
@@ -151,7 +329,7 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
 
   const rollbackJob: Record<string, unknown> = {
     stage: "deploy",
-    ...(selfHosted ? { tags: [tag] } : { image: "alpine:3.21" }),
+    ...(selfHosted ? { tags: [tag] } : { image: IMAGES.alpine.ref }),
     resource_group: `opscrew-${app}`,
     environment: { name: envName },
     rules: [
@@ -182,55 +360,42 @@ export function renderGitLabPipeline(plan: DeployPlan, ctx: RuntimeContext): Ren
   if (previews) {
     const mrGuard =
       "$CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID";
-    const previewKeyVar = deploySecretName(plan, "PREVIEW_SSH_KEY");
-    const previewHostVar = deploySecretName(plan, "PREVIEW_HOST");
-    const previewKnownVar = deploySecretName(plan, "PREVIEW_KNOWN_HOSTS");
-    const previewSsh = [
-      "set -eu",
-      "mkdir -p ~/.ssh && chmod 700 ~/.ssh",
-      `if [ -f "$${previewKeyVar}" ]; then cp "$${previewKeyVar}" ~/.ssh/id_preview; else printf '%s\\n' "$${previewKeyVar}" > ~/.ssh/id_preview; fi`,
-      "chmod 600 ~/.ssh/id_preview",
-      `if [ -f "$${previewKnownVar}" ]; then cp "$${previewKnownVar}" ~/.ssh/known_hosts; else printf '%s\\n' "$${previewKnownVar}" > ~/.ssh/known_hosts; fi`,
-      "chmod 644 ~/.ssh/known_hosts",
-      `SSH_OPTS="-i ~/.ssh/id_preview -p ${sshPort} -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts"`,
-    ];
+    const previewSsh = sshPreamble(plan, sshPort);
 
     pipeline.preview_up = {
       stage: "deploy",
-      image: "docker:28-cli",
-      services: ["docker:28-dind"],
+      image: IMAGES.dockerCli.ref,
+      services: [IMAGES.dockerDind.ref],
       variables: { DOCKER_TLS_CERTDIR: "/certs" },
       rules: [{ if: mrGuard }],
       environment: {
-        name: `review/mr-$CI_MERGE_REQUEST_IID`,
+        name: "review/mr-$CI_MERGE_REQUEST_IID",
         on_stop: "preview_down",
         auto_stop_in: `${previews.lifetimeDays} days`,
       },
       before_script: ["apk add --no-cache openssh-client"],
       script: [
         ...previewSsh,
-        'printf "%s\\n" "$CI_JOB_TOKEN" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin',
-        `docker build --pull -t "${image}:mr-$CI_MERGE_REQUEST_IID" .`,
-        `docker push "${image}:mr-$CI_MERGE_REQUEST_IID"`,
-        `PREVIEW_IMAGE="$(docker inspect --format='{{index .RepoDigests 0}}' "${image}:mr-$CI_MERGE_REQUEST_IID")"`,
-        `printf '%s\\n' "$CI_JOB_TOKEN" | ssh $SSH_OPTS "deploy@$${previewHostVar}" "up $CI_MERGE_REQUEST_IID $PREVIEW_IMAGE $CI_COMMIT_SHA"`,
+        ...registrySetup(plan),
+        'printf "%s\\n" "$CI_JOB_TOKEN" | docker login "$REGISTRY_HOST" -u "$CI_REGISTRY_USER" --password-stdin',
+        ...dockerBuildLines(plan, "${APP_IMAGE_BASE}:mr-$CI_MERGE_REQUEST_IID"),
+        'docker push "${APP_IMAGE_BASE}:mr-$CI_MERGE_REQUEST_IID"',
+        'PREVIEW_IMAGE="$(docker inspect --format=\'{{index .RepoDigests 0}}\' "${APP_IMAGE_BASE}:mr-$CI_MERGE_REQUEST_IID")"',
+        'printf \'%s\\n\' "$CI_JOB_TOKEN" | ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "up $CI_MERGE_REQUEST_IID $PREVIEW_IMAGE $CI_COMMIT_SHA"',
       ],
     };
 
     pipeline.preview_down = {
       stage: "cleanup",
-      image: "alpine:3.21",
+      image: IMAGES.alpine.ref,
       variables: { GIT_STRATEGY: "none" },
       rules: [{ if: mrGuard, when: "manual" }],
       environment: {
-        name: `review/mr-$CI_MERGE_REQUEST_IID`,
+        name: "review/mr-$CI_MERGE_REQUEST_IID",
         action: "stop",
       },
       before_script: ["apk add --no-cache openssh-client"],
-      script: [
-        ...previewSsh,
-        `ssh $SSH_OPTS "deploy@$${previewHostVar}" "down $CI_MERGE_REQUEST_IID"`,
-      ],
+      script: [...previewSsh, 'ssh $SSH_OPTS "deploy@$DEPLOY_HOST" "down $CI_MERGE_REQUEST_IID"'],
     };
   }
 

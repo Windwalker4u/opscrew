@@ -15,6 +15,7 @@ const DefinitionSchema = z.object({
   contractVersion: z.literal(GIT_PLATFORM_CONTRACT_VERSION),
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
   displayName: z.string().min(1),
+  defaultHost: z.string().min(1),
   cicdProvider: z.string().regex(/^[a-z][a-z0-9-]*$/),
   registryId: z.string().regex(/^[a-z][a-z0-9-]*$/),
   credentials: z.object({
