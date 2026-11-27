@@ -13,8 +13,9 @@
  *    - nginx starts and reloads cleanly with `app-b`'s `<app-b>-kamal-proxy` stopped/absent
  *      (`zone` + `resolve`), serving `app-a` throughout, and automatically picks up `app-b` when
  *      `<app-b>-kamal-proxy` comes back with a new container IP.
- *    - OpenLiteSpeed reloads cleanly after `<app-a>-kamal-proxy` is recreated (new IP) and while
- *      `<app-b>-kamal-proxy` is stopped.
+ *    - OpenLiteSpeed reloads cleanly after `<app-a>-kamal-proxy` is recreated (new IP) and after
+ *      removing `<app-b>`'s site files before tearing down `<app-b>-kamal-proxy` (while keeping
+ *      `<app-a>` serving if an unresolved vhost reload is refused).
  *
  * Gated by `OPSCREW_DOCKER_TESTS=1` with a running Docker daemon. Every test container and network
  * is removed in `afterEach`/`afterAll`.
@@ -31,9 +32,15 @@ import { IMAGES } from "../pins";
 import { appProxyAlias, appProxyUpstream } from "./index";
 import { NGINX_CONF } from "./nginx";
 import {
-  OPENLITESPEED_COMMAND,
+  OPENLITESPEED_CAPABILITIES,
+  OPENLITESPEED_CATCH_ALL,
+  OPENLITESPEED_CHECK,
   OPENLITESPEED_ERROR_PAGE,
+  OPENLITESPEED_INPUT,
+  OPENLITESPEED_LOOP,
+  OPENLITESPEED_RELOAD,
   openlitespeedConf,
+  openlitespeedSite,
 } from "./openlitespeed";
 
 function dockerSkipReason(): string | undefined {
@@ -552,43 +559,49 @@ describe.skipIf(SKIP !== undefined)("049 Option B: per-app kamal-proxy isolation
   );
 
   it(
-    "OpenLiteSpeed reloads cleanly after recreating <app-a>-kamal-proxy and while <app-b>-kamal-proxy is down",
+    "OpenLiteSpeed reloads cleanly after recreating <app-a>-kamal-proxy and removing <app-b>'s site before teardown",
     async () => {
       const edgeNet = createNet("ols-edge");
       const netA = createNet("ols-a");
+      const netB = createNet("ols-b");
 
       const appA = startApp(netA, "app", "app-a");
+      const appB = startApp(netB, "app", "app-b");
       let proxyA = startKamalProxy(edgeNet, appProxyAlias("app-a"), netA);
+      const proxyB = startKamalProxy(edgeNet, appProxyAlias("app-b"), netB);
       deployRoute(proxyA, "app-a", `${appA}:3000`, "a.test");
+      deployRoute(proxyB, "app-b", `${appB}:3000`, "b.test");
 
       const olsDir = path.join(work, "ols-res");
+      const etcDir = path.join(olsDir, "etc");
       const sitesDir = path.join(olsDir, "sites");
+      const tlsDir = path.join(olsDir, "tls");
+      const letsencryptDir = path.join(olsDir, "letsencrypt");
+      await mkdir(etcDir, { recursive: true });
       await mkdir(sitesDir, { recursive: true });
-      await writeFile(path.join(olsDir, "httpd_config.conf"), openlitespeedConf(false));
-      await writeFile(path.join(olsDir, "error.html"), OPENLITESPEED_ERROR_PAGE);
-      await writeFile(
-        path.join(sitesDir, "app-a.map"),
-        "virtualhost app-a {\n  vhRoot /var/www/vhosts/app-a\n  configFile /etc/opscrew/sites/app-a.vhconf\n}\nlistener HTTP {\n  map app-a a.test\n}\n",
-      );
-      await writeFile(
-        path.join(sitesDir, "app-a.vhconf"),
-        [
-          "docRoot /var/www/vhosts/app-a/html",
-          "extprocessor kamal-proxy {",
-          "  type proxy",
-          `  address ${appProxyUpstream("app-a")}`,
-          "  maxConns 100",
-          "  initTimeout 60",
-          "  retryTimeout 0",
-          "  respBuffer 0",
-          "}",
-          "context / {",
-          "  type proxy",
-          "  handler kamal-proxy",
-          "}",
-          "",
-        ].join("\n"),
-      );
+      await mkdir(tlsDir, { recursive: true });
+      await mkdir(letsencryptDir, { recursive: true });
+
+      const sites = {
+        ...openlitespeedSite({
+          app: "app-a",
+          mode: "tunnel",
+          hosts: ["a.test"],
+        }),
+        ...openlitespeedSite({
+          app: "app-b",
+          mode: "tunnel",
+          hosts: ["b.test"],
+        }),
+      };
+      await writeFile(path.join(etcDir, "httpd_config.conf"), openlitespeedConf(false));
+      await writeFile(path.join(etcDir, "catchall.conf"), OPENLITESPEED_CATCH_ALL);
+      await writeFile(path.join(etcDir, "error.html"), OPENLITESPEED_ERROR_PAGE);
+      await writeFile(path.join(etcDir, "check.sh"), OPENLITESPEED_CHECK);
+      await writeFile(path.join(etcDir, "reload.sh"), OPENLITESPEED_RELOAD);
+      for (const [name, lines] of Object.entries(sites)) {
+        await writeFile(path.join(sitesDir, name), lines.join("\n"));
+      }
 
       const port = await freePort();
       const ols = trackContainer(unique("ols"));
@@ -601,35 +614,77 @@ describe.skipIf(SKIP !== undefined)("049 Option B: per-app kamal-proxy isolation
         LABEL,
         "--network",
         edgeNet,
+        "--init",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--cap-drop",
+        "ALL",
+        ...OPENLITESPEED_CAPABILITIES.flatMap((capability) => ["--cap-add", capability]),
         "-p",
         `127.0.0.1:${port}:80`,
         "-v",
-        `${path.join(olsDir, "httpd_config.conf")}:/etc/opscrew/httpd_config.conf:ro`,
+        `${path.join(etcDir, "httpd_config.conf")}:${OPENLITESPEED_INPUT.conf}:ro`,
         "-v",
-        `${path.join(olsDir, "error.html")}:/etc/opscrew/error.html:ro`,
+        `${path.join(etcDir, "catchall.conf")}:${OPENLITESPEED_INPUT.catchAll}:ro`,
         "-v",
-        `${sitesDir}:/etc/opscrew/sites:ro`,
+        `${path.join(etcDir, "error.html")}:${OPENLITESPEED_INPUT.errorPage}:ro`,
+        "-v",
+        `${path.join(etcDir, "check.sh")}:${OPENLITESPEED_INPUT.check}:ro`,
+        "-v",
+        `${path.join(etcDir, "reload.sh")}:${OPENLITESPEED_INPUT.reload}:ro`,
+        "-v",
+        `${sitesDir}:${OPENLITESPEED_INPUT.sites}:ro`,
+        "-v",
+        `${tlsDir}:${OPENLITESPEED_INPUT.tls}:ro`,
+        "-v",
+        `${letsencryptDir}:/etc/letsencrypt:ro`,
+        "--entrypoint",
+        "sh",
         IMAGES.openlitespeed.ref,
+        "-c",
+        OPENLITESPEED_LOOP,
       ]);
 
-      const first = await until("a.test via OpenLiteSpeed", async () => {
+      const firstA = await until("a.test via OpenLiteSpeed", async () => {
         const r = await httpGet(port, "a.test");
         return r.status === 200 ? r : undefined;
       });
-      expect(JSON.parse(first.body).app).toBe("app-a");
+      expect(JSON.parse(firstA.body).app).toBe("app-a");
+      const firstB = await until("b.test via OpenLiteSpeed", async () => {
+        const r = await httpGet(port, "b.test");
+        return r.status === 200 ? r : undefined;
+      });
+      expect(JSON.parse(firstB.body).app).toBe("app-b");
 
       // Recreate app-a's kamal-proxy (gets a new container IP), deploy route, reload OLS.
       docker(["rm", "-f", proxyA]);
       createdContainers.delete(proxyA);
       proxyA = startKamalProxy(edgeNet, appProxyAlias("app-a"), netA);
       deployRoute(proxyA, "app-a", `${appA}:3000`, "a.test");
-      expect(dockerQuiet(["exec", ols, "sh", "-c", OPENLITESPEED_COMMAND.reload]).status).toBe(0);
+      expect(dockerQuiet(["exec", ols, "sh", OPENLITESPEED_INPUT.reload]).status).toBe(0);
 
-      const second = await until("a.test via OpenLiteSpeed after proxy recreate", async () => {
+      const secondA = await until("a.test via OpenLiteSpeed after proxy recreate", async () => {
         const r = await httpGet(port, "a.test");
         return r.status === 200 ? r : undefined;
       });
-      expect(JSON.parse(second.body).app).toBe("app-a");
+      expect(JSON.parse(secondA.body).app).toBe("app-a");
+
+      // Stopping app-b's kamal-proxy while its vhost is still present makes reload fail safely
+      // while OpenLiteSpeed keeps serving app-a; removing app-b's site files first reloads cleanly.
+      docker(["rm", "-f", proxyB]);
+      createdContainers.delete(proxyB);
+      expect(dockerQuiet(["exec", ols, "sh", OPENLITESPEED_INPUT.reload]).status).not.toBe(0);
+      const stillA = await httpGet(port, "a.test");
+      expect(stillA.status).toBe(200);
+      expect(JSON.parse(stillA.body).app).toBe("app-a");
+
+      for (const ext of ["vhconf", "vhost", "map"]) {
+        await rm(path.join(sitesDir, `app-b.${ext}`), { force: true });
+      }
+      expect(dockerQuiet(["exec", ols, "sh", OPENLITESPEED_INPUT.reload]).status).toBe(0);
+      const afterRemove = await httpGet(port, "a.test");
+      expect(afterRemove.status).toBe(200);
+      expect(JSON.parse(afterRemove.body).app).toBe("app-a");
     },
     TIMEOUT,
   );

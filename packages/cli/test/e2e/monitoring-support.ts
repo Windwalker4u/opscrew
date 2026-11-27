@@ -103,7 +103,11 @@ export function localStack(
   ]);
   const grafana = service(doc, "grafana");
   const port = MONITORING_GRAFANA_PORT;
-  rendered(grafana.ports, [`127.0.0.1:${port}:${port}`], "Grafana's port");
+  rendered(
+    grafana.ports,
+    [`127.0.0.1:${port}:${port}`, `${o.address}:${port}:${port}`],
+    "Grafana's port",
+  );
   grafana.ports = [`127.0.0.1:${o.grafanaPort}:${port}`];
   const push = doc.networks?.push;
   rendered(push?.name, MONITORING_PUSH_NETWORK, "the push network's name");

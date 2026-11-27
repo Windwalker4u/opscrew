@@ -8,7 +8,7 @@ http://example.com {
 	@http_visitor header Cf-Visitor \`*"http"*\`
 	redir @http_visitor https://{host}{uri} 308
 	encode zstd gzip
-	reverse_proxy kamal-proxy:80
+	reverse_proxy shop-kamal-proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		-Server

@@ -260,7 +260,7 @@ const FAKE_DOCKER = [
   '    if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; exit 3; fi ;;',
   '  "compose exec")',
   "    cat > /dev/null",
-  '    if [[ "$project" != opscrew-edge ]]; then',
+  '    if [[ "$project" != opscrew-edge && "$4" != kamal-proxy ]]; then',
   '      if grep -qxF "${*:5}" "$WORK/failing"; then echo "setup output for ${*:5}"; exit 1; fi',
   "      exit 0",
   "    fi",
@@ -274,6 +274,8 @@ const FAKE_DOCKER = [
   '      if (( ${NGINX_RELOAD_FAIL:-0} > 0 && n >= ${NGINX_RELOAD_FAIL:-0} )); then echo "nginx: [emerg] cannot load certificate" >&2; exit 1; fi',
   "      exit 0",
   "    fi",
+  // Legacy shared kamal-proxy cleanup after per-app switch never drops the app's own route.
+  '    if [[ "$project" == opscrew-edge && "$6" == remove ]]; then exit 0; fi',
   // kamal-proxy's pause and resume of a service it has (a route), which $WORK/paused/<service> marks.
   '    if [[ "$6" == pause || "$6" == resume ]]; then',
   '      if [[ ! -f "$WORK/routes/$7" ]]; then echo "Error: service not found" >&2; exit 1; fi',
@@ -498,9 +500,9 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(calls).toContain(
         "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
       );
-      // The app is the edge's kamal-proxy service named after it (no hostname before a domain).
+      // The app is its own per-app kamal-proxy service named after it (no hostname before a domain).
       expect(file("projects.log")).toContain(
-        "opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop --target shop-app-1:3000 --health-check-path /api/health --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s",
+        "shop exec -T kamal-proxy kamal-proxy deploy shop --target shop-app-1:3000 --health-check-path /api/health --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s",
       );
       // The old copy goes only after the switch, with a graceful stop.
       expect(calls.indexOf("kamal-proxy deploy")).toBeLessThan(calls.indexOf("docker stop c90"));
@@ -605,6 +607,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       const ups = calls.filter((c) => c.startsWith("docker compose up"));
       expect(ups).toEqual([
         "docker compose up -d --no-deps --wait db",
+        "docker compose up -d --no-deps kamal-proxy",
         "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
       ]);
     });
@@ -612,10 +615,10 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
 
   describe("recreate", () => {
     const PAUSE =
-      "opscrew-edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s";
-    const RESUME = "opscrew-edge exec -T kamal-proxy kamal-proxy resume shop";
+      "shop exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s";
+    const RESUME = "shop exec -T kamal-proxy kamal-proxy resume shop";
     const RESUME_TRAP =
-      "edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true";
+      "docker compose exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true";
     /** Whether kamal-proxy holds the app's requests (the fake's mark). */
     const paused = () => existsSync(join(work, "paused", "shop"));
     /** The running version of the app, with its service on kamal-proxy. */
@@ -647,11 +650,9 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(at(PAUSE)).toBeGreaterThan(-1);
       expect(at(PAUSE)).toBeLessThan(at("shop up -d --no-deps --remove-orphans app"));
       expect(at("shop up -d --no-deps --remove-orphans app")).toBeLessThan(
-        at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop "),
+        at("shop exec -T kamal-proxy kamal-proxy deploy shop "),
       );
-      expect(at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(
-        at(RESUME),
-      );
+      expect(at("shop exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(at(RESUME));
       expect(paused()).toBe(false);
       // The EXIT trap resumes once more and keeps the registry logout.
       expect(recreate.start).toContain(
@@ -704,9 +705,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(rollback.output).toContain("restored the previous version");
       expect(routed()).toBe(OLD);
       expect(at(PAUSE)).toBeLessThan(at("shop up -d --no-deps --remove-orphans app"));
-      expect(at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(
-        at(RESUME),
-      );
+      expect(at("shop exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(at(RESUME));
       expect(paused()).toBe(false);
       expect(recreate.rollback).toContain(`trap '${RESUME_TRAP}' EXIT`);
     });
@@ -999,6 +998,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
         .filter((call) => call.startsWith("docker compose up"));
       expect(ups).toEqual([
         "docker compose up -d --no-deps --wait db cache",
+        "docker compose up -d --no-deps kamal-proxy",
         "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
         "docker compose up -d --no-deps worker beat cron",
       ]);
@@ -1407,13 +1407,13 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(existsSync(join(work, "network-opscrew-edge"))).toBe(true);
       const calls = dockerCalls().split("\n");
       const at = (text: string) => calls.findIndex((line) => line.includes(text));
-      // Under the lock, the network comes before the edge, the edge before the app's switch; the
-      // start script holds its own lock in the app's folder throughout.
+      // Under the lock, the network comes before per-app kamal-proxy and the app's switch, which
+      // finishes before the shared edge reloads Caddy to point at `<app>-kamal-proxy`.
       expect(file("flock.log")).toBe("flock 7\nflock 9");
       expect(at("docker network create opscrew-edge")).toBeGreaterThan(at("docker compose pull"));
       expect(at("docker network create opscrew-edge")).toBeLessThan(at(" up -d --wait"));
       expect(at(" up -d --wait")).toBeLessThan(at("caddy reload"));
-      expect(at("caddy reload")).toBeLessThan(at("--scale app=1 app"));
+      expect(at("--scale app=1 app")).toBeLessThan(at("caddy reload"));
       expect(routed()).toBe(NEW);
     });
 
@@ -1434,8 +1434,8 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
         "# the site Caddy serves now\n",
       );
       expect(containers()).toEqual([OLD]);
+      expect(routed()).toBe(OLD);
       expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
-      expect(dockerCalls()).not.toContain("--scale");
 
       resetCalls();
       expect(run(rolling.rollback).output).toContain("still runs the version it had");
@@ -1531,7 +1531,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
           "shop.caddy",
         ]);
         expect(file("projects.log")).toContain(
-          "opscrew-edge exec -T kamal-proxy kamal-proxy deploy blog --target blog-app-",
+          "blog exec -T kamal-proxy kamal-proxy deploy blog --target blog-app-",
         );
         expect(file("projects.log")).toMatch(
           /deploy blog --target blog-app-\d+:3000 --host blog\.example\.com --health-check-path/,
@@ -1566,7 +1566,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
               .split("\n")
               .map((l) => l.split(" ")[0]),
           ),
-        ).toEqual(new Set(["blog", "opscrew-edge"]));
+        ).toEqual(new Set(["blog"]));
         expect(folder("shop")).toEqual(shopFolder);
         expect(file("containers-shop")).toBe(shopContainers);
         expect(routed()).toBe(NEW);
@@ -1607,16 +1607,16 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(start.status, start.output).toBe(0);
       expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.conf"));
       // nginx and certbot run as the deploy user, from the edge's .env.
-      const uid = spawnSync("id", ["-u"], { encoding: "utf8" }).stdout.trim();
+      const uid = spawnSync("sh", ["-c", "id -u"], { encoding: "utf8" }).stdout.trim();
       expect(readEdge(".env")).toContain(`OPSCREW_DEPLOY_UID=${uid}\n`);
       const order = [
+        "kamal-proxy deploy shop",
         "--entrypoint chown certbot",
         "--entrypoint test certbot -f /etc/letsencrypt/live/shop/fullchain.pem",
         " up -d --wait --remove-orphans",
         "exec -T nginx sh -c nginx -t -q && nginx -s reload",
         "--entrypoint certbot certbot certonly",
         "--entrypoint sh certbot -c",
-        "kamal-proxy deploy shop",
       ].map(at);
       expect(order.every((n) => n >= 0)).toBe(true);
       expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -1644,7 +1644,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       );
       expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.http.conf"));
       expect(containers()).toEqual([OLD]);
-      expect(dockerCalls()).not.toContain("kamal-proxy deploy");
+      expect(routed()).toBe(OLD);
     });
 
     it("serves the HTTPS site at once when certbot already has the certificate", () => {
@@ -1746,7 +1746,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(file("projects.log")).toContain("opscrew-edge up -d --wait --remove-orphans");
       expect(readEdge("sites/shop.caddy")).toBeUndefined();
       expect(readEdge("sites/shop.conf")).toBe(site(nginxPlan, "shop.conf"));
-      expect(at("certonly")).toBeLessThan(at("kamal-proxy deploy shop"));
+      expect(at("kamal-proxy deploy shop")).toBeLessThan(at("certonly"));
       expect(routed()).toBe(NEW);
     });
 
@@ -2186,10 +2186,11 @@ describe("the deploy job per strategy", () => {
       const job = deploy(withPlan(plan, { deploy: { strategy } }));
       const calls = job.split("\n").filter((line) => line.includes("kamal-proxy deploy"));
       // An app with a database has a recreate switch for a rollback that changes it: one more in
-      // the rollback script, and one more in a rolling app's start script.
-      expect(calls, strategy).toHaveLength(strategy === "rolling" ? 4 : 3);
+      // the rollback script, one more in a rolling app's start script, plus `restoreRoute` in
+      // `install_edge` to put `$old` back if the edge reload fails.
+      expect(calls, strategy).toHaveLength(strategy === "rolling" ? 5 : 4);
       // kamal-proxy reads no stdin: the server script itself arrives on it.
-      for (const call of calls) expect(call).toContain(" --target-timeout 300s < /dev/null; then");
+      for (const call of calls) expect(call).toContain(" --target-timeout 300s < /dev/null");
     }
   });
 

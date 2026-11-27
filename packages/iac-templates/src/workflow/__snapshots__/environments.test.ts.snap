@@ -1228,8 +1228,10 @@ jobs:
                 if [ -n "$_old_name" ]; then
                   docker compose exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${_old_name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
                 fi
+              else
+                docker compose exec -T kamal-proxy kamal-proxy remove shop-staging < /dev/null > /dev/null 2>&1 || true
               fi
-              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+              if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop-staging.caddy; else rm -f "$EDGE_DIR"/sites/shop-staging.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop-staging.additions; else rm -f "$EDGE_DIR"/sites/shop-staging.additions; fi
               for f in origin.pem origin.key pull.pem; do
@@ -1248,6 +1250,8 @@ jobs:
           ) 9> "$EDGE_DIR"/.lock
           }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -2975,8 +2979,10 @@ jobs:
                 if [ -n "$_old_name" ]; then
                   docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
                 fi
+              else
+                docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
               fi
-              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+              if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.caddy; else rm -f "$EDGE_DIR"/sites/shop.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
               for f in origin.pem origin.key pull.pem; do
@@ -2995,6 +3001,8 @@ jobs:
           ) 9> "$EDGE_DIR"/.lock
           }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -4311,8 +4319,10 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
                 if [ -n "$_old_name" ]; then
                   docker compose exec -T kamal-proxy kamal-proxy deploy shop-eu-staging --target "\${_old_name#/}:3000" --host eu-staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
                 fi
+              else
+                docker compose exec -T kamal-proxy kamal-proxy remove shop-eu-staging < /dev/null > /dev/null 2>&1 || true
               fi
-              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+              if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop-eu-staging.caddy; else rm -f "$EDGE_DIR"/sites/shop-eu-staging.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop-eu-staging.additions; else rm -f "$EDGE_DIR"/sites/shop-eu-staging.additions; fi
               for f in origin.pem origin.key pull.pem; do
@@ -4331,6 +4341,8 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           ) 9> "$EDGE_DIR"/.lock
           }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -5607,8 +5619,10 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
                 if [ -n "$_old_name" ]; then
                   docker compose exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${_old_name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
                 fi
+              else
+                docker compose exec -T kamal-proxy kamal-proxy remove shop-staging < /dev/null > /dev/null 2>&1 || true
               fi
-              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+              if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop-staging.caddy; else rm -f "$EDGE_DIR"/sites/shop-staging.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop-staging.additions; else rm -f "$EDGE_DIR"/sites/shop-staging.additions; fi
               for f in origin.pem origin.key pull.pem; do
@@ -5627,6 +5641,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           ) 9> "$EDGE_DIR"/.lock
           }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -6908,8 +6924,10 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
                 if [ -n "$_old_name" ]; then
                   docker compose exec -T kamal-proxy kamal-proxy deploy shop-dev --target "\${_old_name#/}:3000" --host shop.localhost --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
                 fi
+              else
+                docker compose exec -T kamal-proxy kamal-proxy remove shop-dev < /dev/null > /dev/null 2>&1 || true
               fi
-              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+              if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop-dev.caddy; else rm -f "$EDGE_DIR"/sites/shop-dev.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop-dev.additions; else rm -f "$EDGE_DIR"/sites/shop-dev.additions; fi
               for f in local.pem local.key; do
@@ -6928,6 +6946,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           ) 9> "$EDGE_DIR"/.lock
           }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

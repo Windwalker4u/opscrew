@@ -9,7 +9,7 @@ import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { type RuntimeContext, renderEdgeSite } from "../runtime";
-import { renderEdgeCompose } from "./index";
+import { appProxyAlias, renderEdgeCompose } from "./index";
 import { NGINX_LOOP } from "./nginx";
 
 /*
@@ -111,7 +111,7 @@ describe.skipIf(reason !== undefined)("the visitor's address (OPSCREW_DOCKER_TES
       "--network",
       id,
       "--network-alias",
-      "kamal-proxy",
+      appProxyAlias("shop"),
       "-v",
       `${join(work, "echo", "Caddyfile")}:/etc/caddy/Caddyfile:ro`,
       IMAGES.caddy.ref,

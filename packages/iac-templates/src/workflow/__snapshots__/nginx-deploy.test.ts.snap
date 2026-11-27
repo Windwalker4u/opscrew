@@ -46,8 +46,10 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
       if [ -n "$_old_name" ]; then
         docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
       fi
+    else
+      docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
     fi
-    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+    if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
     if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
     for f in origin.pem origin.key pull.pem; do
@@ -81,8 +83,10 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
         if [ -n "$_old_name" ]; then
           docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
         fi
+      else
+        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
       fi
-      if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
       if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
       for f in origin.pem origin.key pull.pem; do
@@ -92,8 +96,28 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
       edge up -d --wait --remove-orphans || true
       echo '::error::certbot could not get the certificate for shop.example.com, so the server keeps Caddy as its proxy, and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
     elif [ "$first" -eq 1 ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      else
+        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+      fi
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       echo '::error::certbot could not get the certificate for shop.example.com, so the site stays on HTTP only, and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
     else
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      else
+        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+      fi
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       echo '::error::certbot could not get the certificate for shop.example.com, so the site keeps its current certificate (which may not cover every hostname), and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
     fi
     exit 1
@@ -108,8 +132,10 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
         if [ -n "$_old_name" ]; then
           docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
         fi
+      else
+        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
       fi
-      if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
       if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
       for f in origin.pem origin.key pull.pem; do
@@ -119,9 +145,29 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
       edge up -d --wait --remove-orphans || true
       echo '::error::The switch to nginx did not work, so the server keeps Caddy as its proxy.'
     elif [ "$first" -eq 0 ] && [ -f .site.previous ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      else
+        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+      fi
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       cp .site.previous "$EDGE_DIR"/sites/shop.conf
       edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null || true
     else
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      else
+        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+      fi
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       cp edge/sites/shop.http.conf "$EDGE_DIR"/sites/shop.conf
       edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null || true
     fi
@@ -171,8 +217,10 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
       if [ -n "$_old_name" ]; then
         docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
       fi
+    else
+      docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
     fi
-    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+    if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.conf; else rm -f "$EDGE_DIR"/sites/shop.conf; fi
     if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
     for f in origin.pem origin.key pull.pem; do
@@ -225,8 +273,10 @@ exports[`the deploy on the nginx edge > matches the snapshots of the first certi
       if [ -n "$_old_name" ]; then
         docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
       fi
+    else
+      docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
     fi
-    if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+    if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.caddy; else rm -f "$EDGE_DIR"/sites/shop.caddy; fi
     if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/shop.additions; else rm -f "$EDGE_DIR"/sites/shop.additions; fi
     for f in origin.pem origin.key pull.pem; do

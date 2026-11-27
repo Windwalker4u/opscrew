@@ -233,6 +233,14 @@ describe("parsers", () => {
       running: true,
       networks: [],
     });
+    const [legacy] = parseContainers("legacy-app-1|shop|0.0.0.0:3000->3000/tcp|running");
+    expect(legacy).toEqual({
+      name: "legacy-app-1",
+      project: "shop",
+      ports: "0.0.0.0:3000->3000/tcp",
+      running: true,
+    });
+    expect(legacy?.networks).toBeUndefined();
     expect(publishesPort(caddy?.ports ?? "", 80)).toBe(true);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080)).toBe(false);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080, true)).toBe(true);

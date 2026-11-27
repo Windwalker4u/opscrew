@@ -247,7 +247,10 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
       volumes: { "kamal-proxy-config": {} },
     };
     await writeFile(path.join(appDir(), "compose.yaml"), stringify(appCompose, { lineWidth: 0 }));
-    await dockerOk(
+    // Pass APP_IMAGE only to this initial up so Compose validates `app` without writing `.env`
+    // before the first deploy test.
+    const upProxy = await new NodeCommandRunner().run(
+      "docker",
       [
         "compose",
         "-p",
@@ -259,9 +262,9 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
         "--no-deps",
         "kamal-proxy",
       ],
-      "starting the app's kamal-proxy",
-      TWO_MINUTES,
+      { env: { ...process.env, APP_IMAGE: images.v1 }, timeoutMs: TWO_MINUTES },
     );
+    expect(upProxy.exitCode, upProxy.stderr).toBe(0);
   }, TEN_MINUTES);
 
   afterAll(async () => {

@@ -240,6 +240,7 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     docker.addFolder("/srv/data/shop");
     docker.addFolder("/srv/data/shop/db", { PG_VERSION: bytes(3), "base/1": bytes(4096) });
     docker.addVolume("shop_sqlite", { "app.db": bytes(8192) });
+    docker.addVolume("shop_kamal-proxy-config", { "state.json": bytes(256) });
     docker.addVolume("opscrew-monitoring_prometheus", { wal: bytes(100) });
     docker.addFolder("/srv/data/blog/db");
     docker.addFolder("/srv/apps/shop/crontab");
@@ -272,6 +273,14 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
       { type: "bind", source: "/srv/apps/shop/crontab", target: "/etc/crontab" },
     ]);
     await container("shop", "worker", [sqlite]);
+    // Per-app kamal-proxy's config volume is ephemeral route state, never copied by retarget.
+    await container("shop", "kamal-proxy", [
+      {
+        type: "volume",
+        source: "shop_kamal-proxy-config",
+        target: "/home/kamal-proxy/.config/kamal-proxy",
+      },
+    ]);
     await container("blog", "db", [
       { type: "bind", source: "/srv/data/blog/db", target: "/var/lib/postgresql/data" },
     ]);

@@ -2070,7 +2070,9 @@ describe("the start script's database lines", () => {
 
   it("switch once in a recreate app's database step, and twice otherwise", () => {
     const deploys = (plan: DeployPlan) =>
-      switchCommands(plan, []).filter((l) => l.includes("kamal-proxy deploy")).length;
+      switchCommands(plan, []).filter(
+        (l) => l.includes("kamal-proxy deploy") && !l.includes("_old_name"),
+      ).length;
     expect(deploys(withPlan(staging, { deploy: { strategy: "recreate" } }))).toBe(1);
     expect(deploys(staging)).toBe(2);
   });

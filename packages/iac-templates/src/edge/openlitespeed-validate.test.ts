@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
 import { switchApp } from "../workflow/switch";
 import { localhostPlan } from "./__fixtures__/localhost";
+import { appProxyAlias } from "./index";
 import {
   OPENLITESPEED_CAPABILITIES,
   OPENLITESPEED_CATCH_ALL,
@@ -200,7 +201,9 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       "--network",
       id,
       "--network-alias",
-      "kamal-proxy",
+      appProxyAlias("shop"),
+      "--network-alias",
+      appProxyAlias("blog"),
       "-v",
       `${join(work, "app")}:/app:ro`,
       IMAGES.nodeAlpine.ref,

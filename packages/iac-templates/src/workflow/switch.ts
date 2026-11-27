@@ -991,8 +991,10 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     '  if [ -n "$_old_name" ]; then',
     `    ${kamalProxy(`deploy ${app} --target "\${_old_name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${plan.deploy.drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)} > /dev/null 2>&1 || true`,
     "  fi",
+    "else",
+    `  ${kamalProxy(`remove ${app}`)} > /dev/null 2>&1 || true`,
     "fi",
-    'if [ -n "${new:-}" ] && [ -n "${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi',
+    'if [ -n "${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi',
   ];
   const restoreFiles = (pad: string) =>
     [
@@ -1061,8 +1063,10 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
       ...restoreEdge("      "),
       `      ${sayFrom(plan, (from) => certbotFailed(hosts, `the server keeps ${from} as its proxy`))}`,
       '    elif [ "$first" -eq 1 ]; then',
+      ...restoreRoute.map((line) => `      ${line}`),
       `      echo ${shellQuote(certbotFailed(hosts, "the site stays on HTTP only"))}`,
       "    else",
+      ...restoreRoute.map((line) => `      ${line}`),
       `      echo ${shellQuote(certbotFailed(hosts, "the site keeps its current certificate (which may not cover every hostname)"))}`,
       "    fi",
       "    exit 1",
@@ -1075,9 +1079,11 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
       ...restoreEdge("      "),
       `      ${sayFrom(plan, (from) => switchFailed(plan, from))}`,
       `    elif [ "$first" -eq 0 ] && [ -f ${PREVIOUS_SITE} ]; then`,
+      ...restoreRoute.map((line) => `      ${line}`),
       `      cp ${PREVIOUS_SITE} ${site}`,
       `      ${RELOAD[proxy]} || true`,
       "    else",
+      ...restoreRoute.map((line) => `      ${line}`),
       `      cp edge/sites/${app}.http.${ext} ${site}`,
       `      ${RELOAD[proxy]} || true`,
       "    fi",
@@ -1614,8 +1620,10 @@ export function switchCommands(
     "install_edge() {",
     ...edgeCommands(plan, edgeFiles),
     "}",
-    // A move to the server keeps the app off its empty services until its data is copied.
-    ...(o.preview === true ? [] : moveWaiting(["install_edge"])),
+    // A move to the server keeps the app off its empty services until its data is copied;
+    // start per-app kamal-proxy (empty, no routes) before install_edge so OpenLiteSpeed resolves
+    // <app>-kamal-proxy on opscrew-edge during reload without starting `app`.
+    ...(o.preview === true ? [] : moveWaiting([...ENSURE_APP_PROXY, "install_edge"])),
     ...(o.preview === true ? [] : snapshotScheduleLines(plan, APP_SERVER)),
     ...(data ? snapshotStep(plan, appFolder(plan)) : []),
     ...release,

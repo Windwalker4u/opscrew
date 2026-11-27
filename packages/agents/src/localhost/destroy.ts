@@ -84,6 +84,9 @@ function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolea
       ? []
       : [
           `edge exec -T kamal-proxy kamal-proxy remove ${shellQuote(app)} < /dev/null > /dev/null 2>&1 || true`,
+          `rm -f ${SITE_FILES.map((ext) => `"$EDGE_DIR"/sites/${shellQuote(app)}.${ext}`).join(" ")}`,
+          `rm -rf "$EDGE_DIR"/tls/${shellQuote(app)}`,
+          `${RELOAD[edgeProxy(plan)]} > /dev/null 2>&1 || true`,
         ]),
     ...removeAll("ps -a", "rm -f", project),
     ...removeAll("network ls", "network rm", project),
@@ -95,11 +98,7 @@ function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolea
           ...(o.deleteData ? removeAll("volume ls", "volume rm", EDGE_PROJECT) : []),
           'rm -rf "$EDGE_DIR"',
         ]
-      : [
-          `rm -f ${SITE_FILES.map((ext) => `"$EDGE_DIR"/sites/${shellQuote(app)}.${ext}`).join(" ")}`,
-          `rm -rf "$EDGE_DIR"/tls/${shellQuote(app)}`,
-          `${RELOAD[edgeProxy(plan)]} > /dev/null 2>&1 || true`,
-        ]),
+      : []),
     `rm -rf "$APPS_DIR"/${shellQuote(app)}`,
   ].join("\n");
 }

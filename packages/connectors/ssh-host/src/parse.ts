@@ -370,9 +370,14 @@ export function majorOf(version: string | null): number {
 export function parseContainers(text: string): HostFacts["containers"] {
   return linesOf(text).flatMap((line) => {
     const fields = line.split("|");
-    if (fields.length < 5) return [];
+    if (fields.length < 4) return [];
     const [name, project] = fields;
     if (!name) return [];
+    if (fields.length === 4) {
+      const ports = fields[2] ?? "";
+      const state = fields[3] ?? "";
+      return [{ name, project: project ?? "", ports, running: state === "running" }];
+    }
     const networksRaw = fields[fields.length - 1] ?? "";
     const state = fields[fields.length - 2] ?? "";
     const ports = fields.slice(2, -2).join("|");

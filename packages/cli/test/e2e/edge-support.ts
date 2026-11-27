@@ -613,6 +613,9 @@ export class LocalEdge {
     const additions = path.join(this.dir, "sites", `${name}.additions`);
     if (app.additions !== undefined) await writeFile(additions, app.additions);
     else await rm(additions, { force: true });
+    // Start the app's per-app kamal-proxy on the edge network before the front proxy starts/reloads
+    // (matching production `switchCommands`, so nginx never negative-caches NXDOMAIN for `<app>-kamal-proxy`).
+    await this.ensureAppProxy(name);
     await this.edgeOk(`${commands.up} && ${commands.reload}`, "starting the edge and reloading it");
     if (certbot) {
       const certonly = required(commands.certonly, "certbot certonly");

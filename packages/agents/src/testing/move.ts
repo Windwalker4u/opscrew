@@ -664,8 +664,11 @@ function opOf(command: string): string {
   // The services start waiting until they run; the workers and cron start with the app.
   const services = /docker compose (stop -t \d+|up -d(?: --wait)?) ([a-z0-9 -]+)$/.exec(command);
   if (services) return `${services[1]?.startsWith("up") ? "start" : "stop"} ${services[2]}`;
-  // The app's web container by its name: the `app` alias may be another app's on a shared edge.
-  if (/--entrypoint wget (caddy|nginx|openlitespeed) /.test(command)) {
+  // The app's web container by its name on its isolated `<app>_internal` network.
+  if (
+    /--entrypoint wget (caddy|nginx|openlitespeed) /.test(command) ||
+    new RegExp(`--network ${APP}_internal --entrypoint wget `).test(command)
+  ) {
     const byName = `--filter label=com.docker.compose.project=${APP} --filter label=com.docker.compose.service=app `;
     return command.includes(byName) ? "health" : "health by the app alias";
   }

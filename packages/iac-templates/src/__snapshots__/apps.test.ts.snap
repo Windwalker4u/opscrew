@@ -1230,8 +1230,10 @@ jobs:
                 if [ -n "$_old_name" ]; then
                   docker compose exec -T kamal-proxy kamal-proxy deploy docs --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
                 fi
+              else
+                docker compose exec -T kamal-proxy kamal-proxy remove docs < /dev/null > /dev/null 2>&1 || true
               fi
-              if [ -n "\${new:-}" ] && [ -n "\${old:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
+              if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
               if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/docs.caddy; else rm -f "$EDGE_DIR"/sites/docs.caddy; fi
               if [ -f .additions.previous ]; then cp .additions.previous "$EDGE_DIR"/sites/docs.additions; else rm -f "$EDGE_DIR"/sites/docs.additions; fi
               for f in origin.pem origin.key pull.pem; do
@@ -1250,6 +1252,8 @@ jobs:
           ) 9> "$EDGE_DIR"/.lock
           }
           if [ "$MODE" = deploy ] && [ -f .move.waiting ] && [ "$(cat .move.waiting)" != copied ]; then
+            docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
+            docker compose up -d --no-deps kamal-proxy
             install_edge
             docker compose up --no-start --no-deps app
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

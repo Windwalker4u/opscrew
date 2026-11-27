@@ -11,6 +11,7 @@ import {
   replaceNames,
 } from "@opscrew/core";
 import {
+  APP_KAMAL_PROXY_SERVICE,
   APPS_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
@@ -452,6 +453,8 @@ async function dataMounts(
       `${COMPOSE_PROJECT_LABEL}=${project}`,
     ])) {
       const service = container.labels[COMPOSE_SERVICE_LABEL] ?? "";
+      // Each app's per-app kamal-proxy holds only ephemeral route state, never app data.
+      if (project === app && service === APP_KAMAL_PROXY_SERVICE) continue;
       const owner =
         project === MONITORING_PROJECT ? "monitoring" : services.has(service) ? service : "app";
       for (const mount of container.mounts) {
