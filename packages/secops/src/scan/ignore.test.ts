@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Finding } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
+import { GIT_PLATFORMS } from "@opscrew/git-platforms";
 import { ArtifactError } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderScanMarkdown, renderScanSummary } from "../report";
@@ -110,6 +111,11 @@ describe("BUILTIN_RULE_IDS", () => {
         for (const match of source.matchAll(/^ {4}id: "([a-z-]+)"/gm)) {
           found.add(`secrets/${match[1]}`);
         }
+      }
+    }
+    for (const platform of GIT_PLATFORMS) {
+      for (const rule of platform.credentials.tokenRules) {
+        found.add(`secrets/${rule.id}`);
       }
     }
     expect([...found].sort()).toEqual([...BUILTIN_RULE_IDS].sort());

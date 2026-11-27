@@ -17,7 +17,13 @@ import {
   type GitHubClient,
   parseGitHubRepo,
 } from "@opscrew/connector-github";
-import type { CredentialCheck, RegistrarAccountCheck, VpsProviderId } from "@opscrew/contracts";
+import type {
+  CredentialCheck,
+  GitPlatformDefinition,
+  GitPlatformRemote,
+  RegistrarAccountCheck,
+  VpsProviderId,
+} from "@opscrew/contracts";
 import {
   errorMessage,
   errorText,
@@ -27,6 +33,7 @@ import {
   lowerFirst,
   orText,
 } from "@opscrew/core";
+import { detectGitPlatform, GIT_PLATFORMS, gitPlatform } from "@opscrew/git-platforms";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { addressUpdaterName, CHECK_PAUSED_VARIABLE, usesTunnel } from "@opscrew/iac-templates";
 import {
@@ -175,8 +182,10 @@ const OFFLINE_NOTE = "offline: only checked that it is set, not that it works";
 const MODEL_HINT =
   "Set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN), OPENAI_API_KEY (with optional OPENAI_BASE_URL for compatible gateways), or route Claude through a cloud provider by setting CLAUDE_CODE_USE_BEDROCK=1, CLAUDE_CODE_USE_VERTEX=1 or CLAUDE_CODE_USE_FOUNDRY=1 with that provider's credentials.";
 
-const REMOTE_FIX =
-  "Create the repository on GitHub, run `git remote add origin https://github.com/<owner>/<repo>.git`, push, then run `opscrew init` again.";
+const remoteFixHint = (): string =>
+  GIT_PLATFORMS.map((platform) => platform.texts.remoteFixHint).join(" ");
+
+const githubRemoteFix = (): string => gitPlatform("github").texts.remoteFixHint;
 
 const SCANNERS = [
   { name: "gitleaks", url: "https://github.com/gitleaks/gitleaks#installing" },
@@ -250,6 +259,7 @@ interface RepoInfo {
   git?: string;
   isRepo: boolean;
   coordinates?: { owner: string; repo: string };
+  detected?: { platform: GitPlatformDefinition; remote: GitPlatformRemote };
 }
 
 /**
@@ -276,12 +286,12 @@ export async function runInitChecks(
   const registrarSecrets = OTHER_REGISTRAR_IDS.flatMap((id) => REGISTRAR_ENV[id]).filter(
     (name) => name !== "NAMECHEAP_API_USER",
   );
+  const gitPlatformTokens = GIT_PLATFORMS.flatMap((platform) => platform.credentials.envVars);
   for (const name of [
     ...providerTokens,
     "CLOUDFLARE_API_TOKEN",
     CLOUDFLARE_HOSTING.deployTokenVar,
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
+    ...gitPlatformTokens,
     PORTAINER_TOKEN_VAR,
     HOSTING_TOKEN_VAR,
     REGISTRY_TOKEN_VAR,
@@ -518,7 +528,13 @@ async function inspectRepository(
   if (!(await client.isRepo())) return { git, isRepo: false };
   const remote = await client.remoteUrl("origin");
   const coordinates = remote ? parseGitHubRepo(remote) : undefined;
-  return { git, isRepo: true, ...(coordinates ? { coordinates } : {}) };
+  const detected = remote ? detectGitPlatform(remote) : undefined;
+  return {
+    git,
+    isRepo: true,
+    ...(coordinates ? { coordinates } : {}),
+    ...(detected ? { detected } : {}),
+  };
 }
 
 function checkGit(git: string | undefined): CheckResult {
@@ -538,19 +554,20 @@ function checkRepository(info: RepoInfo): CheckResult {
     return {
       status: "fail",
       message: "This folder is not a git repository.",
-      fix: `Run \`git init\` and commit your code. ${REMOTE_FIX}`,
+      fix: `Run \`git init\` and commit your code. ${remoteFixHint()}`,
     };
   }
-  if (!info.coordinates) {
+  if (!info.detected) {
+    const names = orText(GIT_PLATFORMS.map((platform) => platform.displayName));
     return {
       status: "fail",
-      message: "This repository has no GitHub remote named origin.",
-      fix: REMOTE_FIX,
+      message: `This repository has no ${names} remote named origin.`,
+      fix: remoteFixHint(),
     };
   }
   return {
     status: "pass",
-    message: `origin is github.com/${info.coordinates.owner}/${info.coordinates.repo}.`,
+    message: `origin is ${info.detected.remote.host}/${info.detected.remote.fullPath}.`,
   };
 }
 
@@ -1275,7 +1292,7 @@ async function checkGithubPages(
       status: "fail",
       message:
         "There is no GitHub origin, and GitHub Pages publishes the site from the repository on GitHub.",
-      fix: REMOTE_FIX,
+      fix: githubRemoteFix(),
     };
   }
   const { owner, repo } = coordinates;
@@ -1586,7 +1603,7 @@ async function checkGitHub(
     return {
       status: "warn",
       message: `A GitHub token is available from ${source}, but push access was not checked because there is no GitHub origin.`,
-      fix: REMOTE_FIX,
+      fix: githubRemoteFix(),
     };
   }
   const name = `${coordinates.owner}/${coordinates.repo}`;
