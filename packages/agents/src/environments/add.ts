@@ -15,6 +15,7 @@ import {
   isServerlessTarget,
   likelyCloudflareZone,
   type ProjectFacts,
+  previewEnvironmentOf,
   type Question,
   type QuestionId,
   type Requirements,
@@ -54,7 +55,9 @@ import {
   gitClient,
   readOwnServer,
   readPortainerConnection,
+  readServerAddresses,
   type SharesReference,
+  sameIp,
   serverlessName,
 } from "../shared";
 import { inspectOwnServerForDesign } from "../shared/own-server-design";
@@ -65,9 +68,9 @@ import {
   remoteEnvironmentBranches,
   requireBranch,
 } from "./branches";
-import { environmentPaths } from "./paths";
+import { baseAppNameFrom, environmentPaths } from "./paths";
 import { addPreviewEnvironment } from "./previews";
-import { writeEnvironmentRequirements } from "./requirements";
+import { readEnvironmentRequirements, writeEnvironmentRequirements } from "./requirements";
 import { requireMachineFits, runnerChoice } from "./runner";
 import { followedBranches, matchedBranches } from "./setup";
 
@@ -208,7 +211,8 @@ function defaultHostname(
 ): string | undefined {
   const { domain } = base;
   if (domain === undefined) return undefined;
-  if (name === "prod" && prodPlan.dns.domain !== domain) return domain;
+  // For prod, never fabricate a `prod.` prefix: use the base domain only when free, else ask.
+  if (name === "prod") return prodPlan.dns.domain === domain ? undefined : domain;
   if (hidesNames(prodPlan)) {
     let part = "";
     for (let i = 0; i < RANDOM_LENGTH; i++) {
@@ -249,6 +253,7 @@ export function environmentQuestions(
   const interview = buildQuestions(facts, base);
   const asked = (id: QuestionId) => interview.find((q) => q.id === id) as Question;
   const provider = asked("provider");
+  const { default: _baseDomainDefault, ...domainQuestion } = asked("domain");
   const hostname = defaultHostname(name, base, prodPlan, context.randomInt ?? randomInt);
   return [
     {
@@ -271,7 +276,7 @@ export function environmentQuestions(
       default: "<1k",
     },
     {
-      ...asked("domain"),
+      ...domainQuestion,
       id: "domain",
       prompt: `Which hostname should the ${name} environment use?`,
       help: `Its own: no other environment may use it. Not used on this computer, which has its own .localhost address.${hostname === undefined ? "" : ` ${hostnameNote(prodPlan)}`}`,
@@ -587,7 +592,7 @@ async function addContext(deps: PhaseDeps): Promise<AddContext> {
     referencePaths === undefined
       ? undefined
       : await readOptionalArtifact("plan", referencePaths.files.plan);
-  if (referencePlan === undefined || referencePaths === undefined) {
+  if (referenceEnv === undefined || referencePlan === undefined || referencePaths === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The app has no environment yet, so there is no existing plan to add ${name} beside.`,
@@ -597,13 +602,7 @@ async function addContext(deps: PhaseDeps): Promise<AddContext> {
     );
   }
   const hasProd = referenceEnv === "prod";
-  const suffix = `-${referenceEnv}`;
-  const baseAppName =
-    hasProd ||
-    !referencePlan.app.name.endsWith(suffix) ||
-    referencePlan.app.name.length <= suffix.length
-      ? referencePlan.app.name
-      : referencePlan.app.name.slice(0, -suffix.length);
+  const baseAppName = baseAppNameFrom(referencePlan, referenceEnv);
   const appName = name === "prod" ? baseAppName : `${baseAppName}-${name}`;
   // No other app or environment of the repository may have its names (FR-1615).
   await requireUniqueNames(
@@ -757,7 +756,9 @@ export async function addEnvironment(
     requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined;
   const domain = requirements.domain === undefined ? {} : { domain: requirements.domain };
 
-  const prodOwn = requirements.provider === "own" ? await readOwnServer(prodPaths) : undefined;
+  // Never default prod to another environment's own server (it may host previews or test data).
+  const prodOwn =
+    requirements.provider === "own" && name !== "prod" ? await readOwnServer(prodPaths) : undefined;
   let ownServer: OwnServerAnswers | undefined;
   // On the server of another app (prod's by default when prod shares one): one more app there.
   let shared: { ref: SharesReference; first: FirstApp } | undefined;
@@ -779,6 +780,9 @@ export async function addEnvironment(
     const ref = await answersToSharedServer(server, context);
     if (ref !== undefined) shared = { ref, first: await firstApp(deps, ref) };
     else ownServer = answersToOwnServer(server, context);
+    if (name === "prod") {
+      await requireNotPreviewHost(paths, app, ownServer?.host, shared);
+    }
   }
   let portainer: PortainerAnswers | undefined;
   if (requirements.provider === "portainer") {
@@ -804,7 +808,22 @@ export async function addEnvironment(
     );
   }
   if (portainer !== undefined) await recordPortainerAnswers(paths, portainer);
+  // When adding prod beside existing environments, snapshot each existing environment's effective
+  // answers before rewriting opscrew/requirements.yaml, then re-write their overrides against the
+  // new base so their effective requirements stay unchanged.
+  const priorEnvironments =
+    name === "prod"
+      ? await Promise.all(
+          environments.map(async (envName) => {
+            const envPaths = environmentPaths(paths, envName);
+            return { envPaths, requirements: await readEnvironmentRequirements(envPaths) };
+          }),
+        )
+      : [];
   await writeEnvironmentRequirements(paths, requirements);
+  for (const prior of priorEnvironments) {
+    await writeEnvironmentRequirements(prior.envPaths, prior.requirements);
+  }
   deps.reporter.success(
     `Wrote ${toPosixRelative(paths.root, paths.files.requirements)}: ${name === "prod" ? "prod's answers" : `the ${name} environment's own answers`}.`,
   );
@@ -835,4 +854,50 @@ export async function addEnvironment(
     ...(branch !== undefined ? { branch } : {}),
   });
   return { requirements, design };
+}
+
+/**
+ * Refuses `opscrew env add prod` when the chosen own server (`host`, or `shared`'s login host) is
+ * already the server this app's previews run on (their own server, or another environment's server
+ * they share), preserving the invariant that previews never run beside `prod`.
+ */
+async function requireNotPreviewHost(
+  paths: ProjectPaths,
+  app: string,
+  host: string | undefined,
+  shared: { ref: SharesReference; first: FirstApp } | undefined,
+): Promise<void> {
+  const previewEnv = await previewEnvironmentOf(paths.root, paths.app);
+  if (previewEnv === undefined) return;
+  const previewPlan = await readOptionalArtifact(
+    "plan",
+    environmentPaths(paths, previewEnv).files.plan,
+  );
+  const hostEnv = previewPlan?.environment?.previews?.server?.environment ?? previewEnv;
+  const hostPaths = environmentPaths(paths, hostEnv);
+  const recordedOwn = await readOwnServer(hostPaths);
+  const recordedAddr = (await readServerAddresses(hostPaths)).deployment;
+  const candidates = [recordedOwn?.host, recordedAddr?.ipv4, recordedAddr?.ipv6].filter(
+    (value): value is string => value !== undefined,
+  );
+  const chosenHost = host ?? shared?.first.login.host;
+  const matchesHost =
+    chosenHost !== undefined &&
+    candidates.some(
+      (existing) =>
+        sameIp(existing, chosenHost) || existing.toLowerCase() === chosenHost.toLowerCase(),
+    );
+  const sharesPreviewHost =
+    shared !== undefined &&
+    shared.first.paths.root === paths.root &&
+    shared.first.paths.app === paths.app &&
+    shared.first.paths.environment === hostEnv;
+  if (!matchesHost && !sharesPreviewHost) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The previews of the ${previewEnv} environment run on ${hostEnv === previewEnv ? "that server" : `${hostEnv}'s server`}, and prod never runs beside previews. Nothing was changed.`,
+    {
+      hint: `Give prod a server of its own, or remove the previews first with \`opscrew env remove ${previewEnv}${app}\`, then run \`opscrew env add prod${app}\` again.`,
+    },
+  );
 }

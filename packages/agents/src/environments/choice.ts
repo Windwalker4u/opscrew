@@ -16,9 +16,10 @@ export interface EnvironmentChoiceDeps {
   /** Asks the user to pick one of `environments`; given only when a person can answer. */
   choose?: (environments: readonly string[]) => Promise<string>;
   /**
-   * When true (design commands only), accept a valid environment name (`"prod"` or
-   * `ENVIRONMENT_NAME_PATTERN`) even before its `plan.yaml` exists, so `design --env <name>` can
-   * bootstrap a first environment or add `prod` later.
+   * When true (design commands only), accept a valid missing environment name (`"prod"` or
+   * `ENVIRONMENT_NAME_PATTERN`) when the app has no environments yet (bootstrapping a first
+   * environment) or when `requested === "prod"` (adding `prod` later). Once an environment exists,
+   * adding a new non-`prod` environment still goes through `opscrew env add <name>`.
    */
   allowNew?: boolean | undefined;
 }
@@ -80,11 +81,24 @@ export async function resolveEnvironment(
   const { app, allowNew } = deps;
   if (requested !== undefined) {
     if (allowNew === true) {
-      if (requested === "prod" || ENVIRONMENT_NAME_PATTERN.test(requested)) return requested;
+      if (requested !== "prod" && !ENVIRONMENT_NAME_PATTERN.test(requested)) {
+        throw new OpsCrewError(
+          "INVALID_INPUT",
+          `Environment name "${requested}" is not valid: an environment's name ${ENVIRONMENT_NAME_MESSAGE}.`,
+          { hint: "Use lowercase letters, digits and hyphens, for example staging or dev." },
+        );
+      }
+      const existing = await environmentsOf(root, app);
+      if (existing.includes(requested) || existing.length === 0 || requested === "prod") {
+        return requested;
+      }
+      const appFlagText = app === undefined ? "" : ` --app ${app}`;
       throw new OpsCrewError(
         "INVALID_INPUT",
-        `Environment name "${requested}" is not valid: an environment's name ${ENVIRONMENT_NAME_MESSAGE}.`,
-        { hint: "Use lowercase letters, digits and hyphens, for example staging or dev." },
+        `The app${app === undefined ? "" : ` ${app}`} has no environment "${requested}". Its environments: ${existing.map((name) => `"${name}"`).join(", ")}.`,
+        {
+          hint: `Add it first with \`opscrew env add ${requested}${appFlagText}\`, or run \`opscrew env list${appFlagText}\` to see the app's environments.`,
+        },
       );
     }
     return known(root, requested, app);

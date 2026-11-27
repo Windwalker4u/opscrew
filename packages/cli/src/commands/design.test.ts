@@ -211,6 +211,11 @@ describe("opscrew design", () => {
       'The app has no environment "prod". Its environments: "staging".',
     );
 
+    // Once staging exists, design --env dev is refused (new non-prod envs go through `env add`).
+    const designNewDev = projectContext(project);
+    expect(await run(designNewDev, "design", "--env", "dev")).toBe(2);
+    expect(designNewDev.errors).toContain("opscrew env add dev");
+
     // env list shows staging cleanly.
     const listCtx = projectContext(project);
     expect(await run(listCtx, "env", "list")).toBe(0);

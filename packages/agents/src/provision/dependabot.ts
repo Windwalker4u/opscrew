@@ -11,6 +11,7 @@ import {
   type JavaBuild,
   type RenderedFile,
   renderDependabot,
+  runtimeDir,
 } from "@opscrew/iac-templates";
 import {
   appsOf,
@@ -26,6 +27,7 @@ import { findInApp } from "../adapt/build-files";
 import { appFlag } from "../apps/choice";
 import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
+import { environmentPaths } from "../environments/paths";
 
 /** The places Dependabot reads its configuration from. */
 const DEPENDABOT_FILES = [".github/dependabot.yml", ".github/dependabot.yaml"];
@@ -97,12 +99,16 @@ async function otherApps(root: string, plan: DeployPlan): Promise<DependabotApp[
     if (key === plan.app.key) continue;
     const paths = appPaths(repository, key);
     const analysis = await readOptionalArtifact("architecture", paths.files.architecture);
-    const prod = await readOptionalArtifact("plan", paths.files.plan);
-    if (analysis === undefined || prod === undefined) continue;
+    if (analysis === undefined) continue;
+    const envs = await environmentsOf(root, key);
+    const refEnv = envs.includes("prod") ? "prod" : envs[0];
+    if (refEnv === undefined) continue;
+    const refPlan = await readOptionalArtifact("plan", environmentPaths(paths, refEnv).files.plan);
+    if (refPlan === undefined) continue;
     others.push({
       facts: analysis.facts,
-      plan: prod,
-      javaBuild: await javaBuildOf(root, analysis.facts, prod),
+      plan: refPlan,
+      javaBuild: await javaBuildOf(root, analysis.facts, refPlan),
       environments: await watchedEnvironments(root, key),
     });
   }
@@ -119,10 +125,16 @@ function earlierFiles(content: string, apps: readonly DependabotApp[]): string[]
   for (const [, key = "", name] of content.matchAll(ENVIRONMENT_RUNTIME)) {
     named.set(key, [...(named.get(key) ?? []), name as string]);
   }
-  const listed = apps.map((app) => ({
-    ...app,
-    environments: ["prod", ...(named.get(app.plan.app.key ?? "") ?? [])],
-  }));
+  const lines = content.split("\n").map((line) => line.trim());
+  const listed = apps.map((app) => {
+    const prodDir = `/${runtimeDir({ app: app.plan.app })}`;
+    const hasProd = lines.includes(`- ${prodDir}`);
+    const extra = named.get(app.plan.app.key ?? "") ?? [];
+    return {
+      ...app,
+      environments: [...(hasProd ? ["prod"] : []), ...extra],
+    };
+  });
   const files: string[] = [];
   // Every combination, the current app's left out too: the file an app's provision wrote before
   // the current app was added does not list it.

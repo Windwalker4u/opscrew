@@ -147,6 +147,20 @@ describe.skipIf(GIT === undefined)("opscrew adapt", () => {
     expect(plan).toMatch(/status: applied/);
   });
 
+  it("defaults bare scripted adapt to prod on a multi-environment app (prod + staging)", async () => {
+    project = await planned();
+    expect(await run(projectContext(project), "env", "add", "staging", "--target", "hetzner")).toBe(
+      0,
+    );
+    const approvals = new ApproveAll();
+    const ctx = projectContext(project, {
+      services: { approvalHandler: approvals, runtime: new FakeAgentRuntime() },
+    });
+    expect(await run(ctx, "adapt", "--no-ai", "--no-push")).toBe(0);
+    const prodPlan = await readFile(path.join(project.root, "opscrew", "plan.yaml"), "utf8");
+    expect(prodPlan).toMatch(/status: applied/);
+  });
+
   it("commits without prompts in a non-interactive run with --yes", async () => {
     project = await planned();
     const ctx = projectContext(project);

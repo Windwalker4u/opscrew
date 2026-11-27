@@ -1169,4 +1169,68 @@ describe("addEnvironment with previews below the app's zone (US10)", () => {
     );
     expect(await nothingWritten(app.preview)).toBe(true);
   });
+
+  it("adds a preview environment on a staging-only app (without prod), and refuses env add prod on its server", async () => {
+    const cf = cloudflare();
+    const env = { CLOUDFLARE_API_TOKEN: TOKEN };
+    const staging = await createTestPhaseDeps({ environment: "staging", fetch: cf.fetch, env });
+    await writeArtifact("architecture", staging.paths.files.architecture, {
+      schemaVersion: 1,
+      generatedAt: "2026-11-05T10:00:00.000Z",
+      generator: { tool: "opscrew", version: "0.0.0-test" },
+      facts: nextPostgresFacts({ name: "shop" }),
+      summary: "A shop.",
+      risks: [],
+      aiEnriched: false,
+    });
+    await writeArtifact(
+      "requirements",
+      staging.paths.files.shared.requirementsBase,
+      makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }),
+    );
+    await runDesign(staging, { catalog: euCatalog() });
+
+    const preview = await createTestPhaseDeps({
+      root: staging.paths.root,
+      environment: "preview",
+      fetch: cf.fetch,
+      env,
+    });
+    const added = await addEnvironment(preview, {
+      previews: true,
+      answers: { ...PREVIEWS, provider: "hetzner" },
+      design: { catalog: euCatalog() },
+    });
+    expect(added.design.plan.app.name).toBe("shop-preview");
+    expect(added.design.plan.environment?.name).toBe("preview");
+    expect(added.design.plan.environment?.previews?.domain).toBe(PREVIEW_ZONE);
+
+    // Record the preview server's IP and verify `env add prod` refuses landing on it.
+    await updateServerAddresses(preview.paths, (current) => ({
+      ...current,
+      deployment: { ipv4: HOST_IPV4 },
+    }));
+    const prod = await createTestPhaseDeps({
+      root: staging.paths.root,
+      environment: "prod",
+      fetch: cf.fetch,
+      env,
+    });
+    const clash = await failure(
+      addEnvironment(prod, {
+        answers: {
+          provider: "own",
+          domain: "prod.example.com",
+          "server.host": HOST_IPV4,
+          "server.user": "root",
+          "server.port": "22",
+          "server.reachable": "yes",
+          "server.serve": "proxy",
+        },
+      }),
+    );
+    expect(clash.code).toBe("PHASE_PRECONDITION");
+    expect(clash.message).toContain("prod never runs beside previews");
+    expect(await exists(prod.paths.files.plan)).toBe(false);
+  });
 });

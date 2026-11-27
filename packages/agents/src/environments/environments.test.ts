@@ -125,7 +125,7 @@ describe("resolveEnvironment", () => {
     }
 
     // Once only staging exists: bare resolves to staging, --env prod is refused without allowNew,
-    // and --env prod is accepted with allowNew.
+    // --env prod is accepted with allowNew, and a new non-prod name (dev) is refused even with allowNew.
     const stagingOnly = await project({ staging: inEnvironment(prodPlan(), "staging") });
     expect(await resolveEnvironment(stagingOnly.paths.root, undefined)).toBe("staging");
     expect(await resolveEnvironment(stagingOnly.paths.root, "staging")).toBe("staging");
@@ -137,10 +137,21 @@ describe("resolveEnvironment", () => {
     expect(await resolveEnvironment(stagingOnly.paths.root, "prod", { allowNew: true })).toBe(
       "prod",
     );
+    const newDev = await failure(
+      resolveEnvironment(stagingOnly.paths.root, "dev", { allowNew: true }),
+    );
+    expect(newDev.code).toBe("INVALID_INPUT");
+    expect(newDev.hint).toContain("opscrew env add dev");
 
     const deps = await project({ prod: prodPlan() });
     expect(await resolveEnvironment(deps.paths.root, undefined)).toBe("prod");
     expect(await resolveEnvironment(deps.paths.root, "prod")).toBe("prod");
+    // Once prod exists, design --env staging is refused even with allowNew (use `env add`).
+    const newStaging = await failure(
+      resolveEnvironment(deps.paths.root, "staging", { allowNew: true }),
+    );
+    expect(newStaging.code).toBe("INVALID_INPUT");
+    expect(newStaging.hint).toContain("opscrew env add staging");
   });
 
   it("asks which one when there are several, and stops a script with the names and --env", async () => {
@@ -787,5 +798,25 @@ describe("the phases' paths per environment", () => {
     // A file the user changed stays theirs.
     await writeFile(file, `${renderDependabot(facts, prod).content}# mine\n`);
     expect((await dependabotStep(deps.paths.root, facts, staging)).action).toBe("keep");
+  });
+
+  it("includes a staging-only app in dependabot.yml and updates it when prod is added later", async () => {
+    const prod = prodPlan();
+    const staging = inEnvironment(prod, "staging");
+    const deps = await project({ staging });
+    const facts = makeFacts({ name: "shop" });
+    // First provision on a staging-only app writes dependabot.yml covering staging.
+    const initial = await dependabotStep(deps.paths.root, facts, staging);
+    expect(initial.action).toBe("write");
+    expect(initial.action === "write" && initial.file.content).toContain(
+      "- /opscrew/environments/staging/runtime\n",
+    );
+    const file = join(deps.paths.root, ".github/dependabot.yml");
+    await mkdir(dirname(file), { recursive: true });
+    if (initial.action === "write") await writeFile(file, initial.file.content);
+    // When prod is added later, dependabotStep recognizes OpsCrew's earlier staging-only file.
+    await writeArtifact("plan", deps.paths.files.plan, prod);
+    const afterProd = await dependabotStep(deps.paths.root, facts, prod);
+    expect(afterProd.action).toBe("write");
   });
 });

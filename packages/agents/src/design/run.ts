@@ -60,7 +60,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
-import { environmentPaths } from "../environments/paths";
+import { environmentPaths, referenceAppName } from "../environments/paths";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import {
   type SharedPartsSource,
@@ -1033,6 +1033,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const inputs = await readInputs(deps);
   const name = paths.environment;
   const prodPlan = name === "prod" ? undefined : await prodPlanOf(deps);
+  const baseApp = prodPlan?.app.name ?? (await referenceAppName(paths));
   // The plan without its placement, which design completes from the user's edits below.
   const read = await readPlanWithEdits(paths.files.plan).catch((error: unknown) => {
     // A placement field that is not valid stops design: the rest of the plan is the user's.
@@ -1235,8 +1236,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     const edited = keptEdits(
       shaped(
         name === "prod"
-          ? prodEnvironmentSettings(designed, named)
-          : environmentNames(designed, prodPlan, name, named),
+          ? prodEnvironmentSettings(designed, named, previous === undefined ? baseApp : undefined)
+          : environmentNames(designed, baseApp, name, named),
       ),
       previous,
       edits,
@@ -1614,11 +1615,22 @@ function samePlan(a: DeployPlan, b: DeployPlan): boolean {
 function prodEnvironmentSettings(
   plan: DeployPlan,
   options: Pick<RunDesignOptions, "environment" | "branch">,
+  baseApp?: string | undefined,
 ): DeployPlan {
+  const renamed =
+    baseApp === undefined || baseApp === plan.app.name
+      ? plan
+      : {
+          ...plan,
+          app: { ...plan.app, name: baseApp },
+          ...(plan.target.provider === "cloudflare-workers"
+            ? { target: { ...plan.target, worker: baseApp } }
+            : {}),
+        };
   const next =
     options.branch === undefined
-      ? plan
-      : { ...plan, cicd: { ...plan.cicd, branch: options.branch } };
+      ? renamed
+      : { ...renamed, cicd: { ...renamed.cicd, branch: options.branch } };
   const env = options.environment;
   if (env === undefined) return next;
   const hasSettings =
@@ -1636,20 +1648,20 @@ function prodEnvironmentSettings(
 
 /**
  * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>` (taking the
- * base app name from `prodPlan` when it exists, else `plan.app.name`), its own workflow and
- * infrastructure root (plan-schema's `workflowPathFor` and `infraDirFor`, with a further app's
- * key), and its `environment` block (with the deploy source and runner `opscrew env add` chose,
- * defaulting to `{ from: "main" }`) and branch (`--branch`). On Cloudflare's hosting its Worker
- * is named like its app. An earlier plan's root, block and branch are kept over these
- * (`keepPlanSettings`).
+ * base app name from `baseApp` when another environment exists, else `plan.app.name`), its own
+ * workflow and infrastructure root (plan-schema's `workflowPathFor` and `infraDirFor`, with a
+ * further app's key), and its `environment` block (with the deploy source and runner
+ * `opscrew env add` chose, defaulting to `{ from: "main" }`) and branch (`--branch`). On
+ * Cloudflare's hosting its Worker is named like its app. An earlier plan's root, block and branch
+ * are kept over these (`keepPlanSettings`).
  */
 function environmentNames(
   plan: DeployPlan,
-  prodPlan: DeployPlan | undefined,
+  baseApp: string | undefined,
   name: string,
   options: Pick<RunDesignOptions, "environment" | "branch">,
 ): DeployPlan {
-  const app = `${prodPlan?.app.name ?? plan.app.name}-${name}`;
+  const app = `${baseApp ?? plan.app.name}-${name}`;
   return {
     ...plan,
     environment: EnvironmentSchema.parse({

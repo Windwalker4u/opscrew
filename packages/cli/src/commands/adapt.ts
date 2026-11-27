@@ -1,7 +1,9 @@
 import { type AdaptResult, runAdapt } from "@opscrew/agents";
+import { environmentsOf } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, MODEL_SETUP_HINT, modelOption, servicesOf } from "../deps";
+import { resolveCliApp } from "../ui/app";
 import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printCosts, printNextSteps } from "../ui/output";
 
@@ -60,7 +62,15 @@ export function register(program: Command, ctx: CliContext): void {
     );
   addEnvOption(command).action(async (flags: AdaptFlags) => {
     const model = modelOption(ctx, flags.model);
-    const { app, name, flag } = await chooseEnvironment(ctx, flags, "adapt");
+    const appKey = await resolveCliApp(ctx, flags.app, "adapt");
+    const requested = flags.env?.trim() || undefined;
+    // Keep bare `opscrew adapt` targeting `prod` whenever `prod` exists (including multi-env apps),
+    // and only fall back to another environment when `prod` does not exist yet.
+    const env =
+      requested === undefined && (await environmentsOf(ctx.cwd, appKey)).includes("prod")
+        ? "prod"
+        : requested;
+    const { app, name, flag } = await chooseEnvironment(ctx, { ...flags, env }, "adapt");
     const deps = createPhaseDeps(ctx, {
       ai: flags.ai,
       app,

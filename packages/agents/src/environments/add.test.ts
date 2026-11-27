@@ -42,6 +42,7 @@ import {
   type EnvironmentQuestion,
   environmentQuestions,
   listEnvironments,
+  readEnvironmentRequirements,
   removeEnvironment,
   setEnvironment,
   sharedPartsDiffer,
@@ -856,12 +857,27 @@ describe("design per environment", () => {
     expect(addedDev.design.plan.app.name).toBe("shop-dev");
     expect(dev.reporter.text()).toContain("Next: run `opscrew provision --env dev`.");
 
-    // Adding prod later via env add prod (promoted from staging) creates opscrew/plan.yaml
-    // with base app name "shop" and no environment.name, and keeps opscrew/requirements.yaml valid.
+    // Adding prod later via env add prod (promoted from staging) with a different domain and
+    // provider creates opscrew/plan.yaml with base app name "shop" and no environment.name,
+    // keeps opscrew/requirements.yaml valid, and preserves staging's effective requirements.
+    const stagingReqsBefore = await readEnvironmentRequirements(staging.paths);
+    const stagingPlanBefore = await readArtifact("plan", staging.paths.files.plan);
+    const prodQuestions = environmentQuestions(
+      "prod",
+      {
+        prodPlan: stagingPlanBefore,
+        base: stagingReqsBefore,
+        environments: ["staging", "dev"],
+      },
+      nextPostgresFacts({ name: "shop" }),
+    );
+    // When staging already uses base.domain, prod's hostname question has no fabricated `prod.` default.
+    expect(prodQuestions.find((q) => q.id === "domain")?.default).toBeUndefined();
+
     const prod = await createTestPhaseDeps({ root: staging.paths.root, environment: "prod" });
     const addedProd = await addEnvironment(prod, {
-      answers: { provider: "hetzner", domain: "prod.example.com", from: "staging" },
-      design: { catalog: euCatalog() },
+      answers: { provider: "digitalocean", domain: "prod.example.com", from: "staging" },
+      design: {},
     });
     expect(addedProd.design.plan.app.name).toBe("shop");
     expect(addedProd.design.plan.environment?.name).toBeUndefined();
@@ -873,10 +889,46 @@ describe("design per environment", () => {
     expect(addedProd.design.plan.cicd.workflowPath).toBe(".github/workflows/opscrew-deploy.yml");
     expect(await readArtifact("requirements", prod.paths.files.requirements)).toMatchObject({
       domain: "prod.example.com",
-      provider: "hetzner",
+      provider: "digitalocean",
     });
+    // Staging's effective answers are completely unchanged (same domain, provider, region).
+    const stagingReqsAfter = await readEnvironmentRequirements(staging.paths);
+    expect(stagingReqsAfter).toMatchObject({
+      domain: stagingReqsBefore.domain,
+      provider: stagingReqsBefore.provider,
+      region: stagingReqsBefore.region,
+      expectedMonthlyUsers: stagingReqsBefore.expectedMonthlyUsers,
+    });
+    // Re-designing staging succeeds with no hostname clash or accidental switch to prod's provider.
+    const stagingRedesign = await runDesign(staging, { catalog: euCatalog() });
+    expect(stagingRedesign.plan.target.provider).toBe("hetzner");
+    expect(stagingRedesign.plan.dns.domain).toBe(DOMAIN);
     // Now that prod exists, adding prod a second time is refused.
     expect((await failure(addEnvironment(prod))).code).toBe("INVALID_INPUT");
+
+    // Shared base-app-name helper: renaming shop-staging to storefront-staging propagates to dev.
+    const renamed = await createTestPhaseDeps({ environment: "staging" });
+    await writeArtifact(
+      "architecture",
+      renamed.paths.files.architecture,
+      architecture(nextPostgresFacts({ name: "shop" })),
+    );
+    await writeArtifact(
+      "requirements",
+      renamed.paths.files.shared.requirementsBase,
+      makeRequirements(),
+    );
+    const firstStaging = await runDesign(renamed, { catalog: euCatalog() });
+    await writeArtifact("plan", renamed.paths.files.plan, {
+      ...firstStaging.plan,
+      app: { ...firstStaging.plan.app, name: "storefront-staging" },
+    });
+    const renamedDev = await createTestPhaseDeps({ root: renamed.paths.root, environment: "dev" });
+    const addedRenamedDev = await addEnvironment(renamedDev, {
+      answers: { provider: "hetzner" },
+      design: { catalog: euCatalog() },
+    });
+    expect(addedRenamedDev.design.plan.app.name).toBe("storefront-dev");
 
     // On a fresh staging-only app, removing staging succeeds cleanly without prod.
     const solo = await createTestPhaseDeps({ environment: "staging" });

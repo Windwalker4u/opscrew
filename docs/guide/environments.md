@@ -15,11 +15,27 @@ its own address, before anything is merged. See [Previews](previews.md). Preview
 domain of their own, unless you choose to run them on your dev or staging server or below your
 app's domain: see [Fewer servers or one domain](previews.md#fewer-servers-or-one-domain).
 
-## Prod is the default environment
+## Prod is the default environment (or start with another first)
 
-Every app starts with one environment, `prod`. Its files are `opscrew/plan.yaml`, `.opscrew/` and
-`~/.opscrew/projects/<project>/`. While prod is the only environment, a command without `--env`
-acts on prod. With several environments, it asks which one, or stops in a script.
+By default an app starts with `prod` (`npx opscrew design`, or explicitly
+`npx opscrew design --env prod`). Its files are `opscrew/plan.yaml`, `.opscrew/` and
+`~/.opscrew/projects/<project>/`.
+
+You can also start with a non-prod environment first, such as `staging` or `dev`, before `prod`
+exists:
+
+```bash
+npx opscrew design --env staging
+npx opscrew adapt
+npx opscrew provision
+```
+
+That writes `opscrew/environments/staging/plan.yaml` (named `<app>-staging`), and while `staging`
+is the app's only environment, bare commands without `--env` act on `staging`. Later, add `prod`
+with `npx opscrew env add prod` (or `npx opscrew design --env prod`), or add more environments with
+`npx opscrew env add <name>`. Once an environment exists, adding another non-prod environment goes
+through `opscrew env add <name>`. With several environments, a command without `--env` asks which
+one (or stops in a script), except `opscrew adapt`, which defaults to `prod` once `prod` exists.
 
 ## Adding an environment
 
