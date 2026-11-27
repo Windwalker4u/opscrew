@@ -611,7 +611,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 
 ### The core lead's review of Kamatera's pull request ([#55](https://github.com/opscrew-hub/opscrew/pull/55))
 
-- [ ] T3534 [US6] An existing server's own firewall never drifts from the plan in silence (review points 1 and 2)
+- [x] T3534 [US6] An existing server's own firewall never drifts from the plan in silence (review points 1 and 2)
   - Owns: `packages/secops/src/policies/**`, `packages/agents/src/provision/**` (not `plan-json.ts`),
     `packages/agents/src/retarget/**`, `packages/agents/src/secure/server-firewall.ts` (and their tests)
   - Reads: ADR 0029 D13; `packages/iac-templates/shared/server-firewall.sh.tftpl` (its `ssh_sources`,
@@ -632,7 +632,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
     - Every other provider's results and texts are unchanged.
   - Effort: high
 
-- [ ] T3535 [P] [US6] The server firewall's script and Kamatera's module harden (review points 3 to 8)
+- [x] T3535 [P] [US6] The server firewall's script and Kamatera's module harden (review points 3 to 8)
   - Owns: `packages/iac-templates/shared/**`, `packages/iac-templates/src/**` (and snapshots),
     `packages/providers/kamatera/**`
   - Accept:
@@ -652,7 +652,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
       them).
   - Effort: high
 
-- [ ] T3536 [P] [US6] Kamatera's generated root password never leaves the state (review point 9)
+- [x] T3536 [P] [US6] Kamatera's generated root password never leaves the state (review point 9)
   - Owns: `packages/agents/src/provision/plan-json.ts` (and its test), `packages/cli/test/live/kamatera.test.ts`
   - Accept:
     - `ALWAYS_MASKED` masks `kamatera_server`'s `generated_password` in resource changes, drift and
@@ -662,7 +662,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
       prompts) and that each sees only the masked one; the task's report names the code for it.
   - Effort: medium
 
-- [ ] T3537 [US6] Kamatera's `findAppServers` matches only the plan's server names (review point 7,
+- [x] T3537 [US6] Kamatera's `findAppServers` matches only the plan's server names (review point 7,
   [#56](https://github.com/opscrew-hub/opscrew/issues/56))
   - Owns: `packages/contracts/src/connector.ts`, `packages/providers/kamatera/src/servers.ts` (and
     tests), the agents' callers of `findAppServers` (`destroy/`, `provision/plan-apply.ts`,
