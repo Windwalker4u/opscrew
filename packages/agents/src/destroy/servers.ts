@@ -22,6 +22,8 @@ import {
   isCloudTarget,
   servicesOn,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { publicSshHostPlan } from "../network";
 import { providerProfile } from "../providers";
@@ -35,6 +37,7 @@ import {
 import { networkSshPort, reopenedPlan } from "../shared/server-address";
 import { readServerAddresses, updateServerAddresses } from "../shared/server-record";
 import {
+  cloudServerName,
   type ExtraCloudServer,
   extraCloudServers,
   hasExtraServers,
@@ -66,34 +69,156 @@ export function extraOwnServers(plan: DeployPlan): string[] {
   );
 }
 
-/** The plan's extra servers OpsCrew created whose provider has delete protection (Hetzner). */
-export function extraProtectedServers(plan: DeployPlan): ExtraCloudServer[] {
-  return extraCloudServers(plan).filter(
+const PlanBeforeSchema = z.looseObject({
+  resource_changes: z
+    .array(
+      z.looseObject({
+        address: z.string().optional(),
+        change: z.looseObject({ before: z.unknown().optional() }).optional(),
+      }),
+    )
+    .optional(),
+});
+
+const BeforeServerSchema = z.looseObject({
+  name: z.string().trim().min(1).optional(),
+  display_name: z.string().trim().min(1).optional(),
+  backups: z.boolean().optional(),
+});
+
+/** The cloud provider that owns Terraform server resource type `type`, or `undefined`. */
+function cloudProviderOfType(type: string): CloudProvider | undefined {
+  const id = CLOUD_PROVIDERS.find((provider) => provider.terraform.serverResourceType === type)?.id;
+  return id !== undefined && isCloudProvider(id) ? id : undefined;
+}
+
+/**
+ * Extra cloud servers that the destroy preview deletes from Terraform state even though they were
+ * already removed from `plan.yaml` (issue #57). Ordered as they appear in `preview.changes`.
+ */
+function droppedExtraServers(
+  plan: Pick<DeployPlan, "app" | "servers">,
+  preview: { changes: readonly ResourceChange[]; planJson?: unknown },
+): ExtraCloudServer[] {
+  const planned = new Set(extraCloudServers(plan).map((server) => server.name));
+  const seen = new Set<string>();
+  const json = PlanBeforeSchema.safeParse(preview.planJson);
+  const byAddress = new Map(
+    json.success
+      ? (json.data.resource_changes ?? []).flatMap((rc) =>
+          rc.address !== undefined ? [[rc.address, rc.change?.before] as const] : [],
+        )
+      : [],
+  );
+  const dropped: ExtraCloudServer[] = [];
+  for (const change of preview.changes) {
+    if (change.action !== "delete" && change.action !== "replace") continue;
+    const provider = cloudProviderOfType(change.type);
+    if (provider === undefined) continue;
+    const match = /^module\.server_([^.]+)\./.exec(change.address);
+    const serverName = match?.[1];
+    if (
+      serverName === undefined ||
+      serverName === "previous" ||
+      planned.has(serverName) ||
+      seen.has(serverName)
+    ) {
+      continue;
+    }
+    seen.add(serverName);
+    const before = BeforeServerSchema.safeParse(byAddress.get(change.address));
+    const resource =
+      (before.success ? (before.data.name ?? before.data.display_name) : undefined) ??
+      cloudServerName(plan, serverName);
+    const backups = before.success ? (before.data.backups ?? false) : false;
+    dropped.push({
+      name: serverName,
+      provider,
+      resource,
+      module: `module.server_${serverName}.`,
+      backups,
+    });
+  }
+  return dropped;
+}
+
+/** Extra servers from `snapshots` that are in state but no longer listed in `plan.yaml`. */
+function droppedSnapshots(
+  plan: Pick<DeployPlan, "app" | "servers">,
+  snapshots: readonly ServerSnapshot[] | undefined,
+): ServerSnapshot[] {
+  if (snapshots === undefined) return [];
+  const planned = new Set(extraCloudServers(plan).map((server) => server.name));
+  return snapshots.filter(
+    (snapshot) =>
+      snapshot.server !== APP_SERVER && snapshot.inState && !planned.has(snapshot.server),
+  );
+}
+
+/** The plan's extra servers OpsCrew created whose provider has delete protection (Hetzner), plus any dropped from `plan.yaml` still in state. */
+export function extraProtectedServers(
+  plan: DeployPlan,
+  snapshots?: readonly ServerSnapshot[],
+): ExtraCloudServer[] {
+  const fromPlan = extraCloudServers(plan).filter(
     (server) => providerProfile(server.provider).deleteProtection,
   );
+  const fromState = droppedSnapshots(plan, snapshots)
+    .filter((snapshot) => providerProfile(snapshot.provider).deleteProtection)
+    .map(
+      (snapshot): ExtraCloudServer => ({
+        name: snapshot.server,
+        provider: snapshot.provider,
+        resource: snapshot.name ?? cloudServerName(plan, snapshot.server),
+        module: snapshot.module,
+        backups: snapshot.data.backups,
+      }),
+    );
+  return [...fromPlan, ...fromState];
 }
 
 /**
  * `-var <name>_delete_protection=false` for each extra Hetzner server (only Hetzner has delete
- * protection), which the protection-lifting plan and the teardown pass.
+ * protection), including any dropped from `plan.yaml` still deleted by the state, which the
+ * protection-lifting plan and the teardown pass.
  */
-export function extraProtectionVars(plan: DeployPlan): Record<string, string> {
+export function extraProtectionVars(
+  plan: DeployPlan,
+  snapshots?: readonly ServerSnapshot[],
+): Record<string, string> {
   return Object.fromEntries(
-    extraProtectedServers(plan).map((server) => [`${server.name}_delete_protection`, "false"]),
+    extraProtectedServers(plan, snapshots).map((server) => [
+      `${server.name}_delete_protection`,
+      "false",
+    ]),
   );
 }
 
 /**
  * What remains of each extra server OpsCrew created once the teardown deleted it: its snapshot
  * (`snapshotIds`, by server name), the snapshots taken earlier (`earlier`, by server name) and its
- * kept backups, each by its name at the provider.
+ * kept backups, each by its name at the provider. Includes extra servers dropped from `plan.yaml`
+ * that were still deleted from the state (`snapshots`).
  */
 export function extraServersRemaining(
   plan: DeployPlan,
   snapshotIds: Readonly<Record<string, string | undefined>>,
   earlier: EarlierSnapshots,
+  snapshots?: readonly ServerSnapshot[],
 ): string[] {
-  return extraCloudServers(plan).flatMap((server) =>
+  const servers: ExtraCloudServer[] = [
+    ...extraCloudServers(plan),
+    ...droppedSnapshots(plan, snapshots).map(
+      (snapshot): ExtraCloudServer => ({
+        name: snapshot.server,
+        provider: snapshot.provider,
+        resource: snapshot.name ?? cloudServerName(plan, snapshot.server),
+        module: snapshot.module,
+        backups: snapshot.data.backups,
+      }),
+    ),
+  ];
+  return servers.flatMap((server) =>
     remainingAfterDeletion({
       provider: server.provider,
       app: server.resource,
@@ -188,8 +313,11 @@ export interface ServerSnapshot {
 
 /**
  * Each server OpsCrew created whose module the preview deletes, in plan order (the app's first,
- * on a cloud target), with whether it gets a snapshot first: `choice`, or with `auto` when the
- * services placed on it keep data (the app's also its SQLite database) or its backups are on.
+ * on a cloud target, then the plan's extra cloud servers, then any extra cloud server already
+ * removed from `plan.yaml` that the preview still deletes from Terraform state), with whether it
+ * gets a snapshot first: `choice`, or with `auto` when the services placed on it keep data (the
+ * app's also its SQLite database), its backups are on, or it was dropped from `plan.yaml` (so
+ * OpsCrew cannot tell from `plan.yaml` what data remains on it and fails safe).
  */
 export function serverSnapshots(
   plan: DeployPlan,
@@ -205,6 +333,7 @@ export function serverSnapshots(
           module: "module.server.",
           backups: target.backups,
           storage: plan.storage,
+          dropped: false,
         },
       ]
     : [];
@@ -215,23 +344,37 @@ export function serverSnapshots(
     module: server.module,
     backups: server.backups,
     storage: undefined,
+    dropped: false,
   }));
-  return [...app, ...extras].map(({ backups, storage, ...server }) => {
-    const { module } = server;
-    const changes = preview.changes.filter((change) => change.address.startsWith(module));
-    const inState = deletesServer(changes, server.provider);
-    const data = {
-      serverData: serverData({ services: servicesOn(plan, server.server), storage }).length > 0,
-      backups,
-    };
-    return {
-      ...server,
-      inState,
-      ids: serverIdsInPlan(preview.planJson, server.provider, module),
-      data,
-      wanted: inState && snapshotsOutlive(server.provider) && snapshotWanted(choice, data),
-    };
-  });
+  const dropped = droppedExtraServers(plan, preview).map((server) => ({
+    server: server.name,
+    provider: server.provider,
+    name: server.resource,
+    module: server.module,
+    backups: server.backups,
+    storage: undefined,
+    dropped: true,
+  }));
+  return [...app, ...extras, ...dropped].map(
+    ({ backups, storage, dropped: isDropped, ...server }) => {
+      const { module } = server;
+      const changes = preview.changes.filter((change) => change.address.startsWith(module));
+      const inState = deletesServer(changes, server.provider);
+      const data = {
+        serverData:
+          isDropped ||
+          serverData({ services: servicesOn(plan, server.server), storage }).length > 0,
+        backups,
+      };
+      return {
+        ...server,
+        inState,
+        ids: serverIdsInPlan(preview.planJson, server.provider, module),
+        data,
+        wanted: inState && snapshotsOutlive(server.provider) && snapshotWanted(choice, data),
+      };
+    },
+  );
 }
 
 /**
@@ -267,7 +410,8 @@ export async function snapshotServers(
  * a snapshot first (`snapshots`).
  */
 export function serverLines(plan: DeployPlan, snapshots: readonly ServerSnapshot[] = []): string[] {
-  if (!hasExtraServers(plan)) return [];
+  const dropped = droppedSnapshots(plan, snapshots);
+  if (!hasExtraServers(plan) && dropped.length === 0) return [];
   const snapshot = (server: string) =>
     snapshots.some((s) => s.server === server && s.wanted)
       ? "a snapshot of it is taken first"
@@ -289,12 +433,18 @@ export function serverLines(plan: DeployPlan, snapshots: readonly ServerSnapshot
       const texts = destroyTexts(server.provider);
       return `Server ${name}: the ${texts.displayName} ${texts.noun} ${server.resource} ${goes(server.provider)}${dataOn(plan, name)}; ${snapshot(name)}.`;
     }),
+    ...dropped.map((server) => {
+      const texts = destroyTexts(server.provider);
+      const resource = server.name ?? cloudServerName(plan, server.server);
+      return `Server ${server.server} (removed from plan.yaml, still in the state): the ${texts.displayName} ${texts.noun} ${resource} ${goes(server.provider)}; ${snapshot(server.server)}.`;
+    }),
   ];
 }
 
 /**
  * After the app's typed name, each extra cloud server the confirmed teardown deletes (its module
- * in `preview.resources`) needs its own typed name, its name at the provider (`<app>-<name>`):
+ * in `preview.resources`, including any server dropped from `plan.yaml` while still in the state)
+ * needs its own typed name, its name at the provider (`<app>-<name>` or the name in the state):
  * `confirm` is asked again with that name and `server` set. A name not typed stops with nothing
  * changed.
  */
@@ -303,8 +453,20 @@ export async function confirmExtraServers(
   plan: DeployPlan,
   preview: DestroyPreview,
   confirm: DestroyOptions["confirm"],
+  snapshots?: readonly ServerSnapshot[],
 ): Promise<void> {
-  for (const server of extraCloudServers(plan)) {
+  const fromPlan = extraCloudServers(plan);
+  const fromState: ExtraCloudServer[] =
+    snapshots !== undefined
+      ? droppedSnapshots(plan, snapshots).map((snapshot) => ({
+          name: snapshot.server,
+          provider: snapshot.provider,
+          resource: snapshot.name ?? cloudServerName(plan, snapshot.server),
+          module: snapshot.module,
+          backups: snapshot.data.backups,
+        }))
+      : droppedExtraServers(plan, { changes: preview.resources });
+  for (const server of [...fromPlan, ...fromState]) {
     if (!preview.resources.some((change) => change.address.startsWith(server.module))) continue;
     const texts = destroyTexts(server.provider);
     await confirmDeletion(
@@ -510,8 +672,17 @@ export async function removeExtraOwnServers(
  * record and their host keys OpsCrew's known_hosts. The user's own servers keep their logins, as
  * the app's own server does.
  */
-export async function forgetExtraCloudServers(deps: PhaseDeps, plan: DeployPlan): Promise<void> {
-  const names = extraCloudServers(plan).map((server) => server.name);
+export async function forgetExtraCloudServers(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  snapshots?: readonly ServerSnapshot[],
+): Promise<void> {
+  const names = [
+    ...new Set([
+      ...extraCloudServers(plan).map((server) => server.name),
+      ...droppedSnapshots(plan, snapshots).map((snapshot) => snapshot.server),
+    ]),
+  ];
   if (names.length === 0) return;
   const record = await readServerAddresses(deps.paths);
   const addresses = names.flatMap((name) => {

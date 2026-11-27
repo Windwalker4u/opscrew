@@ -772,6 +772,11 @@ async function destroyDeployment(
   // and whether it gets a snapshot first; the app's server is the one under module.server.
   const { serverIds } = preview;
   const snapshots = serverSnapshots(plan, preview, options.snapshot);
+  const allProtectionVars = {
+    ...protectionVars,
+    ...extraProtectionVars(plan, snapshots),
+  };
+  if (Object.keys(allProtectionVars).length > 0) ctx.vars = allProtectionVars;
   const serverInState = snapshots.some((s) => s.server === APP_SERVER && s.inState);
   // The servers whose provider cancels them at the end of their term instead of deleting them.
   const cancelling = cancelledServers(snapshots);
@@ -842,9 +847,9 @@ async function destroyDeployment(
     ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
     ...(servers.length > 0 ? { servers } : {}),
   };
-  // The app's name, then each extra cloud server's own name.
+  // The app's name, then each extra cloud server's own name (including any dropped from plan.yaml still in state).
   await confirmDeletion(session, confirmation, options.confirm)
-    .then(() => confirmExtraServers(session, plan, confirmation, options.confirm))
+    .then(() => confirmExtraServers(session, plan, confirmation, options.confirm, snapshots))
     .catch(async (error: unknown) => {
       if (bucket !== undefined) await discardBucketDeletion(bucket);
       throw error;
@@ -893,10 +898,10 @@ async function destroyDeployment(
 
     // 6. Lift delete protection (only where the provider has it), on every Hetzner server
     protection = await liftProtection(session, {
-      vars: protectionVars,
+      vars: allProtectionVars,
       names: [
         ...(profile.deleteProtection ? [name] : []),
-        ...extraProtectedServers(plan).map((server) => server.resource),
+        ...extraProtectedServers(plan, snapshots).map((server) => server.resource),
       ],
       serverInState: deletesProtectedServer(preview.changes),
       ...(snapshotId !== undefined ? { snapshotId } : {}),
@@ -941,7 +946,7 @@ async function destroyDeployment(
   if ((await forgetHostKeys(deps, [address?.ipv4, address?.ipv6])) > 0) {
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
-  await forgetExtraCloudServers(deps, plan);
+  await forgetExtraCloudServers(deps, plan, snapshots);
   const approvals = [
     ...machines.map((outcome) => outcome.approval),
     ...monitoringApprovals,
@@ -957,7 +962,11 @@ async function destroyDeployment(
     forgetAddress: true,
   });
   await removeSnapshotRecord(deps, "destroy");
-  for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
+  const snapshotNames = new Set([
+    ...extras.map((server) => server.resource),
+    ...snapshots.flatMap((s) => (s.server !== APP_SERVER && s.name !== undefined ? [s.name] : [])),
+  ]);
+  for (const resource of snapshotNames) await removeSnapshotRecord(deps, "destroy", resource);
   await deps.audit.append({
     kind: "phase",
     actor: "opscrew",
@@ -980,7 +989,7 @@ async function destroyDeployment(
     files: await deploymentFiles(deps, plan),
   });
   // The extra servers' snapshots and kept backups, each by its name at the provider.
-  remaining.push(...extraServersRemaining(plan, snapshotIds, earlier));
+  remaining.push(...extraServersRemaining(plan, snapshotIds, earlier, snapshots));
   remaining.push(...bucketStillListed(bucketDeleted));
   // The cancelled servers, billed until their contracts end.
   remaining.unshift(...(cancelled ?? []));

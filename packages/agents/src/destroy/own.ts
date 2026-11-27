@@ -854,9 +854,9 @@ export async function destroyOwnServer(
       ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
       ...(servers.length > 0 ? { servers } : {}),
     };
-    // The app's name, then each extra cloud server's own name.
+    // The app's name, then each extra cloud server's own name (including any dropped from plan.yaml still in state).
     await confirmDeletion(scope, confirmation, options.confirm)
-      .then(() => confirmExtraServers(scope, plan, confirmation, options.confirm))
+      .then(() => confirmExtraServers(scope, plan, confirmation, options.confirm, snapshots))
       .catch(async (error: unknown) => {
         if (bucket !== undefined) await discardBucketDeletion(bucket);
         throw error;
@@ -953,10 +953,11 @@ export async function destroyOwnServer(
       });
     }
     // The extra Hetzner servers' delete protection, lifted with a plan of its own first.
-    if (iac !== undefined && Object.keys(vars).length > 0) {
-      const names = extraProtectedServers(given).map((server) => server.resource);
+    const allProtectionVars = extraProtectionVars(given, snapshots);
+    if (iac !== undefined && Object.keys(allProtectionVars).length > 0) {
+      const names = extraProtectedServers(given, snapshots).map((server) => server.resource);
       const protection = await liftProtection(iac, {
-        vars,
+        vars: allProtectionVars,
         names,
         serverInState: deletesProtectedServer(resources),
         mismatchHint: DRIFT_THEN_DESTROY,
@@ -964,9 +965,18 @@ export async function destroyOwnServer(
       protectionApproval = protection.approval;
       if (protection.off) lifted = names;
     }
+    const removalExtra = {
+      servers: [
+        ...new Set([
+          ...extra.servers,
+          ...snapshots.filter((s) => s.server !== APP_SERVER && s.inState).map((s) => s.module),
+        ]),
+      ],
+      ...(Object.keys(allProtectionVars).length > 0 ? { vars: allProtectionVars } : {}),
+    };
     if (iac !== undefined && resources.length > 0) {
       removal = await approveCloudflareRemoval(iac, {
-        ...extra,
+        ...removalExtra,
         confirmed,
         appChanges: hostSteps.length > 0,
         words,
@@ -1079,7 +1089,7 @@ export async function destroyOwnServer(
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
     // The extra servers OpsCrew deleted are forgotten.
-    await forgetExtraCloudServers(deps, plan);
+    await forgetExtraCloudServers(deps, plan, snapshots);
     const approvals = [
       ...machines.map((outcome) => outcome.approval),
       ...monitoringApprovals,
@@ -1193,11 +1203,17 @@ export async function destroyOwnServer(
     ...(shares !== undefined ? { firstApp: shares.app } : {}),
   });
   // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
-  remaining.push(...extraServersRemaining(given, snapshotIds, earlier));
+  remaining.push(...extraServersRemaining(given, snapshotIds, earlier, snapshots));
   // The cancelled extra servers, billed until their contracts end.
   remaining.unshift(...cancelled);
   if (removeApp) {
-    for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
+    const snapshotNames = new Set([
+      ...extras.map((server) => server.resource),
+      ...snapshots.flatMap((s) =>
+        s.server !== APP_SERVER && s.name !== undefined ? [s.name] : [],
+      ),
+    ]);
+    for (const resource of snapshotNames) await removeSnapshotRecord(deps, "destroy", resource);
   }
   remaining.push(...bucketStillListed(bucketDeleted), ...homeLeft);
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));

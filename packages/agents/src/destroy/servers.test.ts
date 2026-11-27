@@ -1,7 +1,12 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { appDirs, type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
-import type { ApprovalRequest, CommandResult, RemoteExec } from "@opscrew/contracts";
+import type {
+  ApprovalRequest,
+  CommandResult,
+  RemoteExec,
+  ServerSnapshotApi,
+} from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, networkInterface, readArtifact } from "@opscrew/plan-schema";
@@ -29,7 +34,9 @@ import {
   testKeyMaker,
 } from "../testing";
 import { firstAppLook } from "../testing/other-apps";
+import { dataSnapshotOffer } from "./cancel";
 import { runDestroy } from "./run";
+import { serverLines, serverSnapshots } from "./servers";
 import type { DestroyPreview, DestroyServices } from "./types";
 
 const DATA_HOST = "203.0.113.20";
@@ -201,6 +208,19 @@ function rootShell(address: string): RemoteExec {
       return { exitCode: 0, stdout, stderr: "" };
     },
   };
+}
+
+/** Wraps `fakeServers` to record every `(app, names)` passed to `findAppServers`. */
+function trackFind(
+  fakeServers: FakeServers,
+  findCalls: Array<{ app: string; names: readonly string[] | undefined }>,
+): ServerSnapshotApi {
+  return Object.assign(Object.create(fakeServers) as FakeServers, {
+    findAppServers: async (app: string, names?: readonly string[]) => {
+      findCalls.push({ app, names });
+      return fakeServers.findAppServers(app);
+    },
+  });
 }
 
 describe.skipIf(!findExecutable("git"))("runDestroy with extra servers (US2 #6, FR-1812)", () => {
@@ -400,5 +420,222 @@ describe.skipIf(!findExecutable("git"))("runDestroy with extra servers (US2 #6, 
     expect(s.deps.reporter.text()).toContain(
       'OpsCrew\'s setup stays on server data: the OpsCrew app "blog" still uses it.',
     );
+  });
+
+  it("snapshots, lifts protection on, and confirms an extra server dropped from plan.yaml while still in state (#57)", async () => {
+    // 1. Start from a split plan whose extra server `data` is in Terraform state, then drop `data` from plan.yaml.
+    const full = deployedSplit("cloud");
+    const { servers: _droppedServers, network: _droppedNetwork, ...rest } = full;
+    const droppedPlan: DeployPlan = {
+      ...rest,
+      services: full.services.map(({ server: _server, ...service }) => service),
+    };
+    const s = await setup(droppedPlan);
+    const findCalls: Array<{ app: string; names: readonly string[] | undefined }> = [];
+    const fakeServers = s.services.servers as FakeServers;
+    const trackedServices: DestroyServices = {
+      ...s.services,
+      servers: trackFind(fakeServers, findCalls),
+    };
+
+    // 2. Refusing the dropped server's typed name deletes nothing.
+    const refused = await runDestroy(s.deps, {
+      services: trackedServices,
+      confirm: async (preview) => preview.server === undefined,
+    }).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ code: "APPROVAL_REFUSED" });
+    expect((refused as Error).message).toContain("nothing was deleted");
+    expect(s.engine.applied).toEqual([]);
+
+    // 3. Confirming both names snapshots both servers (under default `auto`), lifts protection on both, and cleans up.
+    const asked: DestroyPreview[] = [];
+    const result = await runDestroy(s.deps, {
+      services: trackedServices,
+      confirm: async (preview) => {
+        asked.push(preview);
+        return true;
+      },
+    });
+    expect(asked.map((p) => [p.name, p.server])).toEqual([
+      ["shop", undefined],
+      ["shop-data", "data"],
+    ]);
+    expect(asked[0]?.servers).toEqual([
+      "Server app: the Hetzner Cloud server shop is deleted with the PostgreSQL database on it; a snapshot of it is taken first.",
+      "Server data (removed from plan.yaml, still in the state): the Hetzner Cloud server shop-data is deleted; a snapshot of it is taken first.",
+    ]);
+    expect(findCalls).toContainEqual({ app: "shop", names: ["shop-data"] });
+    expect(fakeServers.snapshots.map((snapshot) => snapshot.name)).toEqual([
+      "opscrew-shop-before-destroy-20261011T120000Z",
+      "opscrew-shop-data-before-destroy-20261011T120000Z",
+    ]);
+    const lift = s.handler.requests.find((r) => r.title.startsWith("Lift delete protection"));
+    expect(lift?.title).toBe("Lift delete protection on shop and shop-data");
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect", "destroy"]);
+    expect(result.remaining.join("\n")).toContain("The snapshot of shop-data (Hetzner image 9001)");
+    expect(await readdir(s.deps.paths.stateDir)).not.toContainEqual(
+      expect.stringMatching(/snapshot/),
+    );
+    expect((await readServerAddresses(s.deps.paths)).servers).toBeUndefined();
+    expect(await readFile(s.deps.paths.files.knownHosts, "utf8")).not.toContain(DATA_HOST);
+  });
+
+  it("uses the state-recorded name of a dropped Kamatera extra server for findAppServers and typed confirmation (#57)", async () => {
+    const full = deployedSplit("cloud");
+    const { servers: _droppedServers, network: _droppedNetwork, ...rest } = full;
+    const droppedPlan: DeployPlan = {
+      ...rest,
+      services: full.services.map(({ server: _server, ...service }) => service),
+    };
+    const kamateraAddress = "module.server_cache.kamatera_server.this";
+    const s = await setup(droppedPlan);
+    const kamateraEngine = new ScriptedDestroyEngine({
+      resources: [
+        ...deployedResources(),
+        {
+          address: kamateraAddress,
+          type: "kamatera_server",
+          name: "this",
+          provider: "registry.opentofu.org/kamatera/kamatera",
+          action: "delete",
+        },
+      ],
+    });
+    const basePlan = kamateraEngine.plan.bind(kamateraEngine);
+    kamateraEngine.plan = async (dir, planFile, options) => {
+      const summary = await basePlan(dir, planFile, options);
+      if (options?.destroy !== true) return summary;
+      return {
+        ...summary,
+        planJson: {
+          format_version: "1.2",
+          resource_changes: [
+            {
+              address: SERVER_ADDRESS,
+              type: "hcloud_server",
+              change: { actions: ["delete"], before: { id: "4711", name: "shop" } },
+            },
+            {
+              address: kamateraAddress,
+              type: "kamatera_server",
+              change: {
+                actions: ["delete"],
+                before: { id: "k-99", name: "shop-cache-state" },
+              },
+            },
+          ],
+        },
+      };
+    };
+    const findCalls: Array<{ app: string; names: readonly string[] | undefined }> = [];
+    const fakeServers = new FakeServers();
+    fakeServers.servers = [
+      { id: "4711", name: "shop", status: "running" },
+      { id: "k-99", name: "shop-cache-state", status: "on", nameOnly: true },
+    ];
+    const trackedServers = trackFind(fakeServers, findCalls);
+    const asked: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: {
+        ...s.services,
+        engine: async () => kamateraEngine,
+        servers: trackedServers,
+      },
+      confirm: async (preview) => {
+        asked.push(preview);
+        return true;
+      },
+    });
+    expect(asked.map((p) => [p.name, p.server])).toEqual([
+      ["shop", undefined],
+      ["shop-cache-state", "cache"],
+    ]);
+    expect(findCalls).toContainEqual({ app: "shop", names: ["shop-cache-state"] });
+    expect(fakeServers.snapshots.map((snapshot) => snapshot.name)).toContain(
+      "opscrew-shop-cache-state-before-destroy-20261011T120000Z",
+    );
+  });
+});
+
+describe("serverSnapshots and dataSnapshotOffer for dropped extra servers (#57)", () => {
+  it("discovers dropped extra servers from plan deletions across providers, skips module.server_previous, and respects --no-snapshot", () => {
+    const full = deployedSplit("cloud");
+    const { servers: _droppedServers, network: _droppedNetwork, ...rest } = full;
+    const plan: DeployPlan = {
+      ...rest,
+      services: full.services.map(({ server: _server, ...service }) => service),
+    };
+    const preview = {
+      changes: [
+        ...deployedResources(),
+        {
+          address: "module.server_previous.hcloud_server.this",
+          type: "hcloud_server",
+          name: "this",
+          provider: "registry.opentofu.org/hetznercloud/hcloud",
+          action: "delete" as const,
+        },
+        {
+          address: "module.server_db.digitalocean_droplet.this",
+          type: "digitalocean_droplet",
+          name: "this",
+          provider: "registry.opentofu.org/digitalocean/digitalocean",
+          action: "delete" as const,
+        },
+        {
+          address: "module.server_archive.contabo_instance.this",
+          type: "contabo_instance",
+          name: "this",
+          provider: "registry.opentofu.org/contabo/contabo",
+          action: "delete" as const,
+        },
+      ],
+      planJson: {
+        format_version: "1.2",
+        resource_changes: [
+          {
+            address: SERVER_ADDRESS,
+            type: "hcloud_server",
+            change: { actions: ["delete"], before: { id: "4711", name: "shop" } },
+          },
+          {
+            address: "module.server_db.digitalocean_droplet.this",
+            type: "digitalocean_droplet",
+            change: { actions: ["delete"], before: { id: 888, backups: true } },
+          },
+          {
+            address: "module.server_archive.contabo_instance.this",
+            type: "contabo_instance",
+            change: {
+              actions: ["delete"],
+              before: { id: "c-10", display_name: "shop-archive-old" },
+            },
+          },
+        ],
+      },
+    };
+
+    const autoSnapshots = serverSnapshots(plan, preview, "auto");
+    expect(autoSnapshots.map((s) => [s.server, s.provider, s.name, s.ids, s.wanted])).toEqual([
+      ["app", "hetzner", undefined, ["4711"], true],
+      // Fallback name `<app>-<server>` when state omits `before.name`, snapshots wanted by default.
+      ["db", "digitalocean", "shop-db", ["888"], true],
+      // Contabo snapshots go with the server (`wanted: false`), state `display_name` preserved.
+      ["archive", "contabo", "shop-archive-old", ["c-10"], false],
+    ]);
+
+    const noSnapshots = serverSnapshots(plan, preview, false);
+    expect(noSnapshots.every((s) => !s.wanted)).toBe(true);
+
+    // `serverLines` includes dropped state servers even when `plan.servers` is empty.
+    const lines = serverLines(plan, autoSnapshots);
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toContain("Server db (removed from plan.yaml, still in the state)");
+    expect(lines[2]).toContain("shop-archive-old");
+
+    // `dataSnapshotOffer` produces plain-English text even when dropped server has no services in plan.yaml.
+    const contaboOnly = autoSnapshots.filter((s) => s.server === "archive");
+    const offer = dataSnapshotOffer(plan, contaboOnly, "");
+    expect(offer).toContain("To keep any data on server archive,");
   });
 });
