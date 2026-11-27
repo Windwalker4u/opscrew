@@ -26,8 +26,13 @@ describe("the server modules after a rebuild from a snapshot", () => {
   )("%s ignores changes to the server's image", (file, type) => {
     const body = resourceBody(MODULE_FILES[file] ?? "", type);
     // The attribute the module sets from its `image` variable (`image`, Contabo's `image_id`), or
-    // OVHcloud's `image_id` from the id it looks up by that name (`local.image_id`).
-    const source = type === "ovh_cloud_instance" ? "local\\.image_id" : "var\\.image";
+    // the `image_id` OVHcloud and Kamatera look up by that name (`local.image_id`, the
+    // `kamatera_image` data source's id).
+    const sources: Record<string, string> = {
+      ovh_cloud_instance: "local\\.image_id",
+      kamatera_server: "data\\.kamatera_image\\.this\\.id",
+    };
+    const source = sources[type] ?? "var\\.image";
     const image = new RegExp(`^ {2}(\\w+) += ${source}$`, "m").exec(body)?.[1];
     expect(image).toBeDefined();
     const ignored = /ignore_changes = \[([^\]]*)\]/.exec(lifecycle(body, type));

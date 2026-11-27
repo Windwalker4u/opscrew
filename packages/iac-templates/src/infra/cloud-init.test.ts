@@ -16,6 +16,16 @@ import { renderInfra } from "./index";
 import { MODULE_FILES } from "./modules";
 
 const MODULES = CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name);
+/**
+ * How deep a module's main.tf passes the template's values: 4 spaces in `user_data`'s
+ * templatefile, 6 in the startup script's (Kamatera's `firstBoot: "script"`), which nests it.
+ */
+const TEMPLATE_INDENT: Readonly<Record<string, number>> = Object.fromEntries(
+  CLOUD_PROVIDERS.map(({ terraform }) => [
+    terraform.module.name,
+    terraform.firstBoot === "script" ? 6 : 4,
+  ]),
+);
 
 /**
  * The engines that render the template for real (`.tools/bin` on PATH, or OPSCREW_TOFU_BIN /
@@ -151,7 +161,7 @@ describe("cloud-init template", () => {
     );
     for (const module of MODULES) {
       expect(MODULE_FILES[`${module}/main.tf`]).toMatch(
-        /^ {4}ssh_public_key {2}= var\.ssh_public_key$/m,
+        new RegExp(`^ {${TEMPLATE_INDENT[module]}}ssh_public_key {2}= var\\.ssh_public_key$`, "m"),
       );
       expect(MODULE_FILES[`${module}/main.tf`]).toContain(
         // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL's interpolation, not JavaScript's.
@@ -173,7 +183,9 @@ describe("cloud-init template", () => {
     // Only those lines differ: SSH stays allowed and ufw is still enabled.
     expect(rest).toEqual(commands(rendered).filter((c) => !WEB_RULES.includes(c)));
     for (const module of MODULES) {
-      expect(MODULE_FILES[`${module}/main.tf`]).toMatch(/^ {4}web {13}= var\.web$/m);
+      expect(MODULE_FILES[`${module}/main.tf`]).toMatch(
+        new RegExp(`^ {${TEMPLATE_INDENT[module]}}web {13}= var\\.web$`, "m"),
+      );
       expect(MODULE_FILES[`${module}/variables.tf`]).toMatch(
         /variable "web" \{[^}]*type {8}= bool\n {2}default {5}= true/,
       );
@@ -419,12 +431,20 @@ describe("cloud-init template", () => {
 });
 
 describe.each(
-  CLOUD_PROVIDERS.map(({ id, terraform }) => [terraform.module.name, id as CloudProvider] as const),
-)("%s module", (module, provider) => {
+  CLOUD_PROVIDERS.map(
+    ({ id, terraform }) =>
+      [
+        terraform.module.name,
+        id as CloudProvider,
+        // The first boot as user data, or as a startup script (Kamatera's).
+        terraform.firstBoot === "script" ? "startup_script" : "user_data",
+      ] as const,
+  ),
+)("%s module", (module, provider, firstBoot) => {
   it("uses the shared template and never rebuilds an existing server for it", () => {
     expect(MODULE_FILES[`${module}/cloud-init.yaml.tftpl`]).toBe(template);
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
-    expect(main).toMatch(/ignore_changes = \[[^\]]*\buser_data\b/);
+    expect(main).toMatch(new RegExp(`ignore_changes = \\[[^\\]]*\\b${firstBoot}\\b`));
   });
 
   it("renders the same server, its user_data included, with and without the server's runner", () => {

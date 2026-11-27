@@ -177,7 +177,7 @@ describe("Analyst prompts", () => {
 
   it("names both VPS providers", () => {
     expect(ANALYST_SYSTEM_PROMPT).toContain(
-      "(Hetzner Cloud, DigitalOcean, Contabo or OVHcloud, Docker, Caddy)",
+      "(Hetzner Cloud, DigitalOcean, Contabo, OVHcloud or Kamatera, Docker, Caddy)",
     );
   });
 

@@ -389,7 +389,8 @@ const MODULE_LOCALS: Readonly<Record<string, { key: string; web: string }>> = {
 };
 
 describe("the server modules", () => {
-  for (const module of CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name)) {
+  for (const { terraform } of CLOUD_PROVIDERS) {
+    const module = terraform.module.name;
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
     const variables = MODULE_FILES[`${module}/variables.tf`] ?? "";
     const locals = MODULE_LOCALS[module] ?? { key: "ssh_key_id", web: "web_rules" };
@@ -402,6 +403,22 @@ describe("the server modules", () => {
       expect(variables).toMatch(
         /variable "ssh_key_id" \{[^}]*type {8}= string\n {2}default {5}= null/,
       );
+      if (terraform.firewallResourceType === "") {
+        // No cloud firewall and no key resource (Kamatera's): every server takes the deploy key's
+        // text, which is its ssh_key_id, and the server's own firewall gets the web's and
+        // WireGuard's ports.
+        expect(MODULE_FILES[`${module}/outputs.tf`]).toMatch(
+          /output "ssh_key_id" \{[^}]*value {7}= var\.ssh_public_key/,
+        );
+        expect(main).not.toMatch(/resource "\w+" "deploy"/);
+        expect(main).toMatch(
+          /web_sources += var\.web \? join\(" ", var\.http_allowed_cidrs\) : ""/,
+        );
+        expect(main).toMatch(
+          /wireguard_port = var\.wireguard_port == null \? "" : tostring\(var\.wireguard_port\)/,
+        );
+        return;
+      }
       expect(MODULE_FILES[`${module}/outputs.tf`]).toMatch(
         new RegExp(`output "ssh_key_id" \\{[^}]*value {7}= local\\.${locals.key}`),
       );

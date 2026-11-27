@@ -19,6 +19,7 @@ const MODULE_DIRS: Record<CloudProvider, string> = {
   digitalocean: "digitalocean-droplet",
   contabo: "contabo-vps",
   ovhcloud: "ovhcloud-instance",
+  kamatera: "kamatera-instance",
 };
 const CREDENTIALS_COMMENTS: Record<CloudProvider, string> = {
   hetzner: "# Token from the HCLOUD_TOKEN environment variable (never stored in files or state).",
@@ -28,6 +29,8 @@ const CREDENTIALS_COMMENTS: Record<CloudProvider, string> = {
     "# Credentials from the CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS environment variables (never stored in files or state).",
   ovhcloud:
     "# Credentials from the OVH_ENDPOINT, OVH_CLIENT_ID and OVH_CLIENT_SECRET environment variables (never stored in files or state); the Public Cloud project's id from TF_VAR_ovhcloud_project_id.",
+  kamatera:
+    "# Credentials from the KAMATERA_API_CLIENT_ID and KAMATERA_API_SECRET environment variables (never stored in files or state). At plan time the provider checks the server's configuration against Kamatera's public price list, so a plan needs the network.",
 };
 const CLOUD_IDS = CLOUD_PROVIDERS.map(({ id }) => id as CloudProvider);
 const MOVES_ONLY: readonly LayoutName[] = ["rename", "abort-rename"];

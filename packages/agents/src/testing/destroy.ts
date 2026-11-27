@@ -329,6 +329,11 @@ const FAKE_SERVERS: Record<CloudProvider, { server: AppServer; snapshotId: strin
     },
     snapshotId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
   },
+  // Kamatera finds a server by its name, its Terraform id; a snapshot is `<server>:<id>`.
+  kamatera: {
+    server: { id: "shop", name: "shop", status: "on", nameOnly: true },
+    snapshotId: "shop:4711",
+  },
 };
 
 /**

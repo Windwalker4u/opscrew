@@ -88,12 +88,13 @@ const TARGETS = {
   digitalocean: { location: "fra1", serverType: "s-1vcpu-2gb", image: "ubuntu-24-04-x64" },
   contabo: { location: "EU", serverType: "V153", image: DEFAULT_IMAGES.contabo },
   ovhcloud: { location: "GRA11", serverType: "d2-4", image: DEFAULT_IMAGES.ovhcloud },
+  kamatera: { location: "EU-FR", serverType: "A-2-4", image: DEFAULT_IMAGES.kamatera },
 } as const;
 
 /** A valid `opscrew/plan.yaml` input (parsed with the schema so defaults are filled). */
 export function testPlan(options: PlanInputOptions = {}) {
   const provider = options.provider ?? "hetzner";
-  const currency = provider === "digitalocean" ? "USD" : "EUR";
+  const currency = cloudProvider(provider).offering.currency;
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T10:00:00.000Z",

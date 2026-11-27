@@ -245,6 +245,7 @@ describe("addEnvironment with previews", () => {
       "digitalocean",
       "contabo",
       "ovhcloud",
+      "kamatera",
       "own",
     ]);
     const plan = await readArtifact("plan", preview.paths.files.plan);
@@ -750,6 +751,7 @@ describe("addEnvironment with previews on another environment's server (US9)", (
       "digitalocean",
       "contabo",
       "ovhcloud",
+      "kamatera",
       "own",
       "share:dev",
     ]);
