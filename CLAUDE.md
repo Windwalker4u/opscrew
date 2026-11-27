@@ -37,9 +37,12 @@ or a stand-in lead).
 - Small standalone docs changes: small documentation-only edits (such as `AGENTS.md`, `CLAUDE.md`,
   or standalone guide/roadmap notes) unrelated to an in-flight feature may be committed directly to
   `main` after `pnpm lint`, without a feature branch or full test gate.
-- Stalled contributor PRs and issues: if a contributor has no commit or comment after an
-  inactivity window scaled to urgency (**4–6 hours** for release-blocking PRs, **12–24 hours** for
-  regular feature PRs and assigned issues), post a clear takeover comment on the PR/issue naming
-  the current `<head-sha>` (so a waking contributor rebases instead of colliding), pick up from
-  their branch on a lead branch preserving their commits, finish the remaining blockers, run the
-  gate, and land it (or release an unstarted issue back to the unclaimed queue).
+- Stalled contributor PRs and issues (urgency-scaled takeover):
+  - **Unclaimed ready tasks:** pick up after **1–2 hours** for release-blocking work or **4–6 hours**
+    for routine work (or immediately when unassigned and you have capacity).
+  - **Quiet claimed tasks / PRs awaiting fixes:** post a **1-hour check-in** comment first; if
+    still quiet after **2–4 hours** (release-blocking) or **4–6 hours** (routine), post a clear
+    takeover comment naming the current `<head-sha>` (so a waking contributor rebases instead of
+    colliding), pick up from their branch on a lead branch preserving their commits, finish the
+    remaining blockers, run the gate, and land it (or release an unstarted issue back to the
+    unclaimed queue).
