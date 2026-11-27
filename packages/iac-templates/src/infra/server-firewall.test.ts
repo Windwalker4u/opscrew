@@ -81,9 +81,9 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
     ]) {
       expect(files[SERVER_FIREWALL_FILE]).toBeUndefined();
     }
-    // No provider in the registry gets it: their modules are as they were.
+    // Of the registry's providers, only Kamatera's module gets it: the others are as they were.
     expect(Object.keys(MODULE_FILES).filter((path) => path.endsWith(SERVER_FIREWALL_FILE))).toEqual(
-      [],
+      [`kamatera-instance/${SERVER_FIREWALL_FILE}`],
     );
   });
 
