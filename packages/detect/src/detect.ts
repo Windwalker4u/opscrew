@@ -106,6 +106,7 @@ import {
   type SourceSignals,
   scanSource,
 } from "./sources";
+import { detectStatelessIssues } from "./stateless";
 import { detectObjectStorage, detectSqlite } from "./storage";
 import { vercelRouting } from "./vercel-routing";
 import { dockerfileWorkdir, fileCapabilityNote } from "./workdir";
@@ -821,6 +822,15 @@ export async function detectProjectDetails(
   const platformRouting = vercelRouting(vercelText);
   const sqlite = await detectSqlite({ ...sources, envTexts, dbConnection, serverDatabase });
   const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
+  const statelessIssues = await detectStatelessIssues({
+    appDir,
+    files: ownFiles,
+    envFiles,
+    settingsTexts,
+    dependencies: runtimeDependencies,
+    frameworks: appFrameworkNames,
+    read,
+  });
   if (appKind !== "static-spa") {
     let start: string | undefined;
     const hasNpmDependency = (name: string) =>
@@ -1015,6 +1025,7 @@ export async function detectProjectDetails(
     ...(sqlite ? { sqlite } : {}),
     ...(keptFiles ? { files: { dir: keptFiles } } : {}),
     ...(objectStorage ? { objectStorage } : {}),
+    ...(statelessIssues ? { statelessIssues } : {}),
     docker: {
       ...(dockerfile ? { dockerfile } : {}),
       ...(compose ? { compose } : {}),
