@@ -2915,6 +2915,8 @@ export const DEFAULT_IMAGES: Readonly<Record<CloudProvider, string>> = {
   contabo: "d64d5c6c-9dda-4e38-8174-0ee282474d8a",
   // OVHcloud's image ids differ per region, so its module looks the image up by this name.
   ovhcloud: "Ubuntu 24.04",
+  // Kamatera's module looks its image up by this name (os and code from its definition).
+  kamatera: "Ubuntu 24.04",
 };
 
 /**

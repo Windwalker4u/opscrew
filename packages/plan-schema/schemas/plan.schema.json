@@ -314,7 +314,7 @@
           "properties": {
             "provider": {
               "type": "string",
-              "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud"]
+              "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera"]
             },
             "mode": {
               "type": "string",
@@ -382,7 +382,7 @@
                 },
                 "provider": {
                   "type": "string",
-                  "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud"]
+                  "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera"]
                 }
               },
               "required": ["app", "provider"],
@@ -791,7 +791,7 @@
                 "properties": {
                   "provider": {
                     "type": "string",
-                    "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud"]
+                    "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera"]
                   },
                   "mode": {
                     "type": "string",
@@ -2701,7 +2701,7 @@
                   "properties": {
                     "provider": {
                       "type": "string",
-                      "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud"]
+                      "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera"]
                     },
                     "mode": {
                       "type": "string",
@@ -2769,7 +2769,7 @@
                         },
                         "provider": {
                           "type": "string",
-                          "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud"]
+                          "enum": ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera"]
                         }
                       },
                       "required": ["app", "provider"],

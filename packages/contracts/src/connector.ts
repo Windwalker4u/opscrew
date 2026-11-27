@@ -118,7 +118,7 @@ export interface ComputeCatalog {
  */
 export type VpsProviderId = Extract<
   ProviderId,
-  "hetzner" | "digitalocean" | "contabo" | "ovhcloud" | "own"
+  "hetzner" | "digitalocean" | "contabo" | "ovhcloud" | "kamatera" | "own"
 >;
 
 /** A server OpsCrew created for an app, as the provider reports it. */
