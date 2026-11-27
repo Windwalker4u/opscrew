@@ -43,7 +43,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-  kamal-proxy:
+  app-proxy:
     image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:
@@ -232,7 +232,7 @@ services:
         condition: service_healthy
       opensearch:
         condition: service_healthy
-  kamal-proxy:
+  app-proxy:
     image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:
@@ -415,7 +415,7 @@ services:
         condition: service_healthy
       meilisearch:
         condition: service_healthy
-  kamal-proxy:
+  app-proxy:
     image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:
@@ -641,7 +641,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-  kamal-proxy:
+  app-proxy:
     image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:

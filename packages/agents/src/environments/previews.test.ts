@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { FetchLike } from "@opscrew/contracts";
 import { exists, OpsCrewError } from "@opscrew/core";
-import { edgeMemoryMb } from "@opscrew/iac-templates";
+import { edgeMemoryMb, KAMAL_PROXY_MEMORY_MB } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -888,7 +888,7 @@ describe("addEnvironment with previews on another environment's server (US9)", (
 
     const plan = sharedPreviewTestPlan();
     await writeArtifact("plan", preview.paths.files.plan, plan);
-    const previewsMb = 3 * appMemoryMb(plan);
+    const previewsMb = 3 * (appMemoryMb(plan) + KAMAL_PROXY_MEMORY_MB);
     const shared = await runDesign(dev, { catalog: euCatalog() });
     expect(shared.chosen.summary).toContain(`the previews of preview ${previewsMb} MB`);
     const need = appMemoryMb(shared.plan) + previewsMb + edgeMemoryMb("caddy") + SYSTEM_RESERVE_MB;

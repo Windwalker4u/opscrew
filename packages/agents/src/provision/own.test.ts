@@ -769,7 +769,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       expect(error).toBeInstanceOf(OpsCrewError);
       expect(error.code).toBe("PHASE_PRECONDITION");
       expect(error.message).toBe(
-        `Your server has 4096 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 3000 MB of memory limits ("blog" 3000 MB), which leaves 584 MB, and this app's containers have 1024 MB of memory limits. Nothing was changed.`,
+        `Your server has 4096 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 3032 MB of memory limits ("blog" 3000 MB and 32 MB for its proxy), which leaves 552 MB, and this app's containers have 1024 MB of memory limits. Nothing was changed.`,
       );
       expect(error.hint).toContain("then run `opscrew design` and `opscrew provision` again.");
       expect(s.handler.requests).toEqual([]);

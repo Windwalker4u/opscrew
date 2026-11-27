@@ -4,7 +4,7 @@ import type { AppRecord } from "@opscrew/connector-ssh-host";
 import type { FetchLike, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { edgeMemoryMb, edgeProxy } from "@opscrew/iac-templates";
+import { edgeMemoryMb, edgeProxy, KAMAL_PROXY_MEMORY_MB } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { appMemoryMb } from "../shared/memory";
@@ -411,7 +411,7 @@ describe.skipIf(!findExecutable("git"))(
         });
         const error = await refusedBeforeAnyChange(t);
         expect(error.message).toMatch(
-          /^cx33 has 8192 MB of memory\. After 384 MB for the system and \d+ MB for OpsCrew's edge, it doesn't hold this app's \d+ MB of memory limits beside the 7000 MB of the other app on the server \("inventory" 7000 MB\)\. Nothing was changed\.$/,
+          /^cx33 has 8192 MB of memory\. After 384 MB for the system and \d+ MB for OpsCrew's edge, it doesn't hold this app's \d+ MB of memory limits beside the 7032 MB of the other app on the server \("inventory" 7000 MB and 32 MB for its proxy\)\. Nothing was changed\.$/,
         );
         expect(error.hint).toContain("opscrew design");
       });
@@ -427,14 +427,14 @@ describe.skipIf(!findExecutable("git"))(
         // cx33's 8192 MB: after the system (384) and the edge, 200 MB stay free beside this app.
         const appMb = appMemoryMb(plan());
         const edgeMb = edgeMemoryMb(edgeProxy(plan()));
-        const memoryMb = 8192 - 384 - edgeMb - appMb - 200;
+        const memoryMb = 8192 - 384 - edgeMb - appMb - KAMAL_PROXY_MEMORY_MB - 200;
         const t = await provisionWith(plan(), before, { records: [secondAppRecord({ memoryMb })] });
         wentOn(t);
         const warnings = t.deps.reporter.lines.filter((line) => line.level === "warn");
         expect(warnings.map((line) => line.message)).toEqual(
           expect.arrayContaining([
             RESTART,
-            `Your server keeps only 3% of its memory free after the memory limits of this app (${appMb} MB) and of the other OpsCrew app on it (${memoryMb} MB: "inventory" ${memoryMb} MB), OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
+            `Your server keeps only 3% of its memory free after the memory limits of this app (${appMb} MB) and of the other OpsCrew app on it (${memoryMb + KAMAL_PROXY_MEMORY_MB} MB: "inventory" ${memoryMb} MB and ${KAMAL_PROXY_MEMORY_MB} MB for its proxy), OpsCrew's edge and the system, so a container that grows can make the server run out of memory. Lower a memory limit in opscrew/plan.yaml, or add memory to the server.`,
           ]),
         );
       });

@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import { OpsCrewError } from "@opscrew/core";
+import { KAMAL_PROXY_MEMORY_MB } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments/paths";
@@ -165,7 +166,7 @@ describe("the host environment while previews run on its server", () => {
     const { deps, host, plan } = await sharedPreviewProject();
     const limit = await sharedPreviewsLimit(host);
     expect(limit?.name).toBe("the previews of preview");
-    expect(limit?.memoryMb).toBe(3 * appMemoryMb(plan));
+    expect(limit?.memoryMb).toBe(3 * (appMemoryMb(plan) + KAMAL_PROXY_MEMORY_MB));
     expect(await sharedPreviewsLimit(deps.paths)).toBeUndefined();
     expect(await sharedPreviewsLimit(environmentPaths(deps.paths, "prod"))).toBeUndefined();
   });

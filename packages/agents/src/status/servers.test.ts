@@ -59,7 +59,7 @@ function fakeServers(servers: Record<string, FakeServer>) {
       commands.push({ host, command });
       const server = servers[host];
       if (server === undefined) return { exitCode: 255, stdout: "", stderr: "timed out" };
-      if (command.includes("'{{.Names}}|{{.State}}'")) {
+      if (command.includes("{{.Names}}|{{.State}}")) {
         return { exitCode: 0, stdout: server.ps, stderr: "" };
       }
       if (command.includes("==opscrew-deploys:")) {

@@ -1363,7 +1363,11 @@ jobs:
           else
             docker network inspect opscrew-edge > /dev/null 2>&1 || docker network create opscrew-edge > /dev/null
             docker compose up -d --no-deps app-proxy
-            install_edge
+            _edge_installed=""
+            if docker compose exec -T app-proxy kamal-proxy list < /dev/null 2> /dev/null | grep -Eq '(^|[[:space:]])docs([[:space:]]|$)'; then
+              install_edge
+              _edge_installed=1
+            fi
             trap 'docker compose exec -T app-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
             docker compose exec -T app-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -1375,6 +1379,9 @@ jobs:
               echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed --app docs\`. Check that the app listens on port 3000 (app.port in opscrew/apps/docs/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design --app docs, opscrew adapt --app docs and opscrew provision --app docs.'
               docker rm -f "$new" > /dev/null
               exit 1
+            fi
+            if [ -z "$_edge_installed" ]; then
+              install_edge
             fi
             docker compose exec -T app-proxy kamal-proxy resume docs < /dev/null
             edge exec -T kamal-proxy kamal-proxy remove docs < /dev/null > /dev/null 2>&1 || true

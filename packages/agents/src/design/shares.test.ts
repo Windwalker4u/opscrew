@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { type AppRecord, type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
-import { edgeMemoryMb } from "@opscrew/iac-templates";
+import { edgeMemoryMb, KAMAL_PROXY_MEMORY_MB } from "@opscrew/iac-templates";
 import {
   type Architecture,
   type DeployPlan,
@@ -284,20 +284,22 @@ describe("design for a second app on the server of another app", () => {
 
     it("refuses an app that doesn't fit, counting the first app and the other records", async () => {
       const { first, mine, edge } = await limits();
+      const others = first + 512 + 2 * KAMAL_PROXY_MEMORY_MB;
       const app = await secondApp({
         records: [secondAppRecord()],
-        memoryGb: gb(384 + edge + first + 512 + mine - 150),
+        memoryGb: gb(384 + edge + others + mine - 150),
       });
       const error = await refusal(app, design(app));
       expect(error.message).toContain(
-        `the other OpsCrew apps on it take ${first + 512} MB of memory limits ("shop" ${first} MB and "inventory" 512 MB)`,
+        `the other OpsCrew apps on it take ${others} MB of memory limits ("shop" ${first} MB and ${KAMAL_PROXY_MEMORY_MB} MB for its proxy and "inventory" 512 MB and ${KAMAL_PROXY_MEMORY_MB} MB for its proxy)`,
       );
       expect(error.message).toMatch(/Nothing was written\.$/);
     });
 
     it("warns when less than 15% stays free, naming them", async () => {
       const { first, mine, edge } = await limits();
-      const used = first + 512 + mine + edge;
+      const others = first + 512 + 2 * KAMAL_PROXY_MEMORY_MB;
+      const used = others + mine + edge;
       const app = await secondApp({
         records: [secondAppRecord()],
         memoryGb: Math.ceil(((384 + used / 0.93) / 1024) * 10) / 10,
@@ -305,7 +307,7 @@ describe("design for a second app on the server of another app", () => {
       const result = await design(app);
       expect(result.warnings.join("\n")).toMatch(
         new RegExp(
-          `keeps only \\d+% of its memory free after the memory limits of this app \\(${mine} MB\\) and of the other OpsCrew apps on it \\(${first + 512} MB: "shop" ${first} MB and "inventory" 512 MB\\)`,
+          `keeps only \\d+% of its memory free after the memory limits of this app \\(${mine} MB\\) and of the other OpsCrew apps on it \\(${others} MB: "shop" ${first} MB and ${KAMAL_PROXY_MEMORY_MB} MB for its proxy and "inventory" 512 MB and ${KAMAL_PROXY_MEMORY_MB} MB for its proxy\\)`,
         ),
       );
     });

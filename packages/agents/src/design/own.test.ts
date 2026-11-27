@@ -495,7 +495,7 @@ describe("runDesign for a server the user owns", () => {
       expect(error).toBeInstanceOf(OpsCrewError);
       expect((error as OpsCrewError).code).toBe("PHASE_PRECONDITION");
       expect((error as OpsCrewError).message).toBe(
-        "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1280 MB of memory limits (\"blog\" 1280 MB), which leaves 256 MB, and this app's containers have 512 MB of memory limits. Nothing was written.",
+        "Your server has 2048 MB of memory. After 384 MB for the system and 128 MB for OpsCrew's edge, the other OpsCrew app on it takes 1312 MB of memory limits (\"blog\" 1280 MB and 32 MB for its proxy), which leaves 224 MB, and this app's containers have 512 MB of memory limits. Nothing was written.",
       );
       await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toThrow();
     });
@@ -509,7 +509,7 @@ describe("runDesign for a server the user owns", () => {
       });
       expect(result.plan.app.name).toBe("landing");
       expect(result.warnings.join("\n")).toContain(
-        'Your server keeps only 11% of its memory free after the memory limits of this app (512 MB) and of the other OpsCrew app on it (1024 MB: "blog" 1024 MB)',
+        'Your server keeps only 9% of its memory free after the memory limits of this app (512 MB) and of the other OpsCrew app on it (1056 MB: "blog" 1024 MB and 32 MB for its proxy)',
       );
     });
   });
