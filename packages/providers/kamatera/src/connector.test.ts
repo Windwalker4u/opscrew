@@ -1,14 +1,12 @@
-import type {
-  ComputeCatalog,
-  ProviderConnectorDeps,
-  ProviderExtras,
-  VpsConnector,
-} from "@opscrew/contracts";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { ProviderConnectorDeps, VpsConnector } from "@opscrew/contracts";
 import { Redactor } from "@opscrew/core";
 import type { FakeReply } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { CREDENTIALS, CREDENTIALS_ENV, kamateraFetch, queued } from "./__fixtures__/fixtures";
 import { POWER_COMMAND, SERVER_IDS, server, serverList, WORKER_ID } from "./__fixtures__/servers";
+import { KAMATERA_CALCULATOR_URL } from "./catalog";
 import { type KamateraConnector, kamateraConnector } from "./connector";
 
 // Type-level check: the Kamatera connector satisfies the VPS connector contract.
@@ -17,18 +15,11 @@ const asVps = (c: KamateraConnector) => c satisfies VpsConnector;
 /** Every value OpsCrew must never show: the API key and the servers' ids. */
 const SECRETS = [...Object.values(CREDENTIALS), ...SERVER_IDS];
 
-/** A stand-in for the price catalogue, which another module builds. */
-function fakeCatalog(): ComputeCatalog {
-  return {
-    provider: "kamatera",
-    listOffers: async () => [],
-    extras: async (): Promise<ProviderExtras> => ({
-      pricesIncludeVat: false,
-      source: "static",
-      asOf: "2026-11-22T00:00:00Z",
-    }),
-  };
-}
+/** Kamatera's public calculator file, trimmed to the lines the catalogue parses. */
+const CALCULATOR = await readFile(
+  join(import.meta.dirname, "__fixtures__", "catalog-calculator.js.php"),
+  "utf8",
+);
 
 /** One datacenter as `GET /service/server/options/datacenters` lists it. */
 const datacenter = (id: string, region: string) => ({ id, region });
@@ -39,28 +30,19 @@ function connector(
   extra: Partial<ProviderConnectorDeps> = {},
 ) {
   const fake = kamateraFetch(routes);
-  const made: ProviderConnectorDeps[] = [];
   const waits: number[] = [];
   let time = Date.parse("2026-11-26T10:00:00Z");
-  const c = kamateraConnector(
-    {
-      env,
-      fetch: fake.fetch,
-      sleep: async (ms) => {
-        waits.push(ms);
-        time += ms;
-      },
-      now: () => new Date(time),
-      ...extra,
+  const c = kamateraConnector({
+    env,
+    fetch: fake.fetch,
+    sleep: async (ms) => {
+      waits.push(ms);
+      time += ms;
     },
-    {
-      catalog: (deps) => {
-        made.push(deps);
-        return fakeCatalog();
-      },
-    },
-  );
-  return { connector: c, calls: fake.calls, made, waits };
+    now: () => new Date(time),
+    ...extra,
+  });
+  return { connector: c, calls: fake.calls, waits };
 }
 
 const paths = (calls: { method: string; path: string }[]) =>
@@ -106,16 +88,23 @@ describe("kamateraConnector", () => {
     }
   });
 
-  it("makes the catalogue once, from its deps, with or without the values", async () => {
+  it("makes the catalogue once, reading the public prices with its fetch and clock, with or without the values", async () => {
     for (const env of [CREDENTIALS_ENV, {}]) {
-      const { connector: c, made, calls } = connector({}, env);
+      const { connector: c, calls } = connector(
+        { [KAMATERA_CALCULATOR_URL]: { text: CALCULATOR } },
+        env,
+      );
       const catalog = c.catalog();
       expect(c.catalog()).toBe(catalog);
-      expect(made).toHaveLength(1);
-      expect(made[0]?.env).toBe(env);
-      expect(made[0]?.fetch).toBeDefined();
-      expect(await catalog.listOffers()).toEqual([]);
-      expect(calls).toEqual([]);
+      const offers = await catalog.listOffers("EU-FR");
+      expect(offers.length).toBeGreaterThan(0);
+      for (const offer of offers) {
+        expect(offer).toMatchObject({ source: "live", asOf: "2026-11-26T10:00:00.000Z" });
+      }
+      await catalog.listOffers();
+      // Once, with no key: the calculator file is public.
+      expect(calls.map((call) => call.url)).toEqual([KAMATERA_CALCULATOR_URL]);
+      expect(JSON.stringify(calls[0]?.headers)).not.toMatch(/Auth/);
     }
   });
 
@@ -144,10 +133,10 @@ describe("kamateraConnector", () => {
   it("sends the key to the address KAMATERA_API_URL names", async () => {
     const base = "https://kamatera.example.test";
     const fake = kamateraFetch({ "GET /service/servers": serverList() }, base);
-    const c = kamateraConnector(
-      { env: { ...CREDENTIALS_ENV, KAMATERA_API_URL: base }, fetch: fake.fetch },
-      { catalog: fakeCatalog },
-    );
+    const c = kamateraConnector({
+      env: { ...CREDENTIALS_ENV, KAMATERA_API_URL: base },
+      fetch: fake.fetch,
+    });
     await c.servers?.findAppServers("shop");
     expect(fake.calls.map((call) => call.url)).toEqual([`${base}/service/servers`]);
   });

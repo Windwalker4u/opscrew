@@ -5,12 +5,7 @@ export {
   KamateraClient,
   readKamateraCredentials,
 } from "./client";
-export {
-  KAMATERA_CREDENTIALS,
-  type KamateraConnector,
-  type KamateraConnectorOptions,
-  kamateraConnector,
-} from "./connector";
+export { KAMATERA_CREDENTIALS, type KamateraConnector, kamateraConnector } from "./connector";
 export { definition } from "./definition";
 export {
   KAMATERA_LOCATIONS,

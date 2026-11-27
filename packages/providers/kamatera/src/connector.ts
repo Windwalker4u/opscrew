@@ -8,6 +8,7 @@ import type {
 } from "@opscrew/contracts";
 import { errorText, listText, plural, Redactor, realSleep } from "@opscrew/core";
 import { z } from "zod";
+import { KamateraCatalog } from "./catalog";
 import { KAMATERA_ENV, KamateraClient, readKamateraCredentials } from "./client";
 import { kamateraServerApi, kamateraServers } from "./servers";
 
@@ -31,26 +32,15 @@ export interface KamateraConnector extends VpsConnector {
   readonly id: "kamatera";
 }
 
-/** What the connector is built with beside its deps. */
-export interface KamateraConnectorOptions {
-  /**
-   * Makes the price catalogue, once per connector, from the connector's deps. Kamatera's prices
-   * are public, so it is the same with or without the API key.
-   */
-  catalog(deps: ProviderConnectorDeps): ComputeCatalog;
-}
-
 /**
  * Creates the Kamatera connector: the credential check, the catalogue and the server API. The API
  * key is read from `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET` and registered with the
- * redactor as it is read; without both, nothing calls Kamatera. Kamatera has no cloud firewall,
- * and OpsCrew turns on none of its backups, so there are no connector firewalls, backups or object
- * storage.
+ * redactor as it is read; without both, nothing calls Kamatera. The catalogue is made once, and
+ * reads Kamatera's public prices, so it is the same with or without the key. Kamatera has no cloud
+ * firewall, and OpsCrew turns on none of its backups, so there are no connector firewalls, backups
+ * or object storage.
  */
-export function kamateraConnector(
-  deps: ProviderConnectorDeps,
-  options: KamateraConnectorOptions,
-): KamateraConnector {
+export function kamateraConnector(deps: ProviderConnectorDeps): KamateraConnector {
   const redactor = deps.redactor ?? new Redactor();
   const read = readKamateraCredentials(deps.env, redactor);
   const now = () => (deps.now ?? (() => new Date()))().getTime();
@@ -78,7 +68,7 @@ export function kamateraConnector(
     configured: client !== undefined,
     servers: client === undefined ? undefined : kamateraServerApi(client, { redactor, now }),
     catalog: () => {
-      catalog ??= options.catalog(deps);
+      catalog ??= new KamateraCatalog({ fetch: deps.fetch, now: deps.now });
       return catalog;
     },
     verifyCredentials: async () =>

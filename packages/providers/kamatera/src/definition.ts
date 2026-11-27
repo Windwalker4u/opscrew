@@ -1,6 +1,5 @@
 import type { CloudProviderDefinition, ModuleCall, ProviderSecOps } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
-import { KamateraCatalog } from "./catalog";
 import { KAMATERA_CREDENTIALS_HINT, KAMATERA_ENV } from "./client";
 import { KAMATERA_CREDENTIALS, kamateraConnector } from "./connector";
 import { MODULE_FILES } from "./generated/module";
@@ -76,10 +75,7 @@ export const definition: CloudProviderDefinition = {
     envPrefixes: ["KAMATERA", "CLOUDCLI"],
     apiPattern: /cloudcli\.cloudwm\.com|console\.kamatera\.com|kamatera api|kamatera_/i,
   },
-  connector: (deps) =>
-    kamateraConnector(deps, {
-      catalog: ({ fetch, now }) => new KamateraCatalog({ fetch, now }),
-    }),
+  connector: (deps) => kamateraConnector(deps),
   regions: {
     locations: {
       "eu-central": ["EU-FR", "EU"],
