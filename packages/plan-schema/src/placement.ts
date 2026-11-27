@@ -175,6 +175,75 @@ export function servicesOn(
   return plan.services.filter((s) => s.enabled && (s.server ?? APP_SERVER) === server);
 }
 
+/**
+ * Every server running a copy of the web process: always {@link APP_SERVER}, followed by any extra
+ * copy servers in `plan.app.servers` (033).
+ */
+export function webServers(plan: {
+  readonly app: { readonly servers?: readonly string[] | undefined };
+}): string[] {
+  return [APP_SERVER, ...(plan.app.servers ?? [])];
+}
+
+/**
+ * Every server running a copy of `worker`: always {@link APP_SERVER}, followed by any extra copy
+ * servers in `worker.servers` (033).
+ */
+export function workerServers(worker: {
+  readonly servers?: readonly string[] | undefined;
+}): string[] {
+  return [APP_SERVER, ...(worker.servers ?? [])];
+}
+
+/**
+ * The unique extra servers (excluding {@link APP_SERVER}) running a copy of the web process or an
+ * enabled worker, in declaration order (web copies first, then worker copies) (033).
+ */
+export function appCopyServers(plan: {
+  readonly app: { readonly servers?: readonly string[] | undefined };
+  readonly processes?:
+    | {
+        readonly workers?:
+          | readonly {
+              readonly enabled?: boolean;
+              readonly servers?: readonly string[] | undefined;
+            }[]
+          | undefined;
+      }
+    | undefined;
+}): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (server: string) => {
+    if (server === APP_SERVER || seen.has(server)) return;
+    seen.add(server);
+    result.push(server);
+  };
+  for (const server of plan.app.servers ?? []) add(server);
+  for (const worker of plan.processes?.workers ?? []) {
+    if (worker.enabled === false) continue;
+    for (const server of worker.servers ?? []) add(server);
+  }
+  return result;
+}
+
+/** True when at least one extra server runs a web copy or an enabled worker copy (033). */
+export function hasRemoteAppCopies(plan: {
+  readonly app: { readonly servers?: readonly string[] | undefined };
+  readonly processes?:
+    | {
+        readonly workers?:
+          | readonly {
+              readonly enabled?: boolean;
+              readonly servers?: readonly string[] | undefined;
+            }[]
+          | undefined;
+      }
+    | undefined;
+}): boolean {
+  return appCopyServers(plan).length > 0;
+}
+
 /** A network member's WireGuard interface on its server: `wg-opscrew<port - 51820>`. */
 export function networkInterface(member: { port: number }): string {
   return `wg-opscrew${member.port - FIRST_PORT}`;
@@ -182,9 +251,27 @@ export function networkInterface(member: { port: number }): string {
 
 /** What {@link checkPlacement} reads of a plan. */
 interface PlacementFields {
+  app: { servers?: readonly string[] | undefined };
   target: { provider: string };
   servers?: readonly { name: string }[];
   services: readonly PlanService[];
+  processes?:
+    | {
+        workers?: readonly {
+          name: string;
+          enabled?: boolean;
+          servers?: readonly string[] | undefined;
+        }[];
+      }
+    | undefined;
+  storage?:
+    | {
+        sqlite?: unknown;
+        files?: unknown;
+      }
+    | undefined;
+  scaling?: unknown;
+  environment?: { previews?: unknown } | undefined;
   network?: Network;
   move?: Move;
   observability?: { monitoring?: MonitoringSettings | undefined } | undefined;
@@ -248,13 +335,119 @@ export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): voi
     );
   }
   const monitoring = monitoringOf(plan)?.where;
+  const monitoringServer = monitoring?.kind === "server" ? monitoring.server : undefined;
+  const webCopies = plan.app.servers ?? [];
+  const workers = plan.processes?.workers ?? [];
+  const isPreview = plan.environment?.previews !== undefined;
+  const nonVps = !onOneServer(plan.target.provider);
+  const nonVpsTarget = TARGET_NAMES[plan.target.provider] ?? plan.target.provider;
+  const vpsChoice = `a cloud server or your own server (target.provider ${orText(VpsProviderSchema.options)})`;
+
+  if (webCopies.length > 0) {
+    if (nonVps) {
+      issue(
+        ["app", "servers"],
+        `is refused with ${nonVpsTarget}: web copies across servers run on ${vpsChoice}; remove app.servers, or choose such a target`,
+      );
+    }
+    if (isPreview) {
+      issue(
+        ["app", "servers"],
+        "is refused in a preview environment: previews run one copy on one server; remove app.servers",
+      );
+    }
+    if (plan.storage?.sqlite !== undefined) {
+      issue(
+        ["app", "servers"],
+        "is refused with storage.sqlite: SQLite lives on one server's disk, so copies would diverge; move to PostgreSQL or MySQL before adding web copies",
+      );
+    }
+    if (plan.storage?.files !== undefined) {
+      issue(
+        ["app", "servers"],
+        "is refused with storage.files: local uploads live on one server's disk; move uploads to S3-compatible object storage before adding web copies",
+      );
+    }
+    const seenWeb = new Set<string>();
+    for (const [i, server] of webCopies.entries()) {
+      if (seenWeb.has(server)) {
+        issue(
+          ["app", "servers", i],
+          `"${server}" is listed more than once; name each web copy server once`,
+        );
+      }
+      seenWeb.add(server);
+      if (!named.has(server)) {
+        const instead =
+          names.length > 0 ? `use one of ${names.join(", ")}, or` : "the plan has none, so";
+        issue(
+          ["app", "servers", i],
+          `names no server of the plan: "${server}"; ${instead} add it to servers[] first`,
+        );
+      } else if (monitoringServer === server) {
+        issue(
+          ["app", "servers", i],
+          `cannot run on monitoring server "${server}": the monitoring server holds only the monitoring stack; give the web copy its own server`,
+        );
+      }
+    }
+  }
+
+  for (const [wi, worker] of workers.entries()) {
+    const wServers = worker.servers ?? [];
+    if (wServers.length === 0) continue;
+    if (nonVps) {
+      issue(
+        ["processes", "workers", wi, "servers"],
+        `is refused with ${nonVpsTarget}: worker copies across servers run on ${vpsChoice}; remove servers, or choose such a target`,
+      );
+    }
+    if (isPreview) {
+      issue(
+        ["processes", "workers", wi, "servers"],
+        "is refused in a preview environment: previews run on one server; remove servers",
+      );
+    }
+    for (const [si, server] of wServers.entries()) {
+      if (!named.has(server)) {
+        const instead =
+          names.length > 0 ? `use one of ${names.join(", ")}, or` : "the plan has none, so";
+        issue(
+          ["processes", "workers", wi, "servers", si],
+          `names no server of the plan: "${server}"; ${instead} add it to servers[] first`,
+        );
+      } else if (monitoringServer === server) {
+        issue(
+          ["processes", "workers", wi, "servers", si],
+          `cannot run on monitoring server "${server}": the monitoring server holds only the monitoring stack; give the worker copy its own server`,
+        );
+      }
+    }
+  }
+
+  if (plan.scaling !== undefined) {
+    if (nonVps) {
+      issue(
+        ["scaling"],
+        `is refused with ${nonVpsTarget}: scaling across servers runs on ${vpsChoice}; remove scaling, or choose such a target`,
+      );
+    }
+    if (isPreview) {
+      issue(
+        ["scaling"],
+        "is refused in a preview environment: previews run on one server; remove scaling",
+      );
+    }
+  }
+
+  const copyServers = new Set(appCopyServers(plan));
   for (const [i, { name }] of servers.entries()) {
-    if (servicesOn(plan, name).length > 0 || move?.from === name) continue;
+    if (servicesOn(plan, name).length > 0 || copyServers.has(name) || move?.from === name) continue;
     // The monitoring server holds only the monitoring stack.
-    if (monitoring?.kind === "server" && monitoring.server === name) continue;
+    if (monitoringServer === name) continue;
     issue(
       ["servers", i],
-      `runs no enabled service: place a service on ${name} (services[].server), or remove the server (it is deleted at the next provision, after your approval)`,
+      `runs no enabled service: place a service on ${name} (services[].server), add it to app.servers or a worker's servers, or remove the server (it is deleted at the next provision, after your approval)`,
     );
   }
   if (network !== undefined) checkNetwork(network, plan, names, issue);

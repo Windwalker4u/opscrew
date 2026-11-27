@@ -73,6 +73,11 @@ const WorkerSchema = z
     memoryMb: MemoryMbSchema.default(256),
     /** `false` keeps the entry and runs nothing. */
     enabled: z.boolean().default(true),
+    /**
+     * Extra servers (`servers[].name`) that also run copies of this worker beside `app` (033).
+     * Refused when `single` is true. Absent: runs on `app` only.
+     */
+    servers: z.array(ServerNameSchema).min(1).optional(),
   })
   .superRefine((worker, ctx) => {
     if (worker.single && worker.count !== 1) {
@@ -81,6 +86,27 @@ const WorkerSchema = z
         path: ["count"],
         message: "must be 1 when single is true: a scheduler that runs twice runs every job twice",
       });
+    }
+    if (worker.single && worker.servers !== undefined && worker.servers.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["servers"],
+        message:
+          "must be absent when single is true: a single-instance scheduler must run on one server only",
+      });
+    }
+    if (worker.servers !== undefined) {
+      const seen = new Set<string>();
+      for (const [i, server] of worker.servers.entries()) {
+        if (seen.has(server)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["servers", i],
+            message: `"${server}" is listed more than once; name each copy server once`,
+          });
+        }
+        seen.add(server);
+      }
     }
   });
 

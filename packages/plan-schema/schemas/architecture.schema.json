@@ -668,6 +668,37 @@
           "required": ["client", "presignedUploads", "variables"],
           "additionalProperties": false
         },
+        "statelessIssues": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["local-sessions", "local-uploads"]
+              },
+              "framework": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "file": {
+                "type": "string",
+                "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+              },
+              "remediation": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["kind", "framework", "evidence", "remediation"],
+            "additionalProperties": false
+          }
+        },
         "docker": {
           "type": "object",
           "properties": {

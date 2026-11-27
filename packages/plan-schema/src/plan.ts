@@ -50,6 +50,27 @@ import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
 
 /**
+ * Load-balancing policy for multi-copy web servers (`scaling.loadBalancer.policy`, 033).
+ */
+export const LoadBalancerPolicySchema = z.enum(["round_robin", "least_conn", "ip_hash"]);
+export type LoadBalancerPolicy = z.output<typeof LoadBalancerPolicySchema>;
+
+/**
+ * Multi-server scaling settings (`plan.scaling`, 033 Phase 1).
+ * `loadBalancer.kind: "edge"` balances requests across `app` and `app.servers` from the front
+ * server's reverse proxy over the WireGuard private network.
+ */
+export const ScalingSchema = z.strictObject({
+  loadBalancer: z
+    .strictObject({
+      kind: z.literal("edge"),
+      policy: LoadBalancerPolicySchema.default("round_robin"),
+    })
+    .optional(),
+});
+export type Scaling = z.output<typeof ScalingSchema>;
+
+/**
  * The reverse proxy in front of every OpsCrew app on a server: Caddy (the default), nginx with
  * certbot, or OpenLiteSpeed with certbot. Every OpsCrew app on one server uses the same one.
  */
@@ -2328,13 +2349,20 @@ const DeployPlanFieldsSchema = z.strictObject({
     ),
     /** Absent until design sets it. */
     build: AppBuildSchema.optional(),
+    /**
+     * Extra servers (`servers[].name`) that run additional copies of the web process beside `app`
+     * (033). Absent: runs on `app` only.
+     */
+    servers: z.array(ServerNameSchema).min(1).optional(),
   }),
   target: DeployTargetSchema,
   /**
-   * The app's extra servers, for services placed on them; the app's own server is `target`.
-   * Absent: none (a plan without them keeps its bytes).
+   * The app's extra servers, for services or app/worker copies placed on them; the app's own
+   * server is `target`. Absent: none (a plan without them keeps its bytes).
    */
   servers: z.array(ExtraServerSchema).optional(),
+  /** Multi-server scaling and load-balancing settings (033). Absent when single-copy. */
+  scaling: ScalingSchema.optional(),
   /** How a new version replaces the running one. */
   deploy: DeploySettingsSchema.prefault({}),
   /** Scheduled snapshots and their off-server copy; absent: neither. */

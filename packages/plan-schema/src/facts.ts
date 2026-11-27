@@ -340,6 +340,26 @@ export const ProjectFactsSchema = z.strictObject({
       variables: z.array(EnvVarNameSchema),
     })
     .optional(),
+  /**
+   * Local per-server state detected in app code or config that breaks across >1 server (033):
+   * file/memory sessions or local-disk uploads. Absent when none is found.
+   */
+  statelessIssues: z
+    .array(
+      z.strictObject({
+        kind: z.enum(["local-sessions", "local-uploads"]),
+        /** Framework or ecosystem where the local state was detected (e.g. `laravel`, `express`). */
+        framework: z.string().min(1),
+        /** Deterministic evidence string (e.g. `SESSION_DRIVER=file`). Never a secret value. */
+        evidence: z.string().min(1),
+        /** Repo-relative file path where the setting or usage was detected, when known. */
+        file: RepoPathSchema.optional(),
+        /** Plain-English next step to make the app stateless before scaling across servers. */
+        remediation: z.string().min(1),
+      }),
+    )
+    .min(1)
+    .optional(),
   docker: z.strictObject({
     dockerfile: RepoPathSchema.optional(),
     compose: RepoPathSchema.optional(),

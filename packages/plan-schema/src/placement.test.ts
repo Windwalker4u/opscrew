@@ -405,7 +405,7 @@ describe("the extra servers", () => {
       {
         path: "servers.1",
         message:
-          "runs no enabled service: place a service on box (services[].server), or remove the server (it is deleted at the next provision, after your approval)",
+          "runs no enabled service: place a service on box (services[].server), add it to app.servers or a worker's servers, or remove the server (it is deleted at the next provision, after your approval)",
       },
     ]);
     const moving = {

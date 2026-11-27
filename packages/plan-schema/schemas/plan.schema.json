@@ -302,6 +302,14 @@
           },
           "required": ["builder", "chosen", "reason", "runtime", "probe"],
           "additionalProperties": false
+        },
+        "servers": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,14}$"
+          }
         }
       },
       "required": ["name", "port", "env"],
@@ -842,6 +850,28 @@
         "additionalProperties": false
       }
     },
+    "scaling": {
+      "type": "object",
+      "properties": {
+        "loadBalancer": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "edge"
+            },
+            "policy": {
+              "default": "round_robin",
+              "type": "string",
+              "enum": ["round_robin", "least_conn", "ip_hash"]
+            }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "deploy": {
       "default": {},
       "type": "object",
@@ -1065,6 +1095,14 @@
               "enabled": {
                 "default": true,
                 "type": "boolean"
+              },
+              "servers": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,14}$"
+                }
               }
             },
             "required": ["name", "command", "source"],

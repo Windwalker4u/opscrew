@@ -191,7 +191,7 @@ describe("monitoring's rules", () => {
       {
         path: "servers.0",
         message:
-          "runs no enabled service: place a service on monitoring (services[].server), or remove the server (it is deleted at the next provision, after your approval)",
+          "runs no enabled service: place a service on monitoring (services[].server), add it to app.servers or a worker's servers, or remove the server (it is deleted at the next provision, after your approval)",
       },
     ]);
   });

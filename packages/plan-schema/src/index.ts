@@ -45,8 +45,10 @@ export {
 } from "./migrations";
 export { isOutsideMember, monitoringOf, monitoringServerName } from "./monitoring";
 export {
+  appCopyServers,
   DeviceNameSchema,
   GRANTABLE_KINDS,
+  hasRemoteAppCopies,
   inPrivateNetworks,
   type Move,
   MoveSchema,
@@ -57,6 +59,8 @@ export {
   serverOfService,
   servicesOn,
   WireGuardKeySchema,
+  webServers,
+  workerServers,
 } from "./placement";
 export * from "./plan";
 export * from "./requirements";
