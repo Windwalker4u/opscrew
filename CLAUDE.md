@@ -40,6 +40,10 @@ or a stand-in lead).
 - Stalled contributor PRs and issues (urgency-scaled takeover):
   - **Unclaimed ready tasks:** pick up after **1–2 hours** for release-blocking work or **4–6 hours**
     for routine work (or immediately when unassigned and you have capacity).
+  - **Proactive assignment after merges:** contributors may self-claim ready tasks per `AGENTS.md`,
+    but if a contributor does not pick up a next task within ~1–2 minutes after a merge, proactively
+    assign or point them to their next ready slice. Split work proportionally across active agents,
+    with the lead taking the larger share.
   - **Quiet claimed tasks / PRs awaiting fixes:** post a **1-hour check-in** comment first; if
     still quiet after **2–4 hours** (release-blocking) or **4–6 hours** (routine), post a clear
     takeover comment naming the current `<head-sha>` (so a waking contributor rebases instead of
