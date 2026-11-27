@@ -608,3 +608,56 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   implementers' findings, then its pull request, stacked on OVHcloud's
 - [ ] T3533 (lead) The live pass, only with the founder's go-ahead (it costs money;
   [issue #14](https://github.com/opscrew-hub/opscrew/issues/14))
+
+### The core lead's review of Kamatera's pull request ([#55](https://github.com/opscrew-hub/opscrew/pull/55))
+
+- [ ] T3534 [US6] An existing server's own firewall never drifts from the plan in silence (review points 1 and 2)
+  - Owns: `packages/secops/src/policies/**`, `packages/agents/src/provision/**` (not `plan-json.ts`),
+    `packages/agents/src/retarget/**`, `packages/agents/src/secure/server-firewall.ts` (and their tests)
+  - Reads: ADR 0029 D13; `packages/iac-templates/shared/server-firewall.sh.tftpl` (its `ssh_sources`,
+    `web_sources` and `wireguard_port` lines keep their form); the review on #55
+  - Accept:
+    - For a `firewallCheck: "server"` provider's server the plan doesn't create, SecOps parses the
+      rules from the startup script in that resource change's `before` (policies see the masked plan,
+      which has no `prior_state`) and compares them with the plan's `ssh_allowed_cidrs`,
+      `http_allowed_cidrs` and the module call's `wireguard_port`. Any difference fails critical, with
+      a plain next step. A missing or unreadable script fails critical too.
+    - `provision` and `retarget` stop before any approval when the plan would change those networks
+      on such a server that already exists, saying why (the rules are set at the first boot and
+      OpsCrew can't change them in place yet) and what to do instead. A test proves each stops.
+    - `secure`'s remediation no longer says that editing the tfvars and reloading fixes the rules. It
+      says the rules are set at the first boot and can't be changed in place by OpsCrew yet. It says
+      how to load them again as written (`systemctl restart opscrew-firewall.service`, which loads
+      `/etc/opscrew/firewall.nft`, T3535), and what to do when the plan's networks really changed.
+    - Every other provider's results and texts are unchanged.
+  - Effort: high
+
+- [ ] T3535 [P] [US6] The server firewall's script and Kamatera's module harden (review points 3 to 8)
+  - Owns: `packages/iac-templates/shared/**`, `packages/iac-templates/src/**` (and snapshots),
+    `packages/providers/kamatera/**`
+  - Accept:
+    - The rules go to `/etc/opscrew/firewall.nft`, loaded by a oneshot `opscrew-firewall.service`
+      that loads and deletes only `inet opscrew-firewall` (never `flush ruleset`).
+      `nftables.service` is neither enabled nor touched.
+    - After the ssh reload, `sshd -T` must show `passwordauthentication no` (and
+      `kbdinteractiveauthentication no`), or the step fails closed.
+    - The forward chain drops non-DNAT traffic from outside the server routed to `docker0` or `br-*`.
+    - `variables.tf` validates each CIDR in `ssh_allowed_cidrs` and `http_allowed_cidrs` with
+      `cidrhost`, and `wireguard_port` as empty or a port in 1 to 65535.
+    - `power_on` is in `ignore_changes` and `terraform.lifecycleIgnored`.
+    - `findAppServers` matches only the app's exact server names: `<app>`, and `<app>-<name>` for a
+      name the plan gives, plus their `(n)` duplicates. A sibling app's `shop-staging` never matches
+      `shop`.
+    - The `ssh_sources=`, `web_sources=` and `wireguard_port=` lines keep their form (T3534 parses
+      them).
+  - Effort: high
+
+- [ ] T3536 [P] [US6] Kamatera's generated root password never leaves the state (review point 9)
+  - Owns: `packages/agents/src/provision/plan-json.ts` (and its test), `packages/cli/test/live/kamatera.test.ts`
+  - Accept:
+    - `ALWAYS_MASKED` masks `kamatera_server`'s `generated_password` in resource changes, drift and
+      planned values, whether or not the provider marks it sensitive. A test shows a plan JSON
+      carrying it in `before`, `after` and `prior_state` keeps no trace of it once masked.
+    - The pull request's answer names where raw plan JSON goes (the sidecar, policies, audit,
+      prompts) and that each sees only the masked one; the task's report names the code for it.
+  - Effort: medium
