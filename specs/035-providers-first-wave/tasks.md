@@ -562,7 +562,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/core && npx vitest run --root packages/core && pnpm lint`
   - Effort: medium
 
-- [ ] T3529 [P] [US9] The guide
+- [x] T3529 [P] [US9] The guide
   - Owns: `docs/guide/kamatera.md`, and Kamatera's lines in `docs/prices-compared.md`,
     `docs/guide/snapshots.md`, `retarget.md` and `credential-rotation.md`
   - Reads: spec US9; research R4; `docs/guide/contabo.md` (the model); README's provider list
@@ -580,7 +580,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T3530 [P] [US9] The plugin's skills and the MCP text
+- [x] T3530 [P] [US9] The plugin's skills and the MCP text
   - Owns: `plugin/**`, `packages/mcp-server/src/**` (text only)
   - Reads: spec US9.3; how T3512 added OVHcloud
   - Depends: T3527
@@ -590,7 +590,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: medium
 
-- [ ] T3531 [P] [US9] The live test and its steps
+- [x] T3531 [P] [US9] The live test and its steps
   - Owns: `packages/cli/test/live/kamatera.test.ts`, Kamatera's section of `docs/e2e.md`
   - Reads: `packages/cli/test/live/contabo.test.ts` and `ovhcloud.test.ts`, `docs/e2e.md`, spec
     SC-3513
