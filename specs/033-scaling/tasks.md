@@ -14,7 +14,7 @@
 
 ## Wave 1b — Stateless Readiness Detection (`@opscrew/detect`, Contributor Slice A)
 
-- [ ] **T3304 (contributor — Slice A):** Implement deterministic `detectStatelessIssues` in `packages/detect/src/stateless.ts` (Laravel/PHP, Express/Node.js, Django/Python, Rails/Ruby per `research.md` R3), wire into `detectProject` → `ProjectFacts.statelessIssues`, and add fixture-backed unit tests covering both unsafe local defaults and safe Redis/DB/cookie/S3 configurations.
+- [x] **T3304 (contributor — Slice A):** Implement deterministic `detectStatelessIssues` in `packages/detect/src/stateless.ts` (Laravel/PHP, Express/Node.js, Django/Python, Rails/Ruby per `research.md` R3), wire into `detectProject` → `ProjectFacts.statelessIssues`, and add fixture-backed unit tests covering both unsafe local defaults and safe Redis/DB/cookie/S3 configurations.
 
 ## Wave 2 — Runtime, Load Balancing & Serial Rolling Deploy (`@opscrew/iac-templates`, Lead)
 
