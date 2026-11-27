@@ -3,10 +3,10 @@ import { isRecord, OpsCrewError, zodIssues } from "@opscrew/core";
 import { CurrencySchema, PlainUrlSchema, RegionSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 
-/** The shared first-boot setup OpsCrew adds to every server module (ADR 0029, D5). */
 /** The root variable holding the deploy key's text: a provider with no SSH-key resource uses it. */
 const DEPLOY_KEY_TEXT = "var.deploy_ssh_public_key";
 
+/** The shared first-boot setup OpsCrew adds to every server module (ADR 0029, D5). */
 const SHARED_CLOUD_INIT = "cloud-init.yaml.tftpl";
 
 /** A function of the contract; only its kind is checked. */
