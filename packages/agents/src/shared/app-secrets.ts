@@ -65,6 +65,7 @@ export const GeneratedValuesSchema = z.object({
  * into `network` must be WireGuard keys.
  */
 const GeneratedFileSchema = z.looseObject({
+  services: GeneratedValuesSchema.shape.services,
   network: z.record(z.string(), WireGuardKeySchema).optional(),
   grants: GeneratedValuesSchema.shape.grants,
   monitoring: MonitoringValuesSchema.optional(),

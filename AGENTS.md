@@ -158,6 +158,11 @@ It reviews every pull request and merges it; nothing reaches `main` any other wa
   - **After a merge:** rebase your next branch onto `main`.
 - **Report honestly:** never mark something done that you didn't verify. A failing test or a
   skipped step is said plainly in the pull request.
+- **Keep moving while waiting on others:** always pick up the next unblocked task or phase from
+  the active feature's `tasks.md`, an open issue, or the approved roadmap queue until you reach a
+  milestone or run out of unblocked work (only pausing when every remaining task is blocked on a
+  review, a live test, or a founder decision). Start the watcher in the background so you wake as
+  soon as a reply arrives, and switch back to review feedback first.
 
 ### Talking to the core's lead: GitHub issues
 
