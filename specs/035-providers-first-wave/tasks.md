@@ -456,7 +456,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && npx vitest run --root packages/providers/kamatera && pnpm lint`
   - Effort: high
 
-- [ ] T3524 [P] [US6] [US7] The server API, the `<name>(1)` guard and the connector
+- [x] T3524 [P] [US6] [US7] The server API, the `<name>(1)` guard and the connector
   - Owns: `packages/providers/kamatera/src/servers.ts`, `servers.test.ts`, `connector.ts`,
     `connector.test.ts`, their fixtures
   - Reads: plan 8.; research R4 §2, §8, §9 and §10; `ServerSnapshotApi` and `VpsConnector` in

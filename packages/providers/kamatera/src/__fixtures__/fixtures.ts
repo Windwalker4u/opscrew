@@ -32,7 +32,7 @@ export function queued(status: string, log = ""): FakeReply {
       {
         id: 4242,
         status,
-        server: "opscrew-shop-ab12",
+        server: "shop",
         description: "Fake command",
         added: "2026-11-26 10:00:00",
         executed: status === "pending" ? null : "2026-11-26 10:00:02",

@@ -452,9 +452,7 @@ describe("a command's log", () => {
     for (const value of [PASSWORD, ADDRESS]) expect(errorText(error)).not.toContain(value);
   });
 
-  // The client puts a failed command's log in its error today (client.ts, `#commandFailed`),
-  // redacting only the values it knows. This flips to `it` once the client leaves the log out.
-  it.fails("never reaches the error of a failed command", async () => {
+  it("never reaches the error of a failed command", async () => {
     const { api } = setup({
       "GET /service/servers": serverList(server("shop")),
       "POST /service/server/poweroff": POWER_COMMAND,
