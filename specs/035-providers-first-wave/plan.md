@@ -1,8 +1,9 @@
-# Implementation Plan: More server providers, first wave (OVHcloud first)
+# Implementation Plan: More server providers, first wave (OVHcloud, then Kamatera)
 
-**Branch**: `035-providers-first-wave` | **Date**: 2026-11-21 | **Spec**: [spec.md](spec.md)
+**Branch**: `035-providers-first-wave` for OVHcloud, `035-kamatera` for Kamatera (stacked on it) |
+**Date**: 2026-11-21 for OVHcloud, 2026-11-24 for Kamatera | **Spec**: [spec.md](spec.md)
 **Input**: [spec.md](spec.md), [research.md](research.md) (R1 OVHcloud's facts, R2 the lead's
-decisions, R3 the live checks).
+decisions, R3 the live checks, R4 Kamatera's facts).
 
 ## Summary
 
@@ -26,6 +27,23 @@ contract gains one optional field, `rootVariables`, with three small generic con
 That change, and the new id in the shared id lists, go through `[035]` issues to the core's lead
 first. Kamatera, IONOS Cloud and UpCloud come later, each in its own pull request.
 
+Kamatera becomes the fifth, `kamatera`, in `@opscrew/provider-kamatera`, on a branch stacked on
+OVHcloud's because it needs the same contract fields and shared lists. It contains:
+- its definition;
+- a typed client over the API front Kamatera's own Terraform provider and CLI use;
+- a catalogue: a dated table of Kamatera's public calculator prices, refreshed from the same
+  public file when it is reachable;
+- the server API the Terraform provider lacks: lookup by name, snapshots, power and terminate;
+- its HCL module on `Kamatera/kamatera` 0.9.4 (a server with a startup script, no key resource and
+  no user data).
+
+Kamatera needs up to two more shared changes, both additive:
+- `ProviderTerraform.firstBoot?: "cloud-init" | "script"`, because it takes the first-boot setup as
+  a startup script, not as user data (issue #13, the contract question);
+- a server-firewall kind in SecOps, because Kamatera has **no cloud firewall OpsCrew can set or
+  prove** and the firewall has to live on the server (issue #13, the founder's safety-model
+  question). Without the founder's approval, Kamatera's work stops at that task.
+
 ## Technical Context
 
 - **Language**: TypeScript strict ESM on Node 22.9+, pnpm and turbo, Vitest, zod, Biome, as for
@@ -37,12 +55,23 @@ first. Kamatera, IONOS Cloud and UpCloud come later, each in its own pull reques
   client credentials from `https://auth.eu.ovhcloud.com/oauth2/token`, scope `all` (go-ovh
   `ovh.go` and `configuration.go`, read 2026-11-21). The public catalogue is
   `GET /1.0/order/catalog/public/cloud?ovhSubsidiary=IE`.
-- **Testing**: unit tests with injected `fetch` fakes and fixtures written from the API's documented
-  answers (`eu.api.ovh.com/v1/cloud.json`, `v2/publicCloud.json`). No real cloud call anywhere.
-  The module is checked with `tofu validate` and `fmt -check`, plus `terraform` where installed,
-  skipping when the provider can't be downloaded, as Contabo's is.
+- **Kamatera's Terraform provider**: `Kamatera/kamatera` **0.9.4**, MPL-2.0, community tier, on the
+  OpenTofu registry, published 2025-09-11 (R4 §2). It is built on terraform-plugin-sdk v2 and its
+  resources are `kamatera_server` and `kamatera_network`, with the data sources
+  `kamatera_datacenter` and `kamatera_image`.
+- **Kamatera API**: the front its Terraform provider and cloudcli use, `https://cloudcli.cloudwm.com`,
+  where **every call** carries `AuthClientId` and `AuthSecret` and returns a queued command id
+  (R4 §1). The console API, `https://console.kamatera.com/service/`, is the documented front with
+  an hourly token; the decision below takes the first, and the live pass confirms it.
+- **Kamatera prices**: `https://console.kamatera.com/info/calculator.js.php`, a public
+  unauthenticated file with every price in US dollars a month; the Terraform provider reads it
+  during plan to validate the datacenter and the plan (R4 §7).
+- **Testing**: unit tests with injected `fetch` fakes and fixtures written from the documented
+  answers and the public calculator data. No real cloud call anywhere. Each module is checked with
+  `tofu validate` and `fmt -check`, plus `terraform` where installed, skipping when the provider
+  can't be downloaded.
 - **Constraints**:
-  - no new dependency (the client uses the injected `fetch`, and node's `crypto` only if needed);
+  - no new dependency (the clients use the injected `fetch`, and node's `crypto` only if needed);
   - no secret-shaped literal in any fixture (`fakeSecret`, `{{FAKE:<kind>}}`);
   - temp files under `OPSCREW_TEST_TMP=D:/opscrew-test-tmp`.
 
@@ -52,19 +81,31 @@ first. Kamatera, IONOS Cloud and UpCloud come later, each in its own pull reques
   and a destroy needs `allowDestroy` and the typed name. The connector's mutating calls (snapshot,
   rebuild, power, reinstall) are the ones `ServerSnapshotApi` already gates in the agents. No
   standing approval is added. ✅
+  **Kamatera** keeps the gate for everything Terraform creates: the server, its startup script and
+  its key are one plan approved by its hash, and the destroy needs the same. Its **firewall** is
+  the one exception: with no cloud firewall to plan, the gate is the first-boot script inside the
+  approved plan plus `opscrew secure` after the boot, and a server is reachable between its boot
+  and that script's run. That changes the safety model for one provider, so it waits for the
+  founder's decision in issue #13. ⚠️
 - **II. The user owns everything**: the module is vendored into the user's repository, and the
   project id is never written to a file. A user who deletes OpsCrew keeps HCL that runs with
   `TF_VAR_ovhcloud_project_id` set. The guide says so. ✅
+  Kamatera's module is vendored the same way, with its startup script inside it: whoever runs it
+  without OpsCrew runs the same server and firewall. ✅
 - **III. Dual engine**: the module stays in the common dialect and is validated under both
   engines. ✅
 - **IV. Secrets**: all four values are registered with the redactor when read. They are never in
   state (the provider reads them from the environment) or in tfvars. The service account is
   scoped to one project by an IAM policy, which the guide and `init` explain. ✅
+  Kamatera's key **cannot be scoped**, so both values are redacted, the guide recommends a separate
+  account, and the root password its provider records in state is random and never shown. ✅
 - **V. Deterministic first**: the catalogue, availability and every check are code. No model is
   involved. ✅
 - **VI. Contracts first**: one optional field, `rootVariables`, owned by `@opscrew/contracts`, is
   changed in its own task (T3502) and recorded in ADR 0029 as D11. The id joins the lists in
   T3510. ✅
+  Kamatera's `firstBoot` and its SecOps kind are separate, additive tasks (T3520, T3526) recorded
+  as D12 and D13, each after its issue. ✅
 - **VII. Test-first**: every task names its `Verify:` command. ✅
 
 ## Design
@@ -237,6 +278,186 @@ Then `pnpm check` must pass, with any exhaustive switch left over fixed. This is
 - **The module** under both engines, and SecOps on an OVHcloud plan JSON fixture (an attached
   group, a missing one, the default group never used).
 
+### 7. Kamatera's contract change: `ProviderTerraform.firstBoot` (T3520, lead, after issue #13)
+
+```ts
+/**
+ * How a provider's servers take the shared first-boot setup: `cloud-init` (the default, and
+ * every provider before Kamatera) as the `cloud-init.yaml.tftpl` user data, or `script` as a
+ * shell script the module passes where the provider takes a startup script (Kamatera, which has
+ * no user data). Both render the same steps, from the same context.
+ */
+firstBoot?: "cloud-init" | "script";
+```
+
+- **iac-templates:** today it writes `cloud-init.yaml.tftpl` into every server module's folder and
+  the module reads it. With `script`, it also writes `first-boot.sh.tftpl`, the generic wrapper:
+  the module renders the cloud-config, base64-encodes it (`base64encode`), and passes the wrapper
+  to `startup_script`. The wrapper ships **beside** the cloud-config rather than replacing it,
+  because the deploy key and the web flag are values only `templatefile` knows at apply time, so
+  the steps have to stay a template. The other providers never get the wrapper.
+- **The script's shape:** a bash script with a marker guard (`/var/lib/opscrew/first-boot.done`),
+  which installs cloud-init when the image lacks it, writes the cloud-config to
+  `/var/lib/cloud/seed/nocloud-net/user-data`, and runs `cloud-init clean`, `init --local`, `init`
+  and `modules --mode=final`. It is idempotent, so an image that runs it on every boot changes
+  nothing after the first. The live pass proves whether it runs once, and whether the image has
+  cloud-init at all (R4 §9).
+- **ADR 0029 D12:** why (Kamatera has no user data in its Terraform), the rule (the same steps,
+  rendered twice), and that the vendored module keeps its script, so the user owns it.
+- **Only Kamatera's files change.** The other providers' roots and modules are byte-identical,
+  which the existing snapshot tests prove.
+
+### 8. The Kamatera package (`packages/providers/kamatera`, `@opscrew/provider-kamatera`)
+
+- **`client.ts`**:
+  - **Front:** `https://cloudcli.cloudwm.com` (`KAMATERA_API_URL` overrides it), the front
+    Kamatera's own Terraform provider and CLI use (decision 1). No token step: every call carries
+    `AuthClientId` and `AuthSecret`, read from `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET`
+    and registered with the redactor.
+  - **Answers:** every one parsed with zod; a list is a list, and a command is `{ id }` or a
+    one-element list, as the API answers both (R4 §10).
+  - **Queued commands:** a create, a terminate and a configure return a command id; the client
+    polls `GET /service/queue?id=<id>` with an injected clock and sleep until `complete`, and fails
+    with the command's `log` on `error`.
+  - **Errors:** HTTP 500 is used for user mistakes at Kamatera (R4 §10), so the client reads the
+    body's `message` and `errors[].info` and says what to do; a 404 says the server or the route
+    was not found; no `post` is ever retried.
+  - **No scope:** neither value can be limited, so a message never prints one.
+- **`static-prices.ts`**: the dated table of 2026-11-22, in USD a month, with `hourly` =
+  `monthly / 730`, and these plans (R4 §7):
+  - `A-1-2` (1 vCPU A, 2 GB, 20 GB, $6.00), `A-2-4` (2, 4 GB, 40 GB, $19.00), `A-4-8`
+    (4, 8 GB, 80 GB, $42.00);
+  - `B-1-2` (1 vCPU B, 2 GB, 20 GB, $15.00), `B-2-4` (2, 4 GB, 40 GB, $42.00), `B-4-8`
+    (4, 8 GB, 80 GB, $90.00);
+
+  plus the snapshot rate ($0.05 a GB a month), the extra IPv4 ($1 a month), the traffic allowance
+  per datacenter (5000 GB in Europe and North America, 1000 GB in Asia and Sydney, $0.01 a GB
+  over), the stopped-server rate (about a tenth: $0.0102 an hour for 50 GB, R4 §3) and the source.
+- **`catalog.ts`**:
+  - **The table:** every plan offered in every mapped datacenter, `billing: "hourly"`, `hourly`,
+    `monthly` = the table's, no `setupFee`, `source: "static"` and the date.
+  - **Live prices:** the public calculator file, read at most once per catalogue when it is
+    reachable, because its prices are public and need no credentials. It updates the prices and
+    says `source: "live"`; a failed read keeps the table and adds no warning (it is the same
+    data).
+  - **Availability:** Kamatera publishes no per-account availability, so every plan is offered
+    everywhere it is sold; an apply it refuses (the account's price limit, its allotment, no
+    capacity) takes the generic unavailable-size path, with the error patterns in the definition.
+  - **`extras(location)`:** the snapshot rate, the extra IPv4, the traffic allowance and the
+    overage rate.
+- **`servers.ts`** (`ServerSnapshotApi`):
+  - **`findAppServers(app)`:** `GET /service/servers` (id, name, datacenter, power), matched on
+    the app's exact name, every one `nameOnly: true`. The ids and names both come back, so the
+    Terraform id — the name — is available without another call.
+  - **The `<name>(1)` guard:** the same list is checked for `<name>(1)` before every apply; a
+    match is reported by name and never adopted silently (R4 §2, issue #25).
+  - **Snapshots:** created, listed, reverted and deleted through the API's snapshot route, named
+    `opscrew-<app>-<server>-<time>` and listed by that prefix, oldest first. The create's command
+    is awaited; the delete's too.
+  - **Power:** `poweron`, `poweroff` and `reboot`, each an awaited command; `powerOff` never forces
+    (the terminate does).
+  - **Terminate:** `POST /service/server/terminate` with `force: true`, awaited. The Terraform
+    provider removes a server with it, so the connector's `remove` is not used
+    (`connectorRemoval` false), and `rebuild`/`reinstall` are refused with a plain message: a
+    Kamatera server is made again as a new one.
+- **`connector.ts`**: `configured`, `catalog()`, `servers`, and `verifyCredentials`, which reads
+  the account's server list and a datacenter's options and says what it found (the server count
+  and the datacenter codes). No `firewalls`, `backups` or `objectStorage`.
+- **`definition.ts`** (decision 2):
+  - `currency: "USD"`, `billing: { model: "hourly", counts: "second", setupFee: false }` (billed by
+    the started minute, finer than the offer's hour);
+  - `providerBackups: false`, `backupPercent: 0`, `backupsPrice: "order-page"` (the daily-backup
+    flag exists, its price does not: R4 §5), `backupsOutliveServer: true`;
+  - `snapshots: { kind: "per-gb", perGbMonth: 0.05, perGbHour: 0.05 / 730 }`,
+    `serverSnapshotsOutliveServer: true`;
+  - `deleteProtection: false`, `resize: false`, `offAfterRefusedResize: false`,
+    `removal: { kind: "delete" }`;
+  - `connectorFirewall: false`, `connectorBackups: false`, `connectorRemoval: false`,
+    `homeCacheFiles: []`;
+  - `firewallResourceType: "kamatera_server"` (unused while `firewallCheck` is `"server"`, T3526);
+  - `lifecycleIgnored: ["image_id", "ssh_pubkey", "startup_script"]`;
+  - `sshKeyAttribute: "ssh_pubkey"` (T3516's field: the server takes the key's text);
+  - `tokenRules: []` and `envPrefixes: ["KAMATERA", "CLOUDCLI"]`;
+  - the regions as R4 §6, with the unconfirmed codes noted;
+  - `unavailable` and `serverLimit` patterns from Kamatera's words (`price limit`, `allotment`,
+    `no capacity`, `limit`), marked unverified until the live pass;
+  - `defaultImage: "Ubuntu 24.04"`, mapped by the module's data source (`os = "Ubuntu"`,
+    `code = "24.04 64bit"`);
+  - every text in plain English, and the destroy texts say a stopped server had kept billing and
+    what may outlive the server.
+- **`module/` (`kamatera-instance`)**:
+  - `locals.plans` maps each OpsCrew plan id (`A-2-4`) to `cpu_type`, `cpu_cores`, `ram_mb` and
+    `disk_sizes_gb`, so `server_type` stays an opaque id to the root (decision 5);
+  - `data "kamatera_image"` with `datacenter_id = var.location`, `os` and `code` from the
+    definition's image;
+  - `kamatera_server` with `name = var.name`, `datacenter_id = var.location`, the plan's CPU,
+    memory and disks, `billing_cycle = "hourly"`, `ssh_pubkey = var.deploy_ssh_public_key`,
+    `startup_script = templatefile("${path.module}/first-boot.sh.tftpl", { cloud_config_b64 =
+    base64encode(templatefile("${path.module}/cloud-init.yaml.tftpl", …)) })`,
+    `daily_backup = false`, `power_on = true` and `allow_recreate = false`;
+  - `lifecycle.ignore_changes` on `image_id`, `ssh_pubkey` and `startup_script`, so a change is
+    never planned (they would recreate the server);
+  - no password argument: the provider generates one and records it in state as
+    `generated_password`, which OpsCrew never reads or shows (decision 9);
+  - the outputs the other modules have; `server_id` is the server's **name**, because that is
+    Kamatera's Terraform id (R4 §2);
+  - `src/generated/module.ts` from `pnpm gen:provider-modules`.
+- **SecOps (T3526, after issue #13)**: `ProviderSecOps` gains a firewall kind —
+  `firewallCheck?: "cloud" | "server"`, default `"cloud"`. With `"server"`, `firewall-attached`
+  checks that the planned server's `startup_script` holds the firewall marker, and `opscrew
+  secure` reads the rules over SSH after the boot (default deny; the allowed SSH, web and
+  WireGuard ports) and fails until they are right. The plan, the design summary and the guide then
+  say "cloud firewall: none; server firewall: on". **Not chosen:** D8's connector firewall, because
+  Kamatera's API has no firewall to sync and an SSH-only sync would still leave the same boot gap
+  without the script.
+
+### 9. Kamatera's id joins the lists (T3527, lead, after the issue)
+
+`kamatera` in:
+- `ProviderId`, `VpsProviderId`, `VpsProviderSchema` and `DEFAULT_IMAGES` (`"Ubuntu 24.04"`);
+- `CLOUD_PROVIDERS`, after `ovhcloud`, with the registry's and the CLI's dependencies and the
+  lockfile;
+- the plugin's two credential lists (`plugin/.codex-plugin/plugin.json` and the TOML in
+  `docs/guide/mcp-clients.md`), with `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET`.
+
+Then `pnpm check` passes, with any exhaustive switch left over fixed.
+
+### 10. Kamatera's variables never reach the agent (T3528, small, additive)
+
+`packages/core/src/env.ts` gains `KAMATERA_` and `CLOUDCLI_` among the prefixes the agent's
+environment never gets, with a test, as commit 59e65a49 did for `OVH_` (issue #11). The variables
+stay on the user's computer.
+
+### 11. The guide, the plugin, the live pass (T3529, T3530)
+
+- `docs/guide/kamatera.md` on `docs/guide/contabo.md`'s model, and Kamatera's lines on the pages
+  that list providers and compare prices.
+- The plugin's deploy and snapshot skills say what differs (no cloud firewall, a startup script, no
+  resize, a stopped server that bills).
+- `packages/cli/test/live/kamatera.test.ts` (`OPSCREW_E2E_KAMATERA=1` and the two variables) and its
+  steps in `docs/e2e.md`, written for the founder, on one `A-2-4` at about $0.03 an hour. It is
+  never run without his go-ahead (issue #14).
+
+### 12. Tests (Kamatera)
+
+- **The registry:** its conformance test over the five definitions, and Kamatera's `firstBoot` and
+  `sshKeyAttribute` validated.
+- **iac-templates:** every existing snapshot byte-identical; a root with a `firstBoot: "script"`
+  provider gets `first-boot.sh.tftpl` beside `cloud-init.yaml.tftpl`, and the rendered script
+  carries the same cloud-config, base64-encoded (checked by decoding it, and by `sh -n`).
+- **The client, with `fetch` fakes:** the two headers on every call; a queued create awaited; a
+  command that ends in `error` fails with its `log`; a 500 with `errors[].info` in plain English;
+  no `post` retried; a leak check.
+- **The catalogue:** the six plans, hourly = monthly / 730, the date, `source`, `extras`; the live
+  read updating prices; a failed read keeping the table.
+- **The server API:** `findAppServers` by exact name; the `<name>(1)` guard reporting a stray
+  server; snapshot create/list/delete; power; terminate.
+- **The module:** `tofu validate` and `fmt -check` (and `terraform` where installed), plus a plan
+  with a fake provider config if the network allows, skipping plainly otherwise; SecOps on a
+  Kamatera plan JSON fixture.
+- **The flows:** SC-3508's one flow test in agents on a Kamatera app, and SC-3509's two cases
+  (a timed-out create; a `<name>(1)` rename).
+
 ## Decisions (lead, 2026-11-21)
 
 1. **`rootVariables` is a contract field, not a plan.yaml field.** The project id belongs with the
@@ -258,8 +479,48 @@ Then `pnpm check` must pass, with any exhaustive switch left over fixed. This is
 5. **Monthly billing, `ovh-ca` and `ovh-us`, automated backups, resizing and delete protection**
    are later, if users ask (research R2).
 
+## Decisions for Kamatera (the contributor, 2026-11-24)
+
+1. **The API front is the cloudcli proxy** (`https://cloudcli.cloudwm.com`): it is the front
+   Kamatera's own Terraform provider and its MIT-licensed CLI use, it covers every route OpsCrew
+   needs (servers, queue, snapshots, power, terminate), and its schema is public. The documented
+   console API has a token step and no snapshot route. The live pass confirms each route; if one
+   is missing, the console API is the fallback for it.
+2. **The plans are OpsCrew's own ids** (`A-2-4`), mapped to Kamatera's CPU type, cores, memory and
+   disk in the module. Kamatera sells a configuration, not a plan, and parsing a name in HCL would
+   be fragile; the definition's offers and the module's map are kept equal by a test.
+3. **`firstBoot` is an optional contract field**, `cloud-init` the default, so the other four
+   providers' files and tests are untouched (issue #13).
+4. **`disable_validations` stays off.** The provider's plan-time check reads Kamatera's public
+   price file and is what refuses an unknown datacenter or plan; OpsCrew validates the datacenter
+   itself too, and the duplicate check costs nothing but a network read. A machine without the
+   network fails the plan with that address named.
+5. **The live prices need no credentials**, because the calculator file is public. The catalog
+   reads it once when reachable and shows `live`; it never blocks a design run.
+6. **The firewall is the server's own**, installed by the first boot and checked by `secure`
+   (issue #13, option A). The founder decides; the tasks that don't need it proceed meanwhile.
+7. **Resize is refused**, because a disk change fails at Kamatera's API (issue #32) and a CPU or
+   memory change's behaviour is unverified; a move is the way, as on OVHcloud.
+8. **Billing counts by the second** in the contract, because Kamatera bills by the started minute
+   (R4 §3); the difference in a shown estimate is under a cent.
+9. **The root password is Kamatera's generated one**, kept in state and never read by OpsCrew; the
+   SSH key is the way in, and the guide says the password is in the state on the user's computer.
+
+10. **Servers are named as on every provider** (`<app>`, `<app>-<name>`), not
+    `opscrew-<app>-<random>` (the lead, 2026-11-27), so the generic takeover and destroy keep finding
+    them. A duplicate create shows as `<name>(n)`; `findAppServers` refuses to go on while one
+    exists, naming it and its datacenter, which also stops destroy and snapshots until the user
+    deletes it in the console.
+11. **Kamatera's name rule** (4–40 letters, digits, dashes or dots) is checked by the module's
+    `name` variable, so a plan fails with a plain message, not the provider's.
+12. **No takeover of a lost server, for now** (known limit). `kamatera_server` imports by its
+    internal UUID, and the connector reports servers by name, so the takeover's `import` fails at
+    plan and creates nothing. Reporting UUIDs is a follow-up.
+13. **No shared SSH-key resource:** Kamatera's servers take the deploy key's text, so
+    `extraShared` declares nothing, which the registry accepts for that case only (issue #52).
+
 ## Order
 
-`tasks.md` holds the order, the waves and each task's number (T3501 to T3518), and the issues each
-one waited for. The plan's first draft numbered them one lower; the numbers above follow
-`tasks.md`.
+`tasks.md` holds the order, the waves and each task's number. OVHcloud is T3501 to T3518, with
+T3515 waiting for the founder. Kamatera is T3519 to T3533, stacked on OVHcloud's branch and
+following it in the review queue.

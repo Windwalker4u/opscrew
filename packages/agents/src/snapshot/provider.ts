@@ -6,7 +6,7 @@
 import type { ServerSnapshotApi } from "@opscrew/contracts";
 import { type CloudProvider, isCloudProvider } from "@opscrew/plan-schema";
 import { credentialsNotSet, providerProfile, vpsConnector } from "../providers";
-import { extraCloudProviders } from "../shared/servers";
+import { extraCloudProviders, extraCloudServers } from "../shared/servers";
 import type { SnapshotRun } from "./run";
 import type { SnapshotEntry } from "./types";
 
@@ -35,8 +35,8 @@ export interface ProviderSnapshot {
 }
 
 /**
- * The whole-server snapshots OpsCrew took of the app's servers at each of their providers, oldest
- * first per server. A provider whose token is not set is said in a warning and left out.
+ * The whole-server snapshots OpsCrew took of the app's servers at each of their providers (the
+ * plan's servers there, by their names at the provider), oldest first per server. A provider whose token is not set is said in a warning and left out.
  */
 export async function providerSnapshots(run: SnapshotRun): Promise<ProviderSnapshot[]> {
   const { deps, plan } = run;
@@ -52,7 +52,13 @@ export async function providerSnapshots(run: SnapshotRun): Promise<ProviderSnaps
       );
       continue;
     }
-    for (const server of await api.findAppServers(plan.app.name)) {
+    const names = [
+      ...(plan.target.provider === provider ? [plan.app.name] : []),
+      ...extraCloudServers(plan)
+        .filter((server) => server.provider === provider)
+        .map((server) => server.resource),
+    ];
+    for (const server of await api.findAppServers(plan.app.name, names)) {
       for (const snapshot of await api.listSnapshots(server.id)) {
         found.push({
           api,

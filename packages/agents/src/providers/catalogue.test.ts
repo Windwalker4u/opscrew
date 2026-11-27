@@ -104,6 +104,8 @@ describe("the provider catalogue", () => {
       { provider: "contabo", size: "V153", location: "EU" },
       // OVHcloud's shared d2 hold at most 50 GB, so an app with PostgreSQL (60 GB) gets b3-16.
       { provider: "ovhcloud", size: "b3-16", location: "DE1" },
+      // Kamatera's A-2-4 has 40 GB of disk, so an app with PostgreSQL (60 GB) gets A-4-8.
+      { provider: "kamatera", size: "A-4-8", location: "EU-FR" },
     ]);
     expect(suggestions.staticSite).toMatchObject({
       target: "cloudflare-workers",
@@ -137,6 +139,26 @@ describe("the provider catalogue", () => {
     });
     expect(d24?.monthly).toBeCloseTo(15.04, 2);
     expect(sizes("ovhcloud").every((size) => size.setupFee === undefined)).toBe(true);
+    // Kamatera bills by the hour (the monthly price over 730), with no setup fee, at one price in
+    // every datacenter.
+    expect(sizes("kamatera").map((size) => size.id)).toEqual([
+      "A-1-2",
+      "A-2-4",
+      "A-4-8",
+      "B-1-2",
+      "B-2-4",
+      "B-4-8",
+    ]);
+    const a24 = sizes("kamatera").find((size) => size.id === "A-2-4");
+    expect(a24).toMatchObject({
+      vcpu: 2,
+      memoryMb: 4096,
+      diskGb: 40,
+      monthly: 19,
+      locations: ["EU-FR", "EU", "EU-ST", "US-NY2", "US-SC", "AS-SG"],
+    });
+    expect(a24?.hourly).toBeCloseTo(19 / 730, 4);
+    expect(sizes("kamatera").every((size) => size.setupFee === undefined)).toBe(true);
   });
 
   it("gives a token's format where the value alone has one, and marks the secrets", async () => {
@@ -255,6 +277,7 @@ describe("the provider catalogue", () => {
       "cloud-server digitalocean": "https://www.digitalocean.com/pricing",
       "cloud-server contabo": "https://contabo.com/en/vps/",
       "cloud-server ovhcloud": "https://www.ovhcloud.com/en-ie/public-cloud/prices/",
+      "cloud-server kamatera": "https://www.kamatera.com/pricing/",
       "cloudflare cloudflare": "https://www.cloudflare.com/plans/",
       "cloudflare cloudflare-workers":
         "https://developers.cloudflare.com/workers/platform/pricing/",

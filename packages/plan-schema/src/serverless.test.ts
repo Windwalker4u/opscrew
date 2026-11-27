@@ -719,6 +719,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "digitalocean",
       "contabo",
       "ovhcloud",
+      "kamatera",
       "own",
       "portainer",
       "localhost",
@@ -726,7 +727,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "github-pages",
       "hosting",
     ]);
-    const onServer = new Set(["hetzner", "digitalocean", "contabo", "ovhcloud", "own"]);
+    const onServer = new Set(["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera", "own"]);
     const runnerHost = { name: "home-box", arch: "amd64" };
     for (const provider of DeployProviderSchema.options) {
       for (const environment of [{ runner: "server" }, { runner: "host", runnerHost }]) {
@@ -741,7 +742,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
           ).toEqual(["environment.runner"]);
           expect(result.error?.issues[0]?.message, what).toMatch(
             new RegExp(
-              `^can be "${environment.runner}" only on a server OpsCrew creates or your own server \\(target.provider hetzner, digitalocean, contabo, ovhcloud or own\\)`,
+              `^can be "${environment.runner}" only on a server OpsCrew creates or your own server \\(target.provider hetzner, digitalocean, contabo, ovhcloud, kamatera or own\\)`,
             ),
           );
         }
@@ -767,8 +768,8 @@ describe("onServer: the runners that deploy on or to a server", () => {
 
 describe("the unions", () => {
   it("have one predicate each: a server, a cloud server, and server-less", async () => {
-    const servers = ["hetzner", "digitalocean", "contabo", "ovhcloud", "own"];
-    const clouds = ["hetzner", "digitalocean", "contabo", "ovhcloud"];
+    const servers = ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera", "own"];
+    const clouds = ["hetzner", "digitalocean", "contabo", "ovhcloud", "kamatera"];
     const serverless = ["cloudflare-workers", "github-pages"];
     for (const provider of DeployProviderSchema.options) {
       expect(onOneServer(provider), provider).toBe(servers.includes(provider));

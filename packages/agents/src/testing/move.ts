@@ -99,12 +99,14 @@ export const NEW_SERVERS: Record<CloudProvider, { id: string; ipv4: string; ipv6
     ipv4: "198.51.100.50",
     ipv6: "2001:db8:50::1",
   },
+  kamatera: { id: "shop", ipv4: "198.51.100.60", ipv6: "2001:db8:60::1" },
 };
 export const OLD_IDS: Record<CloudProvider, string> = {
   hetzner: "4711",
   digitalocean: "3164444",
   contabo: "202611001",
   ovhcloud: "11111111-2222-4333-8444-555555555555",
+  kamatera: "shop",
 };
 
 /** Everything the fakes saw, in order: the trail SC-502 is checked on. */
@@ -159,6 +161,7 @@ const MODULE_PROVIDER: Record<string, CloudProvider> = {
   "digitalocean-droplet": "digitalocean",
   "contabo-vps": "contabo",
   "ovhcloud-instance": "ovhcloud",
+  "kamatera-instance": "kamatera",
 };
 
 const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> = {
@@ -186,18 +189,22 @@ const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> =
     ["ovh_cloud_security_group", "this"],
     ["ovh_cloud_instance", "this"],
   ],
+  // No cloud firewall and no SSH key resource: the server takes the key's text.
+  kamatera: [["kamatera_server", "this"]],
 };
 const SERVER_TYPE: Record<CloudProvider, string> = {
   hetzner: "hcloud_server",
   digitalocean: "digitalocean_droplet",
   contabo: "contabo_instance",
   ovhcloud: "ovh_cloud_instance",
+  kamatera: "kamatera_server",
 };
 const REGISTRY: Record<CloudProvider, string> = {
   hetzner: "registry.opentofu.org/hetznercloud/hcloud",
   digitalocean: "registry.opentofu.org/digitalocean/digitalocean",
   contabo: "registry.opentofu.org/contabo/contabo",
   ovhcloud: "registry.opentofu.org/ovh/ovh",
+  kamatera: "registry.opentofu.org/kamatera/kamatera",
 };
 
 interface FakeConfig {
@@ -1651,6 +1658,7 @@ export function targetOf(kind: MoveSideKind, records = true): DeployPlan["target
     case "digitalocean":
     case "contabo":
     case "ovhcloud":
+    case "kamatera":
       return movePlan({ from: kind }).target;
     case "own":
       return {

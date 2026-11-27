@@ -71,6 +71,10 @@ describe("sanitizeAgentEnv", () => {
     "OVH_ENDPOINT",
     "OVH_CLIENT_ID",
     "OVH_CLOUD_PROJECT_SERVICE",
+    // Kamatera's client id and its API address, and its CLI's variables.
+    "KAMATERA_API_CLIENT_ID",
+    "KAMATERA_API_URL",
+    "CLOUDCLI_APICLIENTID",
     "ARM_CLIENT_ID",
     "ARM_SUBSCRIPTION_ID",
     "AZURE_CLIENT_ID",

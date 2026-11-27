@@ -615,3 +615,442 @@ question goes to the founder in an issue instead.
 - Added from T3513's review: whether OVHcloud's `instanceId` snapshot filter still finds an
   instance's snapshots after the instance is deleted. The live pass records the ids before the
   destroy, so it doesn't depend on it.
+
+## R4. Kamatera
+
+Read 2026-11-22 from https://registry.terraform.io/v1/providers/Kamatera/kamatera,
+https://registry.opentofu.org/v1/providers/kamatera/kamatera/versions,
+https://github.com/Kamatera/terraform-provider-kamatera (docs, `kamatera/*.go`, README, issues #18, #25, #32, #44,
+releases, commits), https://github.com/Kamatera/kamateratoolbox (`pages_src/templates/serverconfiggen.js`),
+https://github.com/Kamatera/docker-machine-driver-kamatera (README), https://github.com/cloudwm/cloudcli (README,
+docs, `cmd/*.go`, `example-cloudcli.env`; Kamatera's own CLI, MIT), the public calculator data
+`https://console.kamatera.com/info/calculator.js.php`, the public CLI schema
+`https://cloudcli.cloudwm.com/schema?supports=1.0.0`, https://www.kamatera.com/knowledgebase/api-documentation/,
+https://www.kamatera.com/faq/answer/permissions-api-documentation/,
+https://www.kamatera.com/faq/answer/will-i-be-charged-for-my-hourly-server-even-when-its-powered-off/,
+https://www.kamatera.com/faq/answer/which-cpu-types-are-offered-by-kamatera/,
+https://www.kamatera.com/faq/answer/why-was-i-charged-after-i-terminated-my-services/,
+https://www.kamatera.com/faq/answer/terminate-server/, https://www.kamatera.com/faq/billing/,
+https://www.kamatera.com/pricing/, https://www.kamatera.com/data-centers/,
+https://www.kamatera.com/knowledgebase/how-to-set-up-a-firewall-on-kamatera/,
+https://www.kamatera.com/knowledgebase/how-do-i-back-up-my-server-and-restore-from-a-backup/,
+https://www.kamatera.com/knowledgebase/how-to-deploy-terraform-on-a-kamatera-vps/ and
+https://www.kamatera.com/blog/cloud-security-tips/. https://console.kamatera.com/pricing came back empty (it needs a
+browser), so prices below come from the calculator data instead. The calculator data and the CLI schema are public
+unauthenticated GETs. No account was created and no authenticated call was made. The provider's docs are not on
+the registry pages I could read, so they come from the repository's `docs/` folder.
+
+### 1. API and sign-in
+
+There are **two API fronts** and Kamatera's own pages disagree on which one to use:
+
+| Front | Base URL | Sign-in | Source |
+|---|---|---|---|
+| Console API (documented) | `https://console.kamatera.com/service/` | `POST /service/authenticate` with `clientId` and `secret` returns `authentication` (a token) and `expires` (epoch); the token lives **one hour**; send `Authorization: Bearer <token>`. The page says: do not send the id and secret as headers. | https://www.kamatera.com/knowledgebase/api-documentation/ |
+| CLI proxy (what Terraform and cloudcli use) | `https://cloudcli.cloudwm.com` (provider default for `api_url`) | **every call** carries headers `AuthClientId: <id>` and `AuthSecret: <secret>`; no token step | `kamatera/provider.go`, `kamatera/request.go` in the provider repo; cloudcli `cmd/` |
+
+- The proxy answers real paths such as `POST /service/server` (create), `POST /service/server/terminate`,
+  `POST /service/server/info`, `GET /service/servers` (id, name, datacenter, power), `GET /service/queue?id=<id>`
+  and `GET /service/server?datacenter=1|images=1&datacenter=<id>`. The console API documents
+  `POST /service/server` (create), `DELETE /service/server/{id}/terminate` and returns a task id.
+  (Sources: `kamatera/request.go`, `kamatera/resource_server.go`, the schema above, the API documentation page.)
+- A bare `GET https://cloudcli.cloudwm.com/service/queue` with no credentials answered `200 []`, an empty list,
+  so that route does not check credentials without an id. `GET .../service/server/options/datacenters` without
+  credentials answered 500 with a PHP error text. No other unauthenticated call was made.
+- **Keys:** console, API, Keys, Create New Key, a description; the dialog shows an *access key* (the client id) and a
+  *secret key*, shown once (https://www.kamatera.com/knowledgebase/how-to-deploy-terraform-on-a-kamatera-vps/).
+- **Env vars:** the Terraform provider reads `KAMATERA_API_CLIENT_ID`, `KAMATERA_API_SECRET` and `KAMATERA_API_URL`
+  (`kamatera/provider.go`; the README example matches). cloudcli reads `CLOUDCLI_APICLIENTID`, `CLOUDCLI_APISECRET`,
+  `CLOUDCLI_FORMAT`, `CLOUDCLI_DEBUG`, `CLOUDCLI_CONFIG` (`example-cloudcli.env`), and `~/.cloudcli.yaml`.
+  The provider also takes `disable_validations`, which has no env var.
+- **Scoping: not documented.** Kamatera's pages describe no scope, role, read-only key, IP allow-list or per-key
+  permission (https://www.kamatera.com/faq/answer/permissions-api-documentation/ says so by omission and calls
+  scope "not covered"). The security blog says to "restrict them to specific actions and IP addresses where possible"
+  (https://www.kamatera.com/blog/cloud-security-tips/) but gives no way. Treat a key as **full account access**
+  (unverified). The same permissions page links user-level controls (server price limit, server-creation
+  allotment); their content was not read (unverified).
+- **Token format:** no prefix is shown anywhere. The id and secret are opaque (unverified: no real example seen), so
+  a scanner has nothing to match; redact the exact values OpsCrew holds.
+
+### 2. Terraform provider `Kamatera/kamatera`
+
+- Latest **v0.9.4**, published **2025-09-11T09:26:52Z** (registry and GitHub releases). Earlier: 0.9.3 2025-08-14,
+  0.9.2 2025-08-03, 0.9.1 2025-08-02, 0.8.15 2025-05-26. Registry tier **community** (not partner or official).
+  Licence **MPL-2.0** (GitHub API). **OpenTofu registry: present**, 0.9.4 is the newest version listed.
+- Repository pushed 2026-02-10; the only commit after 0.9.4 is the same-day "add option to disable provider
+  validations". No release in the 14 months to today. It is built on terraform-plugin-sdk v2 (`provider.go`).
+- **Resources and data sources (all there are):** `kamatera_server`, `kamatera_network`; data sources
+  `kamatera_datacenter` (by `country` + `name`) and `kamatera_image` (by `datacenter_id` + `os` + `code`, or
+  `private_image_name`). **No firewall, no snapshot, no backup resource, no SSH-key resource, no tags, no user
+  data** (docs folder and `provider.go`).
+
+`kamatera_server` (https://github.com/Kamatera/terraform-provider-kamatera/blob/master/docs/resources/server.md):
+
+| Argument | Notes |
+|---|---|
+| `name` (required) | the server name; **also the Terraform id** (`d.SetId(createdServerName)`); renamed in place |
+| `datacenter_id` (required) | ForceNew; the code, for example `EU-FR` |
+| `image_id` (required) | image id from `kamatera_image`; changing it needs `allow_recreate = true` |
+| `cpu_type` + `cpu_cores` | `A`, `B`, `D` or `T`; sent as `"<cores><type>"`, for example `2B` |
+| `ram_mb` | MB |
+| `disk_sizes_gb` | list; one disk each; the first is the system disk |
+| `billing_cycle` | `hourly` or `monthly`; changeable in place |
+| `monthly_traffic_package` | only checked for monthly (`t5000`, `b50`, ...) |
+| `network` blocks (max 4) | `name = "wan"` plus optional `ip`, or a `kamatera_network.full_name`; default one WAN with auto IP; a change needs `allow_recreate` |
+| `ssh_pubkey` | the public key text; ForceNew in the schema; a change needs `allow_recreate` |
+| `startup_script` | a script; ForceNew; a change needs `allow_recreate` |
+| `password` | root password; if empty the provider sends `__generate__` and stores the answer in sensitive `generated_password` (so **a root password ends up in state**) |
+| `daily_backup`, `managed` | booleans; changeable in place |
+| `power_on` | default true; false creates the server off; changeable in place (`poweron` / `poweroff`) |
+| `allow_recreate` | provider-specific guard; without it, changes to image, network, ssh key or script **fail with an error** instead of recreating |
+| read-only | `id`, `internal_server_id`, `public_ips`, `private_ips`, `attached_networks`, `price_hourly_on`, `price_hourly_off`, `price_monthly_on`, `generated_password` |
+
+- **Private networks:** `kamatera_network` (`datacenter_id`, `name`, up to 500 `subnet` blocks with `ip`, `bit`,
+  `gateway`, `dns1`, `dns2`); `full_name` is what a server attaches.
+- **Import:** `kamatera_server` has an importer (the id is the internal server id; added in issue #31, closed
+  2022-06-16).
+- **Waits:** every operation is a queued command; the provider polls `GET service/queue?id=` every 2 seconds for up
+  to **40 minutes**, then fails with "timeout waiting for Kamatera command to complete"; a command status of
+  `error` fails with "kamatera command failed: <log>" (`request.go`).
+- **Plan-time network call:** unless `disable_validations` is set, the provider downloads
+  `https://console.kamatera.com/info/calculator.js.php` during plan and rejects an unknown datacenter, CPU, RAM or
+  disk size or traffic package (`server_options.go`). The plan therefore needs that URL reachable.
+- **Open issues that bite** (25 issues in all; 7 open) at https://github.com/Kamatera/terraform-provider-kamatera/issues:
+  - **#25 (open since 2021-12):** the API sometimes names the new server `<name>(1)`; the provider then fails with
+    `error response from Kamatera API (500): No servers found (name='...')`, and an **orphan server keeps running and
+    billing**. A maintainer says it comes from conditions in Kamatera's API the provider cannot control.
+  - **#32 (open since 2023-09):** changing a disk size fails with HTTP 500 `Value expected to be 'number', 'string'
+    given.` (a bug in the upstream API, ticket CWM-6583, per the maintainer). Treat disk resize as unusable.
+  - **#44 (closed 2026-03-23):** a change in `cpu_cores` was not detected. No commit after 0.9.4 touches it, so
+    whether it is fixed in a release is (unverified); plan a check on a live account.
+  - **#18/#19 (closed 2021):** "Can't terminate server", which was the same `(1)` name problem.
+- **Verdict:** the only Terraform provider is Kamatera's own, community tier, with a small surface and no release in
+  over a year. Server, SSH key text and startup script are covered; **firewall, snapshots, tags and user data are
+  not**. Another Terraform provider by anyone else was not looked for (unverified). The alternative is a typed
+  OpsCrew connector over the same API cloudcli uses (the schema in section 10 lists every route) and no Terraform
+  for Kamatera at all.
+
+### 3. Billing
+
+Sources: https://www.kamatera.com/pricing/, the three FAQ pages in the header, the calculator data.
+
+- **Currency: US dollars** ("$"; the pricing page names no code). Price list in `calculator.js.php` has no tax data.
+- **Monthly price is the base; hourly = monthly / 730.** The page shows type A "$0.00054/hour or $4/month"
+  (that hourly figure looks like a typo for 0.0055, since 4/730 = 0.00548, unverified), type B "$0.0123/hour or
+  $9/month" (9/730 = 0.01233), and for 8 vCPU, 8 GB, 50 GB "$0.0931/hour, about $68 for 730 hours" (68/730 = 0.0931). The
+  calculator reproduces $4, $9, $25 (the page's "Standard 2 vCPU 2 GB") and $39 ("Pro 2 vCPU 4 GB").
+  **Hourly and monthly cost the same per hour**; monthly is not a discount.
+- **Hourly servers:** the pricing page says "billed by the minute" (https://www.kamatera.com/pricing/). The billing
+  FAQ says hourly is **post-paid**: the invoice for a terminated server's usage arrives the next month. No minimum
+  is stated. The exact rounding is (unverified).
+- **Powered off (hourly):** there is a **small charge** for the reserved storage and IP address that varies with disk
+  size (FAQ). The page's example: 8 vCPU / 8 GB / 50 GB is $0.0102 an hour off ($7.50 per 730 h), against $0.0931 on.
+  The calculator has `wanPoweredOff` = 5 (an IP, "WAN Address for hourly powered off") and extra disk 0.05 per GB, and
+  5 + 50 x 0.05 = 7.50, which matches. **A stopped server is not free**, but costs about a tenth. (The formula is my
+  inference from the match; the FAQ gives only the example.)
+- **Monthly servers:** paid in advance for the configuration, with upgrades pro rata; the billing cycle starts on the
+  **1st of the month**. "If you cancel after the 1st, you're charged for the full month"; terminate **before the
+  1st** to avoid the next month (https://www.kamatera.com/faq/answer/why-was-i-charged-after-i-terminated-my-services/).
+  A monthly server terminated early is not refunded for the rest of the month (the FAQ states the full month is
+  billed; no refund is mentioned).
+- **Hourly to monthly and back:** the provider changes `billing_cycle` in place (`server/configure` with
+  `billingcycle`); what Kamatera charges at the switch is (unverified).
+- **Setup fee:** none mentioned on the pricing page or in the calculator data (unverified in the terms).
+- **Public IPv4:** one is included (calculator `wan` option "1" costs 0); each extra address costs **$1 a month**
+  (`wan` options 2, 3, 4 cost 1, 2, 3 and `wanEx` "Extra WAN address" 1).
+- **Traffic** (calculator `netPck.<dc>` and `netPckTrafficEx.<dc>`): **5000 GB** a month in every Europe
+  datacenter, every US datacenter and Toronto; **1000 GB** in Hong Kong (`AS`), Singapore (`AS-SG`), Tokyo
+  (`AS-TY`) and Sydney (`AU-SY`); an unmetered `b50` option (50 Mbit/s, price 0) exists everywhere but `AS`.
+  Over the allowance: **$0.01 per GB**. The pricing page adds: on the unmetered option, if incoming traffic is more
+  than 33% of the total, the whole traffic is billed. Whether the hourly plans carry the allowance is
+  (unverified); the pricing page lists 5 TB for its three monthly plans, and a FAQ title says the dedicated hourly
+  plan includes no traffic (https://www.kamatera.com/faq/answer/why-doesnt-the-dedicated-hourly-plan-include-internet-traffic/,
+  title only, not read).
+- **VAT:** not mentioned on the pages read (unverified).
+- **Deposit:** accounts can run on a prepaid deposit; after the trial a minimum deposit is required
+  (https://www.kamatera.com/faq/billing/, amount not shown). Payment: card or PayPal, PayPal limited for new
+  accounts.
+- **Free trial:** 30 days, one server worth up to $100, 1 TB of traffic; some accounts are asked for a $10
+  refundable security deposit (billing FAQ).
+- **Deleting an hourly server** ends its charge on termination; a stopped one still costs the powered-off rate until
+  it is terminated.
+
+### 4. Firewall and private networking
+
+- **There is a firewall, but only in the console, per server.** The knowledge-base article: open the server, the
+  **Firewall** tab, tick the box to enable it, optional IP Sets, an input and an output policy (Accept, Reject or
+  Drop), and rules with direction, interface, protocol (TCP, UDP, ICMP), source, port, policy and position,
+  evaluated top to bottom, saved with "Update Firewall" (https://www.kamatera.com/knowledgebase/how-to-set-up-a-firewall-on-kamatera/).
+  **It starts disabled**, so a new server accepts everything. The article mentions no API and no Terraform; IPv6 is not
+  mentioned (the protocol list has no IPv6 entry).
+- **No firewall route anywhere in the API surface I could read:** the cloudcli schema lists `server`, `queue`,
+  `network`, `k8s`, `datacenters`, `images` and no firewall command; the console API documentation page has none; the
+  Terraform provider has none. Whether a console-only API route exists is (unverified).
+- **Consequence:** the cloud firewall cannot be managed from Terraform or from the documented API. The default
+  protection has to be an **in-server firewall** installed by the startup script (nftables or ufw), which is also what
+  Kamatera's own security blog recommends beside "default deny" (https://www.kamatera.com/blog/cloud-security-tips/).
+- **Private networks:** `kamatera_network` creates a VLAN-style private network per datacenter with subnets
+  (README). A server can have up to 4 interfaces (Terraform schema), 9 NICs on the console API (API page). Price of a
+  private network is not in the calculator (unverified; the calculator has no line for it). Not needed for
+  single-server apps.
+- **IPv6 and DDoS:** the data-centers page mentions neither; IPv6 on a new server is (unverified).
+
+### 5. Backups and snapshots
+
+- **Daily backup** (`daily_backup`, API `dailybackup=yes`): runs at 00:00 in the datacenter's time zone, kept
+  **14 days**, "a small monthly fee"; the page gives no figure (https://www.kamatera.com/solutions/backups/ was
+  read through a search summary only). The calculator's `backup` entry says "Backup operation (boolean)" with 0.5
+  on both values, and its unit is unclear (unverified). Restore is done by Kamatera support, or a backup image from
+  the console's Hard Disk Library "My Private Images" can be turned into a new server
+  (https://www.kamatera.com/knowledgebase/how-do-i-back-up-my-server-and-restore-from-a-backup/).
+- **Snapshots:** per server, created and reverted from the console and by cloudcli
+  (`cloudcli server snapshot --create/--delete/--revert`, schema route `/server/snapshot`). Calculator: **$0.05 per
+  GB** (`snapshot`, "Snapshot price per GB"; per month is my reading, unverified). No count limit is stated.
+- **Hard Disk Library images** (backups and private images): calculator `hdlibGB` $0.05 per GB.
+- **Do they outlive the server?** Not stated for either. Snapshots hang off the server's Snapshots tab, so they most
+  likely go with it, and library images stay because they are separate private images (both unverified).
+  OpsCrew must treat backups as possibly outliving the server and ask Kamatera's console or API to confirm
+  before saying so.
+- **Terraform:** only the `daily_backup` flag. No snapshot or image resource.
+
+### 6. Regions (datacenters)
+
+The calculator lists **25 datacenter codes**; the data-centers page lists **21 cities**
+(https://www.kamatera.com/data-centers/, no codes there). The toolbox maps 13 codes to cities (marked "T"); the
+rest are my reading of the code against the city list (marked "inferred"). Coordinates are approximate and mine.
+
+| Code | City, country | Mapping source | ~Lat, lon | Traffic |
+|---|---|---|---|---|
+| `EU` | Amsterdam, NL | T | 52.4, 4.9 | 5000 GB |
+| `EU-FR` | Frankfurt, DE | T | 50.1, 8.7 | 5000 GB |
+| `EU-LO` | London, UK | T | 51.5, -0.1 | 5000 GB |
+| `EU-ST` | Stockholm, SE | inferred | 59.3, 18.1 | 5000 GB |
+| `EU-ML` | Milan, IT | inferred | 45.5, 9.2 | 5000 GB |
+| `EU-MD` | Madrid, ES | inferred | 40.4, -3.7 | 5000 GB |
+| `EU-BU` | Bucharest, RO | inferred | 44.4, 26.1 | 5000 GB |
+| `US-NY2` | New York, NY | T | 40.7, -74.0 | 5000 GB |
+| `US-AT` | Atlanta, GA | inferred | 33.7, -84.4 | 5000 GB |
+| `US-MI` | Miami, FL | inferred | 25.8, -80.2 | 5000 GB |
+| `US-CH` | Chicago, IL | inferred | 41.9, -87.6 | 5000 GB |
+| `US-TX` | Dallas, TX | T | 32.8, -96.8 | 5000 GB |
+| `US-SC` | Santa Clara, CA | T | 37.4, -121.9 | 5000 GB |
+| `US-LA` | Los Angeles, CA | inferred | 34.1, -118.2 | 5000 GB |
+| `US-SE` | Seattle, WA | inferred | 47.6, -122.3 | 5000 GB |
+| `CA-TR` | Toronto, CA | T | 43.7, -79.4 | 5000 GB |
+| `AS` | Hong Kong | T | 22.3, 114.2 | 1000 GB |
+| `AS-SG` | Singapore | inferred | 1.35, 103.8 | 1000 GB |
+| `AS-TY` | Tokyo, JP | inferred | 35.7, 139.7 | 1000 GB |
+| `AU-SY` | Sydney, AU | inferred | -33.9, 151.2 | 1000 GB |
+| `IL`, `IL-RH` | Rosh Haayin, IL | T | 32.1, 34.95 | 5000 GB |
+| `IL-HA` | Haifa, IL | T | 32.8, 35.0 | 5000 GB |
+| `IL-PT` | Petach Tikva, IL | T | 32.1, 34.9 | 5000 GB |
+| `IL-TA` | Tel Aviv, IL | T | 32.1, 34.8 | 5000 GB |
+
+(Sources: `serverconfiggen.js` for T; `calculator.js.php` `datacenters` and `netPck.*` for codes and traffic.) The
+data-centers page names only Tel Aviv among the Israeli sites and no Rosh Haayin, Haifa or Petach Tikva; whether
+the other four are still on sale is (unverified; they are in the calculator list). The page also names no `US-MI2`;
+the calculator has price lines for that code but not in its datacenter list.
+
+**OpsCrew mapping** (every key maps):
+
+- `eu-central` -> `EU-FR` Frankfurt (T, so verified), spare `EU` Amsterdam.
+- `eu-north` -> `EU-ST` Stockholm (the city is on the data-centers page; the code is inferred, (unverified) until a
+  live `datacenters` list says it). Nearest verified alternative: `EU` Amsterdam, about 1,100 km from Stockholm.
+- `us-east` -> `US-NY2` New York (T); spares `US-AT`, `US-MI`, `US-CH` (inferred).
+- `us-west` -> `US-SC` Santa Clara (T); spares `US-LA`, `US-SE` (inferred).
+- `ap-southeast` -> `AS-SG` Singapore (inferred, (unverified) code); spare `AU-SY` Sydney, `AS` Hong Kong (T,
+  verified, about 2,500 km from Singapore).
+- The Asian and Sydney datacenters carry a 1000 GB allowance, five times less than elsewhere.
+
+### 7. Prices
+
+- **Public price data without login:** `GET https://console.kamatera.com/info/calculator.js.php`, a JavaScript file with
+  `var prd_prices = '{...}';`; the inner JSON has `datacenters`, `cpu` (per `<cores><type>`), `ramMB.<type>`,
+  `diskGB`, `snapshot`, `wan`, `wanPoweredOff`, `netPck.<dc>`, `netPckTrafficEx.<dc>`, `hdlibGB` and `os` (every image
+  with id, name, `minRamMB`, `minCpu`, `minDiskSizeGB` and the datacenters it is in). The provider reads the same file.
+  About 150 KB. It was fetched 2026-11-22. All prices in it are **US dollars a month**; hourly is that divided by 730.
+- **A server's monthly price = cpu(`<cores><type>`) + ramMB.`<type>`(ram) + diskGB(total size) + extra disks +
+  traffic + IP**; the three sums I checked against the pricing page's own examples all matched.
+- **CPU types** (https://www.kamatera.com/faq/answer/which-cpu-types-are-offered-by-kamatera/): **A** Availability
+  (threads shared with others, no guaranteed resources, 1 to 32 vCPU), **B** General Purpose (dedicated threads,
+  guaranteed, the recommended one), **D** Dedicated (a whole core), **T** Burstable (guaranteed threads, but average
+  CPU over 10% adds **$0.041 an hour per vCPU**: calculator `cpuEx.T` 30 a month). OpsCrew offers A and B only.
+- **Disk:** the total size gives a price in steps (calculator `diskGB`): 5 to 20 GB $6, 30 GB $8, 40 $9, 50 $10,
+  60 $11, 80 $12, 100 $14; extra disks $0.05 per GB.
+
+Computed from the calculator 2026-11-22 (USD, includes a 20 to 80 GB system disk, one public IPv4, no extras):
+
+| Config | Type | vCPU | RAM | Disk | Monthly | Hourly (monthly / 730) |
+|---|---|---|---|---|---|---|
+| A-small | A | 1 | 1 GB | 20 GB | 4.00 | 0.00548 |
+| A-1-2 | A | 1 | 2 GB | 20 GB | 6.00 | 0.00822 |
+| A-2-4 | A | 2 | 4 GB | 40 GB | 19.00 | 0.02603 |
+| A-4-8 | A | 4 | 8 GB | 80 GB | 42.00 | 0.05753 |
+| B-1-1 | B | 1 | 1 GB | 20 GB | 9.00 | 0.01233 |
+| B-1-2 | B | 1 | 2 GB | 20 GB | 15.00 | 0.02055 |
+| B-2-2 | B | 2 | 2 GB | 20 GB | 25.00 | 0.03425 |
+| B-2-4 | B | 2 | 4 GB | 40 GB | 42.00 | 0.05753 |
+| B-2-8 | B | 2 | 8 GB | 60 GB | 64.00 | 0.08767 |
+| B-4-8 | B | 4 | 8 GB | 80 GB | 90.00 | 0.12329 |
+
+- Powered off, 50 GB disk: $7.50 a month, $0.0102 an hour (FAQ example).
+- An A-type 1 GB server falls below Ubuntu 24.04's image minimum for some apps; the plain `ubuntu_server_24.04_64-bit`
+  image lists `minRamMB` 1024, `minCpu` 1 and `minDiskSizeGB` 10 (calculator `os`), so 1 GB and 20 GB are allowed.
+- Snapshots $0.05 per GB, extra traffic $0.01 per GB, extra IP $1 a month.
+- Is there a **public price API**? Yes, only that calculator file (not a documented API). The authenticated
+  `server options` call returns the same data (schema route `GET /service/server`).
+
+### 8. Account, apps and names
+
+- **No projects, folders or resource groups.** The CLI schema has no such command and the docs describe none
+  (unverified: not found, not proven absent). All servers of an account are in one flat list (`GET /service/servers`
+  returns id, name, datacenter, power). Sub-users and groups exist (account-management FAQ,
+  https://www.kamatera.com/faq/answer/assign-permissions-to-servers/, titles only) but were not read.
+- **Tags exist in the API but not in Terraform:** `cloudcli server create --tag`, `cloudcli server tags --add/--remove`
+  (route `/server/tags`), and the docker-machine driver passes `--kamatera-tag`. The Terraform provider has no
+  tag argument, and a server created by Terraform cannot carry one. Tag listing and filtering routes were not
+  read (unverified).
+- **Name rules** (cloudcli schema): `[a-zA-Z0-9()_-]{4,}`, at least 4 characters. **Names are not unique**: a
+  duplicate gets a `(1)` suffix (issues #18, #25), which is why `(` and `)` are allowed, and which breaks the
+  provider. `server info` and cloudcli accept a name, and the CLI says a name may be "a regular expression matching a
+  single server" (flag text), so listing by prefix is possible.
+- **Idempotency:** no idempotency key. Create returns a command id (`quantity` up to 50 in one call). A retry
+  after a lost answer may create a second server named `<name>(1)`. Look the name up first (and the `(1)` form too).
+
+### 9. Ubuntu 24.04, default user, startup script, time to ready
+
+- **Image:** `ubuntu_server_24.04_64-bit`, id **`6000C29549da189eaef6ea8a31001a34`**, category `server`, `minRamMB`
+  1024, `minCpu` 1, `minDiskSizeGB` 10, offered in **all 25** datacenters (calculator `os`, 2026-11-22). The image id is
+  the same in every datacenter in this data (unlike OVHcloud). Terraform picks it with `os = "Ubuntu"`,
+  `code = "24.04 64bit"` (README); the calculator `name` field is a different string, so look up by id. Images for
+  Ubuntu 22.04 and 26.04 exist too. Many "apps_*" images are Ubuntu 24.04 based; do not use them.
+- **Default user:** the server resource documents a **root password** and `ssh_pubkey` "to allow access without a
+  password"; the user the key lands under is (unverified), most likely `root`. The password rules: 10 to 20 characters
+  from `a-zA-Z0-9!@#$^&*()~` with a capital, a small letter and a digit (cloudcli schema).
+- **Startup script:** `startup_script` (Terraform) / `script-file` (CLI) / `--kamatera-script` (docker-machine):
+  "script to run on server startup, Bash script for Linux" (cloudcli doc). The provider sends it as `script-file`. It
+  runs on boot; **whether it runs once or on every boot is (unverified)**.
+- **User data:** the create API and cloudcli have `userdata-file` ("Path to user data file") and the docker-machine
+  driver `--kamatera-userdata` ("user-data contents to add to the machine on creation"). The Terraform provider has
+  **no such argument**. Whether Kamatera images run cloud-init and execute `#cloud-config` is **(unverified)**; I found
+  no page that says so.
+- **Time to ready:** not documented; the provider allows 40 minutes. A Kamatera knowledge-base page says a new
+  server is added to the "Tasks Queue" (https://www.kamatera.com/knowledgebase/how-to-operate-a-linux-server-on-kamatera/,
+  via a search summary). Measured time is (unverified).
+
+### 10. Errors and limits
+
+- **Error shape** (provider `request.go`): HTTP status other than 200 gives a JSON body; the provider prints
+  `error response from Kamatera API (<status>): <map>`. Seen in the issues: `(500) map[message:{"errors":[{"code":2,
+  "info":"Value expected to be 'number', 'string' given.","category":"General Error"}]}]` (#32) and
+  `(500) No servers found (name='...')` (#25). The proxy's own errors are `{"error":true,"message":"Not Found"}`
+  (404, my call) and `{"error":true,"message":"Argument 1 passed to str_starts_with() ..."}` (500, my call). So
+  **errors are sometimes HTTP 500 for a user mistake**, and the shape varies.
+- **Command queue:** every change returns a command id (a one-item list of strings, sometimes a bare number). Status
+  is `GET /service/queue?id=<id>` and returns a list of one object with `status` (`complete` or `error` seen in the
+  provider; a pending state's name is not known) and `log`. Create's `log` holds a line `Name: <final name>`, which
+  the provider reads to learn the real name (`resource_server.go`). cloudcli also has `queue list` (`/svc/queue`).
+- **Rate limits:** not documented (the API page says so by silence). (unverified)
+- **Out of stock or quota:** no text was found. Whether a datacenter can refuse for capacity, and the per-account
+  server cap or spend limit text, are (unverified). The user-level "maximum server price" and "server creation
+  allotment" settings exist (titles in the permissions page's related list) and would produce a refusal.
+- **Delete protection:** none found in the schema or docs (`server` fields: none).
+- **Resize:** CPU and RAM change in place through `POST /service/server/configure` (`cpu`, `ram`); whether the
+  server must be off, and whether a downgrade is allowed, are (unverified). Disk size changes are broken (issue #32).
+  Resize cannot be tested without an account.
+- **Removal:** terminate is `POST /service/server/terminate {id, force:true}` through the proxy
+  (`resource_server.go`) and `DELETE /service/server/{id}/terminate?confirm=1&force=1` on the console API. The
+  console says "the server must be turned off to terminate" (https://www.kamatera.com/faq/answer/terminate-server/);
+  the API's `force` covers a powered-on one. Termination is a queued command, so the server can show for a while.
+  Whether its disks, snapshots and library backups are deleted with it is (unverified).
+- **Power and statuses:** `poweron`, `poweroff`, `reboot`, `suspend`, `resume` routes exist; the list's `power` field
+  reads `on` or `off` (provider reads `server["power"] == "on"`). Other statuses are (unverified).
+
+### What this means for OpsCrew
+
+- **Terraform provider choice.** `Kamatera/kamatera` 0.9.4 (MPL-2.0, community tier, on the OpenTofu registry,
+  last release 2025-09-11) is the only one found. It covers the server (name, datacenter, image, CPU, RAM, disks,
+  billing cycle, power, one public key, startup script, daily backup flag) and private networks. It does not cover a
+  firewall, snapshots, tags or user data. Pin 0.9.4. The plugin should be an IaC plugin for the server only, or a
+  connector plugin, as the contract allows; the lead decides. If the contract needs the firewall or a snapshot from
+  Terraform, Kamatera cannot give it.
+- **Idempotency and names are the risk.** The server's Terraform id is its name, the API renames a duplicate to
+  `<name>(1)`, and the provider then loses the server and leaves an orphan that bills (issue #25, open five
+  years). OpsCrew must give every server a unique name (`opscrew-<app>-<short random>`, at least 4 characters,
+  `[a-zA-Z0-9()_-]`), check the account's list for the name and for `<name>(1)` before every apply, and report a
+  stray `(1)` server instead of ignoring it. Treat a failed apply as "check the list" before any retry.
+- **Billing for the definition: hourly, counted by the minute, post-paid.** Hourly and monthly rates are the same
+  per hour (monthly / 730), so hourly has no price disadvantage; use `billing_cycle = "hourly"` only. Show hourly and
+  the 730-hour figure from a dated static table built from `calculator.js.php`. **A stopped server still costs**
+  (about $7.50 a month for 50 GB: IP and disk), so the destroy text must say that only a terminate ends the cost.
+  A monthly mode, if ever added, is charged in full for the calendar month after the 1st: say so before approval.
+- **Credentials.** A client id and secret, **no scope** (unverified, nothing documented). Env vars:
+  `KAMATERA_API_CLIENT_ID`, `KAMATERA_API_SECRET` (and `KAMATERA_API_URL`, `CLOUDCLI_*` for the CLI); the agent's
+  environment must pass these and no other `KAMATERA_` or `CLOUDCLI_` variable (compare commit 59e65a49 for `OVH_`).
+  No token prefix, so redact the exact values. The setup should warn that the key can do everything on the account
+  and suggest a separate Kamatera account for OpsCrew. The root password the provider generates lands in
+  Terraform state as `generated_password`; give a random password OpsCrew never shows, and rely on the SSH key.
+- **Firewall path.** No cloud firewall resource, no documented API, console-only and **off by default**. The plugin has
+  `firewallResourceType` and `connectorFirewall` in the contract; both have no honest value for Kamatera. The only
+  protection OpsCrew can set at create time is an **in-server firewall** (nftables or ufw, default deny, 22, 80,
+  443) written by the startup script, which is one more thing to verify after first boot and is not a cloud
+  firewall: say so in the plan's text ("cloud firewall: none, server firewall: on"). The console firewall can be
+  turned on by the user (their choice, mention it in the guide).
+- **Startup script instead of cloud-init (unverified).** Terraform has no user data, only `startup_script`, and it is
+  ForceNew; a change later fails unless `allow_recreate` is set (it would destroy the server and its disks). Set
+  `allow_recreate = false` and say that a changed script means a new server. Check on a live account that the script
+  runs once, as root, and after networking is up; and what cloud-init does on this image.
+- **Removal.** `terminate` is real but asynchronous (a queue command, up to 40 minutes in the provider) and the
+  server can be left powered on, so the provider forces it. The typed confirmation needs no billing-end date for
+  hourly. **What stays behind is unclear:** snapshots and library backups may outlive the server and each cost
+  $0.05 per GB a month (unverified); list them (console, `cloudcli server snapshot`, Hard Disk Library) before
+  saying the cost is zero. `backupsOutliveServer` and `serverSnapshotsOutliveServer` should be set to the cautious
+  value `true` until a live test says otherwise.
+- **Backups and snapshots.** Daily backup is a flag with a "small monthly fee" and no known price; the calculator
+  `backup` entry (0.5) has an unknown unit, so `backupsPrice` should be "order-page"-like or unknown, not a percent.
+  Snapshots are $0.05 per GB (`kind: "per-gb"`, `perGbMonth` 0.05, `perGbHour` 0.05/730 = 0.0000685), per
+  month by my reading. There is **no Terraform resource for either snapshot or backup restore**, so the snapshot
+  drill and "snapshot before destroy" have to go through the API or the console.
+- **Regions.** Frankfurt, Stockholm (code to confirm), New York, Santa Clara and Singapore (code to confirm) give a
+  complete map. Asia and Sydney carry 1000 GB of traffic instead of 5000. Only 13 of the 25 codes have a city from
+  Kamatera's own repository.
+- **What the contract may lack:** (1) a provider without a cloud firewall at all; (2) a provider with **no tags and
+  non-unique names** whose Terraform id is its name; (3) a **plan-time network call** to a price file (the provider's
+  validation), which needs `disable_validations` offline; (4) account-wide credentials with no scope;
+  (5) a **stopped-server cost** below the running one and above zero; (6) an asynchronous terminate whose "gone"
+  moment is a queue state; (7) user data with no cloud-init guarantee (a script instead); (8) a resize that depends on
+  an API bug for disks.
+- **To test live** (needs an account, so the founder's go-ahead; a test server costs about $0.0055 an hour for the
+  1 vCPU / 1 GB / 20 GB type A): the real datacenter ids and their cities, the Ubuntu 24.04 `os` and `code` strings,
+  the login user and where the key lands, whether the startup script runs once and when, cloud-init presence,
+  seconds to ready, the `(1)` behaviour on a duplicate name, the no-capacity and quota error texts, whether
+  terminate removes disks, snapshots and backups, whether a snapshot or backup shows afterwards, the powered-off
+  rate, IPv6, whether a key works from another IP, and whether the console firewall has a route in the API.
+
+### What building Kamatera settled or changed (T3519 to T3532, 2026-11-27)
+
+- **Names:** plain `<app>` and `<app>-<name>`, as on the other providers (plan decision 10), not the random suffix
+  suggested above. The module refuses a name Kamatera refuses (4 to 40 characters of `[a-zA-Z0-9.-]`).
+  `findAppServers` stops with a plain error when it sees a `<name>(n)` duplicate. That check runs on the takeover,
+  destroy and snapshot paths, not before every apply.
+- **Takeover:** not possible. The Terraform import needs the server's internal id, which the name doesn't give,
+  so the provider has no `importId` and a takeover fails closed.
+- **Commands:** a queued command is polled at `/service/queue?id=`. A failed command's error never carries its
+  `log`, which can quote what the server was sent; the hint points at the server's tasks in the console instead.
+- **Rebuild:** done as a snapshot revert, the only restore Kamatera's API has.
+- **Prices:** six plans from `calculator.js.php` (A-1-2, A-2-4, A-4-8, B-1-2, B-2-4, B-4-8) with a 40 GB disk at
+  least, since design sizes every app at 40 GB or more, in six datacenters (EU-FR, EU, EU-ST, US-NY2, US-SC,
+  AS-SG). The calculator file is the price source; there is no price API.
+- **The server's own firewall** (D13): nftables, written by the first boot's script, default deny, SSH from the
+  plan's networks, 80 and 443 from the plan's `http_allowed_cidrs`. The script turns password logins off first,
+  then loads the rules; if any step before the rules are loaded fails, the server powers itself off rather than
+  stay reachable without them. SecOps reads the rules from the plan only for a server the plan creates, and
+  `opscrew secure` and `opscrew advise` compare the live table with the committed plan's networks.
+- **No restart repair:** a new Kamatera server that never opens SSH may have powered itself off for that reason,
+  and if Kamatera doesn't run the startup script again on a later boot, a restart would bring it up without a
+  firewall. OpsCrew doesn't offer that restart; it points at the first boot's log in the console.
+- **The generated root password** stays only in the encrypted state. The live pass reads it from the state and
+  searches every other file and log for it.
+- **Still for the live pass (T3533):** whether the startup script runs on later boots; the first real
+  `nft -f` of the rules (no root here); the seconds to ready and how long the server is open before the rules
+  load; the `(n)` behaviour; what terminate leaves behind.

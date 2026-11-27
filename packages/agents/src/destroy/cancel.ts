@@ -235,8 +235,8 @@ function dayText(value: string): string {
 }
 
 /**
- * After the apply, reads the cancelled `servers` back (`findAppServers` of the app, once per
- * provider) and returns, for each, when its contract ends in plain English, or that the provider
+ * After the apply, reads the cancelled `servers` back (`findAppServers` of the app with their names,
+ * once per provider) and returns, for each, when its contract ends in plain English, or that the provider
  * did not say (never a guess). Each answer is audited; a failed lookup is said and audited too,
  * since the cancel itself was applied.
  */
@@ -252,7 +252,10 @@ export async function cancelDates(
     const { company, noun, console } = texts;
     let found: Awaited<ReturnType<ReturnType<typeof serverApi>["findAppServers"]>>;
     try {
-      found = await serverApi({ ...scope, provider }, input).findAppServers(app);
+      found = await serverApi({ ...scope, provider }, input).findAppServers(
+        app,
+        group.map((server) => nameOf(server, app)),
+      );
     } catch (error) {
       const reason = failureReason(error);
       for (const server of group) {

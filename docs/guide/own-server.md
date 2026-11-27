@@ -5,8 +5,8 @@ OpsCrew can deploy your app to a server you already pay for or run yourself: a r
 home. You get the same result as on the servers OpsCrew creates for you: a hardened server, the app
 deployed from [GitHub](https://github.com/) with TLS, health checks and rollback, and the `verify`, `secure` and `drift`
 checks. To have OpsCrew create the server for you instead, see [Hetzner Cloud](hetzner.md),
-[DigitalOcean](digitalocean.md), [Contabo](contabo.md) and [OVHcloud](ovhcloud.md), whose Public
-Cloud servers OpsCrew creates itself.
+[DigitalOcean](digitalocean.md), [Contabo](contabo.md), [OVHcloud](ovhcloud.md), whose Public
+Cloud servers OpsCrew creates itself, and [Kamatera](kamatera.md).
 
 OpsCrew never creates, reinstalls or deletes your server. It inspects it first, shows you every
 change it would make, and changes nothing until you approve that exact list.

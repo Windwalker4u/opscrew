@@ -258,3 +258,59 @@ describe("a Cloudflare Tunnel's connections", () => {
     expect(masked.resource_changes[1]?.change.after).toEqual(tunnel(null));
   });
 });
+
+describe("Kamatera's generated root password", () => {
+  const SERVER = "kamatera_server";
+  const GENERATED = fakeSecret("generic-password", "kamatera-generated");
+  const server = (password: unknown) => ({
+    name: "opscrew-shop",
+    datacenter_id: "EU",
+    generated_password: password,
+  });
+
+  it("leaves no trace in changes, drift, planned values or the prior state", () => {
+    const address = `module.server.${SERVER}.this`;
+    const plan = {
+      format_version: "1.2",
+      prior_state: {
+        values: {
+          root_module: {
+            child_modules: [{ resources: [{ address, type: SERVER, values: server(GENERATED) }] }],
+          },
+        },
+      },
+      resource_changes: [
+        {
+          address,
+          type: SERVER,
+          change: {
+            actions: ["update"],
+            before: server(GENERATED),
+            after: server(GENERATED),
+            before_sensitive: {},
+            after_sensitive: {},
+          },
+        },
+      ],
+      resource_drift: [
+        { address, type: SERVER, change: { before: server(""), after: server(GENERATED) } },
+      ],
+      planned_values: {
+        root_module: {
+          child_modules: [{ resources: [{ address, type: SERVER, values: server(GENERATED) }] }],
+        },
+      },
+    };
+    const masked = maskSensitivePlanJson(plan) as typeof plan;
+    const text = JSON.stringify(masked);
+    expect(text).not.toContain(GENERATED);
+    expect(text).toContain("opscrew-shop");
+    expect(masked.resource_changes[0]?.change.before).toEqual(server(SENSITIVE_VALUE));
+    expect(masked.resource_changes[0]?.change.after).toEqual(server(SENSITIVE_VALUE));
+    expect(masked.resource_drift[0]?.change.after).toEqual(server(SENSITIVE_VALUE));
+    expect(masked.planned_values.root_module.child_modules[0]?.resources[0]?.values).toEqual(
+      server(SENSITIVE_VALUE),
+    );
+    expect(maskSensitivePlanJson(masked)).toEqual(masked);
+  });
+});

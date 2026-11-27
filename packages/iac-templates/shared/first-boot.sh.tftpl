@@ -1,0 +1,30 @@
+#!/bin/bash
+# Rendered by OpsCrew. The first boot for a provider whose servers take a startup script instead of
+# cloud-init user data (ADR 0029, D12; Kamatera). It runs the same cloud-config every other provider
+# gets: the config is decoded from the base64 this file is rendered with, written to the NoCloud
+# seed, and applied through cloud-init. The marker makes a second boot change nothing. A provider
+# with no cloud firewall puts the server's own firewall (server-firewall.sh.tftpl) first, below.
+set -euo pipefail
+exec >>/var/log/opscrew-first-boot.log 2>&1
+echo "opscrew: first boot started $(date -Is)"
+if [ -e /var/lib/opscrew/first-boot.done ]; then
+  echo "opscrew: first boot already done"
+  exit 0
+fi
+${server_firewall}
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v cloud-init >/dev/null 2>&1; then
+  apt-get -o DPkg::Lock::Timeout=600 update
+  apt-get -o DPkg::Lock::Timeout=600 install -y cloud-init
+fi
+cloud-init clean --logs
+seed=/var/lib/cloud/seed/nocloud-net
+install -d -m 0755 "$seed"
+printf '%s' '${cloud_config_b64}' | base64 -d >"$seed/user-data"
+printf 'instance-id: opscrew-%s\n' "$(date +%s)" >"$seed/meta-data"
+cloud-init init --local
+cloud-init init
+cloud-init modules --mode=final
+install -d -m 0755 /var/lib/opscrew
+date -Is >/var/lib/opscrew/first-boot.done
+echo "opscrew: first boot done $(date -Is)"

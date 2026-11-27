@@ -35,6 +35,7 @@ import {
   writeFakeState,
 } from "../testing";
 import { firstAppLook, noOtherApps } from "../testing/other-apps";
+import { NARROWED_SSH, staleServerFirewallPlanJson } from "./__fixtures__/stale-server-firewall";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { deploymentRenderContext, previewDeploymentFiles } from "./render";
@@ -957,6 +958,30 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
     expect(engine.calls).not.toContain("apply");
     expect((await deps.state.read()).phases.provision?.status).toBe("failed");
+  });
+
+  // Kamatera's server keeps its first boot's firewall (the module ignores its startup script), so
+  // a plan that changes its networks would leave the old rules in place.
+  it("stops before the plan's approval when it changes the networks of a server's own firewall", async () => {
+    const engine = new FakeEngine({ planJson: staleServerFirewallPlanJson() });
+    // No provider backups, which Kamatera's servers never have.
+    const { deps, handler, services } = await setup({ engine, plan: testPlan({ backups: false }) });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "The plan fails 1 security policy: The server's own firewall has the plan's networks. Nothing was changed.",
+    });
+    const hint = (error as OpsCrewError).hint ?? "";
+    expect(hint).toContain(
+      `SSH: the server accepts 0.0.0.0/0 and ::/0, which the plan doesn't, and the plan adds ${NARROWED_SSH}`,
+    );
+    expect(hint).toContain("set at its first boot");
+    expect(hint).toContain("OpsCrew can't change them in place yet");
+    expect(hint).toContain("Change opscrew/plan.yaml back");
+    // Only the rendered files' write was asked for: never the plan's approval, never an apply.
+    expect(handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
+    expect(engine.calls).not.toContain("apply");
   });
 
   it("requires the typed server name to approve a plan that destroys something", async () => {

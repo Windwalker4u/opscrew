@@ -48,18 +48,19 @@ describe("the interview's server-less targets", () => {
       "digitalocean",
       "contabo",
       "ovhcloud",
+      "kamatera",
       "cloudflare-workers",
       "github-pages",
       "own",
       "portainer",
       "localhost",
     ]);
-    expect(provider?.options?.[4]).toEqual({
+    expect(provider?.options?.[5]).toEqual({
       value: "cloudflare-workers",
       label: "Cloudflare (no server)",
       hint: expect.stringContaining("free for static files"),
     });
-    expect(provider?.options?.[5]).toEqual({
+    expect(provider?.options?.[6]).toEqual({
       value: "github-pages",
       label: "GitHub Pages (no server)",
       hint: expect.stringContaining("no commercial use"),
@@ -81,6 +82,7 @@ describe("the interview's server-less targets", () => {
       "digitalocean",
       "contabo",
       "ovhcloud",
+      "kamatera",
       "cloudflare-workers",
       "own",
       "portainer",
@@ -91,6 +93,7 @@ describe("the interview's server-less targets", () => {
       "digitalocean",
       "contabo",
       "ovhcloud",
+      "kamatera",
       "own",
       "portainer",
       "localhost",

@@ -105,6 +105,41 @@ kinds, not on which cloud.
   - **Without OpsCrew:** whoever runs the vendored HCL sets `TF_VAR_<name>` themselves. The
     provider's guide page says so (constitution II).
 
+- **D12: a provider may take the first-boot setup as a startup script** (feature 035, Kamatera; the
+  contract question of issue #13, 2026-11-24).
+  - **Why:** Kamatera's Terraform takes a `startup_script` (a shell script, ForceNew) and no user
+    data, so the shared `cloud-init.yaml.tftpl` can't be handed to it. Whether its Ubuntu image
+    runs cloud-init at all is unverified (research R4 §9).
+  - **`terraform.firstBoot`:** `cloud-init` (the default, and every provider before Kamatera) or
+    `script`. Both render the same first-boot steps from the same context: with `script`,
+    iac-templates writes `first-boot.sh` beside `cloud-init.yaml.tftpl`, and the module passes
+    the script, with the cloud-config inside it, where the provider takes a startup script.
+  - **The script** guards itself with a marker, so a second boot changes nothing. It installs
+    cloud-init when the image lacks it, writes the cloud-config to the NoCloud seed and runs it.
+    The live pass proves when it runs, and whether cloud-init is there.
+  - **The vendored module keeps its script**, so a user who deletes OpsCrew keeps the same first
+    boot (constitution II).
+- **D13: a provider without a cloud firewall gets a firewall on the server itself** (feature 035,
+  Kamatera; the founder's option A on issue #13, 2026-11-25).
+  - **`texts.secops.firewallCheck`:** `cloud` (the default, every provider before Kamatera) or
+    `server`. With `server`, iac-templates puts an nftables step first in the first-boot script
+    (default deny inbound for IPv4 and IPv6; SSH, the web ports and WireGuard only as the plan
+    says; outside traffic to Docker's networks that Docker didn't publish dropped). Its own oneshot
+    unit, `opscrew-firewall.service`, loads `/etc/opscrew/firewall.nft` at every boot and replaces
+    only OpsCrew's table (`nftables.service`, whose stop flushes every table, is never used). Password
+    logins go off first, confirmed with `sshd -T`. It fails closed: a step that fails powers the
+    server off, an apply never powers it back on (`power_on` is in `ignore_changes`), and OpsCrew's
+    repair never restarts it.
+  - **Checked twice:** SecOps checks the planned script's rules when the server is created. For a
+    server that exists, it compares the networks in the script the server was created with against
+    the plan's, and fails critical on any difference, so `provision` and `retarget` stop before
+    approval. `opscrew secure` and `opscrew advise` read the live rules over SSH and fail on any
+    difference from the plan.
+  - **Said plainly:** the plan, design and the guide say "cloud firewall: none; server firewall: on"
+    and name the time between the server's start and the rules. The rules aren't updated after the
+    first boot: changing the networks of an existing server waits for a host plan, approved by hash,
+    that updates them (a follow-up).
+
 ## Consequences
 
 - Adding a cloud server provider is one package and one line in the registry, plus its id in

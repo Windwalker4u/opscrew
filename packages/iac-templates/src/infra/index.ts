@@ -66,12 +66,18 @@ export {
   type WorkerCustomDomain,
   workerCustomDomainAddresses,
 } from "./cloudflare-move";
+export { FIRST_BOOT_LOG } from "./first-boot";
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export {
   managesPortainerRecords,
   PORTAINER_WEBHOOK_PATH,
   portainerWebhookHostname,
 } from "./portainer";
+export {
+  SERVER_FIREWALL_TABLE,
+  type ServerFirewallRules,
+  serverFirewallTable,
+} from "./server-firewall";
 export {
   pagesVerificationRootDir,
   renderPagesVerification,

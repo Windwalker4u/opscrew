@@ -30,6 +30,7 @@ import { renderedServers } from "../provision/disk-guard";
 import type { ProvisionServices } from "../provision/types";
 import { credentialInventory } from "../rotate/inventory";
 import { ownServerHardening } from "../secure/own";
+import { plannedWebSources } from "../secure/server-firewall";
 import { hostChecksFor } from "../secure/servers";
 import {
   gitClient,
@@ -147,7 +148,9 @@ async function hostChecks(
       )
     : undefined;
   deps.reporter.step(`Running secure's host checks on server ${name} (read-only)`);
-  const results = await runHostChecks(docker, hostChecksFor(plan, name, hardening));
+  // The web ports' networks the plan applied, which a server's own firewall is held to.
+  const web = name === APP_SERVER ? await plannedWebSources(deps.paths.root, plan) : undefined;
+  const results = await runHostChecks(docker, hostChecksFor(plan, name, hardening, web));
   await deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",

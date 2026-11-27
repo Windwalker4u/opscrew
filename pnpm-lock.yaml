@@ -216,6 +216,9 @@ importers:
       '@opscrew/provider-hetzner':
         specifier: workspace:*
         version: link:../providers/hetzner
+      '@opscrew/provider-kamatera':
+        specifier: workspace:*
+        version: link:../providers/kamatera
       '@opscrew/provider-ovhcloud':
         specifier: workspace:*
         version: link:../providers/ovhcloud
@@ -573,6 +576,18 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  packages/providers/kamatera:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
   packages/providers/ovhcloud:
     dependencies:
       '@opscrew/contracts':
@@ -605,6 +620,9 @@ importers:
       '@opscrew/provider-hetzner':
         specifier: workspace:*
         version: link:../hetzner
+      '@opscrew/provider-kamatera':
+        specifier: workspace:*
+        version: link:../kamatera
       '@opscrew/provider-ovhcloud':
         specifier: workspace:*
         version: link:../ovhcloud

@@ -88,6 +88,14 @@ const TARGETS = {
     currency: "EUR",
     pricesIncludeVat: false,
   },
+  kamatera: {
+    location: "EU-FR",
+    serverType: "A-2-4",
+    image: DEFAULT_IMAGES.kamatera,
+    amount: 19,
+    currency: "USD",
+    pricesIncludeVat: false,
+  },
 } as const satisfies Record<CloudProvider, unknown>;
 
 /** The services design writes for an app on PostgreSQL (`db`) and one on Redis (`cache`). */

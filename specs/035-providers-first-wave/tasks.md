@@ -2,10 +2,11 @@
 description: "Tasks for 035-providers-first-wave"
 ---
 
-# Tasks: More server providers, first wave (OVHcloud first)
+# Tasks: More server providers, first wave (OVHcloud, then Kamatera)
 
-**Status**: OVHcloud being built since 2026-11-21. Kamatera, IONOS Cloud and UpCloud follow, each
-with its own tasks added here when its work starts.
+**Status**: OVHcloud built on `035-providers-first-wave`, its pull request open for review.
+Kamatera specified 2026-11-24 on `035-kamatera`, stacked on OVHcloud's branch; its tasks are T3519
+to T3533. IONOS Cloud and UpCloud follow, each with its own tasks added here when its work starts.
 
 **Input**: `specs/035-providers-first-wave/` (spec.md, plan.md, research.md); feature 026 (the
 contract, ADR 0029, and Contabo as the template).
@@ -36,6 +37,22 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
 - **Writing files:** long files with the Write or Edit tool, not shell heredocs.
 - **Worktrees:** `D:/opscrew/.claude/worktrees/t35NN`, branched from `035-providers-first-wave`;
   `pnpm install --frozen-lockfile --prefer-offline` first.
+
+**Kamatera's rules, for T3519 onward:**
+- **Leaks:** none of `KAMATERA_API_CLIENT_ID` or `KAMATERA_API_SECRET` (and no address, no server
+  id and no generated password) in output, logs, audit entries, errors or fixtures; fake values
+  come from `fakeSecret(kind)`. Every Kamatera test file ends with a leak check.
+- **Sources:** the public CLI schema `https://cloudcli.cloudwm.com/schema?supports=1.0.0`, the
+  public calculator data `https://console.kamatera.com/info/calculator.js.php`, and the
+  `Kamatera/kamatera` 0.9.4 provider's docs and source. Never guess a route or an answer; record
+  what you read in the report, and the lead moves it into research R4.
+- **Words:** user-facing text says "Kamatera", "your Kamatera account" and "its console", and never
+  names a task or a feature number.
+- **The API front:** `https://cloudcli.cloudwm.com` with `AuthClientId` and `AuthSecret` on every
+  call (plan, decision 1). The console API is only a fallback for a route this front lacks, and
+  the task that uses it says so in its report.
+- **No cloud firewall:** never write text that claims one for Kamatera. Until T3526 lands, the plan
+  says the firewall is on the server.
 
 ## Phase 1: Foundation (lead)
 
@@ -355,3 +372,306 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   [#14](https://github.com/opscrew-hub/opscrew/issues/14)). It costs money. After the destroy, the
   test proves nothing of the app is left (servers, snapshots, SSH keys, security groups), and its
   findings tighten `offering.unavailable` to OVHcloud's real wording.
+
+## Phase 6: Kamatera
+
+- [x] T3519 (lead) The package's skeleton
+  - Accept: `packages/providers/kamatera` with `package.json` (`@opscrew/provider-kamatera`, the
+    same dependencies, scripts and `exports` as `@opscrew/provider-contabo`), `tsconfig.json`,
+    `vitest.config.ts`, an empty `module/` folder, `src/index.ts` exporting nothing yet, and the
+    lockfile regenerated. `pnpm check` is as green as before.
+  - Effort: lead
+
+- [x] T3520 (lead; the contract question of [issue #13](https://github.com/opscrew-hub/opscrew/issues/13))
+  The contract's `firstBoot`
+  - Accept:
+    - `ProviderTerraform.firstBoot?: "cloud-init" | "script"` exactly as plan 7., exported from
+      `@opscrew/contracts`.
+    - ADR 0029 gains D12: why Kamatera needs it, and that both kinds render the same steps.
+    - The registry accepts both values and rejects any other.
+    - The typecheck is green, and no other provider's file changes.
+  - Effort: lead
+
+- [x] T3521 [P] [US6] iac-templates renders the first-boot script (built 2026-11-24; reviewed with the whole branch in T3532)
+  - Owns: `packages/iac-templates/src/infra/**` (and its tests and snapshots)
+  - Reads: plan 7.; `infra/cloud-init.ts` (the context and the template), `infra/servers.ts`
+    (where `cloud-init.yaml.tftpl` is added), `infra/index.ts`
+  - Depends: T3520
+  - Accept:
+    - A root with a `firstBoot: "script"` provider gets `first-boot.sh.tftpl` **beside**
+      `cloud-init.yaml.tftpl`: the wrapper can't carry the key or the web flag, which only
+      `templatefile` knows at apply time, so the module renders the cloud-config, base64-encodes
+      it and passes the wrapper to the startup script. A provider whose `firstBoot` is absent or
+      `cloud-init` gets no wrapper and no other change.
+    - The script is rendered from the same context as the cloud-init one, and it:
+      - guards itself with a marker (`/var/lib/opscrew/first-boot.done`), so a second run changes
+        nothing;
+      - installs cloud-init when the image lacks it, writes the cloud-config to
+        `/var/lib/cloud/seed/nocloud-net/user-data`, and runs `cloud-init clean`, `init --local`,
+        `init` and `modules --mode=final`;
+      - holds no secret and quotes its values as the cloud-init template does.
+    - `sh -n` passes on the rendered script, and a test asserts the cloud-init and script
+      renderings carry the same steps (the deploy user, its key, the packages and the commands).
+    - Every existing snapshot and every other provider's output is byte-identical.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates && pnpm lint`
+  - Effort: high
+
+- [x] T3522 [P] [US6] Kamatera's API client
+  - Owns: `packages/providers/kamatera/src/client.ts`, `client.test.ts`, `src/__fixtures__/**`
+  - Reads: plan 8.; research R4 §1 and §10; plan decision 1; `packages/providers/contabo/src/client.ts`
+    and `packages/providers/ovhcloud/src/client.ts` (the templates); the public CLI schema
+  - Depends: T3519
+  - Accept:
+    - `KAMATERA_ENV` names `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET`, and
+      `KAMATERA_API_URL` overrides the base only. Reading the two registers both with the
+      redactor, and a missing one is named before any call.
+    - Every call carries `AuthClientId` and `AuthSecret`; every answer is parsed with a zod schema
+      the caller passes.
+    - A queued command (`{ id }` or `[id]`) is awaited through `GET /service/queue?id=`, with the
+      clock and sleep injected and a timeout carrying a plain message. A command whose status is
+      `error` fails with its `log`.
+    - An HTTP 500 body's `message` and `errors[].info` become an `OpsCrewError` that says what to
+      do; a 404 says the server or the route wasn't found; no `post` is ever retried.
+    - Tests with `fetch` fakes cover each rule, and a leak check shows neither value in any error,
+      log or fixture.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && npx vitest run --root packages/providers/kamatera && pnpm lint`
+  - Effort: high
+
+- [x] T3523 [P] [US6] [US8] The catalogue and the price table
+  - Owns: `packages/providers/kamatera/src/catalog.ts`, `catalog.test.ts`, `static-prices.ts`, its
+    fixtures under `src/__fixtures__/catalog*`
+  - Reads: plan 8.; research R4 §3, §5 and §7; plan decision 5; `ComputeCatalog`, `ComputeOffer`
+    and `ProviderExtras` in `packages/contracts/src/connector.ts`; Contabo's catalogue
+  - Depends: T3522
+  - Accept:
+    - Static: the six plans of plan 8. with the 2026-11-22 table, in USD, offered in every mapped
+      datacenter, `billing: "hourly"`, `hourly` = `monthly / 730`, no `setupFee`,
+      `source: "static"`, the table's date.
+    - Live: the public calculator file read once per catalogue when reachable, updating the
+      prices and saying `source: "live"`; a failed read keeps the table without a warning, since
+      it is the same data.
+    - `extras(location)`: the snapshot rate, the extra IPv4, the traffic allowance and its overage
+      rate, and the stopped-server rate.
+    - No availability is claimed per account; a refusal at apply takes the generic path.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && npx vitest run --root packages/providers/kamatera && pnpm lint`
+  - Effort: high
+
+- [x] T3524 [P] [US6] [US7] The server API, the `<name>(1)` guard and the connector
+  - Owns: `packages/providers/kamatera/src/servers.ts`, `servers.test.ts`, `connector.ts`,
+    `connector.test.ts`, their fixtures
+  - Reads: plan 8.; research R4 §2, §8, §9 and §10; `ServerSnapshotApi` and `VpsConnector` in
+    `packages/contracts/src/connector.ts`; `packages/agents/src/provision/takeover.ts` (how
+    `nameOnly` is used); Contabo's `servers.ts` and `connector.ts`
+  - Depends: T3522
+  - Accept:
+    - `findAppServers(app)` returns the account's servers named exactly `app` or `app-<name>`,
+      each with `nameOnly: true`, and the server's id is its name.
+    - A name check for the app's server reports:
+      - a server already named exactly as the plan means to create it (`opscrew-<app>-<random>`);
+      - a `<name>(1)` server, naming it and its datacenter, and never adopting it silently.
+    - Snapshots: created, listed by the `opscrew-<app>-<server>-<time>` prefix oldest first, and
+      deleted; each waits for its command.
+    - Power: `powerOn`, `powerOff` (never forcing) and `restart`, each awaited; `rebuild` reverts
+      the server to the snapshot (Kamatera's snapshot revert; the lead, 2026-11-27); `reinstall`
+      is absent.
+    - The connector: `configured`, `catalog()`, `servers` (undefined without credentials), and
+      `verifyCredentials`, which reads the account's servers and a datacenter's options and says
+      what it found. No `firewalls`, `backups` or `objectStorage`.
+    - Every wait has a timeout with a plain message, and the clock and sleep are injected.
+    - Each API route's source (the CLI schema or the console documentation) is listed in the
+      report.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && npx vitest run --root packages/providers/kamatera && pnpm lint`
+  - Effort: xhigh
+
+- [x] T3525 [US6] [US7] [US8] The definition and the module
+  - Owns: `packages/providers/kamatera/src/definition.ts`, `definition.test.ts`, `src/index.ts`,
+    `module/**`, `src/generated/**`
+  - Reads: plan 8. and 9.; research R4 in full; `packages/contracts/src/provider.ts`; Contabo's and
+    Hetzner's `definition.ts`, `definition.test.ts` and `module/`; `scripts/gen-provider-modules.ts`;
+    `Kamatera/kamatera` 0.9.4's docs and `kamatera/*.go`
+  - Depends: T3519, T3521, T3522, T3523, T3524
+  - Accept:
+    - `definition` as plan 8., including `firstBoot: "script"`, `sshKeyAttribute`, the regions, the
+      offering and every text, validated by `validateCloudProvider` in the test.
+    - The module `kamatera-instance`:
+      - `locals.plans` maps each OpsCrew plan id to Kamatera's `cpu_type`, `cpu_cores`, `ram_mb`
+        and `disk_sizes_gb`, and a test keeps the map and the offers equal;
+      - the image resolved by `data "kamatera_image"` with `os` and `code` from the definition;
+      - `kamatera_server` with the plan's CPU, memory and disks, `billing_cycle = "hourly"`, the
+        key's text from `var.deploy_ssh_public_key`, `startup_script = file(...)`,
+        `daily_backup = false`, `power_on = true` and `allow_recreate = false`;
+      - `lifecycle.ignore_changes` on `image_id`, `ssh_pubkey` and `startup_script`;
+      - no password argument, so the provider generates one and OpsCrew never reads it;
+      - the usual outputs, with `server_id` equal to the server's name.
+    - `src/generated/module.ts` is regenerated with `pnpm gen:provider-modules`.
+    - SecOps reads the key from `ssh_pubkey` and passes on the plan JSON fixture. The firewall
+      check is T3526, not this task.
+    - The module validates and passes `fmt -check` under `tofu` (and `terraform` where installed),
+      skipping plainly without the network.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && OPSCREW_IT=1 npx vitest run --root packages/providers/kamatera && pnpm lint`
+  - Effort: xhigh
+
+- [x] T3526 (lead; the founder chose option A on
+  [issue #13](https://github.com/opscrew-hub/opscrew/issues/13), 2026-11-25) The server firewall
+  and SecOps's check of it
+  - Owns: `packages/contracts/src/provider.ts` (`ProviderSecOps.firewallCheck`),
+    `packages/secops/src/policies/**` and its tests, `packages/agents/src/**` (the post-boot
+    check), `packages/providers/kamatera/src/definition.ts` and `module/first-boot` (the rules)
+  - Reads: the issue's option A; plan 8.; ADR 0029 D8 and D11; how `secure` runs its checks today
+  - Depends: T3525
+  - Accept (the founder's conditions on #13):
+    - **First:** the firewall is the first step of the first boot, before anything else runs:
+      nftables for IPv4 and IPv6, default deny inbound, loopback and established/related allowed,
+      22 only from `security.sshAllowedCidrs`, 80/443 as `security.httpAllowedFrom` says
+      (Cloudflare's ranges when proxied), WireGuard's port only where the plan uses it.
+    - **Kept across reboots:** the rules are persisted (the live pass checks it).
+    - **Key-only from the same step:** if the image comes with a root password or password SSH,
+      the same step turns password logins off.
+    - `ProviderSecOps.firewallCheck?: "cloud" | "server"`, default `"cloud"`; the other four
+      providers are unchanged.
+    - With `"server"`, `firewall-attached` passes only when the planned server's
+      `startup_script` holds the firewall marker, and `opscrew secure` reads the server's
+      nftables rules over SSH and fails until they are default deny with the allowed SSH, web and
+      WireGuard ports.
+    - The plan, the design summary and the guide say "cloud firewall: none; server firewall: on",
+      and name the boot-to-script gap.
+    - Tests: a script with the rules passes, one without fails, and `secure` fails on a server
+      whose rules were changed.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/secops --filter=@opscrew/agents --filter=@opscrew/provider-kamatera && npx vitest run --root packages/secops && npx vitest run --root packages/agents src/secure && pnpm lint`
+  - Effort: xhigh
+
+- [x] T3527 (lead; [issue #15](https://github.com/opscrew-hub/opscrew/issues/15)) `kamatera` joins
+  the lists and the registry (`ProviderId` first, done 2026-11-26, so T3523 and T3524 typecheck)
+  - Accept:
+    - `kamatera` in `ProviderId`, `VpsProviderId`, `VpsProviderSchema` and `DEFAULT_IMAGES`
+      (`"Ubuntu 24.04"`).
+    - `CLOUD_PROVIDERS` after `ovhcloud`, with the registry's and the CLI's dependencies and the
+      lockfile.
+    - Any exhaustive switch left over is fixed.
+    - `npx opscrew providers --json` lists it, with its labels, `signupUrl` and `pricingUrl`.
+    - The Codex plugin's two credential lists gain `KAMATERA_API_CLIENT_ID` and
+      `KAMATERA_API_SECRET`.
+    - `pnpm check` passes, or the failures are only the environment's, named in the PR.
+  - Effort: lead
+
+- [x] T3528 [P] [US6] The agent's environment leaves out Kamatera's variables
+  - Owns: `packages/core/src/env.ts`, `env.test.ts`
+  - Reads: commit 59e65a49 (the same change for `OVH_`), the issue beside it
+  - Accept: `KAMATERA_` and `CLOUDCLI_` join the prefixes the agent's environment never gets, with
+    a test; the other prefixes and every caller are unchanged.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/core && npx vitest run --root packages/core && pnpm lint`
+  - Effort: medium
+
+- [x] T3529 [P] [US9] The guide
+  - Owns: `docs/guide/kamatera.md`, and Kamatera's lines in `docs/prices-compared.md`,
+    `docs/guide/snapshots.md`, `retarget.md` and `credential-rotation.md`
+  - Reads: spec US9; research R4; `docs/guide/contabo.md` (the model); README's provider list
+    (report its line for the lead)
+  - Depends: T3527
+  - Accept:
+    - The page covers what spec US9.1 lists: the key and its lack of scope, the datacenter
+      mapping, billing by the minute and what keeps billing, the traffic allowance, and what isn't
+      offered (a cloud firewall OpsCrew manages, provider backups, resizing, delete protection,
+      monthly billing).
+    - It says the console firewall can be turned on as a second layer OpsCrew doesn't manage, and
+      that the root password sits in the state.
+    - The other pages list Kamatera where they list Contabo.
+    - `docs/guide/index.md` waits for its issue (report the line to add).
+  - Verify: `pnpm lint`
+  - Effort: medium
+
+- [x] T3530 [P] [US9] The plugin's skills and the MCP text
+  - Owns: `plugin/**`, `packages/mcp-server/src/**` (text only)
+  - Reads: spec US9.3; how T3512 added OVHcloud
+  - Depends: T3527
+  - Accept: the MCP tools accept `kamatera` wherever they accept a cloud provider (from the
+    registry), and the deploy and snapshot skills say what differs: no cloud firewall, a startup
+    script, no resize, a stopped server that bills.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/mcp-server && pnpm lint`
+  - Effort: medium
+
+- [x] T3531 [P] [US9] The live test and its steps
+  - Owns: `packages/cli/test/live/kamatera.test.ts`, Kamatera's section of `docs/e2e.md`
+  - Reads: `packages/cli/test/live/contabo.test.ts` and `ovhcloud.test.ts`, `docs/e2e.md`, spec
+    SC-3513
+  - Depends: T3527
+  - Accept:
+    - The test runs only with `OPSCREW_E2E_KAMATERA=1` and the two variables. It goes through the
+      flow of SC-3508 on one `A-2-4` and ends with a scan for both values.
+    - `docs/e2e.md` gives the steps, the variables and the cost (about $0.03 an hour, and what
+      stays after the destroy).
+    - It is never run in this task.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
+  - Effort: medium
+
+- [x] T3532 (lead) A fresh review of Kamatera's branch, `pnpm check`, research R4 updated with the
+  implementers' findings, then its pull request, stacked on OVHcloud's
+- [ ] T3533 (lead) The live pass, only with the founder's go-ahead (it costs money;
+  [issue #14](https://github.com/opscrew-hub/opscrew/issues/14))
+
+### The core lead's review of Kamatera's pull request ([#55](https://github.com/opscrew-hub/opscrew/pull/55))
+
+- [x] T3534 [US6] An existing server's own firewall never drifts from the plan in silence (review points 1 and 2)
+  - Owns: `packages/secops/src/policies/**`, `packages/agents/src/provision/**` (not `plan-json.ts`),
+    `packages/agents/src/retarget/**`, `packages/agents/src/secure/server-firewall.ts` (and their tests)
+  - Reads: ADR 0029 D13; `packages/iac-templates/shared/server-firewall.sh.tftpl` (its `ssh_sources`,
+    `web_sources` and `wireguard_port` lines keep their form); the review on #55
+  - Accept:
+    - For a `firewallCheck: "server"` provider's server the plan doesn't create, SecOps parses the
+      rules from the startup script in that resource change's `before` (policies see the masked plan,
+      which has no `prior_state`) and compares them with the plan's `ssh_allowed_cidrs`,
+      `http_allowed_cidrs` and the module call's `wireguard_port`. Any difference fails critical, with
+      a plain next step. A missing or unreadable script fails critical too.
+    - `provision` and `retarget` stop before any approval when the plan would change those networks
+      on such a server that already exists, saying why (the rules are set at the first boot and
+      OpsCrew can't change them in place yet) and what to do instead. A test proves each stops.
+    - `secure`'s remediation no longer says that editing the tfvars and reloading fixes the rules. It
+      says the rules are set at the first boot and can't be changed in place by OpsCrew yet. It says
+      how to load them again as written (`systemctl restart opscrew-firewall.service`, which loads
+      `/etc/opscrew/firewall.nft`, T3535), and what to do when the plan's networks really changed.
+    - Every other provider's results and texts are unchanged.
+  - Effort: high
+
+- [x] T3535 [P] [US6] The server firewall's script and Kamatera's module harden (review points 3 to 8)
+  - Owns: `packages/iac-templates/shared/**`, `packages/iac-templates/src/**` (and snapshots),
+    `packages/providers/kamatera/**`
+  - Accept:
+    - The rules go to `/etc/opscrew/firewall.nft`, loaded by a oneshot `opscrew-firewall.service`
+      that loads and deletes only `inet opscrew-firewall` (never `flush ruleset`).
+      `nftables.service` is neither enabled nor touched.
+    - After the ssh reload, `sshd -T` must show `passwordauthentication no` (and
+      `kbdinteractiveauthentication no`), or the step fails closed.
+    - The forward chain drops non-DNAT traffic from outside the server routed to `docker0` or `br-*`.
+    - `variables.tf` validates each CIDR in `ssh_allowed_cidrs` and `http_allowed_cidrs` with
+      `cidrhost`, and `wireguard_port` as empty or a port in 1 to 65535.
+    - `power_on` is in `ignore_changes` and `terraform.lifecycleIgnored`.
+    - `findAppServers` matches only the app's exact server names: `<app>`, and `<app>-<name>` for a
+      name the plan gives, plus their `(n)` duplicates. A sibling app's `shop-staging` never matches
+      `shop`.
+    - The `ssh_sources=`, `web_sources=` and `wireguard_port=` lines keep their form (T3534 parses
+      them).
+  - Effort: high
+
+- [x] T3536 [P] [US6] Kamatera's generated root password never leaves the state (review point 9)
+  - Owns: `packages/agents/src/provision/plan-json.ts` (and its test), `packages/cli/test/live/kamatera.test.ts`
+  - Accept:
+    - `ALWAYS_MASKED` masks `kamatera_server`'s `generated_password` in resource changes, drift and
+      planned values, whether or not the provider marks it sensitive. A test shows a plan JSON
+      carrying it in `before`, `after` and `prior_state` keeps no trace of it once masked.
+    - The pull request's answer names where raw plan JSON goes (the sidecar, policies, audit,
+      prompts) and that each sees only the masked one; the task's report names the code for it.
+  - Effort: medium
+
+- [x] T3537 [US6] Kamatera's `findAppServers` matches only the plan's server names (review point 7,
+  [#56](https://github.com/opscrew-hub/opscrew/issues/56))
+  - Owns: `packages/contracts/src/connector.ts`, `packages/providers/kamatera/src/servers.ts` (and
+    tests), the agents' callers of `findAppServers` (`destroy/`, `provision/plan-apply.ts`,
+    `provision/takeover.ts`, `snapshot/`) and their tests
+  - Accept:
+    - `findAppServers(app, names?)`: `names` are the plan's server names. Kamatera, given them, keeps
+      exactly those names and their `(n)` duplicates (the guard stays for exactly those); without
+      them, it behaves as today. Every other provider ignores it, unchanged.
+    - Each agents caller that has the plan passes its server names, from the one helper that
+      already names servers (no new naming rule). A test: app `shop` with a sibling `shop-staging`
+      and `shop-staging(1)` on the account finds neither, and its own `shop-<extra>` still.
+  - Effort: high

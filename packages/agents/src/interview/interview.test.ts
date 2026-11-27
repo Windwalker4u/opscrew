@@ -306,6 +306,11 @@ describe("provider question", () => {
           hint: "servers in Germany, France and Poland, plus Canada, Singapore and Australia; billed by the hour, per second, until deleted; prices in EUR; needs a Public Cloud project",
         },
         {
+          value: "kamatera",
+          label: "Kamatera",
+          hint: "servers in Frankfurt, Amsterdam, Stockholm, New York, Santa Clara and Singapore; billed by the hour, counted by the minute, until terminated (a stopped server still bills); prices in USD; cloud firewall: none; server firewall: on, from a few seconds after the server starts",
+        },
+        {
           value: "own",
           label: "A server you already have",
           hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere, also a computer at home; you already pay for it",

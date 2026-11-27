@@ -178,6 +178,8 @@ describe("runAdvise: one server", () => {
       "OVHcloud's prices in SBG5",
       "OVHcloud's prices in GRA11",
       "OVHcloud's prices in WAW1",
+      "Kamatera's prices in EU-FR",
+      "Kamatera's prices in EU",
       "Dependabot alerts",
       "Dependabot's open pull requests",
       "the GitHub token's expiry",
@@ -194,6 +196,9 @@ describe("runAdvise: one server", () => {
       ),
       expect.stringMatching(
         /^live prices: HCLOUD_TOKEN is not set, so prices come from Hetzner's published price list dated \d{4}-\d{2}-\d{2}/,
+      ),
+      expect.stringMatching(
+        /^live prices: Kamatera has no price API, so prices come from Kamatera's published price list dated \d{4}-\d{2}-\d{2}/,
       ),
       expect.stringMatching(
         /^live prices: OVH_CLIENT_ID is not set, so prices come from OVHcloud's published price list dated \d{4}-\d{2}-\d{2}/,

@@ -3681,6 +3681,123 @@ What this pass doesn't cover (fakes do): moves to and from OVHcloud, several ser
 monitoring, rollback, data snapshots, `advise` and `rotate` on OVHcloud; a create that times out
 (SC-3502); a size change's refusal; the regions other than DE1 and GRA11.
 
+## Kamatera
+
+`packages/cli/test/live/kamatera.test.ts`, with `OPSCREW_E2E_KAMATERA=1`, runs OpsCrew on Kamatera
+(SC-3508, SC-3511, SC-3513): `examples/flask-sqlite` on one `A-2-4` (2 shared vCPU, 4 GB, 40 GB
+disk) in EU-FR (Frankfurt), on a Kamatera account of yours.
+
+**It costs money.** It runs on the contributor's own Kamatera account, just before the release
+that ships Kamatera, and the founder is asked then (opscrew-hub/opscrew#14). Kamatera bills the
+server by the hour, counted by the minute, until it is terminated (a stopped server still bills):
+an `A-2-4` costs about $0.026 an hour before any tax. The whole-server snapshot of step 5 costs
+$0.05 per GB a month while it exists (at most 40 GB, so under $0.003 an hour), and the test deletes
+it in step 9, before the destroy. A pass takes one to three hours, so it costs under $0.10. The
+prices are in `packages/providers/kamatera/src/static-prices.ts` and on
+[Kamatera's price page](https://www.kamatera.com/pricing/).
+
+The app is named after the run, `e2e-kam-<run id>`, so no server of an earlier run is ever taken
+for this one's. OpsCrew gets the two values as `KAMATERA_API_CLIENT_ID` and `KAMATERA_API_SECRET`,
+as a user's run does, and no other provider's token. `OPSCREW_E2E_APP` and `OPSCREW_E2E_REGION`
+are ignored.
+
+### Before the first run (once, in Kamatera's console)
+
+1. **The account.** Use a Kamatera account for the pass alone, or one that holds nothing else you
+   care about: Kamatera's API key can't be limited, and reaches every server on the account.
+2. **The API key.** In [Kamatera's console](https://console.kamatera.com/), API → Keys: create a
+   key. Its access key is `KAMATERA_API_CLIENT_ID` and its secret key, shown once,
+   `KAMATERA_API_SECRET`.
+3. **The limits.** If the account has a server price limit or a server creation allotment, it must
+   allow one `A-2-4`.
+
+### The steps
+
+Each step below is one numbered test, so a run reads as "N of 11 steps":
+1. **The interview.** The example goes to the throwaway repository's `main`, as for
+   [environments](#environments-and-promotion). Then `init --fix`, `analyze --no-ai`, the run's
+   name set in `opscrew/architecture.json`, and `interview --answers` without a provider
+   (`eu-central`, 1,000 to 10,000 users a month, the run's own hostname behind Cloudflare). With
+   only Kamatera's values set, the interview must choose Kamatera.
+2. **Design.** The plan must be one `A-2-4` in EU-FR, with no Kamatera backups, priced in USD.
+   Then the pass runs `snapshot offsite off` (it tests Kamatera, not the R2 copies, whose key only
+   Cloudflare's dashboard makes) and, for the recovery copy's age key, `secrets folder` and
+   `--key-out` on every provision, as the rotation passes do.
+3. **Provision.** `adapt`'s pull request is merged. The account must have no server of the app
+   yet. Then provision, each plan approved by its hash. Its output must hold no takeover note, and
+   the account must then have exactly one server, named after the app, with no `<app>(n)`
+   duplicate, and its address recorded by OpsCrew.
+4. **Deploy, verify and status.** The deploy-setup pull request is merged and its deploy run must
+   succeed. The app must answer on its hostname through Cloudflare; `verify` and `status` must
+   pass. A value is written through the app into its SQLite file.
+5. **A whole-server snapshot.** `snapshot --server` must give its price per GB per month, and
+   `snapshot list --json` must list it as kind `server` of the app's server.
+6. **Its restore.** A second value is written. Then `restore --server <id>`, run first without
+   `--approve` and then with `--confirm <app> --approve <hash>`, as in
+   [Snapshots and restores](#snapshots-and-restores); its result must say "and the app answers".
+   The account must still have the one server, OpsCrew's record the same address, the app must
+   read back the first value, and `verify` must pass again.
+7. **Secure and drift.** `secure` must write `SECURITY_REPORT.md` with its check of the server's
+   own firewall passing (cloud firewall: none; server firewall: on: the live nftables rules are the
+   plan's), and without the findings of a server without that firewall or without an SSH key;
+   `drift` must find no difference.
+8. **A reboot.** The test reboots the server through Kamatera's API. The app must answer again
+   with the first value, and `secure`'s firewall check must pass again: the rules are kept across
+   reboots.
+9. **The snapshots deleted,** always, even after a failed step: Kamatera reaches a snapshot only
+   through its server, so while the server exists the test deletes every snapshot OpsCrew lists
+   for it (`opscrew-<app>-…`) through Kamatera's API, and the server must then have none.
+10. **Destroy.** `destroy --confirm <app> --no-snapshot`, each plan approved by its hash. The
+    account must have no server of the app and no `<app>(n)` duplicate, and Cloudflare nothing of
+    the app.
+11. **Nothing leaked** (SC-3511), always run: neither `KAMATERA_API_CLIENT_ID` nor
+    `KAMATERA_API_SECRET`, and no other known secret, in any CLI output, the deploy job's log, any
+    audit entry, saved plan, state file, report or Cloudflare record, any commit (every branch) or
+    pull request of the run, as for environments. The state holds the root password Kamatera
+    generates, which OpsCrew never reads or shows.
+
+### Cleanup and what stays
+
+The cleanup is the one for environments, after every step and always: `opscrew destroy` if a
+step failed after provision started, then the GitHub environments, deploy secrets and deploy
+pauses, the app's records in Cloudflare, and the repository reset. Then a server of the app, or a
+`<app>(n)` duplicate, still in the account fails the run, each named.
+
+After a finished pass nothing of the run stays at Kamatera: step 9 deletes the server's snapshots
+and the destroy terminates the server. The account and its API key stay for the next run; they
+cost nothing.
+
+**If a run was interrupted**, in Kamatera's console: open the server `e2e-kam-<run id>` (and any
+`e2e-kam-<run id>(1)`), delete its snapshots on its Snapshots tab, then terminate it. In the
+throwaway repository and in Cloudflare, delete what the environments test lists.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_KAMATERA` | `1` runs this test, just before the release that ships Kamatera, after the founder agrees: it costs up to $0.10. |
+| `KAMATERA_API_CLIENT_ID`, `KAMATERA_API_SECRET` | The API key's access key and secret key ([above](#before-the-first-run-once-in-kamateras-console)). |
+| `KAMATERA_API_URL` | Optional: another address of Kamatera's API. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as for environments. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for your own server: the app answers on the run's own hostname in that zone. |
+
+Without them the test is skipped, with a message naming each one it misses. Set
+`OPSCREW_E2E_KAMATERA=1` only on the command line of this one file, never in `.env.e2e` or an
+exported shell.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_KAMATERA=1 KAMATERA_API_CLIENT_ID=… KAMATERA_API_SECRET=… \
+  OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/kamatera.test.ts
+```
+
+What this pass doesn't cover (fakes do): moves to and from Kamatera, several servers, previews,
+monitoring, rollback, data snapshots, `advise` and `rotate` on Kamatera; a create that times out
+or leaves a `<name>(1)` duplicate (SC-3509); a size change's refusal; the datacenters other than
+EU-FR. Whether Kamatera keeps a server's snapshots once it is terminated isn't checked: the pass
+deletes them first, as the guide tells users to.
+
 ## A cPanel account
 
 `packages/cli/test/live/cpanel.test.ts`, with `OPSCREW_E2E_CPANEL=1`, runs feature 027 on the

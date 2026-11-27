@@ -3,6 +3,9 @@ import { isRecord, OpsCrewError, zodIssues } from "@opscrew/core";
 import { CurrencySchema, PlainUrlSchema, RegionSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 
+/** The root variable holding the deploy key's text: a provider with no SSH-key resource uses it. */
+const DEPLOY_KEY_TEXT = "var.deploy_ssh_public_key";
+
 /** The shared first-boot setup OpsCrew adds to every server module (ADR 0029, D5). */
 const SHARED_CLOUD_INIT = "cloud-init.yaml.tftpl";
 
@@ -172,6 +175,7 @@ const terraform = z.object({
   module: z.object({ name: z.string(), files: moduleFiles }),
   credentialsComment: z.string(),
   deleteProtectionVariable: z.boolean(),
+  firstBoot: z.enum(["cloud-init", "script"]).optional(),
   descriptions: z.object({ location: z.string(), serverType: z.string(), backups: z.string() }),
   moduleArguments: fn<Definition["terraform"]["moduleArguments"]>(),
   rootVariables: z.array(rootVariable).optional(),
@@ -196,6 +200,9 @@ const terraform = z.object({
         } else addresses.push(`${match[1]}.${match[2]}`);
       }
       if (addresses.length === 0) {
+        // A provider with no SSH-key resource gives each server the key's text itself (Kamatera's
+        // `ssh_pubkey`): no shared resource line at all then, and the key id is that text (#52).
+        if (shared.resources.length === 0 && shared.sshKeyId === DEPLOY_KEY_TEXT) return;
         ctx.addIssue({ code: "custom", path: ["resources"], message: "declares no resource" });
       } else if (!addresses.some((address) => shared.sshKeyId.includes(address))) {
         ctx.addIssue({

@@ -290,7 +290,7 @@ async function startUpdatedServers(
   const check = (name: string) =>
     `Check that the ${noun} ${name} is on in ${displayName}'s console (${consoleUrl}) and start it there if it isn't.`;
   if (api === undefined) return names.map(check).join(" ");
-  const found = await api.findAppServers(deployPlan.app.name).catch(() => undefined);
+  const found = await api.findAppServers(deployPlan.app.name, names).catch(() => undefined);
   const lines: string[] = [];
   for (const name of names) {
     const server = found?.find((item) => item.name === name);

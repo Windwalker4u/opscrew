@@ -101,6 +101,8 @@ steps you run:
   and snapshots. Its prices come from a dated list, since it has no price API.
 - **OVHcloud** (api.eu.ovhcloud.com, and auth.eu.ovhcloud.com for its sign-in): servers, security
   groups, SSH keys and snapshots in your Public Cloud project, and live prices.
+- **Kamatera** (cloudcli.cloudwm.com, and console.kamatera.com for its public price list): servers
+  and snapshots, and live prices.
 - **Cloudflare:** DNS records, TLS settings, rules and Workers; DNS-over-HTTPS lookups
   (cloudflare-dns.com) when it checks a site.
 - **Porkbun, Namecheap and GoDaddy**, only in the `domain` steps: availability, prices, purchases
