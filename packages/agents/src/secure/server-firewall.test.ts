@@ -171,8 +171,21 @@ describe("the server firewall's check", () => {
     expect(result.remediation).toContain(
       `http_allowed_cidrs\` in ${plan().infra.dir}/terraform.tfvars.json`,
     );
-    expect(result.remediation).toContain("nft -f /etc/nftables.conf");
-    expect(result.remediation).toContain("opscrew secure");
+    // Said honestly: the rules are the first boot's, which nothing reloads from the plan.
+    expect(result.remediation).toContain(
+      "Its rules are set at the server's first boot, and OpsCrew can't change them in place yet.",
+    );
+    expect(result.remediation).toContain(
+      "), `systemctl restart opscrew-firewall.service` loads them again as written in /etc/opscrew/firewall.nft.",
+    );
+    expect(result.remediation).toContain(
+      "If the plan's networks really changed (the web ports' are `http_allowed_cidrs`",
+    );
+    expect(result.remediation).toContain(
+      "edit /etc/opscrew/firewall.nft as root to match the plan, or replace the server, and restart that unit. Then run `opscrew secure` again.",
+    );
+    expect(result.remediation).not.toContain("nft -f");
+    expect(result.remediation).not.toContain("nftables.conf");
   });
 
   it("fails a range of the plan's that the live table lacks", () => {
@@ -246,7 +259,7 @@ describe("the server firewall's check", () => {
     );
     expect(added).toMatchObject({ status: "fail", severity: "critical" });
     expect(added.message).toContain("tcp dport 3306 accept");
-    expect(added.remediation).toContain("nft -f /etc/nftables.conf");
+    expect(added.remediation).toContain("systemctl restart opscrew-firewall.service");
     expect(added.remediation).toContain("opscrew secure");
 
     // SSH from everywhere although the plan allows two networks.
@@ -296,7 +309,7 @@ describe("the server firewall's check", () => {
     );
     expect(missing.status).toBe("fail");
     expect(missing.message).toContain("no firewall of OpsCrew's");
-    expect(missing.remediation).toContain("nft -f /etc/nftables.conf");
+    expect(missing.remediation).toContain("systemctl restart opscrew-firewall.service");
     const unread = evaluate(
       plan(),
       CLOUDFLARE,

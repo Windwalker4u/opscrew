@@ -24,6 +24,10 @@ import { committedTfvars } from "../provision/render";
  */
 const READ_TABLE = `docker run --rm --network host --cap-drop ALL --cap-add NET_ADMIN --cap-add SYS_CHROOT --volume /:/host:ro ${IMAGES.caddy.ref} chroot /host nft list table ${SERVER_FIREWALL_TABLE}`;
 
+/** The rules file the first boot writes, and the oneshot unit that loads it at every boot. */
+const FIREWALL_RULES = "/etc/opscrew/firewall.nft";
+const FIREWALL_UNIT = "opscrew-firewall.service";
+
 /** Every address of each family, as the module's networks write it. */
 const WORLD = ["0.0.0.0/0", "::/0"];
 
@@ -106,7 +110,9 @@ export function serverFirewallCheck(
   const sshSources = plan.security.sshAllowedCidrs.map(listed);
   const wireguardPort = plan.network?.members.find((member) => member.name === server)?.port;
   const tfvars = `${plan.infra.dir}/terraform.tfvars.json`;
-  const remediation = `${provider.name} has no cloud firewall, so this is the server's only one. As root on the server (from ${provider.texts.runbook.console}), \`nft -f /etc/nftables.conf\` loads the rules its first boot wrote again; if the plan's networks changed since (the web ports' are \`http_allowed_cidrs\` in ${tfvars}), change them in that file first. Then run \`opscrew secure\` again.`;
+  // The first boot's rules: nothing reloads them from the plan (the module ignores changes to the
+  // startup script), so the remediation never says that changing the plan's files fixes them.
+  const remediation = `${provider.name} has no cloud firewall, so this is the server's only one. Its rules are set at the server's first boot, and OpsCrew can't change them in place yet. As root on the server (from ${provider.texts.runbook.console}), \`systemctl restart ${FIREWALL_UNIT}\` loads them again as written in ${FIREWALL_RULES}. If the plan's networks really changed (the web ports' are \`http_allowed_cidrs\` in ${tfvars}), edit ${FIREWALL_RULES} as root to match the plan, or replace the server, and restart that unit. Then run \`opscrew secure\` again.`;
   const base = {
     id: "server-firewall",
     title: "The server's own firewall lets in only what the plan allows",

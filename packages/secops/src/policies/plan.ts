@@ -5,10 +5,11 @@ import type {
   ProviderSecOps,
   Severity,
 } from "@opscrew/contracts";
-import { isRecord } from "@opscrew/core";
+import { isRecord, listText } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { z } from "zod";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
@@ -216,11 +217,34 @@ const PROVIDERS: readonly ProviderChecks[] = CLOUD_PROVIDERS.map((provider) => (
 const SERVER_FIREWALL_MARKER = "# opscrew-server-firewall:";
 const SERVER_FIREWALL_DROP = "type filter hook input priority filter; policy drop;";
 
-/** The planned server's first-boot script with the server firewall's step (whichever attribute). */
-function serverFirewallScript(server: PlannedResourceJson): string | undefined {
-  return Object.values(server.values).find(
+/** A server's first-boot script with the server firewall's step (whichever attribute). */
+function serverFirewallScript(values: Record<string, unknown>): string | undefined {
+  return Object.values(values).find(
     (value): value is string => typeof value === "string" && value.includes(SERVER_FIREWALL_MARKER),
   );
+}
+
+/** The networks a server's own firewall lets in: SSH's, the web ports' and WireGuard's port. */
+interface ServerFirewallNetworks {
+  ssh: string[];
+  web: string[];
+  /** The UDP port, or `""` for none. */
+  wireguard: string;
+}
+
+/** The words of `text` (a script's space-separated networks). */
+const words = (text: string) => text.split(" ").filter((word) => word !== "");
+
+/**
+ * The networks of the step in a first-boot script: its `ssh_sources`, `web_sources` and
+ * `wireguard_port` lines. Undefined when no script holds the step or its networks can't be read.
+ */
+function scriptNetworks(script: string | undefined): ServerFirewallNetworks | undefined {
+  if (script === undefined || !script.includes(SERVER_FIREWALL_DROP)) return undefined;
+  const value = (name: string) => new RegExp(`^${name}='([^']*)'$`, "m").exec(script)?.[1];
+  const [ssh, web, wireguard] = ["ssh_sources", "web_sources", "wireguard_port"].map(value);
+  if (ssh === undefined || web === undefined || wireguard === undefined) return undefined;
+  return { ssh: words(ssh), web: words(web), wireguard };
 }
 
 /**
@@ -229,21 +253,25 @@ function serverFirewallScript(server: PlannedResourceJson): string | undefined {
  * from everywhere. Undefined when no script holds the step or its networks can't be read.
  */
 function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[] | undefined {
-  const script = serverFirewallScript(server);
-  if (script === undefined || !script.includes(SERVER_FIREWALL_DROP)) return undefined;
-  const value = (name: string) => new RegExp(`^${name}='([^']*)'$`, "m").exec(script)?.[1];
-  const [ssh, web, wireguard] = ["ssh_sources", "web_sources", "wireguard_port"].map(value);
-  if (ssh === undefined || web === undefined || wireguard === undefined) return undefined;
+  const networks = scriptNetworks(serverFirewallScript(server.values));
+  if (networks === undefined) return undefined;
+  const { ssh, web, wireguard } = networks;
   const rule = (protocol: string, port: string, sources: string[]) =>
     sources.length === 0 ? [] : [{ direction: "in", protocol, port, source_ips: sources }];
-  const sources = (text: string) => text.split(" ").filter((network) => network !== "");
   return [
-    ...rule("tcp", "22", sources(ssh)),
-    ...rule("tcp", "80", sources(web)),
-    ...rule("tcp", "443", sources(web)),
-    ...rule("udp", "443", sources(web)),
+    ...rule("tcp", "22", ssh),
+    ...rule("tcp", "80", web),
+    ...rule("tcp", "443", web),
+    ...rule("udp", "443", web),
     ...(wireguard === "" ? [] : rule("udp", wireguard, [...OPEN_TO_ALL])),
   ];
+}
+
+/** The `change` of the resource at `address` in the plan's `resource_changes`. */
+function resourceChange(planJson: unknown, address: string): Record<string, unknown> | undefined {
+  if (!isRecord(planJson) || !Array.isArray(planJson.resource_changes)) return undefined;
+  const entry = planJson.resource_changes.find((e) => isRecord(e) && e.address === address);
+  return isRecord(entry) && isRecord(entry.change) ? entry.change : undefined;
 }
 
 /**
@@ -252,12 +280,154 @@ function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[]
  * in it. False when the plan creates or replaces it, or says nothing of it.
  */
 function serverExists(planJson: unknown, address: string): boolean {
-  if (!isRecord(planJson) || !Array.isArray(planJson.resource_changes)) return false;
-  const change = planJson.resource_changes.find(
-    (entry) => isRecord(entry) && entry.address === address,
-  );
-  const actions = isRecord(change) && isRecord(change.change) ? change.change.actions : undefined;
+  const actions = resourceChange(planJson, address)?.actions;
   return Array.isArray(actions) && actions.length > 0 && !actions.includes("create");
+}
+
+/**
+ * The first-boot script a server that exists was created with: in its change's `before`, which the
+ * masked plan keeps (it drops `prior_state`).
+ */
+function storedServerScript(planJson: unknown, address: string): string | undefined {
+  const before = resourceChange(planJson, address)?.before;
+  return isRecord(before) ? serverFirewallScript(before) : undefined;
+}
+
+const Networks = z.array(z.string());
+/** What the plan JSON says of the networks a server module gets. */
+const PlannedNetworksSchema = z.object({
+  variables: z.object({
+    ssh_allowed_cidrs: z.object({ value: Networks }),
+    http_allowed_cidrs: z.object({ value: Networks }).optional(),
+  }),
+  configuration: z.object({
+    root_module: z.object({
+      module_calls: z.record(
+        z.string(),
+        z.object({
+          expressions: z
+            .object({
+              web: z.object({ constant_value: z.boolean() }).optional(),
+              wireguard_port: z
+                .object({ constant_value: z.union([z.number(), z.string()]) })
+                .optional(),
+            })
+            .optional(),
+        }),
+      ),
+    }),
+  }),
+});
+
+/**
+ * The networks the plan gives the server at `address` (`module.<call>.<type>.<name>`): the root's
+ * `ssh_allowed_cidrs`, its `http_allowed_cidrs` unless the module call closes the web ports
+ * (`web = false`, an extra server), and the module call's `wireguard_port`. Undefined when the plan
+ * JSON doesn't say them.
+ */
+function plannedNetworks(planJson: unknown, address: string): ServerFirewallNetworks | undefined {
+  const call = /^module\.([^.]+)\./.exec(address)?.[1];
+  const parsed = PlannedNetworksSchema.safeParse(planJson);
+  if (call === undefined || !parsed.success) return undefined;
+  const { variables, configuration } = parsed.data;
+  const module = configuration.root_module.module_calls[call];
+  if (module === undefined) return undefined;
+  const closed = module.expressions?.web?.constant_value === false;
+  const web = closed ? [] : variables.http_allowed_cidrs?.value;
+  if (web === undefined) return undefined;
+  const port = module.expressions?.wireguard_port?.constant_value;
+  return {
+    ssh: variables.ssh_allowed_cidrs.value,
+    web,
+    wireguard: port === undefined ? "" : String(port),
+  };
+}
+
+/** Up to six of `items` in a sentence, the rest counted. */
+function some(items: readonly string[]): string {
+  return items.length <= 6
+    ? listText(items)
+    : `${items.slice(0, 5).join(", ")} and ${items.length - 5} more`;
+}
+
+/** How the networks of `kind` on the server (`live`) differ from the plan's; none when equal. */
+function networkDifference(
+  kind: string,
+  noun: string,
+  live: readonly string[],
+  planned: readonly string[],
+): string[] {
+  const stray = live.filter((network) => !planned.includes(network));
+  const lacking = planned.filter((network) => !live.includes(network));
+  const said = [
+    ...(stray.length === 0 ? [] : [`the ${noun} accepts ${some(stray)}, which the plan doesn't`]),
+    ...(lacking.length === 0 ? [] : [`the plan adds ${some(lacking)}`]),
+  ];
+  return said.length === 0 ? [] : [`${kind}: ${said.join(", and ")}`];
+}
+
+/** How the WireGuard port on the server (`live`, `""` for none) differs from the plan's. */
+function portDifference(noun: string, live: string, planned: string): string[] {
+  if (live === planned) return [];
+  const said =
+    live === ""
+      ? `the plan opens UDP port ${planned}, which the ${noun} doesn't`
+      : planned === ""
+        ? `the ${noun} opens UDP port ${live}, which the plan doesn't`
+        : `the ${noun} opens UDP port ${live} and the plan ${planned}`;
+  return [`WireGuard: ${said}`];
+}
+
+/**
+ * `server-firewall-as-planned` for a server that already exists on a provider whose firewall is
+ * the server's own: the networks its first boot set (read from the script it was created with) must
+ * be the plan's, since OpsCrew can't change them in place. Fails critical on any difference, and
+ * when either side can't be read.
+ */
+function storedFirewallResult(
+  noun: string,
+  planJson: unknown,
+  server: PlannedResourceJson,
+): PolicyResult {
+  const stored = scriptNetworks(storedServerScript(planJson, server.address));
+  const planned = plannedNetworks(planJson, server.address);
+  const check = (passed: boolean, message: string) =>
+    result(
+      "server-firewall-as-planned",
+      "The server's own firewall has the plan's networks",
+      "critical",
+      passed,
+      message,
+      server.address,
+    );
+  const live = `\`opscrew secure\` reads the rules live on the ${noun}`;
+  if (stored === undefined) {
+    return check(
+      false,
+      `The ${noun} already exists, and OpsCrew can't read the networks its own firewall was set at its first boot with (the startup script it was created with has no firewall step OpsCrew can read), so it can't tell whether this plan changes them, and it can't change them in place yet. Nothing was changed: ${live}.`,
+    );
+  }
+  if (planned === undefined) {
+    return check(
+      false,
+      `OpsCrew can't read the networks this plan gives the ${noun} (the root's \`ssh_allowed_cidrs\` and \`http_allowed_cidrs\`, or its module's \`wireguard_port\`), so it can't hold them to the ones its own firewall was set at its first boot with. Run \`opscrew provision\` again, which writes them; ${live}.`,
+    );
+  }
+  const differences = [
+    ...networkDifference("SSH", noun, stored.ssh, planned.ssh),
+    ...networkDifference("the web ports", noun, stored.web, planned.web),
+    ...portDifference(noun, stored.wireguard, planned.wireguard),
+  ];
+  if (differences.length === 0) {
+    return check(
+      true,
+      `The ${noun}'s own firewall, set at its first boot, has this plan's networks.`,
+    );
+  }
+  return check(
+    false,
+    `The ${noun} already exists, and its own firewall was set at its first boot with networks this plan changes (${differences.join("; ")}). OpsCrew can't change them in place yet, so applying this plan would leave the old rules on the ${noun}. Change opscrew/plan.yaml back so that it gives the ${noun} the networks it has, then run the command again; ${live}.`,
+  );
 }
 
 /**
@@ -274,8 +444,8 @@ function isFirewall(resource: PlannedResourceJson, firewallType: string): boolea
  * whose firewall is the server's own (`firewallCheck` `server`) has no firewall resource: the rules
  * of each server the plan creates are read from its first-boot script and checked as a cloud
  * firewall's are. A server that already exists keeps the script it was created with (the module
- * ignores changes to it), so only the step's presence is read there, and `opscrew secure` checks
- * the live rules.
+ * ignores changes to it), so the plan may not change the networks that script set
+ * (`server-firewall-as-planned`), and `opscrew secure` checks the live rules.
  */
 function providerPolicies(
   provider: ProviderChecks,
@@ -296,7 +466,7 @@ function providerPolicies(
     const hasFirewall = !onServer
       ? provider.attached(server, firewalls, planJson)
       : existing
-        ? serverFirewallScript(server) !== undefined
+        ? storedServerScript(planJson, server.address) !== undefined
         : serverRules !== undefined;
     const hasKeys = isSet(server, provider.sshKeyAttribute ?? "ssh_keys");
     const attachedText = existing
@@ -322,6 +492,7 @@ function providerPolicies(
         server.address,
       ),
     );
+    if (existing) results.push(storedFirewallResult(noun, planJson, server));
     if (serverRules !== undefined) {
       results.push(
         ...openPortResults(server, serverRules, proxiedBehindCloudflare, deployPlan),

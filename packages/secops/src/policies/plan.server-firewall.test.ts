@@ -63,29 +63,69 @@ function startupScript({ ssh = WORLD, web = WORLD, wireguard }: Networks, firewa
     .replace("${cloud_config_b64}", Buffer.from("#cloud-config\n").toString("base64"));
 }
 
+/** What the plan gives a server that already exists: the root's networks and its module call. */
+interface Planned extends Networks {
+  /** The module call's `web` (an extra server's is false); none for the app's server. */
+  webServer?: boolean;
+  /** The module call's name: `server`, the app's, by default. */
+  module?: string;
+}
+
 /**
- * A plan's JSON with the app's server, its startup script `script` (none: no script at all), and
- * what the plan does to it (`actions`: created by default).
+ * A plan's JSON with a server, its startup script `script` (none: no script at all), and what the
+ * plan does to it (`actions`: created by default). A server the plan keeps has the script it was
+ * created with in its change's `before` too (the module ignores changes to it). `planned` gives the
+ * root's `ssh_allowed_cidrs` and `http_allowed_cidrs` and the module call's `wireguard_port` and
+ * `web`; `null` leaves the root's variables and module calls out.
  */
-function planJson(script?: string, actions: string[] = ["create"]) {
-  const address = "module.server.own_server.this";
-  const values = {
+function planJson(script?: string, actions: string[] = ["create"], planned: Planned | null = {}) {
+  const module = planned?.module ?? "server";
+  const address = `module.${module}.own_server.this`;
+  const values: Record<string, unknown> = {
     name: "shop",
     ssh_keys: ["deploy"],
     ...(script === undefined ? {} : { startup_script: script }),
   };
+  const existing = !actions.includes("create");
+  const expressions = {
+    ssh_allowed_cidrs: { references: ["var.ssh_allowed_cidrs"] },
+    ...(planned?.wireguard === undefined
+      ? {}
+      : { wireguard_port: { constant_value: planned.wireguard } }),
+    ...(planned?.webServer === undefined ? {} : { web: { constant_value: planned.webServer } }),
+  };
   return {
+    ...(planned === null
+      ? {}
+      : {
+          variables: {
+            ssh_allowed_cidrs: { value: planned.ssh ?? WORLD },
+            http_allowed_cidrs: { value: planned.web ?? WORLD },
+          },
+          configuration: {
+            root_module: { module_calls: { [module]: { source: "../modules/own", expressions } } },
+          },
+        }),
     planned_values: {
       root_module: {
         child_modules: [
           {
-            address: "module.server",
+            address: `module.${module}`,
             resources: [{ address, mode: "managed", type: "own_server", name: "this", values }],
           },
         ],
       },
     },
-    resource_changes: [{ address, change: { actions, after_unknown: { id: true } } }],
+    resource_changes: [
+      {
+        address,
+        change: {
+          actions,
+          ...(existing ? { before: { ...values } } : {}),
+          after_unknown: existing ? {} : { id: true },
+        },
+      },
+    ],
   };
 }
 
@@ -218,21 +258,137 @@ describe("a provider whose firewall is the server's own", () => {
   });
 
   // The module ignores changes to the startup script, so a server that exists keeps the script it
-  // was created with: its planned script is the stored one, not the plan's.
-  it("reads no rules from the stored script of a server that already exists", () => {
-    const narrowed = deployPlan({ sshAllowedCidrs: ["203.0.113.7/32"], proxied: true });
-    const stored = startupScript({ ssh: WORLD, web: WORLD, wireguard: 51820 });
+  // was created with: the plan can't change its firewall, so it may not change its networks.
+  it("passes a server that already exists when its first boot's networks are the plan's", () => {
+    const networks = { ssh: ["203.0.113.7/32"], web: CLOUDFLARE, wireguard: 51820 };
+    const plan = deployPlan({ sshAllowedCidrs: networks.ssh, proxied: true, wireguard: 51820 });
     for (const actions of [["no-op"], ["update"]]) {
-      const results = evaluatePlanPolicies(planJson(stored, actions), narrowed);
+      const results = evaluatePlanPolicies(
+        planJson(startupScript(networks), actions, networks),
+        plan,
+      );
       expect(blockingPolicyFailures(results), actions[0]).toEqual([]);
       const attached = result(results, "firewall-attached");
       expect(attached).toMatchObject({ passed: true, resource: "module.server.own_server.this" });
       expect(attached?.message).toContain("Cloud firewall: none; server firewall: on.");
       expect(attached?.message).toContain("`opscrew secure`");
+      expect(result(results, "server-firewall-as-planned")).toMatchObject({
+        passed: true,
+        severity: "critical",
+        resource: "module.server.own_server.this",
+      });
+      // Its rules are its first boot's, held to the plan's networks, not checked as new ones.
       for (const policy of ["ssh-not-public", "no-open-admin-ports", "origin-cloudflare-only"]) {
         expect(result(results, policy), policy).toBeUndefined();
       }
     }
+  });
+
+  it("holds the networks in any order, as the firewall's rules don't depend on it", () => {
+    const stored = startupScript({ ssh: ["203.0.113.7/32", "198.51.100.0/24"] });
+    const json = planJson(stored, ["no-op"], { ssh: ["198.51.100.0/24", "203.0.113.7/32"] });
+    expect(blockingPolicyFailures(evaluatePlanPolicies(json, deployPlan()))).toEqual([]);
+  });
+
+  it("fails critical when the plan changes the networks of a server that already exists", () => {
+    const stored = startupScript({ ssh: WORLD, web: WORLD });
+    const cases: [Planned, string[]][] = [
+      // SSH narrowed to one network.
+      [
+        { ssh: ["203.0.113.7/32"] },
+        [
+          "SSH: the server accepts 0.0.0.0/0 and ::/0, which the plan doesn't, and the plan adds 203.0.113.7/32",
+        ],
+      ],
+      // The web ports held to Cloudflare's ranges.
+      [
+        { web: CLOUDFLARE },
+        [
+          "the web ports: the server accepts 0.0.0.0/0 and ::/0, which the plan doesn't, and the plan adds 173.245.48.0/20 and 2400:cb00::/32",
+        ],
+      ],
+      // A private network added: its WireGuard port.
+      [
+        { wireguard: 51820 },
+        ["WireGuard: the plan opens UDP port 51820, which the server doesn't"],
+      ],
+    ];
+    for (const [planned, said] of cases) {
+      const results = evaluatePlanPolicies(planJson(stored, ["no-op"], planned), deployPlan());
+      const failed = result(results, "server-firewall-as-planned");
+      expect(failed).toMatchObject({
+        passed: false,
+        severity: "critical",
+        title: "The server's own firewall has the plan's networks",
+        resource: "module.server.own_server.this",
+      });
+      for (const text of said) expect(failed?.message).toContain(text);
+      expect(failed?.message).toContain("set at its first boot");
+      expect(failed?.message).toContain("OpsCrew can't change them in place yet");
+      expect(failed?.message).toContain("opscrew/plan.yaml");
+      expect(blockingPolicyFailures(results).map((r) => r.policyId)).toEqual([
+        "server-firewall-as-planned",
+      ]);
+    }
+    // The private network's port the plan no longer gives the server, or another port.
+    const networked = startupScript({ wireguard: 51820 });
+    const gone = result(
+      evaluatePlanPolicies(planJson(networked, ["update"], {}), deployPlan()),
+      "server-firewall-as-planned",
+    );
+    expect(gone?.message).toContain(
+      "WireGuard: the server opens UDP port 51820, which the plan doesn't",
+    );
+    const moved = result(
+      evaluatePlanPolicies(planJson(networked, ["update"], { wireguard: 51821 }), deployPlan()),
+      "server-firewall-as-planned",
+    );
+    expect(moved?.message).toContain(
+      "WireGuard: the server opens UDP port 51820 and the plan 51821",
+    );
+  });
+
+  it("holds an extra server, whose module call closes the web ports, to no web networks", () => {
+    const extra = { module: "server_db", webServer: false, wireguard: 51820 };
+    const closed = startupScript({ web: [], wireguard: 51820 });
+    const results = evaluatePlanPolicies(planJson(closed, ["no-op"], extra), deployPlan());
+    expect(result(results, "server-firewall-as-planned")).toMatchObject({
+      passed: true,
+      resource: "module.server_db.own_server.this",
+    });
+    const open = startupScript({ web: WORLD, wireguard: 51820 });
+    const failed = evaluatePlanPolicies(planJson(open, ["no-op"], extra), deployPlan());
+    expect(result(failed, "server-firewall-as-planned")?.passed).toBe(false);
+  });
+
+  it("reads the first boot's networks from the change's `before`, which the masked plan keeps", () => {
+    const narrowed = { ssh: ["203.0.113.7/32"] };
+    const json = planJson(startupScript({ ssh: WORLD }), ["no-op"], narrowed);
+    // Whatever the planned values hold, the server keeps the script it was created with.
+    const planned = json.planned_values.root_module.child_modules[0]?.resources[0];
+    if (planned !== undefined) planned.values.startup_script = startupScript(narrowed);
+    const results = evaluatePlanPolicies(json, deployPlan());
+    expect(result(results, "server-firewall-as-planned")?.passed).toBe(false);
+  });
+
+  it("fails critical when the first boot's script or the plan's networks can't be read", () => {
+    const unreadable = startupScript({}).replace(/^web_sources=.*\n/m, "");
+    for (const json of [
+      planJson(undefined, ["no-op"]),
+      planJson(startupScript({}, false), ["no-op"]),
+      planJson(unreadable, ["update"]),
+    ]) {
+      const failed = result(evaluatePlanPolicies(json, deployPlan()), "server-firewall-as-planned");
+      expect(failed).toMatchObject({ passed: false, severity: "critical" });
+      expect(failed?.message).toContain("can't read the networks its own firewall");
+      expect(failed?.message).toContain("`opscrew secure`");
+    }
+    const unplanned = result(
+      evaluatePlanPolicies(planJson(startupScript({}), ["no-op"], null), deployPlan()),
+      "server-firewall-as-planned",
+    );
+    expect(unplanned).toMatchObject({ passed: false, severity: "critical" });
+    expect(unplanned?.message).toContain("can't read the networks this plan gives");
   });
 
   it("still fails a server that exists without the firewall's step", () => {
