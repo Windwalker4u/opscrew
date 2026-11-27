@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,25 +64,63 @@ if (nftSkip !== undefined) {
   console.warn(`[iac-templates] checking the nft rules by their lines only: ${nftSkip}`);
 }
 
+/** The unit the step writes to /etc/systemd/system/opscrew-firewall.service. */
+const UNIT = `# Managed by OpsCrew: loads this server's firewall, /etc/opscrew/firewall.nft, at every boot
+# before the network and Docker. The file replaces only the table inet opscrew-firewall; nothing
+# here flushes the ruleset, which would take Docker's and ufw's tables with it. nftables.service
+# does flush it when it stops, restarts or reloads, so this unit follows it and loads the file
+# again. To load the rules as written: systemctl restart opscrew-firewall.service.
+[Unit]
+Description=OpsCrew server firewall (the table inet opscrew-firewall)
+DefaultDependencies=no
+Wants=network-pre.target
+After=nftables.service
+Before=network-pre.target docker.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/opscrew/firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/opscrew/firewall.nft
+
+[Install]
+WantedBy=sysinit.target
+`;
+
+/** What `sshd -T` prints of the two settings once the keys-only file is read. */
+const KEYS_ONLY = ["passwordauthentication no", "kbdinteractiveauthentication no"];
+
 /**
  * Runs the rendered step as the first boot does (`set -euo pipefail`, stderr with stdout, as in
- * its log), then `after`, with its files under a folder of its own instead of `/etc`, on an image
- * without nft (so it installs it), and `systemctl`, `apt-get` and `nft` replaced by functions that
- * print their arguments to stderr, `apt-get` or `nft` failing as `fail` says. Returns the run, its
- * lines and the folder.
+ * its log), then `after`, with its files under a folder of its own instead of `/etc` and `/run`,
+ * on an image without nft (so it installs it), and `systemctl`, `apt-get` and `sshd` replaced by
+ * functions that print their arguments to stderr. `apt-get` fails when `fail` says so, `systemctl`
+ * fails to enable OpsCrew's firewall unit when `fail` is `systemctl`, and `sshd -T` prints
+ * `sshd`'s settings among others. Returns the run, its lines and the folder.
  */
-async function runStep(rules: ServerFirewallRules, fail: "apt-get" | "nft" | "none", after = "") {
+async function runStep(
+  rules: ServerFirewallRules,
+  fail: "apt-get" | "systemctl" | "none",
+  after = "",
+  sshd: readonly string[] = KEYS_ONLY,
+) {
   const root = (await mkdtemp(join(tmpdir(), "opscrew-first-boot-"))).replaceAll("\\", "/");
-  const stub = (name: string) =>
-    `${name}() { echo "${name} $*" >&2; ${fail === name ? "return 100" : "true"}; }`;
+  const failing = fail === "systemctl" ? '[ "$1" = enable ] && return 1; ' : "";
+  const settings = ["port 22", "permitrootlogin without-password", ...sshd, "usepam yes"];
   const script = [
     "set -euo pipefail",
     "exec 2>&1",
+    // systemd's folder for units, as every server has it.
+    `mkdir -p '${root}/etc/systemd/system'`,
     'command() { if [ "$*" = "-v nft" ]; then return 1; fi; builtin command "$@"; }',
-    'systemctl() { echo "systemctl $*" >&2; }',
-    stub("apt-get"),
-    stub("nft"),
-    renderServerFirewall(rules).replaceAll("/etc/", `${root}/etc/`),
+    `systemctl() { echo "systemctl $*" >&2; ${failing}true; }`,
+    `apt-get() { echo "apt-get $*" >&2; ${fail === "apt-get" ? "return 100" : "true"}; }`,
+    `sshd() { echo "sshd $*" >&2; printf '%s\\n' ${settings.map((line) => `'${line}'`).join(" ")}; }`,
+    renderServerFirewall(rules)
+      .replaceAll("/etc/", `${root}/etc/`)
+      .replaceAll("/run/", `${root}/run/`),
     after,
   ].join("\n");
   const run = spawnSync(bash ?? "bash", [], { input: script, encoding: "utf8" });
@@ -171,9 +209,11 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
       "\n  trap 'echo \"opscrew: the server firewall could not be set up, so the server powers off rather than stay reachable without it $(date -Is)\" >&2; systemctl poweroff' EXIT\n",
       ">/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf\n",
       "\n  systemctl try-reload-or-restart ssh.service\n",
+      "sshd -T | grep -cx -e 'passwordauthentication no' -e 'kbdinteractiveauthentication no'",
       "install -y nftables\n",
-      "\n  nft -f /etc/nftables.conf\n",
-      "\n  systemctl enable nftables.service\n",
+      "\n  mv /etc/opscrew/firewall.nft.opscrew /etc/opscrew/firewall.nft\n",
+      "\n  opscrew_firewall_unit >/etc/systemd/system/opscrew-firewall.service\n",
+      "\n  systemctl enable --now opscrew-firewall.service\n",
       "\n  trap - EXIT\n",
       "\nopscrew_server_firewall\n",
       "cloud-init clean",
@@ -196,18 +236,23 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
         run.lines.map((line) => line.replace(/^(opscrew: server firewall on) .*$/, "$1")),
       ).toEqual([
         "systemctl try-reload-or-restart ssh.service",
+        "sshd -T",
         "apt-get -o DPkg::Lock::Timeout=600 update",
         "apt-get -o DPkg::Lock::Timeout=600 install -y nftables",
-        `nft -f ${run.root}/etc/nftables.conf`,
-        "systemctl enable nftables.service",
+        "systemctl enable --now opscrew-firewall.service",
         "opscrew: server firewall on",
       ]);
       expect(
         readFileSync(join(run.root, "etc/ssh/sshd_config.d/00-opscrew-keys-only.conf"), "utf8"),
       ).toBe("PasswordAuthentication no\nKbdInteractiveAuthentication no\n");
-      expect(tableLines(readFileSync(join(run.root, "etc/nftables.conf"), "utf8"))).toEqual(
+      expect(tableLines(readFileSync(join(run.root, "etc/opscrew/firewall.nft"), "utf8"))).toEqual(
         serverFirewallTable(RULES),
       );
+      expect(
+        readFileSync(join(run.root, "etc/systemd/system/opscrew-firewall.service"), "utf8"),
+      ).toBe(UNIT.replaceAll("/etc/", `${run.root}/etc/`));
+      // nftables.service is neither enabled nor given a rules file: its stop flushes every table.
+      expect(existsSync(join(run.root, "etc/nftables.conf"))).toBe(false);
     },
   );
 
@@ -216,19 +261,46 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
     async () => {
       for (const [fail, rules, last] of [
         ["apt-get", RULES, "apt-get -o DPkg::Lock::Timeout=600 update"],
-        ["nft", RULES, "nft -f "],
+        ["systemctl", RULES, "systemctl enable --now opscrew-firewall.service"],
         // Stopped while the rules file is written: the line still reaches the log.
         ["none", { ...RULES, wireguardPort: Number.NaN }, "opscrew: not a port: NaN"],
       ] as const) {
         const run = await runStep(rules, fail, 'echo "opscrew: cloud-init ran"');
         expect(run.status, fail).not.toBe(0);
-        expect(run.lines[0], fail).toBe("systemctl try-reload-or-restart ssh.service");
+        expect(run.lines.slice(0, 2), fail).toEqual([
+          "systemctl try-reload-or-restart ssh.service",
+          "sshd -T",
+        ]);
         expect(run.lines.at(-3)?.startsWith(last), `${fail}: ${run.stdout}`).toBe(true);
         expect(run.lines.at(-2), fail).toMatch(POWER_OFF);
         expect(run.lines.at(-1), fail).toBe("systemctl poweroff");
         // Nothing after the step runs, and nothing says the firewall is on.
         expect(run.stdout).not.toContain("server firewall on");
         expect(run.stdout).not.toContain("cloud-init ran");
+      }
+    },
+  );
+
+  it.skipIf(bashSkip !== undefined)(
+    "powers the server off when sshd would still take passwords after the reload",
+    async () => {
+      for (const sshd of [
+        ["passwordauthentication yes", "kbdinteractiveauthentication no"],
+        ["passwordauthentication no", "kbdinteractiveauthentication yes"],
+        // Neither setting printed: no proof, so the same.
+        [],
+      ]) {
+        const run = await runStep(RULES, "none", 'echo "opscrew: cloud-init ran"', sshd);
+        expect(run.status, sshd.join()).not.toBe(0);
+        expect(run.lines, sshd.join()).toEqual([
+          "systemctl try-reload-or-restart ssh.service",
+          "sshd -T",
+          "opscrew: SSH still takes passwords: sshd -T doesn't show both passwordauthentication no and kbdinteractiveauthentication no",
+          expect.stringMatching(POWER_OFF),
+          "systemctl poweroff",
+        ]);
+        // Nothing of the firewall was written: the step stopped before it.
+        expect(existsSync(join(run.root, "etc/opscrew"))).toBe(false);
       }
     },
   );
@@ -246,14 +318,18 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
 
   it("keeps the rules across reboots and turns password logins off in the same step", () => {
     const step = renderServerFirewall(RULES);
-    expect(step).toContain("opscrew_firewall_rules >/etc/nftables.conf.opscrew\n");
-    expect(step).toContain("mv /etc/nftables.conf.opscrew /etc/nftables.conf\n");
-    expect(step).toContain("nft -f /etc/nftables.conf\n");
-    expect(step).toContain("systemctl enable nftables.service\n");
-    // Installs nftables when the image lacks it.
+    expect(step).toContain("opscrew_firewall_rules >/etc/opscrew/firewall.nft.opscrew\n");
+    expect(step).toContain("mv /etc/opscrew/firewall.nft.opscrew /etc/opscrew/firewall.nft\n");
+    expect(step).toContain("systemctl enable --now opscrew-firewall.service\n");
+    // Installs nftables when the image lacks it, and never enables or touches nftables.service:
+    // its stop, restart and reload flush every table, Docker's and ufw's (iptables-nft) too.
     expect(step).toContain("install -y nftables\n");
-    // The rules file replaces only OpsCrew's table, never the others' (ufw's, Docker's).
-    expect(step).not.toContain("flush ruleset");
+    expect(step).not.toContain("systemctl enable nftables");
+    expect(step).not.toContain("/etc/nftables.conf");
+    // The rules file and the unit replace only OpsCrew's table, never the others': no line but a
+    // comment says flush.
+    const commands = step.split("\n").filter((line) => !line.trim().startsWith("#"));
+    expect(commands.filter((line) => line.includes("flush"))).toEqual([]);
     expect(step).toContain(
       "printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' >/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf\n",
     );
@@ -273,8 +349,8 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
       expect(result.stdout).toBe(
         [
           "#!/usr/sbin/nft -f",
-          "# Managed by OpsCrew: the firewall of this server, which has no cloud firewall. nftables.service",
-          "# loads it at every boot; it replaces only the table inet opscrew-firewall.",
+          "# Managed by OpsCrew: the firewall of this server, which has no cloud firewall.",
+          "# opscrew-firewall.service loads it at every boot; it replaces only the table inet opscrew-firewall.",
           "add table inet opscrew-firewall",
           "delete table inet opscrew-firewall",
           "table inet opscrew-firewall {",
@@ -307,6 +383,9 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
           dnat("tcp", 443, "ip6 saddr 2400:cb00::/32"),
           dnat("udp", 443, "ip6 saddr 2400:cb00::/32"),
           "\t\tct direction original ct status dnat drop",
+          "\t\tct state established,related accept",
+          '\t\toifname "docker0" drop',
+          '\t\toifname "br-*" drop',
           "\t}",
           "}",
           "",
@@ -314,6 +393,64 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
       );
     },
   );
+
+  it("drops what comes from outside to Docker's networks unless Docker's DNAT let it in", () => {
+    const forward = serverFirewallTable(RULES);
+    const at = (line: string) => {
+      const index = forward.lastIndexOf(line);
+      expect(index, line).toBeGreaterThan(forward.indexOf("chain forward {"));
+      return index;
+    };
+    // Inside first (by the interface a packet came in on), then the DNAT'd web ports and the drop
+    // of every other DNAT, then the replies to the containers' own connections, then the rest to
+    // Docker's networks: so a packet routed straight to a container's address never gets there.
+    const order = [
+      'iifname "br-*" accept',
+      "ct direction original ct status dnat meta l4proto tcp ct original proto-dst 80 ip saddr 173.245.48.0/20 accept",
+      "ct direction original ct status dnat drop",
+      "ct state established,related accept",
+      'oifname "docker0" drop',
+      'oifname "br-*" drop',
+    ].map(at);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(forward.at(-3)).toBe('oifname "br-*" drop');
+    // On a server without the web: no DNAT is let in, and the drops are the same.
+    const extra = serverFirewallTable({ sshSources: [], webSources: [], wireguardPort: 51821 });
+    expect(extra.slice(extra.indexOf("chain forward {"))).toEqual([
+      "chain forward {",
+      "type filter hook forward priority filter; policy accept;",
+      'iifname "docker0" accept',
+      'iifname "br-*" accept',
+      'iifname "wg-opscrew*" accept',
+      "ct direction original ct status dnat drop",
+      "ct state established,related accept",
+      'oifname "docker0" drop',
+      'oifname "br-*" drop',
+      "}",
+      "}",
+    ]);
+  });
+
+  it("loads the rules file with a unit of OpsCrew's own, never with nftables.service", () => {
+    const step = renderServerFirewall(RULES);
+    // The unit is the file the step writes, as it is (its shell run checks the same).
+    expect(step).toContain(`\n${UNIT}UNIT\n`);
+    const lines = UNIT.split("\n");
+    // Loads (and on a reload loads again) only the rules file, which replaces only OpsCrew's
+    // table; no stop that would open the server or touch another table.
+    expect(lines.filter((line) => line.startsWith("Exec"))).toEqual([
+      "ExecStart=/usr/sbin/nft -f /etc/opscrew/firewall.nft",
+      "ExecReload=/usr/sbin/nft -f /etc/opscrew/firewall.nft",
+    ]);
+    // At every boot, early, before the network and Docker are up.
+    expect(lines).toContain("WantedBy=sysinit.target");
+    expect(lines).toContain("DefaultDependencies=no");
+    expect(lines).toContain("Before=network-pre.target docker.service");
+    // nftables.service's stop, restart and reload flush every table: the unit follows it, as the
+    // web filter does, so its table comes back.
+    expect(lines).toContain("PartOf=nftables.service");
+    expect(lines).toContain("ReloadPropagatedFrom=nftables.service");
+  });
 
   it.skipIf(bashSkip !== undefined)(
     "writes the same table OpsCrew expects on the server, for every kind of plan",

@@ -90,6 +90,10 @@ export function serverFirewallTable({
     ...inside,
     ...webSources.flatMap((network) => DNAT_WEB.map((dnat) => `${dnat} ${source(network)} accept`)),
     "ct direction original ct status dnat drop",
+    // From outside to Docker's networks without Docker's DNAT: only the containers' replies.
+    "ct state established,related accept",
+    'oifname "docker0" drop',
+    'oifname "br-*" drop',
     "}",
     "}",
   ];

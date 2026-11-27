@@ -39,12 +39,24 @@ variable "ssh_allowed_cidrs" {
   description = "Networks allowed to reach SSH (port 22) through the server's own firewall; empty for none (public SSH closed)."
   type        = list(string)
   default     = ["0.0.0.0/0", "::/0"]
+
+  validation {
+    # The first boot writes each one into the firewall's rules; one that isn't a network would stop
+    # it, and the server would power itself off.
+    condition     = alltrue([for cidr in var.ssh_allowed_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "Each network in ssh_allowed_cidrs must be an address range such as 203.0.113.7/32 or 2001:db8::/48. Correct it in the tfvars file, then plan again."
+  }
 }
 
 variable "http_allowed_cidrs" {
   description = "Networks allowed to reach HTTP/HTTPS (ports 80 and 443) through the server's own firewall."
   type        = list(string)
   default     = ["0.0.0.0/0", "::/0"]
+
+  validation {
+    condition     = alltrue([for cidr in var.http_allowed_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "Each network in http_allowed_cidrs must be an address range such as 173.245.48.0/20 or 2400:cb00::/32. Correct it in the tfvars file, then plan again."
+  }
 }
 
 variable "web" {
@@ -57,6 +69,12 @@ variable "wireguard_port" {
   description = "UDP port of the app's private WireGuard network, open to everyone in the server's own firewall; null for none."
   type        = number
   default     = null
+
+  validation {
+    # A conditional, not ||: an engine that evaluates both sides would compare null.
+    condition     = var.wireguard_port == null ? true : var.wireguard_port >= 1 && var.wireguard_port <= 65535 && floor(var.wireguard_port) == var.wireguard_port
+    error_message = "The WireGuard port must be a whole number from 1 to 65535, or null for none."
+  }
 }
 
 variable "ssh_key_id" {

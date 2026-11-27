@@ -69,7 +69,8 @@ resource "kamatera_server" "this" {
   lifecycle {
     # A changed image, key or startup script would make a new server, and its disk with it;
     # OpsCrew never does that silently. A server taken over with an import block has no key or
-    # startup script in the state, which then stays as it is.
-    ignore_changes = [image_id, ssh_pubkey, startup_script]
+    # startup script in the state, which then stays as it is. A server that powered itself off
+    # because its firewall could not be set up stays off: no apply powers it back on.
+    ignore_changes = [image_id, ssh_pubkey, startup_script, power_on]
   }
 }

@@ -153,7 +153,7 @@ export const definition: CloudProviderDefinition = {
     connectorRemoval: false,
     homeCacheFiles: [],
     mirroredAttributes: {},
-    lifecycleIgnored: ["image_id", "ssh_pubkey", "startup_script"],
+    lifecycleIgnored: ["image_id", "ssh_pubkey", "startup_script", "power_on"],
     module: { name: "kamatera-instance", files: MODULE_FILES },
     credentialsComment: `Credentials from the ${listText(ENV_VARS)} environment variables (never stored in files or state). At plan time the provider checks the server's configuration against Kamatera's public price list, so a plan needs the network.`,
     deleteProtectionVariable: false,

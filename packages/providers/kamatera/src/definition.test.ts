@@ -440,9 +440,10 @@ describe("Kamatera's cloud provider definition", () => {
       "image_id",
       "ssh_pubkey",
       "startup_script",
+      "power_on",
     ]);
     expect(block('resource "kamatera_server" "this" {')).toContain(
-      "    ignore_changes = [image_id, ssh_pubkey, startup_script]",
+      "    ignore_changes = [image_id, ssh_pubkey, startup_script, power_on]",
     );
   });
 
@@ -990,4 +991,90 @@ describe("Kamatera definition leaks", () => {
     });
     for (const value of Object.values(CREDENTIALS_ENV)) expect(written).not.toContain(value);
   });
+});
+
+/** OpenTofu or Terraform, for the module's variables alone (no provider, so no network). */
+const engine =
+  process.env.OPSCREW_TOFU_BIN ||
+  findExecutable("tofu") ||
+  process.env.OPSCREW_TERRAFORM_BIN ||
+  findExecutable("terraform");
+if (engine === undefined) {
+  console.warn(
+    "[provider-kamatera] skipping the variables' validation run: no tofu or terraform binary (set OPSCREW_TOFU_BIN or add it to PATH).",
+  );
+}
+
+describe("the module's variables", () => {
+  const variables = () => definition.terraform.module.files["variables.tf"] ?? "";
+
+  it("check each network of the server's own firewall and its WireGuard port", () => {
+    for (const name of ["ssh_allowed_cidrs", "http_allowed_cidrs"]) {
+      const start = variables().indexOf(`variable "${name}" {`);
+      const block = variables().slice(start, variables().indexOf("\n}\n", start));
+      expect(block, name).toContain(
+        `    condition     = alltrue([for cidr in var.${name} : can(cidrhost(cidr, 0))])`,
+      );
+    }
+    expect(variables()).toContain(
+      "    condition     = var.wireguard_port == null ? true : var.wireguard_port >= 1 && var.wireguard_port <= 65535 && floor(var.wireguard_port) == var.wireguard_port",
+    );
+  });
+
+  it.skipIf(engine === undefined)(
+    "refuse a network that isn't one and a port outside 1 to 65535, before anything is planned",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "opscrew-kamatera-variables-"));
+      await writeFile(join(root, "variables.tf"), variables());
+      const runner = new NodeCommandRunner();
+      const env = { ...process.env, TF_IN_AUTOMATION: "1" };
+      const run = (args: string[]) => runner.run(engine as string, args, { cwd: root, env });
+      const init = await run(["init", "-backend=false", "-input=false", "-no-color"]);
+      expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+      const plan = async (values: Record<string, unknown>) => {
+        await writeFile(
+          join(root, "terraform.tfvars.json"),
+          JSON.stringify({
+            name: "shop",
+            location: "EU-FR",
+            server_type: "A-2-4",
+            image: "Ubuntu 24.04",
+            ssh_public_key: DEPLOY_KEY,
+            ...values,
+          }),
+        );
+        const result = await run(["plan", "-input=false", "-no-color", "-lock=false"]);
+        return {
+          exitCode: result.exitCode,
+          said: `${result.stdout} ${result.stderr}`.replace(/[│╷╵]/g, " ").replace(/\s+/g, " "),
+        };
+      };
+      const SSH = "Each network in ssh_allowed_cidrs must be an address range such as";
+      const WEB = "Each network in http_allowed_cidrs must be an address range such as";
+      const PORT = "The WireGuard port must be a whole number from 1 to 65535";
+      const cases: [Record<string, unknown>, string | undefined][] = [
+        [{}, undefined],
+        [{ ssh_allowed_cidrs: [], wireguard_port: 51820 }, undefined],
+        [{ ssh_allowed_cidrs: ["203.0.113.7/32", "2001:db8::/48"], wireguard_port: 1 }, undefined],
+        [{ http_allowed_cidrs: ["173.245.48.0/20"], wireguard_port: 65535 }, undefined],
+        [{ ssh_allowed_cidrs: ["203.0.113.7/32;"] }, SSH],
+        [{ ssh_allowed_cidrs: ["0.0.0.0/0", "accept"] }, SSH],
+        [{ http_allowed_cidrs: ["173.245.48.0/20", "203.0.113.7"] }, WEB],
+        [{ wireguard_port: 0 }, PORT],
+        [{ wireguard_port: 65536 }, PORT],
+        [{ wireguard_port: 51820.5 }, PORT],
+      ];
+      for (const [values, error] of cases) {
+        const result = await plan(values);
+        const name = JSON.stringify(values);
+        if (error === undefined) {
+          expect(result.exitCode, `${name}: ${result.said}`).toBe(0);
+        } else {
+          expect(result.exitCode, name).not.toBe(0);
+          expect(result.said, name).toContain(error);
+        }
+      }
+    },
+    120_000,
+  );
 });

@@ -5,10 +5,14 @@
 # plan's networks, the web ports as the plan says, and the private network's WireGuard port.
 # Docker's published ports are held to the same web rule. Traffic from inside the server (Docker's
 # networks, the private network) passes, as a cloud firewall never sees it: ufw filters it, as on
-# every server. The rules go in /etc/nftables.conf, which nftables.service loads at every boot.
-# SSH stops taking passwords first, which needs no network. Until this step runs, a few seconds
-# after the server starts, nothing filters its ports; if any part of it fails, the server powers
-# off rather than stay reachable without its firewall, and says so in the first boot's log.
+# every server; but a packet from outside routed straight to a container's address is dropped.
+# The rules go in /etc/opscrew/firewall.nft, which OpsCrew's own unit, opscrew-firewall.service,
+# loads at every boot before the network and Docker. It replaces only OpsCrew's table; it is never
+# nftables.service, whose stop, restart and reload flush every table, Docker's and ufw's too.
+# SSH stops taking passwords first, which needs no network, and sshd -T must then show it does.
+# Until this step runs, a few seconds after the server starts, nothing filters its ports; if any
+# part of it fails, the server powers off rather than stay reachable without its firewall, and
+# says so in the first boot's log.
 ssh_sources='${ssh_sources}'
 web_sources='${web_sources}'
 wireguard_port='${wireguard_port}'
@@ -39,8 +43,8 @@ opscrew_firewall_rules() {
     *[!0-9]*) opscrew_fail "not a port: $wireguard_port" ;;
   esac
   echo '#!/usr/sbin/nft -f'
-  echo '# Managed by OpsCrew: the firewall of this server, which has no cloud firewall. nftables.service'
-  echo '# loads it at every boot; it replaces only the table inet opscrew-firewall.'
+  echo '# Managed by OpsCrew: the firewall of this server, which has no cloud firewall.'
+  echo '# opscrew-firewall.service loads it at every boot; it replaces only the table inet opscrew-firewall.'
   echo 'add table inet opscrew-firewall'
   echo 'delete table inet opscrew-firewall'
   echo 'table inet opscrew-firewall {'
@@ -74,8 +78,42 @@ opscrew_firewall_rules() {
     done
   done
   printf '\t\tct direction original ct status dnat drop\n'
+  # What is left from outside the server to Docker's networks was not DNAT'd by Docker: the replies
+  # to the containers' own connections pass, and the rest is dropped, such as a packet routed
+  # straight to a container's address, whatever Docker's own rules do.
+  printf '\t\tct state established,related accept\n'
+  printf '\t\toifname "docker0" drop\n'
+  printf '\t\toifname "br-*" drop\n'
   printf '\t}\n'
   echo '}'
+}
+# The unit that loads the rules file at every boot, before the network and Docker. It only loads
+# the file, and has no stop: nothing in it flushes the ruleset or opens the server.
+opscrew_firewall_unit() {
+  cat <<'UNIT'
+# Managed by OpsCrew: loads this server's firewall, /etc/opscrew/firewall.nft, at every boot
+# before the network and Docker. The file replaces only the table inet opscrew-firewall; nothing
+# here flushes the ruleset, which would take Docker's and ufw's tables with it. nftables.service
+# does flush it when it stops, restarts or reloads, so this unit follows it and loads the file
+# again. To load the rules as written: systemctl restart opscrew-firewall.service.
+[Unit]
+Description=OpsCrew server firewall (the table inet opscrew-firewall)
+DefaultDependencies=no
+Wants=network-pre.target
+After=nftables.service
+Before=network-pre.target docker.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/opscrew/firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/opscrew/firewall.nft
+
+[Install]
+WantedBy=sysinit.target
+UNIT
 }
 opscrew_server_firewall() {
   # Fails closed: the first boot stops at any failure (set -e), and until the rules are kept, a
@@ -86,14 +124,22 @@ opscrew_server_firewall() {
   install -d -m 0755 /etc/ssh/sshd_config.d
   printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf
   systemctl try-reload-or-restart ssh.service
+  # What sshd now applies, read back. sshd -T needs its privilege separation folder, which
+  # Ubuntu's socket-activated ssh makes only once a connection starts it.
+  install -d -m 0755 /run/sshd
+  if [ "$(sshd -T | grep -cx -e 'passwordauthentication no' -e 'kbdinteractiveauthentication no')" != 2 ]; then
+    opscrew_fail "SSH still takes passwords: sshd -T doesn't show both passwordauthentication no and kbdinteractiveauthentication no"
+  fi
   if ! command -v nft >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 update
     DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y nftables
   fi
-  opscrew_firewall_rules >/etc/nftables.conf.opscrew
-  mv /etc/nftables.conf.opscrew /etc/nftables.conf
-  nft -f /etc/nftables.conf
-  systemctl enable nftables.service
+  install -d -m 0755 /etc/opscrew
+  opscrew_firewall_rules >/etc/opscrew/firewall.nft.opscrew
+  mv /etc/opscrew/firewall.nft.opscrew /etc/opscrew/firewall.nft
+  opscrew_firewall_unit >/etc/systemd/system/opscrew-firewall.service
+  # Enabled for every boot and started now: the unit loads the rules, or the step fails.
+  systemctl enable --now opscrew-firewall.service
   trap - EXIT
   echo "opscrew: server firewall on $(date -Is)"
 }
