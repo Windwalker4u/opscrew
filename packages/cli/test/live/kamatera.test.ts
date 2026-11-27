@@ -21,7 +21,7 @@
  * server or duplicate of it left at Kamatera.
  */
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import type { ServerSnapshotApi } from "@opscrew/contracts";
@@ -186,7 +186,24 @@ describe.skipIf(MISSING.length > 0)(
       if (passwords.length === 0)
         return missed("the state has no kamatera_server generated_password");
       for (const password of passwords) run.scrubber.add(password, ROOT_PASSWORD);
+      rootPasswords.push(...passwords);
       log("observed: Kamatera's root password read from the state, for the leak search");
+    }
+
+    /** Kamatera's root passwords read from the state, for the plan sidecars' own search. */
+    const rootPasswords: string[] = [];
+
+    /** The plan sidecars (`*.json` in the plans folder) that carry one of `rootPasswords`. */
+    async function sidecarsWithPassword(): Promise<string[]> {
+      const dir = run.paths().files.plansDir;
+      if (!existsSync(dir)) return [];
+      const found: string[] = [];
+      for (const name of await readdir(dir)) {
+        if (!name.endsWith(".json")) continue;
+        const text = await readFile(join(dir, name), "utf8");
+        if (rootPasswords.some((password) => text.includes(password))) found.push(name);
+      }
+      return found;
     }
 
     /** Runs `opscrew secure` and gives SECURITY_REPORT.md. */
@@ -430,16 +447,22 @@ ${run.tail(taken.output)}`,
     run.step(
       "11. neither Kamatera value, nor any other secret, in any output, deploy job's log, audit entry, state file, plan or commit, and Kamatera's root password only in the state",
       minutes(10),
-      async () =>
-        run.expectNothingLeaked([
+      async () => {
+        // A plan's JSON sidecar masks the root password (`ALWAYS_MASKED`). The harness searches
+        // every file under the plans folder as state, which `inState` exempts, so the sidecars
+        // are searched here on their own.
+        expect(await sidecarsWithPassword(), "plan sidecars with Kamatera's root password").toEqual(
+          [],
+        );
+        return run.expectNothingLeaked([
           // Kamatera's provider reads both values from the environment: neither is in a state
           // file. The root password it generates is, by design (and in a binary plan file, which
           // holds the state), and OpsCrew never reads or shows it: it is searched for everywhere
-          // else. A plan's JSON sidecar masks it (`ALWAYS_MASKED`), but the harness searches every
-          // file under the plans folder as state, so `inState` exempts the sidecars too.
+          // else.
           ...(await envs.leaks({ cloudflare: true, inState: [ROOT_PASSWORD] })),
           ...(await deployLogLeaks(run, deployRuns)),
-        ]),
+        ]);
+      },
       { always: true },
     );
 
