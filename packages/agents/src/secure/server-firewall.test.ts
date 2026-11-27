@@ -1,11 +1,17 @@
 import { randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { IMAGES, type ServerFirewallRules, serverFirewallTable } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { runHostChecks } from "@opscrew/secops";
 import { describe, expect, it, vi } from "vitest";
-import { type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
-import { serverFirewallCheck } from "./server-firewall";
+import { recordServerAddress } from "../shared";
+import { createTestPhaseDeps } from "../testing";
+import { SERVER, type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
+import { runSecure } from "./run";
+import { plannedWebSources, serverFirewallCheck } from "./server-firewall";
 import { hostChecksFor } from "./servers";
 
 // Hetzner as a provider with no cloud firewall, whose server has its own (as Kamatera's has),
@@ -69,27 +75,43 @@ function answer(stdout: string, exitCode = 0, stderr = ""): CommandResult {
   return { exitCode, stdout, stderr };
 }
 
-/** The check of the app's server, evaluated on `result`. */
-function evaluate(deployPlan: DeployPlan, result: CommandResult) {
-  const check = serverFirewallCheck(deployPlan, APP_SERVER);
+/**
+ * The check of the app's server, with `web` the networks the plan lets reach the web ports (its
+ * committed `http_allowed_cidrs`), evaluated on `result`.
+ */
+function evaluate(
+  deployPlan: DeployPlan,
+  web: readonly string[] | undefined,
+  result: CommandResult,
+) {
+  const check = serverFirewallCheck(deployPlan, APP_SERVER, web);
   if (check === undefined) throw new Error("no server firewall check");
   return check.evaluate(result);
 }
 
 /** The rules the first boot writes for the app's server of `plan()`, web open to everyone. */
 const OPEN: ServerFirewallRules = { sshSources: SSH_LISTED, webSources: WORLD };
+/** The same with the web ports held to Cloudflare's ranges. */
+const BEHIND: ServerFirewallRules = { sshSources: SSH_LISTED, webSources: CLOUDFLARE };
+
+/** Writes `values` as the environment's committed `terraform.tfvars.json` under `root`. */
+async function commitTfvars(root: string, deployPlan: DeployPlan, values: unknown) {
+  const file = join(root, deployPlan.infra.dir, "terraform.tfvars.json");
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(values, null, 2)}\n`);
+}
 
 describe("the server firewall's check", () => {
   it("is a host check only on a server whose provider has no cloud firewall", () => {
-    const own = hostChecksFor(plan(), APP_SERVER, undefined);
+    const own = hostChecksFor(plan(), APP_SERVER, undefined, CLOUDFLARE);
     expect(own.filter((check) => check.id === "server-firewall")).toHaveLength(1);
-    const cloud = hostChecksFor(plan({ provider: "digitalocean" }), APP_SERVER, undefined);
+    const cloud = hostChecksFor(plan({ provider: "digitalocean" }), APP_SERVER, undefined, WORLD);
     expect(cloud.map((check) => check.id)).not.toContain("server-firewall");
-    expect(serverFirewallCheck(plan({ provider: "contabo" }), APP_SERVER)).toBeUndefined();
+    expect(serverFirewallCheck(plan({ provider: "contabo" }), APP_SERVER, WORLD)).toBeUndefined();
   });
 
   it("reads the live table as root through Docker, with only the rights nft needs", () => {
-    const check = serverFirewallCheck(plan(), APP_SERVER);
+    const check = serverFirewallCheck(plan(), APP_SERVER, CLOUDFLARE);
     expect(check?.command).toBe(
       `docker run --rm --network host --cap-drop ALL --cap-add NET_ADMIN --cap-add SYS_CHROOT --volume /:/host:ro ${IMAGES.caddy.ref} chroot /host nft list table inet opscrew-firewall`,
     );
@@ -110,7 +132,9 @@ describe("the server firewall's check", () => {
     };
     const [result] = await runHostChecks(
       remote,
-      hostChecksFor(deployPlan, APP_SERVER, undefined).filter((c) => c.id === "server-firewall"),
+      hostChecksFor(deployPlan, APP_SERVER, undefined, WORLD).filter(
+        (c) => c.id === "server-firewall",
+      ),
     );
     expect(result).toMatchObject({ id: "server-firewall", status: "pass", severity: "critical" });
     expect(result?.message).toContain("cloud firewall: none; server firewall: on");
@@ -118,17 +142,93 @@ describe("the server firewall's check", () => {
   });
 
   it("passes the listing of an older nft, which prints the priority as 0", () => {
-    const result = evaluate(plan({ httpAllowedFrom: "any" }), answer(listing(OPEN, "0")));
+    const result = evaluate(plan({ httpAllowedFrom: "any" }), WORLD, answer(listing(OPEN, "0")));
     expect(result.status).toBe("pass");
   });
 
-  it("passes the web ports held to the Cloudflare ranges the server was set up with", () => {
-    const behind = { sshSources: SSH_LISTED, webSources: CLOUDFLARE };
-    expect(evaluate(plan(), answer(listing(behind))).status).toBe("pass");
+  it("passes the web ports held to the plan's Cloudflare ranges", () => {
+    const passed = evaluate(plan(), CLOUDFLARE, answer(listing(BEHIND)));
+    expect(passed.status).toBe("pass");
+    expect(passed.message).toContain("the web ports from Cloudflare only");
     // Open to everyone although the plan says Cloudflare only.
-    const open = evaluate(plan(), answer(listing(OPEN)));
+    const open = evaluate(plan(), CLOUDFLARE, answer(listing(OPEN)));
     expect(open.status).toBe("fail");
     expect(open.message).toContain("Cloudflare");
+    expect(open.message).toContain("0.0.0.0/0");
+  });
+
+  it("fails a range on the web ports that the plan doesn't have, naming it and saying what to do", () => {
+    const stray = "198.51.100.0/24";
+    const result = evaluate(
+      plan(),
+      CLOUDFLARE,
+      answer(listing({ ...BEHIND, webSources: [...CLOUDFLARE, stray] })),
+    );
+    expect(result).toMatchObject({ status: "fail", severity: "critical" });
+    expect(result.message).toContain(
+      `ports 80 and 443 accept ${stray}, which the plan doesn't (it lets only Cloudflare's ranges reach them)`,
+    );
+    expect(result.remediation).toContain(
+      `http_allowed_cidrs\` in ${plan().infra.dir}/terraform.tfvars.json`,
+    );
+    expect(result.remediation).toContain("nft -f /etc/nftables.conf");
+    expect(result.remediation).toContain("opscrew secure");
+  });
+
+  it("fails a range of the plan's that the live table lacks", () => {
+    // The server was set up before Cloudflare added a range the plan has now.
+    const added = "104.16.0.0/13";
+    const result = evaluate(plan(), [...CLOUDFLARE, added], answer(listing(BEHIND)));
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain(`ports 80 and 443 don't accept ${added}, which the plan does`);
+  });
+
+  it("fails when the plan's web networks can't be read", () => {
+    const result = evaluate(plan(), undefined, answer(listing(BEHIND)));
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain(`${plan().infra.dir}/terraform.tfvars.json`);
+    expect(result.remediation).toContain("opscrew provision");
+  });
+
+  it("reads the plan's web networks from the environment's committed tfvars", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-server-firewall-"));
+    const deployPlan = plan();
+    expect(await plannedWebSources(root, deployPlan)).toBeUndefined();
+    await commitTfvars(root, deployPlan, { http_allowed_cidrs: CLOUDFLARE });
+    expect(await plannedWebSources(root, deployPlan)).toEqual(CLOUDFLARE);
+    for (const wrong of [{}, { http_allowed_cidrs: "0.0.0.0/0" }, { http_allowed_cidrs: [1] }]) {
+      await commitTfvars(root, deployPlan, wrong);
+      expect(await plannedWebSources(root, deployPlan)).toBeUndefined();
+    }
+  });
+
+  it("is held by `opscrew secure` to the committed networks, not the live ones", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-secure-firewall-"));
+    const deps = await createTestPhaseDeps({ root });
+    const deployPlan = plan();
+    await writeArtifact("plan", deps.paths.files.plan, deployPlan);
+    await recordServerAddress(deps.paths, SERVER);
+    await commitTfvars(root, deployPlan, { http_allowed_cidrs: CLOUDFLARE });
+    const firewall = async (rules: ServerFirewallRules) => {
+      const remote: RemoteExec = {
+        host: SERVER.ipv4,
+        async run(command) {
+          return command.includes("nft list table")
+            ? answer(listing(rules))
+            : answer("", 127, "not in this test");
+        },
+      };
+      const result = await runSecure(deps, {
+        scanners: [],
+        remote,
+        tcpConnect: async () => false,
+      });
+      return result.hostChecks.find((check) => check.id === "server-firewall");
+    };
+    expect(await firewall(BEHIND)).toMatchObject({ status: "pass" });
+    const stray = await firewall({ ...BEHIND, webSources: [...CLOUDFLARE, "198.51.100.0/24"] });
+    expect(stray).toMatchObject({ status: "fail" });
+    expect(stray?.message).toContain("198.51.100.0/24");
   });
 
   it("fails a server whose rules were changed, naming what differs and saying what to do", () => {
@@ -136,6 +236,7 @@ describe("the server firewall's check", () => {
     // A database port opened at the end of the input chain.
     const added = evaluate(
       deployPlan,
+      WORLD,
       answer(
         listing(OPEN).replace(
           "\t}\n\n\tchain forward",
@@ -149,7 +250,7 @@ describe("the server firewall's check", () => {
     expect(added.remediation).toContain("opscrew secure");
 
     // SSH from everywhere although the plan allows two networks.
-    const ssh = evaluate(deployPlan, answer(listing({ ...OPEN, sshSources: WORLD })));
+    const ssh = evaluate(deployPlan, WORLD, answer(listing({ ...OPEN, sshSources: WORLD })));
     expect(ssh.status).toBe("fail");
     expect(ssh.message).toContain("meta nfproto ipv4 tcp dport 22 accept");
     expect(ssh.message).toContain("ip saddr 203.0.113.7 tcp dport 22 accept");
@@ -157,6 +258,7 @@ describe("the server firewall's check", () => {
     // Default accept instead of default drop.
     const accepting = evaluate(
       deployPlan,
+      WORLD,
       answer(listing(OPEN).replace("policy drop;", "policy accept;")),
     );
     expect(accepting.status).toBe("fail");
@@ -165,6 +267,7 @@ describe("the server firewall's check", () => {
     // Docker's published ports no longer dropped from outside.
     const forward = evaluate(
       deployPlan,
+      WORLD,
       answer(listing(OPEN).replace("\t\tct direction original ct status dnat drop\n", "")),
     );
     expect(forward.status).toBe("fail");
@@ -174,9 +277,9 @@ describe("the server firewall's check", () => {
   it("opens WireGuard's port only where the plan uses it", () => {
     const deployPlan = plan({ httpAllowedFrom: "any" }, 51820);
     const rules = { ...OPEN, wireguardPort: 51820 };
-    expect(evaluate(deployPlan, answer(listing(rules))).status).toBe("pass");
-    expect(evaluate(deployPlan, answer(listing(OPEN))).status).toBe("fail");
-    const without = evaluate(plan({ httpAllowedFrom: "any" }), answer(listing(rules)));
+    expect(evaluate(deployPlan, WORLD, answer(listing(rules))).status).toBe("pass");
+    expect(evaluate(deployPlan, WORLD, answer(listing(OPEN))).status).toBe("fail");
+    const without = evaluate(plan({ httpAllowedFrom: "any" }), WORLD, answer(listing(rules)));
     expect(without.status).toBe("fail");
     expect(without.message).toContain("udp dport 51820 accept");
   });
@@ -184,6 +287,7 @@ describe("the server firewall's check", () => {
   it("fails a server without OpsCrew's table, or whose table can't be read", () => {
     const missing = evaluate(
       plan(),
+      CLOUDFLARE,
       answer(
         "",
         1,
@@ -195,6 +299,7 @@ describe("the server firewall's check", () => {
     expect(missing.remediation).toContain("nft -f /etc/nftables.conf");
     const unread = evaluate(
       plan(),
+      CLOUDFLARE,
       answer("", 125, "docker: Cannot connect to the Docker daemon\n"),
     );
     expect(unread.status).toBe("fail");

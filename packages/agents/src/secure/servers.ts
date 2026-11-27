@@ -37,15 +37,18 @@ import { serverServiceChecks, servicePorts } from "./services";
 /**
  * `secure`'s host checks on server `server` of `plan`: the hardening checks (on a server the user
  * owns, with what its last setup accepts, `hardening`), on a server whose provider has no cloud
- * firewall its own firewall's, then those of the services it runs; on a preview server those are
- * checked per preview instead (`previewServiceChecks`).
+ * firewall its own firewall's (held to `httpAllowedCidrs`, the plan's web networks from
+ * `plannedWebSources`, on the app's server), then those of the services it runs; on a preview
+ * server those are checked per preview instead (`previewServiceChecks`).
  */
 export function hostChecksFor(
   plan: DeployPlan,
   server: string,
   hardening: OwnServerHardening | undefined,
+  httpAllowedCidrs?: readonly string[],
 ): HostCheck[] {
-  const firewall = hardening === undefined ? serverFirewallCheck(plan, server) : undefined;
+  const firewall =
+    hardening === undefined ? serverFirewallCheck(plan, server, httpAllowedCidrs) : undefined;
   return [
     ...(hardening === undefined ? HOST_CHECKS : ownServerHostChecks(hardening)),
     ...(firewall === undefined ? [] : [firewall]),

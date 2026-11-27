@@ -15,6 +15,8 @@ import {
 import { APP_SERVER, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import type { HostCheck } from "@opscrew/secops";
+import { z } from "zod";
+import { committedTfvars } from "../provision/render";
 
 /**
  * Lists OpsCrew's table as root, run as `deploy` (who has no sudo but is in the docker group): the
@@ -38,11 +40,31 @@ function tableLines(stdout: string): string[] {
     .filter((line) => line !== "");
 }
 
-/** The networks the live table lets reach the web ports (`<family> saddr <network>`), in order. */
+/**
+ * The networks the live table lets reach the web ports, as {@link listed} writes them: one network
+ * (`<family> saddr <network>`), or a family's every address (`meta nfproto <family>`).
+ */
 function webSources(lines: readonly string[]): string[] {
-  return lines.flatMap(
-    (line) => /^ip6? saddr (\S+) tcp dport \{ 80, 443 \} accept$/.exec(line)?.[1] ?? [],
-  );
+  return lines.flatMap((line) => {
+    const match =
+      /^(?:ip6? saddr (\S+)|meta nfproto (ipv4|ipv6)) tcp dport \{ 80, 443 \} accept$/.exec(line);
+    if (match === null) return [];
+    return match[1] ?? (match[2] === "ipv4" ? "0.0.0.0/0" : "::/0");
+  });
+}
+
+/**
+ * The networks the plan lets reach the web ports: `http_allowed_cidrs` of the environment's
+ * committed `terraform.tfvars.json`, which provision wrote for the server's module. Undefined when
+ * the file or the value is missing, or the value is not a list of networks.
+ */
+export async function plannedWebSources(
+  root: string,
+  plan: Pick<DeployPlan, "infra">,
+): Promise<string[] | undefined> {
+  const values = await committedTfvars(root, plan);
+  const parsed = z.array(z.string()).safeParse(values?.http_allowed_cidrs);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** The cloud provider of server `server` of `plan`, when OpsCrew creates it. */
@@ -54,22 +76,37 @@ function serverProvider(plan: DeployPlan, server: string) {
   return isCloudProvider(id) ? cloudProvider(id) : undefined;
 }
 
+/** Up to six of `items` in a sentence, the rest counted. */
+function some(items: readonly string[]): string {
+  return items.length <= 6
+    ? listText(items)
+    : `${items.slice(0, 5).join(", ")} and ${items.length - 5} more`;
+}
+
 /**
  * The check of the firewall on server `server` (the app's or an extra one) of `plan`, or undefined
  * when its provider has a cloud firewall. It passes only when the live table is the one the first
  * boot writes for the plan: default drop, SSH from `security.sshAllowedCidrs`, the web ports on the
- * app's server as `security.httpAllowedFrom` says (Cloudflare's ranges, as the server was set up
- * with them, when proxied), the network's WireGuard port where the server has one, and Docker's
- * other published ports dropped from outside.
+ * app's server from `httpAllowedCidrs` (the plan's networks, {@link plannedWebSources}: Cloudflare's
+ * ranges when proxied), the network's WireGuard port where the server has one, and Docker's other
+ * published ports dropped from outside. The app's server fails without `httpAllowedCidrs`, since
+ * nothing then says which networks its web ports may accept.
  */
-export function serverFirewallCheck(plan: DeployPlan, server: string): HostCheck | undefined {
+export function serverFirewallCheck(
+  plan: DeployPlan,
+  server: string,
+  httpAllowedCidrs: readonly string[] | undefined,
+): HostCheck | undefined {
   const provider = serverProvider(plan, server);
   if (provider?.texts.secops.firewallCheck !== "server") return undefined;
   const web = server === APP_SERVER;
-  const cloudflare = web && webOnlyFromCloudflare(plan);
+  const plannedWeb = web ? httpAllowedCidrs?.map(listed) : [];
+  const open = plannedWeb?.some((network) => WORLD.includes(network)) === true;
+  const cloudflare = web && !open && webOnlyFromCloudflare(plan);
   const sshSources = plan.security.sshAllowedCidrs.map(listed);
   const wireguardPort = plan.network?.members.find((member) => member.name === server)?.port;
-  const remediation = `${provider.name} has no cloud firewall, so this is the server's only one. As root on the server (from ${provider.texts.runbook.console}), \`nft -f /etc/nftables.conf\` loads the rules its first boot wrote again; if the plan's networks changed since, change them in that file first. Then run \`opscrew secure\` again.`;
+  const tfvars = `${plan.infra.dir}/terraform.tfvars.json`;
+  const remediation = `${provider.name} has no cloud firewall, so this is the server's only one. As root on the server (from ${provider.texts.runbook.console}), \`nft -f /etc/nftables.conf\` loads the rules its first boot wrote again; if the plan's networks changed since (the web ports' are \`http_allowed_cidrs\` in ${tfvars}), change them in that file first. Then run \`opscrew secure\` again.`;
   const base = {
     id: "server-firewall",
     title: "The server's own firewall lets in only what the plan allows",
@@ -96,16 +133,22 @@ export function serverFirewallCheck(plan: DeployPlan, server: string): HostCheck
         const reason = said.trim().split("\n")[0]?.slice(0, 200) ?? "";
         return check("fail", `OpsCrew could not read the server's firewall: ${reason}`);
       }
+      if (plannedWeb === undefined) {
+        return {
+          ...check(
+            "fail",
+            `OpsCrew could not read which networks the plan lets reach the web ports (\`http_allowed_cidrs\` in ${tfvars}), so it can't hold the server's own firewall to them.`,
+          ),
+          remediation: `Run \`opscrew provision\`, which writes ${tfvars} again (or restore it from Git), then run \`opscrew secure\` again.`,
+        };
+      }
       const live = tableLines(result.stdout);
-      const expected = serverFirewallTable({
-        sshSources,
-        webSources: !web ? [] : cloudflare ? webSources(live) : WORLD,
-        wireguardPort,
-      });
+      const expected = serverFirewallTable({ sshSources, webSources: plannedWeb, wireguardPort });
       if (live.join("\n") === expected.join("\n")) {
+        const from = open ? "everyone" : cloudflare ? "Cloudflare only" : "the plan's networks";
         const allowed = [
           sshSources.length === 0 ? "no SSH from outside" : "SSH from the plan's networks",
-          ...(web ? [`the web ports from ${cloudflare ? "Cloudflare only" : "everyone"}`] : []),
+          ...(web ? [`the web ports from ${from}`] : []),
           ...(wireguardPort === undefined ? [] : [`WireGuard's port ${wireguardPort}`]),
         ];
         return check(
@@ -117,8 +160,15 @@ export function serverFirewallCheck(plan: DeployPlan, server: string): HostCheck
       if (!live.includes("type filter hook input priority filter; policy drop;")) {
         problems.push("it doesn't drop by default");
       }
-      if (cloudflare && webSources(live).length === 0) {
-        problems.push("it doesn't hold ports 80 and 443 to Cloudflare's ranges, as the plan says");
+      const liveWeb = webSources(live);
+      const stray = liveWeb.filter((network) => !plannedWeb.includes(network));
+      const lacking = plannedWeb.filter((network) => !liveWeb.includes(network));
+      if (stray.length > 0) {
+        const only = cloudflare ? " (it lets only Cloudflare's ranges reach them)" : "";
+        problems.push(`ports 80 and 443 accept ${some(stray)}, which the plan doesn't${only}`);
+      }
+      if (lacking.length > 0) {
+        problems.push(`ports 80 and 443 don't accept ${some(lacking)}, which the plan does`);
       }
       const quoted = (lines: string[]) => listText(lines.slice(0, 6).map((line) => `\`${line}\``));
       const extra = live.filter((line) => !expected.includes(line));

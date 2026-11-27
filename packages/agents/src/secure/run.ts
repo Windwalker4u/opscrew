@@ -98,6 +98,7 @@ import {
   securityProblems,
   UNKNOWN_SERVER_ADDRESS,
 } from "./report";
+import { plannedWebSources } from "./server-firewall";
 import {
   extraServerChecks,
   hostChecksFor,
@@ -272,11 +273,13 @@ async function checkServer(
         : await previewServiceChecks(deps, plan, remote);
     // A second app: the server's hardening is the first app's, said in one skipped check.
     const firstApp = own?.firstApp;
+    // The web ports' networks the plan applied, which a server's own firewall is held to.
+    const web = await plannedWebSources(paths.root, plan);
     hostChecks = [
       ...(firstApp === undefined ? [] : [firstAppHardeningCheck(firstApp)]),
       ...(await runHostChecks(remote, [
         ...(firstApp === undefined
-          ? hostChecksFor(plan, APP_SERVER, own?.hardening)
+          ? hostChecksFor(plan, APP_SERVER, own?.hardening, web)
           : serverServiceChecks(plan)),
         ...(previews?.checks ?? []),
         ...(await siteTlsChecks(deps, plan, remote)),
