@@ -56,6 +56,15 @@ describe("serverFirewallRulesFile and serverFirewallNetworksJson", () => {
     expect(listing).toContain("|ip saddr 203.0.113.7 tcp dport 22 accept|");
     expect(listing).toContain("|udp dport 51820 accept|");
 
+    // CIDRs with host bits set are canonicalized in both firewall.nft and the expected listing.
+    const nonCanonical = { ssh: ["198.51.100.7/24", "2001:db8::1/64"], web: [] };
+    const nonCanonicalRules = serverFirewallRulesFile(nonCanonical);
+    const nonCanonicalListing = serverFirewallListing(nonCanonical);
+    expect(nonCanonicalRules).toContain("\t\tip saddr 198.51.100.0/24 tcp dport 22 accept\n");
+    expect(nonCanonicalRules).toContain("\t\tip6 saddr 2001:db8::/64 tcp dport 22 accept\n");
+    expect(nonCanonicalListing).toContain("|ip saddr 198.51.100.0/24 tcp dport 22 accept|");
+    expect(nonCanonicalListing).toContain("|ip6 saddr 2001:db8::/64 tcp dport 22 accept|");
+
     // Networks JSON is schemaVersion 1 with exact networks.
     const json = serverFirewallNetworksJson(params);
     expect(JSON.parse(json)).toEqual({

@@ -25,13 +25,14 @@ import {
   serverFirewallRulesFile,
 } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   NARROWED_SSH,
   staleServerFirewallPlanJson,
 } from "../provision/__fixtures__/stale-server-firewall";
 import { planAndApply } from "../provision/plan-apply";
+import { runSecure } from "../secure/run";
 import {
   createdServerFacts,
   createTestPhaseDeps,
@@ -39,7 +40,8 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
-import { hostPlanFile, recordServerAddress } from "./index";
+import { approvalEntry, hostPlanFile, recordServerAddress, updateServerAddresses } from "./index";
+import { secopsToServerFirewallParams } from "./server-firewall";
 
 const WORLD = ["0.0.0.0/0", "::/0"];
 const SERVER_IP = "203.0.113.42";
@@ -298,9 +300,89 @@ describe("in-place server firewall updates via planAndApply (issue #62)", () => 
         serverFirewall: s.serverFirewall,
       }),
     ).rejects.toMatchObject({
-      code: "COMMAND_FAILED",
-      message: expect.stringContaining("not valid JSON"),
+      code: "PHASE_PRECONDITION",
+      hint: expect.stringContaining("not valid JSON"),
     });
+    expect(s.handler.requests).toEqual([]);
+  });
+
+  it("fails closed on SSH read failure after an in-place update even when plan reverts to the first-boot networks", async () => {
+    // Regression test (PR #68 blocker 1): server updated A -> B, then plan reverts to A (matching
+    // Terraform's stale first-boot script) while SSH fails. Must NOT fall back to A == A and skip!
+    const s = await setup();
+    await planAndApply(s.deps, {
+      engine: s.engine,
+      dir: join(s.root, s.deployPlan.infra.dir),
+      env: {},
+      deployPlan: s.deployPlan,
+      files: [],
+      serverFirewall: s.serverFirewall,
+    });
+    expect(s.server.files.get(SERVER_FIREWALL_NETWORKS_FILE)).toBe(
+      serverFirewallNetworksJson({ ssh: [NARROWED_SSH], web: WORLD }),
+    );
+
+    // Now revert plan.yaml back to WORLD (matching stale before.startup_script in Terraform state)
+    // and simulate an SSH outage when reading /etc/opscrew/firewall-networks.json.
+    const revertedPlan = testPlan({ backups: false });
+    const revertedJson = staleServerFirewallPlanJson();
+    revertedJson.variables.ssh_allowed_cidrs.value = WORLD;
+    const engine = new FakeEngine({ changes: [], planJson: revertedJson });
+    const brokenRemote: RemoteExec = {
+      host: SERVER_IP,
+      async run() {
+        throw new Error("ssh: connect to host timed out");
+      },
+    };
+    const error = await planAndApply(s.deps, {
+      engine,
+      dir: join(s.root, revertedPlan.infra.dir),
+      env: {},
+      deployPlan: revertedPlan,
+      files: [],
+      serverFirewall: {
+        ...s.serverFirewall,
+        plan: revertedPlan,
+        remote: () => brokenRemote,
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("The server's own firewall has the plan's networks"),
+      hint: expect.stringContaining("will not fall back to the first-boot script"),
+    });
+  });
+
+  it("never falls back module.server_previous to deployment.ipv4 when no retarget record exists", async () => {
+    // Regression test (PR #68 blocker 2): only deployment.ipv4 is in server.json, no retarget.from
+    // and no previousHost. Must fail closed and NEVER connect to deployment.ipv4!
+    const s = await setup();
+    const touchedHosts: string[] = [];
+    const engine = new FakeEngine({
+      changes: [],
+      planJson: staleServerFirewallPlanJson("module.server_previous.kamatera_server.this"),
+    });
+    const error = await planAndApply(s.deps, {
+      engine,
+      dir: join(s.root, s.deployPlan.infra.dir),
+      env: {},
+      deployPlan: s.deployPlan,
+      files: [],
+      phase: "retarget",
+      command: "opscrew retarget",
+      serverFirewall: {
+        ...s.serverFirewall,
+        remote: (host) => {
+          touchedHosts.push(host);
+          return s.server;
+        },
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      hint: expect.stringContaining("previous server's address is not recorded"),
+    });
+    expect(touchedHosts).toEqual([]);
     expect(s.handler.requests).toEqual([]);
   });
 
@@ -325,5 +407,173 @@ describe("in-place server firewall updates via planAndApply (issue #62)", () => 
     expect(s.server.files.get(SERVER_FIREWALL_NETWORKS_FILE)).toBe(
       serverFirewallNetworksJson({ ssh: [NARROWED_SSH], web: WORLD }),
     );
+  });
+
+  it("preserves the iac-apply approval record via afterApply when the subsequent firewall host plan fails", async () => {
+    // Regression test (PR #68 point 4): tofu apply succeeds, then server-firewall host plan fails.
+    const s = await setup({ verifyLogin: async () => false });
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.dns.cloudflare_dns_record.app",
+          type: "cloudflare_dns_record",
+          name: "app",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "update",
+        },
+      ],
+      planJson: staleServerFirewallPlanJson(),
+    });
+    let recordedApprovalHash: string | undefined;
+    await expect(
+      planAndApply(s.deps, {
+        engine,
+        dir: join(s.root, s.deployPlan.infra.dir),
+        env: {},
+        deployPlan: s.deployPlan,
+        files: [],
+        serverFirewall: s.serverFirewall,
+        afterApply: async (_saved, approval) => {
+          if (approval !== undefined) {
+            recordedApprovalHash = approval.planHash;
+            const current = await readArtifact("plan", s.deps.paths.files.plan);
+            await writeArtifact("plan", s.deps.paths.files.plan, {
+              ...current,
+              approvals: [...current.approvals, approvalEntry(approval)],
+            });
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+
+    expect(recordedApprovalHash).toMatch(/^[0-9a-f]{64}$/);
+    const persisted = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(persisted.approvals).toContainEqual(
+      expect.objectContaining({ kind: "iac-apply", planHash: recordedApprovalHash }),
+    );
+  });
+
+  it("routes each own-firewall server to its own shell in runSecure and fails closed on damaged JSON", async () => {
+    // Regression test (PR #68 points 3 & 6c): two Kamatera servers (app + db) with different
+    // WireGuard ports, each reading its own /etc/opscrew/firewall-networks.json; damaged JSON on
+    // db fails the check instead of being swallowed.
+    const root = await mkdtemp(join(tmpdir(), "opscrew-sf-secure-"));
+    const deps = await createTestPhaseDeps({ root });
+    const base = testPlan({ backups: false });
+    const deployPlan = DeployPlanSchema.parse({
+      ...base,
+      security: { ...base.security, sshAllowedCidrs: [NARROWED_SSH] },
+    });
+    await writeArtifact("plan", deps.paths.files.plan, deployPlan);
+    const DB_IP = "203.0.113.43";
+    await updateServerAddresses(deps.paths, (current) => ({
+      ...current,
+      deployment: { ipv4: SERVER_IP },
+      servers: { db: { ipv4: DB_IP } },
+    }));
+
+    const appServer = new FakeKamateraServer({
+      ssh: [NARROWED_SSH],
+      web: WORLD,
+      wireguardPort: 51820,
+    });
+    appServer.files.set(
+      SERVER_FIREWALL_NETWORKS_FILE,
+      serverFirewallNetworksJson({ ssh: [NARROWED_SSH], web: WORLD, wireguardPort: 51820 }),
+    );
+    const dbServer = new FakeKamateraServer({ ssh: [NARROWED_SSH], web: [], wireguardPort: 51821 });
+    dbServer.files.set(
+      SERVER_FIREWALL_NETWORKS_FILE,
+      serverFirewallNetworksJson({ ssh: [NARROWED_SSH], web: [], wireguardPort: 51821 }),
+    );
+
+    // Plan JSON with two existing Kamatera servers whose first-boot scripts are stale (no WG port).
+    const appJson = staleServerFirewallPlanJson("module.server.kamatera_server.this");
+    const dbJson = staleServerFirewallPlanJson("module.server_db.kamatera_server.this");
+    const twoServerPlanJson = {
+      format_version: "1.2",
+      variables: {
+        ssh_allowed_cidrs: { value: [NARROWED_SSH] },
+        http_allowed_cidrs: { value: WORLD },
+      },
+      configuration: {
+        root_module: {
+          module_calls: {
+            server: {
+              source: "../modules/kamatera-server",
+              expressions: {
+                ssh_allowed_cidrs: { references: ["var.ssh_allowed_cidrs"] },
+                wireguard_port: { constant_value: 51820 },
+              },
+            },
+            server_db: {
+              source: "../modules/kamatera-server",
+              expressions: {
+                ssh_allowed_cidrs: { references: ["var.ssh_allowed_cidrs"] },
+                web: { constant_value: false },
+                wireguard_port: { constant_value: 51821 },
+              },
+            },
+          },
+        },
+      },
+      planned_values: {
+        root_module: {
+          child_modules: [
+            ...appJson.planned_values.root_module.child_modules,
+            ...dbJson.planned_values.root_module.child_modules,
+          ],
+        },
+      },
+      resource_changes: [...appJson.resource_changes, ...dbJson.resource_changes],
+    };
+
+    const okResult = await runSecure(deps, {
+      scanners: [],
+      planJson: twoServerPlanJson,
+      remote: appServer,
+      serverRemote: (host) => (host === DB_IP ? dbServer : appServer),
+      tcpConnect: async () => false,
+    });
+    const okPolicies = (okResult.policies ?? []).filter(
+      (p) => p.policyId === "server-firewall-as-planned",
+    );
+    expect(okPolicies).toHaveLength(2);
+    expect(okPolicies.every((p) => p.passed)).toBe(true);
+
+    // Corrupt db's /etc/opscrew/firewall-networks.json: must NOT be swallowed!
+    dbServer.files.set(SERVER_FIREWALL_NETWORKS_FILE, "{damaged");
+    const badResult = await runSecure(deps, {
+      scanners: [],
+      planJson: twoServerPlanJson,
+      remote: appServer,
+      serverRemote: (host) => (host === DB_IP ? dbServer : appServer),
+      tcpConnect: async () => false,
+    });
+    const dbPolicy = (badResult.policies ?? []).find(
+      (p) =>
+        p.policyId === "server-firewall-as-planned" &&
+        p.resource === "module.server_db.kamatera_server.this",
+    );
+    expect(dbPolicy).toMatchObject({
+      passed: false,
+      severity: "critical",
+      message: expect.stringContaining("not valid JSON"),
+    });
+    expect(badResult.passed).toBe(false);
+  });
+
+  it("throws INVALID_INPUT in secopsToServerFirewallParams on an unparseable WireGuard port", () => {
+    expect(() =>
+      secopsToServerFirewallParams({ ssh: WORLD, web: WORLD, wireguard: "not-a-port" }),
+    ).toThrow(/not a valid UDP port number/);
+    expect(() =>
+      secopsToServerFirewallParams({ ssh: WORLD, web: WORLD, wireguard: "70000" }),
+    ).toThrow(/must be between 1 and 65535/);
+    expect(secopsToServerFirewallParams({ ssh: WORLD, web: WORLD, wireguard: "51820" })).toEqual({
+      ssh: WORLD,
+      web: WORLD,
+      wireguardPort: 51820,
+    });
   });
 });

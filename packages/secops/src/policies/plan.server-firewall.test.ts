@@ -519,11 +519,33 @@ describe("a provider whose firewall is the server's own", () => {
       web: WORLD,
     });
     const refused = evaluatePlanPolicies(tampered, deployPlan({ sshAllowedCidrs: narrowed }), {
-      inPlaceServerFirewall: true,
+      inPlaceServerFirewallAddresses: new Set([address]),
     });
     expect(result(refused, "server-firewall-as-planned")?.passed).toBe(true);
     expect(result(refused, "ssh-not-public")?.passed).toBe(false);
     expect(blockingPolicyFailures(refused).map((r) => r.policyId)).toEqual(["ssh-not-public"]);
+  });
+
+  it("fails closed when serverFirewallReadErrors is set, even if the first-boot script matches the plan", () => {
+    const address = "module.server.own_server.this";
+    const json = planJson(startupScript({ ssh: WORLD, web: WORLD }), ["no-op"], {
+      ssh: WORLD,
+      web: WORLD,
+    });
+    const failed = evaluatePlanPolicies(json, deployPlan(), {
+      serverFirewallReadErrors: { [address]: "SSH timed out" },
+    });
+    const check = result(failed, "server-firewall-as-planned");
+    expect(check).toMatchObject({
+      passed: false,
+      severity: "critical",
+      resource: address,
+    });
+    expect(check?.message).toContain("SSH timed out");
+    expect(check?.message).toContain("will not fall back to the first-boot script");
+    expect(blockingPolicyFailures(failed).map((r) => r.policyId)).toEqual([
+      "server-firewall-as-planned",
+    ]);
   });
 
   it("lists existing own-firewall servers for app, extra servers, and retarget previous", () => {

@@ -35,7 +35,7 @@ import {
   writeFakeState,
 } from "../testing";
 import { firstAppLook, noOtherApps } from "../testing/other-apps";
-import { NARROWED_SSH, staleServerFirewallPlanJson } from "./__fixtures__/stale-server-firewall";
+import { staleServerFirewallPlanJson } from "./__fixtures__/stale-server-firewall";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { deploymentRenderContext, previewDeploymentFiles } from "./render";
@@ -975,12 +975,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
         "The plan fails 1 security policy: The server's own firewall has the plan's networks. Nothing was changed.",
     });
     const hint = (error as OpsCrewError).hint ?? "";
-    expect(hint).toContain(
-      `SSH: the server accepts 0.0.0.0/0 and ::/0, which the plan doesn't, and the plan adds ${NARROWED_SSH}`,
-    );
-    expect(hint).toContain("set at its first boot");
     expect(hint).toContain("/etc/opscrew/firewall-networks.json");
-    expect(hint).toContain("opscrew/plan.yaml");
+    expect(hint).toContain("will not fall back to the first-boot script");
     // Only the rendered files' write was asked for: never the plan's approval, never an apply.
     expect(handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
     expect(engine.calls).not.toContain("apply");

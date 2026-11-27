@@ -561,17 +561,26 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
       ? undefined
       : (await findSavedPlan(paths.files.plansDir, plan.deployment.lastPlanHash))?.planJson);
   const secureRemote = options.remote;
+  const extraRemote = options.serverRemote;
   const serverFirewalls =
-    planJson !== undefined && host !== undefined && existingOwnFirewallServers(planJson).length > 0
+    planJson !== undefined && existingOwnFirewallServers(planJson).length > 0
       ? await readExistingServerFirewalls(
           deps,
           {
             plan,
-            ...(secureRemote !== undefined ? { remote: () => secureRemote } : {}),
+            ...(secureRemote !== undefined || extraRemote !== undefined
+              ? {
+                  remote: (targetHost: string, server: string) => {
+                    if (server === APP_SERVER && secureRemote !== undefined) return secureRemote;
+                    if (extraRemote !== undefined) return extraRemote(targetHost);
+                    return undefined;
+                  },
+                }
+              : {}),
           },
           planJson,
           "secure",
-        ).catch(() => undefined)
+        )
       : undefined;
   const policies =
     planJson === undefined
@@ -581,7 +590,10 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
           plan,
           serverFirewalls === undefined
             ? undefined
-            : { serverFirewallNetworks: serverFirewalls.networks },
+            : {
+                serverFirewallNetworks: serverFirewalls.networks,
+                serverFirewallReadErrors: serverFirewalls.errors,
+              },
         );
 
   let hostChecks: CheckResult[] = [];

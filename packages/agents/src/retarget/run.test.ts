@@ -13,10 +13,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ROLLING_NOTE } from "../design/strategy";
-import {
-  NARROWED_SSH,
-  staleServerFirewallPlanJson,
-} from "../provision/__fixtures__/stale-server-firewall";
+import { staleServerFirewallPlanJson } from "../provision/__fixtures__/stale-server-firewall";
 import { STORAGE_KEY_VARS } from "../provision/storage";
 import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
@@ -1740,10 +1737,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       message:
         "The plan fails 1 security policy: The server's own firewall has the plan's networks. Nothing was changed.",
     });
-    expect(error.hint).toContain(
-      `SSH: the server accepts 0.0.0.0/0 and ::/0, which the plan doesn't, and the plan adds ${NARROWED_SSH}`,
-    );
     expect(error.hint).toContain("/etc/opscrew/firewall-networks.json");
+    expect(error.hint).toContain("will not fall back to the first-boot script");
     expect(h.events.filter((e) => e.type === "approval")).toEqual([]);
     expect(applies(h)).toEqual([]);
   });

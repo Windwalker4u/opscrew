@@ -241,20 +241,22 @@ export interface EvaluatePlanPoliciesOptions {
    * Applied networks read from `/etc/opscrew/firewall-networks.json` over SSH for existing servers,
    * keyed by Terraform resource address (e.g. `module.server.kamatera_server.this`). When present
    * for a server, `server-firewall-as-planned` compares the plan against this record instead of
-   * the first-boot script in Terraform state (falling back to the first-boot script only when no
-   * record is present for that server).
+   * the first-boot script in Terraform state (falling back to the first-boot script only when SSH
+   * succeeded and confirmed no record exists yet for that server).
    */
   serverFirewallNetworks?: Readonly<Record<string, ServerFirewallNetworks | undefined>>;
   /**
-   * When true, any existing server whose own firewall differs from the plan passes
-   * `server-firewall-as-planned` because OpsCrew emits a SHA-256 hash-approved host plan to update
-   * `/etc/opscrew/firewall.nft` and `/etc/opscrew/firewall-networks.json` in place under the
-   * automatic undo.
+   * Read failures from trying to inspect `/etc/opscrew/firewall-networks.json` over SSH, keyed by
+   * Terraform resource address. Whenever an entry is present for a server,
+   * `server-firewall-as-planned` fails closed (critical) instead of falling back to the first-boot
+   * script in Terraform state, which may be stale after an earlier in-place firewall update.
    */
-  inPlaceServerFirewall?: boolean;
+  serverFirewallReadErrors?: Readonly<Record<string, string | undefined>>;
   /**
-   * Per-address version of {@link inPlaceServerFirewall}: only the named Terraform resource
-   * addresses are reachable for an in-place host plan update.
+   * Terraform resource addresses of existing servers that are reachable for an in-place
+   * `server-firewall` host plan update: when networks differ on one of these addresses,
+   * `server-firewall-as-planned` passes (noting the SHA-256 hash-approved host plan update) while
+   * still enforcing port and SSH policies on the planned networks.
    */
   inPlaceServerFirewallAddresses?: ReadonlySet<string>;
 }
@@ -447,10 +449,7 @@ function serverNameOfModule(moduleCall: string): string {
 
 /** True when `options` allows updating the server at `address` in place via a host plan. */
 function allowsInPlaceUpdate(address: string, options?: EvaluatePlanPoliciesOptions): boolean {
-  return (
-    options?.inPlaceServerFirewall === true ||
-    options?.inPlaceServerFirewallAddresses?.has(address) === true
-  );
+  return options?.inPlaceServerFirewallAddresses?.has(address) === true;
 }
 
 /**
@@ -557,6 +556,15 @@ function storedFirewallResult(
       policy: check(
         true,
         `The plan imports the ${noun}, which OpsCrew didn't create: its provider doesn't give back the script it started with, so this plan can't hold its firewall to the plan's networks. After the apply, ${live} and fails on any rule that differs from the plan's, or on no firewall of OpsCrew's at all.`,
+      ),
+    };
+  }
+  const readError = options?.serverFirewallReadErrors?.[server.address];
+  if (readError !== undefined) {
+    return {
+      policy: check(
+        false,
+        `OpsCrew could not read /etc/opscrew/firewall-networks.json on the ${noun} over SSH (${readError}), so it will not fall back to the first-boot script in Terraform state (which may be stale after an earlier in-place firewall update). Nothing was changed: check that the ${noun} is reachable over SSH and try again; ${live}.`,
       ),
     };
   }

@@ -108,14 +108,31 @@ export const ServerFirewallFieldsSchema = z
   })
   .pipe(ServerFirewallParamsSchema);
 
-/** A rule's source as `server-firewall.sh.tftpl` and nft write it. */
+/**
+ * Canonicalizes a network CIDR (masking any host bits on non-`/32` IPv4 or non-`/128` IPv6 CIDRs)
+ * while preserving `/32` or `/128` notation when present in `network` so `firewall.nft` stays
+ * byte-for-byte identical to `server-firewall.sh.tftpl` and matches what `nft` loads.
+ */
+function canonicalFirewallNetwork(network: string): string {
+  if (network === ANY_IPV4 || network === ANY_IPV6) return network;
+  const canonical = canonicalSshSource(network);
+  if (canonical === null) return network;
+  if (!canonical.includes("/")) {
+    if (network.endsWith("/32")) return `${canonical}/32`;
+    if (network.endsWith("/128")) return `${canonical}/128`;
+  }
+  return canonical;
+}
+
+/** A rule's source as `server-firewall.sh.tftpl` and nft write it (with host bits masked). */
 function nftSource(network: string): string {
   if (network === ANY_IPV4) return "meta nfproto ipv4";
   if (network === ANY_IPV6) return "meta nfproto ipv6";
-  return `${network.includes(":") ? "ip6" : "ip"} saddr ${network}`;
+  const canonical = canonicalFirewallNetwork(network);
+  return `${canonical.includes(":") ? "ip6" : "ip"} saddr ${canonical}`;
 }
 
-/** A rule's source as `nft list table` prints it (`/32` and `/128` stripped; `/0` as `meta nfproto`). */
+/** A rule's source as `nft list table` prints it (`/32` and `/128` stripped, host bits masked). */
 function nftListedSource(network: string): string {
   if (network === ANY_IPV4) return "meta nfproto ipv4";
   if (network === ANY_IPV6) return "meta nfproto ipv6";

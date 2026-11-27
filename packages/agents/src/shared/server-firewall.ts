@@ -1,8 +1,10 @@
 /**
  * In-place updates of a server's own firewall (`firewallCheck: "server"`, issue #62; Kamatera):
  * - Reads `/etc/opscrew/firewall-networks.json` over SSH (as root/docker) for existing servers
- *   before `evaluatePlanPolicies`, falling back to the first-boot script in Terraform state only
- *   when the record does not yet exist on the server.
+ *   before `evaluatePlanPolicies`, falling back to the first-boot script in Terraform state ONLY
+ *   when SSH succeeds and confirms `/etc/opscrew/firewall-networks.json` is absent. On SSH failure,
+ *   missing address/key, insufficient privilege, or damaged JSON, fails closed instead of trusting
+ *   the first-boot script (which may be stale after an earlier in-place update).
  * - When the planned networks differ from the server's current networks, builds a SHA-256
  *   hash-approved `connector-ssh-host` host plan (`planServerFirewall`) that rewrites
  *   `/etc/opscrew/firewall.nft`, reloads `opscrew-firewall.service`, and atomically writes
@@ -20,7 +22,7 @@ import {
   type ServerFirewallNetworksRecord,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
-import { exists, OpsCrewError } from "@opscrew/core";
+import { errorText, exists, OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import {
@@ -49,8 +51,11 @@ export interface ServerFirewallHostApi {
 export interface ServerFirewallRun {
   /** Plan used to reach the servers (e.g. `beforeApply(plan)`). */
   plan: DeployPlan;
-  /** Optional SSH shell override by host address (tests). */
-  remote?: ((host: string) => RemoteExec) | undefined;
+  /**
+   * Optional SSH shell override by host address and OpsCrew server name (`app`, `<extra>`,
+   * `previous`). Returning `undefined` falls back to the real SSH shell for that server.
+   */
+  remote?: ((host: string, server: string) => RemoteExec | undefined) | undefined;
   /** Optional host adapter override (tests). */
   host?: ServerFirewallHostApi | undefined;
   /** Optional host IP of `module.server_previous` during `opscrew retarget`. */
@@ -67,6 +72,11 @@ export interface ExistingServerFirewallsRead {
   records: Record<string, ServerFirewallNetworksRecord>;
   /** Terraform addresses of existing servers reachable with root/sudo/docker privilege. */
   reachable: Set<string>;
+  /**
+   * Read/connection failures per Terraform address: whenever an entry is present, SecOps fails
+   * `server-firewall-as-planned` closed instead of falling back to the first-boot script.
+   */
+  errors: Record<string, string>;
 }
 
 interface ResolvedServer {
@@ -74,6 +84,8 @@ interface ResolvedServer {
   privilege: HostPrivilege;
   verifyLogin: () => Promise<boolean>;
 }
+
+type ProbeOutcome = { ok: true; server: ResolvedServer } | { ok: false; reason: string };
 
 function isRootPrivilege(privilege: HostFacts["privilege"]): privilege is HostPrivilege {
   return privilege === "root" || privilege === "sudo" || privilege === "docker";
@@ -87,13 +99,30 @@ function recordToSecops(record: ServerFirewallNetworksRecord): ServerFirewallNet
   };
 }
 
-function secopsToParams(networks: ServerFirewallNetworks) {
-  const wireguardPort =
-    networks.wireguard === "" ? undefined : Number.parseInt(networks.wireguard, 10);
+/** Converts SecOps firewall networks into validated `ServerFirewallParams`; throws on bad port. */
+export function secopsToServerFirewallParams(networks: ServerFirewallNetworks) {
+  if (networks.wireguard === "") {
+    return { ssh: [...networks.ssh], web: [...networks.web] };
+  }
+  if (!/^\d{1,5}$/.test(networks.wireguard)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The planned WireGuard port "${networks.wireguard}" is not a valid UDP port number.`,
+      { hint: "Check `network.members[].port` in opscrew/plan.yaml, then try again." },
+    );
+  }
+  const wireguardPort = Number(networks.wireguard);
+  if (!Number.isInteger(wireguardPort) || wireguardPort < 1 || wireguardPort > 65535) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The planned WireGuard port "${networks.wireguard}" must be between 1 and 65535.`,
+      { hint: "Check `network.members[].port` in opscrew/plan.yaml, then try again." },
+    );
+  }
   return {
     ssh: [...networks.ssh],
     web: [...networks.web],
-    ...(wireguardPort !== undefined && Number.isInteger(wireguardPort) ? { wireguardPort } : {}),
+    wireguardPort,
   };
 }
 
@@ -102,29 +131,42 @@ async function resolveServerShell(
   deps: PhaseDeps,
   run: ServerFirewallRun,
   server: string,
-): Promise<{ remote: RemoteExec; verifyLogin: () => Promise<boolean> } | undefined> {
+): Promise<
+  | { ok: true; remote: RemoteExec; verifyLogin: () => Promise<boolean> }
+  | { ok: false; reason: string }
+> {
   const addresses = await readServerAddresses(deps.paths);
   const customVerify = run.verifyLogin;
   const customRemote = run.remote;
   if (server === "previous") {
-    const host = run.previousHost ?? addresses.retarget?.from?.ipv4 ?? addresses.deployment?.ipv4;
-    if (host === undefined) return undefined;
-    if (customRemote !== undefined) {
-      const remote = customRemote(host);
+    // Never fall back to `addresses.deployment?.ipv4`: that is the current deployment's server,
+    // not `module.server_previous`. Fail closed when no previous-server address is known.
+    const host = run.previousHost ?? addresses.retarget?.from?.ipv4;
+    if (host === undefined) {
       return {
-        remote,
+        ok: false,
+        reason: "the previous server's address is not recorded in .opscrew/server.json",
+      };
+    }
+    const provided = customRemote?.(host, server);
+    if (provided !== undefined) {
+      return {
+        ok: true,
+        remote: provided,
         verifyLogin:
           customVerify !== undefined
             ? () => customVerify(server)
             : async () =>
                 (
-                  await customRemote(host)
+                  await (customRemote?.(host, server) ?? provided)
                     .run("true", { timeoutMs: 30_000 })
                     .catch(() => undefined)
                 )?.exitCode === 0,
       };
     }
-    if (!(await exists(deps.paths.files.deployKey))) return undefined;
+    if (!(await exists(deps.paths.files.deployKey))) {
+      return { ok: false, reason: "the deploy SSH key is not present on this computer" };
+    }
     const make = (fresh: boolean) =>
       new SshRemoteExec({
         host,
@@ -135,6 +177,7 @@ async function resolveServerShell(
         ...(fresh ? { fresh: true } : {}),
       });
     return {
+      ok: true,
       remote: make(false),
       verifyLogin:
         customVerify !== undefined
@@ -150,30 +193,39 @@ async function resolveServerShell(
 
   const host =
     server === APP_SERVER ? addresses.deployment?.ipv4 : addresses.servers?.[server]?.ipv4;
-  if (customRemote !== undefined) {
-    if (host === undefined) return undefined;
-    const remote = customRemote(host);
+  if (host === undefined) {
     return {
-      remote,
+      ok: false,
+      reason: `the address of server ${server} is not recorded in .opscrew/server.json`,
+    };
+  }
+  const provided = customRemote?.(host, server);
+  if (provided !== undefined) {
+    return {
+      ok: true,
+      remote: provided,
       verifyLogin:
         customVerify !== undefined
           ? () => customVerify(server)
           : async () =>
               (
-                await customRemote(host)
+                await (customRemote?.(host, server) ?? provided)
                   .run("true", { timeoutMs: 30_000 })
                   .catch(() => undefined)
               )?.exitCode === 0,
     };
   }
-  if (host === undefined || !(await exists(deps.paths.files.deployKey))) return undefined;
+  if (!(await exists(deps.paths.files.deployKey))) {
+    return { ok: false, reason: "the deploy SSH key is not present on this computer" };
+  }
   let remote: RemoteExec;
   try {
     remote = await serverRemote(deps, run.plan, server);
-  } catch {
-    return undefined;
+  } catch (error) {
+    return { ok: false, reason: deps.redactor.redact(errorText(error)) };
   }
   return {
+    ok: true,
     remote,
     verifyLogin:
       customVerify !== undefined
@@ -192,39 +244,35 @@ async function probeServer(
   deps: PhaseDeps,
   run: ServerFirewallRun,
   server: string,
-): Promise<ResolvedServer | undefined> {
+): Promise<ProbeOutcome> {
   const shell = await resolveServerShell(deps, run, server);
-  if (shell === undefined) return undefined;
+  if (!shell.ok) return shell;
   let privilege: HostFacts["privilege"];
   try {
     privilege = await probePrivilege(shell.remote);
-  } catch {
-    return undefined;
+  } catch (error) {
+    return { ok: false, reason: deps.redactor.redact(errorText(error)) };
   }
-  if (!isRootPrivilege(privilege)) return undefined;
-  return { ...shell, privilege };
-}
-
-/** True when `error` indicates `/etc/opscrew/firewall-networks.json` exists on disk but is damaged. */
-function isDamagedRecordError(error: unknown): boolean {
-  return (
-    error instanceof OpsCrewError &&
-    error.code === "COMMAND_FAILED" &&
-    error.message.includes(SERVER_FIREWALL_NETWORKS_FILE) &&
-    (error.message.includes("not valid JSON") || error.message.includes("damaged or incomplete"))
-  );
+  if (!isRootPrivilege(privilege)) {
+    return {
+      ok: false,
+      reason: `the SSH login on server ${server} does not have root, passwordless sudo, or Docker access`,
+    };
+  }
+  return { ok: true, server: { remote: shell.remote, verifyLogin: shell.verifyLogin, privilege } };
 }
 
 /**
  * Reads `/etc/opscrew/firewall-networks.json` over SSH (read-only) for every existing server on a
  * `firewallCheck: "server"` provider in `planJson`.
- * - When the file exists and is valid, records it in `networks[address]` and marks `address`
- *   reachable.
- * - When the file does not exist yet (`absent`), omits `networks[address]` (so SecOps falls back
- *   to the first-boot script in Terraform state) and still marks `address` reachable.
- * - When the file exists on disk but is damaged JSON, throws (fail closed).
- * - When the server cannot be reached over SSH or lacks root/sudo/docker access, leaves `address`
- *   out of `reachable` so `server-firewall-as-planned` fails closed if networks differ.
+ * - When SSH succeeds and the file exists and is valid, records it in `networks[address]` and marks
+ *   `address` reachable.
+ * - When SSH succeeds and confirms the file does not exist yet (`absent`), omits
+ *   `networks[address]` (allowing SecOps to fall back to the first-boot script in Terraform state)
+ *   and marks `address` reachable.
+ * - When SSH fails, privilege probing fails, or reading/parsing `/etc/opscrew/firewall-networks.json`
+ *   fails (including damaged JSON), records `errors[address]` and leaves `address` out of
+ *   `reachable` so SecOps fails closed instead of trusting a potentially stale first-boot script.
  */
 export async function readExistingServerFirewalls(
   deps: PhaseDeps,
@@ -235,15 +283,23 @@ export async function readExistingServerFirewalls(
   const networks: Record<string, ServerFirewallNetworks> = {};
   const records: Record<string, ServerFirewallNetworksRecord> = {};
   const reachable = new Set<string>();
+  const errors: Record<string, string> = {};
   const servers = existingOwnFirewallServers(planJson);
-  if (servers.length === 0) return { networks, records, reachable };
+  if (servers.length === 0) return { networks, records, reachable, errors };
 
   const readNetworks = run.host?.readNetworks ?? readServerFirewallNetworks;
   for (const item of servers) {
     const probed = await probeServer(deps, run, item.server);
-    if (probed === undefined) continue;
+    if (!probed.ok) {
+      errors[item.address] = probed.reason;
+      continue;
+    }
     try {
-      const record = await readNetworks(probed.remote, probed.privilege, IMAGES.caddy.ref);
+      const record = await readNetworks(
+        probed.server.remote,
+        probed.server.privilege,
+        IMAGES.caddy.ref,
+      );
       reachable.add(item.address);
       if (record !== undefined) {
         records[item.address] = record;
@@ -259,11 +315,10 @@ export async function readExistingServerFirewalls(
         detail: record === undefined ? "absent (first-boot fallback)" : "present",
       });
     } catch (error) {
-      if (isDamagedRecordError(error)) throw error;
-      // Unreachable / exec error: leave out of `reachable` so policies fail closed on drift.
+      errors[item.address] = deps.redactor.redact(errorText(error));
     }
   }
-  return { networks, records, reachable };
+  return { networks, records, reachable, errors };
 }
 
 /**
@@ -284,6 +339,17 @@ export async function applyServerFirewallUpdates(
 ): Promise<HostPlanOutcome[]> {
   const read =
     input.read ?? (await readExistingServerFirewalls(deps, input.run, input.planJson, input.phase));
+  const readErrors = Object.entries(read.errors);
+  if (readErrors.length > 0) {
+    const [, reason] = readErrors[0] ?? ["", "unknown error"];
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew could not read ${SERVER_FIREWALL_NETWORKS_FILE} on the server (${reason}), so it cannot safely update the server's firewall. Nothing on the server was changed.`,
+      {
+        hint: `Check that the server is reachable over SSH and ${SERVER_FIREWALL_NETWORKS_FILE} is valid, then run \`${input.command}\` again.`,
+      },
+    );
+  }
   const updates = serverFirewallUpdates(input.planJson, {
     serverFirewallNetworks: read.networks,
   });
@@ -293,23 +359,24 @@ export async function applyServerFirewallUpdates(
   const outcomes: HostPlanOutcome[] = [];
   for (const update of updates) {
     const probed = await probeServer(deps, input.run, update.server);
-    if (probed === undefined) {
+    if (!probed.ok) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `OpsCrew could not reach server ${update.server} over SSH to update its own firewall (${update.differences.join("; ")}). Nothing on the server was changed.`,
+        `OpsCrew could not reach server ${update.server} over SSH to update its own firewall (${update.differences.join("; ")}): ${probed.reason}. Nothing on the server was changed.`,
         {
           hint: `Check that server ${update.server} is reachable over SSH, then run \`${input.command}\` again.`,
         },
       );
     }
-    const rootImage = probed.privilege === "docker" ? IMAGES.caddy.ref : undefined;
+    const { remote, privilege, verifyLogin } = probed.server;
+    const rootImage = privilege === "docker" ? IMAGES.caddy.ref : undefined;
     deps.reporter.step(`Inspecting server ${update.server} for its firewall update (read-only)`);
-    const facts = await host.inspect(probed.remote, rootImage === undefined ? {} : { rootImage });
+    const facts = await host.inspect(remote, rootImage === undefined ? {} : { rootImage });
     const hostPlan = planServerFirewall(
       facts,
       {
         app: input.run.plan.app.name,
-        serverFirewall: secopsToParams(update.planned),
+        serverFirewall: secopsToServerFirewallParams(update.planned),
         current: read.records[update.address],
       },
       input.command,
@@ -317,12 +384,12 @@ export async function applyServerFirewallUpdates(
     const where = update.server === "previous" ? "the previous server" : `server ${update.server}`;
     const outcome = await approveAndApplyHostPlan(deps, {
       plan: hostPlan,
-      remote: probed.remote,
+      remote,
       apply:
         rootImage === undefined
-          ? (remote, applied, options) => host.apply(remote, applied, options)
-          : (remote, applied, options) => host.apply(remote, applied, { ...options, rootImage }),
-      verifyLogin: probed.verifyLogin,
+          ? (shell, applied, options) => host.apply(shell, applied, options)
+          : (shell, applied, options) => host.apply(shell, applied, { ...options, rootImage }),
+      verifyLogin,
       title: `Update the server's own firewall on ${where}`,
       intro: [
         `The plan's networks for ${where} differ from its current firewall (${update.differences.join("; ")}).`,
