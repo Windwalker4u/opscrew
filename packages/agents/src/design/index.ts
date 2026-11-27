@@ -25,4 +25,11 @@ export {
   resolveCatalog,
   runDesign,
 } from "./run";
+export {
+  copyLatencyWarnings,
+  copyServerLimits,
+  type PgBouncerScalingResult,
+  pgBouncerScaling,
+  statelessReadinessWarnings,
+} from "./scaling";
 export { serverlessTargetsFor } from "./serverless";

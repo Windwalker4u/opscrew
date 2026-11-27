@@ -15,6 +15,7 @@ import {
   type Move,
   monitoringOf,
   type PlanService,
+  type ProjectFacts,
   type Requirements,
   servicesOn,
 } from "@opscrew/plan-schema";
@@ -39,6 +40,12 @@ import { designMove, moveLine, requireMoveServersKept } from "./moves";
 import { designOwnServer, type OwnServersOptions } from "./own-servers";
 import { hasPlacement, type PlacementEdits } from "./placement-edits";
 import { withServerThreads } from "./plan";
+import {
+  copyLatencyWarnings,
+  copyServerLimits,
+  pgBouncerScaling,
+  statelessReadinessWarnings,
+} from "./scaling";
 import {
   applied,
   appServerChange,
@@ -90,6 +97,8 @@ export interface PlacementInput {
   catalogFor: (provider: CloudProvider, location: string) => Promise<ComputeCatalog>;
   /** The app's server when the user owns it: its WireGuard interfaces and UDP ports in use. */
   appNetwork?: NetworkHostFacts;
+  /** Detected project facts (`architecture.json`), used for stateless-readiness warnings (033). */
+  facts?: Pick<ProjectFacts, "statelessIssues">;
 }
 
 /** {@link designPlacement}'s result. */
@@ -135,25 +144,48 @@ export async function designPlacement(
   options: PlacementOptions = {},
 ): Promise<DesignedPlacement> {
   const { edits } = input;
-  // The monitoring was read with the placement; its servers are designed below.
-  const base =
-    edits.monitoring === undefined
-      ? input.plan
+  // The monitoring and multi-server scaling edits were read with the placement; put them back.
+  const baseWithEdits: DeployPlan = {
+    ...input.plan,
+    ...(edits.monitoring === undefined
+      ? {}
+      : { observability: { ...input.plan.observability, monitoring: edits.monitoring } }),
+    ...((edits.appServers?.length ?? 0) === 0
+      ? {}
+      : { app: { ...input.plan.app, servers: edits.appServers } }),
+    ...(edits.workerServers === undefined
+      ? {}
       : {
-          ...input.plan,
-          observability: { ...input.plan.observability, monitoring: edits.monitoring },
-        };
-  await requireOwnerCopies(deps, base);
+          processes: {
+            ...input.plan.processes,
+            workers: input.plan.processes.workers.map((worker) => {
+              const servers = edits.workerServers?.[worker.name];
+              return servers === undefined || servers.length === 0
+                ? worker
+                : { ...worker, servers };
+            }),
+          },
+        }),
+    ...(edits.scaling === undefined ? {} : { scaling: edits.scaling }),
+  };
+  await requireOwnerCopies(deps, baseWithEdits);
   if (!hasPlacement(edits)) {
     // A service the deployment runs on another server still can't lose it unnoticed.
-    designMove({ services: base.services, servers: [] }, input.previous, undefined);
-    const plan = edits.monitoring === undefined ? base : placedPlan(base);
+    designMove({ services: baseWithEdits.services, servers: [] }, input.previous, undefined);
+    const plan = edits.monitoring === undefined ? baseWithEdits : placedPlan(baseWithEdits);
     return { plan, privateKeys: {}, lines: [], warnings: [] };
   }
-  const services = base.services.map((service) => {
+  const placedServices = baseWithEdits.services.map((service) => {
     const server = edits.placed[service.name];
     return server === undefined ? service : { ...service, server };
   });
+  // Enable/recommend PgBouncer before sizing servers so its memory limit is counted on the DB server.
+  const pgbouncer = pgBouncerScaling(
+    { ...baseWithEdits, services: placedServices },
+    applied(input.previous),
+  );
+  const base = pgbouncer.plan;
+  const { services } = base;
   const on = (server: string) => servicesOn({ services }, server);
   const stack = monitoringOf(base)?.where;
   if (stack?.kind === "server" && on(stack.server).length > 0) {
@@ -179,7 +211,7 @@ export async function designPlacement(
   );
   for (const edited of edits.servers) {
     const placed = on(edited.name);
-    const addons = monitoringLimits(base, edited.name);
+    const addons = [...copyServerLimits(base, edited.name), ...monitoringLimits(base, edited.name)];
     if (edited.target?.provider === "own") {
       const own = await designOwnServer(
         deps,
@@ -243,8 +275,14 @@ export async function designPlacement(
     const over = overBudget(plan.cost, input.requirements.budgetMonthly, servers.length + 1);
     if (over !== undefined) warnings.push(over);
   }
+  warnings.push(
+    ...statelessReadinessWarnings(plan, input.facts),
+    ...pgbouncer.warnings,
+    ...copyLatencyWarnings(plan),
+  );
   const lines = [
     ...(servers.length === 0 ? [] : serverLines(plan, input, designed)),
+    ...pgbouncer.lines,
     ...hopLines(plan, designed, warnings),
     ...(await moveLines(deps, plan, moved.move)),
   ];
@@ -329,7 +367,10 @@ function serverLines(
         server.services,
         server.memoryGb * 1024,
         server.cost?.monthly,
-        monitoringLimits(plan, server.server.name),
+        [
+          ...copyServerLimits(plan, server.server.name),
+          ...monitoringLimits(plan, server.server.name),
+        ],
       ),
     ]),
     totalLine(plan.cost, designed, app),

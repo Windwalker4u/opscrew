@@ -14,6 +14,7 @@ import {
   servicesOn,
 } from "@opscrew/plan-schema";
 import { onAppServer } from "../../design/placement";
+import { copyServerLimits } from "../../design/scaling";
 import { cheapestServerOffer, extraServerNeed } from "../../design/servers";
 import { providerProfile } from "../../providers";
 import { appMemoryMb, memoryHeadroom, monitoringLimits } from "../../shared/memory";
@@ -527,7 +528,10 @@ function holdsContainers(
     const limitsMb = appMemoryMb(onAppServer(plan)) + besideAppMb;
     return memoryHeadroom(serverMb, limitsMb, edgeMemoryMb(edgeProxy(plan))).fits;
   }
-  const need = extraServerNeed(servicesOn(plan, name), monitoringLimits(plan, name));
+  const need = extraServerNeed(servicesOn(plan, name), [
+    ...copyServerLimits(plan, name),
+    ...monitoringLimits(plan, name),
+  ]);
   return serverMb >= need.memoryMb && offer.vcpus >= need.vcpus;
 }
 

@@ -18,6 +18,7 @@ import {
   isHostingTarget,
   isServerlessProvider,
   type Requirements,
+  readOptionalArtifact,
 } from "@opscrew/plan-schema";
 import { couldNotRun, runHostChecks } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -556,10 +557,11 @@ export async function readAdvice(
   const since = new Date(at.getTime() - THRESHOLDS.historyDays * DAY_MS).toISOString();
   const { services } = options;
   const names = isServerlessProvider(plan.target.provider) ? [] : appServers(plan);
-  const [requirements, deployedPlan, sharedPreviews, look] = await Promise.all([
+  const [requirements, deployedPlan, sharedPreviews, architecture, look] = await Promise.all([
     attempt(deps, "the interview's answers", () => readEnvironmentRequirements(deps.paths)),
     asDeployed(deps, plan),
     sharedPreviewsLimit(deps.paths),
+    readOptionalArtifact("architecture", deps.paths.files.architecture).catch(() => undefined),
     // A look that fails as OpsCrew tells users is not read, and the rest goes on.
     attempt(deps, "the other apps on the server", () => readOtherApps(deps, plan, services)),
   ]);
@@ -607,6 +609,7 @@ export async function readAdvice(
     plan: deployedPlan,
     ...(sharedPreviews === undefined && others.memoryMb === 0 ? {} : { besideAppMb: besideMb }),
     ...(requirements.value === undefined ? {} : { requirements: requirements.value }),
+    ...(architecture === undefined ? {} : { facts: architecture.facts }),
     prices: prices.lists,
     upkeep: {
       ...(github.dependabot === undefined ? {} : { dependabot: github.dependabot }),

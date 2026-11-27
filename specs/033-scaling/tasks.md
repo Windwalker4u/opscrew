@@ -26,7 +26,7 @@
 
 ## Wave 3 — Design, Provision, Operations & Guide (`@opscrew/agents`, `packages/cli`, `packages/mcp-server`, `docs/guide/`)
 
-- [ ] **T3310 (contributor — Slice B):** Implement `design` & `advise` scaling readiness in `packages/agents/src/design/` and `packages/agents/src/advise/` (stateless readiness gate surfacing `statelessIssues` + SQLite/local-files, PgBouncer recommendation/enablement for PostgreSQL when `webServers > 1`, copy-server memory sizing across mixed providers + own servers, and cross-provider/region DB latency warning) with unit tests.
+- [x] **T3310 (contributor — Slice B):** Implement `design` & `advise` scaling readiness in `packages/agents/src/design/` and `packages/agents/src/advise/` (stateless readiness gate surfacing `statelessIssues` + SQLite/local-files, PgBouncer recommendation/enablement for PostgreSQL when `webServers > 1`, copy-server memory sizing across mixed providers + own servers, and cross-provider/region DB latency warning) with unit tests.
 - [ ] **T3311 (lead):** Wire `provision` (`packages/agents/src/provision/`) for copy servers: upload `app.env` (with private WG service addresses), `worker-db.env`, and `compose.yaml` to each copy server, configure deploy secrets/host keys, and update `generated_values` & host plans cleanly.
 - [ ] **T3312 (lead):** Wire `status`, `drift`, `verify`, `rollback`, `rotate`, and `destroy` (`packages/agents/src/`) to inspect, verify, roll back, rotate, and tear down web/worker copy servers cleanly (including verifying copy-server `app-proxy` health and reporting per-server copy status).
 - [ ] **T3313 (lead):** Add `docs/guide/scaling.md` and link it from `docs/guide/index.md`; verify CLI & MCP tools expose multi-copy status/plans cleanly.

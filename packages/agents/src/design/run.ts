@@ -1297,6 +1297,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       edgeMb,
       catalogFor: extraCatalogs(deps, preview.catalog, warn),
       ...(ownServer?.network === undefined ? {} : { appNetwork: ownServer.network }),
+      facts,
     },
     options,
   );
@@ -1715,7 +1716,15 @@ async function unplacedSource(
   const source = await sharedPartsSource(paths, plan);
   if (source === undefined) return undefined;
   const services = source.plan.services.map(({ server: _server, ...service }) => service);
-  return { ...source, plan: { ...source.plan, services } };
+  const { servers: _appServers, ...app } = source.plan.app;
+  const workers = source.plan.processes.workers.map(
+    ({ servers: _workerServers, ...worker }) => worker,
+  );
+  const { scaling: _scaling, ...rest } = source.plan;
+  return {
+    ...source,
+    plan: { ...rest, app, processes: { ...source.plan.processes, workers }, services },
+  };
 }
 
 /**
