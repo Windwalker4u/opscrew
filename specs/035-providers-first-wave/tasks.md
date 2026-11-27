@@ -540,7 +540,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/secops --filter=@opscrew/agents --filter=@opscrew/provider-kamatera && npx vitest run --root packages/secops && npx vitest run --root packages/agents src/secure && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3527 (lead; [issue #15](https://github.com/opscrew-hub/opscrew/issues/15)) `kamatera` joins
+- [x] T3527 (lead; [issue #15](https://github.com/opscrew-hub/opscrew/issues/15)) `kamatera` joins
   the lists and the registry (`ProviderId` first, done 2026-11-26, so T3523 and T3524 typecheck)
   - Accept:
     - `kamatera` in `ProviderId`, `VpsProviderId`, `VpsProviderSchema` and `DEFAULT_IMAGES`
