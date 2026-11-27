@@ -110,12 +110,12 @@ describe.skipIf(reason !== undefined)(
 
     /** The preview's address, from the random part its `.preview` keeps. */
     const address = () => `pr-1-${s.previewFields(1).random}.${BASE}`;
-    /** What the edge's kamal-proxy serves for the preview's hostname, through the edge's network. */
+    /** What the preview's per-app kamal-proxy serves for the preview's hostname, through the edge's network. */
     const served = () =>
       docker(
         ...edge,
         ...["exec", "-T", "caddy", "wget", "-qO-", "--header", `Host: ${address()}`],
-        "http://kamal-proxy/",
+        `http://${NAME}-kamal-proxy/`,
       ).out;
     /** The ids of the preview's containers, networks or volumes. */
     const left = (kind: "container" | "network" | "volume") =>
@@ -162,7 +162,7 @@ describe.skipIf(reason !== undefined)(
         stdout: `opscrew-preview: running ${first}\n`,
       });
       expect(served()).toContain("Welcome to nginx");
-      expect(left("container").split("\n")).toHaveLength(1);
+      expect(left("container").split("\n")).toHaveLength(2);
 
       expect(s.run({ key: "list", env: ENV }).stdout).toMatch(
         new RegExp(

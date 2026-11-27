@@ -50,10 +50,11 @@ plain-English remediation guidance (re-run the deploy workflow), while a running
 ## Functional Requirements
 
 - **FR-4901 (Per-app `kamal-proxy` in app Compose):** `renderCompose` attaches `app` ONLY to
-  `["internal"]` (never `opscrew-edge`), adds a hardened `kamal-proxy` service (`mem_limit: 32m`,
-  `memswap_limit: 32m`, pinned `IMAGES.kamalProxy.ref`, `kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy`)
-  attached to `internal: {}` and `opscrew-edge: { aliases: ["<app>-kamal-proxy"] }`, and declares
-  the `kamal-proxy-config` volume.
+  `["internal"]` (never `opscrew-edge`), adds a hardened `app-proxy` service (`APP_KAMAL_PROXY_SERVICE`,
+  deliberately not named `kamal-proxy` so Docker Compose does not register a colliding `kamal-proxy`
+  DNS alias on `opscrew-edge`; `mem_limit: 32m`, `memswap_limit: 32m`, pinned `IMAGES.kamalProxy.ref`,
+  `kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy`) attached to `internal: {}` and
+  `opscrew-edge: { aliases: ["<app>-kamal-proxy"] }`, and declares the `kamal-proxy-config` volume.
 - **FR-4902 (Per-app front-proxy upstreams):**
   - Caddy (`renderCaddyfile`): `reverse_proxy <app>-kamal-proxy:80`.
   - nginx (`nginxSite`): per-site `upstream <app>-kamal-proxy { zone <app>-kamal-proxy 64k; server <app>-kamal-proxy:80 resolve max_fails=0; }` and `proxy_pass http://<app>-kamal-proxy;` (retaining `resolver 127.0.0.11 valid=10s ipv6=off;` and legacy `upstream kamal-proxy` in `nginx.conf`).
@@ -67,18 +68,22 @@ plain-English remediation guidance (re-run the deploy workflow), while a running
 - **FR-4903 (Shared `kamal-proxy` kept through transition):** `/srv/edge/compose.yaml` keeps its
   shared `kamal-proxy` service so unmigrated `0.2.12` apps remain online until their next deploy.
 - **FR-4904 (Zero-downtime deploy, rollback, and rotate switch order):**
-  - `switchCommands` pulls images, ensures `opscrew-edge` exists and starts per-app `kamal-proxy`
-    (`docker compose up -d --no-deps kamal-proxy`), runs backing services/init/release/db steps,
-    starts the new `app` copy and deploys its route on per-app `kamal-proxy`
-    (`docker compose exec -T kamal-proxy kamal-proxy deploy ...`), runs `install_edge` (swaps the
-    site file to `<app>-kamal-proxy:80` and reloads the front proxy under `/srv/edge/.lock`),
-    writes `.env`, stops `$old` (rolling) or resumes per-app `kamal-proxy` (recreate), removes the
-    legacy route from `/srv/edge`'s shared `kamal-proxy` (`|| true`), and runs `afterSwitch`
-    (OpenLiteSpeed cache purge + reload).
-  - On rolling failure after `kamal-proxy deploy`, `restoreFiles` restores the per-app `kamal-proxy`
-    route to `$old` and removes `$new` before restoring the previous site file, leaving `$old` and
-    any legacy shared route untouched.
-  - `rollbackCommands` and `rotate` operate on the per-app `kamal-proxy` and run `afterSwitch`.
+  - `switchCommands` pulls images, ensures `opscrew-edge` exists and starts per-app `app-proxy`
+    (`docker compose up -d --no-deps app-proxy`), runs backing services/init/release/db steps,
+    and then:
+    - **Rolling:** starts the new `app` copy and deploys its route on per-app `app-proxy`
+      (`docker compose exec -T app-proxy kamal-proxy deploy ...`), runs `install_edge` under
+      `_switch_mode=rolling` (swaps the site file to `<app>-kamal-proxy:80` and reloads the front
+      proxy under `/srv/edge/.lock`), writes `.env`, stops `$old`, removes the legacy route from
+      `/srv/edge`'s shared `kamal-proxy` (`|| true`), and runs `afterSwitch` (OpenLiteSpeed cache
+      purge + reload). On rolling failure after `kamal-proxy deploy`, `restoreFiles` restores the
+      per-app route to `$old` (or removes it when `$old` is empty) and removes `$new` before
+      restoring the previous site file, leaving `$old` and any legacy shared route untouched.
+    - **Recreate:** runs `install_edge` BEFORE pausing or replacing `app` (so a failed edge check,
+      certbot error, or reload leaves the running container and `.env` untouched), then pauses both
+      per-app and legacy shared proxies, writes `.env`, replaces `app`, deploys its route on per-app
+      `app-proxy`, resumes, removes the legacy shared route, and runs `afterSwitch`.
+  - `rollbackCommands` and `rotate` operate on the per-app `app-proxy` and run `afterSwitch`.
 - **FR-4905 (Sizing):**
   - Single-app servers are unchanged (`edgeMemoryMb` already includes 32 MB for one `kamal-proxy`).
   - Multi-app servers count `+32 MB` (`KAMAL_PROXY_MEMORY_MB`) per additional app in

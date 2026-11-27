@@ -752,6 +752,8 @@ function switchLines(
     "fi",
   ];
   const installEdge = options.installEdge === true ? ["install_edge"] : [];
+  const rollingInstallEdge =
+    options.installEdge === true ? ["_switch_mode=rolling", "install_edge", '_switch_mode=""'] : [];
   const dropSharedRoute =
     options.installEdge === true
       ? [`${sharedKamalProxy(`remove ${app}`)} > /dev/null 2>&1 || true`]
@@ -759,12 +761,14 @@ function switchLines(
   if (strategy === "recreate") {
     return [
       ...ENSURE_APP_PROXY,
+      // Install/reload the edge BEFORE pausing or replacing the container so a failed edge check,
+      // certbot error, or reload leaves the currently running container and `.env` untouched.
+      ...installEdge,
       ...holdRequests(plan, onExit),
       WRITE_ENV,
       "docker compose up -d --no-deps --remove-orphans app",
       'new="$(docker compose ps -aq app)"',
       ...kamal,
-      ...installEdge,
       kamalProxy(`resume ${app}`),
       ...dropSharedRoute,
     ];
@@ -778,7 +782,7 @@ function switchLines(
     '  case " $old " in *" $id "*) ;; *) new="$id" ;; esac',
     "done",
     ...kamal,
-    ...installEdge,
+    ...rollingInstallEdge,
     WRITE_ENV,
     "for id in $old; do",
     '  docker stop "$id" > /dev/null',
@@ -985,16 +989,18 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
    */
   const hosts = proxyHosts(plan, o.localhost);
   const restoreRoute = [
-    'if [ -n "${old:-}" ]; then',
-    "  _old_first=\"$(printf '%s' \"$old\" | awk '{print $1}')\"",
-    '  _old_name="$(docker inspect --format \'{{.Name}}\' "$_old_first" 2> /dev/null || true)"',
-    '  if [ -n "$_old_name" ]; then',
-    `    ${kamalProxy(`deploy ${app} --target "\${_old_name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${plan.deploy.drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)} > /dev/null 2>&1 || true`,
+    'if [ "${_switch_mode:-}" = rolling ]; then',
+    '  if [ -n "${old:-}" ]; then',
+    "    _old_first=\"$(printf '%s' \"$old\" | awk '{print $1}')\"",
+    '    _old_name="$(docker inspect --format \'{{.Name}}\' "$_old_first" 2> /dev/null || true)"',
+    '    if [ -n "$_old_name" ]; then',
+    `      ${kamalProxy(`deploy ${app} --target "\${_old_name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${plan.deploy.drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)} > /dev/null 2>&1 || true`,
+    "    fi",
+    "  else",
+    `    ${kamalProxy(`remove ${app}`)} > /dev/null 2>&1 || true`,
     "  fi",
-    "else",
-    `  ${kamalProxy(`remove ${app}`)} > /dev/null 2>&1 || true`,
+    '  if [ -n "${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi',
     "fi",
-    'if [ -n "${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi',
   ];
   const restoreFiles = (pad: string) =>
     [
@@ -1623,7 +1629,9 @@ export function switchCommands(
     // A move to the server keeps the app off its empty services until its data is copied;
     // start per-app kamal-proxy (empty, no routes) before install_edge so OpenLiteSpeed resolves
     // <app>-kamal-proxy on opscrew-edge during reload without starting `app`.
-    ...(o.preview === true ? [] : moveWaiting([...ENSURE_APP_PROXY, "install_edge"])),
+    ...(o.preview === true
+      ? []
+      : moveWaiting(['_switch_mode=""; old=""; new=""', ...ENSURE_APP_PROXY, "install_edge"])),
     ...(o.preview === true ? [] : snapshotScheduleLines(plan, APP_SERVER)),
     ...(data ? snapshotStep(plan, appFolder(plan)) : []),
     ...release,

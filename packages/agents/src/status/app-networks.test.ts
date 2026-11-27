@@ -47,14 +47,16 @@ describe("feature 049 (Option B): status and drift for per-app kamal-proxy isola
 
     const lines = componentStatusLines(plan, status).join("\n");
     expect(lines).toContain(`Isolation: app is still on the shared edge network (${EDGE_PROJECT})`);
-    expect(lines).toContain("Proxy (kamal-proxy): not running");
+    expect(lines).toContain(`Proxy (${APP_KAMAL_PROXY_SERVICE}): not running`);
 
     const drift = containerDifferences(plan, containers, true);
     expect(drift.some((d) => d.detail.includes(`shared edge network (${EDGE_PROJECT})`))).toBe(
       true,
     );
     expect(
-      drift.some((d) => d.detail.includes("The app's proxy (kamal-proxy) is not running")),
+      drift.some((d) =>
+        d.detail.includes(`The app's proxy (${APP_KAMAL_PROXY_SERVICE}) is not running`),
+      ),
     ).toBe(true);
   });
 
@@ -63,7 +65,7 @@ describe("feature 049 (Option B): status and drift for per-app kamal-proxy isola
       { name: "shop-app-1", running: true, networks: ["shop_internal"] },
       { name: "shop-db-1", running: true, networks: ["shop_internal"] },
       {
-        name: "shop-kamal-proxy-1",
+        name: `shop-${APP_KAMAL_PROXY_SERVICE}-1`,
         running: false,
         networks: ["shop_internal", EDGE_PROJECT],
       },
@@ -72,12 +74,12 @@ describe("feature 049 (Option B): status and drift for per-app kamal-proxy isola
     expect(status.onEdgeNetwork).toBeUndefined();
     expect(status.missingAppProxy).toBe(true);
     expect(componentStatusLines(plan, status).join("\n")).toContain(
-      "Proxy (kamal-proxy): not running",
+      `Proxy (${APP_KAMAL_PROXY_SERVICE}): not running`,
     );
 
     const drift = containerDifferences(plan, containers, true);
-    expect(drift.filter((d) => d.detail.includes("kamal-proxy"))).toHaveLength(1);
-    expect(drift[0]?.detail).toContain("shop-kamal-proxy-1 is stopped");
+    expect(drift.filter((d) => d.detail.includes(APP_KAMAL_PROXY_SERVICE))).toHaveLength(1);
+    expect(drift[0]?.detail).toContain(`shop-${APP_KAMAL_PROXY_SERVICE}-1 is stopped`);
   });
 
   it("reads container networks from docker ps in readAppContainers", async () => {

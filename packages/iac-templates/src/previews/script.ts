@@ -1,5 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { EDGE_PROJECT } from "../edge";
+import { APP_KAMAL_PROXY_SERVICE, EDGE_PROJECT } from "../edge";
 import { IMAGES } from "../pins";
 import { shellQuote } from "../runtime/services";
 
@@ -396,7 +396,7 @@ up_preview() {
     why="$(failed_step)"
     (cd "$P" && OPSCREW_APPS_DIR="$APPS_DIR" OPSCREW_EDGE_DIR="$EDGE_DIR" sh ./rollback.sh "$image" < /dev/null >> up.log 2>&1) || true
     if [ -z "$previous" ]; then
-      (cd "$P" && docker compose exec -T kamal-proxy kamal-proxy remove "$NAME" < /dev/null >> up.log 2>&1) || true
+      (cd "$P" && docker compose exec -T ${APP_KAMAL_PROXY_SERVICE} kamal-proxy remove "$NAME" < /dev/null >> up.log 2>&1) || true
       edge exec -T kamal-proxy kamal-proxy remove "$NAME" >> "$P/up.log" 2>&1 || true
       rm -f "$P/.env"
     fi

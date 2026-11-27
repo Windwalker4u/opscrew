@@ -15,7 +15,8 @@ online until their next deploy.
 ## Package-by-Package Changes
 
 1. **`packages/iac-templates`**
-   - `src/edge/index.ts`: export `KAMAL_PROXY_MEMORY_MB = 32`, `APP_KAMAL_PROXY_SERVICE = "kamal-proxy"`,
+   - `src/edge/index.ts`: export `KAMAL_PROXY_MEMORY_MB = 32`, `APP_KAMAL_PROXY_SERVICE = "app-proxy"`
+     (not `"kamal-proxy"`, so Compose does not auto-register a colliding `kamal-proxy` alias on `opscrew-edge`),
      `appProxyAlias(app)`, `appProxyUpstream(app)`, and `edgeAppUpstream(proxy, app)`. Keep shared
      `kamal-proxy` in `renderEdgeCompose`.
    - `src/edge/nginx.ts`: add per-site `upstream <app>-kamal-proxy` (`zone 64k`, `server <app>-kamal-proxy:80 resolve max_fails=0`)
@@ -29,11 +30,13 @@ online until their next deploy.
      `kamal-proxy-config` volume; in `renderCaddyfile`, forward to `appProxyUpstream(app)`.
    - `src/workflow/edge-check.ts`: add `127.0.0.1 <app>-kamal-proxy kamal-proxy` in OpenLiteSpeed's
      offline checker.
-   - `src/workflow/switch.ts`: route `kamalProxy()` to `docker compose exec -T kamal-proxy kamal-proxy`,
-     add `sharedKamalProxy()` for legacy transition cleanup, start per-app `kamal-proxy` with
-     `--no-deps`, reorder `switchCommands` so `install_edge` runs right after deploying the route on
-     per-app `kamal-proxy` (and before stopping `$old` / removing the legacy shared route), and
-     restore the per-app route before restoring the previous site file on failure.
+   - `src/workflow/switch.ts`: route `kamalProxy()` to `docker compose exec -T app-proxy kamal-proxy`,
+     add `sharedKamalProxy()` for legacy transition cleanup, start per-app `app-proxy` with
+     `--no-deps`, reorder rolling `switchCommands` so `install_edge` runs right after deploying the
+     route on per-app `app-proxy` (and before stopping `$old` / removing the legacy shared route)
+     with `restoreRoute` guarded by `_switch_mode=rolling`, and keep `install_edge` BEFORE
+     `holdRequests` / container replacement on `recreate` so a failed edge reload never removes the
+     live app.
    - `src/previews/script.ts`: remove route from both per-app and shared `kamal-proxy` on first
      preview failure; on `remove()`, remove Caddy site and reload Caddy before cleaning up any
      legacy shared route and removing the preview Compose project.

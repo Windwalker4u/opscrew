@@ -93,8 +93,13 @@ export const EDGE_PROXY_KEY = "x-opscrew-edge-proxy";
 /** Where the legacy shared edge's kamal-proxy listens; kept for mixed-version transitions (049). */
 export const EDGE_UPSTREAM = "kamal-proxy:80";
 
-/** The per-app kamal-proxy Compose service name inside each app's Compose project (049). */
-export const APP_KAMAL_PROXY_SERVICE = "kamal-proxy";
+/**
+ * The per-app kamal-proxy Compose service name inside each app's Compose project (049).
+ * Deliberately NOT `"kamal-proxy"`, because Docker Compose automatically registers each service's
+ * name as a DNS alias on every network it joins — including `opscrew-edge` — which would collide
+ * with `/srv/edge`'s legacy shared `kamal-proxy` during the `0.2.12` -> `0.2.13` transition.
+ */
+export const APP_KAMAL_PROXY_SERVICE = "app-proxy";
 
 /**
  * The per-app kamal-proxy's DNS alias on `opscrew-edge`: `<app>-kamal-proxy`. Only this container

@@ -155,7 +155,7 @@ if [[ "$1" == compose ]]; then
       echo "$svc output of $project"
       ;;
     exec)
-      if [[ "$2" == kamal-proxy ]]; then
+      if [[ "$2" == app-proxy || "$2" == kamal-proxy ]]; then
         shift 3
         KAMAL_PROJECT="$project" exec kamal-proxy "$@"
       fi
@@ -205,7 +205,7 @@ case "$1" in
           read -r cid cp cs _ <<< "$line"
           if [[ "$cid" == "$id" ]]; then
             dropped_projects+=("$cp")
-            [[ "$cs" == kamal-proxy ]] && rm -f "$S/routes/$cp"
+            [[ "$cs" == app-proxy || "$cs" == kamal-proxy ]] && rm -f "$S/routes/$cp"
           fi
         done
         drop "$id"

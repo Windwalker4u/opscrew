@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { ApprovalHandler, CommandResult } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { APP_KAMAL_PROXY_SERVICE } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { createTestPhaseDeps, ScriptedRunner, testPlan } from "../../testing";
 import type { LocalRequestInput, LocalResponse } from "../https";
@@ -198,7 +199,7 @@ export class FakeComputer {
     this.containers.push(
       { name: `${project}-app-1`, project, service: "app", running: true },
       { name: `${project}-db-1`, project, service: "db", running: true },
-      { name: `${project}-kamal-proxy-1`, project, service: "kamal-proxy", running: true },
+      { name: `${project}-${APP_KAMAL_PROXY_SERVICE}-1`, project, service: APP_KAMAL_PROXY_SERVICE, running: true },
       {
         name: "opscrew-edge-caddy-1",
         project: "opscrew-edge",

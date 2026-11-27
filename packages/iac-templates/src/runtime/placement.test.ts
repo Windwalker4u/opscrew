@@ -56,7 +56,7 @@ describe("the app's Compose file (the app's server)", () => {
   it("leaves out a service placed on another server, and waits only for its own (snapshot)", () => {
     const file = renderCompose(POSTGRES_ELSEWHERE);
     const doc = compose(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "worker", "cron", "cache"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "app-proxy", "worker", "cron", "cache"]);
     for (const name of ["app", "worker", "cron"]) {
       expect(doc.services[name]?.depends_on).toEqual({ cache: { condition: "service_healthy" } });
     }
@@ -66,7 +66,7 @@ describe("the app's Compose file (the app's server)", () => {
 
   it("has no service and no dependency when every service runs elsewhere", () => {
     const doc = compose(renderCompose(KAFKA_ELSEWHERE).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "app-proxy"]);
     expect(doc.services.app?.depends_on).toBeUndefined();
     expect(doc.volumes).toEqual({ "kamal-proxy-config": {} });
   });
@@ -107,7 +107,7 @@ describe("the app's Compose file (the app's server)", () => {
     expect(hostSettingsServices(plan)).toEqual([]);
     expect(Object.keys(compose(renderCompose(plan).content).services)).toEqual([
       "app",
-      "kamal-proxy",
+      "app-proxy",
       "db",
     ]);
     expect(hostSettingsServices(plan, "search")).toEqual(["sysctl"]);

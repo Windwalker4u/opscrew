@@ -103,26 +103,29 @@ describe("feature 049 (Option B): per-app kamal-proxy and network isolation", ()
     const plan = testPlan({ domain: "shop.example.com", www: false });
     const script = switchCommands(plan, [], { originTls: false, additions: false }).join("\n");
 
-    const startProxy = script.indexOf("docker compose up -d --no-deps kamal-proxy");
+    const startProxy = script.indexOf(`docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`);
     const deployPerApp = script.indexOf(
-      'docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "${name#/}:3000"',
+      `docker compose exec -T ${APP_KAMAL_PROXY_SERVICE} kamal-proxy deploy shop --target "\${name#/}:3000"`,
     );
-    const callInstallEdge = script.indexOf("install_edge\n", deployPerApp);
+    const markRolling = script.indexOf("_switch_mode=rolling", deployPerApp);
+    const callInstallEdge = script.indexOf("install_edge\n", markRolling);
     const removeLegacy = script.indexOf(
       "edge exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true",
     );
 
     expect(startProxy).toBeGreaterThan(-1);
     expect(deployPerApp).toBeGreaterThan(startProxy);
-    expect(callInstallEdge).toBeGreaterThan(deployPerApp);
+    expect(markRolling).toBeGreaterThan(deployPerApp);
+    expect(callInstallEdge).toBeGreaterThan(markRolling);
     expect(removeLegacy).toBeGreaterThan(callInstallEdge);
 
-    // On rolling install_edge failure, per-app route is restored before restoring PREVIOUS_SITE.
-    expect(script).toContain('if [ -n "${old:-}" ]; then');
+    // On rolling install_edge failure, per-app route is restored only when _switch_mode=rolling.
+    expect(script).toContain('if [ "${_switch_mode:-}" = rolling ]; then');
+    expect(script).toContain('  if [ -n "${old:-}" ]; then');
     expect(script).not.toContain("opscrew-app-");
   });
 
-  it("pauses both per-app and legacy shared kamal-proxy on recreate and uses per-app kamal-proxy on rollback", () => {
+  it("installs the edge BEFORE holding or replacing the container on recreate, pauses both proxies, and uses per-app proxy on rollback", () => {
     const base = testPlan({ domain: "shop.example.com", www: false });
     const plan = DeployPlanSchema.parse({
       ...base,
@@ -131,12 +134,29 @@ describe("feature 049 (Option B): per-app kamal-proxy and network isolation", ()
     const switchScript = switchCommands(plan, [], { originTls: false, additions: false }).join(
       "\n",
     );
-    expect(switchScript).toContain("docker compose exec -T kamal-proxy kamal-proxy pause shop");
+    const startProxy = switchScript.indexOf(
+      `docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`,
+      switchScript.indexOf("recreate") > -1 ? 0 : 0,
+    );
+    const switchTail = switchScript.slice(
+      switchScript.lastIndexOf(`docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`),
+    );
+    const callInstallEdge = switchTail.indexOf("\ninstall_edge\n");
+    const pausePerApp = switchTail.indexOf(
+      `docker compose exec -T ${APP_KAMAL_PROXY_SERVICE} kamal-proxy pause shop`,
+    );
+    const recreateApp = switchTail.indexOf("docker compose up -d --no-deps --remove-orphans app");
+    expect(startProxy).toBeGreaterThan(-1);
+    expect(callInstallEdge).toBeGreaterThan(-1);
+    expect(pausePerApp).toBeGreaterThan(callInstallEdge);
+    expect(recreateApp).toBeGreaterThan(pausePerApp);
     expect(switchScript).toContain("edge exec -T kamal-proxy kamal-proxy pause shop");
 
     const rollback = rollbackCommands(plan).join("\n");
-    expect(rollback).toContain("docker compose up -d --no-deps kamal-proxy");
-    expect(rollback).toContain("docker compose exec -T kamal-proxy kamal-proxy deploy shop");
+    expect(rollback).toContain(`docker compose up -d --no-deps ${APP_KAMAL_PROXY_SERVICE}`);
+    expect(rollback).toContain(
+      `docker compose exec -T ${APP_KAMAL_PROXY_SERVICE} kamal-proxy deploy shop`,
+    );
   });
 
   it("removes preview Caddy site and reloads Caddy before cleaning legacy shared route and tearing down preview project", () => {

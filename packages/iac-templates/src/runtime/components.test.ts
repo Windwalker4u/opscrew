@@ -80,7 +80,7 @@ describe("the services on a server", () => {
     const compose = renderCompose(FULL);
     expect(Object.keys(parse(compose.content).services)).toEqual([
       "app",
-      "kamal-proxy",
+      "app-proxy",
       "worker",
       "cron",
       "mysql",
@@ -325,7 +325,7 @@ describe("the search engines' host setting", () => {
     const all = services(plan());
     expect(Object.keys(all)).toEqual([
       "app",
-      "kamal-proxy",
+      "app-proxy",
       "sysctl",
       "opensearch",
       "elasticsearch",

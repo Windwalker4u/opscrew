@@ -28,8 +28,11 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
+import { testPlan } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
-import { appProxyAlias, appProxyUpstream } from "./index";
+import { renderCompose } from "../runtime";
+import { APP_KAMAL_PROXY_SERVICE, appProxyAlias, appProxyUpstream, EDGE_PROJECT } from "./index";
 import { NGINX_CONF } from "./nginx";
 import {
   OPENLITESPEED_CAPABILITIES,
@@ -685,6 +688,109 @@ describe.skipIf(SKIP !== undefined)("049 Option B: per-app kamal-proxy isolation
       const afterRemove = await httpGet(port, "a.test");
       expect(afterRemove.status).toBe(200);
       expect(JSON.parse(afterRemove.body).app).toBe("app-a");
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "Compose-started per-app proxy registers <app>-kamal-proxy without taking the legacy kamal-proxy alias on opscrew-edge",
+    async () => {
+      const edgeNet = createNet("compose-edge");
+      const legacyNet = createNet("compose-legacy");
+      const project = unique("proj");
+      const composeDir = path.join(work, project);
+      await mkdir(composeDir, { recursive: true });
+
+      const plan = testPlan({ domain: "shop.example.com", www: false });
+      const doc = parse(renderCompose(plan).content) as {
+        name: string;
+        services: Record<string, Record<string, unknown>>;
+        networks: Record<string, Record<string, unknown>>;
+        volumes?: Record<string, unknown>;
+      };
+      doc.name = project;
+      doc.networks[EDGE_PROJECT] = { external: true, name: edgeNet };
+      const proxyService = doc.services[APP_KAMAL_PROXY_SERVICE];
+      expect(proxyService).toBeDefined();
+      if (proxyService !== undefined) {
+        proxyService.labels = [LABEL];
+      }
+      const composePath = path.join(composeDir, "compose.yaml");
+      await writeFile(composePath, stringify(doc, { lineWidth: 0 }));
+
+      // Start a 0.2.12-style shared kamal-proxy on edgeNet with alias `kamal-proxy` serving a legacy app.
+      const legacyApp = startApp(legacyNet, "legacy-app", "legacy-0212");
+      const sharedProxy = startKamalProxy(edgeNet, "kamal-proxy", legacyNet);
+      deployRoute(sharedProxy, "legacy", `${legacyApp}:3000`, "legacy.test");
+
+      try {
+        const up = dockerQuiet([
+          "compose",
+          "-p",
+          project,
+          "-f",
+          composePath,
+          "up",
+          "-d",
+          "--no-deps",
+          APP_KAMAL_PROXY_SERVICE,
+        ]);
+        expect(up.status, up.stderr).toBe(0);
+
+        const proxyId = docker([
+          "compose",
+          "-p",
+          project,
+          "-f",
+          composePath,
+          "ps",
+          "-q",
+          APP_KAMAL_PROXY_SERVICE,
+        ]);
+        expect(proxyId).not.toBe("");
+        const aliasesRaw = docker([
+          "inspect",
+          "--format",
+          `{{json (index .NetworkSettings.Networks "${edgeNet}").Aliases}}`,
+          proxyId,
+        ]);
+        const aliases = JSON.parse(aliasesRaw) as string[];
+        expect(aliases).toContain(appProxyAlias("shop"));
+        expect(aliases).not.toContain("kamal-proxy");
+
+        // A 0.2.12-style Caddy site routing to `kamal-proxy:80` must hit ONLY the legacy shared proxy
+        // (never the 0.2.13 app's Compose-started `app-proxy`), across repeated requests.
+        const caddyPort = await freePort();
+        const caddyFile = path.join(composeDir, "Caddyfile");
+        await writeFile(caddyFile, ":80 {\n  reverse_proxy kamal-proxy:80\n}\n");
+        const caddy = trackContainer(unique("compose-caddy"));
+        docker([
+          "run",
+          "-d",
+          "--name",
+          caddy,
+          "--label",
+          LABEL,
+          "--network",
+          edgeNet,
+          "-p",
+          `127.0.0.1:${caddyPort}:80`,
+          "-v",
+          `${caddyFile}:/etc/caddy/Caddyfile:ro`,
+          IMAGES.caddy.ref,
+        ]);
+        await until("legacy.test via Caddy -> kamal-proxy:80", async () => {
+          const r = await httpGet(caddyPort, "legacy.test");
+          return r.status === 200 ? r : undefined;
+        });
+        for (let i = 0; i < 10; i++) {
+          const r = await httpGet(caddyPort, "legacy.test");
+          expect(r.status).toBe(200);
+          expect(JSON.parse(r.body).app).toBe("legacy-0212");
+        }
+      } finally {
+        dockerQuiet(["compose", "-p", project, "-f", composePath, "down", "-v"]);
+      }
     },
     TIMEOUT,
   );

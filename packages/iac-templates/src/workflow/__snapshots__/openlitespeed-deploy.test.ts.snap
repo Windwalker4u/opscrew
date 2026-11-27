@@ -46,16 +46,18 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   fi
   cp additions.openlitespeed "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null; then
-    if [ -n "\${old:-}" ]; then
-      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-      if [ -n "$_old_name" ]; then
-        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+    if [ "\${_switch_mode:-}" = rolling ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      else
+        docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
       fi
-    else
-      docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     fi
-    if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
     for f in vhost map; do
       if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi
@@ -86,16 +88,18 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   printf '%s\\n' "$out"
   if [ "$status" -ne 0 ]; then
     if [ -f .edge.previous ]; then
-      if [ -n "\${old:-}" ]; then
-        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-        if [ -n "$_old_name" ]; then
-          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      if [ "\${_switch_mode:-}" = rolling ]; then
+        if [ -n "\${old:-}" ]; then
+          _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+          _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+          if [ -n "$_old_name" ]; then
+            docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+          fi
+        else
+          docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
         fi
-      else
-        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+        if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       fi
-      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
       for f in vhost map; do
         if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi
@@ -108,28 +112,32 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
       edge up -d --wait --remove-orphans || true
       printf '::error::certbot could not get the certificate for shop.example.com, so the server keeps %s as its proxy, and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.\\n' "$from"
     elif [ "$first" -eq 1 ]; then
-      if [ -n "\${old:-}" ]; then
-        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-        if [ -n "$_old_name" ]; then
-          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      if [ "\${_switch_mode:-}" = rolling ]; then
+        if [ -n "\${old:-}" ]; then
+          _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+          _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+          if [ -n "$_old_name" ]; then
+            docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+          fi
+        else
+          docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
         fi
-      else
-        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+        if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       fi
-      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       echo '::error::certbot could not get the certificate for shop.example.com, so the site stays on HTTP only, and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
     else
-      if [ -n "\${old:-}" ]; then
-        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-        if [ -n "$_old_name" ]; then
-          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      if [ "\${_switch_mode:-}" = rolling ]; then
+        if [ -n "\${old:-}" ]; then
+          _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+          _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+          if [ -n "$_old_name" ]; then
+            docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+          fi
+        else
+          docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
         fi
-      else
-        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+        if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       fi
-      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       echo '::error::certbot could not get the certificate for shop.example.com, so the site keeps its current certificate (which may not cover every hostname), and the new version was not started. certbot'\\''s reason is above. Let'\\''s Encrypt issues at most 5 certificates a week for the same hostnames and allows 5 failed validations an hour for each hostname: when certbot'\\''s reason names a rate limit, wait until it passes, then push again. Otherwise check that the hostnames'\\'' DNS records point to this server and that port 80 reaches it, then push again.'
     fi
     exit 1
@@ -138,16 +146,18 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   cp edge/sites/shop.vhconf "$EDGE_DIR"/sites/shop.vhconf
   if ! edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null; then
     if [ -f .edge.previous ]; then
-      if [ -n "\${old:-}" ]; then
-        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-        if [ -n "$_old_name" ]; then
-          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      if [ "\${_switch_mode:-}" = rolling ]; then
+        if [ -n "\${old:-}" ]; then
+          _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+          _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+          if [ -n "$_old_name" ]; then
+            docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+          fi
+        else
+          docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
         fi
-      else
-        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+        if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       fi
-      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
       for f in vhost map; do
         if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi
@@ -160,29 +170,33 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
       edge up -d --wait --remove-orphans || true
       printf '::error::The switch to OpenLiteSpeed did not work, so the server keeps %s as its proxy.\\n' "$from"
     elif [ "$first" -eq 0 ] && [ -f .site.previous ]; then
-      if [ -n "\${old:-}" ]; then
-        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-        if [ -n "$_old_name" ]; then
-          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      if [ "\${_switch_mode:-}" = rolling ]; then
+        if [ -n "\${old:-}" ]; then
+          _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+          _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+          if [ -n "$_old_name" ]; then
+            docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+          fi
+        else
+          docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
         fi
-      else
-        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+        if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       fi
-      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       cp .site.previous "$EDGE_DIR"/sites/shop.vhconf
       edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null || true
     else
-      if [ -n "\${old:-}" ]; then
-        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-        if [ -n "$_old_name" ]; then
-          docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+      if [ "\${_switch_mode:-}" = rolling ]; then
+        if [ -n "\${old:-}" ]; then
+          _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+          _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+          if [ -n "$_old_name" ]; then
+            docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+          fi
+        else
+          docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
         fi
-      else
-        docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+        if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       fi
-      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
       cp edge/sites/shop.http.vhconf "$EDGE_DIR"/sites/shop.vhconf
       edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null || true
     fi
@@ -232,16 +246,18 @@ exports[`the deploy on the OpenLiteSpeed edge > matches the snapshots of the fir
   cp edge/sites/shop.vhconf "$EDGE_DIR"/sites/shop.vhconf
   rm -f "$EDGE_DIR"/sites/shop.additions
   if ! edge up -d --wait --remove-orphans || ! edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null; then
-    if [ -n "\${old:-}" ]; then
-      _old_first="$(printf '%s' "$old" | awk '{print $1}')"
-      _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
-      if [ -n "$_old_name" ]; then
-        docker compose exec -T kamal-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+    if [ "\${_switch_mode:-}" = rolling ]; then
+      if [ -n "\${old:-}" ]; then
+        _old_first="$(printf '%s' "$old" | awk '{print $1}')"
+        _old_name="$(docker inspect --format '{{.Name}}' "$_old_first" 2> /dev/null || true)"
+        if [ -n "$_old_name" ]; then
+          docker compose exec -T app-proxy kamal-proxy deploy shop --target "\${_old_name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null > /dev/null 2>&1 || true
+        fi
+      else
+        docker compose exec -T app-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
       fi
-    else
-      docker compose exec -T kamal-proxy kamal-proxy remove shop < /dev/null > /dev/null 2>&1 || true
+      if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     fi
-    if [ -n "\${new:-}" ]; then docker rm -f "$new" > /dev/null 2>&1 || true; fi
     if [ -f .site.previous ]; then cp .site.previous "$EDGE_DIR"/sites/shop.vhconf; else rm -f "$EDGE_DIR"/sites/shop.vhconf; fi
     for f in vhost map; do
       if [ -f .site.previous.$f ]; then cp .site.previous.$f "$EDGE_DIR"/sites/shop.$f; else rm -f "$EDGE_DIR"/sites/shop.$f; fi

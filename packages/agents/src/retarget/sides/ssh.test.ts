@@ -274,7 +274,7 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     ]);
     await container("shop", "worker", [sqlite]);
     // Per-app kamal-proxy's config volume is ephemeral route state, never copied by retarget.
-    await container("shop", "kamal-proxy", [
+    await container("shop", "app-proxy", [
       {
         type: "volume",
         source: "shop_kamal-proxy-config",

@@ -69,14 +69,14 @@ describe("renderCompose", () => {
     expect(file.path).toBe("opscrew/runtime/compose.yaml");
     const doc = parse(file.content);
     expect(doc.name).toBe("shop");
-    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "db", "cache"]);
-    for (const name of ["app", "kamal-proxy", "db", "cache"]) {
+    expect(Object.keys(doc.services)).toEqual(["app", "app-proxy", "db", "cache"]);
+    for (const name of ["app", "app-proxy", "db", "cache"]) {
       expect(doc.services[name].ports).toBeUndefined();
     }
     expect(file.content).not.toMatch(/caddy|Caddyfile/);
     // Only the app's own kamal-proxy joins the shared edge's network; the app stays on internal.
     expect(doc.services.app.networks).toEqual(["internal"]);
-    expect(doc.services["kamal-proxy"].networks).toEqual({
+    expect(doc.services["app-proxy"].networks).toEqual({
       internal: {},
       "opscrew-edge": { aliases: ["shop-kamal-proxy"] },
     });
@@ -99,13 +99,13 @@ describe("renderCompose", () => {
 
   it("omits the database and cache when the plan does not self-host them", () => {
     const doc = parse(renderCompose(plan({ postgres: false })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "app-proxy"]);
     expect(doc.services.app.depends_on).toBeUndefined();
   });
 
   it("rotates every service's logs itself and keeps no-new-privileges (Docker's daemon settings stay as they are)", () => {
     const doc = parse(renderCompose(plan({ redis: true, release: "migrate" })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "release", "db", "cache"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "app-proxy", "release", "db", "cache"]);
     for (const service of Object.values<Record<string, unknown>>(doc.services)) {
       expect(service.logging).toEqual({
         driver: "json-file",
@@ -123,7 +123,7 @@ describe("renderCompose", () => {
     const command = "python manage.py migrate --noinput && echo $HOME ${X}";
     const file = renderCompose(plan({ redis: true, release: command }));
     const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "kamal-proxy", "release", "db", "cache"]);
+    expect(Object.keys(doc.services)).toEqual(["app", "app-proxy", "release", "db", "cache"]);
     const { app, release } = doc.services;
     expect(release.image).toBe(app.image);
     expect(release.env_file).toEqual(app.env_file);
@@ -198,7 +198,7 @@ describe("renderCompose", () => {
     const doc = parse(file.content);
     expect(Object.keys(doc.services)).toEqual([
       "app",
-      "kamal-proxy",
+      "app-proxy",
       "release",
       "seed",
       "db",

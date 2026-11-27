@@ -112,7 +112,7 @@ services:
     depends_on:
       cache:
         condition: service_healthy
-  kamal-proxy:
+  app-proxy:
     image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:
@@ -262,7 +262,7 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
-  kamal-proxy:
+  app-proxy:
     image: <pin:IMAGES.kamalProxy>
     restart: unless-stopped
     volumes:

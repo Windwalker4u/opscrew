@@ -185,7 +185,7 @@ const FAKE_DOCKER = [
   '      : > "$apps/list"; start_app',
   "    else",
   '      for arg in "${@:3}"; do',
-  '        [[ "$arg" != -* && "$arg" != kamal-proxy ]] || continue',
+  '        [[ "$arg" != -* && "$arg" != app-proxy && "$arg" != kamal-proxy ]] || continue',
   '        if [[ "${UP_FAIL:-}" == "$arg" ]]; then echo "container $arg is unhealthy" >&2; exit 1; fi',
   '        env="$arg.env"; [[ " ${PROCESSES:-} " != *" $arg "* ]] || env=app.env; [[ "$arg" != *-pooler ]] || env="${arg%-pooler}.env"',
   '        slurp "$env"; now="$text"; slurp "$WORK/created/$arg"',
@@ -195,7 +195,7 @@ const FAKE_DOCKER = [
   "      done",
   "    fi ;;",
   '  "compose exec")',
-  '    [[ "$4" == kamal-proxy ]] || exit 1',
+  '    [[ "$4" == app-proxy || "$4" == kamal-proxy ]] || exit 1',
   '    if [[ "$project" == opscrew-edge && "$6" == remove ]]; then exit 0; fi',
   '    if [[ "$6" == deploy ]]; then',
   '      if [[ -n "${HEALTH_FAIL:-}" ]]; then echo "Error: target failed to become healthy within configured timeout (60s)" >&2; exit 1; fi',
@@ -453,7 +453,7 @@ describe("renderRotateScript", () => {
 
   it("moves only the app and the services whose step recreates them, and pulls nothing", () => {
     expect(script).not.toContain("pull");
-    expect(script).not.toMatch(/compose (exec -T (?!kamal-proxy)|run)/);
+    expect(script).not.toMatch(/compose (exec -T (?!app-proxy|kamal-proxy)|run)/);
     const ups = script.split("\n").filter((line) => line.includes("docker compose up"));
     for (const line of ups) expect(line).not.toMatch(/ (db|cache|jobs)( |$)/);
     expect(ups.some((line) => line.includes("--scale"))).toBe(true);

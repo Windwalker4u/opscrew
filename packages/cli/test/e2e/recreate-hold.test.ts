@@ -190,7 +190,7 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
     const srv = `${work.replaceAll("\\", "/")}/srv/`;
     script = `${(remote ?? "").replaceAll("/srv/", srv).replaceAll(`-p ${EDGE_PROJECT} `, `-p ${edgeProject} `)}\n`;
     expect(script).toContain(`kamal-proxy pause ${app} --drain-timeout 30s --max-pause 90s`);
-    expect(script).toContain("docker compose exec -T kamal-proxy kamal-proxy");
+    expect(script).toContain("docker compose exec -T app-proxy kamal-proxy");
 
     // The stand-in app's images.
     for (const [version, tag] of Object.entries(images)) {
@@ -236,7 +236,7 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
           environment: { PORT: String(plan.app.port) },
           networks: ["internal"],
         },
-        "kamal-proxy": {
+        "app-proxy": {
           ...kamal,
           labels: [LABEL],
           ports: [`127.0.0.1:${proxyPort}:80`],
@@ -260,7 +260,7 @@ describe.skipIf(SKIP !== undefined)("a server's recreate under load (014, T1416b
         "up",
         "-d",
         "--no-deps",
-        "kamal-proxy",
+        "app-proxy",
       ],
       { env: { ...process.env, APP_IMAGE: images.v1 }, timeoutMs: TWO_MINUTES },
     );

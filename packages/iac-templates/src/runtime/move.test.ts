@@ -43,7 +43,7 @@ describe("a move from the app's server to an extra server", () => {
       const plan = moving("data", { from: "app", to: "data", step });
       // The old copy stays in the app's project, unpublished, and the app still waits for it.
       const app = services(renderCompose(plan).content);
-      expect(Object.keys(app)).toEqual(["app", "kamal-proxy", "db", "cache"]);
+      expect(Object.keys(app)).toEqual(["app", "app-proxy", "db", "cache"]);
       expect(app.db?.ports).toBeUndefined();
       expect(app.db?.volumes).toEqual(["/srv/data/shop/db:/var/lib/postgresql/data"]);
       expect(app.app?.depends_on).toEqual({
@@ -62,7 +62,7 @@ describe("a move from the app's server to an extra server", () => {
     const plan = moving("data", { from: "app", to: "data", step: "switched" });
     expect(Object.keys(services(renderCompose(plan).content))).toEqual([
       "app",
-      "kamal-proxy",
+      "app-proxy",
       "cache",
     ]);
     expect(Object.keys(services(renderServerCompose(plan, "data").content))).toEqual(["db"]);
@@ -75,7 +75,7 @@ describe("a move from an extra server back to the app's server", () => {
     const plan = moving(undefined, { from: "data", to: "app", step: "deployed" });
     // The new copy runs on the app's server, empty and unpublished.
     const app = services(renderCompose(plan).content);
-    expect(Object.keys(app)).toEqual(["app", "kamal-proxy", "db"]);
+    expect(Object.keys(app)).toEqual(["app", "app-proxy", "db"]);
     expect(app.db?.ports).toBeUndefined();
     // The old copy keeps its place and port on data, next to what else runs there.
     const data = services(renderServerCompose(plan, "data").content);

@@ -260,7 +260,7 @@ const FAKE_DOCKER = [
   '    if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; exit 3; fi ;;',
   '  "compose exec")',
   "    cat > /dev/null",
-  '    if [[ "$project" != opscrew-edge && "$4" != kamal-proxy ]]; then',
+  '    if [[ "$project" != opscrew-edge && "$4" != app-proxy && "$4" != kamal-proxy ]]; then',
   '      if grep -qxF "${*:5}" "$WORK/failing"; then echo "setup output for ${*:5}"; exit 1; fi',
   "      exit 0",
   "    fi",
@@ -502,7 +502,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       );
       // The app is its own per-app kamal-proxy service named after it (no hostname before a domain).
       expect(file("projects.log")).toContain(
-        "shop exec -T kamal-proxy kamal-proxy deploy shop --target shop-app-1:3000 --health-check-path /api/health --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s",
+        "shop exec -T app-proxy kamal-proxy deploy shop --target shop-app-1:3000 --health-check-path /api/health --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s",
       );
       // The old copy goes only after the switch, with a graceful stop.
       expect(calls.indexOf("kamal-proxy deploy")).toBeLessThan(calls.indexOf("docker stop c90"));
@@ -607,7 +607,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       const ups = calls.filter((c) => c.startsWith("docker compose up"));
       expect(ups).toEqual([
         "docker compose up -d --no-deps --wait db",
-        "docker compose up -d --no-deps kamal-proxy",
+        "docker compose up -d --no-deps app-proxy",
         "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
       ]);
     });
@@ -615,10 +615,10 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
 
   describe("recreate", () => {
     const PAUSE =
-      "shop exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s";
-    const RESUME = "shop exec -T kamal-proxy kamal-proxy resume shop";
+      "shop exec -T app-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s";
+    const RESUME = "shop exec -T app-proxy kamal-proxy resume shop";
     const RESUME_TRAP =
-      "docker compose exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true";
+      "docker compose exec -T app-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true";
     /** Whether kamal-proxy holds the app's requests (the fake's mark). */
     const paused = () => existsSync(join(work, "paused", "shop"));
     /** The running version of the app, with its service on kamal-proxy. */
@@ -650,16 +650,16 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(at(PAUSE)).toBeGreaterThan(-1);
       expect(at(PAUSE)).toBeLessThan(at("shop up -d --no-deps --remove-orphans app"));
       expect(at("shop up -d --no-deps --remove-orphans app")).toBeLessThan(
-        at("shop exec -T kamal-proxy kamal-proxy deploy shop "),
+        at("shop exec -T app-proxy kamal-proxy deploy shop "),
       );
-      expect(at("shop exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(at(RESUME));
+      expect(at("shop exec -T app-proxy kamal-proxy deploy shop ")).toBeLessThan(at(RESUME));
       expect(paused()).toBe(false);
       // The EXIT trap resumes once more and keeps the registry logout.
       expect(recreate.start).toContain(
         `trap '${RESUME_TRAP}; docker logout ghcr.io > /dev/null 2>&1' EXIT`,
       );
       expect(dockerCalls().split("\n").slice(-2)).toEqual([
-        expect.stringMatching(/ exec -T kamal-proxy kamal-proxy resume shop$/),
+        expect.stringMatching(/ exec -T (app-proxy|kamal-proxy) kamal-proxy resume shop$/),
         "docker logout ghcr.io",
       ]);
     });
@@ -670,9 +670,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(start.status).toBe(1);
       expect(start.output).toContain("::error::The new version did not pass its health check");
       expect(paused()).toBe(false);
-      expect(lastAt(RESUME)).toBeGreaterThan(
-        at("opscrew-edge exec -T kamal-proxy kamal-proxy deploy"),
-      );
+      expect(lastAt(RESUME)).toBeGreaterThan(at("shop exec -T app-proxy kamal-proxy deploy"));
       expect(dockerCalls()).toContain("docker logout ghcr.io");
     });
 
@@ -684,6 +682,16 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(paused()).toBe(false);
       expect(lastAt(RESUME)).toBeGreaterThan(at(PAUSE));
       expect(dockerCalls()).toContain("docker logout ghcr.io");
+    });
+
+    it("keeps the running container and route intact when recreate's edge reload fails", () => {
+      deployed();
+      const start = run(recreate.start, { CADDY_RELOAD_FAIL: "1" });
+      expect(start.status).not.toBe(0);
+      expect(containers()).toEqual([OLD]);
+      expect(routed()).toBe(OLD);
+      expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+      expect(paused()).toBe(false);
     });
 
     it("deploys the first version although kamal-proxy has no service to pause yet", () => {
@@ -705,7 +713,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
       expect(rollback.output).toContain("restored the previous version");
       expect(routed()).toBe(OLD);
       expect(at(PAUSE)).toBeLessThan(at("shop up -d --no-deps --remove-orphans app"));
-      expect(at("shop exec -T kamal-proxy kamal-proxy deploy shop ")).toBeLessThan(at(RESUME));
+      expect(at("shop exec -T app-proxy kamal-proxy deploy shop ")).toBeLessThan(at(RESUME));
       expect(paused()).toBe(false);
       expect(recreate.rollback).toContain(`trap '${RESUME_TRAP}' EXIT`);
     });
@@ -887,7 +895,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
         at("docker compose up -d --no-deps --wait db cache"),
         at("docker compose run --rm --no-deps -T release"),
         at("docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app"),
-        at("exec -T kamal-proxy kamal-proxy deploy shop "),
+        at("exec -T app-proxy kamal-proxy deploy shop "),
         at("docker stop c90"),
         at("docker compose up -d --no-deps worker beat cron"),
         at("docker inspect --format {{.RestartCount}}"),
@@ -998,7 +1006,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
         .filter((call) => call.startsWith("docker compose up"));
       expect(ups).toEqual([
         "docker compose up -d --no-deps --wait db cache",
-        "docker compose up -d --no-deps kamal-proxy",
+        "docker compose up -d --no-deps app-proxy",
         "docker compose up -d --no-deps --no-recreate --remove-orphans --scale app=2 app",
         "docker compose up -d --no-deps worker beat cron",
       ]);
@@ -1531,7 +1539,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_00
           "shop.caddy",
         ]);
         expect(file("projects.log")).toContain(
-          "blog exec -T kamal-proxy kamal-proxy deploy blog --target blog-app-",
+          "blog exec -T app-proxy kamal-proxy deploy blog --target blog-app-",
         );
         expect(file("projects.log")).toMatch(
           /deploy blog --target blog-app-\d+:3000 --host blog\.example\.com --health-check-path/,

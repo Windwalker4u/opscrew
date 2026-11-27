@@ -89,7 +89,7 @@ describe("the app's Compose project on this computer", () => {
   it("publishes no port: only the edge does, on 127.0.0.1", () => {
     for (const service of Object.values(doc.services)) expect(service.ports).toBeUndefined();
     expect(doc.services.app?.networks).toEqual(["internal"]);
-    expect(doc.services["kamal-proxy"]?.networks).toEqual({
+    expect(doc.services["app-proxy"]?.networks).toEqual({
       internal: {},
       "opscrew-edge": { aliases: ["shop-kamal-proxy"] },
     });

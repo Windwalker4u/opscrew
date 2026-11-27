@@ -407,7 +407,7 @@ describe.skipIf(!shWorks())(
       expect(docker).toContain(`-f ${edgeDir()}/compose.yaml up -d --wait --remove-orphans\n`);
       // The app's container is created for its volumes, never started; no release command (the
       // fake fails any one-off container), no switch, workers or route.
-      expect(docker).toContain("docker compose up -d --no-deps kamal-proxy\n");
+      expect(docker).toContain("docker compose up -d --no-deps app-proxy\n");
       expect(docker).toContain("docker compose up --no-start --no-deps app\n");
       expect(docker).not.toMatch(/ run --rm|--scale|kamal-proxy deploy/);
       expect(route("shop")).toBeUndefined();
