@@ -149,6 +149,8 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
   const named = `the new ${profile.displayName} ${profile.serverNoun} shop`;
   const target = `${provider} server ${FIRST_BOOT_SERVER_ID}`;
   const hash = installHash(provider);
+  // A server whose firewall is its own (Kamatera) is never restarted: see `ownFirewall` in wait.ts.
+  const ownFirewall = cloudProvider(provider).texts.secops.firewallCheck === "server";
 
   it("names the failed steps in plain words when no repair is offered", async () => {
     const { result, server, handler, everything } = await firstBoot(provider, { repair: false });
@@ -162,41 +164,44 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     expectNoLeak(everything);
   });
 
-  it("restarts a server that never opened SSH, after the app's name, then goes on", async () => {
-    const { result, server, handler, deps, everything } = await firstBoot(provider, {
-      network: false,
-      setup: "ready",
-    });
-    expect(result).toMatchObject({ created: true, changed: false });
-    expect(result).not.toHaveProperty("installHash");
-    expect(server.calls).toEqual([`restart ${FIRST_BOOT_SERVER_ID}`]);
-    expect(handler.requests).toHaveLength(1);
-    const request = handler.requests[0] as ApprovalRequest;
-    expect(request).toMatchObject({
-      kind: "remote-exec",
-      title: `Restart ${named}`,
-      confirmPhrase: "shop",
-    });
-    // No data is lost by a restart: the typed name only, bound to no hash.
-    expect(request.allowDestroy).toBeUndefined();
-    expect(request.planHash).toBeUndefined();
-    expect(isNewServerRepairRequest(request)).toBe(true);
-    expect(request.details).toContain(`The server at ${HOST} did not open SSH within 5 minutes.`);
-    expect(request.details).toContain("OpsCrew has no record of a deploy to it.");
-    expect(request.details).not.toContain("holds nothing");
-    expect(request.details).toContain(
-      `OpsCrew restarts ${named} through ${profile.displayName}'s API`,
-    );
-    expect(deps.audit.entries.filter((e) => e.kind === "provider-call")).toEqual([
-      expect.objectContaining({ action: "restart server", target }),
-      expect.objectContaining({ action: "server restarted", target }),
-    ]);
-    expect(deps.reporter.text()).toContain(`success: The server at ${HOST} is ready.`);
-    // The title is kept in the approvals record and the audit log: no address there.
-    expect(request.title).not.toContain(HOST);
-    expect(JSON.stringify(deps.audit.entries)).not.toContain(HOST);
-    expectNoLeak(everything);
-  });
+  it.skipIf(ownFirewall)(
+    "restarts a server that never opened SSH, after the app's name, then goes on",
+    async () => {
+      const { result, server, handler, deps, everything } = await firstBoot(provider, {
+        network: false,
+        setup: "ready",
+      });
+      expect(result).toMatchObject({ created: true, changed: false });
+      expect(result).not.toHaveProperty("installHash");
+      expect(server.calls).toEqual([`restart ${FIRST_BOOT_SERVER_ID}`]);
+      expect(handler.requests).toHaveLength(1);
+      const request = handler.requests[0] as ApprovalRequest;
+      expect(request).toMatchObject({
+        kind: "remote-exec",
+        title: `Restart ${named}`,
+        confirmPhrase: "shop",
+      });
+      // No data is lost by a restart: the typed name only, bound to no hash.
+      expect(request.allowDestroy).toBeUndefined();
+      expect(request.planHash).toBeUndefined();
+      expect(isNewServerRepairRequest(request)).toBe(true);
+      expect(request.details).toContain(`The server at ${HOST} did not open SSH within 5 minutes.`);
+      expect(request.details).toContain("OpsCrew has no record of a deploy to it.");
+      expect(request.details).not.toContain("holds nothing");
+      expect(request.details).toContain(
+        `OpsCrew restarts ${named} through ${profile.displayName}'s API`,
+      );
+      expect(deps.audit.entries.filter((e) => e.kind === "provider-call")).toEqual([
+        expect.objectContaining({ action: "restart server", target }),
+        expect.objectContaining({ action: "server restarted", target }),
+      ]);
+      expect(deps.reporter.text()).toContain(`success: The server at ${HOST} is ready.`);
+      // The title is kept in the approvals record and the audit log: no address there.
+      expect(request.title).not.toContain(HOST);
+      expect(JSON.stringify(deps.audit.entries)).not.toContain(HOST);
+      expectNoLeak(everything);
+    },
+  );
 
   it("installs a server whose setup failed again, approved by its hash and the app's name, and pins the new key with no question", async () => {
     const { result, server, handler, deps, everything } = await firstBoot(provider);
@@ -272,46 +277,68 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
     ]);
   });
 
-  it("repairs the live case: a restart, then an install, at most one of each", async () => {
-    const { result, server, handler } = await firstBoot(provider, { network: false });
-    expect(server.calls).toEqual([
-      `restart ${FIRST_BOOT_SERVER_ID}`,
-      `reinstall ${FIRST_BOOT_SERVER_ID}`,
-    ]);
-    expect(handler.requests.map((r) => r.title)).toEqual([
-      `Restart ${named}`,
-      `Install ${named} again`,
-    ]);
-    expect(result).toMatchObject({ knownHostsLines: `${HOST} ${NEW_HOST_KEY}\n` });
+  it.skipIf(ownFirewall)(
+    "repairs the live case: a restart, then an install, at most one of each",
+    async () => {
+      const { result, server, handler } = await firstBoot(provider, { network: false });
+      expect(server.calls).toEqual([
+        `restart ${FIRST_BOOT_SERVER_ID}`,
+        `reinstall ${FIRST_BOOT_SERVER_ID}`,
+      ]);
+      expect(handler.requests.map((r) => r.title)).toEqual([
+        `Restart ${named}`,
+        `Install ${named} again`,
+      ]);
+      expect(result).toMatchObject({ knownHostsLines: `${HOST} ${NEW_HOST_KEY}\n` });
 
-    // A server that fails again after the install is not installed a second time.
-    const again = await firstBoot(provider, { network: false, setupAfterInstall: "failed" });
-    expect(again.server.calls).toEqual([
-      `restart ${FIRST_BOOT_SERVER_ID}`,
-      `reinstall ${FIRST_BOOT_SERVER_ID}`,
-    ]);
-    expect(again.result).toMatchObject({
-      code: "PROVIDER_ERROR",
-      message: expect.stringContaining("did not finish its first-boot setup"),
-    });
-  });
+      // A server that fails again after the install is not installed a second time.
+      const again = await firstBoot(provider, { network: false, setupAfterInstall: "failed" });
+      expect(again.server.calls).toEqual([
+        `restart ${FIRST_BOOT_SERVER_ID}`,
+        `reinstall ${FIRST_BOOT_SERVER_ID}`,
+      ]);
+      expect(again.result).toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: expect.stringContaining("did not finish its first-boot setup"),
+      });
+    },
+  );
 
-  it("restarts once: a server still without SSH after it stops plainly", async () => {
-    const stuck = new FakeFirstBoot({ network: false });
-    // A restart that brings no network.
-    const stays = {
-      ...stuck.servers,
-      restart: async (id: string) => {
-        stuck.calls.push(`restart ${id}`);
-      },
-    };
-    const { result } = await firstBoot(provider, { network: false, servers: stays });
-    expect(stuck.calls).toEqual([`restart ${FIRST_BOOT_SERVER_ID}`]);
-    expect(result).toMatchObject({
-      code: "PROVIDER_ERROR",
-      message: `The server at ${HOST} did not open SSH within 5 minutes after OpsCrew restarted it.`,
-    });
-  });
+  it.runIf(ownFirewall)(
+    "never restarts a server whose own firewall may have failed: it may have powered itself off",
+    async () => {
+      const { result, server, handler } = await firstBoot(provider, { network: false });
+      expect(server.calls).toEqual([]);
+      expect(handler.requests).toEqual([]);
+      expect(result).toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: `The server at ${HOST} did not open SSH within 5 minutes.`,
+      });
+      expect((result as OpsCrewError).hint).toContain(
+        "powers it off rather than leave it reachable",
+      );
+    },
+  );
+
+  it.skipIf(ownFirewall)(
+    "restarts once: a server still without SSH after it stops plainly",
+    async () => {
+      const stuck = new FakeFirstBoot({ network: false });
+      // A restart that brings no network.
+      const stays = {
+        ...stuck.servers,
+        restart: async (id: string) => {
+          stuck.calls.push(`restart ${id}`);
+        },
+      };
+      const { result } = await firstBoot(provider, { network: false, servers: stays });
+      expect(stuck.calls).toEqual([`restart ${FIRST_BOOT_SERVER_ID}`]);
+      expect(result).toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: `The server at ${HOST} did not open SSH within 5 minutes after OpsCrew restarted it.`,
+      });
+    },
+  );
 
   it("points a server that doesn't answer at its first boot's log where that runs as a startup script", async () => {
     const script = cloudProvider(provider).terraform.firstBoot === "script";
@@ -339,16 +366,18 @@ describe.each(VPS_PROVIDERS)("a new server's first boot on %s", (provider) => {
   });
 
   it("without the approval restarts and installs nothing, and prints the command that approves it", async () => {
-    const restart = await firstBoot(provider, { network: false, answer: () => false });
-    expect(restart.server.calls).toEqual([]);
-    expect(restart.result).toMatchObject({ code: "APPROVAL_REFUSED" });
-    const refused = restart.result as OpsCrewError;
-    expect(refused.message).toContain("did not open SSH");
-    expect(refused.message).toContain("OpsCrew did not restart it");
-    expect(refused.message).toContain("Nothing was changed.");
-    expect(refused.hint).toBe(
-      "To restart it, run `opscrew provision` again and type shop when asked; in a script, run `opscrew provision --confirm shop`.",
-    );
+    if (!ownFirewall) {
+      const restart = await firstBoot(provider, { network: false, answer: () => false });
+      expect(restart.server.calls).toEqual([]);
+      expect(restart.result).toMatchObject({ code: "APPROVAL_REFUSED" });
+      const refused = restart.result as OpsCrewError;
+      expect(refused.message).toContain("did not open SSH");
+      expect(refused.message).toContain("OpsCrew did not restart it");
+      expect(refused.message).toContain("Nothing was changed.");
+      expect(refused.hint).toBe(
+        "To restart it, run `opscrew provision` again and type shop when asked; in a script, run `opscrew provision --confirm shop`.",
+      );
+    }
 
     const install = await firstBoot(provider, { answer: () => false });
     expect(install.server.calls).toEqual([]);

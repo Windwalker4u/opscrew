@@ -503,6 +503,15 @@ function startupScriptProvider(profile: ReadyProfile) {
 }
 
 /**
+ * True where the server's firewall is its own, set up by its first boot (`firewallCheck`
+ * `server`, Kamatera). Such a server that never opens SSH may have powered itself off because that
+ * firewall failed, and a restart might bring it up without one, so OpsCrew never restarts it.
+ */
+function ownFirewall(profile: ReadyProfile): boolean {
+  return startupScriptProvider(profile)?.texts.secops.firewallCheck === "server";
+}
+
+/**
  * What to check about a new server that doesn't answer, then `again`: the server in the provider's
  * console, or, where the first boot runs as its startup script (`firstBoot` `script`, Kamatera),
  * that script's log there, saying that it powers the server off when it can't set up the server's
@@ -604,7 +613,12 @@ export async function readyNewServer(
       if (!open) {
         if (network?.unreachable !== undefined) throw network.unreachable;
         const failure = `${subject} did not open SSH within ${durationText(waitMs)}${restarted ? " after OpsCrew restarted it" : ""}.`;
-        if (repair !== undefined && servers?.restart !== undefined && !restarted) {
+        if (
+          repair !== undefined &&
+          servers?.restart !== undefined &&
+          !restarted &&
+          !ownFirewall(profile)
+        ) {
           const restart = servers.restart.bind(servers);
           await approveRepair(deps, repair, {
             title: `${RESTART_TITLE}${profile.displayName} ${profile.serverNoun} ${repair.app}`,
