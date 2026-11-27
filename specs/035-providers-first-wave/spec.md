@@ -418,11 +418,12 @@ UpCloud follows IONOS Cloud, in the same way.
   from a dated table of its public calculator prices. Every price MUST show its date, there is no
   setup fee, and design, the runbook and the guide MUST say that a stopped server still bills
   about a tenth and that only a terminate ends the cost.
-- **FR-3519**: Every Kamatera server MUST get a unique name with a random suffix
-  (`opscrew-<app>-<random>`, valid as `[a-zA-Z0-9()_-]`, at least 4 characters). Before every
-  apply, OpsCrew MUST read the account's server list and check the name and its `<name>(1)` form,
-  take over a server the state doesn't know instead of creating another, and report a stray `(1)`
-  server rather than ignoring it.
+- **FR-3519**: Kamatera servers MUST be named as on every provider (`<app>`, `<app>-<name>`;
+  plan decision 10), within Kamatera's rule (4–40 letters, digits, dashes or dots), which the module
+  checks with a plain message. Whenever OpsCrew lists the app's servers (the takeover after an
+  earlier apply, destroy, snapshots), a `<name>(n)` server that Kamatera made from a repeated
+  create MUST stop the command, named with its datacenter, and never be adopted. Taking over a
+  lost server isn't possible yet (decision 12): its import fails at plan and creates nothing.
 - **FR-3520**: Because Kamatera has no user data, the shared first-boot setup MUST be delivered as
   the `startup_script` its Terraform accepts. The contract MUST gain an optional first-boot kind
   (`cloud-init`, the default, or `script`) so the same steps render as that script, and no other
@@ -493,9 +494,8 @@ UpCloud follows IONOS Cloud, in the same way.
 - **SC-3508**: With fakes of Kamatera's API and the engine, interview, design, provision, verify,
   status, secure, drift, a whole-server snapshot and its restore, and destroy each run on a
   Kamatera app, with no real cloud call in any test.
-- **SC-3509**: With a fake Kamatera API that times out on create, a second provision creates no
-  second server; with one that renamed the server `<name>(1)`, the plan reports the stray server
-  and creates nothing.
+- **SC-3509**: With a fake Kamatera API that holds a `<name>(1)` server, listing the app's servers
+  stops with that server named and creates nothing.
 - **SC-3510**: For the example apps on Hetzner, DigitalOcean, Contabo and OVHcloud, the generated
   files are byte-identical before and after Kamatera's tasks, and every existing test passes.
 - **SC-3511**: No output, log, audit entry, generated or committed file of the fake runs holds

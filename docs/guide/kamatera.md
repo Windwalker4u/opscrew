@@ -87,8 +87,11 @@ installs the server's own firewall instead:
   (80 and 443, and UDP 443 for HTTP/3) on the server that serves your site, and WireGuard's port
   where the app's [private network](private-network.md) uses it. The same step turns password logins
   off.
-- **A few seconds after the server starts,** when Kamatera runs the startup script, the rules
-  apply. Until then nothing filters the server's ports, and nothing of your app runs there yet.
+- **Shortly after the server starts,** when Kamatera runs the startup script, password logins go
+  off and then the rules apply: within seconds when the image has nftables, a few minutes when it
+  must install it first. Until then nothing filters the server's ports, and nothing of your app
+  runs there yet. If the firewall can't be put in place, the server powers itself off rather than
+  stay open.
 - **Kept across reboots:** the rules are in `/etc/nftables.conf`, which the server loads at every
   boot.
 - **Checked:** `npx opscrew secure` reads the live rules from the server and fails when they are

@@ -201,8 +201,8 @@ const terraform = z.object({
       }
       if (addresses.length === 0) {
         // A provider with no SSH-key resource gives each server the key's text itself (Kamatera's
-        // `ssh_pubkey`): no shared resource then, and the key id is that text (issue #52).
-        if (shared.sshKeyId === DEPLOY_KEY_TEXT) return;
+        // `ssh_pubkey`): no shared resource line at all then, and the key id is that text (#52).
+        if (shared.resources.length === 0 && shared.sshKeyId === DEPLOY_KEY_TEXT) return;
         ctx.addIssue({ code: "custom", path: ["resources"], message: "declares no resource" });
       } else if (!addresses.some((address) => shared.sshKeyId.includes(address))) {
         ctx.addIssue({

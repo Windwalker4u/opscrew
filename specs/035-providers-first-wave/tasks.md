@@ -471,9 +471,9 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
       - a `<name>(1)` server, naming it and its datacenter, and never adopting it silently.
     - Snapshots: created, listed by the `opscrew-<app>-<server>-<time>` prefix oldest first, and
       deleted; each waits for its command.
-    - Power: `powerOn`, `powerOff` (never forcing) and `restart`, each awaited; `rebuild` and
-      `reinstall` are refused with a plain message that a Kamatera server is made again as a new
-      one.
+    - Power: `powerOn`, `powerOff` (never forcing) and `restart`, each awaited; `rebuild` reverts
+      the server to the snapshot (Kamatera's snapshot revert; the lead, 2026-11-27); `reinstall`
+      is absent.
     - The connector: `configured`, `catalog()`, `servers` (undefined without credentials), and
       `verifyCredentials`, which reads the account's servers and a datacenter's options and says
       what it found. No `firewalls`, `backups` or `objectStorage`.

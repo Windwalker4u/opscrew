@@ -228,6 +228,9 @@ describe("validateCloudProvider", () => {
     expect(() =>
       validateCloudProvider(shared({ resources: [], sshKeyId: "var.deploy_ssh_public_key" })),
     ).not.toThrow();
+    expect(
+      failure(shared({ resources: ["# anything"], sshKeyId: "var.deploy_ssh_public_key" })),
+    ).toContain("terraform.extraShared.resources: declares no resource");
     expect(failure(shared({ resources: [], sshKeyId: "var.other" }))).toContain(
       "terraform.extraShared.resources: declares no resource",
     );

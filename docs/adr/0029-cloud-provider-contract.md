@@ -112,13 +112,25 @@ kinds, not on which cloud.
     runs cloud-init at all is unverified (research R4 §9).
   - **`terraform.firstBoot`:** `cloud-init` (the default, and every provider before Kamatera) or
     `script`. Both render the same first-boot steps from the same context: with `script`,
-    iac-templates writes `first-boot.sh` instead of `cloud-init.yaml.tftpl`, and the module passes
-    it where the provider takes a startup script.
+    iac-templates writes `first-boot.sh` beside `cloud-init.yaml.tftpl`, and the module passes
+    the script, with the cloud-config inside it, where the provider takes a startup script.
   - **The script** guards itself with a marker, so a second boot changes nothing. It installs
     cloud-init when the image lacks it, writes the cloud-config to the NoCloud seed and runs it.
     The live pass proves when it runs, and whether cloud-init is there.
   - **The vendored module keeps its script**, so a user who deletes OpsCrew keeps the same first
     boot (constitution II).
+- **D13: a provider without a cloud firewall gets a firewall on the server itself** (feature 035,
+  Kamatera; the founder's option A on issue #13, 2026-11-25).
+  - **`texts.secops.firewallCheck`:** `cloud` (the default, every provider before Kamatera) or
+    `server`. With `server`, iac-templates puts an nftables step first in the first-boot script
+    (default deny inbound for IPv4 and IPv6; SSH, the web ports and WireGuard only as the plan
+    says; kept across reboots; password logins off), and it fails closed: a step that fails powers
+    the server off.
+  - **Checked twice:** SecOps checks the planned script's rules when the server is created, and
+    `opscrew secure` reads the live rules over SSH and fails on any difference from the plan.
+  - **Said plainly:** the plan, design and the guide say "cloud firewall: none; server firewall: on"
+    and name the time between the server's start and the rules. The rules aren't updated after the
+    first boot; `secure` says how to change them.
 
 ## Consequences
 
