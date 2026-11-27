@@ -31,6 +31,8 @@ const CONSOLE_URL = "https://console.kamatera.com/";
 const PRICING_URL = "https://www.kamatera.com/pricing/";
 /** A deploy key's public half, synthetic. */
 const DEPLOY_KEY = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5${"A".repeat(48)} opscrew-deploy`;
+/** How the module's `name` validation starts its message: Kamatera's provider's rule. */
+const NAME_RULE = "Kamatera needs a server name of 4 to 40 letters, digits, dashes or dots";
 /** Nothing in a unit test reaches the network: the catalogue's public file read is refused. */
 const offline: FetchLike = () => Promise.reject(new Error("no request in this test"));
 
@@ -464,6 +466,17 @@ describe("Kamatera's cloud provider definition", () => {
     expect(server).not.toMatch(/^\s*password\s*=/m);
   });
 
+  it("refuses a server name Kamatera's provider refuses, before the provider sees it, saying what to do", () => {
+    const variables = definition.terraform.module.files["variables.tf"] ?? "";
+    const rest = variables.slice(variables.indexOf('variable "name" {'));
+    const name = rest.slice(0, rest.indexOf("\n}\n") + 2);
+    // The provider's rule (resource_server.go): 4 to 40 characters, from a-z, A-Z, 0-9, - and .
+    expect(name).toContain('    condition     = can(regex("^[a-zA-Z0-9.-]{4,40}$", var.name))\n');
+    expect(name).toContain(
+      `    error_message = "${NAME_RULE}, and OpsCrew would name this server \\"\${var.name}\\". Choose a different app name (or extra server's name) so that the server's name fits."\n`,
+    );
+  });
+
   it("outputs what the root module reads from every server module, the server's name as its id", () => {
     const outputs = definition.terraform.module.files["outputs.tf"] ?? "";
     for (const name of ["ipv4_address", "ipv6_address", "server_id", "server_name", "ssh_key_id"]) {
@@ -847,6 +860,21 @@ describe.skipIf(!runIt)("Kamatera's module validates and plans (integration)", (
             });
             expect(request.url).toMatch(/^\/service\/server\?images=1&datacenter=[A-Z0-9-]+$/);
           }
+          // A name Kamatera's provider refuses stops the plan in OpsCrew's words: a 3-letter app.
+          const short = await run([
+            "plan",
+            "-input=false",
+            "-no-color",
+            "-lock=false",
+            "-var=app_name=api",
+          ]);
+          expect(short.exitCode, short.stdout).not.toBe(0);
+          const said = `${short.stdout} ${short.stderr}`
+            .replace(/[│╷╵]/g, " ")
+            .replace(/\s+/g, " ");
+          expect(said).toContain(
+            `${NAME_RULE}, and OpsCrew would name this server "api". Choose a different app name (or extra server's name) so that the server's name fits.`,
+          );
           // Neither value of the key reaches the plan, its JSON or anything the engine printed.
           const printed = [...output, await readFile(join(root, "main.tf"), "utf8")].join("\n");
           for (const value of Object.values(CREDENTIALS_ENV)) {

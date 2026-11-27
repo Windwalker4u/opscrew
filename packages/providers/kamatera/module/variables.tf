@@ -1,6 +1,12 @@
 variable "name" {
   description = "Server name, which is also its Terraform id at Kamatera: 4 to 40 letters, digits, dashes or dots."
   type        = string
+
+  validation {
+    # Kamatera's provider takes 4 to 40 characters from a-z, A-Z, 0-9, - and . (resource_server.go).
+    condition     = can(regex("^[a-zA-Z0-9.-]{4,40}$", var.name))
+    error_message = "Kamatera needs a server name of 4 to 40 letters, digits, dashes or dots, and OpsCrew would name this server \"${var.name}\". Choose a different app name (or extra server's name) so that the server's name fits."
+  }
 }
 
 variable "location" {

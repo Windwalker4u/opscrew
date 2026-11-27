@@ -169,6 +169,7 @@ export const definition: CloudProviderDefinition = {
     extraShared: { resources: [], sshKeyId: "var.deploy_ssh_public_key" },
     // Kamatera takes a startup script and no user data (ADR 0029, D12).
     firstBoot: "script",
+    // No importId: Kamatera imports by its internal id, not the name, so a takeover fails at plan.
   },
   texts: {
     rotate: { deleteToken: `${CONSOLE} (${CONSOLE_URL}, API → Keys)` },
