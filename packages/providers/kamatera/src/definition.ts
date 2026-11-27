@@ -11,25 +11,35 @@ const ENV_VARS = Object.values(KAMATERA_ENV);
 const CONSOLE_URL = "https://console.kamatera.com/";
 const CONSOLE = "Kamatera's console";
 
+/** How every text says where a Kamatera server's firewall is (issue #13). */
+const FIREWALL_WORDS = "cloud firewall: none; server firewall: on";
+/** When the server's own firewall applies. */
+const FIREWALL_GAP = "a few seconds after the server starts";
+
 /** The server's name: the app's, or `<app>-<name>` for an extra server. */
 function nameArgument({ extra }: ModuleCall): readonly [string, string] {
   return ["name", extra === undefined ? "var.app_name" : `"\${var.app_name}-${extra}"`];
 }
 
+/** The web's networks, only on the server that serves the web (not on an extra server). */
+function httpArguments({ extra }: ModuleCall): (readonly [string, string])[] {
+  return extra === undefined ? [["http_allowed_cidrs", "var.http_allowed_cidrs"]] : [];
+}
+
 /**
  * SecOps's checks of a plan's Kamatera servers. Kamatera has no cloud firewall: no Terraform
- * resource and no API route sets one (research R4 §4). So SecOps finds no firewall in a Kamatera
- * plan and its "Server has a firewall" check fails, which stops provision. How SecOps checks the
- * server's own firewall instead is T3526's (`ProviderSecOps.firewallCheck`), which replaces
- * `rules`, `attached` and their texts.
+ * resource and no API route sets one (research R4 §4). The server's own firewall is the first step
+ * of its first boot (issue #13), so SecOps reads it from the planned server's startup script and
+ * `opscrew secure` from the server (`firewallCheck`); `rules` and `attached` find nothing.
  */
 const SECOPS: ProviderSecOps = {
   noun: "server",
+  firewallCheck: "server",
   rules: () => [],
   attached: () => false,
-  attachedText: "The server's own firewall is set up at its first boot.",
+  attachedText: `Cloud firewall: none; server firewall: on. Kamatera has no cloud firewall, so the server's own firewall (nftables) is the first step of its first boot: it drops everything the plan doesn't allow from ${FIREWALL_GAP}, when Kamatera runs the startup script.`,
   unattachedText:
-    "Kamatera has no cloud firewall, so nothing in front of the server limits who reaches its ports: the firewall the server sets up at its first boot is its only one, and this plan can't show it.",
+    "Cloud firewall: none; server firewall: off. Kamatera has no cloud firewall, and the server's startup script doesn't set up OpsCrew's firewall, so every port would be reachable from the internet. Run `opscrew provision` again: it writes the server's module with the firewall as the first step.",
   keylessText:
     "The server has no SSH key, so the only way in would be the root password Kamatera generates. Add the deploy key.",
   // The server takes the key's text (`kamatera_server.ssh_pubkey`), not `ssh_keys`.
@@ -139,8 +149,8 @@ export const definition: CloudProviderDefinition = {
   terraform: {
     provider: { name: "kamatera", source: "Kamatera/kamatera", version: "~> 0.9.4" },
     serverResourceType: "kamatera_server",
-    // No type: Kamatera has no cloud firewall resource, so SecOps finds none in a plan (see
-    // SECOPS). T3526 settles the server firewall's check and this value with it.
+    // No type: Kamatera has no cloud firewall resource. SecOps checks the server's own firewall
+    // instead (see SECOPS).
     firewallResourceType: "",
     connectorFirewall: false,
     connectorBackups: false,
@@ -163,6 +173,9 @@ export const definition: CloudProviderDefinition = {
       ["server_type", `var.${call.prefix}server_type`],
       ["image", `var.${call.prefix}image`],
       ["ssh_public_key", "var.deploy_ssh_public_key"],
+      // The networks the server's own firewall lets in, as another provider's cloud firewall.
+      ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
+      ...httpArguments(call),
     ],
     // Kamatera keeps no copy of a key: every server takes the deploy key's text, so the app's
     // servers share no resource, and an extra server gets the text itself as `ssh_key_id`.
@@ -175,9 +188,9 @@ export const definition: CloudProviderDefinition = {
     rotate: { deleteToken: `${CONSOLE} (${CONSOLE_URL}, API → Keys)` },
     interview: {
       label: "Kamatera",
-      hint: "servers in Frankfurt, Amsterdam, Stockholm, New York, Santa Clara and Singapore; billed by the hour, counted by the minute, until terminated (a stopped server still bills); prices in USD; no cloud firewall, so the server runs its own",
+      hint: `servers in Frankfurt, Amsterdam, Stockholm, New York, Santa Clara and Singapore; billed by the hour, counted by the minute, until terminated (a stopped server still bills); prices in USD; ${FIREWALL_WORDS}, from ${FIREWALL_GAP}`,
     },
-    design: { summaryNoun: "Kamatera server", titleSuffix: " on Kamatera" },
+    design: { summaryNoun: `Kamatera server (${FIREWALL_WORDS})`, titleSuffix: " on Kamatera" },
     init: {
       fix: `${KAMATERA_CREDENTIALS_HINT} Kamatera's steps: ${KAMATERA_CREDENTIALS.createUrl}. A key can't be limited: it can do everything on your Kamatera account, so a separate Kamatera account for OpsCrew is the safest.`,
       scopeNote: "",
@@ -188,8 +201,7 @@ export const definition: CloudProviderDefinition = {
       backupsOnDatabaseCell: "snapshots with `opscrew snapshot`",
       backupsOn:
         "OpsCrew turns on no Kamatera daily backups: its own snapshots of the app's data (`opscrew snapshot`) cover them.",
-      cloudFirewall:
-        "no cloud firewall (Kamatera's console has a firewall per server, which OpsCrew can't set and which stays off unless you turn it on)",
+      cloudFirewall: `the server's own nftables firewall, the first step of its first boot (${FIREWALL_WORDS}, from ${FIREWALL_GAP}; the firewall in Kamatera's console, which OpsCrew can't set, stays off unless you turn it on)`,
       deletes: () =>
         `the server (Kamatera terminates it, and only that ends its hourly billing: a stopped server still bills its IP address, about $${STATIC_RATES.stoppedIpv4Monthly} a month, and its disk, about $${STATIC_RATES.stoppedDiskPerGbMonth} per GB a month)`,
       connectNote: [],

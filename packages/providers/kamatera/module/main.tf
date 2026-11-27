@@ -26,7 +26,7 @@ data "kamatera_image" "this" {
 }
 
 # Kamatera has no cloud firewall that Terraform or its API can set, so the server's own firewall,
-# set up by the first boot, is its only one.
+# the first step of its first boot, is its only one: cloud firewall: none; server firewall: on.
 resource "kamatera_server" "this" {
   name          = var.name
   datacenter_id = var.location
@@ -45,9 +45,16 @@ resource "kamatera_server" "this" {
   ssh_pubkey = var.ssh_public_key
 
   # Kamatera takes no cloud-init user data, so the shared first boot runs as the startup script,
-  # which applies the same cloud-config through cloud-init. The scheduled check's key goes in as a
-  # second authorized key (YAML-quoted); none without it.
+  # which applies the same cloud-config through cloud-init. Its first step is the server's own
+  # firewall, from the networks another provider's cloud firewall gets; it applies a few seconds
+  # after the server starts. The scheduled check's key goes in as a second authorized key
+  # (YAML-quoted); none without it.
   startup_script = templatefile("${path.module}/first-boot.sh.tftpl", {
+    server_firewall = templatefile("${path.module}/server-firewall.sh.tftpl", {
+      ssh_sources    = join(" ", var.ssh_allowed_cidrs)
+      web_sources    = var.web ? join(" ", var.http_allowed_cidrs) : ""
+      wireguard_port = var.wireguard_port == null ? "" : tostring(var.wireguard_port)
+    })
     cloud_config_b64 = base64encode(templatefile("${path.module}/cloud-init.yaml.tftpl", {
       ssh_public_key  = var.ssh_public_key
       check_key_entry = var.check_key_line == "" ? "" : "\n      - ${jsonencode(var.check_key_line)}"

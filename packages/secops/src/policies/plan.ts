@@ -209,6 +209,40 @@ const PROVIDERS: readonly ProviderChecks[] = CLOUD_PROVIDERS.map((provider) => (
 }));
 
 /**
+ * The server firewall's step in a server's first-boot script, as iac-templates renders
+ * `server-firewall.sh.tftpl` (`firewallCheck` `server`): its first line, and the input chain's
+ * default drop it writes.
+ */
+const SERVER_FIREWALL_MARKER = "# opscrew-server-firewall:";
+const SERVER_FIREWALL_DROP = "type filter hook input priority filter; policy drop;";
+
+/**
+ * The inbound rules of the server's own firewall, read from the step in the planned server's
+ * first-boot script (whichever attribute holds it): SSH from `ssh_sources`, the web ports from
+ * `web_sources`, the WireGuard port from everywhere. Undefined when no script holds the step or its
+ * networks can't be read.
+ */
+function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[] | undefined {
+  const script = Object.values(server.values).find(
+    (value): value is string => typeof value === "string" && value.includes(SERVER_FIREWALL_MARKER),
+  );
+  if (script === undefined || !script.includes(SERVER_FIREWALL_DROP)) return undefined;
+  const value = (name: string) => new RegExp(`^${name}='([^']*)'$`, "m").exec(script)?.[1];
+  const [ssh, web, wireguard] = ["ssh_sources", "web_sources", "wireguard_port"].map(value);
+  if (ssh === undefined || web === undefined || wireguard === undefined) return undefined;
+  const rule = (protocol: string, port: string, sources: string[]) =>
+    sources.length === 0 ? [] : [{ direction: "in", protocol, port, source_ips: sources }];
+  const sources = (text: string) => text.split(" ").filter((network) => network !== "");
+  return [
+    ...rule("tcp", "22", sources(ssh)),
+    ...rule("tcp", "80", sources(web)),
+    ...rule("tcp", "443", sources(web)),
+    ...rule("udp", "443", sources(web)),
+    ...(wireguard === "" ? [] : rule("udp", wireguard, [...OPEN_TO_ALL])),
+  ];
+}
+
+/**
  * Whether `resource` is a provider's firewall: of its `firewallResourceType`, or for `<type>.<name>`
  * (a general type, such as `terraform_data.firewall`) of that type and that name.
  */
@@ -217,7 +251,11 @@ function isFirewall(resource: PlannedResourceJson, firewallType: string): boolea
   return resource.type === type && (name === undefined || resource.name === name);
 }
 
-/** The server and firewall policies of one provider (spec 004 plan "Security checks"). */
+/**
+ * The server and firewall policies of one provider (spec 004 plan "Security checks"). A provider
+ * whose firewall is the server's own (`firewallCheck` `server`) has no firewall resource: each
+ * server's rules are read from its first-boot script and checked as a cloud firewall's are.
+ */
 function providerPolicies(
   provider: ProviderChecks,
   planJson: unknown,
@@ -227,11 +265,15 @@ function providerPolicies(
 ): PolicyResult[] {
   const results: PolicyResult[] = [];
   const servers = resources.filter((r) => r.type === provider.server);
-  const firewalls = resources.filter((r) => isFirewall(r, provider.firewall));
+  const onServer = provider.firewallCheck === "server";
+  const firewalls = onServer ? [] : resources.filter((r) => isFirewall(r, provider.firewall));
   const { noun } = provider;
 
   for (const server of servers) {
-    const hasFirewall = provider.attached(server, firewalls, planJson);
+    const serverRules = onServer ? serverFirewallRules(server) : undefined;
+    const hasFirewall = onServer
+      ? serverRules !== undefined
+      : provider.attached(server, firewalls, planJson);
     const hasKeys = isSet(server, provider.sshKeyAttribute ?? "ssh_keys");
     results.push(
       result(
@@ -253,6 +295,12 @@ function providerPolicies(
         server.address,
       ),
     );
+    if (serverRules !== undefined) {
+      results.push(
+        ...openPortResults(server, serverRules, proxiedBehindCloudflare, deployPlan),
+        sshPolicyResult(server, serverRules, deployPlan),
+      );
+    }
     if (provider.deleteProtection) {
       const protectedServer = server.values.delete_protection === true;
       results.push(
@@ -292,7 +340,7 @@ function providerPolicies(
     results.push(sshPolicyResult(firewall, rules, deployPlan));
   }
 
-  if (servers.length > 0 && firewalls.length === 0) {
+  if (!onServer && servers.length > 0 && firewalls.length === 0) {
     results.push(
       result(
         "firewall-attached",

@@ -1,0 +1,94 @@
+# opscrew-server-firewall: the first step of the first boot, before anything else runs.
+# Rendered by OpsCrew for a provider with no cloud firewall (Kamatera): cloud firewall: none;
+# server firewall: on. The server's own nftables firewall (OpsCrew's table inet opscrew-firewall,
+# IPv4 and IPv6) drops what comes from outside the server unless the plan allows it: SSH from the
+# plan's networks, the web ports as the plan says, and the private network's WireGuard port.
+# Docker's published ports are held to the same web rule. Traffic from inside the server (Docker's
+# networks, the private network) passes, as a cloud firewall never sees it: ufw filters it, as on
+# every server. The rules go in /etc/nftables.conf, which nftables.service loads at every boot,
+# and SSH stops taking passwords. Until this step runs, a few seconds after the server starts,
+# nothing filters its ports.
+ssh_sources='${ssh_sources}'
+web_sources='${web_sources}'
+wireguard_port='${wireguard_port}'
+opscrew_fail() {
+  echo "opscrew: $*" >&2
+  exit 1
+}
+# A rule's source as nft lists it: one family's every address, or one network.
+opscrew_source() {
+  case "$1" in
+    0.0.0.0/0) echo 'meta nfproto ipv4' ;;
+    ::/0) echo 'meta nfproto ipv6' ;;
+    '' | *[!0-9A-Fa-f.:/]*) opscrew_fail "not an address range: $1" ;;
+    *:*) echo "ip6 saddr $1" ;;
+    *) echo "ip saddr $1" ;;
+  esac
+}
+# Docker's networks and the private network's interfaces: the table leaves them to ufw.
+opscrew_inside() {
+  printf '\t\tiifname "docker0" accept\n'
+  printf '\t\tiifname "br-*" accept\n'
+  if [ -n "$wireguard_port" ]; then printf '\t\tiifname "wg-opscrew*" accept\n'; fi
+}
+# The rules file: OpsCrew's table, replaced in one transaction (created first, so the delete never
+# fails), and no other table touched.
+opscrew_firewall_rules() {
+  case "$wireguard_port" in
+    *[!0-9]*) opscrew_fail "not a port: $wireguard_port" ;;
+  esac
+  echo '#!/usr/sbin/nft -f'
+  echo '# Managed by OpsCrew: the firewall of this server, which has no cloud firewall. nftables.service'
+  echo '# loads it at every boot; it replaces only the table inet opscrew-firewall.'
+  echo 'add table inet opscrew-firewall'
+  echo 'delete table inet opscrew-firewall'
+  echo 'table inet opscrew-firewall {'
+  printf '\tchain input {\n'
+  printf '\t\ttype filter hook input priority filter; policy drop;\n'
+  printf '\t\tiifname "lo" accept\n'
+  printf '\t\tct state established,related accept\n'
+  opscrew_inside
+  printf '\t\tmeta l4proto icmp accept\n'
+  printf '\t\tmeta l4proto ipv6-icmp accept\n'
+  for net in $ssh_sources; do
+    match=$(opscrew_source "$net")
+    printf '\t\t%s tcp dport 22 accept\n' "$match"
+  done
+  for net in $web_sources; do
+    match=$(opscrew_source "$net")
+    printf '\t\t%s tcp dport { 80, 443 } accept\n' "$match"
+    printf '\t\t%s udp dport 443 accept\n' "$match"
+  done
+  if [ -n "$wireguard_port" ]; then printf '\t\tudp dport %s accept\n' "$wireguard_port"; fi
+  printf '\t}\n'
+  printf '\tchain forward {\n'
+  printf '\t\ttype filter hook forward priority filter; policy accept;\n'
+  opscrew_inside
+  # Docker's published web ports, by the port a connection was made to before Docker's DNAT; any
+  # other port Docker publishes is dropped from outside the server.
+  for net in $web_sources; do
+    match=$(opscrew_source "$net")
+    for dnat in 'tcp ct original proto-dst 80' 'tcp ct original proto-dst 443' 'udp ct original proto-dst 443'; do
+      printf '\t\tct direction original ct status dnat meta l4proto %s %s accept\n' "$dnat" "$match"
+    done
+  done
+  printf '\t\tct direction original ct status dnat drop\n'
+  printf '\t}\n'
+  echo '}'
+}
+opscrew_server_firewall() {
+  if ! command -v nft >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 update
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y nftables
+  fi
+  opscrew_firewall_rules >/etc/nftables.conf.opscrew
+  mv /etc/nftables.conf.opscrew /etc/nftables.conf
+  nft -f /etc/nftables.conf
+  systemctl enable nftables.service
+  # Key logins only from now on, whatever the image allowed; the cloud-config's SSH settings follow.
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf
+  systemctl try-reload-or-restart ssh.service
+  echo "opscrew: server firewall on $(date -Is)"
+}
+opscrew_server_firewall

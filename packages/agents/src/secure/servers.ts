@@ -31,20 +31,24 @@ import { extraServers } from "../shared/servers";
 import { serviceWords } from "../status/network";
 import { readPublishedPorts, serverShell } from "../status/servers";
 import { ownServerHardening } from "./own";
+import { serverFirewallCheck } from "./server-firewall";
 import { serverServiceChecks, servicePorts } from "./services";
 
 /**
  * `secure`'s host checks on server `server` of `plan`: the hardening checks (on a server the user
- * owns, with what its last setup accepts, `hardening`), then those of the services it runs; on a
- * preview server those are checked per preview instead (`previewServiceChecks`).
+ * owns, with what its last setup accepts, `hardening`), on a server whose provider has no cloud
+ * firewall its own firewall's, then those of the services it runs; on a preview server those are
+ * checked per preview instead (`previewServiceChecks`).
  */
 export function hostChecksFor(
   plan: DeployPlan,
   server: string,
   hardening: OwnServerHardening | undefined,
 ): HostCheck[] {
+  const firewall = hardening === undefined ? serverFirewallCheck(plan, server) : undefined;
   return [
     ...(hardening === undefined ? HOST_CHECKS : ownServerHostChecks(hardening)),
+    ...(firewall === undefined ? [] : [firewall]),
     ...(plan.environment?.previews === undefined ? serverServiceChecks(plan, server) : []),
   ];
 }

@@ -13,11 +13,14 @@ export const FIRST_BOOT_CONFIG = "cloud_config_b64";
 /**
  * Renders `first-boot.sh.tftpl` the way the module's `templatefile` does: the cloud-config, which
  * is the same file every other provider gets, base64-encoded into the wrapper that runs it through
- * cloud-init. Base64 keeps the YAML's own `$` and quotes out of the shell's reach.
+ * cloud-init. Base64 keeps the YAML's own `$` and quotes out of the shell's reach. `serverFirewall`
+ * is the server firewall's step (`renderServerFirewall`), which runs first; none for a provider
+ * with a cloud firewall.
  */
-export function renderFirstBootScript(cloudConfig: string): string {
+export function renderFirstBootScript(cloudConfig: string, serverFirewall = ""): string {
   const source = SERVER_MODULE_FILES[FIRST_BOOT_SCRIPT] ?? "";
   return templatefile(source, {
     [FIRST_BOOT_CONFIG]: Buffer.from(cloudConfig, "utf8").toString("base64"),
+    server_firewall: serverFirewall,
   });
 }

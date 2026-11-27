@@ -73,6 +73,11 @@ export {
   portainerWebhookHostname,
 } from "./portainer";
 export {
+  SERVER_FIREWALL_TABLE,
+  type ServerFirewallRules,
+  serverFirewallTable,
+} from "./server-firewall";
+export {
   pagesVerificationRootDir,
   renderPagesVerification,
   verificationRecordName,

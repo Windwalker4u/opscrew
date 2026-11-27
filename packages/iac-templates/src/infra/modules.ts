@@ -1,18 +1,27 @@
-import type { ProviderTerraform } from "@opscrew/contracts";
+import type { ProviderSecOps, ProviderTerraform } from "@opscrew/contracts";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { MODULE_FILES as OWN_MODULE_FILES, SERVER_MODULE_FILES } from "../generated/modules";
 import { FIRST_BOOT_SCRIPT } from "./first-boot";
+import { SERVER_FIREWALL_FILE } from "./server-firewall";
 
 /**
  * The files of one provider's server module: its own, and the files OpsCrew adds to every server
  * module (the first boot's `cloud-init.yaml.tftpl`, ADR 0029 D5). A provider whose servers take the
- * first boot as a startup script also gets `first-boot.sh.tftpl` (D12); the others never do.
+ * first boot as a startup script also gets `first-boot.sh.tftpl` (D12), and when its firewall is
+ * the server's own (`firewallCheck` `server`, issue #13) `server-firewall.sh.tftpl`, the first
+ * step of that script; the others never do.
  */
 export function serverModuleFiles(
   terraform: Pick<ProviderTerraform, "module" | "firstBoot">,
+  firewallCheck?: ProviderSecOps["firewallCheck"],
 ): Record<string, string> {
-  const shared = Object.entries(SERVER_MODULE_FILES).filter(
-    ([path]) => path !== FIRST_BOOT_SCRIPT || terraform.firstBoot === "script",
+  const script = terraform.firstBoot === "script";
+  const shared = Object.entries(SERVER_MODULE_FILES).filter(([path]) =>
+    path === FIRST_BOOT_SCRIPT
+      ? script
+      : path === SERVER_FIREWALL_FILE
+        ? script && firewallCheck === "server"
+        : true,
   );
   return { ...terraform.module.files, ...Object.fromEntries(shared) };
 }
@@ -23,8 +32,8 @@ export function serverModuleFiles(
  */
 export const MODULE_FILES: Readonly<Record<string, string>> = Object.fromEntries([
   ...Object.entries(OWN_MODULE_FILES),
-  ...CLOUD_PROVIDERS.flatMap(({ terraform }) =>
-    Object.entries(serverModuleFiles(terraform)).map(
+  ...CLOUD_PROVIDERS.flatMap(({ terraform, texts }) =>
+    Object.entries(serverModuleFiles(terraform, texts.secops.firewallCheck)).map(
       ([path, content]) => [`${terraform.module.name}/${path}`, content] as const,
     ),
   ),

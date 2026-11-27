@@ -35,6 +35,8 @@ const DEPLOY_KEY = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5${"A".repeat(48)} opscrew-de
 const NAME_RULE = "Kamatera needs a server name of 4 to 40 letters, digits, dashes or dots";
 /** Nothing in a unit test reaches the network: the catalogue's public file read is refused. */
 const offline: FetchLike = () => Promise.reject(new Error("no request in this test"));
+/** How every text says where a Kamatera server's firewall is. */
+const FIREWALL_WORDS = "cloud firewall: none; server firewall: on";
 
 /** The module's main.tf. */
 function mainTf(): string {
@@ -253,8 +255,12 @@ describe("Kamatera's cloud provider definition", () => {
     expect(texts.resizeOffline).toBeUndefined();
     expect(texts.interview.label).toBe("Kamatera");
     expect(texts.interview.hint).toMatch(/hour.*USD/);
-    // Kamatera's prices are public: no variable turns them on.
-    expect(texts.design).toEqual({ summaryNoun: "Kamatera server", titleSuffix: " on Kamatera" });
+    // Kamatera's prices are public: no variable turns them on. Design's summary says where the
+    // server's firewall is.
+    expect(texts.design).toEqual({
+      summaryNoun: `Kamatera server (${FIREWALL_WORDS})`,
+      titleSuffix: " on Kamatera",
+    });
     for (const name of ENV_VARS) expect(texts.init.fix).toContain(name);
     expect(texts.init.fix).toContain(KAMATERA_CREDENTIALS_HINT);
     expect(texts.init.fix).toContain(KAMATERA_CREDENTIALS.createUrl);
@@ -310,22 +316,45 @@ describe("Kamatera's cloud provider definition", () => {
 
   it("claims no cloud firewall and names no task in any text", () => {
     const text = allTexts();
-    expect(definition.texts.runbook.cloudFirewall).toMatch(/^no cloud firewall/);
     // Every mention of a cloud firewall says there is none.
-    for (const match of text.matchAll(/.{0,30}cloud firewall/g)) {
-      expect(match[0], match[0]).toMatch(/\bno cloud firewall|has no cloud firewall/);
+    for (const match of text.matchAll(/.{0,30}cloud firewall.{0,7}/gi)) {
+      expect(match[0], match[0]).toMatch(/\bno cloud firewall|cloud firewall: none/i);
     }
     expect(text).not.toMatch(/\bT\d{4}\b|\b0\d\d\b|feature \d/);
   });
 
+  it("says plainly that the server's own firewall is on, and when it applies", () => {
+    const { texts } = definition;
+    for (const [where, text] of Object.entries({
+      interview: texts.interview.hint,
+      design: texts.design.summaryNoun,
+      runbook: texts.runbook.cloudFirewall,
+      secops: texts.secops.attachedText,
+    })) {
+      expect(text.toLowerCase(), where).toContain(FIREWALL_WORDS);
+    }
+    // The few seconds between the server's start and the firewall's first step.
+    for (const text of [
+      texts.interview.hint,
+      texts.runbook.cloudFirewall,
+      texts.secops.attachedText,
+    ]) {
+      expect(text).toContain("a few seconds after the server starts");
+    }
+  });
+
   it("builds the module arguments of the app's server, an extra server and the previous one", () => {
     const { moduleArguments } = definition.terraform;
+    // The networks the server's own firewall lets in, as another provider's cloud firewall gets
+    // them: SSH's on every server, the web's on the one that serves it.
     expect(moduleArguments({ prefix: "" })).toEqual([
       ["name", "var.app_name"],
       ["location", "var.location"],
       ["server_type", "var.server_type"],
       ["image", "var.image"],
       ["ssh_public_key", "var.deploy_ssh_public_key"],
+      ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
+      ["http_allowed_cidrs", "var.http_allowed_cidrs"],
     ]);
     // An app tag passed in is ignored: Kamatera's Terraform has no tags.
     expect(
@@ -337,10 +366,37 @@ describe("Kamatera's cloud provider definition", () => {
       ["server_type", "var.db_server_type"],
       ["image", "var.db_image"],
       ["ssh_public_key", "var.deploy_ssh_public_key"],
+      ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
     ]);
     const previous = moduleArguments({ prefix: "previous_" });
     expect(previous).toContainEqual(["location", "var.previous_location"]);
     expect(previous).toContainEqual(["server_type", "var.previous_server_type"]);
+    expect(previous).toContainEqual(["http_allowed_cidrs", "var.http_allowed_cidrs"]);
+  });
+
+  it("puts the server's own firewall first in the startup script, from the module's networks", () => {
+    const server = block('resource "kamatera_server" "this" {');
+    const script = server.indexOf('  startup_script = templatefile("');
+    const firewall = server.indexOf(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
+      '    server_firewall = templatefile("${path.module}/server-firewall.sh.tftpl", {\n',
+    );
+    expect(firewall).toBeGreaterThan(script);
+    expect(firewall).toBeLessThan(server.indexOf("    cloud_config_b64 = "));
+    for (const line of [
+      '      ssh_sources    = join(" ", var.ssh_allowed_cidrs)',
+      '      web_sources    = var.web ? join(" ", var.http_allowed_cidrs) : ""',
+      '      wireguard_port = var.wireguard_port == null ? "" : tostring(var.wireguard_port)',
+    ]) {
+      expect(server, line).toContain(`${line}\n`);
+    }
+    const variables = definition.terraform.module.files["variables.tf"] ?? "";
+    for (const name of ["ssh_allowed_cidrs", "http_allowed_cidrs"]) {
+      const rest = variables.slice(variables.indexOf(`variable "${name}" {`));
+      const variable = rest.slice(0, rest.indexOf("\n}\n") + 2);
+      expect(variable, name).toContain("  type        = list(string)\n");
+      expect(variable, name).toContain('  default     = ["0.0.0.0/0", "::/0"]\n');
+    }
   });
 
   it("gives each server the deploy key's text, with no key object to share", () => {
@@ -565,21 +621,16 @@ describe("Kamatera's security checks", () => {
     expect(definition.texts.secops.keylessText).toContain("root password");
   });
 
-  it("find no cloud firewall on a Kamatera server", () => {
+  it("read the server's own firewall, since Kamatera has no cloud firewall", () => {
     const { secops } = definition.texts;
-    const [server] = plannedOfType(
-      serverPlanJson({ name: "shop", ssh_pubkey: DEPLOY_KEY }),
-      "kamatera_server",
-    );
-    expect(server).toBeDefined();
-    if (server === undefined) return;
-    // No resource type: SecOps finds no firewall in a plan, and none is attached.
+    // SecOps reads the firewall from the planned server's startup script, and `opscrew secure`
+    // from the server; no cloud firewall resource is looked for.
+    expect(secops.firewallCheck).toBe("server");
     expect(definition.terraform.firewallResourceType).toBe("");
-    expect(secops.attached(server, [], serverPlanJson({}))).toBe(false);
-    expect(secops.attached(server, [server], serverPlanJson({}))).toBe(false);
-    expect(secops.rules(server)).toEqual([]);
     expect(secops.noun).toBe("server");
-    expect(secops.unattachedText).toContain("Kamatera has no cloud firewall");
+    expect(secops.attachedText).toMatch(/^Cloud firewall: none; server firewall: on\. /);
+    expect(secops.unattachedText).toMatch(/^Cloud firewall: none; server firewall: off\. /);
+    expect(secops.unattachedText).toContain("opscrew provision");
     expect(secops.backupsText).toContain("snapshots");
   });
 });
@@ -675,6 +726,9 @@ function rootModule(): string {
     ...["app_name", "deploy_ssh_public_key", "check_key_line"].flatMap((name) =>
       variable(name, "string"),
     ),
+    ...["ssh_allowed_cidrs", "http_allowed_cidrs"].flatMap((name) =>
+      variable(name, "list(string)"),
+    ),
     ...SERVERS.flatMap(({ prefix }) =>
       ["location", "server_type", "image"].flatMap((name) =>
         variable(`${prefix}${name}`, "string"),
@@ -694,12 +748,18 @@ function rootModule(): string {
   ].join("\n");
 }
 
+/** SSH from one address and one IPv6 network; the web from two of Cloudflare's ranges. */
+const SSH_CIDRS = ["203.0.113.7/32", "2001:db8::/48"];
+const HTTP_CIDRS = ["173.245.48.0/20", "2400:cb00::/32"];
+
 /** The root's variable values. */
-function rootValues(): Record<string, string> {
+function rootValues(): Record<string, unknown> {
   return {
     app_name: "shop",
     deploy_ssh_public_key: DEPLOY_KEY,
     check_key_line: `restrict,command="/usr/local/sbin/opscrew-check" ${DEPLOY_KEY}`,
+    ssh_allowed_cidrs: SSH_CIDRS,
+    http_allowed_cidrs: HTTP_CIDRS,
     ...Object.fromEntries(
       SERVERS.flatMap(({ prefix, plan, location }) => [
         [`${prefix}location`, location],
@@ -771,6 +831,10 @@ describe.skipIf(!runIt)("Kamatera's module validates and plans (integration)", (
           ...definition.terraform.module.files,
           "cloud-init.yaml.tftpl": await readFile(join(SHARED, "cloud-init.yaml.tftpl"), "utf8"),
           "first-boot.sh.tftpl": await readFile(join(SHARED, "first-boot.sh.tftpl"), "utf8"),
+          "server-firewall.sh.tftpl": await readFile(
+            join(SHARED, "server-firewall.sh.tftpl"),
+            "utf8",
+          ),
         };
         for (const [path, content] of Object.entries(files)) {
           const target = join(root, MODULE_DIR, path);
@@ -849,6 +913,17 @@ describe.skipIf(!runIt)("Kamatera's module validates and plans (integration)", (
             expect(cloudConfig.startsWith("#cloud-config\n"), module).toBe(true);
             expect(cloudConfig).toContain(`      - ${DEPLOY_KEY}\n`);
             expect(cloudConfig.includes("[ufw, allow, 80/tcp]"), module).toBe(extra === undefined);
+            // The server's own firewall comes first, from the networks the root passes: SSH's on
+            // every server, the web's only on the one that serves it, and its WireGuard port.
+            const firewall = script.indexOf("# opscrew-server-firewall:");
+            expect(firewall, module).toBeGreaterThan(script.indexOf("first boot already done"));
+            expect(firewall, module).toBeLessThan(script.indexOf("export DEBIAN_FRONTEND"));
+            expect(script).toContain(`\nssh_sources='${SSH_CIDRS.join(" ")}'\n`);
+            expect(script).toContain(
+              `\nweb_sources='${extra === undefined ? HTTP_CIDRS.join(" ") : ""}'\n`,
+            );
+            expect(script).toContain(`\nwireguard_port='${extra === undefined ? 51820 : 51821}'\n`);
+            expect(script).toContain("\nopscrew_server_firewall\n");
           }
           // The provider read each datacenter's images, and nothing else, with the API key.
           expect(fake.requests.length).toBeGreaterThan(0);

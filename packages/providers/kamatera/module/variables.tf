@@ -35,14 +35,26 @@ variable "check_key_line" {
   default     = ""
 }
 
+variable "ssh_allowed_cidrs" {
+  description = "Networks allowed to reach SSH (port 22) through the server's own firewall; empty for none (public SSH closed)."
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
+variable "http_allowed_cidrs" {
+  description = "Networks allowed to reach HTTP/HTTPS (ports 80 and 443) through the server's own firewall."
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
 variable "web" {
-  description = "Whether the server serves the web: false leaves ports 80 and 443 closed in its firewall."
+  description = "Whether the server serves the web: false leaves ports 80 and 443 closed, in the server's own firewall and in ufw."
   type        = bool
   default     = true
 }
 
 variable "wireguard_port" {
-  description = "UDP port of the app's private WireGuard network; null for none."
+  description = "UDP port of the app's private WireGuard network, open to everyone in the server's own firewall; null for none."
   type        = number
   default     = null
 }
