@@ -40,6 +40,7 @@ import {
   renderCloudflareWorkersWorkflow,
 } from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
+import { FORGE_REGISTRY_TOKEN_SECRET, renderForgejoOrGiteaWorkflow } from "./forgejo-gitea";
 import { renderGithubPagesWorkflow } from "./github-pages";
 import { renderGitLabPipeline } from "./gitlab";
 import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
@@ -116,6 +117,7 @@ export {
   CLOUDFLARE_DEPLOY_SECRETS_NEW,
   renderCloudflareWorkersWorkflow,
 } from "./cloudflare-workers";
+export { FORGE_REGISTRY_TOKEN_SECRET, renderForgejoOrGiteaWorkflow } from "./forgejo-gitea";
 export { PAGES_PUBLISH_JOB, renderGithubPagesWorkflow } from "./github-pages";
 export { renderGitLabPipeline } from "./gitlab";
 export { DEPLOY_PAUSED_VARIABLE } from "./pause";
@@ -1647,9 +1649,14 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     return publicSshClosed(plan) ? [names.knownHosts] : [names.host, names.knownHosts];
   });
   if (extra.length > 0 && deploysInPlace(plan)) extra.unshift(DEPLOY_SECRETS.sshKey);
+  const forgeRegistry =
+    plan.cicd.provider === "forgejo-actions" || plan.cicd.provider === "gitea-actions"
+      ? [FORGE_REGISTRY_TOKEN_SECRET]
+      : [];
   return [
     ...connection,
     ...extra,
+    ...forgeRegistry,
     DEPLOY_SECRETS.appEnv,
     ...(hasReleaseDbEnv(plan) ? [RELEASE_DB_ENV.secret] : []),
     ...(hasWorkerDbEnv(plan) ? [WORKER_DB_ENV.secret] : []),
@@ -1727,6 +1734,9 @@ export async function isMoveReady(
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   if (plan.cicd.provider === "gitlab-ci") return renderGitLabPipeline(plan, ctx);
+  if (plan.cicd.provider === "forgejo-actions" || plan.cicd.provider === "gitea-actions") {
+    return renderForgejoOrGiteaWorkflow(plan, ctx, renderVpsWorkflow);
+  }
   if (plan.target.provider === "cloudflare-workers") {
     return renderCloudflareWorkersWorkflow(plan, ctx);
   }
@@ -1737,6 +1747,10 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       : renderHostingWorkflow(plan, ctx);
   }
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
+  return renderVpsWorkflow(plan, ctx);
+}
+
+function renderVpsWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
   checkSshPort(ctx.sshPort);
   // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).
   const hosts = certbotHosts(plan, ctx);

@@ -2398,17 +2398,22 @@ const DeployPlanFieldsSchema = z.strictObject({
       .optional(),
   }),
   cicd: z.strictObject({
-    provider: z.enum(["github-actions", "gitlab-ci"]).default("github-actions"),
+    provider: z
+      .enum(["github-actions", "gitlab-ci", "forgejo-actions", "gitea-actions"])
+      .default("github-actions"),
     /**
      * Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name, provider)`.
      * A later design keeps it.
      */
     workflowPath: RepoPathSchema.optional(),
-    /** Defaults to the provider's own registry (`ghcr` for GitHub Actions, `gitlab-registry` for GitLab CI). */
-    registry: z.enum(["ghcr", "gitlab-registry"]).optional(),
-    /** Self-managed git platform host (e.g. `gitlab.company.internal`); absent uses the platform default. */
+    /**
+     * Defaults to the provider's own registry (`ghcr` for GitHub Actions, `gitlab-registry` for
+     * GitLab CI, `forgejo-registry` for Forgejo Actions, `gitea-registry` for Gitea Actions).
+     */
+    registry: z.enum(["ghcr", "gitlab-registry", "forgejo-registry", "gitea-registry"]).optional(),
+    /** Self-managed git platform host (e.g. `gitlab.company.internal`, `forgejo.example.com`); absent uses the platform default. */
     host: z.string().min(1).optional(),
-    /** Custom container registry host; absent uses the platform default (`ghcr.io` or `registry.gitlab.com`). */
+    /** Custom container registry host; absent uses the platform default (`ghcr.io`, `registry.gitlab.com`, `codeberg.org`, or `gitea.com`). */
     registryHost: z.string().min(1).optional(),
     /** Deploys run on pushes to this branch. */
     branch: z.string().min(1).default("main"),
@@ -2586,12 +2591,20 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   checkSnapshots(plan, ctx);
 });
 
+const DEFAULT_CICD_REGISTRY = {
+  "github-actions": "ghcr",
+  "gitlab-ci": "gitlab-registry",
+  "forgejo-actions": "forgejo-registry",
+  "gitea-actions": "gitea-registry",
+} as const;
+
 /**
- * CI/CD provider rules: `cicd.registry` matches `cicd.provider`, and `gitlab-ci` targets only
- * cloud VPS and own-server deployments until other targets have GitLab pipelines.
+ * CI/CD provider rules: `cicd.registry` matches `cicd.provider`, and non-GitHub CI/CD providers
+ * (`gitlab-ci`, `forgejo-actions`, `gitea-actions`) target only cloud VPS and own-server
+ * deployments until other targets have matching pipelines.
  */
 function checkCicd(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
-  const expectedRegistry = plan.cicd.provider === "gitlab-ci" ? "gitlab-registry" : "ghcr";
+  const expectedRegistry = DEFAULT_CICD_REGISTRY[plan.cicd.provider];
   if (plan.cicd.registry !== undefined && plan.cicd.registry !== expectedRegistry) {
     ctx.addIssue({
       code: "custom",
@@ -2600,7 +2613,7 @@ function checkCicd(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
     });
   }
   if (
-    plan.cicd.provider === "gitlab-ci" &&
+    plan.cicd.provider !== "github-actions" &&
     !isCloudTarget(plan.target) &&
     plan.target.provider !== "own"
   ) {
@@ -2989,7 +3002,7 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
     cicd: {
       provider,
       workflowPath: workflowPath ?? workflowPathFor(key, environment, provider),
-      registry: registry ?? (provider === "gitlab-ci" ? "gitlab-registry" : "ghcr"),
+      registry: registry ?? DEFAULT_CICD_REGISTRY[provider],
       ...cicd,
     },
     ...(plan.retarget === undefined

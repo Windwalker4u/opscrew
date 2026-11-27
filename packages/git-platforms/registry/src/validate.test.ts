@@ -1,5 +1,6 @@
 import type { GitPlatformDefinition } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { forgejoDefinition, giteaDefinition } from "@opscrew/git-forgejo-gitea";
 import { definition as github } from "@opscrew/git-github";
 import { definition as gitlab } from "@opscrew/git-gitlab";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,8 @@ describe("validateGitPlatform", () => {
   it("accepts every built-in git platform definition", () => {
     expect(validateGitPlatform(github)).toBe(github);
     expect(validateGitPlatform(gitlab)).toBe(gitlab);
+    expect(validateGitPlatform(forgejoDefinition)).toBe(forgejoDefinition);
+    expect(validateGitPlatform(giteaDefinition)).toBe(giteaDefinition);
   });
 
   it("refuses a wrong contract version", () => {

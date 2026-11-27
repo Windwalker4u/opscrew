@@ -33,15 +33,18 @@ function parts(app: string | undefined, env: string | undefined): string[] {
 }
 
 /**
- * The deploy workflow of an app's environment: `.github/workflows/opscrew-deploy[-<key>][-<env>].yml`
- * for GitHub Actions (the first app's prod: `opscrew-deploy.yml`), or `.gitlab-ci.yml`
- * (`.gitlab/opscrew-deploy-<key>[-<env>].yml` for further apps/environments) for GitLab CI.
+ * The deploy workflow of an app's environment:
+ * - `.github/workflows/opscrew-deploy[-<key>][-<env>].yml` for GitHub Actions;
+ * - `.forgejo/workflows/opscrew-deploy[-<key>][-<env>].yml` for Forgejo Actions;
+ * - `.gitea/workflows/opscrew-deploy[-<key>][-<env>].yml` for Gitea Actions;
+ * - `.gitlab-ci.yml` (`.gitlab/opscrew-deploy-<key>[-<env>].yml` for further apps/environments)
+ *   for GitLab CI.
  * `env` is the environment's name; `prod` or none is prod.
  */
 export function workflowPathFor(
   app?: string,
   env?: string,
-  provider: "github-actions" | "gitlab-ci" = "github-actions",
+  provider: "github-actions" | "gitlab-ci" | "forgejo-actions" | "gitea-actions" = "github-actions",
 ): string {
   const joined = parts(app, env);
   if (provider === "gitlab-ci") {
@@ -50,7 +53,13 @@ export function workflowPathFor(
       : `.gitlab/opscrew-deploy-${joined.join("-")}.yml`;
   }
   const suffix = joined.map((part) => `-${part}`).join("");
-  return `.github/workflows/opscrew-deploy${suffix}.yml`;
+  const folder =
+    provider === "forgejo-actions"
+      ? ".forgejo/workflows"
+      : provider === "gitea-actions"
+        ? ".gitea/workflows"
+        : ".github/workflows";
+  return `${folder}/opscrew-deploy${suffix}.yml`;
 }
 
 /**

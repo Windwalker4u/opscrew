@@ -13,6 +13,8 @@ export const FAKE_SECRET_KINDS = [
   "gitlab-token",
   "gitlab-runner-token",
   "gitlab-deploy-token",
+  "forgejo-token",
+  "gitea-token",
   "anthropic-key",
   "openai-key",
   "aws-access-key-id",
@@ -91,6 +93,9 @@ export function fakeSecret(kind: FakeSecretKind, seed = "opscrew"): string {
       return `glrt-${filler(s, 20, BASE64URL)}`;
     case "gitlab-deploy-token":
       return `gldt-${filler(s, 20, BASE64URL)}`;
+    case "forgejo-token":
+    case "gitea-token":
+      return filler(s, 40, HEX);
     case "anthropic-key":
       return `sk-ant-api03-${filler(s, 93, BASE64URL)}AA`;
     case "openai-key":

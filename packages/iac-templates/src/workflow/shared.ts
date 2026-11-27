@@ -372,6 +372,9 @@ export const MODE_ENV = `    MODE: \${{ ${ROLLING_BACK} && 'rollback' || 'deploy
  * what the repository supports; none with prefixed secrets.
  */
 export function githubEnvironment(plan: DeployPlan): string | undefined {
+  if (plan.cicd.provider === "forgejo-actions" || plan.cicd.provider === "gitea-actions") {
+    return undefined;
+  }
   const environment = plan.environment;
   if (environment?.secrets === "prefixed") return undefined;
   if (environment?.name !== undefined && environment.secrets !== "environment") return undefined;

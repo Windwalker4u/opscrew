@@ -4,6 +4,7 @@
  */
 import type { GitPlatformDefinition, GitPlatformRemote } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
+import { forgejoDefinition, giteaDefinition } from "@opscrew/git-forgejo-gitea";
 import { definition as github } from "@opscrew/git-github";
 import { definition as gitlab } from "@opscrew/git-gitlab";
 import { validateGitPlatform } from "./validate";
@@ -11,9 +12,12 @@ import { validateGitPlatform } from "./validate";
 export { validateGitPlatform } from "./validate";
 
 /** The built-in git platforms, in order. */
-export const GIT_PLATFORMS: readonly GitPlatformDefinition[] = [github, gitlab].map(
-  validateGitPlatform,
-);
+export const GIT_PLATFORMS: readonly GitPlatformDefinition[] = [
+  github,
+  gitlab,
+  forgejoDefinition,
+  giteaDefinition,
+].map(validateGitPlatform);
 
 /** The definition of git platform `id`; throws `INVALID_INPUT` for any unknown id. */
 export function gitPlatform(id: string): GitPlatformDefinition {
