@@ -29,22 +29,22 @@
 
 ## Wave 2 — PR 2 (`042-gitlab`, stacked on PR 1): GitLab platform
 
-- [ ] **T4207 — GitLab token redaction, `fakeSecret`, and `plan-schema` extensions**
+- [x] **T4207 — GitLab token redaction, `fakeSecret`, and `plan-schema` extensions**
   - Owns: `packages/core/src/**`, `packages/plan-schema/src/**`, `packages/plan-schema/plan.schema.json`
   - Accept: FR-4207, FR-4210 (`gitlab-ci`, `gitlab-registry`, `cicd.host`, `cicd.registryHost`, `glpat-`/`glrt-`/`gldt-` redaction & fake secrets).
 
-- [ ] **T4208 — `@opscrew/git-gitlab` REST v4 client, remote parser & platform definition**
+- [x] **T4208 — `@opscrew/git-gitlab` REST v4 client, remote parser & platform definition**
   - Owns: `packages/git-platforms/gitlab/**`, `packages/git-platforms/registry/**`
   - Accept: FR-4205, FR-4206 (full REST v4 client, Free-tier capability handling, smart secret masking/`variable_type: "file"`, nested subgroups + self-managed hosts, registered in `GIT_PLATFORMS`, conformance tests pass).
 
-- [ ] **T4209 — `.gitlab-ci.yml` deploy & MR preview templates (`@opscrew/iac-templates`)**
+- [x] **T4209 — `.gitlab-ci.yml` deploy & MR preview templates (`@opscrew/iac-templates`)**
   - Owns: `packages/iac-templates/src/workflow/{gitlab,gitlab-preview}.ts`, `packages/iac-templates/src/workflow/index.ts`, `packages/iac-templates/src/pins.ts`
   - Accept: FR-4208 (deploy pipeline, rolling/recreate/rollback, `$CI_REGISTRY_IMAGE`, `$DEPLOY_SSH_KEY` file handling, tagged server runner, MR preview with `on_stop` & ADR 0026 `opscrew-preview`, unit tests).
 
-- [ ] **T4210 — GitLab Runner host support (`@opscrew/connector-ssh-host`) & agent wiring (`@opscrew/agents`)**
+- [x] **T4210 — GitLab Runner host support (`@opscrew/connector-ssh-host`) & agent wiring (`@opscrew/agents`)**
   - Owns: `packages/connectors/ssh-host/src/**`, `packages/agents/src/**`
   - Accept: FR-4205, FR-4209 (`opscrew init` detects GitLab `.com` and self-managed hosts & checks `GITLAB_TOKEN`/`GL_TOKEN`/`glab`; host runner unit & script support for `gitlab-runner` with stdin `glrt-` token).
 
-- [ ] **T4211 — User documentation (`docs/guide/gitlab.md`, `docs/guide/runners.md`) & PR 2 verification**
+- [x] **T4211 — User documentation (`docs/guide/gitlab.md`, `docs/guide/runners.md`) & PR 2 verification**
   - Owns: `docs/guide/gitlab.md`, `docs/guide/runners.md`, `specs/042-gitlab/tasks.md`
   - Accept: FR-4210; `pnpm format`, `pnpm lint`, `pnpm typecheck`, all affected tests, and CLI build pass; PR 2 opened stacked on PR 1.

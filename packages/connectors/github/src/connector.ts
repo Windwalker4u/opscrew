@@ -1,4 +1,10 @@
-import type { CommandRunner, Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
+import type {
+  CommandRunner,
+  Connector,
+  CredentialCheck,
+  FetchLike,
+  ProviderRedactor,
+} from "@opscrew/contracts";
 import { errorText, findExecutable, Redactor } from "@opscrew/core";
 import { GITHUB_TOKEN_PERMISSIONS, GitHubClient } from "./github";
 
@@ -26,7 +32,7 @@ export interface GitHubConnectorOptions {
   /** Token already resolved with `resolveGitHubToken` (or undefined). */
   token: string | undefined;
   fetch: FetchLike;
-  redactor?: Redactor;
+  redactor?: ProviderRedactor;
   version?: string;
 }
 

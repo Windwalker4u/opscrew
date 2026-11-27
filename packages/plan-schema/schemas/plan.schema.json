@@ -2034,8 +2034,9 @@
       "type": "object",
       "properties": {
         "provider": {
+          "default": "github-actions",
           "type": "string",
-          "const": "github-actions"
+          "enum": ["github-actions", "gitlab-ci"]
         },
         "workflowPath": {
           "type": "string",
@@ -2043,7 +2044,15 @@
         },
         "registry": {
           "type": "string",
-          "const": "ghcr"
+          "enum": ["ghcr", "gitlab-registry"]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registryHost": {
+          "type": "string",
+          "minLength": 1
         },
         "branch": {
           "default": "main",
@@ -2083,7 +2092,6 @@
           "additionalProperties": false
         }
       },
-      "required": ["provider", "registry"],
       "additionalProperties": false
     },
     "security": {

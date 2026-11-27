@@ -2398,13 +2398,18 @@ const DeployPlanFieldsSchema = z.strictObject({
       .optional(),
   }),
   cicd: z.strictObject({
-    provider: z.literal("github-actions"),
+    provider: z.enum(["github-actions", "gitlab-ci"]).default("github-actions"),
     /**
-     * Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name)`. A
-     * later design keeps it.
+     * Defaults to the app's environment's own, `workflowPathFor(app.key, environment.name, provider)`.
+     * A later design keeps it.
      */
     workflowPath: RepoPathSchema.optional(),
-    registry: z.literal("ghcr"),
+    /** Defaults to the provider's own registry (`ghcr` for GitHub Actions, `gitlab-registry` for GitLab CI). */
+    registry: z.enum(["ghcr", "gitlab-registry"]).optional(),
+    /** Self-managed git platform host (e.g. `gitlab.company.internal`); absent uses the platform default. */
+    host: z.string().min(1).optional(),
+    /** Custom container registry host; absent uses the platform default (`ghcr.io` or `registry.gitlab.com`). */
+    registryHost: z.string().min(1).optional(),
     /** Deploys run on pushes to this branch. */
     branch: z.string().min(1).default("main"),
     /** A `deploy-<UTC time>` tag on the commit after each healthy deploy. */
@@ -2576,9 +2581,36 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   checkCloudflareEdgeNames(plan, ctx);
   checkComponents(plan, ctx);
   checkPlacement(plan, ctx);
+  checkCicd(plan, ctx);
   checkDatabaseRollback(plan, ctx);
   checkSnapshots(plan, ctx);
 });
+
+/**
+ * CI/CD provider rules: `cicd.registry` matches `cicd.provider`, and `gitlab-ci` targets only
+ * cloud VPS and own-server deployments until other targets have GitLab pipelines.
+ */
+function checkCicd(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const expectedRegistry = plan.cicd.provider === "gitlab-ci" ? "gitlab-registry" : "ghcr";
+  if (plan.cicd.registry !== undefined && plan.cicd.registry !== expectedRegistry) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["cicd", "registry"],
+      message: `must be "${expectedRegistry}" when cicd.provider is "${plan.cicd.provider}"`,
+    });
+  }
+  if (
+    plan.cicd.provider === "gitlab-ci" &&
+    !isCloudTarget(plan.target) &&
+    plan.target.provider !== "own"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["cicd", "provider"],
+      message: `is supported only for cloud server and own-server targets (not "${plan.target.provider}")`,
+    });
+  }
+}
 
 /**
  * Snapshots only where a release can take them (a cloud server, the user's own server, this
@@ -2938,7 +2970,7 @@ function withTargetDefaults(target: z.output<typeof DeployTargetSchema>) {
  */
 export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
   const { engine, dir, ...infra } = plan.infra;
-  const { provider, workflowPath, ...cicd } = plan.cicd;
+  const { provider, workflowPath, registry, ...cicd } = plan.cicd;
   const key = plan.app.key;
   const environment = plan.environment?.name;
   return {
@@ -2954,7 +2986,12 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
           ),
         }),
     infra: { engine, dir: dir ?? infraDirFor(key, environment), ...infra },
-    cicd: { provider, workflowPath: workflowPath ?? workflowPathFor(key, environment), ...cicd },
+    cicd: {
+      provider,
+      workflowPath: workflowPath ?? workflowPathFor(key, environment, provider),
+      registry: registry ?? (provider === "gitlab-ci" ? "gitlab-registry" : "ghcr"),
+      ...cicd,
+    },
     ...(plan.retarget === undefined
       ? {}
       : {

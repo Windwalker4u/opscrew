@@ -10,6 +10,7 @@ import {
   plural,
   readTextIfExists,
 } from "@opscrew/core";
+import { gitPlatformByCicdProvider } from "@opscrew/git-platforms";
 import {
   additionsPath,
   appServerVariables,
@@ -32,7 +33,6 @@ import {
   backupsBucketOf,
   type CloudDeployTarget,
   type DeployPlan,
-  ghcrImageFor,
   isCloudTarget,
   isHostingTarget,
   isServerlessProvider,
@@ -136,6 +136,7 @@ import {
   readableDeployPause,
   rotationPauseRefusal,
 } from "../shared/deploy-pause";
+import { requireGitPlatformRemote } from "../shared/git-platform";
 import { hostPlanFile } from "../shared/host-plan";
 import { appMemoryMb, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { runPhase } from "../shared/phase-status";
@@ -154,9 +155,15 @@ import {
   showCancelDates,
   shutDownCancelled,
 } from "./cancel";
-import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
+import { checkProvider, type GitHubSetup, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { renderedServers, requireNoSmallerDisk } from "./disk-guard";
+import {
+  platformEnvironmentName,
+  publishPlatformDeployment,
+  setPlatformDeploySecrets,
+  setupGitPlatform,
+} from "./git-platform";
 import { requireNoMoveInProgress, warnInTempFolder } from "./guard";
 import { type LeavingHome, switchAccessMode } from "./home-switch";
 import { monitoringHostPlans } from "./monitoring";
@@ -569,7 +576,13 @@ async function provisionFlow(
   // at the check's step.
   const uptime = await planProvisionUptime(deps, {
     plan,
-    github: () => githubCoordinates(git),
+    github:
+      plan.cicd.provider === "github-actions"
+        ? () => githubCoordinates(git)
+        : async () => {
+            const { remote } = await requireGitPlatformRemote(deps);
+            return { owner: remote.owner, repo: remote.repo };
+          },
     services,
     command: rerun,
     ask: options.planOnly !== true,
@@ -630,12 +643,14 @@ async function provisionFlow(
   // The providers of the extra servers OpsCrew creates, besides the app server's.
   const extraProviders = extraCloudProviders(plan, profile.id);
   const others = extraProviders.map((provider) => `${providerProfile(provider).displayName}, `);
+  const cicdPlatform = gitPlatformByCicdProvider(plan.cicd.provider);
+  const platformName = cicdPlatform.displayName;
   deps.reporter.step(
     sharedHost !== undefined
-      ? `Checking the login to ${sharedHost}'s server, Cloudflare and GitHub access`
+      ? `Checking the login to ${sharedHost}'s server, Cloudflare and ${platformName} access`
       : ownServer
-        ? `Checking the login to your server, ${others.join("")}Cloudflare and GitHub access`
-        : `Checking your ${profile.displayName}, ${others.join("")}Cloudflare and GitHub access`,
+        ? `Checking the login to your server, ${others.join("")}Cloudflare and ${platformName} access`
+        : `Checking your ${profile.displayName}, ${others.join("")}Cloudflare and ${platformName} access`,
   );
   if (sharedHost === undefined) await checkProvider(deps, profile.id, services);
   for (const provider of extraProviders) {
@@ -687,14 +702,37 @@ async function provisionFlow(
       again,
     });
   }
-  const github = await setupGitHub(deps, git, services);
+  const gitPlatform =
+    plan.cicd.provider === "github-actions"
+      ? undefined
+      : await setupGitPlatform(deps, plan, {
+          ...(services.gitPlatform !== undefined ? { client: services.gitPlatform } : {}),
+        });
+  const github: GitHubSetup | undefined =
+    gitPlatform === undefined ? await setupGitHub(deps, git, services) : undefined;
+  const repoCoords =
+    gitPlatform !== undefined
+      ? {
+          owner: gitPlatform.remote.owner,
+          repo: gitPlatform.remote.repo,
+          defaultBranch: gitPlatform.defaultBranch,
+          fullPath: gitPlatform.remote.fullPath,
+        }
+      : {
+          owner: (github as GitHubSetup).owner,
+          repo: (github as GitHubSetup).repo,
+          defaultBranch: (github as GitHubSetup).defaultBranch,
+          fullPath: `${(github as GitHubSetup).owner}/${(github as GitHubSetup).repo}`,
+        };
   // A rollback pins the environment (ADR 0023): a move's deploy and window need its deploys, and
   // what this run merges deploys only once the pin ends. Only a move needs the variable read; the
   // note doesn't ask a token for a new permission.
   const paused =
-    plan.move !== undefined
-      ? await deployPauseOf(github, plan)
-      : await readableDeployPause(github, plan);
+    github === undefined
+      ? undefined
+      : plan.move !== undefined
+        ? await deployPauseOf(github, plan)
+        : await readableDeployPause(github, plan);
   const pinned = paused?.reason === "rollback" ? paused : undefined;
   if (pinned !== undefined && plan.move !== undefined) {
     const resume = `opscrew rollback${await commandFlags(deps.paths.root, plan.environment?.name ?? "prod", plan.app.key)} --resume`;
@@ -742,7 +780,7 @@ async function provisionFlow(
       plan,
       builderBranch: await builderBranch(deps.paths, plan),
       requirements,
-      github,
+      github: repoCoords,
       deployPublicKey: "",
       cloudflare,
       edge: {
@@ -796,7 +834,7 @@ async function provisionFlow(
               ? undefined
               : {
                   workflow: posix.basename(plan.cicd.workflowPath),
-                  branch: workflowBranch(plan, github.defaultBranch),
+                  branch: workflowBranch(plan, repoCoords.defaultBranch),
                 },
           ),
         }
@@ -830,20 +868,26 @@ async function provisionFlow(
   // Where the deploy secrets live, before anything is rendered (a plan-only run asks GitHub
   // nothing); a preview environment is refused here while a pull request could read another
   // environment's deploy secrets.
-  const placed = await placeDeploySecrets(deps, github, plan, {
-    command,
-    phase,
-    planOnly: !commits,
-  });
+  const placed =
+    github !== undefined
+      ? await placeDeploySecrets(deps, github, plan, {
+          command,
+          phase,
+          planOnly: !commits,
+        })
+      : { plan, branchRules: undefined, readable: [] as string[] };
   plan = placed.plan;
-  const deployBranch = await deployBranchFor(deps, {
-    git,
-    github,
-    plan,
-    phase,
-    commits,
-    push: options.push !== false,
-  });
+  const deployBranch =
+    github !== undefined
+      ? await deployBranchFor(deps, {
+          git,
+          github,
+          plan,
+          phase,
+          commits,
+          push: options.push !== false,
+        })
+      : undefined;
   await extras.ready?.();
   // The note's advice (a new server for a fresh address) is for servers OpsCrew creates.
   const addressWasPublic =
@@ -866,7 +910,7 @@ async function provisionFlow(
     );
   }
   // The scheduled check's key (the repository's), where the check reads the disk over SSH.
-  const repository = `${github.owner}/${github.repo}`;
+  const repository = repoCoords.fullPath;
   const checkKey = await environmentCheckKey(deps, plan);
   if (checkKey?.created) {
     deps.reporter.info(
@@ -1082,7 +1126,7 @@ async function provisionFlow(
     plan,
     builderBranch: await builderBranch(deps.paths, plan),
     requirements,
-    github,
+    github: repoCoords,
     deployPublicKey: deployKey.publicKeyOpenSsh,
     cloudflare,
     server: knownServer,
@@ -1095,11 +1139,13 @@ async function provisionFlow(
   });
   // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221); a
   // preview environment has no runtime files for it.
-  const dependabot = previews
-    ? undefined
-    : await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
+  const dependabot =
+    previews || github === undefined
+      ? undefined
+      : await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
   // The scheduled check's files, rendered from every app's and environment's plan.
-  const check = await deploySetupCheck(deps, plan, github);
+  const check =
+    github !== undefined ? await deploySetupCheck(deps, plan, github) : { files: [], removed: [] };
   const rendered = [
     ...deploymentFiles(
       plan,
@@ -1639,7 +1685,11 @@ async function provisionFlow(
       env: previewEnv,
       key: previewKey,
       repository,
-      imageName: ghcrImageFor(repository, plan.app.key),
+      imageName: cicdPlatform.containerImage(
+        { host: plan.cicd.host ?? cicdPlatform.defaultHost, fullPath: repository },
+        plan.app.key,
+        plan.cicd.registryHost,
+      ),
       branchRules: placed.branchRules,
       readable: placed.readable ?? [],
       command: again,
@@ -1668,17 +1718,26 @@ async function provisionFlow(
     save: async () => {
       if (previewEnv !== undefined && previewKey !== undefined) {
         const build = previewEnv.build.names;
-        await setDeploySecrets(
-          deps,
-          github,
-          plan,
-          previewDeploySecrets({ ...secretsTarget, key: previewKey, env: previewEnv }),
-          build,
-          phase,
-          {
-            about: `The SSH key is the preview key, which can run only the preview command on the preview server; the environment's deploy key stays on this computer. The previews' build values: ${build.length > 0 ? build.join(", ") : "none"}.`,
-          },
-        );
+        const previewSecrets = previewDeploySecrets({
+          ...secretsTarget,
+          key: previewKey,
+          env: previewEnv,
+        });
+        const about = `The SSH key is the preview key, which can run only the preview command on the preview server; the environment's deploy key stays on this computer. The previews' build values: ${build.length > 0 ? build.join(", ") : "none"}.`;
+        if (gitPlatform !== undefined) {
+          await setPlatformDeploySecrets(deps, gitPlatform, plan, {
+            secrets: previewSecrets,
+            variableNames: build,
+            environment: platformEnvironmentName(plan),
+            branch: plan.cicd.branch,
+            phase,
+            about,
+          });
+        } else {
+          await setDeploySecrets(deps, github as GitHubSetup, plan, previewSecrets, build, phase, {
+            about,
+          });
+        }
         return;
       }
       // R2's key is a token the user limits to the bucket, so it comes now that the bucket exists.
@@ -1707,7 +1766,7 @@ async function provisionFlow(
           ? "The deploy secrets are not stored yet."
           : `The bucket ${backupsBucket.bucket} exists; the deploy secrets are not stored yet.`;
       const copy =
-        offsite === undefined
+        offsite === undefined || github === undefined
           ? undefined
           : await offsiteSetup(deps, plan, services, {
               github,
@@ -1726,26 +1785,37 @@ async function provisionFlow(
         });
       }
       recoveryCopy = copy?.recoveryCopy;
-      await setDeploySecrets(
-        deps,
-        github,
+      const secretValues = deploySecrets({
         plan,
-        deploySecrets({
+        host: secretsTarget.host,
+        privateKey: deployKey.privateKeyOpenSsh,
+        knownHosts: secretsTarget.knownHosts,
+        ...(copy !== undefined ? { offsite: offsiteEnvFile(copy.values) } : {}),
+        environment,
+        ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
+        ...(ctx.originTls !== undefined ? { originTls: originTlsSecret(site.values) } : {}),
+        ...(serverReach.length > 0 ? { servers: serverReach } : {}),
+      });
+      if (gitPlatform !== undefined) {
+        await setPlatformDeploySecrets(deps, gitPlatform, plan, {
+          secrets: secretValues,
+          variableNames: environment.names,
+          environment: platformEnvironmentName(plan),
+          branch: plan.cicd.branch,
+          phase,
+        });
+      } else {
+        await setDeploySecrets(
+          deps,
+          github as GitHubSetup,
           plan,
-          host: secretsTarget.host,
-          privateKey: deployKey.privateKeyOpenSsh,
-          knownHosts: secretsTarget.knownHosts,
-          ...(copy !== undefined ? { offsite: offsiteEnvFile(copy.values) } : {}),
-          environment,
-          ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
-          ...(ctx.originTls !== undefined ? { originTls: originTlsSecret(site.values) } : {}),
-          ...(serverReach.length > 0 ? { servers: serverReach } : {}),
-        }),
-        environment.names,
-        phase,
-      );
+          secretValues,
+          environment.names,
+          phase,
+        );
+      }
     },
-    where: { host: secretsTarget.host, owner: github.owner, repo: github.repo },
+    where: { host: secretsTarget.host, owner: repoCoords.owner, repo: repoCoords.repo },
     noun: "server",
   });
   if (plan !== unrecorded) await writePlanIfChanged(deps, persisted(plan));
@@ -1754,32 +1824,35 @@ async function provisionFlow(
   // where it reads the disk over SSH, then its secrets.
   // A server this apply created got the key at its first boot (`created`).
   const keyServer =
-    checkKey === undefined
+    checkKey === undefined || github === undefined
       ? undefined
       : await checkKeyServer(deps, { plan, services, ownRun, key: checkKey, repository, created });
-  const checkHost = await provisionCheck(deps, {
-    plan,
-    github,
-    ...(checkKey !== undefined ? { key: checkKey } : {}),
-    ...(keyServer !== undefined
-      ? {
-          server: {
-            ...keyServer,
-            reach: {
-              host: secretsTarget.host,
-              port: ownRun?.sshPort ?? 22,
-              user: "deploy",
-              knownHosts: secretsTarget.knownHosts,
-            },
-          },
-        }
-      : {}),
-    storeSecrets: options.secrets !== false,
-    services,
-    uptime,
-    command,
-    phase,
-  });
+  const checkHost =
+    github === undefined
+      ? undefined
+      : await provisionCheck(deps, {
+          plan,
+          github,
+          ...(checkKey !== undefined ? { key: checkKey } : {}),
+          ...(keyServer !== undefined
+            ? {
+                server: {
+                  ...keyServer,
+                  reach: {
+                    host: secretsTarget.host,
+                    port: ownRun?.sshPort ?? 22,
+                    user: "deploy",
+                    knownHosts: secretsTarget.knownHosts,
+                  },
+                },
+              }
+            : {}),
+          storeSecrets: options.secrets !== false,
+          services,
+          uptime,
+          command,
+          phase,
+        });
   if (checkHost?.approval) {
     approvals.push(approvalEntry(checkHost.approval));
     plan = record(checkHost.applied || host?.applied === true);
@@ -1789,27 +1862,39 @@ async function provisionFlow(
   // Where each service runs, once verify saw a deploy succeed and no move is under way.
   plan = withPlacement(plan);
 
-  // 10. Commit, push and open the pull request (with the user's additions, which the deploy
+  // 10. Commit, push and open the pull/merge request (with the user's additions, which the deploy
   // uploads, and the recovery copy when this computer's files changed).
-  const published = await publishDeployment(deps, {
-    git,
-    github,
-    plan: persisted(plan),
-    files: [
-      ...files.map((f) => f.path),
-      ...(ctx.additions === true ? [additionsPath(plan)] : []),
-      ...check.removed,
-      // Out of home with the repository's last app there: the outside check's workflow goes.
-      ...(await removeUnusedOutsideCheck(deps, plan)),
-    ],
-    push: options.push !== false,
-    secretsStored,
-    phase,
-    branch: deployBranch,
-    dependabot,
-    ...(recovery !== undefined ? { recovery } : {}),
-    ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
-  });
+  const publishPaths = [
+    ...files.map((f) => f.path),
+    ...(ctx.additions === true ? [additionsPath(plan)] : []),
+    ...check.removed,
+    // Out of home with the repository's last app there: the outside check's workflow goes.
+    ...(await removeUnusedOutsideCheck(deps, plan)),
+  ];
+  const published =
+    gitPlatform !== undefined
+      ? await publishPlatformDeployment(deps, {
+          git,
+          setup: gitPlatform,
+          plan: persisted(plan),
+          files: publishPaths,
+          push: options.push !== false,
+          secretsStored,
+          phase,
+        })
+      : await publishDeployment(deps, {
+          git,
+          github: github as GitHubSetup,
+          plan: persisted(plan),
+          files: publishPaths,
+          push: options.push !== false,
+          secretsStored,
+          phase,
+          branch: deployBranch,
+          dependabot,
+          ...(recovery !== undefined ? { recovery } : {}),
+          ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
+        });
   plan = published.plan;
   // No first deploy for a preview environment: its previews come from pull requests.
   const merge = previews
@@ -1821,8 +1906,8 @@ async function provisionFlow(
   const pausedNote = await pausedMergeNote(deps, plan, pinned);
   if (pausedNote !== undefined) deps.reporter.info(pausedNote);
   // The environment is set up again: a pause of its check (a move's window, a teardown) ends.
-  await resumeCheck(deps, github, plan, { command, phase });
-  if (renewed && secretsStored && ctx.originTls !== undefined) {
+  if (github !== undefined) await resumeCheck(deps, github, plan, { command, phase });
+  if (renewed && secretsStored && ctx.originTls !== undefined && github !== undefined) {
     // No deploy starts while a service moves: its window decides when the app's server changes.
     if (plan.move !== undefined && plan.move.step !== "switched") {
       deps.reporter.info(

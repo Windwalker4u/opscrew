@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { FetchLike } from "@opscrew/contracts";
+import type { FetchLike, ProviderRedactor } from "@opscrew/contracts";
 import {
   CONNECTION_HINT,
   durationText,
@@ -74,7 +74,7 @@ export interface GitHubClientOptions {
    * Tokens GitHub hands out (runner tokens, GHCR's pull tokens) are registered here on receipt.
    * Pass the session's redactor; a private one is created when omitted.
    */
-  redactor?: Redactor;
+  redactor?: ProviderRedactor;
 }
 
 /** A user or team whose approval a job in a GitHub environment needs. */
@@ -245,6 +245,9 @@ export interface OpenIssue {
 export interface PullRequest {
   number: number;
   url: string;
+  title?: string;
+  head?: string;
+  base?: string;
 }
 
 /** An open Dependabot alert: its advisory's severity, the package and the alert's page. */
@@ -307,7 +310,13 @@ const IssueSchema = z.looseObject({
   pull_request: z.unknown().optional(),
 });
 const VariableSchema = z.looseObject({ value: z.string() });
-const PullSchema = z.looseObject({ number: z.number(), html_url: z.string() });
+const PullSchema = z.looseObject({
+  number: z.number(),
+  html_url: z.string(),
+  title: z.string().optional(),
+  head: z.looseObject({ ref: z.string() }).optional(),
+  base: z.looseObject({ ref: z.string() }).optional(),
+});
 const AuthoredPullSchema = PullSchema.extend({
   title: z.string(),
   created_at: z.string(),
@@ -715,7 +724,7 @@ export class GitHubClient {
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #now: () => number;
   readonly #timeoutMs: number;
-  readonly #redactor: Redactor;
+  readonly #redactor: ProviderRedactor;
   readonly #ghcr: GhcrReader;
 
   constructor(options: GitHubClientOptions) {
@@ -1299,7 +1308,15 @@ export class GitHubClient {
     const query = new URLSearchParams({ state: "open", head: `${owner}:${head}`, per_page: "1" });
     const { json } = await this.#request("GET", `/repos/${owner}/${repo}/pulls?${query}`, what);
     const first = this.#parse(z.array(PullSchema), json, what)[0];
-    return first ? { number: first.number, url: first.html_url } : undefined;
+    return first
+      ? {
+          number: first.number,
+          url: first.html_url,
+          ...(first.title !== undefined ? { title: first.title } : {}),
+          ...(first.head?.ref !== undefined ? { head: first.head.ref } : {}),
+          ...(first.base?.ref !== undefined ? { base: first.base.ref } : {}),
+        }
+      : undefined;
   }
 
   async createPullRequest(input: {
@@ -1320,7 +1337,13 @@ export class GitHubClient {
       },
     );
     const pull = this.#parse(PullSchema, json, what);
-    return { number: pull.number, url: pull.html_url };
+    return {
+      number: pull.number,
+      url: pull.html_url,
+      ...(pull.title !== undefined ? { title: pull.title } : {}),
+      ...(pull.head?.ref !== undefined ? { head: pull.head.ref } : {}),
+      ...(pull.base?.ref !== undefined ? { base: pull.base.ref } : {}),
+    };
   }
 
   /** Replaces the title and body of the pull request `number`. */
@@ -1339,7 +1362,13 @@ export class GitHubClient {
       { body: { title: input.title, body: input.body } },
     );
     const pull = this.#parse(PullSchema, json, what);
-    return { number: pull.number, url: pull.html_url };
+    return {
+      number: pull.number,
+      url: pull.html_url,
+      ...(pull.title !== undefined ? { title: pull.title } : {}),
+      ...(pull.head?.ref !== undefined ? { head: pull.head.ref } : {}),
+      ...(pull.base?.ref !== undefined ? { base: pull.base.ref } : {}),
+    };
   }
 
   /** The sealing key of the secrets below `secretsPath` (`…/actions/secrets` and the like). */
@@ -1442,6 +1471,23 @@ export class GitHubClient {
     const key = publicKey ?? (await this.environmentPublicKey(owner, repo, env));
     const secrets = `${environmentPath(owner, repo, env)}/secrets`;
     await this.#putSecret(secrets, name, value, key, ENVIRONMENTS);
+  }
+
+  /** Whether the GitHub environment `env` has the secret `name` (its value is never read); 404 is false. */
+  async environmentSecretExists(
+    owner: string,
+    repo: string,
+    env: string,
+    name: string,
+  ): Promise<boolean> {
+    assertSecretName(name);
+    const { status } = await this.#request(
+      "GET",
+      `${environmentPath(owner, repo, env)}/secrets/${name}`,
+      `read whether the secret ${name} exists in environment ${env}`,
+      { ok: [404], permission: ENVIRONMENTS },
+    );
+    return status !== 404;
   }
 
   /** Deletes a secret of the GitHub environment `env`; a missing one (404) counts as deleted. */

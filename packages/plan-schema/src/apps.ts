@@ -34,13 +34,22 @@ function parts(app: string | undefined, env: string | undefined): string[] {
 
 /**
  * The deploy workflow of an app's environment: `.github/workflows/opscrew-deploy[-<key>][-<env>].yml`
- * (the first app's prod: `opscrew-deploy.yml`). `env` is the environment's name; `prod` or none
- * is prod.
+ * for GitHub Actions (the first app's prod: `opscrew-deploy.yml`), or `.gitlab-ci.yml`
+ * (`.gitlab/opscrew-deploy-<key>[-<env>].yml` for further apps/environments) for GitLab CI.
+ * `env` is the environment's name; `prod` or none is prod.
  */
-export function workflowPathFor(app?: string, env?: string): string {
-  const suffix = parts(app, env)
-    .map((part) => `-${part}`)
-    .join("");
+export function workflowPathFor(
+  app?: string,
+  env?: string,
+  provider: "github-actions" | "gitlab-ci" = "github-actions",
+): string {
+  const joined = parts(app, env);
+  if (provider === "gitlab-ci") {
+    return joined.length === 0
+      ? ".gitlab-ci.yml"
+      : `.gitlab/opscrew-deploy-${joined.join("-")}.yml`;
+  }
+  const suffix = joined.map((part) => `-${part}`).join("");
   return `.github/workflows/opscrew-deploy${suffix}.yml`;
 }
 

@@ -136,6 +136,7 @@ describe("pins.ts", () => {
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
         "alloy",
+        "alpine",
         "beszel",
         "beszelAgent",
         "busybox",
@@ -144,6 +145,8 @@ describe("pins.ts", () => {
         "composer",
         "cloudflared",
         "curl",
+        "dockerCli",
+        "dockerDind",
         "dockerfileSyntax",
         "dragonfly",
         "redis",

@@ -44,6 +44,9 @@ function isPlaceholder(value: string): boolean {
 export const TOKEN_PATTERNS = {
   "github-token": /(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,251}(?![A-Za-z0-9])/g,
   "github-pat": /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{22,255}/g,
+  /** GitLab personal/project/group (`glpat-`), runner (`glrt-`), deploy (`gldt-`), and trigger (`glptt-`) tokens. */
+  "gitlab-token":
+    /(?<![A-Za-z0-9_-])(?:gl(?:pat|rt|dt)-[A-Za-z0-9_-]{20,}|glptt-[0-9a-f]{40})(?![A-Za-z0-9_-])/g,
   "anthropic-api-key": /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g,
   "openai-api-key":
     /(?<![A-Za-z0-9_-])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9_-]))/g,
@@ -68,6 +71,7 @@ export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
   },
   { id: "github-token", pattern: TOKEN_PATTERNS["github-token"] },
   { id: "github-pat", pattern: TOKEN_PATTERNS["github-pat"] },
+  { id: "gitlab-token", pattern: TOKEN_PATTERNS["gitlab-token"] },
   { id: "anthropic-api-key", pattern: TOKEN_PATTERNS["anthropic-api-key"] },
   { id: "openai-api-key", pattern: TOKEN_PATTERNS["openai-api-key"] },
   { id: "aws-access-key-id", pattern: TOKEN_PATTERNS["aws-access-key-id"] },

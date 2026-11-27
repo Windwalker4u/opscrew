@@ -132,6 +132,10 @@ loki.process "mask" {
     replace    = "<opscrew:github-pat>"
   }
   stage.replace {
+    expression = "(?:^|[^A-Za-z0-9_-])((?:gl(?:pat|rt|dt)-[A-Za-z0-9_-]{20,}|glptt-[0-9a-f]{40}))"
+    replace    = "<opscrew:gitlab-token>"
+  }
+  stage.replace {
     expression = "(?:^|[^A-Za-z0-9_-])(sk-ant-[A-Za-z0-9_-]{20,})"
     replace    = "<opscrew:anthropic-api-key>"
   }
@@ -606,6 +610,10 @@ loki.process "mask" {
     replace    = "<opscrew:github-pat>"
   }
   stage.replace {
+    expression = "(?:^|[^A-Za-z0-9_-])((?:gl(?:pat|rt|dt)-[A-Za-z0-9_-]{20,}|glptt-[0-9a-f]{40}))"
+    replace    = "<opscrew:gitlab-token>"
+  }
+  stage.replace {
     expression = "(?:^|[^A-Za-z0-9_-])(sk-ant-[A-Za-z0-9_-]{20,})"
     replace    = "<opscrew:anthropic-api-key>"
   }
@@ -995,6 +1003,10 @@ loki.process "mask" {
   stage.replace {
     expression = "(?:^|[^A-Za-z0-9_])(github_pat_[A-Za-z0-9_]{22,255})"
     replace    = "<opscrew:github-pat>"
+  }
+  stage.replace {
+    expression = "(?:^|[^A-Za-z0-9_-])((?:gl(?:pat|rt|dt)-[A-Za-z0-9_-]{20,}|glptt-[0-9a-f]{40}))"
+    replace    = "<opscrew:gitlab-token>"
   }
   stage.replace {
     expression = "(?:^|[^A-Za-z0-9_-])(sk-ant-[A-Za-z0-9_-]{20,})"

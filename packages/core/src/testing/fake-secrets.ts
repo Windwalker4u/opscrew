@@ -10,6 +10,9 @@ import { join } from "node:path";
 export const FAKE_SECRET_KINDS = [
   "github-token",
   "github-pat",
+  "gitlab-token",
+  "gitlab-runner-token",
+  "gitlab-deploy-token",
   "anthropic-key",
   "openai-key",
   "aws-access-key-id",
@@ -82,6 +85,12 @@ export function fakeSecret(kind: FakeSecretKind, seed = "opscrew"): string {
       return `ghp_${filler(s, 36)}`;
     case "github-pat":
       return `github_pat_${filler(`${s}:a`, 22)}_${filler(`${s}:b`, 59)}`;
+    case "gitlab-token":
+      return `glpat-${filler(s, 20, BASE64URL)}`;
+    case "gitlab-runner-token":
+      return `glrt-${filler(s, 20, BASE64URL)}`;
+    case "gitlab-deploy-token":
+      return `gldt-${filler(s, 20, BASE64URL)}`;
     case "anthropic-key":
       return `sk-ant-api03-${filler(s, 93, BASE64URL)}AA`;
     case "openai-key":

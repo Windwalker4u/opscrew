@@ -6,6 +6,7 @@ import {
 } from "@opscrew/connector-github";
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
+import { detectProjectGitPlatform, gitPlatformConnectorFor } from "./git-platform";
 
 /** What the git and GitHub helpers need from the phase. */
 type GitDeps = Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">;
@@ -85,9 +86,12 @@ export async function repositoryPrivate(
   deps: GitDeps & Pick<PhaseDeps, "fetch" | "version">,
 ): Promise<boolean | undefined> {
   try {
-    const { owner, repo } = await githubCoordinates(gitClient(deps));
-    const github = await githubClientFromToken(deps);
-    return github === undefined ? undefined : (await github.getRepo(owner, repo)).private;
+    const detected = await detectProjectGitPlatform(deps);
+    if (!detected) return undefined;
+    const connector = await gitPlatformConnectorFor(deps, detected.platform, detected.remote.host);
+    return connector.client === undefined
+      ? undefined
+      : (await connector.client.getRepo(detected.remote)).private;
   } catch {
     return undefined;
   }

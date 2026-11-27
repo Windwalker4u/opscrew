@@ -130,6 +130,7 @@ export type InitCheckId =
   | "namecheap"
   | "godaddy"
   | "github"
+  | `git-platform:${string}`
   /** Listed only with the scheduled check on in GitHub Actions: the GitHub token's permissions it needs. */
   | "scheduled-check"
   /**
@@ -192,6 +193,11 @@ const SCANNERS = [
   { name: "osv-scanner", url: "https://google.github.io/osv-scanner/installation/" },
   { name: "trivy", url: "https://trivy.dev/latest/getting-started/installation/" },
 ] as const;
+
+/** Derives the init checklist id for a registered git platform without unsafe casts. */
+function gitPlatformCheckId(platform: Pick<GitPlatformDefinition, "id">): InitCheckId {
+  return platform.id === "github" ? "github" : `git-platform:${platform.id}`;
+}
 
 /** True when no check failed (optional checks never fail, so warnings still pass). */
 export function initPassed(checks: readonly InitCheck[]): boolean {
@@ -326,10 +332,18 @@ export async function runInitChecks(
       : undefined;
   const updaterZone = homeUpdaterZone(artifacts.plan);
 
+  const resolvedRepo = await repoInfo;
   const checks = await Promise.all([
     guard("node", "Node.js", true, async () => checkNode(services.nodeVersion)),
-    guard("git", "git", true, async () => checkGit((await repoInfo).git)),
-    guard("repository", "GitHub repository", true, async () => checkRepository(await repoInfo)),
+    guard("git", "git", true, async () => checkGit(resolvedRepo.git)),
+    guard(
+      "repository",
+      resolvedRepo.detected
+        ? `${resolvedRepo.detected.platform.displayName} repository`
+        : "GitHub repository",
+      true,
+      async () => checkRepository(resolvedRepo),
+    ),
     guard("engine", "OpenTofu or Terraform", true, () => checkEngine(deps, which)),
     provider === "hosting"
       ? guard("ssh", "sftp and ssh-keyscan", true, async () =>
@@ -419,14 +433,30 @@ export async function runInitChecks(
           ),
         ),
     ),
-    guard("github", "GitHub token", true, () =>
-      withBudget(
-        checkGitHub(offline, github, deploysThroughActions(artifacts)),
-        budget,
-        "GitHub",
-        true,
-      ),
-    ),
+    ...(resolvedRepo.detected !== undefined && resolvedRepo.coordinates === undefined
+      ? (() => {
+          const { platform, remote } = resolvedRepo.detected;
+          return [
+            guard(gitPlatformCheckId(platform), `${platform.displayName} token`, true, () =>
+              withBudget(
+                checkGitPlatformToken(deps, offline, platform, remote.host),
+                budget,
+                platform.displayName,
+                true,
+              ),
+            ),
+          ];
+        })()
+      : [
+          guard("github", "GitHub token", true, () =>
+            withBudget(
+              checkGitHub(offline, github, deploysThroughActions(artifacts)),
+              budget,
+              "GitHub",
+              true,
+            ),
+          ),
+        ]),
     ...(artifacts.plan !== undefined && checksInActions(artifacts.plan)
       ? [
           guard("scheduled-check", "GitHub permissions for the scheduled check", true, () =>
@@ -507,6 +537,45 @@ async function withBudget(
   }
 }
 
+async function checkGitPlatformToken(
+  deps: PhaseDeps,
+  offline: boolean,
+  platform: GitPlatformDefinition,
+  host: string,
+): Promise<CheckResult> {
+  const token = await platform.resolveToken(deps.env, deps.runner);
+  if (!token) {
+    return {
+      status: "fail",
+      message: `No ${platform.displayName} token found (${platform.credentials.envVars.join(" or ")}${platform.credentials.cliCommand ? `, or \`${platform.credentials.cliCommand}\`` : ""}).`,
+      fix: platform.texts.tokenFixHint,
+    };
+  }
+  deps.redactor.addLiteral(token, `${platform.id}-token`);
+  if (offline) {
+    return {
+      status: "pass",
+      message: `${platform.displayName} token is set for ${host} (${OFFLINE_NOTE}).`,
+    };
+  }
+  const connector = platform.createConnector({
+    token,
+    host,
+    fetch: deps.fetch,
+    redactor: deps.redactor,
+    version: deps.version,
+  });
+  const verified = await connector.verifyCredentials();
+  if (verified.ok) {
+    return { status: "pass", message: verified.message };
+  }
+  return {
+    status: "fail",
+    message: verified.message,
+    fix: platform.texts.tokenFixHint,
+  };
+}
+
 function checkNode(version = process.versions.node): CheckResult {
   if (versionAtLeast(version, MIN_NODE_VERSION)) {
     return { status: "pass", message: `Node.js ${version}.` };
@@ -528,7 +597,7 @@ async function inspectRepository(
   if (!(await client.isRepo())) return { git, isRepo: false };
   const remote = await client.remoteUrl("origin");
   const coordinates = remote ? parseGitHubRepo(remote) : undefined;
-  const detected = remote ? detectGitPlatform(remote) : undefined;
+  const detected = remote ? detectGitPlatform(remote, deps.env) : undefined;
   return {
     git,
     isRepo: true,
