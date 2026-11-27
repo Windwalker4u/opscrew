@@ -9,6 +9,10 @@ on:
     paths:
       - packages/iac-templates/src/hosting/**
       - .github/workflows/hosting-agent.yml
+  pull_request:
+    paths:
+      - packages/iac-templates/src/hosting/**
+      - .github/workflows/hosting-agent.yml
   workflow_dispatch:
 
 permissions:
