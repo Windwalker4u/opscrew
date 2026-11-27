@@ -31,6 +31,7 @@ const FastlyBackendSchema = z.object({
   name: z.string().min(1),
   address: z.string().min(1),
   ssl_client_cert: z.string().nullable().optional(),
+  ssl_ca_cert: z.string().nullable().optional(),
 });
 
 export type FastlyIpRanges = { ipv4: string[]; ipv6: string[] };
@@ -55,6 +56,7 @@ export interface FastlyClient {
     backendName: string;
     clientCertPem: string;
     clientKeyPem: string;
+    originCaCertPem?: string;
   }): Promise<void>;
   activateVersion(serviceId: string, version: number): Promise<void>;
 }
@@ -213,6 +215,7 @@ export function fastlyClient(deps: FastlyClientDeps): FastlyClient {
           body: {
             ssl_client_cert: input.clientCertPem,
             ssl_client_key: input.clientKeyPem,
+            ...(input.originCaCertPem === undefined ? {} : { ssl_ca_cert: input.originCaCertPem }),
           },
         },
       );

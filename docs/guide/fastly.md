@@ -43,12 +43,16 @@ Like Cloudflare, Fastly gives OpsCrew both layers of origin protection:
 
 - **Compact CIDR cloud firewall:** Fastly publishes ~18 IPv4 and 2 IPv6 CIDRs at
   `https://api.fastly.com/public-ip-list`. OpsCrew restricts cloud firewall ports 80 and 443 to
-  Fastly's CIDRs only, and configures Caddy, nginx, and OpenLiteSpeed to trust `Fastly-Client-IP`
-  strictly from those CIDRs.
-- **Origin mTLS (`pull.pem`):** OpsCrew configures the server's reverse proxy to require a per-app
-  mTLS client certificate (`pull.pem`) and installs the client certificate and private key on
-  Fastly's `opscrew_origin` backend via a plan-hash-approved Fastly API sequence (clone active
-  version -> update backend -> activate).
+  Fastly's CIDRs only, configures Caddy and nginx to trust `Fastly-Client-IP` strictly from those
+  CIDRs, and configures OpenLiteSpeed (`useIpInProxyHeader 2`) to trust `X-Forwarded-For` from
+  those CIDRs.
+- **Origin TLS & mTLS (`pull.pem`):** Because the cloud firewall blocks public port 80 (so the
+  origin cannot run HTTP-01 ACME), OpsCrew generates a per-app P-256 origin server certificate
+  (signed by a per-app CA) and client certificate (`pull.pem`) locally in `generated_values.json`
+  (`0600`). The server's reverse proxy serves the origin certificate (`OPSCREW_ORIGIN_TLS`) and
+  requires `pull.pem`; after Terraform apply, OpsCrew installs `ssl_ca_cert`, `ssl_client_cert`,
+  and `ssl_client_key` on Fastly's `opscrew_origin` backend via a plan-hash-approved Fastly API
+  sequence (clone active version -> update backend -> activate).
 - **Never in Terraform state or git:** OpsCrew intentionally omits `backend.ssl_client_key` from
   `fastly_service_vcl` in Terraform so the private key never lands in Terraform state. SecOps
   blocks any Terraform plan that puts `ssl_client_key` in state as a `critical` finding.
@@ -59,9 +63,14 @@ Like Cloudflare, Fastly gives OpsCrew both layers of origin protection:
   `request_setting { action = "pass", force_ssl = true }` so dynamic responses are not cached by
   default and HTTP visitors are redirected to HTTPS.
 - **Verified origin TLS:** The `opscrew_origin` backend uses `use_ssl = true`,
-  `ssl_check_cert = true`, and matches `ssl_cert_hostname` / `ssl_sni_hostname` to your domain.
-- **Managed edge TLS:** `fastly_tls_subscription` provisions managed HTTPS certificates for your
-  domain (and `www.<domain>` when enabled).
+  `ssl_check_cert = true`, and matches `ssl_cert_hostname` / `ssl_sni_hostname` to your domain,
+  verified against OpsCrew's per-app origin CA pinned via `ssl_ca_cert`.
+- **Managed edge TLS & split DNS routing:** `fastly_tls_subscription` provisions managed HTTPS
+  certificates for your domain (and `www.<domain>` when enabled). The paired DNS module (Bunny DNS
+  or Gcore DNS) automatically creates the ACME DNS validation records from `managed_dns_challenges`
+  plus the routing records pointing at Fastly's edge (`Flatten`/`CNAME` on Bunny; anycast
+  `A`/`AAAA` at apex and `CNAME` on subdomains on Gcore), and `fastly_tls_subscription_validation`
+  waits for validation to complete.
 - **Free VCL probe blocking:** When `security.wafCustomRules: true`, Terraform adds a VCL
   `condition` and `response_object` returning HTTP `403 Forbidden` at Fastly's edge for `/.env`,
   `/.git/`, `/wp-admin`, `/wp-login.php`, `/xmlrpc.php`, and `/phpmyadmin`.
@@ -77,8 +86,9 @@ and preview environments (`environment.previews`).
 1. Export `FASTLY_API_KEY` (and your Bunny/Gcore DNS token) and run `opscrew provision` for a test
    app with `dns.provider: bunny` (or `gcore`), `dns.edge: fastly`, `dns.proxied: true`,
    `security.httpAllowedFrom: edge`.
-2. Complete Fastly's TLS subscription DNS validation record and point the domain at Fastly's CNAME /
-   anycast target.
+2. Approve the Terraform plan (creates the Fastly VCL service, Bunny/Gcore edge routing + ACME DNS
+   validation records, and waits for `fastly_tls_subscription_validation`), then approve the Fastly
+   origin mTLS plan (pins `ssl_ca_cert` + `ssl_client_cert` + `ssl_client_key` on `opscrew_origin`).
 3. Verify `https://<domain>/.env` returns HTTP `403` at Fastly's edge without hitting the origin.
 4. Verify a direct connection to port 443 on the server IP from outside Fastly's CIDRs is blocked by
    the cloud firewall, and a connection without the `pull.pem` client cert fails TLS handshake.

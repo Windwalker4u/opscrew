@@ -336,9 +336,26 @@ function thirdPartyEdgeRoots(
       : undefined;
   const edgeId = thirdPartyEdgeId(plan);
   const splitDns = dnsId !== undefined && edgeId !== undefined && dnsId !== edgeId;
+  const edgeDef = edgeId === undefined ? undefined : edgeProvider(edgeId);
 
   if (splitDns) {
     const dnsDef = edgeProvider(dnsId);
+    const dnsOutputs = edgeDef?.terraform.root?.edgeDnsOutputs;
+    const edgeDns =
+      dnsOutputs === undefined
+        ? undefined
+        : {
+            cnameTargetExpr: `module.edge.${dnsOutputs.cnameTarget}`,
+            ...(dnsOutputs.ipv4Targets === undefined
+              ? {}
+              : { ipv4TargetsExpr: `module.edge.${dnsOutputs.ipv4Targets}` }),
+            ...(dnsOutputs.ipv6Targets === undefined
+              ? {}
+              : { ipv6TargetsExpr: `module.edge.${dnsOutputs.ipv6Targets}` }),
+            ...(dnsOutputs.tlsValidationRecords === undefined
+              ? {}
+              : { tlsValidationRecordsExpr: `module.edge.${dnsOutputs.tlsValidationRecords}` }),
+          };
     if (dnsDef.terraform.root !== undefined) {
       entries.push({
         def: dnsDef,
@@ -358,14 +375,14 @@ function thirdPartyEdgeRoots(
           ipv6Expr: ipv6,
           hasDomainVar,
           ...(ctx.edge?.dnsZoneId === undefined ? {} : { dnsZoneId: ctx.edge.dnsZoneId }),
+          ...(edgeDns === undefined ? {} : { edgeDns }),
         }),
       });
       hasDomainVar = true;
     }
   }
 
-  if (edgeId !== undefined) {
-    const edgeDef = edgeProvider(edgeId);
+  if (edgeDef !== undefined) {
     if (edgeDef.terraform.root !== undefined) {
       entries.push({
         def: edgeDef,
@@ -385,6 +402,7 @@ function thirdPartyEdgeRoots(
           ipv6Expr: ipv6,
           hasDomainVar,
           ...(ctx.edge?.dnsZoneId === undefined ? {} : { dnsZoneId: ctx.edge.dnsZoneId }),
+          ...(splitDns ? { dependsOnDnsModule: true } : {}),
         }),
       });
     }

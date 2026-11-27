@@ -2551,7 +2551,10 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     ctx.addIssue({
       code: "custom",
       path: ["dns", "edge"],
-      message: `cannot be combined with dns.provider: "cloudflare" yet: use dns.provider: "${plan.dns.edge}" or dns.provider: "none" with dns.edge: "${plan.dns.edge}"`,
+      message:
+        plan.dns.edge === "fastly"
+          ? 'cannot be combined with dns.provider: "cloudflare" yet: set dns.provider to "bunny" or "gcore"'
+          : `cannot be combined with dns.provider: "cloudflare" yet: use dns.provider: "${plan.dns.edge}" or dns.provider: "none" with dns.edge: "${plan.dns.edge}"`,
     });
   }
   if (plan.dns.edge !== undefined && !plan.dns.proxied) {
@@ -2586,7 +2589,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
       code: "custom",
       path: ["dns", "provider"],
       message:
-        'cannot be "none" when dns.edge is "fastly": Fastly does not host DNS, so set dns.provider to "cloudflare", "bunny", or "gcore"',
+        'cannot be "none" when dns.edge is "fastly": Fastly does not host DNS, so set dns.provider to "bunny" or "gcore"',
     });
   }
   if (

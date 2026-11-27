@@ -91,6 +91,22 @@ export interface EdgeRootInput {
   hasDomainVar: boolean;
   /** Provider-specific DNS zone id looked up by the connector before rendering. */
   dnsZoneId?: number;
+  /**
+   * When `moduleName` is `"dns"` and a separate edge provider sits in front (`dns.edge`),
+   * Terraform expressions referencing `module.edge` for DNS routing and ACME TLS validation
+   * records so DNS points at the edge instead of the origin server's IP.
+   */
+  edgeDns?: {
+    cnameTargetExpr: string;
+    ipv4TargetsExpr?: string;
+    ipv6TargetsExpr?: string;
+    tlsValidationRecordsExpr?: string;
+  };
+  /**
+   * True when a separate `module "dns"` creates ACME DNS validation records that this edge
+   * provider's TLS subscription validation resource must wait for (`depends_on = [module.dns]`).
+   */
+  dependsOnDnsModule?: boolean;
 }
 
 /** Root Terraform module fragments contributed by an edge provider. */
@@ -109,6 +125,19 @@ export interface EdgeRootContribution {
 export interface EdgeProviderTerraformRoot {
   /** Terraform output name carrying the edge resource id for connector post-apply sync. */
   resourceIdOutput: string;
+  /** Terraform output name carrying the backend name for `mtls-client-cert` post-apply sync. */
+  backendNameOutput?: string;
+  /**
+   * Terraform module outputs exposed by an edge provider when paired with a separate DNS host
+   * (`dns.provider !== dns.edge`), so `module "dns"` routes traffic to the edge and provisions
+   * any ACME DNS validation records instead of pointing at the origin IP.
+   */
+  edgeDnsOutputs?: {
+    cnameTarget: string;
+    ipv4Targets?: string;
+    ipv6Targets?: string;
+    tlsValidationRecords?: string;
+  };
   render(input: EdgeRootInput): EdgeRootContribution;
 }
 
@@ -164,9 +193,11 @@ export interface EdgeOriginMtlsPlan {
   backendName: string;
   /** Short SHA-256 fingerprint of the public client certificate PEM (never the private key). */
   certFingerprint: string;
+  /** Short SHA-256 fingerprint of the pinned origin CA certificate PEM, when configured. */
+  caCertFingerprint?: string;
   /** Plain-English summary shown before approval (contains no private key). */
   summary: string;
-  /** SHA-256 hash binding approval to this exact service, version, backend, and cert fingerprint. */
+  /** SHA-256 hash binding approval to this exact service, version, backend, and cert fingerprints. */
   hash: string;
 }
 
@@ -215,6 +246,8 @@ export interface EdgeProviderConnector {
     backendName: string;
     clientCertPem: string;
     clientKeyPem: string;
+    /** Optional PEM CA certificate pinned as `ssl_ca_cert` so the edge trusts OpsCrew's origin cert. */
+    originCaCertPem?: string;
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;
   }): Promise<EdgeOriginMtlsPlan>;
@@ -223,6 +256,8 @@ export interface EdgeProviderConnector {
     plan: EdgeOriginMtlsPlan;
     clientCertPem: string;
     clientKeyPem: string;
+    /** Optional PEM CA certificate pinned as `ssl_ca_cert` so the edge trusts OpsCrew's origin cert. */
+    originCaCertPem?: string;
     approvedHash: string;
     fetch?: FetchLike;
     redactor?: EdgeRedactorLike;

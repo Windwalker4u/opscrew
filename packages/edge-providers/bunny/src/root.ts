@@ -110,6 +110,16 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
             type: "string",
             description: "Relative record name for www.<domain> inside the Bunny DNS zone.",
           },
+          ...(input.edgeDns === undefined
+            ? []
+            : [
+                {
+                  name: "bunny_dns_zone_name",
+                  type: "string",
+                  description:
+                    "Bunny.net DNS zone name used to compute relative ACME challenge names.",
+                },
+              ]),
         ]
       : []),
   ];
@@ -117,7 +127,9 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
     ["pullzone_name", "var.bunny_pullzone_name"],
     ["domain", "var.domain"],
     ["www", "var.www"],
-    ["origin_host", `coalesce(${input.ipv4Expr}, ${input.ipv6Expr})`],
+    ...(input.edgeDns === undefined
+      ? ([["origin_host", `coalesce(${input.ipv4Expr}, ${input.ipv6Expr})`]] as [string, string][])
+      : []),
     ["proxied", "var.bunny_proxied"],
     ["waf_custom_rules", "var.bunny_waf_custom_rules"],
     ["manage_dns", input.manageDns ? "true" : "false"],
@@ -126,8 +138,21 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
           ["dns_zone_id", "var.bunny_dns_zone_id"],
           ["record_name", "var.bunny_record_name"],
           ["www_record_name", "var.bunny_www_record_name"],
-          ["ipv4", input.ipv4Expr],
-          ["ipv6", input.ipv6Expr],
+          ...(input.edgeDns === undefined
+            ? ([
+                ["ipv4", input.ipv4Expr],
+                ["ipv6", input.ipv6Expr],
+              ] as [string, string][])
+            : ([
+                ["dns_zone_name", "var.bunny_dns_zone_name"],
+                ["edge_cname_target", input.edgeDns.cnameTargetExpr],
+                ...(input.edgeDns.tlsValidationRecordsExpr === undefined
+                  ? []
+                  : ([["tls_validation_records", input.edgeDns.tlsValidationRecordsExpr]] as [
+                      string,
+                      string,
+                    ][])),
+              ] as [string, string][])),
         ] as [string, string][])
       : []),
   ];
@@ -160,6 +185,9 @@ export function renderBunnyRoot(input: EdgeRootInput): EdgeRootContribution {
             bunny_dns_zone_id: input.dnsZoneId,
             bunny_record_name: recordName,
             bunny_www_record_name: wwwRecordName,
+            ...(input.edgeDns === undefined
+              ? {}
+              : { bunny_dns_zone_name: input.zone ?? input.domain }),
           }
         : {}),
     },

@@ -42,6 +42,15 @@ export interface ThirdPartyEdgeSetup {
   apiKey: string;
   dnsZoneId?: number;
   dnsZoneName?: string;
+  /**
+   * Separate DNS provider credentials when `dns.provider` and `dns.edge` are two distinct
+   * non-Cloudflare providers (for example `dns.provider: bunny` with `dns.edge: fastly`).
+   */
+  dnsProvider?: {
+    id: string;
+    envVar: string;
+    apiKey: string;
+  };
   edgeRanges?: string[];
 }
 
@@ -145,9 +154,11 @@ export function requireThirdPartyEdgeKey(
 }
 
 /**
- * Checks credentials and (when the provider manages DNS) looks up the DNS zone id for a
- * non-Cloudflare edge/DNS provider via its registry definition. Returns `undefined` when the plan
- * uses Cloudflare or no third-party edge/DNS provider.
+ * Checks credentials and (when a non-Cloudflare provider manages DNS) looks up the DNS zone id
+ * via the edge registry. When `dns.provider` and `dns.edge` are two separate non-Cloudflare
+ * providers (for example Bunny DNS + Fastly edge), verifies BOTH providers' credentials and looks
+ * up the DNS zone on `dns.provider`. Returns `undefined` when the plan uses Cloudflare or no
+ * third-party edge/DNS provider.
  */
 export async function setupThirdPartyEdge(
   deps: Pick<PhaseDeps, "env" | "redactor">,
@@ -159,23 +170,68 @@ export async function setupThirdPartyEdge(
   const edge = edgeProvider(id);
   const { envVar, apiKey } = requireThirdPartyEdgeKey(deps, id);
   const connector = edge.connector;
-  if (connector === undefined) {
-    return { id, envVar, apiKey };
-  }
-  const check = await connector.verifyCredentials({
-    apiKey,
-    ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
-    redactor: deps.redactor,
-  });
-  if (!check.ok) {
-    throw new OpsCrewError("CREDENTIALS_INVALID", check.message, {
-      hint: `Check ${envVar} at ${edge.credentials.createUrl}, then try again.`,
+  if (connector !== undefined) {
+    const check = await connector.verifyCredentials({
+      apiKey,
+      ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+      redactor: deps.redactor,
     });
+    if (!check.ok) {
+      throw new OpsCrewError("CREDENTIALS_INVALID", check.message, {
+        hint: `Check ${envVar} at ${edge.credentials.createUrl}, then try again.`,
+      });
+    }
   }
+
+  const dnsId =
+    plan.dns.provider !== "cloudflare" && plan.dns.provider !== "none"
+      ? plan.dns.provider
+      : undefined;
+  let dnsProvider: ThirdPartyEdgeSetup["dnsProvider"];
   let dnsZoneId: number | undefined;
   let dnsZoneName: string | undefined;
-  if (plan.dns.provider === id && plan.dns.domain !== undefined) {
-    const zone = await connector.lookupDnsZone?.({
+  if (dnsId !== undefined && dnsId !== id) {
+    const dnsEdge = edgeProvider(dnsId);
+    const dnsCreds = requireThirdPartyEdgeKey(deps, dnsId);
+    dnsProvider = { id: dnsId, envVar: dnsCreds.envVar, apiKey: dnsCreds.apiKey };
+    const dnsConnector = dnsEdge.connector;
+    if (dnsConnector !== undefined) {
+      const dnsCheck = await dnsConnector.verifyCredentials({
+        apiKey: dnsCreds.apiKey,
+        ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+        redactor: deps.redactor,
+      });
+      if (!dnsCheck.ok) {
+        throw new OpsCrewError("CREDENTIALS_INVALID", dnsCheck.message, {
+          hint: `Check ${dnsCreds.envVar} at ${dnsEdge.credentials.createUrl}, then try again.`,
+        });
+      }
+      if (dnsConnector.lookupDnsZone !== undefined && plan.dns.domain !== undefined) {
+        const zone = await dnsConnector.lookupDnsZone({
+          apiKey: dnsCreds.apiKey,
+          domain: plan.dns.domain,
+          ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+          redactor: deps.redactor,
+        });
+        if (zone === undefined) {
+          throw new OpsCrewError(
+            "PHASE_PRECONDITION",
+            `${dnsEdge.displayName} has no DNS zone matching "${plan.dns.domain}".`,
+            {
+              hint: `Add the DNS zone for "${plan.dns.domain}" in ${dnsEdge.displayName}, then run \`opscrew provision\` again.`,
+            },
+          );
+        }
+        dnsZoneId = zone.id;
+        dnsZoneName = zone.domain;
+      }
+    }
+  } else if (
+    dnsId === id &&
+    connector?.lookupDnsZone !== undefined &&
+    plan.dns.domain !== undefined
+  ) {
+    const zone = await connector.lookupDnsZone({
       apiKey,
       domain: plan.dns.domain,
       ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
@@ -193,10 +249,11 @@ export async function setupThirdPartyEdge(
     dnsZoneId = zone.id;
     dnsZoneName = zone.domain;
   }
+
   let edgeRanges: string[] | undefined;
   if (
     edge.capabilities.originIpFiltering === "compact-cidrs" &&
-    connector.getIpRanges !== undefined
+    connector?.getIpRanges !== undefined
   ) {
     const ranges = await connector.getIpRanges({
       ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
@@ -210,6 +267,7 @@ export async function setupThirdPartyEdge(
     apiKey,
     ...(dnsZoneId === undefined ? {} : { dnsZoneId }),
     ...(dnsZoneName === undefined ? {} : { dnsZoneName }),
+    ...(dnsProvider === undefined ? {} : { dnsProvider }),
     ...(edgeRanges === undefined ? {} : { edgeRanges }),
   };
 }

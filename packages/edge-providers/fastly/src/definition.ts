@@ -34,6 +34,13 @@ export const definition: EdgeProviderDefinition = {
     },
     root: {
       resourceIdOutput: "fastly_service_id",
+      backendNameOutput: "fastly_backend_name",
+      edgeDnsOutputs: {
+        cnameTarget: "edge_cname_target",
+        ipv4Targets: "edge_ipv4_targets",
+        ipv6Targets: "edge_ipv6_targets",
+        tlsValidationRecords: "tls_validation_records",
+      },
       render: renderFastlyRoot,
     },
   },
@@ -59,6 +66,7 @@ export const definition: EdgeProviderDefinition = {
       backendName,
       clientCertPem,
       clientKeyPem,
+      originCaCertPem,
       fetch,
       redactor,
     }) =>
@@ -68,13 +76,20 @@ export const definition: EdgeProviderDefinition = {
           ...(fetch === undefined ? {} : { fetch }),
           ...(redactor === undefined ? {} : { redactor }),
         }),
-        { serviceId, backendName, clientCertPem, clientKeyPem },
+        {
+          serviceId,
+          backendName,
+          clientCertPem,
+          clientKeyPem,
+          ...(originCaCertPem === undefined ? {} : { originCaCertPem }),
+        },
       ),
     applyOriginMtls: ({
       apiKey,
       plan,
       clientCertPem,
       clientKeyPem,
+      originCaCertPem,
       approvedHash,
       fetch,
       redactor,
@@ -86,7 +101,12 @@ export const definition: EdgeProviderDefinition = {
           ...(redactor === undefined ? {} : { redactor }),
         }),
         plan,
-        { clientCertPem, clientKeyPem, approvedHash },
+        {
+          clientCertPem,
+          clientKeyPem,
+          ...(originCaCertPem === undefined ? {} : { originCaCertPem }),
+          approvedHash,
+        },
       ),
   },
   texts: {

@@ -184,7 +184,7 @@ describe("plan-schema DNS host and edge provider rules (036 PR 2 & PR 3)", () =>
     );
     expect(withCloudflare.success).toBe(false);
     expect(withCloudflare.error?.issues[0]?.message).toContain(
-      'cannot be combined with dns.provider: "cloudflare"',
+      'cannot be combined with dns.provider: "cloudflare" yet: set dns.provider to "bunny" or "gcore"',
     );
 
     const withNone = DeployPlanSchema.safeParse(
@@ -196,6 +196,9 @@ describe("plan-schema DNS host and edge provider rules (036 PR 2 & PR 3)", () =>
       }),
     );
     expect(withNone.success).toBe(false);
-    expect(withNone.error?.issues[0]?.message).toContain("Fastly does not host DNS");
+    expect(withNone.error?.issues[0]?.message).toContain(
+      'Fastly does not host DNS, so set dns.provider to "bunny" or "gcore"',
+    );
+    expect(withNone.error?.issues[0]?.message).not.toContain('"cloudflare"');
   });
 });

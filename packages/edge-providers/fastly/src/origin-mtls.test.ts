@@ -4,6 +4,8 @@ import { applyFastlyOriginMtls, planFastlyOriginMtls } from "./origin-mtls";
 
 const CERT_1 = "-----BEGIN CERTIFICATE-----\nCERT-ONE-PAYLOAD\n-----END CERTIFICATE-----";
 const CERT_2 = "-----BEGIN CERTIFICATE-----\nCERT-TWO-PAYLOAD\n-----END CERTIFICATE-----";
+const CA_CERT_1 = "-----BEGIN CERTIFICATE-----\nORIGIN-CA-ONE\n-----END CERTIFICATE-----";
+const CA_CERT_2 = "-----BEGIN CERTIFICATE-----\nORIGIN-CA-TWO\n-----END CERTIFICATE-----";
 const KEY_1 = generateKeyPairSync("ec", { namedCurve: "prime256v1" })
   .privateKey.export({ type: "pkcs8", format: "pem" })
   .toString();
@@ -11,19 +13,26 @@ const KEY_2 = generateKeyPairSync("ec", { namedCurve: "prime256v1" })
   .privateKey.export({ type: "pkcs8", format: "pem" })
   .toString();
 
-function fakeFastly(initialCert: string | null = null) {
+function fakeFastly(initialCert: string | null = null, initialCaCert: string | null = null) {
   let activeVersion = 1;
   let cert = initialCert;
+  let caCert = initialCaCert;
   const events: string[] = [];
   return {
     events,
     getCert: () => cert,
+    getCaCert: () => caCert,
     client: {
       async getActiveVersion() {
         return activeVersion;
       },
       async getBackend(_serviceId: string, _version: number, backendName: string) {
-        return { name: backendName, address: "203.0.113.10", ssl_client_cert: cert };
+        return {
+          name: backendName,
+          address: "203.0.113.10",
+          ssl_client_cert: cert,
+          ssl_ca_cert: caCert,
+        };
       },
       async cloneVersion(_serviceId: string, version: number) {
         const next = version + 1;
@@ -36,9 +45,11 @@ function fakeFastly(initialCert: string | null = null) {
         backendName: string;
         clientCertPem: string;
         clientKeyPem: string;
+        originCaCertPem?: string;
       }) {
         events.push(`update:v${input.version}:${input.backendName}`);
         cert = input.clientCertPem;
+        if (input.originCaCertPem !== undefined) caCert = input.originCaCertPem;
       },
       async activateVersion(_serviceId: string, version: number) {
         events.push(`activate:v${version}`);
@@ -124,6 +135,57 @@ describe("Fastly origin mTLS plan & hash-bound apply", () => {
       }),
     ).resolves.toEqual({ applied: true, activatedVersion: 3 });
     expect(fake.getCert()).toBe(CERT_2);
+  });
+
+  it("pins originCaCertPem as ssl_ca_cert alongside the client certificate and rejects CA mismatch after hashing", async () => {
+    const fake = fakeFastly(null, null);
+    const plan = await planFastlyOriginMtls(fake.client, {
+      serviceId: "svc-fastly-2",
+      backendName: "opscrew_origin",
+      clientCertPem: CERT_1,
+      clientKeyPem: KEY_1,
+      originCaCertPem: CA_CERT_1,
+    });
+    expect(plan.action).toBe("configure");
+    expect(plan.caCertFingerprint).toMatch(/^[0-9a-f]{12}$/);
+
+    await expect(
+      applyFastlyOriginMtls(fake.client, plan, {
+        clientCertPem: CERT_1,
+        clientKeyPem: KEY_1,
+        originCaCertPem: CA_CERT_2,
+        approvedHash: plan.hash,
+      }),
+    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+
+    await expect(
+      applyFastlyOriginMtls(fake.client, plan, {
+        clientCertPem: CERT_1,
+        clientKeyPem: KEY_1,
+        originCaCertPem: CA_CERT_1,
+        approvedHash: plan.hash,
+      }),
+    ).resolves.toEqual({ applied: true, activatedVersion: 2 });
+    expect(fake.getCaCert()).toBe(CA_CERT_1);
+
+    // Same client cert + same CA cert is a noop; rotating only the CA plans an update.
+    const noop = await planFastlyOriginMtls(fake.client, {
+      serviceId: "svc-fastly-2",
+      backendName: "opscrew_origin",
+      clientCertPem: CERT_1,
+      clientKeyPem: KEY_1,
+      originCaCertPem: CA_CERT_1,
+    });
+    expect(noop.action).toBe("noop");
+
+    const rotateCa = await planFastlyOriginMtls(fake.client, {
+      serviceId: "svc-fastly-2",
+      backendName: "opscrew_origin",
+      clientCertPem: CERT_1,
+      clientKeyPem: KEY_1,
+      originCaCertPem: CA_CERT_2,
+    });
+    expect(rotateCa.action).toBe("update");
   });
 
   it("refuses non-PEM certificates or keys", async () => {

@@ -112,10 +112,16 @@ resource "fastly_service_vcl" "this" {
   force_destroy = true
 }
 
+# Default Fastly TLS configuration exposing anycast IPv4/IPv6 and CNAME targets for DNS.
+data "fastly_tls_configuration" "default" {
+  default = true
+}
+
 # Managed TLS certificate (free up to 5 domains on Fastly's developer tier).
 resource "fastly_tls_subscription" "this" {
   domains               = var.www ? [var.domain, "www.\${var.domain}"] : [var.domain]
   certificate_authority = "certainly"
+  configuration_id      = data.fastly_tls_configuration.default.id
   depends_on            = [fastly_service_vcl.this]
 }
 `;
@@ -133,6 +139,33 @@ output "backend_name" {
 output "tls_subscription_id" {
   description = "Fastly managed TLS subscription id."
   value       = fastly_tls_subscription.this.id
+}
+
+output "edge_cname_target" {
+  description = "Fastly TLS configuration CNAME target for DNS routing."
+  value       = one([for r in data.fastly_tls_configuration.default.dns_records : r.record_value if r.record_type == "CNAME"])
+}
+
+output "edge_ipv4_targets" {
+  description = "Fastly TLS configuration anycast IPv4 A record targets."
+  value       = [for r in data.fastly_tls_configuration.default.dns_records : r.record_value if r.record_type == "A"]
+}
+
+output "edge_ipv6_targets" {
+  description = "Fastly TLS configuration anycast IPv6 AAAA record targets."
+  value       = [for r in data.fastly_tls_configuration.default.dns_records : r.record_value if r.record_type == "AAAA"]
+}
+
+output "tls_validation_records" {
+  description = "ACME DNS validation records required by fastly_tls_subscription_validation."
+  value = {
+    for challenge in fastly_tls_subscription.this.managed_dns_challenges :
+    challenge.record_name => {
+      type  = challenge.record_type
+      name  = challenge.record_name
+      value = challenge.record_value
+    }
+  }
 }
 
 output "url" {

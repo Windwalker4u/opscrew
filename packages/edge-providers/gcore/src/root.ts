@@ -79,15 +79,35 @@ export function renderGcoreRoot(input: EdgeRootInput): EdgeRootContribution {
     ["origin_group_name", "var.gcore_origin_group_name"],
     ["domain", "var.domain"],
     ["www", "var.www"],
-    ["origin_host", `coalesce(${input.ipv4Expr}, ${input.ipv6Expr})`],
+    ...(input.edgeDns === undefined
+      ? ([["origin_host", `coalesce(${input.ipv4Expr}, ${input.ipv6Expr})`]] as [string, string][])
+      : []),
     ["proxied", "var.gcore_proxied"],
     ["waf_custom_rules", "var.gcore_waf_custom_rules"],
     ["manage_dns", input.manageDns ? "true" : "false"],
     ...(input.manageDns
       ? ([
           ["dns_zone", "var.gcore_dns_zone"],
-          ["ipv4", input.ipv4Expr],
-          ["ipv6", input.ipv6Expr],
+          ...(input.edgeDns === undefined
+            ? ([
+                ["ipv4", input.ipv4Expr],
+                ["ipv6", input.ipv6Expr],
+              ] as [string, string][])
+            : ([
+                ["edge_cname_target", input.edgeDns.cnameTargetExpr],
+                ...(input.edgeDns.ipv4TargetsExpr === undefined
+                  ? []
+                  : ([["edge_ipv4_targets", input.edgeDns.ipv4TargetsExpr]] as [string, string][])),
+                ...(input.edgeDns.ipv6TargetsExpr === undefined
+                  ? []
+                  : ([["edge_ipv6_targets", input.edgeDns.ipv6TargetsExpr]] as [string, string][])),
+                ...(input.edgeDns.tlsValidationRecordsExpr === undefined
+                  ? []
+                  : ([["tls_validation_records", input.edgeDns.tlsValidationRecordsExpr]] as [
+                      string,
+                      string,
+                    ][])),
+              ] as [string, string][])),
         ] as [string, string][])
       : []),
   ];

@@ -25,6 +25,7 @@ import {
   renderStorage,
   rootMainFile,
   tunnelMode,
+  usesOriginMtls,
   usesSharedOriginHeader,
   usesTunnel,
   webOnlyFromCloudflare,
@@ -166,6 +167,7 @@ import {
   setupThirdPartyEdge,
   syncEdgeOriginHeader,
 } from "./edge-origin-token";
+import { syncOriginMtls } from "./fastly-origin-mtls";
 import { requireNoMoveInProgress, warnInTempFolder } from "./guard";
 import { type LeavingHome, switchAccessMode } from "./home-switch";
 import { monitoringHostPlans } from "./monitoring";
@@ -173,13 +175,16 @@ import { checkOffsiteWriteOnServers } from "./offsite-check";
 import {
   deployRenewedCertificate,
   edgeSwitch,
+  ensureLocalOriginMtlsValues,
   keepCertificateRequest,
+  originMtlsHostnames,
   originTlsApply,
   originTlsHostnames,
   originTlsNotes,
   originTlsSecret,
   planOriginTls,
   readEdgeOver,
+  readOriginTlsValues,
   readServerEdge,
   renewsOriginCertificate,
   requirePreviewCertificate,
@@ -744,7 +749,8 @@ async function provisionFlow(
   });
   // The app's own additions to its site, checked before any change (FR-1443) against the site
   // this run means to deploy.
-  const intended = originTlsHostnames(plan);
+  const cloudflareIntended = originTlsHostnames(plan);
+  const intended = cloudflareIntended.length > 0 ? cloudflareIntended : originMtlsHostnames(plan);
   await checkAdditions(
     deps,
     plan,
@@ -868,6 +874,9 @@ async function provisionFlow(
   const { engine, env: engineEnv } = await provisionEngine(deps, plan, options);
   if (thirdPartyEdge !== undefined) {
     engineEnv[thirdPartyEdge.envVar] = thirdPartyEdge.apiKey;
+    if (thirdPartyEdge.dnsProvider !== undefined) {
+      engineEnv[thirdPartyEdge.dnsProvider.envVar] = thirdPartyEdge.dnsProvider.apiKey;
+    }
   }
   const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   if (deployKey.created) deps.reporter.info("Created a dedicated SSH deploy key for this project.");
@@ -1089,7 +1098,11 @@ async function provisionFlow(
       ? undefined
       : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
   // The app's site: origin TLS as Cloudflare now has it (a missing permission keeps today's
-  // site), and the user's additions.
+  // site), or locally generated origin TLS + mTLS (`pull.pem` + per-app origin CA) for
+  // `mtls-client-cert` edges such as Fastly, plus the user's additions.
+  if (usesOriginMtls(plan) && !tunnelMode(plan)) {
+    await ensureLocalOriginMtlsValues(deps, plan);
+  }
   const site = await recordedEdge(deps, persisted(plan));
   const ctx = await deploymentRenderContext(deps, {
     plan,
@@ -1549,6 +1562,58 @@ async function provisionFlow(
       ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
     });
     edgeOriginTokenValue = formatEdgeOriginTokenSecret(token);
+  }
+
+  // 6c. Origin mTLS (`mtls-client-cert`, ADR 0038 D6, e.g. Fastly): approve by hash and install
+  // the per-app client cert/key (`pull.pem`) and pinned origin CA (`ssl_ca_cert`) on the edge
+  // backend via its registry connector (never in Terraform state).
+  if (usesOriginMtls(plan) && !tunnelMode(plan) && thirdPartyEdge !== undefined) {
+    const edgeDef = edgeProvider(thirdPartyEdge.id);
+    const idOutputName = edgeDef.terraform.root?.resourceIdOutput;
+    const backendOutputName = edgeDef.terraform.root?.backendNameOutput;
+    const outputs = await currentOutputs(applied, engine, dir, engineEnv);
+    const rawServiceId = idOutputName === undefined ? undefined : outputs[idOutputName];
+    const serviceId =
+      rawServiceId === undefined || rawServiceId === null ? undefined : String(rawServiceId);
+    const rawBackendName = backendOutputName === undefined ? undefined : outputs[backendOutputName];
+    const backendName =
+      rawBackendName === undefined || rawBackendName === null ? undefined : String(rawBackendName);
+    if (
+      serviceId === undefined ||
+      serviceId === "" ||
+      backendName === undefined ||
+      backendName === ""
+    ) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew could not read ${edgeDef.displayName}'s service or backend id (${idOutputName ?? "unknown"} / ${backendOutputName ?? "unknown"}) from Terraform state, so it did not configure origin mTLS.`,
+        {
+          hint: "Check that the edge service exists in Terraform state, then run `opscrew provision` again.",
+        },
+      );
+    }
+    const mtlsValues = await readOriginTlsValues(deps);
+    if (mtlsValues.ORIGIN_PULL_CERT === undefined || mtlsValues.ORIGIN_PULL_KEY === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `This computer holds no origin mTLS client certificate or key for ${edgeDef.displayName}, so OpsCrew did not update the edge backend.`,
+        {
+          hint: `Run \`${command}\` again to regenerate the local origin mTLS keypair.`,
+        },
+      );
+    }
+    await syncOriginMtls(deps, plan, {
+      apiKey: thirdPartyEdge.apiKey,
+      serviceId,
+      backendName,
+      clientCertPem: mtlsValues.ORIGIN_PULL_CERT,
+      clientKeyPem: mtlsValues.ORIGIN_PULL_KEY,
+      ...(mtlsValues.ORIGIN_TLS_CA_CERT === undefined
+        ? {}
+        : { originCaCertPem: mtlsValues.ORIGIN_TLS_CA_CERT }),
+      command,
+      ...(services.edgeFetch === undefined ? {} : { fetch: services.edgeFetch }),
+    });
   }
 
   let secretsTarget: {

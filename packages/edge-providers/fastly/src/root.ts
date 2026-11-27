@@ -68,21 +68,38 @@ export function renderFastlyRoot(input: EdgeRootInput): EdgeRootContribution {
     ["origin_host", `coalesce(${input.ipv4Expr}, ${input.ipv6Expr})`],
     ["waf_custom_rules", "var.fastly_waf_custom_rules"],
   ];
+  const moduleName = input.moduleName ?? "edge";
+  const validationLines = [
+    "# Completes Fastly's managed TLS ACME validation once the DNS records are created.",
+    `resource "fastly_tls_subscription_validation" "${moduleName}" {`,
+    `  subscription_id = module.${moduleName}.tls_subscription_id`,
+    ...(input.dependsOnDnsModule === true ? ["  depends_on      = [module.dns]"] : []),
+    "}",
+    "",
+  ];
   return {
-    mainLines: formatModuleBlock(
-      [
-        "# Fastly VCL service (dynamic pass, verified origin HTTPS, free VCL 403 probe blocking, managed TLS).",
-        "# Origin mTLS ssl_client_key is configured via the Fastly API after apply, never in Terraform state.",
-      ],
-      input.moduleName ?? "edge",
-      FASTLY_EDGE_MODULE_NAME,
-      args,
-    ),
+    mainLines: [
+      ...formatModuleBlock(
+        [
+          "# Fastly VCL service (dynamic pass, verified origin HTTPS, free VCL 403 probe blocking, managed TLS).",
+          "# Origin mTLS ssl_client_key and ssl_ca_cert are configured via the Fastly API after apply, never in Terraform state.",
+        ],
+        moduleName,
+        FASTLY_EDGE_MODULE_NAME,
+        args,
+      ),
+      ...validationLines,
+    ],
     variables,
     outputLines: [
-      ...formatOutput("fastly_service_id", "module.edge.service_id"),
-      ...formatOutput("fastly_backend_name", "module.edge.backend_name"),
-      ...formatOutput("fastly_tls_subscription_id", "module.edge.tls_subscription_id"),
+      ...formatOutput("fastly_service_id", `module.${moduleName}.service_id`),
+      ...formatOutput("fastly_backend_name", `module.${moduleName}.backend_name`),
+      ...formatOutput("fastly_tls_subscription_id", `module.${moduleName}.tls_subscription_id`),
+      ...formatOutput("fastly_edge_cname_target", `module.${moduleName}.edge_cname_target`),
+      ...formatOutput(
+        "fastly_tls_validation_records",
+        `module.${moduleName}.tls_validation_records`,
+      ),
     ],
     tfvars: {
       ...(input.hasDomainVar ? {} : { domain: input.domain, www: input.www }),
