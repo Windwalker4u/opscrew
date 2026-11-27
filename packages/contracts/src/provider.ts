@@ -303,6 +303,14 @@ export interface PlannedResourceJson {
 export interface ProviderSecOps {
   /** "server" or "Droplet". */
   noun: string;
+  /**
+   * Where the server's firewall is (issue #13): `cloud` (the default) is the provider's firewall
+   * in the plan, read with {@link rules} and {@link attached}. `server` is the server's own
+   * nftables firewall, which a provider with no cloud firewall and a startup-script first boot
+   * (`ProviderTerraform.firstBoot` `script`, Kamatera) gets as the first step of that boot: SecOps
+   * reads it from the planned server's first-boot script, and `opscrew secure` from the server.
+   */
+  firewallCheck?: "cloud" | "server";
   /** The firewall's inbound rules. */
   rules(firewall: PlannedResourceJson): PlannedFirewallRule[];
   /** True when one of `firewalls` is attached to `server`. */
