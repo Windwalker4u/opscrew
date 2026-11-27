@@ -4,6 +4,9 @@ import { CurrencySchema, PlainUrlSchema, RegionSchema } from "@opscrew/plan-sche
 import { z } from "zod";
 
 /** The shared first-boot setup OpsCrew adds to every server module (ADR 0029, D5). */
+/** The root variable holding the deploy key's text: a provider with no SSH-key resource uses it. */
+const DEPLOY_KEY_TEXT = "var.deploy_ssh_public_key";
+
 const SHARED_CLOUD_INIT = "cloud-init.yaml.tftpl";
 
 /** A function of the contract; only its kind is checked. */
@@ -197,6 +200,9 @@ const terraform = z.object({
         } else addresses.push(`${match[1]}.${match[2]}`);
       }
       if (addresses.length === 0) {
+        // A provider with no SSH-key resource gives each server the key's text itself (Kamatera's
+        // `ssh_pubkey`): no shared resource then, and the key id is that text (issue #52).
+        if (shared.sshKeyId === DEPLOY_KEY_TEXT) return;
         ctx.addIssue({ code: "custom", path: ["resources"], message: "declares no resource" });
       } else if (!addresses.some((address) => shared.sshKeyId.includes(address))) {
         ctx.addIssue({
