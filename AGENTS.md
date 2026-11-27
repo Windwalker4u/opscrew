@@ -163,9 +163,6 @@ It reviews every pull request and merges it; nothing reaches `main` any other wa
   milestone or run out of unblocked work (only pausing when every remaining task is blocked on a
   review, a live test, or a founder decision). Start the watcher in the background so you wake as
   soon as a reply arrives, and switch back to review feedback first.
-- **Small standalone docs changes (core's lead):** small documentation-only edits (such as
-  `AGENTS.md`, `CLAUDE.md`, or standalone guide/roadmap notes) unrelated to an in-flight feature
-  may be committed directly to `main` after `pnpm lint`, without a feature branch or full test gate.
 
 ### Talking to the core's lead: GitHub issues
 

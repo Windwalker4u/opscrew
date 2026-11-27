@@ -3,7 +3,8 @@
 @AGENTS.md
 
 The guide above (`AGENTS.md`) is shared by every AI agent working in this repository. What follows
-is for Claude Code only: the core's implementation subagents and the core's lead.
+is for Claude Code's implementation subagents and whoever is acting as the core's lead (Claude Code
+or a stand-in lead).
 
 ## Working as an implementation subagent
 
@@ -33,3 +34,12 @@ is for Claude Code only: the core's implementation subagents and the core's lead
 - Model routing: research with Sonnet subagents (official sources only, few fetches); coding with
   Opus subagents at the task's `Effort:` (`medium` simple, `high` default, `xhigh` complex,
   `max` rarely).
+- Small standalone docs changes: small documentation-only edits (such as `AGENTS.md`, `CLAUDE.md`,
+  or standalone guide/roadmap notes) unrelated to an in-flight feature may be committed directly to
+  `main` after `pnpm lint`, without a feature branch or full test gate.
+- Stalled contributor PRs and issues: if a contributor has no commit or comment after an
+  inactivity window scaled to urgency (**4–6 hours** for release-blocking PRs, **12–24 hours** for
+  regular feature PRs and assigned issues), post a clear takeover comment on the PR/issue naming
+  the current `<head-sha>` (so a waking contributor rebases instead of colliding), pick up from
+  their branch on a lead branch preserving their commits, finish the remaining blockers, run the
+  gate, and land it (or release an unstarted issue back to the unclaimed queue).
