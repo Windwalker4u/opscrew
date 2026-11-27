@@ -135,6 +135,12 @@ resource "gcore_cdn_resource" "this" {
       value   = ["TLSv1.2", "TLSv1.3"]
     }
   }
+
+  lifecycle {
+    # The origin-verification header is applied via Gcore's API outside Terraform (ADR 0038 D6)
+    # so the secret never enters Terraform state; prevent later applies from wiping it.
+    ignore_changes = [options[0].static_request_headers]
+  }
 }
 
 # Included on Gcore CDN Free tier (1 TB/month): blocks common secret and admin-panel probes at the edge.

@@ -91,7 +91,8 @@ describe("Gcore infrastructure rendering (036 PR 3)", () => {
     expect(moduleMain).toContain("force_return {");
     expect(moduleMain).toContain(`content = "\${data.gcore_cdn_client.this[0].cname}."`);
     expect(moduleMain).not.toContain(`content = "\${gcore_cdn_resource.this[0].cname}."`);
-    expect(moduleMain).not.toContain("static_request_headers");
+    expect(moduleMain).toContain("ignore_changes = [options[0].static_request_headers]");
+    expect(moduleMain).not.toMatch(/static_request_headers\s*\{/);
     expect(moduleMain).not.toContain("X-OpsCrew-Origin-Token");
   });
 

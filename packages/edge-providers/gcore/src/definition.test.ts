@@ -48,8 +48,10 @@ describe("@opscrew/edge-provider-gcore", () => {
     for (const part of ["\\.env", "\\.git/", "wp-admin", "wp-login", "xmlrpc", "phpmyadmin"]) {
       expect(main).toContain(part);
     }
-    // Security invariant (ADR 0038 D6): origin verification header NEVER lives in Terraform state.
-    expect(main).not.toContain("static_request_headers");
+    // Security invariant (ADR 0038 D6): origin verification header NEVER lives in Terraform state,
+    // and lifecycle.ignore_changes prevents later applies from wiping the API-managed header.
+    expect(main).toContain("ignore_changes = [options[0].static_request_headers]");
+    expect(main).not.toMatch(/static_request_headers\s*\{/);
     expect(main).not.toContain("X-OpsCrew-Origin-Token");
   });
 
