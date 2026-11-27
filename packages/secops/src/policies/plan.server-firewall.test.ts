@@ -391,6 +391,35 @@ describe("a provider whose firewall is the server's own", () => {
     expect(unplanned?.message).toContain("can't read the networks this plan gives");
   });
 
+  it("passes a server the plan imports, whose script its provider never gives back, and says secure checks it", () => {
+    const json = planJson(undefined, ["no-op"]);
+    const change = json.resource_changes[0]?.change as Record<string, unknown>;
+    change.importing = { id: "imported-server-id" };
+    const results = evaluatePlanPolicies(json, deployPlan());
+    for (const id of ["server-firewall-as-planned", "firewall-attached"]) {
+      const imported = result(results, id);
+      expect(imported, id).toMatchObject({ passed: true });
+      expect(imported?.message, id).toContain("imports the server");
+      expect(imported?.message, id).toMatch(/`opscrew secure` (checks|reads) the rules live/);
+    }
+    // Without `importing`, the same plan fails as before.
+    delete change.importing;
+    const kept = evaluatePlanPolicies(json, deployPlan());
+    expect(result(kept, "server-firewall-as-planned")?.passed).toBe(false);
+  });
+
+  it("reads only the server's own module call, whatever another call's expressions say", () => {
+    const json = planJson(startupScript({}), ["no-op"]);
+    const calls = json.configuration?.root_module.module_calls as Record<string, unknown>;
+    // An unrelated module whose `web` and `wireguard_port` are references, not constants.
+    calls.other = {
+      source: "../modules/other",
+      expressions: { web: { references: ["var.web"] }, wireguard_port: { references: ["x"] } },
+    };
+    const results = evaluatePlanPolicies(json, deployPlan());
+    expect(result(results, "server-firewall-as-planned")?.passed).toBe(true);
+  });
+
   it("still fails a server that exists without the firewall's step", () => {
     for (const json of [
       planJson(startupScript({}, false), ["no-op"]),

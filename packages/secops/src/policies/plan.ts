@@ -285,6 +285,15 @@ function serverExists(planJson: unknown, address: string): boolean {
 }
 
 /**
+ * True when the plan imports the server at `address` (its change's `importing`, a takeover): its
+ * provider never gives back the script it was created with, so there is none to read.
+ */
+function serverImported(planJson: unknown, address: string): boolean {
+  const importing = resourceChange(planJson, address)?.importing;
+  return importing !== undefined && importing !== null;
+}
+
+/**
  * The first-boot script a server that exists was created with: in its change's `before`, which the
  * masked plan keeps (it drops `prior_state`).
  */
@@ -294,29 +303,28 @@ function storedServerScript(planJson: unknown, address: string): string | undefi
 }
 
 const Networks = z.array(z.string());
-/** What the plan JSON says of the networks a server module gets. */
+/**
+ * What the plan JSON says of the networks a server module gets: the root's variables, and the
+ * module calls, each read on its own ({@link ModuleCallSchema}) so that another module's call
+ * never decides whether this one's can be read.
+ */
 const PlannedNetworksSchema = z.object({
   variables: z.object({
     ssh_allowed_cidrs: z.object({ value: Networks }),
     http_allowed_cidrs: z.object({ value: Networks }).optional(),
   }),
   configuration: z.object({
-    root_module: z.object({
-      module_calls: z.record(
-        z.string(),
-        z.object({
-          expressions: z
-            .object({
-              web: z.object({ constant_value: z.boolean() }).optional(),
-              wireguard_port: z
-                .object({ constant_value: z.union([z.number(), z.string()]) })
-                .optional(),
-            })
-            .optional(),
-        }),
-      ),
-    }),
+    root_module: z.object({ module_calls: z.record(z.string(), z.unknown()) }),
   }),
+});
+/** What a server module's call says of its web ports and its WireGuard port. */
+const ModuleCallSchema = z.object({
+  expressions: z
+    .object({
+      web: z.object({ constant_value: z.boolean() }).optional(),
+      wireguard_port: z.object({ constant_value: z.union([z.number(), z.string()]) }).optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -330,8 +338,9 @@ function plannedNetworks(planJson: unknown, address: string): ServerFirewallNetw
   const parsed = PlannedNetworksSchema.safeParse(planJson);
   if (call === undefined || !parsed.success) return undefined;
   const { variables, configuration } = parsed.data;
-  const module = configuration.root_module.module_calls[call];
-  if (module === undefined) return undefined;
+  const parsedCall = ModuleCallSchema.safeParse(configuration.root_module.module_calls[call]);
+  if (!parsedCall.success) return undefined;
+  const module = parsedCall.data;
   const closed = module.expressions?.web?.constant_value === false;
   const web = closed ? [] : variables.http_allowed_cidrs?.value;
   if (web === undefined) return undefined;
@@ -401,6 +410,12 @@ function storedFirewallResult(
       server.address,
     );
   const live = `\`opscrew secure\` reads the rules live on the ${noun}`;
+  if (serverImported(planJson, server.address)) {
+    return check(
+      true,
+      `The plan imports the ${noun}, which OpsCrew didn't create: its provider doesn't give back the script it started with, so this plan can't hold its firewall to the plan's networks. After the apply, ${live} and fails on any rule that differs from the plan's, or on no firewall of OpsCrew's at all.`,
+    );
+  }
   if (stored === undefined) {
     return check(
       false,
@@ -463,15 +478,19 @@ function providerPolicies(
   for (const server of servers) {
     const existing = onServer && serverExists(planJson, server.address);
     const serverRules = onServer && !existing ? serverFirewallRules(server) : undefined;
+    const imported = existing && serverImported(planJson, server.address);
     const hasFirewall = !onServer
       ? provider.attached(server, firewalls, planJson)
-      : existing
-        ? storedServerScript(planJson, server.address) !== undefined
-        : serverRules !== undefined;
+      : imported ||
+        (existing
+          ? storedServerScript(planJson, server.address) !== undefined
+          : serverRules !== undefined);
     const hasKeys = isSet(server, provider.sshKeyAttribute ?? "ssh_keys");
-    const attachedText = existing
-      ? `${provider.attachedText} The ${noun} already exists, so its first boot ran when it was created and this plan doesn't change its firewall: \`opscrew secure\` checks the rules live on the ${noun}.`
-      : provider.attachedText;
+    const attachedText = imported
+      ? `The plan imports the ${noun}, which OpsCrew didn't create, so the firewall its first boot set can't be read from the plan: after the apply, \`opscrew secure\` checks the rules live on the ${noun}, and fails when there are none of OpsCrew's.`
+      : existing
+        ? `${provider.attachedText} The ${noun} already exists, so its first boot ran when it was created and this plan doesn't change its firewall: \`opscrew secure\` checks the rules live on the ${noun}.`
+        : provider.attachedText;
     results.push(
       result(
         "firewall-attached",

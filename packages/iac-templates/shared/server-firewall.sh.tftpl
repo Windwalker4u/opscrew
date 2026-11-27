@@ -94,8 +94,10 @@ opscrew_firewall_unit() {
 # Managed by OpsCrew: loads this server's firewall, /etc/opscrew/firewall.nft, at every boot
 # before the network and Docker. The file replaces only the table inet opscrew-firewall; nothing
 # here flushes the ruleset, which would take Docker's and ufw's tables with it. nftables.service
-# does flush it when it stops, restarts or reloads, so this unit follows it and loads the file
-# again. To load the rules as written: systemctl restart opscrew-firewall.service.
+# does flush it: a restart or reload of it restarts or reloads this unit, which loads the file
+# again; a stop of it flushes the ruleset and stops this unit too, so the server has no rules of
+# OpsCrew's until systemctl start opscrew-firewall.service. To load the rules as written:
+# systemctl restart opscrew-firewall.service.
 [Unit]
 Description=OpsCrew server firewall (the table inet opscrew-firewall)
 DefaultDependencies=no
@@ -125,8 +127,10 @@ opscrew_server_firewall() {
   printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' >/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf
   systemctl try-reload-or-restart ssh.service
   # What sshd now applies, read back. sshd -T needs its privilege separation folder, which
-  # Ubuntu's socket-activated ssh makes only once a connection starts it.
+  # Ubuntu's socket-activated ssh makes only once a connection starts it, and host keys, which an
+  # image may leave to cloud-init (still to run): ssh-keygen -A makes only the missing ones.
   install -d -m 0755 /run/sshd
+  ssh-keygen -A
   if [ "$(sshd -T | grep -cx -e 'passwordauthentication no' -e 'kbdinteractiveauthentication no')" != 2 ]; then
     opscrew_fail "SSH still takes passwords: sshd -T doesn't show both passwordauthentication no and kbdinteractiveauthentication no"
   fi

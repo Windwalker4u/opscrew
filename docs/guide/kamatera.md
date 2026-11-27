@@ -106,9 +106,9 @@ installs the server's own firewall instead:
   firewall lets in, before anything is approved. That covers a new address for SSH, new Cloudflare
   ranges, or a private network for a second server. Change `opscrew/plan.yaml` back, or remove the
   app's server and provision it again. If `npx opscrew secure` finds the live rules differ from the
-  plan, it gives the steps: as root, from Kamatera's console, `systemctl restart
-  opscrew-firewall.service` loads the rules again as they were written; to change them, edit
-  `/etc/opscrew/firewall.nft` to match the plan first.
+  plan, it gives the steps: put the plan back or replace the server when the plan changed, and when
+  the rules on the server were changed, as root from Kamatera's console, `systemctl restart
+  opscrew-firewall.service` loads them again as they were written.
 - **Kamatera's console firewall is yours to add.** Open the server in the console, its **Firewall**
   tab, and turn it on as a second layer. OpsCrew doesn't manage it or check it: let in at least SSH
   from your networks and the web ports, or your app and OpsCrew lose the server.

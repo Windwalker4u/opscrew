@@ -68,8 +68,10 @@ if (nftSkip !== undefined) {
 const UNIT = `# Managed by OpsCrew: loads this server's firewall, /etc/opscrew/firewall.nft, at every boot
 # before the network and Docker. The file replaces only the table inet opscrew-firewall; nothing
 # here flushes the ruleset, which would take Docker's and ufw's tables with it. nftables.service
-# does flush it when it stops, restarts or reloads, so this unit follows it and loads the file
-# again. To load the rules as written: systemctl restart opscrew-firewall.service.
+# does flush it: a restart or reload of it restarts or reloads this unit, which loads the file
+# again; a stop of it flushes the ruleset and stops this unit too, so the server has no rules of
+# OpsCrew's until systemctl start opscrew-firewall.service. To load the rules as written:
+# systemctl restart opscrew-firewall.service.
 [Unit]
 Description=OpsCrew server firewall (the table inet opscrew-firewall)
 DefaultDependencies=no
@@ -98,13 +100,15 @@ const KEYS_ONLY = ["passwordauthentication no", "kbdinteractiveauthentication no
  * on an image without nft (so it installs it), and `systemctl`, `apt-get` and `sshd` replaced by
  * functions that print their arguments to stderr. `apt-get` fails when `fail` says so, `systemctl`
  * fails to enable OpsCrew's firewall unit when `fail` is `systemctl`, and `sshd -T` prints
- * `sshd`'s settings among others. Returns the run, its lines and the folder.
+ * `sshd`'s settings among others, once `ssh-keygen -A` made host keys (`keygen`; without them it
+ * fails as OpenSSH does). Returns the run, its lines and the folder.
  */
 async function runStep(
   rules: ServerFirewallRules,
   fail: "apt-get" | "systemctl" | "none",
   after = "",
   sshd: readonly string[] = KEYS_ONLY,
+  keygen = true,
 ) {
   const root = (await mkdtemp(join(tmpdir(), "opscrew-first-boot-"))).replaceAll("\\", "/");
   const failing = fail === "systemctl" ? '[ "$1" = enable ] && return 1; ' : "";
@@ -117,7 +121,9 @@ async function runStep(
     'command() { if [ "$*" = "-v nft" ]; then return 1; fi; builtin command "$@"; }',
     `systemctl() { echo "systemctl $*" >&2; ${failing}true; }`,
     `apt-get() { echo "apt-get $*" >&2; ${fail === "apt-get" ? "return 100" : "true"}; }`,
-    `sshd() { echo "sshd $*" >&2; printf '%s\\n' ${settings.map((line) => `'${line}'`).join(" ")}; }`,
+    // An image whose host keys cloud-init would make: sshd -T has none until ssh-keygen -A.
+    `ssh-keygen() { echo "ssh-keygen $*" >&2; ${keygen ? `touch '${root}/hostkeys'` : "true"}; }`,
+    `sshd() { echo "sshd $*" >&2; if [ ! -e '${root}/hostkeys' ]; then echo 'sshd: no hostkeys available -- exiting.' >&2; return 1; fi; printf '%s\\n' ${settings.map((line) => `'${line}'`).join(" ")}; }`,
     renderServerFirewall(rules)
       .replaceAll("/etc/", `${root}/etc/`)
       .replaceAll("/run/", `${root}/run/`),
@@ -209,6 +215,7 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
       "\n  trap 'echo \"opscrew: the server firewall could not be set up, so the server powers off rather than stay reachable without it $(date -Is)\" >&2; systemctl poweroff' EXIT\n",
       ">/etc/ssh/sshd_config.d/00-opscrew-keys-only.conf\n",
       "\n  systemctl try-reload-or-restart ssh.service\n",
+      "\n  ssh-keygen -A\n",
       "sshd -T | grep -cx -e 'passwordauthentication no' -e 'kbdinteractiveauthentication no'",
       "install -y nftables\n",
       "\n  mv /etc/opscrew/firewall.nft.opscrew /etc/opscrew/firewall.nft\n",
@@ -236,6 +243,7 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
         run.lines.map((line) => line.replace(/^(opscrew: server firewall on) .*$/, "$1")),
       ).toEqual([
         "systemctl try-reload-or-restart ssh.service",
+        "ssh-keygen -A",
         "sshd -T",
         "apt-get -o DPkg::Lock::Timeout=600 update",
         "apt-get -o DPkg::Lock::Timeout=600 install -y nftables",
@@ -267,8 +275,9 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
       ] as const) {
         const run = await runStep(rules, fail, 'echo "opscrew: cloud-init ran"');
         expect(run.status, fail).not.toBe(0);
-        expect(run.lines.slice(0, 2), fail).toEqual([
+        expect(run.lines.slice(0, 3), fail).toEqual([
           "systemctl try-reload-or-restart ssh.service",
+          "ssh-keygen -A",
           "sshd -T",
         ]);
         expect(run.lines.at(-3)?.startsWith(last), `${fail}: ${run.stdout}`).toBe(true);
@@ -294,6 +303,7 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
         expect(run.status, sshd.join()).not.toBe(0);
         expect(run.lines, sshd.join()).toEqual([
           "systemctl try-reload-or-restart ssh.service",
+          "ssh-keygen -A",
           "sshd -T",
           "opscrew: SSH still takes passwords: sshd -T doesn't show both passwordauthentication no and kbdinteractiveauthentication no",
           expect.stringMatching(POWER_OFF),
@@ -302,6 +312,24 @@ describe("the server firewall's step, for a provider with no cloud firewall", ()
         // Nothing of the firewall was written: the step stopped before it.
         expect(existsSync(join(run.root, "etc/opscrew"))).toBe(false);
       }
+    },
+  );
+
+  it.skipIf(bashSkip !== undefined)(
+    "makes the host keys an image left to cloud-init before it reads sshd's settings",
+    async () => {
+      const run = await runStep(RULES, "none", "", KEYS_ONLY);
+      expect(run.status, run.stdout).toBe(0);
+      expect(run.lines.slice(0, 3)).toEqual([
+        "systemctl try-reload-or-restart ssh.service",
+        "ssh-keygen -A",
+        "sshd -T",
+      ]);
+      // Without them, sshd -T prints no settings, and the step can only power the server off.
+      const keyless = await runStep(RULES, "none", "", KEYS_ONLY, false);
+      expect(keyless.status).not.toBe(0);
+      expect(keyless.lines).toContain("sshd: no hostkeys available -- exiting.");
+      expect(keyless.lines.at(-1)).toBe("systemctl poweroff");
     },
   );
 

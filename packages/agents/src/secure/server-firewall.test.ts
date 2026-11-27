@@ -173,17 +173,21 @@ describe("the server firewall's check", () => {
     );
     // Said honestly: the rules are the first boot's, which nothing reloads from the plan.
     expect(result.remediation).toContain(
-      "Its rules are set at the server's first boot, and OpsCrew can't change them in place yet.",
+      "Its rules are set at the server's first boot, and OpsCrew can't change them in place yet: `opscrew provision` holds the plan to the networks the server was created with.",
+    );
+    // First the plan put back, or a new server: editing the rules file alone would make secure
+    // pass while provision still holds the plan to the networks the server was created with.
+    const back = result.remediation?.indexOf("change opscrew/plan.yaml back") ?? -1;
+    const restart = result.remediation?.indexOf("systemctl restart opscrew-firewall.service") ?? -1;
+    expect(back).toBeGreaterThan(-1);
+    expect(restart).toBeGreaterThan(back);
+    expect(result.remediation).toContain(
+      "or replace the server (remove it, then run `opscrew provision`).",
     );
     expect(result.remediation).toContain(
-      "), `systemctl restart opscrew-firewall.service` loads them again as written in /etc/opscrew/firewall.nft.",
+      "), `systemctl restart opscrew-firewall.service` loads them again as written in /etc/opscrew/firewall.nft. Then run `opscrew secure` again.",
     );
-    expect(result.remediation).toContain(
-      "If the plan's networks really changed (the web ports' are `http_allowed_cidrs`",
-    );
-    expect(result.remediation).toContain(
-      "edit /etc/opscrew/firewall.nft as root to match the plan, or replace the server, and restart that unit. Then run `opscrew secure` again.",
-    );
+    expect(result.remediation).not.toContain("edit /etc/opscrew/firewall.nft");
     expect(result.remediation).not.toContain("nft -f");
     expect(result.remediation).not.toContain("nftables.conf");
   });
