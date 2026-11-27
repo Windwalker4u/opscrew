@@ -238,34 +238,32 @@ describe("KamateraClient queued commands", () => {
     ).resolves.toMatchObject({ status: "complete" });
   });
 
-  it("fails with the command's log when its status is error, the values masked", async () => {
+  it("fails a command whose status is error without its log, which may hold a password", async () => {
     const { client } = setup({
       "POST /service/server/poweroff": { body: ["4242"] },
       "GET /service/queue": [
         queued("pending"),
-        queued("error", `  Server is locked\nkey ${CREDENTIALS.secret}  `),
+        queued("error", `  root password Zq9-fake-pass 203.0.113.7 key ${CREDENTIALS.secret}  `),
       ],
     });
     const error = await failure(client.command("/service/server/poweroff", { name: "x" }, WAIT));
     expect(error.code).toBe("PROVIDER_ERROR");
-    expect(error.message).toMatch(
-      /^Kamatera's command to power the server off failed: Server is locked\nkey \[REDACTED/,
-    );
+    expect(error.message).toBe("Kamatera's command to power the server off failed.");
     expect(error.hint).toBe(
-      "Check the server in your Kamatera account's console, fix what the log names, then try again.",
+      "Read the command's log in your Kamatera account's console (the server's tasks), fix what it names, then try again.",
     );
-    expect(errorText(error)).not.toContain(CREDENTIALS.secret);
+    for (const value of ["Zq9-fake-pass", "203.0.113.7", CREDENTIALS.secret]) {
+      expect(errorText(error)).not.toContain(value);
+    }
   });
 
-  it("says a failed command gave no log", async () => {
+  it("says the same for a failed command with no log", async () => {
     const { client } = setup({
       "POST /service/server/poweroff": { body: ["4242"] },
       "GET /service/queue": { body: [{ id: 4242, status: "error", log: null }] },
     });
     const error = await failure(client.command("/service/server/poweroff", { name: "x" }, WAIT));
-    expect(error.message).toBe(
-      "Kamatera's command to power the server off failed, and Kamatera gave no log.",
-    );
+    expect(error.message).toBe("Kamatera's command to power the server off failed.");
   });
 
   it("stops at the timeout with a plain message, never waiting past it", async () => {

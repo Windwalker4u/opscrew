@@ -227,14 +227,15 @@ export class KamateraClient {
     return done;
   }
 
-  #commandFailed(command: KamateraCommand, what: string): OpsCrewError {
-    const log = command.log?.trim();
+  /**
+   * A failed command, named but never with its `log`: Kamatera's log can hold the root password
+   * it generated or the server's addresses, which the redactor doesn't know.
+   */
+  #commandFailed(_command: KamateraCommand, what: string): OpsCrewError {
     return this.#failure(
       "PROVIDER_ERROR",
-      log
-        ? `Kamatera's command to ${what} failed: ${log}`
-        : `Kamatera's command to ${what} failed, and Kamatera gave no log.`,
-      "Check the server in your Kamatera account's console, fix what the log names, then try again.",
+      `Kamatera's command to ${what} failed.`,
+      "Read the command's log in your Kamatera account's console (the server's tasks), fix what it names, then try again.",
     );
   }
 
