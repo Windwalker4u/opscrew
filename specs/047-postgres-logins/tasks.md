@@ -243,7 +243,7 @@ Secret-shaped values in tests come from `fakeSecret`.
 
 ## After 0.2.12 (found live on 0.2.12, 2026-11-26)
 
-- [ ] T4794 (lead) One snapshot per switch. Approving only the switch's hash takes the snapshot, then stops
+- [x] T4794 (lead) One snapshot per switch. Approving only the switch's hash takes the snapshot, then stops
   at the next plan's approval (the host plan), so each rerun takes another one (three on the inventory
   demo). Take the switch's snapshot only once every plan of the run is approved, with a test.
   - **Decided (the lead, 2026-11-27):** the snapshot runs right before the switch's first write
