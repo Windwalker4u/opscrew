@@ -5,6 +5,7 @@
  * on the user's own extra servers only what OpsCrew installed removed (the app's services, the
  * private network and its filter, then OpsCrew's setup), through host plans approved by hash.
  */
+import { join } from "node:path";
 import { parseGitHubRepo } from "@opscrew/connector-github";
 import {
   type HostFacts,
@@ -13,7 +14,7 @@ import {
   planUndo,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
-import { listText, plural } from "@opscrew/core";
+import { listText, plural, readTextIfExists } from "@opscrew/core";
 import {
   APP_SERVER,
   type CloudProvider,
@@ -96,7 +97,7 @@ function cloudProviderOfType(type: string): CloudProvider | undefined {
  * Extra cloud servers that the destroy preview deletes from Terraform state even though they were
  * already removed from `plan.yaml` (issue #57). Ordered as they appear in `preview.changes`.
  */
-function droppedExtraServers(
+export function droppedExtraServers(
   plan: Pick<DeployPlan, "app" | "servers">,
   preview: { changes: readonly ResourceChange[]; planJson?: unknown },
 ): ExtraCloudServer[] {
@@ -127,8 +128,9 @@ function droppedExtraServers(
     }
     seen.add(serverName);
     const before = BeforeServerSchema.safeParse(byAddress.get(change.address));
+    // Prefer `display_name` (Contabo sets `display_name = var.name` while `name` is its internal `vmi…` id).
     const resource =
-      (before.success ? (before.data.name ?? before.data.display_name) : undefined) ??
+      (before.success ? (before.data.display_name ?? before.data.name) : undefined) ??
       cloudServerName(plan, serverName);
     const backups = before.success ? (before.data.backups ?? false) : false;
     dropped.push({
@@ -143,7 +145,7 @@ function droppedExtraServers(
 }
 
 /** Extra servers from `snapshots` that are in state but no longer listed in `plan.yaml`. */
-function droppedSnapshots(
+export function droppedSnapshots(
   plan: Pick<DeployPlan, "app" | "servers">,
   snapshots: readonly ServerSnapshot[] | undefined,
 ): ServerSnapshot[] {
@@ -153,6 +155,49 @@ function droppedSnapshots(
     (snapshot) =>
       snapshot.server !== APP_SERVER && snapshot.inState && !planned.has(snapshot.server),
   );
+}
+
+/**
+ * Extra protected servers (`providerProfile(provider).deleteProtection`) whose `<name>_delete_protection`
+ * variable is still declared: every planned one, plus any dropped from `plan.yaml` still in state
+ * whose `variable "<name>_delete_protection"` exists in `dir/variables.tf` (so an earlier
+ * re-render of `variables.tf` never passes an undeclared `-var` to OpenTofu/Terraform).
+ */
+export async function declaredExtraProtectedServers(
+  dir: string,
+  plan: DeployPlan,
+  snapshots?: readonly ServerSnapshot[],
+): Promise<ExtraCloudServer[]> {
+  const fromPlan = extraCloudServers(plan).filter(
+    (server) => providerProfile(server.provider).deleteProtection,
+  );
+  const droppedProtected = droppedSnapshots(plan, snapshots).filter(
+    (snapshot) => providerProfile(snapshot.provider).deleteProtection,
+  );
+  if (droppedProtected.length === 0) return fromPlan;
+  const variables = (await readTextIfExists(join(dir, "variables.tf"))) ?? "";
+  const fromState = droppedProtected
+    .filter((snapshot) => variables.includes(`variable "${snapshot.server}_delete_protection"`))
+    .map(
+      (snapshot): ExtraCloudServer => ({
+        name: snapshot.server,
+        provider: snapshot.provider,
+        resource: snapshot.name ?? cloudServerName(plan, snapshot.server),
+        module: snapshot.module,
+        backups: snapshot.data.backups,
+      }),
+    );
+  return [...fromPlan, ...fromState];
+}
+
+/** `-var <name>_delete_protection=false` for {@link declaredExtraProtectedServers}. */
+export async function declaredExtraProtectionVars(
+  dir: string,
+  plan: DeployPlan,
+  snapshots?: readonly ServerSnapshot[],
+): Promise<Record<string, string>> {
+  const servers = await declaredExtraProtectedServers(dir, plan, snapshots);
+  return Object.fromEntries(servers.map((server) => [`${server.name}_delete_protection`, "false"]));
 }
 
 /** The plan's extra servers OpsCrew created whose provider has delete protection (Hetzner), plus any dropped from `plan.yaml` still in state. */

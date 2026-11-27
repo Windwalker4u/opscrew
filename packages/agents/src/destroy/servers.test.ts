@@ -431,6 +431,11 @@ describe.skipIf(!findExecutable("git"))("runDestroy with extra servers (US2 #6, 
       services: full.services.map(({ server: _server, ...service }) => service),
     };
     const s = await setup(droppedPlan);
+    // `variables.tf` still declares `data_delete_protection` because provision has not re-run.
+    await writeFile(
+      join(s.project.root, droppedPlan.infra.dir, "variables.tf"),
+      'variable "delete_protection" {}\nvariable "data_delete_protection" {}\n',
+    );
     const findCalls: Array<{ app: string; names: readonly string[] | undefined }> = [];
     const fakeServers = s.services.servers as FakeServers;
     const trackedServices: DestroyServices = {
@@ -555,6 +560,72 @@ describe.skipIf(!findExecutable("git"))("runDestroy with extra servers (US2 #6, 
       "opscrew-shop-cache-state-before-destroy-20261011T120000Z",
     );
   });
+
+  it("omits undeclared <name>_delete_protection -var when variables.tf was already re-rendered without the dropped server (#57)", async () => {
+    const full = deployedSplit("cloud");
+    const { servers: _droppedServers, network: _droppedNetwork, ...rest } = full;
+    const droppedPlan: DeployPlan = {
+      ...rest,
+      services: full.services.map(({ server: _server, ...service }) => service),
+    };
+    const s = await setup(droppedPlan);
+    // Earlier provision already re-rendered `variables.tf` without `data_delete_protection`.
+    await writeFile(
+      join(s.project.root, droppedPlan.infra.dir, "variables.tf"),
+      'variable "delete_protection" {}\n',
+    );
+    // Unprotect only touches `app`'s server (module.server_data has no protection variable left).
+    const unprotectAppOnly = {
+      changes: [
+        {
+          address: SERVER_ADDRESS,
+          type: "hcloud_server",
+          name: "this",
+          provider: "registry.opentofu.org/hetznercloud/hcloud",
+          action: "update" as const,
+        },
+      ],
+      planJson: {
+        format_version: "1.2",
+        resource_changes: [
+          {
+            address: SERVER_ADDRESS,
+            mode: "managed",
+            type: "hcloud_server",
+            change: {
+              actions: ["update"],
+              before: serverAttributes(),
+              after: serverAttributes({ delete_protection: false, rebuild_protection: false }),
+              after_unknown: {},
+            },
+          },
+        ],
+      },
+    };
+    const engine = new ScriptedDestroyEngine({
+      resources: dataResources(),
+      unprotect: unprotectAppOnly,
+    });
+    const asked: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: { ...s.services, engine: async () => engine },
+      confirm: async (preview) => {
+        asked.push(preview);
+        return true;
+      },
+    });
+    // Still confirms and snapshots the dropped server, but NEVER passes undeclared `data_delete_protection`.
+    expect(asked.map((p) => [p.name, p.server])).toEqual([
+      ["shop", undefined],
+      ["shop-data", "data"],
+    ]);
+    for (const opts of engine.planOptions) {
+      expect(opts.vars).toEqual({ delete_protection: "false" });
+      expect(opts.vars).not.toHaveProperty("data_delete_protection");
+    }
+    const lift = s.handler.requests.find((r) => r.title.startsWith("Lift delete protection"));
+    expect(lift?.title).toBe("Lift delete protection on shop");
+  });
 });
 
 describe("serverSnapshots and dataSnapshotOffer for dropped extra servers (#57)", () => {
@@ -608,7 +679,8 @@ describe("serverSnapshots and dataSnapshotOffer for dropped extra servers (#57)"
             type: "contabo_instance",
             change: {
               actions: ["delete"],
-              before: { id: "c-10", display_name: "shop-archive-old" },
+              // Contabo sets internal `name` (`vmi…`) alongside OpsCrew's `display_name`: prefer `display_name`.
+              before: { id: "c-10", name: "vmi123456", display_name: "shop-archive-old" },
             },
           },
         ],

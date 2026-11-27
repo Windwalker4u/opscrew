@@ -97,9 +97,10 @@ import { destroySharedPreviews } from "./previews";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
 import {
   confirmExtraServers,
+  declaredExtraProtectedServers,
+  declaredExtraProtectionVars,
   earlierSnapshotsLines,
   extraOwnServers,
-  extraProtectedServers,
   extraProtectionVars,
   extraServersRemaining,
   forgetExtraCloudServers,
@@ -772,9 +773,10 @@ async function destroyDeployment(
   // and whether it gets a snapshot first; the app's server is the one under module.server.
   const { serverIds } = preview;
   const snapshots = serverSnapshots(plan, preview, options.snapshot);
+  const declaredExtraProtected = await declaredExtraProtectedServers(session.dir, plan, snapshots);
   const allProtectionVars = {
     ...protectionVars,
-    ...extraProtectionVars(plan, snapshots),
+    ...(await declaredExtraProtectionVars(session.dir, plan, snapshots)),
   };
   if (Object.keys(allProtectionVars).length > 0) ctx.vars = allProtectionVars;
   const serverInState = snapshots.some((s) => s.server === APP_SERVER && s.inState);
@@ -901,7 +903,7 @@ async function destroyDeployment(
       vars: allProtectionVars,
       names: [
         ...(profile.deleteProtection ? [name] : []),
-        ...extraProtectedServers(plan, snapshots).map((server) => server.resource),
+        ...declaredExtraProtected.map((server) => server.resource),
       ],
       serverInState: deletesProtectedServer(preview.changes),
       ...(snapshotId !== undefined ? { snapshotId } : {}),
