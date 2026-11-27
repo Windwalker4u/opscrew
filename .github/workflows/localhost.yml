@@ -1,25 +1,14 @@
 # OpsCrew's own check of the localhost target (FR-1531, quickstart "6."): the localhost Docker pass
-# with real Docker on Linux, the same pass on Intel macOS with Colima (non-blocking), and the
-# localhost unit and command tests, with Docker faked, on Windows and Apple silicon (whose runners cannot run Linux containers). No GitHub runner is ever registered.
+# with real Docker on Linux, the same pass on Intel macOS with Colima (non-blocking; weekly and
+# manual only to avoid heavy macOS runner usage), and the localhost unit and command tests, with
+# Docker faked, on Windows and Apple silicon (whose runners cannot run Linux containers). Runs on
+# merges to `main`, weekly schedule, and manual dispatch (not per-commit on PRs). No GitHub runner
+# is ever registered.
 name: Localhost
 
 on:
   push:
     branches: [main]
-    paths:
-      - packages/agents/src/localhost/**
-      - packages/iac-templates/src/edge/**
-      - packages/iac-templates/src/runtime/**
-      - packages/iac-templates/src/workflow/**
-      - packages/iac-templates/src/drill/**
-      - packages/connectors/ssh-host/src/local.ts
-      - packages/connectors/ssh-host/src/local.test.ts
-      - packages/core/src/crypto/x509.ts
-      - packages/core/src/crypto/x509.test.ts
-      - examples/express-mysql/**
-      - packages/cli/test/e2e/localhost*.ts
-      - .github/workflows/localhost.yml
-  pull_request:
     paths:
       - packages/agents/src/localhost/**
       - packages/iac-templates/src/edge/**
@@ -70,6 +59,7 @@ jobs:
 
   docker-macos-intel:
     name: Docker pass (Intel macOS, Colima)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-15-intel
     # Intel macOS runners have a shelf life and Colima takes about 6 minutes to start (research R5).
     # The off-Linux Buildpacks build runs by hand on Windows: here a plain `docker pull` of the
