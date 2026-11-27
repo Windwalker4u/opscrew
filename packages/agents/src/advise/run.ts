@@ -14,6 +14,7 @@ import { componentRules } from "./rules/components";
 import { costRules } from "./rules/cost";
 import { databaseRules } from "./rules/database";
 import { reliabilityRules } from "./rules/reliability";
+import { scalingRules } from "./rules/scaling";
 import { PLAN } from "./rules/shared";
 import { sizeRules } from "./rules/size";
 import { upkeepRules } from "./rules/upkeep";
@@ -30,7 +31,15 @@ import {
 
 export type { ReadingsOptions as RunAdviseOptions };
 
-const RULES = [sizeRules, costRules, reliabilityRules, databaseRules, upkeepRules, componentRules];
+const RULES = [
+  sizeRules,
+  scalingRules,
+  costRules,
+  reliabilityRules,
+  databaseRules,
+  upkeepRules,
+  componentRules,
+];
 
 /** The proposals that change the servers: none while a move is in progress. */
 const SERVER_CATEGORIES: ReadonlySet<ProposalCategory> = new Set(["size", "cost", "components"]);

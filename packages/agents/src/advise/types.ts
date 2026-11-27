@@ -4,7 +4,7 @@
  */
 import type { DependabotAlerts, DependabotPull, IssueDates } from "@opscrew/connector-github";
 import type { CheckResult, ComputeOffer, ProviderExtras, ProviderId } from "@opscrew/contracts";
-import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
+import type { DeployPlan, ProjectFacts, Requirements } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { Credential } from "../rotate/inventory";
 import type { ResourceReading } from "../status";
@@ -293,6 +293,8 @@ export interface Readings {
    */
   besideAppMb?: number;
   requirements?: Requirements;
+  /** Detected project facts (`opscrew/architecture.json`), when present; used for scale-out readiness. */
+  facts?: ProjectFacts;
   prices: PriceList[];
   upkeep: {
     /** Absent when it couldn't be read (then listed in `notRead`). */

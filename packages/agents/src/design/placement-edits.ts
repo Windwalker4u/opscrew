@@ -10,6 +10,8 @@ import {
   type Network,
   NetworkSchema,
   parseArtifact,
+  type Scaling,
+  ScalingSchema,
   ServerNameSchema,
 } from "@opscrew/plan-schema";
 import { parse } from "yaml";
@@ -48,14 +50,21 @@ const EditsSchema = z.strictObject({
   servers: z.array(EditedServerSchema).optional(),
   network: NetworkSchema.optional(),
   move: MoveSchema.optional(),
+  scaling: ScalingSchema.optional(),
 });
 
-/** What `opscrew/plan.yaml` says about where the services run, read before its rules across them. */
+/** What `opscrew/plan.yaml` says about where the services and app copies run, read before its rules across them. */
 export interface PlacementEdits {
   /** The extra servers, in plan order. */
   servers: EditedServer[];
   /** The server each service names (`services[].server`), by the service's name. */
   placed: Record<string, string>;
+  /** Extra servers running copies of the web process (`app.servers`, 033). */
+  appServers?: string[];
+  /** Extra servers running copies of each worker (`processes.workers[].servers`, 033), by worker name. */
+  workerServers?: Record<string, string[]>;
+  /** Multi-server scaling settings (`plan.scaling`, 033). */
+  scaling?: Scaling;
   network?: Network;
   move?: Move;
   /**
@@ -87,11 +96,14 @@ export interface PlanWithEdits {
   edits: PlacementEdits;
 }
 
-/** True when the user placed something: an extra server, a service on one, a network or a move. */
+/** True when the user placed something: an extra server, a service or app/worker copy on one, scaling, a network or a move. */
 export function hasPlacement(edits: PlacementEdits): boolean {
   return (
     edits.servers.length > 0 ||
     Object.keys(edits.placed).length > 0 ||
+    (edits.appServers?.length ?? 0) > 0 ||
+    Object.keys(edits.workerServers ?? {}).length > 0 ||
+    edits.scaling !== undefined ||
     edits.network !== undefined ||
     edits.move !== undefined
   );
@@ -126,7 +138,7 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
     }
   }
   if (!isRecord(raw)) throw failure;
-  const { servers, network, move, ...others } = raw;
+  const { servers, network, move, scaling, ...others } = raw;
   // Monitoring's rules name a server and the network, so it is read with them (a block that is
   // not valid in itself stays, and the plan's own error names it).
   const { monitoring: block, ...observability }: Record<string, unknown> = isRecord(
@@ -156,6 +168,42 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
       : { ...others, observability: read };
   const placed: Record<string, string> = {};
   const issues: { path: string; message: string }[] = [];
+  // Multi-server web and worker copies (`app.servers`, `processes.workers[].servers`, 033) name
+  // extra servers in `servers[]`, so read them with the placement before validating the rest.
+  let appServers: string[] | undefined;
+  let app = rest.app;
+  if (isRecord(rest.app) && rest.app.servers !== undefined) {
+    const { servers: rawAppServers, ...appRest } = rest.app;
+    const parsed = z.array(ServerNameSchema).safeParse(rawAppServers);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        const suffix = issue.path.length > 0 ? `.${issue.path.map(String).join(".")}` : "";
+        issues.push({ path: `app.servers${suffix}`, message: issue.message });
+      }
+    } else if (parsed.data.length > 0) {
+      appServers = parsed.data;
+    }
+    app = appRest;
+  }
+  const workerServers: Record<string, string[]> = {};
+  let processes = rest.processes;
+  if (isRecord(rest.processes) && Array.isArray(rest.processes.workers)) {
+    const workers = rest.processes.workers.map((worker: unknown, i) => {
+      if (!isRecord(worker) || worker.servers === undefined) return worker;
+      const { servers: rawWorkerServers, ...workerRest } = worker;
+      const parsed = z.array(ServerNameSchema).safeParse(rawWorkerServers);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          const suffix = issue.path.length > 0 ? `.${issue.path.map(String).join(".")}` : "";
+          issues.push({ path: `processes.workers.${i}.servers${suffix}`, message: issue.message });
+        }
+      } else if (typeof workerRest.name === "string" && parsed.data.length > 0) {
+        workerServers[workerRest.name] = parsed.data;
+      }
+      return workerRest;
+    });
+    processes = { ...rest.processes, workers };
+  }
   const services = Array.isArray(rest.services)
     ? rest.services.map((service: unknown, i) => {
         if (!isRecord(service) || service.server === undefined) return service;
@@ -172,7 +220,7 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
         return others;
       })
     : rest.services;
-  const plan = DeployPlanSchema.safeParse({ ...rest, services });
+  const plan = DeployPlanSchema.safeParse({ ...rest, app, processes, services });
   if (!plan.success) {
     const issue = plan.error.issues[0];
     // The file is valid as a whole, but not without its placement: design must not start over.
@@ -187,7 +235,7 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
       )
     );
   }
-  const edits = EditsSchema.safeParse({ servers, network, move });
+  const edits = EditsSchema.safeParse({ servers, network, move, scaling });
   for (const issue of edits.error?.issues ?? []) {
     issues.push({ path: issue.path.map(String).join("."), message: issue.message });
   }
@@ -204,6 +252,9 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
     edits: {
       servers: edits.data.servers ?? [],
       placed,
+      ...(appServers === undefined ? {} : { appServers }),
+      ...(Object.keys(workerServers).length === 0 ? {} : { workerServers }),
+      ...(edits.data.scaling === undefined ? {} : { scaling: edits.data.scaling }),
       ...(edits.data.network === undefined ? {} : { network: edits.data.network }),
       ...(edits.data.move === undefined ? {} : { move: edits.data.move }),
       ...(monitoring === undefined ? {} : { monitoring }),
