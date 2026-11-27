@@ -9,10 +9,10 @@
 import {
   canonicalJson,
   errorText,
+  listText,
   OpsCrewError,
   readTextIfExists,
   sha256Hex,
-  writeFileAtomic,
 } from "@opscrew/core";
 import {
   POSTGRES_LOGINS,
@@ -21,7 +21,6 @@ import {
   snapshotParts,
 } from "@opscrew/iac-templates";
 import {
-  APP_SERVER,
   type DeployPlan,
   type PlanService,
   postgresLogins,
@@ -32,8 +31,9 @@ import { loginsUpgradeNotice, loginsVersion } from "../design/postgres-logins";
 import { readStrict } from "../rotate/values-pending";
 import { planFile } from "../runners/words";
 import type { GeneratedValues } from "../shared/app-env";
-import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
+import { changeGenerated, GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { requestApproval } from "../shared/approvals";
+import { dataServers } from "../snapshot/hosts";
 
 /** This environment's generated values as the switch reads them (only provision writes them). */
 export type KeptLogins = Pick<GeneratedValues, "dbPassword" | "services">;
@@ -62,17 +62,20 @@ export async function forgetSwitchPasswords(
   deps: Pick<PhaseDeps, "paths">,
   services: readonly string[],
 ): Promise<void> {
-  const file = generatedValuesFile(deps);
-  const text = await readTextIfExists(file);
-  if (text === undefined) return;
-  const values = JSON.parse(text) as { services?: Record<string, Record<string, unknown>> };
-  for (const name of services) {
-    const secrets = values.services?.[name];
-    if (secrets === undefined) continue;
-    for (const secret of POSTGRES_LOGINS.secrets) delete secrets[secret.name];
-    if (Object.keys(secrets).length === 0) delete values.services?.[name];
-  }
-  await writeFileAtomic(file, `${JSON.stringify(values)}\n`);
+  if ((await readTextIfExists(generatedValuesFile(deps))) === undefined) return;
+  await changeGenerated(deps, (values) => {
+    if (values.services === undefined) return values;
+    const nextServices = { ...values.services };
+    for (const name of services) {
+      const secrets = nextServices[name];
+      if (secrets === undefined) continue;
+      const kept = { ...secrets };
+      for (const secret of POSTGRES_LOGINS.secrets) delete kept[secret.name];
+      if (Object.keys(kept).length === 0) delete nextServices[name];
+      else nextServices[name] = kept;
+    }
+    return { ...values, services: nextServices };
+  });
 }
 
 /** The enabled PostgreSQLs of `plan`. */
@@ -205,7 +208,7 @@ export async function postgresLoginsStep(
   }
   const change = loginsSwitch(plan, kept, deps.paths.environment);
   if (change === undefined) return undefined;
-  const title = `Switch ${change.services.join(" and ")} to separate logins for the app and its migrations`;
+  const title = `Switch ${listText(change.services)} to separate logins for the app and its migrations`;
   const details = [...change.lines, `Switch hash: ${change.hash}`].join("\n");
   if (o.planOnly === true) {
     deps.reporter.info(
@@ -251,13 +254,13 @@ export async function switchSnapshot(
       const skip = dataParts(plan)
         .map((part) => part.name)
         .filter((name) => !copied.has(name));
-      deps.reporter.step(`Taking a snapshot of ${[...copied].join(" and ")} before the switch`);
+      deps.reporter.step(`Taking a snapshot of ${listText([...copied])} before the switch`);
       await o.snapshot.take(skip);
     }
   } catch (error) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `The snapshot of ${change.services.join(" and ")} before the switch to separate logins failed: ${errorText(error)} The database was not changed.`,
+      `The snapshot of ${listText(change.services)} before the switch to separate logins failed: ${errorText(error)} The database was not changed.`,
       {
         hint: `Fix what it names (\`opscrew snapshot\` takes one on its own), then run \`${o.command}\` again; it asks for the switch again.`,
         cause: error,
@@ -268,6 +271,5 @@ export async function switchSnapshot(
 
 /** Every part a snapshot of `plan`'s data has, on each of its servers. */
 function dataParts(plan: DeployPlan): SnapshotPart[] {
-  const servers = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)];
-  return servers.flatMap((server) => snapshotParts(plan, server));
+  return dataServers(plan).flatMap((server) => snapshotParts(plan, server));
 }
