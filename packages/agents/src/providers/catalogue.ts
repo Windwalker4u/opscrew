@@ -290,15 +290,15 @@ function staticSite() {
   };
 }
 
+/** The fetch every connector here gets: the catalogue reads no network. */
+const noNetwork = () => Promise.reject(new Error("The provider catalogue reads no network."));
+
 /**
  * Cloudflare: the token OpsCrew asks for, for the app's DNS, its HTTPS rules and its hosting; then
  * Cloudflare's hosting, which needs the deploy token too.
  */
 function cloudflare() {
-  const connector = cloudflareConnector({
-    env: {},
-    fetch: () => Promise.reject(new Error("The provider catalogue reads no network.")),
-  });
+  const connector = cloudflareConnector({ env: {}, fetch: noNetwork });
   const { envVars, createUrl } = connector.credentials;
   const name = connector.displayName;
   const shared = {
@@ -366,8 +366,9 @@ export async function providerCatalogue(
 ): Promise<ProviderCatalogue> {
   const clouds = await Promise.all(
     cloudProviders.map(async (definition) => {
-      // Without credentials, a provider's connector answers from its built-in price list.
-      const catalog = definition.connector({ env: {} }).catalog();
+      // Without credentials and network, a provider's connector answers from its built-in price
+      // list (Kamatera's would otherwise read its public price file).
+      const catalog = definition.connector({ env: {}, fetch: noNetwork }).catalog();
       return { definition, catalog, entry: await cloudServer(definition, catalog) };
     }),
   );

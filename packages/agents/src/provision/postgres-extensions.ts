@@ -29,7 +29,10 @@ import type { LoginsSnapshot } from "./postgres-logins";
 async function cloudTargetArch(
   target: Pick<CloudDeployTarget, "provider" | "location" | "serverType">,
 ): Promise<"amd64" | "arm64" | "unknown"> {
-  const catalog = cloudProvider(target.provider).connector({ env: {} }).catalog();
+  // No network: Kamatera's catalogue would otherwise read its public price file.
+  const catalog = cloudProvider(target.provider)
+    .connector({ env: {}, fetch: () => Promise.reject(new Error("No network here.")) })
+    .catalog();
   const inLocation = await catalog.listOffers(target.location);
   const found =
     inLocation.find((offer) => offer.id === target.serverType) ??
