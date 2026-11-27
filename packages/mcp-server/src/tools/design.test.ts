@@ -193,3 +193,46 @@ describe("opscrew_design_options for a site with no server", () => {
     expect(text).not.toContain("Server:");
   });
 });
+
+describe("opscrew_design_options and opscrew_select_design with environment", () => {
+  it("allows bootstrapping prod or staging before any plan exists, while rejecting invalid names", async () => {
+    const call = await connect();
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, budgetMonthly: "10 EUR", provider: "hetzner" },
+    });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+
+    for (const invalid of ["../bad", "UPPER"]) {
+      const bad = await call("opscrew_design_options", { environment: invalid });
+      expect(bad.isError).toBe(true);
+      expect(textOf(bad)).toContain("is not valid");
+    }
+
+    const stagingOptions = await call("opscrew_design_options", { environment: "staging" });
+    expect(stagingOptions.isError, textOf(stagingOptions)).toBeFalsy();
+    const recommendedId = (stagingOptions.structuredContent as { recommendedId: string })
+      .recommendedId;
+
+    const selected = await call("opscrew_select_design", {
+      environment: "staging",
+      optionId: recommendedId,
+    });
+    expect(selected.isError, textOf(selected)).toBeFalsy();
+    const stagingPlan = await readArtifact(
+      "plan",
+      path.join(lastRoot, "opscrew", "environments", "staging", "plan.yaml"),
+    );
+    expect(stagingPlan.environment?.name).toBe("staging");
+    expect(stagingPlan.app.name).toMatch(/-staging$/);
+
+    // Bootstrapping prod later also works.
+    const prodSelected = await call("opscrew_select_design", {
+      environment: "prod",
+      optionId: recommendedId,
+    });
+    expect(prodSelected.isError, textOf(prodSelected)).toBeFalsy();
+    const prodPlan = await readArtifact("plan", path.join(lastRoot, "opscrew", "plan.yaml"));
+    expect(prodPlan.environment?.name).toBeUndefined();
+    expect(stagingPlan.app.name).toBe(`${prodPlan.app.name}-staging`);
+  });
+});

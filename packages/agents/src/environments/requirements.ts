@@ -11,6 +11,7 @@ import {
   type Requirements,
   RequirementsSchema,
   readArtifact,
+  writeArtifact,
 } from "@opscrew/plan-schema";
 import { parseDocument, stringify } from "yaml";
 import { z } from "zod";
@@ -63,19 +64,25 @@ export async function readEnvironmentRequirements(paths: ProjectPaths): Promise<
 }
 
 /**
- * Writes the environment's own answers (`files.requirements`): those of `requirements` that differ
- * from prod's, and when they were given. Every answer it leaves out stays prod's.
+ * Writes the environment's own answers (`files.requirements`): for `prod`, the full base
+ * `requirements.yaml`; for another environment, only those of `requirements` that differ from
+ * prod's, and when they were given. Every answer it leaves out stays prod's.
  */
 export async function writeEnvironmentRequirements(
   paths: ProjectPaths,
   requirements: Requirements,
 ): Promise<void> {
+  const parsed = RequirementsSchema.parse(requirements);
+  if (paths.environment === "prod") {
+    await writeArtifact("requirements", paths.files.requirements, parsed);
+    return;
+  }
   const base: Record<string, unknown> = await readArtifact(
     "requirements",
     paths.files.shared.requirementsBase,
   );
   const own = Object.fromEntries(
-    Object.entries(RequirementsSchema.parse(requirements)).filter(
+    Object.entries(parsed).filter(
       ([key, value]) => key === "answeredAt" || canonicalJson(value) !== canonicalJson(base[key]),
     ),
   );

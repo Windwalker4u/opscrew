@@ -118,6 +118,35 @@ describe.skipIf(GIT === undefined)("opscrew adapt", () => {
     expect(await git(project.env, project.root, "log", "-1", "--format=%s")).toBe("initial");
   });
 
+  it("works cleanly on a staging-only app (bare and --env staging) and rejects unknown environments", async () => {
+    const p = await tempProject("nextjs-postgres");
+    project = p;
+    await git(p.env, p.root, "init", "-q", "-b", "main");
+    await git(p.env, p.root, "add", "-A");
+    await git(p.env, p.root, "commit", "-q", "-m", "initial");
+    await writeFile(path.join(p.dir, "answers.yaml"), ANSWERS);
+    expect(await run(projectContext(p), "analyze", "--no-ai")).toBe(0);
+    expect(
+      await run(projectContext(p), "interview", "--answers", path.join(p.dir, "answers.yaml")),
+    ).toBe(0);
+    expect(await run(projectContext(p), "design", "--env", "staging")).toBe(0);
+
+    const bad = projectContext(p);
+    expect(await run(bad, "adapt", "--env", "prod", "--no-ai", "--no-push")).toBe(2);
+    expect(bad.errors).toContain('The app has no environment "prod". Its environments: "staging".');
+
+    const approvals = new ApproveAll();
+    const ctx = projectContext(p, {
+      services: { approvalHandler: approvals, runtime: new FakeAgentRuntime() },
+    });
+    expect(await run(ctx, "adapt", "--no-ai", "--no-push")).toBe(0);
+    const plan = await readFile(
+      path.join(p.root, "opscrew", "environments", "staging", "plan.yaml"),
+      "utf8",
+    );
+    expect(plan).toMatch(/status: applied/);
+  });
+
   it("commits without prompts in a non-interactive run with --yes", async () => {
     project = await planned();
     const ctx = projectContext(project);

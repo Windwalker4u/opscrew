@@ -1,4 +1,5 @@
 import {
+  commandFlags,
   inspectOwnServerForDesign,
   type OwnServerDesignInput,
   readEnvironmentRequirements,
@@ -40,7 +41,7 @@ export function register(program: Command, ctx: CliContext): void {
   addEnvOption(command);
   addHostKeyOption(command).action(async (flags: DesignFlags) => {
     checkApproveFlags("design", flags);
-    const { app, name, flag } = await chooseEnvironment(ctx, flags, "design");
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "design", { allowNew: true });
     const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const optionId = flags.option?.trim() || undefined;
     const interactive = optionId === undefined && ctx.isInteractive;
@@ -87,11 +88,12 @@ export function register(program: Command, ctx: CliContext): void {
     });
 
     if (optionId === undefined && !interactive) {
+      const nextFlag = await commandFlags(ctx.cwd, name, app);
       const others = result.options.filter((option) => option.id !== result.chosen.id);
       ctx.stdout(
         `\nChose the recommended option, ${result.chosen.id}.${
           others.length > 0
-            ? ` To plan another one, run \`opscrew design${flag} --option <id>\` with one of: ${others.map((o) => o.id).join(", ")}.`
+            ? ` To plan another one, run \`opscrew design${nextFlag} --option <id>\` with one of: ${others.map((o) => o.id).join(", ")}.`
             : ""
         }\n`,
       );

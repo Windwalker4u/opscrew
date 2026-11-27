@@ -29,6 +29,7 @@ import {
   type DeployTarget,
   type DesignOption,
   EnvironmentSchema,
+  environmentsOf,
   infraDirFor,
   isCloudProvider,
   isHostingTarget,
@@ -464,21 +465,10 @@ export async function previewDesignOptions(
 }
 
 /**
- * Prod's plan, which an environment other than prod is named after (`<app>-<env>`).
- * @throws OpsCrewError `PHASE_PRECONDITION` when it does not exist yet.
+ * Prod's plan when it exists (`undefined` when a non-prod environment is designed first).
  */
-async function prodPlanOf(deps: PhaseDeps): Promise<DeployPlan> {
-  const name = deps.paths.environment;
-  const prodPlan = await readOptionalArtifact(
-    "plan",
-    environmentPaths(deps.paths, "prod").files.plan,
-  );
-  if (prodPlan !== undefined) return prodPlan;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The ${name} environment's app is named after prod's (\`<app>-${name}\`), and opscrew/plan.yaml does not exist yet. Nothing was written.`,
-    { hint: `Run \`opscrew design\` for prod first, then \`opscrew design --env ${name}\`.` },
-  );
+async function prodPlanOf(deps: PhaseDeps): Promise<DeployPlan | undefined> {
+  return readOptionalArtifact("plan", environmentPaths(deps.paths, "prod").files.plan);
 }
 
 /**
@@ -1243,7 +1233,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     const shaped = (plan: DeployPlan) =>
       previews === undefined ? plan : previewPlan(plan, zone as string, facts);
     const edited = keptEdits(
-      shaped(prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, named)),
+      shaped(
+        name === "prod"
+          ? prodEnvironmentSettings(designed, named)
+          : environmentNames(designed, prodPlan, name, named),
+      ),
       previous,
       edits,
     );
@@ -1277,9 +1271,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // snapshots: the previous plan's, else proposed on an own server or Portainer (FR-2410).
   const kept = withDesignedSnapshots(
     withDesignedCheck(
-      prodPlan === undefined && source === undefined
-        ? own
-        : environmentPlan(shared, source, keep, paths),
+      name === "prod" && source === undefined ? own : environmentPlan(shared, source, keep, paths),
       name,
     ),
     previous,
@@ -1560,10 +1552,15 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const checkLines = check.lines.map(say);
   for (const line of checkLines) reporter.info(line);
   for (const warning of check.warnings) warn(warning);
+  const otherEnvironments = (await environmentsOf(paths.root, paths.app)).filter(
+    (env) => env !== name,
+  );
   reporter.info(
-    prodPlan === undefined
+    name === "prod" || otherEnvironments.length === 0
       ? "Next: run `opscrew adapt` to prepare the code in a pull request."
-      : `Next: run \`opscrew provision --env ${name}\`. The code is prod's, which \`opscrew adapt\` prepares.`,
+      : prodPlan !== undefined
+        ? `Next: run \`opscrew provision --env ${name}\`. The code is prod's, which \`opscrew adapt\` prepares.`
+        : `Next: run \`opscrew provision --env ${name}\`. The code is shared across environments, which \`opscrew adapt\` prepares.`,
   );
   await deps.state.markPhase(
     "design",
@@ -1610,22 +1607,55 @@ function samePlan(a: DeployPlan, b: DeployPlan): boolean {
 }
 
 /**
- * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>`, its own
- * workflow and infrastructure root (plan-schema's `workflowPathFor` and `infraDirFor`, with a
- * further app's key), and its `environment` block (with the deploy source and runner
- * `opscrew env add` chose) and branch (`--branch`). On Cloudflare's hosting its Worker is named
- * like its app. An earlier plan's root, block and branch are kept over these (`keepPlanSettings`).
+ * Applies `opscrew env add prod`'s non-default environment settings (such as promoting `prod` from
+ * `staging`, a custom runner, or a custom branch) to `prod`'s plan without setting
+ * `environment.name` (which must remain absent on `opscrew/plan.yaml`).
+ */
+function prodEnvironmentSettings(
+  plan: DeployPlan,
+  options: Pick<RunDesignOptions, "environment" | "branch">,
+): DeployPlan {
+  const next =
+    options.branch === undefined
+      ? plan
+      : { ...plan, cicd: { ...plan.cicd, branch: options.branch } };
+  const env = options.environment;
+  if (env === undefined) return next;
+  const hasSettings =
+    env.deploySource?.from === "promote" ||
+    (env.runner !== undefined && env.runner !== "github") ||
+    env.runnerHost !== undefined ||
+    env.build !== undefined ||
+    env.previews !== undefined;
+  if (!hasSettings) return next;
+  return {
+    ...next,
+    environment: EnvironmentSchema.parse(env),
+  };
+}
+
+/**
+ * The fresh plan `plan` named for the environment `name`: the app name `<app>-<env>` (taking the
+ * base app name from `prodPlan` when it exists, else `plan.app.name`), its own workflow and
+ * infrastructure root (plan-schema's `workflowPathFor` and `infraDirFor`, with a further app's
+ * key), and its `environment` block (with the deploy source and runner `opscrew env add` chose,
+ * defaulting to `{ from: "main" }`) and branch (`--branch`). On Cloudflare's hosting its Worker
+ * is named like its app. An earlier plan's root, block and branch are kept over these
+ * (`keepPlanSettings`).
  */
 function environmentNames(
   plan: DeployPlan,
-  prodPlan: DeployPlan,
+  prodPlan: DeployPlan | undefined,
   name: string,
   options: Pick<RunDesignOptions, "environment" | "branch">,
 ): DeployPlan {
-  const app = `${prodPlan.app.name}-${name}`;
+  const app = `${prodPlan?.app.name ?? plan.app.name}-${name}`;
   return {
     ...plan,
-    environment: EnvironmentSchema.parse({ ...options.environment, name }),
+    environment: EnvironmentSchema.parse({
+      ...(options.environment ?? { deploySource: { from: "main" } }),
+      name,
+    }),
     app: { ...plan.app, name: app },
     ...(plan.target.provider === "cloudflare-workers"
       ? { target: { ...plan.target, worker: app } }

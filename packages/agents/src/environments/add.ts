@@ -208,6 +208,7 @@ function defaultHostname(
 ): string | undefined {
   const { domain } = base;
   if (domain === undefined) return undefined;
+  if (name === "prod" && prodPlan.dns.domain !== domain) return domain;
   if (hidesNames(prodPlan)) {
     let part = "";
     for (let i = 0; i < RANDOM_LENGTH; i++) {
@@ -543,58 +544,90 @@ export interface AddContext {
   environments: string[];
   /** The app's flag in the commands OpsCrew names (`appFlag`). */
   app: string;
+  /** Paths of the reference environment (`prod` when it exists, else the first environment). */
   prodPaths: ProjectPaths;
-  /** Prod's plan, which the new environment is named after (`<app>-<env>`). */
+  /** Reference plan (`prod`'s when it exists, else the first environment's). */
   prodPlan: DeployPlan;
-  /** Prod's answers. */
+  /** True when `prod` already exists (`prodPlan` is `prod`'s own plan). */
+  hasProd: boolean;
+  /** The app's base name (without `-<env>`). */
+  baseAppName: string;
+  /** Base answers (`opscrew/requirements.yaml`). */
   base: Requirements;
   facts: ProjectFacts;
 }
 
 /**
- * The new environment's name, the app's environments and prod's plan, answers and facts, once
- * the name is free: not prod, not one of the app's environments, and no other app's or
+ * The new environment's name, the app's environments and reference plan (`prod`'s when it exists,
+ * else the first existing environment's), base answers and facts, once the name is free: not one
+ * of the app's environments (including `prod` when it already exists), and no other app's or
  * environment's name (FR-1615).
- * @throws OpsCrewError `INVALID_INPUT` for prod, `PHASE_PRECONDITION` when the environment exists
- * or prod's plan does not yet.
+ * @throws OpsCrewError `INVALID_INPUT` when `prod` already exists, `PHASE_PRECONDITION` when the
+ * environment exists or the app has no environment yet.
  */
 async function addContext(deps: PhaseDeps): Promise<AddContext> {
   const { paths } = deps;
   const name = paths.environment;
-  if (name === "prod") {
+  const environments = await environmentsOf(paths.root, paths.app);
+  const app = await appFlag(paths.root, paths.app);
+  if (name === "prod" && environments.includes("prod")) {
     throw new OpsCrewError("INVALID_INPUT", "prod is the app's first environment already.", {
       hint: "Give the new environment another name, for example staging or dev.",
     });
   }
-  const environments = await environmentsOf(paths.root, paths.app);
-  const app = await appFlag(paths.root, paths.app);
   if (environments.includes(name)) {
     throw new OpsCrewError("PHASE_PRECONDITION", `The app already has a ${name} environment.`, {
       hint: `Run \`opscrew design${app} --env ${name}\` to design it again, or \`opscrew env remove ${name}${app}\` first.`,
     });
   }
-  const prodPaths = environmentPaths(paths, "prod");
-  const prodPlan = await readOptionalArtifact("plan", prodPaths.files.plan);
-  if (prodPlan === undefined) {
+  const referenceEnv = environments.includes("prod") ? "prod" : environments[0];
+  const referencePaths =
+    referenceEnv === undefined ? undefined : environmentPaths(paths, referenceEnv);
+  const referencePlan =
+    referencePaths === undefined
+      ? undefined
+      : await readOptionalArtifact("plan", referencePaths.files.plan);
+  if (referencePlan === undefined || referencePaths === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The ${name} environment's app is named after prod's (\`<app>-${name}\`), and ${toPosixRelative(paths.root, prodPaths.files.plan)} does not exist yet.`,
-      { hint: `Run \`opscrew design${app}\` first, then add the environment.` },
+      `The app has no environment yet, so there is no existing plan to add ${name} beside.`,
+      {
+        hint: `Run \`opscrew design${app}\` (or \`opscrew design${app} --env ${name}\`) first, then add another environment.`,
+      },
     );
   }
+  const hasProd = referenceEnv === "prod";
+  const suffix = `-${referenceEnv}`;
+  const baseAppName =
+    hasProd ||
+    !referencePlan.app.name.endsWith(suffix) ||
+    referencePlan.app.name.length <= suffix.length
+      ? referencePlan.app.name
+      : referencePlan.app.name.slice(0, -suffix.length);
+  const appName = name === "prod" ? baseAppName : `${baseAppName}-${name}`;
   // No other app or environment of the repository may have its names (FR-1615).
   await requireUniqueNames(
     paths,
     {
       ...(paths.app === undefined ? {} : { app: paths.app }),
       environment: name,
-      name: `${prodPlan.app.name}-${name}`,
+      name: appName,
     },
     `Give the environment another name, then run \`opscrew env add <name>${app}\` again.`,
   );
   const base = await readArtifact("requirements", paths.files.shared.requirementsBase);
   const { facts } = await readArtifact("architecture", paths.files.architecture);
-  return { name, environments, app, prodPaths, prodPlan, base, facts };
+  return {
+    name,
+    environments,
+    app,
+    prodPaths: referencePaths,
+    prodPlan: referencePlan,
+    hasProd,
+    baseAppName,
+    base,
+    facts,
+  };
 }
 
 /**
@@ -773,7 +806,7 @@ export async function addEnvironment(
   if (portainer !== undefined) await recordPortainerAnswers(paths, portainer);
   await writeEnvironmentRequirements(paths, requirements);
   deps.reporter.success(
-    `Wrote ${toPosixRelative(paths.root, paths.files.requirements)}: the ${name} environment's own answers.`,
+    `Wrote ${toPosixRelative(paths.root, paths.files.requirements)}: ${name === "prod" ? "prod's answers" : `the ${name} environment's own answers`}.`,
   );
   // A server the user owns is inspected before design, as `opscrew design` does (its size, the
   // apps on it, its CPU); the host key is confirmed at the first connection.

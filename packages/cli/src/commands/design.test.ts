@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveProjectPaths } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import {
@@ -171,6 +172,69 @@ describe("opscrew design", () => {
     expect(await run(ctx, "design")).toBe(1);
     expect(ctx.errors).toContain("You cancelled the choice");
     await expect(planOf(project)).rejects.toThrow();
+  });
+
+  it("accepts --app . --env prod on a brand-new app before plan.yaml exists, while rejecting invalid names", async () => {
+    project = await prepared();
+    for (const invalid of ["../bad", "UPPER"]) {
+      const bad = projectContext(project);
+      expect(await run(bad, "design", "--app", ".", "--env", invalid)).toBe(2);
+      expect(bad.errors).toContain("is not valid");
+    }
+
+    const ctx = projectContext(project);
+    expect(await run(ctx, "design", "--app", ".", "--env", "prod")).toBe(0);
+    const plan = await planOf(project);
+    expect(plan.app.name).toBeTruthy();
+    expect(plan.environment?.name).toBeUndefined();
+  });
+
+  it("bootstraps a non-prod environment first with --env staging, rejects unknown envs on other commands, and adds prod later", async () => {
+    project = await prepared();
+    const stagingCtx = projectContext(project);
+    expect(await run(stagingCtx, "design", "--env", "staging")).toBe(0);
+    const stagingPaths = resolveProjectPaths(project.root, {
+      env: project.env,
+      environment: "staging",
+    });
+    const stagingPlan = await readArtifact("plan", stagingPaths.files.plan);
+    expect(stagingPlan.environment?.name).toBe("staging");
+    expect(stagingPlan.app.name).toMatch(/-staging$/);
+    expect(stagingPlan.infra.dir).toBe("opscrew/infra/staging");
+    expect(stagingPlan.cicd.workflowPath).toBe(".github/workflows/opscrew-deploy-staging.yml");
+    await expect(planOf(project)).rejects.toThrow();
+
+    // Non-design commands still reject unknown environments (including prod when only staging exists).
+    const unknownStatus = projectContext(project);
+    expect(await run(unknownStatus, "status", "--env", "prod")).toBe(2);
+    expect(unknownStatus.errors).toContain(
+      'The app has no environment "prod". Its environments: "staging".',
+    );
+
+    // env list shows staging cleanly.
+    const listCtx = projectContext(project);
+    expect(await run(listCtx, "env", "list")).toBe(0);
+    expect(listCtx.output).toContain("staging");
+
+    // env add dev works beside staging before prod exists.
+    const devCtx = projectContext(project);
+    expect(await run(devCtx, "env", "add", "dev", "--target", "hetzner")).toBe(0);
+    const devPaths = resolveProjectPaths(project.root, { env: project.env, environment: "dev" });
+    const devPlan = await readArtifact("plan", devPaths.files.plan);
+    expect(devPlan.environment?.name).toBe("dev");
+    expect(devPlan.app.name).toBe(`${stagingPlan.app.name.replace(/-staging$/, "")}-dev`);
+
+    // Adding prod later via design --env prod creates opscrew/plan.yaml beside staging and dev.
+    const prodCtx = projectContext(project);
+    expect(await run(prodCtx, "design", "--env", "prod")).toBe(0);
+    const prodPlan = await planOf(project);
+    expect(prodPlan.environment?.name).toBeUndefined();
+    expect(stagingPlan.app.name).toBe(`${prodPlan.app.name}-staging`);
+
+    // Removing staging works cleanly too.
+    const removeCtx = projectContext(project);
+    expect(await run(removeCtx, "env", "remove", "staging", "--confirm", "staging")).toBe(0);
+    await expect(readArtifact("plan", stagingPaths.files.plan)).rejects.toThrow();
   });
 
   it("asks for the earlier steps when they have not run", async () => {

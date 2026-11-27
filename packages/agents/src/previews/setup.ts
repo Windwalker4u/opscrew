@@ -31,7 +31,12 @@ import {
   runtimeDir,
   webOnlyFromCloudflare,
 } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, type Previews, readArtifact } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type Previews,
+  readOptionalArtifact,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -261,7 +266,7 @@ export async function prepareSharedServer(
     },
     APP_SERVER,
   );
-  const prod = await readArtifact("plan", environmentPaths(deps.paths, "prod").files.plan);
+  const prod = await readOptionalArtifact("plan", environmentPaths(deps.paths, "prod").files.plan);
   requireHostApps(
     readableRecords(network.facts.apps)
       .filter((record) => record.state === "active")
@@ -269,7 +274,7 @@ export async function prepareSharedServer(
     server,
     {
       previewApp: plan.app.name,
-      prodApp: prod.app.name,
+      ...(prod === undefined ? {} : { prodApp: prod.app.name }),
       again: input.again,
     },
   );

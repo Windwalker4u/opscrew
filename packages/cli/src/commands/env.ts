@@ -439,7 +439,7 @@ export function register(program: Command, ctx: CliContext): void {
     );
     if (environments.length === 0) {
       ctx.stdout(
-        `The app has no environment yet. Start with \`opscrew design${app.flag}\`, which plans prod.\n`,
+        `The app has no environment yet. Start with \`opscrew design${app.flag}\` (or \`opscrew design${app.flag} --env <name>\`).\n`,
       );
       return;
     }

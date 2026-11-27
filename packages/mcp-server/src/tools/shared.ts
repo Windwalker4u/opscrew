@@ -110,17 +110,24 @@ export async function toolEnvironment(
   projectDir: string,
   app: string | undefined,
   requested: string | undefined,
+  options?: { allowNew?: boolean },
 ): Promise<ToolEnvironment> {
   const appKey = await toolApp(projectDir, app);
   let name: string;
   try {
-    name = await resolveEnvironment(projectDir, requested, { app: appKey });
+    name = await resolveEnvironment(projectDir, requested, {
+      app: appKey,
+      ...(options?.allowNew === true ? { allowNew: true } : {}),
+    });
   } catch (error) {
     // Several environments and none named: the tools take `environment`, not `--env`.
     if (requested !== undefined || !isUserFacingError(error)) throw error;
     if (error.code !== "PHASE_PRECONDITION") throw error;
     const names = await environmentsOf(projectDir, appKey);
-    withHint(error, `Pass environment, for example ${names.find((n) => n !== "prod")}.`);
+    withHint(
+      error,
+      `Pass environment, for example ${names.find((n) => n !== "prod") ?? names[0]}.`,
+    );
   }
   return { appKey, name, flag: await commandFlags(projectDir, name, appKey) };
 }

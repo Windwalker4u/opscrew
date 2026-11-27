@@ -2,12 +2,14 @@ import { type AdaptResult, runAdapt } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, MODEL_SETUP_HINT, modelOption, servicesOf } from "../deps";
-import { addAppOption, chooseApp } from "../ui/app";
+import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printCosts, printNextSteps } from "../ui/output";
 
 interface AdaptFlags {
   /** `--app <key>`: the repository's app. */
   app?: string;
+  /** `--env <name>`: the app's environment whose plan adapt reads and updates. */
+  env?: string;
   ai: boolean;
   push: boolean;
   model?: string;
@@ -56,12 +58,13 @@ export function register(program: Command, ctx: CliContext): void {
       "--model <id>",
       "Model for the Code-change agent (default claude-opus-5-5 or gpt-6.2-sol, or OPSCREW_MODEL)",
     );
-  addAppOption(command).action(async (flags: AdaptFlags) => {
+  addEnvOption(command).action(async (flags: AdaptFlags) => {
     const model = modelOption(ctx, flags.model);
-    const app = await chooseApp(ctx, flags.app, "adapt");
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "adapt");
     const deps = createPhaseDeps(ctx, {
       ai: flags.ai,
-      app: app.key,
+      app,
+      environment: name,
       ...(model === undefined ? {} : { model }),
       ...(flags.yes === true ? { assumeYes: true } : {}),
     });
@@ -79,6 +82,6 @@ export function register(program: Command, ctx: CliContext): void {
     if (flags.ai && deps.runtime === undefined && result.manual.length > 0) {
       ctx.stdout(`\n${MODEL_SETUP_HINT}\n`);
     }
-    printNextSteps(ctx, nextSteps(result, result.manual.length, app.flag));
+    printNextSteps(ctx, nextSteps(result, result.manual.length, flag));
   });
 }

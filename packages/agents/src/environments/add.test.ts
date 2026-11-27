@@ -42,6 +42,7 @@ import {
   type EnvironmentQuestion,
   environmentQuestions,
   listEnvironments,
+  removeEnvironment,
   setEnvironment,
   sharedPartsDiffer,
 } from "./index";
@@ -540,7 +541,9 @@ describe("addEnvironment", () => {
     const fresh = await createTestPhaseDeps({ environment: "staging" });
     const early = await failure(addEnvironment(fresh));
     expect(early.code).toBe("PHASE_PRECONDITION");
-    expect(early.hint).toBe("Run `opscrew design` first, then add the environment.");
+    expect(early.hint).toBe(
+      "Run `opscrew design` (or `opscrew design --env staging`) first, then add another environment.",
+    );
   });
 });
 
@@ -811,23 +814,86 @@ describe("design per environment", () => {
     expect(sharedPartsDiffer(prodPlan, redesigned)).toEqual([]);
   });
 
-  it("stops before prod's plan exists", async () => {
-    const deps = await createTestPhaseDeps({ environment: "staging" });
+  it("designs a non-prod environment first without prod, and supports env add dev/prod and env remove", async () => {
+    const staging = await createTestPhaseDeps({ environment: "staging" });
     await writeArtifact(
       "architecture",
-      deps.paths.files.architecture,
-      architecture(nextPostgresFacts()),
+      staging.paths.files.architecture,
+      architecture(nextPostgresFacts({ name: "shop" })),
     );
     await writeArtifact(
       "requirements",
-      deps.paths.files.shared.requirementsBase,
+      staging.paths.files.shared.requirementsBase,
+      makeRequirements({ domain: DOMAIN, dnsProvider: "cloudflare" }),
+    );
+    const designed = await runDesign(staging, { catalog: euCatalog() });
+    expect(designed.plan.environment).toEqual({
+      name: "staging",
+      deploySource: { from: "main" },
+      runner: "github",
+    });
+    expect(designed.plan.app.name).toBe("shop-staging");
+    expect(designed.plan.infra.dir).toBe("opscrew/infra/staging");
+    expect(designed.plan.cicd.workflowPath).toBe(".github/workflows/opscrew-deploy-staging.yml");
+    expect(staging.reporter.text()).toContain("Next: run `opscrew adapt`");
+    expect(await exists(staging.paths.files.plan)).toBe(true);
+
+    // env list works cleanly on a staging-only app.
+    expect((await listEnvironments(staging.paths)).map((e) => e.name)).toEqual(["staging"]);
+
+    // Adding dev beside staging (without prod) uses staging as reference.
+    const dev = await createTestPhaseDeps({ root: staging.paths.root, environment: "dev" });
+    const addedDev = await addEnvironment(dev, {
+      answers: { provider: "hetzner" },
+      design: { catalog: euCatalog() },
+      randomInt: counting(),
+    });
+    expect(addedDev.design.plan.environment).toEqual({
+      name: "dev",
+      deploySource: { from: "main" },
+      runner: "github",
+    });
+    expect(addedDev.design.plan.app.name).toBe("shop-dev");
+    expect(dev.reporter.text()).toContain("Next: run `opscrew provision --env dev`.");
+
+    // Adding prod later via env add prod (promoted from staging) creates opscrew/plan.yaml
+    // with base app name "shop" and no environment.name, and keeps opscrew/requirements.yaml valid.
+    const prod = await createTestPhaseDeps({ root: staging.paths.root, environment: "prod" });
+    const addedProd = await addEnvironment(prod, {
+      answers: { provider: "hetzner", domain: "prod.example.com", from: "staging" },
+      design: { catalog: euCatalog() },
+    });
+    expect(addedProd.design.plan.app.name).toBe("shop");
+    expect(addedProd.design.plan.environment?.name).toBeUndefined();
+    expect(addedProd.design.plan.environment?.deploySource).toEqual({
+      from: "promote",
+      source: "staging",
+    });
+    expect(addedProd.design.plan.infra.dir).toBe("opscrew/infra/prod");
+    expect(addedProd.design.plan.cicd.workflowPath).toBe(".github/workflows/opscrew-deploy.yml");
+    expect(await readArtifact("requirements", prod.paths.files.requirements)).toMatchObject({
+      domain: "prod.example.com",
+      provider: "hetzner",
+    });
+    // Now that prod exists, adding prod a second time is refused.
+    expect((await failure(addEnvironment(prod))).code).toBe("INVALID_INPUT");
+
+    // On a fresh staging-only app, removing staging succeeds cleanly without prod.
+    const solo = await createTestPhaseDeps({ environment: "staging" });
+    await writeArtifact(
+      "architecture",
+      solo.paths.files.architecture,
+      architecture(nextPostgresFacts({ name: "shop" })),
+    );
+    await writeArtifact(
+      "requirements",
+      solo.paths.files.shared.requirementsBase,
       makeRequirements(),
     );
-    const error = await failure(runDesign(deps, { catalog: euCatalog() }));
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.hint).toBe(
-      "Run `opscrew design` for prod first, then `opscrew design --env staging`.",
-    );
+    await runDesign(solo, { catalog: euCatalog() });
+    await removeEnvironment(solo);
+    expect(await exists(solo.paths.files.plan)).toBe(false);
+    expect(await listEnvironments(solo.paths)).toEqual([]);
   });
 });
 

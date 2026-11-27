@@ -51,11 +51,13 @@ export async function chooseEnvironment(
   ctx: CliContext,
   flags: AppEnvFlags,
   command: string,
+  options?: { allowNew?: boolean },
 ): Promise<ChosenEnvironment> {
   const app = await resolveCliApp(ctx, flags.app, command);
   const prompts = promptsOf(ctx);
   const name = await resolveEnvironment(ctx.cwd, flags.env?.trim() || undefined, {
     app,
+    ...(options?.allowNew === true ? { allowNew: true } : {}),
     ...(ctx.isInteractive
       ? {
           choose: async (names) => {

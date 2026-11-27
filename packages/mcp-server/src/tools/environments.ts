@@ -70,7 +70,7 @@ export function registerEnvironmentTools(
         return {
           text:
             environments.length === 0
-              ? "The app has no environment yet: design prod first (opscrew_design_options, opscrew_select_design)."
+              ? "The app has no environment yet: design one first (opscrew_design_options, opscrew_select_design; pass environment to start with a non-prod environment such as staging)."
               : ["The app's environments:", ...lines].join("\n"),
           data: { environments },
         };

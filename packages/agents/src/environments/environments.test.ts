@@ -98,9 +98,46 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 }
 
 describe("resolveEnvironment", () => {
-  it("is prod for an app without a plan, and the only environment without --env", async () => {
+  it("resolves bare commands to the only environment (or prod when empty), while rejecting unknown names unless allowNew is set", async () => {
     const empty = await createTestPhaseDeps();
     expect(await resolveEnvironment(empty.paths.root, undefined)).toBe("prod");
+    // Without allowNew (non-design commands), even prod and staging are refused before a plan exists.
+    const emptyProd = await failure(resolveEnvironment(empty.paths.root, "prod"));
+    expect(emptyProd.code).toBe("INVALID_INPUT");
+    expect(emptyProd.message).toBe(
+      'The app has no environment "prod". Its environments: none yet.',
+    );
+    const emptyUnknown = await failure(resolveEnvironment(empty.paths.root, "staging"));
+    expect(emptyUnknown.code).toBe("INVALID_INPUT");
+    expect(emptyUnknown.message).toBe(
+      'The app has no environment "staging". Its environments: none yet.',
+    );
+
+    // With allowNew (design commands), any valid name ("prod" or ENVIRONMENT_NAME_PATTERN) is accepted,
+    // while invalid names are still rejected.
+    expect(await resolveEnvironment(empty.paths.root, "prod", { allowNew: true })).toBe("prod");
+    expect(await resolveEnvironment(empty.paths.root, "staging", { allowNew: true })).toBe(
+      "staging",
+    );
+    for (const invalid of ["../bad", "UPPER", "bad_name", "-leading"]) {
+      const err = await failure(resolveEnvironment(empty.paths.root, invalid, { allowNew: true }));
+      expect(err.code).toBe("INVALID_INPUT");
+    }
+
+    // Once only staging exists: bare resolves to staging, --env prod is refused without allowNew,
+    // and --env prod is accepted with allowNew.
+    const stagingOnly = await project({ staging: inEnvironment(prodPlan(), "staging") });
+    expect(await resolveEnvironment(stagingOnly.paths.root, undefined)).toBe("staging");
+    expect(await resolveEnvironment(stagingOnly.paths.root, "staging")).toBe("staging");
+    const missingProd = await failure(resolveEnvironment(stagingOnly.paths.root, "prod"));
+    expect(missingProd.code).toBe("INVALID_INPUT");
+    expect(missingProd.message).toBe(
+      'The app has no environment "prod". Its environments: "staging".',
+    );
+    expect(await resolveEnvironment(stagingOnly.paths.root, "prod", { allowNew: true })).toBe(
+      "prod",
+    );
+
     const deps = await project({ prod: prodPlan() });
     expect(await resolveEnvironment(deps.paths.root, undefined)).toBe("prod");
     expect(await resolveEnvironment(deps.paths.root, "prod")).toBe("prod");

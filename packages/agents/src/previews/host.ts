@@ -487,7 +487,7 @@ export async function shareableHosts(
 export function requireHostApps(
   apps: readonly string[],
   server: Pick<PreviewServer, "plan"> & { host: string },
-  input: { previewApp: string; prodApp: string; again: string },
+  input: { previewApp: string; prodApp?: string | undefined; again: string },
 ): void {
   const { host } = server;
   const own = new RegExp(`^${input.previewApp}(-pr-[1-9][0-9]{0,5})?$`);
@@ -496,7 +496,7 @@ export function requireHostApps(
     .sort();
   if (others.length === 0) return;
   const instead = shareInstead(input.again);
-  if (others.includes(input.prodApp)) {
+  if (input.prodApp !== undefined && others.includes(input.prodApp)) {
     throw refusedBeforeChange("PHASE_PRECONDITION", prodBeside(host), instead);
   }
   throw refusedBeforeChange(

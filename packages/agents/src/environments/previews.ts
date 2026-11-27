@@ -328,10 +328,17 @@ export async function addPreviewEnvironment(
   options: AddEnvironmentOptions,
 ): Promise<AddEnvironmentResult> {
   const { paths, reporter } = deps;
-  const { name, app, prodPlan, base, facts } = context;
+  const { name, app, prodPlan, hasProd, baseAppName, base, facts } = context;
+  const command = `opscrew env add ${name}${app} --previews`;
+  if (name === "prod") {
+    throw refusedBeforeChange(
+      "INVALID_INPUT",
+      "prod cannot be a preview environment.",
+      `Choose another name, for example \`opscrew env add preview${app} --previews\`.`,
+    );
+  }
   // Previews don't move with the zone: none is added while it moves to another Cloudflare account.
   requireNoCloudflareMove(prodPlan);
-  const command = `opscrew env add ${name}${app} --previews`;
   if (isServerlessTarget(prodPlan.target)) {
     throw refusedBeforeChange(
       "PHASE_PRECONDITION",
@@ -347,7 +354,7 @@ export async function addPreviewEnvironment(
       `Change it with \`opscrew design${app} --env ${other}\`, or remove it with \`opscrew env remove ${other}${app}\` first.`,
     );
   }
-  const appName = `${prodPlan.app.name}-${name}`;
+  const appName = `${baseAppName}-${name}`;
   if (appName.length > PREVIEW_APP_NAME_MAX) {
     throw refusedBeforeChange(
       "INVALID_INPUT",
@@ -484,7 +491,7 @@ export async function addPreviewEnvironment(
       shared,
       {
         previewApp: appName,
-        prodApp: prodPlan.app.name,
+        ...(hasProd ? { prodApp: prodPlan.app.name } : {}),
         again: command,
       },
     );

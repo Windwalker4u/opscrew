@@ -285,7 +285,9 @@ export function registerDesignTools(
     },
     ({ projectDir, app, environment }, extra: CallExtra) =>
       runTool(deps, "opscrew_design_options", projectDir, async (call) => {
-        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment, {
+          allowNew: true,
+        });
         const phase = await call.phaseDeps({
           ...designApprovals(server, deps, extra),
           app: appKey,
@@ -415,7 +417,9 @@ export function registerDesignTools(
     },
     ({ projectDir, app, environment, optionId }, extra: CallExtra) =>
       runTool(deps, "opscrew_select_design", projectDir, async (call) => {
-        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
+        const { appKey, name } = await toolEnvironment(call.projectDir, app, environment, {
+          allowNew: true,
+        });
         const phase = await call.phaseDeps({
           ...designApprovals(server, deps, extra),
           app: appKey,

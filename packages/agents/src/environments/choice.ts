@@ -1,5 +1,11 @@
 import { join } from "node:path";
-import { exists, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
+import {
+  ENVIRONMENT_NAME_MESSAGE,
+  ENVIRONMENT_NAME_PATTERN,
+  exists,
+  OpsCrewError,
+  resolveProjectPaths,
+} from "@opscrew/core";
 import { environmentsOf, resolveEnvironmentPaths } from "@opscrew/plan-schema";
 import { appFlag } from "../apps/choice";
 
@@ -9,6 +15,12 @@ export interface EnvironmentChoiceDeps {
   app?: string | undefined;
   /** Asks the user to pick one of `environments`; given only when a person can answer. */
   choose?: (environments: readonly string[]) => Promise<string>;
+  /**
+   * When true (design commands only), accept a valid environment name (`"prod"` or
+   * `ENVIRONMENT_NAME_PATTERN`) even before its `plan.yaml` exists, so `design --env <name>` can
+   * bootstrap a first environment or add `prod` later.
+   */
+  allowNew?: boolean | undefined;
 }
 
 /**
@@ -54,18 +66,29 @@ export async function commandFlags(
 /**
  * The environment a command acts on (`--env`, the MCP tools' `environment`) of the app
  * `deps.app` (the first app by default): `requested`, which must be one of the app's
- * environments; else the only one (prod for an app without a plan yet); else, with several, the
- * one the user picks through `deps.choose`.
- * @throws OpsCrewError `INVALID_INPUT` for an unknown name, and `PHASE_PRECONDITION` with the
- * names when there are several and no one can be asked (a script).
+ * environments (or, when `deps.allowNew` is true, any valid environment name — `"prod"` or
+ * `ENVIRONMENT_NAME_PATTERN` — even before its plan exists); else the only one (`"prod"` for an
+ * app without a plan yet); else, with several, the one the user picks through `deps.choose`.
+ * @throws OpsCrewError `INVALID_INPUT` for an unknown or invalid name, and `PHASE_PRECONDITION`
+ * with the names when there are several and no one can be asked (a script).
  */
 export async function resolveEnvironment(
   root: string,
   requested: string | undefined,
   deps: EnvironmentChoiceDeps = {},
 ): Promise<string> {
-  const { app } = deps;
-  if (requested !== undefined) return known(root, requested, app);
+  const { app, allowNew } = deps;
+  if (requested !== undefined) {
+    if (allowNew === true) {
+      if (requested === "prod" || ENVIRONMENT_NAME_PATTERN.test(requested)) return requested;
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `Environment name "${requested}" is not valid: an environment's name ${ENVIRONMENT_NAME_MESSAGE}.`,
+        { hint: "Use lowercase letters, digits and hyphens, for example staging or dev." },
+      );
+    }
+    return known(root, requested, app);
+  }
   const names = await environmentsOf(root, app);
   if (names.length <= 1) return names[0] ?? "prod";
   if (deps.choose !== undefined) return known(root, await deps.choose(names), app);
