@@ -2,7 +2,12 @@
  * Where the app's services and dashboards are published on the private network (ADR 0022): each
  * server's private address is its member's in `plan.network`.
  */
-import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  hasRemoteAppCopies,
+  type PlanService,
+} from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 
 /**
@@ -26,6 +31,7 @@ export function privateAddress(plan: DeployPlan, server: string): string {
 export function publishedAddress(plan: DeployPlan, service: PlanService): string | undefined {
   const server = service.server ?? APP_SERVER;
   if (server !== APP_SERVER) return privateAddress(plan, server);
+  if (hasRemoteAppCopies(plan)) return privateAddress(plan, APP_SERVER);
   const granted = plan.network?.grants.some((grant) => grant.service === service.name);
   return granted ? privateAddress(plan, APP_SERVER) : undefined;
 }

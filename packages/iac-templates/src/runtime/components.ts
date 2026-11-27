@@ -7,6 +7,7 @@ import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
   APP_SERVER,
   type DeployPlan,
+  hasRemoteAppCopies,
   type PlanService,
   poolerName,
   postgresPooler,
@@ -316,7 +317,9 @@ export function renderServices(
  * server reaches it; none on the app's server, where the app reaches it on the internal network.
  */
 function poolerAddress(plan: DeployPlan, service: PlanService): string | undefined {
-  return service.server === undefined ? undefined : publishedAddress(plan, service);
+  return service.server === undefined && !hasRemoteAppCopies(plan)
+    ? undefined
+    : publishedAddress(plan, service);
 }
 
 /**
@@ -658,7 +661,11 @@ export interface ProcessBase {
  * period, `deploy.replicas` for a worker's count, and the SQLite and kept folder's volumes
  * ({@link appVolumes}).
  */
-export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<string, object> {
+export function renderProcesses(
+  plan: DeployPlan,
+  base: ProcessBase,
+  server = APP_SERVER,
+): Record<string, object> {
   const end = (memoryMb: number) => ({
     healthcheck: { disable: true },
     ...memoryLimit(memoryMb),
@@ -668,7 +675,12 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       : {}),
   });
   const services: Record<string, object> = {};
-  for (const worker of plan.processes.workers.filter((worker) => worker.enabled)) {
+  const workers = plan.processes.workers.filter(
+    (worker) =>
+      worker.enabled &&
+      (server === APP_SERVER ? true : (worker.servers?.includes(server) ?? false)),
+  );
+  for (const worker of workers) {
     services[worker.name] = {
       image: base.image,
       ...base.pull,
@@ -681,7 +693,8 @@ export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<str
       ...end(worker.memoryMb),
     };
   }
-  const cronMb = cronMemoryMb(plan);
+  // Cron jobs run on the primary app server only — never duplicated across copy servers (033).
+  const cronMb = server === APP_SERVER ? cronMemoryMb(plan) : undefined;
   if (cronMb !== undefined) {
     services.cron = {
       image: base.image,

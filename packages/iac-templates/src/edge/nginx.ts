@@ -5,6 +5,7 @@
  * user, so nginx reads the origin key the deploy writes (0600) and certbot's files.
  */
 import { edgeProvider } from "@opscrew/edge-providers";
+import type { LoadBalancerPolicy } from "@opscrew/plan-schema";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
 import { appProxyAlias } from "./index";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
@@ -261,6 +262,16 @@ export interface NginxSite {
    * `httpsPort`.
    */
   local?: { httpsPort: number } | undefined;
+  /**
+   * Additional web copy upstreams (`<wg_ip>:18090`) balanced beside local `<app>-kamal-proxy:80`
+   * over WireGuard (033). Absent for single-copy apps.
+   */
+  loadBalance?:
+    | {
+        upstreams: readonly string[];
+        policy: LoadBalancerPolicy;
+      }
+    | undefined;
 }
 
 /** `hosts` split into those the site serves and those that redirect, and where they redirect. */
@@ -306,6 +317,9 @@ function serve(site: NginxSite, o: { hsts: boolean; h3: boolean }): string[] {
     "\tproxy_buffering off;",
     "\tproxy_request_buffering off;",
     "\tlocation / {",
+    ...(site.loadBalance !== undefined && site.loadBalance.upstreams.length > 0
+      ? ["\t\tproxy_next_upstream error timeout http_502 http_503 http_504;"]
+      : []),
     `\t\tproxy_pass http://${appProxyAlias(site.app)};`,
     "\t}",
     ...(site.additions === undefined
@@ -403,15 +417,31 @@ function tlsServer(site: NginxSite, hosts: readonly string[], tls: readonly stri
 export function nginxSite(site: NginxSite): string[] {
   const zone = `limit_req_zone $binary_remote_addr zone=${nginxRequestZone(site.app)}:1m rate=10r/s;`;
   const upstream = appProxyAlias(site.app);
+  const lb = site.loadBalance;
+  const multiCopy = lb !== undefined && lb.upstreams.length > 0;
+  const policyLine = multiCopy && lb.policy !== "round_robin" ? [`\t${lb.policy};`] : [];
+  const upstreamLines = multiCopy
+    ? [
+        "# This app's local kamal-proxy and remote web copies balanced over the WireGuard private network (033).",
+        `upstream ${upstream} {`,
+        `\tzone ${upstream} 64k;`,
+        ...policyLine,
+        `\tserver ${upstream}:80 resolve max_fails=2 fail_timeout=30s;`,
+        ...lb.upstreams.map((copy) => `\tserver ${copy} max_fails=2 fail_timeout=30s;`),
+        "}",
+      ]
+    : [
+        "# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.",
+        `upstream ${upstream} {`,
+        `\tzone ${upstream} 64k;`,
+        `\tserver ${upstream}:80 resolve max_fails=0;`,
+        "}",
+      ];
   const lines = [
     `# Your additions can limit requests with \`limit_req zone=${nginxRequestZone(site.app)};\`.`,
     zone,
     "",
-    "# This app's own kamal-proxy, resolved in Docker's DNS so another stopped app never blocks reload.",
-    `upstream ${upstream} {`,
-    `\tzone ${upstream} 64k;`,
-    `\tserver ${upstream}:80 resolve max_fails=0;`,
-    "}",
+    ...upstreamLines,
     "",
   ];
   if (site.mode === "tunnel") {

@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
+import type { LoadBalancerPolicy } from "@opscrew/plan-schema";
 import { httpsPortSuffix, LOCALHOST_TLS } from "../edge/localhost";
 import { IMAGES } from "../pins";
 import type { AppEnvironment } from "../runtime-dir";
@@ -135,6 +136,17 @@ export interface CaddySite {
   realIp?: boolean | undefined;
   /** A preview's site: every response also carries `X-Robots-Tag: noindex`. */
   noindex?: boolean | undefined;
+  /**
+   * Additional web copy upstreams (`<wg_ip>:18090`) balanced beside `upstream` over WireGuard
+   * (033). Absent for single-copy apps.
+   */
+  loadBalance?:
+    | {
+        upstreams: readonly string[];
+        policy: LoadBalancerPolicy;
+        healthPath: string;
+      }
+    | undefined;
 }
 
 /**
@@ -344,7 +356,28 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
     "\t}",
     ...BASELINE_HEADERS.map(([name, value]) => `\theader ?${name} "${value}"`),
   ];
+  const lb = site.loadBalance;
+  const targets =
+    lb !== undefined && lb.upstreams.length > 0
+      ? [site.upstream, ...lb.upstreams].join(" ")
+      : site.upstream;
+  const primaryHost = hosts[0];
+  const lbLines =
+    lb !== undefined && lb.upstreams.length > 0
+      ? [
+          `\t\tlb_policy ${lb.policy}`,
+          `\t\thealth_uri ${lb.healthPath}`,
+          "\t\thealth_interval 5s",
+          "\t\thealth_timeout 2s",
+          ...(primaryHost === undefined
+            ? []
+            : ["\t\thealth_headers {", `\t\t\tHost ${primaryHost}`, "\t\t}"]),
+          "\t\tfail_duration 30s",
+          "\t\tmax_fails 2",
+        ]
+      : [];
   const proxy = [
+    ...lbLines,
     ...(site.realIp ? ["\t\theader_up X-Forwarded-For {client_ip}"] : []),
     ...(site.versionDir === undefined
       ? []
@@ -362,8 +395,8 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
         ]),
     "\tencode zstd gzip",
     ...(proxy.length === 0
-      ? [`\treverse_proxy ${site.upstream}`]
-      : [`\treverse_proxy ${site.upstream} {`, ...proxy, "\t}"]),
+      ? [`\treverse_proxy ${targets}`]
+      : [`\treverse_proxy ${targets} {`, ...proxy, "\t}"]),
     ...header,
     // The same headers on the responses Caddy writes itself, such as a 502 while the app is down.
     "\thandle_errors {",

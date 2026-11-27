@@ -318,6 +318,7 @@ function directVariables(
   secret: (service: PlanService, name: string) => string,
   has: (service: PlanService) => boolean,
   login: "owner" | "runtime",
+  consumerServer = APP_SERVER,
 ): Record<string, string> {
   const running = enabledServices(plan);
   const own = new Set(running.flatMap((s) => (s.variable === undefined ? [] : [s.variable])));
@@ -326,6 +327,7 @@ function directVariables(
     service,
     secretRef,
     ...(service.variable === undefined ? {} : { variable: service.variable }),
+    ...(consumerServer === APP_SERVER ? {} : { consumerServer }),
   });
   const direct = (service: PlanService) =>
     postgresDirect(
@@ -390,6 +392,7 @@ export function releaseVariables(
 export function workerVariables(
   plan: DeployPlan,
   secret: (service: PlanService, name: string) => string,
+  consumerServer = APP_SERVER,
 ): Record<string, string> {
-  return directVariables(plan, secret, postgresPooler, "runtime");
+  return directVariables(plan, secret, postgresPooler, "runtime", consumerServer);
 }

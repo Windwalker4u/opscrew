@@ -158,7 +158,8 @@ export function hasLogin(service: PlanService): boolean {
  */
 function serviceHost(ctx: ServiceContext): string {
   const server = appServerOf(ctx.plan, ctx.service);
-  return server === APP_SERVER ? ctx.service.name : privateAddress(ctx.plan, server);
+  const consumer = ctx.consumerServer ?? APP_SERVER;
+  return server === consumer ? ctx.service.name : privateAddress(ctx.plan, server);
 }
 
 /** The header of every settings file OpsCrew writes for a service, naming the plan's file. */

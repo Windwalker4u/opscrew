@@ -39,6 +39,12 @@ export interface ServiceContext {
    * (`facts.services[].variable`): the catalog's `appVariables` gives it the address too.
    */
   variable?: string;
+  /**
+   * The server where the consuming app or worker runs (`APP_SERVER` when omitted): a service on
+   * that same server is reached by its Compose name, any service on another server by that
+   * server's WireGuard private address (033).
+   */
+  consumerServer?: string;
 }
 
 /** A settings file OpsCrew writes for a service and mounts read-only. */

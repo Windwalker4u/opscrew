@@ -8,11 +8,17 @@
  */
 import { sha256Hex } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
-import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isHostingTarget,
+  isServerlessTarget,
+  type LoadBalancerPolicy,
+} from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
 import { notOnServer, wrongTarget } from "../providers";
 import { memoryLimit } from "../runtime/components";
+import { privateAddress } from "../runtime/network";
 import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
 import { artefactsFolder, runtimeDir } from "../runtime-dir";
 import {
@@ -112,6 +118,28 @@ export function appProxyAlias(app: string): string {
 /** The per-app kamal-proxy upstream address on `opscrew-edge`: `<app>-kamal-proxy:80` (049). */
 export function appProxyUpstream(app: string): string {
   return `${appProxyAlias(app)}:80`;
+}
+
+/**
+ * Private WireGuard port on which a web copy server's `app-proxy` listens for requests from the
+ * front server's reverse proxy (033). Bound exclusively to the server's WireGuard private IP,
+ * never `0.0.0.0`, and distinct from `TUNNEL_ORIGIN_PORT` (18080) and `CADDY_METRICS_PORT` (9180).
+ */
+export const APP_COPY_PROXY_PORT = 18090;
+
+/**
+ * Private WireGuard `<ip>:<port>` upstreams for every remote web copy in `plan.app.servers` (033).
+ * Empty for single-copy plans.
+ */
+export function copyProxyUpstreams(plan: DeployPlan): string[] {
+  return (plan.app.servers ?? []).map(
+    (server) => `${privateAddress(plan, server)}:${APP_COPY_PROXY_PORT}`,
+  );
+}
+
+/** Load-balancing policy for multi-copy plans (`round_robin` by default, 033). */
+export function loadBalancerPolicy(plan: DeployPlan): LoadBalancerPolicy {
+  return plan.scaling?.loadBalancer?.policy ?? "round_robin";
 }
 
 /**

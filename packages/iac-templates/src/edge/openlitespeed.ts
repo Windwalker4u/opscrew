@@ -307,6 +307,11 @@ export interface OpenLiteSpeedSite {
    * `httpsPort`.
    */
   local?: { httpsPort: number } | undefined;
+  /**
+   * Additional web copy upstreams (`<wg_ip>:18090`) balanced beside local `<app>-kamal-proxy:80`
+   * over WireGuard (033). Absent for single-copy apps.
+   */
+  loadBalance?: { upstreams: readonly string[] } | undefined;
 }
 
 /** How the app's virtual host serves its hostnames. */
@@ -453,24 +458,50 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
     "RequestHeader unset X-Forwarded-Host",
     "RequestHeader unset X-Forwarded-Proto",
   ];
+  const extraUpstreams = site.loadBalance?.upstreams ?? [];
+  const multiCopy = extraUpstreams.length > 0;
+  const alias = appProxyAlias(app);
+  const allTargets = [appProxyUpstream(app), ...extraUpstreams];
+  const processorBlocks = multiCopy
+    ? [
+        "# This app's local kamal-proxy and remote web copies balanced over the WireGuard private network (033).",
+        ...allTargets.flatMap((target, idx) =>
+          block(`extprocessor ${alias}-${idx}`, [
+            set("type", "proxy"),
+            set("address", target),
+            set("maxConns", 1000),
+            set("pcKeepAliveTimeout", 60),
+            set("initTimeout", 60),
+            set("retryTimeout", 30),
+            set("respBuffer", 0),
+          ]),
+        ),
+        ...block(`extprocessor ${alias}`, [
+          set("type", "loadbalancer"),
+          set("workers", allTargets.map((_, idx) => `proxy::${alias}-${idx}`).join(", ")),
+        ]),
+      ]
+    : [
+        "# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.",
+        ...block(`extprocessor ${alias}`, [
+          set("type", "proxy"),
+          set("address", appProxyUpstream(app)),
+          set("maxConns", 1000),
+          set("pcKeepAliveTimeout", 60),
+          set("initTimeout", 60),
+          set("retryTimeout", 0),
+          set("respBuffer", 0),
+        ]),
+      ];
   const vhconf = [
     set("docRoot", `${SERVED}/`).trim(),
     set("enableGzip", 0).trim(),
     "",
     ...ERROR_PAGES,
-    "# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.",
-    ...block(`extprocessor ${appProxyAlias(app)}`, [
-      set("type", "proxy"),
-      set("address", appProxyUpstream(app)),
-      set("maxConns", 1000),
-      set("pcKeepAliveTimeout", 60),
-      set("initTimeout", 60),
-      set("retryTimeout", 0),
-      set("respBuffer", 0),
-    ]),
+    ...processorBlocks,
     ...block("context /", [
-      set("type", "proxy"),
-      set("handler", appProxyAlias(app)),
+      set("type", multiCopy ? "loadbalancer" : "proxy"),
+      set("handler", alias),
       set("addDefaultCharset", "off"),
       ...heredoc("extraHeaders", headers),
     ]),
