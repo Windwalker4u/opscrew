@@ -63,8 +63,11 @@ function startupScript({ ssh = WORLD, web = WORLD, wireguard }: Networks, firewa
     .replace("${cloud_config_b64}", Buffer.from("#cloud-config\n").toString("base64"));
 }
 
-/** A plan's JSON with the app's server, its startup script `script` (none: no script at all). */
-function planJson(script?: string) {
+/**
+ * A plan's JSON with the app's server, its startup script `script` (none: no script at all), and
+ * what the plan does to it (`actions`: created by default).
+ */
+function planJson(script?: string, actions: string[] = ["create"]) {
   const address = "module.server.own_server.this";
   const values = {
     name: "shop",
@@ -82,7 +85,7 @@ function planJson(script?: string) {
         ],
       },
     },
-    resource_changes: [{ address, change: { actions: ["create"], after_unknown: { id: true } } }],
+    resource_changes: [{ address, change: { actions, after_unknown: { id: true } } }],
   };
 }
 
@@ -212,5 +215,48 @@ describe("a provider whose firewall is the server's own", () => {
     );
     expect(result(results, "no-open-admin-ports")).toMatchObject({ passed: false });
     expect(result(results, "no-open-admin-ports")?.message).toContain("udp/51820");
+  });
+
+  // The module ignores changes to the startup script, so a server that exists keeps the script it
+  // was created with: its planned script is the stored one, not the plan's.
+  it("reads no rules from the stored script of a server that already exists", () => {
+    const narrowed = deployPlan({ sshAllowedCidrs: ["203.0.113.7/32"], proxied: true });
+    const stored = startupScript({ ssh: WORLD, web: WORLD, wireguard: 51820 });
+    for (const actions of [["no-op"], ["update"]]) {
+      const results = evaluatePlanPolicies(planJson(stored, actions), narrowed);
+      expect(blockingPolicyFailures(results), actions[0]).toEqual([]);
+      const attached = result(results, "firewall-attached");
+      expect(attached).toMatchObject({ passed: true, resource: "module.server.own_server.this" });
+      expect(attached?.message).toContain("Cloud firewall: none; server firewall: on.");
+      expect(attached?.message).toContain("`opscrew secure`");
+      for (const policy of ["ssh-not-public", "no-open-admin-ports", "origin-cloudflare-only"]) {
+        expect(result(results, policy), policy).toBeUndefined();
+      }
+    }
+  });
+
+  it("still fails a server that exists without the firewall's step", () => {
+    for (const json of [
+      planJson(startupScript({}, false), ["no-op"]),
+      planJson(undefined, ["update"]),
+    ]) {
+      const results = evaluatePlanPolicies(json, deployPlan());
+      expect(result(results, "firewall-attached")).toMatchObject({
+        passed: false,
+        message: "Cloud firewall: none; server firewall: off.",
+      });
+    }
+  });
+
+  it("checks the script of a server the plan creates, or replaces, as the plan's", () => {
+    const narrowed = deployPlan({ sshAllowedCidrs: ["203.0.113.7/32"] });
+    for (const actions of [["create"], ["delete", "create"], ["create", "delete"]]) {
+      const results = evaluatePlanPolicies(
+        planJson(startupScript({ ssh: WORLD }), actions),
+        narrowed,
+      );
+      expect(result(results, "ssh-not-public"), actions.join()).toMatchObject({ passed: false });
+      expect(blockingPolicyFailures(results).map((r) => r.policyId)).toEqual(["ssh-not-public"]);
+    }
   });
 });

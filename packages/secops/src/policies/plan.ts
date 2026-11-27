@@ -216,16 +216,20 @@ const PROVIDERS: readonly ProviderChecks[] = CLOUD_PROVIDERS.map((provider) => (
 const SERVER_FIREWALL_MARKER = "# opscrew-server-firewall:";
 const SERVER_FIREWALL_DROP = "type filter hook input priority filter; policy drop;";
 
-/**
- * The inbound rules of the server's own firewall, read from the step in the planned server's
- * first-boot script (whichever attribute holds it): SSH from `ssh_sources`, the web ports from
- * `web_sources`, the WireGuard port from everywhere. Undefined when no script holds the step or its
- * networks can't be read.
- */
-function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[] | undefined {
-  const script = Object.values(server.values).find(
+/** The planned server's first-boot script with the server firewall's step (whichever attribute). */
+function serverFirewallScript(server: PlannedResourceJson): string | undefined {
+  return Object.values(server.values).find(
     (value): value is string => typeof value === "string" && value.includes(SERVER_FIREWALL_MARKER),
   );
+}
+
+/**
+ * The inbound rules of the server's own firewall, read from the step in the planned server's
+ * first-boot script: SSH from `ssh_sources`, the web ports from `web_sources`, the WireGuard port
+ * from everywhere. Undefined when no script holds the step or its networks can't be read.
+ */
+function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[] | undefined {
+  const script = serverFirewallScript(server);
   if (script === undefined || !script.includes(SERVER_FIREWALL_DROP)) return undefined;
   const value = (name: string) => new RegExp(`^${name}='([^']*)'$`, "m").exec(script)?.[1];
   const [ssh, web, wireguard] = ["ssh_sources", "web_sources", "wireguard_port"].map(value);
@@ -243,6 +247,20 @@ function serverFirewallRules(server: PlannedResourceJson): PlannedFirewallRule[]
 }
 
 /**
+ * True when the plan keeps the server at `address` (`no-op` or `update`): its startup script is the
+ * one it was created with, since the module ignores changes to it, so the plan's networks aren't
+ * in it. False when the plan creates or replaces it, or says nothing of it.
+ */
+function serverExists(planJson: unknown, address: string): boolean {
+  if (!isRecord(planJson) || !Array.isArray(planJson.resource_changes)) return false;
+  const change = planJson.resource_changes.find(
+    (entry) => isRecord(entry) && entry.address === address,
+  );
+  const actions = isRecord(change) && isRecord(change.change) ? change.change.actions : undefined;
+  return Array.isArray(actions) && actions.length > 0 && !actions.includes("create");
+}
+
+/**
  * Whether `resource` is a provider's firewall: of its `firewallResourceType`, or for `<type>.<name>`
  * (a general type, such as `terraform_data.firewall`) of that type and that name.
  */
@@ -253,8 +271,11 @@ function isFirewall(resource: PlannedResourceJson, firewallType: string): boolea
 
 /**
  * The server and firewall policies of one provider (spec 004 plan "Security checks"). A provider
- * whose firewall is the server's own (`firewallCheck` `server`) has no firewall resource: each
- * server's rules are read from its first-boot script and checked as a cloud firewall's are.
+ * whose firewall is the server's own (`firewallCheck` `server`) has no firewall resource: the rules
+ * of each server the plan creates are read from its first-boot script and checked as a cloud
+ * firewall's are. A server that already exists keeps the script it was created with (the module
+ * ignores changes to it), so only the step's presence is read there, and `opscrew secure` checks
+ * the live rules.
  */
 function providerPolicies(
   provider: ProviderChecks,
@@ -270,18 +291,24 @@ function providerPolicies(
   const { noun } = provider;
 
   for (const server of servers) {
-    const serverRules = onServer ? serverFirewallRules(server) : undefined;
-    const hasFirewall = onServer
-      ? serverRules !== undefined
-      : provider.attached(server, firewalls, planJson);
+    const existing = onServer && serverExists(planJson, server.address);
+    const serverRules = onServer && !existing ? serverFirewallRules(server) : undefined;
+    const hasFirewall = !onServer
+      ? provider.attached(server, firewalls, planJson)
+      : existing
+        ? serverFirewallScript(server) !== undefined
+        : serverRules !== undefined;
     const hasKeys = isSet(server, provider.sshKeyAttribute ?? "ssh_keys");
+    const attachedText = existing
+      ? `${provider.attachedText} The ${noun} already exists, so its first boot ran when it was created and this plan doesn't change its firewall: \`opscrew secure\` checks the rules live on the ${noun}.`
+      : provider.attachedText;
     results.push(
       result(
         "firewall-attached",
         "Server has a firewall",
         "high",
         hasFirewall,
-        hasFirewall ? provider.attachedText : provider.unattachedText,
+        hasFirewall ? attachedText : provider.unattachedText,
         server.address,
       ),
       result(
