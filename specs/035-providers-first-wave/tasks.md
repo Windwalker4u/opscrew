@@ -483,7 +483,7 @@ dependencies or the lockfile. No real secret in any test: `fakeSecret(kind)` and
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/provider-kamatera && npx vitest run --root packages/providers/kamatera && pnpm lint`
   - Effort: xhigh
 
-- [ ] T3525 [US6] [US7] [US8] The definition and the module
+- [x] T3525 [US6] [US7] [US8] The definition and the module
   - Owns: `packages/providers/kamatera/src/definition.ts`, `definition.test.ts`, `src/index.ts`,
     `module/**`, `src/generated/**`
   - Reads: plan 8. and 9.; research R4 in full; `packages/contracts/src/provider.ts`; Contabo's and

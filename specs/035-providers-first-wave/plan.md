@@ -506,6 +506,19 @@ stay on the user's computer.
 9. **The root password is Kamatera's generated one**, kept in state and never read by OpsCrew; the
    SSH key is the way in, and the guide says the password is in the state on the user's computer.
 
+10. **Servers are named as on every provider** (`<app>`, `<app>-<name>`), not
+    `opscrew-<app>-<random>` (the lead, 2026-11-27), so the generic takeover and destroy keep finding
+    them. A duplicate create shows as `<name>(n)`; `findAppServers` refuses to go on while one
+    exists, naming it and its datacenter, which also stops destroy and snapshots until the user
+    deletes it in the console.
+11. **Kamatera's name rule** (4–40 letters, digits, dashes or dots) is checked by the module's
+    `name` variable, so a plan fails with a plain message, not the provider's.
+12. **No takeover of a lost server, for now** (known limit). `kamatera_server` imports by its
+    internal UUID, and the connector reports servers by name, so the takeover's `import` fails at
+    plan and creates nothing. Reporting UUIDs is a follow-up.
+13. **No shared SSH-key resource:** Kamatera's servers take the deploy key's text, so
+    `extraShared` declares nothing, which the registry accepts for that case only (issue #52).
+
 ## Order
 
 `tasks.md` holds the order, the waves and each task's number. OVHcloud is T3501 to T3518, with
