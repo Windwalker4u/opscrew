@@ -433,8 +433,10 @@ ${run.tail(taken.output)}`,
       async () =>
         run.expectNothingLeaked([
           // Kamatera's provider reads both values from the environment: neither is in a state
-          // file. The root password it generates is, by design (and in a saved plan, which holds
-          // the state), and OpsCrew never reads or shows it: it is searched for everywhere else.
+          // file. The root password it generates is, by design (and in a binary plan file, which
+          // holds the state), and OpsCrew never reads or shows it: it is searched for everywhere
+          // else. A plan's JSON sidecar masks it (`ALWAYS_MASKED`), but the harness searches every
+          // file under the plans folder as state, so `inState` exempts the sidecars too.
           ...(await envs.leaks({ cloudflare: true, inState: [ROOT_PASSWORD] })),
           ...(await deployLogLeaks(run, deployRuns)),
         ]),

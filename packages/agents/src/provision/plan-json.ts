@@ -37,13 +37,16 @@ export function maskBySensitivity(value: unknown, sensitive: unknown): unknown {
  * sensitive, but they reveal what must stay private. A Cloudflare Tunnel's `connections` list the
  * public address (`origin_ip`) of every host running its connector, such as the user's Portainer
  * host or a server behind the tunnel. An Access service token's `client_id` is half of the deploy
- * workflow's credential.
+ * workflow's credential. A Kamatera server's `generated_password` is its root password.
  */
 const ALWAYS_MASKED: Readonly<Record<string, readonly string[]>> = {
   cloudflare_zero_trust_tunnel_cloudflared: ["connections"],
   // The provider marks only the client secret sensitive; the client ID is the deploy secret's other
   // half (found by the Cloudflare move's leak search, 2026-11-18).
   cloudflare_zero_trust_access_service_token: ["client_id"],
+  // The server's root password when Kamatera generates it; the provider may not mark it
+  // sensitive, and later plans carry it in their changes and drift (#55 review).
+  kamatera_server: ["generated_password"],
 };
 
 /** `values` (a resource object) with the attributes {@link ALWAYS_MASKED} for `type` replaced. */
