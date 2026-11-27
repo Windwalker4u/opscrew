@@ -82,9 +82,9 @@ const TARGETS = {
   },
   ovhcloud: {
     location: "GRA11",
-    serverType: "d2-2",
+    serverType: "d2-4",
     image: DEFAULT_IMAGES.ovhcloud,
-    amount: 7.59,
+    amount: 15.04,
     currency: "EUR",
     pricesIncludeVat: false,
   },

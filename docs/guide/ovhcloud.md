@@ -84,7 +84,6 @@ quota, OpsCrew shows OVHcloud's answer in plain English with what to try next.
 
 | Model | vCPU | Memory | Disk (NVMe) | EUR an hour | 730 hours |
 |---|---|---|---|---|---|
-| d2-2 | 1, shared | 2 GB | 25 GB | 0.0104 | 7.59 |
 | d2-4 | 2, shared | 4 GB | 50 GB | 0.0206 | 15.04 |
 | d2-8 | 4, shared | 8 GB | 50 GB | 0.0372 | 27.16 |
 | b3-8 | 2, dedicated | 8 GB | 50 GB | 0.0512 | 37.38 |
