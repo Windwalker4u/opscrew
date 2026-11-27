@@ -51,7 +51,7 @@ context /opscrew-error.html {
 }
 
 # This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
-extprocessor kamal-proxy {
+extprocessor blog-kamal-proxy {
   type                    proxy
   address                 blog-kamal-proxy:80
   maxConns                1000
@@ -63,7 +63,7 @@ extprocessor kamal-proxy {
 
 context / {
   type                    proxy
-  handler                 kamal-proxy
+  handler                 blog-kamal-proxy
   addDefaultCharset       off
   extraHeaders            <<<END_extraHeaders
 Header set X-Content-Type-Options "nosniff"
@@ -160,7 +160,7 @@ context /opscrew-error.html {
 }
 
 # This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
-extprocessor kamal-proxy {
+extprocessor blog-kamal-proxy {
   type                    proxy
   address                 blog-kamal-proxy:80
   maxConns                1000
@@ -172,7 +172,7 @@ extprocessor kamal-proxy {
 
 context / {
   type                    proxy
-  handler                 kamal-proxy
+  handler                 blog-kamal-proxy
   addDefaultCharset       off
   extraHeaders            <<<END_extraHeaders
 Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -290,7 +290,7 @@ context /opscrew-error.html {
 }
 
 # This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
-extprocessor kamal-proxy {
+extprocessor shop-kamal-proxy {
   type                    proxy
   address                 shop-kamal-proxy:80
   maxConns                1000
@@ -302,7 +302,7 @@ extprocessor kamal-proxy {
 
 context / {
   type                    proxy
-  handler                 kamal-proxy
+  handler                 shop-kamal-proxy
   addDefaultCharset       off
   extraHeaders            <<<END_extraHeaders
 Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"

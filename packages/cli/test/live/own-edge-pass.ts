@@ -15,6 +15,7 @@ import {
   EDGE_DIR,
   EDGE_PROJECT,
   type EdgeProxy,
+  edgeAppUpstream,
   siteHosts,
 } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
@@ -52,20 +53,21 @@ const ADDITION_BODY = "served by the addition";
  * The same addition in each proxy's syntax; OpenLiteSpeed's additions only send requests on to the
  * app, so its addition is the path's own context, which sends the app's answer with a header.
  */
-const ADDITIONS: Record<EdgeProxy, string> = {
-  nginx: `location = ${ADDITION_PATH} {\n    return 200 "${ADDITION_BODY}";\n}\n`,
-  caddy: `handle ${ADDITION_PATH} {\n\trespond "${ADDITION_BODY}" 200\n}\n`,
-  openlitespeed: [
+function additionText(proxy: EdgeProxy, app: string): string {
+  if (proxy === "nginx")
+    return `location = ${ADDITION_PATH} {\n    return 200 "${ADDITION_BODY}";\n}\n`;
+  if (proxy === "caddy") return `handle ${ADDITION_PATH} {\n\trespond "${ADDITION_BODY}" 200\n}\n`;
+  return [
     `context ${ADDITION_PATH} {`,
     "  type proxy",
-    "  handler kamal-proxy",
+    `  handler ${edgeAppUpstream("openlitespeed", app)}`,
     "  extraHeaders <<<END_extraHeaders",
     `Header set X-OpsCrew-Addition "${ADDITION_BODY}"`,
     "  END_extraHeaders",
     "}",
     "",
-  ].join("\n"),
-};
+  ].join("\n");
+}
 /**
  * The interruption a switch of the proxy may cause for a proxied hostname (the plan states "a few
  * seconds"; research R5 of feature 014).
@@ -177,7 +179,7 @@ export function edgePass(pass: EdgePass): void {
         for (const other of PROXIES.filter((item) => item !== proxy)) {
           await rm(join(dir, `additions.${other}`), { force: true });
         }
-        await writeFile(join(dir, `additions.${proxy}`), ADDITIONS[proxy]);
+        await writeFile(join(dir, `additions.${proxy}`), additionText(proxy, run.app()));
         if (push) {
           await run.git("add", "-A", "opscrew/proxy");
           await run.git("commit", "-q", "-m", `e2e: the addition for ${proxy}`);

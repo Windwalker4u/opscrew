@@ -81,30 +81,30 @@ header /docs/* Cache-Control "public, max-age=3600"
 redir /old-pricing /pricing 301
 ```
 
-The same with nginx (a `location` passes its requests on to the app with `proxy_pass`):
+The same with nginx (a `location` passes its requests on to the app's upstream `<app>-kamal-proxy` with `proxy_pass`, where `<app>` is your `app.name` in `opscrew/plan.yaml`):
 
 ```nginx
 location /docs/ {
     add_header Cache-Control "public, max-age=3600";
-    proxy_pass http://kamal-proxy;
+    proxy_pass http://<app>-kamal-proxy;
 }
 location = /old-pricing { return 301 /pricing; }
 ```
 
 The same with OpenLiteSpeed: each `context` sends its requests on to the app with `type proxy` and
-`handler kamal-proxy`:
+`handler <app>-kamal-proxy`:
 
 ```text
 context /docs/ {
   type                    proxy
-  handler                 kamal-proxy
+  handler                 <app>-kamal-proxy
   extraHeaders            <<<END_extraHeaders
 Header set Cache-Control "public, max-age=3600"
   END_extraHeaders
 }
 context /old-pricing {
   type                    proxy
-  handler                 kamal-proxy
+  handler                 <app>-kamal-proxy
   rewrite {
     enable                1
     rules                 <<<END_rules
@@ -136,7 +136,7 @@ how to convert it.
 |---|---|
 | nginx | `location`, `if`, `add_header`, `proxy_set_header` (at server level), `proxy_hide_header`, `proxy_redirect`, `proxy_pass` (to the app only), `proxy_intercept_errors`, the `proxy_*_timeout` settings, `proxy_buffering`, `proxy_request_buffering`, `error_page`, `return`, `rewrite`, `break`, `internal`, `limit_req` (with a zone named `opscrew_…`), `limit_req_status`, `allow`, `deny`, `client_max_body_size`, `expires`, `etag`, `charset` and the `gzip` settings |
 | Caddy | `header`, `request_header`, `redir`, `rewrite`, `uri`, `respond`, `error`, `abort`, `handle`, `handle_path`, `route`, `handle_response`, `encode`, `basic_auth`, `request_body`, `reverse_proxy` (to the app only), `copy_response`, `copy_response_headers`, and `@name` matchers on path, header, method, query, host, client address and protocol |
-| OpenLiteSpeed | `context` blocks with `type proxy` and `handler kamal-proxy`, and in them `extraHeaders` (`Header`, `RequestHeader`), `rewrite` (`enable`, `inherit`, `rules` with `RewriteCond` and `RewriteRule`), `accessControl` (`allow`, `deny`), `addDefaultCharset`, `enableExpires`, `expiresDefault` and `expiresByType` |
+| OpenLiteSpeed | `context` blocks with `type proxy` and `handler <app>-kamal-proxy`, and in them `extraHeaders` (`Header`, `RequestHeader`), `rewrite` (`enable`, `inherit`, `rules` with `RewriteCond` and `RewriteRule`), `accessControl` (`allow`, `deny`), `addDefaultCharset`, `enableExpires`, `expiresDefault` and `expiresByType` |
 
 Anything else is refused as "not supported in additions yet". Tell OpsCrew if you need a directive
 that is missing.

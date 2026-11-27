@@ -21,8 +21,9 @@ online until their next deploy.
    - `src/edge/nginx.ts`: add per-site `upstream <app>-kamal-proxy` (`zone 64k`, `server <app>-kamal-proxy:80 resolve max_fails=0`)
      and `proxy_pass http://<app>-kamal-proxy;`. Keep `resolver 127.0.0.11 valid=10s ipv6=off;` and
      legacy `upstream kamal-proxy` in `NGINX_CONF`.
-   - `src/edge/openlitespeed.ts`: keep `extprocessor kamal-proxy` handler name; set `address` to
-     `appProxyUpstream(app)` in both `extprocessor` and `websocket /`.
+   - `src/edge/openlitespeed.ts`: use per-app `extprocessor ${appProxyAlias(app)}` and
+     `handler ${appProxyAlias(app)}`; set `address` to `appProxyUpstream(app)` in both
+     `extprocessor` and `websocket /`.
    - `src/runtime/index.ts`: in `renderCompose`, put `app` on `internal` only, add hardened
      `kamal-proxy` service bridging `internal` and `opscrew-edge` (alias `<app>-kamal-proxy`) with
      `kamal-proxy-config` volume; in `renderCaddyfile`, forward to `appProxyUpstream(app)`.

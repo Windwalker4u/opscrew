@@ -343,13 +343,13 @@ describe("the app's site on OpenLiteSpeed", () => {
   it("sends the app's traffic and its WebSockets to kamal-proxy, with the headers on every answer", () => {
     const content = vhconf(BLOG);
     expect(content).toContain(
-      "extprocessor kamal-proxy {\n  type                    proxy\n  address                 blog-kamal-proxy:80\n",
+      "extprocessor blog-kamal-proxy {\n  type                    proxy\n  address                 blog-kamal-proxy:80\n",
     );
     expect(content).toContain(
       [
         "context / {",
         "  type                    proxy",
-        "  handler                 kamal-proxy",
+        "  handler                 blog-kamal-proxy",
         "  addDefaultCharset       off",
         "  extraHeaders            <<<END_extraHeaders",
         'Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"',

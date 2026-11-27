@@ -12,7 +12,7 @@
 import { escapeRegExp } from "@opscrew/core";
 import { edgeProvider } from "@opscrew/edge-providers";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
-import { appProxyUpstream } from "./index";
+import { appProxyAlias, appProxyUpstream } from "./index";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 import { ACME_WEBROOT, certbotLive, MOZILLA_CIPHERS, RELOAD_DIR } from "./nginx";
 
@@ -100,8 +100,9 @@ export const OPENLITESPEED_CAPABILITIES = [
 ];
 
 /**
- * The name of the kamal-proxy external app in every virtual host: a site, and the user's
- * additions, send the app's traffic to `handler kamal-proxy`.
+ * Legacy default external-app handler name (`kamal-proxy`). Per-app virtual hosts use
+ * `appProxyAlias(app)` (`<app>-kamal-proxy`) because OpenLiteSpeed keeps `extprocessor` names in a
+ * server-wide registry across virtual hosts (049).
  */
 export const OPENLITESPEED_UPSTREAM = "kamal-proxy";
 
@@ -458,7 +459,7 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
     "",
     ...ERROR_PAGES,
     "# This app's own kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.",
-    ...block(`extprocessor ${OPENLITESPEED_UPSTREAM}`, [
+    ...block(`extprocessor ${appProxyAlias(app)}`, [
       set("type", "proxy"),
       set("address", appProxyUpstream(app)),
       set("maxConns", 1000),
@@ -469,7 +470,7 @@ export function openlitespeedSite(site: OpenLiteSpeedSite): Record<string, strin
     ]),
     ...block("context /", [
       set("type", "proxy"),
-      set("handler", OPENLITESPEED_UPSTREAM),
+      set("handler", appProxyAlias(app)),
       set("addDefaultCharset", "off"),
       ...heredoc("extraHeaders", headers),
     ]),

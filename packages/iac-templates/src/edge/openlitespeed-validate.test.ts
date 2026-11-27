@@ -179,7 +179,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
         Object.entries(sites).map(([name, lines]) => [`sites/${name}`, lines.join("\n")]),
       ),
       "sites/blog.additions":
-        'context /api/ {\n  type                    proxy\n  handler                 kamal-proxy\n  extraHeaders            <<<END_extraHeaders\nHeader set Cache-Control "no-store"\n  END_extraHeaders\n}\n',
+        'context /api/ {\n  type                    proxy\n  handler                 blog-kamal-proxy\n  extraHeaders            <<<END_extraHeaders\nHeader set Cache-Control "no-store"\n  END_extraHeaders\n}\n',
       "tls/shop/origin.pem": origin.certificate,
       "tls/shop/origin.key": origin.key,
       "tls/shop/pull.pem": client.certificate,
@@ -404,7 +404,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       vhconf,
       (good["blog.vhconf"] ?? [])
         .join("\n")
-        .replace("handler                 kamal-proxy", "handler                 nowhere"),
+        .replace("handler                 blog-kamal-proxy", "handler                 nowhere"),
     );
     const broken = reload();
     writeFileSync(vhconf, (good["blog.vhconf"] ?? []).join("\n"));
@@ -480,7 +480,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     const good = (openlitespeedSite(BLOG)["blog.vhconf"] ?? []).join("\n");
     writeFileSync(
       vhconf,
-      good.replace("handler                 kamal-proxy", "handler                 nowhere"),
+      good.replace("handler                 blog-kamal-proxy", "handler                 nowhere"),
     );
     const refused = after();
     writeFileSync(vhconf, good);

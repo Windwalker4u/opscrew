@@ -57,8 +57,9 @@ plain-English remediation guidance (re-run the deploy workflow), while a running
 - **FR-4902 (Per-app front-proxy upstreams):**
   - Caddy (`renderCaddyfile`): `reverse_proxy <app>-kamal-proxy:80`.
   - nginx (`nginxSite`): per-site `upstream <app>-kamal-proxy { zone <app>-kamal-proxy 64k; server <app>-kamal-proxy:80 resolve max_fails=0; }` and `proxy_pass http://<app>-kamal-proxy;` (retaining `resolver 127.0.0.11 valid=10s ipv6=off;` and legacy `upstream kamal-proxy` in `nginx.conf`).
-  - OpenLiteSpeed (`openLiteSpeedSite`): keeps `extprocessor kamal-proxy` handler name and sets
-    `address <app>-kamal-proxy:80` in both `extprocessor` and `websocket /`. Offline checks
+  - OpenLiteSpeed (`openLiteSpeedSite`): defines per-app `extprocessor <app>-kamal-proxy` and
+    `handler <app>-kamal-proxy` (OpenLiteSpeed shares `extprocessor` names globally across virtual
+    hosts) and sets `address <app>-kamal-proxy:80` in both `extprocessor` and `websocket /`. Offline checks
     (`edge-check.ts`, `provision/additions.ts`) add `--add-host <app>-kamal-proxy:127.0.0.1`
     alongside `kamal-proxy:127.0.0.1`.
   - Proxy additions & Vercel routing (`provision/additions.ts`, `design/additions.ts`) use

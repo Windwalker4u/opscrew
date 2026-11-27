@@ -85,9 +85,10 @@ Internet / Cloudflare
      nginx reload.
   3. `/etc/nginx/nginx.conf` retains the legacy `upstream kamal-proxy` block through the transition
      so unmigrated `0.2.12` sites still pointing at `http://kamal-proxy` remain valid.
-- **OpenLiteSpeed:** Keeps the `extprocessor` handler name `kamal-proxy` (`OPENLITESPEED_UPSTREAM`)
-  so user additions referencing `kamal-proxy` remain compatible, and sets `address <app>-kamal-proxy:80`
-  in both `extprocessor` and `websocket /`. Because OpenLiteSpeed resolves `extprocessor` addresses
+- **OpenLiteSpeed:** Gives each virtual host its own `extprocessor <app>-kamal-proxy` and
+  `handler <app>-kamal-proxy` (matching nginx's per-site `upstream <app>-kamal-proxy`) because
+  OpenLiteSpeed stores `extprocessor` names in a server-wide registry across virtual hosts, and sets
+  `address <app>-kamal-proxy:80` in both `extprocessor` and `websocket /`. Because OpenLiteSpeed resolves `extprocessor` addresses
   when loading configuration, `install_edge` and `afterSwitch` reload OpenLiteSpeed under
   `/srv/edge/.lock` whenever an app switches or recreates its proxy. Offline checks (`edge-check.ts`
   and `provision/additions.ts`) add `--add-host <app>-kamal-proxy:127.0.0.1` alongside

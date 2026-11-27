@@ -272,7 +272,7 @@ describe.skipIf(reason !== undefined)(
       const run = runStep(
         planFor("nginx", { www: true }),
         { ...both, originTls: { hostnames: ["example.com"] } },
-        'add_header X-Robots-Tag "noindex" always;\nlocation /api/ {\n\tlimit_req zone=opscrew_shop burst=20 nodelay;\n\tproxy_pass http://kamal-proxy;\n}\n',
+        'add_header X-Robots-Tag "noindex" always;\nlocation /api/ {\n\tlimit_req zone=opscrew_shop burst=20 nodelay;\n\tproxy_pass http://shop-kamal-proxy;\n}\n',
       );
       expect(run.status, run.output).toBe(0);
       expect(run.output).toContain(
@@ -293,7 +293,7 @@ describe.skipIf(reason !== undefined)(
       const good = runStep(
         plan,
         c,
-        'context /api/ {\n  type proxy\n  handler kamal-proxy\n  extraHeaders <<<END_extraHeaders\nHeader set Cache-Control "no-store"\n  END_extraHeaders\n}\n',
+        'context /api/ {\n  type proxy\n  handler shop-kamal-proxy\n  extraHeaders <<<END_extraHeaders\nHeader set Cache-Control "no-store"\n  END_extraHeaders\n}\n',
       );
       expect(good.status, good.output).toBe(0);
       const bad = runStep(plan, c, "context /api/ {\n  type proxy\n  handler nowhere\n}\n");

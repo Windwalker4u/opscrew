@@ -60,7 +60,7 @@ describe("feature 049 (Option B): per-app kamal-proxy and network isolation", ()
     const caddyPlan = testPlan({ domain: "shop.example.com", www: false });
     expect(edgeAppUpstream("caddy", "shop")).toBe("shop-kamal-proxy:80");
     expect(edgeAppUpstream("nginx", "shop")).toBe("shop-kamal-proxy");
-    expect(edgeAppUpstream("openlitespeed", "shop")).toBe("kamal-proxy");
+    expect(edgeAppUpstream("openlitespeed", "shop")).toBe("shop-kamal-proxy");
 
     const caddy = renderCaddyfile(caddyPlan, ctx).content;
     expect(caddy).toContain(`reverse_proxy ${appProxyUpstream("shop")}`);
@@ -88,7 +88,8 @@ describe("feature 049 (Option B): per-app kamal-proxy and network isolation", ()
     const olsSiteFile = renderEdgeSite(olsPlan, ctx).find((f) =>
       f.path.endsWith("/shop.vhconf"),
     )?.content;
-    expect(olsSiteFile).toContain("extprocessor kamal-proxy {");
+    expect(olsSiteFile).toContain("extprocessor shop-kamal-proxy {");
+    expect(olsSiteFile).toContain("handler                 shop-kamal-proxy");
     expect(olsSiteFile).toContain("address                 shop-kamal-proxy:80");
     expect(olsSiteFile).toContain(
       "websocket / {\n  address                 shop-kamal-proxy:80\n}",

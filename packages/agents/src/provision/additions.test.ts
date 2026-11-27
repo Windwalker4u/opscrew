@@ -104,7 +104,7 @@ const openLiteSpeed = (): DeployPlan => {
     dns: { ...base.dns, proxied: false },
   });
 };
-const OPENLITESPEED_ADDITIONS = "context /api/ {\n  type proxy\n  handler kamal-proxy\n}\n";
+const OPENLITESPEED_ADDITIONS = "context /api/ {\n  type proxy\n  handler shop-kamal-proxy\n}\n";
 const refusedBefore = async (s: Awaited<ReturnType<typeof project>>) => {
   const error = (await runProvision(s.deps, { services: s.services }).catch(
     (e: unknown) => e,
@@ -146,7 +146,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
 
   it("refuses OpenLiteSpeed's file for a Caddy app, naming its proxy", async () => {
     const s = await project({ docker: () => ok() });
-    await write(s, OPENLITESPEED, "context /api/ {\n  type proxy\n  handler kamal-proxy\n}\n");
+    await write(s, OPENLITESPEED, "context /api/ {\n  type proxy\n  handler shop-kamal-proxy\n}\n");
     const error = await refusedBefore(s);
     expect(error.message).toBe(
       `${OPENLITESPEED} holds additions for OpenLiteSpeed, but this app's proxy is Caddy (target.edge), so OpsCrew would not use them. Nothing was changed.`,

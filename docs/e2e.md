@@ -715,7 +715,7 @@ order, with these differences:
 2. **DNS only with OpenLiteSpeed:** as nginx's step 2; the edge's Compose file must say
    `x-opscrew-edge-proxy: openlitespeed`, and the CAA records name only `letsencrypt.org`.
 3. **An addition:** `opscrew/proxy/additions.openlitespeed`, a `context /opscrew-e2e-addition`
-   that sends the request on to the app (`handler kamal-proxy`) with the header
+   that sends the request on to the app (`handler <app>-kamal-proxy`) with the header
    `X-OpsCrew-Addition`, since OpenLiteSpeed's additions only send requests on. The path must
    answer (any status below 500) with that header, and with OpsCrew's
    `Strict-Transport-Security` and `X-Content-Type-Options` headers.

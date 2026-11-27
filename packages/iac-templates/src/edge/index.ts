@@ -112,13 +112,12 @@ export function appProxyUpstream(app: string): string {
 /**
  * The upstream name an app's proxy site and user additions target for `proxy`:
  * `<app>-kamal-proxy:80` on Caddy, `<app>-kamal-proxy` (the site's own `upstream` group) on nginx,
- * and `kamal-proxy` (the virtual host's own `extprocessor`, pointing at `<app>-kamal-proxy:80`) on
- * OpenLiteSpeed.
+ * and `<app>-kamal-proxy` (the virtual host's per-app `extprocessor`, pointing at
+ * `<app>-kamal-proxy:80`) on OpenLiteSpeed.
  */
 export function edgeAppUpstream(proxy: EdgeProxy, app: string): string {
   if (proxy === "caddy") return appProxyUpstream(app);
-  if (proxy === "nginx") return appProxyAlias(app);
-  return OPENLITESPEED_UPSTREAM;
+  return appProxyAlias(app);
 }
 
 /**
